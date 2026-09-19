@@ -12,6 +12,8 @@ from unittest.mock import patch
 import identity
 import prove
 import prepare
+import profile_home
+import os
 
 
 class ProofControls(unittest.TestCase):
@@ -127,6 +129,97 @@ class ProofControls(unittest.TestCase):
             self.assertFalse(prove.cleanup(self.root, owner, row))
             self.assertEqual(processes.call_count, 2)
         self.assertTrue(row['cleanup']['errors'])
+
+    def profile_fixture(self):
+        home = self.base / 'account'; home.mkdir()
+        state = self.root / 'scheduled-task/state'; state.mkdir(parents=True)
+        owner = {'profiles': {'scheduled-task': 'pr147054-scheduled-task-012345abcdef'}}
+        item = profile_home.binding(self.root, owner, home)
+        owner['canonicalProfile'] = item
+        return home, state, owner, Path(item['path'])
+
+    def test_profile_alias_cleanup_preserves_target_and_account_data(self):
+        home, state, owner, link = self.profile_fixture()
+        (home / 'unrelated.txt').write_text('keep'); (state / 'openclaw.json').write_text('{}')
+        link.symlink_to(state, target_is_directory=True)
+        with patch.dict(os.environ, {'USERPROFILE': str(home)}):
+            self.assertTrue(profile_home.retire(self.root, owner)['aliasAbsent'])
+            self.assertTrue(profile_home.retire(self.root, owner)['aliasAbsent'])
+        self.assertFalse(profile_home.lexists(link))
+        self.assertTrue((state / 'openclaw.json').is_file())
+        self.assertEqual((home / 'unrelated.txt').read_text(), 'keep')
+
+    def test_profile_cleanup_rejects_retargeted_alias(self):
+        home, state, owner, link = self.profile_fixture()
+        other = self.base / 'foreign'; other.mkdir(); link.symlink_to(other, target_is_directory=True)
+        with patch.dict(os.environ, {'USERPROFILE': str(home)}):
+            with self.assertRaisesRegex(RuntimeError, 'target changed'):
+                profile_home.retire(self.root, owner)
+        self.assertTrue(link.is_symlink()); self.assertTrue(other.is_dir())
+
+    def test_profile_cleanup_rejects_real_directory_and_mutated_binding(self):
+        home, state, owner, link = self.profile_fixture(); link.mkdir()
+        with patch.dict(os.environ, {'USERPROFILE': str(home)}):
+            with self.assertRaisesRegex(RuntimeError, 'not an owned alias'):
+                profile_home.retire(self.root, owner)
+            owner['canonicalProfile']['path'] = str(home)
+            with self.assertRaisesRegex(RuntimeError, 'binding changed'):
+                profile_home.retire(self.root, owner)
+        self.assertTrue(link.is_dir()); self.assertTrue(home.is_dir())
+
+    def test_existing_canonical_profile_cannot_be_adopted(self):
+        home, state, owner, link = self.profile_fixture(); link.symlink_to(state, target_is_directory=True)
+        owner.pop('canonicalProfile')
+        with patch.dict(os.environ, {'USERPROFILE': str(home)}), \
+             patch.object(profile_home.subprocess, 'check_output', return_value=json.dumps(str(home))), \
+             patch.object(profile_home.native, 'powershell') as native:
+            with self.assertRaisesRegex(RuntimeError, 'already exists'):
+                profile_home.claim(self.root, owner, sys.executable, {})
+            native.assert_not_called()
+        self.assertNotIn('canonicalProfile', owner)
+
+    def test_alias_preserved_when_native_cleanup_is_unverified(self):
+        home, state, owner, link = self.profile_fixture(); link.symlink_to(state, target_is_directory=True)
+        owner.update(tasks=[], ports=[])
+        with patch.object(prove.native, 'owned', return_value={1: {'ProcessId': 1}}), \
+             patch.object(prove.native, 'kill_owned', side_effect=RuntimeError('still live')), \
+             patch.object(prove.profile_home, 'retire') as retire:
+            self.assertFalse(prove.cleanup(self.root, owner, {}))
+            retire.assert_not_called()
+        self.assertTrue(link.is_symlink())
+
+    def test_partial_alias_creation_keeps_cleanup_custody(self):
+        home, state, owner, link = self.profile_fixture(); owner.pop('canonicalProfile')
+        def interrupted(*args):
+            link.symlink_to(state, target_is_directory=True)
+            raise RuntimeError('interrupted after allocation')
+        with patch.dict(os.environ, {'USERPROFILE': str(home)}), \
+             patch.object(profile_home.subprocess, 'check_output', return_value=json.dumps(str(home))), \
+             patch.object(profile_home.native, 'powershell', side_effect=interrupted):
+            with self.assertRaisesRegex(RuntimeError, 'interrupted after allocation'):
+                profile_home.claim(self.root, owner, sys.executable, {})
+            self.assertEqual(json.loads((self.root / 'OWNER.json').read_text())['canonicalProfile'], owner['canonicalProfile'])
+            self.assertTrue(profile_home.retire(self.root, owner)['aliasAbsent'])
+        self.assertTrue(state.is_dir())
+
+    def test_profile_binding_rejects_path_traversal(self):
+        home, state, owner, link = self.profile_fixture()
+        owner['profiles']['scheduled-task'] = '../default'
+        with self.assertRaisesRegex(RuntimeError, 'task-specific'):
+            profile_home.binding(self.root, owner, home)
+        self.assertFalse(profile_home.lexists(link))
+
+    def test_scheduled_only_selection_does_not_replay_console_cells(self):
+        owner = json.loads((self.root / 'OWNER.json').read_text())
+        argv = ['prove.py', '--root', str(self.root), '--seal', self.sha, '--case', 'scheduled-task']
+        with patch.object(prove, 'DRIVER', self.driver), patch.object(sys, 'platform', 'win32'), \
+             patch.object(sys, 'argv', argv), patch.object(prove, 'run_cell', return_value={'state':'PASS'}) as cell:
+            self.assertEqual(prove.main(), 0)
+            self.assertEqual(cell.call_count, 1)
+            self.assertEqual(cell.call_args.args[2], 'scheduled-task')
+        receipt = json.loads((self.root / 'RESULT.json').read_text())
+        self.assertEqual(receipt['requiredModes'], ['scheduled-task'])
+        self.assertEqual(len(receipt['cells']), 1)
 
     def test_child_timeout_is_joined(self):
         child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])

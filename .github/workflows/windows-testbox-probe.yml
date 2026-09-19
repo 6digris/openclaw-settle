@@ -62,6 +62,12 @@ on:
         required: false
         default: false
         type: boolean
+      packaged_gateway_case:
+        description: 'Native cases: all, or missing Scheduled Task only (does not claim console acceptance)'
+        required: false
+        default: all
+        type: choice
+        options: [all, scheduled-task]
       packaged_gateway_artifact_id:
         description: "Artifact containing only retained openclaw-pr147054-0aba608f.tgz (fixed SHA256)"
         required: false
@@ -1263,8 +1269,9 @@ jobs:
       - name: Exercise full installed Gateway through native consoles and Scheduler
         env:
           EXECUTION_SEAL: ${{ steps.install.outputs.seal }}
+          SELECTED_CASE: ${{ inputs.packaged_gateway_case }}
         run: |
-          python -B tooling/scripts/proof/pr147054/prove.py --root "$env:RUNNER_TEMP/pr147054-owned" --seal $env:EXECUTION_SEAL
+          python -B tooling/scripts/proof/pr147054/prove.py --root "$env:RUNNER_TEMP/pr147054-owned" --seal $env:EXECUTION_SEAL --case "$env:SELECTED_CASE"
           if ($LASTEXITCODE -ne 0) { throw 'Full packaged lifecycle failed.' }
       - name: Join owned native state even after interruption
         id: cleanup

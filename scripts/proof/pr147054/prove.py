@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from identity import digest, require, save, snapshot, verify_archive, verify_seal
 import windows_native as native
+import profile_home
 
 DRIVER = Path(__file__).resolve().parent
 MODEL = 'proof-native-drain'
@@ -132,6 +133,10 @@ def cleanup(root, owner, row):
                 sock.bind(('127.0.0.1', port))
         except OSError as exc:
             errors.append('Port not released: ' + str(port) + ': ' + str(exc))
+    profile_cleanup = None
+    if not errors:
+        profile_cleanup = attempt('retire canonical profile alias', lambda: profile_home.retire(root, owner))
+    row['canonicalProfileCleanup'] = profile_cleanup
     row.setdefault('cleanupAttempts', []).append({'at': now(), 'errors': list(errors)})
     row['cleanup'] = {'at': now(), 'errors': errors,
                       'remainingProcesses': remaining, 'tasks': tasks}
@@ -216,6 +221,7 @@ def run_cell(root, seal, mode, owner):
                 return False
         wait_for(mock_ready, 30, 'Mock not ready')
         if mode == 'scheduled-task':
+            row['canonicalProfile'] = profile_home.claim(root, owner, node, env)
             require(not native.task_xml(task), 'Fixture task already exists')
             owner['tasks'].append(task); save(root / 'OWNER.json', owner)
             row['install'] = command(['gateway', 'install', '--port', str(gport),
@@ -363,11 +369,13 @@ def main():
     parser.add_argument('--root', type=Path, required=True)
     parser.add_argument('--seal', required=True)
     parser.add_argument('--cleanup-only', action='store_true')
+    parser.add_argument('--case', choices=('all', 'scheduled-task'), default='all')
     args = parser.parse_args()
     root = args.root.resolve()
+    modes = ('ctrl-c', 'ctrl-break', 'scheduled-task') if args.case == 'all' else ('scheduled-task',)
     result = {'startedAt': now(), 'state': 'FAIL', 'cells': [],
               'scope': 'Full installed Windows Gateway; synthetic provider; native consoles and Scheduler',
-              'forcedTaskTerminationIsGracefulProof': False}
+              'forcedTaskTerminationIsGracefulProof': False, 'requiredModes': list(modes)}
     try:
         require(sys.platform == 'win32' and sys.dont_write_bytecode, 'Windows and python -B required')
         owner = json.loads((root / 'OWNER.json').read_text(encoding='utf-8'))
@@ -381,7 +389,7 @@ def main():
             seal = verify_seal(root, DRIVER, args.seal)
             spec = json.loads((DRIVER / 'spec.json').read_text(encoding='utf-8'))
             result['identity'] = verify_archive(root / 'candidate.tgz', root / 'runtime/node_modules/openclaw', spec)
-            for mode in ('ctrl-c', 'ctrl-break', 'scheduled-task'):
+            for mode in modes:
                 verify_seal(root, DRIVER, args.seal)
                 result['cells'].append(run_cell(root, seal, mode, owner))
             result['state'] = 'PASS'
