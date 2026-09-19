@@ -3,11 +3,9 @@ import { keyed } from "lit/directives/keyed.js";
 import "./chat-composer-skills-dialog.ts";
 import type { ToolsEffectiveEntry, ToolsEffectiveResult } from "../../../api/types.ts";
 import { pathForRoute } from "../../../app-route-paths.ts";
-import type { ApplicationNavigationOptions } from "../../../app/context.ts";
 import "@awesome.me/webawesome/dist/components/switch/switch.js";
 import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
-import type { McpServerSummary } from "../../../lib/config/mcp-servers.ts";
 import { formatUiExternalText } from "../../../lib/format-error.ts";
 import type { SessionToolOverrides } from "../../../lib/sessions/patch.ts";
 import "../../../components/tooltip.ts";
@@ -21,91 +19,23 @@ import {
   resolveToolOverrideState,
   resolveWebSearchToolOverrideState,
 } from "../../../lib/sessions/tool-overrides.ts";
-import type { ComposerLibraryProps } from "../composer-library-session.ts";
 import type { ChatAttachmentControlsProps } from "./chat-attachment-controls.types.ts";
 import {
   handleChatAttachmentMenuSelection,
   renderChatAttachmentMenuOptions,
   renderChatAttachmentMenuTrigger,
 } from "./chat-attachments.ts";
+import type {
+  ChatComposerCapabilityMenuProps,
+  ChatComposerPlusMenuProps,
+  ChatComposerPlusMenuView,
+  ChatComposerRootToggle,
+} from "./chat-composer-capability.types.ts";
 import {
   renderBackRow,
   renderCapabilityToggleRow,
   menuDivider,
 } from "./chat-composer-menu-rows.ts";
-
-export type ChatComposerPlusMenuView = "root" | "skills" | "connectors" | `tools:${string}`;
-
-export type ChatComposerMenuSkill = {
-  key: string;
-  name: string;
-  description: string;
-  enabled: boolean;
-  baseEnabled: boolean;
-  missingDeps?: boolean;
-  blocked?: boolean;
-};
-
-type ChatComposerRootToggle = {
-  value: string;
-  label: string;
-  icon?: TemplateResult;
-  checked: boolean;
-  disabled: boolean;
-  title?: string;
-  onChange: (checked: boolean) => void;
-};
-
-type MenuRoute = "mcp" | "plugins" | "skills";
-
-type ChatComposerPlusMenuProps = {
-  attachments: ChatAttachmentControlsProps;
-  showCapabilities: boolean;
-  scopeKey: string;
-  basePath: string;
-  disabled: boolean;
-  open: boolean;
-  view: ChatComposerPlusMenuView;
-  toolOverrides: SessionToolOverrides | null | undefined;
-  skills: readonly ChatComposerMenuSkill[] | null;
-  skillsLoading: boolean;
-  skillsError: boolean;
-  library?: ComposerLibraryProps;
-  libraryDialog?: TemplateResult | typeof nothing;
-  mcpServers: readonly McpServerSummary[];
-  toolsEffectiveResult: ToolsEffectiveResult | null;
-  toolsEffectiveLoading: boolean;
-  toolsEffectiveError: boolean;
-  toolAccessMutationBlockedReason: string | null;
-  webSearchBaseEnabled: boolean;
-  mutationBlockedReason: string | null;
-  canAdmin: boolean;
-  adminBlockedReason: string | null;
-  rootToggles?: readonly ChatComposerRootToggle[];
-  addServerDialog?: TemplateResult | typeof nothing;
-  onOpenChange: (open: boolean) => void;
-  onViewChange: (view: ChatComposerPlusMenuView) => void;
-  onLoadSkills: () => void;
-  onPatchToolOverrides: (
-    next: SessionToolOverrides | null,
-  ) => void | Promise<{ ok: true; warning?: string } | { ok: false; error: string }>;
-  onNavigate: (routeId: MenuRoute, options?: ApplicationNavigationOptions) => void;
-  onAddServer?: () => void;
-  onOpenToolAccess?: (serverName: string) => void;
-};
-
-export type ChatComposerCapabilityMenuProps = Omit<
-  ChatComposerPlusMenuProps,
-  | "attachments"
-  | "disabled"
-  | "open"
-  | "view"
-  | "toolOverrides"
-  | "onOpenChange"
-  | "onViewChange"
-  | "showCapabilities"
-  | "rootToggles"
->;
 
 function internalLink(href: string, label: string): TemplateResult {
   return html`<a

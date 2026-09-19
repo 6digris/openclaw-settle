@@ -30,12 +30,12 @@ import type { RealtimeTalkStatus } from "../talk/session.ts";
 import type { RealtimeVoiceSelectionState } from "../talk/voice-selection.ts";
 import type { FallbackStatus } from "../tool-stream-contract.ts";
 import type { ChatAttachmentControlsProps } from "./chat-attachment-controls.types.ts";
-import type { ComposerEmojiMenu } from "./chat-composer-emoji.ts";
-import type { HumanMentionDirectory, HumanMentionMenu } from "./chat-composer-mention-menu.ts";
 import type {
   ChatComposerCapabilityMenuProps,
   ChatComposerPlusMenuView,
-} from "./chat-composer-plus-menu.ts";
+} from "./chat-composer-capability.types.ts";
+import type { ComposerEmojiMenu } from "./chat-composer-emoji.ts";
+import type { HumanMentionDirectory, HumanMentionMenu } from "./chat-composer-mention-menu.ts";
 import type { SkillMenuState } from "./chat-composer-skill-menu.ts";
 import type { SlashMenuState } from "./chat-composer-slash-menu.ts";
 import type { ChatPermissionPickerProps } from "./chat-permission-picker.ts";

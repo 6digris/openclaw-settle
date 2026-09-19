@@ -11,14 +11,14 @@ import { t } from "../../../i18n/index.ts";
 import type { SessionToolOverrides } from "../../../lib/sessions/patch.ts";
 import { nextBooleanToolOverrides } from "../../../lib/sessions/tool-overrides.ts";
 import { OpenClawLightDomContentsElement } from "../../../lit/openclaw-element.ts";
+import type {
+  ChatComposerMenuSkill,
+  ChatComposerCapabilityMenuProps,
+} from "./chat-composer-capability.types.ts";
 import {
   handleComposerLibrarySelection,
   renderComposerLibraryMenu,
 } from "./chat-composer-library-menu.ts";
-import type {
-  ChatComposerMenuSkill,
-  ChatComposerCapabilityMenuProps,
-} from "./chat-composer-plus-menu.ts";
 import "../../../styles/chat/skills-dialog.css";
 
 /** Presentation only. The composer host owns availability, permissions and serialized writes. */

@@ -201,7 +201,10 @@ describe("session mutation reconnect truth", () => {
         });
         failReadback = true;
         response.resolve(result);
-        await expect(archive).resolves.toEqual(result);
+        await expect(archive).resolves.toEqual({
+          ...result,
+          listRefreshError: "Archive list refresh unavailable",
+        });
         expect(sessions.state.error).toContain("Archive list refresh unavailable");
         expect(sessions.state.result?.sessions[0]).toMatchObject({ archived });
         expect(sessions.state.result?.sessions[0]?.archivedAt).toBe(archived ? 20 : undefined);
