@@ -2,7 +2,6 @@
 import { exitCliAfterOutput } from "../cli/one-shot-exit.js";
 import { LEGACY_IMPLICIT_AGENT_ID, normalizeAgentId } from "../routing/session-key.js";
 import { defaultRuntime, type RuntimeEnv, writeRuntimeJson } from "../runtime.js";
-import type { DoctorDatabasePreflight } from "./doctor-database-preflight.js";
 import type { DoctorOptions } from "./doctor-prompter.js";
 import type { DoctorSessionSqliteReport } from "./doctor-session-sqlite.js";
 import type { DoctorSqliteMaintenanceAuthority } from "./doctor-sqlite-maintenance-lock.js";
@@ -48,7 +47,7 @@ async function resolveExplicitSessionSqliteMaintenancePaths(
 export async function doctorCommand(
   runtime?: RuntimeEnv,
   options?: DoctorOptions,
-  databasePreflight?: DoctorDatabasePreflight,
+  activateCapture?: () => Promise<void>,
 ): Promise<void> {
   const outputRuntime = runtime ?? defaultRuntime;
   if (options?.stateSqlite) {
@@ -167,7 +166,7 @@ export async function doctorCommand(
     exitCliAfterOutput(outputRuntime, hasError ? 1 : 0);
   }
   const doctorHealth = await import("../flows/doctor-health.js");
-  await doctorHealth.runDoctorHealthFlow(runtime, options, undefined, databasePreflight);
+  await doctorHealth.runDoctorHealthFlow(runtime, options, undefined, undefined, activateCapture);
 }
 
 async function maybeCreateSessionSqliteGithubIssue(

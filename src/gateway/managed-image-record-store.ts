@@ -5,6 +5,7 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
+import { parseAgentSessionKey, scopeLegacySessionKeyToAgent } from "../routing/session-key.js";
 import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
@@ -15,6 +16,7 @@ import {
   managedImageRecordToRow,
   managedImageRecordFromRow,
   managedImageRecordsEqual,
+  normalizeManagedImageRecord,
 } from "./managed-image-record-store.kernel.js";
 import type {
   ManagedImageRecord,
@@ -26,6 +28,8 @@ export {
   managedImageRecordToRow,
   managedImageRecordFromRow,
   managedImageRecordsEqual,
+  resolveManagedImageRecordOwner,
+  managedImageRecordMatchesSession,
 } from "./managed-image-record-store.kernel.js";
 export type {
   ManagedImageRecord,
@@ -87,7 +91,7 @@ export function insertManagedImageRecord(record: ManagedImageRecord, stateDir?: 
       db,
       getNodeSqliteKysely<ManagedImageRecordDatabase>(db)
         .insertInto("managed_outgoing_image_records")
-        .values(managedImageRecordToRow(record)),
+        .values(managedImageRecordToRow(normalizeManagedImageRecord(record))),
     );
   }, stateDatabaseOptions(stateDir));
 }
@@ -107,8 +111,7 @@ export function attachManagedImageRecordToMessage(params: {
       stateDb
         .selectFrom("managed_outgoing_image_records")
         .select(MANAGED_IMAGE_RECORD_COLUMNS)
-        .where("attachment_id", "=", params.attachmentId)
-        .where("session_key", "=", params.sessionKey),
+        .where("attachment_id", "=", params.attachmentId),
     );
     if (!row) {
       return false;
@@ -117,6 +120,15 @@ export function attachManagedImageRecordToMessage(params: {
       return false;
     }
     const current = managedImageRecordFromRow(row);
+    if (
+      current.sessionKey !==
+      scopeLegacySessionKeyToAgent({
+        agentId: current.agentId ?? parseAgentSessionKey(current.sessionKey)?.agentId,
+        sessionKey: params.sessionKey,
+      })
+    ) {
+      return false;
+    }
     if (current.messageId === params.messageId && current.retentionClass === "history") {
       return true;
     }

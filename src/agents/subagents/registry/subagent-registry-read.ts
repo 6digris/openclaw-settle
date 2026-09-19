@@ -3,6 +3,7 @@
  *
  * Combines persisted snapshots with in-memory live runs for UI, announce, control, and recovery paths.
  */
+import { scopeLegacySessionKeyToAgent } from "../../../routing/session-key.js";
 import { normalizeDeliveryContext } from "../../../utils/delivery-context.shared.js";
 import type { DeliveryContext } from "../../../utils/delivery-context.types.js";
 import { getSubagentRunsForChildSession, subagentRuns } from "./subagent-registry-memory.js";
@@ -91,9 +92,14 @@ export function listSubagentRunsForController(
   controllerSessionKey: string,
   controllerAgentId?: string,
 ): SubagentRunRecord[] {
+  const sessionKey =
+    scopeLegacySessionKeyToAgent({
+      agentId: controllerAgentId,
+      sessionKey: controllerSessionKey,
+    }) ?? "";
   return listRunsForControllerFromRuns(
-    getSubagentRunsSnapshotForController(subagentRuns, controllerSessionKey),
-    controllerSessionKey,
+    getSubagentRunsSnapshotForController(subagentRuns, sessionKey),
+    sessionKey,
     controllerAgentId,
   );
 }
@@ -103,9 +109,11 @@ export function countActiveDescendantRuns(
   rootSessionKey: string,
   requesterAgentId?: string,
 ): number {
+  const sessionKey =
+    scopeLegacySessionKeyToAgent({ agentId: requesterAgentId, sessionKey: rootSessionKey }) ?? "";
   return countActiveDescendantRunsFromRuns(
-    getSubagentRunsSnapshotForSessions(subagentRuns, [rootSessionKey]),
-    rootSessionKey,
+    getSubagentRunsSnapshotForSessions(subagentRuns, [sessionKey]),
+    sessionKey,
     requesterAgentId,
   );
 }
@@ -132,9 +140,11 @@ export function hasDescendantRunAwaitingSettle(
   excludeRunId?: string,
   requesterAgentId?: string,
 ): boolean {
+  const sessionKey =
+    scopeLegacySessionKeyToAgent({ agentId: requesterAgentId, sessionKey: rootSessionKey }) ?? "";
   return hasDescendantRunAwaitingSettleFromRuns(
-    getSubagentRunsSnapshotForSessions(subagentRuns, [rootSessionKey]),
-    rootSessionKey,
+    getSubagentRunsSnapshotForSessions(subagentRuns, [sessionKey]),
+    sessionKey,
     excludeRunId,
     requesterAgentId,
   );
@@ -181,8 +191,13 @@ export function listSubagentRunsForRequester(
   requesterSessionKey: string,
   options?: { requesterRunId?: string; requesterAgentId?: string },
 ): SubagentRunRecord[] {
+  const sessionKey =
+    scopeLegacySessionKeyToAgent({
+      agentId: options?.requesterAgentId,
+      sessionKey: requesterSessionKey,
+    }) ?? "";
   // Request-run lifetime scoping must observe the raw live map, including rows not persisted yet.
-  return listRunsForRequesterFromRuns(subagentRuns, requesterSessionKey, options);
+  return listRunsForRequesterFromRuns(subagentRuns, sessionKey, options);
 }
 
 /** Whether any current or durable generation still owns this logical task, including waits/recovery. */

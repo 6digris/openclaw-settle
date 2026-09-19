@@ -3,7 +3,6 @@ import { clearEmbeddedSessionPromptStates } from "../../agents/embedded-agent-ru
 import { killSessionSubagentRuns } from "../../agents/subagents/registry/subagent-control-kill.js";
 import { loadExactSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
-import { resolveSystemEventQueueKey } from "../../infra/system-event-ownership.js";
 import {
   consumeSelectedSystemEventEntries,
   peekSystemEventEntries,
@@ -77,12 +76,12 @@ export function clearSessionResetRuntimeState(
   let systemEventsCleared = 0;
 
   for (const key of cleared.keys) {
+    // Reply queues also carry incarnation IDs; only conversation keys own system events.
     const owner = parseAgentSessionKey(key)?.agentId;
-    if (owner && owner !== normalizeAgentId(opts.agentId)) {
+    if (!owner || owner !== normalizeAgentId(opts.agentId)) {
       continue;
     }
-    const queueKey = resolveSystemEventQueueKey(key, opts.agentId);
-    const removed = consumeSelectedSystemEventEntries(queueKey, peekSystemEventEntries(queueKey));
+    const removed = consumeSelectedSystemEventEntries(key, peekSystemEventEntries(key));
     systemEventsCleared += removed.length;
   }
 

@@ -975,20 +975,15 @@ describe("callGateway url resolution", () => {
   });
 
   it.each([
-    {
-      label: "uses least-privilege scopes by default for non-CLI callers",
-      call: () => callGateway({ method: "health" }),
-      expectedScopes: ["operator.read"],
-    },
-    {
-      label: "uses least-privilege scopes by default for explicit CLI callers",
-      call: () => callGatewayCli({ method: "health" }),
-      expectedScopes: ["operator.read"],
-    },
-  ])("scope selection: $label", async ({ call, expectedScopes }) => {
+    { label: "non-CLI callers", call: callGateway },
+    { label: "explicit CLI callers", call: callGatewayCli },
+  ])("uses least privilege and preserves client capabilities for $label", async ({ call }) => {
     setLocalLoopbackGatewayConfig();
-    await call();
-    expect(lastClientOptions?.scopes).toEqual(expectedScopes);
+    for (const caps of [undefined, [], ["canonical-session-keys", "fixture-capability"]]) {
+      await call({ method: "health", caps });
+      expect(lastClientOptions?.scopes).toEqual(["operator.read"]);
+      expect(lastClientOptions?.caps).toEqual(caps);
+    }
   });
 
   it.each([

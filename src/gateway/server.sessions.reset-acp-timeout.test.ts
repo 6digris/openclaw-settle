@@ -313,7 +313,7 @@ test.each([true, false])(
   },
 );
 
-test.each(["global", "agent:work:main"])(
+test.each(["global", "agent:work:global"])(
   "reset of %s preserves the other agent's ACP owner",
   async (key) => {
     const stores = await createConfiguredGlobalAgentSessionStore({ writePrimeStore: true });
@@ -322,18 +322,23 @@ test.each(["global", "agent:work:main"])(
       const mainMeta = { ...resolvedAcpMeta(), runtimeSessionName: "main-owned" };
       const workMeta = { ...resolvedAcpMeta(), runtimeSessionName: "work-owned" };
       writeAcpSessionMetaForMigration({
-        sessionKey: buildAcpDatabaseSessionKey("global", "main"),
+        sessionKey: buildAcpDatabaseSessionKey("agent:main:global", "main"),
         meta: mainMeta,
       });
       writeAcpSessionMetaForMigration({
-        sessionKey: buildAcpDatabaseSessionKey("global", "work"),
+        sessionKey: buildAcpDatabaseSessionKey("agent:work:global", "work"),
         meta: workMeta,
       });
-      const before = readAcpSessionMeta({ cfg, sessionKey: "global", agentId: "main" });
+      const before = readAcpSessionMeta({ cfg, sessionKey: "agent:main:global", agentId: "main" });
+      expect(before?.runtimeSessionName).toBe("main-owned");
       const reset = await directSessionReq("sessions.reset", { key, agentId: "work" });
       expect(reset.ok).toBe(true);
-      expect(readAcpSessionMeta({ cfg, sessionKey: "global", agentId: "main" })).toEqual(before);
-      expect(readAcpSessionMeta({ cfg, sessionKey: "global", agentId: "work" })).toMatchObject({
+      expect(readAcpSessionMeta({ cfg, sessionKey: "agent:main:global", agentId: "main" })).toEqual(
+        before,
+      );
+      expect(
+        readAcpSessionMeta({ cfg, sessionKey: "agent:work:global", agentId: "work" }),
+      ).toMatchObject({
         runtimeSessionName: "work-owned",
         identity: { state: "pending" },
       });

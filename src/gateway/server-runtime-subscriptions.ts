@@ -337,8 +337,10 @@ export function startGatewayEventSubscriptions(params: {
                 key,
                 options?.agentId,
               );
-              const snapshot = scope?.[1]
-                ? (params.getSessionRowProjection?.()?.snapshot({ key, agentId: scope[1] }) ?? {
+              const snapshot = scope
+                ? (params
+                    .getSessionRowProjection?.()
+                    ?.snapshot({ key: scope.sessionKey, agentId: scope.agentId }) ?? {
                     row: null,
                   })
                 : { row: null };
@@ -434,10 +436,10 @@ export function startGatewayEventSubscriptions(params: {
               link?.agentId ?? evt.agentId ?? run?.agentId,
             )
           : undefined;
-        if (key && scope?.[1]) {
+        if (scope) {
           eventRowOwners.set(evt, {
             projection,
-            record: projection.capture({ key, agentId: scope[1] }),
+            record: projection.capture({ key: scope.sessionKey, agentId: scope.agentId }),
           });
         }
       }

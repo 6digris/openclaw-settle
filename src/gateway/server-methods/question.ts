@@ -37,7 +37,7 @@ import {
   isGatewayAdmin,
   resolveSessionSharingTarget,
 } from "../session-sharing.js";
-import { resolveStoredSessionKeyForAgentStore } from "../session-store-key.js";
+import { resolveSessionStoreKey } from "../session-store-key.js";
 import type { SecretStoreWriteService } from "./secrets.js";
 import type { GatewayClient, GatewayRequestHandlers, RespondFn } from "./types.js";
 import { assertValidParams } from "./validation.js";
@@ -206,9 +206,9 @@ export function createQuestionHandlers(
         }
         const sessionKey =
           request.sessionKey && requestedSession?.ok
-            ? resolveStoredSessionKeyForAgentStore({
+            ? resolveSessionStoreKey({
                 cfg: context.getRuntimeConfig(),
-                agentId: requestedSession.agentId,
+                storeAgentId: requestedSession.agentId,
                 sessionKey: request.sessionKey,
               })
             : undefined;

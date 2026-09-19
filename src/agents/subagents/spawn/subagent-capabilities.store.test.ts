@@ -5,6 +5,7 @@ import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.
 import * as sessionAccessor from "../../../config/sessions/session-accessor.js";
 import { writeSessionEntry } from "../../../config/sessions/session-accessor.sqlite-entry-store.js";
 import type { SessionEntry } from "../../../config/sessions/types.js";
+import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import {
   closeOpenClawAgentDatabasesAsync,
   runOpenClawAgentWriteTransaction,
@@ -28,7 +29,118 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   }),
 );
 
+function writeSharedCapabilityStore(entries: Record<string, SessionEntry>) {
+  const storePath = path.join(tempDirs.make("subagent-capability-shared-"), "sessions.sqlite");
+  runOpenClawAgentWriteTransaction(
+    (database) => {
+      for (const [key, entry] of Object.entries(entries)) {
+        writeSessionEntry(database, key, entry);
+      }
+    },
+    { agentId: "storage", path: storePath },
+  );
+  const cfg = {
+    agents: {
+      ownership: "explicit",
+      entries: { a: {}, z: {}, storage: {} },
+      defaults: { subagents: { maxSpawnDepth: 3 } },
+    },
+    session: { store: storePath },
+  } satisfies OpenClawConfig;
+  return { cfg, storePath };
+}
+
 describe("persisted subagent capability lookups", () => {
+  describe.each(["sqlite", "record"] as const)("shared-store by-ID lookup (%s)", (source) => {
+    it.each(["", " \t\u00a0"])(
+      "uses the requested logical agent's depth and tool policy (padding=%j)",
+      (padding) => {
+        const requested = "agent:z:subagent:legacy";
+        const foreignKey = "agent:a:subagent:retained";
+        const ownKey = "agent:z:subagent:retained";
+        const entries: Record<string, SessionEntry> = {
+          [foreignKey]: {
+            sessionId: requested,
+            updatedAt: 1,
+            spawnDepth: 0,
+            inheritedToolAllow: ["exec"],
+            inheritedToolDeny: ["read"],
+          },
+          [ownKey]: {
+            sessionId: `${padding}${requested}${padding}`,
+            updatedAt: 1,
+            spawnDepth: 3,
+            inheritedToolAllow: ["read"],
+            inheritedToolDeny: ["exec"],
+          },
+        };
+        const { cfg, storePath } = writeSharedCapabilityStore(entries);
+        const store =
+          source === "sqlite" ? resolveSubagentCapabilityStore(requested, { cfg }) : entries;
+
+        expect(
+          sessionAccessor.loadSessionEntryByIdReadOnly({
+            agentId: "storage",
+            logicalAgentId: "a",
+            storePath,
+            sessionId: requested,
+          }),
+        ).toMatchObject({ sessionKey: foreignKey });
+        expect(
+          sessionAccessor.loadExactSessionEntryReadOnly({
+            agentId: "storage",
+            storePath,
+            sessionKey: ownKey,
+          }),
+        ).toMatchObject({ sessionKey: ownKey, entry: { spawnDepth: 3 } });
+
+        expect(resolveStoredSubagentCapabilities(requested, { cfg, store })).toEqual({
+          depth: 3,
+          role: "leaf",
+          controlScope: "none",
+          canSpawn: false,
+          canControlChildren: false,
+        });
+        expect(resolveStoredSubagentInheritedToolAllowlist(requested, { cfg, store })).toEqual([
+          "read",
+        ]);
+        expect(resolveStoredSubagentInheritedToolDenylist(requested, { cfg, store })).toEqual([
+          "exec",
+        ]);
+      },
+    );
+
+    it("keeps a repeated opaque ID separate across logical selectors in one lookup", () => {
+      const entries: Record<string, SessionEntry> = {
+        "agent:a:subagent:retained": { sessionId: "shared-id", updatedAt: 1, spawnDepth: 1 },
+        "agent:z:subagent:retained": { sessionId: "shared-id", updatedAt: 1, spawnDepth: 3 },
+      };
+      const { cfg } = writeSharedCapabilityStore(entries);
+      const store =
+        source === "sqlite"
+          ? resolveSubagentCapabilityStore("agent:z:subagent:retained", { cfg })
+          : entries;
+
+      expect(getSubagentDepthFromSessionStore("shared-id", { cfg, store, agentId: "z" })).toBe(3);
+      expect(getSubagentDepthFromSessionStore("shared-id", { cfg, store, agentId: "a" })).toBe(1);
+      expect(getSubagentDepthFromSessionStore("shared-id", { cfg, store, agentId: "z" })).toBe(3);
+    });
+
+    it("follows a cross-agent parent by ID using the parent's logical selector", () => {
+      const child = "agent:a:subagent:child";
+      const parent = "agent:z:subagent:parent";
+      const entries: Record<string, SessionEntry> = {
+        "agent:a:subagent:decoy": { sessionId: parent, updatedAt: 1, spawnDepth: 0 },
+        [child]: { sessionId: "child-id", updatedAt: 1, spawnedBy: parent },
+        "agent:z:subagent:renamed": { sessionId: parent, updatedAt: 1, spawnDepth: 2 },
+      };
+      const { cfg } = writeSharedCapabilityStore(entries);
+      const store = source === "sqlite" ? resolveSubagentCapabilityStore(child, { cfg }) : entries;
+
+      expect(getSubagentDepthFromSessionStore(child, { cfg, store })).toBe(3);
+    });
+  });
+
   it("memoizes exact reads and misses only within one capability resolution", () => {
     const storePath = path.join(tempDirs.make("subagent-capability-memo-"), "sessions.sqlite");
     const cfg = { session: { store: storePath } };
@@ -161,10 +273,10 @@ describe("persisted subagent capability lookups", () => {
       for (const key of [parent, child, acp, dashboard, byId, "child-id", cycle]) {
         const persisted = resolveSubagentCapabilityStore(key, { cfg });
         expect(resolveStoredSubagentCapabilities(key, { cfg, store: persisted })).toEqual(
-          resolveStoredSubagentCapabilities(key, { store }),
+          resolveStoredSubagentCapabilities(key, { store, agentId: "main" }),
         );
         expect(getSubagentDepthFromSessionStore(key, { cfg, store: persisted })).toBe(
-          getSubagentDepthFromSessionStore(key, { store }),
+          getSubagentDepthFromSessionStore(key, { store, agentId: "main" }),
         );
         if (key !== "child-id") {
           expect(isSubagentEnvelopeSession(key, { cfg, store: persisted })).toBe(

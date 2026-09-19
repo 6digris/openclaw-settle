@@ -4,6 +4,7 @@ import { bindDeliveryQueueEntry } from "./delivery-queue-sqlite-bound.js";
 import {
   prepareClaimedSessionDelivery,
   prepareSessionDelivery,
+  resolveSessionDeliveryIdentityBlock,
   SESSION_DELIVERY_QUEUE_NAME,
   SessionDeliveryAcknowledgementFinalizeError,
   SessionDeliveryAttemptStartError,
@@ -186,6 +187,29 @@ export async function loadPendingSessionDeliveries(
   });
   context.admission.assertCurrent();
   return entries;
+}
+
+/** Scheduling admission never hides pending custody from inventory and retention readers. */
+export async function admitSessionDeliveryExecution(
+  entry: QueuedSessionDelivery,
+  context: OpenClawStateWorkerContext,
+): Promise<QueuedSessionDelivery | null> {
+  if (!resolveSessionDeliveryIdentityBlock(entry)) {
+    return entry;
+  }
+  const result = await executeSessionDelivery(context, {
+    type: "sessionDelivery.recordIdentityBlock",
+    input: { entry },
+  });
+  context.admission.assertCurrent();
+  return result.blocked ? null : result.entry;
+}
+
+export async function readBlockedSessionDeliverySummary(context: OpenClawStateWorkerContext) {
+  return executeSessionDelivery(context, {
+    type: "sessionDelivery.blockedSummary",
+    input: undefined,
+  });
 }
 
 export async function moveSessionDeliveryToFailed(

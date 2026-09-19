@@ -15,7 +15,10 @@ import {
 } from "../state/openclaw-agent-db.js";
 import { withStateDirEnv } from "../test-helpers/state-dir-env.js";
 import { repairCanonicalSessionKeys } from "./doctor-session-canonical-keys.js";
-import { insertLegacySession } from "./doctor-session-canonical-keys.test-support.js";
+import {
+  insertLegacySession,
+  rekeyLegacySessionFixture,
+} from "./doctor-session-canonical-keys.test-support.js";
 
 afterEach(() => closeOpenClawAgentDatabasesForTest());
 
@@ -94,7 +97,7 @@ describe("doctor transcript owner repair", () => {
         agentId: fixture.sourceAgentId,
         entry: { ...aliasStamp, sessionId: "alias-session", updatedAt: 20 },
         env,
-        sessionKey: "agent:main:main",
+        sessionKey: "agent:main:work ",
         storePath: sourceStore,
       });
 
@@ -142,7 +145,8 @@ describe("doctor transcript owner repair", () => {
         env,
       });
       const canonicalKey = "agent:main:work";
-      const winnerKey = "agent:main:main";
+      const winnerKey = "agent:main:work ";
+      const currentWinnerKey = "agent:main:winner";
       const cfg = {
         agents: {
           list: [
@@ -175,12 +179,12 @@ describe("doctor transcript owner repair", () => {
         agentId: sourceAgentId,
         entry: { sessionId: "selected-winner", updatedAt: 20 },
         env,
-        sessionKey: winnerKey,
+        sessionKey: currentWinnerKey,
         storePath: sourceStore,
       });
       const owner = winnerOwned
         ? assignSessionOwner(
-            { agentId: sourceAgentId, env, sessionKey: winnerKey, storePath: sourceStore },
+            { agentId: sourceAgentId, env, sessionKey: currentWinnerKey, storePath: sourceStore },
             {
               owner: { type: "human", id: "profile-winner" },
               assignedBy: { type: "agent", id: "research" },
@@ -189,16 +193,16 @@ describe("doctor transcript owner repair", () => {
           )
         : undefined;
 
+      const sourceDatabase = openOpenClawAgentDatabase({
+        agentId: sourceAgentId,
+        env,
+        path: resolveSqliteTargetFromSessionStorePath(sourceStore, { agentId: sourceAgentId, env })
+          .path,
+      });
+      rekeyLegacySessionFixture(sourceDatabase.db, currentWinnerKey, winnerKey);
       if ("malformed" in fixture) {
-        openOpenClawAgentDatabase({
-          agentId: sourceAgentId,
-          env,
-          path: resolveSqliteTargetFromSessionStorePath(sourceStore, {
-            agentId: sourceAgentId,
-            env,
-          }).path,
-        })
-          .db.prepare("UPDATE session_nodes SET entry_json = ? WHERE session_key = ?")
+        sourceDatabase.db
+          .prepare("UPDATE session_nodes SET entry_json = ? WHERE session_key = ?")
           .run("{malformed", winnerKey);
       }
 
@@ -307,7 +311,7 @@ describe("doctor transcript owner repair", () => {
     });
   });
 
-  it("follows alias ownership transitively to the configured canonical key", async () => {
+  it("follows stored alias ownership transitively to the normalized key", async () => {
     await withStateDirEnv("openclaw-doctor-transcript-owner-chain-", async ({ stateDir }) => {
       const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
       const storeTemplate = path.join(stateDir, "agents", "{agentId}", "sessions.json");
@@ -317,7 +321,7 @@ describe("doctor transcript owner repair", () => {
         session: { mainKey: "work", store: storeTemplate },
       } as OpenClawConfig;
       const staleKey = "agent:main:telegram:default:direct:fixture-peer";
-      const intermediateKey = "agent:main:main";
+      const intermediateKey = "agent:main:work ";
       const canonicalKey = "agent:main:work";
       const sessionId = "owner-chain-session";
       insertLegacySession({
@@ -342,11 +346,19 @@ describe("doctor transcript owner repair", () => {
         removedRows: 2,
         repairedGroups: 1,
       });
+      const database = openOpenClawAgentDatabase({
+        agentId: "main",
+        env,
+        path: resolveSqliteTargetFromSessionStorePath(storePath, { agentId: "main", env }).path,
+      });
       for (const sessionKey of [staleKey, intermediateKey]) {
         expect(
-          loadExactSessionEntryReadOnly({ agentId: "main", env, sessionKey, storePath }),
+          database.db
+            .prepare("SELECT session_key FROM session_nodes WHERE session_key = ?")
+            .get(sessionKey),
         ).toBeUndefined();
       }
+
       expect(
         loadExactSessionEntryReadOnly({ agentId: "main", env, sessionKey: canonicalKey, storePath })
           ?.entry,

@@ -185,22 +185,27 @@ it("selects current work before pagination and represents an isolated cron run o
 
 it.each(["global", "unknown"] as const)(
   "keeps %s activity with its agent when physical stores share a session ID",
-  async (sessionKey) => {
+  async (sentinel) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const config: OpenClawConfig = {
         agents: { list: [{ id: "main", default: true }, { id: "ops" }] },
         session: { scope: "global", store: state.statePath("{agentId}.sqlite") },
       };
-      const sessionId = `restored-${sessionKey}`;
-      const runId = `ops-${sessionKey}-run`;
+      const sessionId = `restored-${sentinel}`;
+      const runId = `ops-${sentinel}-run`;
       for (const agentId of ["main", "ops"]) {
         await upsertSessionEntryCore(
-          { agentId, sessionKey, storePath: state.statePath(`${agentId}.sqlite`) },
+          {
+            agentId,
+            sessionKey: `agent:${agentId}:${sentinel}`,
+            storePath: state.statePath(`${agentId}.sqlite`),
+          },
           { sessionId, updatedAt: 1, visibility: "shared" },
         );
       }
       const context = requestContext(config);
       const client = identifiedClient("viewer@example.test");
+      const sessionKey = `agent:ops:${sentinel}`;
       const request = { activeOnly: true, includeGlobal: true, includeUnknown: true, limit: 100 };
       const activeOwners = async () =>
         (await listSessions({ client, context, request })).sessions.map((row) => row.agentId);
@@ -262,9 +267,10 @@ it.each(["global", "unknown"] as const)(
       const boardFace = "chat" as const;
       for (const [index, agentId] of agents.entries()) {
         const sessionId = `${sentinel}-${agentId}`;
+        const sessionKey = `agent:${agentId}:${sentinel}`;
         const storePath = storePathFor(agentId);
         openOpenClawAgentDatabase({ agentId, path: storePath });
-        const scope = { agentId, storePath, sessionKey: sentinel };
+        const scope = { agentId, storePath, sessionKey };
         const entry = await upsertSessionEntryCore(scope, {
           sessionId,
           boardFace,
@@ -275,7 +281,7 @@ it.each(["global", "unknown"] as const)(
         });
         await replaceSessionEntry(scope, { ...entry!, updatedAt: 100 - index });
         await persistSessionTranscriptTurn(
-          { agentId, storePath, sessionKey: sentinel, sessionId },
+          { ...scope, sessionId },
           {
             messages: [
               { message: { role: "user", content: `${agentId} task` } },
@@ -286,31 +292,32 @@ it.each(["global", "unknown"] as const)(
         );
         if (agentId !== "main") {
           context.chatAbortControllers.set(`sentinel-run-${agentId}`, {
-            sessionKey: sentinel,
+            sessionKey,
             sessionId,
             agentId,
           } as never);
         }
       }
+      const opsKey = `agent:ops:${sentinel}`;
       const childKey = `agent:ops:subagent:${sentinel}-child`;
       await upsertSessionEntryCore(
         { agentId: "ops", storePath: storePathFor("ops"), sessionKey: childKey },
         {
           sessionId: "sentinel-child",
           updatedAt: 1,
-          parentSessionKey: sentinel,
-          spawnedBy: sentinel,
+          parentSessionKey: opsKey,
+          spawnedBy: opsKey,
           visibility: "shared",
         },
       );
       addSubagentRunForTests({
         runId: "sentinel-child-run",
         childSessionKey: childKey,
-        controllerSessionKey: sentinel,
-        requesterSessionKey: sentinel,
+        controllerSessionKey: opsKey,
+        requesterSessionKey: opsKey,
         requesterAgentId: "ops",
         requesterDisplayKey: sentinel,
-        swarmRequesterSessionKey: sentinel,
+        swarmRequesterSessionKey: opsKey,
         collect: true,
         groupId: "ops-group",
         task: "Current child task",
@@ -319,7 +326,7 @@ it.each(["global", "unknown"] as const)(
         startedAt: 2,
       });
       registerAgentRunContext("sentinel-child-run", { sessionKey: childKey, agentId: "ops" });
-      const literalKey = `agent:ops:${sentinel}`;
+      const literalKey = `agent:ops:literal-${sentinel}`;
       const literalSessionId = `literal-${sentinel}`;
       const literalScope = {
         agentId: "ops",
@@ -339,18 +346,20 @@ it.each(["global", "unknown"] as const)(
         agentId: "ops",
       } as never);
       await new SqliteBoardStore({
-        resolveSession: () => ({ agentId: "ops", path: storePathFor("ops"), sessionKey: sentinel }),
-      }).applyOps({ sessionKey: sentinel }, [{ kind: "tab_create", tabId: "main", title: "Ops" }]);
+        resolveSession: () => ({ agentId: "ops", path: storePathFor("ops"), sessionKey: opsKey }),
+      }).applyOps({ sessionKey: opsKey }, [{ kind: "tab_create", tabId: "main", title: "Ops" }]);
       const normal = await listSessions({
         client,
         context,
         request: { boardFace, includeGlobal: true, includeUnknown: true },
       });
       expect(normal.sessions).toMatchObject([
-        { key: sentinel, agentId: "main", hasActiveRun: false },
+        { key: `agent:main:${sentinel}`, agentId: "main", hasActiveRun: false },
+        { key: opsKey, agentId: "ops", hasActiveRun: true },
+        { key: `agent:research:${sentinel}`, agentId: "research", hasActiveRun: true },
         { key: literalKey, agentId: "ops", kind: "direct", hasActiveRun: true },
       ]);
-      expect(normal.count).toBe(2);
+      expect(normal.count).toBe(4);
 
       const request = {
         activeOnly: true,
@@ -366,7 +375,7 @@ it.each(["global", "unknown"] as const)(
         for (const agentId of ["ops", "research"]) {
           expect(
             getSessionRowProjection(context)?.snapshot(
-              { agentId, key: sentinel, storePath: storePathFor(agentId) },
+              { agentId, key: `agent:${agentId}:${sentinel}`, storePath: storePathFor(agentId) },
               { includeLastMessage: true },
             ).row?.lastMessagePreview,
           ).toBe(`${agentId} progress`);
@@ -376,7 +385,7 @@ it.each(["global", "unknown"] as const)(
       expect(active).toMatchObject({ count: 3, totalCount: 3, nextOffset: null });
       expect(active.sessions).toMatchObject([
         {
-          key: sentinel,
+          key: opsKey,
           agentId: "ops",
           kind: sentinel,
           boardFace,
@@ -385,7 +394,7 @@ it.each(["global", "unknown"] as const)(
           lastMessagePreview: "ops progress",
         },
         {
-          key: sentinel,
+          key: `agent:research:${sentinel}`,
           agentId: "research",
           kind: sentinel,
           boardFace,
@@ -402,9 +411,11 @@ it.each(["global", "unknown"] as const)(
         },
       ]);
       expect(JSON.stringify(active)).not.toContain(`${sentinel}-private`);
-      for (const row of active.sessions.filter((candidate) => candidate.key === sentinel)) {
-        expect(row).not.toHaveProperty("childSessions");
-        expect(row).not.toHaveProperty("hasActiveSubagentRun");
+      expect(active.sessions[0]?.childSessions).toEqual([childKey]);
+      expect(active.sessions[0]?.hasActiveSubagentRun).toBe(true);
+      for (const row of active.sessions.slice(1)) {
+        expect(row.childSessions).toBeUndefined();
+        expect(row.hasActiveSubagentRun).toBeUndefined();
       }
       expect(active.sessions[0]?.swarm?.groups).toMatchObject([
         { groupId: "ops-group", running: 1 },
@@ -416,7 +427,7 @@ it.each(["global", "unknown"] as const)(
         request: { ...request, agentId: "ops" },
       });
       expect(scoped.sessions.map((row) => [row.key, row.agentId])).toEqual([
-        [sentinel, "ops"],
+        [opsKey, "ops"],
         [literalKey, "ops"],
       ]);
       const excluded = sentinel === "global" ? { includeGlobal: false } : { includeUnknown: false };
@@ -435,9 +446,9 @@ it.each(["global", "unknown"] as const)(
         const listed = await listSessions({ client, context, request: { ...request, hasBoard } });
         expect(listed.sessions.map((row) => [row.key, row.agentId])).toEqual(
           hasBoard
-            ? [[sentinel, "ops"]]
+            ? [[opsKey, "ops"]]
             : [
-                [sentinel, "research"],
+                [`agent:research:${sentinel}`, "research"],
                 [literalKey, "ops"],
               ],
         );
@@ -445,13 +456,13 @@ it.each(["global", "unknown"] as const)(
 
       await changeDuringReadiness(context, async () => {
         await upsertSessionEntryCore(
-          { agentId: "ops", storePath: storePathFor("ops"), sessionKey: sentinel },
+          { agentId: "ops", storePath: storePathFor("ops"), sessionKey: opsKey },
           { visibility: "draft" },
         );
       });
       const restricted = await listSessions({ client, context, request });
       expect(restricted.sessions.map((row) => [row.key, row.agentId])).toEqual([
-        [sentinel, "research"],
+        [`agent:research:${sentinel}`, "research"],
         [literalKey, "ops"],
       ]);
       expect(restricted).toMatchObject({ count: 2, totalCount: 2 });
@@ -617,7 +628,7 @@ it.each(
       if (selection === "inherited") {
         config.session = { ...config.session, scope: "global" };
         await upsertSessionEntryCore(
-          { agentId: "work", sessionKey: "global" },
+          { agentId: "work", sessionKey: "agent:work:global" },
           {
             sessionId: "work-parent",
             providerOverride: "selected-provider",
@@ -628,7 +639,7 @@ it.each(
         );
         const scope = { agentId: "main", sessionKey };
         const entry = expectDefined(loadSessionEntry(scope), "child session");
-        await replaceSessionEntry(scope, { ...entry, parentSessionKey: "agent:work:main" });
+        await replaceSessionEntry(scope, { ...entry, parentSessionKey: "agent:work:global" });
       }
       registerChatAbortController({
         chatAbortControllers: context.chatAbortControllers,

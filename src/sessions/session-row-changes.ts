@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { deferSqlitePostCommitPublication } from "../infra/sqlite-post-commit.js";
+import { scopeLegacySessionKeyToAgent } from "../routing/session-key.js";
 import { resolveGlobalSet } from "../shared/global-singleton.js";
 import { notifyListeners, registerListener } from "../shared/listeners.js";
 
@@ -18,7 +19,11 @@ export const sessionChanges = {
   },
   /** SQLite observers run only after all committed owner state has settled. */
   emit(change: SessionRowChange, database?: DatabaseSync): void {
-    const publish = () => notifyListeners(listeners, change);
+    const event =
+      "sessionKey" in change
+        ? { ...change, sessionKey: scopeLegacySessionKeyToAgent(change) ?? change.sessionKey }
+        : change;
+    const publish = () => notifyListeners(listeners, event);
     if (!database || !deferSqlitePostCommitPublication(database, publish)) {
       publish();
     }

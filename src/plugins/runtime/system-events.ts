@@ -1,26 +1,33 @@
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { getRuntimeConfig } from "../../config/io.js";
 import { canonicalizeMainSessionAlias } from "../../config/sessions/main-session.js";
-import { resolveSystemEventQueueKey } from "../../infra/system-event-ownership.js";
+import { requestHeartbeat as requestCanonicalHeartbeat } from "../../infra/heartbeat-wake.js";
 import * as events from "../../infra/system-events.js";
-import { normalizeAgentIdStrict, parseAgentSessionKey } from "../../routing/session-key.js";
+import {
+  normalizeAgentIdStrict,
+  parseAgentSessionKey,
+  toAgentStoreSessionKey,
+} from "../../routing/session-key.js";
 
 /** Published SDK aliases resolve here; the process queues retain only qualified identities. */
 function resolveSystemEventSessionKey(sessionKey: string, agentId?: string): string {
-  const explicitOwner = agentId === undefined ? undefined : normalizeAgentIdStrict(agentId);
-  if (explicitOwner && !explicitOwner.ok) {
+  const owner = agentId === undefined ? null : normalizeAgentIdStrict(agentId);
+  if (owner && !owner.ok) {
     throw new Error("Invalid system event agentId.");
   }
-  const normalizedAgentId = explicitOwner?.value;
-  if (parseAgentSessionKey(sessionKey)) {
-    return resolveSystemEventQueueKey(sessionKey, normalizedAgentId);
+  const parsed = parseAgentSessionKey(sessionKey);
+  if (parsed) {
+    if (owner && parsed.agentId !== owner.value) {
+      throw new Error("System event owner does not match its session key.");
+    }
+    return toAgentStoreSessionKey({ agentId: parsed.agentId, requestKey: sessionKey });
   }
   const cfg = getRuntimeConfig();
-  const owner = resolveSessionAgentId({ config: cfg, sessionKey, agentId: normalizedAgentId });
-  return resolveSystemEventQueueKey(
-    canonicalizeMainSessionAlias({ cfg, agentId: owner, sessionKey }),
-    owner,
-  );
+  return canonicalizeMainSessionAlias({
+    cfg,
+    agentId: resolveSessionAgentId({ config: cfg, sessionKey, agentId: owner?.value }),
+    sessionKey,
+  });
 }
 
 export const enqueueSystemEventFromSdk = (
@@ -55,6 +62,14 @@ export function enqueueRoutedSystemEvent(
     agentId: route.agentId,
   });
 }
+
+export const requestHeartbeatFromSdk: typeof requestCanonicalHeartbeat = (options) =>
+  requestCanonicalHeartbeat({
+    ...options,
+    sessionKey: options.sessionKey
+      ? resolveSystemEventSessionKey(options.sessionKey, options.agentId)
+      : undefined,
+  });
 
 export const consumeSelectedSystemEventEntriesFromSdk: typeof events.consumeSelectedSystemEventEntries =
   (key, entries) =>

@@ -424,6 +424,7 @@ describe("abortChatRunById", () => {
   it("preserves the owning session identity when synchronous abort cleanup clears run context", () => {
     const { runId, sessionKey, entry, ops } = createAbortRunFixture({
       runId: "run-pre-reset-abort",
+      sessionKey: "agent:main:main",
     });
     registerAgentRunContext(runId, { sessionKey, sessionId: entry.sessionId });
     entry.controller.signal.addEventListener("abort", () => clearAgentRunContext(runId));
@@ -549,41 +550,21 @@ describe("abortChatRunById", () => {
     expect(ops.nodeSendToSession).not.toHaveBeenCalled();
   });
 
-  for (const testCase of [
-    {
-      name: "fans out default-agent global aborts to scoped and legacy global subscribers",
-      runId: "run-main-global",
-      createEntry: () => ({ ...createActiveEntry("global"), agentId: "main" }),
-      abort: abortChatRunById,
-    },
-    {
-      name: "resolves unscoped global aborts to the default agent subscribers",
-      runId: "run-unscoped-global",
-      createEntry: () => createActiveEntry("global"),
-      abort: abortChatRunById,
-    },
-    {
-      name: "preserves default-agent global delivery through tracked maintenance aborts",
-      runId: "run-tracked-global",
-      createEntry: () => ({ ...createActiveEntry("global"), agentId: "main" }),
-      abort: abortChatRunById,
-    },
-  ]) {
-    it(testCase.name, () => {
-      const ops = createOps({ runId: testCase.runId, entry: testCase.createEntry() });
-      ops.getRuntimeConfig = () => ({ agents: { list: [{ id: "main", default: true }] } });
-
-      const result = testCase.abort(ops, { runId: testCase.runId, sessionKey: "global" });
+  it.each(["main", "work"])(
+    "delivers %s global abort only to its canonical subscribers",
+    (agentId) => {
+      const sessionKey = `agent:${agentId}:global`;
+      const runId = `run-${agentId}-global`;
+      const ops = createOps({ runId, entry: createActiveEntry(sessionKey) });
+      const result = abortChatRunById(ops, { runId, sessionKey });
 
       expect(result).toEqual({ aborted: true });
       const payload = firstBroadcastPayload(ops) as ChatEvent;
-      expect(payload.agentId).toBe("main");
-      const delivery = { sessionKeys: ["agent:main:global", "global"] };
-      expect(ops.broadcast).toHaveBeenCalledWith("chat", payload, delivery);
-      expect(ops.nodeSendToSession).toHaveBeenCalledWith("agent:main:global", "chat", payload);
-      expect(ops.nodeSendToSession).toHaveBeenCalledWith("global", "chat", payload);
-    });
-  }
+      expect(payload.agentId).toBe(agentId);
+      expect(ops.broadcast).toHaveBeenCalledWith("chat", payload, { sessionKeys: [sessionKey] });
+      expect(ops.nodeSendToSession).toHaveBeenCalledExactlyOnceWith(sessionKey, "chat", payload);
+    },
+  );
 
   it("tags maintenance timeouts as timeout abort reasons", () => {
     const { runId, sessionKey, entry, ops } = createAbortRunFixture({ runId: "run-timeout" });
@@ -908,8 +889,8 @@ describe("resolveInFlightRunSnapshot", () => {
 
   it("scopes the shared global session by agent so one agent's run is not restored into another", () => {
     const controllers = new Map<string, ChatAbortControllerEntry>([
-      ["run-a", inFlightEntry("global", { agentId: "main" })],
-      ["run-b", inFlightEntry("global", { agentId: "work" })],
+      ["run-a", inFlightEntry("agent:main:global", { agentId: "main" })],
+      ["run-b", inFlightEntry("agent:work:global", { agentId: "work" })],
     ]);
     const buffers = new Map([
       ["run-a", "main agent global text"],
@@ -919,7 +900,7 @@ describe("resolveInFlightRunSnapshot", () => {
       snap({
         chatAbortControllers: controllers,
         chatRunBuffers: buffers,
-        sessionKey: "global",
+        sessionKey: "agent:work:global",
         agentId: "work",
       }),
     ).toEqual({ runId: "run-b", text: "work agent global text" });
@@ -927,30 +908,10 @@ describe("resolveInFlightRunSnapshot", () => {
       snap({
         chatAbortControllers: controllers,
         chatRunBuffers: buffers,
-        sessionKey: "global",
+        sessionKey: "agent:main:global",
         agentId: "main",
       }),
     ).toEqual({ runId: "run-a", text: "main agent global text" });
-  });
-
-  it("resolves bare global history snapshots to the default agent", () => {
-    const controllers = new Map<string, ChatAbortControllerEntry>([
-      ["run-main", inFlightEntry("global", { agentId: "main", startedAtMs: 1_000 })],
-      ["run-work", inFlightEntry("global", { agentId: "work", startedAtMs: 2_000 })],
-    ]);
-    const buffers = new Map([
-      ["run-main", "main default text"],
-      ["run-work", "work global text"],
-    ]);
-
-    expect(
-      snap({
-        chatAbortControllers: controllers,
-        chatRunBuffers: buffers,
-        sessionKey: "global",
-        defaultAgentId: "main",
-      }),
-    ).toEqual({ runId: "run-main", text: "main default text" });
   });
 
   it("prefers the newest startedAtMs when several runs match the same session+agent", () => {

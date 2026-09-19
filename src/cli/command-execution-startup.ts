@@ -1,13 +1,40 @@
 // CLI startup presentation and config-before-plugin bootstrap.
 import type { ConfigFileSnapshot } from "../config/types.js";
-import { routeLogsToStderr } from "../logging/console.js";
+import { isTruthyEnvValue } from "../infra/env.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { createLazyImportLoader } from "../shared/lazy-promise.js";
 import type { resolveCliStartupPolicy } from "./command-startup-policy.js";
 import { measureCliCommandStartup } from "./command-startup-timing.js";
 import { ensureCliPluginRegistryLoaded } from "./plugin-registry-loader.js";
+import type { createGatewayDispatchStartupTrace } from "./startup-trace.js";
 
 type CliStartupPolicy = ReturnType<typeof resolveCliStartupPolicy>;
+
+export function isDebugProxyCaptureEnvEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (
+    isTruthyEnvValue(env.OPENCLAW_DEBUG_PROXY_ENABLED) ||
+    isTruthyEnvValue(env.OPENCLAW_DEBUG_PROXY_REQUIRE)
+  );
+}
+
+export async function bootstrapCliProxyCapture(
+  startupTrace: ReturnType<typeof createGatewayDispatchStartupTrace>,
+): Promise<void> {
+  // Keep the capture storage graph cold unless debug capture is enabled.
+  if (isDebugProxyCaptureEnvEnabled()) {
+    const [
+      { initializeDebugProxyCapture, finalizeDebugProxyCapture },
+      { maybeWarnAboutDebugProxyCoverage },
+    ] = await startupTrace.measure("proxy-imports", () =>
+      Promise.all([import("../proxy-capture/runtime.js"), import("../proxy-capture/coverage.js")]),
+    );
+    initializeDebugProxyCapture("cli");
+    process.once("exit", () => {
+      finalizeDebugProxyCapture();
+    });
+    maybeWarnAboutDebugProxyCoverage(undefined, (message) => console.warn(message));
+  }
+}
 
 const configGuardModuleLoader = createLazyImportLoader(() => import("./program/config-guard.js"));
 
@@ -26,6 +53,7 @@ export async function applyCliExecutionStartupPresentation(params: {
 }) {
   // Machine-readable commands must route diagnostics away before startup can print.
   if (params.startupPolicy.suppressDoctorStdout && params.routeLogsToStderrOnSuppress !== false) {
+    const { routeLogsToStderr } = await import("../logging/console.js");
     routeLogsToStderr();
   }
   if (params.startupPolicy.hideBanner || params.showBanner === false || !params.version) {

@@ -133,13 +133,13 @@ describe("session observer", () => {
     expect(harness.broadcastToConnIds.mock.calls).toEqual([
       [
         "session.observer",
-        expect.objectContaining({ agentId: "main", revision: 1, sessionKey: "global" }),
-        new Set(["conn-main", "conn-legacy", "conn-work-raw"]),
-        expect.objectContaining({ sessionKeys: ["agent:main:global", "global"] }),
+        expect.objectContaining({ agentId: "main", revision: 1, sessionKey: "agent:main:global" }),
+        new Set(["conn-main"]),
+        expect.objectContaining({ sessionKeys: ["agent:main:global"] }),
       ],
       [
         "session.observer",
-        expect.objectContaining({ agentId: "work", revision: 1, sessionKey: "global" }),
+        expect.objectContaining({ agentId: "work", revision: 1, sessionKey: "agent:work:global" }),
         new Set(["conn-work"]),
         expect.objectContaining({ sessionKeys: ["agent:work:global"] }),
       ],
@@ -147,7 +147,7 @@ describe("session observer", () => {
     harness.observer.dispose();
   });
 
-  it("keeps the persisted fixed-store owner on the bare global observer stream", async () => {
+  it("publishes the fixed-store owner's canonical observer stream only", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
     const config = {
@@ -181,12 +181,12 @@ describe("session observer", () => {
 
     expect(harness.broadcastToConnIds).toHaveBeenCalledWith(
       "session.observer",
-      expect.objectContaining({ agentId: "ops", sessionKey: "global" }),
-      new Set(["conn-scoped", "conn-global"]),
+      expect.objectContaining({ agentId: "ops", sessionKey: "agent:ops:global" }),
+      new Set(["conn-scoped"]),
       expect.objectContaining({
         agentId: "ops",
         dropIfSlow: true,
-        sessionKeys: ["agent:ops:global", "global"],
+        sessionKeys: ["agent:ops:global"],
       }),
     );
     harness.observer.dispose();
@@ -224,7 +224,7 @@ describe("session observer", () => {
       }),
     );
 
-    const snapshot = harness.observer.getCompanionSnapshot("agent:work:main");
+    const snapshot = harness.observer.getCompanionSnapshot("global", "work");
     expect(snapshot.agentId).toBe("work");
     expect(snapshot.runId).toBe("run-work");
     expect(snapshot.notes).not.toHaveLength(0);

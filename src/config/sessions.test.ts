@@ -170,11 +170,11 @@ describe("sessions", () => {
       expected: "agent:main:primary",
     },
     {
-      name: "keeps global scope untouched",
+      name: "qualifies the agent's global scope",
       scope: "global" as const,
       ctx: { From: "+1555" },
       mainKey: undefined,
-      expected: "global",
+      expected: "agent:main:global",
     },
     {
       name: "leaves groups untouched even with main key",

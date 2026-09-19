@@ -20,11 +20,10 @@ import {
   scopedHeartbeatWakeOptionsForPolicy,
 } from "../../../infra/event-session-routing.js";
 import { requestHeartbeat } from "../../../infra/heartbeat-wake.js";
-import { resolveSystemEventQueueKey } from "../../../infra/system-event-ownership.js";
 import { enqueueSystemEvent } from "../../../infra/system-events.js";
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
 import { resolveChannelAccountEntry } from "../../../routing/account-lookup.js";
-import { normalizeAccountId, resolveAgentIdFromSessionKey } from "../../../routing/session-key.js";
+import { normalizeAccountId } from "../../../routing/session-key.js";
 import { normalizeAssistantPhase } from "../../../shared/chat-message-content.js";
 import { truncateUtf16WithEllipsis as truncate } from "../../../shared/text-truncate.js";
 import { recordTaskRunProgressByRunId } from "../../../tasks/detached-task-runtime.js";
@@ -157,7 +156,6 @@ function shouldRelayAcpStatusProgress(params: {
 export function startAcpSpawnParentStreamRelay(params: {
   runId: string;
   parentSessionKey: string;
-  requesterAgentId?: string;
   childSessionKey: string;
   childSessionId?: string;
   agentId: string;
@@ -351,10 +349,7 @@ export function startAcpSpawnParentStreamRelay(params: {
       return;
     }
     enqueueSystemEvent(cleaned, {
-      sessionKey: resolveSystemEventQueueKey(
-        resolveEventSessionKeyForPolicy(parentSessionKey, eventRouting),
-        resolveAgentIdFromSessionKey(parentSessionKey, params.requesterAgentId),
-      ),
+      sessionKey: resolveEventSessionKeyForPolicy(parentSessionKey, eventRouting),
       contextKey,
       deliveryContext: params.deliveryContext,
     });

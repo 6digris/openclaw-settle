@@ -4,9 +4,11 @@ import { WebSocket, WebSocketServer } from "ws";
 import {
   GATEWAY_SERVER_CAPS,
   type HelloOk,
+  type Snapshot,
 } from "../../../../packages/gateway-protocol/src/index.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
+import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import { resolveGatewayAuth } from "../../auth-resolve.js";
 import { startGatewayTailscaleExposure } from "../../server-tailscale.js";
 import { prepareTailscalePublishedOrigin } from "../../tailscale-published-origin.js";
@@ -22,44 +24,46 @@ const {
   emitGatewayAuthSecurityEventMock: vi.fn(),
   listControlUiPluginTabsMock: vi.fn((_scopes: readonly string[]) => []),
   listControlUiPluginWidgetKindsMock: vi.fn((_scopes: readonly string[]) => []),
-  buildGatewaySnapshotMock: vi.fn((opts?: { includeUpdateDetails?: boolean }) => {
-    const updateAvailable = {
-      currentVersion: "2026.8.7",
-      latestVersion: "2026.8.8",
-      channel: "dev",
-    };
-    return {
-      presence: [],
-      health: {},
-      stateVersion: { presence: 1, health: 1 },
-      uptimeMs: 1,
-      sessionDefaults: {
-        defaultAgentId: "main",
-        mainKey: "main",
-        mainSessionKey: "main",
-        scope: "per-sender",
-      },
-      updateAvailable: opts?.includeUpdateDetails
-        ? {
-            ...updateAvailable,
-            currentSha: "1111111111111111111111111111111111111111",
-            upstreamRef: "origin/main",
-            upstreamSha: "2222222222222222222222222222222222222222",
-            commitsBehind: 1,
-            commits: [{ sha: "2222222", subject: "Detailed commit subject" }],
-          }
-        : updateAvailable,
-      ...(opts?.includeUpdateDetails
-        ? {
-            updateSchedule: {
-              channel: "dev",
-              autoEnabled: true,
-              install: { kind: "git" },
-            },
-          }
-        : {}),
-    };
-  }),
+  buildGatewaySnapshotMock: vi.fn<(opts?: { includeUpdateDetails?: boolean }) => Snapshot>(
+    (opts) => {
+      const updateAvailable = {
+        currentVersion: "2026.8.7",
+        latestVersion: "2026.8.8",
+        channel: "dev",
+      };
+      return {
+        presence: [],
+        health: {},
+        stateVersion: { presence: 1, health: 1 },
+        uptimeMs: 1,
+        sessionDefaults: {
+          defaultAgentId: "main",
+          mainKey: "main",
+          mainSessionKey: "main",
+          scope: "per-sender",
+        },
+        updateAvailable: opts?.includeUpdateDetails
+          ? {
+              ...updateAvailable,
+              currentSha: "1111111111111111111111111111111111111111",
+              upstreamRef: "origin/main",
+              upstreamSha: "2222222222222222222222222222222222222222",
+              commitsBehind: 1,
+              commits: [{ sha: "2222222", subject: "Detailed commit subject" }],
+            }
+          : updateAvailable,
+        ...(opts?.includeUpdateDetails
+          ? {
+              updateSchedule: {
+                channel: "dev",
+                autoEnabled: true,
+                install: { kind: "git" },
+              },
+            }
+          : {}),
+      };
+    },
+  ),
 }));
 
 vi.mock("../health-state.js", () => ({
@@ -175,6 +179,45 @@ describe("sendGatewayHello update detail scope", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
+
+  it.each([false, true])(
+    "keeps bootstrap session identity in the negotiated dialect (canonical=%s)",
+    async (canonical) => {
+      await withOpenClawTestState({ prefix: "openclaw-wire-hello-" }, async (state) => {
+        const context = makeContext("operator", ["operator.read"]);
+        const cfg: OpenClawConfig = {
+          agents: { entries: { research: {} } },
+          session: { scope: "global", store: state.statePath("{agentId}", "sessions.json") },
+        };
+        context.handler.buildRequestContext = () => ({
+          nodeRegistry: { get: () => undefined },
+          getRuntimeConfig: () => cfg,
+        });
+        Object.assign(context.connectParams, { caps: canonical ? ["canonical-session-keys"] : [] });
+        await state.writeConfig(cfg);
+        const { buildGatewaySnapshot } =
+          await vi.importActual<typeof import("../health-state.js")>("../health-state.js");
+        buildGatewaySnapshotMock.mockImplementationOnce(() =>
+          buildGatewaySnapshot({
+            client: null,
+            revisionProjector: {
+              projectRawHash: (hash) => hash,
+              projectResolvedHash: (hash) => hash,
+            },
+          }),
+        );
+        await sendGatewayHello(
+          context as never,
+          makeState("operator", ["operator.read"]) as never,
+          {},
+        );
+        expect(helloPayload(context)?.features.capabilities).toContain("canonical-session-keys");
+        expect(helloSnapshot(context)?.sessionDefaults?.mainSessionKey).toBe(
+          canonical ? "agent:research:global" : "global",
+        );
+      });
+    },
+  );
 
   it.each([
     { mode: "trusted-proxy", tailscale: "off", expected: true },

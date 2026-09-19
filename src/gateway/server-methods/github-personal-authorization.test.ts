@@ -61,7 +61,6 @@ function sessionRead(agentId = "main") {
     store: {},
     storeKeys: [`agent:${agentId}:main`],
     entry: { sessionId: "session-cache-test", updatedAt: 1 },
-    legacyKey: undefined,
   };
 }
 

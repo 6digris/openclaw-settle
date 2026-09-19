@@ -1,8 +1,13 @@
+import { isDeepStrictEqual } from "node:util";
 import { computeBackoff } from "../../packages/retry/src/index.js";
+import { parseAgentSessionKey } from "../routing/session-key.js";
 import type { OpenClawStateDatabase } from "../state/openclaw-state-db-contract.js";
+import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import {
   loadDeliveryQueueEntryInDatabase,
   upsertBoundDeliveryQueueEntryInDatabase,
+  inflateDeliveryQueueRow,
+  type DeliveryQueueDatabase,
 } from "./delivery-queue-sqlite-bound.js";
 import {
   completeDeliveryQueueEntryInDatabase,
@@ -14,10 +19,19 @@ import {
   updateDeliveryQueueEntryInDatabase,
 } from "./delivery-queue-sqlite.kernel.js";
 import {
+  executeSqliteQuerySync,
+  executeSqliteQueryTakeFirstSync,
+  getNodeSqliteKysely,
+  iterateSqliteQuerySync,
+  sqliteStringSet,
+} from "./kysely-sync.js";
+import {
   SESSION_DELIVERY_QUEUE_NAME,
+  resolveSessionDeliveryIdentityBlock,
   type QueuedSessionDelivery,
 } from "./session-delivery-queue.records.js";
 import type { SessionDeliveryWorkerOperations } from "./session-delivery-queue.worker-contract.js";
+import { runSqliteDeferredTransactionSync } from "./sqlite-transaction.js";
 import type { SqliteWorkerCommand } from "./sqlite-worker-contract.js";
 
 function readSessionDelivery(
@@ -194,6 +208,96 @@ export function executeSessionDeliveryCommand(
       // SAFETY: All returned rows belong to the canonical session-delivery namespace.
       return entries as QueuedSessionDelivery[];
     }
+    case "sessionDelivery.recordIdentityBlock":
+      return runOpenClawStateWriteTransaction(
+        ({ db }) => {
+          const query = getNodeSqliteKysely<DeliveryQueueDatabase>(db);
+          const row = executeSqliteQueryTakeFirstSync(
+            db,
+            query
+              .selectFrom("delivery_queue_entries")
+              .selectAll()
+              .where("queue_name", "=", SESSION_DELIVERY_QUEUE_NAME)
+              .where("id", "=", command.input.entry.id)
+              .where("status", "=", "pending"),
+          );
+          const current =
+            // SAFETY: The session namespace is decoded by its canonical queue codec.
+            (row ? inflateDeliveryQueueRow(row) : null) as QueuedSessionDelivery | null;
+          const reason = current ? resolveSessionDeliveryIdentityBlock(current) : undefined;
+          if (
+            !row ||
+            !current ||
+            !reason ||
+            !isDeepStrictEqual(current, command.input.entry) ||
+            row.last_error === reason
+          ) {
+            return { entry: current, blocked: Boolean(reason) };
+          }
+          executeSqliteQuerySync(
+            db,
+            query
+              .updateTable("delivery_queue_entries")
+              .set({ last_error: reason })
+              .where("queue_name", "=", SESSION_DELIVERY_QUEUE_NAME)
+              .where("id", "=", row.id)
+              .where("status", "=", "pending")
+              .where("entry_json", "=", row.entry_json)
+              .where("last_error", "is", row.last_error),
+          );
+          return {
+            entry: { ...current, lastError: reason },
+            blocked: true,
+          };
+        },
+        { database },
+        { operationLabel: "record blocked session delivery identity" },
+      );
+    case "sessionDelivery.blockedSummary":
+      return runSqliteDeferredTransactionSync(database.db, () => {
+        const query = getNodeSqliteKysely<DeliveryQueueDatabase>(database.db);
+        const ids: string[] = [];
+        for (const row of iterateSqliteQuerySync(
+          database.db,
+          query
+            .selectFrom("delivery_queue_entries")
+            .select(["id", "session_key"])
+            .where("queue_name", "=", SESSION_DELIVERY_QUEUE_NAME)
+            .where("status", "=", "pending"),
+        )) {
+          if (!parseAgentSessionKey(row.session_key)) {
+            ids.push(row.id);
+          }
+        }
+        if (!ids.length) {
+          return [];
+        }
+        const rows = iterateSqliteQuerySync(
+          database.db,
+          query
+            .selectFrom("delivery_queue_entries")
+            .selectAll()
+            .where("queue_name", "=", SESSION_DELIVERY_QUEUE_NAME)
+            .where("status", "=", "pending")
+            .where("id", "in", sqliteStringSet(ids)),
+        );
+        let count = 0;
+        let oldestEnqueuedAt = Number.POSITIVE_INFINITY;
+        let reason: string | undefined;
+        for (const row of rows) {
+          // SAFETY: Only session rows enter this identity-only diagnostic.
+          const entry = inflateDeliveryQueueRow(row) as QueuedSessionDelivery | null;
+          const blocked = entry && resolveSessionDeliveryIdentityBlock(entry);
+          if (entry && blocked) {
+            count += 1;
+            oldestEnqueuedAt = Math.min(oldestEnqueuedAt, entry.enqueuedAt);
+            reason = blocked;
+          }
+        }
+        return reason
+          ? [{ queueName: SESSION_DELIVERY_QUEUE_NAME, count, oldestEnqueuedAt, reason }]
+          : [];
+      });
     case "sessionDelivery.moveToFailed": {
       const { id } = command.input;
       try {

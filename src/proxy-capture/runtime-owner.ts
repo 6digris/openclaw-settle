@@ -59,6 +59,35 @@ const captureOwners = new WeakMap<
   CaptureRegistry
 >();
 
+function captureRegistry(runtime: ReturnType<typeof resolveRuntimeDeps>): CaptureRegistry {
+  let registry = captureOwners.get(runtime.getStore);
+  if (!registry) {
+    registry = { owners: new Map(), resolved: new WeakMap() };
+    captureOwners.set(runtime.getStore, registry);
+  }
+  return registry;
+}
+
+/** CLI admission can defer ambient writers without disturbing an existing capture owner. */
+export function deferDebugProxyCapture(): (() => void) | undefined {
+  const settings = resolveEnabledDebugProxySettings();
+  if (!settings) {
+    return undefined;
+  }
+  const registry = captureRegistry(resolveRuntimeDeps());
+  if (registry.owners.has(captureOwnerKey(settings))) {
+    return undefined;
+  }
+  const previous = registry.ambient;
+  const deferred = { sessionId: settings.sessionId, dbPath: settings.dbPath, admission: {} };
+  registry.ambient = deferred;
+  return () => {
+    if (registry.ambient === deferred) {
+      registry.ambient = previous;
+    }
+  };
+}
+
 type GlobalFetchPatchedState = {
   originalFetch: typeof globalThis.fetch;
   admission: CaptureAdmission;
@@ -166,11 +195,7 @@ export function resolveCaptureOwner(
   runtime: ReturnType<typeof resolveRuntimeDeps>,
   options: { initialize?: boolean; explicit?: boolean } = {},
 ): CaptureOwner | undefined {
-  let registry = captureOwners.get(runtime.getStore);
-  if (!registry) {
-    registry = { owners: new Map(), resolved: new WeakMap() };
-    captureOwners.set(runtime.getStore, registry);
-  }
+  const registry = captureRegistry(runtime);
   const key = captureOwnerKey(settings);
   let owner = registry.owners.get(key);
   if (!owner) {

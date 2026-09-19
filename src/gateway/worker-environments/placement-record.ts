@@ -1,3 +1,4 @@
+import { toAgentStoreSessionKey } from "../../routing/session-key.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import type { WorkerSessionPlacementState } from "./placement-state.js";
 import type { WorkerWorkspaceResultConflict } from "./workspace-conflicts.js";
@@ -356,7 +357,10 @@ export function normalizeIdentity(
   return {
     sessionId: required(input.sessionId, "session id"),
     agentId: required(input.agentId, "agent id"),
-    sessionKey: required(input.sessionKey, "session key"),
+    sessionKey: toAgentStoreSessionKey({
+      agentId: input.agentId,
+      requestKey: required(input.sessionKey, "session key"),
+    }),
   };
 }
 

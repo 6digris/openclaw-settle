@@ -4,12 +4,16 @@ import { constants as osConstants, tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseStrictPositiveInteger } from "@openclaw/normalization-core/number-coercion";
 import type { Command } from "commander";
+import { GATEWAY_SERVER_CAPS } from "../../packages/gateway-protocol/src/server-capabilities.js";
 import { getRuntimeConfig } from "../config/io.js";
+import { parseAgentSessionKey } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 import {
   callSessionTargetGateway,
   resolveSessionTarget,
+  resolveSessionWireTarget,
   type SessionTargetGateway,
+  type SessionWireHistory,
 } from "./session-target.js";
 
 type AttachGrant = {
@@ -19,6 +23,9 @@ type AttachGrant = {
   mcpConfig: { mcpServers: Record<string, unknown> };
   env: Record<string, string>;
 };
+
+const UNSUPPORTED_ATTACH_SESSION_MESSAGE =
+  "This Gateway cannot preserve this session's identity for attached tools. Update the Gateway before attaching.";
 
 export function writeClaudeMcpConfig(mcpConfig: AttachGrant["mcpConfig"]): {
   path: string;
@@ -103,19 +110,60 @@ export async function registerAttachCli(program: Command, _argv: string[] = proc
           password: opts.password,
           tlsFingerprint: opts.tlsFingerprint,
         };
-        const globalAgentId =
-          resolved?.sessionKey === "global" && resolved.parsed.kind === "url"
-            ? resolved.parsed.agentId
-            : undefined;
+        const requestedKey = resolved?.sessionKey ?? opts.session ?? "main";
+        let canonicalSessionKeys = false;
+        const history = await callSessionTargetGateway<SessionWireHistory>({
+          gateway,
+          method: "chat.history",
+          request: { sessionKey: requestedKey, limit: 1 },
+          requiredScope: "operator.read",
+          onHelloOk: (hello) => {
+            canonicalSessionKeys =
+              hello.features.capabilities?.includes(GATEWAY_SERVER_CAPS.CANONICAL_SESSION_KEYS) ===
+              true;
+          },
+        });
+        let selected = parseAgentSessionKey(requestedKey);
+        if (!selected) {
+          const identity = history.sessionInfo;
+          if (identity?.key === "global" || identity?.key === "unknown") {
+            throw new Error(UNSUPPORTED_ATTACH_SESSION_MESSAGE);
+          }
+          selected = parseAgentSessionKey(identity?.key);
+        }
+        if (!selected) {
+          throw new Error("Gateway did not provide the selected session's identity.");
+        }
+        const sessionKey = `agent:${selected.agentId}:${selected.rest}`;
+        const wireTarget = await resolveSessionWireTarget({
+          sessionKey,
+          agentId: selected.agentId,
+          canonicalSessionKeys,
+          readHistory: (request) =>
+            request.sessionKey === requestedKey
+              ? Promise.resolve(history)
+              : callSessionTargetGateway<SessionWireHistory>({
+                  gateway,
+                  method: "chat.history",
+                  request,
+                  requiredScope: "operator.read",
+                }),
+        });
+        if (wireTarget.legacyMain || !parseAgentSessionKey(wireTarget.sessionKey)) {
+          throw new Error(UNSUPPORTED_ATTACH_SESSION_MESSAGE);
+        }
         const granted = (await callSessionTargetGateway({
           gateway,
           method: "attach.grant",
           request: {
-            sessionKey: resolved?.sessionKey ?? opts.session,
-            ...(globalAgentId ? { agentId: globalAgentId } : {}),
+            sessionKey: wireTarget.sessionKey,
+            agentId: wireTarget.agentId,
             ttlMs,
           },
           requiredScope: "operator.admin",
+          requiredCapabilities: canonicalSessionKeys
+            ? [GATEWAY_SERVER_CAPS.CANONICAL_SESSION_KEYS]
+            : undefined,
         })) as Partial<AttachGrant> | null;
         if (
           !granted ||
@@ -132,9 +180,30 @@ export async function registerAttachCli(program: Command, _argv: string[] = proc
           return;
         }
         const grant = granted as AttachGrant;
+        const expiresAt = new Date(grant.expiresAtMs).toISOString();
+        const revokeGrant = async () => {
+          try {
+            await callSessionTargetGateway({
+              gateway,
+              method: "attach.revoke",
+              request: { token: grant.token },
+              requiredScope: "operator.admin",
+            });
+          } catch (error) {
+            defaultRuntime.error(
+              `Warning: failed to revoke attach grant; it remains live until ${expiresAt}. ${String(error)}`,
+            );
+          }
+        };
+
+        if (grant.sessionKey !== sessionKey) {
+          await revokeGrant();
+          throw new Error("Gateway granted access to a different conversation.");
+        }
 
         const { path: configPath, cleanup } = writeClaudeMcpConfig(grant.mcpConfig);
-        const expiresAt = new Date(grant.expiresAtMs).toISOString();
+        let revokePromise: Promise<void> | undefined;
+        const revokeOnce = () => (revokePromise ??= revokeGrant().finally(cleanup));
         const claudeArgs = ["--strict-mcp-config", "--mcp-config", configPath];
 
         if (opts.printConfig) {
@@ -156,24 +225,6 @@ export async function registerAttachCli(program: Command, _argv: string[] = proc
           );
           return;
         }
-
-        let revokePromise: Promise<void> | undefined;
-        const revokeOnce = () =>
-          (revokePromise ??= (async () => {
-            try {
-              await callSessionTargetGateway({
-                gateway,
-                method: "attach.revoke",
-                request: { token: grant.token },
-                requiredScope: "operator.admin",
-              });
-            } catch (error) {
-              defaultRuntime.error(
-                `Warning: failed to revoke attach grant; it remains live until ${expiresAt}. ${String(error)}`,
-              );
-            }
-            cleanup();
-          })());
 
         defaultRuntime.log(
           `Attaching Claude Code to session ${grant.sessionKey} (grant expires ${expiresAt})…`,

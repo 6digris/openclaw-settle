@@ -2141,7 +2141,7 @@ describe("session.message websocket events", () => {
     const transcriptPath = path.join(path.dirname(storePath), "global-work.jsonl");
     await writeSessionStore({
       entries: {
-        global: {
+        "agent:work:global": {
           sessionId: "sess-work-global",
           sessionFile: transcriptPath,
           updatedAt: Date.now(),
@@ -2179,7 +2179,10 @@ describe("session.message websocket events", () => {
     const mainWs = await harness.openWs();
     const bareWs = await harness.openWs();
     try {
-      await connectOk(workWs, { scopes: ["operator.read"] });
+      await connectOk(workWs, {
+        scopes: ["operator.read"],
+        caps: [GATEWAY_CLIENT_CAPS.CANONICAL_SESSION_KEYS],
+      });
       await connectOk(mainWs, { scopes: ["operator.read"] });
       await connectOk(bareWs, { scopes: ["operator.read"] });
       expect(
@@ -2187,7 +2190,7 @@ describe("session.message websocket events", () => {
           key: "global",
           agentId: "work",
         }),
-      ).toMatchObject({ ok: true, payload: { key: "global", subscribed: true } });
+      ).toMatchObject({ ok: true, payload: { key: "agent:work:global", subscribed: true } });
       expect(
         await rpcReq(mainWs, "sessions.messages.subscribe", {
           key: "global",
@@ -2200,7 +2203,7 @@ describe("session.message websocket events", () => {
         }),
       ).toMatchObject({ ok: true, payload: { key: "global", subscribed: true } });
 
-      const workMessagePromise = waitForSessionMessageEvent(workWs, "global");
+      const workMessagePromise = waitForSessionMessageEvent(workWs, "agent:work:global");
       const mainMessagePromise = expectNoMessageWithin({
         watch: (timeoutMs) => waitForSessionMessageEvent(mainWs, "global", timeoutMs),
         timeoutMs: 250,
@@ -2218,7 +2221,7 @@ describe("session.message websocket events", () => {
       await mainMessagePromise;
       const bareMessage = await bareMessagePromise;
       expectRecordFields(workMessage.payload, {
-        sessionKey: "global",
+        sessionKey: "agent:work:global",
         agentId: "work",
         messageId: "msg-work-global",
         goal: {
@@ -2257,7 +2260,7 @@ describe("session.message websocket events", () => {
     };
     testState.agentConfig = { sessionStore: { agentId: "work" } };
     await writeSessionStore({
-      entries: { global: { sessionId: "sess-work-observer", updatedAt: Date.now() } },
+      entries: { "agent:work:global": { sessionId: "sess-work-observer", updatedAt: Date.now() } },
       storePath,
       agentId: "work",
     });
@@ -2332,7 +2335,7 @@ describe("session.message websocket events", () => {
     const transcriptPath = path.join(path.dirname(storePath), "sess-default-global.jsonl");
     await writeSessionStore({
       entries: {
-        global: {
+        "agent:main:global": {
           sessionId: "sess-default-global",
           sessionFile: transcriptPath,
           updatedAt: Date.now(),
@@ -2389,16 +2392,13 @@ describe("session.message websocket events", () => {
       const mainMessage = await mainMessagePromise;
       const bareMessage = await bareMessagePromise;
       await workMessagePromise;
-      expectRecordFields(mainMessage.payload, {
-        sessionKey: "global",
-        messageId: "msg-default-global",
-      });
-      expectRecordFields(bareMessage.payload, {
-        sessionKey: "global",
-        messageId: "msg-default-global",
-      });
-      expect((mainMessage.payload as { agentId?: unknown }).agentId).toBeUndefined();
-      expect((bareMessage.payload as { agentId?: unknown }).agentId).toBeUndefined();
+      for (const message of [mainMessage, bareMessage]) {
+        expectRecordFields(message.payload, {
+          sessionKey: "global",
+          agentId: "main",
+          messageId: "msg-default-global",
+        });
+      }
     } finally {
       workWs.close();
       mainWs.close();
@@ -2411,7 +2411,7 @@ describe("session.message websocket events", () => {
     const transcriptPath = path.join(path.dirname(storePath), "sess-default-scoped-global.jsonl");
     await writeSessionStore({
       entries: {
-        global: {
+        "agent:main:global": {
           sessionId: "sess-default-scoped-global",
           sessionFile: transcriptPath,
           updatedAt: Date.now(),

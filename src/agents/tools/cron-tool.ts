@@ -4,6 +4,7 @@
  * Manages scheduled jobs, wake/run actions, delivery context, and reminder-style payload normalization.
  */
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import { GATEWAY_CLIENT_CAPS } from "../../../packages/gateway-protocol/src/client-info.js";
 import { parseDurationMs } from "../../cli/parse-duration.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import { resolveCronCreationDelivery } from "../../cron/delivery-context.js";
@@ -71,7 +72,7 @@ import {
   withGatewayToolCallerIdentity,
 } from "./gateway-caller-context.js";
 import { callGatewayTool, readGatewayCallOptions, type GatewayCallOptions } from "./gateway.js";
-import { resolveInternalSessionKey, resolveMainSessionAlias } from "./sessions-helpers.js";
+import { resolveInternalSessionKey } from "./sessions-helpers.js";
 
 export type { CronCreatorToolAllowlistEntry, CronToolsAllowCaptureRef } from "./cron-tool.types.js";
 export {
@@ -250,6 +251,10 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
       const callGateway: typeof callGatewayTool = async <T>(
         ...request: Parameters<typeof callGatewayTool>
       ) => {
+        request[3] = {
+          ...request[3],
+          caps: [...(request[3]?.caps ?? []), GATEWAY_CLIENT_CAPS.CANONICAL_SESSION_KEYS],
+        };
         const identity = getGatewayToolCallerIdentity();
         const grant = managementAuthority?.mint(request[0], operationSignal);
         const requesterGrant =
@@ -298,13 +303,20 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
             agentId: opts.agentId,
           })
         : undefined;
+      const callerSessionKey = opts?.agentSessionKey?.trim()
+        ? resolveInternalSessionKey({
+            key: opts.agentSessionKey,
+            agentId: callerAgentId,
+            cfg: runtimeConfig,
+          })
+        : undefined;
       const creatorExecToolTarget = resolveCronCreatorExecToolTarget(opts?.creatorToolAllowlist);
       const callerIdentity =
-        callerAgentId && opts?.agentSessionKey?.trim()
+        callerAgentId && callerSessionKey
           ? {
               agentId: callerAgentId,
-              sessionKey: opts.agentSessionKey.trim(),
-              turnSourceAccountId: opts.agentAccountId,
+              sessionKey: callerSessionKey,
+              turnSourceAccountId: opts?.agentAccountId,
               ...(readCronSelfRemoveOnlyJobId(opts)
                 ? { cronSelfManagementJobId: readCronSelfRemoveOnlyJobId(opts) }
                 : {}),
@@ -458,7 +470,7 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
             const enabledExplicit = typeof canonicalJob.enabled === "boolean";
             const job =
               normalizeCronJobCreate(canonicalJob, {
-                sessionContext: { sessionKey: opts?.agentSessionKey },
+                sessionContext: { sessionKey: callerSessionKey },
               }) ?? canonicalJob;
             if (
               typeof job.declarationKey === "string" &&
@@ -489,15 +501,11 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
             capCronJobToolsAllowOnCreate(job, creatorToolAllowlist);
             assertInheritedCronToolCaptureReady(job, creatorToolAllowlistCaptureRef);
             if (job && typeof job === "object") {
-              const { mainKey, alias } = resolveMainSessionAlias(runtimeConfig);
-              const resolvedSessionKey = opts?.agentSessionKey
-                ? resolveInternalSessionKey({ key: opts.agentSessionKey, alias, mainKey })
-                : undefined;
               const sessionTarget = normalizeLowercaseStringOrEmpty(
                 (job as { sessionTarget?: unknown }).sessionTarget,
               );
-              if (!("sessionKey" in job) && resolvedSessionKey && sessionTarget !== "isolated") {
-                (job as { sessionKey?: string }).sessionKey = resolvedSessionKey;
+              if (!("sessionKey" in job) && callerSessionKey && sessionTarget !== "isolated") {
+                (job as { sessionKey?: string }).sessionKey = callerSessionKey;
               }
             }
 
@@ -535,7 +543,7 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
                 const inferred = resolveCronCreationDelivery({
                   cfg: runtimeConfig,
                   currentDeliveryContext: opts.currentDeliveryContext,
-                  agentSessionKey: opts.agentSessionKey,
+                  agentSessionKey: callerSessionKey,
                 });
                 if (inferred) {
                   (job as { delivery?: unknown }).delivery = {
@@ -557,7 +565,7 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
               const payload = (job as { payload: { kind: string; text: string } }).payload;
               if (typeof payload.text === "string" && payload.text.trim()) {
                 const contextLines = await buildReminderContextLines({
-                  agentSessionKey: opts?.agentSessionKey,
+                  agentSessionKey: callerSessionKey,
                   agentId: callerAgentId,
                   gatewayOpts,
                   contextMessages,
@@ -686,13 +694,9 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
                 : "next-heartbeat";
             // An omitted target wakes the originating conversation, not the
             // heartbeat lane. Gateway owns target validation and authorization.
-            const { mainKey, alias } = resolveMainSessionAlias(runtimeConfig);
             const explicitSessionKey = readToolStringParam(params, "sessionKey");
             const explicitAgentId = readToolStringParam(params, "agentId");
-            const inferredSessionKey = opts?.agentSessionKey
-              ? resolveInternalSessionKey({ key: opts.agentSessionKey, alias, mainKey })
-              : undefined;
-            const sessionKey = explicitSessionKey ?? inferredSessionKey;
+            const sessionKey = explicitSessionKey ?? callerSessionKey;
             // Pair an explicit session with its own agent; caller defaults must
             // not rewrite that target before the Gateway can validate it.
             const agentIdFromExplicitSessionKey = explicitSessionKey

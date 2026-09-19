@@ -195,37 +195,40 @@ describe("resolveTuiShutdownHardExitMs", () => {
 });
 
 describe("resolveTuiSessionKey", () => {
-  it("uses global only as the default when scope is global", () => {
+  it.each([
+    { raw: "", expected: "agent:main:global" },
+    { raw: "main", expected: "agent:main:global" },
+    { raw: "test123", expected: "agent:main:test123" },
+    { raw: "agent:main:Test1", expected: "agent:main:test1" },
+    { raw: "Test1", expected: "agent:main:test1" },
+  ])("resolves global-scope session key '$raw' to $expected", ({ raw, expected }) => {
     expect(
       resolveTuiSessionKey({
-        raw: "",
+        raw,
         sessionScope: "global",
         currentAgentId: "main",
         sessionMainKey: "agent:main:main",
       }),
-    ).toBe("global");
-    expect(
-      resolveTuiSessionKey({
-        raw: "test123",
-        sessionScope: "global",
-        currentAgentId: "main",
-        sessionMainKey: "agent:main:main",
-      }),
-    ).toBe("agent:main:test123");
+    ).toBe(expected);
   });
 
-  it("keeps explicit agent-prefixed keys unchanged", () => {
-    expect(
-      resolveTuiSessionKey({
-        raw: "agent:ops:incident",
-        sessionScope: "global",
-        currentAgentId: "main",
-        sessionMainKey: "agent:main:main",
-      }),
-    ).toBe("agent:ops:incident");
-  });
+  it.each(["global", "per-sender"] as const)(
+    "keeps qualified identities exact under %s scope and a different main key",
+    (sessionScope) => {
+      for (const raw of ["agent:ops:main", "agent:ops:primary", "agent:ops:incident"]) {
+        expect(
+          resolveTuiSessionKey({
+            raw,
+            sessionScope,
+            currentAgentId: "main",
+            sessionMainKey: "primary",
+          }),
+        ).toBe(raw);
+      }
+    },
+  );
 
-  it("unwraps an agent-qualified global key after agent selection", () => {
+  it("preserves an agent-qualified global key after agent selection", () => {
     expect(
       resolveTuiSessionKey({
         raw: "AGENT:Work:GLOBAL",
@@ -233,7 +236,7 @@ describe("resolveTuiSessionKey", () => {
         currentAgentId: "work",
         sessionMainKey: "main",
       }),
-    ).toBe("global");
+    ).toBe("agent:work:global");
   });
 
   it.each([
@@ -278,27 +281,6 @@ describe("resolveTuiSessionKey", () => {
         sessionMainKey: "main",
       }),
     ).toBe(expected);
-  });
-
-  it("lowercases session keys with uppercase characters", () => {
-    // Uppercase in agent-prefixed form
-    expect(
-      resolveTuiSessionKey({
-        raw: "agent:main:Test1",
-        sessionScope: "global",
-        currentAgentId: "main",
-        sessionMainKey: "agent:main:main",
-      }),
-    ).toBe("agent:main:test1");
-    // Uppercase in bare form (prefixed by currentAgentId)
-    expect(
-      resolveTuiSessionKey({
-        raw: "Test1",
-        sessionScope: "global",
-        currentAgentId: "main",
-        sessionMainKey: "agent:main:main",
-      }),
-    ).toBe("agent:main:test1");
   });
 });
 
@@ -426,7 +408,7 @@ describe("resolveInitialTuiAgentId", () => {
 });
 
 describe("resolveTuiSessionSelection", () => {
-  it("keeps a fixed-store bare key with its persisted owner", () => {
+  it("qualifies a fixed-store bare key with its persisted owner", () => {
     const cfg: OpenClawConfig = {
       session: { store: "/tmp/shared.sqlite" },
       agents: {
@@ -444,10 +426,10 @@ describe("resolveTuiSessionSelection", () => {
         currentAgentId: "research",
         sessionMainKey: "main",
       }),
-    ).toEqual({ key: "incident-42", agentId: "ops" });
+    ).toEqual({ key: "agent:ops:incident-42", agentId: "ops", intent: "exact" });
   });
 
-  it("carries an explicit owner while unwrapping global storage", () => {
+  it("keeps global storage qualified by its explicit owner", () => {
     const cfg: OpenClawConfig = {
       agents: { ownership: "explicit", list: [{ id: "ops" }, { id: "research" }] },
     };
@@ -459,7 +441,7 @@ describe("resolveTuiSessionSelection", () => {
         currentAgentId: "research",
         sessionMainKey: "main",
       }),
-    ).toEqual({ key: "global", agentId: "ops" });
+    ).toEqual({ key: "agent:ops:global", agentId: "ops", intent: "exact" });
   });
 });
 

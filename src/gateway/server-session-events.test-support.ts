@@ -199,17 +199,6 @@ const ownerGoal = {
   continuationTurns: 0,
 };
 
-const PRIVATE_SESSION_FIELDS =
-  "agentId session message owner goal status hasActiveRun activeRunIds model responseUsage".split(
-    " ",
-  );
-
-function expectPrivateSessionInvalidation(payload: unknown) {
-  for (const field of PRIVATE_SESSION_FIELDS) {
-    expect(payload, field).not.toHaveProperty(field);
-  }
-}
-
 async function emitAssistantTranscriptUpdate(
   projectSessionActive: boolean,
   message: unknown = { role: "assistant", content: [{ type: "text", text: "Final answer" }] },
@@ -234,7 +223,6 @@ export {
   createLifecycleEventBroadcastHandler,
   createTranscriptUpdateBroadcastHandler,
   emitAssistantTranscriptUpdate,
-  expectPrivateSessionInvalidation,
   fixedStoreRuntimeConfig,
   listAccessorSessionEntriesReadOnlyMock,
   loadAccessorSessionEntryReadOnlyMock,

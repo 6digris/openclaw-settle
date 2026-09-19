@@ -14,6 +14,7 @@ import { withProgress } from "./progress.js";
 type CallGatewayFromCliRuntimeExtra = {
   clientName?: Parameters<typeof callGateway>[0]["clientName"];
   mode?: Parameters<typeof callGateway>[0]["mode"];
+  caps?: Parameters<typeof callGateway>[0]["caps"];
   deviceIdentity?: Parameters<typeof callGateway>[0]["deviceIdentity"];
   signal?: Parameters<typeof callGateway>[0]["signal"];
   expectFinal?: boolean;
@@ -86,6 +87,7 @@ export async function callGatewayFromCliRuntime<T = Record<string, unknown>>(
         deviceIdentity: extra?.deviceIdentity,
         expectFinal: extra?.expectFinal ?? Boolean(opts.expectFinal),
         scopes: extra?.scopes,
+        caps: extra?.caps,
         useStoredDeviceAuth: extra?.useStoredDeviceAuth,
         requiredStoredDeviceAuthScopes: extra?.requiredStoredDeviceAuthScopes,
         requireLocalBackendSharedAuth: extra?.requireLocalBackendSharedAuth,

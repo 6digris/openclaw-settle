@@ -9,10 +9,7 @@ export { getRuntimeConfig } from "../../config/config.js";
 export { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 export { resolveTranscriptSessionKeyBySessionId } from "../../config/sessions/session-accessor.js";
 export { searchSessionTranscripts } from "../../config/sessions/session-transcript-search.js";
-export {
-  resolveSessionStoreKey,
-  resolveStoredSessionKeyForAgentStore,
-} from "../../gateway/session-store-key.js";
+export { resolveSessionStoreKey } from "../../gateway/session-store-key.js";
 export { resolveEffectiveChatHistoryMaxChars } from "../../gateway/chat-display-projection.js";
 export { getMaxChatHistoryMessagesBytes } from "../../gateway/server-constants.js";
 export {

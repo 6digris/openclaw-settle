@@ -120,6 +120,10 @@ export async function loadGatewayImage(params: {
   request: TuiImageRequest;
   connection: GatewayImageConnection;
   credentials: readonly string[];
+  withInboundSession: (
+    read: (target: Record<string, unknown>) => Promise<TuiImageData>,
+    signal: AbortSignal,
+  ) => Promise<TuiImageData>;
   readMediaBasePath: (signal: AbortSignal) => Promise<string>;
   downloadArtifact: (artifactId: string, signal: AbortSignal) => Promise<ArtifactsDownloadResult>;
 }): Promise<TuiImageData> {
@@ -131,51 +135,56 @@ export async function loadGatewayImage(params: {
     return await prepareTuiImage(inline, signal);
   }
   const inbound = parseInboundMediaUri(request.source);
-  let route: URL;
-  let mediaBasePath = "";
-  let credentials = params.credentials;
   if (inbound) {
-    mediaBasePath = normalizeControlUiBasePath(await params.readMediaBasePath(signal));
-    route = new URL(resolveAssistantMediaRoutePath(mediaBasePath), "http://localhost");
-    route.searchParams.set("source", inbound.normalizedSource);
-    route.searchParams.set("sessionKey", request.sessionKey);
-    if (request.agentId) {
-      route.searchParams.set("agentId", request.agentId);
-    }
-  } else {
-    const managed = request.source.startsWith("/api/chat/media/outgoing/")
-      ? parseManagedOutgoingRoute(request.source)
-      : null;
-    if (!managed) {
-      throw new Error("Image source is not managed by this Gateway");
-    }
-    const artifactId = `${MANAGED_OUTGOING_IMAGE_ARTIFACT_ID_PREFIX}${managed.attachmentId}`;
-    if (request.artifactId && request.artifactId !== artifactId) {
-      throw new Error("Image artifact does not match its source");
-    }
-    const result = await params.downloadArtifact(artifactId, signal);
-    const download = result.url;
-    const downloadedRoute = download ? parseManagedOutgoingRoute(download) : null;
-    if (
-      !download?.startsWith("/api/chat/media/outgoing/") ||
-      result.artifact.id !== artifactId ||
-      result.artifact.type !== "image" ||
-      downloadedRoute?.attachmentId !== managed.attachmentId ||
-      downloadedRoute.sessionKey !== managed.sessionKey ||
-      result.artifact.sessionKey !== downloadedRoute.sessionKey
-    ) {
-      throw new Error("Image artifact is unavailable");
-    }
-    route = new URL(download, "http://localhost");
-    route.pathname = route.pathname.replace(/\/full$/, "/thumbnail");
-    credentials = [];
+    const mediaBasePath = normalizeControlUiBasePath(await params.readMediaBasePath(signal));
+    return await params.withInboundSession(async (target) => {
+      if (
+        typeof target.sessionKey !== "string" ||
+        (target.agentId !== undefined && typeof target.agentId !== "string")
+      ) {
+        throw new Error("Gateway did not provide the selected image session identity.");
+      }
+      const route = new URL(resolveAssistantMediaRoutePath(mediaBasePath), "http://localhost");
+      route.searchParams.set("source", inbound.normalizedSource);
+      route.searchParams.set("sessionKey", target.sessionKey);
+      if (target.agentId) {
+        route.searchParams.set("agentId", target.agentId);
+      }
+      const buffer = await requestGatewayImage(
+        params.connection,
+        route,
+        params.credentials,
+        signal,
+        mediaBasePath,
+      );
+      return await prepareTuiImage(buffer, signal);
+    }, signal);
   }
-  const buffer = await requestGatewayImage(
-    params.connection,
-    route,
-    credentials,
-    signal,
-    mediaBasePath,
-  );
+  const managed = request.source.startsWith("/api/chat/media/outgoing/")
+    ? parseManagedOutgoingRoute(request.source)
+    : null;
+  if (!managed) {
+    throw new Error("Image source is not managed by this Gateway");
+  }
+  const artifactId = `${MANAGED_OUTGOING_IMAGE_ARTIFACT_ID_PREFIX}${managed.attachmentId}`;
+  if (request.artifactId && request.artifactId !== artifactId) {
+    throw new Error("Image artifact does not match its source");
+  }
+  const result = await params.downloadArtifact(artifactId, signal);
+  const download = result.url;
+  const downloadedRoute = download ? parseManagedOutgoingRoute(download) : null;
+  if (
+    !download?.startsWith("/api/chat/media/outgoing/") ||
+    result.artifact.id !== artifactId ||
+    result.artifact.type !== "image" ||
+    downloadedRoute?.attachmentId !== managed.attachmentId ||
+    downloadedRoute.sessionKey !== managed.sessionKey ||
+    result.artifact.sessionKey !== downloadedRoute.sessionKey
+  ) {
+    throw new Error("Image artifact is unavailable");
+  }
+  const route = new URL(download, "http://localhost");
+  route.pathname = route.pathname.replace(/\/full$/, "/thumbnail");
+  const buffer = await requestGatewayImage(params.connection, route, [], signal, "");
   return await prepareTuiImage(buffer, signal);
 }

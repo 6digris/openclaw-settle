@@ -46,19 +46,32 @@ export async function runDoctorHealthFlow(
   options: DoctorOptions = {},
   writeAuthority?: UpdateDoctorWriteAuthority,
   databasePreflight?: DoctorDatabasePreflight,
+  activateCapture?: () => Promise<void>,
 ) {
   const resultPath = process.env[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV]?.trim();
   return resultPath
     ? captureUpdateDoctorConfigWrites(
         resolveConfigPath(),
         (capture) =>
-          runDoctorHealthFlowWithResult(runtime, options, databasePreflight, {
-            resultPath,
-            capture,
-          }),
+          runDoctorHealthFlowWithResult(
+            runtime,
+            options,
+            databasePreflight,
+            {
+              resultPath,
+              capture,
+            },
+            activateCapture,
+          ),
         writeAuthority,
       )
-    : runDoctorHealthFlowWithResult(runtime, options, databasePreflight);
+    : runDoctorHealthFlowWithResult(
+        runtime,
+        options,
+        databasePreflight,
+        undefined,
+        activateCapture,
+      );
 }
 
 async function runDoctorHealthFlowWithResult(
@@ -66,6 +79,7 @@ async function runDoctorHealthFlowWithResult(
   options: DoctorOptions,
   databasePreflight: DoctorDatabasePreflight | undefined,
   updateResult?: { resultPath: string; capture: DoctorConfigCapture },
+  activateCapture?: () => Promise<void>,
 ) {
   const effectiveRuntime = runtime ?? (await import("../runtime.js")).defaultRuntime;
   // Config loading can initialize SQLite-backed state before integrity runs.
@@ -99,24 +113,10 @@ async function runDoctorHealthFlowWithResult(
       const { prepareDoctorDatabasePreflight } =
         await import("../commands/doctor-database-preflight.js");
       const prompter = createDoctorPrompter({ runtime: effectiveRuntime, options });
-      // Explicit repair never offers an update. Acquire its owners before any
-      // snapshot; diagnostic Doctor still checks state before update admission.
-      if (!maintenance) {
-        if (!databasePreflight) {
-          await prepareDoctorDatabasePreflight({ scope: "state" });
-        }
-        const { maybeOfferUpdateBeforeDoctor } = await import("../commands/doctor-update.js");
-        const offeredUpdate = await maybeOfferUpdateBeforeDoctor({
-          options,
-          root,
-          confirm: (p) => prompter.confirm(p),
-          outro,
-        });
-        if (offeredUpdate.handled) {
-          return undefined;
-        }
-      }
-      const schemas = databasePreflight ?? (await prepareDoctorDatabasePreflight());
+      const schemas =
+        maintenance || !databasePreflight
+          ? await prepareDoctorDatabasePreflight()
+          : databasePreflight;
       const { recordAgentDatabaseAdmissions } =
         await import("../state/agent-database-admission.js");
       // Repair owns fresh file decisions until its migration graph finishes.
@@ -141,6 +141,19 @@ async function runDoctorHealthFlowWithResult(
         }
         for (const change of readability.changes) {
           effectiveRuntime.log(change);
+        }
+      }
+      await activateCapture?.();
+      if (!maintenance) {
+        const { maybeOfferUpdateBeforeDoctor } = await import("../commands/doctor-update.js");
+        const offeredUpdate = await maybeOfferUpdateBeforeDoctor({
+          options,
+          root,
+          confirm: (p) => prompter.confirm(p),
+          outro,
+        });
+        if (offeredUpdate.handled) {
+          return undefined;
         }
       }
 

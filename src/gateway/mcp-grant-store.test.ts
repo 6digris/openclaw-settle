@@ -61,6 +61,7 @@ describe("mcp-grant-store", () => {
 
   it("requires a non-empty sessionKey", () => {
     expect(() => mintAttachGrant({ sessionKey: "  ", nowMs: T0 })).toThrow();
+    expect(() => mintAttachGrant({ sessionKey: "global", nowMs: T0 })).toThrow();
   });
 
   it("resolves a live grant and drops it once expired (TTL)", () => {
@@ -83,16 +84,17 @@ describe("mcp-grant-store", () => {
     expect(a.token).not.toBe(b.token);
   });
 
-  it("binds a separate agent owner only to the canonical global session", () => {
-    const global = mintAttachGrant({ sessionKey: "global", agentId: " ops ", nowMs: T0 });
+  it("revokes only the matching agent's qualified grant", () => {
+    const global = mintAttachGrant({ sessionKey: "agent:ops:global", nowMs: T0 });
     const scoped = mintAttachGrant({
       sessionKey: "agent:main:telegram:1",
-      agentId: "ops",
       nowMs: T0,
     });
 
-    expect(global.agentId).toBe("ops");
-    expect(scoped.agentId).toBeUndefined();
+    expect(global.sessionKey).toBe("agent:ops:global");
+    expect(revokeAttachGrantsForSession("agent:other:global")).toBe(0);
+    expect(revokeAttachGrantsForSession("agent:ops:global")).toBe(1);
+    expect(resolveAttachGrant(scoped.token, T0)).toBe(scoped);
   });
 
   it("revokes by token", () => {
@@ -114,11 +116,15 @@ describe("mcp-grant-store", () => {
   });
 
   it("clamps TTL: default for non-positive, ceiling at 12h", () => {
-    const def = mintAttachGrant({ sessionKey: "s", nowMs: T0 });
+    const def = mintAttachGrant({ sessionKey: "agent:main:s", nowMs: T0 });
     expect(def.expiresAtMs).toBe(T0 + 60 * 60 * 1000);
-    const zero = mintAttachGrant({ sessionKey: "s", ttlMs: 0, nowMs: T0 });
+    const zero = mintAttachGrant({ sessionKey: "agent:main:s", ttlMs: 0, nowMs: T0 });
     expect(zero.expiresAtMs).toBe(T0 + 60 * 60 * 1000);
-    const huge = mintAttachGrant({ sessionKey: "s", ttlMs: 999 * 60 * 60 * 1000, nowMs: T0 });
+    const huge = mintAttachGrant({
+      sessionKey: "agent:main:s",
+      ttlMs: 999 * 60 * 60 * 1000,
+      nowMs: T0,
+    });
     expect(huge.expiresAtMs).toBe(T0 + 12 * 60 * 60 * 1000);
   });
 

@@ -73,17 +73,30 @@ describe("attach gateway methods", () => {
     expect(resolveAttachGrant(body.token)?.sessionKey).toBe("agent:main:attach-method");
   });
 
-  it("uses an explicit agent for an omitted session key", async () => {
-    const respond = vi.fn();
-    await expectDefined(
-      attachHandlers["attach.grant"],
-      'attachHandlers["attach.grant"] test invariant',
-    )(grantWithAgentOpts("research", respond));
+  it.each([
+    { sessionKey: undefined, scope: "per-sender", expected: "agent:research:main" },
+    { sessionKey: "main", scope: "global", expected: "agent:research:global" },
+    { sessionKey: "global", scope: "per-sender", expected: "agent:research:global" },
+    { sessionKey: "unknown", scope: "global", expected: "agent:research:unknown" },
+    { sessionKey: "agent:research:main", scope: "global", expected: "agent:research:main" },
+  ] as const)(
+    "admits $sessionKey in $scope scope as $expected",
+    async ({ sessionKey, scope, expected }) => {
+      const respond = vi.fn();
+      const opts = grantWithAgentOpts("research", respond);
+      const cfg = opts.context.getRuntimeConfig();
+      opts.params = { agentId: "research", sessionKey };
+      opts.context.getRuntimeConfig = () => ({ ...cfg, session: { scope } });
+      await expectDefined(
+        attachHandlers["attach.grant"],
+        'attachHandlers["attach.grant"] test invariant',
+      )(opts);
 
-    expect(respond.mock.calls[0]?.[0]).toBe(true);
-    const result = respond.mock.calls[0]?.[1] as { sessionKey?: string } | undefined;
-    expect(result?.sessionKey).toBe("agent:research:main");
-  });
+      expect(respond.mock.calls[0]?.[0]).toBe(true);
+      const result = respond.mock.calls[0]?.[1] as { sessionKey?: string } | undefined;
+      expect(result?.sessionKey).toBe(expected);
+    },
+  );
   it("rejects attach grants for reserved harness sessions", async () => {
     const respond = vi.fn();
     await expectDefined(

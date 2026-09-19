@@ -4,7 +4,6 @@ import {
   replaceSessionEntrySync,
 } from "../config/sessions/session-accessor.js";
 import * as sessionKeys from "../sessions/session-key-utils.js";
-import { registerOpenClawAgentDatabase } from "../state/openclaw-agent-db-registry.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { create as createSessionRow } from "./session-row-projection-record.js";
@@ -81,20 +80,74 @@ it("reuses resident key predicates across list requests and refreshes entry clas
   });
 });
 
+it("selects an exact qualified session before search matches and pagination under global scope", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const cfg = { agents: { entries: { main: {} } }, session: { scope: "global" as const } };
+    await state.writeConfig(cfg);
+    const exactKey = "agent:main:main";
+    const prefixKey = `${exactKey}-newer`;
+    const labelKey = "agent:main:other";
+    const missingKey = `${exactKey}-missing`;
+    const homeKey = "agent:main:global";
+    const entries = [
+      { key: exactKey, updatedAt: 1, label: "Exact main" },
+      { key: prefixKey, updatedAt: 40, label: "Prefix match" },
+      { key: labelKey, updatedAt: 30, label: `Discuss ${exactKey}` },
+      { key: `${missingKey}-newer`, updatedAt: 20, label: "Missing target prefix" },
+      { key: homeKey, updatedAt: 50, label: "Home" },
+    ];
+    for (const { key, updatedAt, label } of entries) {
+      replaceSessionEntrySync(
+        { agentId: "main", sessionKey: key },
+        { sessionId: key, updatedAt, label },
+      );
+    }
+    const projection = await createSessionRowProjection({ cfg });
+    try {
+      const opts = { agentId: "main", includeGlobal: true, limit: 1 };
+      for (const [offset, expectedKey] of [prefixKey, labelKey].entries()) {
+        const ordinary = await listProjectedSessions({
+          projection,
+          opts: { ...opts, search: exactKey, offset },
+        });
+        expect(ordinary.sessions.map((row) => row.key)).toEqual([expectedKey]);
+        expect(ordinary).toMatchObject({ count: 1, totalCount: 4, hasMore: true });
+      }
+      for (const { key, offset, expected, totalCount } of [
+        { key: exactKey, offset: 0, expected: [exactKey], totalCount: 1 },
+        { key: exactKey, offset: 1, expected: [], totalCount: 1 },
+        { key: missingKey, offset: 0, expected: [], totalCount: 0 },
+        { key: homeKey, offset: 0, expected: [homeKey], totalCount: 1 },
+      ]) {
+        const request = { projection, key, opts: { ...opts, offset } };
+        const selected = await listProjectedSessions(request);
+        expect(selected.sessions.map((row) => row.key)).toEqual(expected);
+        expect(selected).toMatchObject({
+          count: expected.length,
+          totalCount,
+          limitApplied: 1,
+          hasMore: false,
+          nextOffset: null,
+        });
+      }
+    } finally {
+      projection.dispose();
+    }
+  });
+});
+
 it.each([false, true])(
-  "preserves sentinel precedence, ties, and resident order before filtering (activeOnly: %s)",
+  "preserves distinct qualified identities, ties, and resident order before filtering (activeOnly: %s)",
   async (activeOnly) => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const cfg = { agents: { entries: { main: {}, ops: {} } } };
       const projection = createSessionRowProjectionFixture({ cfg, store: {} });
       const samples = [
-        ["shadow-global", "global", "main", "fallback"],
+        ["ops-global", "agent:ops:global", "ops", "fallback"],
         ["ordinary", "agent:main:ordinary", "main", "primary"],
-        ["main-global", "global", "main", "primary"],
-        ["ops-global", "global", "ops", "primary"],
-        ["ops-shadow", "global", "ops", "fallback"],
-        ["unknown-winner", "unknown", "ops", "primary"],
-        ["unknown-shadow", "unknown", "main", "fallback"],
+        ["main-global", "agent:main:global", "main", "primary"],
+        ["ops-unknown", "agent:ops:unknown", "ops", "primary"],
+        ["main-unknown", "agent:main:unknown", "main", "fallback"],
         ["excluded", "agent:main:ordinary", "main", "excluded"],
         ["retired", "agent:retired:ordinary", "retired", "primary"],
       ] as const;
@@ -129,36 +182,42 @@ it.each([false, true])(
           includeGlobal: true,
           includeUnknown: true,
         });
-        expect(prepared.entries.map(([, entry]) => entry.sessionId)).toEqual(
-          activeOnly
-            ? ["ordinary", "main-global", "ops-global", "unknown-winner", "unknown-shadow"]
-            : ["ordinary", "main-global", "unknown-winner"],
-        );
+        expect(prepared.entries.map(([, entry]) => entry.sessionId)).toEqual([
+          "ops-global",
+          "ordinary",
+          "main-global",
+          "ops-unknown",
+          "main-unknown",
+        ]);
         for (const [key, entry] of prepared.entries) {
           const target = prepared.getTarget(key)!;
           const original = rows.find((row) => row.entry === entry)!;
           expect(target.entry).toBe(entry);
           expect(target.storeTarget).toBe(original.storeTarget);
-          expect(target.storeKey ?? key).toBe(original.key);
-          if (!activeOnly || original.key.startsWith("agent:")) {
-            expect(target).toBe(original);
-          }
+          expect(key).toBe(original.key);
+          expect(target).toBe(original);
         }
         const visible = filterAndSortSessionEntries({
           ...prepared,
           entryFilter: (_key, entry) => entry.sessionId !== "main-global",
         });
-        expect(visible.map(([, entry]) => entry.sessionId)).toEqual(
-          expect.not.arrayContaining(["main-global", "shadow-global", "ops-shadow"]),
-        );
+        expect(visible.map(([, entry]) => entry.sessionId)).toEqual([
+          "ordinary",
+          "main-unknown",
+          "ops-global",
+          "ops-unknown",
+        ]);
         expect(rows.map((row) => row.entry.sessionId)).toEqual(samples.map(([id]) => id));
         const scoped = filterAndSortSessionEntries({
           ...prepared,
           opts: { ...prepared.opts, agentId: "ops" },
         });
-        expect(scoped.map(([, entry]) => entry.sessionId)).toEqual(
-          activeOnly ? ["main-global", "ops-global", "unknown-winner"] : ["main-global"],
-        );
+        expect(scoped.map(([, entry]) => entry.sessionId)).toEqual(["ops-global", "ops-unknown"]);
+        const ordinary = filterAndSortSessionEntries({
+          ...prepared,
+          opts: { ...prepared.opts, includeGlobal: false, includeUnknown: false },
+        });
+        expect(ordinary.map(([, entry]) => entry.sessionId)).toEqual(["ordinary"]);
       } finally {
         projection.dispose();
       }
@@ -166,41 +225,53 @@ it.each([false, true])(
   },
 );
 
-it("rejects duplicate ordinary keys introduced after store admission before filtering or pagination", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-    const cfg = { agents: { list: [{ id: "main", default: true }] } };
-    const primary = resolveOpenClawAgentSqlitePath({ agentId: "main" });
-    const secondary = state.statePath("secondary.sqlite");
-    const key = "agent:main:original";
-    for (const [storePath, sessionKey] of [
-      [primary, key],
-      [secondary, "agent:main:other"],
-    ] as const) {
-      replaceSessionEntrySync(
-        { agentId: "main", storePath, sessionKey },
-        { sessionId: sessionKey, updatedAt: Date.now() },
-      );
-      registerOpenClawAgentDatabase({ agentId: "main", path: storePath });
-    }
-    const projection = await createSessionRowProjection({ cfg });
-    try {
-      const opts = { configuredAgentsOnly: true };
-      expect((await listProjectedSessions({ projection, opts })).sessions).toHaveLength(2);
-      const duplicate = { agentId: "main", storePath: secondary, sessionKey: key };
-      replaceSessionEntrySync(duplicate, { sessionId: "duplicate", updatedAt: Date.now() + 1 });
-      await expect(
-        listProjectedSessions({ projection, opts: { ...opts, limit: 1, offset: 1 } }),
-      ).rejects.toThrow("duplicate rows resolve to canonical session key");
-      await deleteSessionEntryLifecycle({
-        agentId: "main",
-        storePath: secondary,
-        archiveTranscript: false,
-        target: { canonicalKey: key, storeKeys: [key] },
-      });
-      const result = await listProjectedSessions({ projection, opts });
-      expect(result.sessions.map((row) => row.key).toSorted()).toEqual([key, "agent:main:other"]);
-    } finally {
-      projection.dispose();
-    }
-  });
-});
+it.each(["original", "global", "unknown"])(
+  "rejects duplicate qualified %s keys introduced after store admission before filtering or pagination",
+  async (suffix) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const cfg = {
+        agents: { list: [{ id: "main", default: true }] },
+        session: {
+          store: state.statePath("alternate", "agents", "{agentId}", "sessions", "sessions.json"),
+        },
+      };
+      const primary = resolveOpenClawAgentSqlitePath({ agentId: "main" });
+      const secondary = cfg.session.store.replace("{agentId}", "main");
+      const key = `agent:main:${suffix}`;
+      for (const [storePath, sessionKey] of [
+        [primary, key],
+        [secondary, "agent:main:other"],
+      ] as const) {
+        replaceSessionEntrySync(
+          { agentId: "main", storePath, sessionKey },
+          { sessionId: sessionKey, updatedAt: Date.now() },
+        );
+      }
+      const projection = await createSessionRowProjection({ cfg });
+      try {
+        const opts = { configuredAgentsOnly: true, includeGlobal: true, includeUnknown: true };
+        expect((await listProjectedSessions({ projection, opts })).sessions).toHaveLength(2);
+        const duplicate = { agentId: "main", storePath: secondary, sessionKey: key };
+        replaceSessionEntrySync(duplicate, { sessionId: "duplicate", updatedAt: Date.now() + 1 });
+        await expect(
+          listProjectedSessions({
+            projection,
+            opts: { ...opts, search: "other", limit: 1, offset: 1 },
+          }),
+        ).rejects.toThrow("duplicate rows resolve to canonical session key");
+        await deleteSessionEntryLifecycle({
+          agentId: "main",
+          storePath: secondary,
+          archiveTranscript: false,
+          target: { canonicalKey: key, storeKeys: [key] },
+        });
+        const result = await listProjectedSessions({ projection, opts });
+        expect(result.sessions.map((row) => row.key).toSorted()).toEqual(
+          [key, "agent:main:other"].toSorted(),
+        );
+      } finally {
+        projection.dispose();
+      }
+    });
+  },
+);

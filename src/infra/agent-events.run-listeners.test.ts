@@ -18,8 +18,8 @@ describe("run-indexed agent event listeners", () => {
   });
 
   test("delivers only the subscribed run's events", () => {
-    registerAgentRunContext("run-a", { sessionKey: "session-a" });
-    registerAgentRunContext("run-b", { sessionKey: "session-b" });
+    registerAgentRunContext("run-a", { sessionKey: "agent:main:session-a" });
+    registerAgentRunContext("run-b", { sessionKey: "agent:main:session-b" });
     const mine: number[] = [];
     const unsubscribe = onAgentEventForRun("run-a", (evt) => mine.push(evt.seq));
 
@@ -33,7 +33,7 @@ describe("run-indexed agent event listeners", () => {
   });
 
   test("preserves mixed global and run listener registration order", () => {
-    registerAgentRunContext("run-order", { sessionKey: "session-order" });
+    registerAgentRunContext("run-order", { sessionKey: "agent:main:session-order" });
     const order: string[] = [];
     const stopRun = onAgentEventForRun("run-order", () => order.push("run"));
     const stopGlobal = onAgentEvent((evt) => {
@@ -196,7 +196,7 @@ describe("run-indexed agent event listeners", () => {
   });
 
   test("keeps sibling subscribers alive and reclaims the bucket only when empty", () => {
-    registerAgentRunContext("run-shared", { sessionKey: "session-shared" });
+    registerAgentRunContext("run-shared", { sessionKey: "agent:main:session-shared" });
     const first: string[] = [];
     const second: string[] = [];
     const stopFirst = onAgentEventForRun("run-shared", () => first.push("first"));
@@ -221,7 +221,7 @@ describe("run-indexed agent event listeners", () => {
   });
 
   test("tolerates a repeated unsubscribe without disturbing a later subscriber", () => {
-    registerAgentRunContext("run-repeat", { sessionKey: "session-repeat" });
+    registerAgentRunContext("run-repeat", { sessionKey: "agent:main:session-repeat" });
     const stale = onAgentEventForRun("run-repeat", () => {});
     stale();
     const seen: string[] = [];
@@ -237,7 +237,7 @@ describe("run-indexed agent event listeners", () => {
   test("routes owner-scoped emissions to run-indexed listeners", () => {
     const claimId = claimAgentRunContext(
       "run-owner",
-      { sessionKey: "session-owner" },
+      { sessionKey: "agent:main:session-owner" },
       { exclusive: true, trackOwner: true },
     )!;
     const seen: string[] = [];

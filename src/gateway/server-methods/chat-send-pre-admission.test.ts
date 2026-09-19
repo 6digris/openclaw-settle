@@ -84,7 +84,6 @@ function preAdmissionFixture(runId: string) {
       sessionLoadKey: session.sessionKey,
       sessionLoadOptions: { agentId: "main" },
       sessionLoadMs: 0,
-      legacyKey: undefined,
       sessionRoutingChanged: () => false,
       expectedLeafEntryId: undefined,
       agentIdOverride: undefined,

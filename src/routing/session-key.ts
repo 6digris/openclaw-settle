@@ -56,25 +56,12 @@ export function scopedHeartbeatWakeOptions<T extends object>(
   wakeOptions: T,
   mainKey?: string,
   scope?: "per-sender" | "global",
-): T | (T & { sessionKey: string }) | (T & { agentId: string }) {
+): T | (T & { sessionKey: string }) {
   const parsed = parseAgentSessionKey(sessionKey);
   if (!parsed) {
     return wakeOptions;
   }
-  if (isCronRunSessionKey(sessionKey)) {
-    // Global-scope agents drain the literal "global" queue, not agent-main;
-    // a targeted wake on agent:<id>:main would be unresolvable. Drop the
-    // sessionKey but carry the agent target so multi-agent global-scope
-    // setups still wake the originating agent's heartbeat.
-    if (scope === "global") {
-      return { ...wakeOptions, agentId: parsed.agentId };
-    }
-    return {
-      ...wakeOptions,
-      sessionKey: buildAgentMainSessionKey({ agentId: parsed.agentId, mainKey }),
-    };
-  }
-  return { ...wakeOptions, sessionKey };
+  return { ...wakeOptions, sessionKey: resolveEventSessionKey(sessionKey, mainKey, scope) };
 }
 
 export function resolveEventSessionKey(
@@ -86,12 +73,10 @@ export function resolveEventSessionKey(
   if (!parsed || !isCronRunSessionKey(sessionKey)) {
     return sessionKey;
   }
-  // Global-scope agents enqueue/drain via the literal "global" queue; agent-main
-  // would strand the event in a queue the heartbeat never peeks.
-  if (scope === "global") {
-    return "global";
-  }
-  return buildAgentMainSessionKey({ agentId: parsed.agentId, mainKey });
+  return buildAgentMainSessionKey({
+    agentId: parsed.agentId,
+    mainKey: scope === "global" ? "global" : mainKey,
+  });
 }
 
 export function toAgentRequestSessionKey(storeKey: string | undefined | null): string | undefined {
@@ -112,7 +97,9 @@ export function agentSessionKeysMatchByRequestKey(
     return false;
   }
   return (
-    leftRaw === rightRaw || toAgentRequestSessionKey(leftRaw) === toAgentRequestSessionKey(rightRaw)
+    leftRaw === rightRaw ||
+    ((!parseAgentSessionKey(leftRaw) || !parseAgentSessionKey(rightRaw)) &&
+      toAgentRequestSessionKey(leftRaw) === toAgentRequestSessionKey(rightRaw))
   );
 }
 
@@ -132,7 +119,7 @@ export function toAgentStoreSessionKey(params: {
   }
   const normalized = normalizeSessionKeyPreservingOpaquePeerIds(raw);
   if (lowered.startsWith("agent:")) {
-    return normalized;
+    throw new Error("Malformed agent session key; refusing default-agent resolution.");
   }
   return `agent:${normalizeAgentId(params.agentId)}:${normalized}`;
 }
@@ -193,6 +180,22 @@ export function scopeLegacySessionKeyToAgent(params: {
     requestKey: raw,
     mainKey: params.mainKey,
   });
+}
+
+/** Old durable references may retain bare sentinels inside their recorded agent's scope. */
+export function resolveLegacySessionKeyCandidates(params: {
+  agentId: string;
+  sessionKey: string;
+}): string[] {
+  const canonical = toAgentStoreSessionKey({
+    agentId: params.agentId,
+    requestKey: params.sessionKey,
+  });
+  const parsed = parseAgentSessionKey(canonical);
+  return parsed?.agentId === normalizeAgentId(params.agentId) &&
+    isUnscopedSessionKeySentinel(parsed.rest)
+    ? [canonical, parsed.rest]
+    : [canonical];
 }
 
 export function normalizeOptionalAgentId(value: unknown): string | undefined {

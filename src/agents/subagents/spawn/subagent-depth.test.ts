@@ -87,11 +87,12 @@ describe("getSubagentDepthFromSessionStore", () => {
     expect(getSubagentDepthFromSessionStore("agent:main:dashboard:legacy", { store })).toBe(0);
   });
 
-  it("resolves depth when caller is identified by sessionId", () => {
+  it("resolves depth when caller is identified by sessionId and agentId", () => {
     const key1 = "agent:main:subagent:one";
     const key2 = "agent:main:subagent:two";
     const key3 = "agent:main:subagent:three";
     const depth = getSubagentDepthFromSessionStore("subagent-three-session", {
+      agentId: "main",
       store: {
         [key1]: { sessionId: "subagent-one-session", spawnedBy: "agent:main:main" },
         [key2]: { sessionId: "subagent-two-session", spawnedBy: key1 },

@@ -285,7 +285,7 @@ describe("migrateOrphanedSessionKeys", () => {
 
   it.each([
     { scope: undefined, canonicalMainKey: "agent:voice:main" },
-    { scope: "global" as const, canonicalMainKey: "global" },
+    { scope: "global" as const, canonicalMainKey: "agent:voice:global" },
   ])(
     "preserves opaque foreign main aliases in plugin-owned $scope stores",
     async ({ scope, canonicalMainKey }) => {
@@ -810,7 +810,7 @@ describe("migrateOrphanedSessionKeys", () => {
     });
   });
 
-  it("canonicalizes global main aliases in shared stores", async () => {
+  it("preserves ambiguous global aliases in shared stores until an owner is selected", async () => {
     await withStateFixture(async ({ tmpDir, stateDir }) => {
       const sharedStorePath = path.join(tmpDir, "shared-sessions.json");
       writeStore(sharedStorePath, {
@@ -827,12 +827,12 @@ describe("migrateOrphanedSessionKeys", () => {
       const result = await migrateFixtureState(stateDir, cfg);
 
       const store = readStore(sharedStorePath);
-      expect(requireStoreEntry(store, "global").sessionId).toBe("fresh-main");
-      expect(store.main).toBeUndefined();
-      expect(store["agent:main:main"]).toBeUndefined();
-      expect(store["agent:main:work"]).toBeUndefined();
-      expect(result.changes).toHaveLength(1);
-      expect(result.warnings).toHaveLength(0);
+      expect(requireStoreEntry(store, "global").sessionId).toBe("stale-global");
+      expect(requireStoreEntry(store, "main").sessionId).toBe("bare-main");
+      expect(requireStoreEntry(store, "agent:main:main").sessionId).toBe("legacy-main");
+      expect(requireStoreEntry(store, "agent:main:work").sessionId).toBe("fresh-main");
+      expect(result.changes).toHaveLength(0);
+      expect(result.warnings).toHaveLength(1);
     });
   });
 

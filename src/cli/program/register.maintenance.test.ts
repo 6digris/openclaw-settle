@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
     exit: vi.fn(),
   },
   runDoctorLintCli: vi.fn(),
+  activateCapture: vi.fn(async () => {}),
 }));
 
 const {
@@ -97,7 +98,7 @@ describe("registerMaintenanceCommands doctor action", () => {
   });
   async function runMaintenanceCli(args: string[]) {
     const program = new Command();
-    registerMaintenanceCommands(program);
+    registerMaintenanceCommands(program, { activateDoctorCapture: mocks.activateCapture });
     const originalArgv = process.argv;
     process.argv = [process.execPath, "openclaw", ...args];
     try {
@@ -114,6 +115,25 @@ describe("registerMaintenanceCommands doctor action", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it.each([
+    { args: ["--json"] },
+    { args: ["--lint"] },
+    { args: ["--post-upgrade"] },
+    { args: ["--state-sqlite", "compact"] },
+    { args: ["--session-sqlite", "inspect"] },
+    { args: ["--fix"] },
+    { args: ["--json", "--fix"] },
+    { args: ["--lint", "--fix"] },
+  ])("keeps capture deferred through command dispatch for $args", async ({ args }) => {
+    doctorCommand.mockResolvedValue(undefined);
+    runDoctorLintCli.mockResolvedValue(0);
+    await runMaintenanceCli(["doctor", ...args]);
+    expect(mocks.activateCapture).not.toHaveBeenCalled();
+    if (args.length === 1 && args[0] === "--fix") {
+      expect(doctorCommand.mock.calls[0]?.[2]).toBe(mocks.activateCapture);
+    }
   });
 
   it("rejects legacy capture cleanup before entering Doctor maintenance", async () => {
@@ -464,7 +484,7 @@ describe("registerMaintenanceCommands doctor action", () => {
     expect(doctorCommand).toHaveBeenCalledWith(
       runtime,
       expect.objectContaining({ postUpgrade: true, json: true }),
-      undefined,
+      mocks.activateCapture,
     );
     expect(runDoctorLintCli).not.toHaveBeenCalled();
     expect(runtime.exit).toHaveBeenCalledWith(0);

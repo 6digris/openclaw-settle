@@ -79,7 +79,7 @@ export function prepareAgentSession(params: {
     return undefined;
   }
   const requestedAgentId = requestedSessionAgent.agentId;
-  const { cfg, storePath, entry, canonicalKey, legacyKey, storeKeys } = loadSessionEntry(
+  const { cfg, storePath, entry, canonicalKey, storeKeys } = loadSessionEntry(
     params.requestedSessionKey,
     { agentId: requestedAgentId, clone: false },
   );
@@ -187,7 +187,6 @@ export function prepareAgentSession(params: {
       cfg,
       canonicalKey,
       entry,
-      acpMetadataSessionKey: legacyKey,
       respond: params.respond,
     })
   ) {

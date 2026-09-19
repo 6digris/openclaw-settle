@@ -42,7 +42,11 @@ import {
 } from "../media/playback-transcode.js";
 import { getMediaDir, MEDIA_MAX_BYTES, saveMediaBuffer, saveMediaSource } from "../media/store.js";
 import { unlinkIfExists } from "../media/temp-files.js";
-import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
+import {
+  normalizeAgentId,
+  parseAgentSessionKey,
+  scopeLegacySessionKeyToAgent,
+} from "../routing/session-key.js";
 import { safeEqualSecret } from "../security/secret-equal.js";
 import { readAssistantDisplayContent } from "../shared/assistant-display-content.js";
 import {
@@ -74,6 +78,8 @@ import {
   listManagedImageRecordEntries,
   MANAGED_OUTGOING_ORIGINALS_SUBDIR,
   readManagedImageRecord,
+  resolveManagedImageRecordOwner,
+  managedImageRecordMatchesSession,
   type ManagedImageRecord,
 } from "./managed-image-record-store.js";
 import { resolveManagedImageThumbnail } from "./managed-image-thumbnail-cache.js";
@@ -198,13 +204,6 @@ export type ManagedOutgoingMediaArtifactDownload = {
   url: string;
   expiresAt: string;
 };
-
-function buildSessionManagedOutgoingAttachmentIndexCacheKey(
-  sessionKey: string,
-  agentId?: string,
-): string {
-  return sessionKey === "global" && agentId ? `agent:${agentId}:global` : sessionKey;
-}
 
 export function resolveManagedImageAttachmentLimits(
   config?: ManagedImageAttachmentLimitsConfig | null,
@@ -648,10 +647,13 @@ export async function cleanupManagedOutgoingMediaRecords(params?: {
   const stateDir = params?.stateDir ?? resolveStateDir();
   const nowMs = params?.nowMs ?? Date.now();
   const transientMaxAgeMs = params?.transientMaxAgeMs ?? DEFAULT_TRANSIENT_OUTGOING_IMAGE_TTL_MS;
-  const sessionKeyFilter = params?.sessionKey ?? null;
-  const agentIdFilter = params?.agentId?.trim() ? normalizeAgentId(params.agentId) : undefined;
+  const sessionKeyFilter = scopeLegacySessionKeyToAgent(params ?? {}) ?? null;
+  const agentIdFilter = params?.agentId?.trim()
+    ? normalizeAgentId(params.agentId)
+    : parseAgentSessionKey(sessionKeyFilter)?.agentId;
   const globalCompatibilityOwnerAgentId =
-    sessionKeyFilter === "global" && agentIdFilter
+    agentIdFilter &&
+    (sessionKeyFilter === "global" || parseAgentSessionKey(sessionKeyFilter)?.rest === "global")
       ? tryResolveSessionCompatibilityOwnerAgentId(getRuntimeConfig(), "global")
       : undefined;
   const forceDeleteSessionRecords = params?.forceDeleteSessionRecords === true;
@@ -669,30 +671,23 @@ export async function cleanupManagedOutgoingMediaRecords(params?: {
   const sessionStoreTargetsReadCache: SessionStoreTargetsReadCache = new Map();
   for (const entry of entries) {
     const { record } = entry;
-    if (sessionKeyFilter && record.sessionKey !== sessionKeyFilter) {
-      retainedCount += 1;
-      continue;
-    }
-    if (
-      sessionKeyFilter === "global" &&
-      record.sessionKey === "global" &&
-      (!agentIdFilter ||
-        resolveManagedSessionOwnerAgentId(
-          record.sessionKey,
-          record.agentId,
-          globalCompatibilityOwnerAgentId,
-        ) !== agentIdFilter)
-    ) {
-      retainedCount += 1;
-      continue;
+    if (sessionKeyFilter) {
+      const owner = resolveManagedImageRecordOwner(
+        record,
+        record.sessionKey === "global" ? globalCompatibilityOwnerAgentId : undefined,
+      );
+      if (
+        !owner ||
+        scopeLegacySessionKeyToAgent({ agentId: owner, sessionKey: record.sessionKey }) !==
+          sessionKeyFilter
+      ) {
+        retainedCount += 1;
+        continue;
+      }
     }
 
     let shouldDelete = entry.cleanupPending;
-    if (
-      !entry.cleanupPending &&
-      forceDeleteSessionRecords &&
-      (!sessionKeyFilter || record.sessionKey === sessionKeyFilter)
-    ) {
+    if (!entry.cleanupPending && forceDeleteSessionRecords) {
       shouldDelete = true;
     } else if (!entry.cleanupPending && record.messageId) {
       const transcriptMatch = await recordMatchesTranscriptMessage(
@@ -762,18 +757,6 @@ export async function removeManagedOutgoingMediaBlocks(params: {
       }
     }),
   );
-}
-
-function resolveManagedSessionOwnerAgentId(
-  sessionKey: string,
-  explicitAgentId?: string,
-  compatibilityAgentId?: string,
-): string | undefined {
-  const ownerAgentId =
-    explicitAgentId?.trim() ||
-    parseAgentSessionKey(sessionKey)?.agentId ||
-    compatibilityAgentId?.trim();
-  return ownerAgentId ? normalizeAgentId(ownerAgentId) : undefined;
 }
 
 function buildManagedMediaBlock(
@@ -963,7 +946,13 @@ function collectManagedOutgoingAttachmentRefs(
       if (!parsed) {
         continue;
       }
-      if (expectedSessionKey && parsed.sessionKey !== expectedSessionKey) {
+      if (
+        expectedSessionKey &&
+        scopeLegacySessionKeyToAgent({
+          agentId: parseAgentSessionKey(expectedSessionKey)?.agentId,
+          sessionKey: parsed.sessionKey,
+        }) !== expectedSessionKey
+      ) {
         continue;
       }
       const attachmentId = expectDefined(parsed.attachmentId, "managed image attachment id");
@@ -1011,13 +1000,13 @@ async function recordMatchesTranscriptMessage(
   }
   const { sessionKey, agentId, messageId: requestedMessageId } = record;
   const refKey = buildManagedOutgoingAttachmentRefKey(requestedMessageId, record.attachmentId);
-  const cacheKey = buildSessionManagedOutgoingAttachmentIndexCacheKey(sessionKey, agentId);
+  const cacheKey = scopeLegacySessionKeyToAgent({ sessionKey, agentId }) ?? sessionKey;
   if (cache?.has(cacheKey)) {
     return cache.get(cacheKey)?.has(refKey) ? "match" : "missing";
   }
   const cfg = getRuntimeConfig();
   const ownerAgentId =
-    resolveManagedSessionOwnerAgentId(sessionKey, agentId) ??
+    resolveManagedImageRecordOwner(record) ??
     tryResolveSessionCompatibilityOwnerAgentId(cfg, sessionKey);
   if (!ownerAgentId) {
     return "unavailable";
@@ -1182,15 +1171,11 @@ export async function resolveManagedOutgoingMediaArtifactDownload(params: {
     return null;
   }
   const record = await readManagedImageRecord(parsed.attachmentId, stateDir);
-  if (!record || record.sessionKey !== sessionKey) {
+  if (!record || !managedImageRecordMatchesSession(record, sessionKey, defaultAgentId)) {
     return null;
   }
   const requestedAgentId = agentId ? normalizeAgentId(agentId) : undefined;
-  const recordAgentId = resolveManagedSessionOwnerAgentId(
-    record.sessionKey,
-    record.agentId,
-    defaultAgentId,
-  );
+  const recordAgentId = resolveManagedImageRecordOwner(record, defaultAgentId);
   if (requestedAgentId && recordAgentId !== requestedAgentId) {
     return null;
   }
@@ -1210,11 +1195,17 @@ export async function resolveManagedOutgoingMediaUrlDownload(params: {
   const { url, sessionKey } = params;
   const stateDir = params.stateDir ?? resolveStateDir();
   const parsed = parseManagedOutgoingRoute(url);
-  if (!parsed || parsed.sessionKey !== sessionKey) {
+  if (
+    !parsed ||
+    scopeLegacySessionKeyToAgent({
+      agentId: parseAgentSessionKey(sessionKey)?.agentId,
+      sessionKey: parsed.sessionKey,
+    }) !== sessionKey
+  ) {
     return null;
   }
   const record = await readManagedImageRecord(parsed.attachmentId, stateDir);
-  if (!record || record.sessionKey !== sessionKey) {
+  if (!record || !managedImageRecordMatchesSession(record, sessionKey)) {
     return null;
   }
   return await resolveManagedOutgoingMediaArtifactDownloadForRecord(record, stateDir);
@@ -1261,7 +1252,7 @@ export async function readManagedOutgoingImageThumbnail(
   signal.throwIfAborted();
   const record = await readManagedImageRecord(parsed.attachmentId, stateDir);
   signal.throwIfAborted();
-  if (!record || record.sessionKey !== sessionKey) {
+  if (!record || !managedImageRecordMatchesSession(record, sessionKey, params.defaultAgentId)) {
     return null;
   }
   const opened = await openLocalFileSafely({ filePath: resolveManagedImageOriginalPath(record) });
@@ -1321,7 +1312,7 @@ export async function createManagedOutgoingMediaBlocks(params: {
   abortSignal?: AbortSignal;
 }): Promise<ManagedMediaBlock[]> {
   return await withChannelReadAuthority(params.assertCurrent, async () => {
-    const sessionKey = params.sessionKey.trim();
+    const sessionKey = scopeLegacySessionKeyToAgent(params);
     if (!sessionKey) {
       return [];
     }
@@ -1520,9 +1511,7 @@ export async function createManagedOutgoingMediaBlocks(params: {
         const record: ManagedImageRecord = {
           attachmentId: randomUUID(),
           sessionKey,
-          ...(sessionKey === "global" && params.agentId?.trim()
-            ? { agentId: params.agentId.trim() }
-            : {}),
+          ...(params.agentId?.trim() ? { agentId: params.agentId.trim() } : {}),
           messageId: params.messageId ?? null,
           createdAt: new Date().toISOString(),
           retentionClass: params.messageId ? "history" : "transient",
@@ -1733,7 +1722,7 @@ export async function handleManagedOutgoingMediaHttpRequest(
   }
   const stateDir = opts.stateDir ?? resolveStateDir();
   const record = await readManagedImageRecord(attachmentId, stateDir);
-  if (!record || record.sessionKey !== sessionKey) {
+  if (!record || !managedImageRecordMatchesSession(record, sessionKey)) {
     sendStatus(res, 404, "not found");
     return true;
   }

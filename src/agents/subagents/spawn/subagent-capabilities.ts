@@ -105,22 +105,22 @@ function resolveSessionCapabilityEntry(params: {
   cfg?: OpenClawConfig;
   store?: SessionCapabilityStore;
 }): SessionCapabilityEntry | undefined {
+  const agentId = parseAgentSessionKey(params.sessionKey)?.agentId;
+  if (!agentId) {
+    return undefined;
+  }
   if (params.store) {
     const store = asSessionCapabilityLookup(params.store);
-    return store.get(params.sessionKey) ?? store.getById(params.sessionKey);
+    return store.get(params.sessionKey) ?? store.getById(params.sessionKey, agentId);
   }
   if (!params.cfg) {
     return undefined;
   }
-  const parsed = parseAgentSessionKey(params.sessionKey);
-  if (!parsed?.agentId) {
-    return undefined;
-  }
   const storePath = resolveSessionStorePathCore(params.cfg.session?.store, {
-    agentId: parsed.agentId,
+    agentId,
   });
-  const store = createSubagentSessionStore(storePath, parsed.agentId);
-  return store.get(params.sessionKey) ?? store.getById(params.sessionKey);
+  const store = createSubagentSessionStore(storePath, agentId);
+  return store.get(params.sessionKey) ?? store.getById(params.sessionKey, agentId);
 }
 
 /** Resolve the session-store subset used for subagent capability lookup. */
@@ -366,13 +366,11 @@ export function resolveStoredSubagentCapabilities(
     return resolveSubagentCapabilities({ depth, maxSpawnDepth });
   }
   const store = resolveSubagentCapabilityStore(normalizedSessionKey, opts);
-  const entry = normalizedSessionKey
-    ? resolveSessionCapabilityEntry({
-        sessionKey: normalizedSessionKey,
-        cfg: opts?.cfg,
-        store,
-      })
-    : undefined;
+  const entry = resolveSessionCapabilityEntry({
+    sessionKey: normalizedSessionKey,
+    cfg: opts?.cfg,
+    store,
+  });
   const depthStore =
     opts?.cfg && !isSessionCapabilityLookup(store) && typeof entry?.spawnDepth !== "number"
       ? undefined

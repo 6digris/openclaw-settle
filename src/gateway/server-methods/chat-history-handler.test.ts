@@ -103,7 +103,7 @@ describe("chat history model selection defaults", () => {
       await state.writeConfig(cfg);
       for (const agentId of ["ops", "research"]) {
         await upsertSessionEntryCore(
-          { agentId, sessionKey: "global" },
+          { agentId, sessionKey: `agent:${agentId}:global` },
           { sessionId: `global-${agentId}`, updatedAt: 1 },
         );
       }
@@ -132,7 +132,10 @@ describe("chat history model selection defaults", () => {
         });
         expect(respond).toHaveBeenCalledWith(
           true,
-          expect.objectContaining({ sessionKey, sessionId }),
+          expect.objectContaining({
+            sessionKey: sessionKey === "global" ? "agent:research:global" : sessionKey,
+            sessionId,
+          }),
         );
       }
     });

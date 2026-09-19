@@ -1,6 +1,9 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
+  GATEWAY_CLIENT_CAPS,
   GATEWAY_CLIENT_IDS,
   GATEWAY_CLIENT_MODES,
+  hasGatewayClientCap,
 } from "../../../../packages/gateway-protocol/src/client-info.js";
 import type {
   ConnectParams,
@@ -25,6 +28,7 @@ import { captureGatewayDeviceRevocation } from "../../device-revocation.js";
 import { createExpectedProfileBinding } from "../../expected-profile.js";
 import { bindWebSocketRequestMutationAuthority } from "../../server-methods/session-mutation-guards.js";
 import type { GatewayRequestEntry } from "../../server-request-entry.js";
+import { legacySessionKey, projectSessionWireResponse } from "../../session-wire-identity.js";
 import { classifyGatewayStaleInstall } from "../../stale-install.js";
 import { formatForLog, logWs } from "../../ws-log.js";
 import {
@@ -110,6 +114,24 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
     logWs("in", "req", { connId, id: req.id, method: req.method });
     const context = buildRequestContext();
     const expectedProfileBinding = createExpectedProfileBinding(req.expectedProfileId, client);
+    const canonicalSessionKeys = hasGatewayClientCap(
+      client.connect.caps,
+      GATEWAY_CLIENT_CAPS.CANONICAL_SESSION_KEYS,
+    );
+    const wireKey = isRecord(req.params)
+      ? req.method === "sessions.messages.subscribe" ||
+        req.method === "sessions.messages.unsubscribe"
+        ? req.params.key
+        : req.method === "chat.history" ||
+            req.method === "chat.startup" ||
+            req.method === "chat.send"
+          ? req.params.sessionKey
+          : undefined
+      : undefined;
+    const sessionWireSelection =
+      !canonicalSessionKeys && typeof wireKey === "string"
+        ? context.beginSessionWireSelection?.(client.connId, wireKey)
+        : undefined;
     const clientAuthority = captureGatewayDeviceRevocation(
       context,
       { deviceId: client.connect.device?.id, role: client.connect.role },
@@ -152,7 +174,26 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
         try {
           let responseOk = ok;
           let responseError = error;
-          let sendResult = sendResponse({ type: "res", id: req.id, ok, payload, error });
+          let sendResult = sendResponse({
+            type: "res",
+            id: req.id,
+            ok,
+            payload: canonicalSessionKeys
+              ? payload
+              : projectSessionWireResponse(
+                  req.method,
+                  payload,
+                  (key, owner) =>
+                    legacySessionKey(
+                      key,
+                      owner,
+                      sessionWireSelection?.key ?? context.getSessionWireKey?.(client.connId, key),
+                    ),
+                  undefined,
+                  req.params,
+                ),
+            error,
+          });
           if (sendResult.kind === "serialization") {
             const detail = formatForLog(sendResult.error);
             logGateway.error(`response serialization failed method=${req.method}: ${detail}`);
@@ -284,7 +325,7 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
           if (!hasCurrentClientAuthority() || !hasCurrentRuntimeAuthority()) {
             return;
           }
-          const { handleGatewayRequest } = await loadGatewayServerMethods();
+          const { handleGatewayRequest, legacySessionRequest } = await loadGatewayServerMethods();
           entry?.assertOpen();
           // Node completion traffic retains its native yielding and existing close-drain
           // deadline. Operator requests share bounded starts without serializing completion.
@@ -322,7 +363,16 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
             handleGatewayRequest(
               bindWebSocketRequestMutationAuthority(
                 {
+                  sessionWireSelection,
                   req,
+                  ...(canonicalSessionKeys
+                    ? {}
+                    : {
+                        prepareRequestParams: () =>
+                          legacySessionRequest(req.method, req.params, () =>
+                            context.getRuntimeConfig(),
+                          ),
+                      }),
                   respond: respondWithAuthority,
                   client,
                   isWebchatConnect: params.isWebchatConnect,

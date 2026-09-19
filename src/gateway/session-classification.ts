@@ -88,13 +88,13 @@ export function sessionClassificationForRow(
   entry?: SessionEntry,
 ): GatewaySessionClassification {
   const canonicalKey = normalizeSessionKeyPreservingOpaquePeerIds(key);
-  const isMain =
-    canonicalKey === "global"
-      ? cfg.session?.scope === "global"
-      : canonicalKey === resolveAgentMainSessionKey({ cfg, agentId });
   const parsedAgent = parseAgentSessionKey(canonicalKey);
   const resolvedAgentId = parsedAgent?.agentId ?? normalizeOptionalString(agentId);
   const rest = parsedAgent?.rest ?? canonicalKey;
+  const isMain =
+    rest === "global"
+      ? cfg.session?.scope === "global"
+      : canonicalKey === resolveAgentMainSessionKey({ cfg, agentId });
   const parsedThread = parseThreadSessionSuffix(canonicalKey);
   const route = parseSessionDeliveryRoute(canonicalKey);
   const hasLegacyDirectPeer = /^(?:direct|dm):.+$/i.test(
@@ -107,9 +107,9 @@ export function sessionClassificationForRow(
     entry?.chatType === "direct";
 
   let classification: SessionClassification;
-  if (canonicalKey === "global") {
+  if (rest === "global") {
     classification = "global";
-  } else if (canonicalKey === "unknown") {
+  } else if (rest === "unknown") {
     classification = "unknown";
   } else if (entry?.heartbeatIsolatedBaseSessionKey) {
     classification = "heartbeat";

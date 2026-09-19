@@ -7,9 +7,8 @@ import { isInternalSessionEffectsKey } from "../config/sessions/internal-session
 import { resolveCanonicalMainSessionKey } from "../config/sessions/main-session-key.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { withSystemEventOwner } from "../infra/system-event-ownership.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
-import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
+import { resolveAgentIdFromSessionKey, toAgentStoreSessionKey } from "../routing/session-key.js";
 import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
 import { SESSION_CREATED_NOTICE_CONTEXT_PREFIX } from "./session-state-event-kinds.js";
 import { recordSessionStateEvent } from "./session-state-events.js";
@@ -20,19 +19,20 @@ export function recordSessionCreated(
   params: { sessionKey: string; entry: SessionEntry; agentId?: string },
 ): void {
   const agentId = params.agentId ?? resolveAgentIdFromSessionKey(params.sessionKey);
-  enqueueSessionCreatedNotice({ ...params, cfg, agentId });
+  const sessionKey = toAgentStoreSessionKey({ agentId, requestKey: params.sessionKey });
+  enqueueSessionCreatedNotice({ ...params, cfg, agentId, sessionKey });
   const actor = params.entry.createdActor;
   if (!actor) {
     return;
   }
   recordSessionStateEvent({
-    sessionKey: params.sessionKey,
+    sessionKey,
     sessionId: params.entry.sessionId,
     agentId,
     kind: "created",
     actorType: actor.type,
     ...(actor.id ? { actorId: actor.id } : {}),
-    dedupeKey: `created:${agentId}:${params.sessionKey}:${params.entry.sessionId}`,
+    dedupeKey: `created:${agentId}:${sessionKey}:${params.entry.sessionId}`,
     summary: "session created",
   });
 }
@@ -85,12 +85,9 @@ function enqueueSessionCreatedNotice(params: {
   };
   enqueueSystemEvent(
     wrapUntrustedPromptDataBlock({ label: "New session created", text: JSON.stringify(details) }),
-    withSystemEventOwner(
-      {
-        sessionKey: mainSessionKey,
-        contextKey: `${SESSION_CREATED_NOTICE_CONTEXT_PREFIX}${sessionKey}:${entry.sessionId}`,
-      },
-      agentId,
-    ),
+    {
+      sessionKey: mainSessionKey,
+      contextKey: `${SESSION_CREATED_NOTICE_CONTEXT_PREFIX}${sessionKey}:${entry.sessionId}`,
+    },
   );
 }

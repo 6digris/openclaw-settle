@@ -104,6 +104,7 @@ export async function handleChatHistoryRequest({
   method,
   signal,
   retainedSessionId,
+  sessionWireSelection,
 }: GatewayRequestHandlerOptions & {
   method: ChatHistoryMethod;
   retainedSessionId?: string;
@@ -170,14 +171,11 @@ export async function handleChatHistoryRequest({
       phase: method,
     },
   );
-  const {
-    cfg,
-    agentId: sessionAgentId,
-    storePath,
-    entry,
-    canonicalKey,
-    legacyKey,
-  } = selectedSession;
+  const { cfg, agentId: sessionAgentId, storePath, entry, canonicalKey } = selectedSession;
+  const respondHistory = (payload: unknown) => {
+    sessionWireSelection?.accept(canonicalKey);
+    respond(true, payload);
+  };
   const selectedAgent = validateChatSelectedAgent({
     cfg,
     requestedSessionKey: sessionKey,
@@ -191,7 +189,7 @@ export async function handleChatHistoryRequest({
     const sharing = prepareSessionSharing({ client, cfg: current.cfg });
     if (
       current.entry
-        ? sharing.entryFilter?.(current.legacyKey ?? current.canonicalKey, current.entry) === false
+        ? sharing.entryFilter?.(current.canonicalKey, current.entry) === false
         : requestedSessionId && !retainedSessionId && !isGatewayAdmin(client)
     ) {
       respond(false, undefined, hiddenSessionNotFound(canonicalKey));
@@ -217,7 +215,6 @@ export async function handleChatHistoryRequest({
       (!currentEntry ||
         current.agentId !== sessionAgentId ||
         current.canonicalKey !== canonicalKey ||
-        current.legacyKey !== legacyKey ||
         current.storePath !== storePath ||
         (!retainedSessionId &&
           (currentEntry.sessionId !== entry.sessionId ||
@@ -242,7 +239,7 @@ export async function handleChatHistoryRequest({
           sharingRole: sharing.roleForTarget({
             ...current,
             entry: currentEntry,
-            storeKey: current.legacyKey ?? current.canonicalKey,
+            storeKey: current.canonicalKey,
           }),
         }
       : {};
@@ -605,7 +602,7 @@ export async function handleChatHistoryRequest({
     }) ?? embeddedRecovery;
   if (cursor !== undefined) {
     if (!sessionInfo || !sessionId || !storePath || resolveClaudeCliBindingSessionId(entry)) {
-      respond(true, { kind: "reset" });
+      respondHistory({ kind: "reset" });
       return;
     }
     const sessionSnapshot = buildGatewaySessionSnapshot({
@@ -658,7 +655,7 @@ export async function handleChatHistoryRequest({
       return;
     }
     if (delta.kind === "reset") {
-      respond(true, delta);
+      respondHistory(delta);
       return;
     }
     sessionInfo.activeLeafEntryId = delta.activeLeafEntryId;
@@ -667,7 +664,7 @@ export async function handleChatHistoryRequest({
       messages: delta.messages,
       maxBytes: maxHistoryBytes - chatHistoryActivityBytes(delta.activity),
     });
-    respond(true, {
+    respondHistory({
       kind: "delta",
       messages: delta.messages,
       ...(delta.activity.length > 0 ? { activity: delta.activity } : {}),
@@ -687,7 +684,7 @@ export async function handleChatHistoryRequest({
     maxBytes: responseHistoryBytes,
   });
   const payload = {
-    sessionKey,
+    sessionKey: canonicalKey,
     sessionId,
     messages: composeTranscriptDisplay(capped),
     ...(capped.some((message) => activity.has(message))
@@ -712,7 +709,7 @@ export async function handleChatHistoryRequest({
     ...(boundedInFlightRun ? { inFlightRun: boundedInFlightRun } : {}),
     ...(startupMetadata ? { metadata: startupMetadata } : {}),
   };
-  respond(true, payload);
+  respondHistory(payload);
 }
 
 export const chatHistoryHandlers: GatewayRequestHandlers = {

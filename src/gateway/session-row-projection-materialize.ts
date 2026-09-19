@@ -1,5 +1,4 @@
 import { resolveUtilityModelRefForAgent } from "../agents/utility-model.js";
-import { projectGatewaySessionEntry } from "../config/sessions/combined-store-gateway.js";
 import { readCommittedSessionEntryCache } from "../config/sessions/session-accessor.sqlite-entry-cache.js";
 import { readExactSessionEntryRow } from "../config/sessions/session-accessor.sqlite-entry-read.js";
 import { listSessionMembers } from "../config/sessions/session-sharing-store.js";
@@ -134,12 +133,8 @@ export function readSessionRowEntry(row: records.Row) {
 }
 
 /** Exact incognito acquisition never admits an ephemeral store to the resident roster. */
-export function readIncognitoSessionRow(params: {
-  cfg: records.Inputs["cfg"];
-  key: string;
-  agentId: string;
-}) {
-  const { cfg, key, agentId } = params;
+export function readIncognitoSessionRow(params: { key: string; agentId: string }) {
+  const { key, agentId } = params;
   const ephemeralPath = resolveIncognitoOpenClawAgentSqlitePath({ agentId });
   if (!listOpenIncognitoAgentDatabases().some((store) => store.storePath === ephemeralPath)) {
     return undefined;
@@ -149,7 +144,7 @@ export function readIncognitoSessionRow(params: {
   if (!storedEntry) {
     return undefined;
   }
-  const entry = projectGatewaySessionEntry(cfg, storedEntry);
+  const entry = { ...storedEntry };
   return Object.assign(row, {
     storedEntry,
     entry,

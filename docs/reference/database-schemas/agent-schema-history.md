@@ -57,10 +57,13 @@ seeds all keys and validates bounded batches before publishing that proof.
 Ordinary connection close and eviction preserve it, while physical replacement,
 registry invalidation and native deserialization revoke it. Read-only callers
 without an admitted proof retain full validation and never create a writer.
-Each native reader keeps the existing admission contract for its current
-main-key policy and physical owner. Already-admitted metadata readers retain
-their established raw-row parser behavior; a fresh reader, policy change or
-owner replacement must cross admission again. Pending keys make that admission
+Each native reader keeps its admission contract for the physical owner.
+Already-admitted metadata readers retain their established raw-row parser behavior;
+a fresh reader or owner replacement must cross admission again. Qualified keys
+are stable identities and no longer depend on the legacy main-key policy.
+The legacy policy table and its invalidation triggers remain for older readers;
+restoring an older build requires the pre-update backup when its policy rejects
+keys accepted by the newer runtime. Pending keys make that admission
 incremental without caching session identity or permission results.
 
 Gateway startup reuses valid canonical receipts for the same physical generation;

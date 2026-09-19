@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { rekeyLegacySessionFixture } from "../../commands/doctor-session-canonical-keys.test-support.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import {
@@ -195,48 +196,144 @@ describe("searchSessionTranscripts", () => {
     }
   });
 
-  it("scopes omitted filters to a logical namespace in a shared database", async () => {
-    const storePath = path.join(paths.tempDir, "shared.sqlite");
-    openOpenClawAgentDatabase({ agentId: "owner", env: env(), path: storePath });
-    const sessions = [
-      ["work_team", "agent:work_team:main"],
-      ["workxteam", "agent:workxteam:main"],
-      ["owner", "agent:owner:main"],
-      ["owner", "global"],
-      ["owner", "unknown"],
-    ] as const;
-    for (const [index, [agentId, sessionKey]] of sessions.entries()) {
-      const text =
-        agentId === "work_team"
-          ? `needle bounded ${"context ".repeat(30)}`
-          : agentId === "workxteam"
-            ? "needle bounded"
-            : "needle";
-      await appendTranscriptMessage(
-        { agentId, env: env(), sessionId: `session-${index}`, sessionKey, storePath },
-        { message: { role: "user", content: [{ type: "text", text }] } },
+  it.each([false, true])(
+    "scopes omitted filters to a logical namespace in a shared database (cold: %s)",
+    async (cold) => {
+      const storePath = path.join(paths.tempDir, "shared.sqlite");
+      const database = openOpenClawAgentDatabase({ agentId: "owner", env: env(), path: storePath });
+      const sessions = [
+        ["work_team", "agent:work_team:main"],
+        ["workxteam", "agent:workxteam:main"],
+        ["owner", "agent:owner:main"],
+        ["work_team", "agent:work_team:global"],
+        ["work_team", "agent:work_team:unknown"],
+        ["owner", "agent:owner:global"],
+        ["owner", "agent:owner:unknown"],
+        ["owner", "agent:owner:legacy-global"],
+        ["owner", "agent:owner:legacy-unknown"],
+      ] as const;
+      for (const [index, [agentId, sessionKey]] of sessions.entries()) {
+        const text =
+          sessionKey === "agent:work_team:main"
+            ? `needle bounded ${"context ".repeat(30)}`
+            : agentId === "workxteam"
+              ? "needle bounded"
+              : "needle";
+        await appendTranscriptMessage(
+          { agentId, env: env(), sessionId: `session-${index}`, sessionKey, storePath },
+          { message: { role: "user", content: [{ type: "text", text }] } },
+        );
+        if (cold) {
+          await replaceSessionEntry(
+            { agentId, env: env(), sessionKey, storePath },
+            { sessionId: `current-${index}`, updatedAt: Date.now() },
+          );
+        }
+      }
+      const db = getNodeSqliteKysely<OpenClawAgentKyselyDatabase>(database.db);
+      if (cold) {
+        executeSqliteQuerySync(
+          database.db,
+          db
+            .updateTable("session_windows")
+            .set({ updated_at: 1, transcript_updated_at: 1 })
+            .where(
+              "session_id",
+              "in",
+              sessions.map((_, index) => `session-${index}`),
+            ),
+        );
+        await expect(
+          runSessionColdStorageMaintenance({
+            config: {
+              agents: { list: [{ id: "owner" }] },
+              session: {
+                store: storePath,
+                maintenance: { coldStorage: { enabled: true, afterDays: 30 } },
+              },
+            },
+          }),
+        ).resolves.toMatchObject({ archivedTranscripts: sessions.length });
+      }
+      // Retained legacy windows have no logical owner; inspection must not reassign them.
+      for (const alias of ["global", "unknown"]) {
+        rekeyLegacySessionFixture(database.db, `agent:owner:legacy-${alias}`, alias);
+      }
+      executeSqliteQuerySync(
+        database.db,
+        db
+          .updateTable("session_nodes")
+          .set({ entry_json: "{}", entry_valid: -1 })
+          .where("session_key", "in", ["global", "unknown"]),
       );
-    }
-    const params = { agentId: "work_team", env: env(), query: "needle", storePath };
-    expect(
-      searchSessionTranscripts(params)
-        .hits.map((hit) => hit.sessionKey)
-        .toSorted(),
-    ).toEqual(["agent:work_team:main", "global", "unknown"]);
-    expect(searchSessionTranscripts({ ...params, query: "bounded", limit: 1 })).toEqual({
-      hits: [expect.objectContaining({ sessionKey: "agent:work_team:main" })],
-      indexing: false,
-      truncated: false,
-    });
-    expect(
-      searchSessionTranscripts({ ...params, sessionKeys: ["agent:workxteam:main"] }).hits,
-    ).toEqual([expect.objectContaining({ sessionKey: "agent:workxteam:main" })]);
-    expect(
-      searchSessionTranscripts({ ...params, sessionKeys: [] })
-        .hits.map((hit) => hit.sessionKey)
-        .toSorted(),
-    ).toEqual(sessions.map(([, sessionKey]) => sessionKey).toSorted());
-  });
+      const rawHistory = () => ({
+        nodes: database.db
+          .prepare(
+            "SELECT * FROM session_nodes WHERE session_key IN ('global', 'unknown') ORDER BY session_key",
+          )
+          .all(),
+        windows: database.db
+          .prepare(
+            "SELECT * FROM session_windows WHERE session_key IN ('global', 'unknown') ORDER BY session_id",
+          )
+          .all(),
+        events: database.db
+          .prepare(
+            "SELECT * FROM transcript_events WHERE session_id IN ('session-7', 'session-8') ORDER BY session_id, seq",
+          )
+          .all(),
+        archives: database.db
+          .prepare(
+            "SELECT * FROM session_transcript_cold_archives WHERE session_id IN ('session-7', 'session-8') ORDER BY session_id",
+          )
+          .all(),
+      });
+      const before = rawHistory();
+      const params = { agentId: "work_team", env: env(), query: "needle", storePath };
+      const qualified = sessions.slice(0, -2).map(([, sessionKey]) => sessionKey);
+      const all = searchSessionTranscripts({
+        ...params,
+        sessionKeys: [...qualified, "global", "unknown"],
+      });
+      expect(all.hits.map((hit) => hit.sessionKey).toSorted()).toEqual(
+        cold ? [] : [...qualified, "global", "unknown"].toSorted(),
+      );
+      expect(all.archivedTranscriptsExcluded).toBe(cold ? sessions.length : undefined);
+      for (const sessionKeys of [
+        ["agent:workxteam:main"],
+        ["agent:owner:global", "agent:owner:unknown"],
+        ["global", "unknown"],
+      ]) {
+        const exact = searchSessionTranscripts({ ...params, sessionKeys });
+        expect(exact.hits.map((hit) => hit.sessionKey).toSorted()).toEqual(
+          cold ? [] : sessionKeys.toSorted(),
+        );
+        expect(exact.archivedTranscriptsExcluded).toBe(cold ? sessionKeys.length : undefined);
+      }
+      if (!cold) {
+        expect(searchSessionTranscripts({ ...params, query: "bounded", limit: 1 })).toEqual({
+          hits: [expect.objectContaining({ sessionKey: "agent:work_team:main" })],
+          indexing: false,
+          truncated: false,
+        });
+      }
+      const result = searchSessionTranscripts(params);
+      const empty = searchSessionTranscripts({ ...params, sessionKeys: [] });
+      expect(rawHistory()).toEqual(before);
+      expect
+        .soft(result.hits.map((hit) => hit.sessionKey).toSorted())
+        .toEqual(
+          cold ? [] : ["agent:work_team:global", "agent:work_team:main", "agent:work_team:unknown"],
+        );
+      expect.soft(result.archivedTranscriptsExcluded).toBe(cold ? 3 : undefined);
+      expect(result).toMatchObject({ indexing: false, truncated: false });
+      expect.soft(empty).toEqual({
+        hits: [],
+        indexing: false,
+        truncated: false,
+      });
+    },
+  );
 
   it("returns empty results without creating a missing database", () => {
     const databasePath = resolveOpenClawAgentSqlitePath({ agentId: "main", env: env() });

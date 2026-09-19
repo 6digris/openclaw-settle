@@ -1,6 +1,7 @@
 import {
   ErrorCodes,
   type ErrorShape,
+  type SessionsListParams,
   errorShape,
 } from "../../packages/gateway-protocol/src/index.js";
 import {
@@ -9,16 +10,17 @@ import {
   tryResolveSoleAgentId,
 } from "../agents/agent-scope.js";
 import { tryResolveLegacyCompatibilityAgentId } from "../config/legacy.default-agent-owner.js";
+import { canonicalizeMainSessionAlias } from "../config/sessions/main-session.js";
 import { resolvePersistedSessionStoreOwnerForKey } from "../config/sessions/session-store-owner.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
+  classifySessionKeyShape,
   normalizeAgentId,
   normalizeAgentIdStrict,
-  normalizeMainKey,
   parseAgentSessionKey,
 } from "../routing/session-key.js";
+import { normalizeSessionKeyPreservingOpaquePeerIds } from "../sessions/session-key-utils.js";
 import { readAgentDatabaseAdmissionRefusal } from "../state/agent-database-admission.js";
-import { resolveSessionSubscriptionKeys } from "./session-subscription-keys.js";
 
 type RequestedSessionAgentIdResolution =
   | { ok: true; agentId: string }
@@ -36,20 +38,17 @@ function admitRequestedAgent(agentId: string): RequestedSessionAgentIdResolution
     : { ok: true, agentId };
 }
 
-/** Public identity, private routing identity, then raw-global compatibility owner. */
-export type SessionEventAgentScope = readonly [
-  eventAgentId: string | undefined,
-  routingAgentId: string | undefined,
-  compatibilityOwnerAgentId: string | undefined,
-];
+export type SessionEventAgentScope = { agentId: string; sessionKey: string };
 
-/** Resolves public event identity separately from private session routing ownership. */
+/** Bind retained unqualified events to their recorded owner before publication. */
 export function resolveSessionEventAgentScope(
   cfg: OpenClawConfig,
   key: string,
   explicitAgentId?: string,
-  publishQualifiedAgent = false,
 ): SessionEventAgentScope | null {
+  if (classifySessionKeyShape(key) === "malformed_agent") {
+    return null;
+  }
   const parsed = parseAgentSessionKey(key.trim());
   const keyAgentId = parsed?.agentId ? normalizeAgentId(parsed.agentId) : undefined;
   const explicit = explicitAgentId === undefined ? null : normalizeAgentIdStrict(explicitAgentId);
@@ -60,37 +59,19 @@ export function resolveSessionEventAgentScope(
     return null;
   }
   const persistedOwner = resolvePersistedSessionStoreOwnerForKey(cfg, key);
-  const compatibilityOwnerAgentId = keyAgentId
-    ? undefined
-    : tryResolveSessionCompatibilityOwnerAgentId(cfg, key);
-  const eventAgentId =
-    explicit?.value ??
-    (publishQualifiedAgent && keyAgentId && listAgentIds(cfg).includes(keyAgentId)
-      ? keyAgentId
-      : undefined);
-  const routingAgentId =
+  const agentId =
     explicit?.value ??
     keyAgentId ??
-    compatibilityOwnerAgentId ??
-    (persistedOwner.kind === "retired" ? persistedOwner.agentId : undefined);
-  return [eventAgentId, routingAgentId, compatibilityOwnerAgentId];
-}
-
-/** Binds a retired unqualified owner to its private sharing scope. */
-export function resolvePrivateSessionEventBroadcastScope(
-  key: string | undefined,
-  [eventAgentId, routingAgentId, compatibilityOwnerAgentId]: SessionEventAgentScope,
-) {
-  return key &&
-    !parseAgentSessionKey(key) &&
-    !eventAgentId &&
-    routingAgentId &&
-    !compatibilityOwnerAgentId
+    (persistedOwner.kind !== "none" ? persistedOwner.agentId : undefined) ??
+    tryResolveSessionCompatibilityOwnerAgentId(cfg, key);
+  return agentId
     ? {
-        agentId: routingAgentId,
-        sessionKeys: resolveSessionSubscriptionKeys(key, routingAgentId),
+        agentId,
+        sessionKey: parsed
+          ? normalizeSessionKeyPreservingOpaquePeerIds(key)
+          : canonicalizeMainSessionAlias({ cfg, sessionKey: key, agentId }),
       }
-    : undefined;
+    : null;
 }
 
 /** Resolves only stable implicit ownership for unscoped session rows and active runs. */
@@ -98,6 +79,9 @@ export function tryResolveSessionCompatibilityOwnerAgentId(
   cfg: OpenClawConfig,
   key: string | undefined,
 ): string | undefined {
+  if (classifySessionKeyShape(key) === "malformed_agent") {
+    return undefined;
+  }
   const persistedStoreOwner = resolvePersistedSessionStoreOwnerForKey(cfg, key);
   if (persistedStoreOwner.kind === "configured") {
     return persistedStoreOwner.agentId;
@@ -114,6 +98,12 @@ export function resolveRequestedSessionAgentId(
   key: string | undefined,
   explicitAgentId?: string,
 ): RequestedSessionAgentIdResolution {
+  if (classifySessionKeyShape(key) === "malformed_agent") {
+    return {
+      ok: false,
+      error: errorShape(ErrorCodes.INVALID_REQUEST, "Malformed agent session key."),
+    };
+  }
   const parsed = parseAgentSessionKey(key?.trim());
   const configuredAgentIds = listAgentIds(cfg);
   const normalizedRequest =
@@ -131,18 +121,8 @@ export function resolveRequestedSessionAgentId(
       error: errorShape(ErrorCodes.INVALID_REQUEST, `Unknown agent id "${explicitAgentId}"`),
     };
   }
-  let ownerKey = key;
   if (parsed?.agentId) {
     const keyAgentId = normalizeAgentId(parsed.agentId);
-    const keyIsGlobalMainAlias =
-      cfg.session?.scope === "global" &&
-      (parsed.rest === "main" || parsed.rest === normalizeMainKey(cfg.session?.mainKey));
-    if (keyIsGlobalMainAlias && !configuredAgentIds.includes(keyAgentId)) {
-      return {
-        ok: false,
-        error: errorShape(ErrorCodes.INVALID_REQUEST, `Unknown agent id "${parsed.agentId}"`),
-      };
-    }
     if (normalizedRequestedAgentId && keyAgentId !== normalizedRequestedAgentId) {
       return {
         ok: false,
@@ -152,14 +132,10 @@ export function resolveRequestedSessionAgentId(
         ),
       };
     }
-    if (!keyIsGlobalMainAlias || !normalizedRequestedAgentId) {
-      return admitRequestedAgent(keyAgentId);
-    }
-    // Explicit targets must also match the fixed store after losing their prefix.
-    ownerKey = "global";
+    return admitRequestedAgent(keyAgentId);
   }
 
-  const persistedStoreOwner = resolvePersistedSessionStoreOwnerForKey(cfg, ownerKey);
+  const persistedStoreOwner = resolvePersistedSessionStoreOwnerForKey(cfg, key);
   if (persistedStoreOwner.kind === "retired") {
     return {
       ok: false,
@@ -196,4 +172,30 @@ export function resolveRequestedSessionAgentId(
     ok: false,
     error: errorShape(ErrorCodes.INVALID_REQUEST, selectionError.message),
   };
+}
+
+/** Admit child filters without borrowing their agent for the parent selector. */
+export function resolveRequestedSessionListScope<
+  T extends Pick<SessionsListParams, "agentId" | "spawnedBy">,
+>(cfg: OpenClawConfig, scope: T) {
+  const agent = scope.agentId === undefined ? null : normalizeAgentIdStrict(scope.agentId);
+  if (agent && !agent.ok) {
+    return {
+      ok: false as const,
+      error: errorShape(ErrorCodes.INVALID_REQUEST, `Unknown agent id "${scope.agentId}"`),
+    };
+  }
+  let spawnedBy = scope.spawnedBy;
+  if (spawnedBy !== undefined) {
+    const parent = resolveRequestedSessionAgentId(cfg, spawnedBy);
+    if (!parent.ok) {
+      return parent;
+    }
+    spawnedBy = canonicalizeMainSessionAlias({
+      cfg,
+      agentId: parent.agentId,
+      sessionKey: spawnedBy,
+    });
+  }
+  return { ok: true as const, scope: { ...scope, agentId: agent?.value, spawnedBy } };
 }

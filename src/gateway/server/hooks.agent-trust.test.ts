@@ -16,13 +16,10 @@ import { useSpawnBrokerTestFixture } from "../../process/spawn-broker/host.test-
 const enqueueSystemEventMock = vi.fn();
 const requestHeartbeatMock = vi.fn();
 const runCronIsolatedAgentTurnMock = vi.fn();
-const resolveMainSessionKeyMock = vi.fn(() => "main-session");
-const resolveAgentMainSessionKeyMock = vi.fn(
-  (params: { cfg?: { session?: { mainKey?: string } }; agentId: string }) =>
-    `agent:${params.agentId}:${params.cfg?.session?.mainKey ?? "main"}`,
-);
+const resolveAgentMainSessionKeyMock =
+  vi.fn<typeof import("../../config/sessions.js").resolveAgentMainSessionKey>();
 const mainRosterConfig = (): OpenClawConfig => ({
-  agents: { entries: { main: {} } },
+  agents: { entries: { main: { default: true }, hooks: {} } },
 });
 const loadConfigMock = vi.fn(mainRosterConfig);
 const logHooksInfoMock = vi.fn();
@@ -51,13 +48,15 @@ vi.mock("../../infra/outbound/channel-resolution.js", () => ({
 vi.mock("../../channels/plugins/helpers.js", () => ({
   resolveChannelDefaultAccountId: resolveChannelDefaultAccountIdMock,
 }));
-vi.mock("../../config/sessions.js", () => ({
-  resolveMainSessionKeyFromConfig: resolveMainSessionKeyMock,
-  resolveMainSessionKey: vi.fn((cfg?: { session?: { mainKey?: string; scope?: string } }) =>
-    cfg?.session?.scope === "global" ? "global" : `agent:main:${cfg?.session?.mainKey ?? "main"}`,
-  ),
-  resolveAgentMainSessionKey: resolveAgentMainSessionKeyMock,
-}));
+vi.mock("../../config/sessions.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../config/sessions.js")>();
+  return {
+    ...actual,
+    resolveAgentMainSessionKey: resolveAgentMainSessionKeyMock.mockImplementation(
+      actual.resolveAgentMainSessionKey,
+    ),
+  };
+});
 vi.mock("../../config/io.js", () => ({
   getRuntimeConfig: loadConfigMock,
 }));
@@ -218,12 +217,15 @@ describe("dispatchAgentHook trust handling", () => {
       "hooks",
     );
 
-    expectOwnedSystemEvent("Mapped wake", "hooks");
+    expect(enqueueSystemEventMock).toHaveBeenCalledWith("Mapped wake", {
+      sessionKey: "agent:hooks:global",
+    });
     expect(requestHeartbeatMock).toHaveBeenCalledWith({
       source: "hook",
       intent: "immediate",
       reason: "hook:wake",
       agentId: "hooks",
+      sessionKey: "agent:hooks:global",
     });
   });
 
@@ -931,7 +933,7 @@ describe("dispatchAgentHook trust handling", () => {
       reason: expect.stringMatching(/^hook:[0-9a-f-]+$/),
       agentId: "hooks",
     });
-    expect(requestHeartbeatMock.mock.calls[0]?.[0]?.sessionKey).toBeUndefined();
+    expect(requestHeartbeatMock.mock.calls[0]?.[0]?.sessionKey).toBe("agent:hooks:global");
   });
 
   it("carries the accepted owner on an unnamed hook announce wake", async () => {
@@ -980,14 +982,11 @@ describe("dispatchAgentHook trust handling", () => {
       reason: expect.stringMatching(/^hook:[0-9a-f-]+:error$/),
       agentId: "hooks",
     });
-    expect(requestHeartbeatMock.mock.calls[0]?.[0]?.sessionKey).toBeUndefined();
+    expect(requestHeartbeatMock.mock.calls[0]?.[0]?.sessionKey).toBe("agent:hooks:global");
   });
 
   it("carries the accepted default agent on the global-scope announce wake", async () => {
-    // Global session scope resolves the event key to the unscoped "global"
-    // sentinel, which carries no agent identity; the scheduler cannot resolve
-    // a target from it, so the wake must carry the accepted agent or the
-    // announced event sits unread.
+    // The announcement and scheduler wake share the accepted owner's canonical key.
     loadConfigMock.mockImplementation(() => ({
       agents: { entries: { main: { default: true } } },
       session: { scope: "global" },
@@ -1013,7 +1012,7 @@ describe("dispatchAgentHook trust handling", () => {
       reason: expect.stringMatching(/^hook:[0-9a-f-]+$/),
       agentId: "main",
     });
-    expect(announceWake.sessionKey).toBeUndefined();
+    expect(announceWake.sessionKey).toBe("agent:main:global");
   });
 
   it("carries the accepted default agent on the global-scope failure wake", async () => {
@@ -1033,6 +1032,6 @@ describe("dispatchAgentHook trust handling", () => {
       reason: expect.stringMatching(/^hook:[0-9a-f-]+:error$/),
       agentId: "main",
     });
-    expect(failureWake.sessionKey).toBeUndefined();
+    expect(failureWake.sessionKey).toBe("agent:main:global");
   });
 });

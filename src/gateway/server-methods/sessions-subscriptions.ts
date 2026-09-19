@@ -95,7 +95,7 @@ export const sessionSubscriptionHandlers: GatewayRequestHandlers = {
     const sessionKeys = declarations.replace(connId, canonicalKeys);
     respond(true, { sessionKeys }, undefined);
   },
-  "sessions.messages.subscribe": ({ params, client, context, respond }) => {
+  "sessions.messages.subscribe": ({ params, client, context, respond, sessionWireSelection }) => {
     if (
       !assertValidParams(
         params,
@@ -144,7 +144,11 @@ export const sessionSubscriptionHandlers: GatewayRequestHandlers = {
         const rollbackSubscription = context.subscribeSessionMessageEvents(
           connId,
           subscriptionKey,
-          { includeApprovals: true, provisional: true },
+          {
+            includeApprovals: true,
+            provisional: true,
+            ...(sessionWireSelection ? { wireKey: sessionWireSelection.key } : {}),
+          },
         );
         try {
           approvalReplay = context.listSessionPendingApprovals?.(subscriptionKey, client);
@@ -169,7 +173,9 @@ export const sessionSubscriptionHandlers: GatewayRequestHandlers = {
         }
         rollbackSubscription?.commit?.();
       } else {
-        context.subscribeSessionMessageEvents(connId, subscriptionKey);
+        context.subscribeSessionMessageEvents(connId, subscriptionKey, {
+          wireKey: sessionWireSelection?.key,
+        });
       }
       respond(
         true,

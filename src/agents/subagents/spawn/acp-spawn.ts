@@ -181,6 +181,7 @@ export async function spawnAcpDirect(
   });
   const requesterInternalKey = resolveRequesterInternalSessionKey({
     cfg,
+    agentId: ctx.requesterAgentIdOverride,
     requesterSessionKey: ctx.agentSessionKey,
   });
   if (!isAcpEnabledByPolicy(cfg)) {
@@ -191,7 +192,9 @@ export async function spawnAcpDirect(
     });
   }
   const streamToParentRequested = params.streamTo === "parent";
-  const parentSessionKey = normalizeOptionalString(ctx.agentSessionKey);
+  const parentSessionKey = normalizeOptionalString(ctx.agentSessionKey)
+    ? requesterInternalKey
+    : undefined;
   if (streamToParentRequested && !parentSessionKey) {
     return createAcpSpawnFailure({
       status: "error",
@@ -209,7 +212,7 @@ export async function spawnAcpDirect(
   const runtimePolicyError = resolveAcpSpawnRuntimePolicyError({
     cfg,
     requesterAgentId,
-    requesterSessionKey: ctx.agentSessionKey,
+    requesterSessionKey: parentSessionKey,
     requesterSandboxed: ctx.sandboxed,
     sandbox: params.sandbox,
   });
@@ -290,6 +293,7 @@ export async function spawnAcpDirect(
   });
   const ownership = resolveSubagentSpawnOwnership({
     cfg,
+    agentId: ctx.requesterAgentIdOverride,
     agentSessionKey: ctx.agentSessionKey,
     completionOwnerKey: ctx.completionOwnerKey,
   });
@@ -368,7 +372,7 @@ export async function spawnAcpDirect(
   const resolvedCwd = resolveSpawnedWorkspaceInheritance({
     config: cfg,
     targetAgentId,
-    requesterSessionKey: ctx.agentSessionKey,
+    requesterSessionKey: parentSessionKey,
     explicitWorkspaceDir: params.cwd,
   });
   let runtimeCwd: string | undefined;
@@ -538,7 +542,6 @@ export async function spawnAcpDirect(
           ? startAcpSpawnParentStreamRelay({
               runId,
               parentSessionKey,
-              requesterAgentId,
               childSessionKey: sessionKey,
               childSessionId: state.initializedSession.sessionId,
               agentId: targetAgentId,

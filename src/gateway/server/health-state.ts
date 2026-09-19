@@ -62,8 +62,7 @@ export function buildGatewaySnapshot(opts: {
   const defaultAgentId = selection.defaultId;
   const mainKey = normalizeMainKey(cfg.session?.mainKey);
   const scope = cfg.session?.scope ?? "per-sender";
-  const mainSessionKey =
-    scope === "global" ? "global" : resolveAgentMainSessionKey({ cfg, agentId: defaultAgentId });
+  const mainSessionKey = resolveAgentMainSessionKey({ cfg, agentId: defaultAgentId });
   const presence = createPresenceRecipientProjection({ cfg, presence: listSystemPresence() })(
     opts.client,
   );

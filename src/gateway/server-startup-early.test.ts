@@ -1,8 +1,12 @@
+import { hostname } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 /**
  * Early gateway startup helper tests.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { drainGlobalSingletonLifecycleState } from "../shared/global-singleton.js";
+import { getFileLockProcessStartTime } from "../shared/pid-alive.js";
+import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { getDetachedTaskLifecycleRuntime } from "../tasks/detached-task-runtime.js";
 import { getTaskById } from "../tasks/task-registry.js";
 import { createTaskFixture } from "../tasks/task-registry.test-support.js";
@@ -389,6 +393,69 @@ describe("early startup task maintenance", () => {
     resetTaskFlowRegistryForTests({ persist: false });
     await drainGlobalSingletonLifecycleState("close");
   });
+
+  it("preserves legacy task references when orphan settlement precedes startup failure", async () => {
+    await withStateDirEnv("openclaw-startup-task-identity-", async () => {
+      resetTaskRegistryForTests({ persist: false });
+      resetTaskFlowRegistryForTests({ persist: false });
+      const startIdentity = getFileLockProcessStartTime(process.pid);
+      if (startIdentity === null) {
+        throw new Error("Fixture process identity unavailable");
+      }
+      const task = createTaskFixture("subagent", {
+        requesterSessionKey: "agent:research:global",
+        ownerKey: "agent:research:global",
+        requesterAgentId: "research",
+        agentId: "worker",
+        childSessionKey: "agent:worker:legacy-child",
+        task: "Retained task",
+        notifyPolicy: "silent",
+        executionOwner: {
+          host: hostname(),
+          pid: process.pid,
+          startIdentity: startIdentity + 1,
+        },
+      });
+      const { db, path } = openOpenClawStateDatabase();
+      db.prepare(
+        "UPDATE task_runs SET requester_session_key = 'global', owner_key = 'global', child_session_key = 'legacy-child' WHERE task_id = ?",
+      ).run(task.taskId);
+      resetTaskRegistryForTests({ persist: false });
+      resetTaskFlowRegistryForTests({ persist: false });
+      mocks.startGatewayDiscovery.mockRejectedValueOnce(new Error("later discovery failure"));
+
+      await expect(
+        startGatewayEarlyRuntime(earlyRuntimeInput({ minimalTestGateway: false })),
+      ).rejects.toThrow("later discovery failure");
+
+      expect(getTaskById(task.taskId)).toMatchObject({
+        status: "cancelled",
+        endedAt: expect.any(Number),
+        requesterSessionKey: "agent:research:global",
+        ownerKey: "agent:research:global",
+        childSessionKey: "agent:worker:legacy-child",
+      });
+      // A rollback reader still joins the original physical keys after failed startup.
+      const rollbackReader = new DatabaseSync(path, { readOnly: true });
+      try {
+        expect(
+          rollbackReader
+            .prepare(
+              "SELECT requester_session_key, owner_key, child_session_key, status FROM task_runs WHERE owner_key = 'global' AND task_id = ?",
+            )
+            .get(task.taskId),
+        ).toEqual({
+          requester_session_key: "global",
+          owner_key: "global",
+          child_session_key: "legacy-child",
+          status: "cancelled",
+        });
+      } finally {
+        rollbackReader.close();
+      }
+    });
+  });
+
   it.each([false, true])(
     "preserves copied tasks only in an update canary (updateCanary: %s)",
     async (updateCanary) => {

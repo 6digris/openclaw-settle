@@ -4,11 +4,7 @@ import {
   replaceSessionEntrySync,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
-import { setCanonicalSqliteSessionMainKey } from "../../config/sessions/session-canonical-key.js";
-import {
-  closeOpenClawAgentDatabasesForTest,
-  openOpenClawAgentDatabase,
-} from "../../state/openclaw-agent-db.js";
+import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { listOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.test-support.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
@@ -52,10 +48,11 @@ function simulateExpensiveAccessSlices() {
 }
 
 describe("task page access snapshots", () => {
-  it.each(["canonical", "main alias", "distinct requesters", "warm"] as const)(
+  it.each(["canonical", "qualified main", "distinct requesters", "warm"] as const)(
     "bounds session lookup work across a yielded task page using %s keys",
     async (mode) => {
-      const sessionKey = "agent:main:cold-requester";
+      const sessionKey =
+        mode === "qualified main" ? "agent:main:main" : "agent:main:cold-requester";
       const warm = mode === "warm";
       const requesterKeys =
         mode === "distinct requesters"
@@ -63,12 +60,8 @@ describe("task page access snapshots", () => {
           : [sessionKey];
       const profileId = ensureProfileForEmail("cold-viewer@example.test").id;
       const config = rolePolicyConfig();
-      if (mode === "main alias") {
+      if (mode === "qualified main") {
         config.session = { mainKey: "cold-requester" };
-        setCanonicalSqliteSessionMainKey(
-          openOpenClawAgentDatabase({ agentId: "main" }),
-          "cold-requester",
-        );
       }
       for (const requesterKey of requesterKeys) {
         await upsertSessionEntryCore(
@@ -86,8 +79,7 @@ describe("task page access snapshots", () => {
       const tasks = Array.from({ length: 65 }, (_, index) =>
         createSnapshotTask({
           taskId: `cold-task-${index}`,
-          requesterSessionKey:
-            mode === "main alias" ? "main" : (requesterKeys[index] ?? sessionKey),
+          requesterSessionKey: requesterKeys[index] ?? sessionKey,
           requesterAgentId: "main",
           ownerKey: sessionKey,
           lastEventAt: 2_000 + index,

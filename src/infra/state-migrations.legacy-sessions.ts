@@ -204,7 +204,7 @@ export async function migrateLegacySessions(
   const ambiguousAliasedKeys = new Set(
     [...Object.keys(targetStore), ...Object.keys(legacyStore)].filter(
       (key) =>
-        isAmbiguousSharedStoreKey(key, detected.targetMainKey, detected.targetScope) ||
+        isAmbiguousSharedStoreKey(key, detected.targetMainKey) ||
         (detected.sessions.preserveForeignMainAliases &&
           isLegacyDefaultMainAliasKey(key, detected.targetMainKey)),
     ),
@@ -232,10 +232,7 @@ export async function migrateLegacySessions(
     agentId: detected.targetAgentId,
     mainKey: detected.targetMainKey,
     scope: detected.targetScope,
-    skipCrossAgentRemap: detected.sessions.preserveAmbiguousKeys,
-    preserveCanonicalAgentOwner: true,
     preserveAmbiguousKeys: detected.sessions.preserveAmbiguousKeys,
-    preserveForeignMainAliases: detected.sessions.preserveForeignMainAliases,
     legacySessionSurfaces: options.legacySessionSurfaces.surfaces,
   });
   const canonicalizedLegacy = canonicalizeSessionStore({
@@ -243,8 +240,6 @@ export async function migrateLegacySessions(
     agentId: detected.targetAgentId,
     mainKey: detected.targetMainKey,
     scope: detected.targetScope,
-    preserveCanonicalAgentOwner: true,
-    preserveForeignMainAliases: detected.sessions.preserveForeignMainAliases,
     legacySessionSurfaces: options.legacySessionSurfaces.surfaces,
   });
   const targetKeys = new Set(Object.keys(canonicalizedTarget.store));

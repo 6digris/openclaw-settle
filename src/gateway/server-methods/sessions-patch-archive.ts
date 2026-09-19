@@ -11,6 +11,7 @@ import type { SessionEntry } from "../../config/sessions.js";
 import type { SessionAccessScope } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { resolveMissingAgentHarnessSessionError } from "../../sessions/agent-harness-session-key.js";
 import {
   SessionWorktreeLifecycleError,
@@ -87,10 +88,11 @@ function archiveUnavailableError(key: string, message: "active" | "stopping"): E
 }
 
 function protectedArchiveError(cfg: OpenClawConfig, canonicalKey: string): ErrorShape | undefined {
-  if (canonicalKey === "unknown") {
+  const rest = parseAgentSessionKey(canonicalKey)?.rest;
+  if (rest === "unknown") {
     return errorShape(ErrorCodes.INVALID_REQUEST, "Cannot archive the unknown session sentinel.");
   }
-  if (canonicalKey === "global" || isAgentMainSessionKey(cfg, canonicalKey)) {
+  if (rest === "global" || isAgentMainSessionKey(cfg, canonicalKey)) {
     return errorShape(ErrorCodes.INVALID_REQUEST, "Cannot archive an agent's main session.");
   }
   return undefined;
@@ -153,7 +155,7 @@ export async function prepareSessionPatchArchive(params: {
       store: freshResolved.store,
       agentId: target.requestedAgentId,
     });
-    const freshCanonicalKey = fresh.target.canonicalKey ?? target.key;
+    const freshCanonicalKey = fresh.target.canonicalKey;
     const ownershipError = resolvePluginSessionOwnershipError({
       action: "patch",
       entry: fresh.entry,

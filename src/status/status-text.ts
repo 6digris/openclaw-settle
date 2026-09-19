@@ -21,10 +21,7 @@ import { resolveDefaultModelForAgent } from "../agents/model-selection.js";
 import { resolveConfiguredThinkingDefault } from "../agents/model-thinking-default.js";
 import { listOpenAIAuthProfileProvidersForAgentRuntime } from "../agents/openai-routing.js";
 import { resolveSessionRuntimeOverrideForProvider } from "../agents/session-runtime-compat.js";
-import {
-  resolveInternalSessionKey,
-  resolveMainSessionAlias,
-} from "../agents/tools/sessions-helpers.js";
+import { resolveInternalSessionKey } from "../agents/tools/sessions-helpers.js";
 import { normalizeGroupActivation } from "../auto-reply/group-activation.js";
 import { resolveSelectedAndActiveModel } from "../auto-reply/model-runtime.js";
 import { normalizeThinkLevel } from "../auto-reply/thinking.shared.js";
@@ -524,8 +521,11 @@ export async function buildStatusReplyParts(
   let subagentsLine: string | undefined;
   let taskLine: string | undefined;
   if (sessionKey) {
-    const { mainKey, alias } = resolveMainSessionAlias(cfg);
-    const requesterKey = resolveInternalSessionKey({ key: sessionKey, alias, mainKey });
+    const requesterKey = resolveInternalSessionKey({
+      key: sessionKey,
+      agentId: statusAgentId,
+      cfg,
+    });
     // Task/subagent status should follow the internal session key alias used by
     // runtime registries, not necessarily the external key passed to the command.
     taskLine = params.skipDefaultTaskLookup

@@ -10,6 +10,7 @@ import type { InboundEventKind } from "../channels/inbound-event/kind.js";
 import { resolveMainSessionKey } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isTruthyEnvValue } from "../infra/env.js";
+import { parseAgentSessionKey } from "../routing/session-key.js";
 import { safeEqualSecret } from "../security/secret-equal.js";
 import { normalizeMessageChannel } from "../utils/message-channel.js";
 import { getHeader } from "./http-utils.js";
@@ -57,7 +58,6 @@ type McpRequestContext = McpLoopbackRequestContext;
 type McpLoopbackRequestAuth = {
   senderIsOwner: boolean;
   boundSessionKey?: string;
-  boundAgentId?: string;
   boundClientGrant?: NonNullable<ReturnType<typeof resolveMcpLoopbackClientGrant>>;
   boundGrantToken?: string;
 };
@@ -146,7 +146,6 @@ function resolveMcpSender(params: {
     return {
       senderIsOwner: false,
       boundSessionKey: grant.sessionKey,
-      ...(grant.agentId ? { boundAgentId: grant.agentId } : {}),
     };
   }
   return undefined;
@@ -309,12 +308,15 @@ export function resolveMcpRequestContext(
     // session, channel, capability, or ownership headers.
     return structuredClone(auth.boundClientGrant.context);
   }
-  // Grant-authenticated callers get only their server-bound session and optional
-  // global-session agent owner; spoofable delivery/action headers stay reserved.
+  // Attach grants carry the exact session; request headers cannot replace its owner or context.
   if (auth.boundSessionKey) {
+    const session = parseAgentSessionKey(auth.boundSessionKey);
+    if (!session) {
+      throw new Error("MCP attach grant requires an agent-qualified session key");
+    }
     return {
       sessionKey: auth.boundSessionKey,
-      agentId: auth.boundAgentId,
+      agentId: session.agentId,
       sessionId: undefined,
       messageProvider: undefined,
       clientCaps: undefined,

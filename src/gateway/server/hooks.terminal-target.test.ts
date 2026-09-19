@@ -156,6 +156,14 @@ describe("global hook terminal target resolution", () => {
       reason: "accepted-agent-removed",
     },
     {
+      name: "the accepted agent is removed from a per-sender fleet",
+      outcome: "success" as const,
+      wakeMode: "now" as const,
+      status: "ok",
+      reason: "accepted-agent-removed",
+      scope: "per-sender" as const,
+    },
+    {
       name: "the accepted agent is removed after failure",
       outcome: "failure" as const,
       wakeMode: "now" as const,
@@ -170,9 +178,12 @@ describe("global hook terminal target resolution", () => {
       reason: "accepted-agent-removed",
     },
   ])("suppresses the terminal event when $name", async (testCase) => {
+    const session = { scope: testCase.scope ?? ("global" as const) };
+    loadConfigMock.mockReturnValue({ ...globalConfig("main"), session });
     const gate = await startGatedRun(testCase.outcome, testCase.wakeMode);
     loadConfigMock.mockReturnValue({
       ...globalConfig("work", false),
+      session,
       hooks: { enabled: true, token: "test-token", allowedAgentIds: ["*"] },
     });
     gate.resolve();

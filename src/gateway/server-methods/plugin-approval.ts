@@ -28,7 +28,7 @@ import {
 } from "../../infra/plugin-approvals.js";
 import type { ExecApprovalManager } from "../exec-approval-manager.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
-import { resolveStoredSessionKeyForAgentStore } from "../session-store-key.js";
+import { resolveSessionStoreKey } from "../session-store-key.js";
 import {
   bindApprovalRequesterMetadata,
   bindApprovalReviewerDeviceIds,
@@ -125,9 +125,9 @@ export function createPluginApprovalHandlers(
       }
       const sessionKey =
         rawSessionKey && sessionOwner?.ok
-          ? resolveStoredSessionKeyForAgentStore({
+          ? resolveSessionStoreKey({
               cfg: context.getRuntimeConfig(),
-              agentId: sessionOwner.agentId,
+              storeAgentId: sessionOwner.agentId,
               sessionKey: rawSessionKey,
             })
           : null;

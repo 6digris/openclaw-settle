@@ -98,46 +98,36 @@ const hoisted = vi.hoisted(() => {
   const listTasksForOwnerKeyMock = vi.fn();
   const upsertSessionEntryMock = vi.fn();
   const createSessionAccessorMock = () => {
-    const resolveMockStorePath = (scope: {
+    type MockSessionStoreScope = {
       agentId?: string;
       env?: NodeJS.ProcessEnv;
       storePath?: string;
-    }): string =>
+    };
+    const resolveMockStorePath = (scope: MockSessionStoreScope): string =>
       scope.storePath ??
       resolveStorePathMock(undefined, {
         agentId: scope.agentId,
         env: scope.env,
       });
-    const loadMockEntry = (scope: {
-      agentId?: string;
-      env?: NodeJS.ProcessEnv;
-      sessionKey: string;
-      storePath?: string;
-    }): SessionEntry | undefined => {
-      const store = loadSessionStoreMock(resolveMockStorePath(scope)) as Record<
-        string,
-        SessionEntry
-      >;
-      return store[scope.sessionKey];
-    };
-    const listMockEntries = (
-      scope: {
-        agentId?: string;
-        env?: NodeJS.ProcessEnv;
-        storePath?: string;
-      } = {},
-    ) => {
-      const store = loadSessionStoreMock(resolveMockStorePath(scope)) as Record<
-        string,
-        SessionEntry
-      >;
-      return Object.entries(store).map(([sessionKey, entry]) => ({ sessionKey, entry }));
-    };
+    const loadMockStore = (scope: MockSessionStoreScope = {}) =>
+      loadSessionStoreMock(resolveMockStorePath(scope)) as Record<string, SessionEntry>;
+    const loadMockEntry = (
+      scope: MockSessionStoreScope & { sessionKey: string },
+    ): SessionEntry | undefined => loadMockStore(scope)[scope.sessionKey];
+    const listMockEntries = (scope: MockSessionStoreScope = {}) =>
+      Object.entries(loadMockStore(scope)).map(([sessionKey, entry]) => ({ sessionKey, entry }));
     return {
       listSessionEntriesCore: listMockEntries,
       listSessionEntriesReadOnly: listMockEntries,
       loadSessionEntry: loadMockEntry,
       loadSessionEntryReadOnly: loadMockEntry,
+      loadExactSessionEntryCandidates: (
+        scope: MockSessionStoreScope & { sessionKeys: readonly string[] },
+      ) =>
+        scope.sessionKeys.flatMap((sessionKey) => {
+          const entry = loadMockEntry({ ...scope, sessionKey });
+          return entry ? [{ sessionKey, entry }] : [];
+        }),
       upsertSessionEntryCore: async (scope: unknown, patch: SessionEntry) =>
         await upsertSessionEntryMock(scope, patch),
       resolveSessionTranscriptRuntimeTarget: async (scope: {
@@ -147,9 +137,7 @@ const hoisted = vi.hoisted(() => {
         storePath?: string;
         threadId?: string | number;
       }) => {
-        const store = scope.storePath
-          ? (loadSessionStoreMock(scope.storePath) as Record<string, SessionEntry>)
-          : undefined;
+        const store = scope.storePath ? loadMockStore(scope) : undefined;
         const resolved = await resolveSessionTranscriptFileMock({
           ...scope,
           ...(store ? { sessionStore: store } : {}),
@@ -3510,7 +3498,7 @@ describe("spawnAcpDirect", () => {
       expectAcceptedSpawn(result);
       expect(hoisted.registerSubagentRunMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          requesterSessionKey: "global",
+          requesterSessionKey: "agent:research:global",
           childSessionKey: expect.stringMatching(/^agent:codex:acp:/),
           agentId: "codex",
           requesterAgentId: "research",

@@ -16,6 +16,7 @@ import {
   loadPendingSessionDeliveries,
   markSessionDeliverySettlement,
   moveSessionDeliveryToFailed,
+  admitSessionDeliveryExecution,
 } from "./session-delivery-queue-storage.js";
 import {
   SessionDeliveryAcknowledgementFinalizeError,
@@ -24,6 +25,7 @@ import {
   SessionDeliveryDeferredError,
   SessionDeliveryRetryChargedError,
   SessionDeliverySafeRetryError,
+  resolveSessionDeliverySettlementOutcome,
   type QueuedSessionDelivery,
   type SessionDeliverySettledOutcome,
 } from "./session-delivery-queue.records.js";
@@ -93,12 +95,6 @@ async function finalizeSessionDeliverySettlement(params: {
   }
 }
 
-function resolvePendingSettlementOutcome(
-  entry: QueuedSessionDelivery,
-): SessionDeliverySettledOutcome | undefined {
-  return entry.settlementOutcome ?? (entry.acknowledgedAt !== undefined ? "recovered" : undefined);
-}
-
 function resolveSessionDeliveryMaxRetries(entry: QueuedSessionDelivery): number {
   return entry.maxRetries ?? MAX_SESSION_DELIVERY_RETRIES;
 }
@@ -139,8 +135,12 @@ async function processPendingSessionDelivery(opts: {
   beforeDelivery?: () => Promise<"continue" | "stop">;
   onFailed?: (entry: QueuedSessionDelivery, errMsg: string) => void;
 }) {
-  const { entry, context } = opts;
-  const pendingSettlementOutcome = resolvePendingSettlementOutcome(entry);
+  const { context } = opts;
+  const entry = await admitSessionDeliveryExecution(opts.entry, context.queueContext);
+  if (!entry) {
+    return { status: "blocked" };
+  }
+  const pendingSettlementOutcome = resolveSessionDeliverySettlementOutcome(entry);
   if (pendingSettlementOutcome) {
     const finalized = await finalizeSessionDeliverySettlement({
       entry,

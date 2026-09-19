@@ -15,6 +15,7 @@ export async function prepareAndAdmitChatSend(
     client,
     hasCurrentClientAuthority,
     sessionMutationAuthorization,
+    sessionWireSelection,
   }: Pick<
     GatewayRequestHandlerOptions,
     | "params"
@@ -23,6 +24,7 @@ export async function prepareAndAdmitChatSend(
     | "client"
     | "hasCurrentClientAuthority"
     | "sessionMutationAuthorization"
+    | "sessionWireSelection"
   >,
   onAdmissionOwned?: () => Promise<boolean>,
   options?: {
@@ -93,10 +95,16 @@ export async function prepareAndAdmitChatSend(
       return undefined;
     }
   }
+  const respondAdmission: typeof respond = (...args) => {
+    if (args[0]) {
+      sessionWireSelection?.accept(preparedSession.value.sessionKey);
+    }
+    respond(...args);
+  };
   const shouldAdmit = await runChatSendPreAdmission({
     request: normalizedRequest.value,
     session: preparedSession.value,
-    respond,
+    respond: respondAdmission,
     context,
     client,
     assertCurrent,
@@ -107,7 +115,7 @@ export async function prepareAndAdmitChatSend(
   const admitted = await admitChatSend({
     request: normalizedRequest.value,
     session: preparedSession.value,
-    respond,
+    respond: respondAdmission,
     context,
     client,
     onAdmissionOwned,
@@ -117,5 +125,6 @@ export async function prepareAndAdmitChatSend(
   if (!admitted.ok) {
     return undefined;
   }
+  sessionWireSelection?.accept(preparedSession.value.sessionKey);
   return { normalizedRequest, preparedSession, admitted };
 }

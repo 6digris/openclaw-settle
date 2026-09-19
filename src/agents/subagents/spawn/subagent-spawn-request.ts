@@ -20,12 +20,7 @@ import { getSubagentSpawnDeps } from "./subagent-spawn-deps.js";
 import { resolveSubagentSpawnOwnership } from "./subagent-spawn-ownership.js";
 import { resolveConfiguredSubagentRunTimeoutSeconds } from "./subagent-spawn-plan.js";
 import { loadSubagentConfig } from "./subagent-spawn-session-patch.js";
-import {
-  loadSessionEntry,
-  resolveGatewaySessionStoreTarget,
-  resolveInternalSessionKey,
-  resolveMainSessionAlias,
-} from "./subagent-spawn.runtime.js";
+import { loadSessionEntry, resolveGatewaySessionStoreTarget } from "./subagent-spawn.runtime.js";
 import { normalizeSubagentTaskName } from "./subagent-task-name.js";
 
 function rejectSubagentSpawnRequest(status: "error" | "forbidden", error: string) {
@@ -111,20 +106,13 @@ export function resolveSubagentSpawnRequest(
       accountId: ctx.agentAccountId,
     },
   });
-  const { mainKey, alias } = resolveMainSessionAlias(cfg);
-  const requesterSessionKey = ctx.agentSessionKey;
-  const requesterInternalKey = requesterSessionKey
-    ? resolveInternalSessionKey({
-        key: requesterSessionKey,
-        alias,
-        mainKey,
-      })
-    : alias;
   const ownership = resolveSubagentSpawnOwnership({
     cfg,
+    agentId: ctx.requesterAgentIdOverride,
     agentSessionKey: ctx.agentSessionKey,
     completionOwnerKey: ctx.completionOwnerKey,
   });
+  const requesterInternalKey = ownership.controllerSessionKey;
 
   // Capture the requester window before launch; a reset must not move child
   // progress receipts or private results to a replacement session at the same key.

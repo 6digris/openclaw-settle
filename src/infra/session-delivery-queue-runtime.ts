@@ -11,8 +11,12 @@ import {
 import {
   loadPendingSessionDeliveries,
   loadPendingSessionDelivery,
+  admitSessionDeliveryExecution,
 } from "./session-delivery-queue-storage.js";
-import type { QueuedSessionDelivery } from "./session-delivery-queue.records.js";
+import {
+  resolveSessionDeliveryIdentityBlock,
+  type QueuedSessionDelivery,
+} from "./session-delivery-queue.records.js";
 
 type SessionDeliveryRuntime = {
   queueContext: OpenClawStateWorkerContext;
@@ -107,7 +111,26 @@ function armSessionDelivery(
   if (runtime?.runningEntries.has(entry.id)) {
     return;
   }
+  if (resolveSessionDeliveryIdentityBlock(entry)) {
+    return;
+  }
   armSessionDeliveryId(entry.id, Math.max(minimumDelayMs, resolveRetryDelayMs(entry)), generation);
+}
+
+async function admitAndArmSessionDelivery(
+  entry: QueuedSessionDelivery,
+  activeRuntime: SessionDeliveryRuntime,
+  generation: number,
+): Promise<void> {
+  try {
+    const admitted = await admitSessionDeliveryExecution(entry, activeRuntime.queueContext);
+    if (admitted) {
+      armSessionDelivery(admitted, generation);
+    }
+  } catch (error) {
+    activeRuntime.log.error(`session delivery: failed to admit ${entry.id}: ${String(error)}`);
+    armSessionDeliveryId(entry.id, RUNTIME_RELOAD_RETRY_MS, generation);
+  }
 }
 
 async function runScheduledSessionDelivery(id: string, generation: number): Promise<void> {
@@ -219,7 +242,7 @@ export async function scheduleSessionDelivery(
     if (!entry || !runtime || generation !== runtimeGeneration) {
       return !entry;
     }
-    armSessionDelivery(entry, generation);
+    await admitAndArmSessionDelivery(entry, activeRuntime, generation);
     return true;
   } finally {
     activeRuntime.pendingSchedules.delete(settled.promise);
@@ -251,7 +274,7 @@ export async function schedulePendingSessionDeliveries(): Promise<void> {
       return;
     }
     for (const entry of entries) {
-      armSessionDelivery(entry, generation);
+      await admitAndArmSessionDelivery(entry, activeRuntime, generation);
     }
   } finally {
     activeRuntime.pendingSchedules.delete(settled.promise);

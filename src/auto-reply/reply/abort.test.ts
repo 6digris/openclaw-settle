@@ -699,7 +699,7 @@ describe("abort detection", () => {
     addSubagentFixture({
       runId: "slow-child-run",
       childSessionKey: childKey,
-      requesterSessionKey: sessionKey,
+      requesterSessionKey: `agent:main:${sessionKey}`,
       requesterDisplayKey: sessionKey,
       task: "slow child",
       cleanup: "keep",
@@ -1252,7 +1252,7 @@ describe("abort detection", () => {
     addSubagentFixture({
       runId: "run-1",
       childSessionKey: childKey,
-      requesterSessionKey: sessionKey,
+      requesterSessionKey: `agent:main:${sessionKey}`,
       requesterDisplayKey: "telegram:parent",
       task: "do work",
       cleanup: "keep",
@@ -1277,7 +1277,7 @@ describe("abort detection", () => {
     const run = (runId: string, childSessionKey: string): SubagentRunFixture => ({
       runId,
       childSessionKey,
-      requesterSessionKey: sessionKey,
+      requesterSessionKey: `agent:main:${sessionKey}`,
       requesterDisplayKey: sessionKey,
       task: "stop despite persistence failure",
       cleanup: "keep",
@@ -1336,7 +1336,7 @@ describe("abort detection", () => {
     addSubagentFixture({
       runId: "run-1",
       childSessionKey: depth1Key,
-      requesterSessionKey: sessionKey,
+      requesterSessionKey: `agent:main:${sessionKey}`,
       requesterDisplayKey: "telegram:parent",
       task: "orchestrator",
       cleanup: "keep",
@@ -1372,7 +1372,7 @@ describe("abort detection", () => {
     addSubagentFixture({
       runId: "run-yield-child",
       childSessionKey: childKey,
-      requesterSessionKey: sessionKey,
+      requesterSessionKey: `agent:main:${sessionKey}`,
       requesterDisplayKey: sessionKey,
       task: "paused worker",
       cleanup: "keep",
@@ -1411,7 +1411,7 @@ describe("abort detection", () => {
     addSubagentFixture({
       runId: "run-1",
       childSessionKey: depth1Key,
-      requesterSessionKey: sessionKey,
+      requesterSessionKey: `agent:main:${sessionKey}`,
       requesterDisplayKey: "telegram:parent",
       task: "orchestrator",
       cleanup: "keep",
@@ -1461,7 +1461,7 @@ describe("abort detection", () => {
       {
         runId: "run-stale-parent",
         childSessionKey: depth1Key,
-        requesterSessionKey: sessionKey,
+        requesterSessionKey: `agent:main:${sessionKey}`,
         requesterDisplayKey: "telegram:parent",
         task: "stale orchestrator",
         cleanup: "keep",
@@ -1471,7 +1471,7 @@ describe("abort detection", () => {
       {
         runId: "run-current-parent",
         childSessionKey: depth1Key,
-        requesterSessionKey: sessionKey,
+        requesterSessionKey: `agent:main:${sessionKey}`,
         requesterDisplayKey: "telegram:parent",
         task: "current orchestrator",
         cleanup: "keep",

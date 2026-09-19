@@ -9,6 +9,8 @@ import {
 // Injects delayed session restore and history controls into the real-runTui PTY fixture.
 export const TUI_PTY_STARTUP_SESSION_FIXTURE = {
   variables: `
+      const startupDelayMs = Number(process.env.OPENCLAW_TUI_PTY_STARTUP_DELAY_MS ?? 0);
+      const sessionMainKey = process.env.OPENCLAW_TUI_PTY_MAIN_KEY ?? "main";
       const restoreDelayMs = Number(process.env.OPENCLAW_TUI_PTY_RESTORE_DELAY_MS ?? 0);
       const restoreFailures = Number(process.env.OPENCLAW_TUI_PTY_RESTORE_FAILURES ?? 0);
       const reconnectHistoryDelayMs = Number(
@@ -32,20 +34,17 @@ export const TUI_PTY_STARTUP_SESSION_FIXTURE = {
             }
             record("startupHistoryReleased", { sessionKey });
           }`,
-  listSessionsSetup: `
-          const isRestore = Boolean(opts?.search);
-  `,
-  listSessionsDelay: `
-          if (isRestore && reconnectDuringRestore) {
+  describeSessionDelay: `
+          if (reconnectDuringRestore) {
             reconnectDuringRestore = false;
             record("restoreReconnect");
             this.onDisconnected?.("fixture reconnect during restore");
             queueMicrotask(() => this.onConnected?.());
           }
-          if (isRestore && restoreDelayMs > 0) {
+          if (restoreDelayMs > 0) {
             await new Promise((resolve) => setTimeout(resolve, restoreDelayMs));
           }
-          if (isRestore && restoreAttempts++ < restoreFailures) {
+          if (restoreAttempts++ < restoreFailures) {
             throw new Error("fixture remembered-session lookup failed");
           }
   `,

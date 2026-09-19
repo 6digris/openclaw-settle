@@ -184,11 +184,19 @@ describe("Doctor maintenance admission", () => {
         await import("../commands/doctor-maintenance.js");
         snapshotProcesses.execFile.mockClear();
         const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+        const activateCapture = vi.fn();
         const started = performance.now();
-        const failure = await runDoctorHealthFlow(runtime, {
-          repair: true,
-          nonInteractive: true,
-        }).catch((error: unknown) => error);
+        const failure = await runDoctorHealthFlow(
+          runtime,
+          {
+            repair: true,
+            nonInteractive: true,
+          },
+          undefined,
+          undefined,
+          activateCapture,
+        ).catch((error: unknown) => error);
+        expect(activateCapture).not.toHaveBeenCalled();
         expect(
           snapshotProcesses.execFile.mock.calls.filter(
             (call) => Array.isArray(call[1]) && call[1].includes(SQLITE_READONLY_CHILD_ARG),

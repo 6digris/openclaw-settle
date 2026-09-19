@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { HelloOk } from "../../packages/gateway-protocol/src/index.js";
 import { GATEWAY_SERVER_CAPS } from "../../packages/gateway-protocol/src/server-capabilities.js";
+import type { GatewayClientOptions } from "../gateway/client.js";
 // Covers gateway-backed chat behavior used by the TUI backend.
 
 const { GatewayChatClient } = await import("./gateway-chat.js");
@@ -9,6 +11,106 @@ describe("GatewayChatClient", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
+
+  it.each([
+    { canonical: true, close: true, stop: false },
+    { canonical: false, close: true, stop: false },
+    { canonical: true, close: false, stop: false },
+    { canonical: true, close: true, stop: true },
+  ])(
+    "rebinds before sending on capability transition ($canonical/$close/$stop)",
+    async ({ canonical, close, stop }) => {
+      let options: GatewayClientOptions | undefined;
+      const hello = (capable: boolean): HelloOk => ({
+        type: "hello-ok",
+        protocol: 4,
+        server: { version: "test", connId: `peer-${capable}` },
+        features: {
+          methods: [],
+          events: [],
+          capabilities: capable ? [GATEWAY_SERVER_CAPS.CANONICAL_SESSION_KEYS] : [],
+        },
+        snapshot: {
+          presence: [],
+          health: {},
+          stateVersion: { presence: 0, health: 0 },
+          uptimeMs: 0,
+        },
+        auth: { role: "operator", scopes: ["operator.read", "operator.write"] },
+        policy: { maxPayload: 1024, maxBufferedBytes: 1024, tickIntervalMs: 1000 },
+      });
+      const request = vi.fn(async (method: string, params: { sessionKey?: string }) => {
+        if (method === "chat.history") {
+          return { sessionInfo: { key: params.sessionKey } };
+        }
+        if (method === "config.get") {
+          return {
+            valid: true,
+            runtimeConfig: { agents: { entries: { work: {} } } },
+            configRevisionHash: "applied",
+            appliedConfigHash: "applied",
+          };
+        }
+        if (method === "agents.list") {
+          return { scope: "per-sender", ownership: "sole", defaultId: "work" };
+        }
+        return { runId: "current-peer" };
+      });
+      vi.resetModules();
+      vi.doMock("../gateway/client.js", async (importOriginal) => ({
+        ...(await importOriginal<typeof import("../gateway/client.js")>()),
+        GatewayClient: class {
+          request = request;
+          async stopAndWait() {}
+          constructor(opts: GatewayClientOptions) {
+            options = opts;
+          }
+        },
+      }));
+      try {
+        const { GatewayChatClient: ConnectedClient } = await import("./gateway-chat.js");
+        const client = new ConnectedClient({ url: "ws://127.0.0.1:18789", token: "test-token" });
+        const firstHello = hello(canonical);
+        options?.onHelloOk?.(firstHello);
+        const send = client.sendChat({
+          sessionKey: "agent:work:main",
+          message: "current peer only",
+        });
+        if (close) {
+          options?.onClose?.(1001, "peer changed");
+        }
+        expect(client.hello).toBe(firstHello);
+        if (stop) {
+          const stopped = expect(send).rejects.toMatchObject({ name: "AbortError" });
+          await client.stop();
+          await stopped;
+          expect(request.mock.calls.some(([method]) => method === "chat.send")).toBe(false);
+          return;
+        }
+        options?.onHelloOk?.(hello(!canonical));
+        await expect(send).resolves.toMatchObject({ runId: "current-peer" });
+        const sends = request.mock.calls.filter(([method]) => method === "chat.send");
+        expect(sends).toHaveLength(1);
+        expect(sends[0]?.[1]).toMatchObject({ sessionKey: "agent:work:main" });
+        if (canonical) {
+          expect(sends[0]?.[1]).toHaveProperty(
+            "expectedSessionRoutingContract",
+            "per-sender|main|work",
+          );
+        } else {
+          expect(sends[0]?.[1]).not.toHaveProperty("expectedSessionRoutingContract");
+        }
+        expect(
+          request.mock.calls.some(
+            ([method, params]) => method === "chat.history" && params.sessionKey === "global",
+          ),
+        ).toBe(false);
+      } finally {
+        vi.doUnmock("../gateway/client.js");
+        vi.resetModules();
+      }
+    },
+  );
 
   it.each([true, false])(
     "preserves model availability semantics for published-catalog capability %s",
@@ -124,7 +226,13 @@ describe("GatewayChatClient", () => {
       expect(constructedOptions).toHaveLength(1);
       expect(constructedOptions[0]).toMatchObject({
         clientName: "openclaw-tui",
-        caps: ["agent-kind", "plugin-approvals", "task-suggestions", "tool-events"],
+        caps: [
+          "canonical-session-keys",
+          "agent-kind",
+          "plugin-approvals",
+          "task-suggestions",
+          "tool-events",
+        ],
         mode: "ui",
         scopes: ["operator.admin", "operator.read", "operator.write", "operator.approvals"],
         preauthHandshakeTimeoutMs: 30_000,
@@ -288,46 +396,6 @@ describe("GatewayChatClient", () => {
     expect(vi.getTimerCount()).toBe(baselineTimerCount);
   });
 
-  it("passes selected-agent global scope through chat methods", async () => {
-    const client = new GatewayChatClient({
-      url: "ws://127.0.0.1:18789",
-      token: "test-token",
-    });
-    const request = vi.fn().mockResolvedValue({ messages: [] });
-    (client as unknown as { client: { request: typeof request } }).client.request = request;
-
-    await client.sendChat({
-      sessionKey: "global",
-      agentId: "work",
-      message: "hello",
-      runId: "run-global-work",
-    });
-    await client.loadHistory({ sessionKey: "global", agentId: "work", limit: 50 });
-    await client.abortChat({ sessionKey: "global", agentId: "work", runId: "run-global-work" });
-    await client.listModels({ agentId: "work" });
-
-    expect(request).toHaveBeenNthCalledWith(1, "chat.send", {
-      sessionKey: "global",
-      agentId: "work",
-      message: "hello",
-      thinking: undefined,
-      deliver: undefined,
-      timeoutMs: undefined,
-      idempotencyKey: "run-global-work",
-    });
-    expect(request).toHaveBeenNthCalledWith(2, "chat.history", {
-      sessionKey: "global",
-      agentId: "work",
-      limit: 50,
-    });
-    expect(request).toHaveBeenNthCalledWith(3, "chat.abort", {
-      sessionKey: "global",
-      agentId: "work",
-      runId: "run-global-work",
-    });
-    expect(request).toHaveBeenNthCalledWith(4, "models.list", { agentId: "work" });
-  });
-
   it("resolves a handoff key through the exact sessions.resolve wire contract", async () => {
     const client = new GatewayChatClient({
       url: "ws://127.0.0.1:18789",
@@ -417,19 +485,19 @@ describe("GatewayChatClient", () => {
     await expect(
       client.createSession({
         key: "tui-next",
-        parentSessionKey: "agent:main:main",
+        parentSessionKey: "agent:main:thread:parent",
         succeedsParent: true,
       }),
     ).resolves.toEqual({ ok: true, key: "agent:main:tui-next" });
     expect(request).toHaveBeenNthCalledWith(1, "sessions.create", {
       key: "tui-next",
-      parentSessionKey: "agent:main:main",
+      parentSessionKey: "agent:main:thread:parent",
       succeedsParent: true,
       emitCommandHooks: true,
     });
     expect(request).toHaveBeenNthCalledWith(2, "sessions.create", {
       key: "tui-next",
-      parentSessionKey: "agent:main:main",
+      parentSessionKey: "agent:main:thread:parent",
       emitCommandHooks: true,
     });
   });
@@ -454,14 +522,14 @@ describe("GatewayChatClient", () => {
       client.createSession({
         key: "tui-parallel",
         agentId: "main",
-        parentSessionKey: "agent:main:main",
+        parentSessionKey: "agent:main:thread:parent",
         succeedsParent: false,
       }),
     ).resolves.toEqual({ ok: true, key: "agent:main:tui-parallel" });
     expect(request).toHaveBeenNthCalledWith(1, "sessions.create", {
       key: "tui-parallel",
       agentId: "main",
-      parentSessionKey: "agent:main:main",
+      parentSessionKey: "agent:main:thread:parent",
       succeedsParent: false,
       emitCommandHooks: true,
     });

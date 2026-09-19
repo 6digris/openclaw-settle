@@ -1,37 +1,14 @@
-import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { createGatewayConnectionState } from "../../server-connection-state.js";
-import type { GatewayRequestOptions } from "../../server-methods/types.js";
+import { sessionSubscriptionHandlers } from "../../server-methods/sessions-subscriptions.js";
+import type { GatewayRequestHandler } from "../../server-methods/types.js";
 import {
   createDispatchTestHarness,
   createOperatorWsClient,
 } from "./authenticated-request-dispatch.test-support.js";
 
-const runtime = vi.hoisted(() => ({ beforeHandler: vi.fn<() => Promise<void>>() }));
-
-vi.mock("./authenticated-request-dispatch.server-methods.runtime.js", async () => {
-  const { sessionSubscriptionHandlers } =
-    await import("../../server-methods/sessions-subscriptions.js");
-  return {
-    handleGatewayRequest: async (options: GatewayRequestOptions) => {
-      await runtime.beforeHandler();
-      const handler = sessionSubscriptionHandlers[options.req.method];
-      if (!handler) {
-        throw new Error(`missing test handler for ${options.req.method}`);
-      }
-      await handler({
-        ...options,
-        params: (options.req.params ?? {}) as Record<string, unknown>,
-      });
-    },
-  };
-});
-
 describe("authenticated request connection liveness", { concurrent: false }, () => {
-  beforeEach(() => {
-    runtime.beforeHandler.mockReset();
-  });
-
   it.each([
     {
       method: "sessions.subscribe",
@@ -48,9 +25,14 @@ describe("authenticated request connection liveness", { concurrent: false }, () 
   ])("rejects a late $method mutation after disconnect cleanup", async (testCase) => {
     const held = createDeferredCore();
     const started = createDeferredCore();
-    runtime.beforeHandler.mockImplementation(() => {
+    const delayedHandler = vi.fn<GatewayRequestHandler>(async (options) => {
       started.resolve();
-      return held.promise;
+      await held.promise;
+      const handler = sessionSubscriptionHandlers[options.req.method];
+      if (!handler) {
+        throw new Error(`missing test handler for ${options.req.method}`);
+      }
+      await handler(options);
     });
     const state = createGatewayConnectionState({ bootId: "late-subscription", cfg: {} });
     onTestFinished(() => state.mentionInbox.dispose());
@@ -61,6 +43,7 @@ describe("authenticated request connection liveness", { concurrent: false }, () 
     state.clients.add(client);
     const harness = createDispatchTestHarness({
       connId: client.connId,
+      extraHandlers: { [testCase.method]: delayedHandler },
       buildRequestContext: () => ({
         getRuntimeConfig: () => ({}),
         logGateway: { error: vi.fn() },
@@ -74,8 +57,13 @@ describe("authenticated request connection liveness", { concurrent: false }, () 
       client,
     );
     try {
-      await started.promise;
-      expect(runtime.beforeHandler).toHaveBeenCalledOnce();
+      await Promise.race([
+        started.promise,
+        dispatch.then(() => {
+          throw new Error("Request settled before the held handler started");
+        }),
+      ]);
+      expect(delayedHandler).toHaveBeenCalledOnce();
       state.clients.delete(client);
       state.sessionEventSubscribers.unsubscribe(client.connId);
       state.sessionMessageSubscribers.unsubscribeAll(client.connId);

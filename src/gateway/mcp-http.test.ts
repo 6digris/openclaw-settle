@@ -1346,7 +1346,7 @@ describe("mcp loopback server", () => {
   });
 
   it("binds an attach grant's session owner and ignores ALL spoofed context headers", async () => {
-    const grant = mintAttachGrant({ sessionKey: "global", agentId: "ops" });
+    const grant = mintAttachGrant({ sessionKey: "agent:ops:global" });
     const { port: serverPort } = await startLoopbackServerForTest();
 
     const response = await sendRaw({
@@ -1369,7 +1369,7 @@ describe("mcp loopback server", () => {
 
     expect(response.status).toBe(200);
     const call = getScopedToolsCall(0);
-    expect(call.sessionKey).toBe("global");
+    expect(call.sessionKey).toBe("agent:ops:global");
     expect(call.agentId).toBe("ops");
     expect(call.senderIsOwner).toBe(false);
     expect(call.surface).toBe("loopback");
@@ -4159,7 +4159,7 @@ describe("collector result tool across the loopback MCP boundary", () => {
 
   it("gives an attach grant on the collector's session no result tool to list or call", async () => {
     await startLoopbackServerForTest();
-    const attach = mintAttachGrant({ sessionKey: collectorSessionKey, agentId: "main" });
+    const attach = mintAttachGrant({ sessionKey: collectorSessionKey });
     const scope = { token: attach.token };
 
     const names = await listToolNames(scope);

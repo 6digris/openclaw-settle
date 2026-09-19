@@ -48,20 +48,22 @@ describe("resolveRuntimePolicySessionKey", () => {
     ).toBe("agent:main:slack:default:direct:u123");
   });
 
-  it("leaves local main-session runs unsandboxed in non-main mode", () => {
+  it.each(["per-sender", "global"] as const)("keeps local %s runs unsandboxed", (scope) => {
+    const scopedConfig = { ...cfg, session: { scope } };
+    const mainSessionKey = scope === "global" ? "agent:main:global" : "agent:main:main";
     const sessionKey = resolveRuntimePolicySessionKey({
-      cfg,
-      sessionKey: "agent:main:main",
+      cfg: scopedConfig,
+      sessionKey: mainSessionKey,
       ctx: {
-        SessionKey: "agent:main:main",
+        SessionKey: mainSessionKey,
         Provider: "webchat",
         ChatType: "direct",
         SenderId: "operator",
       },
     });
 
-    expect(sessionKey).toBe("agent:main:main");
-    expect(resolveSandboxRuntimeStatus({ cfg, sessionKey }).sandboxed).toBe(false);
+    expect(sessionKey).toBe(mainSessionKey);
+    expect(resolveSandboxRuntimeStatus({ cfg: scopedConfig, sessionKey }).sandboxed).toBe(false);
   });
 
   it("keeps already-isolated sessions unchanged", () => {
@@ -77,6 +79,16 @@ describe("resolveRuntimePolicySessionKey", () => {
         },
       }),
     ).toBe("agent:main:discord:channel:123:thread:456");
+  });
+
+  it("keeps an old main conversation distinct after changing the configured mainKey", () => {
+    const changed = { ...cfg, session: { mainKey: "work" } };
+    const sessionKey = resolveRuntimePolicySessionKey({
+      cfg: changed,
+      sessionKey: "agent:main:main",
+    });
+    expect(sessionKey).toBe("agent:main:main");
+    expect(resolveSandboxRuntimeStatus({ cfg: changed, sessionKey }).sandboxed).toBe(true);
   });
 
   it("uses native command target sessions as the policy base", () => {

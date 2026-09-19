@@ -11,7 +11,7 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { getGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
-import { resolveStoredSessionKeyForAgentStore } from "../session-store-key.js";
+import { resolveSessionStoreKey } from "../session-store-key.js";
 import { captureGatewayUiCommandTarget } from "../ui-command-target.js";
 import type { GatewayRequestHandlerOptions, GatewayRequestHandlers } from "./types.js";
 import { defineValidatedGatewayMethod } from "./validation.js";
@@ -39,9 +39,9 @@ export function dispatchUiCommandToRequester({
   }
   const canonicalSessionKey =
     commandSessionKey && requestedSession?.ok
-      ? resolveStoredSessionKeyForAgentStore({
+      ? resolveSessionStoreKey({
           cfg: context.getRuntimeConfig(),
-          agentId: requestedSession.agentId,
+          storeAgentId: requestedSession.agentId,
           sessionKey: commandSessionKey,
         })
       : undefined;

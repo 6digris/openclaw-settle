@@ -4,7 +4,6 @@ import {
   clearEmbeddedSessionPromptStates,
   getEmbeddedSessionPromptState,
 } from "../../agents/embedded-agent-runner/session-prompt-state.js";
-import { withSystemEventOwner } from "../../infra/system-event-ownership.js";
 import {
   enqueueSystemEvent,
   peekSystemEvents,
@@ -33,15 +32,18 @@ describe("clearSessionResetRuntimeState", () => {
   });
 
   it("clears reset queues and drains system events for normalized keys", () => {
-    enqueueSystemEvent("stale alpha", withSystemEventOwner({ sessionKey: "alpha" }, "main"));
-    enqueueSystemEvent("stale beta", withSystemEventOwner({ sessionKey: "beta" }, "main"));
-    enqueueSystemEvent("fresh gamma", withSystemEventOwner({ sessionKey: "gamma" }, "main"));
+    enqueueSystemEvent("stale alpha", { sessionKey: "agent:main:alpha" });
+    enqueueSystemEvent("stale beta", { sessionKey: "agent:main:beta" });
+    enqueueSystemEvent("fresh gamma", { sessionKey: "agent:main:gamma" });
 
-    const result = clearSessionResetRuntimeState([" alpha ", undefined, " ", "alpha", "beta"], {
-      agentId: "main",
-    });
+    const result = clearSessionResetRuntimeState(
+      [" agent:main:alpha ", undefined, " ", "agent:main:alpha", "agent:main:beta"],
+      {
+        agentId: "main",
+      },
+    );
 
-    expect(result.keys).toEqual(["alpha", "beta"]);
+    expect(result.keys).toEqual(["agent:main:alpha", "agent:main:beta"]);
     expect(result.systemEventsCleared).toBe(2);
     expect(peekSystemEvents("agent:main:alpha")).toStrictEqual([]);
     expect(peekSystemEvents("agent:main:beta")).toStrictEqual([]);
@@ -49,13 +51,14 @@ describe("clearSessionResetRuntimeState", () => {
   });
 
   it("preserves events owned by other agents during an agent-scoped reset", () => {
-    enqueueSystemEvent("main", withSystemEventOwner({ sessionKey: "global" }, "main"));
-    enqueueSystemEvent("alpha", withSystemEventOwner({ sessionKey: "global" }, "alpha"));
-    enqueueSystemEvent("beta", withSystemEventOwner({ sessionKey: "global" }, "beta"));
+    enqueueSystemEvent("main", { sessionKey: "agent:main:global" });
+    enqueueSystemEvent("alpha", { sessionKey: "agent:alpha:global" });
+    enqueueSystemEvent("beta", { sessionKey: "agent:beta:global" });
 
-    const result = clearSessionResetRuntimeState(["global", "agent:beta:global"], {
-      agentId: " Alpha ",
-    });
+    const result = clearSessionResetRuntimeState(
+      ["agent:alpha:global", "agent:beta:global", "incarnation-id"],
+      { agentId: " Alpha " },
+    );
 
     expect(result.systemEventsCleared).toBe(1);
     expect(peekSystemEvents("agent:alpha:global")).toEqual([]);

@@ -166,7 +166,6 @@ function loadSessionEntryWithMode(
     }
   }
   const canonicalMatch = resolveCanonicalSessionStoreMatchFromStoreKeys(store, target.storeKeys);
-  const legacyKey = canonicalMatch?.key !== target.canonicalKey ? canonicalMatch?.key : undefined;
   const entry =
     readOnly && opts?.clone !== false && canonicalMatch?.entry
       ? structuredClone(canonicalMatch.entry)
@@ -180,7 +179,6 @@ function loadSessionEntryWithMode(
     entry,
     canonicalKey: target.canonicalKey,
     storeKeys: target.storeKeys,
-    legacyKey,
   };
 }
 

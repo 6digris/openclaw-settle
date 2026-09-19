@@ -1,5 +1,6 @@
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import { iterateSqliteQuerySync } from "../../infra/kysely-sync.js";
+import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
   openOpenClawAgentDatabase,
@@ -29,7 +30,6 @@ import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 type ResolvedSqliteSessionEntry = {
   existing: SessionEntry | undefined;
-  legacyKeys: string[];
   normalizedKey: string;
 };
 
@@ -56,7 +56,6 @@ export function resolveSessionEntry(
     );
     return {
       existing: selected?.entry,
-      legacyKeys: [],
       normalizedKey: resolved.sessionKey,
     };
   };
@@ -67,7 +66,7 @@ export function resolveSessionEntry(
     );
     return result.found
       ? result.value
-      : { existing: undefined, legacyKeys: [], normalizedKey: resolved.sessionKey };
+      : { existing: undefined, normalizedKey: resolved.sessionKey };
   }
   return read(openOpenClawAgentDatabase(toDatabaseOptions(resolved)));
 }
@@ -128,9 +127,13 @@ export function loadExactSessionEntryCandidates(
 const SESSION_ID_TRIM_CHARACTERS =
   "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff";
 
-/** Loads a visible current ID, falling back to legacy trimmed IDs only on an exact miss. */
+/** Loads a logical agent's current ID, trying legacy trimmed IDs only after an exact miss. */
 export function loadSessionEntryByIdReadOnly(
-  scope: Omit<SessionEntryReadScope, "sessionKey"> & { sessionId: string },
+  scope: Omit<SessionEntryReadScope, "sessionKey"> & {
+    sessionId: string;
+    /** Restricts logical nodes without changing the physical database owner. */
+    logicalAgentId: string;
+  },
 ): ExactSessionEntry | undefined {
   const resolved = resolveSqliteScope({ ...scope, sessionKey: "" });
   const result = withOpenClawAgentDatabaseReadOnly(
@@ -158,7 +161,10 @@ export function loadSessionEntryByIdReadOnly(
               : query.where("current_session_id", "=", scope.sessionId),
           );
           for (const { session_key: sessionKey } of matches) {
-            if (isInternalSessionEffectsKey(sessionKey)) {
+            if (
+              isInternalSessionEffectsKey(sessionKey) ||
+              parseAgentSessionKey(sessionKey)?.agentId !== scope.logicalAgentId
+            ) {
               continue;
             }
             const selected = readExactSessionEntryRowValidated(

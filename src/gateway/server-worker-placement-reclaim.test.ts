@@ -76,7 +76,7 @@ async function scenario(
     agentId: REQUEST.agentId,
     store: { [REQUEST.sessionKey]: entry },
   };
-  lookup.value = { ...target, cfg: {}, entry, legacyKey: undefined };
+  lookup.value = { ...target, cfg: {}, entry };
   if (pendingMove) {
     await replaceSessionEntry(
       { storePath, sessionKey: REQUEST.sessionKey, agentId: REQUEST.agentId },
@@ -606,7 +606,7 @@ it.each(["missing", "local"] as const)(
       agentId: REQUEST.agentId,
       store: { [REQUEST.sessionKey]: entry },
     };
-    lookup.value = { ...target, cfg: {}, entry, legacyKey: undefined };
+    lookup.value = { ...target, cfg: {}, entry };
     await replaceSessionEntry(
       { storePath, sessionKey: REQUEST.sessionKey, agentId: REQUEST.agentId },
       entry,

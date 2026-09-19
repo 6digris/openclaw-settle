@@ -28,7 +28,7 @@ import type { TerminalUploadFile } from "../../infra/terminal-file-upload.js";
 import type { SessionCatalogTerminalPlan } from "../../plugins/session-catalog.js";
 import { applyPluginNodeInvokePolicy } from "../node-invoke-plugin-policy.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
-import { resolveStoredSessionKeyForAgentStore } from "../session-store-key.js";
+import { resolveSessionStoreKey } from "../session-store-key.js";
 import { loadGatewaySessionEntryReadOnly } from "../session-utils.js";
 import { buildTerminalEnv, type TerminalLaunchResolution } from "../terminal/launch.js";
 import { createNodeRelayBackend } from "../terminal/node-relay.js";
@@ -360,9 +360,9 @@ export async function openTerminalSession(
       respond(false, undefined, requestedOwner.error);
       return;
     }
-    const agentSessionKey = resolveStoredSessionKeyForAgentStore({
+    const agentSessionKey = resolveSessionStoreKey({
       cfg: runtimeConfig,
-      agentId: requestedOwner.agentId,
+      storeAgentId: requestedOwner.agentId,
       sessionKey: request.sessionKey,
     });
     const { entry } = loadGatewaySessionEntryReadOnly(agentSessionKey, {

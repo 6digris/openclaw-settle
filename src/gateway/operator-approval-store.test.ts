@@ -31,6 +31,7 @@ import {
   pruneTerminalOperatorApprovals,
   resolveOperatorApproval,
 } from "./operator-approval-store.js";
+import { approval } from "./operator-approval-store.test-support.js";
 
 type OperatorApprovalDatabase = Pick<OpenClawStateKyselyDatabase, "operator_approvals">;
 type NewOperatorApproval = Parameters<typeof insertOperatorApproval>[0]["approval"];
@@ -49,57 +50,6 @@ function createDatabaseOptions(): OpenClawStateDatabaseOptions {
   );
   tempDirs.push(stateDir);
   return { env: { ...process.env, OPENCLAW_STATE_DIR: stateDir } };
-}
-
-function approval(id: string, overrides: Partial<NewOperatorApproval> = {}): NewOperatorApproval {
-  const kind = overrides.kind ?? overrides.presentation?.kind ?? "exec";
-  const presentation: NewOperatorApproval["presentation"] =
-    overrides.presentation ??
-    (kind === "exec"
-      ? {
-          kind: "exec" as const,
-          commandText: `echo ${id}`,
-          commandPreview: `echo ${id}`,
-          warningText: null,
-          host: "gateway",
-          nodeId: null,
-          agentId: "main",
-          allowedDecisions: ["allow-once", "allow-always", "deny"],
-        }
-      : {
-          kind: "plugin" as const,
-          title: "Approve plugin action",
-          description: `Allow the plugin action for ${id}.`,
-          severity: "warning" as const,
-          pluginId: "test-plugin",
-          toolName: "test-tool",
-          agentId: "main",
-          allowedDecisions: ["allow-once", "allow-always", "deny"],
-        });
-  return {
-    id,
-    kind,
-    presentation,
-    requester: {
-      deviceId: "request-device",
-      clientId: "request-client",
-      deviceTokenAuth: true,
-    },
-    reviewerDeviceIds: ["reviewer-b", "reviewer-a", "reviewer-b"],
-    source: {
-      agentId: "main",
-      sessionKey: "agent:main:child",
-      sessionId: "session-1",
-      runId: "run-1",
-      toolCallId: "tool-call-1",
-      toolName: "exec",
-    },
-    audienceSessionKeys: ["agent:main:child", "agent:main:parent"],
-    runtimeEpoch: "runtime-a",
-    createdAtMs: 1_000,
-    expiresAtMs: 10_000,
-    ...overrides,
-  };
 }
 
 function rawApprovalRow(options: OpenClawStateDatabaseOptions, id: string) {
@@ -186,6 +136,84 @@ describe("operator approval store", () => {
       expect.objectContaining({ id: "plugin", kind: "plugin" }),
     ]);
   });
+
+  it("replays a legacy global source by its agent without changing approval authority", () => {
+    const databaseOptions = createDatabaseOptions();
+    const input = approval("legacy-global", {
+      source: { agentId: "main", sessionKey: "agent:main:global" },
+      audienceSessionKeys: ["agent:main:global"],
+    });
+    const inserted = insertOperatorApproval({ approval: input, databaseOptions });
+    const database = openOpenClawStateDatabase(databaseOptions);
+    database.db
+      .prepare(
+        "UPDATE operator_approvals SET source_session_key = 'global', audience_session_keys_json = '[\"global\"]'",
+      )
+      .run();
+    expect(getOperatorApproval({ id: input.id, nowMs: 2_000, databaseOptions })).toEqual(
+      inserted.outcome === "inserted" ? inserted.record : null,
+    );
+    expect(
+      listPendingOperatorApprovals({
+        sourceSessionKey: "agent:main:global",
+        nowMs: 2_000,
+        databaseOptions,
+      }),
+    ).toHaveLength(1);
+    expect(
+      listPendingOperatorApprovals({
+        audienceSessionKey: "agent:main:global",
+        nowMs: 2_000,
+        databaseOptions,
+      }),
+    ).toHaveLength(1);
+    expect(
+      listPendingOperatorApprovals({
+        sourceSessionKey: "agent:other:global",
+        nowMs: 2_000,
+        databaseOptions,
+      }),
+    ).toEqual([]);
+    expect(insertOperatorApproval({ approval: input, databaseOptions }).outcome).toBe("existing");
+  });
+
+  it.each([
+    { audience: ["agent:main:custom"], expected: "agent:main:custom" },
+    { audience: [], expected: "main" },
+    { audience: ["agent:other:custom"], expected: "main" },
+  ])(
+    "resolves historical main only from its recorded source audience: $expected / $audience",
+    ({ audience, expected }) => {
+      const databaseOptions = createDatabaseOptions();
+      const input = approval("legacy-main", {
+        source: { agentId: "main", sessionKey: expected },
+        audienceSessionKeys: audience,
+      });
+      insertOperatorApproval({ approval: input, databaseOptions });
+      openOpenClawStateDatabase(databaseOptions)
+        .db.prepare("UPDATE operator_approvals SET source_session_key = 'main'")
+        .run();
+      expect(getOperatorApproval({ id: input.id, nowMs: 2_000, databaseOptions })).toMatchObject({
+        source: { sessionKey: expected },
+        audienceSessionKeys: audience,
+      });
+      expect(
+        listPendingOperatorApprovals({
+          sourceSessionKey: "agent:main:custom",
+          nowMs: 2_000,
+          databaseOptions,
+        }),
+      ).toHaveLength(expected === "agent:main:custom" ? 1 : 0);
+      expect(
+        listPendingOperatorApprovals({
+          sourceSessionKey: "agent:main:main",
+          nowMs: 2_000,
+          databaseOptions,
+        }),
+      ).toEqual([]);
+      expect(insertOperatorApproval({ approval: input, databaseOptions }).outcome).toBe("existing");
+    },
+  );
 
   it("lists terminal history newest-first with kind filtering and keyset pagination", () => {
     const databaseOptions = createDatabaseOptions();

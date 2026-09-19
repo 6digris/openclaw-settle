@@ -61,6 +61,17 @@ function isReplayableTuiSessionMessage(event: SessionMessageEvent): boolean {
   );
 }
 
+/** Capture the selected key, owner, and Home intent together before asynchronous work. */
+export function readTuiSessionTarget(
+  state: Pick<TuiStateAccess, "currentSessionKey" | "currentAgentId" | "currentSessionIntent">,
+) {
+  return {
+    sessionKey: state.currentSessionKey,
+    agentId: state.currentAgentId,
+    ...(state.currentSessionIntent === "home" ? { targetIntent: state.currentSessionIntent } : {}),
+  };
+}
+
 /** Scope the shared transcript projection to the TUI's actual selected session. */
 export function readTuiSessionProjectionScope(
   state: Pick<TuiStateAccess, "currentSessionKey" | "currentAgentId" | "currentSessionId">,

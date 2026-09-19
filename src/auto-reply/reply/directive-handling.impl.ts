@@ -12,7 +12,6 @@ import { persistStickyModelSelectionBestEffort } from "../../agents/sticky-model
 import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
 import { resolveCollapsedSessionAuthPinSource } from "../../config/sessions/auth-profile-override-provenance.js";
 import { triggerSessionPatchHook } from "../../gateway/session-patch-hooks.js";
-import { resolveSystemEventQueueKey } from "../../infra/system-event-ownership.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { applyModelOverrideWithAuthProfileCompatibility } from "../../sessions/auth-profile-preservation.js";
 import {
@@ -572,7 +571,7 @@ export async function handleDirectiveOnly(
     const nextLabel = `${modelSelection.provider}/${modelSelection.model}`;
     if (nextLabel !== params.initialModelLabel) {
       enqueueSystemEvent(formatModelSwitchEvent(nextLabel, modelSelection.alias), {
-        sessionKey: resolveSystemEventQueueKey(sessionKey, activeAgentId),
+        sessionKey,
         contextKey: `model:${nextLabel}`,
       });
     }
@@ -581,7 +580,7 @@ export async function handleDirectiveOnly(
     enqueueModeSwitchEvents({
       enqueueSystemEvent,
       sessionEntry,
-      sessionKey: resolveSystemEventQueueKey(sessionKey, activeAgentId),
+      sessionKey,
       elevatedChanged,
       reasoningChanged,
     });
@@ -709,7 +708,7 @@ export async function handleDirectiveOnly(
         ? "Fast mode set to auto."
         : `Fast mode ${nextFastMode ? "enabled" : "disabled"}.`;
     enqueueSystemEvent(nextFastModeText, {
-      sessionKey: resolveSystemEventQueueKey(sessionKey, activeAgentId),
+      sessionKey,
       contextKey: `fast:${formatFastModeValue(nextFastMode)}`,
     });
   }

@@ -527,10 +527,11 @@ function isProtectedExternalConversationSessionKey(sessionKey: string): boolean 
 }
 
 function isPrimarySessionMaintenanceKey(sessionKey: string): boolean {
-  if (normalizeLowercaseStringOrEmpty(sessionKey) === "global") {
-    return true;
-  }
-  return parseAgentSessionKey(sessionKey)?.rest === "main";
+  const rest = parseAgentSessionKey(sessionKey)?.rest;
+  // Doctor also uses this policy before importing file-era bare global keys.
+  return (
+    rest === "main" || rest === "global" || normalizeLowercaseStringOrEmpty(sessionKey) === "global"
+  );
 }
 
 function isProtectedSessionMaintenanceEntry(
@@ -542,7 +543,7 @@ function isProtectedSessionMaintenanceEntry(
     return false;
   }
   // Primary sessions are operator-facing and must survive maintenance even without an active
-  // admission. Global scope uses the literal `global` key instead of `agent:<id>:main`.
+  // admission.
   if (isPrimarySessionMaintenanceKey(sessionKey)) {
     return true;
   }

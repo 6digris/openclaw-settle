@@ -46,7 +46,6 @@ export function admitWorkerStopChat(params: {
       storePath,
       entry,
       sessionKey,
-      legacyKey: undefined,
       expectedLeafEntryId: undefined,
       sessionRoutingChanged: () => false,
       agentIdOverride: agentId,

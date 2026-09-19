@@ -26,7 +26,11 @@ import {
   assertAgentRunLifecycleGenerationCurrent,
   getAgentEventLifecycleGeneration,
 } from "../../infra/agent-events.js";
-import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
+import {
+  normalizeAgentId,
+  normalizeAgentIdStrict,
+  parseAgentSessionKey,
+} from "../../routing/session-key.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { waitForChatAbortTerminalPersistence } from "../chat-abort-lifecycle-internal.js";
 import type { ChatAbortControllerEntry } from "../chat-abort.js";
@@ -122,11 +126,10 @@ function resolveScopedAbortKey(params: {
   if (!key) {
     return undefined;
   }
-  const requestedAgentId = normalizeOptionalString(params.agentId);
-  if (!requestedAgentId) {
+  const scopedAgentId = params.agentId;
+  if (!scopedAgentId) {
     return key;
   }
-  const scopedAgentId = normalizeAgentId(requestedAgentId);
   const ownerAgentId = resolveStoredSessionOwnerAgentId({
     cfg: params.cfg,
     agentId: scopedAgentId,
@@ -159,7 +162,16 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
     const cfg = context.getRuntimeConfig();
     const requestedRunId = readStringValue(p.runId);
     const requestedKey = normalizeOptionalString(p.key);
-    const requestedParamAgentId = normalizeOptionalString(p.agentId);
+    const explicit = p.agentId === undefined ? null : normalizeAgentIdStrict(p.agentId);
+    if (explicit && !explicit.ok) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "Invalid explicit agent id."),
+      );
+      return;
+    }
+    const requestedParamAgentId = explicit?.value;
     const clearQueued = p.clearQueued === true;
     const workerRunSessionId = requestedRunId
       ? asWorkerInferenceControl(context.workerEnvironmentService)?.resolveInferenceSessionForRunId(
@@ -330,8 +342,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       agentId: requestedGlobalAgentId,
       defaultAgentId: stableTargetOwner,
     });
-    const abortSessionKey =
-      canonicalKey === "global" && requestedGlobalAgentId ? "global" : resolvedAbortSessionKey;
+    const abortSessionKey = resolvedAbortSessionKey;
     const abortAgentId = requestedGlobalAgentId ?? activeRunAgentId;
     const lifecycleGeneration = getAgentEventLifecycleGeneration();
     const assertAbortCurrent = () => {
@@ -443,7 +454,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
         ? () => {
             assertAbortCurrent();
             let queueCleared = false;
-            if (clearQueued && canonicalKey !== "global") {
+            if (clearQueued) {
               // Explicit full-session stops clear first so an aborting run cannot
               // promote queued work. Ordinary sessions.abort calls preserve it.
               const cleared = clearSessionQueues([
@@ -458,7 +469,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
             // have no connection-owned chat controller.
             const wasActive = persistedSessionId && isEmbeddedAgentRunActive(persistedSessionId);
             const embeddedAborted =
-              persistedSessionId && canonicalKey !== "global" && !embeddedController
+              persistedSessionId && !embeddedController
                 ? sessionEmbeddedRun
                   ? sessionEmbeddedRun.abort()
                   : abortEmbeddedAgentRun(persistedSessionId)
@@ -471,11 +482,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
             if (clearQueued && embeddedController) {
               pendingMcpController = embeddedController;
             }
-            if (
-              (clearQueued || canonicalKey === "global") &&
-              persistedSessionId &&
-              (canonicalKey === "global" || !wasActive || embeddedAborted)
-            ) {
+            if (clearQueued && persistedSessionId && (!wasActive || embeddedAborted)) {
               mcpRetirement ??= retireSessionMcpRuntime({
                 sessionId: persistedSessionId,
                 reason: "session-stop",

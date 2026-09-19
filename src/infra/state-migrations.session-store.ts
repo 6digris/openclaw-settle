@@ -86,107 +86,30 @@ function canonicalizeSessionKeyForAgent(params: {
   agentId: string;
   mainKey: string;
   scope?: SessionScope;
-  skipCrossAgentRemap?: boolean;
-  preserveCanonicalAgentOwner?: boolean;
   preserveAmbiguousKeys?: boolean;
-  preserveForeignMainAliases?: boolean;
   legacySessionSurfaces?: PreparedLegacySessionSurfaces["surfaces"];
 }): string {
   const raw = params.key.trim();
   if (!raw) {
     return raw;
   }
-  const rawLower = normalizeLowercaseStringOrEmpty(raw);
-  const legacyDefaultMainAlias = isLegacyDefaultMainAliasKey(rawLower, params.mainKey);
-  const configuredAgentId = normalizeAgentId(params.agentId);
-  const canonicalRowOwner = resolveCanonicalAgentSessionOwner(raw);
-  // Shared stores may contain rows for several agents. Canonicalize a valid
-  // wrapper within its declared owner so another agent pass cannot adopt it.
-  // The default-agent main alias remains an orphan when a different single
-  // owner is authoritative for this store.
-  const candidateOwner = params.preserveCanonicalAgentOwner ? canonicalRowOwner : undefined;
-  const parsedOwner =
-    candidateOwner === DEFAULT_AGENT_ID &&
-    configuredAgentId !== DEFAULT_AGENT_ID &&
-    legacyDefaultMainAlias
-      ? undefined
-      : candidateOwner;
-  const agentId = parsedOwner ?? configuredAgentId;
   const normalized = normalizeSessionKeyPreservingOpaquePeerIds(raw);
-  if (rawLower === "global" || rawLower === "unknown") {
-    return rawLower;
-  }
-  // Plugin-routed stores can contain either a core orphan or an opaque explicit
-  // key with this shape. Without row provenance, never merge the two.
-  if (params.preserveForeignMainAliases && legacyDefaultMainAlias) {
-    return params.key;
-  }
-  const canonicalMain = canonicalizeMainSessionAlias({
-    cfg: { session: { scope: params.scope, mainKey: params.mainKey } },
-    agentId,
-    sessionKey: normalized,
-  });
-  // Global scope has one owner, so recognized main aliases are never ambiguous.
-  if (params.scope === "global" && canonicalMain === "global") {
-    return canonicalMain;
-  }
-  // Unscoped and legacy default-main keys in a potentially shared store have no durable owner.
-  // Keep it untouched instead of assigning another agent's history by iteration order.
-  if (params.preserveAmbiguousKeys && (!canonicalRowOwner || legacyDefaultMainAlias)) {
-    return params.key;
-  }
-
-  // When shared-store guard is active, do not remap keys that belong to a
-  // different agent — they are legitimate records for that agent, not orphans.
-  // Without this check, canonicalizeMainSessionAlias (which now recognises
-  // legacy agent:main:* aliases) would rewrite them before the
-  // skipCrossAgentRemap guard below has a chance to block it.
-  if (params.skipCrossAgentRemap) {
-    const parsed = parseAgentSessionKey(raw);
-    if (parsed && normalizeAgentId(parsed.agentId) !== agentId) {
-      return normalized;
-    }
-    if (
-      agentId !== DEFAULT_AGENT_ID &&
-      (rawLower === DEFAULT_MAIN_KEY || rawLower === params.mainKey)
-    ) {
-      return rawLower;
-    }
-  }
-
-  if (canonicalMain !== normalized) {
-    return normalizeLowercaseStringOrEmpty(canonicalMain);
-  }
-
-  // Handle cross-agent orphaned main-session keys: "agent:main:main" or
-  // "agent:main:<mainKey>" in a store belonging to a different agent (e.g.
-  // "ops"). Only remap provable orphan aliases — other agent:main:* keys
-  // (hooks, subagents, cron, per-sender) may be intentional cross-agent
-  // references and must not be touched (#29683).
-  const defaultPrefix = `agent:${DEFAULT_AGENT_ID}:`;
-  if (
-    rawLower.startsWith(defaultPrefix) &&
-    agentId !== DEFAULT_AGENT_ID &&
-    !params.skipCrossAgentRemap
-  ) {
-    const rest = rawLower.slice(defaultPrefix.length);
-    const isOrphanAlias = rest === DEFAULT_MAIN_KEY || rest === params.mainKey;
-    if (isOrphanAlias) {
-      const remapped = `agent:${agentId}:${rest}`;
-      const canonicalized = canonicalizeMainSessionAlias({
-        cfg: { session: { scope: params.scope, mainKey: params.mainKey } },
-        agentId,
-        sessionKey: remapped,
-      });
-      return normalizeLowercaseStringOrEmpty(canonicalized);
-    }
-  }
-
-  // A malformed agent-shaped key has no authoritative row owner. Once shared-store
-  // preservation is ruled out, treat it as opaque input owned by the configured agent.
-  if (rawLower.startsWith("agent:") && canonicalRowOwner) {
+  if (resolveCanonicalAgentSessionOwner(raw)) {
     return normalized;
   }
+  if (params.preserveAmbiguousKeys) {
+    return params.key;
+  }
+  const rawLower = normalizeLowercaseStringOrEmpty(raw);
+  const agentId = normalizeAgentId(params.agentId);
+  if (rawLower === DEFAULT_MAIN_KEY || rawLower === params.mainKey) {
+    return canonicalizeMainSessionAlias({
+      cfg: { session: { scope: params.scope, mainKey: params.mainKey } },
+      agentId,
+      sessionKey: rawLower,
+    });
+  }
+
   if (rawLower.startsWith("subagent:")) {
     const rest = raw.slice("subagent:".length);
     return normalizeLowercaseStringOrEmpty(`agent:${agentId}:subagent:${rest}`);
@@ -301,10 +224,7 @@ export function canonicalizeSessionStore(params: {
   agentId: string;
   mainKey: string;
   scope?: SessionScope;
-  skipCrossAgentRemap?: boolean;
-  preserveCanonicalAgentOwner?: boolean;
   preserveAmbiguousKeys?: boolean;
-  preserveForeignMainAliases?: boolean;
   legacySessionSurfaces?: PreparedLegacySessionSurfaces["surfaces"];
 }): { store: Record<string, SessionEntryLike>; legacyKeys: string[] } {
   const canonical = Object.create(null) as Record<string, SessionEntryLike>;
@@ -320,10 +240,7 @@ export function canonicalizeSessionStore(params: {
       agentId: params.agentId,
       mainKey: params.mainKey,
       scope: params.scope,
-      skipCrossAgentRemap: params.skipCrossAgentRemap,
-      preserveCanonicalAgentOwner: params.preserveCanonicalAgentOwner,
       preserveAmbiguousKeys: params.preserveAmbiguousKeys,
-      preserveForeignMainAliases: params.preserveForeignMainAliases,
       legacySessionSurfaces: params.legacySessionSurfaces,
     });
     const isCanonical = canonicalKey === key;
@@ -361,27 +278,13 @@ export function canonicalizeSessionStore(params: {
   return { store: canonical, legacyKeys };
 }
 
-export function isAmbiguousSharedStoreKey(
-  key: string,
-  mainKey: string,
-  scope?: SessionScope,
-): boolean {
+export function isAmbiguousSharedStoreKey(key: string, mainKey: string): boolean {
   const raw = key.trim();
-  const lower = normalizeLowercaseStringOrEmpty(raw);
-  if (!raw || lower === "global" || lower === "unknown") {
-    return false;
-  }
-  if (
-    scope === "global" &&
-    canonicalizeMainSessionAlias({
-      cfg: { session: { scope, mainKey } },
-      agentId: DEFAULT_AGENT_ID,
-      sessionKey: lower,
-    }) === "global"
-  ) {
-    return false;
-  }
-  return !resolveCanonicalAgentSessionOwner(raw) || isLegacyDefaultMainAliasKey(lower, mainKey);
+  return (
+    Boolean(raw) &&
+    (!resolveCanonicalAgentSessionOwner(raw) ||
+      isLegacyDefaultMainAliasKey(normalizeLowercaseStringOrEmpty(raw), mainKey))
+  );
 }
 
 export function aliasedSessionStoreMigrationWarning(params: {
@@ -483,76 +386,11 @@ export function resolveStaleLegacySessionFile(params: {
 
 function sessionStoreMayNeedCanonicalization(params: {
   store: Record<string, SessionEntryLike>;
-  storeAgentIds: Iterable<string>;
-  mainKey: string;
-  scope?: SessionScope;
-  preserveForeignMainAliases?: boolean;
 }): boolean {
-  const storeAgentIds = new Set([...params.storeAgentIds].map((id) => normalizeAgentId(id)));
-  const hasNonMainAgent = [...storeAgentIds].some((id) => id !== DEFAULT_AGENT_ID);
-  for (const key of Object.keys(params.store)) {
-    const rawKey = key.trim();
-    if (rawKey !== key) {
-      return true;
-    }
-    if (!rawKey) {
-      continue;
-    }
-    const lowerKey = normalizeLowercaseStringOrEmpty(rawKey);
-    if (lowerKey !== rawKey) {
-      return true;
-    }
-    if (lowerKey === "global" || lowerKey === "unknown") {
-      continue;
-    }
-    if (
-      params.preserveForeignMainAliases &&
-      isLegacyDefaultMainAliasKey(lowerKey, params.mainKey)
-    ) {
-      return true;
-    }
-    if (lowerKey === DEFAULT_MAIN_KEY || lowerKey === params.mainKey) {
-      return true;
-    }
-    if (lowerKey.startsWith("subagent:")) {
-      return true;
-    }
-    if (lowerKey.startsWith("group:") || lowerKey.startsWith("channel:")) {
-      return true;
-    }
-    if (!lowerKey.startsWith("agent:")) {
-      return true;
-    }
-    const rowOwner = resolveCanonicalAgentSessionOwner(rawKey);
-    if (!rowOwner) {
-      return true;
-    }
-    const agentMainAlias = `agent:${rowOwner}:${DEFAULT_MAIN_KEY}`;
-    const agentMainKey = `agent:${rowOwner}:${params.mainKey}`;
-    if (
-      lowerKey === agentMainAlias &&
-      (params.mainKey !== DEFAULT_MAIN_KEY || params.scope === "global")
-    ) {
-      return true;
-    }
-    if (lowerKey === agentMainKey && params.scope === "global") {
-      return true;
-    }
-    if (
-      lowerKey === `agent:${DEFAULT_AGENT_ID}:${DEFAULT_MAIN_KEY}` &&
-      (params.mainKey !== DEFAULT_MAIN_KEY || hasNonMainAgent || params.scope === "global")
-    ) {
-      return true;
-    }
-    if (
-      lowerKey === `agent:${DEFAULT_AGENT_ID}:${params.mainKey}` &&
-      hasNonMainAgent &&
-      !storeAgentIds.has(DEFAULT_AGENT_ID)
-    ) {
-      return true;
-    }
-  }
-  return false;
+  return Object.keys(params.store).some((key) => {
+    const normalized = normalizeSessionKeyPreservingOpaquePeerIds(key);
+    return key !== normalized || !resolveCanonicalAgentSessionOwner(normalized);
+  });
 }
 
 export function listLegacySessionKeys(params: {
@@ -561,7 +399,6 @@ export function listLegacySessionKeys(params: {
   mainKey: string;
   scope?: SessionScope;
   preserveAmbiguousKeys?: boolean;
-  preserveForeignMainAliases?: boolean;
   legacySessionSurfaces?: PreparedLegacySessionSurfaces["surfaces"];
 }): string[] {
   const legacy: string[] = [];
@@ -571,10 +408,7 @@ export function listLegacySessionKeys(params: {
       agentId: params.agentId,
       mainKey: params.mainKey,
       scope: params.scope,
-      skipCrossAgentRemap: params.preserveAmbiguousKeys,
-      preserveCanonicalAgentOwner: params.preserveAmbiguousKeys,
       preserveAmbiguousKeys: params.preserveAmbiguousKeys,
-      preserveForeignMainAliases: params.preserveForeignMainAliases,
       legacySessionSurfaces: params.legacySessionSurfaces,
     });
     if (canonical !== key) {
@@ -728,10 +562,6 @@ export async function migrateOrphanedSessionKeys(params: {
       !parsed.ok ||
       !sessionStoreMayNeedCanonicalization({
         store: parsed.store,
-        storeAgentIds,
-        mainKey,
-        scope,
-        preserveForeignMainAliases: pluginForeignMainAliasRisk,
       })
     ) {
       continue;
@@ -753,7 +583,7 @@ export async function migrateOrphanedSessionKeys(params: {
     const preserveAmbiguousKeys = storeAgentIds.size > 1;
     const preservedAmbiguousKeyCount = Object.keys(working).filter(
       (key) =>
-        (preserveAmbiguousKeys && isAmbiguousSharedStoreKey(key, mainKey, scope)) ||
+        (preserveAmbiguousKeys && isAmbiguousSharedStoreKey(key, mainKey)) ||
         (pluginForeignMainAliasRisk && isLegacyDefaultMainAliasKey(key, mainKey)),
     ).length;
     if (storeAliases.hasUnresolvedIdentity) {
@@ -786,10 +616,7 @@ export async function migrateOrphanedSessionKeys(params: {
         agentId: storeAgentId,
         mainKey,
         scope,
-        skipCrossAgentRemap: preserveAmbiguousKeys,
-        preserveCanonicalAgentOwner: true,
         preserveAmbiguousKeys,
-        preserveForeignMainAliases: pluginForeignMainAliasRisk,
         legacySessionSurfaces: legacySessionSurfaces.surfaces,
       });
       working = canonicalized;
@@ -958,7 +785,7 @@ export async function migrateLegacyAcpSessionMetadata(params: {
     }
     const ambiguousKeyCount = Object.keys(parsed.store).filter(
       (key) =>
-        isAmbiguousSharedStoreKey(key, mainKey, scope) ||
+        isAmbiguousSharedStoreKey(key, mainKey) ||
         (pluginForeignMainAliasRisk && isLegacyDefaultMainAliasKey(key, mainKey)),
     ).length;
     const hasLegacyAcpMetadata = Object.entries(parsed.store).some(
@@ -1003,7 +830,7 @@ export async function migrateLegacyAcpSessionMetadata(params: {
         continue;
       }
       if (normalizedEntry.acp) {
-        const ambiguousSharedStoreKey = isAmbiguousSharedStoreKey(sessionKey, mainKey, scope);
+        const ambiguousSharedStoreKey = isAmbiguousSharedStoreKey(sessionKey, mainKey);
         const ambiguousMultiOwnerKey = agentIds.size > 1 && ambiguousSharedStoreKey;
         const foreignMainAlias =
           pluginForeignMainAliasRisk && isLegacyDefaultMainAliasKey(sessionKey, mainKey);
@@ -1018,7 +845,6 @@ export async function migrateLegacyAcpSessionMetadata(params: {
           agentId: rowAgentId,
           mainKey,
           scope,
-          skipCrossAgentRemap: true,
           legacySessionSurfaces: params.legacySessionSurfaces.surfaces,
         });
         const imported = importLegacyAcpSessionMetadata({

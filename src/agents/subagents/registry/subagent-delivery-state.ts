@@ -1,3 +1,8 @@
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import {
+  parseAgentSessionKey,
+  scopeLegacySessionKeyToAgent,
+} from "../../../routing/session-key.js";
 import { normalizeAgentRunTerminalReplySnapshot } from "../../agent-run-terminal-reply.js";
 import type {
   SubagentCompletionDeliveryState,
@@ -83,7 +88,41 @@ export function projectSubagentRunForMaintenance(
   };
 }
 
+export function normalizeSubagentRunSessionKeys<
+  T extends Pick<
+    SubagentRunReadRecord,
+    "requesterSessionKey" | "requesterAgentId" | "controllerSessionKey" | "swarmRequesterSessionKey"
+  >,
+>(entry: T): T {
+  // A child can execute on another agent; only requester evidence can qualify its parent.
+  const agentId =
+    normalizeOptionalString(entry.requesterAgentId) ??
+    parseAgentSessionKey(entry.requesterSessionKey)?.agentId;
+  if (agentId) {
+    for (const field of [
+      "requesterSessionKey",
+      "controllerSessionKey",
+      "swarmRequesterSessionKey",
+    ] as const) {
+      const sessionKey = entry[field];
+      if (sessionKey && !parseAgentSessionKey(sessionKey)) {
+        entry[field] = scopeLegacySessionKeyToAgent({ agentId, sessionKey }) ?? sessionKey;
+      }
+    }
+  }
+  return entry;
+}
+
 export function normalizeSubagentRunState(entry: SubagentRunRecord): SubagentRunRecord {
+  normalizeSubagentRunSessionKeys(entry);
+  const agentId = parseAgentSessionKey(entry.requesterSessionKey)?.agentId;
+  if (entry.delivery?.payload && agentId) {
+    entry.delivery.payload.requesterSessionKey =
+      scopeLegacySessionKeyToAgent({
+        agentId,
+        sessionKey: entry.delivery.payload.requesterSessionKey,
+      }) ?? entry.delivery.payload.requesterSessionKey;
+  }
   const taskRunId = typeof entry.taskRunId === "string" ? entry.taskRunId.trim() : "";
   entry.taskRunId = taskRunId || undefined;
   const requesterTurnRunId =

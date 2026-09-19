@@ -14,6 +14,7 @@ export {
   buildAgentMainSessionKey,
   DEFAULT_MAIN_KEY,
   normalizeMainKey,
+  normalizeAgentSessionKeyParts,
   parseAgentSessionKeyParts,
   type ParsedAgentSessionKey,
 } from "./session-key.js";

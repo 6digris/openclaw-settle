@@ -6,10 +6,7 @@ import {
 import { buildSubagentRunReadIndex } from "../../../agents/subagents/registry/subagent-registry-read.js";
 import type { SubagentRunRecord } from "../../../agents/subagents/registry/subagent-registry.types.js";
 import { buildSubagentRunView } from "../../../agents/subagents/registry/subagent-run-view.js";
-import {
-  resolveInternalSessionKey,
-  resolveMainSessionAlias,
-} from "../../../agents/tools/sessions-helpers.js";
+import { resolveInternalSessionKey } from "../../../agents/tools/sessions-helpers.js";
 import { isNativeCommandTurn, resolveCommandTurnContext } from "../../command-turn-context.js";
 import { commandReply } from "../command-gates.js";
 import { extractSubagentMessageText, type ChatMessage } from "../commands-subagents-text.js";
@@ -108,8 +105,7 @@ export function resolveRequesterSessionKey(
   if (!raw) {
     return undefined;
   }
-  const { mainKey, alias } = resolveMainSessionAlias(params.cfg);
-  return resolveInternalSessionKey({ key: raw, alias, mainKey });
+  return resolveInternalSessionKey({ key: raw, agentId: params.agentId, cfg: params.cfg });
 }
 
 export function buildSubagentsHelp() {

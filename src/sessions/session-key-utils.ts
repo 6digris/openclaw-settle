@@ -5,7 +5,7 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import {
-  parseAgentSessionKeyParts,
+  normalizeAgentSessionKeyParts,
   type ParsedAgentSessionKey,
 } from "@openclaw/session-url-contract";
 import { pruneMapToMaxSize } from "../infra/map-size.js";
@@ -213,10 +213,15 @@ function collectCasePreservedSpans(raw: string): PreservedSpan[] {
 export function normalizeSessionKeyPreservingOpaquePeerIds(
   sessionKey: string | undefined | null,
 ): string {
-  const raw = normalizeOptionalString(sessionKey);
-  if (!raw) {
+  const input = normalizeOptionalString(sessionKey);
+  if (!input) {
     return "";
   }
+  const admitted = normalizeAgentSessionKeyParts(input);
+  return normalizeSessionKeyCase(admitted.ok ? admitted.value.sessionKey : input);
+}
+
+function normalizeSessionKeyCase(raw: string): string {
   const cached = readNormalizedSessionKeyCache(raw);
   if (cached !== undefined) {
     return cached;
@@ -256,7 +261,12 @@ export function normalizeSessionKeyPreservingOpaquePeerIds(
 export function parseAgentSessionKey(
   sessionKey: string | undefined | null,
 ): ParsedAgentSessionKey | null {
-  return parseAgentSessionKeyParts(normalizeSessionKeyPreservingOpaquePeerIds(sessionKey));
+  const admitted = normalizeAgentSessionKeyParts(normalizeOptionalString(sessionKey) ?? "");
+  if (!admitted.ok) {
+    return null;
+  }
+  const { agentId, sessionKey: key } = admitted.value;
+  return { agentId, rest: normalizeSessionKeyCase(key).slice(agentId.length + 7) };
 }
 
 export function isCronRunSessionKey(sessionKey: string | undefined | null): boolean {

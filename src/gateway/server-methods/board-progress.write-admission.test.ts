@@ -195,7 +195,7 @@ describe("board and progress-card database write admission", () => {
                   .prepare(
                     "SELECT revision, grant_state FROM board_widgets WHERE session_key = ? AND name = ?",
                   )
-                  .get(target.sessionKey, "admission"),
+                  .get("agent:work:global", "admission"),
               database,
             );
             expect(unchanged).toEqual({

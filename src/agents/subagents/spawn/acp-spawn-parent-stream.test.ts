@@ -277,12 +277,10 @@ describe("startAcpSpawnParentStreamRelay", () => {
       | undefined;
     expect(progressOptions?.contextKey).toBe("acp-spawn:run-cron:progress");
     expect(progressOptions?.sessionKey).toBe("agent:ops:global");
-    const heartbeatOptions = firstMockCall(requestHeartbeatMock, "heartbeat request")[0] as
-      | { agentId?: string; reason?: string }
-      | undefined;
-    expect(heartbeatOptions?.agentId).toBe("ops");
-    expect(heartbeatOptions?.reason).toBe("acp:spawn:stream");
-    expect(heartbeatOptions).not.toHaveProperty("sessionKey");
+    expect(firstMockCall(requestHeartbeatMock, "heartbeat request")[0]).toMatchObject({
+      sessionKey: "agent:ops:global",
+      reason: "acp:spawn:stream",
+    });
     relay.dispose();
   });
 

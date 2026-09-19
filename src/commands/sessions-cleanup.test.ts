@@ -246,6 +246,7 @@ describe("sessionsCleanupCommand", () => {
     expect(mocks.callGateway).toHaveBeenCalledOnce();
     const gatewayCall = mocks.callGateway.mock.calls[0]?.[0];
     expect(gatewayCall?.method).toBe("sessions.cleanup");
+    expect(gatewayCall?.caps).toEqual(["canonical-session-keys"]);
     expect(gatewayCall?.params.enforce).toBe(true);
     expect(gatewayCall?.requiredMethods).toEqual(["sessions.cleanup"]);
     expect(mocks.runLocalSessionsCleanup).not.toHaveBeenCalled();

@@ -40,6 +40,13 @@ Pass either a positional target or `--session`, not both. Short references are
 resolved before the scoped attach grant is minted; a missing session is never
 created implicitly.
 
+Home and aliases such as `main` and `global` select a conversation when you
+attach. The grant binds its fully qualified identity. Older Gateways cannot
+preserve exact main sessions or legacy unqualified `global` and `unknown` rows
+in attached tools; update the Gateway before attaching to those sessions.
+Ordinary fully qualified sessions and qualified sentinel rows remain supported
+when they have no conflicting legacy row.
+
 A URL or host target never reuses configured credentials or
 `OPENCLAW_GATEWAY_TOKEN` / `OPENCLAW_GATEWAY_PASSWORD`. It uses the stored
 device token for that exact Gateway origin, or explicit `--token`/`--password`

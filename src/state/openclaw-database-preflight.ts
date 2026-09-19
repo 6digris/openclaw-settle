@@ -311,6 +311,7 @@ export async function preflightOpenClawStateDatabasePath(
 export async function preflightOpenClawDatabaseSchemas(options: {
   env: NodeJS.ProcessEnv;
   onAgentDatabaseDiscovery?: (prepared: PreparedAgentDatabaseMigrationDiscovery) => void;
+  onAgentDatabaseOwner?: (owner: { agentId: string; path: string }) => void;
   onAgentInspection?: (stats: AgentDatabasePreflightStats) => void;
   scope?: "state";
   signal?: AbortSignal;
@@ -590,7 +591,7 @@ export async function preflightOpenClawDatabaseSchemas(options: {
           pathname: realAgentPath,
           agentId: row.agentId,
           supportedVersion: supportedVersions.agent,
-          inspectOwnership,
+          inspectOwnership: inspectOwnership || options.onAgentDatabaseOwner !== undefined,
           verifyCurrentSchemaShape: options.verifyCurrentSchemaShape,
           requireStartupMigrationReadiness: options.requireStartupMigrationReadiness,
         };
@@ -620,6 +621,13 @@ export async function preflightOpenClawDatabaseSchemas(options: {
           throw new Error(`Agent database inspection returned no result: ${agentPath}`);
         }
         const { version: agentVersion, writerAppVersion, agentSchemaMeta } = schemaInspection;
+        if (
+          agentVersion <= supportedVersions.agent &&
+          agentSchemaMeta?.role === "agent" &&
+          agentSchemaMeta.agentId
+        ) {
+          options.onAgentDatabaseOwner?.({ agentId: agentSchemaMeta.agentId, path: agentPath });
+        }
         if (agentVersion <= supportedVersions.agent && inspectOwnership && row.agentId) {
           const refusal = inspectAgentDatabaseAdmission({
             agentId: row.agentId,

@@ -13,7 +13,7 @@ import { tuiTheme as theme } from "../theme/theme.js";
 import type { TuiImageData, TuiImageRequest } from "../tui-backend.js";
 import type { TuiImageSource } from "../tui-images.js";
 
-type ImageScope = Pick<TuiImageRequest, "sessionKey" | "agentId">;
+type ImageScope = Pick<TuiImageRequest, "sessionKey" | "agentId" | "targetIntent">;
 export type TuiImageRendererOptions = {
   loadImage: (request: TuiImageRequest) => Promise<TuiImageData>;
   getScope: () => ImageScope;

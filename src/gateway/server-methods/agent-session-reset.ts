@@ -226,7 +226,7 @@ export async function resolveBareSessionResetResult(params: {
   const bestEffortDeliver =
     typeof params.request.bestEffortDeliver === "boolean"
       ? params.request.bestEffortDeliver
-      : params.sessionKey === mainSessionKey || params.sessionKey === "global"
+      : params.sessionKey === mainSessionKey
         ? true
         : undefined;
   return await deliverBareSessionResetResult({

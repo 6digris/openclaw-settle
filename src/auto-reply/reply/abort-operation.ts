@@ -7,10 +7,7 @@ import { resolveActiveEmbeddedRunSessionId } from "../../agents/embedded-agent-r
 import { abortEmbeddedAgentRun } from "../../agents/embedded-agent-runner/runs.js";
 import { killAllControlledSubagentRuns } from "../../agents/subagents/registry/subagent-control.js";
 import { listSubagentRunsForController } from "../../agents/subagents/registry/subagent-registry-read.js";
-import {
-  resolveInternalSessionKey,
-  resolveMainSessionAlias,
-} from "../../agents/tools/sessions-helpers.js";
+import { resolveInternalSessionKey } from "../../agents/tools/sessions-helpers.js";
 import { resolveSessionStorePathCore } from "../../config/sessions.js";
 import {
   loadSessionEntry,
@@ -122,33 +119,26 @@ function resolveBoundAcpAbortTargetSessionKey(params: {
   });
 }
 
-function normalizeRequesterSessionKey(
-  cfg: OpenClawConfig,
-  key: string | undefined,
-): string | undefined {
-  const cleaned = normalizeOptionalString(key);
-  if (!cleaned) {
-    return undefined;
-  }
-  const { mainKey, alias } = resolveMainSessionAlias(cfg);
-  return resolveInternalSessionKey({ key: cleaned, alias, mainKey });
-}
-
 export async function stopSubagentsForRequester(params: {
   cfg: OpenClawConfig;
   requesterSessionKey?: string;
   requesterAgentId?: string;
   beforeKill?: Parameters<typeof killAllControlledSubagentRuns>[0]["beforeKill"];
 }): Promise<{ stopped: number; failed: number }> {
-  const requesterKey = normalizeRequesterSessionKey(params.cfg, params.requesterSessionKey);
-  if (!requesterKey) {
+  const raw = normalizeOptionalString(params.requesterSessionKey);
+  if (!raw) {
     await params.beforeKill?.();
     return { stopped: 0, failed: 0 };
   }
   const controllerAgentId = resolveSessionAgentId({
     config: params.cfg,
-    sessionKey: requesterKey,
+    sessionKey: raw,
     fallbackAgentId: params.requesterAgentId,
+  });
+  const requesterKey = resolveInternalSessionKey({
+    key: raw,
+    agentId: controllerAgentId,
+    cfg: params.cfg,
   });
   const result = await killAllControlledSubagentRuns({
     cfg: params.cfg,

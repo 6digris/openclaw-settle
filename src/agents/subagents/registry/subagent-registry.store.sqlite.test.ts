@@ -15,6 +15,7 @@ import {
   repairOpenClawStateDatabaseSchema,
 } from "../../../state/openclaw-state-db.js";
 import { withEnvAsync } from "../../../test-utils/env.js";
+import { listSubagentRunsForController } from "./subagent-registry-read.js";
 import {
   clearSubagentRunsReadCacheForTest,
   getSubagentRunsSnapshotForRead,
@@ -31,6 +32,7 @@ import {
   loadSubagentRunsForSessionsFromSqlite,
   saveSubagentRegistryChangesToSqlite,
   saveSubagentRegistryToSqlite,
+  hasSubagentSessionOwnerInDatabase,
 } from "./subagent-registry.store.sqlite.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
@@ -153,6 +155,67 @@ describe("subagent registry sqlite store", () => {
     }
     return await withEnvAsync({ OPENCLAW_STATE_DIR: tempStateDir }, fn);
   }
+
+  it.each([false, true])(
+    "qualifies retained requester aliases across full and compact readers (private=%s)",
+    async (privateCompletion) => {
+      await withTempStateEnv(async () => {
+        const runs = ["research", "operations"].map((requesterAgentId) =>
+          createRun({
+            runId: requesterAgentId,
+            childSessionKey: `agent:worker:subagent:${requesterAgentId}`,
+            requesterSessionKey: "global",
+            controllerSessionKey: "global",
+            requesterAgentId,
+            ...(privateCompletion ? { completionTarget: "parent" as const } : {}),
+          }),
+        );
+        saveSubagentRegistryToSqlite(new Map(runs.map((run) => [run.runId, run])));
+        const database = openOpenClawStateDatabase();
+        expect(readSubagentRun(database, "research")?.requesterSessionKey).toBe(
+          "agent:research:global",
+        );
+        // Query columns, not stale payload identities, own retained session membership.
+        for (const run of runs) {
+          database.db
+            .prepare(
+              "UPDATE subagent_runs SET requester_session_key = 'global', controller_session_key = 'global', payload_json = ? WHERE run_id = ?",
+            )
+            .run(JSON.stringify(privateCompletion ? { parentCompletion: run } : run), run.runId);
+        }
+        const key = "agent:research:global";
+        const expected = {
+          requesterSessionKey: key,
+          controllerSessionKey: key,
+          childSessionKey: "agent:worker:subagent:research",
+        };
+        expect(loadSubagentRegistryFromSqlite().get("research")).toMatchObject(expected);
+        expect(loadSubagentRunsForControllerFromSqlite(key).map((run) => run.runId)).toEqual([
+          "research",
+        ]);
+        clearSubagentRunsReadCacheForTest();
+        await withEnvAsync({ OPENCLAW_TEST_READ_SUBAGENT_RUNS_FROM_SQLITE: "1" }, async () => {
+          expect(
+            listSubagentRunsForController("global", "research").map((run) => run.runId),
+          ).toEqual(["research"]);
+        });
+        expect([...loadSubagentSessionListRunsFromSqlite([key]).keys()]).toEqual(["research"]);
+        for (const projection of ["full", "session-list"] as const) {
+          const selected =
+            projection === "full"
+              ? loadSubagentRunsForSessionsFromSqlite([key], [], "full")
+              : loadSubagentRunsForSessionsFromSqlite([key], [], "session-list");
+          expect([...selected.runs.keys()]).toEqual(["research"]);
+          expect(selected.runs.get("research")).toMatchObject(expected);
+        }
+        expect(hasSubagentSessionOwnerInDatabase(database, key)).toBe(true);
+        expect(hasSubagentSessionOwnerInDatabase(database, "agent:worker:global")).toBe(false);
+        database.db.prepare("UPDATE subagent_runs SET payload_json = '{}'").run();
+        expect(hasSubagentSessionOwnerInDatabase(database, key)).toBe(true);
+        expect(hasSubagentSessionOwnerInDatabase(database, "agent:worker:global")).toBe(true);
+      });
+    },
+  );
 
   it.each(["empty", "whole"] as const)(
     "reuses a complete %s compact tree with isolated full records and owner writes",

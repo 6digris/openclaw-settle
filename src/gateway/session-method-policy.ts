@@ -64,6 +64,78 @@ const SESSION_TARGET_FIELDS_BY_METHOD = new Map<string, readonly SessionMutation
   ["tools.invoke", ["sessionKey"]],
 ]);
 
+type SessionRequestTargetField = SessionMutationTargetField | "keys" | "sessionKeys" | "spawnedBy";
+const SESSION_WIRE_TARGET_FIELDS_BY_METHOD = new Map<string, readonly SessionRequestTargetField[]>([
+  ...[
+    "session.publicShare.set",
+    "session.visibility.set",
+    "session.members.list",
+    "session.members.listEvidence",
+    "session.members.add",
+    "session.members.remove",
+    "session.suggestions.add",
+    "session.suggestions.list",
+    "session.suggestions.resolve",
+    "session.typing",
+    "artifacts.download",
+    "board.get",
+    "board.widget.appView",
+    "chat.history",
+    "chat.startup",
+    "chat.metadata",
+    "chat.message.get",
+    "chat.toolTitles",
+    "commands.list",
+    "models.list",
+    "tools.effective",
+    "question.request",
+    "exec.approval.request",
+    "plugin.approval.request",
+    "tasks.list",
+    "sessions.branches.list",
+    "sessions.files.list",
+    "sessions.files.get",
+    "sessions.diff",
+    "skills.library.list",
+    "skills.library.read",
+    "talk.voice.get",
+  ].map((method) => [method, ["sessionKey"]] as const),
+  ...[
+    "sessions.messages.subscribe",
+    "sessions.messages.unsubscribe",
+    "sessions.describe",
+    "sessions.files.reveal",
+    "sessions.compaction.list",
+    "sessions.usage",
+    "sessions.usage.timeseries",
+    "sessions.usage.logs",
+  ].map((method) => [method, ["key"]] as const),
+  ["sessions.get", ["key", "sessionKey"]],
+  ["sessions.list", ["spawnedBy"]],
+  ["sessions.subscribe", ["spawnedBy"]],
+  ["sessions.viewers.set", ["sessionKeys"]],
+  ["sessions.resolve", ["key", "spawnedBy"]],
+  ["sessions.preview", ["keys"]],
+  ["sessions.search", ["sessionKeys"]],
+]);
+
+/** Wire selector ownership is broader than mutation authorization. */
+export function sessionRequestTargetFields(method: string): readonly SessionRequestTargetField[] {
+  return (
+    SESSION_TARGET_FIELDS_BY_METHOD.get(method) ??
+    SESSION_WIRE_TARGET_FIELDS_BY_METHOD.get(method) ??
+    []
+  );
+}
+
+/** Previews have always processed the first 64 nonblank selectors. */
+export function normalizeSessionPreviewKeys(keys: readonly string[]): string[] {
+  return keys
+    .map((key) => key.trim())
+    .filter(Boolean)
+    .slice(0, 64);
+}
+
 const REQUIRED_SESSION_TARGET_METHODS = new Set([
   "skills.library.activate",
   "board.action",

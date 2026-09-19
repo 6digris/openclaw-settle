@@ -61,16 +61,14 @@ openclaw tui --local
 
 - Agents are unique slugs (e.g. `main`, `research`). The Gateway exposes the list.
 - Sessions belong to the current agent.
-- Session keys are stored as `agent:<agentId>:<sessionKey>`.
-  - If you type `/session main`, the TUI expands it to `agent:<currentAgent>:main`.
-  - If you type `/session agent:other:main`, you switch to that agent session explicitly.
-- Session scope:
-  - `per-sender` (default): each agent has many sessions.
-  - `global`: the TUI always uses the `global` session (the picker may be empty).
+- Session identities are fully qualified: `agent:<agentId>:<sessionKey>`. Short aliases are resolved when you select a session.
+  - `/session main` selects **Home** for the current agent. Home follows session scope: `agent:<currentAgent>:main` for `per-sender` (default), or `agent:<currentAgent>:global` for `global`.
+  - `/session agent:other:main` selects that exact conversation, even if Home points elsewhere. Session picker selections are also exact.
+- Session scope chooses Home; it does not prevent selecting other conversations.
 - The current agent + session are always visible in the footer.
 - If the session has a [goal](/tools/goal), the footer shows its compact state:
   `Pursuing goal`, `Goal paused (/goal resume)`, `Goal blocked (/goal resume)`, or `Goal achieved`.
-- When started without `--session`, gateway-mode TUI resumes the last selected session. The gateway, agent, and session scope must match, and that session must still exist. Passing `--session`, `/session`, `/new`, or `/reset` remains explicit.
+- When started without `--session`, gateway-mode TUI resumes the last selected session. The gateway, agent, and session scope must match, and that session must still exist. Restoration checks its exact identity, so newer sessions with similar names cannot hide it. Remembered Home selections follow Home, while fully qualified selections remain exact after restart. Older fully qualified preferences retain their recorded conversation. Passing `--session`, `/session`, `/new`, or `/reset` remains explicit.
 
 ## Sending + delivery
 
@@ -301,6 +299,13 @@ disabled by default inside tmux and GNU Screen. Sixel is not supported.
 - The TUI connects with client id `openclaw-tui` under the coarse `ui` client mode. Control UI and WebChat use that same mode for Gateway policy.
 - Reconnects show a system message. Event gaps are surfaced in the log.
 
+Older Gateways, including 2026.9.4, still support Home and ordinary session keys.
+When an older Gateway cannot preserve an exact selection for an operation, the
+TUI refuses that operation and asks you to update the Gateway or choose Home.
+If legacy `global` and `agent:<agentId>:global` records contain distinct session
+IDs, update and repair the Gateway before selecting that identity. They are
+never silently merged; aliases with the same session ID represent one conversation.
+
 ## Options
 
 - `--local`: Run against the local embedded agent runtime
@@ -308,7 +313,7 @@ disabled by default inside tmux and GNU Screen. Sixel is not supported.
 - `--token <token>`: Gateway token (if required)
 - `--password <password>`: Gateway password (if required)
 - `--tls-fingerprint <sha256>`: Expected TLS certificate fingerprint for a pinned `wss://` Gateway
-- `--session <key>`: Session key (default: `main`, or `global` when scope is global)
+- `--session <key>`: Session selection (default: remembered session or Home). Bare `main` selects the current agent's Home; a fully qualified key selects an exact conversation.
 - `--deliver`: Deliver assistant replies to the provider (default off)
 - `--thinking <level>`: Override thinking level for sends
 - `--message <text>`: Send an initial message after connecting
@@ -332,7 +337,7 @@ No output after sending a message:
 
 - `disconnected`: ensure the Gateway is running and your `--url/--token/--password` are correct.
 - No agents in picker: check `openclaw agents list` and your routing config.
-- Empty session picker: you might be in global scope or have no sessions yet.
+- Empty session picker: you might have no sessions updated in the last 7 days. Use `/session <key>` for an older known session.
 
 ## Related
 

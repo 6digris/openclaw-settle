@@ -21,6 +21,7 @@ import {
   acknowledgeSessionStateNotices,
   classifySessionStateActor,
   getSessionStateVersion,
+  getSessionStateVersions,
   handleSessionStateSessionDeleted,
   handleSessionStateSessionReset,
   listAmbientGroupWatchTargets,
@@ -295,6 +296,28 @@ describe("session state events", () => {
     expect(listSessionStateEventsSince(child, "main", 0, 200, database).events).toHaveLength(1);
   });
 
+  it("does not replay historical creation when its alias becomes canonical", () => {
+    const database = createDatabaseOptions();
+    const { db } = openOpenClawStateDatabase(database);
+    db.prepare(`INSERT INTO session_state_events
+      (dedupe_key, session_key, session_id, agent_id, kind, actor_type, occurred_at, summary)
+      VALUES ('created:ops:global:original', 'global', 'original', 'ops', 'created', 'human', ?, 'session created')`).run(
+      Date.now(),
+    );
+    recordSessionCreated(cfg, {
+      sessionKey: "agent:ops:global",
+      agentId: "ops",
+      entry: {
+        sessionId: "original",
+        updatedAt: Date.now(),
+        createdActor: { type: "human", id: "operator", source: "profile" },
+      },
+    });
+    expect(db.prepare("SELECT dedupe_key, session_key FROM session_state_events").all()).toEqual([
+      { dedupe_key: "created:ops:global:original", session_key: "global" },
+    ]);
+  });
+
   it("re-enqueues and re-freezes pending notices after restart", async () => {
     const database = createDatabaseOptions();
     await createWatcherSession(database);
@@ -481,7 +504,7 @@ describe("session state events", () => {
     expect(getSessionStateVersion(child, "main", database)).toBe(fresh.sequence);
   });
 
-  it("suppresses cursors and notices for agent-ambiguous bare watcher keys", () => {
+  it("suppresses notices for ownerless keys without changing historical cursors", async () => {
     const database = createDatabaseOptions();
     const event = recordSessionStateEvent(
       eventInput({ watcherSessionKeys: ["global"] }),
@@ -489,47 +512,128 @@ describe("session state events", () => {
     )!;
     expect(event.sequence).toBeGreaterThan(0);
     expect(peekSystemEventEntries("agent:main:global")).toEqual([]);
+    expect(peekSystemEventEntries("agent:ops:global")).toEqual([]);
     const cursorRow = openOpenClawStateDatabase(database)
       .db.prepare("SELECT COUNT(*) AS n FROM session_watch_cursors")
       .get() as { n: number };
     expect(cursorRow.n).toBe(0);
+    await createWatcherSession(database);
+    openOpenClawStateDatabase(database)
+      .db.prepare(`INSERT INTO session_watch_cursors
+      (watcher_session_key, target_session_key, material_sequence, updated_at)
+      VALUES (?, 'global', ?, ?)`)
+      .run(watcher, event.sequence, Date.now());
+    sweepSessionStateWatchNotices(database);
+    expect(peekSystemEventEntries(watcher)).toEqual([]);
+    expect(readCursor(database, watcher, "global")).toEqual({
+      last_seen_sequence: 0,
+      notified_sequence: 0,
+      material_sequence: event.sequence,
+    });
   });
 
-  it("keeps same-keyed global sessions independent across agents", () => {
-    const database = createDatabaseOptions();
-    const mainEvent = recordSessionStateEvent(
-      eventInput({
-        sessionKey: "global",
-        agentId: "main",
-        kind: "goal_changed",
-        actorType: "human",
-        watcherSessionKeys: [],
-      }),
-      database,
-    )!;
-    const opsEvent = recordSessionStateEvent(
-      eventInput({
-        sessionKey: "global",
-        agentId: "ops",
-        kind: "goal_changed",
-        actorType: "human",
-        watcherSessionKeys: [],
-      }),
-      database,
-    )!;
+  it.each(["global", "unknown"])(
+    "preserves %s history across canonical identity cutover",
+    (alias) => {
+      const database = createDatabaseOptions();
+      const { db } = openOpenClawStateDatabase(database);
+      const now = Date.now();
+      const canonical = `agent:main:${alias}`;
+      const opsKey = `agent:ops:${alias}`;
+      const inserted = db
+        .prepare(`INSERT INTO session_state_events
+      (session_key, agent_id, kind, actor_type, occurred_at, summary, payload_json)
+      VALUES (?, 'main', 'goal_changed', 'human', ?, 'historical', '{ "original": true }')`)
+        .run(alias, now - 100);
+      const historicalSequence = Number(inserted.lastInsertRowid);
+      db.prepare(`INSERT INTO session_state_heads
+      (session_key, agent_id, last_sequence, updated_at) VALUES (?, 'main', ?, ?)`).run(
+        alias,
+        historicalSequence,
+        now,
+      );
 
-    expect(getSessionStateVersion("global", "main", database)).toBe(mainEvent.sequence);
-    expect(getSessionStateVersion("global", "ops", database)).toBe(opsEvent.sequence);
-    expect(
-      listSessionStateEventsSince("global", "main", 0, 200, database).events.map(
-        (event) => event.sequence,
-      ),
-    ).toEqual([mainEvent.sequence]);
+      expect(getSessionStateVersion(canonical, "main", database)).toBe(historicalSequence);
+      const mainEvent = recordSessionStateEvent(
+        eventInput({
+          sessionKey: canonical,
+          agentId: "main",
+          kind: "goal_changed",
+          actorType: "human",
+          watcherSessionKeys: [],
+        }),
+        { ...database, now },
+      )!;
+      const opsEvent = recordSessionStateEvent(
+        eventInput({
+          sessionKey: alias,
+          agentId: "ops",
+          kind: "goal_changed",
+          actorType: "human",
+          watcherSessionKeys: [],
+        }),
+        { ...database, now },
+      )!;
 
-    handleSessionStateSessionDeleted("global", "ops", database);
-    expect(getSessionStateVersion("global", "ops", database)).toBe(0);
-    expect(getSessionStateVersion("global", "main", database)).toBe(mainEvent.sequence);
-  });
+      expect(opsEvent.sessionKey).toBe(opsKey);
+      expect(getSessionStateVersion(alias, "main", database)).toBe(mainEvent.sequence);
+      expect(getSessionStateVersion(opsKey, "ops", database)).toBe(opsEvent.sequence);
+      expect(
+        getSessionStateVersions(
+          [
+            { sessionKey: canonical, agentId: "main" },
+            { sessionKey: opsKey, agentId: "ops" },
+          ],
+          database,
+        ),
+      ).toEqual({
+        main: { [canonical]: mainEvent.sequence },
+        ops: { [opsKey]: opsEvent.sequence },
+      });
+      expect(
+        getSessionStateVersions([{ sessionKey: canonical, agentId: "main" }], database),
+      ).toEqual({ main: { [canonical]: mainEvent.sequence } });
+      const firstPage = listSessionStateEventsSince(canonical, "main", 0, 1, database);
+      expect(firstPage).toMatchObject({
+        events: [{ sessionKey: canonical, sequence: historicalSequence }],
+        truncated: true,
+        historyGap: false,
+        earliestAvailableSequence: historicalSequence,
+      });
+      expect(
+        listSessionStateEventsSince(
+          canonical,
+          "main",
+          historicalSequence,
+          200,
+          database,
+        ).events.map((event) => event.sequence),
+      ).toEqual([mainEvent.sequence]);
+      expect(
+        db
+          .prepare("SELECT session_key, payload_json FROM session_state_events WHERE sequence = ?")
+          .get(historicalSequence),
+      ).toEqual({ session_key: alias, payload_json: '{ "original": true }' });
+
+      sweepSessionStateWatchNotices({ ...database, now: now + SESSION_STATE_RETENTION_MS - 50 });
+      expect(listSessionStateEventsSince(canonical, "main", 0, 200, database)).toMatchObject({
+        events: [{ sequence: mainEvent.sequence }],
+        historyGap: true,
+        earliestAvailableSequence: mainEvent.sequence,
+      });
+      expect(getSessionStateVersion(canonical, "main", database)).toBe(mainEvent.sequence);
+      db.prepare(`INSERT INTO session_watch_cursors
+      (watcher_session_key, target_session_key, updated_at) VALUES (?, ?, ?)`).run(
+        watcher,
+        alias,
+        now,
+      );
+      handleSessionStateSessionDeleted(canonical, "main", database);
+      expect(getSessionStateVersion(alias, "main", database)).toBe(0);
+      expect(getSessionStateVersion(opsKey, "ops", database)).toBe(opsEvent.sequence);
+      expect(readCursor(database, watcher, alias)).toBeDefined();
+    },
+  );
 
   it("acks only drained session-state entries and ignores ordinary events", async () => {
     const database = createDatabaseOptions();
@@ -590,45 +694,57 @@ describe("session state events", () => {
     });
   });
 
-  it("registers explicit watchers who get notices only for later changes", () => {
-    const database = createDatabaseOptions();
-    const preRegistration = recordSessionStateEvent(
-      eventInput({ watcherSessionKeys: [] }),
-      database,
-    )!;
+  it.each([
+    { targetKey: child, agentId: "main", targetCanonical: child, watcherKey: watcher },
+    {
+      targetKey: "global",
+      agentId: "ops",
+      targetCanonical: "agent:ops:global",
+      watcherKey: "agent:main:global",
+    },
+  ])(
+    "registers explicit watchers for $targetCanonical without crossing agents",
+    ({ targetKey, agentId, targetCanonical, watcherKey }) => {
+      const database = createDatabaseOptions();
+      const input = eventInput({ sessionKey: targetKey, agentId, watcherSessionKeys: [] });
+      const registration = {
+        watcherSessionKey: watcherKey,
+        targetSessionKey: targetKey,
+        targetAgentId: agentId,
+      };
+      const preRegistration = recordSessionStateEvent(input, database)!;
 
-    expect(registerSessionStateWatch({ watcherSessionKey: child, targetSessionKey: child })).toBe(
-      false,
-    );
-    expect(
-      registerSessionStateWatch({ watcherSessionKey: "global", targetSessionKey: child }),
-    ).toBe(false);
-    expect(
-      registerSessionStateWatch({ watcherSessionKey: watcher, targetSessionKey: child }, database),
-    ).toBe(true);
+      expect(registerSessionStateWatch({ watcherSessionKey: child, targetSessionKey: child })).toBe(
+        false,
+      );
+      expect(
+        registerSessionStateWatch({ watcherSessionKey: "global", targetSessionKey: child }),
+      ).toBe(false);
+      expect(registerSessionStateWatch(registration, database)).toBe(true);
 
-    expect(peekSystemEventEntries(watcher)).toHaveLength(0);
-    expect(readCursor(database)).toMatchObject({ last_seen_sequence: preRegistration.sequence });
+      expect(peekSystemEventEntries(watcherKey)).toHaveLength(0);
+      expect(readCursor(database, watcherKey, targetCanonical)).toMatchObject({
+        last_seen_sequence: preRegistration.sequence,
+      });
 
-    const afterRegistration = recordSessionStateEvent(
-      eventInput({ watcherSessionKeys: [] }),
-      database,
-    )!;
-    expect(peekSystemEventEntries(watcher)).toHaveLength(1);
-    expect(peekSystemEventEntries(watcher)[0]?.text).toContain(
-      `changesSince ${preRegistration.sequence}`,
-    );
+      const afterRegistration = recordSessionHumanDirectMessage(
+        { sessionKey: targetKey, agentId, actor: { actorType: "human" } },
+        database,
+      )!;
+      expect(peekSystemEventEntries(watcherKey)).toHaveLength(1);
+      expect(peekSystemEventEntries(watcherKey)[0]?.text).toContain(
+        `changesSince ${preRegistration.sequence}`,
+      );
 
-    // Re-registering must keep the pending-notice cursor intact.
-    expect(
-      registerSessionStateWatch({ watcherSessionKey: watcher, targetSessionKey: child }, database),
-    ).toBe(true);
-    expect(readCursor(database)).toEqual({
-      last_seen_sequence: preRegistration.sequence,
-      notified_sequence: afterRegistration.sequence,
-      material_sequence: afterRegistration.sequence,
-    });
-  });
+      // Re-registering must keep the pending-notice cursor intact.
+      expect(registerSessionStateWatch(registration, database)).toBe(true);
+      expect(readCursor(database, watcherKey, targetCanonical)).toEqual({
+        last_seen_sequence: preRegistration.sequence,
+        notified_sequence: afterRegistration.sequence,
+        material_sequence: afterRegistration.sequence,
+      });
+    },
+  );
 
   it("registers one ambient main watcher for a distinct group session", () => {
     const database = createDatabaseOptions();

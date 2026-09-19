@@ -35,5 +35,13 @@ export type SessionDeliveryWorkerOperations = {
   };
   "sessionDelivery.load": { input: { id: string }; output: QueuedSessionDelivery | null };
   "sessionDelivery.list": { input: undefined; output: QueuedSessionDelivery[] };
+  "sessionDelivery.recordIdentityBlock": {
+    input: { entry: QueuedSessionDelivery };
+    output: { entry: QueuedSessionDelivery | null; blocked: boolean };
+  };
+  "sessionDelivery.blockedSummary": {
+    input: undefined;
+    output: Array<{ queueName: string; count: number; oldestEnqueuedAt: number; reason: string }>;
+  };
   "sessionDelivery.moveToFailed": { input: { id: string }; output: void };
 };

@@ -31,8 +31,6 @@ import {
 } from "./legacy-store-inspection.js";
 import { SessionStoreMigrationRequiredError } from "./migration-required.js";
 import { resolveSqliteReadScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
-import { isCanonicalSqliteSessionMainKeyCurrent } from "./session-canonical-key-read.js";
-import { setCanonicalSqliteSessionMainKey } from "./session-canonical-key.js";
 import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
 import { resolveAllAgentSessionStoreTargetsSync, resolveSessionStoreTargets } from "./targets.js";
 import type { migrateManagedWorktreeCanonicalWorkspaces } from "./worktree-workspace-migration.js";
@@ -228,16 +226,8 @@ export async function runSessionStartupMigration(params: {
     let handedOff = false;
     try {
       try {
-        const mainKey = params.cfg.session?.mainKey;
-        if (
-          !registeredDatabases.has(`${options.agentId}\0${databasePath}`) ||
-          !isCanonicalSqliteSessionMainKeyCurrent(options, mainKey)
-        ) {
-          await withOpenClawAgentDatabaseAsync(
-            options,
-            (database) => setCanonicalSqliteSessionMainKey(database, mainKey),
-            params.assertCurrent,
-          );
+        if (!registeredDatabases.has(`${options.agentId}\0${databasePath}`)) {
+          await withOpenClawAgentDatabaseAsync(options, () => {}, params.assertCurrent);
         }
       } catch (error) {
         params.assertCurrent?.();

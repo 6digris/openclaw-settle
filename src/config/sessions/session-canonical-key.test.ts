@@ -2,6 +2,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { insertLegacySession } from "../../commands/doctor-session-canonical-keys.test-support.js";
 import { FIRST_USE_ADDITIVE_AGENT_COLUMN_DEFINITIONS } from "../../state/openclaw-agent-db-additive-columns.js";
 import {
   closeOpenClawAgentDatabaseByPath,
@@ -21,8 +22,6 @@ import {
 import { scanDoctorSessionEntriesStrict } from "./session-accessor.sqlite-canonical-inventory.js";
 import { readSessionEntryCache } from "./session-accessor.sqlite-entry-cache.js";
 import { ensureTranscriptSessionRoot } from "./session-accessor.sqlite-transcript-state.js";
-import { appendTranscriptEventInTransaction } from "./session-accessor.sqlite-transcript-store.js";
-import { setCanonicalSqliteSessionMainKey } from "./session-canonical-key.js";
 import type { SessionEntry } from "./types.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -32,17 +31,89 @@ afterEach(() => {
   closeOpenClawStateDatabaseForTest();
 });
 
-function createScope() {
+function createScope(agentId = "main") {
   const stateDir = tempDirs.make("openclaw-cold-session-keys-");
   return {
-    agentId: "main",
+    agentId,
     env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
-    storePath: path.join(stateDir, "agents/main/agent/openclaw-agent.sqlite"),
-    sessionKey: "agent:main:cold-key",
+    storePath: path.join(stateDir, "agents", agentId, "agent", "openclaw-agent.sqlite"),
+    sessionKey: `agent:${agentId}:cold-key`,
   };
 }
 
 describe("cold canonical session validation", () => {
+  it("normalizes a new SQLite destination and its explicit owner together", () => {
+    const scope = createScope("bad-agent");
+    replaceSessionEntrySync(
+      { ...scope, agentId: " Bad Agent ", sessionKey: "agent:Bad Agent:cold-key" },
+      { sessionId: "normalized", updatedAt: 1, label: "stored" },
+    );
+    expect(loadSessionEntryReadOnly(scope)?.label).toBe("stored");
+    expect(
+      listSessionEntriesReadOnly({ ...scope, projection: "list" }).map(
+        ({ sessionKey }) => sessionKey,
+      ),
+    ).toEqual([scope.sessionKey]);
+  });
+  it.each(["!!!", " ", ""])(
+    "refuses an invalid explicit SQLite owner without touching main: %s",
+    (agentId) => {
+      const scope = createScope();
+      replaceSessionEntrySync(scope, { sessionId: "cold-key", updatedAt: 1, label: "retained" });
+      const invalidScope = { ...scope, agentId };
+      expect(() =>
+        replaceSessionEntrySync(invalidScope, {
+          sessionId: "cold-key",
+          updatedAt: 2,
+          label: "redirected",
+        }),
+      ).toThrow();
+      expect(() => loadSessionEntryReadOnly(invalidScope)).toThrow();
+      expect(loadSessionEntryReadOnly(scope)?.label).toBe("retained");
+    },
+  );
+  it("preserves colliding historical owner spellings and refuses store admission", () => {
+    const scope = createScope("bad-agent");
+    replaceSessionEntrySync(scope, { sessionId: "canonical", updatedAt: 1, label: "canonical" });
+    insertLegacySession({
+      ...scope,
+      sessionKey: "agent:bad agent:cold-key",
+      entry: { sessionId: "legacy", updatedAt: 2, label: "legacy" },
+    });
+    openOpenClawAgentDatabase({ ...scope, path: scope.storePath })
+      .db.prepare("UPDATE session_nodes SET entry_valid = 1 WHERE session_key = ?")
+      .run("agent:bad agent:cold-key");
+    closeOpenClawAgentDatabasesForTest();
+    const database = new DatabaseSync(scope.storePath);
+    try {
+      const read = () =>
+        database
+          .prepare("SELECT session_key, entry_json FROM session_nodes ORDER BY session_key")
+          .all();
+      const before = read();
+      expect(before).toHaveLength(2);
+      expect(() => listSessionEntriesReadOnly({ ...scope, projection: "list" })).toThrow(
+        "openclaw doctor --fix",
+      );
+      expect(read()).toEqual(before);
+    } finally {
+      database.close();
+    }
+  });
+  it("refuses noncanonical lineage owners without changing the stored row", () => {
+    const scope = createScope();
+    replaceSessionEntrySync(scope, { sessionId: "cold-key", updatedAt: 1, label: "retained" });
+    for (const parentSessionKey of [
+      "agent:bad agent:notes",
+      "agent: bad :notes",
+      "agent:---:notes",
+    ]) {
+      expect(() =>
+        replaceSessionEntrySync(scope, { sessionId: "cold-key", updatedAt: 2, parentSessionKey }),
+      ).toThrow();
+      expect(loadSessionEntryReadOnly(scope)?.label).toBe("retained");
+    }
+  });
   it("lists existing metadata without creating absent first-use columns", () => {
     const scope = createScope();
     replaceSessionEntrySync(scope, { sessionId: "cold-key", updatedAt: 1, label: "existing" });
@@ -197,77 +268,29 @@ describe("cold canonical session validation", () => {
     ).toEqual(["repaired", "repaired"]);
   });
 
-  it("rejects the retired main alias on a cold listing", () => {
+  it("keeps qualified identities writable after an old reader's main-key policy changes", () => {
     const scope = { ...createScope(), sessionKey: "agent:main:main" };
-    replaceSessionEntrySync(scope, { sessionId: "main-alias", updatedAt: 1 });
+    replaceSessionEntrySync(scope, {
+      sessionId: "retained-main",
+      updatedAt: 1,
+      parentSessionKey: "agent:main:custom",
+    });
     const database = openOpenClawAgentDatabase({ ...scope, path: scope.storePath });
-    setCanonicalSqliteSessionMainKey(database, "custom");
+    database.db.prepare("UPDATE session_key_contract SET main_key = ? WHERE id = 1").run("custom");
     closeOpenClawAgentDatabasesForTest();
-    expect(() => listSessionEntriesReadOnly({ ...scope, projection: "list" })).toThrow(
-      "openclaw doctor --fix",
-    );
-  });
-
-  it("revalidates a changed policy before refusing a warm transcript root", () => {
-    const scope = createScope();
-    const otherKey = "agent:main:z-later";
-    const otherEntry = { sessionId: "later", updatedAt: 1 };
-    replaceSessionEntrySync(scope, { sessionId: "cold-key", updatedAt: 1 });
-    replaceSessionEntrySync({ ...scope, sessionKey: otherKey }, otherEntry);
-    const database = openOpenClawAgentDatabase({ ...scope, path: scope.storePath });
-    runOpenClawAgentWriteTransaction(
-      (writer) => {
-        ensureTranscriptSessionRoot(writer, { ...scope, sessionId: "cold-key" }, 1);
+    expect(listSessionEntriesReadOnly({ ...scope, projection: "list" })).toMatchObject([
+      {
+        sessionKey: scope.sessionKey,
+        entry: { sessionId: "retained-main", parentSessionKey: "agent:main:custom" },
       },
-      { ...scope, path: scope.storePath },
-    );
-    const append = () =>
-      runOpenClawAgentWriteTransaction(
-        (writer) =>
-          appendTranscriptEventInTransaction(
-            writer,
-            { ...scope, sessionKey: "agent:main:main", sessionId: "new-root" },
-            { type: "message", id: "new-message", message: { role: "user", content: "new" } },
-          ),
-        { ...scope, path: scope.storePath },
-      );
-    // A separate writer changes policy without clearing this reader's warm validation.
-    const external = new DatabaseSync(scope.storePath);
-    try {
-      external.prepare("UPDATE session_key_contract SET main_key = ? WHERE id = 1").run("custom");
-      external
-        .prepare("UPDATE session_nodes SET entry_json = '{' WHERE session_key = ?")
-        .run(otherKey);
-      expect(append).toThrow(
-        "invalid persisted session row requires repair for agent:main:z-later",
-      );
-      external
-        .prepare("UPDATE session_nodes SET entry_json = ? WHERE session_key = ?")
-        .run(JSON.stringify(otherEntry), otherKey);
-      external
-        .prepare("UPDATE session_nodes SET entry_valid = 1 WHERE session_key = ?")
-        .run(otherKey);
-      expect(append).toThrow("refusing non-canonical session key write agent:main:main");
-      expect(
-        database.db
-          .prepare("SELECT session_id FROM session_windows WHERE session_id = ?")
-          .get("new-root"),
-      ).toBeUndefined();
-      expect(
-        database.db
-          .prepare("SELECT seq FROM transcript_events WHERE session_id = ?")
-          .all("new-root"),
-      ).toEqual([]);
-      external.prepare("UPDATE session_key_contract SET main_key = ? WHERE id = 1").run("main");
-      expect(append()).toEqual(expect.any(String));
-      expect(
-        database.db
-          .prepare("SELECT seq FROM transcript_events WHERE session_id = ?")
-          .all("new-root"),
-      ).toEqual([{ seq: 0 }]);
-    } finally {
-      external.close();
-    }
+    ]);
+    replaceSessionEntrySync(scope, {
+      sessionId: "retained-main",
+      updatedAt: 2,
+      parentSessionKey: "agent:main:custom",
+      label: "continued",
+    });
+    expect(loadSessionEntryReadOnly(scope)?.label).toBe("continued");
   });
 
   it.each([false, true])(

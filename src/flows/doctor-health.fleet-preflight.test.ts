@@ -5,6 +5,8 @@ import path from "node:path";
 import { beforeEach, expect, it, vi } from "vitest";
 import * as configFlow from "../commands/doctor-config-flow.js";
 import { prepareDoctorDatabasePreflight } from "../commands/doctor-database-preflight.js";
+import { insertLegacySession } from "../commands/doctor-session-canonical-keys.test-support.js";
+import * as doctorUpdate from "../commands/doctor-update.js";
 import { resolveConfiguredAgentDatabaseTargets } from "../config/sessions/targets.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { SQLITE_READONLY_CHILD_ARG } from "../infra/runtime-process-entrypoints.js";
@@ -42,6 +44,51 @@ beforeEach(() => {
   mocks.runContributions.mockReset();
 });
 
+it("refuses colliding histories before diagnostic Doctor can activate capture or offer an update", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const storePath = state.statePath("sessions.sqlite");
+    const cfg: OpenClawConfig = {
+      agents: { entries: { main: {} } },
+      session: { store: storePath },
+    };
+    await state.writeConfig(cfg);
+    mocks.config.mockReturnValue(cfg);
+    for (const [sessionKey, sessionId] of [
+      ["global", "legacy"],
+      ["agent:main:global", "qualified"],
+    ] as const) {
+      insertLegacySession({
+        agentId: "main",
+        env: state.env,
+        storePath,
+        sessionKey,
+        entry: { sessionId, updatedAt: 1 },
+      });
+    }
+    closeOpenClawAgentDatabasesForTest();
+    closeOpenClawStateDatabaseForTest();
+    const before = fs.readFileSync(storePath);
+    const offerUpdate = vi.spyOn(doctorUpdate, "maybeOfferUpdateBeforeDoctor");
+    const activateCapture = vi.fn();
+    try {
+      await expect(
+        runDoctorHealthFlow(
+          { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+          { nonInteractive: true },
+          undefined,
+          undefined,
+          activateCapture,
+        ),
+      ).rejects.toThrow(/session identity conflict/);
+      expect(offerUpdate).not.toHaveBeenCalled();
+      expect(activateCapture).not.toHaveBeenCalled();
+      expect(fs.readFileSync(storePath)).toEqual(before);
+    } finally {
+      offerUpdate.mockRestore();
+    }
+  });
+});
+
 it("shares one fleet preflight with Doctor admission and its health contribution", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const cfg: OpenClawConfig = {
@@ -70,9 +117,19 @@ it("shares one fleet preflight with Doctor admission and its health contribution
       vi.mocked(fork).mockClear();
       vi.mocked(spawn).mockClear();
       const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
-      await runDoctorHealthFlow(runtime, { nonInteractive: true });
+      const activateCapture = vi.fn();
+      await runDoctorHealthFlow(
+        runtime,
+        { nonInteractive: true },
+        undefined,
+        undefined,
+        activateCapture,
+      );
 
       expect(mocks.runContributions).toHaveBeenCalledOnce();
+      expect(activateCapture).toHaveBeenCalledOnce();
+      expect(inspect).toHaveBeenCalledBefore(activateCapture);
+      expect(activateCapture).toHaveBeenCalledBefore(mocks.runContributions);
       expect(runtime.error).not.toHaveBeenCalled();
       expect(runtime.exit).not.toHaveBeenCalled();
       expect(inspect.mock.calls.filter(([options]) => options.scope !== "state")).toHaveLength(1);

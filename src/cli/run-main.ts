@@ -6,7 +6,6 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { Command as CommanderCommand, Option as CommanderOption } from "commander";
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
-import type { DoctorDatabasePreflight } from "../commands/doctor-database-preflight.js";
 import {
   createInvalidConfigError,
   formatInvalidConfigDetails,
@@ -16,7 +15,7 @@ import type { ConfigFileSnapshot, OpenClawConfig } from "../config/types.opencla
 import { isLoopbackAddress, isSecureWebSocketUrl } from "../gateway/net.js";
 import { normalizeWebSocketProtocol } from "../gateway/websocket-protocol.js";
 import { FLAG_TERMINATOR, isValueToken } from "../infra/cli-root-options.js";
-import { isTruthyEnvValue, normalizeEnv } from "../infra/env.js";
+import { normalizeEnv } from "../infra/env.js";
 import type { ProxyHandle } from "../infra/net/proxy/proxy-lifecycle.js";
 import { tryProcessCwd } from "../infra/safe-cwd.js";
 import type { PluginCliLoadSession } from "../plugins/cli-registry-loader.js";
@@ -28,6 +27,10 @@ import {
   normalizeRootLogLevelArgv,
   normalizeRootNoColorArgv,
 } from "./argv.js";
+import {
+  bootstrapCliProxyCapture,
+  isDebugProxyCaptureEnvEnabled,
+} from "./command-execution-startup.js";
 import {
   isReservedNonPluginCommandRoot,
   shouldSkipPluginCommandRegistration,
@@ -743,13 +746,6 @@ async function ensureCliEnvProxyDispatcher(): Promise<void> {
   }
 }
 
-function isDebugProxyCaptureEnvEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return (
-    isTruthyEnvValue(env.OPENCLAW_DEBUG_PROXY_ENABLED) ||
-    isTruthyEnvValue(env.OPENCLAW_DEBUG_PROXY_REQUIRE)
-  );
-}
-
 function shouldBootstrapCliProxyBeforeFastPath(env: NodeJS.ProcessEnv = process.env): boolean {
   if (isDebugProxyCaptureEnvEnabled(env)) {
     return true;
@@ -932,31 +928,6 @@ async function resolveUnownedCliPrimaryError(params: {
 async function createExpectedPluginPolicyError(message: string): Promise<Error> {
   const { ExpectedCliError } = await import("./failure-output.js");
   return new ExpectedCliError({ message, humanOutput: message, machineOutput: message });
-}
-
-async function bootstrapCliProxyCaptureAndDispatcher(
-  startupTrace: ReturnType<typeof createGatewayDispatchStartupTrace>,
-  options: { ensureDispatcher?: boolean } = {},
-): Promise<void> {
-  // Capture init, exit finalize, and coverage warnings all no-op unless the
-  // debug-proxy env requests capture; importing their sqlite-store graph anyway
-  // costs ~100 MB RSS on metadata-only commands such as `plugins list --json`.
-  if (isDebugProxyCaptureEnvEnabled()) {
-    const [
-      { initializeDebugProxyCapture, finalizeDebugProxyCapture },
-      { maybeWarnAboutDebugProxyCoverage },
-    ] = await startupTrace.measure("proxy-imports", () =>
-      Promise.all([import("../proxy-capture/runtime.js"), import("../proxy-capture/coverage.js")]),
-    );
-    initializeDebugProxyCapture("cli");
-    process.once("exit", () => {
-      finalizeDebugProxyCapture();
-    });
-    maybeWarnAboutDebugProxyCoverage(undefined, (message) => console.warn(message));
-  }
-  if (options.ensureDispatcher !== false) {
-    await startupTrace.measure("proxy-dispatcher", () => ensureCliEnvProxyDispatcher());
-  }
 }
 
 export async function runCli(
@@ -1143,14 +1114,13 @@ async function runCliWithPreparedOutputMode(
       }
     });
   }
-  let doctorDatabasePreflight: DoctorDatabasePreflight | undefined;
   if (!isHelpOrVersionInvocation && normalizedInvocation.primary === "doctor") {
-    // Debug capture can migrate shared state before Commander reaches Doctor.
-    // Resolve the update guard after selectors settle, before any bootstrap writer.
+    // Preserve the installed updater's schema guard before CLI bootstrap.
     const { guardUpdateDoctorSchemaUpgrade } =
       await import("../commands/doctor-update-schema-guard.js");
-    doctorDatabasePreflight = await guardUpdateDoctorSchemaUpgrade({
+    await guardUpdateDoctorSchemaUpgrade({
       json: options.builtInMachineOutput,
+      checkSessionIdentity: false,
     });
   }
   await configureStartupTraces();
@@ -1300,8 +1270,17 @@ async function runCliWithPreparedOutputMode(
   };
   let uninstallGatewayRunRuntimeHooks: (() => void) | null = null;
   let unhandledRejectionHandlerInstalled = false;
+  let releaseCaptureDeferral: (() => void) | undefined;
 
   try {
+    if (
+      !isHelpOrVersionInvocation &&
+      normalizedInvocation.primary === "doctor" &&
+      isDebugProxyCaptureEnvEnabled()
+    ) {
+      const { deferDebugProxyCapture } = await import("../proxy-capture/runtime-owner.js");
+      releaseCaptureDeferral = deferDebugProxyCapture();
+    }
     const startupTraces = [startupTrace, options.additionalStartupTrace].filter(
       (trace): trace is ReturnType<typeof createGatewayDispatchStartupTrace> => Boolean(trace),
     );
@@ -1519,9 +1498,12 @@ async function runCliWithPreparedOutputMode(
     }
 
     if (!isHelpOrVersionInvocation && !isDatabaseInvocation) {
-      await bootstrapCliProxyCaptureAndDispatcher(startupTrace, {
-        ensureDispatcher: shouldUseCliEnvProxy,
-      });
+      if (normalizedInvocation.primary !== "doctor") {
+        await bootstrapCliProxyCapture(startupTrace);
+      }
+      if (shouldUseCliEnvProxy) {
+        await startupTrace.measure("proxy-dispatcher", () => ensureCliEnvProxyDispatcher());
+      }
     }
 
     if (
@@ -1587,7 +1569,9 @@ async function runCliWithPreparedOutputMode(
         ]),
       );
       const program = await startupTrace.measure("build-program", () =>
-        buildProgram({ doctorDatabasePreflight }),
+        buildProgram({
+          activateDoctorCapture: () => bootstrapCliProxyCapture(startupTrace),
+        }),
       );
       await options.harnessCleanup?.pluginResources?.waitForRegistrations();
 
@@ -1730,13 +1714,17 @@ async function runCliWithPreparedOutputMode(
       stopStartupProgress();
     }
   } finally {
-    pluginCliSession?.close();
-    uninstallGatewayRunRuntimeHooks?.();
-    const resources = options.harnessCleanup?.pluginResources;
-    await runCliDisposer("managed-proxy", stopStartedProxy, resources?.runCleanup);
-    await closeCliResources(options.harnessCleanup);
-    if (!resources) {
-      pauseNonTtyStdinForCliExit();
+    try {
+      pluginCliSession?.close();
+      uninstallGatewayRunRuntimeHooks?.();
+      const resources = options.harnessCleanup?.pluginResources;
+      await runCliDisposer("managed-proxy", stopStartedProxy, resources?.runCleanup);
+      await closeCliResources(options.harnessCleanup);
+      if (!resources) {
+        pauseNonTtyStdinForCliExit();
+      }
+    } finally {
+      releaseCaptureDeferral?.();
     }
   }
 }

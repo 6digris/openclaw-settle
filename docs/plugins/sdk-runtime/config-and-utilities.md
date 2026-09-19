@@ -31,6 +31,13 @@ Use `current()`, a passed-in `cfg`, `mutateConfigFile(...)`, or
 
 For direct SDK imports, prefer the focused config subpaths over the broad `openclaw/plugin-sdk/config-runtime` compatibility barrel: `config-contracts` for types, `runtime-config-snapshot` for current process snapshots, and `config-mutation` for writes. Read entry-scoped values from `api.pluginConfig`; use a supplied tool context only for its runtime-wide config snapshot, and keep plugin-specific merging at that boundary. Bundled plugin tests should mock these focused subpaths directly instead of mocking the broad compatibility barrel.
 
+The existing `canonicalizeMainSessionAlias` export in `config-runtime` and
+`session-store-runtime` retains its published selector contract: main aliases
+return bare `global` under global scope, and non-main selectors remain unchanged.
+Pass the selected agent with that selector at Gateway ingress. The Gateway
+resolves it once; internal fully qualified identities remain exact across Home
+configuration changes.
+
 When using the direct `config-mutation` import to replace a source snapshot, pass
 the edited config as `sourceConfig` to `replaceConfigFile`, retaining its `snapshot`,
 `baseHash`, `writeOptions`, and explicit `afterWrite` policy. Runtime-derived

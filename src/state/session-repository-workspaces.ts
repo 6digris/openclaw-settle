@@ -4,6 +4,10 @@ import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { Selectable, Updateable } from "kysely";
 import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
+import {
+  resolveLegacySessionKeyCandidates,
+  toAgentStoreSessionKey,
+} from "../routing/session-key.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { ensureSessionRepositoryWorkspaceSchema } from "./openclaw-state-db-schema-additive.js";
 import { tableExists } from "./openclaw-state-db-schema-helpers.js";
@@ -56,7 +60,7 @@ function project(row: Selectable<SessionRepositoryWorkspaces>): SessionRepositor
   return {
     workspaceId: row.workspace_id,
     agentId: row.agent_id,
-    sessionKey: row.session_key,
+    sessionKey: toAgentStoreSessionKey({ agentId: row.agent_id, requestKey: row.session_key }),
     url: row.url,
     requestedRef: row.requested_ref,
     runSetupScript: row.run_setup_script === 1,
@@ -98,7 +102,8 @@ function findWorkspace(
       .selectFrom(table)
       .selectAll()
       .where("agent_id", "=", owner.agentId)
-      .where("session_key", "=", owner.sessionKey),
+      .where("session_key", "in", resolveLegacySessionKeyCandidates(owner))
+      .orderBy("session_key", "asc"),
   );
   return row ? project(row) : undefined;
 }
@@ -174,7 +179,10 @@ export function createSessionRepositoryWorkspaceStore(
       },
     ): SessionRepositoryWorkspaceRecord {
       const agentId = bounded(input.agentId, "agent id", 128);
-      const sessionKey = bounded(input.sessionKey, "session key", 1024);
+      const sessionKey = toAgentStoreSessionKey({
+        agentId,
+        requestKey: bounded(input.sessionKey, "session key", 1024),
+      });
       const url = bounded(input.url, "URL", 4096);
       const requestedRef =
         input.requestedRef === undefined ? null : bounded(input.requestedRef, "ref", 1024);

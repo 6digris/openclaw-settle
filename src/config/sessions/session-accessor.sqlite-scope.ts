@@ -8,8 +8,9 @@ import { formatErrorMessageWithCode } from "../../infra/errors.js";
 import { getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { getChildLogger } from "../../logging/logger.js";
 import {
+  classifySessionKeyShape,
   isIncognitoSessionKey,
-  normalizeAgentId,
+  normalizeAgentIdStrict,
   parseAgentSessionKey,
   resolveAgentIdFromSessionKey,
   toAgentStoreSessionKey,
@@ -304,8 +305,10 @@ function resolveSqliteDatabaseScope(
   scope: SqliteScopeInput,
   targetCache?: SessionSqliteTargetResolutionCache,
 ) {
-  const parsedAgentId = parseAgentSessionKey(scope.sessionKey)?.agentId;
-  const scopedAgentId = scope.agentId ? normalizeAgentId(scope.agentId) : parsedAgentId;
+  const scopedAgentId = resolveSqliteAgentId({
+    scopedAgentId: scope.agentId,
+    sessionKey: scope.sessionKey,
+  });
   const incognitoAgentId = isIncognitoSessionKey(scope.sessionKey)
     ? resolveAgentIdFromSessionKey(scope.sessionKey)
     : undefined;
@@ -349,10 +352,7 @@ export function resolveSqliteScope(
   }
   const normalizedSessionKey = normalizeSqliteSessionKey(scope.sessionKey);
   const sessionKey =
-    !normalizedSessionKey ||
-    normalizedSessionKey === "global" ||
-    normalizedSessionKey === "unknown" ||
-    parseAgentSessionKey(normalizedSessionKey)
+    !normalizedSessionKey || parseAgentSessionKey(normalizedSessionKey)
       ? normalizedSessionKey
       : toAgentStoreSessionKey({ agentId, requestKey: normalizedSessionKey });
   return { agentId, ...database, sessionKey };
@@ -370,7 +370,13 @@ export function resolveSqliteReadScope(
   if (!agentId) {
     throw new Error("Cannot resolve SQLite transcript read scope without an agent id");
   }
-  return { agentId, ...database, ...(sessionKey ? { sessionKey } : {}) };
+  return {
+    agentId,
+    ...database,
+    ...(sessionKey
+      ? { sessionKey: toAgentStoreSessionKey({ agentId, requestKey: sessionKey }) }
+      : {}),
+  };
 }
 
 function resolveCachedSqliteStoreTarget(
@@ -430,7 +436,15 @@ export function resolveSqliteAgentId(
 ): string;
 export function resolveSqliteAgentId(params: ResolveSqliteAgentIdParams): string | undefined;
 export function resolveSqliteAgentId(params: ResolveSqliteAgentIdParams): string | undefined {
-  const scopedAgentId = params.scopedAgentId ? normalizeAgentId(params.scopedAgentId) : undefined;
+  if (classifySessionKeyShape(params.sessionKey) === "malformed_agent") {
+    throw new Error("Malformed agent session key; refusing SQLite session admission.");
+  }
+  const explicit =
+    params.scopedAgentId === undefined ? null : normalizeAgentIdStrict(params.scopedAgentId);
+  if (explicit && !explicit.ok) {
+    throw new Error("Invalid explicit agent id; refusing SQLite session admission.");
+  }
+  const scopedAgentId = explicit?.value;
   if (
     scopedAgentId &&
     params.storeAgentId &&

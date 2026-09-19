@@ -22,9 +22,6 @@ function buildGatewaySessionEventFields(params: {
   activeRunIds?: string[] | null;
 }): Record<string, unknown> {
   const { sessionRow } = params;
-  const omitUnscopedGlobalGoal = sessionRow.key === "global" && !params.agentId;
-  const omitUnscopedSwarm =
-    (sessionRow.key === "global" || sessionRow.key === "unknown") && !params.agentId;
   return {
     updatedAt: sessionRow.updatedAt ?? undefined,
     sessionId: sessionRow.sessionId,
@@ -56,7 +53,7 @@ function buildGatewaySessionEventFields(params: {
     spawnedBy: sessionRow.spawnedBy,
     controlOwnerSessionKey: sessionRow.controlOwnerSessionKey ?? null,
     swarmGroupId: sessionRow.swarmGroupId,
-    ...(!Object.hasOwn(sessionRow, "swarm") || omitUnscopedSwarm
+    ...(!Object.hasOwn(sessionRow, "swarm")
       ? {}
       : {
           swarm: sessionRow.swarm
@@ -118,7 +115,7 @@ function buildGatewaySessionEventFields(params: {
     lastThreadId: sessionRow.lastThreadId,
     totalTokens: sessionRow.totalTokens,
     totalTokensFresh: sessionRow.totalTokensFresh,
-    ...(omitUnscopedGlobalGoal ? {} : { goal: sessionRow.goal ?? null }),
+    goal: sessionRow.goal ?? null,
     contextTokens: sessionRow.contextTokens,
     contextBudgetStatus: sessionRow.contextBudgetStatus ?? null,
     estimatedCostUsd: sessionRow.estimatedCostUsd,
@@ -229,12 +226,6 @@ export function buildGatewaySessionSnapshot(params: {
         Object.fromEntries(Object.entries(eventFields).filter(([, value]) => value !== undefined)),
       )
     : undefined;
-  if (session && sessionRow.key === "global" && !params.agentId) {
-    delete session.goal;
-  }
-  if (session && (sessionRow.key === "global" || sessionRow.key === "unknown") && !params.agentId) {
-    delete session.swarm;
-  }
   return {
     ...(session ? { session } : {}),
     ...eventFields,

@@ -38,11 +38,11 @@ it("preserves ordered scoped tasks and their exact delivery rows", async () => {
   const direct = record("direct", { createdAt: 50 });
   const runFirst = record("run\0first", {
     runId: " shared-run ",
-    childSessionKey: " shared-child ",
+    childSessionKey: "agent:main:shared-child",
   });
   const runSecond = record("run-second", { runId: "shared-run", createdAt: 200 });
   const literalEscape = record("run\\u0000first", { runId: "shared-run" });
-  const child = record("child", { childSessionKey: " shared-child " });
+  const child = record("child", { childSessionKey: "agent:main:shared-child" });
   const unrelated = record("unrelated", { runId: " ", childSessionKey: " " });
   const broad = Array.from({ length: 64 }, (_, index) =>
     record(`broad-${String(index).padStart(3, "0")}`, { runId: "broad-run" }),
@@ -50,7 +50,11 @@ it("preserves ordered scoped tasks and their exact delivery rows", async () => {
   const cases: Array<{ scope: TaskRegistryMutationScope; expected: TaskRecord[] }> = [
     { scope: { taskId: "absent", runId: " ", childSessionKey: " " }, expected: [] },
     {
-      scope: { taskId: direct.taskId, runId: " shared-run ", childSessionKey: " shared-child " },
+      scope: {
+        taskId: direct.taskId,
+        runId: " shared-run ",
+        childSessionKey: " agent:main:shared-child ",
+      },
       expected: [direct, child, runFirst, literalEscape, runSecond],
     },
     { scope: { taskId: "absent", runId: "broad-run" }, expected: broad },
@@ -183,7 +187,7 @@ it("isolates supplied connections and rolls back compound task, flow, delivery, 
       taskId: "task-b",
       runtime: "subagent",
       sourceId: "source-b",
-      ownerKey: "owner-b",
+      ownerKey: "agent:main:owner-b",
     };
     const otherFlow: TaskFlowRecord = { ...flow, flowId: "flow-b", ownerKey: "owner-b" };
     runSqliteImmediateTransactionSync(first, () => {
@@ -208,7 +212,9 @@ it("isolates supplied connections and rolls back compound task, flow, delivery, 
     expect(tasks.listTaskRecordsByRuntimeSourceIdInDatabase(first, "subagent", "source-b")).toEqual(
       [otherTask],
     );
-    expect(tasks.listTaskRecordsByOwnerKeyInDatabase(first, "owner-b")).toEqual([otherTask]);
+    expect(tasks.listTaskRecordsByOwnerKeyInDatabase(first, otherTask.ownerKey)).toEqual([
+      otherTask,
+    ]);
     expect(tasks.listTaskRecordsByOwnerKeyInDatabase(first, "missing")).toEqual([]);
     expect(tasks.listTaskRecordsByOwnerKeyInDatabase(first, task.ownerKey)).toEqual([task]);
     runSqliteImmediateTransactionSync(first, () => {

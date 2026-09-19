@@ -117,9 +117,7 @@ async function handleSessionsSearch(params: Record<string, unknown>) {
   }
   const requestedAgentId = typeof params.agentId === "string" ? params.agentId.trim() : undefined;
   const sessionKeys = requestedSessionKeys?.map((sessionKey) =>
-    requestedAgentId
-      ? rt.resolveStoredSessionKeyForAgentStore({ cfg, agentId: requestedAgentId, sessionKey })
-      : rt.resolveSessionStoreKey({ cfg, sessionKey }),
+    rt.resolveSessionStoreKey({ cfg, storeAgentId: requestedAgentId, sessionKey }),
   );
   const agentIds = new Set(
     sessionKeys?.map((sessionKey) =>

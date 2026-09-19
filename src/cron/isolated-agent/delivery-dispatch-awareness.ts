@@ -16,7 +16,6 @@ import type {
   SourceDeliveryOutcome,
   SourceDeliveryVisibleDelivery,
 } from "../../infra/outbound/source-delivery-plan.js";
-import { withSystemEventOwner } from "../../infra/system-event-ownership.js";
 import { hasReplyPayloadContent } from "../../interactive/payload.js";
 import { parseThreadSessionSuffix } from "../../routing/session-key.js";
 import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
@@ -76,9 +75,7 @@ export function resolveCronAwarenessMainSessionKey(params: {
   cfg: OpenClawConfig;
   agentId: string;
 }): string {
-  return params.cfg.session?.scope === "global"
-    ? "global"
-    : resolveAgentMainSessionKey({ cfg: params.cfg, agentId: params.agentId });
+  return resolveAgentMainSessionKey(params);
 }
 
 export function isSameSessionKey(left: string | undefined, right: string | undefined): boolean {
@@ -181,13 +178,10 @@ export async function queueCronAwarenessSystemEvent(params: {
       agentId: params.agentId,
     });
     if (params.queueMainSession) {
-      enqueueSystemEvent(
-        params.text,
-        withSystemEventOwner(
-          { sessionKey: mainSessionKey, contextKey: params.deliveryIdempotencyKey },
-          params.agentId,
-        ),
-      );
+      enqueueSystemEvent(params.text, {
+        sessionKey: mainSessionKey,
+        contextKey: params.deliveryIdempotencyKey,
+      });
     }
     const targetSessionKey = params.targetSessionKey;
     const shouldQueueTargetSession =
@@ -195,11 +189,10 @@ export async function queueCronAwarenessSystemEvent(params: {
       (!isSameSessionKey(targetSessionKey, mainSessionKey) || !params.queueMainSession);
     if (shouldQueueTargetSession) {
       const text = params.targetText ?? formatTargetCronDeliveryAwarenessText(params.text);
-      const options = withSystemEventOwner(
-        { sessionKey: targetSessionKey, contextKey: params.deliveryIdempotencyKey },
-        params.agentId,
-      );
-      enqueueSystemEvent(text, options);
+      enqueueSystemEvent(text, {
+        sessionKey: targetSessionKey,
+        contextKey: params.deliveryIdempotencyKey,
+      });
     }
   } catch (err) {
     await logCronDeliveryWarn(
@@ -315,7 +308,7 @@ function canonicalizeDirectCronRouteSessionKey(params: {
     agentId: params.agentId,
     sessionKey: thread.baseSessionKey,
   });
-  if (canonicalBase === thread.baseSessionKey || canonicalBase === "global") {
+  if (canonicalBase === thread.baseSessionKey) {
     return sessionKey;
   }
   return `${canonicalBase}:thread:${thread.threadId}`;

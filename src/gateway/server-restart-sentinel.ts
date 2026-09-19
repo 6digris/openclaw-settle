@@ -36,12 +36,14 @@ import {
 } from "../infra/session-delivery-queue-storage.js";
 import {
   SessionDeliveryDeadLetteredError,
+  SessionDeliveryDeferredError,
+  resolveSessionDeliveryTarget,
+  resolveSessionDeliveryIdentityBlock,
   SessionDeliverySafeRetryError,
   type QueuedSessionDelivery,
   type QueuedSessionDeliveryPayload,
   type SessionDeliveryRoute,
 } from "../infra/session-delivery-queue.records.js";
-import { withSystemEventOwner } from "../infra/system-event-ownership.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
 import { isPendingControlPlaneUpdateRestartSentinel } from "../infra/update-control-plane-sentinel.js";
 import { recordUpdateRunVerification } from "../infra/update-run-ledger.js";
@@ -108,11 +110,10 @@ function enqueueRestartSentinelWake(
   agentId: string,
   deliveryContext?: DeliveryContext,
 ) {
-  const eventOptions = {
+  enqueueSystemEvent(message, {
     sessionKey,
     ...(deliveryContext ? { deliveryContext } : {}),
-  };
-  enqueueSystemEvent(message, withSystemEventOwner(eventOptions, agentId));
+  });
   requestHeartbeat({
     source: "restart-sentinel",
     intent: "immediate",
@@ -174,15 +175,23 @@ export async function deliverQueuedSessionDelivery(params: {
 }) {
   params.queueContext.admission.assertCurrent();
   const queuedEntry = resolveCorrelatedSubagentDelivery(params.entry);
+  const sessionKey = resolveSessionDeliveryTarget(queuedEntry);
+  if (!sessionKey) {
+    const error = new SessionDeliveryDeferredError(
+      resolveSessionDeliveryIdentityBlock(queuedEntry) ??
+        "legacy session delivery has no retained canonical target",
+    );
+    log.warn(error.message, { queueId: queuedEntry.id });
+    throw error;
+  }
   const { cfg, agentId, entry, storePath, canonicalKey } = loadSessionEntry(
-    queuedEntry.sessionKey,
+    sessionKey,
     queuedEntry.kind === "systemEvent" ? { agentId: queuedEntry.agentId } : undefined,
   );
   const deliveryContext = resolveQueuedSessionDeliveryContext(queuedEntry);
 
   if (queuedEntry.kind === "systemEvent") {
-    const { agentId: systemEventAgentId = agentId, text } = queuedEntry;
-    enqueueRestartSentinelWake(text, canonicalKey, systemEventAgentId, deliveryContext);
+    enqueueRestartSentinelWake(queuedEntry.text, canonicalKey, agentId, deliveryContext);
     return;
   }
 

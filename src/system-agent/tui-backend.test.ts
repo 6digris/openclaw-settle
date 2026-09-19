@@ -1,5 +1,5 @@
 // OpenClaw TUI backend tests cover rescue status integration with the TUI backend.
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { assert, beforeAll, describe, expect, it, vi } from "vitest";
 import * as preparedModelCatalog from "../agents/prepared-model-catalog.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -310,16 +310,8 @@ describe("runSystemAgentTui", () => {
       {
         ...verified,
         runTui: async (opts) => {
-          const backend = opts.backend as unknown as {
-            loadHistory: (opts: { sessionKey: string }) => Promise<{ thinkingLevel: string }>;
-            listSessions: () => Promise<{
-              sessions: Array<{
-                model?: string;
-                modelProvider?: string;
-                thinkingLevel?: string;
-              }>;
-            }>;
-          };
+          const backend = opts.backend;
+          assert(backend);
 
           await expect(
             backend.loadHistory({ sessionKey: "agent:openclaw:main" }),
@@ -333,6 +325,15 @@ describe("runSystemAgentTui", () => {
               },
             ],
           });
+          await expect(
+            backend.describeSession({ sessionKey: "agent:openclaw:main" }),
+          ).resolves.toMatchObject({
+            session: { model: "gpt-5.5", modelProvider: "openai", thinkingLevel: "high" },
+            defaults: { model: "gpt-5.5", modelProvider: "openai" },
+          });
+          await expect(
+            backend.describeSession({ sessionKey: "agent:other:main" }),
+          ).resolves.toMatchObject({ session: null });
           return { exitReason: "exit" };
         },
       },

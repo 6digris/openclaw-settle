@@ -22,6 +22,7 @@ import {
   parseAgentSessionKey,
   resolveAgentIdFromSessionKey,
   resolveEventSessionKey,
+  resolveLegacySessionKeyCandidates,
   scopedHeartbeatWakeOptions,
   isUnscopedSessionKeySentinel,
   scopeLegacySessionKeyToAgent,
@@ -98,11 +99,30 @@ describe("isUnscopedSessionKeySentinel", () => {
   });
 });
 
+describe("resolveLegacySessionKeyCandidates", () => {
+  it.each(["global", "unknown"])("retains the owner's old %s reference only", (alias) => {
+    expect(resolveLegacySessionKeyCandidates({ agentId: "ops", sessionKey: alias })).toEqual([
+      `agent:ops:${alias}`,
+      alias,
+    ]);
+    expect(
+      resolveLegacySessionKeyCandidates({ agentId: "ops", sessionKey: `agent:ops:${alias}` }),
+    ).toEqual([`agent:ops:${alias}`, alias]);
+    expect(
+      resolveLegacySessionKeyCandidates({ agentId: "ops", sessionKey: `agent:research:${alias}` }),
+    ).toEqual([`agent:research:${alias}`]);
+  });
+});
+
 describe("agentSessionKeysMatchByRequestKey", () => {
   it("matches canonical agent keys against their request-key aliases", () => {
     expect(agentSessionKeysMatchByRequestKey("agent:main:main", "main")).toBe(true);
     expect(agentSessionKeysMatchByRequestKey("agent:ops:incident-42", "incident-42")).toBe(true);
     expect(agentSessionKeysMatchByRequestKey("agent:ops:incident-42", "main")).toBe(false);
+    expect(agentSessionKeysMatchByRequestKey("agent:ops:global", "agent:research:global")).toBe(
+      false,
+    );
+    expect(agentSessionKeysMatchByRequestKey("agent:ops:main", "agent:research:main")).toBe(false);
   });
 });
 
@@ -411,28 +431,20 @@ describe("scopedHeartbeatWakeOptions", () => {
     expect("sessionKey" in result).toBe(false);
   });
 
-  it("strips sessionKey for global-scope sessions to preserve unscoped wake behavior", () => {
-    // In session.scope = "global" setups, resolveMainSessionKeyFromConfig() returns "global".
-    // Passing "global" as sessionKey into requestHeartbeatNow would create a targeted wake
-    // that can fail to resolve, breaking hook-triggered heartbeats. scopedHeartbeatWakeOptions
-    // must strip it to preserve the old unscoped behavior.
+  it("preserves an unscoped legacy wake when its input has no owner", () => {
     const result = scopedHeartbeatWakeOptions("global", { reason: "hook:wake" });
     expect(result).toEqual({ reason: "hook:wake" });
     expect("sessionKey" in result).toBe(false);
   });
 
-  it("drops sessionKey but preserves agentId for cron-run keys when scope is global", () => {
-    // Global-scope agents drain the "global" queue automatically; a targeted
-    // wake on agent:<id>:main would be unresolvable. Carry the agent target
-    // so multi-agent global-scope setups still wake the originating agent.
+  it("targets the originating agent's global session for cron-run wakes", () => {
     const result = scopedHeartbeatWakeOptions(
       "agent:ops:cron:job-1:run:xyz",
       { reason: "exec-event" },
       undefined,
       "global",
     );
-    expect(result).toEqual({ reason: "exec-event", agentId: "ops" });
-    expect("sessionKey" in result).toBe(false);
+    expect(result).toEqual({ reason: "exec-event", sessionKey: "agent:ops:global" });
   });
 
   it("threads custom mainKey for cron-run keys under per-sender scope", () => {
@@ -487,18 +499,16 @@ describe("resolveEventSessionKey", () => {
     expect(resolveEventSessionKey("global")).toBe("global");
   });
 
-  it("routes cron-run keys to the global queue when scope is global", () => {
-    // resolveHeartbeatSession drains the literal "global" queue for global-scope
-    // sessions; remapping to agent:<id>:main would strand the event.
+  it("routes cron-run keys to the originating agent's global queue", () => {
     expect(resolveEventSessionKey("agent:ops:cron:job-1:run:xyz", undefined, "global")).toBe(
-      "global",
+      "agent:ops:global",
     );
     expect(resolveEventSessionKey("agent:main:cron:backup:run:abc", "primary", "global")).toBe(
-      "global",
+      "agent:main:global",
     );
     expect(
       resolveEventSessionKey("agent:main:cron:backup:run:abc:subagent:worker", "primary", "global"),
-    ).toBe("global");
+    ).toBe("agent:main:global");
   });
 
   it("treats explicit per-sender scope identically to omitted scope", () => {

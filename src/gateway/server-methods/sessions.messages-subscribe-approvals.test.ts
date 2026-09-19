@@ -260,7 +260,7 @@ describe("sessions.messages.subscribe approval opt-in", () => {
     });
     expect(respond).toHaveBeenCalledWith(
       true,
-      { subscribed: true, key: "global", approvalReplay },
+      { subscribed: true, key: "agent:work:global", approvalReplay },
       undefined,
     );
     expect(loadSessionEntryMock).not.toHaveBeenCalled();
@@ -362,6 +362,7 @@ describe("sessions.messages.subscribe approval opt-in", () => {
     expect(subscribeSessionMessageEvents).toHaveBeenCalledWith(
       "conn-approval-reviewer",
       "agent:main:work",
+      { wireKey: undefined },
     );
     expect(respond).toHaveBeenCalledWith(
       true,

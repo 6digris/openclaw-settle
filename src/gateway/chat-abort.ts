@@ -23,6 +23,7 @@ import {
   type AgentRunDelegatedAuthority,
 } from "../infra/agent-run-registry.js";
 import { jsonUtf8Bytes } from "../infra/json-utf8-bytes.js";
+import { parseAgentSessionKey } from "../routing/session-key.js";
 import { notifyChatAbortControllerRemoved } from "./chat-abort-lifecycle-internal.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.types.js";
 import { appendChatCanvasBlocksToMessage } from "./chat-display-projection.canvas.js";
@@ -34,11 +35,6 @@ import {
   type ChatRunPlanSnapshot,
   type ChatRunState,
 } from "./server-chat-state.js";
-import { resolveRequestedSessionAgentId } from "./session-request-agent.js";
-import {
-  resolveSessionSubscriptionKey,
-  resolveSessionSubscriptionKeys,
-} from "./session-subscription-keys.js";
 
 export type { ChatAbortControllerEntry } from "./chat-abort.types.js";
 
@@ -342,7 +338,7 @@ function normalizeActiveAgentId(agentId: string | undefined): string | undefined
  * Matches a run the same way sessions.list's active-run projection does: an abort
  * entry can hold the requested key while chat run state holds the canonical store
  * key, so accept a match on EITHER `requestedSessionKey` or `canonicalSessionKey`,
- * scoping the shared "global" session by agent. Only runs still projected active
+ * after input aliases have been resolved. Only runs still projected active
  * (`projectSessionActive !== false`, matching sessions.list; the terminal lifecycle
  * flips it to false), not aborted, and visible chat-send runs are returned, so a
  * finalized run — already in persisted history — is not duplicated and hidden
@@ -358,20 +354,7 @@ export function resolveInFlightRunSnapshot(params: {
   defaultAgentId?: string;
 }): InFlightRunSnapshot | undefined {
   const matchesKey = (entry: ChatAbortControllerEntry, key: string): boolean => {
-    if (entry.sessionKey !== key) {
-      return false;
-    }
-    if (key !== "global") {
-      return true;
-    }
-    const requestedAgentId =
-      normalizeActiveAgentId(params.agentId) ?? normalizeActiveAgentId(params.defaultAgentId);
-    if (!requestedAgentId) {
-      return false;
-    }
-    const runAgentId =
-      normalizeActiveAgentId(entry.agentId) ?? normalizeActiveAgentId(params.defaultAgentId);
-    return runAgentId === requestedAgentId;
+    return entry.sessionKey === key;
   };
   // Some callers/tests run without populated run state; guard like
   // collectTrackedActiveSessionRuns so a missing map is a no-op, not a throw.
@@ -501,26 +484,6 @@ export type ChatAbortOps = {
   onRunAborted?: (runId: string) => void;
 };
 
-function resolveChatAbortDeliverySessionKeys(
-  ops: ChatAbortOps,
-  sessionKey: string,
-  agentId: string | undefined,
-): string[] {
-  const scopedAgentId = normalizeActiveAgentId(agentId);
-  if (!scopedAgentId) {
-    return [sessionKey];
-  }
-  const canonicalKey = resolveSessionSubscriptionKey(sessionKey, scopedAgentId);
-  if (canonicalKey === sessionKey) {
-    return [canonicalKey];
-  }
-  return resolveSessionSubscriptionKeys(
-    sessionKey,
-    scopedAgentId,
-    resolveDefaultGlobalAgentId(ops),
-  );
-}
-
 function broadcastChatAborted(
   ops: ChatAbortOps,
   params: {
@@ -535,13 +498,8 @@ function broadcastChatAborted(
 ) {
   const { runId, sessionKey, stopReason } = params;
   const errorMessage = readToolValidationErrorSummary(params.errorMessage);
-  const explicitAgentId = normalizeActiveAgentId(params.agentId);
-  const defaultGlobalAgentId =
-    sessionKey === "global" && !explicitAgentId
-      ? normalizeActiveAgentId(resolveDefaultGlobalAgentId(ops))
-      : undefined;
   const payloadAgentId =
-    sessionKey === "global" ? (explicitAgentId ?? defaultGlobalAgentId) : explicitAgentId;
+    normalizeActiveAgentId(params.agentId) ?? parseAgentSessionKey(sessionKey)?.agentId;
   const payload = {
     runId,
     sessionKey,
@@ -552,23 +510,11 @@ function broadcastChatAborted(
     ...(errorMessage ? { errorMessage } : {}),
     message: params.message ? { ...params.message, timestamp: Date.now() } : undefined,
   };
-  const deliverySessionKeys = resolveChatAbortDeliverySessionKeys(ops, sessionKey, payloadAgentId);
   ops.broadcast("chat", payload, {
-    sessionKeys: deliverySessionKeys,
+    sessionKeys: [sessionKey],
     ...(params.liveTextGroup ? { liveText: { group: params.liveTextGroup } } : {}),
   });
-  for (const deliverySessionKey of deliverySessionKeys) {
-    ops.nodeSendToSession(deliverySessionKey, "chat", payload);
-  }
-}
-
-function resolveDefaultGlobalAgentId(ops: ChatAbortOps): string | undefined {
-  const cfg = ops.getRuntimeConfig?.();
-  if (!cfg) {
-    return undefined;
-  }
-  const resolved = resolveRequestedSessionAgentId(cfg, "global");
-  return resolved.ok ? resolved.agentId : undefined;
+  ops.nodeSendToSession(sessionKey, "chat", payload);
 }
 
 export function isChatAbortControllerEntryAbortable(entry: ChatAbortControllerEntry): boolean {

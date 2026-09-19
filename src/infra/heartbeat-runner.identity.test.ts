@@ -18,7 +18,6 @@ import {
   withTempHeartbeatSandbox,
   type HeartbeatReplySpy,
 } from "./heartbeat-runner.test-utils.js";
-import { withSystemEventOwner } from "./system-event-ownership.js";
 import {
   enqueueSystemEvent,
   peekSystemEventEntries,
@@ -54,7 +53,7 @@ describe("runHeartbeatOnce identity", () => {
   afterEach(() => resetSystemEventsForTest());
 
   it.each([
-    { isolatedSession: false, expectedSessionKey: "global" },
+    { isolatedSession: false, expectedSessionKey: "agent:historian2:global" },
     { isolatedSession: true, expectedSessionKey: "agent:historian2:global:heartbeat" },
   ])(
     "keeps a secondary global heartbeat in its agent store (isolated=$isolatedSession)",
@@ -75,15 +74,14 @@ describe("runHeartbeatOnce identity", () => {
         const historianStorePath = resolveSessionStorePathCore(storeTemplate, {
           agentId: "historian2",
         });
-        await seedSessionStore(mainStorePath, "global", {
+        await seedSessionStore(mainStorePath, "agent:main:global", {
           lastChannel: "slack",
           lastProvider: "slack",
           lastTo: "channel:MAIN",
         });
         const historianScope = { agentId: "historian2", storePath: historianStorePath };
-        // Custom locators and the global key do not imply a database owner.
         await replaceSessionEntry(
-          { ...historianScope, sessionKey: "global" },
+          { ...historianScope, sessionKey: "agent:historian2:global" },
           {
             sessionId: "historian-session",
             updatedAt: Date.now(),
@@ -124,7 +122,7 @@ describe("runHeartbeatOnce identity", () => {
             entry,
           ]),
         );
-        expect(historianStore.global).toBeDefined();
+        expect(historianStore["agent:historian2:global"]).toBeDefined();
         expect(historianStore["agent:historian2:global:heartbeat"] !== undefined).toBe(
           isolatedSession,
         );
@@ -132,50 +130,58 @@ describe("runHeartbeatOnce identity", () => {
     },
   );
 
-  it("runs a global hook wake for an agent without a heartbeat schedule", async () => {
-    await withTempHeartbeatSandbox(async ({ tmpDir, replySpy }) => {
-      const storeTemplate = path.join(tmpDir, "agents", "{agentId}", "sessions.json");
-      const cfg: OpenClawConfig = {
-        agents: {
-          defaults: { workspace: tmpDir },
-          entries: { main: { default: true }, hooks: {} },
-        },
-        session: { scope: "global", store: storeTemplate },
-      };
-      const hooksStorePath = resolveSessionStorePathCore(storeTemplate, { agentId: "hooks" });
-      await seedSessionStore(hooksStorePath, "global", {});
-      enqueueSystemEvent(
-        "Mapped hook wake",
-        withSystemEventOwner({ sessionKey: "global" }, "hooks"),
-      );
-      expect(peekSystemEventEntries("agent:hooks:global").map((event) => event.text)).toEqual([
-        "Mapped hook wake",
-      ]);
-      const systemEventBlocks = mockReplyWithSystemEvents(replySpy, cfg);
+  it.each([
+    { sessionKey: "agent:hooks:global", forcedSessionKey: undefined },
+    { sessionKey: "agent:hooks:main", forcedSessionKey: "agent:hooks:main" },
+    {
+      sessionKey: "agent:hooks:telegram:direct:123",
+      forcedSessionKey: "agent:hooks:telegram:direct:123",
+    },
+  ])(
+    "runs the exact hook wake target $sessionKey after selecting global scope",
+    async ({ sessionKey, forcedSessionKey }) => {
+      await withTempHeartbeatSandbox(async ({ tmpDir, replySpy }) => {
+        const storeTemplate = path.join(tmpDir, "agents", "{agentId}", "sessions.json");
+        const cfg: OpenClawConfig = {
+          agents: {
+            defaults: { workspace: tmpDir },
+            entries: { main: { default: true }, hooks: {} },
+          },
+          session: { scope: "global", store: storeTemplate },
+        };
+        const hooksStorePath = resolveSessionStorePathCore(storeTemplate, { agentId: "hooks" });
+        await seedSessionStore(hooksStorePath, sessionKey, {});
+        enqueueSystemEvent("Mapped hook wake", { sessionKey });
+        expect(peekSystemEventEntries(sessionKey).map((event) => event.text)).toEqual([
+          "Mapped hook wake",
+        ]);
+        const systemEventBlocks = mockReplyWithSystemEvents(replySpy, cfg);
 
-      const result = await runHeartbeatOnce({
-        cfg,
-        agentId: "hooks",
-        source: "hook",
-        intent: "immediate",
-        reason: "hook:wake",
-        deps: {
-          getReplyFromConfig: replySpy,
-          getQueueSize: () => 0,
-        },
-      });
+        const result = await runHeartbeatOnce({
+          cfg,
+          agentId: "hooks",
+          sessionKey: forcedSessionKey,
+          source: "hook",
+          intent: "immediate",
+          reason: "hook:wake",
+          deps: {
+            getReplyFromConfig: replySpy,
+            getQueueSize: () => 0,
+          },
+        });
 
-      expect(result.status).toBe("ran");
-      expect(replySpy).toHaveBeenCalledTimes(1);
-      expect(replySpy.mock.calls[0]?.[0]).toMatchObject({
-        AgentId: "hooks",
-        SessionKey: "global",
+        expect(result.status).toBe("ran");
+        expect(replySpy).toHaveBeenCalledTimes(1);
+        expect(replySpy.mock.calls[0]?.[0]).toMatchObject({
+          AgentId: "hooks",
+          SessionKey: sessionKey,
+        });
+        expect(systemEventBlocks).toHaveLength(1);
+        expect(systemEventBlocks[0]).toContain("Mapped hook wake");
+        expect(peekSystemEventEntries(sessionKey)).toEqual([]);
       });
-      expect(systemEventBlocks).toHaveLength(1);
-      expect(systemEventBlocks[0]).toContain("Mapped hook wake");
-      expect(peekSystemEventEntries("agent:hooks:global")).toEqual([]);
-    });
-  });
+    },
+  );
 
   it("keeps a global hook event owned by another agent queued for its owner", async () => {
     await withTempHeartbeatSandbox(async ({ tmpDir, replySpy }) => {
@@ -185,23 +191,21 @@ describe("runHeartbeatOnce identity", () => {
           defaults: { workspace: tmpDir },
           entries: { main: { default: true }, alpha: {}, beta: {} },
         },
-        session: { scope: "global", store: storeTemplate },
+        session: { scope: "global", dmScope: "main", store: storeTemplate },
+        channels: { telegram: { allowFrom: ["123"] } },
       };
       await seedSessionStore(
         resolveSessionStorePathCore(storeTemplate, { agentId: "alpha" }),
-        "global",
+        "agent:alpha:global",
         {},
       );
       await seedSessionStore(
         resolveSessionStorePathCore(storeTemplate, { agentId: "beta" }),
-        "global",
+        "agent:beta:global",
         {},
       );
-      enqueueSystemEvent(
-        "Hook Alpha: done",
-        withSystemEventOwner({ sessionKey: "global" }, "alpha"),
-      );
-      enqueueSystemEvent("Hook Beta: done", withSystemEventOwner({ sessionKey: "global" }, "beta"));
+      enqueueSystemEvent("Hook Alpha: done", { sessionKey: "agent:alpha:global" });
+      enqueueSystemEvent("Hook Beta: done", { sessionKey: "agent:beta:global" });
       const systemEventBlocks = mockReplyWithSystemEvents(replySpy, cfg);
 
       const alphaResult = await runHeartbeatOnce({
@@ -220,7 +224,7 @@ describe("runHeartbeatOnce identity", () => {
       expect(replySpy).toHaveBeenCalledTimes(1);
       expect(replySpy.mock.calls[0]?.[0]).toMatchObject({
         AgentId: "alpha",
-        SessionKey: "global",
+        SessionKey: "agent:alpha:global",
       });
       // The first targeted wake must not drain the other agent's queued event.
       expect(systemEventBlocks[0]).toContain("Hook Alpha: done");

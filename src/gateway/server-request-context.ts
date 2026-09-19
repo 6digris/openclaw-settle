@@ -77,6 +77,8 @@ type GatewayRequestContextRuntime = Pick<
   | "chatRunState"
   | "addChatRun"
   | "removeChatRun"
+  | "beginSessionWireSelection"
+  | "getSessionWireKey"
   | "subscribeSessionMessageEvents"
   | "unsubscribeSessionMessageEvents"
   | "dedupe"
@@ -539,6 +541,8 @@ export function createGatewayRequestContext(
     removeChatRun: runtime.removeChatRun,
     subscribeSessionEvents: sessionEventSubscribers.subscribe,
     unsubscribeSessionEvents: sessionEventSubscribers.unsubscribe,
+    beginSessionWireSelection: runtime.beginSessionWireSelection,
+    getSessionWireKey: runtime.getSessionWireKey,
     subscribeSessionMessageEvents: runtime.subscribeSessionMessageEvents,
     unsubscribeSessionMessageEvents: runtime.unsubscribeSessionMessageEvents,
     unsubscribeAllSessionEvents: (connId) => {

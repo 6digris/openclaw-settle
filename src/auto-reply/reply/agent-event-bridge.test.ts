@@ -27,7 +27,7 @@ describe("agent event delivery bridge", () => {
       let predicateReads = 0;
       const bridges = Array.from({ length: runs }, (_, runIndex) => {
         const runId = `run-${runIndex}`;
-        registerAgentRunContext(runId, { sessionKey: `session-${runIndex}` });
+        registerAgentRunContext(runId, { sessionKey: `agent:main:session-${runIndex}` });
         return Array.from({ length: 8 }, (_bridge, bridgeIndex) => {
           const delivered: string[] = [];
           const bridge = createAgentEventBridge<string>({
@@ -70,7 +70,7 @@ describe("agent event delivery bridge", () => {
   );
 
   test("keeps stream delivery order when a later global listener emits another event", async () => {
-    registerAgentRunContext("run-nested", { sessionKey: "session-nested" });
+    registerAgentRunContext("run-nested", { sessionKey: "agent:main:session-nested" });
     const delivered: string[] = [];
     const bridge = textBridge("run-nested", delivered);
     const stopGlobal = onAgentEvent((evt) => {
@@ -89,7 +89,7 @@ describe("agent event delivery bridge", () => {
   });
 
   test("delivers the current event before a later global listener unsubscribes the bridge", async () => {
-    registerAgentRunContext("run-unsubscribe", { sessionKey: "session-unsubscribe" });
+    registerAgentRunContext("run-unsubscribe", { sessionKey: "agent:main:session-unsubscribe" });
     const delivered: string[] = [];
     const bridge = textBridge("run-unsubscribe", delivered);
     const stopGlobal = onAgentEvent((evt) => {
@@ -109,8 +109,8 @@ describe("agent event delivery bridge", () => {
   });
 
   test("routes a changed event identity only to later matching bridges", async () => {
-    registerAgentRunContext("run-a", { sessionKey: "session-a" });
-    registerAgentRunContext("run-b", { sessionKey: "session-b" });
+    registerAgentRunContext("run-a", { sessionKey: "agent:main:session-a" });
+    registerAgentRunContext("run-b", { sessionKey: "agent:main:session-b" });
     const earlierB: string[] = [];
     const laterB: string[] = [];
     const laterA: string[] = [];

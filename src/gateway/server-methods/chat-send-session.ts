@@ -119,7 +119,7 @@ function loadChatSendSessionContext(params: {
     },
   );
   const sessionLoadMs = roundedChatSendTimingMs(performance.now() - sessionLoadStartedAtMs);
-  const { cfg, storePath, entry, canonicalKey: sessionKey, legacyKey } = sessionLoadResult;
+  const { cfg, storePath, entry, canonicalKey: sessionKey } = sessionLoadResult;
   const expectedSessionRoutingContract = normalizeOptionalChatText(
     p.expectedSessionRoutingContract,
   );
@@ -142,7 +142,6 @@ function loadChatSendSessionContext(params: {
       ...(sessionLoadResult.readSource ? { readSource: sessionLoadResult.readSource } : {}),
       entry,
       sessionKey,
-      legacyKey,
       sessionRoutingChanged,
       expectedLeafEntryId,
       agentIdOverride,
@@ -164,7 +163,7 @@ export function prepareChatSendSession(params: {
   const loadedValue = loaded.value;
   const { request, client } = params;
   const { p, explicitOrigin, normalizedAttachments, turnKind, rawMessage } = request;
-  const { cfg, sessionKey, entry, legacyKey, rawSessionKey, agentIdOverride } = loadedValue;
+  const { cfg, sessionKey, entry, rawSessionKey, agentIdOverride } = loadedValue;
   if (isIncognitoSessionKey(sessionKey) && !entry) {
     return { ok: false as const, error: `Incognito session "${sessionKey}" was not found.` };
   }
@@ -182,7 +181,7 @@ export function prepareChatSendSession(params: {
     return { ok: false as const, error: selectedAgent.error };
   }
   const deletedAgentId = resolveDeletedAgentIdFromSessionKey(cfg, sessionKey, entry, {
-    acpMetadataSessionKey: legacyKey ?? sessionKey,
+    acpMetadataSessionKey: sessionKey,
   });
   if (deletedAgentId !== null) {
     return {

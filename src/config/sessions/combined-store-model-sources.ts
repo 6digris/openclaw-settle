@@ -10,8 +10,6 @@ import type { SessionEntry } from "./types.js";
 // Model sources retain stored lineage; combined rows may project aliases for display.
 export type GatewayStoredSessionTarget = GatewaySessionModelSource & {
   agentId: string;
-  /** Exact stored key when a list uses an internal key to retain sentinel owners. */
-  storeKey?: string;
   storeTarget: SessionStoreTarget;
 };
 
@@ -51,7 +49,7 @@ export function createSessionModelSources(
       ): GatewaySessionModelSource["readSourceEntry"] => {
         store[key] = entry;
         const identity = logicalKey(logicalAgentId, key);
-        // Preserve target-order selection within an owner, including hidden sentinels.
+        // Preserve target-order selection within an owner.
         if (!logicalEntries.has(identity)) {
           logicalEntries.set(identity, entry);
         }
@@ -63,10 +61,7 @@ export function createSessionModelSources(
             store,
           });
           read = (parentKey) => {
-            if (parentKey === "global" || parentKey === "unknown") {
-              return store[parentKey];
-            }
-            // Stored qualified lineage retains its owner before a main alias collapses.
+            // Stored qualified lineage retains its owner through main-alias resolution.
             const parsed = parseAgentSessionKey(parentKey);
             const agentId = normalizeAgentId(parsed?.agentId ?? logicalAgentId);
             const refusal = readAgentDatabaseAdmissionRefusal(agentId);

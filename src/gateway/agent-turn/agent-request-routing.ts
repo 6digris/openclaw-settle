@@ -7,7 +7,7 @@ import { resolveExplicitAgentSessionKey } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { emitDiagnosticEvent } from "../../infra/diagnostic-events.js";
 import { resolveAgentExplicitRecipientSession } from "../../infra/outbound/agent-delivery.js";
-import { classifySessionKeyShape, normalizeAgentId } from "../../routing/session-key.js";
+import { classifySessionKeyShape, normalizeAgentIdStrict } from "../../routing/session-key.js";
 import {
   isDeliverableMessageChannel,
   normalizeMessageChannel,
@@ -64,9 +64,10 @@ export async function prepareAgentRequestRouting(params: {
       ? params.request.bestEffortDeliver
       : undefined;
   const knownAgents = listAgentIds(params.cfg);
-  const agentIdRaw = normalizeOptionalString(params.request.agentId) ?? "";
-  let agentId = agentIdRaw ? normalizeAgentId(agentIdRaw) : undefined;
-  if (agentId && !knownAgents.includes(agentId)) {
+  const agentIdRaw = params.request.agentId;
+  const explicit = agentIdRaw === undefined ? null : normalizeAgentIdStrict(agentIdRaw);
+  let agentId = explicit?.ok ? explicit.value : undefined;
+  if (explicit && (!explicit.ok || !knownAgents.includes(explicit.value))) {
     params.respond(
       false,
       undefined,
@@ -222,9 +223,7 @@ export async function prepareAgentRequestRouting(params: {
       cfg: params.cfg,
       sessionKey: requestedSessionKey,
       storeAgentId: agentId,
-    }) === "global"
-      ? "global"
-      : requestedSessionKey;
+    });
   // Keyless runs still need the run-id reservation before asynchronous preparation,
   // otherwise concurrent callers can dispatch the same id without a session owner.
   params.reserveDedupe(preAcceptedReservedSessionKey, agentId);

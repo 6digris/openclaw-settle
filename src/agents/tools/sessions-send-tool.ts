@@ -9,15 +9,13 @@ import { finiteSecondsToTimerSafeMilliseconds } from "@openclaw/normalization-co
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { Type } from "typebox";
 import { readAcpSessionMetaForEntry } from "../../acp/runtime/session-meta-readonly.js";
-import { tryResolveLegacyCompatibilityAgentId } from "../../config/legacy.default-agent-owner.js";
-import { resolvePersistedSessionStoreOwnerForKey } from "../../config/sessions/session-store-owner.js";
+import { resolveAgentMainSessionKey } from "../../config/sessions/main-session.js";
 import { parseSessionThreadInfo } from "../../config/sessions/thread-info.js";
 import { runWithoutOwnedSessionTranscriptWrites } from "../../config/sessions/transcript-write-context.js";
 import type { AgentRouteBinding } from "../../config/types.agents.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveGatewaySessionStoreTargetWithStore } from "../../gateway/session-utils-store-lookup.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import { withSystemEventOwner } from "../../infra/system-event-ownership.js";
 import { enqueueSystemEventEntry } from "../../infra/system-events.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
@@ -31,12 +29,10 @@ import { normalizeRouteBindingChannelId } from "../../routing/binding-scope.js";
 import { resolveAgentRoute } from "../../routing/resolve-route.js";
 import {
   buildAgentMainSessionKey,
-  classifySessionKeyShape,
   isUnscopedSessionKeySentinel,
   normalizeAccountId,
   normalizeAgentId,
   normalizeAgentIdStrict,
-  toAgentStoreSessionKey,
 } from "../../routing/session-key.js";
 import { annotateInterSessionPromptText } from "../../sessions/input-provenance.js";
 import { deriveSessionChatTypeFromKey } from "../../sessions/session-chat-type-shared.js";
@@ -77,13 +73,17 @@ import {
   runWithGatewayToolCleanupContext,
   type AgentToolGatewayRequestCaller,
 } from "./in-process-gateway.js";
-import { runWithScopedSessionAccess } from "./scoped-session-access.js";
+import {
+  resolveSessionToolTargetAgentId,
+  runWithScopedSessionAccess,
+} from "./scoped-session-access.js";
 import {
   createSessionVisibilityRowChecker,
   formatSessionToolAccessDenial,
   isExpectedSessionLookupMiss,
+  resolveInternalSessionKey,
+  shouldResolveSessionIdInput,
   recordSessionToolActionFact,
-  resolveDisplaySessionKey,
   resolveSessionReference,
   resolveSessionToolAccess,
   resolveSessionToolContext,
@@ -235,11 +235,7 @@ function resolveConfiguredAgentMainSessionKey(params: {
   if (!listAgentIds(params.cfg).includes(agentId)) {
     return undefined;
   }
-  return toAgentStoreSessionKey({
-    agentId,
-    requestKey: "main",
-    mainKey: params.mainKey,
-  });
+  return resolveAgentMainSessionKey({ cfg: params.cfg, agentId });
 }
 
 function isConfiguredAgentMainSessionKey(params: {
@@ -382,27 +378,13 @@ export function createSessionsSendTool(opts?: {
       const {
         cfg,
         mainKey,
-        alias,
         effectiveRequesterKey,
+        requesterAgentId,
         mainSessionKey,
         restrictToSpawned,
         sessionVisibility,
         a2aPolicy,
       } = resolveSessionToolContext(opts);
-      let requesterAgentId: string;
-      try {
-        requesterAgentId = resolveSessionAgentId({
-          config: cfg,
-          sessionKey: effectiveRequesterKey,
-          agentId: opts?.agentId,
-        });
-      } catch (err) {
-        return jsonResult({
-          runId: crypto.randomUUID(),
-          status: "forbidden",
-          error: formatErrorMessage(err),
-        });
-      }
 
       const sessionKeyParam = readToolStringParam(params, "sessionKey");
       const labelParam = normalizeOptionalString(readToolStringParam(params, "label"));
@@ -479,6 +461,13 @@ export function createSessionsSendTool(opts?: {
           });
           resolvedKey = normalizeOptionalString(resolved?.key) ?? "";
           resolvedTargetAgentId = normalizeOptionalString(resolved?.agentId);
+          if (resolvedKey) {
+            resolvedKey = resolveInternalSessionKey({
+              key: resolvedKey,
+              agentId: resolvedTargetAgentId ?? requestedAgentId,
+              cfg,
+            });
+          }
         } catch (err) {
           if (isExpectedSessionLookupMiss(err)) {
             resolvedKey = "";
@@ -528,21 +517,41 @@ export function createSessionsSendTool(opts?: {
         sessionKey,
         mainKey,
       });
+      let keyAgentId = requesterAgentId;
+      if (
+        !resolvedLabelKey &&
+        sessionKey !== "current" &&
+        !shouldResolveSessionIdInput(sessionKey)
+      ) {
+        try {
+          keyAgentId = resolveSessionToolTargetAgentId({
+            cfg,
+            targetSessionKey: sessionKey,
+            requesterAgentId,
+          });
+        } catch (error) {
+          return jsonResult({
+            runId: crypto.randomUUID(),
+            status: "forbidden",
+            error: formatErrorMessage(error),
+            sessionKey,
+          });
+        }
+      }
       const resolvedSession = resolvedLabelKey
         ? {
             ok: true as const,
             ...(resolvedTargetAgentId ? { agentId: resolvedTargetAgentId } : {}),
             key: resolvedLabelKey,
-            displayKey: resolveDisplaySessionKey({ key: resolvedLabelKey, alias, mainKey }),
+            displayKey: resolvedLabelKey,
             resolvedViaSessionId: false,
             requesterOwned: restrictToSpawned,
           }
         : await resolveSessionReference({
             action: "send",
             sessionKey,
-            keyAgentId: requesterAgentId,
-            alias,
-            mainKey,
+            keyAgentId,
+            cfg,
             requesterInternalKey: effectiveRequesterKey,
             restrictToSpawned,
             callGateway: gatewayCall,
@@ -566,6 +575,7 @@ export function createSessionsSendTool(opts?: {
         a2aPolicy,
       }).check({ key: resolvedSession.key });
       const visibleSession = await resolveVisibleSessionReference({
+        cfg,
         action: "send",
         resolvedSession,
         requesterSessionKey: effectiveRequesterKey,
@@ -588,63 +598,12 @@ export function createSessionsSendTool(opts?: {
       // Normalize sessionKey/sessionId input into a canonical session key.
       const resolvedKey = visibleSession.key;
       const displayKey = visibleSession.displayKey;
-      const resolvedKeyAgentId = parseAgentSessionKey(resolvedKey)?.agentId;
-      const isLiteralLegacyKeyInput =
-        !labelParam && sessionKeyParam !== undefined && !resolvedSession.resolvedViaSessionId;
-      const isLiteralUnscopedTarget =
-        isLiteralLegacyKeyInput && classifySessionKeyShape(resolvedKey) === "legacy_or_alias";
-      const persistedTargetOwner = isLiteralUnscopedTarget
-        ? resolvePersistedSessionStoreOwnerForKey(cfg, resolvedKey)
-        : { kind: "none" as const };
-      const compatibilityTargetAgentId =
-        isLiteralUnscopedTarget && persistedTargetOwner.kind === "none"
-          ? tryResolveLegacyCompatibilityAgentId(cfg)
-          : undefined;
-      const isLiteralUnscopedMainTarget =
-        isLiteralUnscopedTarget &&
-        (isUnscopedSessionKeySentinel(sessionKeyParam.trim()) ||
-          sessionKeyParam.trim().toLowerCase() === mainKey);
-      if (persistedTargetOwner.kind === "retired") {
-        return jsonResult({
-          runId: crypto.randomUUID(),
-          status: "forbidden",
-          error: "Session ownership could not be verified because its fixed-store owner retired.",
-          sessionKey: unresolvedDisplayKey,
-        });
-      }
-      const resolvedTargetOwner =
-        visibleSession.agentId ??
-        resolvedTargetAgentId ??
-        (labelParam ? explicitTargetAgentId : undefined);
-      if (
-        persistedTargetOwner.kind === "configured" &&
-        resolvedTargetOwner &&
-        normalizeAgentId(resolvedTargetOwner) !== persistedTargetOwner.agentId
-      ) {
-        return jsonResult({
-          runId: crypto.randomUUID(),
-          status: "forbidden",
-          error: `Session belongs to agent "${persistedTargetOwner.agentId}", not "${normalizeAgentId(resolvedTargetOwner)}".`,
-          sessionKey: unresolvedDisplayKey,
-        });
-      }
-      const targetAgentId =
-        (persistedTargetOwner.kind === "configured" ? persistedTargetOwner.agentId : undefined) ??
-        resolvedTargetOwner ??
-        resolvedKeyAgentId ??
-        (isLiteralUnscopedMainTarget ? requesterAgentId : undefined) ??
-        compatibilityTargetAgentId;
-      if (!targetAgentId) {
-        return jsonResult({
-          runId: crypto.randomUUID(),
-          status: "forbidden",
-          error:
-            "Session ownership could not be verified. Upgrade the gateway or use an agent-prefixed session key.",
-          sessionKey: unresolvedDisplayKey,
-        });
-      }
-      const mayUseRequesterForLiteralSentinel =
-        isLiteralUnscopedMainTarget && normalizeAgentId(targetAgentId) === requesterAgentId;
+      const targetAgentId = resolveSessionToolTargetAgentId({
+        cfg,
+        targetSessionKey: resolvedKey,
+        resolvedAgentId: visibleSession.agentId,
+        requesterAgentId,
+      });
       const rawRequesterSessionKey = opts?.agentSessionKey ? effectiveRequesterKey : undefined;
       const requesterSession = resolveGatewaySessionStoreTargetWithStore({
         cfg,
@@ -797,11 +756,7 @@ export function createSessionsSendTool(opts?: {
           sessionKey: unresolvedDisplayKey,
         });
       }
-      const authorizationTargetKey = mayUseRequesterForLiteralSentinel
-        ? effectiveRequesterKey
-        : targetAgentId && !parseAgentSessionKey(resolvedKey)
-          ? `agent:${targetAgentId}:${resolvedKey}`
-          : resolvedKey;
+      const authorizationTargetKey = resolvedKey;
       const access = await resolveSessionToolAccess({
         action: "send",
         requesterAgentId,
@@ -931,10 +886,7 @@ export function createSessionsSendTool(opts?: {
           if (mode === "notify") {
             const event = enqueueSystemEventEntry(
               annotateInterSessionPromptText(message, inputProvenance),
-              withSystemEventOwner(
-                { sessionKey: resolvedKey, contextKey: `session-notify:${idempotencyKey}` },
-                targetAgentId,
-              ),
+              { sessionKey: resolvedKey, contextKey: `session-notify:${idempotencyKey}` },
             );
             if (!event?.id) {
               return jsonResult({

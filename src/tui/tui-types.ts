@@ -129,6 +129,7 @@ export type SessionInfo = {
 };
 
 export type SessionScope = "per-sender" | "global";
+export type TuiSessionIntent = "home" | "exact";
 
 export type AgentSummary = {
   id: string;
@@ -190,6 +191,7 @@ export type TuiStateAccess = {
   agents: AgentSummary[];
   currentAgentId: string;
   currentSessionKey: string;
+  currentSessionIntent?: TuiSessionIntent;
   currentSessionId: string | null;
   sessionGeneration?: number;
   sessionProjection?: SessionProjectionState;

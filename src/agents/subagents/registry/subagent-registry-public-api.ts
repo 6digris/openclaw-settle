@@ -1,3 +1,4 @@
+import { scopeLegacySessionKeyToAgent } from "../../../routing/session-key.js";
 import {
   ackLeasedAgentSteeringItemsFromSubagentRuns,
   leasePendingAgentSteeringItemsFromSubagentRuns,
@@ -156,7 +157,7 @@ export function createSubagentRegistryPublicApi(config: {
     return listSwarmRunsForGroupFromRuns(
       readRuns(),
       groupId,
-      requesterSessionKey,
+      scopeLegacySessionKeyToAgent({ agentId: requesterAgentId, sessionKey: requesterSessionKey }),
       requesterAgentId,
     );
   }
@@ -168,7 +169,10 @@ export function createSubagentRegistryPublicApi(config: {
     requesterAgentId?: string,
   ): SubagentRunRecord | undefined {
     const key = replayKey.trim();
-    const requesterKey = requesterSessionKey?.trim();
+    const requesterKey = scopeLegacySessionKeyToAgent({
+      agentId: requesterAgentId,
+      sessionKey: requesterSessionKey,
+    });
     if (!key) {
       return undefined;
     }
@@ -186,7 +190,14 @@ export function createSubagentRegistryPublicApi(config: {
     requesterSessionKey: string,
     options?: { collect?: boolean; requesterAgentId?: string },
   ): number {
-    return countActiveRunsForSessionFromRuns(readRuns(), requesterSessionKey, options);
+    return countActiveRunsForSessionFromRuns(
+      readRuns(),
+      scopeLegacySessionKeyToAgent({
+        agentId: options?.requesterAgentId,
+        sessionKey: requesterSessionKey,
+      }) ?? "",
+      options,
+    );
   }
 
   /** Records sessions_yield before the active requester run is aborted. */

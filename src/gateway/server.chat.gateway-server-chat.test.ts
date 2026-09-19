@@ -526,7 +526,7 @@ describe("gateway server chat", () => {
             event.payload?.runId === followupRunId,
           CHAT_RESPONSE_TIMEOUT_MS,
         );
-        registerAgentRunContext(followupRunId, { sessionKey: "main" });
+        registerAgentRunContext(followupRunId, { sessionKey: "agent:main:main" });
         registerAgentRunContext(followupRunId, { completionSource: "reply-dispatch" });
         if (
           name === "canvas" ||
@@ -2718,7 +2718,7 @@ describe("gateway server chat", () => {
 
     try {
       registerAgentRunContext("run-tool-1", {
-        sessionKey: "main",
+        sessionKey: "agent:main:main",
         verboseLevel: "on",
       });
 
@@ -2737,7 +2737,7 @@ describe("gateway server chat", () => {
 
         const evt = await agentEvtP;
         const payload = evt.payload && typeof evt.payload === "object" ? evt.payload : {};
-        expect(payload.sessionKey).toBe("main");
+        expect(payload.sessionKey).toBe("agent:main:main");
         expect(payload.stream).toBe("assistant");
       }
 

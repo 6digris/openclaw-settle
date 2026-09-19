@@ -4,6 +4,7 @@
  * Shared by registry read/write helpers for active in-memory run state.
  */
 import { isDeepStrictEqual } from "node:util";
+import { scopeLegacySessionKeyToAgent } from "../../../routing/session-key.js";
 import { publishSubagentRunChanges } from "./subagent-registry-publication.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
@@ -222,7 +223,10 @@ export function getSubagentRunsForCollectorGroup(
   groupId: string,
   requesterAgentId?: string,
 ): Iterable<[string, SubagentRunRecord]> {
-  const key = JSON.stringify([requesterSessionKey, groupId]);
+  const sessionKey =
+    scopeLegacySessionKeyToAgent({ agentId: requesterAgentId, sessionKey: requesterSessionKey }) ??
+    "";
+  const key = JSON.stringify([sessionKey, groupId]);
   // Restore can backfill agent ownership after index insertion; read the live owner.
   return [...(runsByCollectorGroupKey.get(key)?.entries() ?? [])].filter(
     ([, entry]) => entry.requesterAgentId === requesterAgentId,

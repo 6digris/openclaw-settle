@@ -1,3 +1,4 @@
+import { asOptionalRecord, readStringField } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { DEFAULT_AGENT_ID } from "../routing/session-key.js";
@@ -14,7 +15,6 @@ import {
   sessionMutationTargetFields,
 } from "./session-method-policy.js";
 import type { SessionMutationTarget } from "./session-mutation-authorization-error.js";
-import { canonicalizeSessionKeyForAgent } from "./session-store-key.js";
 import { resolveUnifiedTalkSessionTarget } from "./talk/session-registry.js";
 
 export type { SessionMutationTarget } from "./session-mutation-authorization-error.js";
@@ -37,10 +37,10 @@ export function resolveDirectSessionTargets(
   if (Array.isArray(record.sessionKeys)) {
     candidates.push(...record.sessionKeys);
   }
-  const agentId = normalizeOptionalString(record.agentId);
+  const agentId = readStringField(record, "agentId")?.trim();
   return candidates.flatMap((candidate): SessionMutationTarget[] =>
     typeof candidate === "string"
-      ? [{ sessionKey: candidate, ...(agentId ? { agentId } : {}) }]
+      ? [{ sessionKey: candidate, ...(agentId !== undefined ? { agentId } : {}) }]
       : [],
   );
 }
@@ -49,10 +49,10 @@ export function resolveDirectIncognitoTargets(
   method: string,
   params: unknown,
 ): SessionMutationTarget[] {
-  return resolveDirectSessionTargets(method, params).filter((target) =>
-    isIncognitoSessionKey(
-      canonicalizeSessionKeyForAgent(target.agentId ?? DEFAULT_AGENT_ID, target.sessionKey),
-    ),
+  return resolveDirectSessionTargets(method, params).filter(
+    ({ sessionKey }) =>
+      isIncognitoSessionKey(sessionKey) ||
+      isIncognitoSessionKey(`agent:${DEFAULT_AGENT_ID}:${sessionKey.trim()}`),
   );
 }
 
@@ -116,11 +116,11 @@ function resolveApprovalSessionTarget(
     resolvedId?.kind === "exact" || resolvedId?.kind === "prefix" ? resolvedId.id : id;
   const request = manager?.getSnapshot(recordId)?.request;
   const sessionKey = readSessionSharingStringParam(request, "sessionKey");
-  const agentId = readSessionSharingStringParam(request, "agentId");
+  const agentId = readStringField(asOptionalRecord(request), "agentId")?.trim();
   return sessionKey
     ? {
         sessionKey,
-        ...(agentId ? { agentId } : {}),
+        ...(agentId !== undefined ? { agentId } : {}),
       }
     : undefined;
 }
@@ -182,8 +182,8 @@ export function resolveSessionMutationTargets(params: {
     return Array.isArray(targets)
       ? targets.slice(0, 101).flatMap((target): SessionMutationTarget[] => {
           const sessionKey = readSessionSharingStringParam(target, "key");
-          const agentId = readSessionSharingStringParam(target, "agentId");
-          return sessionKey ? [{ sessionKey, ...(agentId ? { agentId } : {}) }] : [];
+          const agentId = readStringField(asOptionalRecord(target), "agentId")?.trim();
+          return sessionKey ? [{ sessionKey, ...(agentId !== undefined ? { agentId } : {}) }] : [];
         })
       : undefined;
   }
@@ -208,7 +208,10 @@ export function resolveSessionMutationTargets(params: {
     );
     return target ? [target] : undefined;
   }
-  const requestedAgentId = readSessionSharingStringParam(params.requestParams, "agentId");
+  const requestedAgentId = readStringField(
+    asOptionalRecord(params.requestParams),
+    "agentId",
+  )?.trim();
   const directTargets: SessionMutationTarget[] = [];
   for (const field of sessionMutationTargetFields(params.method)) {
     const sessionKey = readSessionSharingStringParam(params.requestParams, field);
@@ -221,7 +224,9 @@ export function resolveSessionMutationTargets(params: {
       field !== "parentSessionKey" || ["global", "unknown"].includes(sessionKey.toLowerCase());
     directTargets.push({
       sessionKey,
-      ...(requestedAgentId && parentUsesRequestedAgent ? { agentId: requestedAgentId } : {}),
+      ...(requestedAgentId !== undefined && parentUsesRequestedAgent
+        ? { agentId: requestedAgentId }
+        : {}),
     });
   }
   if (directTargets.length) {
@@ -232,7 +237,7 @@ export function resolveSessionMutationTargets(params: {
     const claims = ticket
       ? resolveAuthorizedBoardViewTicketClaims(ticket, { gatewayContext: params.context })
       : undefined;
-    if (!claims || (requestedAgentId && requestedAgentId !== claims.agentId)) {
+    if (!claims || (requestedAgentId !== undefined && requestedAgentId !== claims.agentId)) {
       return undefined;
     }
     return [

@@ -105,11 +105,18 @@ import { GATEWAY_CLIENT_CAPS } from "@openclaw/gateway-protocol/client-info";
 const caps = [GATEWAY_CLIENT_CAPS.TOOL_EVENTS];
 ```
 
-The current registry contains `agent-kind`, `approvals`, `exec-approvals`,
+The current registry contains `agent-kind`, `approvals`, `canonical-session-keys`, `exec-approvals`,
 `inline-widgets`, `plugin-approvals`, `run-tool-bindings`, `session-scoped-events`,
 `task-suggestions`, `terminal-offset-seq`, `tool-events`, `ui-commands`, and
 `usage-refreshing`.
 Advertise only capabilities the client actually implements.
+
+`canonical-session-keys` opts into fully qualified session identities and exact
+qualified selectors. Supporting Gateways advertise the same name in
+`hello-ok.features.capabilities`. Check that advertisement on each connection
+before relying on the contract, including a new connection used to complete a
+prepared operation. Clients without the capability retain legacy alias behavior
+at the wire boundary.
 
 `usage-refreshing` allows a cold `usage.status` request to return immediately
 with `refreshing: true` and an empty provider list. A client advertising it must
@@ -180,6 +187,13 @@ current in-memory run state:
    Maintain the highest accepted sequence independently for each run, ignore an
    already-seen or lower sequence, and treat a forward gap as a reason to reload
    authoritative history.
+
+Clients advertising `canonical-session-keys` receive the fully qualified selected
+identity in a full `chat.history` or `chat.startup` snapshot's top-level
+`sessionKey`, including empty history for a session that has not been created.
+Clients without that capability retain the original `sessionKey` spelling for
+direct requests. Short-reference startup keeps the resolved key. Cursor delta
+and reset responses do not add a top-level `sessionKey`.
 
 ### Active-run cache matrix
 

@@ -381,8 +381,10 @@ export type SessionMessageSubscriberRegistry = {
   subscribe: (
     connId: string,
     sessionKey: string,
-    opts?: { includeApprovals?: boolean; provisional?: boolean },
+    opts?: { includeApprovals?: boolean; provisional?: boolean; wireKey?: string },
   ) => SessionMessageSubscription | undefined;
+  beginWireSelection: (connId: string, wireKey: string) => SessionWireSelection | undefined;
+  getWireKey: (connId: string, sessionKey: string) => string | undefined;
   unsubscribe: (connId: string, sessionKey: string) => void;
   unsubscribeAll: (connId: string) => void;
   get: (sessionKey: string) => ReadonlySet<string>;
@@ -392,10 +394,21 @@ export type SessionMessageSubscriberRegistry = {
 
 type SessionMessageSubscription = (() => void) & { commit: () => void };
 
-type ProvisionalSubscriptionState = {
-  base?: boolean;
-  inflight: number;
-  lastSuccess?: { sequence: number; includeApprovals: boolean };
+export type SessionWireSelection = {
+  key: string;
+  accept: (canonicalKey: string) => void;
+};
+
+type SessionSubscriptionSelection = {
+  sequence: number;
+  includeApprovals: boolean;
+  wireKey?: string;
+};
+
+type SessionConnectionState = {
+  committed?: SessionSubscriptionSelection;
+  pending: Map<number, SessionSubscriptionSelection>;
+  observed?: { sequence: number; key: string };
 };
 
 const TOOL_EVENT_RECIPIENT_TTL_MS = 10 * 60 * 1000;
@@ -432,9 +445,8 @@ export function createSessionMessageSubscriberRegistry(
   isConnectionActive?: (connId: string) => boolean,
 ): SessionMessageSubscriberRegistry {
   const sessionToConnIds = new Map<string, Set<string>>();
-  // Booleans retain committed approval mode; records own unsettled replays.
-  // Replacing a record fences late settlements, including connection/session reuse.
-  const connections = new Map<string, Map<string, boolean | ProvisionalSubscriptionState>>();
+  // Record identity fences settlements after unsubscribe or connection replacement.
+  const connections = new Map<string, Map<string, SessionConnectionState>>();
   const approvalSessionToConnIds = new Map<string, Set<string>>();
   const changeListeners = new Set<(sessionKey: string) => void>();
   const empty = new Set<string>();
@@ -479,65 +491,100 @@ export function createSessionMessageSubscriberRegistry(
     }
   };
 
+  const connection = (connId: string) => {
+    if (!connId || isConnectionActive?.(connId) === false) {
+      return undefined;
+    }
+    let states = connections.get(connId);
+    if (!states) {
+      states = new Map();
+      connections.set(connId, states);
+    }
+    return states;
+  };
+  const latestSubscription = (state: SessionConnectionState) => {
+    let latest = state.committed;
+    for (const pending of state.pending.values()) {
+      if (!latest || pending.sequence > latest.sequence) {
+        latest = pending;
+      }
+    }
+    return latest;
+  };
   const registry: SessionMessageSubscriberRegistry = {
+    beginWireSelection: (connId, wireKey) => {
+      const normalizedConnId = normalize(connId);
+      const states = connection(normalizedConnId);
+      if (!states) {
+        return undefined;
+      }
+      const observed = { sequence: ++subscriptionSequence, key: wireKey.trim() };
+      return {
+        key: observed.key,
+        accept: (canonicalKey) => {
+          if (
+            connections.get(normalizedConnId) !== states ||
+            isConnectionActive?.(normalizedConnId) === false
+          ) {
+            return;
+          }
+          const state: SessionConnectionState = states.get(canonicalKey) ?? { pending: new Map() };
+          if (!state.observed || state.observed.sequence < observed.sequence) {
+            state.observed = observed;
+            states.set(canonicalKey, state);
+          }
+        },
+      };
+    },
+    getWireKey: (connId, sessionKey) => {
+      const state = connections.get(connId)?.get(sessionKey);
+      // Explicit subscriptions own presentation while active; history/outbox reads
+      // only choose spelling for clients that do not subscribe to message events.
+      return state ? (latestSubscription(state)?.wireKey ?? state.observed?.key) : undefined;
+    },
     subscribe: (connId: string, sessionKey: string, opts) => {
       const normalizedConnId = normalize(connId);
       const normalizedSessionKey = normalize(sessionKey);
-      if (
-        !normalizedConnId ||
-        !normalizedSessionKey ||
-        isConnectionActive?.(normalizedConnId) === false
-      ) {
+      if (!normalizedSessionKey) {
         return undefined;
       }
-      const states =
-        connections.get(normalizedConnId) ??
-        new Map<string, boolean | ProvisionalSubscriptionState>();
-      const previous = states.get(normalizedSessionKey);
-      const state: ProvisionalSubscriptionState =
-        typeof previous === "object" ? previous : { base: previous, inflight: 0 };
-      state.inflight += 1;
+      const states = connection(normalizedConnId);
+      if (!states) {
+        return undefined;
+      }
+      const state: SessionConnectionState = states.get(normalizedSessionKey) ?? {
+        pending: new Map(),
+      };
+      const selection: SessionSubscriptionSelection = {
+        sequence: ++subscriptionSequence,
+        includeApprovals: opts?.includeApprovals === true,
+        wireKey: opts?.wireKey,
+      };
+      state.pending.set(selection.sequence, selection);
       states.set(normalizedSessionKey, state);
-      connections.set(normalizedConnId, states);
-      subscriptionSequence += 1;
-      const provisionalRecency = subscriptionSequence;
-      setMessageSubscription(normalizedConnId, normalizedSessionKey, true);
-
-      setApprovalSubscription(
-        normalizedConnId,
-        normalizedSessionKey,
-        opts?.includeApprovals === true,
-      );
-      let settled = false;
+      const publish = () => {
+        const latest = latestSubscription(state);
+        setMessageSubscription(normalizedConnId, normalizedSessionKey, latest !== undefined);
+        setApprovalSubscription(
+          normalizedConnId,
+          normalizedSessionKey,
+          latest?.includeApprovals === true,
+        );
+      };
+      publish();
       const settle = (succeeded: boolean) => {
-        if (settled || connections.get(normalizedConnId)?.get(normalizedSessionKey) !== state) {
+        if (
+          connections.get(normalizedConnId)?.get(normalizedSessionKey) !== state ||
+          !state.pending.delete(selection.sequence)
+        ) {
           return;
         }
-        settled = true;
-        if (succeeded) {
-          if (provisionalRecency >= (state.lastSuccess?.sequence ?? -Infinity)) {
-            state.lastSuccess = {
-              sequence: provisionalRecency,
-              includeApprovals: opts?.includeApprovals === true,
-            };
-          }
+        if (succeeded && (!state.committed || state.committed.sequence < selection.sequence)) {
+          state.committed = selection;
         }
-        state.inflight -= 1;
-        if (state.inflight > 0) {
-          return;
-        }
-        const committed = state.lastSuccess?.includeApprovals ?? state.base;
-        if (committed === undefined) {
+        publish();
+        if (!state.committed && state.pending.size === 0 && !state.observed) {
           states.delete(normalizedSessionKey);
-          setMessageSubscription(normalizedConnId, normalizedSessionKey, false);
-          setApprovalSubscription(normalizedConnId, normalizedSessionKey, false);
-        } else {
-          states.set(normalizedSessionKey, committed);
-          setMessageSubscription(normalizedConnId, normalizedSessionKey, true);
-          setApprovalSubscription(normalizedConnId, normalizedSessionKey, committed);
-        }
-        if (states.size === 0) {
-          connections.delete(normalizedConnId);
         }
       };
       const rollback = (() => settle(false)) as SessionMessageSubscription;
@@ -556,9 +603,6 @@ export function createSessionMessageSubscriberRegistry(
       }
       const states = connections.get(normalizedConnId);
       states?.delete(normalizedSessionKey);
-      if (states?.size === 0) {
-        connections.delete(normalizedConnId);
-      }
       setMessageSubscription(normalizedConnId, normalizedSessionKey, false);
       setApprovalSubscription(normalizedConnId, normalizedSessionKey, false);
     },

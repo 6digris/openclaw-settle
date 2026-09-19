@@ -1,6 +1,7 @@
 // Session lifecycle timestamps prefer store metadata and fall back to transcript headers.
 import { asDateTimestampMs } from "@openclaw/normalization-core/number-coercion";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import { resolveCanonicalMainSessionKey } from "./main-session-key.js";
 import { canonicalizeMainSessionAlias } from "./main-session.js";
 import { loadTranscriptHeaderSync, readTranscriptMutationStateSync } from "./session-accessor.js";
 import {
@@ -225,10 +226,10 @@ function resolveTerminalMainSessionTranscriptRegistryCheck(
   if (!params.entry || !params.sessionKey) {
     return undefined;
   }
-  const configuredMainSessionKey = canonicalizeMainSessionAlias({
-    cfg: { session: { scope: params.sessionScope, mainKey: params.mainKey } },
+  const configuredMainSessionKey = resolveCanonicalMainSessionKey({
     agentId: params.agentId,
-    sessionKey: params.mainKey ?? "main",
+    mainKey: params.mainKey,
+    sessionScope: params.sessionScope,
   });
   const candidateSessionKey = canonicalizeMainSessionAlias({
     cfg: { session: { scope: params.sessionScope, mainKey: params.mainKey } },

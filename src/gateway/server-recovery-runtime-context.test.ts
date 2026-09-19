@@ -6,6 +6,7 @@ import type {
 import type { AgentRunRequest } from "./server-methods/agent-request-types.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import {
+  bindGatewayLifecycleRequest,
   dispatchGatewayLifecycleMethod,
   registerGatewayRecoveryRuntime,
 } from "./server-recovery-runtime-context.js";
@@ -78,4 +79,22 @@ describe("dispatchGatewayLifecycleMethod", () => {
       releaseActive();
     }
   });
+});
+
+it("requests canonical session identities on detached lifecycle transport", async () => {
+  const gateway = await import("./call.js");
+  const transport = vi.spyOn(gateway, "callGateway").mockResolvedValue({ messages: [] });
+  try {
+    await bindGatewayLifecycleRequest()({
+      method: "chat.history",
+      params: { sessionKey: "agent:research:main" },
+    });
+    expect(transport).toHaveBeenCalledExactlyOnceWith({
+      method: "chat.history",
+      params: { sessionKey: "agent:research:main" },
+      caps: ["canonical-session-keys"],
+    });
+  } finally {
+    transport.mockRestore();
+  }
 });

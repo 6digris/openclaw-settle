@@ -4,44 +4,37 @@
  * Resolves which session controls spawn state, thread binding, and completion delivery.
  */
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
-import {
-  resolveDisplaySessionKey,
-  resolveInternalSessionKey,
-  resolveMainSessionAlias,
-} from "../../tools/sessions-helpers.js";
+import { resolveSessionAgentId } from "../../agent-scope.js";
+import { resolveInternalSessionKey } from "../../tools/sessions-helpers.js";
 
 /** Normalizes requester/completion owner aliases into internal and display session keys. */
 export function resolveSubagentSpawnOwnership(params: {
   cfg: OpenClawConfig;
+  agentId?: string;
   agentSessionKey?: string;
   completionOwnerKey?: string;
 }) {
-  const { mainKey, alias } = resolveMainSessionAlias(params.cfg);
-  const controllerSessionKey = params.agentSessionKey
-    ? resolveInternalSessionKey({
-        key: params.agentSessionKey,
-        alias,
-        mainKey,
-      })
-    : alias;
+  const agentId = resolveSessionAgentId({
+    config: params.cfg,
+    sessionKey: params.agentSessionKey,
+    agentId: params.agentId,
+  });
+  const controllerSessionKey = resolveInternalSessionKey({
+    key: params.agentSessionKey ?? "main",
+    agentId,
+    cfg: params.cfg,
+  });
   const completionOwnerKey = params.completionOwnerKey?.trim();
   const completionRequesterSessionKey = completionOwnerKey
     ? resolveInternalSessionKey({
         key: completionOwnerKey,
-        alias,
-        mainKey,
+        agentId,
+        cfg: params.cfg,
       })
     : controllerSessionKey;
-  // Completion ownership can differ from control ownership when a parent proxies the spawn.
-  const completionRequesterDisplayKey = resolveDisplaySessionKey({
-    key: completionRequesterSessionKey,
-    alias,
-    mainKey,
-  });
-
   return {
     controllerSessionKey,
     completionRequesterSessionKey,
-    completionRequesterDisplayKey,
+    completionRequesterDisplayKey: completionRequesterSessionKey,
   };
 }

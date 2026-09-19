@@ -363,7 +363,7 @@ describe("task-registry", () => {
   });
 
   it.each(["terminal", "progress"] as const)(
-    "preserves the bare-session requester on direct %s delivery",
+    "qualifies the bare-session requester with its captured owner on direct %s delivery",
     async (kind) => {
       await withTaskRegistryTempDir(async () => {
         hoisted.sendMessageMock.mockResolvedValue({ deliveryStatus: "delivered" });
@@ -389,7 +389,7 @@ describe("task-registry", () => {
         expect(hoisted.sendMessageMock).toHaveBeenCalledExactlyOnceWith(
           expect.objectContaining({
             agentId: "alpha",
-            mirror: expect.objectContaining({ sessionKey: "global", agentId: "alpha" }),
+            mirror: expect.objectContaining({ sessionKey: "agent:alpha:global", agentId: "alpha" }),
           }),
         );
       });

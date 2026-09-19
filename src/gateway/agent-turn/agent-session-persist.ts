@@ -585,9 +585,7 @@ export async function persistAgentSessionPhase(params: {
     return undefined;
   }
   const isMainSession =
-    !params.suppressVisibleSessionEffects &&
-    (params.canonicalSessionKey === params.mainSessionKey ||
-      params.canonicalSessionKey === "global");
+    !params.suppressVisibleSessionEffects && params.canonicalSessionKey === params.mainSessionKey;
   return {
     sessionEntry,
     resolvedSessionId,

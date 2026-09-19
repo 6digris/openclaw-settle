@@ -72,19 +72,23 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it.each(["agent:main:dashboard:stored", "global"])(
-  "resolves stored CLI task ownership without agentId for %s",
-  (sessionKey) => {
+it.each(["dashboard:stored", "global"])(
+  "resolves qualified CLI task ownership without agentId for %s",
+  (sessionSuffix) => {
     const runId = "stored-cli";
     const record: TaskRecord = {
       ...task(runId, "running"),
       runtime: "cli",
-      childSessionKey: sessionKey,
+      childSessionKey: `agent:main:${sessionSuffix}`,
       detail: undefined,
     };
     for (const agentId of ["main", "other"]) {
       resetAgentRunRegistryForTest();
-      claimAgentRunContext(runId, { sessionKey, agentId }, { trackOwner: true, ownsContext: true });
+      claimAgentRunContext(
+        runId,
+        { sessionKey: `agent:${agentId}:${sessionSuffix}`, agentId },
+        { trackOwner: true, ownsContext: true },
+      );
       expect(getTaskExecutionObservation(record)).toEqual({
         state: agentId === "main" ? "running" : "unknown",
       });

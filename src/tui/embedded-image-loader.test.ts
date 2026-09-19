@@ -22,7 +22,6 @@ it("keeps a cancelled local image load pending until the thumbnail owner settles
     storePath: "/tmp/tui-image-test.sqlite",
     store: {},
     storeKeys: [sessionKey],
-    legacyKey: undefined,
   });
   let completeThumbnail!: (value: Buffer) => void;
   const thumbnail = new Promise<Buffer>((resolve) => {

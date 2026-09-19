@@ -252,6 +252,7 @@ export async function maybeSpawnVisibleSession(params: {
   }
   const ownership = resolveSubagentSpawnOwnership({
     cfg,
+    agentId: params.options?.requesterAgentIdOverride,
     agentSessionKey: params.options?.agentSessionKey,
     completionOwnerKey: params.options?.completionOwnerKey,
   });

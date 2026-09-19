@@ -4,6 +4,7 @@ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { stripAnsi } from "../../packages/terminal-core/src/ansi.js";
 import { hasTerminalControl } from "../../packages/terminal-core/src/safe-text.js";
 import { splitTrailingAuthProfile } from "../agents/model-ref-profile.js";
+import { modelKey } from "../agents/model-ref-shared.js";
 import { appendReplyMediaFailures, type ReplyMediaFailure } from "../auto-reply/reply-payload.js";
 import { stripLeadingInboundMetadata } from "../auto-reply/reply/strip-inbound-meta.js";
 import type { SessionGoal } from "../config/sessions/types.js";
@@ -12,6 +13,7 @@ import { isImageMediaFact, readPersistedMediaFacts } from "../media/media-facts.
 import { formatRawAssistantErrorForUi } from "../shared/assistant-error-format.js";
 import { extractAssistantPhaseText } from "../shared/chat-message-content.js";
 import { formatTokenCount } from "../utils/token-format.js";
+import type { TuiModelChoice } from "./tui-backend.js";
 import type { SessionInfo } from "./tui-types.js";
 
 const REPLACEMENT_CHAR_RE = /\uFFFD/g;
@@ -587,4 +589,32 @@ export function formatPrimitiveString(value: unknown, fallback = ""): string {
     return String(value);
   }
   return fallback;
+}
+
+export function formatTuiFastMode(mode: unknown): "auto" | "on" | "off" {
+  return mode === "auto" ? "auto" : mode === true ? "on" : "off";
+}
+
+export function formatTuiModelChoices(models: readonly TuiModelChoice[]) {
+  return models.map((model) => {
+    const ref = modelKey(model.provider, model.id);
+    return {
+      value: ref,
+      label: ref,
+      description: [
+        model.name !== model.id ? model.name : "",
+        model.available === false ? (model.unavailableReason ?? "unavailable") : "",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+    };
+  });
+}
+
+export function formatTuiModelUnavailable(reason: TuiModelChoice["unavailableReason"]): string {
+  const guidance =
+    reason === "cooldown"
+      ? "Wait and retry, or choose another model."
+      : "Run openclaw models auth login or choose another model.";
+  return `model unavailable: ${reason ?? "unavailable"}. ${guidance}`;
 }

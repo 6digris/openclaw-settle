@@ -3,7 +3,6 @@ import { resolveSessionStoreIdentity } from "../../gateway/session-store-key.js"
 import { isIncognitoSessionKey, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
-import { resolveAgentMainSessionKey } from "./main-session.js";
 import { resolveSessionStorePathCore } from "./paths.js";
 import "./plugin-host-cleanup.js";
 import "./session-accessor.sqlite-canonical-repair.js";
@@ -81,7 +80,7 @@ export { resolveSessionEntryFromStore };
 export function resolveSessionEntrySelection(
   scope: SessionAccessScope,
   options: { readOnly?: boolean } = {},
-): ReturnType<typeof resolveSessionEntryFromStore> {
+): ReturnType<typeof resolveSessionEntry> {
   return resolveSessionEntry(scope, options);
 }
 
@@ -117,32 +116,6 @@ function resolveLogicalSessionStoreCandidates(params: {
     }
   }
   return [...targets.values()];
-}
-
-function buildLogicalSessionEntryCandidateKeys(params: {
-  agentId: string;
-  canonicalKey: string;
-  cfg: OpenClawConfig;
-  requestedKey: string;
-}): string[] {
-  const targets = new Set<string>();
-  if (params.canonicalKey) {
-    targets.add(params.canonicalKey);
-  }
-  if (params.requestedKey && params.requestedKey !== params.canonicalKey) {
-    targets.add(params.requestedKey);
-  }
-  if (params.canonicalKey === "global" || params.canonicalKey === "unknown") {
-    return [...targets];
-  }
-  const agentMainKey = resolveAgentMainSessionKey({
-    cfg: params.cfg,
-    agentId: params.agentId,
-  });
-  if (params.canonicalKey === agentMainKey) {
-    targets.add(`agent:${params.agentId}:main`);
-  }
-  return [...targets];
 }
 
 function findCanonicalSessionEntryMatch(
@@ -246,12 +219,7 @@ function resolveSessionEntryStoreTarget(
     sessionKey: requestedKey,
     agentId: scope.agentId,
   });
-  const scanTargets = buildLogicalSessionEntryCandidateKeys({
-    agentId,
-    canonicalKey,
-    cfg: scope.cfg,
-    requestedKey,
-  });
+  const scanTargets = uniqueStrings([canonicalKey, requestedKey].filter(Boolean));
   if (isIncognitoSessionKey(canonicalKey)) {
     const incognitoAgentId = resolveAgentIdFromSessionKey(canonicalKey);
     const storePath = resolveIncognitoOpenClawAgentSqlitePath({

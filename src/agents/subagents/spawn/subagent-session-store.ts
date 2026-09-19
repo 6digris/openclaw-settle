@@ -5,6 +5,7 @@ import {
   loadSessionEntryByIdReadOnly,
 } from "../../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../../config/sessions/types.js";
+import { parseAgentSessionKey } from "../../../sessions/session-key-utils.js";
 
 type PersistedSessionCapabilityEntry = Pick<
   SessionEntry,
@@ -27,7 +28,7 @@ export type SessionCapabilityLookup = {
   /** Reuse this memo when depth fallback revisits the same logical store. */
   scope?: { storePath: string; agentId: string };
   get: (sessionKey: string) => SessionCapabilityEntry | undefined;
-  getById: (sessionId: string) => SessionCapabilityEntry | undefined;
+  getById: (sessionId: string, logicalAgentId: string) => SessionCapabilityEntry | undefined;
 };
 
 export type SessionCapabilityStore =
@@ -52,12 +53,14 @@ export function asSessionCapabilityLookup(store: SessionCapabilityStore): Sessio
   }
   return {
     get: (key) => store[key],
-    getById: (id) => {
+    getById: (id, logicalAgentId) => {
       const normalizedId = normalizeOptionalString(id);
       return normalizedId
-        ? Object.values(store).find(
-            (entry) => normalizeOptionalString(entry?.sessionId) === normalizedId,
-          )
+        ? Object.entries(store).find(
+            ([key, entry]) =>
+              parseAgentSessionKey(key)?.agentId === logicalAgentId &&
+              normalizeOptionalString(entry?.sessionId) === normalizedId,
+          )?.[1]
         : undefined;
     },
   };
@@ -95,18 +98,20 @@ export function createSubagentSessionStore(
       }
       return entries.get(sessionKey);
     },
-    getById: (sessionId) => {
+    getById: (sessionId, logicalAgentId) => {
       const id = normalizeOptionalString(sessionId);
       if (!id) {
         return undefined;
       }
-      if (!ids.has(id)) {
+      const cacheKey = `${logicalAgentId}\0${id}`;
+      if (!ids.has(cacheKey)) {
         let entry: SessionCapabilityEntry | undefined;
         try {
           const selected = loadSessionEntryByIdReadOnly({
             storePath,
             agentId,
             sessionId: id,
+            logicalAgentId,
             projection: "list",
           });
           entry = selected?.entry;
@@ -116,9 +121,9 @@ export function createSubagentSessionStore(
         } catch {
           // Preserve the depth/key fallback for missing or unavailable stores.
         }
-        ids.set(id, entry);
+        ids.set(cacheKey, entry);
       }
-      return ids.get(id);
+      return ids.get(cacheKey);
     },
   };
 }

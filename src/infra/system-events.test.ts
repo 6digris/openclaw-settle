@@ -10,13 +10,15 @@ import {
   setRuntimeConfigSnapshot,
 } from "../config/io.js";
 import { resolveMainSessionKey } from "../config/sessions/main-session.js";
+import { requestHeartbeat as requestSdkHeartbeat } from "../plugin-sdk/heartbeat-runtime.js";
 import {
   enqueueRoutedSystemEvent,
   enqueueSystemEvent as enqueueSdkSystemEvent,
   peekSystemEventEntries as peekSdkSystemEventEntries,
 } from "../plugin-sdk/system-event-runtime.js";
+import { createRuntimeSystem } from "../plugins/runtime/runtime-system.js";
 import { isCronSystemEvent } from "./heartbeat-events-filter.js";
-import { withSystemEventOwner } from "./system-event-ownership.js";
+import { requestHeartbeatAndWait, setHeartbeatWakeHandler } from "./heartbeat-wake.js";
 import {
   consumeSelectedSystemEventEntries,
   drainSystemEventEntries,
@@ -93,6 +95,67 @@ describe("system events (session routing)", () => {
 
   it("requires an explicit session key", () => {
     expect(() => enqueueSystemEvent("Node: Mac Studio", { sessionKey: " " })).toThrow("sessionKey");
+  });
+
+  it("resolves SDK and plugin-runtime wake aliases before coalescing", async () => {
+    vi.useFakeTimers();
+    const previous = getRuntimeConfigSnapshot();
+    const handler = vi.fn().mockResolvedValue({ status: "ran", durationMs: 1 });
+    const stop = setHeartbeatWakeHandler(handler);
+    try {
+      setRuntimeConfigSnapshot({
+        agents: { entries: { alpha: { default: true }, beta: {} } },
+        session: { scope: "global", mainKey: "work" },
+      });
+      const wake = { source: "manual", intent: "manual", coalesceMs: 0 } as const;
+      requestSdkHeartbeat({ ...wake, sessionKey: "main" });
+      createRuntimeSystem().requestHeartbeat({ ...wake, sessionKey: "global" });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(handler).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionKey: "agent:alpha:global" }),
+      );
+      setRuntimeConfigSnapshot({
+        agents: { ownership: "explicit", entries: { alpha: {}, beta: {} } },
+      });
+      expect(() => requestSdkHeartbeat({ ...wake, sessionKey: "global" })).toThrow();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(handler).toHaveBeenCalledTimes(1);
+    } finally {
+      stop();
+      if (previous) {
+        setRuntimeConfigSnapshot(previous);
+      } else {
+        clearRuntimeConfigSnapshot();
+      }
+    }
+  });
+
+  it.each([
+    { sessionKey: "global" },
+    { agentId: "!!!", sessionKey: "agent:main:global" },
+    { agentId: "alpha", sessionKey: "agent:beta:global" },
+  ])("detaches abort listeners when wake target admission fails: %j", async (target) => {
+    const controller = new AbortController();
+    const add = vi.spyOn(controller.signal, "addEventListener");
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+    const handler = vi.fn().mockResolvedValue({ status: "ran", durationMs: 1 });
+    const stop = setHeartbeatWakeHandler(handler);
+    try {
+      await expect(
+        requestHeartbeatAndWait(
+          { source: "manual", intent: "manual", ...target },
+          { abortSignal: controller.signal },
+        ),
+      ).rejects.toThrow();
+      expect(add).toHaveBeenCalledOnce();
+      expect(remove).toHaveBeenCalledExactlyOnceWith("abort", add.mock.calls[0]?.[1]);
+      expect(handler).not.toHaveBeenCalled();
+    } finally {
+      stop();
+      add.mockRestore();
+      remove.mockRestore();
+    }
   });
 
   it.each(["main", "global", "unknown"])(
@@ -502,27 +565,21 @@ describe("system events (session routing)", () => {
   });
 
   it("does not evict another agent's global notification when one queue fills", async () => {
-    enqueueSystemEvent(
-      "Beta result is ready",
-      withSystemEventOwner({ sessionKey: "global" }, "beta"),
-    );
+    enqueueSystemEvent("Beta result is ready", { sessionKey: "agent:beta:global" });
     for (let index = 0; index < 25; index += 1) {
-      enqueueSystemEvent(
-        `Alpha progress ${index}`,
-        withSystemEventOwner({ sessionKey: "global" }, "alpha"),
-      );
+      enqueueSystemEvent(`Alpha progress ${index}`, { sessionKey: "agent:alpha:global" });
     }
-    const beta = await drainFormattedEvents("global", { agentId: "beta" });
+    const beta = await drainFormattedEvents("agent:beta:global", { agentId: "beta" });
     expect(beta).toContain("Beta result is ready");
     expect(beta).not.toContain("Alpha progress");
-    const alpha = await drainFormattedEvents("global", { agentId: "alpha" });
+    const alpha = await drainFormattedEvents("agent:alpha:global", { agentId: "alpha" });
     expect(alpha).toContain("Alpha progress 24");
     expect(alpha).not.toContain("Beta result is ready");
   });
 
   it("qualifies enqueue options without changing the caller's session target", () => {
     const options = { sessionKey: "global", contextKey: "hook:ready" };
-    enqueueSystemEvent("Ready", withSystemEventOwner(options, "alpha"));
+    enqueueSdkSystemEvent("Ready", { ...options, agentId: "alpha" });
     expect(options).toEqual({ sessionKey: "global", contextKey: "hook:ready" });
     expect(peekSystemEvents("agent:alpha:global")).toEqual(["Ready"]);
   });

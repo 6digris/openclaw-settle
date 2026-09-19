@@ -14,11 +14,17 @@ import type {
   TaskSuggestion,
   TaskSuggestionsAcceptResult,
 } from "../../packages/gateway-protocol/src/index.js";
-import type { ResponseUsageMode, SessionInfo, SessionScope } from "./tui-types.js";
+import type {
+  ResponseUsageMode,
+  SessionInfo,
+  SessionScope,
+  TuiSessionIntent,
+} from "./tui-types.js";
 
 // Transport-agnostic backend contract consumed by the TUI runtime.
 /** Options for sending one chat turn through a TUI backend. */
 export type ChatSendOptions = {
+  targetIntent?: TuiSessionIntent;
   sessionKey: string;
   agentId?: string;
   sessionId?: string | null;
@@ -34,9 +40,7 @@ export type TuiChatSendResult = {
   status?: string;
 };
 
-export type TuiImageRequest = {
-  sessionKey: string;
-  agentId?: string;
+export type TuiImageRequest = Pick<ChatSendOptions, "sessionKey" | "agentId" | "targetIntent"> & {
   source: string;
   artifactId?: string;
   signal: AbortSignal;
@@ -121,6 +125,8 @@ export type TuiSessionList = {
       key: string;
       sessionId?: string;
       updatedAt?: number | null;
+      archived?: boolean;
+      incognito?: boolean;
       fastMode?: FastMode;
       sendPolicy?: string;
       responseUsage?: ResponseUsageMode;
@@ -143,6 +149,11 @@ export type TuiSessionList = {
       lastMessagePreview?: string;
     }
   >;
+};
+
+export type TuiSessionDescription = {
+  session: TuiSessionList["sessions"][number] | null;
+  defaults?: TuiSessionList["defaults"];
 };
 
 /** Agent-list payload used by TUI agent switching. */
@@ -185,6 +196,7 @@ export type TuiSessionCreateOptions = {
   key: string;
   agentId?: string;
   parentSessionKey?: string;
+  parentTargetIntent?: TuiSessionIntent;
   succeedsParent?: boolean;
 };
 
@@ -206,20 +218,31 @@ export type TuiBackend = {
   sendChat: (opts: ChatSendOptions) => Promise<TuiChatSendResult>;
   /** runId optional: omit for session-scoped abort (queued turns then active). */
   abortChat: (opts: {
+    targetIntent?: TuiSessionIntent;
     sessionKey: string;
     agentId?: string;
     runId?: string;
   }) => Promise<{ ok: boolean; aborted: boolean; runIds?: string[] }>;
-  loadHistory: (opts: { sessionKey: string; agentId?: string; limit?: number }) => Promise<unknown>;
+  loadHistory: (opts: {
+    sessionKey: string;
+    agentId?: string;
+    limit?: number;
+    targetIntent?: TuiSessionIntent;
+  }) => Promise<unknown>;
   loadImage?: (opts: TuiImageRequest) => Promise<TuiImageData>;
   listSessions: (opts?: SessionsListParams) => Promise<TuiSessionList>;
+  describeSession: (
+    opts: Pick<ChatSendOptions, "sessionKey" | "agentId" | "targetIntent">,
+  ) => Promise<TuiSessionDescription>;
   listAgents: () => Promise<TuiAgentsList>;
-  patchSession: (opts: SessionsPatchParams) => Promise<SessionsPatchResult>;
+  patchSession: (
+    opts: SessionsPatchParams & { targetIntent?: TuiSessionIntent },
+  ) => Promise<SessionsPatchResult>;
   createSession: (opts: TuiSessionCreateOptions) => Promise<TuiSessionMutationResult>;
   resetSession: (
     key: string,
     reason?: "new" | "reset",
-    opts?: { agentId?: string },
+    opts?: { agentId?: string; targetIntent?: TuiSessionIntent },
   ) => Promise<TuiSessionMutationResult>;
   getGatewayStatus: () => Promise<unknown>;
   listModels: (opts?: { agentId?: string }) => Promise<TuiModelChoice[]>;

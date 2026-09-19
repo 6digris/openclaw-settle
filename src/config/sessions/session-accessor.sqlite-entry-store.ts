@@ -53,7 +53,7 @@ import { readTranscriptMutationStateInTransaction } from "./session-accessor.sql
 import {
   assertCanonicalSessionEntryLineageWrite,
   assertCanonicalSqliteSessionKeysCurrent,
-  assertCanonicalSessionKeyWriteMatchesDatabase,
+  assertCanonicalSessionKeyWrite,
   canonicalSessionKeyMigrationRequiredError,
 } from "./session-canonical-key.js";
 import { certifyCanonicalSessionValidationRow } from "./session-canonical-validation.js";
@@ -149,7 +149,6 @@ export function readUnchangedLifecycleTargetSnapshot(
 export function resolveLifecyclePrimaryEntry(
   database: Pick<OpenClawAgentDatabase, "agentId" | "db">,
   target: { canonicalKey: string; storeKeys: string[] },
-  options: { allowCanonicalMove?: boolean } = {},
 ): SqliteLifecycleTargetSnapshot[number] | undefined {
   const rows = target.storeKeys.flatMap((key) => {
     const sessionKey = key.trim();
@@ -162,7 +161,7 @@ export function resolveLifecyclePrimaryEntry(
     );
   }
   const [row] = rows;
-  if (row && row.sessionKey !== target.canonicalKey && options.allowCanonicalMove !== true) {
+  if (row && row.sessionKey !== target.canonicalKey) {
     throw canonicalSessionKeyMigrationRequiredError(
       `non-canonical persisted row resolves to session key ${target.canonicalKey}`,
     );
@@ -182,11 +181,10 @@ export function resolveLifecyclePrimaryEntry(
 export function readLifecycleTargetSnapshot(
   database: Pick<OpenClawAgentDatabase, "agentId" | "db">,
   target: { canonicalKey: string; storeKeys: string[] },
-  options: { allowCanonicalMove?: boolean } = {},
 ): SqliteLifecycleTargetSnapshot {
   assertCanonicalSqliteSessionKeysCurrent(database);
   const normalized = normalizeLifecycleTarget(target);
-  const row = resolveLifecyclePrimaryEntry(database, normalized, options);
+  const row = resolveLifecyclePrimaryEntry(database, normalized);
   return row ? [row] : [];
 }
 
@@ -456,8 +454,8 @@ export function writeSessionEntry(
   } = {},
 ): SessionEntry {
   if (!options.allowStoredAliases) {
-    assertCanonicalSessionKeyWriteMatchesDatabase(database, sessionKey);
-    assertCanonicalSessionEntryLineageWrite(database, entry);
+    assertCanonicalSessionKeyWrite(sessionKey);
+    assertCanonicalSessionEntryLineageWrite(entry);
     if (resolveDeliveryProvenCanonicalSessionKey(sessionKey, entry) !== sessionKey) {
       throw canonicalSessionKeyMigrationRequiredError(
         `refusing non-canonical session key write ${sessionKey}`,

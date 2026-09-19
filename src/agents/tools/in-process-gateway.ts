@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { GATEWAY_CLIENT_CAPS } from "../../../packages/gateway-protocol/src/client-info.js";
 import {
   createCronMutationCompletion,
   type CronMutationCompletion,
@@ -230,7 +231,12 @@ async function callAgentToolGatewayRequestBound<T>(
     } = request;
     return await runBoundInProcessGatewayCall(
       boundGateway,
-      () => callGateway<T>({ ...wireRequest, method }),
+      () =>
+        callGateway<T>({
+          ...wireRequest,
+          method,
+          caps: [GATEWAY_CLIENT_CAPS.CANONICAL_SESSION_KEYS],
+        }),
       assertCurrent,
       revalidateOnCompletion,
     );
@@ -331,7 +337,10 @@ async function callInProcessGatewayToolBound<T>(
   options: InProcessGatewayCallOptions & {
     sessionCreation?: TrustedSessionCreation;
   },
-  fallback: (scopes: ReturnType<typeof resolveLeastPrivilegeOperatorScopesForMethod>) => Promise<T>,
+  fallback: (options: {
+    scopes: ReturnType<typeof resolveLeastPrivilegeOperatorScopesForMethod>;
+    caps: string[];
+  }) => Promise<T>,
 ): Promise<T> {
   const assertCallerCurrent = captureGatewayToolCallerAssertion();
   const caller = getGatewayToolCallerIdentity();
@@ -379,7 +388,11 @@ async function callInProcessGatewayToolBound<T>(
   if (boundGateway) {
     throw new Error(`Gateway instance unavailable for ${method}`);
   }
-  return await runBoundInProcessGatewayCall(undefined, () => fallback(scopes), assertCallerCurrent);
+  return await runBoundInProcessGatewayCall(
+    undefined,
+    () => fallback({ scopes, caps: [GATEWAY_CLIENT_CAPS.CANONICAL_SESSION_KEYS] }),
+    assertCallerCurrent,
+  );
 }
 
 export const callInProcessGatewayTool: InProcessGatewayCaller = async <T>(
@@ -387,13 +400,13 @@ export const callInProcessGatewayTool: InProcessGatewayCaller = async <T>(
   params: Record<string, unknown>,
   options: InProcessGatewayCallOptions = {},
 ): Promise<T> => {
-  return await callInProcessGatewayToolBound(method, params, options, async (scopes) =>
+  return await callInProcessGatewayToolBound(method, params, options, async (fallbackOptions) =>
     callGatewayTool<T>(
       method,
       options.timeoutMs == null ? {} : { timeoutMs: options.timeoutMs },
       params,
       {
-        scopes,
+        ...fallbackOptions,
         ...(options.signal ? { signal: options.signal } : {}),
       },
     ),
@@ -415,12 +428,12 @@ export async function callInProcessGatewayToolWithCreation<T = Record<string, un
     method,
     params,
     { ...options, sessionCreation: creation },
-    async (scopes) => {
+    async (fallbackOptions) => {
       // The fallback is a real local Gateway request. Carry spawn policy only in
       // the signed agent-runtime identity token, never in model-authored params.
       if (creation.via !== "spawn" || !creation.inheritedToolPolicy) {
         return await callGatewayTool<T>(method, {}, params, {
-          scopes,
+          ...fallbackOptions,
           ...(options.signal ? { signal: options.signal } : {}),
           ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
         });
@@ -438,7 +451,7 @@ export async function callInProcessGatewayToolWithCreation<T = Record<string, un
         },
         () =>
           callGatewayTool<T>(method, {}, params, {
-            scopes,
+            ...fallbackOptions,
             requireAgentRuntimeIdentity: true,
             ...(options.signal ? { signal: options.signal } : {}),
             ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),

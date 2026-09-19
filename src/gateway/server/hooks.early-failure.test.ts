@@ -500,7 +500,7 @@ describe("gateway hook early-failure recovery", () => {
 
   it.each([
     { scope: "agent-scoped", eventSessionKey: "agent:hooks:main" },
-    { scope: "global", eventSessionKey: "global" },
+    { scope: "global", eventSessionKey: "agent:hooks:global" },
   ])("keeps the accepted agent authoritative for $scope recovery", async (testCase) => {
     const global = testCase.scope === "global";
     const response = await postAgentHook(global);
@@ -518,13 +518,12 @@ describe("gateway hook early-failure recovery", () => {
       "Hook Recovery (error): Error: required system config unavailable",
       { sessionKey: global ? "agent:hooks:global" : testCase.eventSessionKey },
     );
-
     expect(mocks.requestHeartbeat).toHaveBeenCalledWith({
       source: "hook",
       intent: "immediate",
       reason: expect.stringMatching(/^hook:[0-9a-f-]+:error$/),
       agentId: "hooks",
-      ...(global ? {} : { sessionKey: testCase.eventSessionKey }),
+      sessionKey: testCase.eventSessionKey,
     });
     await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
   });

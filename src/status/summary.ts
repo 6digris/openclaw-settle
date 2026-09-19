@@ -31,7 +31,6 @@ import { resolveHeartbeatSessionKey } from "../infra/heartbeat-runner-session.js
 import { resolveHeartbeatSummariesForAgents } from "../infra/heartbeat-summary-projection.js";
 import { hasResolvableHeartbeatOwnerRoute } from "../infra/outbound/targets.js";
 import { readStartupMigrationWarning } from "../infra/state-migrations.messages.js";
-import { resolveSystemEventQueueKey } from "../infra/system-event-ownership.js";
 import { peekSystemEvents } from "../infra/system-events.js";
 import {
   listActiveDegradedPlugins,
@@ -449,14 +448,11 @@ export async function getStatusSummary(
     : [];
   const queuedSystemEvents = agentList.agents.flatMap(({ id: agentId }) =>
     peekSystemEvents(
-      resolveSystemEventQueueKey(
-        resolveCanonicalMainSessionKey({
-          agentId,
-          mainKey: cfg.session?.mainKey,
-          sessionScope: cfg.session?.scope,
-        }),
+      resolveCanonicalMainSessionKey({
         agentId,
-      ),
+        mainKey: cfg.session?.mainKey,
+        sessionScope: cfg.session?.scope,
+      }),
     ),
   );
   const taskMaintenanceModule = await taskRegistryMaintenanceModuleLoader.load();

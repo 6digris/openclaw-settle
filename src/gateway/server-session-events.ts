@@ -25,15 +25,11 @@ import { resolveVisibleActiveSessionRunState } from "./server-methods/session-ac
 import { hasSessionChangeReceivers } from "./session-change-receivers.js";
 import { buildGatewaySessionSnapshot } from "./session-event-payload.js";
 import {
-  resolvePrivateSessionEventBroadcastScope,
   resolveSessionEventAgentScope,
   type SessionEventAgentScope,
 } from "./session-request-agent.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
-import {
-  resolveSessionSubscriptionKey,
-  resolveSessionSubscriptionKeys,
-} from "./session-subscription-keys.js";
+import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
 import { projectSessionMessagePayload } from "./session-transcript-message.js";
 import {
   readSessionMessageByIdAsync,
@@ -64,10 +60,9 @@ function readTranscriptUpdateLifecycleOwner(
     normalizeOptionalString(update.sessionId) ??
     marker?.sessionId;
   const storePath = normalizeOptionalString(update.target?.storePath) ?? marker?.storePath;
-  const ownerAgentId =
-    agentId ?? resolveSessionEventAgentScope(getRuntimeConfig(), sessionKey)?.[1];
-  const entry = ownerAgentId
-    ? projection?.capture({ agentId: ownerAgentId, key: sessionKey, storePath })?.entry
+  const scope = resolveSessionEventAgentScope(getRuntimeConfig(), sessionKey, agentId);
+  const entry = scope
+    ? projection?.capture({ agentId: scope.agentId, key: scope.sessionKey, storePath })?.entry
     : undefined;
   if (!entry || (sessionId && entry.sessionId !== sessionId)) {
     return undefined;
@@ -97,7 +92,6 @@ export function createTranscriptUpdateBroadcastHandler(params: {
       (update.message !== undefined
         ? readTranscriptUpdateLifecycleOwner(update, projection)?.lifecycleRevision
         : undefined);
-    const queuedUpdate = lifecycleRevision ? { ...update, lifecycleRevision } : update;
     const legacyMarker = parseSqliteSessionFileMarker(update.sessionFile);
     const sessionKey =
       normalizeOptionalString(update.target?.sessionKey) ??
@@ -113,11 +107,13 @@ export function createTranscriptUpdateBroadcastHandler(params: {
     if (agentScope === null) {
       return Promise.resolve();
     }
-    // Raw global is per-agent storage identity; its qualified aliases must share a lane.
-    const laneKey =
-      sessionKey && agentScope?.[1]
-        ? resolveSessionSubscriptionKey(sessionKey, agentScope[1])
-        : (sessionKey ?? normalizeOptionalString(update.sessionFile) ?? "");
+    const queuedUpdate = {
+      ...update,
+      ...(update.sessionKey ? agentScope : {}),
+      ...(update.target && agentScope ? { target: { ...update.target, ...agentScope } } : {}),
+      ...(lifecycleRevision ? { lifecycleRevision } : {}),
+    };
+    const laneKey = agentScope?.sessionKey ?? normalizeOptionalString(update.sessionFile) ?? "";
     // Preserve transcript update order within the lane even when counting
     // messages requires an async read from the session file.
     const tail = broadcastQueues.get(laneKey) ?? Promise.resolve();
@@ -195,38 +191,32 @@ async function handleTranscriptUpdateBroadcast(
     return;
   }
   const compatibleLegacyMarker = completeTarget ? undefined : legacyMarker;
-  const sessionKey = compatibleLegacyMarker
+  const resolvedSessionKey = compatibleLegacyMarker
     ? candidateKeyEntry?.sessionId === compatibleLegacyMarker.sessionId ||
       (!candidateKeyEntry && markerMatches.length === 0)
       ? candidateSessionKey
       : markerMatches[0]?.key
     : candidateSessionKey;
-  if (!sessionKey) {
+  if (!resolvedSessionKey) {
     return;
   }
   const agentScope =
-    capturedAgentScope ??
+    (candidateSessionKey ? capturedAgentScope : undefined) ??
     resolveSessionEventAgentScope(
       getRuntimeConfig(),
-      sessionKey,
+      resolvedSessionKey,
       compatibleLegacyMarker?.agentId ?? targetAgentId ?? update.agentId,
     );
   if (!agentScope) {
     return;
   }
-  const [eventAgentId, routingAgentId, compatibilityOwnerAgentId] = agentScope;
-  const privateBroadcastScope = resolvePrivateSessionEventBroadcastScope(sessionKey, agentScope);
+  const { agentId, sessionKey } = agentScope;
   const connIds = new Set<string>();
   for (const connId of params.sessionEventSubscribers.getAll()) {
     connIds.add(connId);
   }
-  const broadcastKeys = routingAgentId
-    ? resolveSessionSubscriptionKeys(sessionKey, routingAgentId, compatibilityOwnerAgentId)
-    : [sessionKey];
-  for (const broadcastKey of broadcastKeys) {
-    for (const connId of params.sessionMessageSubscribers.get(broadcastKey)) {
-      connIds.add(connId);
-    }
+  for (const connId of params.sessionMessageSubscribers.get(sessionKey)) {
+    connIds.add(connId);
   }
   if (connIds.size === 0) {
     if (
@@ -237,28 +227,6 @@ async function handleTranscriptUpdateBroadcast(
     }
   }
   const lifecycleRevision = normalizeOptionalString(update.lifecycleRevision);
-  if (!eventAgentId && !compatibilityOwnerAgentId && !parseAgentSessionKey(sessionKey)) {
-    if (lifecycleRevision) {
-      const currentLifecycleOwner = readTranscriptUpdateLifecycleOwner(update, projection);
-      if (
-        !currentLifecycleOwner ||
-        (currentLifecycleOwner.lifecycleRevision &&
-          currentLifecycleOwner.lifecycleRevision !== lifecycleRevision)
-      ) {
-        return;
-      }
-    }
-    params.broadcastToConnIds(
-      "sessions.changed",
-      { sessionKey, phase: "message", ts: Date.now() },
-      connIds,
-      {
-        ...privateBroadcastScope,
-        dropIfSlow: true,
-      },
-    );
-    return;
-  }
   let message = update.message;
   let messageSeq = asPositiveSafeInteger(update.messageSeq);
   let transcriptPosition: TranscriptDisplayPosition | undefined;
@@ -291,7 +259,7 @@ async function handleTranscriptUpdateBroadcast(
     // current transcript line count for cursor-compatible live history.
     const updateStorePath = targetStorePath ?? compatibleLegacyMarker?.storePath;
     const fallbackTarget = projection?.selectEntries({
-      agentId: routingAgentId,
+      agentId,
       key: sessionKey,
       storePath: updateStorePath,
     })[0];
@@ -304,7 +272,7 @@ async function handleTranscriptUpdateBroadcast(
     messageSeq = messageSessionId
       ? asPositiveSafeInteger(
           await readSessionMessageCountAsync({
-            agentId: update.target?.agentId ?? routingAgentId,
+            agentId: update.target?.agentId ?? agentId,
             sessionEntry: entry,
             sessionId: messageSessionId,
             sessionKey,
@@ -330,26 +298,24 @@ async function handleTranscriptUpdateBroadcast(
       return;
     }
   }
-  const sessionRow = routingAgentId
-    ? projection?.snapshot({ key: sessionKey, agentId: routingAgentId, storePath: targetStorePath })
-        .row
+  const sessionRow = projection?.snapshot({
+    key: sessionKey,
+    agentId,
+    storePath: targetStorePath,
+  }).row;
+  const activeRunState = sessionRow
+    ? resolveVisibleActiveSessionRunState({
+        context: params,
+        requestedKey: sessionKey,
+        canonicalKey: sessionRow.key,
+        sessionId: sessionRow.sessionId,
+        agentId,
+        projectedAgentRunIndex: projection?.state.rowContext.projectedAgentRuns,
+      })
     : null;
-  const activeRunState =
-    sessionRow &&
-    (sessionRow.key !== "global" || routingAgentId !== undefined || compatibilityOwnerAgentId)
-      ? resolveVisibleActiveSessionRunState({
-          context: params,
-          requestedKey: sessionKey,
-          canonicalKey: sessionRow.key,
-          sessionId: sessionRow.sessionId,
-          ...(routingAgentId ? { agentId: routingAgentId } : {}),
-          defaultAgentId: compatibilityOwnerAgentId,
-          projectedAgentRunIndex: projection?.state.rowContext.projectedAgentRuns,
-        })
-      : null;
   const sessionSnapshot = buildGatewaySessionSnapshot({
     sessionRow,
-    agentId: eventAgentId,
+    agentId,
     includeSession: true,
     activeRunState,
   });
@@ -360,7 +326,7 @@ async function handleTranscriptUpdateBroadcast(
       "sessions.changed",
       {
         sessionKey,
-        ...(eventAgentId ? { agentId: eventAgentId } : {}),
+        agentId,
         phase: "message",
         ts: Date.now(),
         ...sessionSnapshot,
@@ -371,7 +337,7 @@ async function handleTranscriptUpdateBroadcast(
   }
   const projected = projectSessionMessagePayload({
     sessionKey,
-    ...(eventAgentId ? { agentId: eventAgentId } : {}),
+    agentId,
     message,
     transcriptPosition,
     ...(typeof update.messageId === "string" ? { messageId: update.messageId } : {}),
@@ -394,7 +360,7 @@ async function handleTranscriptUpdateBroadcast(
     "sessions.changed",
     {
       sessionKey,
-      ...(eventAgentId ? { agentId: eventAgentId } : {}),
+      agentId,
       phase: "message",
       ts: Date.now(),
       ...(typeof update.messageId === "string" ? { messageId: update.messageId } : {}),
@@ -418,32 +384,27 @@ export function createLifecycleEventBroadcastHandler(params: {
     if (!hasSessionChangeReceivers(connIds)) {
       return;
     }
+    const cfg = getRuntimeConfig();
     const agentScope = resolveSessionEventAgentScope(
-      getRuntimeConfig(),
+      cfg,
       event.sessionKey,
       normalizeOptionalString(event.agentId),
-      true,
     );
     if (!agentScope) {
       return;
     }
-    const [eventAgentId, routingAgentId, compatibilityOwnerAgentId] = agentScope;
-    const privateBroadcastScope = resolvePrivateSessionEventBroadcastScope(
-      event.sessionKey,
-      agentScope,
-    );
-    const broadcastOptions = { ...privateBroadcastScope, dropIfSlow: true };
+    const { agentId, sessionKey } = agentScope;
+    const parentSessionKey = event.parentSessionKey
+      ? resolveStoredSessionKeyForAgentStore({ cfg, sessionKey: event.parentSessionKey, agentId })
+      : undefined;
+    const broadcastOptions = { agentId, sessionKeys: [sessionKey], dropIfSlow: true };
     // Key-only lifecycle deletes invalidate membership; a later row is not deletion evidence.
-    if (
-      event.reason === "delete" ||
-      !routingAgentId ||
-      (!eventAgentId && !compatibilityOwnerAgentId)
-    ) {
+    if (event.reason === "delete") {
       params.broadcastToConnIds(
         "sessions.changed",
         {
-          sessionKey: event.sessionKey,
-          ...(eventAgentId ? { agentId: eventAgentId } : {}),
+          sessionKey,
+          agentId,
           reason: event.reason,
           ...(event.catalogChanged ? { catalogChanged: true } : {}),
           ts: Date.now(),
@@ -454,16 +415,15 @@ export function createLifecycleEventBroadcastHandler(params: {
       return;
     }
     const projection = params.getSessionRowProjection?.();
-    const query = { key: event.sessionKey, agentId: routingAgentId };
+    const query = { key: sessionKey, agentId };
     const captured = projection?.capture(query);
     const readActiveState = (session: { key: string; sessionId?: string }) =>
       resolveVisibleActiveSessionRunState({
         context: params,
-        requestedKey: event.sessionKey,
+        requestedKey: sessionKey,
         canonicalKey: session.key,
         sessionId: session.sessionId,
-        agentId: routingAgentId,
-        defaultAgentId: compatibilityOwnerAgentId,
+        agentId,
         // Capacity transitions retain their synchronous memory edge before row preparation.
         projectedAgentRunIndex:
           event.reason === "run-capacity"
@@ -474,7 +434,7 @@ export function createLifecycleEventBroadcastHandler(params: {
     const capacityState =
       event.reason === "run-capacity"
         ? readActiveState({
-            key: captured?.key ?? event.sessionKey,
+            key: captured?.key ?? sessionKey,
             sessionId: captured?.entry?.sessionId,
           })
         : undefined;
@@ -491,21 +451,21 @@ export function createLifecycleEventBroadcastHandler(params: {
     params.broadcastToConnIds(
       "sessions.changed",
       {
-        sessionKey: event.sessionKey,
-        ...(eventAgentId ? { agentId: eventAgentId } : {}),
+        sessionKey,
+        agentId,
         reason: event.reason,
         ...(event.catalogChanged ? { catalogChanged: true } : {}),
-        parentSessionKey: event.parentSessionKey,
+        parentSessionKey,
         label: event.label,
         displayName: event.displayName,
         ts: Date.now(),
         ...buildGatewaySessionSnapshot({
           sessionRow,
           includeSession: true,
-          agentId: eventAgentId,
+          agentId,
           label: event.label,
           displayName: event.displayName,
-          parentSessionKey: event.parentSessionKey,
+          parentSessionKey,
           activeRunState,
         }),
         ...(event.swarmGroupId
@@ -517,7 +477,7 @@ export function createLifecycleEventBroadcastHandler(params: {
           : {}),
       },
       connIds,
-      { dropIfSlow: true },
+      broadcastOptions,
     );
   };
 }

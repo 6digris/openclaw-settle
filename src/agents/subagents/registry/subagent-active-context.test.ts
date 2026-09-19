@@ -153,7 +153,8 @@ describe("buildActiveSubagentRuntimeContext", () => {
     addSubagentRunForTests(run);
 
     const prompt = buildActiveSubagentRuntimeContext({
-      cfg: { session: { mainKey: "agent:main:main" } } as OpenClawConfig,
+      cfg: { session: { mainKey: "main" } } as OpenClawConfig,
+      controllerAgentId: "main",
       controllerSessionKey: "main",
     });
 

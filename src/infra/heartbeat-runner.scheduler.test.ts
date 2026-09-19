@@ -968,7 +968,7 @@ describe("startHeartbeatRunner", () => {
         source: "notifications-event",
         intent: "immediate",
         reason: "wake",
-        sessionKey: testCase.sessionKey,
+        sessionKey: testCase.sessionKey === "global" ? "agent:main:global" : testCase.sessionKey,
         heartbeat: testCase.heartbeat,
       },
     });

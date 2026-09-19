@@ -18,6 +18,7 @@ import {
 } from "../state/openclaw-agent-db.js";
 import { withStateDirEnv } from "../test-helpers/state-dir-env.js";
 import { repairCanonicalSessionKeys } from "./doctor-session-canonical-keys.js";
+import { rekeyLegacySessionFixture } from "./doctor-session-canonical-keys.test-support.js";
 
 const receipts: SessionPendingInputReceipt[] = [];
 afterEach(() => {
@@ -27,19 +28,18 @@ afterEach(() => {
   closeOpenClawAgentDatabasesForTest();
 });
 
-function fixture(stateDir: string, alias = false) {
+function fixture(stateDir: string, sameStore = false) {
   const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
-  const sourceAgent = alias ? "main" : "ops";
+  const sourceAgent = sameStore ? "main" : "ops";
   const sourcePath = path.join(stateDir, `${sourceAgent}.sqlite`);
   const destinationPath = path.join(stateDir, "main.sqlite");
-  const sourceKey = alias ? "agent:main:main" : "agent:main:private-parent";
-  const canonicalKey = alias ? "agent:main:work" : sourceKey;
+  const canonicalKey = sameStore ? "agent:main:work" : "agent:main:private-parent";
   const sessionId = "private-parent-generation";
   const cfg: OpenClawConfig = {
     agents: { ownership: "explicit", entries: { main: {}, ops: {} } },
     session: {
       store: path.join(stateDir, "{agentId}.sqlite"),
-      ...(alias ? { mainKey: "work" } : {}),
+      ...(sameStore ? { mainKey: "work" } : {}),
     },
   };
   const database = (destination = false) =>
@@ -51,7 +51,7 @@ function fixture(stateDir: string, alias = false) {
   const scope = (destination = false) => ({
     agentId: "main",
     env,
-    sessionKey: destination ? canonicalKey : sourceKey,
+    sessionKey: canonicalKey,
     sessionId,
     storePath: destination ? destinationPath : sourcePath,
   });
@@ -152,8 +152,13 @@ describe("Doctor canonical completion receipt repair", () => {
     await withStateDirEnv("doctor-private-alias-", async ({ stateDir }) => {
       const f = fixture(stateDir, true);
       f.create();
-      (await f.stage()).complete!(stopped);
+      const receipt = await f.stage();
+      receipt.complete!(stopped);
+      receipt.finish("interrupted");
+      rekeyLegacySessionFixture(f.database().db, f.canonicalKey, "work");
       const before = f.rows();
+      expect(before).toHaveLength(1);
+      expect(before[0]?.session_key).toBe("work");
       rotateAgentEventLifecycleGeneration();
       closeOpenClawAgentDatabasesForTest();
       await repairCanonicalSessionKeys({ apply: true, cfg: f.cfg, env: f.env });

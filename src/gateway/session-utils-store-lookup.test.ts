@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { resetConfigRuntimeState, setRuntimeConfigSnapshot } from "../config/config.js";
 import { loadSessionEntry, replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import * as sessionAccessor from "../config/sessions/session-accessor.js";
+import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   closeOpenClawAgentDatabasesForTest,
@@ -44,6 +45,7 @@ import {
   resolveGatewaySessionStoreTargetsReadOnly,
   type GatewaySessionStoreCache,
 } from "./session-utils-store-lookup.js";
+import { readGatewaySessionEntryFromSources } from "./session-utils-store-readonly.js";
 import { loadGatewaySessionEntryReadOnly } from "./session-utils-store.js";
 import { loadCombinedSessionStoreForGatewayCore } from "./session-utils.js";
 
@@ -67,12 +69,10 @@ async function withGlobalSessions(mainKey: string, run: (cfg: OpenClawConfig) =>
     setRuntimeConfigSnapshot(cfg, cfg);
     try {
       for (const agentId of ["main", "research"]) {
-        for (const sessionKey of ["global", `agent:${agentId}:global`]) {
-          await replaceSessionEntry(
-            { agentId, sessionKey },
-            { sessionId: `${agentId}-${sessionKey}`, updatedAt: 1 },
-          );
-        }
+        await replaceSessionEntry(
+          { agentId, sessionKey: `agent:${agentId}:global` },
+          { sessionId: `${agentId}-global`, updatedAt: 1 },
+        );
       }
       await run(cfg);
     } finally {
@@ -84,25 +84,29 @@ async function withGlobalSessions(mainKey: string, run: (cfg: OpenClawConfig) =>
 }
 
 describe("global session lookup ownership", () => {
-  it("retains alias rejection after a canonical row becomes malformed in a warm store", async () => {
-    await withGlobalSessions("main", async (cfg) => {
-      const alias = "agent:main:main";
-      await replaceSessionEntry(
-        { agentId: "main", sessionKey: alias },
-        { sessionId: "retained-alias", updatedAt: 1 },
-      );
-      resolveGatewaySessionStoreTargetWithStore({ cfg, key: "agent:main:global" });
-      openOpenClawAgentDatabase({ agentId: "main" })
-        .db.prepare("UPDATE session_nodes SET entry_json = ? WHERE session_key = ?")
-        .run("{", "global");
+  it.each(["single", "batch"])(
+    "reports a malformed canonical row through a %s alias read in a warm store",
+    async (mode) => {
+      await withGlobalSessions("main", async (cfg) => {
+        const alias = "main";
+        resolveGatewaySessionStoreTargetWithStore({ cfg, key: "agent:main:global" });
+        openOpenClawAgentDatabase({ agentId: "main" })
+          .db.prepare("UPDATE session_nodes SET entry_json = ? WHERE session_key = ?")
+          .run("{", "agent:main:global");
 
-      expect(() => resolveGatewaySessionStoreTarget({ cfg, key: alias })).toThrow(
-        "non-canonical persisted row resolves to session key global",
-      );
-    });
-  });
+        expect(() =>
+          mode === "single"
+            ? resolveGatewaySessionStoreTarget({ cfg, key: alias, agentId: "main" })
+            : resolveGatewaySessionStoreTargetsReadOnly({
+                cfg,
+                targets: [{ key: alias, agentId: "main" }],
+              }),
+        ).toThrow("invalid persisted session row requires repair for agent:main:global");
+      });
+    },
+  );
 
-  it("keeps different candidate listings separate within the same store cache", async () => {
+  it("resolves alias and canonical candidate listings to the same row within the store cache", async () => {
     await withGlobalSessions("main", async (cfg) => {
       const storeCache: GatewaySessionStoreCache = new Map();
       for (const key of ["global", "agent:main:global", "global"]) {
@@ -111,11 +115,11 @@ describe("global session lookup ownership", () => {
           key,
           agentId: "main",
           projection: "list",
-          listCandidatesOnly: true,
+          exactRead: true,
           storeCache,
         });
-        expect(Object.keys(target.store)).toEqual([key]);
-        expect(target.store[key]?.sessionId).toBe(`main-${key}`);
+        expect(Object.keys(target.store)).toEqual(["agent:main:global"]);
+        expect(target.store["agent:main:global"]?.sessionId).toBe("main-global");
       }
     });
   });
@@ -191,12 +195,7 @@ describe("global session lookup ownership", () => {
         ["global", "unknown", "agent:research:main", "agent:research:global"].map(
           (key) => read(key)?.sessionId,
         ),
-      ).toEqual([
-        "main-global",
-        "main-unknown",
-        "research-global",
-        "research-agent:research:global",
-      ]);
+      ).toEqual(["main-global", "main-unknown", undefined, "research-global"]);
     });
   });
 
@@ -224,8 +223,8 @@ describe("global session lookup ownership", () => {
           cfg,
           projection: "full",
           targets: [
-            { key: "agent:main:main" },
-            { key: "agent:research:main" },
+            { key: "agent:main:global" },
+            { key: "agent:research:global" },
             { key: "agent:main:main", agentId: "research" },
           ],
         });
@@ -235,7 +234,11 @@ describe("global session lookup ownership", () => {
             ok: true,
             value: {
               agentId: "research",
-              store: { global: { skillsSnapshot: { prompt: "selected synthetic prompt" } } },
+              store: {
+                "agent:research:global": {
+                  skillsSnapshot: { prompt: "selected synthetic prompt" },
+                },
+              },
             },
           },
           { ok: false, error: { message: expect.stringContaining('belongs to "main"') } },
@@ -249,7 +252,7 @@ describe("global session lookup ownership", () => {
           expect(() =>
             resolveGatewaySessionStoreTargetWithStore({
               cfg,
-              key: "agent:main:main",
+              key: "agent:main:global",
               exactRead: true,
             }),
           ).toThrow(failure);
@@ -299,48 +302,82 @@ describe("global session lookup ownership", () => {
   });
 
   it.each([false, true])(
-    "does not plan a replacement after a deleted-main match or selection error (duplicate: %s)",
+    "keeps retired-main selection and conflicting-owner failures with their batch targets (duplicate: %s)",
     async (duplicate) => {
       await withStateDirEnv("gateway-prepared-legacy-owner-", async ({ stateDir }) => {
         const cfg: OpenClawConfig = {
           agents: { ownership: "explicit", entries: { research: {} } },
           session: {
-            store: path.join(stateDir, "agents", "{agentId}", "sessions", "sessions.json"),
+            store: path.join(
+              stateDir,
+              "alternate",
+              "agents",
+              "{agentId}",
+              "sessions",
+              "sessions.json",
+            ),
           },
         };
         const key = "agent:main:retained";
-        for (const sessionKey of duplicate ? [key, "agent:main:main"] : [key]) {
+        const primary = resolveOpenClawAgentSqlitePath({ agentId: "main" });
+        const paths = duplicate
+          ? [primary, cfg.session!.store!.replace("{agentId}", "main")]
+          : [primary];
+        for (const storePath of paths) {
           await replaceSessionEntry(
-            { agentId: "main", sessionKey },
-            { sessionId: sessionKey, updatedAt: 1 },
+            { agentId: "main", sessionKey: key, storePath },
+            { sessionId: key, updatedAt: 1 },
           );
         }
-        // Normal planning rejects this explicit replacement owner. Legacy success
-        // and duplicate selection errors must both finish before that boundary.
         const results = prepareGatewaySessionStoreTargetsReadOnly({
           cfg,
-          targets: [{ key, agentId: "research" }],
+          targets: [{ key }, { key, agentId: "research" }],
           projection: "full",
         });
-        expect(results).toMatchObject(
+        expect(results[0]).toMatchObject(
           duplicate
-            ? [{ ok: false, error: { message: expect.stringContaining("duplicate rows") } }]
-            : [{ ok: true, value: { agentId: "main", store: { [key]: { sessionId: key } } } }],
+            ? { ok: false, error: { message: expect.stringContaining("duplicate rows") } }
+            : { ok: true, value: { agentId: "main", store: { [key]: { sessionId: key } } } },
         );
+        expect(results[1]).toMatchObject({
+          ok: false,
+          error: { message: expect.stringContaining('belongs to "main"') },
+        });
+        const auxiliaryEntry = readGatewaySessionEntryFromSources(
+          key,
+          paths.map((storePath) => ({
+            agentId: "main",
+            path: resolveSqliteTargetFromSessionStorePath(storePath, { agentId: "main" }).path,
+          })),
+        );
+        if (duplicate) {
+          expect(auxiliaryEntry).toBeUndefined();
+        } else {
+          expect(auxiliaryEntry).toMatchObject({ sessionId: key });
+        }
       });
     },
   );
 
   it.each(["single", "batch", "read-only"] as const)(
-    "preserves qualified main aliases and ordinary global keys through %s reads",
+    "keeps qualified main and global identities distinct through %s reads",
     async (mode) => {
       await withGlobalSessions("work", async (cfg) => {
+        for (const agentId of ["main", "research"]) {
+          for (const suffix of ["main", "work"]) {
+            await replaceSessionEntry(
+              { agentId, sessionKey: `agent:${agentId}:${suffix}` },
+              { sessionId: `${agentId}-${suffix}`, updatedAt: 1 },
+            );
+          }
+        }
         // Revisit Research after Main so shared sentinels cannot adopt the previous owner.
         const requests = ["research", "main", "research"].flatMap((agentId) =>
           ["main", "work", "global"].map((suffix) => ({
             key: `agent:${agentId}:${suffix}`,
             agentId,
-            canonicalKey: suffix === "global" ? `agent:${agentId}:global` : "global",
+            canonicalKey: `agent:${agentId}:${suffix}`,
+            sessionId: `${agentId}-${suffix}`,
           })),
         );
         const targets =
@@ -361,10 +398,10 @@ describe("global session lookup ownership", () => {
             sessionId: target.store[target.canonicalKey]?.sessionId,
           })),
         ).toEqual(
-          requests.map(({ agentId, canonicalKey }) => ({
+          requests.map(({ agentId, canonicalKey, sessionId }) => ({
             agentId,
             canonicalKey,
-            sessionId: `${agentId}-${canonicalKey}`,
+            sessionId,
           })),
         );
       });
@@ -400,7 +437,7 @@ describe("global session lookup ownership", () => {
               store: cfg.session!.store!.replaceAll("{agentId}", "shared"),
             },
           };
-          for (const key of ["global", "agent:research:main"]) {
+          for (const key of ["global"]) {
             expect
               .soft(() => read(fixed, key, "research"))
               .toThrow(owner === "retired" ? 'retired agent "retired"' : 'belongs to "main"');
@@ -410,7 +447,7 @@ describe("global session lookup ownership", () => {
     },
   );
 
-  it("routes GitHub options and its access recheck to the qualified alias owner", async () => {
+  it("routes GitHub options and its access recheck to the qualified owner", async () => {
     await withGlobalSessions("main", async (cfg) => {
       const latestShared = vi.fn<
         NonNullable<GatewayRequestContext["githubPublicationService"]>["latestShared"]
@@ -426,7 +463,7 @@ describe("global session lookup ownership", () => {
             type: "req",
             id: `options-${agentId}`,
             method: "sessions.github.options",
-            params: { sessionKey: `agent:${agentId}:main` },
+            params: { sessionKey: `agent:${agentId}:global` },
           },
           client: null,
           isWebchatConnect: () => false,
@@ -450,7 +487,7 @@ describe("global session lookup ownership", () => {
         expect(latestShared).toHaveBeenLastCalledWith(
           expect.objectContaining({
             agentId,
-            sessionKey: "global",
+            sessionKey: `agent:${agentId}:global`,
             sessionId: agentId + "-global",
           }),
           undefined,
@@ -651,7 +688,7 @@ it.each([
       }
       const created = await request(sessionCreateHandlers["sessions.create"]!, "sessions.create", {
         agentId: "work",
-        parentSessionKey: foreignParent?.key ?? (shared ? "agent:ops:main" : "global"),
+        parentSessionKey: foreignParent?.key ?? (shared ? "agent:ops:global" : "global"),
       });
       expect(created.key).toMatch(/^agent:work:dashboard:/);
       const childScope = {
@@ -661,7 +698,7 @@ it.each([
       };
       const unpinned = loadSessionEntry(childScope);
       expect(unpinned).toMatchObject({
-        parentSessionKey: foreignParent?.key ?? "global",
+        parentSessionKey: foreignParent?.key ?? `agent:${parentAgent}:global`,
         parentSessionId: foreignParent?.sessionId ?? `${parentAgent}-parent`,
       });
       for (const field of ["providerOverride", "modelOverride", "modelOverrideSource"] as const) {
@@ -692,8 +729,13 @@ it.each([
         });
       }
       const combined = loadCombinedSessionStoreForGatewayCore(cfg);
-      expect(combined.targetsBySessionKey.get("global")?.agentId).toBe(shared ? "ops" : "main");
-      expect(combined.store.global?.modelOverride).toBe(shared ? "qwen3:14b" : "qwen3:8b");
+      const defaultGlobalKey = `agent:${shared ? "ops" : "main"}:global`;
+      expect(combined.targetsBySessionKey.get(defaultGlobalKey)?.agentId).toBe(
+        shared ? "ops" : "main",
+      );
+      expect(combined.store[defaultGlobalKey]?.modelOverride).toBe(
+        shared ? "qwen3:14b" : "qwen3:8b",
+      );
 
       const expected = {
         agentId: "work",
@@ -753,9 +795,10 @@ it.each([
       resolveGatewaySessionStoreTargetWithStore(cachedRequest);
       const cached = resolveGatewaySessionStoreTargetWithStore(cachedRequest);
       for (const selected of [batched!, cached]) {
-        expect(createGatewaySessionEntryReader({ cfg, ...selected })("global")?.modelOverride).toBe(
-          "qwen3:14b",
-        );
+        expect(
+          createGatewaySessionEntryReader({ cfg, ...selected })(`agent:${parentAgent}:global`)
+            ?.modelOverride,
+        ).toBe("qwen3:14b");
       }
     });
   },

@@ -32,7 +32,6 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { triggerSessionPatchHook } from "../gateway/session-patch-hooks.js";
 import { resolveSessionWorkerPlacementContext } from "../gateway/session-worker-placement-context.js";
 import { resolveWorkerPlacementSessionRuntimeCapabilities } from "../gateway/worker-environments/placement-session-runtime.js";
-import { resolveSystemEventQueueKey } from "../infra/system-event-ownership.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
 import { applyModelOverrideWithAuthProfileCompatibility } from "../sessions/auth-profile-preservation.js";
 import {
@@ -445,7 +444,7 @@ export async function applySessionModelSelection(
 
   if (`${params.currentProvider}/${params.currentModel}` !== effectiveModelRef) {
     enqueueSystemEvent(formatModelSwitchEvent(provider, model, request.alias), {
-      sessionKey: resolveSystemEventQueueKey(params.sessionKey, params.agentId),
+      sessionKey: params.sessionKey,
       contextKey: `model:${effectiveModelRef}`,
     });
   }

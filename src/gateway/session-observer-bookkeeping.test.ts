@@ -9,7 +9,7 @@ describe("session observer run bookkeeping", () => {
     const floors = new Map();
     for (let index = 0; index < 300; index += 1) {
       rememberSessionObserverDormantRun(runs, floors, {
-        sessionKey: index === 0 ? "global" : `agent:main:session-${index}`,
+        sessionKey: index === 0 ? "agent:work:global" : `agent:main:session-${index}`,
         sessionId: `session-${index}`,
         runId: `run-${index}`,
         agentId: index === 0 ? "work" : "main",
@@ -50,7 +50,7 @@ describe("session observer run bookkeeping", () => {
         list: [{ id: "main", default: true }, { id: "work" }],
       },
     } satisfies OpenClawConfig;
-    const digest = persistedLiveDigest({ agentId: "work", sessionKey: "global" });
+    const digest = persistedLiveDigest({ agentId: "work", sessionKey: "agent:work:global" });
     const readSession = vi.fn(() => ({
       sessionId: "global-session-id",
       updatedAt: 1_000,
@@ -58,9 +58,9 @@ describe("session observer run bookkeeping", () => {
     }));
     const harness = createHarness({ subscribe: false, config, readSession });
 
-    const snapshot = harness.observer.getCompanionSnapshot("agent:work:main");
+    const snapshot = harness.observer.getCompanionSnapshot("agent:work:global");
 
-    expect(readSession).toHaveBeenCalledWith("global", "work");
+    expect(readSession).toHaveBeenCalledWith("agent:work:global", "work");
     expect(snapshot).toMatchObject({ agentId: "work", digest, runId: digest.runId });
     harness.observer.dispose();
   });

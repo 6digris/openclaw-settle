@@ -2,7 +2,9 @@
  * Tests config runtime exports and snapshot/cache behavior exposed through the SDK.
  */
 import { describe, expect, it } from "vitest";
+import { canonicalizeMainSessionAlias as canonicalizeInternalSessionKey } from "../config/sessions/main-session.js";
 import {
+  canonicalizeMainSessionAlias,
   getSessionEntry,
   listSessionEntries,
   readSessionUpdatedAt,
@@ -11,10 +13,57 @@ import {
   type OpenClawConfig,
 } from "./config-runtime.js";
 import {
+  canonicalizeMainSessionAlias as canonicalizeSessionStoreMainAlias,
   getSessionEntry as getSessionStoreEntry,
   listSessionEntries as listSessionStoreEntries,
   readSessionUpdatedAt as readSessionStoreUpdatedAt,
 } from "./session-store-runtime.js";
+
+describe.each([canonicalizeMainSessionAlias, canonicalizeSessionStoreMainAlias])(
+  "published main-session alias boundary",
+  (canonicalize) => {
+    it.each(["per-sender", "global"] as const)(
+      "preserves published selectors in %s scope while internal identities stay exact",
+      (scope) => {
+        const cfg = { session: { mainKey: "work", scope } };
+        for (const sessionKey of [
+          "main",
+          "work",
+          "agent:ops:main",
+          "agent:ops:work",
+          "agent:main:main",
+          "agent:main:work",
+        ]) {
+          expect(canonicalize({ cfg, agentId: "ops", sessionKey })).toBe(
+            scope === "global" ? "global" : "agent:ops:work",
+          );
+        }
+        for (const sessionKey of [
+          "agent:ops:main",
+          "agent:main:main",
+          "agent:research:main",
+          "agent:ops:global",
+          "agent:ops:unknown",
+        ]) {
+          expect(canonicalizeInternalSessionKey({ cfg, agentId: "ops", sessionKey })).toBe(
+            sessionKey,
+          );
+        }
+        for (const sessionKey of [
+          "agent:research:main",
+          "agent:ops:global",
+          "agent:ops:unknown",
+          "global",
+          "unknown",
+          "room",
+          "AGENT:Ops:GLOBAL",
+        ]) {
+          expect(canonicalize({ cfg, agentId: "ops", sessionKey })).toBe(sessionKey);
+        }
+      },
+    );
+  },
+);
 
 describe("config-runtime session read exports", () => {
   it("re-exports the session-store runtime seam wrappers", () => {

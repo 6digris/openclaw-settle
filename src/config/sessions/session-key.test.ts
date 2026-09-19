@@ -6,6 +6,48 @@ import { installDiscordSessionKeyNormalizerFixture, makeCtx } from "./session-ke
 installDiscordSessionKeyNormalizerFixture();
 
 describe("resolveSessionKey", () => {
+  it("resolves bare main while keeping qualified identities stable across configuration changes", () => {
+    expect(resolveSessionKey("global", makeCtx({ SessionKey: "main" }), "work", "ops")).toBe(
+      "agent:ops:global",
+    );
+    for (const sessionKey of ["agent:ops:main", "agent:main:main", "agent:ops:work"]) {
+      expect(resolveSessionKey("global", makeCtx({ SessionKey: sessionKey }), "other", "ops")).toBe(
+        sessionKey,
+      );
+      expect(
+        resolveSessionKey("per-sender", makeCtx({ SessionKey: sessionKey }), "work", "ops"),
+      ).toBe(sessionKey);
+    }
+  });
+
+  it.each(["global", "unknown"])(
+    "preserves reserved %s identity when mainKey has the same name",
+    (mainKey) => {
+      for (const scope of ["global", "per-sender"] as const) {
+        for (const sessionKey of [mainKey, `agent:ops:${mainKey}`]) {
+          expect(
+            resolveSessionKey(scope, makeCtx({ SessionKey: sessionKey }), mainKey, "ops"),
+          ).toBe(`agent:ops:${mainKey}`);
+        }
+        expect(resolveSessionKey(scope, makeCtx({ SessionKey: "main" }), mainKey, "ops")).toBe(
+          `agent:ops:${scope === "global" ? "global" : mainKey}`,
+        );
+      }
+    },
+  );
+
+  it.each(["ops", "research"])("qualifies global scope for %s before routing", (agentId) => {
+    expect(resolveSessionKey("global", makeCtx({}), "main", agentId)).toBe(
+      `agent:${agentId}:global`,
+    );
+    expect(resolveSessionKey("global", makeCtx({ SessionKey: "global" }), "main", agentId)).toBe(
+      `agent:${agentId}:global`,
+    );
+    expect(
+      resolveSessionKey("per-sender", makeCtx({ SessionKey: "unknown" }), "main", agentId),
+    ).toBe(`agent:${agentId}:unknown`);
+  });
+
   it("uses an explicit agent id for canonical direct-chat keys", () => {
     const ctx = makeCtx({
       From: "+15551234567",
@@ -74,7 +116,7 @@ describe("resolveSessionKey", () => {
         chatType: "direct",
         normalizedKey: "discord:123456",
         senderId: "123456",
-        expected: "discord:direct:123456",
+        expected: "agent:fina:discord:direct:123456",
       },
     ])("$title", ({ sessionKey, chatType, normalizedKey, senderId, expected }) => {
       const ctx = makeCtx({
@@ -83,7 +125,7 @@ describe("resolveSessionKey", () => {
         From: normalizedKey,
         SenderId: senderId,
       });
-      expect(resolveSessionKey("per-sender", ctx)).toBe(expected);
+      expect(resolveSessionKey("per-sender", ctx, "main", "fina")).toBe(expected);
     });
   });
 });

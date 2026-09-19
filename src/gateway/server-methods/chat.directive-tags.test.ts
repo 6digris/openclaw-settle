@@ -2805,27 +2805,19 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
         ),
       ).toEqual(["command-metadata", "agent.input.settled"]);
     });
-    const call = mockCallAt(context.broadcastToConnIds, 0);
-    const payload = call?.[1] as { ts?: unknown } | undefined;
-    expect(call?.[0]).toBe("sessions.changed");
-    expect(call?.[2]).toEqual(new Set(["conn-1"]));
-    expect(call?.[3]).toEqual({ agentId: "main", dropIfSlow: true });
-    expect(payload).toMatchObject({
-      sessionKey: "agent:main:main",
-      reason: "command-metadata",
-    });
-    expect(typeof payload?.ts).toBe("number");
-    expect(mockCallAt(context.broadcastToConnIds, 1)).toEqual([
-      "sessions.changed",
-      expect.objectContaining({
-        sessionKey: "agent:main:main",
+    expect(context.broadcastToConnIds).toHaveBeenCalledTimes(2);
+    for (const call of context.broadcastToConnIds.mock.calls) {
+      expect(call).toHaveLength(4);
+      expect(call[0]).toBe("sessions.changed");
+      expect(call[1]).toMatchObject({ sessionKey: "agent:main:main", ts: expect.any(Number) });
+      expect(call[2]).toEqual(new Set(["conn-1"]));
+      expect(call[3]).toEqual({
         agentId: "main",
-        reason: "agent.input.settled",
-        ts: expect.any(Number),
-      }),
-      new Set(["conn-1"]),
-      { agentId: "main", dropIfSlow: true },
-    ]);
+        sessionKeys: ["agent:main:main"],
+        dropIfSlow: true,
+      });
+    }
+    expect(mockCallAt(context.broadcastToConnIds, 1)?.[1]).toMatchObject({ agentId: "main" });
     await waitForAssertion(() => {
       expect(
         readChatSendDedupeResponse(context.dedupe, "idem-command-session-metadata"),
@@ -2936,7 +2928,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       sessionKey: `agent:main:${targetSessionKey}`,
     });
     expect(JSON.stringify(assistantUpdate?.message)).toContain(
-      `/api/chat/media/outgoing/${encodeURIComponent(targetSessionKey)}/`,
+      `/api/chat/media/outgoing/${encodeURIComponent(`agent:main:${targetSessionKey}`)}/`,
     );
     expect(JSON.stringify(assistantUpdate?.message)).not.toContain(
       "/api/chat/media/outgoing/agent%3Amain%3Amain/",

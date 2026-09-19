@@ -486,6 +486,8 @@ function createSharedStateWorkerBackend(
         command.type === "sessionDelivery.fail" ||
         command.type === "sessionDelivery.load" ||
         command.type === "sessionDelivery.list" ||
+        command.type === "sessionDelivery.recordIdentityBlock" ||
+        command.type === "sessionDelivery.blockedSummary" ||
         command.type === "sessionDelivery.moveToFailed"
       ) {
         return executeSessionDeliveryCommand(command, database);

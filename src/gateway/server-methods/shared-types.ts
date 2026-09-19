@@ -49,7 +49,12 @@ import type {
   ChannelRuntimeSnapshotOptions,
   StartChannelOptions,
 } from "../server-channel-runtime.types.js";
-import type { ChatRunEntry, ChatRunRegistration, ChatRunState } from "../server-chat-state.js";
+import type {
+  ChatRunEntry,
+  ChatRunRegistration,
+  ChatRunState,
+  SessionWireSelection,
+} from "../server-chat-state.js";
 import type { GatewayCronServiceContract } from "../server-cron-contract.js";
 import type {
   GatewayApprovalEventPublisher,
@@ -347,8 +352,10 @@ type GatewayTransportContext = {
   subscribeSessionMessageEvents: (
     connId: string,
     sessionKey: string,
-    opts?: { includeApprovals?: boolean; provisional?: boolean },
+    opts?: { includeApprovals?: boolean; provisional?: boolean; wireKey?: string },
   ) => ((() => void) & { commit: () => void }) | undefined;
+  beginSessionWireSelection?: (connId: string, wireKey: string) => SessionWireSelection | undefined;
+  getSessionWireKey?: (connId: string, sessionKey: string) => string | undefined;
   unsubscribeSessionMessageEvents: (connId: string, sessionKey: string) => void;
   unsubscribeAllSessionEvents: (connId: string) => void;
   getSessionEventSubscriberConnIds: () => ReadonlySet<string>;
@@ -442,6 +449,8 @@ export type GatewayRequestContext = GatewayKernelContext &
 /** Full dispatch context for raw request frames before params are normalized. */
 export type GatewayRequestOptions = {
   req: RequestFrame;
+  /** Connection-owned presentation receipt; never used for target resolution or authorization. */
+  sessionWireSelection?: SessionWireSelection;
   client: GatewayClient | null;
   isWebchatConnect: (params: ConnectParams | null | undefined) => boolean;
   respond: RespondFn;
@@ -474,6 +483,8 @@ export type SessionMutationAuthorization = {
 /** Normalized method invocation options passed to registered handlers. */
 export type GatewayRequestHandlerOptions = {
   req: RequestFrame;
+  /** Connection-owned presentation receipt; never used for target resolution or authorization. */
+  sessionWireSelection?: SessionWireSelection;
   params: Record<string, unknown>;
   client: GatewayClient | null;
   isWebchatConnect: (params: ConnectParams | null | undefined) => boolean;

@@ -44,37 +44,30 @@ export function resolveSubagentController(params: {
   agentSessionKey?: string;
   agentId?: string;
 }): ResolvedSubagentController {
-  const { mainKey, alias } = resolveMainSessionAlias(params.cfg);
+  const { alias } = resolveMainSessionAlias(params.cfg);
   const callerRaw = params.agentSessionKey?.trim() || alias;
-  const callerSessionKey = resolveInternalSessionKey({
-    key: callerRaw,
-    alias,
-    mainKey,
-  });
   const controllerAgentId = resolveSessionAgentId({
     config: params.cfg,
-    sessionKey: callerSessionKey,
+    sessionKey: callerRaw,
     agentId: params.agentId,
   });
-  if (!isSubagentSessionKey(callerSessionKey)) {
-    return {
-      controllerSessionKey: callerSessionKey,
-      controllerAgentId,
-      callerSessionKey,
-      callerIsSubagent: false,
-      controlScope: "children",
-    };
-  }
-  const capabilities = resolveStoredSubagentCapabilities(callerSessionKey, {
-    cfg: params.cfg,
+  const callerSessionKey = resolveInternalSessionKey({
+    key: callerRaw,
     agentId: controllerAgentId,
+    cfg: params.cfg,
   });
+  const callerIsSubagent = isSubagentSessionKey(callerSessionKey);
   return {
     controllerSessionKey: callerSessionKey,
     controllerAgentId,
     callerSessionKey,
-    callerIsSubagent: true,
-    controlScope: capabilities.controlScope,
+    callerIsSubagent,
+    controlScope: callerIsSubagent
+      ? resolveStoredSubagentCapabilities(callerSessionKey, {
+          cfg: params.cfg,
+          agentId: controllerAgentId,
+        }).controlScope
+      : "children",
   };
 }
 

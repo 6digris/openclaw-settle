@@ -41,7 +41,6 @@ import {
   type DiagnosticEventPayload,
 } from "../../infra/diagnostic-events.js";
 import { settlePendingFinalDelivery } from "../../infra/outbound/delivery-completion.js";
-import { resolveSystemEventQueueKey } from "../../infra/system-event-ownership.js";
 import { peekSystemEvents, resetSystemEventsForTest } from "../../infra/system-events.js";
 import { flushLogger, setLoggerOverride } from "../../logging/logger.js";
 import {
@@ -602,7 +601,7 @@ describe("runReplyAgent auto-compaction token update", () => {
   }) {
     const tmp = tempDirs.make(params.tmpPrefix);
     const storePath = path.join(tmp, "sessions.json");
-    const sessionKey = "main";
+    const sessionKey = "agent:main:main";
     const sessionEntry = {
       sessionId: "session",
       updatedAt: Date.now(),
@@ -626,6 +625,7 @@ describe("runReplyAgent auto-compaction token update", () => {
       : undefined;
     const baseRun = createBaseRun({
       run: {
+        sessionKey,
         agentId: "main",
         agentDir: path.join(rootDir, "agent"),
         config: params.config ?? {},
@@ -1076,7 +1076,7 @@ describe("runReplyAgent auto-compaction token update", () => {
       "## Session Startup\nRead the queued workspace startup file.\n\n## Red Lines\nNever skip startup context after compaction.\n",
       "utf-8",
     );
-    const sessionKey = "main";
+    const sessionKey = "agent:main:main";
     const sessionEntry = { sessionId: "session", updatedAt: Date.now(), totalTokens: 50_000 };
     runEmbeddedAgentMock.mockImplementationOnce(async (params) => {
       const onAgentEvent = requireRecord(params, "embedded agent params").onAgentEvent;
@@ -1088,7 +1088,7 @@ describe("runReplyAgent auto-compaction token update", () => {
     });
 
     vi.mocked(scheduleFollowupDrain).mockImplementation((key) => {
-      const events = peekSystemEvents(resolveSystemEventQueueKey(key, "main"));
+      const events = peekSystemEvents(key);
       expect(events).toHaveLength(1);
       expect(events[0]).toContain("Read the queued workspace startup file.");
       expect(events[0]).toContain("Never skip startup context after compaction.");
@@ -1096,6 +1096,7 @@ describe("runReplyAgent auto-compaction token update", () => {
 
     await createBaseRun({
       run: {
+        sessionKey,
         agentId: "main",
         agentDir: path.join(rootDir, "agent"),
         workspaceDir,
@@ -1109,6 +1110,7 @@ describe("runReplyAgent auto-compaction token update", () => {
         },
       },
       reply: {
+        queueKey: sessionKey,
         sessionEntry,
         sessionStore: { [sessionKey]: sessionEntry },
         sessionKey,
@@ -1182,7 +1184,7 @@ describe("runReplyAgent auto-compaction token update", () => {
       const root = tempDirs.make("openclaw-aborted-compaction-");
       const storePath = path.join(root, "sessions.json");
       const upstreamAbort = new AbortController();
-      const sessionKey = `${superseded ? "superseded" : "upstream-cancelled"}-settled-fallback`;
+      const sessionKey = `agent:main:${superseded ? "superseded" : "upstream-cancelled"}-settled-fallback`;
       const sessionEntry = {
         sessionId: "session-upstream-cancelled",
         lifecycleRevision: "original-generation",
@@ -1197,14 +1199,8 @@ describe("runReplyAgent auto-compaction token update", () => {
         resetTriggered: false,
         upstreamAbortSignal: upstreamAbort.signal,
       });
-      let releaseFallback: () => void = () => undefined;
-      let markCandidateSettled: () => void = () => undefined;
-      const candidateSettled = new Promise<void>((resolve) => {
-        markCandidateSettled = resolve;
-      });
-      const fallbackRelease = new Promise<void>((resolve) => {
-        releaseFallback = resolve;
-      });
+      const candidateSettled = createDeferred();
+      const fallbackRelease = createDeferred();
       runEmbeddedAgentMock.mockImplementationOnce(
         async (params: RunEmbeddedAgentInternalParams) => {
           params.onCompactionAccounting?.({
@@ -1229,8 +1225,8 @@ describe("runReplyAgent auto-compaction token update", () => {
       runWithModelFallbackMock.mockImplementationOnce(
         async (params: RunWithModelFallbackParams) => {
           const result = await runInitialModelFallbackAttempt(params);
-          markCandidateSettled();
-          await fallbackRelease;
+          candidateSettled.resolve();
+          await fallbackRelease.promise;
           return { result, provider: params.provider, model: params.model, attempts: [] };
         },
       );
@@ -1254,13 +1250,13 @@ describe("runReplyAgent auto-compaction token update", () => {
 
       try {
         const pending = baseRun.run();
-        await candidateSettled;
+        await candidateSettled.promise;
         if (superseded) {
           replyOperation.supersede();
         } else {
           upstreamAbort.abort(new Error("caller cancelled"));
         }
-        releaseFallback();
+        fallbackRelease.resolve();
 
         expectReplyText(await pending, SILENT_REPLY_TOKEN);
         expect(replyOperation.result).toEqual({ kind: "aborted", code: expectedCode });
@@ -1273,9 +1269,9 @@ describe("runReplyAgent auto-compaction token update", () => {
           totalTokens: 40,
           totalTokensFresh: true,
         });
-        expect(peekSystemEvents(resolveSystemEventQueueKey(sessionKey, "main"))).toEqual([]);
+        expect(peekSystemEvents(sessionKey)).toEqual([]);
       } finally {
-        releaseFallback();
+        fallbackRelease.resolve();
         replyOperation.complete();
       }
     },
@@ -1438,7 +1434,7 @@ describe("runReplyAgent auto-compaction token update", () => {
           },
         },
       });
-      const events = peekSystemEvents(resolveSystemEventQueueKey(sessionKey, "main"));
+      const events = peekSystemEvents(sessionKey);
       expect(events).toHaveLength(compactionCount);
       if (compactionCount > 0) {
         expect(events[0]).toContain("Post-compaction context refresh");

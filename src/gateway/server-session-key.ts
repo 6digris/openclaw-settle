@@ -10,11 +10,7 @@ import type { SessionEntry } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.js";
 import { getAgentRunContext } from "../infra/agent-run-registry.js";
 import { pruneMapToMaxSize } from "../infra/map-size.js";
-import {
-  normalizeAgentId,
-  parseAgentSessionKey,
-  toAgentRequestSessionKey,
-} from "../routing/session-key.js";
+import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import { resolvePreferredSessionKeyForSessionIdMatches } from "../sessions/session-id-resolution.js";
 import { resolveSessionStoreIdentity } from "./session-store-key.js";
 import { loadCombinedSessionStoreForGatewayCore } from "./session-utils.js";
@@ -67,12 +63,7 @@ function setResolvedSessionKeyCache(
   });
 }
 
-// Keep global run matching scoped and reject malformed qualified keys before
-// normalizing aliases; the prepared owner must survive a main alias becoming global.
 function sessionKeyMatchesAgent(sessionKey: string, agentId: string, cfg: OpenClawConfig): boolean {
-  if (cfg.session?.scope === "global" && sessionKey.trim().toLowerCase() === "global") {
-    return true;
-  }
   const normalizedAgentId = normalizeAgentId(agentId);
   const parsed = parseAgentSessionKey(sessionKey);
   if (!parsed && sessionKey.trim().toLowerCase().startsWith("agent:")) {
@@ -88,11 +79,7 @@ function sessionKeyMatchesAgent(sessionKey: string, agentId: string, cfg: OpenCl
   }
 }
 
-function resolveRunSessionKeyForCaller(storeKey: string) {
-  return toAgentRequestSessionKey(storeKey) ?? storeKey;
-}
-
-/** Resolves the caller-facing session key for an active or recently persisted run id. */
+/** Resolves the canonical session key for an active or recently persisted run id. */
 export function resolveSessionKeyForRun(runId: string, opts: { agentId?: string } = {}) {
   const cfg = getRuntimeConfig();
   const explicitAgentId =
@@ -101,12 +88,16 @@ export function resolveSessionKeyForRun(runId: string, opts: { agentId?: string 
       : undefined;
   const cached = getAgentRunContext(runId)?.sessionKey;
   if (!explicitAgentId && cached) {
-    return cached;
+    return resolveSessionStoreIdentity({ cfg, sessionKey: cached }).canonicalKey;
   }
   const requestedAgentId = explicitAgentId ?? normalizeAgentId(resolveDefaultAgentId(cfg));
   const cacheAgentId = requestedAgentId;
   if (cached && sessionKeyMatchesAgent(cached, requestedAgentId, cfg)) {
-    const sessionKey = resolveRunSessionKeyForCaller(cached);
+    const sessionKey = resolveSessionStoreIdentity({
+      cfg,
+      sessionKey: cached,
+      agentId: requestedAgentId,
+    }).canonicalKey;
     setResolvedSessionKeyCache(runId, cacheAgentId, sessionKey);
     return sessionKey;
   }
@@ -130,11 +121,8 @@ export function resolveSessionKeyForRun(runId: string, opts: { agentId?: string 
   );
   const storeKey = resolvePreferredSessionKeyForSessionIdMatches(matches, runId);
   if (storeKey) {
-    // Return caller-facing agent request keys, not raw store keys, because
-    // HTTP/RPC clients reuse this value in later session operations.
-    const sessionKey = resolveRunSessionKeyForCaller(storeKey);
-    setResolvedSessionKeyCache(runId, cacheAgentId, sessionKey);
-    return sessionKey;
+    setResolvedSessionKeyCache(runId, cacheAgentId, storeKey);
+    return storeKey;
   }
   setResolvedSessionKeyCache(runId, cacheAgentId, null);
   return undefined;

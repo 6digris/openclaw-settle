@@ -155,30 +155,25 @@ export function* filterSessionEntries(
   const selectedProfileId = profileReference?.value;
 
   const keepCandidate = ([key, entry]: SessionEntryPair) => {
-    const target = expectDefined(params.getTarget(key), "selection row owner");
-    const { selection } = target;
-    const storeKey = target.storeKey ?? key;
+    const { selection } = expectDefined(params.getTarget(key), "selection row owner");
     if (
       selection.isCronRun ||
       (opts.excludeCron === true && isCronSessionDisplayKey(key)) ||
       (opts.excludeSystem === true && isSystemCreatedSessionRow({ ...entry, key })) ||
       (opts.excludeSubagents === true && selection.isSubagent) ||
-      (!includeGlobal && storeKey === "global") ||
-      (!includeUnknown && storeKey === "unknown")
+      (!includeGlobal && selection.isGlobal) ||
+      (!includeUnknown && selection.isUnknown)
     ) {
       return false;
     }
-    if (agentId && storeKey !== "global") {
-      const ownerAgentId = target.storeKey ? normalizeAgentId(target.agentId) : selection.agentId;
-      if (ownerAgentId !== agentId) {
-        return false;
-      }
+    if (agentId && selection.agentId !== agentId) {
+      return false;
     }
     if (selection.isPhantom) {
       return false;
     }
     if (spawnedBy) {
-      if (storeKey === "unknown" || storeKey === "global") {
+      if (selection.isUnknown || selection.isGlobal) {
         return false;
       }
       const keepSpawned = resolveSessionChildOwners({
@@ -221,7 +216,7 @@ export function* filterSessionEntries(
     }
     if (
       opts.pinned !== undefined &&
-      (entry.pinnedAt !== undefined && isPinnableSessionEntry(storeKey, entry)) !== opts.pinned
+      (entry.pinnedAt !== undefined && isPinnableSessionEntry(key, entry)) !== opts.pinned
     ) {
       return false;
     }

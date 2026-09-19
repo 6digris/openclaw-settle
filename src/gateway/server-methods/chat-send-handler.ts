@@ -83,13 +83,22 @@ async function handleChatSendWithOptions(
     hasCurrentClientAuthority,
     sessionMutationAuthorization,
     sessionMutationCommitGuard,
+    sessionWireSelection,
   }: GatewayRequestHandlerOptions,
   onAdmissionOwned?: () => Promise<boolean>,
   externalAuthorityAdmission?: ChatSendExternalAuthorityAdmission,
   options?: ChatSendInternalOptions,
 ): Promise<void> {
   const setup = await prepareAndAdmitChatSend(
-    { params, respond, context, client, hasCurrentClientAuthority, sessionMutationAuthorization },
+    {
+      params,
+      respond,
+      context,
+      client,
+      hasCurrentClientAuthority,
+      sessionMutationAuthorization,
+      sessionWireSelection,
+    },
     onAdmissionOwned,
     options,
   );

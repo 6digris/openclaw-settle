@@ -47,7 +47,7 @@ function exitDoctorError(error: unknown, json: boolean): never {
 /** Register maintenance commands that inspect or mutate local OpenClaw state. */
 export function registerMaintenanceCommands(
   program: Command,
-  ctx?: Pick<ProgramContext, "doctorDatabasePreflight">,
+  ctx?: Pick<ProgramContext, "activateDoctorCapture">,
 ) {
   const doctor = program
     .command("doctor")
@@ -230,7 +230,7 @@ export function registerMaintenanceCommands(
               sessionSqliteGithubIssue: Boolean(opts.githubIssue),
               json: Boolean(opts.json),
             },
-            ctx?.doctorDatabasePreflight,
+            ctx?.activateDoctorCapture,
           );
           exitCliAfterOutput(defaultRuntime, 0);
         });

@@ -192,7 +192,7 @@ export async function createSessionRowProjection(params: {
       agentId,
     });
     if (isIncognitoSessionKey(key)) {
-      return readIncognitoSessionRow({ cfg, key, agentId });
+      return readIncognitoSessionRow({ key, agentId });
     }
     const candidates = matching({ ...query, key }).filter((row) => row.agentId === agentId);
     return records.first(candidates, stores.keys());
@@ -211,7 +211,7 @@ export async function createSessionRowProjection(params: {
     const replaced = new Set<string>();
     const loaded = loadCombinedSessionStoreForGatewayCore(cfg, {
       includeIncognito: false,
-      preserveSentinelOwners: "physical",
+      includeAllPhysicalStores: true,
       loadEntries(target, projection) {
         const opened = withOpenClawAgentDatabaseReadOnly(readOpenClawAgentDatabaseIdentity, {
           agentId: target.agentId,
@@ -253,7 +253,7 @@ export async function createSessionRowProjection(params: {
         continue;
       }
       const fields = {
-        key: target.storeKey ?? key,
+        key,
         agentId: target.agentId,
         storeTarget: target.storeTarget,
       };
@@ -356,9 +356,7 @@ export async function createSessionRowProjection(params: {
     void ensureMaterialized().catch(() => {});
   }
   function readSourceEntry(row: records.Row, key: string) {
-    const source = referenced(
-      records.parentReference(cfg, key, row.agentId, row.storeTarget.storePath),
-    );
+    const source = referenced(records.parentReference(cfg, key, row.agentId));
     return (
       source &&
       (dirty.has(records.identity(source)) ? readSessionRowEntry(source) : source.storedEntry)
@@ -693,7 +691,7 @@ export async function createSessionRowProjection(params: {
     isCurrent,
     selectEntries,
     listCreatedActors: (): ReturnType<typeof creators.list> =>
-      inOwnerContext(() => creators.list(projection.state.scope({}).paths, matching)),
+      inOwnerContext(() => creators.list(projection.state.scope({}).paths)),
     snapshot(query: records.Lookup, options: records.SnapshotOptions = {}) {
       const record = describe(query);
       return record

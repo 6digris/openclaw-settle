@@ -145,7 +145,7 @@ export { resolveSessionStorePathCore as resolveStorePath } from "../config/sessi
 export type { SessionResetMode } from "../config/sessions/reset.js";
 export type { SessionScope } from "../config/sessions/types.js";
 export { resolveGroupSessionKey } from "../config/sessions/group.js";
-export { canonicalizeMainSessionAlias } from "../config/sessions/main-session.js";
+export { canonicalizeLegacyMainSessionAlias as canonicalizeMainSessionAlias } from "../config/sessions/main-session.js";
 export {
   evaluateSessionFreshness,
   resolveChannelResetConfig,

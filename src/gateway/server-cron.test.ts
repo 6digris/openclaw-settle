@@ -3243,7 +3243,7 @@ describe("buildGatewayCronService", () => {
     }
   });
 
-  it("routes global-scope main cron jobs through the global queue for queued wakes", async () => {
+  it("routes global-scope main cron jobs through the owner's queue for queued wakes", async () => {
     const cfg = {
       ...createCronConfig("server-cron-global-queued"),
       session: { mainKey: "main", scope: "global" },
@@ -3267,13 +3267,13 @@ describe("buildGatewayCronService", () => {
         "request",
       );
       expect(heartbeatRequest.agentId).toBe("main");
-      expect(heartbeatRequest.sessionKey).toBe("global");
+      expect(heartbeatRequest.sessionKey).toBe("agent:main:global");
     } finally {
       state.cron.stop();
     }
   });
 
-  it("routes global-scope immediate main cron jobs through the global heartbeat lane", async () => {
+  it("routes global-scope immediate main cron jobs through the owner's heartbeat lane", async () => {
     const cfg = {
       ...createCronConfig("server-cron-global-now"),
       session: { mainKey: "main", scope: "global" },
@@ -3297,7 +3297,7 @@ describe("buildGatewayCronService", () => {
         "heartbeat run options",
       );
       expect(heartbeatRun.agentId).toBe("main");
-      expect(heartbeatRun.sessionKey).toBe("global");
+      expect(heartbeatRun.sessionKey).toBe("agent:main:global");
       expect(heartbeatRun.heartbeat).toEqual({
         target: "last",
         to: undefined,

@@ -250,7 +250,7 @@ describe("createEmbeddedRunLaneController lifecycle admission", () => {
     const staleGeneration = getAgentEventLifecycleGeneration();
     const currentGeneration = rotateAgentEventLifecycleGeneration();
     claimAgentRunContext("shared-run", {
-      sessionKey: "new-session-key",
+      sessionKey: "agent:main:new-session-key",
       sessionId: "new-session",
       lifecycleGeneration: currentGeneration,
     });
@@ -267,7 +267,7 @@ describe("createEmbeddedRunLaneController lifecycle admission", () => {
       name: "AbortError",
     });
     expect(getAgentRunContext("shared-run")).toMatchObject({
-      sessionKey: "new-session-key",
+      sessionKey: "agent:main:new-session-key",
       sessionId: "new-session",
       lifecycleGeneration: currentGeneration,
     });

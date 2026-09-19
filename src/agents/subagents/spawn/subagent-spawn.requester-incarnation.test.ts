@@ -190,7 +190,7 @@ it.each([
       const [restored] = loadSubagentRunsByRunIdsFromSqlite([runId]);
       expect(restored).toMatchObject({
         runId,
-        requesterSessionKey,
+        requesterSessionKey: globalRequester ? "agent:main:global" : requesterSessionKey,
         controllerSessionKey: fixture.parentSessionKey,
         expectsCompletionMessage: true,
       });

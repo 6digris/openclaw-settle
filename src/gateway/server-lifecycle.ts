@@ -649,6 +649,8 @@ export async function prepareGatewayLifecycle(params: {
     sdkResourceHost: params.sdkResourceHost,
     configureDiagnostics,
     requestEntryLifetime,
+    beginSessionWireSelection: sessionMessageSubscribers.beginWireSelection,
+    getSessionWireKey: sessionMessageSubscribers.getWireKey,
     subscribeSessionMessageEvents: sessionMessageSubscribers.subscribe,
     unsubscribeSessionMessageEvents: sessionMessageSubscribers.unsubscribe,
     restartRecoveryCandidates,

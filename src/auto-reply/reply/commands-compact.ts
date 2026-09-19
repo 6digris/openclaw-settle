@@ -24,7 +24,6 @@ import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { resolveSystemEventQueueKey } from "../../infra/system-event-ownership.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { rejectUnauthorizedCommand } from "./command-gates.js";
 import type { CommandHandler, CommandHandlerResult } from "./commands-types.js";
@@ -438,7 +437,7 @@ export const handleCompactCommand: CommandHandler = async (params) => {
     ? `${compactLabel}: ${reason} • ${contextSummary}`
     : `${compactLabel} • ${contextSummary}`;
   runtime.enqueueSystemEvent(line, {
-    sessionKey: resolveSystemEventQueueKey(params.sessionKey, sessionAgentId),
+    sessionKey: params.sessionKey,
   });
   return {
     shouldContinue: false,

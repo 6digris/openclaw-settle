@@ -107,9 +107,9 @@ it.each(
       agentId: "ops",
       baseExists: true,
       isolatedSession: false,
-      baseKey: "global",
-      queueKey: "global",
-      runKey: "global",
+      baseKey: "agent:ops:global",
+      queueKey: "agent:ops:global",
+      runKey: "agent:ops:global",
     },
     ...["flat", "default", "templated"].map((storeLayout) => ({
       name: `secondary global session in a ${storeLayout} store`,
@@ -117,8 +117,8 @@ it.each(
       storeLayout,
       baseExists: true,
       isolatedSession: true,
-      baseKey: "global",
-      queueKey: "global",
+      baseKey: "agent:ops:global",
+      queueKey: "agent:ops:global",
       runKey: "agent:ops:global:heartbeat",
     })),
   ].map((testCase) => Object.assign({ agentId: "main", storeLayout: "flat" }, testCase)),
@@ -135,7 +135,7 @@ it.each(
   }) => {
     await withTempTelegramHeartbeatSandbox(
       async ({ tmpDir, storePath: flatStorePath, replySpy }) => {
-        const globalSession = sessionKey === "global";
+        const globalSession = sessionKey === `agent:${agentId}:global`;
         const recipient = globalSession ? "-10012345" : "12345";
         const configuredStore =
           storeLayout === "default"
@@ -182,7 +182,7 @@ it.each(
         }
         if (globalSession) {
           await replaceSessionEntry(
-            { agentId: "main", storePath: mainStorePath, sessionKey: "global" },
+            { agentId: "main", storePath: mainStorePath, sessionKey: "agent:main:global" },
             {
               sessionId: "unrelated-main-global",
               updatedAt: Date.now(),

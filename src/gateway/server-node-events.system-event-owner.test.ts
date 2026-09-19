@@ -21,109 +21,121 @@ it.each([
   { name: "system-agent notification", event: "notifications.changed", explicit: false },
   { name: "authorized exec completion", event: "exec.finished", explicit: true },
   { name: "unmatched exec completion", event: "exec.finished", explicit: true, denied: true },
-])("preserves the loaded global owner for $name", async ({ name, event, explicit, denied }) => {
-  requestHeartbeat.mockClear();
-  resetSystemEventsForTest();
-  await withOpenClawTestState(
-    { label: "node-event-owner", layout: "state-only" },
-    async (state) => {
-      const config = {
-        agents: {
-          ownership: "explicit" as const,
-          defaults: { systemAgent: { agentId: "research" } },
-          entries: { main: {}, research: {} },
-        },
-        session: {
-          scope: "global" as const,
-          store: path.join(state.stateDir, "agents", "{agentId}", "sessions", "sessions.json"),
-        },
-      };
-      setRuntimeConfigSnapshot(config, config);
-      for (const agentId of ["main", "research"]) {
-        await replaceSessionEntry(
-          { agentId, sessionKey: "global" },
-          { sessionId: `${agentId}-session`, updatedAt: 1 },
+])(
+  "preserves the exact loaded session owner for $name",
+  async ({ name, event, explicit, denied }) => {
+    requestHeartbeat.mockClear();
+    resetSystemEventsForTest();
+    await withOpenClawTestState(
+      { label: "node-event-owner", layout: "state-only" },
+      async (state) => {
+        const config = {
+          agents: {
+            ownership: "explicit" as const,
+            defaults: { systemAgent: { agentId: "research" } },
+            entries: { main: {}, research: {} },
+          },
+          session: {
+            scope: "global" as const,
+            store: path.join(state.stateDir, "agents", "{agentId}", "sessions", "sessions.json"),
+          },
+        };
+        setRuntimeConfigSnapshot(config, config);
+        for (const agentId of ["main", "research"]) {
+          for (const kind of ["main", "global"]) {
+            await replaceSessionEntry(
+              { agentId, sessionKey: `agent:${agentId}:${kind}` },
+              { sessionId: `${agentId}-${kind}-session`, updatedAt: 1 },
+            );
+          }
+        }
+        const authorizeNodeSystemRunEvent = vi.fn(() => !denied);
+        const ctx: NodeEventContext = {
+          deps: {},
+          broadcast: () => {},
+          nodeSendToSession: () => {},
+          nodeSubscribe: () => {},
+          nodeUnsubscribe: () => {},
+          broadcastVoiceWakeChanged: () => {},
+          addChatRun: () => {},
+          removeChatRun: () => undefined,
+          chatAbortControllers: new Map(),
+          dedupe: new Map(),
+          agentRunSeq: new Map(),
+          getHealthCache: () => null,
+          refreshHealthSnapshot: async () => {
+            throw new Error("Unexpected health refresh");
+          },
+          loadGatewayModelCatalog: async () => [],
+          authorizeNodeSystemRunEvent,
+          logGateway: { warn: vi.fn() },
+        };
+        const runId = `node-owner-${name}`;
+        const requestedSessionKey =
+          event === "exec.finished" ? "agent:research:MAIN" : "agent:research:main";
+        const canonicalKey = explicit ? "agent:research:main" : "agent:research:global";
+        const result = await handleNodeEvent(
+          ctx,
+          "node-owner",
+          {
+            event,
+            payloadJSON: JSON.stringify({
+              ...(explicit ? { sessionKey: requestedSessionKey } : {}),
+              change: "posted",
+              key: "notification-owner",
+              title: "Owned notification",
+              runId,
+              exitCode: 0,
+              output: "owned exec result",
+            }),
+          },
+          { connId: "owner-connection" },
         );
-      }
-      const authorizeNodeSystemRunEvent = vi.fn(() => !denied);
-      const ctx: NodeEventContext = {
-        deps: {},
-        broadcast: () => {},
-        nodeSendToSession: () => {},
-        nodeSubscribe: () => {},
-        nodeUnsubscribe: () => {},
-        broadcastVoiceWakeChanged: () => {},
-        addChatRun: () => {},
-        removeChatRun: () => undefined,
-        chatAbortControllers: new Map(),
-        dedupe: new Map(),
-        agentRunSeq: new Map(),
-        getHealthCache: () => null,
-        refreshHealthSnapshot: async () => {
-          throw new Error("Unexpected health refresh");
-        },
-        loadGatewayModelCatalog: async () => [],
-        authorizeNodeSystemRunEvent,
-        logGateway: { warn: vi.fn() },
-      };
-      const runId = `node-owner-${name}`;
-      const result = await handleNodeEvent(
-        ctx,
-        "node-owner",
-        {
-          event,
-          payloadJSON: JSON.stringify({
-            ...(explicit ? { sessionKey: "agent:research:main" } : {}),
-            change: "posted",
-            key: "notification-owner",
-            title: "Owned notification",
-            runId,
-            exitCode: 0,
-            output: "owned exec result",
-          }),
-        },
-        { connId: "owner-connection" },
-      );
 
-      expect(peekSystemEvents("agent:main:global")).toEqual([]);
-      if (event === "exec.finished") {
-        expect(authorizeNodeSystemRunEvent).toHaveBeenCalledExactlyOnceWith({
-          nodeId: "node-owner",
-          connId: "owner-connection",
-          runId,
-          sessionKey: "agent:research:main",
-          terminal: true,
-        });
-      }
-      if (denied) {
-        expect(result).toMatchObject({ handled: false, reason: "unmatched_exec_event" });
-        expect(peekSystemEvents("agent:research:global")).toEqual([]);
-        expect(requestHeartbeat).not.toHaveBeenCalled();
-        return;
-      }
-      expect(result).toBeUndefined();
-      expect(peekSystemEvents("agent:research:global")).toEqual([
-        expect.stringContaining(
-          event === "exec.finished" ? "owned exec result" : "Owned notification",
-        ),
-      ]);
-      expect(requestHeartbeat).toHaveBeenCalledExactlyOnceWith(
-        event === "exec.finished"
-          ? {
-              source: "exec-event",
-              intent: "event",
-              reason: "exec-event",
-              coalesceMs: 0,
-              agentId: "research",
-            }
-          : {
-              source: "notifications-event",
-              intent: "event",
-              reason: "notifications-event",
-              agentId: "research",
-              sessionKey: "global",
-            },
-      );
-    },
-  );
-});
+        expect(peekSystemEvents("agent:main:global")).toEqual([]);
+        expect(peekSystemEvents("agent:main:main")).toEqual([]);
+        expect(
+          peekSystemEvents(explicit ? "agent:research:global" : "agent:research:main"),
+        ).toEqual([]);
+        if (event === "exec.finished") {
+          expect(authorizeNodeSystemRunEvent).toHaveBeenCalledExactlyOnceWith({
+            nodeId: "node-owner",
+            connId: "owner-connection",
+            runId,
+            sessionKey: requestedSessionKey,
+            terminal: true,
+          });
+        }
+        if (denied) {
+          expect(result).toMatchObject({ handled: false, reason: "unmatched_exec_event" });
+          expect(peekSystemEvents(canonicalKey)).toEqual([]);
+          expect(requestHeartbeat).not.toHaveBeenCalled();
+          return;
+        }
+        expect(result).toBeUndefined();
+        expect(peekSystemEvents(canonicalKey)).toEqual([
+          expect.stringContaining(
+            event === "exec.finished" ? "owned exec result" : "Owned notification",
+          ),
+        ]);
+        expect(requestHeartbeat).toHaveBeenCalledExactlyOnceWith(
+          event === "exec.finished"
+            ? {
+                source: "exec-event",
+                intent: "event",
+                reason: "exec-event",
+                coalesceMs: 0,
+                sessionKey: canonicalKey,
+              }
+            : {
+                source: "notifications-event",
+                intent: "event",
+                reason: "notifications-event",
+                agentId: "research",
+                sessionKey: canonicalKey,
+              },
+        );
+      },
+    );
+  },
+);

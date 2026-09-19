@@ -104,7 +104,7 @@ describe("trusted in-process Gateway session creation", () => {
       "sessions.create",
       {},
       { agentId: "main" },
-      { scopes: ["operator.write"] },
+      { scopes: ["operator.write"], caps: ["canonical-session-keys"] },
     );
   });
 
@@ -188,6 +188,7 @@ describe("trusted in-process Gateway session creation", () => {
       {
         scopes: ["operator.write"],
         requireAgentRuntimeIdentity: true,
+        caps: ["canonical-session-keys"],
       },
     );
     expect(getGatewaySessionSpawnContext()).toBeUndefined();
@@ -342,7 +343,7 @@ describe("trusted in-process Gateway session creation", () => {
       "sessions.list",
       { timeoutMs: 120_000 },
       { limit: 5 },
-      { scopes: ["operator.write"], signal },
+      { scopes: ["operator.write"], caps: ["canonical-session-keys"], signal },
     );
   });
 });
@@ -570,6 +571,7 @@ describe("request-shaped in-process Gateway dispatch", () => {
       method: "sessions.list",
       params: { limit: 5 },
       timeoutMs: 2_000,
+      caps: ["canonical-session-keys"],
     });
     expect(mocks.dispatch).not.toHaveBeenCalled();
   });

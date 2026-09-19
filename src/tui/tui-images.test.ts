@@ -7,6 +7,7 @@ import type { TuiImageData, TuiImageRequest } from "./tui-backend.js";
 import { createEventHandlers } from "./tui-event-handlers.js";
 import { makeTui, makeTuiBackend } from "./tui-session-actions-test-support.js";
 import { createSessionActions } from "./tui-session-actions.js";
+import { readTuiSessionTarget } from "./tui-session-projection.js";
 import type { TuiStateAccess } from "./tui-types.js";
 
 const png = createSolidPngBuffer(80, 40, { r: 20, g: 140, b: 200 }).toString("base64");
@@ -50,7 +51,7 @@ function createHarness(
   const tui = makeTui();
   const chatLog = new ChatLog(180, {
     loadImage,
-    getScope: () => ({ sessionKey: state.currentSessionKey, agentId: state.currentAgentId }),
+    getScope: () => readTuiSessionTarget(state),
     requestRender: () => tui.requestRender(),
   });
   const client = makeTuiBackend({
@@ -232,23 +233,32 @@ describe("TUI native image presentation", () => {
     expect(harness.loadImage).not.toHaveBeenCalled();
   });
 
-  it("cancels image reads on session switches and ignores late pixels", async () => {
-    setCapabilityOverrides({ images: "kitty" });
-    const pending = createDeferred<TuiImageData>();
-    const loadImage = vi.fn(async (_request: TuiImageRequest) => pending.promise);
-    const harness = createHarness([{ role: "assistant", content: [image] }], loadImage);
-    await harness.actions.loadHistory();
-    harness.render();
-    await vi.waitFor(() => expect(loadImage).toHaveBeenCalledOnce());
-    const request = loadImage.mock.calls[0]?.[0];
-    harness.client.loadHistory = vi.fn(async () => ({ messages: [], sessionInfo: {} }));
-    await harness.actions.setSession("agent:main:other");
-    expect(request?.signal.aborted).toBe(true);
-    pending.resolve(imageData);
-    await pending.promise;
-    expect(harness.render()).not.toContain(png);
-    expect(harness.render()).not.toContain("Loading image");
-  });
+  it.each([
+    { key: "agent:main:other", from: "exact", to: "exact" },
+    { key: "agent:main:main", from: "home", to: "exact" },
+    { key: "agent:main:main", from: "exact", to: "home" },
+  ] as const)(
+    "cancels image reads when selecting $key from $from to $to",
+    async ({ key, from, to }) => {
+      setCapabilityOverrides({ images: "kitty" });
+      const pending = createDeferred<TuiImageData>();
+      const loadImage = vi.fn(async (_request: TuiImageRequest) => pending.promise);
+      const harness = createHarness([{ role: "assistant", content: [image] }], loadImage);
+      harness.state.currentSessionIntent = from;
+      await harness.actions.loadHistory();
+      harness.render();
+      await vi.waitFor(() => expect(loadImage).toHaveBeenCalledOnce());
+      const request = loadImage.mock.calls[0]?.[0];
+      expect(request?.targetIntent).toBe(from === "home" ? "home" : undefined);
+      harness.client.loadHistory = vi.fn(async () => ({ messages: [], sessionInfo: {} }));
+      await harness.actions.setSession(key, "main", to);
+      expect(request?.signal.aborted).toBe(true);
+      pending.resolve(imageData);
+      await pending.promise;
+      expect(harness.render()).not.toContain(png);
+      expect(harness.render()).not.toContain("Loading image");
+    },
+  );
 
   it("reports failed previews without exposing transport credentials or private paths", async () => {
     setCapabilityOverrides({ images: "kitty" });

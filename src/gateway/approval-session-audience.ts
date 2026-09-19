@@ -6,7 +6,11 @@ import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import { OPERATOR_APPROVAL_MAX_AUDIENCE_SESSION_KEYS } from "./operator-approval-store.js";
-import { resolveSessionStoreAgentId, resolveSessionStoreKey } from "./session-store-key.js";
+import {
+  canonicalizeSessionKeyForAgent,
+  resolveSessionStoreAgentId,
+  resolveSessionStoreKey,
+} from "./session-store-key.js";
 
 // The walker cap must never exceed the store cap: insertOperatorApproval
 // throws past OPERATOR_APPROVAL_MAX_AUDIENCE_SESSION_KEYS, which would fail
@@ -103,16 +107,6 @@ function createRuntimeApprovalSessionAudienceSources(
   sourceAgentId?: string | null,
 ): ApprovalSessionAudienceSources {
   const subagentRuns = buildLatestSubagentRunReadIndex();
-  const resolveStorageTarget = (sessionKey: string): { agentId: string; sessionKey: string } => {
-    const parsed = parseAgentSessionKey(sessionKey);
-    if (parsed?.rest.toLowerCase() === "global") {
-      return { agentId: normalizeAgentId(parsed.agentId), sessionKey: "global" };
-    }
-    return {
-      agentId: resolveSessionStoreAgentId(cfg, sessionKey),
-      sessionKey,
-    };
-  };
   return {
     canonicalizeSessionKey: (sessionKey, relativeToSessionKey) => {
       if (!relativeToSessionKey) {
@@ -124,16 +118,15 @@ function createRuntimeApprovalSessionAudienceSources(
         sessionKey,
         storeAgentId: relativeAgentId,
       });
-      return canonical ? resolveApprovalSourceStreamKey(canonical, relativeAgentId) : canonical;
+      return canonical;
     },
     getLatestSubagentLineage: (sessionKey) => subagentRuns.getLatestSubagentRun(sessionKey),
     getStoredSessionLineage: (sessionKey) => {
-      const target = resolveStorageTarget(sessionKey);
       return loadSessionEntryReadOnly({
-        agentId: target.agentId,
+        agentId: resolveSessionStoreAgentId(cfg, sessionKey),
         clone: false,
         hydrateSkillPromptRefs: false,
-        sessionKey: target.sessionKey,
+        sessionKey,
       });
     },
   };
@@ -157,19 +150,10 @@ function canonicalizeApprovalSourceStreamKey(
   sessionKey: string,
   sourceAgentId?: string | null,
 ): string {
-  const ownerAgentId = normalizeAgentId(sourceAgentId ?? resolveDefaultAgentId(cfg));
-  // Unscoped source aliases (e.g. "child", "main") must resolve against the
-  // raising agent's store, not the default agent's, or multi-agent audiences
-  // route to the wrong session streams.
-  const lowered = sessionKey.trim().toLowerCase();
-  const scoped =
-    parseAgentSessionKey(sessionKey) || lowered === "global" || lowered === "unknown"
-      ? sessionKey
-      : `agent:${ownerAgentId}:${sessionKey}`;
-  const canonical = resolveSessionStoreKey({ cfg, sessionKey: scoped });
-  // Storage uses the bare global sentinel, while live session streams are
-  // agent-scoped so one agent cannot receive another's global events.
-  return resolveApprovalSourceStreamKey(canonical, ownerAgentId);
+  const ownerAgentId = normalizeAgentId(
+    parseAgentSessionKey(sessionKey)?.agentId ?? sourceAgentId ?? resolveDefaultAgentId(cfg),
+  );
+  return resolveSessionStoreKey({ cfg, sessionKey, storeAgentId: ownerAgentId });
 }
 
 /**
@@ -208,16 +192,8 @@ export function resolveApprovalSourceStreamKey(
   sourceAgentId?: string | null,
 ): string {
   const normalizedSessionKey = sourceSessionKey.trim();
-  const lowered = normalizedSessionKey.toLowerCase();
-  // Subscribers only know agent-scoped stream keys, so raw fallback inputs
-  // (bare "global", "main", unscoped child aliases) must scope to the raising
-  // agent or the persisted audience is unreachable exactly when lineage
-  // lookup already failed. "unknown" has no stream and stays bare.
-  if (!sourceAgentId || lowered === "unknown" || parseAgentSessionKey(normalizedSessionKey)) {
+  if (!sourceAgentId || parseAgentSessionKey(normalizedSessionKey)) {
     return normalizedSessionKey;
   }
-  const agentId = normalizeAgentId(sourceAgentId);
-  return lowered === "global"
-    ? `agent:${agentId}:global`
-    : `agent:${agentId}:${normalizedSessionKey}`;
+  return canonicalizeSessionKeyForAgent(sourceAgentId, normalizedSessionKey);
 }

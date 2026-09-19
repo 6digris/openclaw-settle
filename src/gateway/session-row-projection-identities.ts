@@ -3,10 +3,9 @@ import { listSessionEntriesReadOnly } from "../config/sessions/session-accessor.
 import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { readAgentDatabaseAdmissionRefusal } from "../state/agent-database-admission.js";
 import { listOpenIncognitoAgentDatabases } from "../state/openclaw-agent-db.js";
-import { first, identity, type Row } from "./session-row-projection-record.js";
+import { identity, type Row } from "./session-row-projection-record.js";
 
 type Contribution = { key: string; storePath: string; actor: SessionSharingIdentity };
-const isSentinel = (key: string) => key === "global" || key === "unknown";
 
 /** Retain only creator facts, not superseded rows or their materialized graphs. */
 export function createSessionRowCreatorIndex() {
@@ -32,10 +31,6 @@ export function createSessionRowCreatorIndex() {
       ) {
         return;
       }
-      // Even a creatorless sentinel can hide a later store's creator.
-      if (isSentinel((next ?? previous)!.key)) {
-        invalidate();
-      }
       if (previous && before?.id) {
         const contributors = byCreator.get(before.id);
         contributors?.delete(identity(previous));
@@ -59,25 +54,13 @@ export function createSessionRowCreatorIndex() {
         dirty.add(after.id);
       }
     },
-    list(selectedPaths: ReadonlyMap<string, number>, matching: (query: { key: string }) => Row[]) {
+    list(selectedPaths: ReadonlyMap<string, number>) {
       if (disposed) {
         return [];
       }
       if (paths !== selectedPaths) {
         paths = selectedPaths;
         invalidate();
-      }
-      const sentinels = new Set<string>();
-      for (const key of ["global", "unknown"]) {
-        const winner = first(
-          matching({ key }).filter(
-            (row) => row.entry && selectedPaths.has(row.storeTarget.storePath),
-          ),
-          selectedPaths.keys(),
-        );
-        if (winner) {
-          sentinels.add(identity(winner));
-        }
       }
       // Match combined-store precedence, then SQLite's binary session-key order.
       const later = (candidate: Contribution, previous: Contribution | undefined) =>
@@ -88,11 +71,8 @@ export function createSessionRowCreatorIndex() {
       for (const id of dirty) {
         let last: Contribution | undefined;
         let labeled: Contribution | undefined;
-        for (const [rowId, candidate] of byCreator.get(id) ?? []) {
-          if (
-            !selectedPaths.has(candidate.storePath) ||
-            (isSentinel(candidate.key) && !sentinels.has(rowId))
-          ) {
+        for (const candidate of byCreator.get(id)?.values() ?? []) {
+          if (!selectedPaths.has(candidate.storePath)) {
             continue;
           }
           if (later(candidate, last)) {

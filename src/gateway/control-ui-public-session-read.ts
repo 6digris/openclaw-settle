@@ -7,6 +7,7 @@ import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isIncognitoSessionKey, parseAgentSessionKey } from "../routing/session-key.js";
 import type { PublicSessionShareLocator } from "./control-ui-public-session-token.js";
+import { canonicalizeSessionKeyForAgent } from "./session-store-key.js";
 import { readSessionMessagesPageWithStatsAsync } from "./session-transcript-readers.js";
 
 type PublicSessionShareReadResult = {
@@ -44,7 +45,7 @@ function resolvePublicSessionShareScope(
   }
   return {
     agentId: locator.agentId,
-    sessionKey: locator.sessionKey,
+    sessionKey: canonicalizeSessionKeyForAgent(locator.agentId, locator.sessionKey),
     storePath: resolveSessionStorePathForScope(locator, cfg),
     projection: "list",
   };

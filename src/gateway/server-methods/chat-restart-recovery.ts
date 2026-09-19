@@ -242,7 +242,6 @@ function isRestartSafeChatSession(params: {
   const entry = params.entry;
   return Boolean(
     entry?.sessionId &&
-    params.sessionKey !== "global" &&
     entry.status !== "running" &&
     entry.abortedLastRun !== true &&
     entry.archivedAt === undefined &&

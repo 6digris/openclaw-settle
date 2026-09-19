@@ -44,6 +44,7 @@ import type {
 } from "./session-observer-model.js";
 import { createSessionObserverDigestPersister } from "./session-observer-persistence.js";
 import { createSessionObserverPreamblePublisher } from "./session-observer-preamble.js";
+import { resolveSessionEventAgentScope } from "./session-request-agent.js";
 import { resolveSessionSubscriptionKey } from "./session-subscription-keys.js";
 
 const observerLog = createSubsystemLogger("gateway/session-observer");
@@ -106,7 +107,6 @@ export function createSessionObserver(deps: SessionObserverDeps): SessionObserve
     subscribers: deps.subscribers,
     sessionEventSubscribers: deps.sessionEventSubscribers,
     isVisible: (connId) => visibleConnections.has(connId),
-    getConfig: deps.getConfig,
   });
   type ObservedAudience = ReturnType<typeof audience.classify>;
   const broadcastDigest = (
@@ -441,77 +441,83 @@ export function createSessionObserver(deps: SessionObserverDeps): SessionObserve
     })();
   };
 
-  const handleEvent = (event: SessionObserverEvent, settledError = false) => {
-    if (disposed || getAgentRunContext(event.runId)?.isHeartbeat) {
+  const handleEvent = (input: SessionObserverEvent, settledError = false) => {
+    if (disposed || getAgentRunContext(input.runId)?.isHeartbeat) {
       return;
     }
-    const lifecyclePhase = event.stream === "lifecycle" ? event.data.phase : undefined;
+    const lifecyclePhase = input.stream === "lifecycle" ? input.data.phase : undefined;
     const terminal =
-      settledError || isDefinitiveRunLifecycle({ phase: lifecyclePhase, data: event.data });
+      settledError || isDefinitiveRunLifecycle({ phase: lifecyclePhase, data: input.data });
     if (lifecyclePhase === "error" && !terminal) {
-      clearPendingTerminalError(event.runId);
-      const timer = setTimeoutFn(() => handleEvent(event, true), AGENT_RUN_TERMINAL_RETRY_GRACE_MS);
-      pendingTerminalErrors.set(event.runId, timer);
+      clearPendingTerminalError(input.runId);
+      const timer = setTimeoutFn(() => handleEvent(input, true), AGENT_RUN_TERMINAL_RETRY_GRACE_MS);
+      pendingTerminalErrors.set(input.runId, timer);
       return;
     }
     if (terminal || lifecyclePhase === "start") {
-      clearPendingTerminalError(event.runId);
+      clearPendingTerminalError(input.runId);
     }
-    if (terminalRuns.has(event.runId)) {
+    if (terminalRuns.has(input.runId)) {
       return;
     }
-    if (supersededRuns.has(event.runId)) {
+    if (supersededRuns.has(input.runId)) {
       if (terminal) {
-        markSessionObserverRunSuperseded(terminalRuns, event.runId, event.ts);
-        contextlessTerminalRuns.delete(event.runId);
-        supersededRuns.delete(event.runId);
-        dormantRuns.delete(event.runId);
-        disabledRuns.delete(event.runId);
+        markSessionObserverRunSuperseded(terminalRuns, input.runId, input.ts);
+        contextlessTerminalRuns.delete(input.runId);
+        supersededRuns.delete(input.runId);
+        dormantRuns.delete(input.runId);
+        disabledRuns.delete(input.runId);
       }
       return;
     }
     // A terminal with no recoverable run context still closes the live run, but
     // one routed terminal duplicate must pass later to finalize durable state.
-    if (contextlessTerminalRuns.has(event.runId) && !terminal) {
+    if (contextlessTerminalRuns.has(input.runId) && !terminal) {
       return;
     }
-    const eventSessionKey = event.sessionKey?.trim();
-    const eventAgentId = event.agentId?.trim();
+    const eventSessionKey = input.sessionKey?.trim();
+    const eventAgentId = input.agentId?.trim();
     let knownRun: SessionObserverState | DormantSessionObserverRun | undefined;
     // Context-reduced terminals may omit either routing field. Recover their
     // tracked owner by run id before the agent-scoped fail-closed branch.
     if (terminal && (!eventSessionKey || !eventAgentId)) {
       for (const candidate of states.values()) {
-        if (candidate.runId === event.runId) {
+        if (candidate.runId === input.runId) {
           knownRun = candidate;
           break;
         }
       }
-      knownRun ??= dormantRuns.get(event.runId);
+      knownRun ??= dormantRuns.get(input.runId);
     }
-    const sessionKey = eventSessionKey || knownRun?.sessionKey;
-    if (!sessionKey) {
+    const incomingSessionKey = eventSessionKey || knownRun?.sessionKey;
+    if (!incomingSessionKey) {
       if (terminal) {
-        markSessionObserverRunSuperseded(contextlessTerminalRuns, event.runId, event.ts);
+        markSessionObserverRunSuperseded(contextlessTerminalRuns, input.runId, input.ts);
       }
       return;
     }
     const agentId = eventAgentId || knownRun?.agentId;
     if (terminal) {
-      contextlessTerminalRuns.delete(event.runId);
+      contextlessTerminalRuns.delete(input.runId);
       if (!settledError) {
-        markSessionObserverRunSuperseded(terminalRuns, event.runId, event.ts);
+        markSessionObserverRunSuperseded(terminalRuns, input.runId, input.ts);
       }
     }
-    const isPreamble = event.stream === "item" && event.data.kind === "preamble";
+    const isPreamble = input.stream === "item" && input.data.kind === "preamble";
     if (!agentId) {
       if (terminal) {
-        void synthesizeTerminalDigest({ event });
-        dormantRuns.delete(event.runId);
-        disabledRuns.delete(event.runId);
+        void synthesizeTerminalDigest({ event: input });
+        dormantRuns.delete(input.runId);
+        disabledRuns.delete(input.runId);
       }
       return;
     }
+    const scope = resolveSessionEventAgentScope(deps.getConfig(), incomingSessionKey, agentId);
+    if (!scope) {
+      return;
+    }
+    const { sessionKey } = scope;
+    const event = { ...input, ...scope };
     const currentAudience = audience.classify(sessionKey, agentId);
     const scopeKey = resolveSessionSubscriptionKey(sessionKey, agentId);
     if (terminal && audience.recipients(sessionKey, agentId).size === 0) {

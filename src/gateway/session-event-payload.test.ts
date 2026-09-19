@@ -126,9 +126,9 @@ it("serializes merge tombstones without flattening row-only execution fields", (
   }
 });
 
-it("scopes the global goal to its resolved agent", () => {
+it("publishes the global goal under its fully qualified session identity", () => {
   const sessionRow = {
-    key: "global",
+    key: "agent:main:global",
     kind: "global" as const,
     updatedAt: 6,
     goal: {
@@ -144,12 +144,11 @@ it("scopes the global goal to its resolved agent", () => {
     },
   };
 
-  const unscoped = buildGatewaySessionSnapshot({ sessionRow, includeSession: true });
-  expect(unscoped).not.toHaveProperty("goal");
-  expect(unscoped).not.toHaveProperty("session.goal");
-
-  const scoped = buildGatewaySessionSnapshot({ sessionRow, agentId: "main", includeSession: true });
-  expect(scoped).toMatchObject({ goal: sessionRow.goal, session: { goal: sessionRow.goal } });
+  const snapshot = buildGatewaySessionSnapshot({ sessionRow, includeSession: true });
+  expect(snapshot).toMatchObject({
+    goal: sessionRow.goal,
+    session: { key: sessionRow.key, goal: sessionRow.goal },
+  });
 });
 
 it("preserves active run id ownership across omitted, liveness, and exact states", () => {

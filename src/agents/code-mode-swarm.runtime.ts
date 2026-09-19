@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { stableStringify } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { emitSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
+import { resolveSessionAgentId } from "./agent-scope.js";
 import {
   captureAgentToolSourceExecutionGuard,
   runAgentToolSourceExecutionGuard,
@@ -30,15 +31,16 @@ import {
   type CollectorCompletionResult,
 } from "./tools/agents-wait-tool.js";
 import { ToolInputError } from "./tools/common.js";
-import { resolveInternalSessionKey, resolveMainSessionAlias } from "./tools/sessions-resolution.js";
+import { resolveInternalSessionKey } from "./tools/sessions-resolution.js";
 
 function resolveCodeModeRequesterSessionKey(ctx: ToolSearchToolContext): string {
   const sessionKey = ctx.sessionKey?.trim();
   if (!sessionKey) {
     throw new ToolInputError("code mode swarm globals require session and run identity.");
   }
-  const { mainKey, alias } = resolveMainSessionAlias(ctx.runtimeConfig ?? ctx.config ?? {});
-  return resolveInternalSessionKey({ key: sessionKey, alias, mainKey });
+  const cfg = ctx.runtimeConfig ?? ctx.config ?? {};
+  const agentId = resolveSessionAgentId({ config: cfg, sessionKey, agentId: ctx.agentId });
+  return resolveInternalSessionKey({ key: sessionKey, agentId, cfg });
 }
 
 function resolveCodeModeSwarmGroupId(ctx: ToolSearchToolContext): string {

@@ -223,6 +223,11 @@ class SystemAgentTuiBackend implements TuiBackend {
     };
   }
 
+  async describeSession(opts: Parameters<TuiBackend["describeSession"]>[0]) {
+    const { sessions, defaults } = await this.listSessions();
+    return { session: sessions.find((row) => row.key === opts.sessionKey) ?? null, defaults };
+  }
+
   async listAgents(): Promise<TuiAgentsList> {
     return {
       defaultId: SYSTEM_AGENT_ID,

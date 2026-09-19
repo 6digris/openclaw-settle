@@ -7,7 +7,6 @@ import {
   waitForSessionTranscriptProjection,
 } from "../config/sessions/session-accessor.js";
 import { readActiveTranscriptEntryAnchor } from "../config/sessions/session-accessor.sqlite-transcript-anchor.js";
-import { setCanonicalSqliteSessionMainKey } from "../config/sessions/session-canonical-key.js";
 import { runWithSessionTranscriptReadFence } from "../config/sessions/session-transcript-read-fence.js";
 import { clearNodeSqliteKyselyCacheForDatabase } from "../infra/kysely-sync.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
@@ -28,14 +27,14 @@ async function withHistory(
     target: PreparedSessionHistoryReadTarget & { transcript: { sessionKey: string } };
     database: ReturnType<typeof openOpenClawAgentDatabase>;
   }) => Promise<void>,
-  options: { sharedStore?: boolean } = {},
+  options: { sharedStore?: boolean; sessionKey?: string } = {},
 ) {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const databasePath = options.sharedStore ? state.statePath("shared-history.sqlite") : undefined;
     const scope = {
       agentId: "main",
       sessionId: "requested-history",
-      sessionKey: "agent:main:readonly-history",
+      sessionKey: options.sessionKey ?? "agent:main:readonly-history",
       storePath: databasePath ?? `${state.sessionsDir()}/sessions.json`,
     };
     await replaceSessionEntry(scope, { sessionId: scope.sessionId, updatedAt: 1 });
@@ -65,7 +64,7 @@ async function withHistory(
   });
 }
 
-it.each(["cold", "warm", "policy", "receipt"] as const)(
+it.each(["cold", "warm", "receipt"] as const)(
   "keeps canonical admission and history materialization on one retained snapshot (%s)",
   async (admission) => {
     await withHistory(async ({ target, database }) => {
@@ -89,9 +88,7 @@ it.each(["cold", "warm", "policy", "receipt"] as const)(
             "requested-message",
           ]);
         }
-        if (admission === "policy") {
-          setCanonicalSqliteSessionMainKey(database, "custom");
-        } else if (admission === "receipt") {
+        if (admission === "receipt") {
           invalidateOpenClawAgentDatabaseValidation(database.path);
         }
         clearNodeSqliteKyselyCacheForDatabase(connection);
@@ -261,21 +258,18 @@ it("keeps canonical key validation on each admitted reader handle", async () => 
   });
 });
 
-it("observes a committed main-key policy change before a later read", async () => {
-  await withHistory(async ({ target, database }) => {
-    const scope = {
-      agentId: "main",
-      sessionKey: "agent:main:main",
-      storePath: target.database.path,
-    };
-    await replaceSessionEntry(scope, { sessionId: "main-window", updatedAt: 1 });
-    const reader = createReadonlySessionHistoryReader(target);
-    await reader.readRecentSessionMessagesWithStatsAsync(target.transcript, { maxMessages: 10 });
-    setCanonicalSqliteSessionMainKey(database, "work");
-    await expect(
-      reader.readRecentSessionMessagesWithStatsAsync(target.transcript, { maxMessages: 10 }),
-    ).rejects.toThrow("openclaw doctor --fix");
-  });
+it("keeps qualified main history stable when the retained legacy main-key field changes", async () => {
+  await withHistory(
+    async ({ target, database }) => {
+      const reader = createReadonlySessionHistoryReader(target);
+      const read = () =>
+        reader.readRecentSessionMessagesWithStatsAsync(target.transcript, { maxMessages: 10 });
+      expect((await read()).messages.map(readChatHistoryMessageId)).toEqual(["requested-message"]);
+      database.db.prepare("UPDATE session_key_contract SET main_key = ? WHERE id = 1").run("work");
+      expect((await read()).messages.map(readChatHistoryMessageId)).toEqual(["requested-message"]);
+    },
+    { sessionKey: "agent:main:main" },
+  );
 });
 
 it("validates participant projection on the current reader handle", async () => {

@@ -20,13 +20,12 @@ import type { UserModelAccountSelection } from "../model-account-authority.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "../operator-role-policy.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
 import { resolvePluginSessionOwnershipError } from "../session-plugin-ownership.js";
-import { resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId } from "../session-request-agent.js";
+import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { hasSessionReadAccessChanged } from "../session-sharing-policy.js";
 import { SessionMutationAuthorizationChangedError } from "../session-sharing.js";
 import {
   resolveCanonicalGatewaySessionStoreKey,
   resolveCanonicalSessionEntryFromStoreKeys,
-  resolveGatewaySessionStoreTargetWithStore,
 } from "../session-utils.js";
 import { gatewayClientSessionCreator } from "./gateway-client-identity.js";
 import { resolveOperatorSessionCreation } from "./session-creation-provenance.js";
@@ -53,6 +52,7 @@ import {
   prepareSessionPatchRuntimeSelection,
   refreshSessionPatchQueuedSelection,
 } from "./sessions-patch-model-selection.js";
+import { prepareSessionPatchTargets } from "./sessions-patch-targets.js";
 import type {
   GroupAdmissionResult,
   GroupMutationOperation,
@@ -78,6 +78,13 @@ export async function executeSessionPatchMutations(params: {
   targets: readonly MutationTarget[];
 }): Promise<MutationCoreResult> {
   const { client } = params;
+  const authorizeCreation = (agentId: string) => {
+    const currentCfg = params.context.getRuntimeConfig();
+    const owner = resolveRequestedSessionAgentId(currentCfg, undefined, agentId);
+    return owner.ok
+      ? authorizeGatewaySessionCreation({ cfg: currentCfg, client, agentId })
+      : owner.error;
+  };
   const timing = params.diagnostics?.scope("preflight");
   let personalModelSelection: UserModelAccountSelection | undefined;
   try {
@@ -97,36 +104,11 @@ export async function executeSessionPatchMutations(params: {
     "permissionMode" in params.patch
       ? await import("./sessions-patch-permissions.runtime.js")
       : undefined;
-  const targetDiscoveryCache = new Map();
-  const preflightTargets = params.targets.map((input) => {
-    const key = input.key.trim();
-    const requestedAgent = resolveRequestedGlobalAgentId(cfg, key, input.agentId);
-    return {
-      input,
-      key,
-      requestedAgent,
-      resolved: requestedAgent.ok
-        ? resolveGatewaySessionStoreTargetWithStore({
-            cfg,
-            key,
-            agentId: requestedAgent.agentId,
-            exactRead: true,
-            targetDiscoveryCache,
-          })
-        : undefined,
-    };
-  });
-  const logicalTargets = new Set<string>();
-  for (const { key, resolved } of preflightTargets) {
-    if (!resolved) {
-      continue;
-    }
-    const logicalId = `${resolved.storePath}\0${resolved.canonicalKey ?? key}`;
-    if (logicalTargets.has(logicalId)) {
-      return invalidSessionPatchOutcome("Duplicate target.");
-    }
-    logicalTargets.add(logicalId);
+  const targetPreparation = prepareSessionPatchTargets(cfg, params.targets);
+  if (!targetPreparation.ok) {
+    return targetPreparation;
   }
+  const preflightTargets = targetPreparation.targets;
 
   const outcomes = Array.from<MutationOutcome | undefined>({ length: params.targets.length });
   const permissionErrors = new Map<number, ErrorShape>();
@@ -149,7 +131,7 @@ export async function executeSessionPatchMutations(params: {
       continue;
     }
     const requestedAgentId = requestedAgent.agentId;
-    const canonicalKey = resolved.canonicalKey ?? key;
+    const canonicalKey = resolved.canonicalKey;
     const candidateKeys = resolved.storeKeys;
     let initialEntry: SessionEntry | undefined;
     try {
@@ -158,8 +140,7 @@ export async function executeSessionPatchMutations(params: {
       outcomes[index] = { ok: false, error: unexpectedPatchError(key, error) };
       continue;
     }
-    const creationError =
-      !initialEntry && authorizeGatewaySessionCreation({ cfg, client, agentId: resolved.agentId });
+    const creationError = !initialEntry && authorizeCreation(resolved.agentId);
     if (creationError) {
       outcomes[index] = { ok: false, error: creationError };
       continue;
@@ -310,6 +291,7 @@ export async function executeSessionPatchMutations(params: {
                   const requestedLabel = parseSessionLabel(first.fullPatch.label);
                   const archiveTransitions = new Map<number, ArchiveTransition>();
                   const commitGuards = new Set<() => ErrorShape | undefined>();
+                  let createsSession = false;
                   const projectGroup = async (
                     entries: SqliteLifecycleTargetSnapshot,
                     admission: "admitted" | "detached",
@@ -340,12 +322,7 @@ export async function executeSessionPatchMutations(params: {
                           ...(target.requestedAgentId ? { agentId: target.requestedAgentId } : {}),
                         });
                         const creationError =
-                          !existingEntry &&
-                          authorizeGatewaySessionCreation({
-                            cfg,
-                            client,
-                            agentId: target.targetAgentId,
-                          });
+                          !existingEntry && authorizeCreation(target.targetAgentId);
                         if (creationError) {
                           projectedOutcomes.push({ ok: false, error: creationError });
                           continue;
@@ -525,6 +502,7 @@ export async function executeSessionPatchMutations(params: {
                         if (runtimeSelection.validate) {
                           commitGuards.add(runtimeSelection.validate);
                         }
+                        createsSession ||= !existingEntry;
                         replacements.push({
                           entry: projected.entry,
                           previousSessionKeys,
@@ -571,6 +549,12 @@ export async function executeSessionPatchMutations(params: {
                       }
                       for (const transition of archiveTransitions.values()) {
                         transition.assertCommitAllowed();
+                      }
+                      // Callbacks can retire the configured owner before this write creates a row.
+                      const creationError =
+                        createsSession && authorizeCreation(first.targetAgentId);
+                      if (creationError) {
+                        throw new SessionMutationAuthorizationChangedError(creationError);
                       }
                     },
                     agentId: first.targetAgentId,
@@ -634,6 +618,7 @@ export async function executeSessionPatchMutations(params: {
                       target.permissionChange = undefined;
                     }
                     commitGuards.clear();
+                    createsSession = false;
                     archiveTransitions.clear();
                     groupTiming?.mark();
                     const catalog = await catalogs.prepare(first.targetAgentId);

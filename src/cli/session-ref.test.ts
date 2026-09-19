@@ -283,7 +283,11 @@ describe("session target resolution", () => {
   });
 
   it("resolves a stale-agent URL short reference without scoping UUID lookup", async () => {
-    callGatewayMock.mockResolvedValue({ ok: true, key: "agent:research:thread:full-key" });
+    callGatewayMock.mockResolvedValue({
+      ok: true,
+      key: "agent:research:thread:full-key",
+      agentId: "research",
+    });
 
     const result = await resolveSessionTarget({
       raw: "https://gateway.example/base/dashboard/ops/movies-a1166b81",
@@ -304,7 +308,7 @@ describe("session target resolution", () => {
   });
 
   it("resolves a bare literal key without forcing an explicit gateway", async () => {
-    callGatewayMock.mockResolvedValue({ ok: true, key: "agent:ops:telegram:123" });
+    callGatewayMock.mockResolvedValue({ ok: true, key: "agent:ops:telegram:123", agentId: "ops" });
 
     await resolveSessionTarget({ raw: "agent:ops:telegram:123" });
 
@@ -353,7 +357,7 @@ describe("session target resolution", () => {
       raw: "https://gateway.example/dashboard/ops",
     });
 
-    expect(result.sessionKey).toBe("global");
+    expect(result.sessionKey).toBe("agent:ops:global");
   });
 
   it("rejects a second explicit URL", async () => {

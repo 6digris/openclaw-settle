@@ -107,7 +107,7 @@ export function registerTuiCli(program: Command) {
     .argument("[target]", "Control UI URL, host/agent/ref, short ref, or agent:... key")
     .option("--local", "Run against the local embedded agent runtime", false);
   addTuiOptions(command)
-    .option("--session <key>", 'Session key (default: "main", or "global" when scope is global)')
+    .option("--session <key>", "Session key (default: last/Home; main = Home; agent:... = exact)")
     .option("--deliver", "Deliver assistant replies", false)
     .option("--thinking <level>", "Thinking level override")
     .option("--message <text>", "Send an initial message after connecting")

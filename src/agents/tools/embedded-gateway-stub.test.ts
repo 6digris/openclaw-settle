@@ -15,14 +15,6 @@ const runtime = vi.hoisted(() => ({
   resolveSessionStoreKey: vi.fn(({ sessionKey }: { sessionKey: string }) =>
     sessionKey === "main" ? "agent:main:main" : sessionKey,
   ),
-  resolveStoredSessionKeyForAgentStore: vi.fn(
-    ({ agentId, sessionKey }: { agentId: string; sessionKey: string }) =>
-      sessionKey === "global" || sessionKey === "unknown"
-        ? sessionKey
-        : sessionKey.startsWith("agent:")
-          ? sessionKey
-          : `agent:${agentId}:${sessionKey}`,
-  ),
   searchSessionTranscripts: vi.fn(() => ({ hits: [], indexing: false, truncated: false })),
   resolveSessionStorePathCore: vi.fn(() => "/tmp/openclaw-sessions.json"),
   resolveSessionKeyFromResolveParams: vi.fn(),
@@ -69,7 +61,6 @@ describe("embedded gateway stub", () => {
     runtime.loadSessionEntry.mockClear();
     runtime.resolveSessionAgentId.mockClear();
     runtime.resolveSessionStoreKey.mockClear();
-    runtime.resolveStoredSessionKeyForAgentStore.mockClear();
     runtime.searchSessionTranscripts.mockClear();
     runtime.resolveSessionStorePathCore.mockClear();
     runtime.listProjectedSessions.mockClear();
@@ -178,16 +169,6 @@ describe("embedded gateway stub", () => {
         },
       });
 
-      expect(runtime.resolveStoredSessionKeyForAgentStore).toHaveBeenNthCalledWith(1, {
-        cfg,
-        agentId: "main",
-        sessionKey: "main",
-      });
-      expect(runtime.resolveStoredSessionKeyForAgentStore).toHaveBeenNthCalledWith(2, {
-        cfg,
-        agentId: "main",
-        sessionKey: "agent:main:other",
-      });
       expect(runtime.searchSessionTranscripts).toHaveBeenCalledWith({
         agentId: "main",
         query: "needle",

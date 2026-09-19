@@ -1038,7 +1038,10 @@ describe("worker live events", () => {
     }> = [
       { name: "session-id", context: { ...LOCAL, sessionId: `${SID}-other` } },
       { name: "session-key", context: { ...LOCAL, sessionKey: `${KEY}-other` } },
-      { name: "agent-id", context: { ...LOCAL, agentId: "other" } },
+      {
+        name: "agent-id",
+        context: { ...LOCAL, agentId: "other", sessionKey: "agent:other:worker-live" },
+      },
       { name: "lifecycle", context: { ...LOCAL, lifecycleGeneration: "other-lifecycle" } },
     ];
 
@@ -1050,7 +1053,9 @@ describe("worker live events", () => {
         ...mismatch.context,
       });
       await fail(msg(1, "blocked", 0, runId), "invalid-event");
+      expect(getAgentRunContext(runId)).toMatchObject(mismatch.context);
       clearAgentRunContext(runId);
+      expect(getAgentRunContext(runId)).toBeUndefined();
     }
     expect(events).toEqual([]);
   });

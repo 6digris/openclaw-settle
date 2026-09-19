@@ -31,6 +31,7 @@ type ResolveSqliteStoreTargetOptions = {
   defaultAgentId?: string;
   env?: NodeJS.ProcessEnv;
   registeredDatabases?: readonly Pick<OpenClawRegisteredAgentDatabase, "agentId" | "path">[];
+  readDatabaseOwner?: (pathname: string) => string | undefined;
   isSameDatabasePath?: (left: string, right: string) => boolean;
 };
 
@@ -93,7 +94,7 @@ function resolveCustomStoreSqlitePath(params: {
       // Registry precedence makes inspection redundant, but filesystem errors still propagate.
       hasFilesystemEntry(candidatePath);
     } else {
-      databaseOwner = resolveDatabaseOwner(candidatePath);
+      databaseOwner = (params.options.readDatabaseOwner ?? resolveDatabaseOwner)(candidatePath);
     }
     return {
       effectiveOwner:
@@ -277,7 +278,7 @@ export function resolveSqliteTargetFromSessionStorePath(
       // Registry precedence makes inspection redundant, but filesystem errors still propagate.
       hasFilesystemEntry(unsuffixedTarget.path);
     } else {
-      databaseOwner = resolveDatabaseOwner(unsuffixedTarget.path);
+      databaseOwner = (options.readDatabaseOwner ?? resolveDatabaseOwner)(unsuffixedTarget.path);
     }
     const configuredDefaultAgentId = normalizeAgentId(
       options.defaultAgentId ?? LEGACY_IMPLICIT_AGENT_ID,

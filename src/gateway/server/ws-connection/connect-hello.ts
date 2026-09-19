@@ -1,5 +1,9 @@
 // Gateway WebSocket connect completion sends hello-ok and commits post-handshake state.
 import {
+  GATEWAY_CLIENT_CAPS,
+  hasGatewayClientCap,
+} from "../../../../packages/gateway-protocol/src/client-info.js";
+import {
   GATEWAY_SERVER_CAPS,
   PROTOCOL_VERSION,
 } from "../../../../packages/gateway-protocol/src/index.js";
@@ -42,6 +46,7 @@ import {
 } from "../../server-constants.js";
 import { formatError } from "../../server-utils.js";
 import { allowedSessionVisibilities } from "../../session-sharing.js";
+import { legacySessionKey } from "../../session-wire-identity.js";
 import { formatForLog, logWs } from "../../ws-log.js";
 import { shouldScheduleBackgroundHealthRefresh } from "../health-refresh-admission.js";
 import { buildGatewaySnapshot, getHealthCache, getHealthVersion } from "../health-state.js";
@@ -122,6 +127,15 @@ export async function sendGatewayHello(
     includeUpdateDetails: canReadDetailedUpdateMetadata(role, scopes),
     revisionProjector: buildRequestContext().configRevisionProjector,
   });
+  if (
+    !hasGatewayClientCap(connectParams.caps, GATEWAY_CLIENT_CAPS.CANONICAL_SESSION_KEYS) &&
+    snapshot.sessionDefaults
+  ) {
+    snapshot.sessionDefaults = {
+      ...snapshot.sessionDefaults,
+      mainSessionKey: legacySessionKey(snapshot.sessionDefaults.mainSessionKey),
+    };
+  }
   const cachedHealth = getHealthCache();
   if (cachedHealth) {
     snapshot.health = cachedHealth;
@@ -160,6 +174,7 @@ export async function sendGatewayHello(
       events,
       capabilities: [
         GATEWAY_SERVER_CAPS.BOARD_WIDGET_PUT_CANVAS_DOC,
+        GATEWAY_SERVER_CAPS.CANONICAL_SESSION_KEYS,
         GATEWAY_SERVER_CAPS.CHAT_SEND_ROUTING_CONTRACT,
         GATEWAY_SERVER_CAPS.GATEWAY_RESTART_TARGET_SAFE,
         GATEWAY_SERVER_CAPS.MODEL_CATALOG_SNAPSHOT,

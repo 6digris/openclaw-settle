@@ -47,10 +47,7 @@ function resolvePlacementSessionIdentities(
     sessionKey: placement.sessionKey,
     storeAgentId: requestedAgentId,
   });
-  const canonicalAgentId =
-    canonicalKey === "global" || canonicalKey === "unknown" || !parsedKey
-      ? requestedAgentId
-      : resolveSessionStoreAgentId(cfg, canonicalKey);
+  const canonicalAgentId = resolveSessionStoreAgentId(cfg, canonicalKey);
   const canonical = { placement, agentId: canonicalAgentId, sessionKey: canonicalKey };
   if (!parsedKey) {
     return [canonical];

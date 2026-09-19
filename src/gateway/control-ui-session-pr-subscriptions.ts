@@ -1,6 +1,5 @@
 import pLimit from "p-limit";
 import { CHAT_SEND_SESSION_KEY_MAX_LENGTH } from "../../packages/gateway-protocol/src/schema/primitives.js";
-import { parseAgentSessionKey } from "../routing/session-key.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import type {
   ControlUiSessionPullRequestSnapshot,
@@ -69,15 +68,6 @@ const UNAVAILABLE_SNAPSHOT: ControlUiSessionPullRequestSnapshot = {
   rateLimited: false,
   status: "unavailable",
 };
-
-function loaderParams(sessionKey: string, refresh: boolean): ControlUiSessionPullRequestsParams {
-  const parsed = parseAgentSessionKey(sessionKey);
-  // Global is persisted as an unscoped sentinel inside each agent store. The
-  // watch key keeps its agent prefix so concurrent global views stay distinct.
-  const params: ControlUiSessionPullRequestsParams =
-    parsed?.rest === "global" ? { sessionKey: "global", agentId: parsed.agentId } : { sessionKey };
-  return refresh ? { ...params, refresh: true } : params;
-}
 
 function parseSessionKeys(value: unknown): string[] | null {
   if (!Array.isArray(value) || value.length > CONTROL_UI_SESSION_PULL_REQUESTS_MAX_KEYS) {
@@ -194,7 +184,10 @@ export function createControlUiSessionPullRequestSubscriptions(
           return UNAVAILABLE_SNAPSHOT;
         }
         // Fresh result identity acknowledges forced loads even when the failure is unchanged.
-        const snapshot = await load(loaderParams(sessionKey, refresh), state.cacheLifetime.signal)
+        const snapshot = await load(
+          { sessionKey, ...(refresh ? { refresh } : {}) },
+          state.cacheLifetime.signal,
+        )
           .then(pushedSnapshot)
           .catch(() => ({ ...UNAVAILABLE_SNAPSHOT }));
         if (keyStates.get(sessionKey) === state) {

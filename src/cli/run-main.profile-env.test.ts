@@ -11,8 +11,16 @@ const startup = vi.hoisted(() => ({
   route: vi.fn(async () => true),
   schemas: { incompatible: [], indeterminate: [] },
   prepareDoctorDatabasePreflight: vi.fn(),
-  runDoctorHealthFlow: vi.fn(),
+  runDoctorHealthFlow: vi.fn<typeof import("../flows/doctor-health.js").runDoctorHealthFlow>(),
+  initializeCapture: vi.fn(),
+  finalizeCapture: vi.fn(),
 }));
+
+vi.mock("../proxy-capture/runtime.js", () => ({
+  initializeDebugProxyCapture: startup.initializeCapture,
+  finalizeDebugProxyCapture: startup.finalizeCapture,
+}));
+vi.mock("../proxy-capture/coverage.js", () => ({ maybeWarnAboutDebugProxyCoverage: vi.fn() }));
 
 vi.mock("../commands/doctor-database-preflight.js", () => ({
   prepareDoctorDatabasePreflight: startup.prepareDoctorDatabasePreflight,
@@ -115,6 +123,7 @@ import { runCli } from "./run-main.js";
 describe("runCli environment and passive startup", () => {
   const envSnapshot = captureEnv([
     "OPENCLAW_UPDATE_IN_PROGRESS",
+    "OPENCLAW_DEBUG_PROXY_ENABLED",
     "OPENCLAW_PROFILE",
     "OPENCLAW_STATE_DIR",
     "OPENCLAW_CONFIG_PATH",
@@ -128,6 +137,7 @@ describe("runCli environment and passive startup", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     deleteTestEnvValue("OPENCLAW_UPDATE_IN_PROGRESS");
+    deleteTestEnvValue("OPENCLAW_DEBUG_PROXY_ENABLED");
     startup.prepareDoctorDatabasePreflight.mockResolvedValue(startup.schemas);
     deleteTestEnvValue("OPENCLAW_PROFILE");
     deleteTestEnvValue("OPENCLAW_STATE_DIR");
@@ -148,12 +158,23 @@ describe("runCli environment and passive startup", () => {
     envSnapshot.restore();
   });
 
-  it("carries the single early update preflight through Commander into Doctor", async () => {
-    setTestEnvValue("OPENCLAW_UPDATE_IN_PROGRESS", "1");
+  it.each([true, false])("defers capture to Doctor admission (update=%s)", async (updating) => {
+    if (updating) {
+      setTestEnvValue("OPENCLAW_UPDATE_IN_PROGRESS", "1");
+    }
+    setTestEnvValue("OPENCLAW_DEBUG_PROXY_ENABLED", "1");
+    startup.runDoctorHealthFlow.mockImplementationOnce(
+      async (_runtime, _options, _authority, _schemas, activateCapture) => {
+        expect(startup.initializeCapture).not.toHaveBeenCalled();
+        await activateCapture?.();
+        expect(startup.initializeCapture).toHaveBeenCalledExactlyOnceWith("cli");
+      },
+    );
     startup.route.mockResolvedValueOnce(false);
     const argv = ["node", "openclaw", "doctor", "--fix", "--non-interactive"];
     const originalArgv = process.argv;
     const originalListeners = process.listeners("uncaughtException");
+    const originalExitListeners = process.listeners("exit");
     process.argv = argv;
     try {
       await expect(runCli(argv)).rejects.toEqual(new ExitError(0));
@@ -164,15 +185,23 @@ describe("runCli environment and passive startup", () => {
           process.off("uncaughtException", listener);
         }
       }
+      for (const listener of process.listeners("exit")) {
+        if (!originalExitListeners.includes(listener)) {
+          process.off("exit", listener);
+        }
+      }
     }
 
-    expect(startup.prepareDoctorDatabasePreflight).toHaveBeenCalledExactlyOnceWith();
-    expect(startup.prepareDoctorDatabasePreflight).toHaveBeenCalledBefore(startup.startProxy);
+    expect(startup.prepareDoctorDatabasePreflight).toHaveBeenCalledTimes(updating ? 1 : 0);
+    if (updating) {
+      expect(startup.prepareDoctorDatabasePreflight).toHaveBeenCalledBefore(startup.startProxy);
+    }
     expect(startup.runDoctorHealthFlow).toHaveBeenCalledExactlyOnceWith(
       expect.any(Object),
       expect.objectContaining({ repair: true, nonInteractive: true }),
       undefined,
-      startup.schemas,
+      undefined,
+      expect.any(Function),
     );
   });
 

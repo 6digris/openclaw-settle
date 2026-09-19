@@ -303,7 +303,7 @@ describe("sessions.search gateway method", () => {
       agentId: "ops",
       query: "needle",
       limit: undefined,
-      sessionKeys: ["global"],
+      sessionKeys: ["agent:ops:global"],
       storePath: fixedStorePath,
     });
   });
@@ -391,7 +391,7 @@ describe("sessions.search gateway method", () => {
       agentId: "work",
       query: "needle",
       limit: undefined,
-      sessionKeys: ["agent:work:main", "global"],
+      sessionKeys: ["agent:work:main", "agent:work:global"],
       storePath: expect.any(String),
     });
   });

@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import * as archiveWorker from "../config/sessions/session-accessor.sqlite-archive.js";
 import { ensureSessionEntrySync } from "../config/sessions/session-accessor.sqlite-initial-entry.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
   openOpenClawAgentDatabase,
@@ -8,6 +9,7 @@ import {
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { handleGatewayRequest } from "./server-methods.js";
 import type { GatewayRequestHandler } from "./server-methods/types.js";
+import { legacySessionRequest } from "./session-wire-request.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -15,11 +17,17 @@ it.each([
   { method: "sessions.patch", change: "scope", expectedCode: "FORBIDDEN" },
   { method: "sessions.patch", change: "startup", expectedCode: "UNAVAILABLE" },
   { method: "talk.session.create", change: "none", expectedCode: undefined },
+  { method: "talk.session.create", change: "home", expectedCode: undefined },
 ])(
   "restarts $method authorization after canonical readiness ($change)",
   async ({ method, change, expectedCode }) => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const sessionKey = "agent:main:canonical-readiness";
+      const cfg: OpenClawConfig = { session: { mainKey: "canonical-readiness" } };
+      const requestParams =
+        method === "sessions.patch"
+          ? { key: sessionKey }
+          : { sessionKey: change === "home" ? "agent:main:main" : sessionKey };
       ensureSessionEntrySync(
         { agentId: "main", sessionKey },
         {
@@ -46,6 +54,8 @@ it.each([
             scopes.splice(0, scopes.length, "operator.read");
           } else if (change === "startup") {
             unavailableGatewayMethods.add(method);
+          } else if (change === "home") {
+            cfg.session = { mainKey: "replacement-home" };
           }
           return createWorker(data);
         });
@@ -58,9 +68,14 @@ it.each([
           type: "req",
           id: `canonical-${change}`,
           method,
-          params: method === "sessions.patch" ? { key: sessionKey } : { sessionKey },
+          params: requestParams,
         },
         respond,
+        ...(change === "home"
+          ? {
+              prepareRequestParams: () => legacySessionRequest(method, requestParams, () => cfg),
+            }
+          : {}),
         client: {
           connId: "canonical-readiness",
           authenticatedUserId: "member@example.com",
@@ -80,7 +95,7 @@ it.each([
         } as Parameters<typeof handleGatewayRequest>[0]["client"],
         isWebchatConnect: () => false,
         context: {
-          getRuntimeConfig: () => ({}),
+          getRuntimeConfig: () => cfg,
           logGateway: { warn: vi.fn() },
           unavailableGatewayMethods,
         } as unknown as Parameters<typeof handleGatewayRequest>[0]["context"],
@@ -98,6 +113,7 @@ it.each([
         // Talk's target resolver catches arbitrary read errors. The private signal
         // must still cause readiness, never become its user-facing error response.
         expect(handler).toHaveBeenCalledOnce();
+        expect(handler.mock.calls[0]?.[0].params).toEqual({ sessionKey });
         expect(respond).toHaveBeenCalledWith(true, { allowed: true });
       }
     });

@@ -59,12 +59,16 @@ export function registerChatRun(
   state.registry.add(runId, { sessionKey, clientRunId, ...overrides });
 }
 
-export function registerNamedChatRun(
+export function mainKey(name: string) {
+  return `agent:main:session-${name}`;
+}
+
+export function registerMainNamedChatRun(
   state: ChatRunState,
   name: string,
   overrides: Omit<ChatRunRegistration, "clientRunId" | "sessionKey"> = {},
 ) {
-  registerChatRun(state, `run-${name}`, `session-${name}`, `client-${name}`, overrides);
+  registerChatRun(state, `run-${name}`, mainKey(name), `client-${name}`, overrides);
 }
 
 export function createChatVisionModelCatalogSnapshot(): Awaited<
@@ -147,5 +151,37 @@ export function createTextTranscriptEvent(
       timestamp,
       ...message,
     },
+  };
+}
+
+export function answerCandidate(
+  itemId: string,
+  progressText: string,
+  status: "candidate" | "selected" | "superseded" = "candidate",
+) {
+  return {
+    itemId,
+    kind: "answer_candidate",
+    title: "Answer candidate",
+    phase: "update",
+    status,
+    progressText,
+    source: "codex-app-server",
+    hideFromChannelProgress: true,
+  };
+}
+
+export function widgetResult(id: string, target = "assistant_message", title = id) {
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({
+          kind: "canvas",
+          presentation: { target, title, sandbox: "scripts" },
+          view: { id, url: `/__openclaw__/canvas/documents/${id}/index.html` },
+        }),
+      },
+    ],
   };
 }

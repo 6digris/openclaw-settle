@@ -63,7 +63,7 @@ it("keeps selected-agent global completions scoped to their owner", async () => 
     sessionKey: "global",
     agentId: "research",
   });
-  expect(process.run.session.sessionKey).toBe("global");
+  expect(process.run.session.sessionKey).toBe("agent:research:global");
   await process.finish();
 
   expect(requestHeartbeatMock).toHaveBeenCalledWith({
@@ -71,7 +71,7 @@ it("keeps selected-agent global completions scoped to their owner", async () => 
     intent: "event",
     reason: "exec-event",
     coalesceMs: 0,
-    agentId: "research",
+    sessionKey: "agent:research:global",
   });
   expect(peekSystemEventEntries("agent:research:global")).toHaveLength(1);
   expect(peekSystemEventEntries("agent:main:global")).toEqual([]);

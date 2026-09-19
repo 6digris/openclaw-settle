@@ -333,9 +333,7 @@ function resetAgentCliCommandMocksForTest() {
   loggingState.forceConsoleToStderr = false;
 }
 
-beforeEach(() => {
-  resetAgentCliCommandMocksForTest();
-});
+beforeEach(resetAgentCliCommandMocksForTest);
 
 afterEach(() => {
   vi.doUnmock("./agent/session.runtime.js");
@@ -433,6 +431,7 @@ describe("agentCliCommand", () => {
             requireFirstCallArg(callGateway, "gateway"),
             "gateway request",
           );
+          expect(request.caps).toEqual(["canonical-session-keys"]);
           expect(request.clientName).toBe("cli");
           expect(request.mode).toBe("cli");
           expect(request.scopes).toEqual(["operator.admin"]);
@@ -1838,6 +1837,7 @@ describe("agentCliCommand", () => {
         },
       });
       expect(fallbackAbort?.method).toBe("chat.abort");
+      expect(fallbackAbort?.caps).toEqual(["canonical-session-keys"]);
       expect(fallbackAbort?.timeoutMs).toBe(2_000);
       expect(fallbackAbort?.config).toBe(loadConfig.mock.results[0]?.value);
       expect(fallbackAbort?.params).toEqual({

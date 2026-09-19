@@ -1,10 +1,9 @@
 import { isDeepStrictEqual } from "node:util";
 import { resolveSessionParentSessionKey } from "../channels/plugins/session-conversation.js";
-import { projectGatewaySessionEntry } from "../config/sessions/combined-store-gateway.js";
 import type { SessionStoreTarget } from "../config/sessions/targets.js";
 import type { InternalSessionEntry as SessionEntry } from "../config/sessions/types.js";
 import { resolveProjectedAgentRunModel } from "../infra/agent-run-registry.js";
-import { isIncognitoSessionKey, parseAgentSessionKey } from "../routing/session-key.js";
+import { isIncognitoSessionKey } from "../routing/session-key.js";
 import {
   readSessionRowHasBoard,
   type readSessionRowFacts,
@@ -53,17 +52,8 @@ export type Lookup = { agentId: string; key: string; storePath?: string };
 type RowTarget = Pick<Row, "agentId" | "key" | "storeTarget">;
 export const identity = (row: RowTarget) =>
   `${row.agentId}\0${row.storeTarget.storePath}\0${row.key}`;
-export const physical = (storePath: string, key: string) => `physical:${storePath}\0${key}`;
-const logical = (agentId: string, key: string) => `logical:${agentId}\0${key}`;
 export function dependents(row: Row, byParent: ReadonlyMap<string, Set<string>>) {
-  const children = new Set(byParent.get(logical(row.agentId, row.key)));
-  const physicalChildren = byParent.get(physical(row.storeTarget.storePath, row.key));
-  if (physicalChildren) {
-    for (const id of physicalChildren) {
-      children.add(id);
-    }
-  }
-  return children;
+  return byParent.get(`key:${row.key}`) ?? new Set<string>();
 }
 export function markRelated(
   row: Row,
@@ -210,8 +200,6 @@ export function index(
   updateIndex(byAgent, row.agentId, id, deleting);
   updateIndex(byKey, `key:${row.key}`, id, deleting);
   updateIndex(byKey, row.entry && `id:${row.entry.sessionId}`, id, deleting);
-  updateIndex(byKey, logical(row.agentId, row.key), id, deleting);
-  updateIndex(byKey, physical(row.storeTarget.storePath, row.key), id, deleting);
   for (const parent of row.parents) {
     updateIndex(byParent, parent, id, deleting);
   }
@@ -240,17 +228,8 @@ export function isCurrentGeneration(row: Row, current: Row | undefined): boolean
   );
 }
 
-export function parentReference(
-  cfg: Inputs["cfg"],
-  key: string,
-  fallbackAgentId: string,
-  sourcePath?: string,
-) {
-  if (sourcePath && (key === "global" || key === "unknown")) {
-    return physical(sourcePath, key);
-  }
-  const agentId = parseAgentSessionKey(key)?.agentId ?? fallbackAgentId;
-  return logical(agentId, resolveStoredSessionKeyForAgentStore({ cfg, agentId, sessionKey: key }));
+export function parentReference(cfg: Inputs["cfg"], key: string, agentId: string) {
+  return `key:${resolveStoredSessionKeyForAgentStore({ cfg, agentId, sessionKey: key })}`;
 }
 
 /** Drop reader-only graphs while retaining cold metadata and index identity. */
@@ -275,7 +254,7 @@ export function readSessionRowParents(
   const parents = new Set<string>();
   const addParent = (key: string | null | undefined) => {
     if (key && key !== row.key) {
-      parents.add(parentReference(cfg, key, row.agentId, row.storeTarget.storePath));
+      parents.add(parentReference(cfg, key, row.agentId));
     }
   };
   addParent(storedEntry.parentSessionKey ?? resolveSessionParentSessionKey(row.key));
@@ -316,7 +295,7 @@ export function acquireSessionRowEntry(params: {
     remove(identity(row));
     return undefined;
   }
-  const entry = projectGatewaySessionEntry(cfg, storedEntry);
+  const entry = { ...storedEntry };
   const parents = readSessionRowParents(row, storedEntry, cfg, context);
   // Equal timestamps still need the full metadata comparison.
   const changed =

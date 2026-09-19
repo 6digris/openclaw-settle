@@ -22,7 +22,6 @@ import { resolveToolSearchCodeDisplayTarget } from "../agents/tool-display-commo
 import { readToolValidationErrorSummary } from "../agents/tool-error-summary.js";
 import { normalizeVerboseLevel } from "../auto-reply/thinking.js";
 import { normalizeAgentPlanSteps } from "../channels/streaming.js";
-import { getRuntimeConfig } from "../config/io.js";
 import {
   type AgentEventPayload,
   type AgentEventRuntimePayload,
@@ -78,9 +77,7 @@ import {
   isRestartRecoveryLifecycleEvent,
   persistGatewaySessionLifecycleEvent,
 } from "./session-lifecycle-state.js";
-import { tryResolveSessionCompatibilityOwnerAgentId } from "./session-request-agent.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
-import { resolveSessionSubscriptionKeys } from "./session-subscription-keys.js";
 import { projectGatewaySessionRunState } from "./session-utils-display.js";
 import { loadGatewaySessionEntryReadOnly, type GatewaySessionRow } from "./session-utils.js";
 import { formatForLog } from "./ws-log.js";
@@ -567,30 +564,6 @@ export function createAgentEventHandler({
     });
   };
 
-  const resolveSessionDeliveryKeys = (sessionKey: string, agentId?: string) => {
-    if (sessionKey.trim().toLowerCase() !== "global") {
-      return [sessionKey];
-    }
-    const compatibilityOwnerAgentId = tryResolveSessionCompatibilityOwnerAgentId(
-      getRuntimeConfig(),
-      sessionKey,
-    );
-    const deliveryAgentId = agentId ?? compatibilityOwnerAgentId;
-    return deliveryAgentId
-      ? resolveSessionSubscriptionKeys(sessionKey, deliveryAgentId, compatibilityOwnerAgentId)
-      : [];
-  };
-  const sendNodeSessionPayloadForAgent = (
-    sessionKey: string,
-    event: string,
-    payload: unknown,
-    agentId?: string,
-  ) => {
-    for (const deliverySessionKey of resolveSessionDeliveryKeys(sessionKey, agentId)) {
-      nodeSendToSession(deliverySessionKey, event, payload);
-    }
-  };
-
   const emitFirstAssistantChatSendTiming = (chatLink: ChatRunEntry | undefined) => {
     const timing = chatLink?.chatSendTiming;
     if (!timing || timing.firstAssistantEventSent) {
@@ -652,9 +625,7 @@ export function createAgentEventHandler({
       isChatAbortMarkerCurrent(chatRunState.runs.get(evt.runId)?.abortMarker, chatLink);
     const lifecycleAborted = evt.data?.aborted === true;
     const replyDispatchOwnsCompletion = evt.data?.completionSource === "reply-dispatch";
-    const deliverySessionKeys = sessionKey
-      ? resolveSessionDeliveryKeys(sessionKey, sessionAgentId)
-      : [];
+    const deliverySessionKeys = sessionKey ? [sessionKey] : [];
     const restartRecoveryState =
       opts?.restartRecoveryState ??
       (restartRecoverySessionKey
@@ -1121,9 +1092,7 @@ export function createAgentEventHandler({
     opts?: LivePayloadOptions,
   ) => {
     const visible = opts?.controlUiVisible ?? true;
-    const deliverySessionKeys = sessionKey
-      ? resolveSessionDeliveryKeys(sessionKey, opts?.agentId)
-      : undefined;
+    const deliverySessionKeys = sessionKey ? [sessionKey] : undefined;
     const broadcastOpts = {
       dropIfSlow: event === "agent" && visible ? undefined : opts?.dropIfSlow,
       sessionKeys: deliverySessionKeys,
@@ -1132,7 +1101,7 @@ export function createAgentEventHandler({
     if (visible) {
       broadcast(event, payload, broadcastOpts);
       if (sessionKey) {
-        sendNodeSessionPayloadForAgent(sessionKey, event, payload, opts?.agentId);
+        nodeSendToSession(sessionKey, event, payload);
       }
       return;
     }
@@ -1431,9 +1400,7 @@ export function createAgentEventHandler({
     agentId: string | undefined,
     payload: AgentEventPayload,
   ) => {
-    const deliveryKeys = resolveSessionDeliveryKeys(sessionKey, agentId).filter(
-      nodeHasSessionSubscribers,
-    );
+    const deliveryKeys = [sessionKey].filter(nodeHasSessionSubscribers);
     if (deliveryKeys.length === 0) {
       return;
     }
@@ -1538,9 +1505,7 @@ export function createAgentEventHandler({
         };
     const hasSessionMessageSubscribers =
       projectSessionMessages && sessionKey
-        ? resolveSessionDeliveryKeys(sessionKey, sessionAgentId).some(
-            (deliverySessionKey) => sessionMessageSubscribers.get(deliverySessionKey).size > 0,
-          )
+        ? sessionMessageSubscribers.get(sessionKey).size > 0
         : false;
     const last = agentRunSeq.get(evt.runId) ?? 0;
     const isToolEvent = evt.stream === "tool";
@@ -1564,9 +1529,7 @@ export function createAgentEventHandler({
           },
         },
         {
-          sessionKeys: sessionKey
-            ? resolveSessionDeliveryKeys(sessionKey, sessionAgentId)
-            : undefined,
+          sessionKeys: sessionKey ? [sessionKey] : undefined,
           liveText: liveTextDelivery(clientRunId),
         },
       );
@@ -1679,9 +1642,7 @@ export function createAgentEventHandler({
             : agentPayload,
           runToolRecipients,
           {
-            sessionKeys: sessionKey
-              ? resolveSessionDeliveryKeys(sessionKey, sessionAgentId)
-              : undefined,
+            sessionKeys: sessionKey ? [sessionKey] : undefined,
             liveText: liveTextDelivery(clientRunId),
           },
         );

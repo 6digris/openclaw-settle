@@ -3276,62 +3276,60 @@ describe("cleanupManagedOutgoingImageRecords", () => {
     await expect(fs.access(fixture.originalPath)).resolves.toBeUndefined();
   });
 
-  it("treats legacy unscoped global records as the configured default agent", async () => {
-    const config = {
-      agents: { list: [{ id: "main" }, { id: "work", default: true }] },
-    };
-    getRuntimeConfigMock.mockReturnValue(config);
-    prepareAgentSessionStore(stateDir, "work");
-    await replaceTestSessionEntry(
-      {
+  it.each([{ sessionKey: "global", agentId: "work" }, { sessionKey: "agent:work:global" }])(
+    "treats legacy unscoped global records as the configured default agent for $sessionKey",
+    async (filter) => {
+      const config = {
+        agents: { list: [{ id: "main" }, { id: "work", default: true }] },
+      };
+      getRuntimeConfigMock.mockReturnValue(config);
+      prepareAgentSessionStore(stateDir, "work");
+      const session = {
         agentId: "work",
         env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+        sessionKey: "agent:work:global",
+      };
+      await replaceTestSessionEntry(session, {
+        sessionId: "sess-work-global",
+        updatedAt: Date.now(),
+      });
+      closeOpenClawAgentDatabasesForTest();
+      expect(
+        resolveExistingAgentSessionStoreTargetsReadOnlyResult(config, "work", { env: session.env }),
+      ).toMatchObject({ available: true });
+      const { loadExactSessionEntryReadOnlyResult } =
+        await import("../config/sessions/session-accessor.sqlite-entry-availability.js");
+      expect(loadExactSessionEntryReadOnlyResult(session)).toMatchObject({
+        found: true,
+        value: { sessionKey: "agent:work:global" },
+      });
+      const deletedFixture = await createFixture(stateDir, {
         sessionKey: "global",
-      },
-      { sessionId: "sess-work-global", updatedAt: Date.now() },
-    );
-    closeOpenClawAgentDatabasesForTest();
-    expect(
-      resolveExistingAgentSessionStoreTargetsReadOnlyResult(config, "work", {
-        env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
-      }),
-    ).toMatchObject({ available: true });
-    const { loadExactSessionEntryReadOnlyResult } =
-      await import("../config/sessions/session-accessor.sqlite-entry-availability.js");
-    expect(
-      loadExactSessionEntryReadOnlyResult({
-        agentId: "work",
-        env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+        attachmentId: "88888888-8888-4888-8888-888888888888",
+      });
+      const retainedFixture = await createFixture(stateDir, {
         sessionKey: "global",
-      }),
-    ).toMatchObject({ found: true, value: { sessionKey: "global" } });
-    const deletedFixture = await createFixture(stateDir, {
-      sessionKey: "global",
-      attachmentId: "88888888-8888-4888-8888-888888888888",
-    });
-    const retainedFixture = await createFixture(stateDir, {
-      sessionKey: "global",
-      agentId: "main",
-      attachmentId: "99999999-9999-4999-8999-999999999999",
-    });
-    loadSessionEntryMock.mockReturnValue({
-      storePath: path.join(stateDir, "gateway-sessions.json"),
-      entry: { sessionId: "sess-work-global", sessionFile: "/tmp/global-work.jsonl" },
-    });
-    readSessionMessagesMock.mockReturnValue([]);
+        agentId: "main",
+        attachmentId: "99999999-9999-4999-8999-999999999999",
+      });
+      loadSessionEntryMock.mockReturnValue({
+        storePath: path.join(stateDir, "gateway-sessions.json"),
+        entry: { sessionId: "sess-work-global", sessionFile: "/tmp/global-work.jsonl" },
+      });
+      readSessionMessagesMock.mockReturnValue([]);
 
-    const result = await cleanupManagedOutgoingImageRecords({
-      stateDir,
-      sessionKey: "global",
-      agentId: "work",
-    });
+      const result = await cleanupManagedOutgoingImageRecords({
+        stateDir,
+        ...filter,
+      });
 
-    expect(readSessionMessagesMock).toHaveBeenCalled();
-    expect(result.deletedRecordCount).toBe(1);
-    expect(result.retainedCount).toBe(1);
-    await expectPathMissing(deletedFixture.originalPath);
-    await expect(fs.access(retainedFixture.originalPath)).resolves.toBeUndefined();
-  });
+      expect(readSessionMessagesMock).toHaveBeenCalled();
+      expect(result.deletedRecordCount).toBe(1);
+      expect(result.retainedCount).toBe(1);
+      await expectPathMissing(deletedFixture.originalPath);
+      await expect(fs.access(retainedFixture.originalPath)).resolves.toBeUndefined();
+    },
+  );
 
   it("retains ownerless global records when no compatibility owner exists", async () => {
     getRuntimeConfigMock.mockReturnValue({

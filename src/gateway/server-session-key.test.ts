@@ -61,8 +61,8 @@ describe("resolveSessionKeyForRun", () => {
       "agent:main:acp:run-1": { sessionId: "run-1", updatedAt: 123 },
     });
 
-    expect(resolveSessionKeyForRun("run-1")).toBe("acp:run-1");
-    expect(resolveSessionKeyForRun("run-1")).toBe("acp:run-1");
+    expect(resolveSessionKeyForRun("run-1")).toBe("agent:main:acp:run-1");
+    expect(resolveSessionKeyForRun("run-1")).toBe("agent:main:acp:run-1");
     expect(hoisted.loadCombinedSessionStoreForGatewayMock).toHaveBeenCalledTimes(1);
     expect(hoisted.loadCombinedSessionStoreForGatewayMock).toHaveBeenCalledWith(cfg, {
       agentId: "main",
@@ -79,7 +79,9 @@ describe("resolveSessionKeyForRun", () => {
       "agent:retired:acp:run-1": { sessionId: "run-1", updatedAt: 123 },
     });
 
-    expect(resolveSessionKeyForRun("run-1", { agentId: "retired" })).toBe("acp:run-1");
+    expect(resolveSessionKeyForRun("run-1", { agentId: "retired" })).toBe(
+      "agent:retired:acp:run-1",
+    );
     expect(hoisted.loadCombinedSessionStoreForGatewayMock).toHaveBeenCalledWith(cfg, {
       agentId: "retired",
     });
@@ -121,23 +123,23 @@ describe("resolveSessionKeyForRun", () => {
     });
   });
 
-  it("allows literal global session keys for scoped lookups when session scope is global", () => {
+  it("preserves qualified global session ownership through scoped run lookups", () => {
     const cfg: OpenClawConfig = {
       session: {
         scope: "global",
       },
     };
     mockCombinedSessionStore(cfg, {
-      global: { sessionId: "run-global", updatedAt: 123 },
+      "agent:work:global": { sessionId: "run-global", updatedAt: 123 },
     });
 
-    expect(resolveSessionKeyForRun("run-global", { agentId: "work" })).toBe("global");
+    expect(resolveSessionKeyForRun("run-global", { agentId: "work" })).toBe("agent:work:global");
     expect(hoisted.loadCombinedSessionStoreForGatewayMock).toHaveBeenCalledWith(cfg, {
       agentId: "work",
     });
   });
 
-  it("keeps qualified global main run ownership before collapsing its key", () => {
+  it("keeps a qualified main run identity after the configured scope changes", () => {
     mockCombinedSessionStore(
       {
         session: { scope: "global" },
@@ -147,7 +149,9 @@ describe("resolveSessionKeyForRun", () => {
     );
     registerAgentRunContext("qualified-global-run", { sessionKey: "agent:research:main" });
 
-    expect(resolveSessionKeyForRun("qualified-global-run", { agentId: "research" })).toBe("main");
+    expect(resolveSessionKeyForRun("qualified-global-run", { agentId: "research" })).toBe(
+      "agent:research:main",
+    );
     expect(resolveSessionKeyForRun("qualified-global-run", { agentId: "ops" })).toBeUndefined();
   });
 
@@ -166,8 +170,10 @@ describe("resolveSessionKeyForRun", () => {
       }),
     );
 
-    expect(resolveSessionKeyForRun("run-1", { agentId: "main" })).toBe("acp:run-1");
-    expect(resolveSessionKeyForRun("run-1", { agentId: "retired" })).toBe("acp:run-1");
+    expect(resolveSessionKeyForRun("run-1", { agentId: "main" })).toBe("agent:main:acp:run-1");
+    expect(resolveSessionKeyForRun("run-1", { agentId: "retired" })).toBe(
+      "agent:retired:acp:run-1",
+    );
   });
 
   it("keeps run lookup cache entries scoped by agent", () => {
@@ -184,7 +190,9 @@ describe("resolveSessionKeyForRun", () => {
       }),
     );
 
-    expect(resolveSessionKeyForRun("run-1", { agentId: "retired" })).toBe("acp:run-1");
+    expect(resolveSessionKeyForRun("run-1", { agentId: "retired" })).toBe(
+      "agent:retired:acp:run-1",
+    );
     expect(resolveSessionKeyForRun("run-1", { agentId: "main" })).toBeUndefined();
     expect(resolveSessionKeyForRun("run-1")).toBeUndefined();
     expect(hoisted.loadCombinedSessionStoreForGatewayMock).toHaveBeenCalledTimes(2);
@@ -199,9 +207,9 @@ describe("resolveSessionKeyForRun", () => {
 
   it("uses active legacy run contexts for the main agent", () => {
     hoisted.loadConfigMock.mockReturnValue({});
-    registerAgentRunContext("run-live-main", { sessionKey: "main" });
+    registerAgentRunContext("run-live-main", { sessionKey: "main", agentId: "main" });
 
-    expect(resolveSessionKeyForRun("run-live-main")).toBe("main");
+    expect(resolveSessionKeyForRun("run-live-main")).toBe("agent:main:main");
     expect(hoisted.loadCombinedSessionStoreForGatewayMock).not.toHaveBeenCalled();
   });
 
@@ -209,9 +217,9 @@ describe("resolveSessionKeyForRun", () => {
     hoisted.loadConfigMock.mockReturnValue({
       agents: { list: [{ id: "work", default: true }] },
     });
-    registerAgentRunContext("run-live-work", { sessionKey: "main" });
+    registerAgentRunContext("run-live-work", { sessionKey: "main", agentId: "work" });
 
-    expect(resolveSessionKeyForRun("run-live-work")).toBe("main");
+    expect(resolveSessionKeyForRun("run-live-work")).toBe("agent:work:main");
     expect(hoisted.loadCombinedSessionStoreForGatewayMock).not.toHaveBeenCalled();
   });
 
@@ -223,7 +231,7 @@ describe("resolveSessionKeyForRun", () => {
     expect(hoisted.loadCombinedSessionStoreForGatewayMock).not.toHaveBeenCalled();
   });
 
-  it("uses legacy store entries for the configured default agent", () => {
+  it("uses migrated store entries for the configured default agent", () => {
     const cfg: OpenClawConfig = {
       agents: { list: [{ id: "work", default: true }] },
     };
@@ -231,11 +239,11 @@ describe("resolveSessionKeyForRun", () => {
     hoisted.loadCombinedSessionStoreForGatewayMock.mockReturnValue({
       storePath: "(multiple)",
       store: {
-        main: { sessionId: "run-legacy-default", updatedAt: 123 },
+        "agent:work:main": { sessionId: "run-legacy-default", updatedAt: 123 },
       },
     });
 
-    expect(resolveSessionKeyForRun("run-legacy-default")).toBe("main");
+    expect(resolveSessionKeyForRun("run-legacy-default")).toBe("agent:work:main");
     expect(hoisted.loadCombinedSessionStoreForGatewayMock).toHaveBeenCalledWith(cfg, {
       agentId: "work",
     });
@@ -299,7 +307,7 @@ describe("resolveSessionKeyForRun", () => {
       },
     });
 
-    expect(resolveSessionKeyForRun("run-dup")).toBe("acp:run-dup");
+    expect(resolveSessionKeyForRun("run-dup")).toBe("agent:main:acp:run-dup");
   });
 
   it("refuses ambiguous duplicate session ids without a clear best match", () => {

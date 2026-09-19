@@ -678,14 +678,14 @@ describe("sessions.patchMany orchestration", () => {
     });
   });
 
-  it("rejects an alias conflict introduced after preflight without blocking siblings", async () => {
+  it("fences an alias target replaced after preflight without blocking siblings", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const cfg = {
         session: { mainKey: "work" },
         agents: { list: [{ id: "main", default: true }] },
       } satisfies OpenClawConfig;
       const canonicalKey = "agent:main:work";
-      const conflictingAlias = "agent:main:main";
+      const requestedAlias = "main";
       const siblingKeys = ["agent:main:alias-race-before", "agent:main:alias-race-after"];
       await upsertSessionEntryCore(
         { agentId: "main", sessionKey: canonicalKey },
@@ -700,23 +700,23 @@ describe("sessions.patchMany orchestration", () => {
 
       const storePath = resolveGatewaySessionStoreTargetWithStore({
         cfg,
-        key: conflictingAlias,
+        key: requestedAlias,
       }).storePath;
       const writerStarted = createDeferredCore();
-      const insertConflictingAlias = createDeferredCore();
+      const replaceTarget = createDeferredCore();
       const writer = applySessionEntryCanonicalReplacements({
         agentId: "main",
-        sessionKeys: [conflictingAlias],
+        sessionKeys: [canonicalKey],
         storePath,
         update: async () => {
           writerStarted.resolve();
-          await insertConflictingAlias.promise;
+          await replaceTarget.promise;
           return {
             replacements: [
               {
                 entry: { sessionId: "session-alias-race-conflict", updatedAt: 2 },
                 previousSessionKeys: [],
-                sessionKey: conflictingAlias,
+                sessionKey: canonicalKey,
               },
             ],
             result: undefined,
@@ -729,7 +729,11 @@ describe("sessions.patchMany orchestration", () => {
       const respond = vi.fn();
       const request = sessionMutationHandlers["sessions.patchMany"]!({
         params: {
-          targets: [{ key: siblingKeys[0]! }, { key: conflictingAlias }, { key: siblingKeys[1]! }],
+          targets: [
+            { key: siblingKeys[0]! },
+            { key: requestedAlias, expectedSessionId: "session-alias-race-canonical" },
+            { key: siblingKeys[1]! },
+          ],
           patch: { unread: false },
         },
         respond,
@@ -747,7 +751,7 @@ describe("sessions.patchMany orchestration", () => {
       } as never);
 
       await preflightCompleted.promise;
-      insertConflictingAlias.resolve();
+      replaceTarget.resolve();
       await writer;
       await request;
 
@@ -755,41 +759,35 @@ describe("sessions.patchMany orchestration", () => {
         { ok: true, key: siblingKeys[0] },
         {
           ok: false,
-          key: conflictingAlias,
+          key: requestedAlias,
           error: {
-            code: "UNAVAILABLE",
-            message: "Session patch failed unexpectedly. Retry the request.",
-            retryable: true,
+            code: "INVALID_REQUEST",
+            message: "Session main changed before patch. Retry.",
+            details: { reason: "session-changed" },
           },
         },
         { ok: true, key: siblingKeys[1] },
       ]);
       expect(loadSessionEntry({ agentId: "main", sessionKey: canonicalKey })).toMatchObject({
-        sessionId: "session-alias-race-canonical",
+        sessionId: "session-alias-race-conflict",
       });
       expect(loadSessionEntry({ agentId: "main", sessionKey: canonicalKey })).not.toHaveProperty(
         "lastReadAt",
       );
-      expect(loadSessionEntry({ agentId: "main", sessionKey: conflictingAlias })).toMatchObject({
-        sessionId: "session-alias-race-conflict",
-      });
-      expect(
-        loadSessionEntry({ agentId: "main", sessionKey: conflictingAlias }),
-      ).not.toHaveProperty("lastReadAt");
       for (const sessionKey of siblingKeys) {
         expect(loadSessionEntry({ agentId: "main", sessionKey })).toHaveProperty("lastReadAt");
       }
     });
   });
 
-  it("rejects an alias inserted after single-patch preflight while waiting for the writer", async () => {
+  it("fences an alias target replaced after single-patch preflight", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const cfg = {
         session: { mainKey: "work" },
         agents: { list: [{ id: "main", default: true }] },
       } satisfies OpenClawConfig;
       const canonicalKey = "agent:main:work";
-      const conflictingAlias = "agent:main:main";
+      const requestedAlias = "main";
       await upsertSessionEntryCore(
         { agentId: "main", sessionKey: canonicalKey },
         { sessionId: "session-single-alias-race-canonical", updatedAt: 1 },
@@ -797,23 +795,23 @@ describe("sessions.patchMany orchestration", () => {
 
       const storePath = resolveGatewaySessionStoreTargetWithStore({
         cfg,
-        key: conflictingAlias,
+        key: requestedAlias,
       }).storePath;
       const writerStarted = createDeferredCore();
-      const insertConflictingAlias = createDeferredCore();
+      const replaceTarget = createDeferredCore();
       const writer = applySessionEntryCanonicalReplacements({
         agentId: "main",
-        sessionKeys: [conflictingAlias],
+        sessionKeys: [canonicalKey],
         storePath,
         update: async () => {
           writerStarted.resolve();
-          await insertConflictingAlias.promise;
+          await replaceTarget.promise;
           return {
             replacements: [
               {
                 entry: { sessionId: "session-single-alias-race-conflict", updatedAt: 2 },
                 previousSessionKeys: [],
-                sessionKey: conflictingAlias,
+                sessionKey: canonicalKey,
               },
             ],
             result: undefined,
@@ -825,7 +823,11 @@ describe("sessions.patchMany orchestration", () => {
       const preflightCompleted = createDeferredCore();
       const respond = vi.fn();
       const request = sessionMutationHandlers["sessions.patch"]!({
-        params: { key: conflictingAlias, pinned: true },
+        params: {
+          key: requestedAlias,
+          expectedSessionId: "session-single-alias-race-canonical",
+          pinned: true,
+        },
         respond,
         context: context({
           getRuntimeConfig: () => cfg,
@@ -841,27 +843,21 @@ describe("sessions.patchMany orchestration", () => {
       } as never);
 
       await preflightCompleted.promise;
-      insertConflictingAlias.resolve();
+      replaceTarget.resolve();
       await writer;
       await request;
 
       expect(respond).toHaveBeenCalledWith(false, undefined, {
-        code: "UNAVAILABLE",
-        message: "Session patch failed unexpectedly. Retry the request.",
-        retryable: true,
+        code: "INVALID_REQUEST",
+        message: "Session main changed before patch. Retry.",
+        details: { reason: "session-changed" },
       });
       expect(loadSessionEntry({ agentId: "main", sessionKey: canonicalKey })).toMatchObject({
-        sessionId: "session-single-alias-race-canonical",
+        sessionId: "session-single-alias-race-conflict",
       });
       expect(loadSessionEntry({ agentId: "main", sessionKey: canonicalKey })).not.toHaveProperty(
         "pinnedAt",
       );
-      expect(loadSessionEntry({ agentId: "main", sessionKey: conflictingAlias })).toMatchObject({
-        sessionId: "session-single-alias-race-conflict",
-      });
-      expect(
-        loadSessionEntry({ agentId: "main", sessionKey: conflictingAlias }),
-      ).not.toHaveProperty("pinnedAt");
     });
   });
 

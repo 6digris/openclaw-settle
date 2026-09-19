@@ -1,4 +1,6 @@
+import fs from "node:fs";
 import type { ServerResponse } from "node:http";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { fetchWithSsrFGuard } from "../infra/net/fetch-guard.js";
@@ -7,7 +9,12 @@ import { withServer } from "../plugin-sdk/test-helpers/http-test-server.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawStateDatabaseByPath } from "../state/openclaw-state-db-cache.js";
 import { resolveDebugProxySettings } from "./env.js";
-import { finalizeDebugProxyCapture, initializeDebugProxyCapture } from "./runtime.js";
+import { deferDebugProxyCapture } from "./runtime-owner.js";
+import {
+  captureWsEvent,
+  finalizeDebugProxyCapture,
+  initializeDebugProxyCapture,
+} from "./runtime.js";
 import { acquireDebugProxyCaptureStore, closeDebugProxyCaptureStore } from "./store.sqlite.js";
 
 afterEach(() => {
@@ -55,16 +62,163 @@ function captureRoots() {
 }
 
 describe("guarded capture ownership", () => {
+  it("retains prepared and explicit A capture while ambient B is deferred", async () => {
+    const fixture = captureRoots();
+    const arrived = createDeferredCore<ServerResponse>();
+    const controller = new AbortController();
+    try {
+      await withServer(
+        (request, response) => {
+          request.resume();
+          if (request.url === "/a") {
+            arrived.resolve(response);
+          } else {
+            response.end(request.url);
+          }
+        },
+        async (baseUrl) => {
+          const request = async (pathname: string) => {
+            const reply = await fetchWithSsrFGuard({
+              url: baseUrl + pathname,
+              pinDns: false,
+              policy: { allowPrivateNetwork: true },
+              signal: controller.signal,
+            });
+            try {
+              return await reply.response.text();
+            } finally {
+              await reply.release();
+            }
+          };
+          vi.stubEnv("OPENCLAW_STATE_DIR", fixture.roots[0]);
+          const pendingA = request("/a");
+          const responseA = await arrived.promise;
+          vi.stubEnv("OPENCLAW_STATE_DIR", fixture.roots[1]);
+          const restore = deferDebugProxyCapture();
+          try {
+            const patchPreserved = globalThis.fetch === fixture.savedWrapper;
+            expect(await request("/b-before")).toBe("/b-before");
+            const bEventsBeforeAdmission = fixture.recordings[1]!.mock.calls.length;
+            responseA.end("/a");
+            expect(await pendingA).toBe("/a");
+            initializeDebugProxyCapture("second");
+            restore?.();
+            expect(await request("/b-after")).toBe("/b-after");
+            captureWsEvent(
+              {
+                url: "ws://capture.invalid/explicit-a",
+                direction: "local",
+                kind: "ws-frame",
+                flowId: "explicit-a",
+                payload: "still active",
+              },
+              fixture.settings[0],
+            );
+            fixture.close();
+            const [a, b] = fixture.recordings.map((recording) =>
+              recording.mock.calls.map(([event]) => event),
+            );
+            expect(patchPreserved).toBe(true);
+            expect(bEventsBeforeAdmission).toBe(0);
+            expect(
+              a!.filter((event) => event.kind === "request").map((event) => event.path),
+            ).toEqual(["/a"]);
+            const requestA = a!.find((event) => event.kind === "request")!;
+            expect(
+              a!.some(
+                (event) =>
+                  event.flowId === requestA.flowId &&
+                  (event.kind === "response" || event.kind === "error"),
+              ),
+            ).toBe(true);
+            expect(
+              a!.some((event) => event.kind === "ws-frame" && event.flowId === "explicit-a"),
+            ).toBe(true);
+            expect(
+              b!.filter((event) => event.kind === "request").map((event) => event.path),
+            ).toEqual(["/b-after"]);
+          } finally {
+            controller.abort();
+            if (!responseA.writableEnded) {
+              responseA.end();
+            }
+            await pendingA.catch(() => undefined);
+            restore?.();
+          }
+        },
+      );
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it.each(["initialize", "release"] as const)(
+    "keeps deferred ambient requests off storage until %s",
+    async (resume) => {
+      const root = tempDirs.make("capture-deferred-");
+      vi.stubEnv("OPENCLAW_STATE_DIR", root);
+      vi.stubEnv("OPENCLAW_DEBUG_PROXY_ENABLED", "1");
+      vi.stubEnv("OPENCLAW_DEBUG_PROXY_SESSION_ID", "deferred-cli");
+      vi.stubEnv("OPENCLAW_DEBUG_PROXY_URL", undefined);
+      const restore = deferDebugProxyCapture();
+      try {
+        await withServer(
+          (_request, response) => response.end("response"),
+          async (baseUrl) => {
+            const request = async () => {
+              const reply = await fetchWithSsrFGuard({
+                url: baseUrl,
+                pinDns: false,
+                policy: { allowPrivateNetwork: true },
+              });
+              try {
+                expect(await reply.response.text()).toBe("response");
+              } finally {
+                await reply.release();
+              }
+            };
+            await request();
+            expect(fs.existsSync(path.join(root, "state", "openclaw.sqlite"))).toBe(false);
+            if (resume === "initialize") {
+              initializeDebugProxyCapture("doctor");
+            } else {
+              restore?.();
+            }
+            const lease = acquireDebugProxyCaptureStore();
+            const recorded = vi.spyOn(lease.store, "recordEvent");
+            try {
+              await request();
+              finalizeDebugProxyCapture();
+              expect(recorded.mock.calls.map(([event]) => event.kind)).toEqual([
+                "request",
+                "response",
+              ]);
+            } finally {
+              lease.release();
+            }
+          },
+        );
+      } finally {
+        restore?.();
+        finalizeDebugProxyCapture();
+      }
+    },
+  );
+
   it.each([
     "same-owner",
+    "deferred-active",
     "other-owner",
     "saved-wrapper",
     "caller-wrapper",
     "capture-disabled",
   ] as const)("uses one capture owner through %s", async (mode) => {
     const fixture = captureRoots();
-    if (mode === "same-owner") {
+    if (mode === "same-owner" || mode === "deferred-active") {
       vi.stubEnv("OPENCLAW_STATE_DIR", fixture.roots[0]);
+      if (mode === "deferred-active") {
+        deferDebugProxyCapture();
+      }
     } else if (mode === "saved-wrapper") {
       initializeDebugProxyCapture("second", fixture.settings[1]);
     }
@@ -104,7 +258,10 @@ describe("guarded capture ownership", () => {
         recording.mock.calls.map(([event]) => event),
       );
       // Disabling the guard recorder leaves an installed global recorder in control.
-      const expected = mode === "capture-disabled" || mode === "same-owner" ? [2, 0] : [0, 2];
+      const expected =
+        mode === "capture-disabled" || mode === "same-owner" || mode === "deferred-active"
+          ? [2, 0]
+          : [0, 2];
       expect(events.map((rows) => rows.length)).toEqual(expected);
       for (const rows of events.filter((captured) => captured.length > 0)) {
         expect(rows[0]).toMatchObject({ kind: "request", dataText: "loopback request" });

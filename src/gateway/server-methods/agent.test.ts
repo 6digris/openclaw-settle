@@ -4,6 +4,7 @@ import {
   restoreAgentTaskRegistryRuntimeAfterTests,
 } from "./agent.test-harness.js";
 import "./agent.base.test-utils.js";
+import "./agent.owner-admission.test-utils.js";
 import "./agent.media-and-routing.test-utils.js";
 import "./agent.events-and-subagents.test-utils.js";
 import "./agent.sessions-and-models.test-utils.js";

@@ -1226,7 +1226,6 @@ describe("session accessor seam", () => {
         resolveSessionEntrySelection({ agentId: "main", sessionKey, storePath }),
       ).toMatchObject({
         existing: { sessionId: "focused-session" },
-        legacyKeys: [],
         normalizedKey: sessionKey,
       });
       expect(parse.mock.calls.filter(([value]) => value === unrelatedEntryJson)).toHaveLength(0);
@@ -1252,79 +1251,48 @@ describe("session accessor seam", () => {
     }
   });
 
-  it("resolves non-main candidate entries from custom agent store templates", async () => {
-    const storeTemplate = path.join(tempDir, "{agentId}.json");
-    const supportStorePath = path.join(tempDir, "support.json");
-    await upsertSessionEntryCore(
-      {
-        agentId: "support",
-        sessionKey: "agent:support:main",
-        storePath: supportStorePath,
-      },
-      {
-        sessionId: "support-session",
-        updatedAt: 30,
-      },
-    );
-
-    const resolved = resolveSessionEntryCandidateTarget({
-      agentId: "support",
-      candidateKeys: ["agent:support:main"],
-      cfg: {
-        session: { store: storeTemplate },
+  it.each(["candidate", "logical"] as const)(
+    "resolves non-main %s entries from custom agent store templates",
+    async (kind) => {
+      const cfg: OpenClawConfig = {
+        session: { store: path.join(tempDir, "{agentId}.json") },
         agents: { entries: { support: { default: true } } },
-      },
-    });
+      };
+      const sessionKey = "agent:support:main";
+      await upsertSessionEntryCore(
+        { agentId: "support", sessionKey, storePath: path.join(tempDir, "support.json") },
+        { sessionId: "support-session", updatedAt: 30 },
+      );
 
-    expect(resolved).toMatchObject({
-      agentId: "support",
-      candidateKey: "agent:support:main",
-      entry: { sessionId: "support-session" },
-      persisted: true,
-      sessionKey: "agent:support:main",
-    });
-  });
+      const resolved =
+        kind === "candidate"
+          ? resolveSessionEntryCandidateTarget({
+              agentId: "support",
+              candidateKeys: [sessionKey],
+              cfg,
+            })
+          : resolveSessionEntryAccessTarget({ cfg, sessionKey });
 
-  it("resolves non-main logical entries from custom agent store templates", async () => {
-    const storeTemplate = path.join(tempDir, "{agentId}.json");
-    const supportStorePath = path.join(tempDir, "support.json");
-    await upsertSessionEntryCore(
-      {
+      expect(resolved).toMatchObject({
         agentId: "support",
-        sessionKey: "agent:support:main",
-        storePath: supportStorePath,
-      },
-      {
-        sessionId: "support-session",
-        updatedAt: 30,
-      },
-    );
-
-    const resolved = resolveSessionEntryAccessTarget({
-      cfg: {
-        session: { store: storeTemplate },
-        agents: { entries: { support: { default: true } } },
-      },
-      sessionKey: "agent:support:main",
-    });
-
-    expect(resolved).toMatchObject({
-      agentId: "support",
-      canonicalKey: "agent:support:main",
-      entry: { sessionId: "support-session" },
-      requestedKey: "agent:support:main",
-      storeKey: "agent:support:main",
-    });
-  });
+        entry: { sessionId: "support-session" },
+        ...(kind === "candidate"
+          ? { candidateKey: sessionKey, persisted: true, sessionKey }
+          : { canonicalKey: sessionKey, requestedKey: sessionKey, storeKey: sessionKey }),
+      });
+    },
+  );
 
   it.each([
-    { sessionKey: "global", agentId: "research", global: true },
-    { sessionKey: "main", agentId: "research", global: false },
-    { sessionKey: "agent:main:main", agentId: "research", global: false },
-    { sessionKey: "agent:research:main", agentId: undefined, global: true },
+    { sessionKey: "global", agentId: "research", global: true, target: "global" },
+    { sessionKey: "global", agentId: "research", global: false, target: "global" },
+    { sessionKey: "main", agentId: "research", global: true, target: "global" },
+    { sessionKey: "main", agentId: "research", global: false, target: "main" },
+    { sessionKey: "agent:research:main", agentId: undefined, global: true, target: "main" },
+    { sessionKey: "agent:research:global", agentId: undefined, global: false, target: "global" },
   ])(
     "keeps logical owner reads and updates isolated for $sessionKey with owner $agentId",
-    async ({ sessionKey, agentId: requestedAgentId, global }) => {
+    async ({ sessionKey, agentId: requestedAgentId, global, target }) => {
       const cfg: OpenClawConfig = {
         session: {
           store: path.join(tempDir, "{agentId}.json"),
@@ -1332,43 +1300,54 @@ describe("session accessor seam", () => {
         },
         agents: { entries: { research: {}, ops: {} } },
       };
-      const canonicalKey = global ? "global" : "agent:research:main";
+      const canonicalKey = `agent:research:${target}`;
+      const sessionId = `research-${target}-session`;
       for (const agentId of ["research", "ops"]) {
-        await upsertSessionEntryCore(
-          {
-            agentId,
-            sessionKey: global ? "global" : `agent:${agentId}:main`,
-            storePath: path.join(tempDir, `${agentId}.json`),
-          },
-          { sessionId: `${agentId}-session`, updatedAt: 1, label: agentId },
-        );
+        for (const rest of ["main", "global"]) {
+          const key = `agent:${agentId}:${rest}`;
+          await upsertSessionEntryCore(
+            { agentId, sessionKey: key, storePath: path.join(tempDir, `${agentId}.json`) },
+            { sessionId: `${agentId}-${rest}-session`, updatedAt: 1, label: key },
+          );
+        }
       }
       const scope = { cfg, sessionKey, agentId: requestedAgentId };
 
       expect(resolveSessionEntryAccessTarget(scope)).toMatchObject({
         agentId: "research",
         canonicalKey,
-        entry: { sessionId: "research-session", label: "research" },
+        requestedKey: sessionKey,
+        storeKey: canonicalKey,
+        entry: { sessionId, label: canonicalKey },
       });
       const updated = await updateResolvedSessionEntry(scope, (entry) => {
         entry.label = "updated research";
         return entry.sessionId;
       });
 
-      expect(updated).toMatchObject({ found: true, result: "research-session", canonicalKey });
+      expect(updated).toMatchObject({ found: true, result: sessionId, canonicalKey });
       expect(resolveSessionEntryAccessTarget(scope).entry?.label).toBe("updated research");
-      expect(
-        loadSessionEntry({
-          agentId: "ops",
-          sessionKey: global ? "global" : "agent:ops:main",
-          storePath: path.join(tempDir, "ops.json"),
-        })?.label,
-      ).toBe("ops");
+      for (const agentId of ["research", "ops"]) {
+        for (const rest of ["main", "global"]) {
+          const key = `agent:${agentId}:${rest}`;
+          expect(
+            loadSessionEntry({
+              agentId,
+              sessionKey: key,
+              storePath: path.join(tempDir, `${agentId}.json`),
+            }),
+          ).toMatchObject({
+            sessionId: `${agentId}-${rest}-session`,
+            label: key === canonicalKey ? "updated research" : key,
+          });
+        }
+      }
     },
   );
 
   it.each([
     { sessionKey: "agent:ops:main", storeOwner: undefined, message: 'belongs to "ops"' },
+    { sessionKey: "agent:main:main", storeOwner: undefined, message: 'belongs to "main"' },
     { sessionKey: "global", storeOwner: "ops", message: 'belongs to "ops"' },
     { sessionKey: "main", storeOwner: "retired", message: "retired" },
   ])(
@@ -1389,17 +1368,17 @@ describe("session accessor seam", () => {
 
   it.each(
     ["ops", "retired"].flatMap((storeOwner) =>
-      ["agent:research:main", "agent:main:main"].map((sessionKey) => ({ storeOwner, sessionKey })),
+      ["main", "global"].map((sessionKey) => ({ storeOwner, sessionKey })),
     ),
   )(
-    "preserves fixed global owner $storeOwner after canonicalizing $sessionKey",
+    "preserves fixed global owner $storeOwner when resolving bare $sessionKey",
     async ({ storeOwner, sessionKey }) => {
       const sharedStorePath = path.join(tempDir, "shared.sqlite");
       const storedScope = {
         agentId: storeOwner,
         defaultAgentId: storeOwner,
         storePath: sharedStorePath,
-        sessionKey: "global",
+        sessionKey: `agent:${storeOwner}:global`,
       };
       await upsertSessionEntryCore(storedScope, {
         sessionId: `${storeOwner}-session`,
@@ -1424,7 +1403,10 @@ describe("session accessor seam", () => {
           }),
         )
         .rejects.toThrow(expectedError);
-      expect(loadSessionEntry(storedScope)?.label).toBe("original owner label");
+      expect(loadSessionEntry(storedScope)).toMatchObject({
+        sessionId: `${storeOwner}-session`,
+        label: "original owner label",
+      });
     },
   );
 

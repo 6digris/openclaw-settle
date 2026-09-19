@@ -157,7 +157,6 @@ function resolveSessionsListDefaultsAgentId(
 }
 
 type RecordRow = ReturnType<SessionRowProjection["selectEntries"]>[number];
-const sentinel = (key: string) => key === "global" || key === "unknown";
 
 /** Preserve federation before caller visibility and activity filters. */
 export function prepareSessionRowSelection(
@@ -193,33 +192,16 @@ export function prepareSessionRowSelection(
             row.entry,
           )),
     );
-  const winners = new Map<string, RecordRow>();
-  const keyFor = (row: RecordRow) =>
-    sentinel(row.key) && opts.activeOnly ? JSON.stringify([row.key, row.agentId]) : row.key;
+  const byKey = new Map<string, RecordRow>();
   for (const row of rows) {
-    const key = keyFor(row);
-    const previous = winners.get(key);
-    if (previous && !sentinel(row.key)) {
+    if (byKey.has(row.key)) {
       throw canonicalSessionKeyMigrationRequiredError(
         `duplicate rows resolve to canonical session key ${row.key}`,
       );
     }
-    // Equal precedence retains the first resident row, as a stable sort would.
-    if (
-      !previous ||
-      selectedScope.paths.get(row.storeTarget.storePath)! <
-        selectedScope.paths.get(previous.storeTarget.storePath)!
-    ) {
-      winners.set(key, row);
-    }
+    byKey.set(row.key, row);
   }
-  const entries: SessionEntryPair[] = [];
-  for (const row of rows) {
-    const key = keyFor(row);
-    if (winners.get(key) === row) {
-      entries.push([key, row.entry]);
-    }
-  }
+  const entries: SessionEntryPair[] = rows.map((row) => [row.key, row.entry]);
   return {
     cfg,
     opts,
@@ -232,20 +214,10 @@ export function prepareSessionRowSelection(
     getTarget: (
       key: string,
     ):
-      | (RecordRow & {
-          storeKey?: string;
-          getModelFacts?: () => ReturnType<SessionRowProjection["modelFacts"]>;
-        })
+      | (RecordRow & { getModelFacts?: () => ReturnType<SessionRowProjection["modelFacts"]> })
       | undefined => {
-      const winner = winners.get(key);
-      if (!winner || (!opts.search && key === winner.key)) {
-        return winner;
-      }
-      return {
-        ...winner,
-        ...(key !== winner.key ? { storeKey: winner.key } : {}),
-        getModelFacts: () => projection.modelFacts(winner),
-      };
+      const row = byKey.get(key);
+      return row && opts.search ? { ...row, getModelFacts: () => projection.modelFacts(row) } : row;
     },
   };
 }
@@ -265,11 +237,12 @@ export function filterAndSortSessionEntries(params: SessionListFilterParams): Se
 export function prepareProjectedSessionList(params: {
   projection: SessionRowProjection;
   opts: SessionsListParams;
+  key?: string;
   context?: GatewayRequestContext;
   client?: GatewayClient | null;
   now: number;
 }) {
-  const { projection, opts, context, client, now } = params;
+  const { projection, opts, key: exactKey, context, client, now } = params;
   const presentation = prepareProjectedSessionPresentation(
     projection,
     client,
@@ -282,6 +255,7 @@ export function prepareProjectedSessionList(params: {
       : undefined,
   );
   const prepared = prepareSessionRowSelection(projection, opts, {
+    key: exactKey,
     now,
     rowContext: presentation.rowContext,
   });
@@ -316,12 +290,13 @@ export function prepareProjectedSessionList(params: {
 export async function listProjectedSessions(params: {
   projection: SessionRowProjection;
   opts: SessionsListParams;
+  key?: string;
   context?: GatewayRequestContext;
   client?: GatewayClient | null;
   diagnostics?: SessionListDiagnostics;
   onResult?: (result: SessionsListResult) => void;
 }): Promise<SessionsListResult> {
-  const { projection, opts, context, client, diagnostics } = params;
+  const { projection, opts, key: exactKey, context, client, diagnostics } = params;
   const dirtyRowCount = projection.dirtyRowCount;
   const materializedBefore = projection.materializedCount;
   diagnostics?.mark("materialize");
@@ -340,6 +315,7 @@ export async function listProjectedSessions(params: {
     const { presentation, prepared, filters } = prepareProjectedSessionList({
       projection,
       opts,
+      key: exactKey,
       context,
       client,
       now,
@@ -383,10 +359,6 @@ export async function listProjectedSessions(params: {
       }
       if ((record.materializedSequence ?? 0) > materializedBefore) {
         materializedRowCount++;
-      }
-      if (opts.activeOnly && sentinel(record.key)) {
-        delete row.childSessions;
-        delete row.hasActiveSubagentRun;
       }
       return [row];
     });

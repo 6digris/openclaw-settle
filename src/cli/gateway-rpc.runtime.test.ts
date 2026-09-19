@@ -2,7 +2,11 @@
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { withEnvAsync } from "../test-utils/env.js";
-import { addGatewayClientOptions } from "./gateway-rpc.js";
+import {
+  addGatewayClientOptions,
+  callGatewayFromCli,
+  callGatewayFromCliWithTransport,
+} from "./gateway-rpc.js";
 import type { GatewayRpcOpts } from "./gateway-rpc.types.js";
 
 const callGatewayMock = vi.fn(async () => ({ ok: true }));
@@ -60,6 +64,36 @@ describe("addGatewayClientOptions", () => {
 describe("callGatewayFromCliRuntime", () => {
   beforeEach(() => {
     callGatewayMock.mockClear().mockResolvedValue({ ok: true });
+  });
+
+  it.each([
+    { name: "public default", call: callGatewayFromCli, caps: undefined, expected: undefined },
+    {
+      name: "public opt-in",
+      call: callGatewayFromCli,
+      caps: ["canonical-session-keys"],
+      expected: ["canonical-session-keys"],
+    },
+    {
+      name: "internal default",
+      call: callGatewayFromCliWithTransport,
+      caps: undefined,
+      expected: ["canonical-session-keys"],
+    },
+    {
+      name: "internal additional capability",
+      call: callGatewayFromCliWithTransport,
+      caps: ["tool-events"],
+      expected: ["tool-events", "canonical-session-keys"],
+    },
+  ])("preserves capability selection for $name", async ({ call, caps, expected }) => {
+    await call("sessions.list", {}, { includeGlobal: true }, { caps });
+    expect(callGatewayMock).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        method: "sessions.list",
+        caps: expected,
+      }),
+    );
   });
 
   it.each(["sessions.send", "sessions.steer", "chat.send"])(

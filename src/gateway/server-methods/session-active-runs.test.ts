@@ -594,10 +594,10 @@ it("keeps projected bare runs agent-scoped", () => {
   }
 });
 
-it("resolves projected ownerless bare runs through the stable default owner", () => {
+it("resolves projected runs by qualified identity without a separate agent id", () => {
   registerAgentRunContext("projected-ownerless", {
     projectSessionActive: true,
-    sessionKey: "incident-42",
+    sessionKey: "agent:ops:incident-42",
     sessionId: "ownerless-id",
   });
   try {
@@ -606,7 +606,7 @@ it("resolves projected ownerless bare runs through the stable default owner", ()
       resolveVisibleActiveSessionRunState({
         context: {},
         requestedKey: "incident-42",
-        canonicalKey: "incident-42",
+        canonicalKey: "agent:ops:incident-42",
         sessionId: "ownerless-id",
         agentId: "ops",
         defaultAgentId: "ops",
@@ -617,7 +617,7 @@ it("resolves projected ownerless bare runs through the stable default owner", ()
       resolveVisibleActiveSessionRunState({
         context: {},
         requestedKey: "incident-42",
-        canonicalKey: "incident-42",
+        canonicalKey: "agent:research:incident-42",
         sessionId: "ownerless-id",
         agentId: "research",
         defaultAgentId: "ops",

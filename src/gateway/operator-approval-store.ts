@@ -23,6 +23,7 @@ import {
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
 import { normalizeSqliteNumber } from "../infra/sqlite-number.js";
+import { parseAgentSessionKey, resolveLegacySessionKeyCandidates } from "../routing/session-key.js";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
 import type {
   DB as OpenClawStateKyselyDatabase,
@@ -37,6 +38,11 @@ import {
   mintCronStandingGrantLocked,
   type CronStandingGrantMintSpec,
 } from "./operator-approval-standing-grants.js";
+import {
+  inputMatchesExistingRow,
+  normalizeApprovalAudience,
+  resolveApprovalSessionKey,
+} from "./operator-approval-store.identity.js";
 
 const OPERATOR_APPROVAL_TERMINAL_RETENTION_MS = 30 * 24 * 60 * 60_000;
 const OPERATOR_APPROVAL_RECEIPT_SUMMARY_MAX_ROWS = 128;
@@ -487,13 +493,19 @@ function decodeOperatorApprovalRow(row: OperatorApprovalRow): OperatorApprovalRe
     reviewerDeviceIds,
     source: {
       agentId: row.source_agent_id,
-      sessionKey: row.source_session_key,
+      sessionKey: resolveApprovalSessionKey(
+        { agentId: row.source_agent_id, sessionKey: row.source_session_key },
+        audienceSessionKeys,
+      ),
       sessionId: row.source_session_id,
       runId: row.source_run_id,
       toolCallId: row.source_tool_call_id,
       toolName: row.source_tool_name,
     },
-    audienceSessionKeys,
+    audienceSessionKeys: normalizeApprovalAudience(audienceSessionKeys, {
+      agentId: row.source_agent_id,
+      sessionKey: row.source_session_key,
+    }),
     runtimeEpoch: row.runtime_epoch,
     createdAtMs: row.created_at_ms,
     expiresAtMs: row.expires_at_ms,
@@ -1295,37 +1307,6 @@ function requireDecodedRecord(row: OperatorApprovalRow): OperatorApprovalRecord 
   return record;
 }
 
-function inputMatchesExistingRow(
-  input: NewOperatorApproval,
-  row: OperatorApprovalRow,
-  serialized: {
-    presentationJson: string;
-    reviewerDeviceIdsJson: string;
-    audienceSessionKeysJson: string;
-  },
-): boolean {
-  const source = input.source ?? {};
-  return (
-    row.status === "pending" &&
-    row.kind === input.kind &&
-    row.presentation_json === serialized.presentationJson &&
-    row.requested_by_device_id === normalizeNullableString(input.requester?.deviceId) &&
-    row.requested_by_client_id === normalizeNullableString(input.requester?.clientId) &&
-    row.requested_by_device_token_auth === (input.requester?.deviceTokenAuth === true ? 1 : 0) &&
-    row.reviewer_device_ids_json === serialized.reviewerDeviceIdsJson &&
-    row.source_agent_id === normalizeNullableString(source.agentId) &&
-    row.source_session_key === normalizeNullableString(source.sessionKey) &&
-    row.source_session_id === normalizeNullableString(source.sessionId) &&
-    row.source_run_id === normalizeNullableString(source.runId) &&
-    row.source_tool_call_id === normalizeNullableString(source.toolCallId) &&
-    row.source_tool_name === normalizeNullableString(source.toolName) &&
-    row.audience_session_keys_json === serialized.audienceSessionKeysJson &&
-    row.runtime_epoch === input.runtimeEpoch.trim() &&
-    row.created_at_ms === input.createdAtMs &&
-    row.expires_at_ms === input.expiresAtMs
-  );
-}
-
 export function insertOperatorApproval(params: {
   approval: NewOperatorApproval;
   databaseOptions?: OpenClawStateDatabaseOptions;
@@ -1350,7 +1331,10 @@ export function insertOperatorApproval(params: {
   const reviewerDeviceIdsJson = JSON.stringify(
     normalizeUniqueTrimmedStringList(input.reviewerDeviceIds),
   );
-  const audienceSessionKeys = normalizeUniqueTrimmedStringList(input.audienceSessionKeys);
+  const audienceSessionKeys = normalizeApprovalAudience(
+    input.audienceSessionKeys,
+    input.source ?? {},
+  );
   if (audienceSessionKeys.length > OPERATOR_APPROVAL_MAX_AUDIENCE_SESSION_KEYS) {
     throw new Error(
       `operator approval audience exceeds ${OPERATOR_APPROVAL_MAX_AUDIENCE_SESSION_KEYS} sessions`,
@@ -1393,7 +1377,7 @@ export function insertOperatorApproval(params: {
           requested_by_device_token_auth: input.requester?.deviceTokenAuth === true ? 1 : 0,
           reviewer_device_ids_json: reviewerDeviceIdsJson,
           source_agent_id: normalizeNullableString(source.agentId),
-          source_session_key: normalizeNullableString(source.sessionKey),
+          source_session_key: resolveApprovalSessionKey(source, input.audienceSessionKeys),
           source_session_id: normalizeNullableString(source.sessionId),
           source_run_id: normalizeNullableString(source.runId),
           source_tool_call_id: normalizeNullableString(source.toolCallId),
@@ -1442,7 +1426,7 @@ export function insertOperatorApproval(params: {
       }
       return { outcome: "inserted", record };
     }
-    if (!inputMatchesExistingRow(input, row, serialized)) {
+    if (!inputMatchesExistingRow(input, row, record, serialized)) {
       return { outcome: "conflict" };
     }
     if (executionIdentityBinding) {
@@ -1521,8 +1505,11 @@ export function listPendingOperatorApprovals(
       params.audienceSessionKey === undefined
         ? undefined
         : requireString(params.audienceSessionKey, "operator approval audience session key");
+    const sourceAgentId = parseAgentSessionKey(params.sourceSessionKey)?.agentId;
     const requiresPostFilter =
-      audienceSessionKey !== undefined || params.recordFilter !== undefined;
+      sourceAgentId !== undefined ||
+      audienceSessionKey !== undefined ||
+      params.recordFilter !== undefined;
     const records: OperatorApprovalRecord[] = [];
     let cursor: { createdAtMs: number; id: string } | undefined;
     // Audience and reviewer bindings live in validated bounded JSON. Keyset-scan
@@ -1540,7 +1527,21 @@ export function listPendingOperatorApprovals(
         query = query.where("kind", "=", params.kind);
       }
       if (params.sourceSessionKey) {
-        query = query.where("source_session_key", "=", params.sourceSessionKey);
+        const sessionKey = params.sourceSessionKey;
+        query = query.where((eb) =>
+          sourceAgentId
+            ? eb.or([
+                eb("source_session_key", "=", sessionKey),
+                eb.and([
+                  eb("source_agent_id", "=", sourceAgentId),
+                  eb("source_session_key", "in", [
+                    ...resolveLegacySessionKeyCandidates({ agentId: sourceAgentId, sessionKey }),
+                    "main",
+                  ]),
+                ]),
+              ])
+            : eb("source_session_key", "=", sessionKey),
+        );
       }
       if (cursor) {
         const pageCursor = cursor;
@@ -1568,7 +1569,13 @@ export function listPendingOperatorApprovals(
         }
         const matchesAudience =
           !audienceSessionKey || record.audienceSessionKeys.includes(audienceSessionKey);
-        if (matchesAudience && (!params.recordFilter || params.recordFilter(record))) {
+        const matchesSource =
+          !sourceAgentId || record.source.sessionKey === params.sourceSessionKey;
+        if (
+          matchesSource &&
+          matchesAudience &&
+          (!params.recordFilter || params.recordFilter(record))
+        ) {
           records.push(record);
           if (records.length === resultLimit) {
             break;
@@ -1886,39 +1893,27 @@ export function expireDueOperatorApprovals(params: {
     if (dueRows.length === 0) {
       return { affected: 0, records: [] };
     }
+    const terminal = {
+      status: "expired",
+      decision: "deny",
+      terminal_reason: "timeout",
+      resolved_at_ms: nowMs,
+      resolver_kind: "system",
+      resolver_id: null,
+      updated_at_ms: nowMs,
+    };
     const result = executeSqliteQuerySync(
       database.db,
       stateDb
         .updateTable("operator_approvals")
-        .set({
-          status: "expired",
-          decision: "deny",
-          terminal_reason: "timeout",
-          resolved_at_ms: nowMs,
-          resolver_kind: "system",
-          resolver_id: null,
-          updated_at_ms: nowMs,
-        })
+        .set(terminal)
         .where("status", "=", "pending")
         .where("expires_at_ms", "<=", nowMs),
     );
-    const terminalRows: OperatorApprovalRow[] = [];
-    for (const row of dueRows) {
-      terminalRows.push({
-        ...row,
-        status: "expired",
-        decision: "deny",
-        terminal_reason: "timeout",
-        resolved_at_ms: nowMs,
-        resolver_kind: "system",
-        resolver_id: null,
-        updated_at_ms: nowMs,
-      });
-    }
     return {
       affected: Number(result.numAffectedRows ?? 0n),
-      records: terminalRows
-        .map((row) => decodeOperatorApprovalRow(row))
+      records: dueRows
+        .map((row) => decodeOperatorApprovalRow({ ...row, ...terminal }))
         .filter((record): record is OperatorApprovalRecord => record !== null),
     };
   }, params.databaseOptions);

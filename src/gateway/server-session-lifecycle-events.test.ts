@@ -11,7 +11,6 @@ import {
   createActiveRun,
   createGatewayBroadcaster,
   createLifecycleEventBroadcastHandler,
-  expectPrivateSessionInvalidation,
   fixedStoreRuntimeConfig,
   loadGatewaySessionEntryReadOnlyMock,
   loadGatewaySessionRowMock,
@@ -163,6 +162,7 @@ describe("createLifecycleEventBroadcastHandler", () => {
     await handler({
       sessionKey: "agent:main:main",
       reason: "swarm-note",
+      parentSessionKey: "global",
       swarmGroupId: "swarm:agent:main:main:run-1",
       kind,
       text: "Research",
@@ -174,9 +174,10 @@ describe("createLifecycleEventBroadcastHandler", () => {
         swarmGroupId: "swarm:agent:main:main:run-1",
         kind,
         text: "Research",
+        parentSessionKey: "agent:main:global",
       }),
       new Set(["conn-1"]),
-      { dropIfSlow: true },
+      { agentId: "main", sessionKeys: ["agent:main:main"], dropIfSlow: true },
     );
   });
 
@@ -211,17 +212,17 @@ describe("createLifecycleEventBroadcastHandler", () => {
   });
 
   it.each([
-    { name: "projects configured persisted state without publishing its goal" },
+    { name: "resolves the persisted owner before publishing state and goal" },
     { name: "publishes active state and goal for the explicit owner", agentId: "ops" },
   ])("$name through capacity transitions without a refresh", async ({ agentId }) => {
     runtimeConfigState.value = fixedStoreRuntimeConfig("ops", ["ops", "research"]);
-    sessionRow.key = "global";
+    sessionRow.key = "agent:ops:global";
     const goal = { ...ownerGoal };
     loadGatewaySessionRowMock.mockReturnValue({ ...sessionRow, goal });
     const activeRun = {
       ...createActiveRun(true),
       agentId: "ops",
-      sessionKey: "global",
+      sessionKey: "agent:ops:global",
     };
     const broadcastToConnIds = vi.fn();
     const handler = createLifecycleEventBroadcastHandler({
@@ -232,27 +233,21 @@ describe("createLifecycleEventBroadcastHandler", () => {
 
     await handler({ sessionKey: "global", ...(agentId ? { agentId } : {}), reason: "updated" });
 
-    expect(loadGatewaySessionRowMock).toHaveBeenCalledWith("global", { agentId: "ops" });
+    expect(loadGatewaySessionRowMock).toHaveBeenCalledWith("agent:ops:global", { agentId: "ops" });
     expect(broadcastToConnIds).toHaveBeenCalledWith(
       "sessions.changed",
       expect.objectContaining({
-        sessionKey: "global",
+        sessionKey: "agent:ops:global",
         hasActiveRun: true,
         activeRunIds: ["run-before-finalize"],
       }),
       new Set(["conn-1"]),
-      { dropIfSlow: true },
+      { agentId: "ops", sessionKeys: ["agent:ops:global"], dropIfSlow: true },
     );
     const payload = broadcastToConnIds.mock.calls[0]?.[1];
-    if (agentId) {
-      expect(payload).toMatchObject({ agentId: "ops", goal });
-    } else {
-      expect(payload).not.toHaveProperty("agentId");
-      expect(payload).not.toHaveProperty("goal");
-      expect(payload).not.toHaveProperty("session.goal");
-    }
+    expect(payload).toMatchObject({ agentId: "ops", goal, session: { goal } });
     const runId = "run-before-finalize";
-    registerAgentRunContext(runId, { sessionKey: "global", agentId: "ops" });
+    registerAgentRunContext(runId, { sessionKey: "agent:ops:global", agentId: "ops" });
     const publications: Promise<void>[] = [];
     const unsubscribe = onSessionLifecycleEvent((event) => {
       publications.push(handler(event));
@@ -279,8 +274,9 @@ describe("createLifecycleEventBroadcastHandler", () => {
     }
   });
 
-  it("publishes only a private invalidation for a retired fixed-store lifecycle owner", async () => {
+  it("keeps a retired fixed-store lifecycle owner in its canonical namespace", async () => {
     runtimeConfigState.value = fixedStoreRuntimeConfig("ops", ["research"]);
+    loadGatewaySessionRowMock.mockReturnValue(null);
     const broadcastToConnIds = vi.fn();
     const handler = createLifecycleEventBroadcastHandler({
       broadcastToConnIds,
@@ -290,10 +286,15 @@ describe("createLifecycleEventBroadcastHandler", () => {
 
     await handler({ sessionKey: "global", reason: "patch", catalogChanged: true });
 
-    expect(loadGatewaySessionRowMock).not.toHaveBeenCalled();
+    expect(loadGatewaySessionRowMock).toHaveBeenCalledWith("agent:ops:global", { agentId: "ops" });
     expect(broadcastToConnIds).toHaveBeenCalledWith(
       "sessions.changed",
-      expect.objectContaining({ sessionKey: "global", reason: "patch", catalogChanged: true }),
+      expect.objectContaining({
+        sessionKey: "agent:ops:global",
+        agentId: "ops",
+        reason: "patch",
+        catalogChanged: true,
+      }),
       new Set(["conn-events"]),
       {
         agentId: "ops",
@@ -301,6 +302,6 @@ describe("createLifecycleEventBroadcastHandler", () => {
         sessionKeys: ["agent:ops:global"],
       },
     );
-    expectPrivateSessionInvalidation(broadcastToConnIds.mock.calls[0]?.[1]);
+    expect(broadcastToConnIds.mock.calls[0]?.[1]).not.toHaveProperty("session");
   });
 });

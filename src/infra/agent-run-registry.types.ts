@@ -11,8 +11,9 @@ export type AgentRunModel = { provider: string; model: string };
 export type AgentRunContext = {
   /** Queued reply delivery, rather than runtime execution, owns chat completion. */
   completionSource?: "reply-dispatch";
+  /** Canonical agent-qualified identity, absent for sessionless work. */
   sessionKey?: string;
-  /** Resolved agent owner, including for unscoped session keys. */
+  /** Resolved owner; registration qualifies legacy aliases before publishing. */
   agentId?: string;
   /** Owning run's sessionId; stamped onto lifecycle events. */
   sessionId?: string;
@@ -77,6 +78,5 @@ export type ProjectedAgentRunIndex = {
   modelsBySessionId: ReadonlyMap<string, AgentRunModel | null>;
   sessionKeys: ReadonlyMap<string, ProjectedAgentRunState>;
   sessionIds: ReadonlyMap<string, ProjectedAgentRunState>;
-  ownerlessSessionKeys: ReadonlyMap<string, ProjectedAgentRunState>;
   ownerlessSessionIds: ReadonlyMap<string, ProjectedAgentRunState>;
 };

@@ -47,12 +47,9 @@ type ConfigSnapshotStub = {
 const tryRouteCliMock = vi.hoisted(() => vi.fn());
 const loadDotEnvMock = vi.hoisted(() => vi.fn());
 const dotenvModuleImportState = vi.hoisted(() => ({ count: 0 }));
-const existsSyncOverride = vi.hoisted(
-  () =>
-    ({ value: undefined }) as {
-      value: ((target: string) => boolean) | undefined;
-    },
-);
+const existsSyncOverride = vi.hoisted<{
+  value: ((target: string) => boolean) | undefined;
+}>(() => ({ value: undefined }));
 const normalizeEnvMock = vi.hoisted(() => vi.fn());
 const pinConfigDirMock = vi.hoisted(() => vi.fn());
 const pinRuntimePathsMock = vi.hoisted(() => vi.fn());
@@ -241,7 +238,8 @@ vi.mock("../daemon/launchd.js", () => ({
   parkCurrentLaunchAgentForMaintenance: parkCurrentLaunchAgentForMaintenanceMock,
 }));
 
-vi.mock("./command-execution-startup.js", () => ({
+vi.mock("./command-execution-startup.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./command-execution-startup.js")>()),
   ensureCliExecutionBootstrap: ensureCliExecutionBootstrapMock,
 }));
 

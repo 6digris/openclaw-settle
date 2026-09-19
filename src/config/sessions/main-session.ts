@@ -5,17 +5,19 @@ import {
 } from "../../agents/agent-scope-config.js";
 // Main-session keys normalize configured agents and legacy aliases into store keys.
 import {
-  buildAgentMainSessionKey,
-  normalizeAgentId,
   normalizeMainKey,
+  classifySessionKeyShape,
+  normalizeAgentId,
+  isUnscopedSessionKeySentinel,
+  parseAgentSessionKey,
   resolveAgentIdFromSessionKey,
+  toAgentStoreSessionKey,
 } from "../../routing/session-key.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { resolveCanonicalMainSessionKey } from "./main-session-key.js";
 import { resolvePersistedSessionStoreOwnerForKey } from "./session-store-owner.js";
 import type { SessionScope } from "./types.js";
 
-const FALLBACK_DEFAULT_AGENT_ID = "main";
 export const SESSION_ROUTING_CHANGED_ERROR_REASON = "session-routing-changed";
 
 /** Resolves the configured main session key, honoring global session scope. */
@@ -54,8 +56,8 @@ export function resolveSystemMainSessionKey(cfg: OpenClawConfig): string {
 /** Stable fingerprint for the config values that canonicalize chat session keys. */
 export function resolveSessionRoutingContract(cfg: OpenClawConfig): string {
   const scope = cfg?.session?.scope ?? "per-sender";
-  // Global keys carry no agent namespace, so their durable fixed-store owner is
-  // part of the routing contract; otherwise stale clients can target a changed row.
+  // Legacy global aliases still use the fixed-store owner at ingress; stale
+  // clients must not resolve that alias to a changed conversation.
   const persistedOwner =
     scope === "global"
       ? resolvePersistedSessionStoreOwnerForKey(cfg, "global")
@@ -74,12 +76,13 @@ export { resolveAgentIdFromSessionKey };
 
 /** Resolves the main session key for one explicit agent. */
 export function resolveAgentMainSessionKey(params: {
-  cfg?: { session?: { mainKey?: string } };
+  cfg?: { session?: { scope?: SessionScope; mainKey?: string } };
   agentId: string;
 }): string {
-  return buildAgentMainSessionKey({
+  return resolveCanonicalMainSessionKey({
     agentId: params.agentId,
     mainKey: params.cfg?.session?.mainKey,
+    sessionScope: params.cfg?.session?.scope,
   });
 }
 
@@ -105,44 +108,41 @@ export function canonicalizeMainSessionAlias(params: {
   if (!raw) {
     return raw;
   }
-
-  const mainKey = normalizeMainKey(params.cfg?.session?.mainKey);
-  // Ordinary session keys cannot match a main alias; avoid constructing all four aliases.
+  if (classifySessionKeyShape(raw) === "malformed_agent") {
+    throw new Error("Malformed agent session key; refusing alias resolution.");
+  }
+  const parsed = parseAgentSessionKey(raw);
+  if (parsed) {
+    return `agent:${parsed.agentId}:${parsed.rest}`;
+  }
+  const alias = normalizeMainKey(raw);
   if (
-    raw !== "main" &&
-    raw !== mainKey &&
-    !raw.endsWith(":main") &&
-    !(raw.endsWith(mainKey) && raw[raw.length - mainKey.length - 1] === ":")
+    !isUnscopedSessionKeySentinel(alias) &&
+    (alias === "main" || alias === normalizeMainKey(params.cfg?.session?.mainKey))
   ) {
+    return resolveAgentMainSessionKey(params);
+  }
+  return toAgentStoreSessionKey({ agentId: params.agentId, requestKey: raw });
+}
+
+/** Published SDK selector semantics; Gateway ingress admits the selected owner separately. */
+export function canonicalizeLegacyMainSessionAlias(
+  params: Parameters<typeof canonicalizeMainSessionAlias>[0],
+): string {
+  const raw = params.sessionKey.trim();
+  if (!raw) {
     return raw;
   }
   const agentId = normalizeAgentId(params.agentId);
-  const agentMainSessionKey = buildAgentMainSessionKey({ agentId, mainKey });
-  const agentMainAliasKey = buildAgentMainSessionKey({ agentId, mainKey: "main" });
-
-  // Also recognize legacy keys built with the hardcoded DEFAULT_AGENT_ID ("main")
-  // when the configured agent differs. resolveSessionKey() historically used
-  // DEFAULT_AGENT_ID="main" for all write paths, producing "agent:main:<mainKey>"
-  // even when the configured agent is e.g. "ops". See #29683.
-  const legacyMainKey = buildAgentMainSessionKey({ agentId: FALLBACK_DEFAULT_AGENT_ID, mainKey });
-  const legacyMainAliasKey = buildAgentMainSessionKey({
-    agentId: FALLBACK_DEFAULT_AGENT_ID,
-    mainKey: "main",
-  });
-
-  const isMainAlias =
-    raw === "main" ||
-    raw === mainKey ||
-    raw === agentMainSessionKey ||
-    raw === agentMainAliasKey ||
-    raw === legacyMainKey ||
-    raw === legacyMainAliasKey;
-
-  if (params.cfg?.session?.scope === "global" && isMainAlias) {
-    return "global";
-  }
-  if (isMainAlias) {
-    return agentMainSessionKey;
-  }
-  return raw;
+  const mainKey = normalizeMainKey(params.cfg?.session?.mainKey);
+  const mainSessionKey = `agent:${agentId}:${mainKey}`;
+  const isMainAlias = [
+    "main",
+    mainKey,
+    mainSessionKey,
+    `agent:${agentId}:main`,
+    `agent:main:${mainKey}`,
+    "agent:main:main",
+  ].includes(raw);
+  return isMainAlias ? (params.cfg?.session?.scope === "global" ? "global" : mainSessionKey) : raw;
 }

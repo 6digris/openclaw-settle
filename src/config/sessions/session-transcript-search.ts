@@ -132,6 +132,9 @@ export function searchSessionTranscripts(params: {
   if (query.length > SEARCH_QUERY_MAX_CHARS) {
     throw new Error(`query must not exceed ${SEARCH_QUERY_MAX_CHARS} characters`);
   }
+  if (params.sessionKeys?.length === 0) {
+    return { hits: [], indexing: false, truncated: false };
+  }
   const scope = resolveSqliteReadScope(params);
   const databaseOptions = toDatabaseOptions(scope);
   const result = withOpenClawAgentDatabaseReadOnly(
@@ -146,8 +149,7 @@ export function searchSessionTranscripts(params: {
           const indexing =
             hasDirtySessions || isSessionTranscriptIndexReconcileRunning(databaseOptions);
           const limit = Math.min(Math.max(1, params.limit ?? 10), SEARCH_LIMIT_MAX);
-          // Shared databases hold multiple logical agents. Filter before LIMIT;
-          // reserved global/unknown sentinels retain their store-wide scope.
+          // Shared databases hold multiple logical agents. Filter before LIMIT.
           const sessionFilterValues = params.sessionKeys ?? [
             toAgentStoreSessionKey({ agentId: scope.agentId, requestKey: "*" }),
           ];
@@ -161,17 +163,14 @@ export function searchSessionTranscripts(params: {
                 .innerJoin("session_windows as window", "window.session_id", "cold.session_id")
                 .select((eb) => eb.fn.countAll<number>().as("count"))
                 .$if(params.sessionKeys === undefined, (builder) =>
-                  builder.where((eb) =>
-                    eb.or([
+                  builder.where(
+                    (eb) =>
                       /* kysely-allow-raw: GLOB preserves literal underscores in SQLite agent namespaces. */
                       sql<boolean>`${eb.ref("window.session_key")} GLOB ${sessionFilterValues[0]}`,
-                      eb("window.session_key", "in", ["global", "unknown"]),
-                    ]),
                   ),
                 )
-                .$if(
-                  params.sessionKeys !== undefined && sessionFilterValues.length > 0,
-                  (builder) => builder.where("window.session_key", "in", sessionKeySet),
+                .$if(params.sessionKeys !== undefined, (builder) =>
+                  builder.where("window.session_key", "in", sessionKeySet),
                 )
                 .$if(params.sessionId !== undefined, (builder) =>
                   builder.where("window.session_id", "=", params.sessionId!),
@@ -208,15 +207,13 @@ export function searchSessionTranscripts(params: {
                 sql<boolean>`session_transcript_fts MATCH ${toFtsQuery(query)}`,
               )
               .$if(params.sessionKeys === undefined, (builder) =>
-                builder.where((eb) =>
-                  eb.or([
+                builder.where(
+                  (eb) =>
                     /* kysely-allow-raw: GLOB preserves literal underscores in SQLite agent namespaces. */
                     sql<boolean>`${eb.ref("session_windows.session_key")} GLOB ${sessionFilterValues[0]}`,
-                    eb("session_windows.session_key", "in", ["global", "unknown"]),
-                  ]),
                 ),
               )
-              .$if(params.sessionKeys !== undefined && sessionFilterValues.length > 0, (builder) =>
+              .$if(params.sessionKeys !== undefined, (builder) =>
                 builder.where("session_windows.session_key", "in", sessionKeySet),
               )
               .$if(Boolean(params.sessionId), (builder) =>

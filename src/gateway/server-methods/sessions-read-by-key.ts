@@ -1,5 +1,8 @@
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { validateSessionsDescribeParams } from "../../../packages/gateway-protocol/src/index.js";
+import {
+  ErrorCodes,
+  errorShape,
+  validateSessionsDescribeParams,
+} from "../../../packages/gateway-protocol/src/index.js";
 import { hasOperatorBoundary } from "../operator-role-policy.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { prepareProjectedSessionPresentation } from "../session-row-presentation.js";
@@ -86,17 +89,18 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
     if (!key) {
       return;
     }
+    const agentId = p.agentId;
+    if (agentId !== undefined && typeof agentId !== "string") {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "agentId must be a string"));
+      return;
+    }
     const limit =
       typeof p.limit === "number" && Number.isFinite(p.limit)
         ? Math.max(1, Math.floor(p.limit))
         : 200;
 
     const cfg = context.getRuntimeConfig();
-    const requestedAgent = resolveRequestedSessionAgentId(
-      cfg,
-      key,
-      normalizeOptionalString(p.agentId),
-    );
+    const requestedAgent = resolveRequestedSessionAgentId(cfg, key, agentId);
     if (!requestedAgent.ok) {
       respond(false, undefined, requestedAgent.error);
       return;
@@ -129,11 +133,7 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
       },
     );
     const currentCfg = context.getRuntimeConfig();
-    const currentRequestedAgent = resolveRequestedSessionAgentId(
-      currentCfg,
-      key,
-      normalizeOptionalString(p.agentId),
-    );
+    const currentRequestedAgent = resolveRequestedSessionAgentId(currentCfg, key, agentId);
     const current = currentRequestedAgent.ok
       ? loadSessionEntriesForTarget({
           key,

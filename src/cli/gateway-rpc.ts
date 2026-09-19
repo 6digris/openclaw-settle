@@ -1,8 +1,9 @@
 // Lazy gateway RPC facade and shared Commander options for CLI subcommands.
 import type { Command } from "commander";
-import type {
-  GatewayClientMode,
-  GatewayClientName,
+import {
+  GATEWAY_CLIENT_CAPS,
+  type GatewayClientMode,
+  type GatewayClientName,
 } from "../../packages/gateway-protocol/src/client-info.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { OperatorScope } from "../gateway/operator-scopes.js";
@@ -69,6 +70,7 @@ export async function callGatewayFromCli(
   extra?: {
     clientName?: GatewayClientName;
     mode?: GatewayClientMode;
+    caps?: string[];
     deviceIdentity?: DeviceIdentity | null;
     signal?: AbortSignal;
     expectFinal?: boolean;
@@ -77,7 +79,8 @@ export async function callGatewayFromCli(
     sharedStateMode?: "read-only";
   },
 ) {
-  return await callGatewayFromCliWithTransport(method, opts, params, extra);
+  const runtime = await loadGatewayRpcRuntime();
+  return await runtime.callGatewayFromCliRuntime(method, opts, params, extra);
 }
 
 /** Resolve whether CLI Gateway options select the implicit local Gateway. */
@@ -121,5 +124,8 @@ export async function callGatewayFromCliWithTransport<T = Record<string, unknown
   extra?: Parameters<GatewayRpcRuntimeModule["callGatewayFromCliRuntime"]>[3],
 ) {
   const runtime = await loadGatewayRpcRuntime();
-  return await runtime.callGatewayFromCliRuntime<T>(method, opts, params, extra);
+  return await runtime.callGatewayFromCliRuntime<T>(method, opts, params, {
+    ...extra,
+    caps: [...(extra?.caps ?? []), GATEWAY_CLIENT_CAPS.CANONICAL_SESSION_KEYS],
+  });
 }

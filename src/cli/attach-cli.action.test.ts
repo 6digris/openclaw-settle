@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { Command } from "commander";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { SessionsResolveResult } from "../../packages/gateway-protocol/src/index.js";
+import type { HelloOk, SessionsResolveResult } from "../../packages/gateway-protocol/src/index.js";
 
 const spawnedChild = Object.assign(new EventEmitter(), { kill: vi.fn() });
 vi.mock("node:child_process", () => ({ spawn: vi.fn(() => spawnedChild) }));
@@ -10,10 +10,12 @@ const gatewayCalls: Array<{
   method: string;
   params: Record<string, unknown>;
   mode?: string;
+  caps?: string[];
   url?: string;
   token?: string;
   useStoredDeviceAuth?: boolean;
   requiredStoredDeviceAuthScopes?: string[];
+  requiredCapabilities?: string[];
   hasDeviceIdentityKey: boolean;
 }> = [];
 
@@ -30,29 +32,87 @@ vi.mock("../gateway/call.js", () => ({
       method: string;
       params: Record<string, unknown>;
       mode?: string;
+      caps?: string[];
       url?: string;
       token?: string;
       useStoredDeviceAuth?: boolean;
       requiredStoredDeviceAuthScopes?: string[];
+      requiredCapabilities?: string[];
+      onHelloOk?: (hello: HelloOk) => void;
     }) => {
+      const dialect =
+        p.method === "attach.grant" ? (grantDialect ?? sessionDialect) : sessionDialect;
+      const capabilities = dialect === "canonical" ? ["canonical-session-keys"] : [];
+      p.onHelloOk?.({
+        type: "hello-ok",
+        protocol: 4,
+        server: { version: "test", connId: "attach-test" },
+        features: { methods: [], events: [], capabilities },
+        auth: { role: "operator", scopes: ["operator.read", "operator.admin"] },
+        snapshot: {
+          presence: [],
+          health: {},
+          stateVersion: { presence: 0, health: 0 },
+          uptimeMs: 0,
+        },
+        policy: { maxPayload: 1024, maxBufferedBytes: 1024, tickIntervalMs: 1000 },
+      });
+      if (p.requiredCapabilities?.some((capability) => !capabilities.includes(capability))) {
+        throw new Error("Gateway is missing required capability: canonical-session-keys");
+      }
       gatewayCalls.push({
         method: p.method,
         params: gatewayParams(p.params),
         mode: p.mode,
+        caps: p.caps,
         url: p.url,
         token: p.token,
         useStoredDeviceAuth: p.useStoredDeviceAuth,
         requiredStoredDeviceAuthScopes: p.requiredStoredDeviceAuthScopes,
+        requiredCapabilities: p.requiredCapabilities,
         hasDeviceIdentityKey: "deviceIdentity" in p,
       });
       if (p.method === "sessions.resolve") {
-        return { ok: true, key: "agent:ops:thread:resolved" };
+        if (sessionResolveResult) {
+          return sessionResolveResult;
+        }
+        return p.params.key === "global"
+          ? { ok: true, key: "global", agentId: "ops" }
+          : { ok: true, key: "agent:ops:thread:resolved", agentId: "ops" };
       }
       if (p.method === "agents.list") {
-        return { defaultId: "main", mainKey: "main", scope: "global", agents: [] };
+        return { defaultId: "ops", mainKey: "main", scope: sessionScope, agents: [] };
+      }
+      if (p.method === "chat.history") {
+        const key = String(p.params.sessionKey);
+        const owner =
+          typeof p.params.agentId === "string" ? p.params.agentId : key.split(":")[1] || "ops";
+        if (key === "global" && fixedStoreOwner && owner !== fixedStoreOwner) {
+          throw new Error(`agent "${owner}" does not match session key agent "${fixedStoreOwner}"`);
+        }
+        const mainKey = sessionScope === "global" ? "global" : `agent:${owner}:main`;
+        const selected = key === "main" ? mainKey : key;
+        const observed =
+          (key.endsWith(":main") && sessionHistoryKey) ||
+          (sessionDialect === "canonical" && !selected.startsWith("agent:")
+            ? `agent:${owner}:${selected}`
+            : selected);
+        return {
+          sessionId: sessionHistoryRows[observed],
+          sessionInfo: { key: observed, agentId: owner },
+        };
       }
       if (p.method === "attach.grant") {
-        const sessionKey = (p.params.sessionKey as string) ?? "agent:main:main";
+        if (grantResponse !== undefined) {
+          return grantResponse;
+        }
+        const requestedKey = (p.params.sessionKey as string) ?? "agent:main:main";
+        const sessionKey =
+          grantedSessionKey ??
+          ((requestedKey === "global" || requestedKey === "unknown") &&
+          typeof p.params.agentId === "string"
+            ? `agent:${p.params.agentId}:${requestedKey}`
+            : requestedKey);
         return {
           sessionKey,
           token: "tok-123",
@@ -69,12 +129,26 @@ vi.mock("../gateway/call.js", () => ({
           env: { OPENCLAW_MCP_TOKEN: "tok-123" },
         };
       }
+      if (p.method === "attach.revoke" && revokeFailure) {
+        throw new Error("synthetic revoke failure");
+      }
       return {};
     },
   ),
   GatewayStoredDeviceAuthUnavailableError: class extends Error {},
   GatewayTransportError: class extends Error {},
 }));
+
+let sessionResolveResult: SessionsResolveResult | undefined;
+let sessionHistoryKey: string | undefined;
+let sessionDialect: "canonical" | "legacy";
+let sessionScope: "global" | "per-sender";
+let sessionHistoryRows: Record<string, string>;
+let fixedStoreOwner: string | undefined;
+let grantDialect: "canonical" | "legacy" | undefined;
+let grantResponse: unknown;
+let revokeFailure: boolean;
+let grantedSessionKey: string | undefined;
 
 const logs: string[] = [];
 let exitCode: number | undefined;
@@ -105,6 +179,16 @@ const tick = () =>
 describe("openclaw attach (action)", () => {
   beforeEach(() => {
     gatewayCalls.length = 0;
+    sessionResolveResult = undefined;
+    sessionHistoryKey = undefined;
+    sessionDialect = "canonical";
+    sessionScope = "global";
+    sessionHistoryRows = {};
+    fixedStoreOwner = undefined;
+    grantDialect = undefined;
+    grantResponse = undefined;
+    revokeFailure = false;
+    grantedSessionKey = undefined;
     logs.length = 0;
     exitCode = undefined;
     spawnedChild.removeAllListeners();
@@ -249,6 +333,37 @@ describe("openclaw attach (action)", () => {
     expect(out).not.toContain("attach.revoke");
   });
 
+  it("attaches a canonical exact session without probing another fixed-store owner", async () => {
+    fixedStoreOwner = "ops";
+    await runAttach("--session", "agent:research:main", "--print-config");
+    expect(gatewayCalls.find((call) => call.method === "attach.grant")?.params).toMatchObject({
+      sessionKey: "agent:research:main",
+      agentId: "research",
+    });
+    expect(
+      gatewayCalls
+        .filter((call) => call.method === "chat.history")
+        .every((call) => call.params.sessionKey === "agent:research:main"),
+    ).toBe(true);
+  });
+
+  it("requires canonical support on the actual grant connection after a peer downgrade", async () => {
+    grantDialect = "legacy";
+    const { spawn } = await import("node:child_process");
+    const spawnCount = vi.mocked(spawn).mock.calls.length;
+    try {
+      await expect(runAttach("--session", "agent:research:main")).rejects.toThrow(
+        "missing required capability",
+      );
+      expect(gatewayCalls.some((call) => call.method === "attach.grant")).toBe(false);
+      expect(vi.mocked(spawn).mock.calls.length).toBe(spawnCount);
+    } finally {
+      spawnedChild.emit("exit", 0, null);
+      await tick();
+      await tick();
+    }
+  });
+
   it("calls attach.grant in CLI mode with an auto-resolved device identity (operator.admin regression guard)", async () => {
     // Regression guard: attach.grant is operator.admin-scoped. mode BACKEND or an explicit
     // deviceIdentity:null drops the operator device identity → the gateway rejects with
@@ -292,6 +407,7 @@ describe("openclaw attach (action)", () => {
       "--print-config",
     );
 
+    expect(gatewayCalls.every((call) => call.caps?.includes("canonical-session-keys"))).toBe(true);
     expect(gatewayCalls.find((call) => call.method === "agents.list")).toMatchObject({
       url: "wss://gateway.example/base",
       token: "explicit-token",
@@ -304,9 +420,220 @@ describe("openclaw attach (action)", () => {
       token: "explicit-token",
       useStoredDeviceAuth: true,
       requiredStoredDeviceAuthScopes: ["operator.admin"],
-      params: { sessionKey: "global", agentId: "ops" },
+      params: { sessionKey: "agent:ops:global", agentId: "ops" },
     });
   });
+
+  it.each([
+    {
+      target: "https://gateway.example/dashboard/ops/movies-a1166b81",
+      key: "agent:ops:global",
+      agentId: "ops",
+    },
+    {
+      target: "https://gateway.example/dashboard/ops/movies-a1166b81",
+      key: "agent:ops:unknown",
+      agentId: "ops",
+    },
+    {
+      target: "https://gateway.example/dashboard/ops/movies-a1166b81",
+      key: "agent:research:global",
+      agentId: "research",
+    },
+    { target: "a1166b81", key: "agent:research:unknown", agentId: "research" },
+    {
+      target: "https://gateway.example/dashboard/ops/~key/global",
+      key: "agent:ops:global",
+      agentId: "ops",
+    },
+  ])(
+    "retains resolved session ownership for $target → $agentId/$key",
+    async ({ target, key, agentId }) => {
+      sessionResolveResult = { ok: true, key, agentId };
+      try {
+        await runAttach(target);
+        expect(gatewayCalls.find((call) => call.method === "attach.grant")?.params).toMatchObject({
+          sessionKey: key,
+          agentId,
+        });
+        expect(gatewayCalls.every((call) => call.caps?.includes("canonical-session-keys"))).toBe(
+          true,
+        );
+        expect(
+          gatewayCalls.find((call) => call.method === "sessions.resolve")?.params,
+        ).not.toHaveProperty("agentId");
+      } finally {
+        spawnedChild.emit("exit", 0, null);
+        await tick();
+        await tick();
+      }
+    },
+  );
+
+  it.each([
+    { target: "agent:ops:main", response: { ok: true, key: "global", agentId: "ops" } },
+    {
+      target: "https://gateway.example/dashboard/ops/~key/main",
+      response: { ok: true, key: "global", agentId: "ops" },
+    },
+    {
+      target: "agent:ops:thread:original",
+      response: { ok: true, key: "agent:ops:thread:other", agentId: "ops" },
+    },
+    { target: "a1166b81", response: { ok: true, key: "global", agentId: "!!!" } },
+    { target: "a1166b81", response: { ok: true, key: "global" } },
+    { target: "a1166b81", response: { ok: true, key: "agent:ops:global", agentId: "research" } },
+    { target: "a1166b81", response: { ok: true, key: "agent:!!!:global", agentId: "main" } },
+    {
+      target: "https://gateway.example/dashboard/ops/~key/global",
+      response: { ok: true, key: "global", agentId: "research" },
+    },
+  ])(
+    "rejects conflicting resolved session ownership for $target/$response.key",
+    async ({ target, response }) => {
+      vi.mocked(callGateway).mockResolvedValueOnce(response);
+      try {
+        await expect(runAttach(target)).rejects.toThrow(
+          "Gateway resolved the session to a different conversation.",
+        );
+        expect(gatewayCalls.some((call) => call.method === "attach.grant")).toBe(false);
+      } finally {
+        spawnedChild.emit("exit", 0, null);
+        await tick();
+        await tick();
+      }
+    },
+  );
+
+  it("rejects legacy qualified main remapping before granting", async () => {
+    sessionDialect = "legacy";
+    sessionHistoryKey = "global";
+    await expect(runAttach("--session", "agent:ops:main")).rejects.toThrow(
+      "different conversation",
+    );
+    expect(gatewayCalls.some((call) => call.method === "attach.grant")).toBe(false);
+  });
+
+  it.each([
+    { dialect: "canonical", key: "agent:ops:main", existing: false },
+    { dialect: "canonical", key: "agent:ops:main", existing: true },
+    { dialect: "legacy", key: "agent:ops:global", existing: true },
+    { dialect: "legacy", key: "agent:ops:unknown", existing: true },
+    { dialect: "legacy", key: "agent:ops:ordinary", existing: true },
+  ] as const)(
+    "supports $dialect exact $key (existing=$existing)",
+    async ({ dialect, key, existing }) => {
+      sessionDialect = dialect;
+      sessionScope = "per-sender";
+      sessionHistoryRows = existing ? { [key]: "selected-id" } : {};
+      try {
+        await runAttach("--session", key);
+        expect(gatewayCalls.find((call) => call.method === "attach.grant")?.params).toEqual({
+          sessionKey: key,
+          agentId: "ops",
+          ttlMs: undefined,
+        });
+        expect(gatewayCalls.some((call) => call.method === "attach.revoke")).toBe(false);
+      } finally {
+        spawnedChild.emit("exit", 0, null);
+        await tick();
+        await tick();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "revokes a grant remapped after the identity probe before spawning (revoke fails=%s)",
+    async (revokeFails) => {
+      grantedSessionKey = "agent:ops:global";
+      revokeFailure = revokeFails;
+      const { spawn } = await import("node:child_process");
+      const spawnCount = vi.mocked(spawn).mock.calls.length;
+      try {
+        await expect(runAttach("--session", "agent:ops:main")).rejects.toThrow(
+          "different conversation",
+        );
+        expect(gatewayCalls.filter((call) => call.method === "attach.revoke")).toHaveLength(1);
+        expect(vi.mocked(spawn).mock.calls.length).toBe(spawnCount);
+        if (revokeFails) {
+          expect(logs.join("\n")).toContain("failed to revoke attach grant");
+        }
+      } finally {
+        spawnedChild.emit("exit", 0, null);
+        await tick();
+        await tick();
+      }
+    },
+  );
+
+  it.each([
+    { args: [], scope: "global", key: "agent:ops:global" },
+    { args: ["--session", "main"], scope: "per-sender", key: "agent:ops:main" },
+    { args: ["--session", "global"], scope: "global", key: "agent:ops:global" },
+  ] as const)(
+    "binds the current $scope Home/alias selection once ($args)",
+    async ({ args, scope, key }) => {
+      sessionScope = scope;
+      try {
+        await runAttach(...args);
+        expect(gatewayCalls.find((call) => call.method === "attach.grant")?.params.sessionKey).toBe(
+          key,
+        );
+        expect(gatewayCalls.some((call) => call.method === "sessions.resolve")).toBe(false);
+      } finally {
+        spawnedChild.emit("exit", 0, null);
+        await tick();
+        await tick();
+      }
+    },
+  );
+
+  it.each<{
+    args: readonly string[];
+    scope: "global" | "per-sender";
+    rows: Record<string, string>;
+  }>([
+    { args: ["--session", "agent:ops:main"], scope: "per-sender", rows: {} },
+    {
+      args: ["--session", "agent:ops:main"],
+      scope: "per-sender",
+      rows: { "agent:ops:main": "main-id" },
+    },
+    { args: ["--session", "agent:ops:global"], scope: "global", rows: { global: "raw-id" } },
+    { args: ["--session", "agent:ops:unknown"], scope: "per-sender", rows: { unknown: "raw-id" } },
+    { args: ["--session", "global"], scope: "global", rows: { global: "raw-id" } },
+    {
+      args: ["--session", "global"],
+      scope: "global",
+      rows: { "agent:ops:global": "qualified-id" },
+    },
+    { args: ["--session", "main"], scope: "per-sender", rows: {} },
+    { args: [], scope: "global", rows: { global: "raw-id" } },
+    { args: [], scope: "global", rows: { "agent:ops:global": "qualified-id" } },
+    {
+      args: ["https://gateway.example/dashboard/ops"],
+      scope: "global",
+      rows: { global: "raw-id" },
+    },
+  ] as const)(
+    "refuses an unrepresentable legacy $scope bind before granting ($args)",
+    async ({ args, scope, rows }) => {
+      sessionDialect = "legacy";
+      sessionScope = scope;
+      sessionHistoryRows = rows;
+      const { spawn } = await import("node:child_process");
+      const spawnCount = vi.mocked(spawn).mock.calls.length;
+      try {
+        await expect(runAttach(...args)).rejects.toThrow("Update the Gateway before attaching");
+        expect(gatewayCalls.some((call) => call.method === "attach.grant")).toBe(false);
+        expect(vi.mocked(spawn).mock.calls.length).toBe(spawnCount);
+      } finally {
+        spawnedChild.emit("exit", 0, null);
+        await tick();
+        await tick();
+      }
+    },
+  );
 
   it("rejects a non-positive --ttl before minting", async () => {
     await runAttach("--ttl", "-5", "--print-config");
@@ -333,8 +660,8 @@ describe("openclaw attach (action)", () => {
   });
 
   it("errors on a malformed attach.grant response instead of crashing", async () => {
-    vi.mocked(callGateway).mockResolvedValueOnce({} as never);
-    await runAttach("--print-config");
+    grantResponse = {};
+    await runAttach("--print-config", "--session", "agent:ops:ordinary");
     expect(exitCode).toBe(1);
   });
 
@@ -365,30 +692,7 @@ describe("openclaw attach (action)", () => {
   });
 
   it("warns when revoke fails but still exits with the child status", async () => {
-    vi.mocked(callGateway).mockImplementationOnce(async (p) => {
-      gatewayCalls.push({
-        method: p.method,
-        params: gatewayParams(p.params),
-        mode: p.mode,
-        hasDeviceIdentityKey: "deviceIdentity" in p,
-      });
-      return {
-        sessionKey: "agent:main:spawn",
-        token: "tok-123",
-        expiresAtMs: 2_000_000_000_000,
-        mcpConfig: { mcpServers: { openclaw: {} } },
-        env: { OPENCLAW_MCP_TOKEN: "tok-123" },
-      } as never;
-    });
-    vi.mocked(callGateway).mockImplementationOnce(async (p) => {
-      gatewayCalls.push({
-        method: p.method,
-        params: gatewayParams(p.params),
-        mode: p.mode,
-        hasDeviceIdentityKey: "deviceIdentity" in p,
-      });
-      throw new Error("gateway down");
-    });
+    revokeFailure = true;
 
     await runAttach("--session", "agent:main:spawn");
     spawnedChild.emit("exit", 0, null);
@@ -412,14 +716,14 @@ describe("openclaw attach (action)", () => {
   });
 
   it("errors on a grant with a non-numeric expiresAtMs instead of crashing on toISOString", async () => {
-    vi.mocked(callGateway).mockResolvedValueOnce({
+    grantResponse = {
       sessionKey: "agent:main:x",
       token: "tok-123",
       expiresAtMs: "soon",
       mcpConfig: { mcpServers: { openclaw: {} } },
       env: {},
-    } as never);
-    await runAttach("--print-config");
+    };
+    await runAttach("--print-config", "--session", "agent:ops:ordinary");
     expect(exitCode).toBe(1);
   });
 });

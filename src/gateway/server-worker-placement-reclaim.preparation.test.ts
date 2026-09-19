@@ -308,7 +308,7 @@ async function cancellationLoadFixture(
     resolveGatewaySessionStoreTargetWithStore: () => target,
     resolveCanonicalSessionEntryFromStoreKeys: () => entry,
   };
-  lookup.value = { ...target, cfg: {}, entry, legacyKey: undefined };
+  lookup.value = { ...target, cfg: {}, entry };
   const context = createWorkerStopChatContext();
   let delayCancellation = false;
   const loading = createDeferredCore();

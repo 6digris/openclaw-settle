@@ -20,7 +20,7 @@ const SESSION_LINK_RULE = describeSessionLinkRule(SESSION_LINK_BASE);
 
 function hit(overrides: Record<string, unknown> = {}) {
   return {
-    sessionKey: "main",
+    sessionKey: "agent:main:main",
     sessionId: "session-main",
     messageId: "message-1",
     role: "assistant",
@@ -215,13 +215,13 @@ describe("sessions_search tool", () => {
     const result = await tool.execute("call-1", { query: "text", limit: 1 });
 
     expect(result.details).toMatchObject({
-      results: [expect.objectContaining({ messageId: "visible", sessionKey: "main" })],
+      results: [expect.objectContaining({ messageId: "visible", sessionKey: "agent:main:main" })],
     });
     expect(JSON.stringify(result.details)).not.toContain("hidden");
     const searchedKeys = requests
       .filter((request) => request.method === "sessions.search")
       .map((request) => (request.params as { sessionKeys?: unknown }).sessionKeys);
-    expect(searchedKeys).toEqual([["main"]]);
+    expect(searchedKeys).toEqual([["agent:main:main"]]);
   });
 
   it("searches a multi-session visible set in one gateway call", async () => {
@@ -239,7 +239,7 @@ describe("sessions_search tool", () => {
     expect(searchRequests).toHaveLength(1);
     expect(searchRequests[0]?.params).toMatchObject({
       agentId: "main",
-      sessionKeys: ["agent:main:other", "main"],
+      sessionKeys: ["agent:main:main", "agent:main:other"],
     });
   });
 
@@ -276,7 +276,7 @@ describe("sessions_search tool", () => {
     ).not.toContain(incognitoKey);
   });
 
-  it("excludes foreign unscoped sessions that cannot be reopened by session key", async () => {
+  it("keeps foreign global sessions scoped to their owner", async () => {
     const requests: CallGatewayRequest[] = [];
     const tool = createTool({
       requests,
@@ -284,15 +284,24 @@ describe("sessions_search tool", () => {
         tools: { sessions: { visibility: "all" }, agentToAgent: { enabled: true } },
         agents: { list: [{ id: "main", default: true }, { id: "work" }] },
       },
-      results: [hit({ sessionKey: "global", agentId: "work", messageId: "work-global" })],
+      results: [
+        hit({ sessionKey: "agent:work:global", agentId: "work", messageId: "work-global" }),
+      ],
     });
 
     const result = await tool.execute("call-1", { query: "text" });
 
     const searchRequests = requests.filter((request) => request.method === "sessions.search");
-    expect(searchRequests).toHaveLength(1);
-    expect(searchRequests[0]?.params).toMatchObject({ agentId: "main" });
-    expect(result.details).toMatchObject({ results: [] });
+    expect(searchRequests).toHaveLength(2);
+    expect(searchRequests.map((request) => request.params)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ agentId: "main", sessionKeys: ["agent:main:main"] }),
+        expect.objectContaining({ agentId: "work", sessionKeys: ["agent:work:global"] }),
+      ]),
+    );
+    expect(result.details).toMatchObject({
+      results: [expect.objectContaining({ sessionKey: "agent:work:global" })],
+    });
   });
 
   it("keeps an unscoped current session in the requester agent store", async () => {
@@ -306,7 +315,7 @@ describe("sessions_search tool", () => {
         agents: { list: [{ id: "main", default: true }, { id: "work" }] },
       },
       results: [
-        hit({ sessionKey: "global", agentId: "work" }),
+        hit({ sessionKey: "agent:work:global", agentId: "work" }),
         hit({ sessionKey: "agent:work:other", agentId: "work", messageId: "work-other" }),
       ],
     });
@@ -315,7 +324,7 @@ describe("sessions_search tool", () => {
 
     expect(result.details).toMatchObject({
       results: expect.arrayContaining([
-        expect.objectContaining({ sessionKey: "global" }),
+        expect.objectContaining({ sessionKey: "agent:work:global" }),
         expect.objectContaining({ sessionKey: "agent:work:other" }),
       ]),
     });
@@ -325,7 +334,7 @@ describe("sessions_search tool", () => {
         agentId: "work",
         query: "text",
         limit: 25,
-        sessionKeys: ["agent:work:other", "global"],
+        sessionKeys: ["agent:work:global", "agent:work:other"],
       },
     });
   });
@@ -378,7 +387,9 @@ describe("sessions_search tool", () => {
     const result = await tool.execute("call-1", { query: "text" });
 
     expect(result.details).toMatchObject({
-      results: [expect.objectContaining({ messageId: "canonical-main", sessionKey: "main" })],
+      results: [
+        expect.objectContaining({ messageId: "canonical-main", sessionKey: "agent:main:main" }),
+      ],
     });
     expect(JSON.stringify(result.details)).not.toContain("wrong-agent");
   });
@@ -475,7 +486,7 @@ describe("sessions_search tool", () => {
 
     expect(requests).toContainEqual({
       method: "sessions.search",
-      params: { agentId: "main", query: "text", sessionKeys: ["main"], limit: 25 },
+      params: { agentId: "main", query: "text", sessionKeys: ["agent:main:main"], limit: 25 },
     });
   });
 

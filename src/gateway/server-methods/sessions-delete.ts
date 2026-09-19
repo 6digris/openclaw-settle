@@ -81,13 +81,13 @@ export const sessionDeleteHandlers: GatewayRequestHandlers = {
         : compatibilityDefaultAgentId;
     const explicitlySelectedGlobalAgentId =
       normalizeOptionalString(p.agentId) ?? parseAgentSessionKey(key)?.agentId;
+    const isGlobalSession = parseAgentSessionKey(target.canonicalKey)?.rest === "global";
     const isSelectedNonDefaultGlobal =
-      target.canonicalKey === "global" &&
+      isGlobalSession &&
       explicitlySelectedGlobalAgentId !== undefined &&
       normalizeAgentId(explicitlySelectedGlobalAgentId) !== protectedGlobalAgentId;
-    const isMainSession =
-      target.canonicalKey !== "global" && isAgentMainSessionKey(cfg, target.canonicalKey);
-    if ((target.canonicalKey === "global" || isMainSession) && !isSelectedNonDefaultGlobal) {
+    const isMainSession = isAgentMainSessionKey(cfg, target.canonicalKey);
+    if ((isGlobalSession || isMainSession) && !isSelectedNonDefaultGlobal) {
       respond(
         false,
         undefined,
@@ -230,7 +230,7 @@ export const sessionDeleteHandlers: GatewayRequestHandlers = {
           prepare: async () => drain?.handoffToMutation(),
           finalize: async () => drain?.release(),
           run: async () => {
-            const { entry, legacyKey, canonicalKey } = assertCurrent();
+            const { entry, canonicalKey } = assertCurrent();
             const retirement = prepareSessionWorkerPlacementRetirement({
               context,
               sessionId: entry?.sessionId,
@@ -252,7 +252,6 @@ export const sessionDeleteHandlers: GatewayRequestHandlers = {
               key,
               target,
               entry,
-              legacyKey,
               canonicalKey,
               reason: "session-delete",
               assertCurrent: commitGuard,
@@ -307,7 +306,7 @@ export const sessionDeleteHandlers: GatewayRequestHandlers = {
               retirement.retire();
               emitGatewaySessionEndPluginHook({
                 cfg,
-                sessionKey: target.canonicalKey ?? key,
+                sessionKey: target.canonicalKey,
                 sessionId: result.deletedSessionId,
                 storePath,
                 agentId: target.agentId,
@@ -315,14 +314,14 @@ export const sessionDeleteHandlers: GatewayRequestHandlers = {
                 archivedTranscripts: result.archivedTranscripts,
               });
               await emitSessionUnboundLifecycleEvent({
-                targetSessionKey: target.canonicalKey ?? key,
+                targetSessionKey: target.canonicalKey,
                 reason: "session-delete",
                 emitHooks: p.emitLifecycleHooks !== false,
               });
               // Hooks and unbinding retain their historical post-delete order. The
               // generation-scoped purge and checkout cleanup still finish before
               // this fence opens, so a same-key successor cannot be mistaken for it.
-              const deletedSessionKey = target.canonicalKey ?? key;
+              const deletedSessionKey = target.canonicalKey;
               handleSessionStateSessionDeleted(deletedSessionKey, requestedAgentId);
               worktreePreserved = await removeSessionWorktree({
                 id: deletedWorktreeId,

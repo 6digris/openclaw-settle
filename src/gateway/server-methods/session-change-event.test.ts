@@ -559,8 +559,8 @@ describe("sessions.changed coalescing", () => {
             agentId: "ops",
             controller: new AbortController(),
             expiresAtMs: 60_000,
-            sessionId: "global-id",
-            sessionKey: "global",
+            sessionId: "agent:ops:global-id",
+            sessionKey: "agent:ops:global",
             startedAtMs: 0,
           } satisfies ChatAbortControllerEntry,
         ],
@@ -578,15 +578,14 @@ describe("sessions.changed coalescing", () => {
       expect.anything(),
       expect.objectContaining({
         agentId: "ops",
-        sessionKeys: ["global"],
+        sessionKeys: ["agent:ops:global"],
       }),
     );
     const payload = vi.mocked(context.broadcastToConnIds).mock.calls[0]?.[1];
-    expect(payload).not.toHaveProperty("agentId");
-    expect(payload).not.toHaveProperty("goal");
+    expect(payload).toMatchObject({ agentId: "ops", sessionKey: "agent:ops:global" });
   });
 
-  it("keeps a retired fixed-store owner private after the mutation commits", async () => {
+  it("keeps a retired fixed-store owner canonical after the mutation commits", async () => {
     const config = {
       session: { scope: "global", store: "/stores/shared.sqlite" },
       agents: {
@@ -596,13 +595,14 @@ describe("sessions.changed coalescing", () => {
       },
     } satisfies OpenClawConfig;
     const context = createContext(new Set(["conn-1"]), config);
+    mocks.loadRow.mockReturnValue(null);
 
     await emitAndSettleLeading(context, { reason: "update", sessionKey: "global" });
 
-    expect(mocks.loadRow).not.toHaveBeenCalled();
+    expect(mocks.loadRow).toHaveBeenCalledWith("agent:ops:global");
     expect(context.broadcastToConnIds).toHaveBeenCalledWith(
       "sessions.changed",
-      expect.objectContaining({ sessionKey: "global", reason: "update" }),
+      expect.objectContaining({ sessionKey: "agent:ops:global", agentId: "ops", reason: "update" }),
       new Set(["conn-1"]),
       {
         agentId: "ops",
@@ -612,7 +612,6 @@ describe("sessions.changed coalescing", () => {
     );
     const payload = vi.mocked(context.broadcastToConnIds).mock.calls[0]?.[1];
     for (const field of [
-      "agentId",
       "key",
       "label",
       "session",

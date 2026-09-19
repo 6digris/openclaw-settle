@@ -97,40 +97,49 @@ describe("legacy managed outgoing image migration", () => {
     await fsp.rm(stateDir, { recursive: true, force: true });
   });
 
-  it("imports typed metadata, verifies it, and removes JSON", async () => {
-    const legacy = await writeLegacyRecord({ stateDir });
+  it.each([
+    { sessionKey: "agent:main:main", agentId: "main", canonical: "agent:main:main" },
+    { sessionKey: "global", agentId: "ops", canonical: "agent:ops:global" },
+  ])(
+    "imports typed metadata, verifies it, and removes JSON for $sessionKey",
+    async ({ sessionKey, agentId, canonical }) => {
+      const legacy = await writeLegacyRecord({ stateDir, overrides: { sessionKey, agentId } });
 
-    const result = migrate(stateDir);
+      const result = migrate(stateDir);
 
-    expect(result.warnings).toEqual([]);
-    expect(result.changes).toContain(
-      "Migrated 1 managed outgoing image record(s) → shared SQLite state",
-    );
-    await expect(fsp.access(legacy.sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
-    await fsp.access(legacy.originalPath);
-    expect(await readManagedImageRecord(legacy.record.attachmentId, stateDir)).toEqual({
-      ...legacy.record,
-      original: {
-        ...legacy.record.original,
-        mediaRoot: path.join(stateDir, "media"),
-        mediaId: path.basename(legacy.originalPath),
-        mediaSubdir: MANAGED_OUTGOING_ORIGINALS_SUBDIR,
-        path: undefined,
-      },
-    });
-    const database = openOpenClawStateDatabase({
-      env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
-    });
-    const row = executeSqliteQueryTakeFirstSync(
-      database.db,
-      getNodeSqliteKysely<ManagedImageRecordDatabase>(database.db)
-        .selectFrom("managed_outgoing_image_records")
-        .select("record_json")
-        .where("attachment_id", "=", legacy.record.attachmentId),
-    );
-    expect(row?.record_json).not.toContain(legacy.originalPath);
-    expect(row?.record_json).not.toContain('"path"');
-  });
+      expect(result.warnings).toEqual([]);
+      expect(result.changes).toContain(
+        "Migrated 1 managed outgoing image record(s) → shared SQLite state",
+      );
+      await expect(fsp.access(legacy.sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
+      await fsp.access(legacy.originalPath);
+      expect(await readManagedImageRecord(legacy.record.attachmentId, stateDir)).toEqual({
+        ...legacy.record,
+        sessionKey: canonical,
+        original: {
+          ...legacy.record.original,
+          mediaRoot: path.join(stateDir, "media"),
+          mediaId: path.basename(legacy.originalPath),
+          mediaSubdir: MANAGED_OUTGOING_ORIGINALS_SUBDIR,
+          path: undefined,
+        },
+      });
+      const database = openOpenClawStateDatabase({
+        env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+      });
+      const row = executeSqliteQueryTakeFirstSync(
+        database.db,
+        getNodeSqliteKysely<ManagedImageRecordDatabase>(database.db)
+          .selectFrom("managed_outgoing_image_records")
+          .select(["session_key", "record_json"])
+          .where("attachment_id", "=", legacy.record.attachmentId),
+      );
+      expect(row?.record_json).not.toContain(legacy.originalPath);
+      expect(row).toMatchObject({ session_key: sessionKey });
+      expect(JSON.parse(row?.record_json ?? "null")).toMatchObject({ sessionKey });
+      expect(row?.record_json).not.toContain('"path"');
+    },
+  );
 
   it("recovers an interrupted Doctor source claim", async () => {
     const legacy = await writeLegacyRecord({ stateDir });
@@ -282,19 +291,31 @@ describe("legacy managed outgoing image migration", () => {
     expect(await readManagedImageRecord(legacy.record.attachmentId, stateDir)).toBeNull();
   });
 
-  it("restores JSON when cleanup fails and succeeds on retry", async () => {
-    const legacy = await writeLegacyRecord({ stateDir });
+  it.each(["beforeVerify", "removeSource"] as const)(
+    "restores JSON after %s failure and succeeds on retry",
+    async (phase) => {
+      const legacy = await writeLegacyRecord({
+        stateDir,
+        overrides: { sessionKey: "global", agentId: "ops" },
+      });
 
-    const failed = migrate(stateDir, {
-      removeSource: () => {
-        throw new Error("synthetic remove failure");
-      },
-    });
-    expect(failed.warnings.join("\n")).toContain("synthetic remove failure");
-    await fsp.access(legacy.sourcePath);
+      const failed = migrate(stateDir, {
+        [phase]: () => {
+          throw new Error("synthetic migration failure");
+        },
+      });
+      expect(failed.warnings.join("\n")).toContain("synthetic migration failure");
+      await fsp.access(legacy.sourcePath);
+      const imported = await readManagedImageRecord(legacy.record.attachmentId, stateDir);
+      if (phase === "beforeVerify") {
+        expect(imported).toBeNull();
+      } else {
+        expect(imported).toMatchObject({ sessionKey: "agent:ops:global", agentId: "ops" });
+      }
 
-    const retried = migrate(stateDir);
-    expect(retried.warnings).toEqual([]);
-    await expect(fsp.access(legacy.sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
-  });
+      const retried = migrate(stateDir);
+      expect(retried.warnings).toEqual([]);
+      await expect(fsp.access(legacy.sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
 });

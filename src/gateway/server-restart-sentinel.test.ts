@@ -22,6 +22,7 @@ import {
   recordUpdateRunPhase,
 } from "../infra/update-run-ledger.js";
 import { renderUpdateRunNotice, renderUpdateRunReport } from "../infra/update-run-report.js";
+import { parseAgentSessionKey } from "../routing/session-key.js";
 import { onInternalSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
@@ -144,7 +145,6 @@ const mocks = vi.hoisted(() => {
       storePath: "/tmp/sessions.json",
       canonicalKey: sessionKey,
       storeKeys: [sessionKey],
-      legacyKey: undefined,
     })),
     deliveryContextFromSession: vi.fn<
       typeof import("../utils/delivery-context.shared.js").deliveryContextFromSession
@@ -714,13 +714,12 @@ describe("scheduleRestartSentinelWake", () => {
     mocks.loadSessionEntry.mockReset();
     mocks.loadSessionEntry.mockImplementation((sessionKey: string) => ({
       cfg: { commands: { ownerAllowFrom: ["+15550002"] } },
-      agentId: "main",
+      agentId: parseAgentSessionKey(sessionKey)?.agentId ?? "main",
       entry: { sessionId: sessionKey, updatedAt: 0 },
       store: {},
       storePath: "/tmp/sessions.json",
       canonicalKey: sessionKey,
       storeKeys: [sessionKey],
-      legacyKey: undefined,
     }));
     mocks.deliveryContextFromSession.mockReset();
     mocks.deliveryContextFromSession.mockReturnValue(undefined);
@@ -1137,7 +1136,6 @@ describe("scheduleRestartSentinelWake", () => {
         storePath,
         canonicalKey: sessionKey,
         storeKeys: [sessionKey],
-        legacyKey: undefined,
       });
       const originalMerge = mocks.mergeDeliveryContext.getMockImplementation()!;
       if (ledger) {
@@ -1816,7 +1814,6 @@ describe("scheduleRestartSentinelWake", () => {
       storePath: "/tmp/sessions.json",
       canonicalKey: "agent:main:cron:daily-media:run:run-123",
       storeKeys: ["agent:main:cron:daily-media:run:run-123"],
-      legacyKey: undefined,
     });
 
     await deliverGeneratedMedia({
@@ -1859,7 +1856,6 @@ describe("scheduleRestartSentinelWake", () => {
       storePath: "/tmp/sessions.json",
       canonicalKey: "agent:main:main",
       storeKeys: ["agent:main:main"],
-      legacyKey: undefined,
     });
 
     await expect(
@@ -1912,7 +1908,6 @@ describe("scheduleRestartSentinelWake", () => {
       storePath: "/tmp/sessions.json",
       canonicalKey: "agent:main:main",
       storeKeys: ["agent:main:main"],
-      legacyKey: undefined,
     });
 
     await expect(
@@ -1940,7 +1935,6 @@ describe("scheduleRestartSentinelWake", () => {
       storePath: "/tmp/sessions.json",
       canonicalKey: "agent:main:main",
       storeKeys: ["agent:main:main"],
-      legacyKey: undefined,
     });
 
     await expect(
@@ -1988,7 +1982,6 @@ describe("scheduleRestartSentinelWake", () => {
       storePath: "/tmp/sessions.json",
       canonicalKey: "agent:main:main",
       storeKeys: ["agent:main:main"],
-      legacyKey: undefined,
     });
 
     await expect(
@@ -2049,7 +2042,6 @@ describe("scheduleRestartSentinelWake", () => {
       storePath: "/tmp/sessions.json",
       canonicalKey: "agent:main:main",
       storeKeys: ["agent:main:main"],
-      legacyKey: undefined,
     });
 
     await expect(
@@ -2210,11 +2202,11 @@ describe("scheduleRestartSentinelWake", () => {
         "sessions.json",
       );
       await upsertSessionEntryCore(
-        { agentId: "ops", sessionKey: "global", storePath: opsStorePath },
+        { agentId: "ops", sessionKey: "agent:ops:global", storePath: opsStorePath },
         { sessionId, updatedAt: 1 },
       );
       await upsertSessionEntryCore(
-        { agentId: "research", sessionKey: "global", storePath: researchStorePath },
+        { agentId: "research", sessionKey: "agent:research:global", storePath: researchStorePath },
         { sessionId: "research-global-session", updatedAt: 1 },
       );
       const originalContent = [
@@ -2226,7 +2218,7 @@ describe("scheduleRestartSentinelWake", () => {
         },
       ];
       await appendTranscriptMessage(
-        { agentId: "ops", sessionId, sessionKey: "global", storePath: opsStorePath },
+        { agentId: "ops", sessionId, sessionKey: "agent:ops:global", storePath: opsStorePath },
         {
           eventId: "completion-reply",
           message: {
@@ -2266,7 +2258,7 @@ describe("scheduleRestartSentinelWake", () => {
         .mockImplementationOnce(managedMediaActual.attachManagedOutgoingMediaToMessage);
       if (resumed) {
         await upsertSessionEntryCore(
-          { agentId: "ops", sessionKey: "global", storePath: opsStorePath },
+          { agentId: "ops", sessionKey: "agent:ops:global", storePath: opsStorePath },
           {
             sessionId,
             updatedAt: 1,
@@ -2286,7 +2278,7 @@ describe("scheduleRestartSentinelWake", () => {
       }
       const storedEntry = loadStoredSessionEntry({
         agentId: "ops",
-        sessionKey: "global",
+        sessionKey: "agent:ops:global",
         storePath: opsStorePath,
       });
       if (!storedEntry) {
@@ -2298,15 +2290,14 @@ describe("scheduleRestartSentinelWake", () => {
         entry: storedEntry,
         store: {},
         storePath: opsStorePath,
-        canonicalKey: "global",
-        storeKeys: ["global"],
-        legacyKey: undefined,
+        canonicalKey: "agent:ops:global",
+        storeKeys: ["agent:ops:global"],
       });
 
       const queueId = await queueStorageActual.enqueueSessionDelivery(
         {
           kind: "agentTurn",
-          sessionKey: "global",
+          sessionKey: "agent:ops:global",
           message: "generated image ready",
           messageId: "image:task-global:agent-loop",
           route: { channel: "webchat", to: "global", chatType: "direct" },
@@ -2372,7 +2363,7 @@ describe("scheduleRestartSentinelWake", () => {
       const opsEvents = await loadTranscriptEvents({
         agentId: "ops",
         sessionId,
-        sessionKey: "global",
+        sessionKey: "agent:ops:global",
         storePath: opsStorePath,
       });
       expect(opsEvents).toHaveLength(2);
@@ -2409,10 +2400,10 @@ describe("scheduleRestartSentinelWake", () => {
         parsedArtifact?.attachmentId ?? "",
         testState.stateDir,
       );
-      expect(record).toMatchObject({ messageId: messageEvent.id, sessionKey: "global" });
+      expect(record).toMatchObject({ messageId: messageEvent.id, sessionKey: "agent:ops:global" });
       await expect(
         managedMediaActual.resolveManagedOutgoingMediaArtifactDownload({
-          sessionKey: "global",
+          sessionKey: "agent:ops:global",
           agentId: "ops",
           artifactId: String(artifactId),
           stateDir: testState.stateDir,
@@ -2422,7 +2413,7 @@ describe("scheduleRestartSentinelWake", () => {
         loadTranscriptEvents({
           agentId: "research",
           sessionId: "research-global-session",
-          sessionKey: "global",
+          sessionKey: "agent:research:global",
           storePath: researchStorePath,
         }),
       ).resolves.toEqual([]);
@@ -2981,7 +2972,6 @@ describe("scheduleRestartSentinelWake", () => {
       storePath: "/tmp/sessions.json",
       canonicalKey: "agent:main:main",
       storeKeys: ["agent:main:main"],
-      legacyKey: undefined,
     });
 
     await scheduleRestartSentinelWake({ deps: {} as never });
@@ -3024,7 +3014,6 @@ describe("scheduleRestartSentinelWake", () => {
       storePath: "/tmp/sessions.json",
       canonicalKey: "agent:main:main",
       storeKeys: ["agent:main:main"],
-      legacyKey: undefined,
     };
     const replacementEntry: LoadedSessionEntry = {
       cfg: { commands: { ownerAllowFrom: ["+15550002"] } },
@@ -3038,7 +3027,6 @@ describe("scheduleRestartSentinelWake", () => {
       storePath: "/tmp/sessions.json",
       canonicalKey: "agent:main:main",
       storeKeys: ["agent:main:main"],
-      legacyKey: undefined,
     };
     mockRestartContinuation(
       {
@@ -3096,7 +3084,6 @@ describe("scheduleRestartSentinelWake", () => {
       storePath: "/tmp/sessions.json",
       canonicalKey: "agent:main:main",
       storeKeys: ["agent:main:main"],
-      legacyKey: undefined,
     });
 
     await scheduleRestartSentinelWake({ deps: {} as never });
@@ -3147,7 +3134,6 @@ describe("scheduleRestartSentinelWake", () => {
       storePath: "/tmp/sessions.json",
       canonicalKey: "agent:main:group",
       storeKeys: ["agent:main:group"],
-      legacyKey: undefined,
     });
     mocks.resolveOutboundTarget.mockReturnValue({ ok: true as const, to: "-1001" });
     setNoticeOwner("-1001");
@@ -3196,7 +3182,6 @@ describe("scheduleRestartSentinelWake", () => {
       storePath: "/tmp/sessions.json",
       canonicalKey: "agent:main:telegram:group:-1003826723328:topic:13757",
       storeKeys: ["agent:main:telegram:group:-1003826723328:topic:13757"],
-      legacyKey: undefined,
     });
     mocks.deliveryContextFromSession.mockReturnValue({
       channel: "telegram",
@@ -3875,10 +3860,7 @@ describe("scheduleRestartSentinelWake", () => {
         }),
       );
       const eventOptions = mocks.enqueueSystemEvent.mock.calls[0]?.[1];
-      expect(eventOptions).toMatchObject({
-        sessionKey,
-        deliveryContext: context,
-      });
+      expect(eventOptions).toMatchObject({ sessionKey, deliveryContext: context });
       expect(mocks.requestHeartbeat).toHaveBeenCalledWith({
         source: "restart-sentinel",
         intent: "immediate",
@@ -3919,13 +3901,14 @@ describe("scheduleRestartSentinelWake", () => {
     });
     expect(mocks.deliverOutboundPayloads).not.toHaveBeenCalled();
     const eventOptions = mocks.enqueueSystemEvent.mock.calls[0]?.[1];
+    expect(eventOptions).toMatchObject({ sessionKey: "agent:ops:main" });
     expect(eventOptions).not.toHaveProperty("deliveryContext");
   });
 
   it("preserves system-agent ownership for a targetless global wake", async () => {
     mocks.resolveSystemMainSessionTarget.mockReturnValue({
       agentId: "ops",
-      sessionKey: "global",
+      sessionKey: "agent:ops:global",
     });
     mocks.readRestartSentinel.mockResolvedValue({
       version: 1,
@@ -3942,7 +3925,7 @@ describe("scheduleRestartSentinelWake", () => {
       intent: "immediate",
       reason: "wake",
       agentId: "ops",
-      sessionKey: "global",
+      sessionKey: "agent:ops:global",
     });
   });
 
@@ -4016,7 +3999,6 @@ describe("scheduleRestartSentinelWake", () => {
       storePath: "/tmp/sessions.json",
       canonicalKey: "agent:main:matrix:channel:!lowercased:example.org",
       storeKeys: ["agent:main:matrix:channel:!lowercased:example.org"],
-      legacyKey: undefined,
     });
 
     await scheduleRestartSentinelWake({ deps: {} as never });
@@ -4094,7 +4076,6 @@ describe("scheduleRestartSentinelWake", () => {
         storePath: "/tmp/sessions.json",
         canonicalKey: "agent:main:matrix:channel:!lowercased:example.org:thread:$thread-event",
         storeKeys: ["agent:main:matrix:channel:!lowercased:example.org:thread:$thread-event"],
-        legacyKey: undefined,
       })
       .mockReturnValueOnce({
         cfg: {},
@@ -4109,7 +4090,6 @@ describe("scheduleRestartSentinelWake", () => {
         storePath: "/tmp/sessions.json",
         canonicalKey: "agent:main:matrix:channel:!lowercased:example.org",
         storeKeys: ["agent:main:matrix:channel:!lowercased:example.org"],
-        legacyKey: undefined,
       });
     mocks.deliveryContextFromSession
       .mockReturnValueOnce({

@@ -6,7 +6,7 @@ import {
   validateAgentIdentityParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { resolvePublicAgentAvatarSource } from "../../agents/identity-avatar.js";
-import { classifySessionKeyShape, normalizeAgentId } from "../../routing/session-key.js";
+import { classifySessionKeyShape, normalizeAgentIdStrict } from "../../routing/session-key.js";
 import { resolveGatewayAssistantAvatar } from "../assistant-avatar.js";
 import { resolveAssistantIdentity } from "../assistant-identity.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
@@ -22,10 +22,14 @@ export const agentIdentityGetHandler: GatewayRequestHandlers["agent.identity.get
   if (!assertValidParams(params, validateAgentIdentityParams, "agent.identity.get", respond)) {
     return;
   }
-  const agentIdRaw = normalizeOptionalString(params.agentId) ?? "";
   const sessionKeyRaw = normalizeOptionalString(params.sessionKey) ?? "";
   const cfg = context.getRuntimeConfig();
-  let agentId = agentIdRaw ? normalizeAgentId(agentIdRaw) : undefined;
+  const explicit = params.agentId === undefined ? null : normalizeAgentIdStrict(params.agentId);
+  if (explicit && !explicit.ok) {
+    respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "Invalid explicit agent id."));
+    return;
+  }
+  let agentId = explicit?.value;
   if (sessionKeyRaw) {
     if (classifySessionKeyShape(sessionKeyRaw) === "malformed_agent") {
       respond(

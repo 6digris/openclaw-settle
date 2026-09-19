@@ -102,6 +102,15 @@ crash-ambiguous owners keep a minimal bounded or permanent receipt that prevents
 duplicate delivery. Delivery uncertainty notices retain their acknowledgment,
 so a repeated settlement cannot notify the same intent again.
 
+Legacy pending deliveries that never started and lack a recorded exact session
+target remain pending for manual review. Automatic recovery does not repeatedly
+attempt them. Health reports them as blocked, and the queue records the reason
+without changing the saved message or attachment references. Review the retained
+message and send a new message to an explicit agent-qualified session; do not
+restore or edit the old row to request replay. Existing retention and media
+custody still apply. Captured session identities, started deliveries, correlated completion deadlines, and
+already recorded settlements retain their existing recovery rules.
+
 Finish pending settlements before downgrading. Older builds may discard their
 metadata during database repair or drop acknowledged notices while rewriting
 session records, even when the schema version is unchanged.

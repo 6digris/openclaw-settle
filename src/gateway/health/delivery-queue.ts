@@ -9,6 +9,7 @@ import {
 } from "../../infra/delivery-queue-sqlite.js";
 import { isDiagnosticFlagEnabled } from "../../infra/diagnostic-flags.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { readBlockedSessionDeliverySummary } from "../../infra/session-delivery-queue-storage.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 
 const healthLog = createSubsystemLogger("health");
@@ -55,6 +56,12 @@ export async function buildDeliveryQueueHealthSummary(
     "channel ingress failed queue health read failed",
     countFailedChannelIngressQueueEntries,
   );
+  const blocked = await readQueueHealth("blocked session delivery health read failed", () => {
+    if ("error" in context) {
+      throw context.error;
+    }
+    return readBlockedSessionDeliverySummary(context.stateContext.workerContext);
+  });
   const ingressPressure =
     cachedIngressPressure ??
     (await readQueueHealth(
@@ -62,11 +69,17 @@ export async function buildDeliveryQueueHealthSummary(
       countChannelIngressQueuePressure,
     ));
 
-  if (failed.length === 0 && ingressFailed.length === 0 && ingressPressure.length === 0) {
+  if (
+    failed.length === 0 &&
+    blocked.length === 0 &&
+    ingressFailed.length === 0 &&
+    ingressPressure.length === 0
+  ) {
     return undefined;
   }
   return {
     failed,
+    ...(blocked.length > 0 ? { blocked } : {}),
     ...(ingressFailed.length > 0 ? { ingressFailed } : {}),
     ...(ingressPressure.length > 0 ? { ingressPressure } : {}),
   };

@@ -35,10 +35,16 @@ import {
 } from "./components/selectors.js";
 import type { TuiBackend, TuiSessionMutationResult } from "./tui-backend.js";
 import { addBlockedChatSubmitNotice } from "./tui-busy-notice.js";
-import { formatTuiErrorMessage } from "./tui-formatters.js";
+import {
+  formatTuiErrorMessage,
+  formatTuiFastMode,
+  formatTuiModelChoices,
+  formatTuiModelUnavailable,
+} from "./tui-formatters.js";
 import { buildSessionChoices, loadRecentSessions } from "./tui-session-picker.js";
 import {
   readTuiSessionProjectionScope,
+  readTuiSessionTarget,
   reduceTuiSessionProjection,
 } from "./tui-session-projection.js";
 import { formatStatusSummary } from "./tui-status-summary.js";
@@ -59,11 +65,8 @@ import type {
   TuiResult,
   TuiOptions,
   TuiStateAccess,
+  TuiSessionIntent,
 } from "./tui-types.js";
-
-function formatTuiFastMode(mode: unknown): "auto" | "on" | "off" {
-  return mode === "auto" ? "auto" : mode === true ? "on" : "off";
-}
 
 type CommandHandlerContext = {
   client: TuiBackend;
@@ -76,7 +79,7 @@ type CommandHandlerContext = {
   closeOverlay: (handle?: OverlayHandle) => void;
   refreshSessionInfo: () => Promise<void>;
   loadHistory: () => Promise<unknown>;
-  setSession: (key: string, agentId?: string) => Promise<void>;
+  setSession: (key: string, agentId?: string, intent?: TuiSessionIntent) => Promise<void>;
   refreshAgents: (ownsRefresh?: () => boolean) => Promise<Result<void, string>>;
   abortActive: (params?: { preferActive?: boolean }) => Promise<void>;
   setActivityStatus: (text: string) => void;
@@ -252,17 +255,12 @@ export function createCommandHandlers(context: CommandHandlerContext) {
     return true;
   };
 
-  const captureSessionSelection = () => ({
-    sessionKey: state.currentSessionKey,
-    agentId: state.currentAgentId,
-  });
-
   const isCurrentSessionSelection = (selection: { sessionKey: string; agentId: string }) =>
     state.currentAgentId === selection.agentId &&
     agentSessionKeysMatchByRequestKey(state.currentSessionKey, selection.sessionKey);
 
   const captureSessionIncarnation = () => {
-    const selection = captureSessionSelection();
+    const selection = readTuiSessionTarget(state);
     const sessionId = state.currentSessionId;
     const generation = state.sessionGeneration ?? 0;
     return {
@@ -285,6 +283,7 @@ export function createCommandHandlers(context: CommandHandlerContext) {
     try {
       const result = await client.patchSession({
         key: selection.sessionKey,
+        ...(selection.targetIntent ? { targetIntent: selection.targetIntent } : {}),
         ...(!parseAgentSessionKey(selection.sessionKey) ? { agentId: selection.agentId } : {}),
         ...patch,
       });
@@ -349,31 +348,12 @@ export function createCommandHandlers(context: CommandHandlerContext) {
         chatLog.addSystem("no models available");
         return;
       }
-      const items = models.map((model) => {
-        const ref = modelKey(model.provider, model.id);
-        return {
-          value: ref,
-          label: ref,
-          description: [
-            model.name !== model.id ? model.name : "",
-            model.available === false ? (model.unavailableReason ?? "unavailable") : "",
-          ]
-            .filter(Boolean)
-            .join(" · "),
-        };
-      });
       openSelector(
-        createSearchableSelectList(items, 9),
+        createSearchableSelectList(formatTuiModelChoices(models), 9),
         async (value) => {
           const model = models.find((entry) => modelKey(entry.provider, entry.id) === value);
           if (model?.available === false) {
-            const guidance =
-              model.unavailableReason === "cooldown"
-                ? "Wait and retry, or choose another model."
-                : "Run openclaw models auth login or choose another model.";
-            chatLog.addSystem(
-              `model unavailable: ${model.unavailableReason ?? "unavailable"}. ${guidance}`,
-            );
+            chatLog.addSystem(formatTuiModelUnavailable(model.unavailableReason));
             return;
           }
           await applySessionSetting({ model: value }, `model set to ${value}`, "model set failed");
@@ -436,7 +416,7 @@ export function createCommandHandlers(context: CommandHandlerContext) {
         return;
       }
       const selector = createFilterableSelectList(buildSessionChoices(sessions), 9);
-      openSelector(selector, setSession, request);
+      openSelector(selector, (key) => setSession(key, undefined, "exact"), request);
     } catch (err) {
       if (request !== pickerRequest || !isCurrent()) {
         return;
@@ -796,7 +776,13 @@ export function createCommandHandlers(context: CommandHandlerContext) {
         const result = await client.createSession({
           key: `tui-${randomUUID()}`,
           agentId: selection.agentId,
-          ...(sessionId ? { parentSessionKey: selection.sessionKey, succeedsParent: true } : {}),
+          ...(sessionId
+            ? {
+                parentSessionKey: selection.sessionKey,
+                succeedsParent: true,
+                ...(selection.targetIntent ? { parentTargetIntent: selection.targetIntent } : {}),
+              }
+            : {}),
         });
         if (!creationIncarnation.isCurrent()) {
           return;
@@ -829,8 +815,15 @@ export function createCommandHandlers(context: CommandHandlerContext) {
         const result = await client.resetSession(
           resetSelection.sessionKey,
           "reset",
-          !parseAgentSessionKey(resetSelection.sessionKey)
-            ? { agentId: resetSelection.agentId }
+          resetSelection.targetIntent || !parseAgentSessionKey(resetSelection.sessionKey)
+            ? {
+                ...(!parseAgentSessionKey(resetSelection.sessionKey)
+                  ? { agentId: resetSelection.agentId }
+                  : {}),
+                ...(resetSelection.targetIntent
+                  ? { targetIntent: resetSelection.targetIntent }
+                  : {}),
+              }
             : undefined,
         );
         if (!resetIncarnation.isCurrent()) {
@@ -948,6 +941,7 @@ export function createCommandHandlers(context: CommandHandlerContext) {
       tui.requestRender();
       const sendResult = await client.sendChat({
         sessionKey: sendSelection.sessionKey,
+        ...(sendSelection.targetIntent ? { targetIntent: sendSelection.targetIntent } : {}),
         ...(!parseAgentSessionKey(sendSelection.sessionKey)
           ? { agentId: sendSelection.agentId }
           : {}),

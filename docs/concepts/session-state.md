@@ -52,7 +52,7 @@ A watcher is a session that holds a cursor (`session_watch_cursors`) on a target
 - **Ambient groups.** Under `session.groupScope: "per-group"`, the agent's main session watches its isolated group, room, and channel sessions after their first human turn. This is independent of `session.dmScope`. Routing a room into main needs no watch, because it already shares the main conversation.
 - **Explicit (`sessions_send watch: true`).** Any coordinator can watch a non-spawned target. Pass `watch: true` on `sessions_send`. After the send dispatches successfully, the sender is registered as a watcher of the session that actually received the message. Registration starts at the target's current state version — prior history never produces notices. The tool result reports `watched: true|false` when the parameter was set.
 
-Watcher identity must be an agent-qualified session key. Under `session.scope="global"` the shared `global` key is ambiguous across agents, so such sessions get the durable log and `changesSince` but no proactive notices.
+Watcher identity must be an agent-qualified session key, including `agent:<id>:global` under `session.scope="global"`. Older bare watcher keys without recorded owner evidence remain non-authorizing and receive no proactive notices; their retained history is not reassigned to another agent.
 
 Watches clean themselves up: cursor rows expire with signal-log retention, are removed when the watcher session resets, and are removed with either session. A reset that has committed still clears its watches if a later cleanup step fails. There is no unwatch verb in v1.
 

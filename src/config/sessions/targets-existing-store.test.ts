@@ -7,12 +7,11 @@ import { describe, expect, it, vi } from "vitest";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import type { OpenClawConfig } from "../config.js";
 import { replaceSessionEntry } from "./session-accessor.js";
-import * as sessionEntryStatus from "./session-accessor.sqlite-status.js";
 import { resolveExistingAgentSessionStoreTargetsSync } from "./targets.js";
 import { countMatching, createAgentSessionStores } from "./targets.test-support.js";
 
 describe("resolveExistingAgentSessionStoreTargetsSync", () => {
-  it("stops validating fixed-store entries after the first matching agent", async () => {
+  it("validates only the requested owner in a warm shared store", async () => {
     await withTempHome(async (home) => {
       const storePath = path.join(home, "shared.sqlite");
       for (const agentId of ["main", "alpha", "zulu"]) {
@@ -22,22 +21,20 @@ describe("resolveExistingAgentSessionStoreTargetsSync", () => {
         );
       }
       const database = openOpenClawAgentDatabase({ agentId: "main", path: storePath });
-      database.db.prepare("UPDATE session_nodes SET entry_valid = 0").run();
+      database.db
+        .prepare("UPDATE session_nodes SET entry_json = ? WHERE session_key != ?")
+        .run("{", "agent:main:existing");
       const cfg: OpenClawConfig = {
         agents: { list: [{ id: "main", default: true }] },
         session: { store: storePath },
       };
-      const parseEntry = vi.spyOn(sessionEntryStatus, "parseSessionEntryJson");
-      try {
-        expect(resolveExistingAgentSessionStoreTargetsSync(cfg, "main")).toEqual([
-          { agentId: "main", storePath },
-        ]);
-        expect(parseEntry.mock.results.map(({ value }) => value?.sessionId)).toEqual([
-          "session-alpha",
-          "session-main",
-        ]);
-      } finally {
-        parseEntry.mockRestore();
+      expect(resolveExistingAgentSessionStoreTargetsSync(cfg, "main")).toEqual([
+        { agentId: "main", storePath },
+      ]);
+      for (const agentId of ["alpha", "zulu"]) {
+        expect(() => resolveExistingAgentSessionStoreTargetsSync(cfg, agentId)).toThrow(
+          `invalid persisted session row requires repair for agent:${agentId}:existing`,
+        );
       }
     });
   });

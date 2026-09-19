@@ -1,7 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
-import { setCanonicalSqliteSessionMainKey } from "../config/sessions/session-canonical-key.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
@@ -87,20 +86,15 @@ describe("committed session mutation authorization", () => {
   });
 
   it.each(["before", "after"] as const)(
-    "revalidates a committed main-key change with a reader first opened %s the uncommitted setter",
+    "observes committed access revocation with a reader first opened %s the uncommitted edit",
     async (opened) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
         const cfg = rolePolicyConfig();
-        const client = roleClient("write", "committed-main-key");
+        const client = roleClient("write", "committed-access");
         const sessionKey = "agent:main:committed-authorization";
-        replaceSessionEntrySync(
-          { agentId: "main", sessionKey },
-          { sessionId: "target", updatedAt: 1, visibility: "shared" },
-        );
-        replaceSessionEntrySync(
-          { agentId: "main", sessionKey: "agent:main:main" },
-          { sessionId: "main-session", updatedAt: 1, visibility: "shared" },
-        );
+        const scope = { agentId: "main", sessionKey };
+        const entry = { sessionId: "target", updatedAt: 1, visibility: "shared" as const };
+        replaceSessionEntrySync(scope, entry);
         const result = resolveSessionMutationAuthorization({
           client,
           method: "chat.send",
@@ -117,22 +111,20 @@ describe("committed session mutation authorization", () => {
           if (opened === "before") {
             expect(() => authorization.assertCurrent()).not.toThrow();
           }
-          setCanonicalSqliteSessionMainKey(owner, "work");
+          owner.db
+            .prepare("UPDATE session_nodes SET entry_json = ? WHERE session_key = ?")
+            .run(JSON.stringify({ ...entry, visibility: "draft" }), sessionKey);
           expect(() => authorization.assertCurrent()).not.toThrow();
           expect(() => authorization.assertCurrent()).not.toThrow();
           owner.db.exec("COMMIT");
         });
 
-        // The target remains valid, but the newly committed contract invalidates another row.
         inWriterTransaction(owner.db, () => {
           expect(() => authorization.assertCurrent()).toThrow(
-            expect.objectContaining({
-              code: "SESSION_CANONICAL_KEY_MIGRATION_REQUIRED",
-              message: expect.stringContaining("non-canonical persisted row"),
-            }),
+            "session is draft for this connection",
           );
         });
-        setCanonicalSqliteSessionMainKey(owner, "main");
+        replaceSessionEntrySync(scope, entry);
         inWriterTransaction(owner.db, () => {
           expect(() => authorization.assertCurrent()).not.toThrow();
         });

@@ -73,7 +73,6 @@ import {
   readTranscriptStatsSync,
 } from "./session-accessor.sqlite-read.js";
 import { replaceTranscriptEvents } from "./session-accessor.sqlite-transcript-write.js";
-import { setCanonicalSqliteSessionMainKey } from "./session-canonical-key.js";
 import type { InternalSessionEntry, SessionCompactionCheckpoint, SessionEntry } from "./types.js";
 
 // Keep accessor conformance independent of any real openclaw.json on the machine.
@@ -2300,7 +2299,7 @@ describe("sqlite session normalization", () => {
     ).toThrow("openclaw doctor --fix");
   });
 
-  it("revalidates an open database after its canonical main key changes", () => {
+  it("retains qualified sessions after the legacy main-key policy changes", () => {
     const env = { ...process.env, OPENCLAW_STATE_DIR: paths.stateDir };
     const storePath = paths.sqlitePath;
     replaceSessionEntrySync(
@@ -2310,11 +2309,9 @@ describe("sqlite session normalization", () => {
     expect(listSessionEntryRows({ agentId: "main", env, storePath })).toHaveLength(1);
 
     const database = openOpenClawAgentDatabase({ agentId: "main", env, path: paths.sqlitePath });
-    setCanonicalSqliteSessionMainKey(database, "work");
+    database.db.prepare("UPDATE session_key_contract SET main_key = ? WHERE id = 1").run("work");
 
-    expect(() => listSessionEntryRows({ agentId: "main", env, storePath })).toThrow(
-      "openclaw doctor --fix",
-    );
+    expect(listSessionEntryRows({ agentId: "main", env, storePath })).toHaveLength(1);
   });
 
   it("fails loud when promoted lineage disagrees with canonical entry JSON", () => {

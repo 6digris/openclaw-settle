@@ -1,3 +1,4 @@
+import * as sessionKeyIdentity from "@openclaw/session-url-contract";
 import { Value } from "typebox/value";
 import { describe, expect, it, vi } from "vitest";
 import * as sessionKeys from "../../routing/session-key.js";
@@ -58,39 +59,41 @@ describe("sessions_search candidate matching", () => {
       (_, index) => `session-${String(index).padStart(3, "0")}`,
     );
     const keys = ["agent:main:requester", ...aliases];
+    const canonicalKeys = ["agent:main:requester", ...aliases.map((key) => `agent:main:${key}`)];
     const returned = aliases.slice(-25).map((key, index) => searchHit(`agent:main:${key}`, index));
     const parse = vi.spyOn(sessionKeys, "parseAgentSessionKey");
+    const admit = vi.spyOn(sessionKeyIdentity, "normalizeAgentSessionKeyParts");
     try {
-      const { tool, requests } = createSearchFixture(keys, returned, () => parse.mockClear());
-      const result = await tool.execute("candidate-budget", { query: "text", limit: 25 });
-      expect(result.details).toEqual({
-        results: returned.map((row, index) =>
-          Object.assign({}, row, { sessionKey: aliases[174 + index] }),
-        ),
+      const { tool, requests } = createSearchFixture(keys, returned, () => {
+        parse.mockClear();
+        admit.mockClear();
       });
+      const result = await tool.execute("candidate-budget", { query: "text", limit: 25 });
+      expect(result.details).toEqual({ results: returned });
       expect(Value.Check(tool.outputSchema!, result.details)).toBe(true);
       expect(requests.filter((request) => request.method === "sessions.search")).toEqual([
         {
           method: "sessions.search",
-          params: { agentId: "main", query: "text", limit: 25, sessionKeys: keys },
+          params: { agentId: "main", query: "text", limit: 25, sessionKeys: canonicalKeys },
         },
       ]);
       expect(requests.filter((request) => request.method === "sessions.list")).toHaveLength(4);
-      const aliasKeys = new Set(aliases);
-      const aliasParses = parse.mock.calls.filter(
-        ([key]) => typeof key === "string" && aliasKeys.has(key),
+      const candidateKeys = new Set(canonicalKeys);
+      const candidateParses = [...parse.mock.calls, ...admit.mock.calls].filter(
+        ([key]) => typeof key === "string" && candidateKeys.has(key),
       );
-      expect(aliasParses.length).toBeLessThanOrEqual(1_000);
+      expect(candidateParses.length).toBeLessThanOrEqual(1_000);
     } finally {
       parse.mockRestore();
+      admit.mockRestore();
     }
   });
 
   it.each([
-    { keys: ["aaa", "agent:main:aaa"], hitKey: "agent:main:aaa", expected: "aaa" },
+    { keys: ["aaa", "agent:main:aaa"], hitKey: "agent:main:aaa", expected: "agent:main:aaa" },
     { keys: ["agent:main:zzz", "zzz"], hitKey: "agent:main:zzz", expected: "agent:main:zzz" },
-    { keys: [" aaa ", "aaa"], hitKey: "agent:main:aaa", expected: " aaa " },
-  ])("keeps the first matching candidate for $keys", async ({ keys, hitKey, expected }) => {
+    { keys: [" aaa ", "aaa"], hitKey: "agent:main:aaa", expected: "agent:main:aaa" },
+  ])("deduplicates canonical candidates for $keys", async ({ keys, hitKey, expected }) => {
     const { tool, requests } = createSearchFixture(keys, [searchHit(hitKey)]);
     const result = await tool.execute("candidate-order", { query: "text" });
     expect(result.details).toEqual({ results: [{ ...searchHit(hitKey), sessionKey: expected }] });
@@ -101,28 +104,45 @@ describe("sessions_search candidate matching", () => {
     const requested = (request.params as { sessionKeys: string[] }).sessionKeys.filter(
       (key) => key !== "agent:main:requester",
     );
-    expect(requested).toEqual(keys);
+    expect(requested).toEqual([expected]);
   });
 
   it.each([
-    { key: "agent:main:Mixed", accepted: "agent:main:Mixed", rejected: "agent:main:mixed" },
-    { key: " room ", accepted: "agent:main:room", rejected: "agent:work:room" },
-    { key: "Room", accepted: "Room", rejected: "agent:main:room" },
+    {
+      key: "agent:main:Mixed",
+      accepted: "agent:main:Mixed",
+      rejected: "agent:main:mixed",
+      expected: "agent:main:Mixed",
+    },
+    {
+      key: " room ",
+      accepted: "agent:main:room",
+      rejected: "agent:work:room",
+      expected: "agent:main:room",
+    },
+    { key: "Room", accepted: "Room", rejected: "agent:main:Room", expected: "agent:main:room" },
     {
       key: "matrix:channel:!AbC:example.org:thread:$Event",
       accepted: "agent:main:matrix:channel:!AbC:example.org:thread:$Event",
       rejected: "agent:main:matrix:channel:!abc:example.org:thread:$Event",
+      expected: "agent:main:matrix:channel:!AbC:example.org:thread:$Event",
     },
     {
       key: "signal:group:AbC",
       accepted: "agent:main:signal:group:AbC",
       rejected: "agent:main:signal:group:abc",
+      expected: "agent:main:signal:group:AbC",
     },
-  ])("preserves raw and opaque key identity for $key", async ({ key, accepted, rejected }) => {
-    const { tool } = createSearchFixture([key], [searchHit(rejected, 1), searchHit(accepted)]);
-    const result = await tool.execute("key-identity", { query: "text" });
-    expect(result.details).toEqual({ results: [{ ...searchHit(accepted), sessionKey: key }] });
-  });
+  ])(
+    "qualifies raw aliases and preserves opaque identity for $key",
+    async ({ key, accepted, rejected, expected }) => {
+      const { tool } = createSearchFixture([key], [searchHit(rejected, 1), searchHit(accepted)]);
+      const result = await tool.execute("key-identity", { query: "text" });
+      expect(result.details).toEqual({
+        results: [{ ...searchHit(accepted), sessionKey: expected }],
+      });
+    },
+  );
 
   it("matches hits only within the chunk sent to that search request", async () => {
     const aliases = Array.from(
@@ -139,6 +159,9 @@ describe("sessions_search candidate matching", () => {
       requests
         .filter((request) => request.method === "sessions.search")
         .map((request) => (request.params as { sessionKeys: string[] }).sessionKeys),
-    ).toEqual([["agent:main:requester", ...aliases.slice(0, 199)], ["session-199"]]);
+    ).toEqual([
+      ["agent:main:requester", ...aliases.slice(0, 199).map((key) => `agent:main:${key}`)],
+      ["agent:main:session-199"],
+    ]);
   });
 });

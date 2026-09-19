@@ -1,7 +1,11 @@
 import { isDeepStrictEqual } from "node:util";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
-import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
+import {
+  normalizeAgentId,
+  parseAgentSessionKey,
+  scopeLegacySessionKeyToAgent,
+} from "../routing/session-key.js";
 import { normalizeDeliveryContext } from "../utils/delivery-context.shared.js";
 import {
   ensureDeliveryStatus,
@@ -232,6 +236,49 @@ export function normalizeTaskTimestamps<
   return normalized;
 }
 
+export function normalizeTaskSessionKeys<
+  T extends Pick<
+    TaskRecord,
+    | "requesterSessionKey"
+    | "ownerKey"
+    | "scopeKind"
+    | "childSessionKey"
+    | "agentId"
+    | "requesterAgentId"
+  >,
+>(record: T): T {
+  const agentId =
+    record.requesterAgentId ??
+    parseAgentSessionKey(record.requesterSessionKey)?.agentId ??
+    parseAgentSessionKey(record.ownerKey)?.agentId;
+  const scoped = (sessionKey: string) =>
+    agentId && !parseAgentSessionKey(sessionKey)
+      ? (scopeLegacySessionKeyToAgent({ agentId, sessionKey }) ?? sessionKey)
+      : sessionKey;
+  const requesterSessionKey =
+    record.scopeKind === "system" ? "" : scoped(record.requesterSessionKey);
+  const ownerKey = record.scopeKind === "system" ? record.ownerKey : scoped(record.ownerKey);
+  const childAgentId = resolveTaskAgentId({
+    agentId: record.agentId,
+    childSessionKey: record.childSessionKey,
+    ownerKey,
+    requesterSessionKey,
+  });
+  return {
+    ...record,
+    requesterSessionKey,
+    ownerKey,
+    ...(record.childSessionKey && childAgentId
+      ? {
+          childSessionKey: scopeLegacySessionKeyToAgent({
+            agentId: childAgentId,
+            sessionKey: record.childSessionKey,
+          }),
+        }
+      : {}),
+  };
+}
+
 export function cloneTaskDeliveryState(state: TaskDeliveryState): TaskDeliveryState {
   return {
     ...state,
@@ -314,7 +361,13 @@ export function resolveTaskCreateIdentity(params: CreateTaskRecordParams) {
     ownerKey,
     requesterSessionKey,
   });
-  return { requesterSessionKey, scopeKind, ownerKey, agentId, requesterAgentId };
+  return normalizeTaskSessionKeys({
+    requesterSessionKey,
+    scopeKind,
+    ownerKey,
+    agentId,
+    requesterAgentId,
+  });
 }
 
 export function buildTaskRecordForCreate(
@@ -337,38 +390,40 @@ export function buildTaskRecordForCreate(
     scopeKind,
   });
   const lastEventAt = params.lastEventAt ?? params.startedAt ?? now;
-  const record: TaskRecord = normalizeTaskTimestamps({
-    taskId,
-    ...(params.executionOwner ? { executionOwner: { ...params.executionOwner } } : {}),
-    runtime: params.runtime,
-    taskKind: normalizeOptionalString(params.taskKind),
-    sourceId: normalizeOptionalString(params.sourceId),
-    requesterSessionKey,
-    ownerKey,
-    scopeKind,
-    childSessionKey: params.childSessionKey,
-    parentFlowId: normalizeOptionalString(params.parentFlowId),
-    parentTaskId: normalizeOptionalString(params.parentTaskId),
-    agentId,
-    requesterAgentId,
-    runId: normalizeOptionalString(params.runId),
-    label: normalizeOptionalString(params.label),
-    task: params.task,
-    status,
-    deliveryStatus,
-    notifyPolicy,
-    createdAt: now,
-    startedAt: params.startedAt,
-    lastEventAt,
-    cleanupAfter: params.cleanupAfter,
-    progressSummary: normalizeTaskSummary(params.progressSummary),
-    terminalSummary: normalizeTaskSummary(params.terminalSummary),
-    terminalOutcome: resolveTaskTerminalOutcome({
+  const record: TaskRecord = normalizeTaskSessionKeys(
+    normalizeTaskTimestamps({
+      taskId,
+      ...(params.executionOwner ? { executionOwner: { ...params.executionOwner } } : {}),
+      runtime: params.runtime,
+      taskKind: normalizeOptionalString(params.taskKind),
+      sourceId: normalizeOptionalString(params.sourceId),
+      requesterSessionKey,
+      ownerKey,
+      scopeKind,
+      childSessionKey: params.childSessionKey,
+      parentFlowId: normalizeOptionalString(params.parentFlowId),
+      parentTaskId: normalizeOptionalString(params.parentTaskId),
+      agentId,
+      requesterAgentId,
+      runId: normalizeOptionalString(params.runId),
+      label: normalizeOptionalString(params.label),
+      task: params.task,
       status,
-      terminalOutcome: params.terminalOutcome,
+      deliveryStatus,
+      notifyPolicy,
+      createdAt: now,
+      startedAt: params.startedAt,
+      lastEventAt,
+      cleanupAfter: params.cleanupAfter,
+      progressSummary: normalizeTaskSummary(params.progressSummary),
+      terminalSummary: normalizeTaskSummary(params.terminalSummary),
+      terminalOutcome: resolveTaskTerminalOutcome({
+        status,
+        terminalOutcome: params.terminalOutcome,
+      }),
+      ...(params.detail !== undefined ? { detail: structuredClone(params.detail) } : {}),
     }),
-    ...(params.detail !== undefined ? { detail: structuredClone(params.detail) } : {}),
-  });
+  );
   if (isTerminalTaskStatus(record.status) && typeof record.cleanupAfter !== "number") {
     record.cleanupAfter = resolveTaskCleanupAfter(record);
   }
@@ -398,7 +453,7 @@ export function applyTaskRecordPatch(
   if (becomesTerminal && patch.endedAt === undefined) {
     updated.endedAt = patch.lastEventAt ?? now ?? Date.now();
   }
-  const next = normalizeTaskTimestamps(updated);
+  const next = normalizeTaskSessionKeys(normalizeTaskTimestamps(updated));
   if (Object.hasOwn(patch, "error") && patch.error === undefined) {
     delete next.error;
   }

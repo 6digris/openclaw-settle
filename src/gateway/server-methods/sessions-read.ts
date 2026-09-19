@@ -1,10 +1,8 @@
 // Read-only session queries.
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
   ErrorCodes,
   errorShape,
-  type SessionsListParams,
   validateSessionsListParams,
   validateSessionsPreviewParams,
   validateSessionsResolveParams,
@@ -27,7 +25,11 @@ import {
   parseAgentSessionKey,
 } from "../../routing/session-key.js";
 import { hasOperatorBoundary } from "../operator-role-policy.js";
-import { resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId } from "../session-request-agent.js";
+import { normalizeSessionPreviewKeys } from "../session-method-policy.js";
+import {
+  resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId,
+  resolveRequestedSessionListScope,
+} from "../session-request-agent.js";
 import { getSessionRowProjection } from "../session-row-projection-access.js";
 import {
   canAccessIncognitoSession,
@@ -66,12 +68,18 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "query must not be empty"));
       return;
     }
-    if (params.scope !== undefined) {
+    const cfg = context.getRuntimeConfig();
+    const scope = resolveSessionSearchScope(cfg, params);
+    if (!scope.ok) {
+      respond(false, undefined, scope.error);
+      return;
+    }
+    if (scope.kind === "projected") {
       try {
         await searchProjectedSessionTranscripts({
           query,
           limit: params.limit,
-          scope: params.scope,
+          scope: scope.scope,
           context,
           client: client ?? null,
           onResult: (result) => respond(true, result),
@@ -79,12 +87,6 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
       } catch (error) {
         respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatErrorMessage(error)));
       }
-      return;
-    }
-    const cfg = context.getRuntimeConfig();
-    const scope = resolveSessionSearchScope(cfg, params);
-    if (!scope.ok) {
-      respond(false, undefined, scope.error);
       return;
     }
     const { agentId, configured, requestedAgentId, sessionKeys } = scope;
@@ -128,10 +130,7 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
       configured
         ? sessionKeys
         : sessionKeys?.filter((sessionKey) => {
-            const sessionAgentId =
-              requestedAgentId && (sessionKey === "global" || sessionKey === "unknown")
-                ? requestedAgentId
-                : resolveSessionStoreAgentId(cfg, sessionKey);
+            const sessionAgentId = resolveSessionStoreAgentId(cfg, sessionKey);
             return sessionAgentId === agentId;
           })
     )?.filter((sessionKey) => canSearchSessionKey(sessionKey));
@@ -229,13 +228,18 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
     if (!assertValidParams(params, validateSessionsListParams, "sessions.list", respond)) {
       return;
     }
+    const scope = resolveRequestedSessionListScope(context.getRuntimeConfig(), params);
+    if (!scope.ok) {
+      respond(false, undefined, scope.error);
+      return;
+    }
     const projection = getSessionRowProjection(context);
     if (!projection) {
       throw new Error("Session projection is unavailable before Gateway startup completes");
     }
     await listProjectedSessions({
       projection,
-      opts: params as SessionsListParams,
+      opts: scope.scope,
       context,
       client,
       diagnostics,
@@ -246,10 +250,7 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
     if (!assertValidParams(params, validateSessionsPreviewParams, "sessions.preview", respond)) {
       return;
     }
-    const keys = (Array.isArray(params.keys) ? params.keys : [])
-      .map((key) => normalizeOptionalString(key ?? ""))
-      .filter((key): key is string => Boolean(key))
-      .slice(0, 64);
+    const keys = normalizeSessionPreviewKeys(params.keys);
     const limit = params.limit ?? 12;
     const maxChars = params.maxChars ?? 240;
 

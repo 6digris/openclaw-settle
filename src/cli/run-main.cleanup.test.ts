@@ -59,7 +59,10 @@ vi.mock("./gateway-cli/run-command.js", () => ({
   addGatewayRunCommand: (command: import("commander").Command) =>
     command.action(() => dispatch.run()),
 }));
-vi.mock("./command-execution-startup.js", () => ({ ensureCliExecutionBootstrap: async () => {} }));
+vi.mock("./command-execution-startup.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./command-execution-startup.js")>()),
+  ensureCliExecutionBootstrap: async () => {},
+}));
 vi.mock("./banner.js", () => ({ emitCliBanner() {} }));
 vi.mock("./one-shot-exit.js", () => ({
   requestExitAfterOneShotOutput() {},

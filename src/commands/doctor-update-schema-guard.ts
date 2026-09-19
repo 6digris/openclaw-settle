@@ -57,11 +57,14 @@ export async function guardUpdateDoctorSchemaUpgrade(options: {
   schemas?: DoctorDatabasePreflight;
   runtime?: RuntimeEnv;
   json?: boolean;
+  checkSessionIdentity?: boolean;
 }): Promise<DoctorDatabasePreflight | undefined> {
   if (process.env.OPENCLAW_UPDATE_IN_PROGRESS !== "1") {
     return undefined;
   }
-  const schemas = options.schemas ?? (await prepareDoctorDatabasePreflight());
+  const schemas =
+    options.schemas ??
+    (await prepareDoctorDatabasePreflight({ checkSessionIdentity: options.checkSessionIdentity }));
   if (!schemas.pendingMigrations?.length) {
     return schemas;
   }

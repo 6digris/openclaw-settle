@@ -1,4 +1,5 @@
 import type { ProgressContinuationState } from "../../../channels/progress-continuation.js";
+import { scopeLegacySessionKeyToAgent } from "../../../routing/session-key.js";
 import { captureTaskProgressContinuationForRequesterTurn } from "../../../tasks/task-progress-requester.js";
 import { scheduleYieldedSubagentRunProgress } from "../../../tasks/task-registry-progress.js";
 /** Settles durable child ownership when the spawning requester turn ends. */
@@ -21,7 +22,11 @@ export function markRequesterTurnYieldedInRuns(params: {
   runs: Map<string, SubagentRunRecord>;
   persistOrThrow(...runIds: string[]): void;
 }): number {
-  const requesterSessionKey = params.requesterSessionKey.trim();
+  const requesterSessionKey =
+    scopeLegacySessionKeyToAgent({
+      agentId: params.requesterAgentId,
+      sessionKey: params.requesterSessionKey,
+    }) ?? "";
   const requesterTurnRunId = params.requesterTurnRunId.trim();
   if (!requesterSessionKey || !requesterTurnRunId) {
     return 0;
@@ -71,7 +76,11 @@ export function settleRequesterTurnAfterSessionSpawns(params: {
   persistOrThrow(...runIds: string[]): void;
   schedule(runId: string, entry: SubagentRunRecord, kind: "completion" | "settle"): void;
 }): boolean {
-  const requesterSessionKey = params.requesterSessionKey.trim();
+  const requesterSessionKey =
+    scopeLegacySessionKeyToAgent({
+      agentId: params.requesterAgentId,
+      sessionKey: params.requesterSessionKey,
+    }) ?? "";
   const requesterTurnRunId = params.requesterTurnRunId.trim();
   const spawnsByRunId = new Map(
     params.acceptedSessionSpawns.map((spawn) => [spawn.runId, spawn] as const),

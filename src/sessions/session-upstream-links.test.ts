@@ -5,12 +5,14 @@ import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
+  openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.js";
 import { registerSessionStateWatch } from "./session-state-events.js";
 import {
   deleteSessionUpstreamLink,
   listWatchedSessionUpstreamLinks,
+  readSessionUpstreamLink,
   updateSessionUpstreamLinkMarker,
   upsertSessionUpstreamLink,
 } from "./session-upstream-links.js";
@@ -54,6 +56,39 @@ afterAll(() => {
 });
 
 describe("session upstream links", () => {
+  it("retains a legacy global link and marker for only its qualified owner", async () => {
+    const database = createDatabaseOptions();
+    const key = "agent:main:global";
+    upsertLink(key, "claude", database);
+    const initial = readSessionUpstreamLink(key, "main", database);
+    openOpenClawStateDatabase(database)
+      .db.prepare("UPDATE session_upstream_links SET session_key = 'global'")
+      .run();
+    expect(readSessionUpstreamLink(key, "main", database)).toEqual(initial);
+    expect(readSessionUpstreamLink("agent:other:global", "other", database)).toBeUndefined();
+    expect(
+      updateSessionUpstreamLinkMarker(key, "main", { offset: 7 }, { ...database, now: 200 }),
+    ).toBe(true);
+    upsertLink(key, "claude", database);
+    expect(readSessionUpstreamLink(key, "main", database)?.marker).toEqual({ offset: 7 });
+    registerSessionStateWatch(
+      { watcherSessionKey: "agent:main:main", targetSessionKey: key },
+      database,
+    );
+    expect((await listWatchedSessionUpstreamLinks(database)).get("claude")?.[0]?.sessionKey).toBe(
+      key,
+    );
+    openOpenClawStateDatabase(database)
+      .db.prepare(`
+      INSERT INTO session_upstream_links
+      SELECT ?, agent_id, catalog_id, host_id, thread_id, upstream_kind,
+        upstream_ref_json, last_marker_json, last_scanned_at, created_at, updated_at
+      FROM session_upstream_links WHERE session_key = 'global'
+    `)
+      .run(key);
+    expect(deleteSessionUpstreamLink(key, "main", database)).toBe("deleted");
+    expect(readSessionUpstreamLink(key, "main", database)).toBeUndefined();
+  });
   it("returns each watched link once and skips ambiguous agent ownership without host SQL", async () => {
     const database = createDatabaseOptions();
     const watched = "agent:main:adopted:watched";

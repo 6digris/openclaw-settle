@@ -450,7 +450,6 @@ export async function detectLegacyStateMigrations(params: {
           mainKey: targetMainKey,
           scope: targetScope,
           preserveAmbiguousKeys: sessionStoreOwnership.preserveAmbiguousKeys,
-          preserveForeignMainAliases,
           legacySessionSurfaces: legacySessionSurfaces.surfaces,
         })
       : [];

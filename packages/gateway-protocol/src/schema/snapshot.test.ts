@@ -92,6 +92,14 @@ describe("SnapshotSchema", () => {
       health: {
         deliveryQueues: {
           failed: [],
+          blocked: [
+            {
+              queueName: "session",
+              count: 1,
+              oldestEnqueuedAt: 1_000,
+              reason: "Review retained message and send a new message",
+            },
+          ],
           ingressFailed: [
             { channelId: "telegram", accountId: "ops", count: 2, oldestFailedAt: 1_000 },
           ],

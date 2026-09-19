@@ -2,9 +2,13 @@ import { X509Certificate } from "node:crypto";
 import http, { type RequestListener } from "node:http";
 import https from "node:https";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { HelloOk } from "../../packages/gateway-protocol/src/index.js";
 import { createSolidPngBuffer } from "../../test/helpers/image-fixtures.js";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { TEST_TLS_CERT_PEM, TEST_TLS_KEY_PEM } from "../../test/helpers/tls-fixture.js";
-import { GatewayClient } from "../gateway/client.js";
+import type { SessionWireHistory } from "../cli/session-target.js";
+import { GatewayClient, type GatewayClientOptions } from "../gateway/client.js";
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { readImageMetadataFromHeader, resizeToJpeg } from "../media/image-ops.js";
 import { GatewayChatClient } from "./gateway-chat.js";
 import { TUI_IMAGE_MAX_BYTES } from "./tui-image-data.js";
@@ -174,6 +178,239 @@ describe("GatewayChatClient image previews", () => {
     ]);
   });
 
+  it.each([false, true])("carries Home intent to an image read (inbound=%s)", async (inbound) => {
+    const key = inbound ? "agent:main:global" : "agent:main:main";
+    const source = inbound
+      ? "media://inbound/home.jpg"
+      : `/api/chat/media/outgoing/global/${attachmentId}/full`;
+    if (inbound) {
+      handler = (req, res) => {
+        const query = new URL(req.url ?? "", "http://localhost").searchParams;
+        if (query.get("sessionKey") !== "main" || query.get("agentId") !== "main") {
+          res.writeHead(404).end();
+          return;
+        }
+        res.writeHead(200, { "content-type": "image/jpeg" }).end(jpeg);
+      };
+    }
+    const rpc = vi
+      .spyOn(GatewayClient.prototype, "request")
+      .mockImplementation(async (method, params) => {
+        if (method === "config.get") {
+          return { runtimeConfig: {} };
+        }
+        const target = params as { sessionKey: string };
+        if (method === "chat.history") {
+          const isHome = target.sessionKey === "main" || target.sessionKey === "agent:main:main";
+          return {
+            sessionInfo: { key: isHome ? "global" : target.sessionKey },
+            sessionId: isHome ? "home-session" : undefined,
+          };
+        }
+        if (method !== "artifacts.download" || target.sessionKey !== "main") {
+          throw new Error("Home artifact requires the admitted Home alias");
+        }
+        return {
+          artifact: {
+            id: artifactId,
+            type: "image",
+            sessionKey: "global",
+            download: { mode: "url" },
+          },
+          url: `${source}?mediaTicket=synthetic-home-ticket`,
+        };
+      });
+    const client = new GatewayChatClient({ url: origin, token: "gateway-secret" });
+    const selectedImage = {
+      ...request(source),
+      sessionKey: key,
+      targetIntent: "home" as const,
+    };
+    expect((await client.loadImage(selectedImage)).mimeType).toBe("image/png");
+    if (inbound) {
+      expect(
+        rpc.mock.calls.every(([method]) => method === "config.get" || method === "chat.history"),
+      ).toBe(true);
+      expect(requests).toHaveLength(1);
+      const url = new URL(requests[0]!.url!, "http://localhost");
+      expect(Object.fromEntries(url.searchParams)).toEqual({
+        source,
+        sessionKey: "main",
+        agentId: "main",
+      });
+      return;
+    }
+    expect(rpc).toHaveBeenLastCalledWith(
+      "artifacts.download",
+      { sessionKey: "main", agentId: "main", artifactId },
+      { signal: expect.any(AbortSignal) },
+    );
+    expect(requests).toEqual([
+      {
+        url: `/gateway${source.replace(/\/full$/, "/thumbnail")}?mediaTicket=synthetic-home-ticket`,
+        authorization: undefined,
+        edge: "",
+      },
+    ]);
+  });
+
+  it("rejects a conflicting Home owner before inbound HTTP starts", async () => {
+    const client = new GatewayChatClient({ url: origin, token: "image-token" });
+    await expect(
+      client.loadImage({
+        ...request("media://inbound/home.jpg"),
+        sessionKey: "agent:main:global",
+        agentId: "other",
+        targetIntent: "home",
+      }),
+    ).rejects.toThrow("Session key does not match the selected agent");
+    expect(requests).toHaveLength(0);
+  });
+
+  it.each([
+    { stage: "initial identity", owner: "caller", inbound: false },
+    { stage: "foreign owner", owner: "caller", inbound: false },
+    { stage: "reconnect", owner: "caller", inbound: false },
+    { stage: "reconnect", owner: "client", inbound: false },
+    { stage: "initial identity", owner: "caller", inbound: true },
+    { stage: "reconnect", owner: "caller", inbound: true },
+    { stage: "reconnect", owner: "client", inbound: true },
+    { stage: "reconnect ready", owner: "caller", inbound: true },
+  ])(
+    "settles an image $stage wait from its $owner (inbound=$inbound)",
+    async ({ stage, owner, inbound }) => {
+      let options: GatewayClientOptions | undefined;
+      const history = createDeferred<SessionWireHistory>();
+      const enteredHistory = createDeferred();
+      const key = stage === "foreign owner" ? "agent:main:global" : "agent:main:main";
+      const rpc = vi.fn(
+        async (method: string, params: unknown, requestOptions?: { signal?: AbortSignal }) => {
+          if (inbound && method === "config.get") {
+            return { runtimeConfig: {} };
+          }
+          if (method !== "chat.history") {
+            throw new Error(`Unexpected request after image cancellation: ${method}`);
+          }
+          if (stage === "foreign owner") {
+            const target = params as { sessionKey: string; agentId?: string };
+            if (target.sessionKey === key) {
+              return {
+                sessionInfo: { key, agentId: "main" },
+                sessionId: "selected-image-session",
+              };
+            }
+            if (target.agentId) {
+              throw new RequestError({
+                code: "INVALID_REQUEST",
+                message: 'agent "main" does not match session key agent "ops"',
+              });
+            }
+          }
+          enteredHistory.resolve();
+          return await (requestOptions?.signal
+            ? racePromiseWithAbortSignal(history.promise, requestOptions.signal)
+            : history.promise);
+        },
+      );
+      const stop = vi.fn(async () => {});
+      vi.resetModules();
+      vi.doMock("../gateway/client.js", async (importOriginal) => ({
+        ...(await importOriginal<typeof import("../gateway/client.js")>()),
+        GatewayClient: class {
+          request = rpc;
+          stopAndWait = stop;
+          constructor(opts: GatewayClientOptions) {
+            options = opts;
+          }
+        },
+      }));
+      const { GatewayChatClient: ConnectedClient } = await import("./gateway-chat.js");
+      const { GatewayClientRequestError: RequestError } = await import("../gateway/client.js");
+      const client = new ConnectedClient({ url: origin, token: "image-token" });
+      const hello: HelloOk = {
+        type: "hello-ok",
+        protocol: 4,
+        server: { version: "legacy", connId: "image-cancel" },
+        features: { methods: [], events: [] },
+        auth: { role: "operator", scopes: ["operator.read"] },
+        snapshot: {
+          presence: [],
+          health: {},
+          stateVersion: { presence: 0, health: 0 },
+          uptimeMs: 0,
+        },
+        policy: { maxPayload: 1024, maxBufferedBytes: 1024, tickIntervalMs: 1000 },
+      };
+      const controller = new AbortController();
+      let failure: unknown;
+      options?.onHelloOk?.(hello);
+      const image = client
+        .loadImage({
+          sessionKey: key,
+          source: inbound
+            ? "media://inbound/photo.jpg"
+            : `/api/chat/media/outgoing/${encodeURIComponent(key)}/${attachmentId}/full`,
+          signal: controller.signal,
+        })
+        .catch((error: unknown) => {
+          failure = error;
+        });
+      try {
+        await Promise.race([
+          enteredHistory.promise,
+          image.then(() => {
+            throw new Error("Image settled before its identity read", { cause: failure });
+          }),
+        ]);
+        if (stage.startsWith("reconnect")) {
+          options?.onClose?.(1001, "reconnecting");
+          history.resolve({ sessionInfo: { key }, sessionId: "selected-image-session" });
+          await new Promise<void>((resolve) => {
+            setImmediate(resolve);
+          });
+        }
+        if (stage === "reconnect ready") {
+          options?.onHelloOk?.({
+            ...hello,
+            server: { ...hello.server, connId: "image-reconnected" },
+            features: { ...hello.features, capabilities: ["canonical-session-keys"] },
+          });
+          expect(await image).toMatchObject({ mimeType: "image/png" });
+          expect(failure).toBeUndefined();
+          expect(requests).toHaveLength(1);
+          const query = new URL(requests[0]!.url!, "http://localhost").searchParams;
+          expect(query.get("sessionKey")).toBe(key);
+          expect(query.has("agentId")).toBe(false);
+          expect(rpc.mock.calls.map(([method]) => method)).toEqual(["config.get", "chat.history"]);
+          return;
+        }
+        if (owner === "caller") {
+          controller.abort();
+        } else {
+          await client.stop();
+        }
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
+        expect(failure).toMatchObject({ name: "AbortError" });
+        expect(rpc.mock.calls.map(([method]) => method)).toEqual([
+          ...(inbound ? ["config.get"] : []),
+          ...Array.from({ length: stage === "foreign owner" ? 3 : 1 }, () => "chat.history"),
+        ]);
+        expect(requests).toHaveLength(0);
+        if (owner === "caller") {
+          expect(stop).not.toHaveBeenCalled();
+        }
+      } finally {
+        history.resolve({ sessionInfo: { key }, sessionId: "selected-image-session" });
+        await client.stop();
+        await image;
+        vi.doUnmock("../gateway/client.js");
+        vi.resetModules();
+      }
+    },
+  );
+
   it("never follows a redirect carrying Gateway credentials", async () => {
     handler = (_req, res) => res.writeHead(302, { location: "/stolen-credentials" }).end();
     const client = new GatewayChatClient({ url: origin, token: "gateway-secret" });
@@ -182,6 +419,7 @@ describe("GatewayChatClient image previews", () => {
   });
 
   it("renders inline PNGs and rejects excessive header dimensions before decoding", async () => {
+    const rpc = vi.spyOn(GatewayClient.prototype, "request");
     const client = new GatewayChatClient({ url: origin });
     const png = createSolidPngBuffer(4, 2, { r: 24, g: 64, b: 128 });
     const inlineRequest = (buffer: Buffer) =>
@@ -197,6 +435,7 @@ describe("GatewayChatClient image previews", () => {
     oversizedHeader.writeUInt32BE(100_000, 20);
     await expect(client.loadImage(inlineRequest(oversizedHeader))).rejects.toThrow("pixel limit");
     expect(requests).toHaveLength(0);
+    expect(rpc).not.toHaveBeenCalled();
   });
 
   it.each([

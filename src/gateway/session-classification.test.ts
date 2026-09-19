@@ -62,12 +62,14 @@ describe("sessionClassificationForRow", () => {
     expect(
       sessionClassificationForRow(
         { session: { scope: "global" } } as OpenClawConfig,
-        "GLOBAL",
+        "AGENT:MAIN:GLOBAL",
         "main",
         entry(),
       ),
     ).toMatchObject({ classification: "global", isMain: true });
-    expect(classification({ key: "UNKNOWN", isMain: false, entry: entry() })).toMatchObject({
+    expect(
+      classification({ key: "AGENT:MAIN:UNKNOWN", isMain: false, entry: entry() }),
+    ).toMatchObject({
       classification: "unknown",
       isMain: false,
     });

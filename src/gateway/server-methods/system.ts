@@ -22,6 +22,7 @@ import { resolveUtilityModelRefForAgent } from "../../agents/utility-model.js";
 import { tryResolveLegacyCompatibilityAgentId } from "../../config/legacy.default-agent-owner.js";
 import { resolveGatewayPort, resolveStateDir } from "../../config/paths.js";
 import { resolveSystemMainSessionTarget } from "../../config/sessions.js";
+import { canonicalizeMainSessionAlias } from "../../config/sessions/main-session.js";
 import { resolveAdvertisedLanHostCore } from "../../infra/advertised-lan-host.js";
 import {
   loadOrCreateProcessDeviceIdentity,
@@ -33,13 +34,9 @@ import { requestHeartbeat, setHeartbeatsEnabled } from "../../infra/heartbeat-wa
 import { getMachineDisplayName } from "../../infra/machine-name.js";
 import { resolveRuntimeOsLabel } from "../../infra/os-summary.js";
 import { readSystemDisks } from "../../infra/system-disks.js";
-import {
-  resolveSystemEventQueueKey,
-  withSystemEventOwner,
-} from "../../infra/system-event-ownership.js";
 import { enqueueSystemEvent, isSystemEventContextChanged } from "../../infra/system-events.js";
 import { listSystemPresence, updateSystemPresence } from "../../infra/system-presence.js";
-import { normalizeAgentId, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import { normalizeAgentId } from "../../routing/session-key.js";
 import { createPresenceRecipientProjection } from "../presence-projection.js";
 import { getGatewayProcessInstanceId } from "../process-instance.js";
 import { broadcastPresenceSnapshot } from "../server/presence-events.js";
@@ -205,9 +202,17 @@ export const systemHandlers: GatewayRequestHandlers = {
       respond(false, undefined, requestedOwner.error);
       return;
     }
-    const systemTarget = requestedSessionKey
-      ? { agentId: requestedOwner?.agentId, sessionKey: requestedSessionKey }
-      : resolveSystemMainSessionTarget(cfg);
+    const systemTarget =
+      requestedSessionKey && requestedOwner?.ok
+        ? {
+            agentId: requestedOwner.agentId,
+            sessionKey: canonicalizeMainSessionAlias({
+              cfg,
+              agentId: requestedOwner.agentId,
+              sessionKey: requestedSessionKey,
+            }),
+          }
+        : resolveSystemMainSessionTarget(cfg);
     const { agentId: eventOwnerAgentId, sessionKey } = systemTarget;
     const wake = params.wake === true;
     const isNodePresenceLine = text.startsWith("Node:");
@@ -220,9 +225,7 @@ export const systemHandlers: GatewayRequestHandlers = {
       return;
     }
     if (wake && requestedSessionKey) {
-      const requestedAgentId = normalizeAgentId(
-        requestedOwner?.agentId ?? resolveAgentIdFromSessionKey(requestedSessionKey),
-      );
+      const requestedAgentId = eventOwnerAgentId;
       const configuredAgentIds = listAgentIds(cfg).map(normalizeAgentId);
       if (!configuredAgentIds.includes(requestedAgentId)) {
         respond(
@@ -234,7 +237,7 @@ export const systemHandlers: GatewayRequestHandlers = {
       }
       // A targeted wake starts a model run. Require a live persisted session
       // so malformed keys cannot create phantom work under agent defaults.
-      const { entry: targetSession } = loadGatewaySessionEntryReadOnly(requestedSessionKey, {
+      const { entry: targetSession } = loadGatewaySessionEntryReadOnly(sessionKey, {
         agentId: requestedAgentId,
       });
       if (!targetSession || targetSession.archivedAt !== undefined) {
@@ -313,10 +316,7 @@ export const systemHandlers: GatewayRequestHandlers = {
       const reasonChanged = changed.has("reason") && !ignoreReason;
       const hasChanges = hostChanged || ipChanged || versionChanged || modeChanged || reasonChanged;
       if (hasChanges) {
-        const contextChanged = isSystemEventContextChanged(
-          resolveSystemEventQueueKey(sessionKey, eventOwnerAgentId),
-          presenceUpdate.key,
-        );
+        const contextChanged = isSystemEventContextChanged(sessionKey, presenceUpdate.key);
         const parts: string[] = [];
         // Re-state node identity only when the line would otherwise lose
         // routing context or the host/IP changed.
@@ -340,20 +340,12 @@ export const systemHandlers: GatewayRequestHandlers = {
             sessionKey,
             contextKey: presenceUpdate.key,
           };
-          enqueueSystemEvent(
-            deltaText,
-            eventOwnerAgentId
-              ? withSystemEventOwner(eventOptions, eventOwnerAgentId)
-              : eventOptions,
-          );
+          enqueueSystemEvent(deltaText, eventOptions);
         }
       }
     } else {
       const eventOptions = { sessionKey };
-      enqueueSystemEvent(
-        text,
-        eventOwnerAgentId ? withSystemEventOwner(eventOptions, eventOwnerAgentId) : eventOptions,
-      );
+      enqueueSystemEvent(text, eventOptions);
       if (wake) {
         // Targeted admin events may need a proactive response. Carry the exact
         // session through the wake so its delivery context, not main, wins.

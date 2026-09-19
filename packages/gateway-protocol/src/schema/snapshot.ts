@@ -123,6 +123,16 @@ const HealthSnapshotSchema = closedObject({
           oldestFailedAt: Type.Optional(Type.Integer({ minimum: 0 })),
         }),
       ),
+      blocked: Type.Optional(
+        Type.Array(
+          closedObject({
+            queueName: Type.String(),
+            count: Type.Integer({ minimum: 0 }),
+            oldestEnqueuedAt: Type.Integer({ minimum: 0 }),
+            reason: Type.String(),
+          }),
+        ),
+      ),
       ingressFailed: Type.Optional(
         Type.Array(
           closedObject({

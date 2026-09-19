@@ -394,10 +394,7 @@ describe("control UI session PR subscriptions", () => {
 
     await active.replace("conn-a", ["agent:work:global"]);
 
-    expect(load).toHaveBeenCalledWith(
-      { sessionKey: "global", agentId: "work" },
-      expect.any(AbortSignal),
-    );
+    expect(load).toHaveBeenCalledWith({ sessionKey: "agent:work:global" }, expect.any(AbortSignal));
   });
 
   it("forces only requested watched keys through the shared loader", async () => {

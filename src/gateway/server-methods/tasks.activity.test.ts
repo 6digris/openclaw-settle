@@ -185,9 +185,13 @@ describe("tasks gateway execution and activity", () => {
     async (scenario) => {
       const runId = `run-cli-${scenario}`;
       const sessionKey = "agent:main:dashboard:cli-isolation";
+      const contextAgentId = scenario === "other-agent" ? "other" : "main";
       const context = {
-        sessionKey: scenario === "other-session" ? "agent:main:dashboard:other" : sessionKey,
-        agentId: scenario === "other-agent" ? "other" : "main",
+        sessionKey:
+          scenario === "other-session"
+            ? "agent:main:dashboard:other"
+            : `agent:${contextAgentId}:dashboard:cli-isolation`,
+        agentId: contextAgentId,
       };
       claimAgentRunContext(runId, context, { trackOwner: true, ownsContext: true });
       const task = createTaskFixture("cli", {

@@ -15,7 +15,6 @@ import {
   resolveSqliteReadScope,
   toDatabaseOptions,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
-import { setCanonicalSqliteSessionMainKey } from "../config/sessions/session-canonical-key.js";
 import { withCanonicalSessionValidationDeferral } from "../config/sessions/session-canonical-validation-deferral.js";
 import { sessionTranscriptIndexNeedsReconcile } from "../config/sessions/session-transcript-index.js";
 import { waitForSessionTranscriptIndexReconcile } from "../config/sessions/session-transcript-reconcile.js";
@@ -26,6 +25,7 @@ import * as nodeSqlite from "../infra/node-sqlite.js";
 import * as coordinator from "../infra/state-database-coordinator.js";
 import { hasPersistedOpenClawAgentCanonicalValidation } from "../state/openclaw-agent-canonical-validation-receipt.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
+import { unregisterOpenClawAgentDatabase } from "../state/openclaw-agent-db-registry.js";
 import {
   closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
@@ -182,9 +182,9 @@ describe("runStartupSessionMigration", () => {
       const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
       const options = { agentId: "main", env };
       const initial = openOpenClawAgentDatabase(options);
-      setCanonicalSqliteSessionMainKey(initial, "previous");
       await closeOpenClawAgentDatabasesAsync(stateDir);
       closeOpenClawAgentDatabasesForTest(stateDir);
+      unregisterOpenClawAgentDatabase({ ...options, path: initial.path });
       const open = vi.spyOn(nodeSqlite, "openNodeSqliteDatabase");
       let handedOff: ReturnType<typeof getOpenClawAgentDatabaseIfOpen>;
       let reconciled: ReturnType<typeof openOpenClawAgentDatabase> | undefined;

@@ -7,7 +7,7 @@ import {
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
 import { normalizeSqliteNumber } from "../infra/sqlite-number.js";
-import { parseAgentSessionKey } from "../routing/session-key.js";
+import { parseAgentSessionKey, resolveLegacySessionKeyCandidates } from "../routing/session-key.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
   SESSION_WATCH_PROVENANCE_AMBIENT_GROUP,
@@ -53,18 +53,27 @@ type SessionWatchCursorRow = Selectable<OpenClawStateKyselyDatabase["session_wat
 const SESSION_STATE_RETENTION_MS = 30 * 24 * 60 * 60_000;
 const SESSION_STATE_MAX_ROWS = 50_000;
 
-// Bare keys (session.scope="global") are store-local per agent, but cursors, the
-// system-event queue, and heartbeat wakes are keyed by session key alone. A notice
-// for one agent's child could be drained and acknowledged by another agent's global
-// turn — a cross-A2A metadata leak plus a lost notification. Until watcher identity
-// is agent-scoped end-to-end, such watchers get durable events and changesSince but
-// no notices.
+// Historical ownerless watcher keys cannot safely address a shared queue.
 export function isNotifiableWatcherKey(watcherSessionKey: string): boolean {
   return parseAgentSessionKey(watcherSessionKey) != null;
 }
 
 export function getSessionStateKysely(db: DatabaseSync) {
   return getNodeSqliteKysely<SessionStateDatabase>(db);
+}
+
+export function readSessionStateHead(db: DatabaseSync, sessionKey: string, agentId: string) {
+  return executeSqliteQueryTakeFirstSync(
+    db,
+    getSessionStateKysely(db)
+      .selectFrom("session_state_heads")
+      .select((eb) => [
+        eb.fn.max<number>("last_sequence").as("last_sequence"),
+        eb.fn.max<number>("pruned_max_sequence").as("pruned_max_sequence"),
+      ])
+      .where("session_key", "in", resolveLegacySessionKeyCandidates({ sessionKey, agentId }))
+      .where("agent_id", "=", agentId),
+  );
 }
 
 export function normalizeOptionalSqliteNumber(
@@ -193,11 +202,28 @@ function clampSessionStateOccurredAt(value: number | undefined, now: number): nu
 /** The caller owns one synchronous transaction for the event, head, and cursors. */
 export function recordSessionStateEventInDatabase(
   db: DatabaseSync,
-  input: SessionStateEventInput,
+  event: SessionStateEventInput,
   now: number,
 ): { row?: SessionStateEventRow; notices: SessionStateNotice[] } {
-  const occurredAt = clampSessionStateOccurredAt(input.occurredAt, now);
+  const occurredAt = clampSessionStateOccurredAt(event.occurredAt, now);
   const notices: SessionStateNotice[] = [];
+  const keys = resolveLegacySessionKeyCandidates(event);
+  if (event.kind === "created" && keys.length > 1) {
+    const dedupeKeys = keys.map((key) => `created:${event.agentId}:${key}:${event.sessionId}`);
+    if (event.dedupeKey && dedupeKeys.includes(event.dedupeKey)) {
+      const existing = executeSqliteQueryTakeFirstSync(
+        db,
+        getSessionStateKysely(db)
+          .selectFrom("session_state_events")
+          .selectAll()
+          .where("dedupe_key", "in", dedupeKeys),
+      );
+      if (existing) {
+        return { row: existing, notices };
+      }
+    }
+  }
+  const input = { ...event, sessionKey: keys[0]! };
   const insert = executeSqliteQuerySync(
     db,
     getSessionStateKysely(db)
@@ -231,9 +257,6 @@ export function recordSessionStateEventInDatabase(
         updated_at: now,
       })
       .onConflict((conflict) =>
-        // (session_key, agent_id) composite identity: under session.scope="global"
-        // every agent owns a session-store row keyed "global"; a key-only head
-        // would let agents overwrite each other's version heads.
         conflict.columns(["session_key", "agent_id"]).doUpdateSet({
           last_sequence: insertedSequence,
           updated_at: now,

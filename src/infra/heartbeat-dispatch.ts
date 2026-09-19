@@ -64,7 +64,6 @@ import {
   type NormalizedOutboundPayload,
 } from "./outbound/payloads.js";
 import { buildOutboundSessionContext } from "./outbound/session-context.js";
-import { resolveSystemEventQueueKey, withSystemEventOwner } from "./system-event-ownership.js";
 import { consumeSelectedSystemEventEntries, enqueueSystemEvent } from "./system-events.js";
 
 type HeartbeatDispatch = {
@@ -143,7 +142,7 @@ function prepareHeartbeatTargetAwareness(params: {
         const suffix = text.length < deliveredText.length ? "\n[truncated]" : "";
         enqueueSystemEvent(
           `A heartbeat delivered this message to this channel:\n${text}${suffix}`,
-          withSystemEventOwner({ sessionKey, contextKey: idempotencyKey }, params.agentId),
+          { sessionKey, contextKey: idempotencyKey },
         );
       } catch (error) {
         // Platform delivery already succeeded; projection remains best-effort bookkeeping.
@@ -284,10 +283,7 @@ async function prepareHeartbeatDispatchReply(
       accountId: delivery.accountId,
     });
     if (consume && preflight.shouldInspectPendingEvents) {
-      consumeSelectedSystemEventEntries(
-        resolveSystemEventQueueKey(sessionKey, agentId),
-        prepared.inspectedSystemEventsToConsume,
-      );
+      consumeSelectedSystemEventEntries(sessionKey, prepared.inspectedSystemEventsToConsume);
       if (prepared.hasExecCompletion && prepared.hasCronEvents) {
         // Coalesced waiters share this turn, but exec and cron retain separate prompt/delivery policy.
         requestHeartbeat({

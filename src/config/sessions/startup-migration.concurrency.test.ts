@@ -3,6 +3,7 @@
 import { writeFileSync } from "node:fs";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import type { MessagePort, Worker, WorkerOptions } from "node:worker_threads";
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeferredCore, type Deferred } from "../../shared/deferred.js";
 import { hasPersistedOpenClawAgentCanonicalValidation } from "../../state/openclaw-agent-canonical-validation-receipt.js";
@@ -404,65 +405,111 @@ it("reuses durable fleet receipts and recertifies only the store revoked by its 
   });
 });
 
-it("stops fleet admission on refusal and drains an already-started sibling before startup rejects", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-    const { agentIds, cfg } = seedFleet(state.env, true);
-    const gate = gateFirstCertificationPerTask();
-    const consumed: string[] = [];
-    let settled = false;
-    const startup = runSessionStartupMigration({
-      cfg,
-      env: state.env,
-      log: { info: vi.fn(), warn: vi.fn() },
-      deps: {
-        migrateManagedWorktreeCanonicalWorkspaces: async ({ agentId, mode }) => {
-          expect(mode).toBe("detect");
-          consumed.push(agentId);
-          return { found: 0, repaired: 0 };
+it.each([
+  { refusal: "projection mismatch", failedIndex: 0, error: "invalid persisted session row" },
+  {
+    refusal: "bare heartbeat lineage after worker reuse",
+    failedIndex: 2,
+    error: "non-canonical persisted row resolves to session key global",
+  },
+])(
+  "stops fleet admission on $refusal and drains an already-started sibling before startup rejects",
+  async ({ failedIndex, error: expectedError }) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const { agentIds, cfg } = seedFleet(state.env, failedIndex === 0);
+      const failedAgentId = expectDefined(agentIds[failedIndex], "failed fleet agent");
+      if (failedIndex > 0) {
+        const { db } = openOpenClawAgentDatabase({ agentId: failedAgentId, env: state.env });
+        db.prepare(
+          "UPDATE session_nodes SET entry_json = json_set(entry_json, '$.heartbeatIsolatedBaseSessionKey', 'global')",
+        ).run();
+        db.prepare("UPDATE session_nodes SET entry_valid = 1").run();
+        closeOpenClawAgentDatabasesForTest(state.env.OPENCLAW_STATE_DIR);
+      }
+      const gate = gateFirstCertificationPerTask();
+      const consumed: string[] = [];
+      const handedOff: string[] = [];
+      let settled = false;
+      const startup = runSessionStartupMigration({
+        cfg,
+        env: state.env,
+        log: { info: vi.fn(), warn: vi.fn() },
+        handoffDatabase: async ({ agentId }) => {
+          handedOff.push(agentId);
         },
-      },
-    });
-    const outcome = startup.then(
-      () => {
-        settled = true;
-        return undefined;
-      },
-      (error: unknown) => {
-        settled = true;
-        return error;
-      },
-    );
-    try {
-      await gate.waitFor("certification", 2, outcome);
-      expect(gate.held).toHaveLength(2);
-      const first = gate.held.find(({ agentId }) => agentId === agentIds[0]);
-      const failedWorker = gate.tasks.find(({ agentId }) => agentId === agentIds[0]);
-      expect(first).toBeDefined();
-      expect(failedWorker).toBeDefined();
-      first!.release();
-      await failedWorker!.exited.promise;
-      await yieldToEventLoop();
-      expect(settled).toBe(false);
-      expect(gate.tasks).toHaveLength(2);
-      expect(gate.held.map(({ agentId }) => agentId)).toEqual([agentIds[1]]);
-      expect(consumed).toEqual([]);
-
-      gate.releaseAll();
-      expect(await outcome).toEqual(
-        expect.objectContaining({
-          message: expect.stringContaining("invalid persisted session row"),
-        }),
+        deps: {
+          migrateManagedWorktreeCanonicalWorkspaces: async ({ agentId, mode }) => {
+            expect(mode).toBe("detect");
+            consumed.push(agentId);
+            return { found: 0, repaired: 0 };
+          },
+        },
+      });
+      const outcome = startup.then(
+        () => {
+          settled = true;
+          return undefined;
+        },
+        (error: unknown) => {
+          settled = true;
+          return error;
+        },
       );
-      expect(gate.tasks).toHaveLength(2);
-      expect(consumed).toEqual([agentIds[1]]);
-      expect([...observer.workers].every((worker) => worker.threadId === -1)).toBe(true);
-      expect(() => assertNoOpenClawAgentDatabaseLeasesReadOnly({ env: state.env })).not.toThrow();
-    } finally {
-      gate.releaseAll();
-      await outcome;
-    }
-  });
-});
+      try {
+        await gate.waitFor("certification", 2, outcome);
+        if (failedIndex > 0) {
+          while (gate.held.length > 0) {
+            gate.held[0]!.release();
+          }
+          await gate.waitFor("release", 2, outcome);
+          expect(gate.tasks.every((task) => task.closed)).toBe(true);
+          while (gate.heldReleases.length > 0) {
+            gate.heldReleases[0]!.release();
+          }
+          await gate.waitFor("certification", 2, outcome);
+        }
+        expect(gate.held).toHaveLength(2);
+        const first = gate.held.find(({ agentId }) => agentId === failedAgentId);
+        const failedTask = gate.tasks.find(({ agentId }) => agentId === failedAgentId);
+        expect(first).toBeDefined();
+        expect(failedTask).toBeDefined();
+        if (failedIndex > 0) {
+          expect(gate.tasks.slice(0, failedIndex).map((task) => task.worker)).toContain(
+            failedTask!.worker,
+          );
+          expect(observer.workers.size).toBe(2);
+        }
+        first!.release();
+        await Promise.race([
+          failedTask!.exited.promise,
+          gate.waitFor("release", 1, outcome).then(() => {
+            throw new Error("Non-canonical session passed pooled validation");
+          }),
+        ]);
+        await yieldToEventLoop();
+        expect(settled).toBe(false);
+        expect(gate.tasks).toHaveLength(failedIndex + 2);
+        expect(gate.held.map(({ agentId }) => agentId)).toEqual([agentIds[failedIndex + 1]]);
+        expect(consumed.toSorted()).toEqual(agentIds.slice(0, failedIndex));
+        expect(handedOff.toSorted()).toEqual(agentIds.slice(0, failedIndex));
+
+        gate.releaseAll();
+        expect(await outcome).toEqual(
+          expect.objectContaining({ message: expect.stringContaining(expectedError) }),
+        );
+        expect(gate.tasks).toHaveLength(failedIndex + 2);
+        const completed = [...agentIds.slice(0, failedIndex), agentIds[failedIndex + 1]];
+        expect(consumed.toSorted()).toEqual(completed);
+        expect(handedOff.toSorted()).toEqual(completed);
+        expect([...observer.workers].every((worker) => worker.threadId === -1)).toBe(true);
+        expect(() => assertNoOpenClawAgentDatabaseLeasesReadOnly({ env: state.env })).not.toThrow();
+      } finally {
+        gate.releaseAll();
+        await outcome;
+      }
+    });
+  },
+);
 
 it("holds writer admission when a refused task's first native retirement fails", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {

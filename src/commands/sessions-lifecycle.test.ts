@@ -194,27 +194,42 @@ describe("sessions lifecycle commands", () => {
   });
 
   it.each([
-    ["archive", sessionsArchiveCommand, "Cannot archive an agent's main session."],
-    ["delete", sessionsDeleteCommand, "Cannot delete the main session (agent:work:gateway-main)."],
+    ["archive", sessionsArchiveCommand, "Cannot archive an agent's main session.", false],
+    [
+      "delete",
+      sessionsDeleteCommand,
+      "Cannot delete the main session (agent:work:gateway-main).",
+      false,
+    ],
+    ["archive", sessionsArchiveCommand, "Cannot archive an agent's main session.", true],
+    [
+      "delete",
+      sessionsDeleteCommand,
+      "Cannot delete the main session (agent:work:gateway-main).",
+      true,
+    ],
   ] as const)(
-    "%s previews use Gateway main facts without treating global as protected",
-    async (operation, command, error) => {
+    "%s previews use Gateway main facts without treating global as protected (case %#)",
+    async (operation, command, error, legacy) => {
       mocks.getRuntimeConfig.mockReturnValue({
         agents: { entries: { work: {} } },
         session: { mainKey: "main", scope: "global" },
       });
-      mocks.callGateway.mockResolvedValueOnce(
-        listResult([
-          { key: "agent:work:gateway-main", sessionId: "main-session", isMain: true },
-          { key: "agent:work:main", sessionId: "ordinary-session", isMain: false },
-          { key: "global", sessionId: "global-session", isMain: true },
-        ]),
+      const globalKey = legacy ? "global" : "agent:work:global";
+      mocks.callGateway.mockImplementation(async (method: string) =>
+        method === "sessions.resolve"
+          ? { ok: true, key: globalKey, agentId: "work" }
+          : listResult([
+              { key: "agent:work:gateway-main", sessionId: "main-session", isMain: true },
+              { key: "agent:work:main", sessionId: "ordinary-session", isMain: false },
+              { key: globalKey, sessionId: "global-session", agentId: "work", isMain: true },
+            ]),
       );
       const runtime = createNonExitingRuntimeEnv();
 
       await command(
         {
-          keys: ["agent:work:gateway-main", "agent:work:main", "global"],
+          keys: ["agent:work:gateway-main", "agent:work:main", globalKey],
           agent: "work",
           url: "ws://gateway.test",
           dryRun: true,
@@ -223,7 +238,7 @@ describe("sessions lifecycle commands", () => {
         runtime,
       );
 
-      expect(mocks.callGateway).toHaveBeenCalledTimes(1);
+      expect(mocks.callGateway).toHaveBeenCalledTimes(legacy ? 2 : 1);
       expect(mocks.confirm).not.toHaveBeenCalled();
       expect(runtime.writeJson).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -233,12 +248,79 @@ describe("sessions lifecycle commands", () => {
           results: [
             { key: "agent:work:gateway-main", ok: false, status: "failed", error },
             { key: "agent:work:main", ok: true, status: `would_${operation}` },
-            { key: "global", ok: true, status: `would_${operation}` },
+            { key: "agent:work:global", ok: true, status: `would_${operation}` },
           ],
         }),
         2,
       );
       expect(runtime.exit).toHaveBeenCalledWith(1);
+    },
+  );
+
+  it.each([
+    ["archive", sessionsArchiveCommand, "sessions.patch", { archived: true }],
+    ["delete", sessionsDeleteCommand, "sessions.delete", { deleteTranscript: true }],
+  ] as const)(
+    "keeps the resolved legacy owner and wire identity for %s",
+    async (_operation, command, method, mutation) => {
+      mocks.callGateway.mockImplementation(async (rpc: string) => {
+        if (rpc === "sessions.resolve") {
+          return { ok: true, key: "global", agentId: "work" };
+        }
+        if (rpc === "sessions.list") {
+          return listResult([
+            { key: "global", agentId: "main", sessionId: "other-owner" },
+            { key: "global", agentId: "work", sessionId: "selected-raw" },
+            { key: "agent:work:global", agentId: "work", sessionId: "distinct-qualified" },
+          ]);
+        }
+        return { ok: true, key: "global", deleted: true, entry: { archivedAt: 123 } };
+      });
+      const runtime = createNonExitingRuntimeEnv();
+      await command({ keys: ["global"], yes: true, json: true }, runtime);
+      expect(mocks.callGateway).toHaveBeenLastCalledWith(
+        method,
+        expect.anything(),
+        {
+          key: "global",
+          agentId: "work",
+          expectedSessionId: "selected-raw",
+          ...mutation,
+        },
+        { defaultTimeoutMs: 10 * 60_000 },
+      );
+      expect(runtime.exit).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { resolvedOwner: "work", rowOwner: undefined },
+    { resolvedOwner: "work", rowOwner: "!!!" },
+    { resolvedOwner: undefined, rowOwner: "work" },
+    { resolvedOwner: "!!!", rowOwner: "work" },
+    { resolvedOwner: undefined, rowOwner: "work", ambiguous: true },
+  ])(
+    "rejects an unowned legacy row before mutation ($resolvedOwner/$rowOwner/$ambiguous)",
+    async ({ resolvedOwner, rowOwner, ambiguous }) => {
+      mocks.callGateway.mockImplementation(async (method: string) =>
+        method === "sessions.resolve"
+          ? ambiguous
+            ? {
+                ok: false,
+                candidates: [
+                  { key: "global", agentId: "work" },
+                  { key: "global", agentId: "main" },
+                ],
+              }
+            : { ok: true, key: "global", agentId: resolvedOwner }
+          : listResult([{ key: "global", agentId: rowOwner, sessionId: "raw-id", isMain: true }]),
+      );
+      const runtime = createNonExitingRuntimeEnv();
+      await sessionsDeleteCommand({ keys: ["global"], yes: true, json: true }, runtime);
+      expect(mocks.callGateway.mock.calls.some(([method]) => method === "sessions.delete")).toBe(
+        false,
+      );
+      expect(runtime.writeJson).toHaveBeenCalledWith(expect.objectContaining({ ok: false }), 2);
     },
   );
 
@@ -407,24 +489,46 @@ describe("sessions lifecycle commands", () => {
   it.each([
     { key: "agent:main:active", canonicalKey: "agent:main:active", agentId: "main" },
     { key: "agent:work:active", canonicalKey: "agent:work:active", agentId: "work" },
-    { key: "global", canonicalKey: "global", agentId: "work" },
-    { key: "unknown", canonicalKey: "unknown", agentId: "work" },
-    { key: "agent:work:main", canonicalKey: "global", agentId: "work" },
+    { key: "global", canonicalKey: "agent:work:global", agentId: "work" },
+    { key: "unknown", canonicalKey: "agent:work:unknown", agentId: "work" },
+    { key: "agent:work:main", canonicalKey: "agent:work:main", agentId: "work" },
   ])(
     "targets the Gateway owner of $key when explaining retained memory",
     async ({ key, canonicalKey, agentId }) => {
-      mocks.callGateway
-        .mockResolvedValueOnce(listResult([{ key, sessionId: "session-1", agentId }]))
-        .mockResolvedValueOnce({
+      const isAlias = !key.startsWith("agent:");
+      mocks.callGateway.mockImplementation(async (method: string) => {
+        if (method === "sessions.resolve") {
+          return { ok: true, key: canonicalKey, agentId };
+        }
+        if (method === "sessions.list") {
+          return listResult([
+            { key: isAlias ? canonicalKey : key, sessionId: "session-1", agentId },
+          ]);
+        }
+        return {
           ok: true,
           key: canonicalKey,
           deleted: true,
           archived: ["/state/session-1.jsonl.deleted.123"],
-        });
+        };
+      });
       const runtime = createNonExitingRuntimeEnv();
 
       await sessionsDeleteCommand({ keys: [key], yes: true }, runtime);
 
+      if (isAlias) {
+        expect(mocks.callGateway).toHaveBeenCalledWith(
+          "sessions.resolve",
+          expect.anything(),
+          expect.objectContaining({
+            key,
+            includeGlobal: true,
+            includeUnknown: true,
+            allowMissing: true,
+          }),
+          expect.anything(),
+        );
+      }
       expect(runtime.log).toHaveBeenCalledWith(`Deleted session ${canonicalKey}.`);
       expect(runtime.log).toHaveBeenCalledWith(
         "Archived transcript: /state/session-1.jsonl.deleted.123",
@@ -440,7 +544,7 @@ describe("sessions lifecycle commands", () => {
     },
   );
 
-  it("keeps separate owners when delete responses share a canonical key", async () => {
+  it("keeps separate owners when legacy Gateway delete responses return global", async () => {
     mocks.callGateway
       .mockResolvedValueOnce(
         listResult([
@@ -508,8 +612,14 @@ describe("sessions lifecycle commands", () => {
 
   it("does not guess an owner when the Gateway omits its optional agent field", async () => {
     mocks.callGateway
-      .mockResolvedValueOnce(listResult([{ key: "unknown", sessionId: "session-1" }]))
-      .mockResolvedValueOnce({ ok: true, key: "unknown", deleted: true, archived: ["/archive"] });
+      .mockResolvedValueOnce({ ok: true, key: "agent:work:unknown", agentId: "work" })
+      .mockResolvedValueOnce(listResult([{ key: "agent:work:unknown", sessionId: "session-1" }]))
+      .mockResolvedValueOnce({
+        ok: true,
+        key: "agent:work:unknown",
+        deleted: true,
+        archived: ["/archive"],
+      });
     const runtime = createNonExitingRuntimeEnv();
 
     await sessionsDeleteCommand({ keys: ["unknown"], yes: true }, runtime);

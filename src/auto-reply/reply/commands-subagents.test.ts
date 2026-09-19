@@ -7,6 +7,7 @@
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { GATEWAY_CLIENT_CAPS } from "../../../packages/gateway-protocol/src/client-info.js";
 import { buildControlledSubagentRunsReadContext } from "../../agents/subagents/registry/subagent-control-scope.js";
 import { SUBAGENT_ENDED_REASON_KILLED } from "../../agents/subagents/registry/subagent-lifecycle-events.js";
 import {
@@ -326,8 +327,8 @@ describe("subagents global-session inspection", () => {
       addSubagentRunForTests({
         runId: `global-${agentId}`,
         childSessionKey: `agent:${agentId}:subagent:worker`,
-        controllerSessionKey: "global",
-        requesterSessionKey: "global",
+        controllerSessionKey: `agent:${agentId}:global`,
+        requesterSessionKey: `agent:${agentId}:global`,
         requesterAgentId: agentId,
         requesterDisplayKey: "global",
         task: `${agentId} worker`,
@@ -360,6 +361,7 @@ describe("subagents global-session inspection", () => {
       if (command === "/subagents log 1") {
         expect(callGatewayMock).toHaveBeenCalledWith({
           method: "chat.history",
+          caps: [GATEWAY_CLIENT_CAPS.CANONICAL_SESSION_KEYS],
           params: { sessionKey: "agent:research:subagent:worker", limit: 20 },
         });
       }
@@ -497,6 +499,7 @@ describe("subagents info", () => {
     await handleSubagentsLogAction(context);
     expect(callGatewayMock).toHaveBeenLastCalledWith({
       method: "chat.history",
+      caps: [GATEWAY_CLIENT_CAPS.CANONICAL_SESSION_KEYS],
       params: { sessionKey: "agent:main:subagent:numbering-recent", limit: 20 },
     });
   });
@@ -755,6 +758,7 @@ describe("subagents log", () => {
     expect(requireReplyText(result.reply)).toContain("log line");
     expect(callGatewayMock).toHaveBeenCalledWith({
       method: "chat.history",
+      caps: [GATEWAY_CLIENT_CAPS.CANONICAL_SESSION_KEYS],
       params: { sessionKey: "agent:main:subagent:log", limit: 20 },
     });
   });
@@ -837,6 +841,7 @@ describe("subagents log", () => {
 
     expect(callGatewayMock).toHaveBeenCalledWith({
       method: "chat.history",
+      caps: [GATEWAY_CLIENT_CAPS.CANONICAL_SESSION_KEYS],
       params: { sessionKey: "agent:main:subagent:log", limit: 5 },
     });
   });
@@ -846,6 +851,7 @@ describe("subagents log", () => {
 
     expect(callGatewayMock).toHaveBeenCalledWith({
       method: "chat.history",
+      caps: [GATEWAY_CLIENT_CAPS.CANONICAL_SESSION_KEYS],
       params: { sessionKey: "agent:main:subagent:log", limit: 1 },
     });
   });
@@ -855,6 +861,7 @@ describe("subagents log", () => {
 
     expect(callGatewayMock).toHaveBeenCalledWith({
       method: "chat.history",
+      caps: [GATEWAY_CLIENT_CAPS.CANONICAL_SESSION_KEYS],
       params: { sessionKey: "agent:main:subagent:log", limit: 20 },
     });
   });

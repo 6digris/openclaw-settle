@@ -335,7 +335,7 @@ describe("sessions_history redaction", () => {
     const result = await tool.execute("call-1", args);
     const request = requireGatewayRequest(requests, "chat.history");
 
-    expect(request.params).toMatchObject({ sessionKey: "main", messageId: "message-1" });
+    expect(request.params).toMatchObject({ sessionKey: "agent:main:main", messageId: "message-1" });
     expect(request.params).not.toHaveProperty("offset");
     expect(result.details).not.toHaveProperty("offset");
     expect(args).toEqual({ sessionKey: "main", offset, messageId: "message-1" });
@@ -364,7 +364,7 @@ describe("sessions_history redaction", () => {
 
     expect(request).toMatchObject({
       method: "chat.history",
-      params: { sessionKey: "main", limit: 2 },
+      params: { sessionKey: "agent:main:main", limit: 2 },
     });
     expect((request.params as Record<string, unknown>).offset).toBeUndefined();
     expect((result.details as Record<string, unknown>).offset).toBeUndefined();
@@ -393,7 +393,7 @@ describe("sessions_history redaction", () => {
 
     expect(requireGatewayRequest(requests, "chat.history")).toMatchObject({
       method: "chat.history",
-      params: { sessionKey: "main", limit: 2, offset: 0 },
+      params: { sessionKey: "agent:main:main", limit: 2, offset: 0 },
     });
     expect(result.details).toMatchObject({
       offset: 0,
@@ -429,7 +429,7 @@ describe("sessions_history redaction", () => {
     expect(requireGatewayRequest(requests, "chat.history")).toMatchObject({
       method: "chat.history",
       params: {
-        sessionKey: "main",
+        sessionKey: "agent:main:main",
         limit: 3,
         messageId: "matching-message",
         sessionId: "matching-session",
@@ -858,7 +858,7 @@ describe("sessions_history redaction", () => {
 
     expect(requests).toContainEqual({
       method: "chat.history",
-      params: expect.objectContaining({ sessionKey: "global", agentId: "ops" }),
+      params: expect.objectContaining({ sessionKey: "agent:ops:global", agentId: "ops" }),
     });
   });
 

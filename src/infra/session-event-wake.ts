@@ -3,7 +3,11 @@ import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coerc
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { runWithoutOwnedSessionTranscriptWrites } from "../config/sessions/transcript-write-context.js";
 import { runWithGatewayDetachedWorkAdmission } from "../process/gateway-work-admission.js";
-import { parseAgentSessionKey } from "../routing/session-key.js";
+import {
+  normalizeAgentIdStrict,
+  parseAgentSessionKey,
+  scopeLegacySessionKeyToAgent,
+} from "../routing/session-key.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { normalizeHeartbeatWakeReason } from "./heartbeat-reason.js";
 import type { HeartbeatRunResult, HeartbeatWakeRequest } from "./heartbeat-wake-contracts.js";
@@ -121,13 +125,7 @@ function merge(previous: PendingWake, next: PendingWake): PendingWake {
 }
 
 function targetKey(request: SessionEventWakeRequest): string {
-  if (!request.sessionKey || (request.sessionKey === "global" && !request.agentId)) {
-    return `${request.agentId ?? ""}::`;
-  }
-  // Namespaced sessions carry their owner; shared keys need the agent store too.
-  return parseAgentSessionKey(request.sessionKey)
-    ? `::${request.sessionKey}`
-    : `${request.agentId ?? ""}::${request.sessionKey}`;
+  return request.sessionKey ? `::${request.sessionKey}` : `${request.agentId ?? ""}::`;
 }
 
 function shouldRetain(
@@ -503,10 +501,26 @@ function createSessionEventWakeRuntime() {
   function enqueueRequest(options: RequestOptions, settlement?: Settlement): void {
     const now = performance.now();
     const { coalesceMs, ...wake } = options;
+    const owner = wake.agentId === undefined ? null : normalizeAgentIdStrict(wake.agentId);
+    if (owner && !owner.ok) {
+      throw new Error("Invalid heartbeat agentId.");
+    }
+    const agentId = owner?.value;
+    const requestKey = normalizeOptionalString(wake.sessionKey);
+    const scopedKey = scopeLegacySessionKeyToAgent({ agentId, sessionKey: requestKey });
+    const parsed = parseAgentSessionKey(scopedKey);
+    if (scopedKey && !parsed) {
+      throw new Error(
+        "Heartbeat sessionKey must be agent-qualified or include an explicit agentId.",
+      );
+    }
+    if (parsed && agentId && parsed.agentId !== agentId) {
+      throw new Error("Heartbeat sessionKey does not match its agentId.");
+    }
     const normalized = {
       ...wake,
-      agentId: normalizeOptionalString(wake.agentId),
-      sessionKey: normalizeOptionalString(wake.sessionKey),
+      agentId,
+      sessionKey: parsed ? `agent:${parsed.agentId}:${parsed.rest}` : undefined,
       reason: normalizeHeartbeatWakeReason(wake.reason),
     };
     const nextSequence = ++sequence;
@@ -560,7 +574,14 @@ function createSessionEventWakeRuntime() {
       } else {
         waiters.add(settlement);
         signal?.addEventListener("abort", onAbort, { once: true });
-        enqueueRequest(options, settlement);
+        try {
+          enqueueRequest(options, settlement);
+        } catch (error) {
+          settlement.active = false;
+          waiters.delete(settlement);
+          signal?.removeEventListener("abort", onAbort);
+          throw error;
+        }
       }
     });
   }

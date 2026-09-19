@@ -87,7 +87,7 @@ describe("sessions tool", () => {
 
     expect(callGateway).toHaveBeenCalledWith({
       method: "sessions.patch",
-      params: { key: "global", agentId: "ops", label: "Ops" },
+      params: { key: "agent:ops:global", label: "Ops" },
     });
   });
 

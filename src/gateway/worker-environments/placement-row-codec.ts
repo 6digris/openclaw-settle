@@ -16,6 +16,7 @@ import {
   nextGeneration,
   normalizeCursor,
   normalizeEpoch,
+  normalizeIdentity,
   normalizeWorkerPlacementExecutionMode,
   normalizeTimestamp,
   nullableRequired,
@@ -145,9 +146,11 @@ export function fromRow(row: PlacementRow): WorkerSessionPlacementRecord {
   const recoveryError = nullableRequired(row.recovery_error, "recovery error");
   const turnClaim = parseTurnClaim(row);
   const base = {
-    sessionId: row.session_id,
-    agentId: row.agent_id,
-    sessionKey: row.session_key,
+    ...normalizeIdentity({
+      sessionId: row.session_id,
+      agentId: row.agent_id,
+      sessionKey: row.session_key,
+    }),
     executionMode,
     generation: row.transition_generation,
     createdAtMs: row.created_at_ms,

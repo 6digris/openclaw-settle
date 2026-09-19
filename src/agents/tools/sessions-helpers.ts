@@ -30,7 +30,6 @@ export {
 } from "./sessions-access.js";
 export {
   resolveCurrentSessionClientAlias,
-  resolveDisplaySessionKey,
   resolveInternalSessionKey,
   resolveMainSessionAlias,
   resolveSessionReference,

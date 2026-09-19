@@ -289,8 +289,11 @@ describe("session accessor readonly listing", () => {
         { sessionId: key, updatedAt },
       );
     }
-    for (const sessionKey of ["global", "unknown"]) {
-      replaceSessionEntrySync({ ...scope, sessionKey }, { sessionId: sessionKey, updatedAt: 1000 });
+    for (const key of ["global", "unknown"]) {
+      replaceSessionEntrySync(
+        { ...scope, sessionKey: `agent:main:${key}` },
+        { sessionId: key, updatedAt: 1000 },
+      );
     }
     runOpenClawAgentWriteTransaction((database) => {
       ensureTranscriptSessionRoot(
@@ -316,6 +319,8 @@ describe("session accessor readonly listing", () => {
       "agent:main:bad-timestamp",
     );
     const expectedKeys = [
+      "agent:main:global",
+      "agent:main:unknown",
       "agent:main:pending",
       "agent:main:tie-a",
       "agent:main:tie-b",
@@ -329,23 +334,22 @@ describe("session accessor readonly listing", () => {
     const listed = listSessionEntriesReadOnly({ ...scope, readConsistency: "latest" });
     expect(
       listed
-        .filter(({ sessionKey }) => !["global", "unknown"].includes(sessionKey))
         .map(({ sessionKey }) => sessionKey)
         .toSorted((left, right) => left.localeCompare(right)),
     ).toEqual(expectedKeys.toSorted((left, right) => left.localeCompare(right)));
     const summary = readSessionStoreSummaryReadOnly(scope, options);
-    expect(summary.count).toBe(7);
+    expect(summary.count).toBe(9);
     expect(summary.recent.map(({ sessionKey }) => sessionKey)).toEqual(expectedKeys.slice(0, 3));
-    expect(summary.recent[0]?.entry).toMatchObject({
+    expect(summary.recent[2]?.entry).toMatchObject({
       sessionId: "pending-updated",
       label: "fresh",
     });
-    expectDefined(summary.recent[0], "recent pending session").entry.label = "caller-owned";
-    expect(readSessionStoreSummaryReadOnly(scope, options).recent[0]?.entry.label).toBe("fresh");
+    expectDefined(summary.recent[2], "recent pending session").entry.label = "caller-owned";
+    expect(readSessionStoreSummaryReadOnly(scope, options).recent[2]?.entry.label).toBe("fresh");
     expect(readSessionStoreSummaryReadOnly(scope, { ...options, recentLimit: 0 })).toEqual({
-      count: 7,
+      count: 9,
       recent: [],
-      byAgent: new Map([[scope.agentId, { count: 7, recent: [] }]]),
+      byAgent: new Map([[scope.agentId, { count: 9, recent: [] }]]),
     });
 
     const retainedScope = { ...scope, sessionKey: "agent:main:retained" };

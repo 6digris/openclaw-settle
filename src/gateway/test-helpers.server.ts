@@ -45,7 +45,6 @@ import {
   setPreRestartDeferralCheck,
 } from "../infra/restart.js";
 import { normalizeLegacySessionEntryDelivery } from "../infra/state-migrations.legacy-session-store.js";
-import { resolveSystemEventQueueKey } from "../infra/system-event-ownership.js";
 import { peekSystemEvents, resetSystemEventsForTest } from "../infra/system-events.js";
 import { resetLogger, setLoggerOverride } from "../logging.js";
 import type { ChannelRouteRef } from "../plugin-sdk/channel-route.js";
@@ -53,7 +52,6 @@ import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js"
 import {
   LEGACY_IMPLICIT_AGENT_ID as DEFAULT_AGENT_ID,
   normalizeAgentId,
-  normalizeMainKey,
   parseAgentSessionKey,
   toAgentStoreSessionKey,
 } from "../routing/session-key.js";
@@ -126,20 +124,6 @@ let activeSuiteHookScopeCount = 0;
 // Gateway tests exercise RPC/server behavior, not production bind auto-detection by default.
 // Keep suite fixtures loopback-stable inside containers; bind-specific tests opt in explicitly.
 const DEFAULT_GATEWAY_TEST_BIND = "loopback" as const;
-
-function resolveGatewayTestMainSessionKeys(): string[] {
-  // Use the fixture's config seam; transitive runtime readers can retain real IO bindings.
-  const { sessionKey: resolved, agentId } = resolveSystemMainSessionTarget(getRuntimeConfig());
-  const keys = new Set([resolveSystemEventQueueKey(resolved, agentId)]);
-  if (resolved !== "global") {
-    keys.add(`agent:${agentId}:main`);
-    const configuredMainKey = normalizeMainKey(
-      (testState.sessionConfig as { mainKey?: unknown } | undefined)?.mainKey as string | undefined,
-    );
-    keys.add(`agent:${agentId}:${configuredMainKey}`);
-  }
-  return [...keys];
-}
 
 function serializeGatewayTestSessionConfig(): string | undefined {
   if (!testState.sessionConfig) {
@@ -1336,14 +1320,13 @@ export async function rpcReq<T extends Record<string, unknown>>(
 }
 
 export async function waitForSystemEvent(timeoutMs = 2000) {
-  const sessionKeys = resolveGatewayTestMainSessionKeys();
+  // Use the fixture's config seam; transitive runtime readers can retain real IO bindings.
+  const { sessionKey } = resolveSystemMainSessionTarget(getRuntimeConfig());
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    for (const sessionKey of sessionKeys) {
-      const events = peekSystemEvents(sessionKey);
-      if (events.length > 0) {
-        return events;
-      }
+    const events = peekSystemEvents(sessionKey);
+    if (events.length > 0) {
+      return events;
     }
     await new Promise((resolve) => {
       setTimeout(resolve, 10);

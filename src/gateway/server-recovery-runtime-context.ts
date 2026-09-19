@@ -1,3 +1,4 @@
+import { GATEWAY_CLIENT_CAPS } from "../../packages/gateway-protocol/src/client-info.js";
 import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import type { callGateway } from "./call.js";
 import type {
@@ -78,7 +79,10 @@ export function bindGatewayLifecycleRequest(
     assertCurrent();
     if (!hosted || request.url?.trim() || request.token?.trim() || request.password?.trim()) {
       const { callGateway } = await import("./call.js");
-      return await callGateway<T>(request);
+      return await callGateway<T>({
+        ...request,
+        caps: [...(request.caps ?? []), GATEWAY_CLIENT_CAPS.CANONICAL_SESSION_KEYS],
+      });
     }
     if (!runtime) {
       throw new Error(`Gateway instance lifecycle dispatch unavailable for ${request.method}`);

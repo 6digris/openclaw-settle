@@ -9,6 +9,7 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { GatewayProtocolRequestError } from "../../packages/gateway-client/src/protocol-request.js";
 import {
+  GATEWAY_CLIENT_CAPS,
   GATEWAY_CLIENT_MODES,
   GATEWAY_CLIENT_NAMES,
 } from "../../packages/gateway-protocol/src/client-info.js";
@@ -146,7 +147,7 @@ type AgentCliDeps = CliDeps & {
 };
 type AgentGatewayCallIdentity = Pick<
   Parameters<typeof callGateway>[0],
-  "clientName" | "mode" | "scopes"
+  "clientName" | "mode" | "scopes" | "caps"
 >;
 
 function usesImplicitRemoteCompatibilityDefault(roster: RemoteGatewayRoster): boolean {
@@ -930,10 +931,6 @@ function buildGatewayJsonResponse(response: GatewayAgentResponse): GatewayAgentR
   };
 }
 
-function isInFlightGatewayAgentResponse(response: GatewayAgentResponse): boolean {
-  return response.status === "in_flight";
-}
-
 function markAgentRunExitCode(
   status: unknown,
   signalBridge: ReturnType<typeof createAgentCliSignalBridge>,
@@ -1067,6 +1064,7 @@ async function agentViaGatewayCommand(
       ? GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT
       : GATEWAY_CLIENT_NAMES.CLI,
     mode: needsAdminGatewayIdentity ? GATEWAY_CLIENT_MODES.BACKEND : GATEWAY_CLIENT_MODES.CLI,
+    caps: [GATEWAY_CLIENT_CAPS.CANONICAL_SESSION_KEYS],
     // Overrides/resets require admin; otherwise only the local operator requests
     // owner scope, and remote callers keep the agent method's least-privilege scope.
     ...(needsAdminGatewayIdentity || !remoteGateway ? { scopes: [ADMIN_SCOPE] } : {}),
@@ -1180,7 +1178,7 @@ async function agentViaGatewayCommand(
 
   const payloads = response.result?.payloads ?? [];
 
-  if (isInFlightGatewayAgentResponse(response)) {
+  if (response.status === "in_flight") {
     runtime.error?.(formatInFlightGatewayAgentMessage(response));
     return response;
   }

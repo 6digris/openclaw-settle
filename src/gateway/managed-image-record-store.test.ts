@@ -154,6 +154,52 @@ describe("managed image record SQLite store", () => {
     expect(await readManagedImageRecord(expected.attachmentId, stateDir)).toEqual(expected);
   });
 
+  it.each(["global", "legacy-session"])(
+    "reads and attaches legacy %s media only through its recorded agent",
+    async (alias) => {
+      const initial = record({ sessionKey: `agent:main:${alias}` });
+      insertManagedImageRecord({ ...initial, sessionKey: alias }, stateDir);
+      const database = openOpenClawStateDatabase({
+        env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+      });
+      expect(
+        database.db
+          .prepare("SELECT session_key FROM managed_outgoing_image_records WHERE attachment_id = ?")
+          .get(initial.attachmentId),
+      ).toEqual({ session_key: initial.sessionKey });
+      database.db.prepare("UPDATE managed_outgoing_image_records SET session_key = ?").run(alias);
+      expect(await readManagedImageRecord(initial.attachmentId, stateDir)).toEqual(initial);
+      expect(
+        await listManagedImageRecordEntries({ stateDir, sessionKey: initial.sessionKey }),
+      ).toEqual([{ record: initial, cleanupPending: false }]);
+      expect(
+        await listManagedImageRecordEntries({ stateDir, sessionKey: `agent:other:${alias}` }),
+      ).toEqual([]);
+      expect(
+        attachManagedImageRecordToMessage({
+          attachmentId: initial.attachmentId,
+          sessionKey: `agent:other:${alias}`,
+          messageId: "message",
+          updatedAt: initial.createdAt,
+          stateDir,
+        }),
+      ).toBe(false);
+      expect(
+        attachManagedImageRecordToMessage({
+          attachmentId: initial.attachmentId,
+          sessionKey: initial.sessionKey,
+          messageId: "message",
+          updatedAt: initial.createdAt,
+          stateDir,
+        }),
+      ).toBe(true);
+      expect(await readManagedImageRecord(initial.attachmentId, stateDir)).toMatchObject({
+        sessionKey: initial.sessionKey,
+        messageId: "message",
+      });
+    },
+  );
+
   it("uses typed columns when the debug JSON copy is corrupt", async () => {
     const expected = record();
     insertManagedImageRecord(expected, stateDir);

@@ -7,5 +7,8 @@ export function resolveCanonicalMainSessionKey(params: {
   mainKey?: string | undefined;
   sessionScope?: SessionScope;
 }): string {
-  return params.sessionScope === "global" ? "global" : buildAgentMainSessionKey(params);
+  return buildAgentMainSessionKey({
+    agentId: params.agentId,
+    mainKey: params.sessionScope === "global" ? "global" : params.mainKey,
+  });
 }

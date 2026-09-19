@@ -4,6 +4,10 @@ import { isDeepStrictEqual } from "node:util";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import type { SessionUpstreamJsonValue, SessionUpstreamKind } from "../plugins/session-catalog.js";
+import {
+  resolveLegacySessionKeyCandidates,
+  toAgentStoreSessionKey,
+} from "../routing/session-key.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
@@ -29,6 +33,19 @@ function getSessionUpstreamKysely(db: DatabaseSync) {
   return getNodeSqliteKysely<SessionUpstreamDatabase>(db);
 }
 
+function findLink(db: DatabaseSync, sessionKey: string, agentId: string) {
+  return executeSqliteQuerySync(
+    db,
+    getSessionUpstreamKysely(db)
+      .selectFrom("session_upstream_links")
+      .selectAll()
+      .where("session_key", "in", resolveLegacySessionKeyCandidates({ agentId, sessionKey }))
+      .where("agent_id", "=", agentId)
+      .orderBy("session_key", "asc")
+      .limit(1),
+  ).rows[0];
+}
+
 export function upsertSessionUpstreamLink(
   input: {
     sessionKey: string;
@@ -50,13 +67,16 @@ export function upsertSessionUpstreamLink(
   try {
     return runOpenClawStateWriteTransaction(({ db }) => {
       options.assertCommitAllowed?.();
+      const sessionKey =
+        findLink(db, input.sessionKey, input.agentId)?.session_key ??
+        toAgentStoreSessionKey({ agentId: input.agentId, requestKey: input.sessionKey });
       const written =
         executeSqliteQuerySync(
           db,
           getSessionUpstreamKysely(db)
             .insertInto("session_upstream_links")
             .values({
-              session_key: input.sessionKey,
+              session_key: sessionKey,
               agent_id: input.agentId,
               catalog_id: input.catalogId,
               host_id: input.hostId,
@@ -134,14 +154,7 @@ export function readSessionUpstreamLink(
 ): SessionUpstreamLink | undefined {
   try {
     const { db } = openOpenClawStateDatabase(options);
-    const row = executeSqliteQuerySync(
-      db,
-      getSessionUpstreamKysely(db)
-        .selectFrom("session_upstream_links")
-        .selectAll()
-        .where("session_key", "=", sessionKey)
-        .where("agent_id", "=", agentId),
-    ).rows[0];
+    const row = findLink(db, sessionKey, agentId);
     return row ? rowToSessionUpstreamLink(row) : undefined;
   } catch (error) {
     log.warn(`failed to read session upstream link: ${String(error)}`);
@@ -159,6 +172,10 @@ export function updateSessionUpstreamLinkMarker(
   try {
     let updated = false;
     runOpenClawStateWriteTransaction(({ db }) => {
+      const row = findLink(db, sessionKey, agentId);
+      if (!row) {
+        return;
+      }
       let query = getSessionUpstreamKysely(db)
         .updateTable("session_upstream_links")
         .set({
@@ -166,7 +183,7 @@ export function updateSessionUpstreamLinkMarker(
           last_scanned_at: now,
           updated_at: now,
         })
-        .where("session_key", "=", sessionKey)
+        .where("session_key", "=", row.session_key)
         .where("agent_id", "=", agentId);
       if (options.expectedUpdatedAt !== undefined) {
         // CAS: a Continue can refresh the link mid-scan; a stale scan must not
@@ -194,18 +211,11 @@ export function deleteSessionUpstreamLink(
     return runOpenClawStateWriteTransaction(({ db }) => {
       options.assertCommitAllowed?.();
       const kysely = getSessionUpstreamKysely(db);
+      const row = findLink(db, sessionKey, agentId);
+      if (!row) {
+        return options.expected ? "absent" : "deleted";
+      }
       if (options.expected) {
-        const row = executeSqliteQuerySync(
-          db,
-          kysely
-            .selectFrom("session_upstream_links")
-            .selectAll()
-            .where("session_key", "=", sessionKey)
-            .where("agent_id", "=", agentId),
-        ).rows[0];
-        if (!row) {
-          return "absent";
-        }
         if (!isDeepStrictEqual(rowToSessionUpstreamLink(row), options.expected)) {
           return "changed";
         }
@@ -214,7 +224,13 @@ export function deleteSessionUpstreamLink(
         db,
         kysely
           .deleteFrom("session_upstream_links")
-          .where("session_key", "=", sessionKey)
+          .where(
+            "session_key",
+            "in",
+            options.expected
+              ? [row.session_key]
+              : resolveLegacySessionKeyCandidates({ agentId, sessionKey }),
+          )
           .where("agent_id", "=", agentId),
       );
       options.assertCommitAllowed?.();

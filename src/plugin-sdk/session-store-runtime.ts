@@ -629,7 +629,7 @@ export {
 } from "../config/sessions/transcript.js";
 export { resolveSessionKey } from "../config/sessions/session-key.js";
 export { resolveGroupSessionKey } from "../config/sessions/group.js";
-export { canonicalizeMainSessionAlias } from "../config/sessions/main-session.js";
+export { canonicalizeLegacyMainSessionAlias as canonicalizeMainSessionAlias } from "../config/sessions/main-session.js";
 export { clearSessionStoreCacheForTest } from "../config/sessions/store-writer-state.js";
 export { isValidAgentHarnessSessionStoreEntry } from "../sessions/agent-harness-session-key.js";
 // SDK-facing names are a shipped plugin contract; internals route through the

@@ -1164,21 +1164,21 @@ test("sessions.patch scopes selected global mutations and events to the requeste
     label: "Work global",
   });
 
-  expectFields(responsePayload, { ok: true, key: "global" });
+  expectFields(responsePayload, { ok: true, key: "agent:work:global" });
   expectChangedBroadcast(broadcastToConnIds, {
-    sessionKey: "global",
+    sessionKey: "agent:work:global",
     agentId: "work",
     reason: "patch",
     label: "Work global",
   });
   const mainEntry = loadSessionEntry({
     agentId: "main",
-    sessionKey: "global",
+    sessionKey: "agent:main:global",
     storePath: globalStores.mainStorePath,
   });
   const workEntry = loadSessionEntry({
     agentId: "work",
-    sessionKey: "global",
+    sessionKey: "agent:work:global",
     storePath: globalStores.workStorePath,
   });
   expect(mainEntry?.label).toBeUndefined();
@@ -1197,9 +1197,9 @@ test("sessions.compact scopes selected global truncation to the requested agent"
     },
   });
 
-  expectFields(responsePayload, { ok: true, key: "global", compacted: true, kept: 2 });
+  expectFields(responsePayload, { ok: true, key: "agent:work:global", compacted: true, kept: 2 });
   expectChangedBroadcast(broadcastToConnIds, {
-    sessionKey: "global",
+    sessionKey: "agent:work:global",
     agentId: "work",
     reason: "compact",
     compacted: true,
@@ -1208,7 +1208,7 @@ test("sessions.compact scopes selected global truncation to the requested agent"
     loadSeededTranscriptEvents({
       agentId: "main",
       sessionId: "sess-main-global",
-      sessionKey: "global",
+      sessionKey: "agent:main:global",
       storePath: globalStores.mainStorePath,
     }).then(transcriptMessageContents),
   ).resolves.toEqual(["main one", "main two"]);
@@ -1216,7 +1216,7 @@ test("sessions.compact scopes selected global truncation to the requested agent"
     loadSeededTranscriptEvents({
       agentId: "work",
       sessionId: "sess-work-global",
-      sessionKey: "global",
+      sessionKey: "agent:work:global",
       storePath: globalStores.workStorePath,
     }).then(transcriptMessageContents),
   ).resolves.toEqual(["work two"]);
@@ -1233,9 +1233,9 @@ test("sessions.compact trims default global agent when no agentId is supplied", 
     },
   });
 
-  expectFields(responsePayload, { ok: true, key: "global", compacted: true, kept: 2 });
+  expectFields(responsePayload, { ok: true, key: "agent:main:global", compacted: true, kept: 2 });
   expectChangedBroadcast(broadcastToConnIds, {
-    sessionKey: "global",
+    sessionKey: "agent:main:global",
     agentId: "main",
     reason: "compact",
     compacted: true,
@@ -1244,7 +1244,7 @@ test("sessions.compact trims default global agent when no agentId is supplied", 
     loadSeededTranscriptEvents({
       agentId: "main",
       sessionId: "sess-main-global",
-      sessionKey: "global",
+      sessionKey: "agent:main:global",
       storePath: globalStores.mainStorePath,
     }).then(transcriptMessageContents),
   ).resolves.toEqual(["main two"]);
@@ -1252,7 +1252,7 @@ test("sessions.compact trims default global agent when no agentId is supplied", 
     loadSeededTranscriptEvents({
       agentId: "work",
       sessionId: "sess-work-global",
-      sessionKey: "global",
+      sessionKey: "agent:work:global",
       storePath: globalStores.workStorePath,
     }).then(transcriptMessageContents),
   ).resolves.toEqual(["work one", "work two"]);
@@ -1270,13 +1270,13 @@ test("sessions.compact keeps manual trim no-op response shape", async () => {
     },
   });
 
-  expectFields(responsePayload, { ok: true, key: "global", compacted: false, kept: 3 });
+  expectFields(responsePayload, { ok: true, key: "agent:work:global", compacted: false, kept: 3 });
   expect(broadcastToConnIds).not.toHaveBeenCalled();
   await expect(
     loadSeededTranscriptEvents({
       agentId: "work",
       sessionId: "sess-work-global",
-      sessionKey: "global",
+      sessionKey: "agent:work:global",
       storePath: globalStores.workStorePath,
     }).then(transcriptMessageContents),
   ).resolves.toEqual(["work one", "work two"]);
@@ -1296,7 +1296,7 @@ test("sessions.compact keeps manual trim no-transcript response shape", async ()
 
   expectFields(responsePayload, {
     ok: true,
-    key: "global",
+    key: "agent:work:global",
     compacted: false,
     reason: "no transcript",
   });
@@ -1315,11 +1315,11 @@ test("sessions.compact passes the selected global agent into embedded compaction
     subscribedConnIds: new Set(),
   });
 
-  expectFields(responsePayload, { ok: true, key: "global", compacted: true });
+  expectFields(responsePayload, { ok: true, key: "agent:work:global", compacted: true });
   expect(embeddedRunMock.compactEmbeddedAgentSession).toHaveBeenCalledTimes(1);
   expect(embeddedRunMock.compactEmbeddedAgentSession.mock.calls[0]?.[0]).toMatchObject({
     sessionId: "sess-work-global",
-    sessionKey: "global",
+    sessionKey: "agent:work:global",
     agentId: "work",
     authProfileId: "github-copilot:work",
     authProfileIdSource: "user",

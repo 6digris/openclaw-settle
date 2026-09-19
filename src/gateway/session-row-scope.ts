@@ -179,12 +179,8 @@ export function selectSessionRowEntries(
   const agents = owner ? [owner] : query.agentId ? [query.agentId] : byAgent.keys();
   const children = new Set<string>();
   if (parent) {
-    for (const ref of [
-      ...[...agents].map((agentId) => records.parentReference(cfg, parent, agentId)),
-      ...matching({ ...query, key: parent }).map((row) =>
-        records.physical(row.storeTarget.storePath, parent),
-      ),
-    ]) {
+    for (const agentId of agents) {
+      const ref = records.parentReference(cfg, parent, agentId);
       for (const id of byParent.get(ref) ?? []) {
         children.add(id);
       }

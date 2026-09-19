@@ -8,6 +8,7 @@ import {
 } from "../../infra/kysely-sync.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import { ensureSessionGoalOperationsSchema } from "../../state/openclaw-agent-goal-operations-schema.js";
 import { hasLegacyAcpMigrationProvenanceColumn } from "../../state/openclaw-agent-legacy-acp-schema.js";
 import { ensureOpenClawAgentProgressCardSchemaInTransaction } from "../../state/openclaw-agent-progress-card-schema.js";
 import { ensureSessionParticipantsSchema } from "../../state/openclaw-agent-session-participants-schema.js";
@@ -153,6 +154,51 @@ export function copySessionNodeArtifactsForRepair(
   ) {
     ensureSessionParticipantsSchema(destination.db);
     destinationTables = readSessionNodeArtifactTables(destination);
+  }
+  if (sourceTables.has("session_goal_operations")) {
+    for (const receipt of iterateSqliteQuerySync(
+      source.db,
+      sourceDb.selectFrom("session_goal_operations").selectAll().where("session_key", "in", keys),
+    )) {
+      if (!destinationTables.has("session_goal_operations")) {
+        ensureSessionGoalOperationsSchema(destination.db);
+        destinationTables.add("session_goal_operations");
+      }
+      const existing = executeSqliteQueryTakeFirstSync(
+        destination.db,
+        destinationDb
+          .selectFrom("session_goal_operations")
+          .selectAll()
+          .where("session_key", "=", canonicalKey)
+          .where("operation_id", "=", receipt.operation_id),
+      );
+      if (
+        existing &&
+        (existing.session_id !== receipt.session_id ||
+          existing.request_fingerprint !== receipt.request_fingerprint ||
+          existing.result_json !== receipt.result_json ||
+          existing.expires_at !== receipt.expires_at)
+      ) {
+        throw new Error("Canonical repair found conflicting Goal operation receipts");
+      }
+      if (!existing) {
+        executeSqliteQuerySync(
+          destination.db,
+          destinationDb
+            .insertInto("session_goal_operations")
+            .values({ ...receipt, session_key: canonicalKey }),
+        );
+      }
+    }
+    if (source.db === destination.db) {
+      executeSqliteQuerySync(
+        destination.db,
+        destinationDb
+          .deleteFrom("session_goal_operations")
+          .where("session_key", "in", keys)
+          .where("session_key", "!=", canonicalKey),
+      );
+    }
   }
   if (sourceTables.has("session_progress_cards")) {
     const progressCards = executeSqliteQuerySync(
@@ -474,6 +520,7 @@ function readSessionNodeArtifactTables(database: Pick<OpenClawAgentDatabase, "db
           "session_members",
           "session_participants",
           "session_progress_cards",
+          "session_goal_operations",
           "session_suggestions",
         ]),
     ).rows.flatMap((row) => (row.name ? [row.name] : [])),

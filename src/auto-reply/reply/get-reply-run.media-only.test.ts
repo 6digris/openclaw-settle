@@ -33,7 +33,6 @@ import {
   clearAgentRunContext,
   releaseAgentRunDelegatedAuthority,
 } from "../../infra/agent-run-registry.js";
-import { withSystemEventOwner } from "../../infra/system-event-ownership.js";
 import {
   enqueueSystemEvent,
   enqueueSystemEventEntry,
@@ -76,6 +75,8 @@ import { buildChannelSourceTurnId } from "./source-turn-id.js";
 import { withReplySystemEventContext } from "./system-event-session-key.js";
 import { resolveTypingMode } from "./typing-mode.js";
 
+const SESSION_KEY = "agent:default:session-key";
+
 vi.mock("../../agents/auth-profiles/session-override.js", () => ({
   resolveSessionAuthSelection: vi.fn().mockResolvedValue(undefined),
 }));
@@ -87,7 +88,7 @@ vi.mock("../../agents/embedded-agent.runtime.js", () => ({
   preemptAndDrainEmbeddedHeartbeatRun: vi.fn().mockResolvedValue("not-heartbeat"),
   resolveActiveEmbeddedRunSessionId: vi.fn().mockReturnValue(undefined),
   resolveActiveEmbeddedRunSessionIdBySessionFile: vi.fn().mockReturnValue(undefined),
-  resolveEmbeddedSessionLane: vi.fn().mockReturnValue("session:session-key"),
+  resolveEmbeddedSessionLane: vi.fn().mockReturnValue("session:agent:default:session-key"),
   waitForEmbeddedAgentRunEnd: vi.fn().mockResolvedValue(true),
 }));
 
@@ -423,7 +424,7 @@ function baseParams(
       surface: "slack",
       channel: "slack",
       isAuthorizedSender: true,
-      abortKey: "session-key",
+      abortKey: SESSION_KEY,
       ownerList: [],
       senderIsOwner: false,
       rawBodyNormalized: "",
@@ -459,7 +460,7 @@ function baseParams(
     isNewSession: true,
     resetTriggered: false,
     systemSent: true,
-    sessionKey: "session-key",
+    sessionKey: SESSION_KEY,
     workspaceDir: "/tmp/workspace",
     abortedLastRun: false,
   };
@@ -959,6 +960,7 @@ describe("runPreparedReply media-only handling", () => {
       const agentCfg = { toolProgressDetail: defaults };
       await runPrepared({
         agentId: "worker",
+        sessionKey: "agent:worker:session-key",
         agentCfg,
         cfg: { agents: { defaults: agentCfg, entries: { worker: { toolProgressDetail: entry } } } },
       });
@@ -1152,7 +1154,7 @@ describe("runPreparedReply media-only handling", () => {
       updatedAt: 1,
     };
     const sessionStore: Record<string, SessionEntry> = {
-      "session-key": sessionEntry,
+      [SESSION_KEY]: sessionEntry,
     };
 
     await runPrepared({
@@ -1184,7 +1186,7 @@ describe("runPreparedReply media-only handling", () => {
     const call = requireRunReplyAgentCall();
     expect(call.followupRun.run.thinkLevel).toBe("off");
     expect(sessionEntry.thinkingLevel).toBe("high");
-    expect(sessionStore["session-key"]?.thinkingLevel).toBe("high");
+    expect(sessionStore[SESSION_KEY]?.thinkingLevel).toBe("high");
   });
 
   it.each([
@@ -1787,7 +1789,7 @@ describe("runPreparedReply media-only handling", () => {
             surface: "discord",
             channel: "discord",
             isAuthorizedSender: false,
-            abortKey: "session-key",
+            abortKey: SESSION_KEY,
             ownerList: [],
             senderIsOwner: false,
             rawBodyNormalized: body,
@@ -1892,7 +1894,7 @@ describe("runPreparedReply media-only handling", () => {
             surface: "webchat",
             channel: "webchat",
             isAuthorizedSender: false,
-            abortKey: "session-key",
+            abortKey: SESSION_KEY,
             ownerList: [],
             senderIsOwner: false,
             rawBodyNormalized: body,
@@ -1934,7 +1936,7 @@ describe("runPreparedReply media-only handling", () => {
         surface: "discord",
         channel: "discord",
         isAuthorizedSender: false,
-        abortKey: "session-key",
+        abortKey: SESSION_KEY,
         ownerList: [],
         senderIsOwner: false,
         rawBodyNormalized: body,
@@ -1967,7 +1969,7 @@ describe("runPreparedReply media-only handling", () => {
         surface: "slack",
         channel: "slack",
         isAuthorizedSender: false,
-        abortKey: "session-key",
+        abortKey: SESSION_KEY,
         ownerList: [],
         senderIsOwner: false,
         rawBodyNormalized: body,
@@ -2008,7 +2010,7 @@ describe("runPreparedReply media-only handling", () => {
         surface: "discord",
         channel: "discord",
         isAuthorizedSender: false,
-        abortKey: "session-key",
+        abortKey: SESSION_KEY,
         ownerList: [],
         senderIsOwner: false,
         rawBodyNormalized: body,
@@ -2597,7 +2599,7 @@ describe("runPreparedReply media-only handling", () => {
       const queueSettings = await import("./queue/settings-runtime.js");
       vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({ mode: "interrupt" });
       const previousRun = wait
-        ? createReplyOperation({ sessionId, sessionKey: "session-key", resetTriggered: false })
+        ? createReplyOperation({ sessionId, sessionKey: SESSION_KEY, resetTriggered: false })
         : undefined;
       previousRun?.setPhase("running");
       resolveCurrentTurnImagesMock.mockResolvedValueOnce({
@@ -2754,7 +2756,7 @@ describe("runPreparedReply media-only handling", () => {
           model: "gpt-5.5",
           opts: { isHeartbeat: true },
           sessionEntry,
-          sessionStore: { "session-key": sessionEntry },
+          sessionStore: { [SESSION_KEY]: sessionEntry },
         }),
         configuredProfileId: "openai:metered",
       };
@@ -2817,7 +2819,7 @@ describe("runPreparedReply media-only handling", () => {
     let releaseActiveAdmission = () => {};
     const activeAdmission = await beginSessionWorkAdmission({
       scope: storePath,
-      identities: ["session-key", "session-embedded-only"],
+      identities: [SESSION_KEY, "session-embedded-only"],
       assertAllowed: () => {},
       onInterrupt: () => {
         releaseActiveAdmission();
@@ -2854,7 +2856,7 @@ describe("runPreparedReply media-only handling", () => {
       const storePath = "/tmp/recovery-admission-sessions.json";
       const recoveryAdmission = await beginSessionWorkAdmission({
         scope: storePath,
-        identities: ["session-key", "session-recovery-starting"],
+        identities: [SESSION_KEY, "session-recovery-starting"],
         owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
         assertAllowed: () => {},
       });
@@ -2954,7 +2956,7 @@ describe("runPreparedReply media-only handling", () => {
     const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");
     const operation = createReplyOperation({
       sessionId: "session-pre-dispatch-heartbeat",
-      sessionKey: "session-key",
+      sessionKey: SESSION_KEY,
       turnKind: "visible",
       resetTriggered: false,
     });
@@ -3065,7 +3067,7 @@ describe("runPreparedReply media-only handling", () => {
     loadSessionEntryMock.mockReturnValue(completeEntry);
     const activeRun = createReplyOperation({
       sessionId: "session-goal-interrupt",
-      sessionKey: "session-key",
+      sessionKey: SESSION_KEY,
       resetTriggered: false,
     });
     activeRun.setPhase("running");
@@ -3081,7 +3083,7 @@ describe("runPreparedReply media-only handling", () => {
         isNewSession: false,
         sessionId: "session-goal-interrupt",
         sessionEntry: activeEntry,
-        sessionStore: { "session-key": activeEntry },
+        sessionStore: { [SESSION_KEY]: activeEntry },
         storePath: "/tmp/openclaw-session-store.json",
       }),
     );
@@ -3095,7 +3097,7 @@ describe("runPreparedReply media-only handling", () => {
     await expect(runPromise).resolves.toEqual({ text: "ok" });
     expect(loadSessionEntryMock).toHaveBeenCalledWith({
       storePath: "/tmp/openclaw-session-store.json",
-      sessionKey: "session-key",
+      sessionKey: SESSION_KEY,
       readConsistency: "latest",
     });
     const call = requireLastRunReplyAgentCall();
@@ -3113,7 +3115,7 @@ describe("runPreparedReply media-only handling", () => {
     );
     const activeOperation = createReplyOperation({
       sessionId: "session-active",
-      sessionKey: "session-key",
+      sessionKey: SESSION_KEY,
       resetTriggered: false,
     });
     activeOperation.attachBackend({
@@ -3129,7 +3131,7 @@ describe("runPreparedReply media-only handling", () => {
       });
 
       expect(result).toEqual({ text: "ok" });
-      expect(commandQueue.clearCommandLane).toHaveBeenCalledWith("session:session-key");
+      expect(commandQueue.clearCommandLane).toHaveBeenCalledWith(`session:${SESSION_KEY}`);
       expect(embeddedAgentRuntime.abortEmbeddedAgentRun).not.toHaveBeenCalled();
       expect(activeOperation.result).toEqual({
         kind: "aborted",
@@ -3186,7 +3188,7 @@ describe("runPreparedReply media-only handling", () => {
       });
       const activeRun = createReplyOperation({
         sessionId: "active-session",
-        sessionKey: "session-key",
+        sessionKey: SESSION_KEY,
         resetTriggered: false,
         routeThreadId: "500.000",
       });
@@ -3236,7 +3238,7 @@ describe("runPreparedReply media-only handling", () => {
     });
     const activeRun = createReplyOperation({
       sessionId: "active-session",
-      sessionKey: "session-key",
+      sessionKey: SESSION_KEY,
       resetTriggered: false,
       routeThreadId: 42,
     });
@@ -3299,7 +3301,7 @@ describe("runPreparedReply media-only handling", () => {
 
     const intruderRun = createReplyOperation({
       sessionId: "session-auth-race",
-      sessionKey: "session-key",
+      sessionKey: SESSION_KEY,
       resetTriggered: false,
     });
     intruderRun.setPhase("running");
@@ -3321,7 +3323,7 @@ describe("runPreparedReply media-only handling", () => {
     const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");
     const operation = createReplyOperation({
       sessionId: "session-pre-dispatch-owner",
-      sessionKey: "session-key",
+      sessionKey: SESSION_KEY,
       resetTriggered: false,
     });
     vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId).mockReturnValue(
@@ -3353,7 +3355,7 @@ describe("runPreparedReply media-only handling", () => {
   it("rebinds a queued pre-dispatch reply operation after session rollover", async () => {
     const operation = createReplyOperation({
       sessionId: "session-before-rollover",
-      sessionKey: "session-key",
+      sessionKey: SESSION_KEY,
       resetTriggered: false,
     });
 
@@ -3378,11 +3380,11 @@ describe("runPreparedReply media-only handling", () => {
   it("rebinds a provisional pre-dispatch operation to a discovered existing session", async () => {
     const operation = createReplyOperation({
       sessionId: "provisional-session",
-      sessionKey: "session-key",
+      sessionKey: SESSION_KEY,
       resetTriggered: false,
     });
     const sessionStore: Record<string, SessionEntry> = {
-      "session-key": {
+      [SESSION_KEY]: {
         sessionId: "existing-session",
         sessionFile: "/tmp/existing-session.jsonl",
         updatedAt: 1,
@@ -3418,7 +3420,7 @@ describe("runPreparedReply media-only handling", () => {
     const commandQueue = await import("../../process/command-queue.js");
     const operation = createReplyOperation({
       sessionId: "session-reset-owner",
-      sessionKey: "session-key",
+      sessionKey: SESSION_KEY,
       resetTriggered: false,
     });
     vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({ mode: "followup" });
@@ -3454,7 +3456,7 @@ describe("runPreparedReply media-only handling", () => {
       await import("../../agents/auth-profiles/session-override.js");
     const queueSettings = await import("./queue/settings-runtime.js");
     const sessionStore: Record<string, SessionEntry> = {
-      "session-key": {
+      [SESSION_KEY]: {
         sessionId: "session-auth-profile",
         sessionFile: "/tmp/session-auth-profile.jsonl",
         authProfileOverride: "profile-before-wait",
@@ -3474,7 +3476,7 @@ describe("runPreparedReply media-only handling", () => {
     vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({ mode: "interrupt" });
     const previousRun = createReplyOperation({
       sessionId: "session-auth-profile",
-      sessionKey: "session-key",
+      sessionKey: SESSION_KEY,
       resetTriggered: false,
     });
     previousRun.setPhase("running");
@@ -3482,13 +3484,13 @@ describe("runPreparedReply media-only handling", () => {
     const runPromise = runPrepared({
       isNewSession: false,
       sessionId: "session-auth-profile",
-      sessionEntry: expectDefined(sessionStore["session-key"], "stored session entry"),
+      sessionEntry: expectDefined(sessionStore[SESSION_KEY], "stored session entry"),
       sessionStore,
     });
 
     await Promise.resolve();
-    sessionStore["session-key"] = {
-      ...expectDefined(sessionStore["session-key"], "stored session entry"),
+    sessionStore[SESSION_KEY] = {
+      ...expectDefined(sessionStore[SESSION_KEY], "stored session entry"),
       authProfileOverride: "profile-after-wait",
       authProfileOverrideSource: "auto",
       updatedAt: 2,
@@ -3514,7 +3516,7 @@ describe("runPreparedReply media-only handling", () => {
       resolveAuth = resolve;
     });
     const sessionStore: Record<string, SessionEntry> = {
-      "session-key": {
+      [SESSION_KEY]: {
         sessionId: "session-before-rotation",
         sessionFile: "/tmp/session-before-rotation.jsonl",
         updatedAt: 1,
@@ -3530,7 +3532,7 @@ describe("runPreparedReply media-only handling", () => {
     const runPromise = runPrepared({
       isNewSession: false,
       sessionId: "session-before-rotation",
-      sessionEntry: sessionStore["session-key"],
+      sessionEntry: sessionStore[SESSION_KEY],
       sessionStore,
       storePath: "/tmp/sessions.json",
       opts: { onSessionPrepared } as never,
@@ -3539,12 +3541,12 @@ describe("runPreparedReply media-only handling", () => {
     await Promise.resolve();
     const rotatedRun = createReplyOperation({
       sessionId: "session-before-rotation",
-      sessionKey: "session-key",
+      sessionKey: SESSION_KEY,
       resetTriggered: false,
     });
     rotatedRun.setPhase("running");
-    sessionStore["session-key"] = {
-      ...sessionStore["session-key"],
+    sessionStore[SESSION_KEY] = {
+      ...sessionStore[SESSION_KEY],
       sessionId: "session-after-rotation",
       sessionFile: "/tmp/session-after-rotation.jsonl",
       updatedAt: 2,
@@ -3565,7 +3567,7 @@ describe("runPreparedReply media-only handling", () => {
     const call = requireLastRunReplyAgentCall();
     expect(call?.followupRun.run.sessionId).toBe("session-after-rotation");
     expect(onSessionPrepared).toHaveBeenLastCalledWith({
-      sessionKey: "session-key",
+      sessionKey: SESSION_KEY,
       sessionId: "session-after-rotation",
       storePath: "/tmp/sessions.json",
     });
@@ -3576,7 +3578,7 @@ describe("runPreparedReply media-only handling", () => {
     vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({ mode: "interrupt" });
     const previousRun = createReplyOperation({
       sessionId: "session-before-wait",
-      sessionKey: "session-key",
+      sessionKey: SESSION_KEY,
       resetTriggered: false,
     });
     previousRun.setPhase("running");
@@ -3592,7 +3594,7 @@ describe("runPreparedReply media-only handling", () => {
     previousRun.complete();
     const nextRun = createReplyOperation({
       sessionId: "session-after-wait",
-      sessionKey: "session-key",
+      sessionKey: SESSION_KEY,
       resetTriggered: false,
     });
     nextRun.setPhase("running");
@@ -3668,7 +3670,7 @@ describe("runPreparedReply media-only handling", () => {
 
     const previousRun = createReplyOperation({
       sessionId: "session-events-after-wait",
-      sessionKey: "session-key",
+      sessionKey: SESSION_KEY,
       resetTriggered: false,
     });
     previousRun.setPhase("running");
@@ -3863,7 +3865,7 @@ describe("runPreparedReply media-only handling", () => {
     });
     expect(updateAmbientTranscriptWatermarkMock).toHaveBeenCalledWith({
       storePath: "/tmp/openclaw-session-store.json",
-      sessionKey: "session-key",
+      sessionKey: SESSION_KEY,
       key: '["telegram","","-100123",""]',
       messageId: "35676",
       timestampMs: 1_710_000_000_000,
@@ -4217,7 +4219,7 @@ describe("runPreparedReply media-only handling", () => {
     await runPrepared({
       opts: { isHeartbeat: true },
       sessionEntry,
-      sessionStore: { "session-key": sessionEntry },
+      sessionStore: { [SESSION_KEY]: sessionEntry },
     });
 
     expect(buildInboundUserContextPrefix).not.toHaveBeenCalled();
@@ -4891,7 +4893,7 @@ describe("runPreparedReply media-only handling", () => {
           surface: "webchat",
           channel: "webchat",
           isAuthorizedSender: true,
-          abortKey: "session-key",
+          abortKey: SESSION_KEY,
           ownerList: [],
           senderIsOwner: true,
           rawBodyNormalized: commandText,
@@ -4924,7 +4926,7 @@ describe("runPreparedReply media-only handling", () => {
         surface: "webchat",
         channel: "webchat",
         isAuthorizedSender: true,
-        abortKey: "session-key",
+        abortKey: SESSION_KEY,
         ownerList: [],
         senderIsOwner: true,
         rawBodyNormalized: "/reset summarize my workspace",
@@ -5505,23 +5507,20 @@ describe("runPreparedReply media-only handling", () => {
     vi.mocked(drainFormattedSystemEvents).mockImplementationOnce(
       actualSystemEvents.drainFormattedSystemEvents,
     );
-    enqueueSystemEvent(
-      "Alpha hook finished",
-      withSystemEventOwner({ sessionKey: "global" }, "alpha"),
-    );
-    enqueueSystemEvent(
-      "Beta hook finished",
-      withSystemEventOwner({ sessionKey: "global" }, "beta"),
-    );
-    enqueueSystemEvent("Alpha follow-up", withSystemEventOwner({ sessionKey: "global" }, "alpha"));
+    enqueueSystemEvent("Alpha hook finished", { sessionKey: "agent:alpha:global" });
+    enqueueSystemEvent("Beta hook finished", { sessionKey: "agent:beta:global" });
+    enqueueSystemEvent("Alpha follow-up", { sessionKey: "agent:alpha:global" });
 
     await runPreparedReply(
       baseParams({
         agentId: "alpha",
-        sessionKey: "global",
+        sessionKey: "agent:alpha:global",
         opts: withReplySystemEventContext(
           { isHeartbeat: true },
-          { sessionKey: "global", events: peekSystemEventEntries("agent:alpha:global") },
+          {
+            sessionKey: "agent:alpha:global",
+            events: peekSystemEventEntries("agent:alpha:global"),
+          },
         ),
       }),
     );

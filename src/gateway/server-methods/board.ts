@@ -583,7 +583,6 @@ export function createBoardHandlers(
             authority.assertActive();
             const appended = appendBoardEventNotice({
               sessionKey: identity.sessionKey,
-              agentId: identity.agentId,
               widget: identity.name,
               payload: boardParams.payload,
             });

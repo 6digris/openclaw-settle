@@ -5,6 +5,7 @@ import type {
   SessionsDeleteResult,
   WorktreePreservationReason,
 } from "../../packages/gateway-protocol/src/index.js";
+import type { SessionsResolveResult } from "../../packages/gateway-protocol/src/schema/sessions-resolve.js";
 import { resolveConfiguredAgentId } from "../agents/agent-scope-config.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import { formatCliJsonFailure, rethrowExpectedCliError } from "../cli/failure-output.js";
@@ -12,6 +13,7 @@ import { callGatewayFromCliWithTransport } from "../cli/gateway-rpc.js";
 import { quoteCliArg } from "../cli/quote-cli-arg.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { formatErrorMessage } from "../infra/errors.js";
+import { normalizeAgentIdStrict, parseAgentSessionKey } from "../routing/session-key.js";
 import { type RuntimeEnv, writeRuntimeJson } from "../runtime.js";
 import { SESSION_ARCHIVE_REQUEST_TIMEOUT_MS } from "../shared/session-archive-timeout.js";
 import { createClackPrompter } from "../wizard/clack-prompter.js";
@@ -49,6 +51,7 @@ type SessionsLifecycleResult = {
 };
 
 type SessionsListRow = Pick<SessionRow, "key" | "sessionId" | "agentId" | "archived" | "isMain">;
+type LifecycleSession = SessionsListRow & { wireKey: string };
 
 type SessionsListResult = {
   sessions?: SessionsListRow[];
@@ -102,9 +105,10 @@ async function listRequestedSessions(
   keys: readonly string[],
   agent: string | undefined,
   rpcOptions: SessionsLifecycleRpcOptions,
-): Promise<Map<string, SessionsListRow>> {
+  resolvedOwners: ReadonlyMap<string, string>,
+): Promise<Map<string, LifecycleSession>> {
   const wanted = new Set(keys);
-  const found = new Map<string, SessionsListRow>();
+  const found = new Map<string, LifecycleSession>();
   let offset = 0;
 
   while (wanted.size > found.size) {
@@ -127,7 +131,23 @@ async function listRequestedSessions(
     }
     for (const row of page.sessions) {
       if (wanted.has(row.key) && !found.has(row.key)) {
-        found.set(row.key, row);
+        if (parseAgentSessionKey(row.key)) {
+          found.set(row.key, { ...row, wireKey: row.key });
+          continue;
+        }
+        const owner = normalizeAgentIdStrict(row.agentId);
+        const selectedOwner = resolvedOwners.get(row.key);
+        if (!owner.ok || !selectedOwner || (row.key !== "global" && row.key !== "unknown")) {
+          throw new Error(`Gateway did not provide a valid owner for legacy session ${row.key}.`);
+        }
+        if (owner.value === selectedOwner) {
+          found.set(row.key, {
+            ...row,
+            key: `agent:${owner.value}:${row.key}`,
+            agentId: owner.value,
+            wireKey: row.key,
+          });
+        }
       }
     }
     if (found.size === wanted.size || page.hasMore !== true) {
@@ -229,13 +249,35 @@ async function runSessionsLifecycleCommand(
     timeout: opts.timeout,
     json: opts.json,
   };
-  let sessions: Map<string, SessionsListRow>;
+  let sessions: Map<string, LifecycleSession>;
+  const resolvedOwners = new Map<string, string>();
   let agent: string | undefined;
   try {
     // The not-found hint points at `sessions list --agent <id>`, which rejects an unconfigured id
     // locally. Validating here keeps that suggestion runnable instead of handing back a dead end.
     agent = resolveLifecycleAgentId(opts.agent);
-    sessions = await listRequestedSessions(keys.filter(Boolean), agent, rpcOptions);
+    for (const [index, key] of keys.entries()) {
+      if (!key || parseAgentSessionKey(key)) {
+        continue;
+      }
+      const resolved = await callGatewayFromCliWithTransport<SessionsResolveResult>(
+        "sessions.resolve",
+        rpcOptions,
+        { key, agentId: agent, includeGlobal: true, includeUnknown: true, allowMissing: true },
+        { defaultTimeoutMs: 30_000 },
+      );
+      if (resolved.ok) {
+        if (!parseAgentSessionKey(resolved.key)) {
+          const owner = normalizeAgentIdStrict(resolved.agentId);
+          if (!owner.ok || (agent && owner.value !== agent)) {
+            throw new Error(`Gateway did not provide a valid owner for legacy session ${key}.`);
+          }
+          resolvedOwners.set(resolved.key, owner.value);
+        }
+        keys[index] = resolved.key;
+      }
+    }
+    sessions = await listRequestedSessions(keys.filter(Boolean), agent, rpcOptions, resolvedOwners);
   } catch (error) {
     rethrowExpectedCliError(error);
     const message = formatErrorMessage(error);
@@ -297,6 +339,7 @@ async function runSessionsLifecycleCommand(
   }
 
   for (const { index, session } of validTargets) {
+    const mutationAgent = agent ?? (session.wireKey !== session.key ? session.agentId : undefined);
     if (operation === "archive" && session.archived === true) {
       results[index] = { key: session.key, ok: true, status: "already_archived" };
       continue;
@@ -304,7 +347,7 @@ async function runSessionsLifecycleCommand(
     try {
       if (opts.dryRun) {
         // Global classification does not encode selected-agent deletion eligibility.
-        if (session.isMain === true && session.key !== "global") {
+        if (session.isMain === true && parseAgentSessionKey(session.key)?.rest !== "global") {
           throw new Error(
             operation === "archive"
               ? "Cannot archive an agent's main session."
@@ -323,8 +366,8 @@ async function runSessionsLifecycleCommand(
           "sessions.patch",
           rpcOptions,
           {
-            key: session.key,
-            ...(agent ? { agentId: agent } : {}),
+            key: session.wireKey,
+            ...(mutationAgent ? { agentId: mutationAgent } : {}),
             ...(session.sessionId ? { expectedSessionId: session.sessionId } : {}),
             archived: true,
           },
@@ -339,8 +382,8 @@ async function runSessionsLifecycleCommand(
           "sessions.delete",
           rpcOptions,
           {
-            key: session.key,
-            ...(agent ? { agentId: agent } : {}),
+            key: session.wireKey,
+            ...(mutationAgent ? { agentId: mutationAgent } : {}),
             ...(session.sessionId ? { expectedSessionId: session.sessionId } : {}),
             deleteTranscript: true,
             ...(session.archived === true ? { archivedOnly: true } : {}),

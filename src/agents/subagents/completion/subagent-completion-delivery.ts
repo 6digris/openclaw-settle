@@ -9,6 +9,8 @@ import {
   SessionDeliveryDeadLetteredError,
   SessionDeliveryDeferredError,
 } from "../../../infra/session-delivery-queue.records.js";
+import { createSubsystemLogger } from "../../../logging/subsystem.js";
+import { parseAgentSessionKey } from "../../../routing/session-key.js";
 import type { OpenClawStateDatabaseOptions } from "../../../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import { findTaskByRunId, getTaskById } from "../../../tasks/runtime-internal.js";
@@ -35,6 +37,7 @@ import { resolveSubagentCompletionResultText } from "./subagent-completion-resul
 
 const CLAIM_LEASE_MS = 125_000;
 const MAX_DELIVERY_GENERATION = 10;
+const log = createSubsystemLogger("subagents/completion");
 const CANONICAL_RESULT_PROMPT = `A completed subagent task is ready for parent review. ${SUBAGENT_COMPLETION_OUTCOME_INSTRUCTION} The canonical result follows.`;
 type CompletionDeliveryRecoveryResult = {
   ok: boolean;
@@ -151,9 +154,23 @@ export function resolveCorrelatedSubagentDelivery(
   ) {
     throw new SessionDeliveryDeferredError("correlated subagent delivery owner mismatch");
   }
+  let sessionKey = queued.sessionKey;
+  if (!parseAgentSessionKey(sessionKey)) {
+    const requester = parseAgentSessionKey(entry.requesterSessionKey);
+    // Fallback may target an ancestor; control and ancestry do not identify that target.
+    if (!requester || requester.rest !== sessionKey.trim()) {
+      const error = new SessionDeliveryDeferredError(
+        "subagent completion has no retained canonical delivery target",
+      );
+      log.warn(error.message, { queueId: queued.id });
+      throw error;
+    }
+    sessionKey = entry.requesterSessionKey;
+  }
   const result = resolveSubagentCompletionResultText(entry) ?? "(no output)";
   return {
     ...queued,
+    sessionKey,
     message: `${CANONICAL_RESULT_PROMPT}\n\n${result}`,
     runtimeContextFragments: [
       { kind: "runtime-instruction", text: CANONICAL_RESULT_PROMPT },

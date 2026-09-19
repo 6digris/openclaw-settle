@@ -26,6 +26,7 @@ import type {
   PreparedPostSessionPluginMigration,
 } from "../infra/state-migrations.types.js";
 import {
+  preflightCanonicalSessionKeys,
   repairCanonicalSessionKeys,
   type CanonicalSessionKeyRepairReport,
 } from "./doctor-session-canonical-keys.js";
@@ -280,6 +281,7 @@ async function noteSessionSqliteMigrationHealth(params: {
     return postSessionPluginReceipt;
   };
   const runSessionSqlite = async (maintenanceAuthority?: DoctorSqliteMaintenanceAuthority) => {
+    await preflightCanonicalSessionKeys({ cfg: params.cfg ?? {}, env: params.env });
     const report = await runDoctorSessionSqlite({
       allAgents: true,
       ...(params.cfg ? { cfg: params.cfg } : {}),

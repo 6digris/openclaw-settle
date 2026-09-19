@@ -115,7 +115,10 @@ export function registerTaskSubscriptionOwnershipTests(setup: Setup): void {
           updateTask(task.taskId, { runId: "replacement-run" });
           break;
         case "requester":
-          updateTask(task.taskId, { requesterAgentId: "replacement" });
+          updateTask(task.taskId, {
+            requesterAgentId: "replacement",
+            requesterSessionKey: "agent:replacement:global",
+          });
           break;
         case "run-owner":
           releaseReplacement = bindTaskRunOwner(getTaskById(task.taskId)!, cancel);
@@ -149,10 +152,15 @@ export function registerTaskSubscriptionOwnershipTests(setup: Setup): void {
         expect(closeTaskSessions).not.toHaveBeenCalled();
       }
       if (change === "requester") {
+        expect(
+          readTaskUpserts(broadcast)
+            .filter((event) => event.task.status === "completed")
+            .map((event) => event.task.sessionKey),
+        ).toEqual(["agent:main:global", "agent:replacement:global"]);
         expect(broadcast).toHaveBeenCalledWith(
           "task",
           expect.objectContaining({ task: expect.objectContaining({ status: "completed" }) }),
-          { dropIfSlow: true, sessionKeys: ["global"], agentId: "replacement" },
+          { dropIfSlow: true, sessionKeys: ["agent:replacement:global"], agentId: "replacement" },
         );
       }
     } finally {

@@ -14,7 +14,6 @@ import { resolveSubagentAllowedTargetIds } from "../subagents/spawn/subagent-tar
 import { describeAgentsListTool } from "../tool-description-presets.js";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult } from "./common.js";
-import { resolveInternalSessionKey, resolveMainSessionAlias } from "./sessions-helpers.js";
 
 const AgentsListToolSchema = Type.Object({});
 const AgentRuntimeSourceSchema = Type.Union([
@@ -70,18 +69,9 @@ export function createAgentsListTool(opts?: {
     outputSchema: AgentsListOutputSchema,
     execute: async () => {
       const cfg = getRuntimeConfig();
-      const { mainKey, alias } = resolveMainSessionAlias(cfg);
-      const requesterInternalKey =
-        typeof opts?.agentSessionKey === "string" && opts.agentSessionKey.trim()
-          ? resolveInternalSessionKey({
-              key: opts.agentSessionKey,
-              alias,
-              mainKey,
-            })
-          : alias;
       const requesterAgentId = resolveSessionAgentIds({
         config: cfg,
-        sessionKey: requesterInternalKey,
+        sessionKey: opts?.agentSessionKey,
         agentId: opts?.requesterAgentIdOverride,
       }).sessionAgentId;
 

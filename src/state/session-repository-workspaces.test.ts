@@ -128,6 +128,18 @@ it("creates one stable logical-session owner without widening replayed setup int
   expect(store.create({ ...source, agentId: "other" }).workspaceId).not.toBe(initial.workspaceId);
 });
 
+it("reuses an agent-owned legacy global workspace through its qualified identity", async () => {
+  const { database, store } = await fixture();
+  const owner = { ...source, sessionKey: "agent:main:global" };
+  const initial = store.create(owner);
+  database.db.prepare("UPDATE session_repository_workspaces SET session_key = 'global'").run();
+  expect(store.find(owner)).toEqual(initial);
+  expect(store.find({ agentId: "other", sessionKey: "agent:other:global" })).toBeUndefined();
+  expect(store.create(owner)).toEqual(initial);
+  expect(store.create({ ...owner, sessionKey: "global" })).toEqual(initial);
+  expect(store.get(initial.workspaceId)).toEqual(initial);
+});
+
 it("pins the source base and rejects stale or closed checkpoint mutations", async () => {
   const { store } = await fixture();
   const initial = store.create(source);

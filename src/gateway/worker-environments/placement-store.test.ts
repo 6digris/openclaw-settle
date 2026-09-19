@@ -151,6 +151,17 @@ describe("worker session placement store", () => {
     expect(store.get(SESSION.sessionId)).toMatchObject({ executionMode: "worker-turn" });
   });
 
+  it("continues a legacy global placement without changing its generation or owner", () => {
+    const identity = { ...SESSION, sessionKey: "agent:main:global" };
+    const requested = store.startDispatch(identity);
+    database.db.prepare("UPDATE worker_session_placements SET session_key = 'global'").run();
+    expect(store.get(identity.sessionId)).toEqual(requested);
+    expect(() => store.startDispatch(identity)).toThrow("from placement requested");
+    expect(() =>
+      store.startDispatch({ ...identity, agentId: "other", sessionKey: "agent:other:global" }),
+    ).toThrow("identity changed");
+  });
+
   it("requires each placement phase to persist its complete metadata", () => {
     const requested = store.startDispatch(SESSION);
     const provisioning = store.transition({
@@ -270,22 +281,18 @@ describe("worker session placement store", () => {
     expect(requested).toMatchObject({ state: "requested", generation: 1 });
     expect(requested.turnClaim).toMatchObject({ owner: "local", generation: 0 });
 
-    expect(() =>
-      store.claimTurn({
-        ...SESSION,
-        owner: { kind: "local" },
+    for (const { owner, claimId, runId } of [
+      {
+        owner: { kind: "local" as const },
         claimId: "new-local-claim",
         runId: "new-local-run",
-      }),
-    ).toThrow("already has an active turn claim");
-    expect(() =>
-      store.claimTurn({
-        ...SESSION,
-        owner: localClaim.owner,
-        claimId: localClaim.claimId,
-        runId: localClaim.runId,
-      }),
-    ).toThrow("already has an active turn claim");
+      },
+      localClaim,
+    ]) {
+      expect(() => store.claimTurn({ ...SESSION, owner, claimId, runId })).toThrow(
+        "already has an active turn claim",
+      );
+    }
     expect(() =>
       store.transition({
         sessionId: SESSION.sessionId,

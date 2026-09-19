@@ -298,7 +298,7 @@ it("hydrates context metadata only for emitted usage rows while aggregating ever
   }
 });
 
-it("reads selected reports from the physical owner of shared-store sentinels and qualified rows", async () => {
+it("reads selected reports from the physical owner of shared-store global and ordinary rows", async () => {
   await withOpenClawTestState({ label: "usage-shared-context" }, async (state) => {
     const storePath = state.statePath("shared.sqlite");
     await state.writeConfig({
@@ -313,7 +313,7 @@ it("reads selected reports from the physical owner of shared-store sentinels and
     const config = getRuntimeConfig();
     openOpenClawAgentDatabase({ agentId: "main", path: storePath });
     for (const [agentId, key] of [
-      ["ops", "global"],
+      ["ops", "agent:ops:global"],
       ["worker", "agent:worker:usage"],
     ] as const) {
       const contextWeight = {
@@ -358,7 +358,7 @@ it("reads selected reports from the physical owner of shared-store sentinels and
 it.each([
   { owner: "opus", key: undefined },
   { owner: "opus", key: "agent:opus:slack:dm" },
-  { owner: "opus", key: "global" },
+  { owner: "opus", key: "agent:opus:global" },
   { owner: SYSTEM_AGENT_ID, key: `agent:${SYSTEM_AGENT_ID}:usage` },
 ])(
   "keeps independent same-id transcripts with $owner store key $key through the real usage handler",

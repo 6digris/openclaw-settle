@@ -517,6 +517,7 @@ describe("sandbox explain command", () => {
     } as unknown as Parameters<typeof sandboxExplainCommand>[1]);
 
     const parsed = JSON.parse(logs.join(""));
+    expect(parsed.sessionKey).toBe("agent:main:global");
     expect(parsed.sandbox.sessionIsSandboxed).toBe(false);
     expect(parsed.sandbox.effectiveHostWorkspaceRoot).toBe(
       path.resolve("/tmp/openclaw-main-workspace"),
@@ -551,6 +552,7 @@ describe("sandbox explain command", () => {
 
     const parsed = JSON.parse(logs.join(""));
     expect(parsed.agentId).toBe("ops");
+    expect(parsed.sessionKey).toBe("agent:ops:global");
     expect(parsed.sandbox.sessionIsSandboxed).toBe(false);
     expect(parsed.sandbox.effectiveHostWorkspaceRoot).toBe(
       path.resolve("/tmp/openclaw-ops-workspace"),

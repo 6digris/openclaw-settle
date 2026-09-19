@@ -251,10 +251,10 @@ describe("agent event routing after cancellation", () => {
 
 describe("live agent model projection", () => {
   beforeEach(() => resetAgentEventsForTest());
-  test.each(["agent:main:chat", "global"])(
+  test.each(["chat", "global"])(
     "projects only the executing model for exact session %s",
-    (sessionKey) => {
-      const scope = { agentId: "main", sessionId: "session", sessionKey };
+    (session) => {
+      const scope = { agentId: "main", sessionId: "session", sessionKey: `agent:main:${session}` };
       claimAgentRunContext("admission", scope);
       expect(resolveProjectedAgentRunModel(scope)).toBeNull();
       registerAgentRunContext("foreground", scope);
@@ -271,7 +271,7 @@ describe("live agent model projection", () => {
         ["hidden", { isControlUiVisible: false }],
         ["maintenance", { projectSessionLifecycle: false }],
         ["reset", { sessionId: "previous" }],
-        ["other-agent", { agentId: "other" }],
+        ["other-agent", { agentId: "other", sessionKey: `agent:other:${session}` }],
       ] as const) {
         registerAgentRunContext(runId, { ...scope, projectSessionActive: true, ...extra });
       }

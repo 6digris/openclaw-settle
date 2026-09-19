@@ -440,7 +440,7 @@ test("sessions.delete isolates Side chat for the same global key and session ID 
   const stores = await createConfiguredGlobalAgentSessionStore();
   await writeSessionStore({
     agentId: "work",
-    entries: { global: sessionStoreEntry("sess-main-global") },
+    entries: { "agent:work:global": sessionStoreEntry("sess-main-global") },
     storePath: stores.workStorePath,
   });
   const { service } = await createCompanion();

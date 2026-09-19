@@ -1,13 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as sessionsConfig from "../config/sessions.js";
 import * as sessionAccessor from "../config/sessions/session-accessor.js";
-import { setCanonicalSqliteSessionMainKey } from "../config/sessions/session-canonical-key.js";
 import { addSessionMember, removeSessionMember } from "../config/sessions/session-sharing-store.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import {
-  closeOpenClawAgentDatabasesForTest,
-  openOpenClawAgentDatabase,
-} from "../state/openclaw-agent-db.js";
+import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { listOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.test-support.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import type { GatewayClient } from "./server-methods/types.js";
@@ -216,12 +212,23 @@ describe("session mutation authorization store caches", () => {
   );
 
   it.each([
-    { key: "agent:research:main", agentId: undefined, expectedAgent: "research" },
-    { key: "global", agentId: "research", expectedAgent: "research" },
-    { key: "global", agentId: undefined, expectedAgent: "ops" },
-    { key: "agent:research:ordinary", agentId: undefined, expectedAgent: "research" },
-    { key: "agent:research:ordinary", agentId: " ", expectedAgent: "research" },
-    { key: "agent:main:main", agentId: " ", expectedAgent: "ops" },
+    { key: "agent:research:main", agentId: undefined, expectedAgent: "research", kind: "main" },
+    { key: "global", agentId: "research", expectedAgent: "research", kind: "global" },
+    { key: "global", agentId: undefined, expectedAgent: "ops", kind: "global" },
+    { key: "main", agentId: undefined, expectedAgent: "ops", kind: "global" },
+    {
+      key: "agent:research:ordinary",
+      agentId: undefined,
+      expectedAgent: "research",
+      kind: "ordinary",
+    },
+    {
+      key: "agent:research:ordinary",
+      agentId: " research ",
+      expectedAgent: "research",
+      kind: "ordinary",
+    },
+    { key: "agent:main:main", agentId: undefined, expectedAgent: "main", kind: "main" },
   ])("preserves the requested owner for $key with explicit agent $agentId", async (target) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const cfg: OpenClawConfig = {
@@ -229,11 +236,13 @@ describe("session mutation authorization store caches", () => {
         agents: { entries: { ops: { default: true }, research: {} } },
       };
       await state.writeConfig(cfg);
-      for (const agentId of ["ops", "research"]) {
-        await sessionAccessor.upsertSessionEntryCore(
-          { agentId, sessionKey: "global" },
-          { sessionId: `global-${agentId}`, updatedAt: 1 },
-        );
+      for (const agentId of ["ops", "research", "main"]) {
+        for (const kind of ["main", "global"]) {
+          await sessionAccessor.upsertSessionEntryCore(
+            { agentId, sessionKey: `agent:${agentId}:${kind}` },
+            { sessionId: `${kind}-${agentId}`, updatedAt: 1 },
+          );
+        }
       }
       await sessionAccessor.upsertSessionEntryCore(
         { agentId: "research", sessionKey: "agent:research:ordinary" },
@@ -246,13 +255,13 @@ describe("session mutation authorization store caches", () => {
         readOnly: true,
         exactRead: true,
       });
-      const canonicalKey = target.key.endsWith(":ordinary") ? target.key : "global";
+      const canonicalKey = `agent:${target.expectedAgent}:${target.kind}`;
       expect(resolved).toMatchObject({
         agentId: target.expectedAgent,
         canonicalKey,
         store: {
           [canonicalKey]: {
-            sessionId: `${canonicalKey === "global" ? "global" : "ordinary"}-${target.expectedAgent}`,
+            sessionId: `${target.kind}-${target.expectedAgent}`,
           },
         },
       });
@@ -270,7 +279,7 @@ describe("session mutation authorization store caches", () => {
         await state.writeConfig(cfg);
         for (const agentId of ["ops", "research"]) {
           await sessionAccessor.upsertSessionEntryCore(
-            { agentId, sessionKey: "global" },
+            { agentId, sessionKey: `agent:${agentId}:global` },
             {
               sessionId: `global-${agentId}`,
               updatedAt: 1,
@@ -294,38 +303,35 @@ describe("session mutation authorization store caches", () => {
             details: { code: "SESSION_PARTICIPATION_REQUIRED" },
           });
         }
-        const alias = resolveSessionMutationAuthorization({
+        const canonical = resolveSessionMutationAuthorization({
           client,
           method: "sessions.github.publish",
-          requestParams: { sessionKey: "agent:research:main" },
+          requestParams: { sessionKey: "agent:research:global" },
           context,
         });
         if (viewer === "research") {
-          expect(alias.error).toBeNull();
-          expect(alias.authorization).toBeDefined();
-          expect(() => alias.authorization?.assertCurrent()).not.toThrow();
+          expect(canonical.error).toBeNull();
+          expect(canonical.authorization).toBeDefined();
+          expect(() => canonical.authorization?.assertCurrent()).not.toThrow();
         } else {
-          expect(alias.error).toMatchObject({
+          expect(canonical.error).toMatchObject({
             details: { code: "SESSION_PARTICIPATION_REQUIRED" },
           });
-          expect(alias.authorization).toBeUndefined();
+          expect(canonical.authorization).toBeUndefined();
         }
       });
     },
   );
 
-  it.each(["warm", "cold canonical", "cold main alias"] as const)(
+  it.each(["warm", "cold canonical", "cold qualified main"] as const)(
     "bounds task visibility reads and rereads changed access with %s stores",
     async (mode) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
-        const sessionKey = "agent:main:task-requester";
+        const sessionKey =
+          mode === "cold qualified main" ? "agent:main:main" : "agent:main:task-requester";
         const cfg = rolePolicyConfig();
-        if (mode === "cold main alias") {
+        if (mode === "cold qualified main") {
           cfg.session = { mainKey: "task-requester" };
-          setCanonicalSqliteSessionMainKey(
-            openOpenClawAgentDatabase({ agentId: "main" }),
-            "task-requester",
-          );
         }
         const requestClient = roleClient("view", "task-viewer");
         const owner = roleClient("view", "task-owner");
@@ -358,14 +364,14 @@ describe("session mutation authorization store caches", () => {
           client: requestClient,
           task: {
             requesterAgentId: "main",
-            requesterSessionKey: mode === "cold main alias" ? "main" : sessionKey,
+            requesterSessionKey: sessionKey,
             ownerKey: sessionKey,
           },
         };
         const parseSpy = vi.spyOn(JSON, "parse");
         expect(canAccessTaskRequesterSession(access)).toBe(true);
         expect(canAccessTaskRequesterSession(access)).toBe(true);
-        // A cold handle validates the store once; candidate aliases must share that admission.
+        // Each cold access validates the store once without widening the selected target.
         expect(
           parseSpy.mock.calls.filter(([value]) => value.includes("unrelated-task-access-session-")),
         ).toHaveLength(mode === "warm" ? 0 : 48);

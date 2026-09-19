@@ -22,7 +22,6 @@ import { isTransientNetworkError } from "../../infra/unhandled-rejections.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { isIncognitoSessionKey, parseAgentSessionKey } from "../../routing/session-key.js";
 import { getSessionWorkAdmissionRelease } from "../../sessions/session-lifecycle-admission.js";
-import { resolveSessionAgentId } from "../agent-scope.js";
 import { stringEnum } from "../schema/typebox.js";
 import type { AnyAgentTool } from "./common.js";
 import {
@@ -253,11 +252,7 @@ async function resolvePatchTarget(
 }> {
   const context = resolveSessionToolContext(opts);
   const rawKey = sessionKey ?? context.effectiveRequesterKey;
-  const requesterAgentId = resolveSessionAgentId({
-    config: context.cfg,
-    sessionKey: context.effectiveRequesterKey,
-    agentId: opts.requesterAgentIdOverride,
-  });
+  const { requesterAgentId } = context;
   const normalizedRawKey = rawKey.trim();
   const isCurrentSession = normalizedRawKey === "current";
   const isConfiguredMainAlias =
@@ -279,8 +274,7 @@ async function resolvePatchTarget(
     sessionKey: rawKey,
     agentId: inputAgentId,
     keyAgentId: requesterAgentId,
-    alias: context.alias,
-    mainKey: context.mainKey,
+    cfg: context.cfg,
     requesterInternalKey: context.effectiveRequesterKey,
     restrictToSpawned: context.restrictToSpawned,
     callGateway,
@@ -556,7 +550,7 @@ export function createSessionsTool(opts: SessionsToolOptions = {}): AnyAgentTool
       const includeResolved = patch.model !== undefined || patch.thinkingLevel !== undefined;
       const agentScope = parseAgentSessionKey(key) ? {} : { agentId };
 
-      if (patch.archived === true && isRequesterSession && key !== "global") {
+      if (patch.archived === true && isRequesterSession) {
         if (key !== resolveAgentMainSessionKey({ cfg, agentId })) {
           const storePath = resolveSessionStorePathCore(cfg.session?.store, { agentId });
           const currentEntry = loadSessionEntry({ agentId, sessionKey: key, storePath });

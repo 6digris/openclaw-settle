@@ -276,6 +276,7 @@ export function createRequestGatewayMethodRegistry(
 export async function authorizeGatewayRequestPreDispatch(params: {
   method: string;
   requestParams: unknown;
+  prepareRequestParams?: () => unknown;
   client: GatewayRequestOptions["client"];
   context: GatewayRequestContext;
   methodRegistry: GatewayMethodRegistry;
@@ -283,7 +284,10 @@ export async function authorizeGatewayRequestPreDispatch(params: {
 }): Promise<{
   error: ErrorShape | null;
   sessionMutationAuthorization?: SessionMutationAuthorization;
+  requestParams?: unknown;
 }> {
+  let requestParams = params.requestParams;
+  let prepareRequestParams = params.prepareRequestParams;
   if (params.context.ensureSessionRowProjection) {
     await params.context.ensureSessionRowProjection();
   }
@@ -293,44 +297,43 @@ export async function authorizeGatewayRequestPreDispatch(params: {
       // SAFETY: The host-owned method registry carries the PluginRegistry selected for dispatch.
       params.methodRegistry.pluginRegistry as PluginRegistry | undefined,
       () =>
-        authorizeGatewayMethod(
-          params.method,
-          params.client,
-          params.requestParams,
-          params.methodRegistry,
-        ),
+        authorizeGatewayMethod(params.method, params.client, requestParams, params.methodRegistry),
     );
     if (authError) {
       return { error: authError };
     }
     // GitHub-backed connections receive hello before remote account resolution. Profile-owned
     // methods must cross this single router fence before session authorization or handler work.
-    const profileError = await authorizeAuthenticatedProfileForMethod(params);
+    const profileError = await authorizeAuthenticatedProfileForMethod({ ...params, requestParams });
     if (profileError) {
       return { error: profileError };
     }
     try {
       params.expectedProfileBinding?.assertCurrent();
+      // Startup gating precedes session authorization: session stores are not loaded yet,
+      // so an authorization read here would deny with a misleading non-retryable error.
+      if (params.context.unavailableGatewayMethods?.has(params.method)) {
+        return {
+          error: errorShape(
+            ErrorCodes.UNAVAILABLE,
+            `${params.method} unavailable during gateway startup`,
+            {
+              retryable: true,
+              retryAfterMs: GATEWAY_STARTUP_RETRY_AFTER_MS,
+              details: { ...gatewayStartupUnavailableDetails(), method: params.method },
+            },
+          ),
+        };
+      }
+      if (prepareRequestParams) {
+        requestParams = prepareRequestParams();
+        prepareRequestParams = undefined;
+      }
     } catch (error) {
       if (error instanceof SessionMutationAuthorizationChangedError) {
         return { error: error.error };
       }
       throw error;
-    }
-    // Startup gating precedes session authorization: session stores are not loaded yet,
-    // so an authorization read here would deny with a misleading non-retryable error.
-    if (params.context.unavailableGatewayMethods?.has(params.method)) {
-      return {
-        error: errorShape(
-          ErrorCodes.UNAVAILABLE,
-          `${params.method} unavailable during gateway startup`,
-          {
-            retryable: true,
-            retryAfterMs: GATEWAY_STARTUP_RETRY_AFTER_MS,
-            details: { ...gatewayStartupUnavailableDetails(), method: params.method },
-          },
-        ),
-      };
     }
     const projection =
       params.method === "sessions.describe" && !isGatewayAdmin(params.client)
@@ -340,14 +343,14 @@ export async function authorizeGatewayRequestPreDispatch(params: {
       resolveSessionMutationAuthorization({
         client: params.client ?? null,
         method: params.method,
-        requestParams: params.requestParams,
+        requestParams,
         context: params.context,
         sessionRowRead,
       });
     const preparedSessionMutation = projection
       ? await projection.withPreparedExactRows(
           (cfg) =>
-            resolveDirectSessionTargets(params.method, params.requestParams).flatMap((target) => {
+            resolveDirectSessionTargets(params.method, requestParams).flatMap((target) => {
               const agent = resolveRequestedSessionAgentId(cfg, target.sessionKey, target.agentId);
               return agent.ok ? [{ key: target.sessionKey, agentId: agent.agentId }] : [];
             }),
@@ -380,6 +383,7 @@ export async function authorizeGatewayRequestPreDispatch(params: {
     }
     return {
       error: null,
+      ...(params.prepareRequestParams ? { requestParams } : {}),
       ...(sessionMutation.authorization
         ? { sessionMutationAuthorization: sessionMutation.authorization }
         : {}),
@@ -554,10 +558,12 @@ export async function handleGatewayRequest(
     extraHandlers?: GatewayRequestHandlers;
     admission?: "continuation";
     requestEntry?: GatewayRequestEntry;
+    prepareRequestParams?: () => unknown;
   },
   diagnostics?: GatewayRpcDiagnostics,
 ): Promise<void> {
-  const { req, client, isWebchatConnect, context, signal, hasCurrentClientAuthority } = opts;
+  const { client, isWebchatConnect, context, signal, hasCurrentClientAuthority } = opts;
+  let req = opts.req;
   const profileBinding =
     opts.expectedProfileBinding ?? createExpectedProfileBinding(req.expectedProfileId, client);
   // WS publication already owns the shared guard, including policy-close responses.
@@ -586,6 +592,7 @@ export async function handleGatewayRequest(
     const authorization = await authorizeGatewayRequestPreDispatch({
       method: req.method,
       requestParams: req.params,
+      prepareRequestParams: opts.prepareRequestParams,
       client,
       context,
       methodRegistry,
@@ -595,6 +602,9 @@ export async function handleGatewayRequest(
     if (authorization.error) {
       respond(false, undefined, authorization.error);
       return;
+    }
+    if (opts.prepareRequestParams) {
+      req = { ...req, params: authorization.requestParams };
     }
     const handler = methodRegistry.getHandler(req.method) as GatewayRequestHandler | undefined;
     if (!handler) {
@@ -615,6 +625,7 @@ export async function handleGatewayRequest(
         opts,
         {
           req,
+          sessionWireSelection: opts.sessionWireSelection,
           params: (req.params ?? {}) as Record<string, unknown>,
           client,
           isWebchatConnect,

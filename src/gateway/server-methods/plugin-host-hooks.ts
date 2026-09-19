@@ -31,7 +31,7 @@ import {
 import { authorizeOperatorScopesForRequiredScope } from "../method-scopes.js";
 import { WRITE_SCOPE } from "../operator-scopes.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
-import { resolveStoredSessionKeyForAgentStore } from "../session-store-key.js";
+import { resolveSessionStoreKey } from "../session-store-key.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
@@ -134,9 +134,9 @@ export const pluginHostHookHandlers: GatewayRequestHandlers = {
     }
     const sessionKey =
       rawSessionKey && sessionOwner?.ok
-        ? resolveStoredSessionKeyForAgentStore({
+        ? resolveSessionStoreKey({
             cfg: context.getRuntimeConfig(),
-            agentId: sessionOwner.agentId,
+            storeAgentId: sessionOwner.agentId,
             sessionKey: rawSessionKey,
           })
         : undefined;

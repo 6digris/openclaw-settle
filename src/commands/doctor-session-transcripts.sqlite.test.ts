@@ -11,6 +11,7 @@ const repairReservedIncognitoSessionKeys = vi.hoisted(() => vi.fn());
 const repairCanonicalSessionDeliveryStates = vi.hoisted(() => vi.fn());
 const repairCanonicalSessionResolvedSkills = vi.hoisted(() => vi.fn());
 const repairCanonicalSessionKeys = vi.hoisted(() => vi.fn());
+const preflightCanonicalSessionKeys = vi.hoisted(() => vi.fn());
 const repairLegacySessionWorktreeWorkspaces = vi.hoisted(() => vi.fn());
 const migrateLegacyMainSessionKeys = vi.hoisted(() => vi.fn());
 const runDoctorSessionSqlite = vi.hoisted(() => vi.fn());
@@ -43,6 +44,7 @@ vi.mock("./doctor-session-exec-policy.js", () => ({
 }));
 
 vi.mock("./doctor-session-canonical-keys.js", () => ({
+  preflightCanonicalSessionKeys,
   repairCanonicalSessionKeys,
 }));
 
@@ -105,6 +107,7 @@ describe("doctor session transcript repair", () => {
     repairCanonicalSessionResolvedSkills
       .mockReset()
       .mockReturnValue({ found: 0, repaired: 0, scannedStores: 0 });
+    preflightCanonicalSessionKeys.mockReset();
     repairCanonicalSessionKeys.mockReset().mockResolvedValue({
       archivedTranscriptDirectories: [],
       foundGroups: 0,

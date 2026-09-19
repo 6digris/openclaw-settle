@@ -1221,7 +1221,7 @@ describe("task-registry store runtime", () => {
           agent_id: "worker",
           requester_agent_id: "main",
           child_session_key: "agent:worker:subagent:child",
-          owner_key: "global",
+          owner_key: "agent:main:global",
         });
 
         resetTaskRegistryForTests({ persist: false });

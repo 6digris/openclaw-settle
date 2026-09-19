@@ -10,7 +10,7 @@ import {
 import { getSessionDiscussionProvider } from "../../plugins/session-discussion-registry.js";
 import { maybeGenerateSessionTitle } from "../dashboard-session-title.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
-import { resolveStoredSessionKeyForAgentStore } from "../session-store-key.js";
+import { resolveSessionStoreKey } from "../session-store-key.js";
 import { hasExplicitSessionName } from "../session-title-state.js";
 import { formatForLog } from "../ws-log.js";
 import { emitSessionsChanged } from "./session-change-event.js";
@@ -126,9 +126,9 @@ export const sessionDiscussionHandlers: GatewayRequestHandlers = {
       return;
     }
     try {
-      const sessionKey = resolveStoredSessionKeyForAgentStore({
+      const sessionKey = resolveSessionStoreKey({
         cfg: context.getRuntimeConfig(),
-        agentId: requestedAgent.agentId,
+        storeAgentId: requestedAgent.agentId,
         sessionKey: params.sessionKey,
       });
       const result = await provider.info({ sessionKey, agentId: requestedAgent.agentId });
@@ -189,9 +189,9 @@ export const sessionDiscussionHandlers: GatewayRequestHandlers = {
         sessionKey: params.sessionKey,
         agentId: requestedAgent.agentId,
       });
-      const sessionKey = resolveStoredSessionKeyForAgentStore({
+      const sessionKey = resolveSessionStoreKey({
         cfg: context.getRuntimeConfig(),
-        agentId: requestedAgent.agentId,
+        storeAgentId: requestedAgent.agentId,
         sessionKey: params.sessionKey,
       });
       const result = await provider.open({ sessionKey, agentId: requestedAgent.agentId });

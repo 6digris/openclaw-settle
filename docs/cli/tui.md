@@ -35,19 +35,19 @@ Related guide: [TUI](/web/tui)
 
 ## Options
 
-| Flag                         | Default                                   | Description                                                                        |
-| ---------------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------- |
-| `--local`                    | `false`                                   | Run against the local embedded agent runtime instead of a Gateway.                 |
-| `--url <url>`                | `gateway.remote.url` from config          | Gateway WebSocket URL.                                                             |
-| `--token <token>`            | (none)                                    | Gateway token if required.                                                         |
-| `--password <pass>`          | (none)                                    | Gateway password if required.                                                      |
-| `--tls-fingerprint <sha256>` | `gateway.remote.tlsFingerprint`           | Expected TLS certificate fingerprint for a pinned `wss://` Gateway.                |
-| `--session <key>`            | `main` (or `global` when scope is global) | Session key. Inside an agent workspace it auto-selects that agent unless prefixed. |
-| `--deliver`                  | `false`                                   | Deliver assistant replies through configured channels.                             |
-| `--thinking <level>`         | (model default)                           | Thinking level override.                                                           |
-| `--message <text>`           | (none)                                    | Send an initial message after connecting.                                          |
-| `--timeout-ms <ms>`          | `agents.defaults.timeoutSeconds`          | Agent timeout. Invalid values log a warning and are ignored.                       |
-| `--history-limit <n>`        | `200`                                     | History entries to load on attach.                                                 |
+| Flag                         | Default                          | Description                                                                    |
+| ---------------------------- | -------------------------------- | ------------------------------------------------------------------------------ |
+| `--local`                    | `false`                          | Run against the local embedded agent runtime instead of a Gateway.             |
+| `--url <url>`                | `gateway.remote.url` from config | Gateway WebSocket URL.                                                         |
+| `--token <token>`            | (none)                           | Gateway token if required.                                                     |
+| `--password <pass>`          | (none)                           | Gateway password if required.                                                  |
+| `--tls-fingerprint <sha256>` | `gateway.remote.tlsFingerprint`  | Expected TLS certificate fingerprint for a pinned `wss://` Gateway.            |
+| `--session <key>`            | Remembered session or Home       | Bare `main` selects Home; a fully qualified key selects an exact conversation. |
+| `--deliver`                  | `false`                          | Deliver assistant replies through configured channels.                         |
+| `--thinking <level>`         | (model default)                  | Thinking level override.                                                       |
+| `--message <text>`           | (none)                           | Send an initial message after connecting.                                      |
+| `--timeout-ms <ms>`          | `agents.defaults.timeoutSeconds` | Agent timeout. Invalid values log a warning and are ignored.                   |
+| `--history-limit <n>`        | `200`                            | History entries to load on attach.                                             |
 
 Aliases: `openclaw chat` and `openclaw terminal` invoke this command with
 `--local` implied.
@@ -81,6 +81,11 @@ Aliases: `openclaw chat` and `openclaw terminal` invoke this command with
 - Launched from inside a configured agent workspace directory, TUI auto-selects
   that agent for the session key default (unless `--session` is explicitly
   `agent:<id>:...`).
+- Home follows the selected agent's session scope: `agent:<id>:main` for
+  `per-sender`, or `agent:<id>:global` for `global`. Fully qualified keys and
+  session picker choices select an exact conversation even when Home changes.
+  See [TUI connection details](/web/tui#connection-details) for older-Gateway
+  limits on exact operations and conflicting legacy identities.
 - Local mode uses the embedded agent runtime directly. Most local tools work,
   but Gateway-only features are unavailable.
 - Local mode requires exclusive ownership of the configured state directory. It

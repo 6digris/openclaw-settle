@@ -3,6 +3,7 @@
  *
  * Reads persisted session store state to recover spawn depth and parent lineage across restarts.
  */
+import { canonicalizeMainSessionAlias } from "../../../config/sessions/main-session.js";
 import { resolveSessionStorePathCore } from "../../../config/sessions/paths.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { normalizeAgentId } from "../../../routing/session-key.js";
@@ -19,27 +20,20 @@ import {
   type SessionCapabilityStore,
 } from "./subagent-session-store.js";
 
-function buildKeyCandidates(
+function resolveSessionLookupKey(
   rawKey: string,
   cfg?: OpenClawConfig,
   explicitAgentId?: string,
-): string[] {
-  if (!cfg) {
-    return [rawKey];
-  }
-  if (rawKey === "unknown") {
-    return [rawKey];
-  }
-  if (parseAgentSessionKey(rawKey)) {
-    return [rawKey];
+): string {
+  if (!cfg || parseAgentSessionKey(rawKey)) {
+    return rawKey;
   }
   const agentId = resolveSessionAgentId({
     sessionKey: rawKey,
     config: cfg,
     agentId: explicitAgentId,
   });
-  const prefixed = `agent:${agentId}:${rawKey}`;
-  return prefixed === rawKey ? [rawKey] : [rawKey, prefixed];
+  return canonicalizeMainSessionAlias({ cfg, agentId, sessionKey: rawKey });
 }
 
 function resolveEntryForSessionKey(params: {
@@ -49,50 +43,30 @@ function resolveEntryForSessionKey(params: {
   cache: Map<string, SessionCapabilityLookup>;
   agentId?: string;
 }): SessionDepthEntry | undefined {
-  const candidates = buildKeyCandidates(params.sessionKey, params.cfg, params.agentId);
-
+  const key = resolveSessionLookupKey(params.sessionKey, params.cfg, params.agentId);
+  const agentId =
+    parseAgentSessionKey(key)?.agentId ?? params.agentId ?? params.store?.scope?.agentId;
   if (params.store) {
-    for (const key of candidates) {
-      const entry = params.store.get(key);
-      if (entry) {
-        return entry;
-      }
-    }
-    const entry = params.store.getById(params.sessionKey);
+    const entry =
+      params.store.get(key) ??
+      (agentId ? params.store.getById(params.sessionKey, agentId) : undefined);
     if (entry || !params.cfg) {
       return entry;
     }
   }
-
-  if (!params.cfg) {
+  if (!params.cfg || !agentId) {
     return undefined;
   }
-
-  const candidateAgentIds = new Set(
-    candidates.flatMap((key) => {
-      const agentId = parseAgentSessionKey(key)?.agentId;
-      return agentId ? [agentId] : [];
-    }),
-  );
-  for (const agentId of candidateAgentIds) {
-    const storePath = resolveSessionStorePathCore(params.cfg.session?.store, { agentId });
-    // A fixed path still exposes an agent-scoped logical view. Reusing another
-    // agent's snapshot can erase cross-agent lineage or adopt the wrong row.
-    const cacheKey = `${storePath}\0${normalizeAgentId(agentId)}`;
-    let store = params.cache.get(cacheKey);
-    if (!store) {
-      store = createSubagentSessionStore(storePath, agentId);
-      params.cache.set(cacheKey, store);
-    }
-    const entry =
-      candidates.map((key) => store.get(key)).find((candidate) => candidate !== undefined) ??
-      store.getById(params.sessionKey);
-    if (entry) {
-      return entry;
-    }
+  const storePath = resolveSessionStorePathCore(params.cfg.session?.store, { agentId });
+  // A fixed path still exposes an agent-scoped logical view. Reusing another
+  // agent's snapshot can erase cross-agent lineage or adopt the wrong row.
+  const cacheKey = `${storePath}\0${normalizeAgentId(agentId)}`;
+  let store = params.cache.get(cacheKey);
+  if (!store) {
+    store = createSubagentSessionStore(storePath, agentId);
+    params.cache.set(cacheKey, store);
   }
-
-  return undefined;
+  return store.get(key) ?? store.getById(params.sessionKey, agentId);
 }
 
 export function getSubagentDepthFromSessionStore(

@@ -38,7 +38,7 @@ import {
   authorizeResolvedSessionMutation,
   resolveSessionSharingTarget,
 } from "./session-sharing.js";
-import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
+import { resolveSessionStoreKey } from "./session-store-key.js";
 import { loadGatewaySessionEntryReadOnly } from "./session-utils.js";
 import { resolveGatewayScopedTools } from "./tool-resolution.js";
 
@@ -90,9 +90,9 @@ function resolveSessionTarget(params: { cfg: OpenClawConfig; input: ToolsInvokeI
   return {
     ok: true as const,
     agentId: resolved.agentId,
-    sessionKey: resolveStoredSessionKeyForAgentStore({
+    sessionKey: resolveSessionStoreKey({
       cfg: params.cfg,
-      agentId: resolved.agentId,
+      storeAgentId: resolved.agentId,
       sessionKey: rawSessionKey,
     }),
   };

@@ -234,12 +234,12 @@ export function resolveMainScopedEventSessionKey(params: {
   ) {
     return null;
   }
-  if (policy.sessionScope === "global") {
-    return "global";
-  }
   return buildAgentMainSessionKey({
     agentId: resolvedAgentId,
-    mainKey: policy.mainKey ?? params.cfg?.session?.mainKey,
+    mainKey:
+      policy.sessionScope === "global"
+        ? "global"
+        : (policy.mainKey ?? params.cfg?.session?.mainKey),
   });
 }
 
@@ -260,7 +260,7 @@ export function scopedHeartbeatWakeOptionsForPolicy<T extends object>(
   sessionKey: string,
   wakeOptions: T,
   policy?: EventSessionRoutingPolicy,
-): T | (T & { sessionKey: string }) | (T & { agentId: string }) {
+): T | (T & { sessionKey: string }) {
   const cronScoped = resolveEventSessionKey(sessionKey, policy?.mainKey, policy?.sessionScope);
   if (cronScoped !== sessionKey) {
     return scopedHeartbeatWakeOptions(
@@ -272,10 +272,6 @@ export function scopedHeartbeatWakeOptionsForPolicy<T extends object>(
   }
   const mainScoped = resolveMainScopedEventSessionKey({ sessionKey, policy });
   if (mainScoped) {
-    if (mainScoped === "global") {
-      const agentId = parseAgentSessionKey(sessionKey)?.agentId;
-      return agentId ? { ...wakeOptions, agentId } : wakeOptions;
-    }
     return { ...wakeOptions, sessionKey: mainScoped };
   }
   return scopedHeartbeatWakeOptions(sessionKey, wakeOptions, policy?.mainKey, policy?.sessionScope);

@@ -29,7 +29,7 @@ describe("current session ID entry reads", () => {
     "preserves visible listing order and excludes retained generations (%s)",
     (projection) => {
       const env = { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-session-by-id-") };
-      const scope = { agentId: "main", env, projection };
+      const scope = { agentId: "main", logicalAgentId: "main", env, projection };
       for (const name of ["z-shared", "a-shared", "internal-session-effects:shared"]) {
         replaceSessionEntrySync(
           { ...scope, sessionKey: `agent:main:${name}` },
@@ -83,7 +83,7 @@ describe("current session ID entry reads", () => {
 
   it("uses the current-ID index without a trimmed fallback on an exact hit", () => {
     const env = { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-session-by-id-index-") };
-    const scope = { agentId: "main", env };
+    const scope = { agentId: "main", logicalAgentId: "main", env };
     runOpenClawAgentWriteTransaction(() => {
       for (let index = 0; index < 32; index += 1) {
         replaceSessionEntrySync(
@@ -130,7 +130,7 @@ describe("current session ID entry reads", () => {
 
   it("runs a trimmed query only after an exact miss and preserves visible match order", () => {
     const env = { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-session-by-id-padded-") };
-    const scope = { agentId: "main", env, projection: "list" as const };
+    const scope = { agentId: "main", logicalAgentId: "main", env, projection: "list" as const };
     for (const name of ["z-padded", "a-padded", "internal-session-effects:padded"]) {
       replaceSessionEntrySync(
         { ...scope, sessionKey: `agent:main:${name}` },
@@ -152,7 +152,12 @@ describe("current session ID entry reads", () => {
 
   it("validates a selected row again after a warm read", () => {
     const env = { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-session-by-id-invalid-") };
-    const scope = { agentId: "main", env, sessionKey: "agent:main:invalid" };
+    const scope = {
+      agentId: "main",
+      logicalAgentId: "main",
+      env,
+      sessionKey: "agent:main:invalid",
+    };
     replaceSessionEntrySync(scope, { sessionId: "selected", updatedAt: 1 });
     expect(loadSessionEntryByIdReadOnly({ ...scope, sessionId: "selected" })).toBeDefined();
     const database = openOpenClawAgentDatabase(scope);
@@ -168,7 +173,12 @@ describe("current session ID entry reads", () => {
     const root = tempDirs.make("openclaw-session-by-id-missing-");
     const env = { OPENCLAW_STATE_DIR: path.join(root, "state") };
     expect(
-      loadSessionEntryByIdReadOnly({ agentId: "main", env, sessionId: "missing" }),
+      loadSessionEntryByIdReadOnly({
+        agentId: "main",
+        logicalAgentId: "main",
+        env,
+        sessionId: "missing",
+      }),
     ).toBeUndefined();
     expect(fs.readdirSync(root)).toEqual([]);
   });

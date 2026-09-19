@@ -38,33 +38,66 @@ describe("tui last session state", () => {
     });
   });
 
-  it("persists the last session under a scoped hashed key", async () => {
-    const stateDir = await makeTempStateDir();
-    const scopeKey = buildTuiLastSessionScopeKey({
-      connectionUrl: "ws://127.0.0.1:18789",
-      agentId: "Main",
-      sessionScope: "per-sender",
-    });
+  it.each([
+    { agentId: "Main", sessionKey: "agent:main:tui-123", writer: "direct" },
+    { agentId: "Work", sessionKey: "agent:work:unknown", writer: "direct" },
+    { agentId: "Work", sessionKey: "agent:work:unknown", writer: "remember" },
+  ])(
+    "persists and restores $sessionKey through the $writer writer",
+    async ({ agentId, sessionKey, writer }) => {
+      const stateDir = await makeTempStateDir();
+      const scopeKey = buildTuiLastSessionScopeKey({
+        connectionUrl: "ws://127.0.0.1:18789",
+        agentId,
+        sessionScope: "per-sender",
+      });
+      const options = { env: { ...process.env, OPENCLAW_STATE_DIR: stateDir } };
+      configMachineState.writeConfigMachineState(
+        `tui.lastSession.${scopeKey}`,
+        `agent:${agentId.toLowerCase()}:previous`,
+        options,
+      );
+      const failures: string[] = [];
+      const write = (key: string) =>
+        writeTuiLastSessionKey({ scopeKey, sessionKey: key, stateDir });
+      const remember = createRememberSessionKeyWriter({
+        buildScopeKey: () => scopeKey,
+        reportFailure: (message) => failures.push(message),
+        write: (params) => writeTuiLastSessionKey({ ...params, stateDir }),
+      });
 
-    await writeTuiLastSessionKey({
-      scopeKey,
-      sessionKey: "agent:main:tui-123",
-      stateDir,
-    });
+      for (const key of [sessionKey, " unknown ", "  "]) {
+        if (writer === "direct") {
+          await write(key);
+        } else {
+          remember({ sessionKey: key }, "per-sender");
+        }
+      }
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
 
-    await expect(readTuiLastSessionKey({ scopeKey, stateDir })).resolves.toBe("agent:main:tui-123");
-    expect(
-      readConfigMachineStateWithMetadata<string>(`tui.lastSession.${scopeKey}`, {
-        env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
-      }),
-    ).toEqual({ value: "agent:main:tui-123", updatedAtMs: expect.any(Number) });
-    await expect(fs.stat(path.join(stateDir, "tui", "last-session.json"))).rejects.toMatchObject({
-      code: "ENOENT",
-    });
+      expect(failures).toEqual([]);
+      await expect(readTuiLastSessionKey({ scopeKey, stateDir })).resolves.toBe(sessionKey);
+      expect(
+        readConfigMachineStateWithMetadata<string>(`tui.lastSession.${scopeKey}`, options),
+      ).toEqual({ value: sessionKey, updatedAtMs: expect.any(Number) });
+      await expect(fs.stat(path.join(stateDir, "tui", "last-session.json"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
 
-    closeOpenClawStateDatabaseForTest();
-    await expect(readTuiLastSessionKey({ scopeKey, stateDir })).resolves.toBe("agent:main:tui-123");
-  });
+      closeOpenClawStateDatabaseForTest();
+      const rememberedKey = await readTuiLastSessionKey({ scopeKey, stateDir });
+      expect(rememberedKey).toBe(sessionKey);
+      expect(
+        resolveRememberedTuiSessionKey({
+          rememberedKey,
+          currentAgentId: agentId,
+          sessions: [{ key: "agent:other:unknown" }, { key: sessionKey }],
+        }),
+      ).toBe(sessionKey);
+    },
+  );
 
   it("atomically preserves concurrent updates to independent scopes", async () => {
     const stateDir = await makeTempStateDir();
@@ -89,6 +122,7 @@ describe("tui last session state", () => {
   it("restores only a remembered session that still belongs to the current agent", () => {
     const sessions = [
       { key: "agent:main:main" },
+      { key: "agent:ops:tui-123" },
       { key: "agent:main:tui-123" },
       { key: "agent:ops:tui-999" },
     ];
@@ -235,6 +269,42 @@ describe("tui last session state", () => {
 });
 
 describe("createRememberSessionKeyWriter", () => {
+  it.each([
+    { key: "agent:main:primary", scope: "per-sender", intent: "home", stored: "main" },
+    { key: "agent:main:global", scope: "global", intent: "home", stored: "global" },
+    { key: "agent:main:main", scope: "per-sender", intent: "exact", stored: "agent:main:main" },
+    { key: "agent:main:global", scope: "global", intent: "exact", stored: "agent:main:global" },
+  ] as const)(
+    "persists $intent $key as the compatible string $stored",
+    async ({ key, scope, intent, stored }) => {
+      const stateDir = await makeTempStateDir();
+      const remember = createRememberSessionKeyWriter({
+        buildScopeKey: (sessionKey, sessionScope) =>
+          buildTuiLastSessionScopeKey({
+            connectionUrl: "ws://127.0.0.1:18789",
+            agentId: "main",
+            sessionScope,
+          }),
+        reportFailure: (message) => {
+          throw new Error(message);
+        },
+        write: (params) => writeTuiLastSessionKey({ ...params, stateDir }),
+      });
+      remember({ sessionKey: key, ...(intent === "home" ? { targetIntent: intent } : {}) }, scope);
+      const scopeKey = buildTuiLastSessionScopeKey({
+        connectionUrl: "ws://127.0.0.1:18789",
+        agentId: "main",
+        sessionScope: scope,
+      });
+      await expect(readTuiLastSessionKey({ stateDir, scopeKey })).resolves.toBe(stored);
+      expect(
+        readConfigMachineStateWithMetadata<string>(`tui.lastSession.${scopeKey}`, {
+          env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+        })?.value.trim(),
+      ).toBe(stored);
+    },
+  );
+
   it("reports the first write failure once and keeps later writes silent", async () => {
     const failures: string[] = [];
     const write = async () => {
@@ -246,8 +316,8 @@ describe("createRememberSessionKeyWriter", () => {
       write,
     });
 
-    remember("agent:main:one");
-    remember("agent:main:two");
+    remember({ sessionKey: "agent:main:one" }, "per-sender");
+    remember({ sessionKey: "agent:main:two" }, "per-sender");
     await new Promise<void>((resolve) => {
       setImmediate(resolve);
     });
@@ -255,25 +325,26 @@ describe("createRememberSessionKeyWriter", () => {
     expect(failures).toEqual(["SQLITE_CORRUPT: database disk image is malformed"]);
   });
 
-  it("skips empty and unknown session keys without touching the writer", async () => {
-    let writes = 0;
+  it("skips bare placeholders while forwarding qualified unknown session keys", async () => {
+    const writes: string[] = [];
     const remember = createRememberSessionKeyWriter({
       buildScopeKey: (sessionKey) => sessionKey,
       reportFailure: () => {
         throw new Error("must not report");
       },
-      write: async () => {
-        writes += 1;
+      write: async ({ sessionKey }) => {
+        writes.push(sessionKey);
       },
     });
 
-    remember("  ");
-    remember("unknown");
-    remember("agent:main:kept");
+    remember({ sessionKey: "  " }, "per-sender");
+    remember({ sessionKey: "unknown" }, "per-sender");
+    remember({ sessionKey: "agent:main:unknown" }, "per-sender");
+    remember({ sessionKey: "agent:main:kept" }, "per-sender");
     await new Promise<void>((resolve) => {
       setImmediate(resolve);
     });
 
-    expect(writes).toBe(1);
+    expect(writes).toEqual(["agent:main:unknown", "agent:main:kept"]);
   });
 });

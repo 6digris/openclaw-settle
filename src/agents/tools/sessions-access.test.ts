@@ -160,7 +160,8 @@ describe("sandbox session-tools context", () => {
       requesterAgentId: "ops",
     });
 
-    expect(context.mainSessionKey).toBe("global");
+    expect(context.mainSessionKey).toBe("agent:ops:global");
+    expect(context.effectiveRequesterKey).toBe("agent:ops:global");
   });
 });
 

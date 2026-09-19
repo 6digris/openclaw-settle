@@ -737,7 +737,7 @@ describe("gateway server agent", () => {
 
     const webchatWs = await connectWebchatClient({ port });
 
-    registerAgentRunContext("run-auto-1", { sessionKey: "main" });
+    registerAgentRunContext("run-auto-1", { sessionKey: "agent:main:main" });
 
     const finalChatP = onceMessage(
       webchatWs,
@@ -764,7 +764,7 @@ describe("gateway server agent", () => {
 
     const evt = await finalChatP;
     const payload = evt.payload && typeof evt.payload === "object" ? evt.payload : {};
-    expect(payload.sessionKey).toBe("main");
+    expect(payload.sessionKey).toBe("agent:main:main");
     expect(payload.runId).toBe("run-auto-1");
 
     webchatWs.close();

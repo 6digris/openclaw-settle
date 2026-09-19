@@ -1410,7 +1410,7 @@ describe("spawnSubagentDirect seam flow", () => {
       const registerInput = firstRegisteredSubagentRun();
       expect(registerInput.childSessionKey).toBe(result.childSessionKey);
       expect(registerInput.agentId).toBe("worker");
-      expect(registerInput.requesterSessionKey).toBe("global");
+      expect(registerInput.requesterSessionKey).toBe("agent:main:global");
       expect(registerInput.requesterAgentId).toBe("main");
     },
   );

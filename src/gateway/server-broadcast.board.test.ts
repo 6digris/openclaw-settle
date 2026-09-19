@@ -260,9 +260,9 @@ describe("board and progress event session ownership", () => {
         };
         setRuntimeConfigSnapshot(cfg, cfg);
         const targets = [
-          { sessionKey: "global", agentId: "work", label: "raw-owner" },
-          { sessionKey: "agent:work:global", agentId: "work", label: "ordinary-owner" },
-          { sessionKey: "global", agentId: "main", label: "other-agent-owner" },
+          { sessionKey: "agent:work:global", agentId: "work", label: "work-owner" },
+          { sessionKey: "agent:work:other", agentId: "work", label: "ordinary-owner" },
+          { sessionKey: "agent:main:global", agentId: "main", label: "other-agent-owner" },
         ];
         const peers = targets.map(({ label }) => {
           const peer = makeClient(label, "operator", ["operator.read"]);
@@ -330,22 +330,32 @@ describe("board and progress event session ownership", () => {
               agentId: "work",
               expectedRevision: 1,
             });
-            const ordinaryWrite = await invoke("progressCard.put", {
+            const canonicalWrite = await invoke("progressCard.put", {
               sessionKey: "agent:work:global",
+              markdown: "Canonical session",
+            });
+            const ordinaryWrite = await invoke("progressCard.put", {
+              sessionKey: "agent:work:other",
               markdown: "Ordinary session",
             });
-            expect(await progressCardStore.get("global", "work")).toBeNull();
-            expect((await progressCardStore.get("agent:work:global", "work"))?.markdown).toBe(
+            expect(await progressCardStore.get("global", "work")).toEqual(
+              await progressCardStore.get("agent:work:global", "work"),
+            );
+            expect((await progressCardStore.get("global", "work"))?.markdown).toBe(
+              "Canonical session",
+            );
+            expect((await progressCardStore.get("agent:work:other", "work"))?.markdown).toBe(
               "Ordinary session",
             );
-            const changed = (revision: number | null) => ({
+            const changed = (sessionKey: string, revision: number | null) => ({
               event: "progressCard.changed",
-              payload: { sessionKey: "agent:work:global", revision },
+              payload: { sessionKey, revision },
             });
-            expect({ rawWrite, rawClear, ordinaryWrite }).toEqual({
-              rawWrite: [[changed(1)], [], []],
-              rawClear: [[changed(null)], [], []],
-              ordinaryWrite: [[], [changed(1)], []],
+            expect({ rawWrite, rawClear, canonicalWrite, ordinaryWrite }).toEqual({
+              rawWrite: [[changed("agent:work:global", 1)], [], []],
+              rawClear: [[changed("agent:work:global", null)], [], []],
+              canonicalWrite: [[changed("agent:work:global", 3)], [], []],
+              ordinaryWrite: [[], [changed("agent:work:other", 1)], []],
             });
             return;
           }
@@ -370,8 +380,12 @@ describe("board and progress event session ownership", () => {
             instanceId: widget.instanceId,
           });
           const emptyUpdate = await invoke("board.update", { ...target, ops: [] });
-          const ordinaryUpdate = await invoke("board.update", {
+          const canonicalUpdate = await invoke("board.update", {
             sessionKey: "agent:work:global",
+            ops: [{ kind: "tab_create", tabId: "canonical", title: "Canonical" }],
+          });
+          const ordinaryUpdate = await invoke("board.update", {
+            sessionKey: "agent:work:other",
             ops: [{ kind: "tab_create", tabId: "ordinary", title: "Ordinary" }],
           });
           const otherAgentUpdate = await invoke("board.update", {
@@ -380,14 +394,14 @@ describe("board and progress event session ownership", () => {
             ops: [{ kind: "tab_create", tabId: "main-notes", title: "Main notes" }],
           });
           expect(await boardStore.getSnapshot(target)).toMatchObject({
-            sessionKey: "global",
-            revision: 3,
+            sessionKey: "agent:work:global",
+            revision: 4,
             widgets: [{ name: "status", grantState: "granted" }],
           });
-          const changed = (agentId: string, revision: number, widgetName?: string) => ({
+          const changed = (sessionKey: string, revision: number, widgetName?: string) => ({
             event: "board.changed",
             payload: {
-              sessionKey: `agent:${agentId}:global`,
+              sessionKey,
               revision,
               ...(widgetName ? { widget: widgetName } : {}),
             },
@@ -403,28 +417,36 @@ describe("board and progress event session ownership", () => {
               session: expect.objectContaining({ key: sessionKey, agentId, sessionId: label }),
             }),
           });
-          const rawSession = sessionChanged("global", "work", "raw-owner");
+          const ownerSession = sessionChanged("agent:work:global", "work", "work-owner");
           expect({
             rawUpdate,
             rawPut,
             rawGrant,
             emptyUpdate,
+            canonicalUpdate,
             ordinaryUpdate,
             otherAgentUpdate,
           }).toEqual({
-            rawUpdate: [[changed("work", 1), rawSession], [], []],
-            rawPut: [[changed("work", 2, "status"), rawSession], [], []],
-            rawGrant: [[changed("work", 3)], [], []],
+            rawUpdate: [[changed("agent:work:global", 1), ownerSession], [], []],
+            rawPut: [[changed("agent:work:global", 2, "status"), ownerSession], [], []],
+            rawGrant: [[changed("agent:work:global", 3)], [], []],
             emptyUpdate: [[], [], []],
+            canonicalUpdate: [[changed("agent:work:global", 4), ownerSession], [], []],
             ordinaryUpdate: [
               [],
-              [changed("work", 1), sessionChanged("agent:work:global", "work", "ordinary-owner")],
+              [
+                changed("agent:work:other", 1),
+                sessionChanged("agent:work:other", "work", "ordinary-owner"),
+              ],
               [],
             ],
             otherAgentUpdate: [
               [],
               [],
-              [changed("main", 1), sessionChanged("global", "main", "other-agent-owner")],
+              [
+                changed("agent:main:global", 1),
+                sessionChanged("agent:main:global", "main", "other-agent-owner"),
+              ],
             ],
           });
         } finally {
@@ -710,7 +732,8 @@ describe("collaboration event scope guards", () => {
     const both = makeClient("both", "operator", ["operator.read"]);
     const work = makeClient("work", "operator", ["operator.read"]);
     const workRaw = makeClient("work-raw", "operator", ["operator.read"]);
-    for (const entry of [main, legacy, both, work, workRaw]) {
+    const peers = [main, legacy, both, work, workRaw];
+    for (const entry of peers) {
       entry.client.connect.caps = [GATEWAY_CLIENT_CAPS.SESSION_SCOPED_EVENTS];
     }
     const subscribers = createSessionMessageSubscriberRegistry();
@@ -723,22 +746,14 @@ describe("collaboration event scope guards", () => {
     const audience = createSessionObserverAudience({
       subscribers,
       isVisible: () => true,
-      getConfig: () =>
-        ({ agents: { list: [{ id: "main", default: true }, { id: "work" }] } }) as OpenClawConfig,
     });
     const { broadcastToConnIds } = createGatewayBroadcaster({
-      clients: new GatewayClientRegistry([
-        main.client,
-        legacy.client,
-        both.client,
-        work.client,
-        workRaw.client,
-      ]),
+      clients: new GatewayClientRegistry(peers.map(({ client }) => client)),
       sessionMessageSubscribers: subscribers,
     });
 
     for (const agentId of ["main", "work"]) {
-      const sessionKeys = resolveSessionSubscriptionKeys(" GLOBAL ", agentId, "MAIN");
+      const sessionKeys = resolveSessionSubscriptionKeys(" GLOBAL ", agentId);
       const recipients = audience.recipients("global", agentId);
       broadcastToConnIds("session.observer", { sessionKey: "global", agentId }, recipients, {
         sessionKeys,
@@ -747,10 +762,10 @@ describe("collaboration event scope guards", () => {
     }
 
     expect(main.socket.events).toEqual(["session.observer"]);
-    expect(legacy.socket.events).toEqual(["session.observer"]);
+    expect(legacy.socket.events).toEqual([]);
     expect(both.socket.events).toEqual(["session.observer"]);
     expect(work.socket.events).toEqual(["session.observer"]);
-    expect(workRaw.socket.events).toEqual(["session.observer"]);
+    expect(workRaw.socket.events).toEqual([]);
   });
 
   it("preserves event-only recipients selected by the critical observer audience", () => {
@@ -768,8 +783,6 @@ describe("collaboration event scope guards", () => {
       subscribers,
       sessionEventSubscribers,
       isVisible: () => true,
-      getConfig: () =>
-        ({ agents: { list: [{ id: "main", default: true }, { id: "work" }] } }) as OpenClawConfig,
     });
     const { broadcastToConnIds } = createGatewayBroadcaster({
       clients: new GatewayClientRegistry([message.client, eventOnly.client, unrelated.client]),
@@ -811,7 +824,7 @@ describe("collaboration event scope guards", () => {
         event,
         { sessionKey: "global", agentId: "work" },
         {
-          sessionKeys: resolveSessionSubscriptionKeys("global", "work", "main"),
+          sessionKeys: resolveSessionSubscriptionKeys("global", "work"),
           agentId: "work",
         },
       );
@@ -932,7 +945,7 @@ it("delivers committed collector updates to a parent-only cross-agent viewer", a
       Object.assign(peer.client, roleClient("view", name));
       return peer;
     });
-    const parent = { sessionKey: "global", agentId: "ops" };
+    const parent = { sessionKey: "agent:ops:global", agentId: "ops" };
     const child = { sessionKey: "agent:research:subagent:collector", agentId: "research" };
     for (const [index, target] of [parent, child].entries()) {
       await upsertSessionEntryCore(target, {
@@ -1022,7 +1035,7 @@ it("delivers committed collector updates to a parent-only cross-agent viewer", a
       for (const [raw] of peers[0]!.socket.send.mock.calls) {
         const event = JSON.parse(raw);
         expect(event.payload).toMatchObject({
-          sessionKey: "global",
+          sessionKey: "agent:ops:global",
           agentId: "ops",
           reason: "swarm",
           status: "running",

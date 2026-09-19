@@ -35,7 +35,6 @@ import { prepareGatewayAgentCliShim } from "../infra/openclaw-cli-shim.js";
 import { readGatewayRestartHandoffSync } from "../infra/restart-handoff.js";
 import { setGatewaySigusr1RestartPolicy, setPreRestartDeferralCheck } from "../infra/restart.js";
 import { withSqliteReadOnlyWorkerScope } from "../infra/sqlite-readonly-worker.js";
-import { withSystemEventOwner } from "../infra/system-event-ownership.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
 import { applyLoggingConfig } from "../logging/logger.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
@@ -244,10 +243,7 @@ export async function prepareGatewayServerBootstrap(input: {
     const text = `[${code}] ${message}`;
     try {
       const target = resolveSystemMainSessionTarget(cfg);
-      enqueueSystemEvent(
-        text,
-        withSystemEventOwner({ sessionKey: target.sessionKey, contextKey: code }, target.agentId),
-      );
+      enqueueSystemEvent(text, { sessionKey: target.sessionKey, contextKey: code });
     } catch (error) {
       logSecrets.warn(`${text} not delivered: ${formatErrorMessage(error)}`);
     }

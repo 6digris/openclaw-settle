@@ -1,4 +1,5 @@
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
+import { getAgentRunRegistryState } from "./agent-run-registry-state.js";
 import type {
   AgentRunContext,
   AgentRunModel,
@@ -6,7 +7,7 @@ import type {
   ProjectedAgentRunState,
 } from "./agent-run-registry.types.js";
 
-export function projectedRunIdentity(agentId: string, value: string): string {
+function projectedRunIdentity(agentId: string, value: string): string {
   return `${normalizeAgentId(agentId)}\0${value}`;
 }
 
@@ -34,15 +35,12 @@ export function projectedAgentRunInputKey(context: Readonly<AgentRunContext>): s
   ]);
 }
 
-export function buildAgentRunProjectionIndex(params: {
-  contexts: Iterable<Readonly<AgentRunContext>>;
-  lifecycleGeneration: string;
-}): ProjectedAgentRunIndex {
+export function buildProjectedAgentRunIndex(): ProjectedAgentRunIndex {
+  const { contexts, lifecycleGeneration } = getAgentRunRegistryState();
   const modelsBySessionId = new Map<string, AgentRunModel | null>();
   const pendingModelSessionIds = new Set<string>();
   const sessionKeys = new Map<string, ProjectedAgentRunState>();
   const sessionIds = new Map<string, ProjectedAgentRunState>();
-  const ownerlessSessionKeys = new Map<string, ProjectedAgentRunState>();
   const ownerlessSessionIds = new Map<string, ProjectedAgentRunState>();
   const add = (
     index: Map<string, ProjectedAgentRunState>,
@@ -54,11 +52,11 @@ export function buildAgentRunProjectionIndex(params: {
       index.set(key, status);
     }
   };
-  for (const context of params.contexts) {
+  for (const context of contexts.values()) {
     const queued = (context.capacityWaits?.size ?? 0) > 0;
     const agentId = context.agentId ?? parseAgentSessionKey(context.sessionKey)?.agentId;
     if (
-      context.lifecycleGeneration === params.lifecycleGeneration &&
+      context.lifecycleGeneration === lifecycleGeneration &&
       agentId &&
       context.sessionId &&
       context.sessionKey &&
@@ -78,7 +76,7 @@ export function buildAgentRunProjectionIndex(params: {
       }
     }
     if (
-      context.lifecycleGeneration !== params.lifecycleGeneration ||
+      context.lifecycleGeneration !== lifecycleGeneration ||
       (context.projectSessionActive !== true &&
         (!queued ||
           context.projectSessionActive === false ||
@@ -93,8 +91,6 @@ export function buildAgentRunProjectionIndex(params: {
         : "capacity-wait";
     if (context.sessionKey !== undefined && agentId) {
       add(sessionKeys, projectedRunIdentity(agentId, context.sessionKey), status);
-    } else if (context.sessionKey !== undefined) {
-      add(ownerlessSessionKeys, context.sessionKey, status);
     }
     if (context.sessionId !== undefined && agentId) {
       add(sessionIds, projectedRunIdentity(agentId, context.sessionId), status);
@@ -108,5 +104,53 @@ export function buildAgentRunProjectionIndex(params: {
       modelsBySessionId.set(key, null);
     }
   }
-  return { modelsBySessionId, sessionKeys, sessionIds, ownerlessSessionKeys, ownerlessSessionIds };
+  return { modelsBySessionId, sessionKeys, sessionIds, ownerlessSessionIds };
+}
+
+export function resolveProjectedAgentRunModel(params: {
+  agentId: string;
+  sessionId?: string;
+  index?: ProjectedAgentRunIndex;
+}): AgentRunModel | null | undefined {
+  return params.sessionId === undefined
+    ? undefined
+    : (params.index ?? buildProjectedAgentRunIndex()).modelsBySessionId.get(
+        projectedRunIdentity(params.agentId, params.sessionId),
+      );
+}
+
+export function resolveProjectedAgentRunProgressState(params: {
+  sessionKeys: readonly string[];
+  sessionId?: string;
+  agentId?: string;
+  defaultAgentId?: string;
+  index?: ProjectedAgentRunIndex;
+}): ProjectedAgentRunState | undefined {
+  const index = params.index ?? buildProjectedAgentRunIndex();
+  const agentId =
+    params.agentId ??
+    params.sessionKeys.flatMap((key) => parseAgentSessionKey(key)?.agentId ?? [])[0] ??
+    params.defaultAgentId;
+  if (!agentId) {
+    return undefined;
+  }
+  const mayAdoptOwnerless =
+    params.defaultAgentId !== undefined &&
+    normalizeAgentId(agentId) === normalizeAgentId(params.defaultAgentId);
+  const statuses = params.sessionKeys.flatMap((sessionKey) => [
+    index.sessionKeys.get(projectedRunIdentity(agentId, sessionKey)),
+  ]);
+  if (params.sessionId !== undefined) {
+    statuses.push(index.sessionIds.get(projectedRunIdentity(agentId, params.sessionId)));
+    if (mayAdoptOwnerless) {
+      statuses.push(index.ownerlessSessionIds.get(params.sessionId));
+    }
+  }
+  return statuses.includes("running")
+    ? "running"
+    : statuses.includes("queued")
+      ? "queued"
+      : statuses.includes("capacity-wait")
+        ? "capacity-wait"
+        : undefined;
 }

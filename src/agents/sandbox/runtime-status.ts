@@ -67,19 +67,6 @@ function shouldSandboxSession(
   return sessionKey.trim() !== mainSessionKey.trim();
 }
 
-function resolveMainSessionKeyForSandbox(params: {
-  cfg?: OpenClawConfig;
-  agentId: string;
-}): string {
-  if (params.cfg?.session?.scope === "global") {
-    return "global";
-  }
-  return resolveAgentMainSessionKey({
-    cfg: params.cfg,
-    agentId: params.agentId,
-  });
-}
-
 function resolveComparableSessionKeyForSandbox(params: {
   cfg?: OpenClawConfig;
   agentId: string;
@@ -138,7 +125,6 @@ export function resolveSandboxRuntimeStatusesForPersistedSessions(
     const readSession: typeof resolveSessionEntry = ({ sessionKey }) => ({
       existing: byKey.get(sessionKey),
       normalizedKey: sessionKey,
-      legacyKeys: [],
     });
     // Retained or removed entries still need the configured mode classification.
     return params.sessionKeys.map((sessionKey) =>
@@ -176,7 +162,7 @@ function resolveSandboxRuntimeStatusWithRead(
   });
   const cfg = params.cfg;
   const sandboxCfg = resolveSandboxConfigForAgent(cfg, classificationAgentId);
-  const mainSessionKey = resolveMainSessionKeyForSandbox({ cfg, agentId: classificationAgentId });
+  const mainSessionKey = resolveAgentMainSessionKey({ cfg, agentId: classificationAgentId });
   const comparableSessionKey = resolveComparableSessionKeyForSandbox({
     cfg,
     agentId: classificationAgentId,

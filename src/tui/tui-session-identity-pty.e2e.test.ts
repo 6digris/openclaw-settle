@@ -3,7 +3,11 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { sleep } from "../utils/sleep.js";
-import { buildTuiLastSessionScopeKey, writeTuiLastSessionKey } from "./tui-last-session.js";
+import {
+  buildTuiLastSessionScopeKey,
+  readTuiLastSessionKey,
+  writeTuiLastSessionKey,
+} from "./tui-last-session.js";
 import {
   disposeActiveTuiFixtures,
   objectFieldEquals,
@@ -20,12 +24,13 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 async function seedRememberedSession(
   stateDir: string,
   sessionKey: string = REMEMBERED_SESSION_KEY,
+  sessionScope: "global" | "per-sender" = "per-sender",
 ) {
   await writeTuiLastSessionKey({
     scopeKey: buildTuiLastSessionScopeKey({
       connectionUrl: "pty-fixture://local",
       agentId: "main",
-      sessionScope: "per-sender",
+      sessionScope,
     }),
     sessionKey,
     stateDir,
@@ -99,7 +104,9 @@ it("refreshes the footer only for an accepted fallback destination without reloa
     expect(initialFooter).toContain("gpt-4o");
     const backendCalls = (entries: FixtureLogEntry[]) =>
       entries.filter((entry) =>
-        ["loadHistory", "listSessions", "patchSession", "sendChat"].includes(entry.method),
+        ["loadHistory", "describeSession", "listSessions", "patchSession", "sendChat"].includes(
+          entry.method,
+        ),
       );
     const initialCalls = backendCalls(await readFixtureLog(fixture.logPath));
     expect(initialCalls.filter((entry) => entry.method === "sendChat")).toHaveLength(1);
@@ -219,7 +226,9 @@ it("clears the previous display name when the selected session is unnamed", asyn
 }, 65_000);
 
 it("keeps the active stream when the current session is selected again", async () => {
-  const fixture = await startTuiFixture();
+  const fixture = await startTuiFixture({
+    env: { OPENCLAW_TUI_PTY_PICKER_FIXTURE: "1", OPENCLAW_TUI_PTY_SESSION: "agent:main:main" },
+  });
   try {
     await fixture.run.waitForOutput("local ready", STARTUP_TIMEOUT_MS);
     await fixture.run.write("streaming prompt\r", { delay: false });
@@ -228,7 +237,19 @@ it("keeps the active stream when the current session is selected again", async (
       (entry) => entry.method === "loadHistory",
     ).length;
 
-    await fixture.run.write("/session main\r/think\r", { delay: false });
+    await fixture.run.write("/sessions\r", { delay: false });
+    await fixture.waitForLogEntry(
+      (entry) => entry.method === "listSessions" && objectFieldEquals(entry, "purpose", "picker"),
+      STARTUP_TIMEOUT_MS,
+    );
+    await fixture.run.write("\r", { delay: false });
+    await fixture.run.write("/think high\r/think\r", { delay: false });
+    const patch = await fixture.waitForLogEntry(
+      (entry) => entry.method === "patchSession",
+      STARTUP_TIMEOUT_MS,
+    );
+    expect(patch.payload).toMatchObject({ key: "agent:main:main", thinkingLevel: "high" });
+    expect(patch.payload).not.toHaveProperty("targetIntent");
     await fixture.run.waitForOutput("usage: /think", STARTUP_TIMEOUT_MS);
     const rows = await waitForSynchronizedFrameRows(
       fixture.run,
@@ -280,6 +301,152 @@ it("hides a stale approval when startup restores the remembered session", async 
   }
 }, 65_000);
 
+it.each([
+  {
+    sessionScope: "per-sender",
+    selector: "agent:main:main",
+    expectedKey: "agent:main:main",
+    intent: "exact",
+  },
+  {
+    sessionScope: "global",
+    selector: "agent:main:global",
+    expectedKey: "agent:main:global",
+    intent: "exact",
+  },
+  { sessionScope: "per-sender", selector: "main", expectedKey: "agent:main:main", intent: "home" },
+  { sessionScope: "global", selector: "main", expectedKey: "agent:main:global", intent: "home" },
+])(
+  "remembers $intent intent across SQLite-backed TUI restart for $selector ($sessionScope)",
+  async ({ sessionScope, selector, expectedKey, intent }) => {
+    const stateDir = tempDirs.make("openclaw-tui-intent-restart-");
+    const env = {
+      OPENCLAW_STATE_DIR: stateDir,
+      OPENCLAW_TUI_PTY_SESSION_SCOPE: sessionScope,
+      OPENCLAW_TUI_PTY_PICKER_FIXTURE: "1",
+      OPENCLAW_TUI_PTY_PICKER_SESSION_KEY: expectedKey,
+    };
+    for (const launch of ["selected", "restored"]) {
+      const marker = `remembered intent ${launch} proof`;
+      const fixture = await startTuiFixture({
+        env: { ...env, ...(launch === "selected" ? { OPENCLAW_TUI_PTY_SESSION: selector } : {}) },
+      });
+      try {
+        await fixture.run.waitForOutput("local ready", STARTUP_TIMEOUT_MS);
+        await fixture.run.write(`${marker}\r`, { delay: false });
+        const sent = await fixture.waitForLogEntry(
+          (entry) => entry.method === "sendChat" && objectFieldEquals(entry, "message", marker),
+          STARTUP_TIMEOUT_MS,
+        );
+        expect(sent.payload).toMatchObject({ sessionKey: expectedKey });
+        if (intent === "home") {
+          expect(sent.payload).toHaveProperty("targetIntent", "home");
+        } else {
+          expect(sent.payload).not.toHaveProperty("targetIntent");
+        }
+      } finally {
+        await fixture.cleanup();
+      }
+      if (launch === "selected") {
+        await expect(
+          readTuiLastSessionKey({
+            scopeKey: buildTuiLastSessionScopeKey({
+              connectionUrl: "pty-fixture://local",
+              agentId: "main",
+              sessionScope: sessionScope === "global" ? "global" : "per-sender",
+            }),
+            stateDir,
+          }),
+        ).resolves.toBe(
+          intent === "home" ? (sessionScope === "global" ? "global" : "main") : expectedKey,
+        );
+      }
+    }
+  },
+  65_000,
+);
+
+it.each([
+  { scope: "global", mainKey: "main", stored: "main", key: "agent:main:main", intent: "exact" },
+  {
+    scope: "global",
+    mainKey: "primary",
+    stored: "main",
+    key: "agent:main:primary",
+    intent: "exact",
+  },
+  {
+    scope: "per-sender",
+    mainKey: "main",
+    stored: "agent:main:main",
+    key: "agent:main:main",
+    intent: "exact",
+  },
+  {
+    scope: "per-sender",
+    mainKey: "primary",
+    stored: "agent:main:main",
+    key: "agent:main:main",
+    intent: "exact",
+  },
+  {
+    scope: "per-sender",
+    mainKey: "secondary",
+    stored: "agent:main:primary",
+    key: "agent:main:primary",
+    intent: "exact",
+  },
+  { scope: "global", mainKey: "main", stored: "global", key: "agent:main:global", intent: "home" },
+  {
+    scope: "per-sender",
+    mainKey: "main",
+    stored: "global",
+    key: "agent:main:global",
+    intent: "exact",
+  },
+  {
+    scope: "per-sender",
+    mainKey: "primary",
+    stored: "main",
+    key: "agent:main:primary",
+    intent: "home",
+  },
+])(
+  "restores published string $stored under $scope/$mainKey as $intent",
+  async ({ scope, mainKey, stored, key, intent }) => {
+    const stateDir = tempDirs.make("openclaw-tui-published-restore-");
+    await seedRememberedSession(stateDir, stored, scope === "global" ? "global" : "per-sender");
+    const fixture = await startTuiFixture({
+      env: {
+        OPENCLAW_STATE_DIR: stateDir,
+        OPENCLAW_TUI_PTY_SESSION_SCOPE: scope,
+        OPENCLAW_TUI_PTY_MAIN_KEY: mainKey,
+        OPENCLAW_TUI_PTY_PICKER_FIXTURE: "1",
+        OPENCLAW_TUI_PTY_PICKER_SESSION_KEY: key,
+      },
+    });
+    try {
+      await fixture.run.waitForOutput("local ready", STARTUP_TIMEOUT_MS);
+      await fixture.run.write("published restore proof\r", { delay: false });
+      const sent = await fixture.waitForLogEntry(
+        (entry) =>
+          entry.method === "sendChat" &&
+          objectFieldEquals(entry, "message", "published restore proof"),
+        STARTUP_TIMEOUT_MS,
+      );
+      expect(sent.payload).toMatchObject({ sessionKey: key });
+      if (intent === "home") {
+        expect(sent.payload).toHaveProperty("targetIntent", "home");
+      } else {
+        expect(sent.payload).not.toHaveProperty("targetIntent");
+      }
+    } finally {
+      await fixture.cleanup();
+    }
+  },
+  65_000,
+);
+
 it("restores a remembered global session while keeping pre-ready input editable", async () => {
   const stateDir = tempDirs.make("openclaw-tui-startup-session-");
   const marker = "startup remembered session proof";
@@ -295,15 +462,12 @@ it("restores a remembered global session while keeping pre-ready input editable"
 
   try {
     const lookup = await fixture.waitForLogEntry(
-      (entry) => entry.method === "listSessions" && objectFieldEquals(entry, "search", "global"),
+      (entry) =>
+        entry.method === "describeSession" &&
+        objectFieldEquals(entry, "sessionKey", "agent:main:global"),
       STARTUP_TIMEOUT_MS,
     );
-    expect(lookup.payload).toMatchObject({
-      search: "global",
-      includeGlobal: true,
-      includeUnknown: false,
-      agentId: "main",
-    });
+    expect(lookup.payload).toEqual({ sessionKey: "agent:main:global" });
     const outputOffset = fixture.run.visibleOutput().length;
     await fixture.run.write(`${marker}\r`, { delay: false });
     const decision = await waitForSubmitDecision({ fixture, marker, outputOffset });
@@ -325,7 +489,7 @@ it("restores a remembered global session while keeping pre-ready input editable"
       (entry) => entry.method === "sendChat" && objectFieldEquals(entry, "message", marker),
       STARTUP_TIMEOUT_MS,
     );
-    expect(sent.payload).toMatchObject({ sessionKey: "global", agentId: "main" });
+    expect(sent.payload).toMatchObject({ sessionKey: "agent:main:global" });
     expect(markerSends(await readFixtureLog(fixture.logPath), marker)).toHaveLength(1);
   } finally {
     await fixture.cleanup();
@@ -426,19 +590,19 @@ it("keeps reconnect input editable until restored history is stable", async () =
 
 it("keeps an explicit launch session authoritative over remembered state", async () => {
   const stateDir = tempDirs.make("openclaw-tui-explicit-session-");
-  const explicitSession = "agent:main:explicit-target";
+  const explicitSession = "agent:main:main";
   const marker = "explicit startup session proof";
-  await seedRememberedSession(stateDir);
+  await seedRememberedSession(stateDir, REMEMBERED_SESSION_KEY, "global");
   const fixture = await startTuiFixture({
     env: {
       OPENCLAW_STATE_DIR: stateDir,
       OPENCLAW_TUI_PTY_PICKER_FIXTURE: "1",
       OPENCLAW_TUI_PTY_SESSION: explicitSession,
+      OPENCLAW_TUI_PTY_SESSION_SCOPE: "global",
     },
   });
 
   try {
-    await fixture.run.waitForOutput("session explicit-target", STARTUP_TIMEOUT_MS);
     await fixture.run.waitForOutput("local ready", STARTUP_TIMEOUT_MS);
     await fixture.run.write(`${marker}\r`, { delay: false });
     const sent = await fixture.waitForLogEntry(
@@ -446,9 +610,14 @@ it("keeps an explicit launch session authoritative over remembered state", async
       STARTUP_TIMEOUT_MS,
     );
     expect(sent.payload).toMatchObject({ sessionKey: explicitSession });
+    await fixture.run.waitForOutput("session main", STARTUP_TIMEOUT_MS);
     const entries = await readFixtureLog(fixture.logPath);
     expect(
-      entries.some((entry) => objectFieldEquals(entry, "search", REMEMBERED_SESSION_KEY)),
+      entries.some(
+        (entry) =>
+          entry.method === "describeSession" &&
+          objectFieldEquals(entry, "sessionKey", REMEMBERED_SESSION_KEY),
+      ),
     ).toBe(false);
     expect(markerSends(entries, marker)).toHaveLength(1);
   } finally {
@@ -487,7 +656,7 @@ it("falls back after a remembered lookup error and retries on reconnect", async 
       (entry) => entry.method === "sendChat" && objectFieldEquals(entry, "message", marker),
       STARTUP_TIMEOUT_MS,
     );
-    expect(sent.payload).toMatchObject({ sessionKey: "main" });
+    expect(sent.payload).toMatchObject({ sessionKey: "agent:main:main" });
     expect(markerSends(await readFixtureLog(fixture.logPath), marker)).toHaveLength(1);
     await fixture.run.waitForOutput(`PTY_RESPONSE: ${marker}`, STARTUP_TIMEOUT_MS);
 
@@ -519,7 +688,7 @@ it("falls back after a remembered lookup error and retries on reconnect", async 
 it("shows the remembered session label during startup before remote validation", async () => {
   const stateDir = tempDirs.make("openclaw-tui-provisional-label-");
   await seedRememberedSession(stateDir);
-  // 10000 ms restore delay ensures listSessions is still pending when the
+  // 10000 ms restore delay ensures describeSession is still pending when the
   // first synchronized frame renders.  The predicate timeout of 8000 ms
   // matches only frames rendered before validation completes — the pre-fix
   // code renders "session main" first and would time out.
@@ -613,8 +782,8 @@ it("abandons a stale restore generation without sending or duplicating input", a
     await waitForLogCount({
       logPath: fixture.logPath,
       predicate: (entry) =>
-        entry.method === "listSessions" &&
-        objectFieldEquals(entry, "search", REMEMBERED_SESSION_KEY),
+        entry.method === "describeSession" &&
+        objectFieldEquals(entry, "sessionKey", REMEMBERED_SESSION_KEY),
       count: 2,
     });
     const outputOffset = fixture.run.visibleOutput().length;
@@ -696,3 +865,119 @@ it("starts normally when the pre-render state read throws", async () => {
     await fixture.cleanup();
   }
 }, 65_000);
+
+it.each([
+  {
+    name: "default Home",
+    session: "",
+    scope: "per-sender",
+    remembered: "",
+    key: "agent:main:main",
+    home: true,
+  },
+  {
+    name: "bare main Home",
+    session: "main",
+    scope: "per-sender",
+    remembered: "",
+    key: "agent:main:main",
+    home: true,
+  },
+  {
+    name: "published canonical remembered conversation",
+    session: "",
+    scope: "per-sender",
+    remembered: "agent:main:main",
+    key: "agent:main:main",
+    home: false,
+  },
+  {
+    name: "published raw global Home",
+    session: "",
+    scope: "global",
+    remembered: "global",
+    key: "agent:main:global",
+    home: true,
+  },
+  {
+    name: "remembered literal main in global scope",
+    session: "",
+    scope: "global",
+    remembered: "agent:main:main",
+    key: "agent:main:main",
+    home: false,
+  },
+  {
+    name: "remembered literal unknown in per-sender scope",
+    session: "",
+    scope: "per-sender",
+    remembered: "agent:main:unknown",
+    key: "agent:main:unknown",
+    home: false,
+  },
+  {
+    name: "remembered literal unknown in global scope",
+    session: "",
+    scope: "global",
+    remembered: "agent:main:unknown",
+    key: "agent:main:unknown",
+    home: false,
+  },
+  {
+    name: "explicit literal main",
+    session: "agent:main:main",
+    scope: "per-sender",
+    remembered: "",
+    key: "agent:main:main",
+    home: false,
+  },
+] as const)(
+  "keeps selector intent for $name through real TUI startup and reconnect",
+  async ({ session, scope, remembered, key, home }) => {
+    const stateDir = tempDirs.make("openclaw-tui-selector-intent-");
+    if (remembered) {
+      await seedRememberedSession(stateDir, remembered, scope);
+    }
+    const fixture = await startTuiFixture({
+      env: {
+        OPENCLAW_STATE_DIR: stateDir,
+        OPENCLAW_TUI_PTY_SESSION: session,
+        OPENCLAW_TUI_PTY_SESSION_SCOPE: scope,
+        OPENCLAW_TUI_PTY_PICKER_FIXTURE: "1",
+        OPENCLAW_TUI_PTY_DISCONNECT_REASON: "fixture transport loss",
+        OPENCLAW_TUI_PTY_PICKER_SESSION_KEY: key,
+      },
+    });
+    try {
+      await fixture.run.waitForOutput("local ready", STARTUP_TIMEOUT_MS);
+      if (remembered && key !== (scope === "global" ? "agent:main:global" : "agent:main:main")) {
+        const lookup = await fixture.waitForLogEntry(
+          (entry) =>
+            entry.method === "describeSession" && objectFieldEquals(entry, "sessionKey", key),
+          STARTUP_TIMEOUT_MS,
+        );
+        expect(lookup.payload).toEqual({ sessionKey: key });
+      }
+      await fixture.run.write("/gateway-status\r", { delay: false });
+      await fixture.run.waitForOutput(
+        "gateway reconnected after transport loss",
+        STARTUP_TIMEOUT_MS,
+      );
+      const marker = "selector intent startup proof";
+      await fixture.run.write(`${marker}\r`, { delay: false });
+      const sent = await fixture.waitForLogEntry(
+        (entry) => entry.method === "sendChat" && objectFieldEquals(entry, "message", marker),
+        STARTUP_TIMEOUT_MS,
+      );
+      expect(sent.payload).toMatchObject({ sessionKey: key });
+      if (home) {
+        expect(sent.payload).toMatchObject({ targetIntent: "home" });
+      } else {
+        expect(sent.payload).not.toHaveProperty("targetIntent");
+      }
+    } finally {
+      await fixture.cleanup();
+    }
+  },
+  65_000,
+);

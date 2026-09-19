@@ -357,7 +357,6 @@ export async function runChatSendPreAdmission(
     clientRunId,
     sessionLoadOptions,
     storePath,
-    legacyKey,
     sessionRoutingChanged,
   } = session;
 
@@ -390,7 +389,7 @@ export async function runChatSendPreAdmission(
         cfg,
         clientRunId,
         entry,
-        persistedSessionKey: legacyKey ?? sessionKey,
+        persistedSessionKey: sessionKey,
         reloadEntry: () => loadSessionEntry(sessionLoadKey, sessionLoadOptions).entry,
         storePath,
         recoveryRuntime: context.recoveryRuntime,
@@ -515,7 +514,7 @@ export async function runChatSendPreAdmission(
     cfg,
     clientRunId,
     entry,
-    persistedSessionKey: legacyKey ?? sessionKey,
+    persistedSessionKey: sessionKey,
     reloadEntry: () => loadSessionEntry(sessionLoadKey, sessionLoadOptions).entry,
     storePath,
     recoveryRuntime: context.recoveryRuntime,

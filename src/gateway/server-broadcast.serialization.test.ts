@@ -416,9 +416,9 @@ describe("presence recipient projection", () => {
       for (const [agentId, sessionKey, visibility] of [
         ["main", sharedKey, "shared"],
         ["main", incognitoKey, "shared"],
-        ["main", "global", "draft"],
-        ["work", "global", "read-only"],
-        ["work", "unknown", "suggest"],
+        ["main", "agent:main:global", "draft"],
+        ["work", "agent:work:global", "read-only"],
+        ["work", "agent:work:unknown", "suggest"],
       ] as const) {
         await upsertSessionEntryCore(
           { agentId, sessionKey },
@@ -493,7 +493,7 @@ describe("presence recipient projection", () => {
       await deleteSessionEntryLifecycle({
         agentId: "work",
         storePath: resolveSessionStorePathCore(undefined, { agentId: "work" }),
-        target: { canonicalKey: "global", storeKeys: ["global"] },
+        target: { canonicalKey: "agent:work:global", storeKeys: ["agent:work:global"] },
         archiveTranscript: false,
       });
       connection.broadcast("presence", payload);

@@ -1,6 +1,7 @@
 // Session store target discovery maps configured and on-disk agent stores to canonical targets.
 import fsSync from "node:fs";
 import path from "node:path";
+import { extractErrorCode } from "@openclaw/normalization-core/error-coercion";
 import {
   resolveAgentDir,
   resolveAgentEntry,
@@ -8,6 +9,7 @@ import {
 } from "../../agents/agent-scope-config.js";
 import { listAgentEntries, listAgentIds, resolveDefaultAgentId } from "../../agents/agent-scope.js";
 import { resolveAgentSessionDirsFromAgentsDirSync } from "../../agents/session-dirs.js";
+import { iterateSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
@@ -22,6 +24,8 @@ import { resolveStateDir } from "../paths.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { resolveAgentsDirFromSessionStorePath, resolveSessionStorePathCore } from "./paths.js";
 import { iterateSessionEntryKeys } from "./session-accessor.sqlite-entry-store.js";
+import { canonicalSessionValidationQuery } from "./session-canonical-key.js";
+import { validateCanonicalSessionRow } from "./session-canonical-row.js";
 import {
   listDurableSqliteTargetOwnersForSessionStorePath,
   listSqliteTargetCandidatePathsForSessionStorePath,
@@ -356,12 +360,14 @@ export function resolveExistingAgentSessionStoreTargetsSync(
           : requested;
         const result = withOpenClawAgentDatabaseReadOnly(
           (database) => {
-            for (const sessionKey of iterateSessionEntryKeys(database)) {
-              const parsed = parseAgentSessionKey(sessionKey);
-              // Unscoped keys belong to the validated database owner. Explicit agent keys must
-              // match so a fixed store containing only another agent's rows proves nothing.
+            for (const row of iterateSqliteQuerySync(
+              database.db,
+              canonicalSessionValidationQuery(database),
+            )) {
+              const parsed = parseAgentSessionKey(row.session_key);
+              // Validate the requested owner's fresh row within this query's snapshot.
               const ownerAgentId = parsed ? normalizeAgentId(parsed.agentId) : databaseAgentId;
-              if (ownerAgentId === requested) {
+              if (ownerAgentId === requested && validateCanonicalSessionRow(row)) {
                 return true;
               }
             }
@@ -370,7 +376,10 @@ export function resolveExistingAgentSessionStoreTargetsSync(
           { agentId: databaseAgentId, env, path: sqlitePath },
         );
         return result.found && result.value ? [fixedTarget] : [];
-      } catch {
+      } catch (error) {
+        if (extractErrorCode(error) === "SESSION_CANONICAL_KEY_MIGRATION_REQUIRED") {
+          throw error;
+        }
         return [];
       }
     }
@@ -633,6 +642,7 @@ export function resolveSessionStoreTargets(
     env?: NodeJS.ProcessEnv;
     diagnostics?: string[];
     registeredDatabases?: readonly { agentId: string; path: string }[];
+    readDatabaseOwner?: (pathname: string) => string | undefined;
   } = {},
 ): SessionStoreTarget[] {
   const env = params.env ?? process.env;
@@ -701,6 +711,7 @@ export function resolveSessionStoreTargets(
       defaultAgentId,
       env,
       registeredDatabases: params.registeredDatabases,
+      readDatabaseOwner: params.readDatabaseOwner,
       ...(params.diagnostics
         ? { onDiagnostic: (diagnostic) => params.diagnostics?.push(diagnostic.message) }
         : {}),

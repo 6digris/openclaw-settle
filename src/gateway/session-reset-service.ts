@@ -83,7 +83,6 @@ import {
   isIncognitoSessionKey,
   isSubagentSessionKey,
   normalizeAgentId,
-  parseAgentSessionKey,
 } from "../routing/session-key.js";
 import { resolveMissingAgentHarnessSessionError } from "../sessions/agent-harness-session-key.js";
 import {
@@ -119,6 +118,7 @@ import {
   settleGatewaySessionLifecycleCommit,
 } from "./session-lifecycle-preparation.js";
 import { resolvePluginSessionOwnershipError } from "./session-plugin-ownership.js";
+import { resolveRequestedSessionAgentId } from "./session-request-agent.js";
 import { buildPendingAcpMeta, closeAcpRuntimeForSession } from "./session-reset-acp.js";
 import { notifyGatewaySessionReset } from "./session-reset-notifications.js";
 import {
@@ -126,11 +126,7 @@ import {
   type ArchivedSessionTranscript,
 } from "./session-transcript-files.fs.js";
 import { readSessionMessagesAsync } from "./session-transcript-readers.js";
-import {
-  loadSessionEntry,
-  resolveGatewaySessionStoreTarget,
-  resolveSessionStoreKey,
-} from "./session-utils.js";
+import { loadSessionEntry, resolveGatewaySessionStoreTarget } from "./session-utils.js";
 import type { SessionWorkerPlacementContext } from "./session-worker-placement-context.js";
 import {
   resolveSessionWorkerPlacementMutationError,
@@ -594,7 +590,6 @@ export async function cleanupSessionBeforeMutation(params: {
   key: string;
   target: ReturnType<typeof resolveGatewaySessionStoreTarget>;
   entry: SessionEntry | undefined;
-  legacyKey?: string;
   canonicalKey?: string;
   reason: "session-reset" | "session-delete";
   onAcpResetMeta?: (params: { sessionKey: string; meta: SessionAcpMeta }) => void;
@@ -615,7 +610,7 @@ export async function cleanupSessionBeforeMutation(params: {
     cfg: params.cfg,
     registry: getActivePluginRegistry(),
     reason: params.reason === "session-reset" ? "reset" : "delete",
-    sessionKey: params.target.canonicalKey ?? params.key,
+    sessionKey: params.target.canonicalKey,
     // Unscoped keys can exist in several agent stores; this lifecycle owns only its target.
     sessionStoreTargets: [params.target],
     shouldCleanup: () => {
@@ -629,12 +624,12 @@ export async function cleanupSessionBeforeMutation(params: {
       `plugin host cleanup failed for ${failure.pluginId}/${failure.hookId}: ${String(failure.error)}`,
     );
   }
-  const parentSessionKey = params.target.canonicalKey ?? params.canonicalKey ?? params.key;
+  const parentSessionKey = params.target.canonicalKey;
   const parentAcpError = await closeAcpRuntimeForSession({
     cfg: params.cfg,
     sessionKey: parentSessionKey,
     agentId: params.target.agentId,
-    fallbackSessionKeys: [params.canonicalKey, params.legacyKey, params.key],
+    fallbackSessionKeys: [params.canonicalKey, params.key],
     reason: params.reason,
     onResetMeta: params.onAcpResetMeta,
     assertCurrent: params.assertCurrent,
@@ -642,7 +637,7 @@ export async function cleanupSessionBeforeMutation(params: {
   params.assertCurrent?.();
   await closeChildAcpRuntimesForParent({
     cfg: params.cfg,
-    parentKey: params.target.canonicalKey ?? params.canonicalKey ?? params.key,
+    parentKey: params.target.canonicalKey,
     parentAgentId: params.target.agentId,
     reason: params.reason,
     assertCurrent: params.assertCurrent,
@@ -657,8 +652,8 @@ export async function cleanupSessionBeforeMutation(params: {
     const resetParams = {
       agentId: resolveLifecycleAgentId(params.cfg, params.target.agentId),
       sessionId: params.entry.sessionId,
-      sessionKey: params.target.canonicalKey ?? params.key,
-      sessionFile: params.target.canonicalKey ?? params.key,
+      sessionKey: params.target.canonicalKey,
+      sessionFile: params.target.canonicalKey,
       reason: params.reason === "session-reset" ? "reset" : "deleted",
     } satisfies Parameters<typeof resetRegisteredAgentHarnessSessions>[0];
     await resetRegisteredAgentHarnessSessions(resetParams);
@@ -681,7 +676,7 @@ export async function emitGatewayBeforeResetPluginHook(params: {
     return;
   }
 
-  const sessionKey = params.target.canonicalKey ?? params.key;
+  const sessionKey = params.target.canonicalKey;
   const sessionId = params.entry?.sessionId;
   const agentId = resolveLifecycleAgentId(params.cfg, params.target.agentId);
   const sessionFile = sessionId
@@ -808,29 +803,15 @@ export async function performGatewaySessionReset(params: {
 > {
   const resetTarget = (() => {
     const cfg = getRuntimeConfig();
-    const explicitAgentId = params.agentId ? normalizeAgentId(params.agentId) : undefined;
-    const parsedKey = parseAgentSessionKey(params.key);
-    const inferredGlobalAgentId =
-      !explicitAgentId &&
-      parsedKey &&
-      resolveSessionStoreKey({ cfg, sessionKey: params.key }) === "global"
-        ? normalizeAgentId(parsedKey.agentId)
-        : undefined;
-    const requestedAgentId = explicitAgentId ?? inferredGlobalAgentId;
-    if (requestedAgentId && !listAgentIds(cfg).includes(requestedAgentId)) {
+    const requestedAgent = resolveRequestedSessionAgentId(cfg, params.key, params.agentId);
+    if (!requestedAgent.ok) {
+      return requestedAgent;
+    }
+    const requestedAgentId = requestedAgent.agentId;
+    if (!listAgentIds(cfg).includes(requestedAgentId)) {
       return {
         ok: false as const,
         error: errorShape(ErrorCodes.INVALID_REQUEST, `Unknown agent id: ${requestedAgentId}`),
-      };
-    }
-    if (
-      explicitAgentId &&
-      parsedKey?.agentId &&
-      normalizeAgentId(parsedKey.agentId) !== explicitAgentId
-    ) {
-      return {
-        ok: false as const,
-        error: errorShape(ErrorCodes.INVALID_REQUEST, "session key agent does not match agentId"),
       };
     }
     const target = resolveGatewaySessionStoreTarget({
@@ -1086,7 +1067,7 @@ export async function performGatewaySessionReset(params: {
       }
       params.assertCurrent?.();
       params.assertAuthorizedInstance?.();
-      const { entry, legacyKey, canonicalKey } = loadSessionEntry(
+      const { entry, canonicalKey } = loadSessionEntry(
         params.key,
         requestedAgentId ? { agentId: requestedAgentId } : undefined,
       );
@@ -1187,20 +1168,15 @@ export async function performGatewaySessionReset(params: {
         }
       };
       let deferredAcpResetState: { sessionKey: string; meta: SessionAcpMeta } | undefined;
-      const hookEvent = createInternalHookEvent(
-        "command",
-        params.reason,
-        target.canonicalKey ?? params.key,
-        {
-          agentId,
-          sessionEntry: entry,
-          previousSessionEntry: entry,
-          commandSource: params.commandSource,
-          cfg,
-          storePath,
-          workspaceDir,
-        },
-      );
+      const hookEvent = createInternalHookEvent("command", params.reason, target.canonicalKey, {
+        agentId,
+        sessionEntry: entry,
+        previousSessionEntry: entry,
+        commandSource: params.commandSource,
+        cfg,
+        storePath,
+        workspaceDir,
+      });
       await triggerInternalHook(hookEvent);
       params.assertCurrent?.();
       params.assertAuthorizedInstance?.();
@@ -1222,12 +1198,12 @@ export async function performGatewaySessionReset(params: {
       if (runtimeCleanupError) {
         return { ok: false, error: runtimeCleanupError };
       }
-      const parentSessionKey = target.canonicalKey ?? canonicalKey ?? params.key;
+      const parentSessionKey = target.canonicalKey;
       const parentAcpError = await closeAcpRuntimeForSession({
         cfg,
         sessionKey: parentSessionKey,
         agentId: target.agentId,
-        fallbackSessionKeys: [canonicalKey, legacyKey, params.key],
+        fallbackSessionKeys: [canonicalKey, params.key],
         reason: "session-reset",
         deferResetState: true,
         onDeferredResetState: (state) => {
@@ -1241,7 +1217,7 @@ export async function performGatewaySessionReset(params: {
         cfg,
         registry: resetPluginRegistry,
         reason: "reset",
-        sessionKey: target.canonicalKey ?? params.key,
+        sessionKey: target.canonicalKey,
         skipPersistentSessionState: true,
       });
       for (const failure of pluginCleanup.failures) {
@@ -1251,7 +1227,7 @@ export async function performGatewaySessionReset(params: {
       }
       await closeChildAcpRuntimesForParent({
         cfg,
-        parentKey: target.canonicalKey ?? canonicalKey ?? params.key,
+        parentKey: target.canonicalKey,
         parentAgentId: target.agentId,
         reason: "session-reset",
       });
@@ -1259,8 +1235,8 @@ export async function performGatewaySessionReset(params: {
         await resetRegisteredAgentHarnessSessions({
           agentId,
           sessionId: entry.sessionId,
-          sessionKey: target.canonicalKey ?? params.key,
-          sessionFile: target.canonicalKey ?? params.key,
+          sessionKey: target.canonicalKey,
+          sessionFile: target.canonicalKey,
           reason: "reset",
         });
       }
@@ -1269,7 +1245,7 @@ export async function performGatewaySessionReset(params: {
             agentId: resolveLifecycleAgentId(cfg, target.agentId ?? requestedAgentId),
             entry,
             sessionId: entry?.sessionId,
-            sessionKey: target.canonicalKey ?? params.key,
+            sessionKey: target.canonicalKey,
             storePath,
           })
         : undefined;
@@ -1388,8 +1364,8 @@ export async function performGatewaySessionReset(params: {
           canonicalKey: target.canonicalKey,
           storeKeys: [
             ...new Set(
-              [...target.storeKeys, canonicalKey, legacyKey, params.key].filter(
-                (key): key is string => Boolean(key),
+              [...target.storeKeys, canonicalKey, params.key].filter((key): key is string =>
+                Boolean(key),
               ),
             ),
           ],
@@ -1604,7 +1580,7 @@ export async function performGatewaySessionReset(params: {
               });
             },
             () => {
-              const resetSessionKey = target.canonicalKey ?? params.key;
+              const resetSessionKey = target.canonicalKey;
               handleSessionStateSessionReset(resetSessionKey);
               notifyGatewaySessionReset(resetSessionKey, target.agentId);
               emitGatewaySessionEndPluginHook({
@@ -1632,7 +1608,7 @@ export async function performGatewaySessionReset(params: {
           if (hadExistingEntry) {
             postCommitActions.push(() =>
               emitSessionUnboundLifecycleEvent({
-                targetSessionKey: target.canonicalKey ?? params.key,
+                targetSessionKey: target.canonicalKey,
                 reason: "session-reset",
               }),
             );
@@ -1659,11 +1635,11 @@ export async function performGatewaySessionReset(params: {
           }
           clearBootstrapSnapshotOnSessionBoundary({
             boundaryAppended: resetBoundaryAppended,
-            sessionKey: target.canonicalKey ?? params.key,
+            sessionKey: target.canonicalKey,
           });
           if (createdNewEntry) {
             recordSessionCreated(cfg, {
-              sessionKey: target.canonicalKey ?? params.key,
+              sessionKey: target.canonicalKey,
               agentId,
               entry: mutation.nextEntry,
             });

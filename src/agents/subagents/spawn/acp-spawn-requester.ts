@@ -16,11 +16,9 @@ import { getSessionBindingService } from "../../../infra/outbound/session-bindin
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
 import { isSubagentSessionKey, parseAgentSessionKey } from "../../../routing/session-key.js";
 import { normalizeDeliveryContext } from "../../../utils/delivery-context.shared.js";
+import { resolveSessionAgentId } from "../../agent-scope.js";
 import { resolveRequesterOriginForChild } from "../../spawn-requester-origin.js";
-import {
-  resolveInternalSessionKey,
-  resolveMainSessionAlias,
-} from "../../tools/sessions-helpers.js";
+import { resolveInternalSessionKey } from "../../tools/sessions-helpers.js";
 import {
   hasSessionLocalHeartbeatRelayRoute,
   isHeartbeatEnabledForSessionAgent,
@@ -48,17 +46,19 @@ export type AcpSpawnRequesterState = {
 
 export function resolveRequesterInternalSessionKey(params: {
   cfg: OpenClawConfig;
+  agentId?: string;
   requesterSessionKey?: string;
 }): string {
-  const { mainKey, alias } = resolveMainSessionAlias(params.cfg);
   const requesterSessionKey = normalizeOptionalString(params.requesterSessionKey);
-  return requesterSessionKey
-    ? resolveInternalSessionKey({
-        key: requesterSessionKey,
-        alias,
-        mainKey,
-      })
-    : alias;
+  return resolveInternalSessionKey({
+    key: requesterSessionKey ?? "main",
+    agentId: resolveSessionAgentId({
+      config: params.cfg,
+      sessionKey: requesterSessionKey,
+      agentId: params.agentId,
+    }),
+    cfg: params.cfg,
+  });
 }
 
 export async function persistAcpSpawnSessionFileBestEffort(params: {

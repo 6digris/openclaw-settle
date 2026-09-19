@@ -1,5 +1,5 @@
 // Session kind helpers classify cron, interactive, and channel-backed sessions.
-import { isCronSessionKey } from "./session-key-utils.js";
+import { isCronSessionKey, parseAgentSessionKey } from "./session-key-utils.js";
 
 export type SessionKind = "cron" | "direct" | "group" | "global" | "spawn-child" | "unknown";
 
@@ -18,11 +18,9 @@ export function classifySessionKind(
   key: string,
   entry?: { chatType?: string | null; spawnedBy?: string | null },
 ): SessionKind {
-  if (key === "global") {
-    return "global";
-  }
-  if (key === "unknown") {
-    return "unknown";
+  const rest = parseAgentSessionKey(key)?.rest;
+  if (rest === "global" || rest === "unknown") {
+    return rest;
   }
   if (isCronSessionKey(key)) {
     return "cron";

@@ -101,7 +101,7 @@ test("sessions.delete protects the sole explicit agent's global session before c
   const { storePath } = await createSessionStoreDir();
   testState.agentsConfig = { ownership: "explicit", entries: { ops: {} } };
   testState.sessionConfig = { scope: "global" };
-  const target = { agentId: "ops", sessionKey: "global", storePath };
+  const target = { agentId: "ops", sessionKey: "agent:ops:global", storePath };
   await replaceSessionEntry(target, sessionStoreEntry("sole-global"));
   const before = loadSessionEntry(target);
   embeddedRunMock.activeIds.add("sole-global");
@@ -110,7 +110,7 @@ test("sessions.delete protects the sole explicit agent's global session before c
   const result = await directSessionReq("sessions.delete", { key: "global", agentId: "ops" });
 
   expect(result.ok).toBe(false);
-  expect(result.error?.message).toBe("Cannot delete the main session (global).");
+  expect(result.error?.message).toBe("Cannot delete the main session (agent:ops:global).");
   expect(loadSessionEntry(target)).toEqual(before);
   expect(embeddedRunMock.abortCalls).not.toContain("sole-global");
   expect(bundleMcpRuntimeMocks.disposeSessionMcpRuntime).not.toHaveBeenCalled();
@@ -727,10 +727,14 @@ test.each(["sessions.delete", "sessions.reset"] as const)(
     const globalStores = await createConfiguredGlobalAgentSessionStore({ writePrimeStore: true });
     const mainTarget = {
       agentId: "main",
-      sessionKey: "global",
+      sessionKey: "agent:main:global",
       storePath: globalStores.mainStorePath,
     };
-    const workTarget = { ...mainTarget, agentId: "work", storePath: globalStores.workStorePath };
+    const workTarget = {
+      agentId: "work",
+      sessionKey: "agent:work:global",
+      storePath: globalStores.workStorePath,
+    };
     for (const target of [mainTarget, workTarget]) {
       await replaceSessionEntry(
         target,
@@ -930,7 +934,7 @@ test("sessions.delete sessions.changed event always carries the resolved owner",
     "sessions.changed",
     expect.objectContaining({ sessionKey: "agent:main:side", agentId: "main", reason: "delete" }),
     new Set(["conn-1"]),
-    { agentId: "main", dropIfSlow: true },
+    { agentId: "main", sessionKeys: ["agent:main:side"], dropIfSlow: true },
   );
 });
 

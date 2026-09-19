@@ -167,9 +167,9 @@ describe("resolveApprovalSourceStreamKey fallback scoping", () => {
     expect(resolveApprovalSourceStreamKey("GLOBAL", "work")).toBe("agent:work:global");
   });
 
-  it("keeps agent-scoped, unknown, and agent-less keys exact", () => {
+  it("keeps explicit owners and qualifies unknown aliases", () => {
     expect(resolveApprovalSourceStreamKey("agent:other:child", "work")).toBe("agent:other:child");
-    expect(resolveApprovalSourceStreamKey("unknown", "work")).toBe("unknown");
+    expect(resolveApprovalSourceStreamKey("unknown", "work")).toBe("agent:work:unknown");
     expect(resolveApprovalSourceStreamKey("child", null)).toBe("child");
   });
 });

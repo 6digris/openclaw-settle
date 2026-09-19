@@ -18,7 +18,6 @@ import { readSessionTitleFieldsFromTranscript } from "../../gateway/session-tran
 import { deriveSessionTitle, prepareSessionTitleRead } from "../../gateway/session-utils-core.js";
 import { classifySessionKeyShape, isIncognitoSessionKey } from "../../routing/session-key.js";
 import { getSessionStateVersions } from "../../sessions/session-state-events.js";
-import { resolveSessionAgentIds } from "../agent-scope.js";
 import { stringEnum } from "../schema/typebox.js";
 import {
   describeSessionLinkRule,
@@ -44,7 +43,6 @@ import {
   createSessionVisibilityRowChecker,
   classifySessionListKind,
   deriveChannel,
-  resolveDisplaySessionKey,
   resolveInternalSessionKey,
   resolveSessionToolContext,
   SESSION_LIST_KINDS,
@@ -157,19 +155,13 @@ export function createSessionsListTool(opts?: {
       }
       const {
         cfg,
-        mainKey,
-        alias,
         effectiveRequesterKey,
+        requesterAgentId,
         mainSessionKey,
         restrictToSpawned,
         sessionVisibility: visibility,
         a2aPolicy,
       } = resolveSessionToolContext(opts);
-      const requesterAgentId = resolveSessionAgentIds({
-        config: cfg,
-        sessionKey: effectiveRequesterKey,
-        agentId: opts?.requesterAgentIdOverride,
-      }).sessionAgentId;
       const kindsRaw = readStringArrayParam(params, "kinds")?.map((value) => value.toLowerCase());
       const requestedKinds = params.kinds;
       const allowedKinds =
@@ -239,7 +231,7 @@ export function createSessionsListTool(opts?: {
           ) {
             return undefined;
           }
-          return resolveDisplaySessionKey({ key, alias, mainKey });
+          return resolveInternalSessionKey({ key, agentId: referenceAgentId, cfg });
         } catch {
           return undefined;
         }
@@ -302,8 +294,8 @@ export function createSessionsListTool(opts?: {
           );
         }
         for (let index = 0; index < pageSessions.length; index += 1) {
-          const entry = pageSessions[index]!;
-          const key =
+          let entry = pageSessions[index]!;
+          let key =
             entry && typeof entry === "object" && typeof entry.key === "string" ? entry.key : "";
           if (!key) {
             continue;
@@ -331,8 +323,18 @@ export function createSessionsListTool(opts?: {
             // An unowned fixed-store row is unavailable rather than adopted by the requester.
             continue;
           }
-          // Sentinel keys repeat across agent stores; incarnation IDs distinguish replacements.
-          const identity = JSON.stringify([resolvedAgentId, key, readStringValue(entry.sessionId)]);
+          const normalizeReference = (value: unknown) =>
+            typeof value === "string"
+              ? resolveInternalSessionKey({ key: value, agentId: resolvedAgentId, cfg })
+              : undefined;
+          key = resolveInternalSessionKey({ key, agentId: resolvedAgentId, cfg });
+          entry = {
+            ...entry,
+            key,
+            spawnedBy: normalizeReference(entry.spawnedBy),
+            parentSessionKey: normalizeReference(entry.parentSessionKey),
+          };
+          const identity = JSON.stringify([key, readStringValue(entry.sessionId)]);
           if (seenSessions.has(identity)) {
             continue;
           }
@@ -342,19 +344,14 @@ export function createSessionsListTool(opts?: {
             agentId: resolvedAgentId,
             ownerSessionKey:
               typeof (entry as { ownerSessionKey?: unknown }).ownerSessionKey === "string"
-                ? (entry as { ownerSessionKey?: string }).ownerSessionKey
+                ? normalizeReference((entry as { ownerSessionKey?: string }).ownerSessionKey)
                 : undefined,
             spawnedBy: typeof entry.spawnedBy === "string" ? entry.spawnedBy : undefined,
             parentSessionKey:
               typeof entry.parentSessionKey === "string" ? entry.parentSessionKey : undefined,
           });
           const kind = classifySessionListKind(entry);
-          if (
-            access.allowed &&
-            key !== "unknown" &&
-            (key !== "global" || alias === "global") &&
-            (!allowedKinds || allowedKinds.has(kind))
-          ) {
+          if (access.allowed && (!allowedKinds || allowedKinds.has(kind))) {
             sessions.push({ entry, agentId: resolvedAgentId, offset: offset + index });
             if (sessions.length === outputLimit) {
               hasMore = index + 1 < pageSessions.length || page?.hasMore === true;
@@ -400,11 +397,7 @@ export function createSessionsListTool(opts?: {
       for (const { entry, agentId: resolvedAgentId } of sessions) {
         const key = entry.key;
         const kind = classifySessionListKind(entry);
-        const displayKey = resolveDisplaySessionKey({
-          key,
-          alias,
-          mainKey,
-        });
+        const displayKey = key;
 
         const entryChannel = readStringValue(entry.channel);
         const entryOrigin = entry.origin as Record<string, unknown> | undefined;
@@ -522,21 +515,12 @@ export function createSessionsListTool(opts?: {
               updatedAt: typeof row.updatedAt === "number" ? row.updatedAt : 0,
             },
             sessionId,
-            sessionKey: resolveInternalSessionKey({
-              key,
-              alias,
-              mainKey,
-            }),
+            sessionKey: key,
             agentId: resolvedAgentId,
           });
         }
         if (messageLimit > 0) {
-          const resolvedKey = resolveInternalSessionKey({
-            key,
-            alias,
-            mainKey,
-          });
-          historyTargets.push({ row, resolvedKey });
+          historyTargets.push({ row, resolvedKey: key });
         }
         rows.push(row);
       }

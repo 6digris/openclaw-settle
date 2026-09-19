@@ -2,13 +2,12 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { shouldRouteCompletionThroughRequesterSession } from "../auto-reply/reply/completion-delivery-policy.js";
 import { channelSupportsThreadDelivery } from "../channels/thread-addressing.js";
 import { requestHeartbeat } from "../infra/heartbeat-wake.js";
-import { withSystemEventOwner } from "../infra/system-event-ownership.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
 import {
   isGatewayRestartDraining,
   runWithGatewayDetachedWorkContinuation,
 } from "../process/gateway-work-admission.js";
-import { parseAgentSessionKey } from "../routing/session-key.js";
+import { parseAgentSessionKey, scopeLegacySessionKeyToAgent } from "../routing/session-key.js";
 import { normalizeDeliveryContext } from "../utils/delivery-context.shared.js";
 import { isDeliverableMessageChannel } from "../utils/message-channel.js";
 import { readTaskBackingInstance } from "./task-backing-records.js";
@@ -138,7 +137,7 @@ function queueTaskSystemEvent(
   owner: TaskDeliveryOwner,
   source: "background-task" | "background-task-blocked" = "background-task",
 ) {
-  const ownerKey = owner.sessionKey?.trim();
+  const ownerKey = scopeLegacySessionKeyToAgent(owner);
   if (!ownerKey) {
     return false;
   }
@@ -147,7 +146,7 @@ function queueTaskSystemEvent(
     contextKey: `task:${task.taskId}${source === "background-task-blocked" ? ":blocked-followup" : ""}`,
     deliveryContext: owner.requesterOrigin,
   };
-  enqueueSystemEvent(text, owner.agentId ? withSystemEventOwner(options, owner.agentId) : options);
+  enqueueSystemEvent(text, options);
   requestHeartbeat({
     source,
     intent: "immediate",

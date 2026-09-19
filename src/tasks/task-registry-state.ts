@@ -24,6 +24,7 @@ import {
 import {
   listTasksFromIndex,
   normalizeTaskTimestamps,
+  normalizeTaskSessionKeys,
   filterTasksByRunScope,
 } from "./task-registry-records.js";
 import { createAsyncRegistryRestore, createSyncRegistryReader } from "./task-registry-restore.js";
@@ -533,7 +534,7 @@ function installSnapshot(
       continue;
     }
     const current = tasks.get(taskId);
-    const next = normalizeTaskTimestamps(record);
+    const next = normalizeTaskSessionKeys(normalizeTaskTimestamps(record));
     if (!isDeepStrictEqual(current, next)) {
       tasks.set(taskId, next);
       if (recordWrites) {

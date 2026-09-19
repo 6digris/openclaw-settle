@@ -63,8 +63,8 @@ describe("cron tool", () => {
     opts?: Parameters<typeof createCronTool>[0],
   ): ReturnType<typeof createCronTool> {
     return createCronTool(opts, {
-      callGatewayTool: async (method, gatewayOpts, params) => {
-        const result = await callGatewayMock({ method, params }, gatewayOpts);
+      callGatewayTool: async (method, gatewayOpts, params, extra) => {
+        const result = await callGatewayMock({ method, params }, gatewayOpts, extra);
         if (
           method === "cron.get" &&
           result !== null &&
@@ -97,10 +97,6 @@ describe("cron tool", () => {
         | { method?: string; params?: Record<string, unknown> }
         | undefined) ?? { method: undefined, params: undefined }
     );
-  }
-
-  function readGatewayOpts(index = 0): Record<string, unknown> | undefined {
-    return callGatewayMock.mock.calls[index]?.[1] as Record<string, unknown> | undefined;
   }
 
   function readCronPayloadText(index = 0): string {
@@ -367,7 +363,7 @@ describe("cron tool", () => {
     });
 
     expectSingleGatewayCallMethod("cron.status");
-    expect(readGatewayOpts(0)?.timeoutMs).toBe(5000);
+    expect(callGatewayMock.mock.calls[0]?.[1]).toMatchObject({ timeoutMs: 5000 });
   });
 
   it("allows scoped isolated cron runs to get the current job", async () => {
@@ -2221,11 +2217,14 @@ describe("cron tool", () => {
     await executeAddWithContextMessages("call3", 3);
 
     expect(callGatewayMock).toHaveBeenCalledTimes(2);
-    const historyCall = readGatewayCall(0);
-    expect(historyCall.method).toBe("chat.history");
+    expect(callGatewayMock).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ method: "chat.history" }),
+      expect.anything(),
+      expect.objectContaining({ caps: ["canonical-session-keys"] }),
+    );
 
-    const cronCall = readGatewayCall(1);
-    expect(cronCall.method).toBe("cron.add");
+    expect(readGatewayCall(1).method).toBe("cron.add");
     const text = readCronPayloadText(1);
     expect(text).toContain("Recent context:");
     expect(text).toContain("User: Discussed Q2 budget");

@@ -2557,12 +2557,12 @@ describe("gateway session utils", () => {
       ] as const) {
         const storePath = path.join(stateDir, "agents", agentId, "sessions", "sessions.json");
         await seedSessionEntries(storePath, {
-          global: { sessionId, updatedAt: 1 },
+          [`agent:${agentId}:global`]: { sessionId, updatedAt: 1 },
         });
         appendTranscriptMessages({
           agentId,
           sessionId,
-          sessionKey: "global",
+          sessionKey: `agent:${agentId}:global`,
           storePath,
           messages: [
             {
@@ -2580,7 +2580,7 @@ describe("gateway session utils", () => {
         } as OpenClawConfig,
         storePath: "",
         store: {},
-        key: "global",
+        key: "agent:work:global",
         agentId: "work",
         entry: { sessionId, updatedAt: 1 },
       });
@@ -2771,8 +2771,8 @@ describe("gateway session utils", () => {
         key,
         entry,
       }).kind;
-    expect(projectKind("global")).toBe("global");
-    expect(projectKind("unknown")).toBe("unknown");
+    expect(projectKind("agent:main:global")).toBe("global");
+    expect(projectKind("agent:main:unknown")).toBe("unknown");
     expect(projectKind("discord:group:dev")).toBe("group");
     expect(projectKind("main")).toBe("direct");
     const entry = { chatType: "group" } as SessionEntry;
@@ -3472,25 +3472,18 @@ describe("gateway session utils", () => {
     expect(overriddenRow.effectiveQueueMode).toBe("followup");
   });
 
-  test("resolveSessionStoreKey maps main aliases to default agent main", () => {
+  test("resolveSessionStoreKey maps bare main aliases while keeping qualified identities exact", () => {
     const cfg = {
       session: { mainKey: "work" },
       agents: { list: [{ id: "ops", default: true }] },
     } as OpenClawConfig;
     expect(resolveSessionStoreKey({ cfg, sessionKey: "main" })).toBe("agent:ops:work");
     expect(resolveSessionStoreKey({ cfg, sessionKey: "work" })).toBe("agent:ops:work");
-    expect(resolveSessionStoreKey({ cfg, sessionKey: "agent:ops:main" })).toBe("agent:ops:work");
-    expect(resolveSessionStoreKey({ cfg, sessionKey: "agent:ops:MAIN" })).toBe("agent:ops:work");
-    expect(resolveSessionStoreKey({ cfg, sessionKey: "agent:main:main" })).toBe("agent:ops:work");
-    expect(resolveSessionStoreKey({ cfg, sessionKey: "agent:main:work" })).toBe("agent:ops:work");
+    expect(resolveSessionStoreKey({ cfg, sessionKey: "agent:ops:main" })).toBe("agent:ops:main");
+    expect(resolveSessionStoreKey({ cfg, sessionKey: "agent:ops:MAIN" })).toBe("agent:ops:main");
+    expect(resolveSessionStoreKey({ cfg, sessionKey: "agent:main:main" })).toBe("agent:main:main");
+    expect(resolveSessionStoreKey({ cfg, sessionKey: "agent:main:work" })).toBe("agent:main:work");
     expect(resolveSessionStoreKey({ cfg, sessionKey: "MAIN" })).toBe("agent:ops:work");
-  });
-
-  test("resolveSessionStoreKey preserves non-alias agent:main keys for deleted-agent checks", () => {
-    const cfg = {
-      session: { mainKey: "work" },
-      agents: { list: [{ id: "ops", default: true }] },
-    } as OpenClawConfig;
     expect(resolveSessionStoreKey({ cfg, sessionKey: "agent:main:discord:direct:u1" })).toBe(
       "agent:main:discord:direct:u1",
     );
@@ -3511,15 +3504,16 @@ describe("gateway session utils", () => {
     ).toBe("agent:main:history");
   });
 
-  test("resolveDeletedAgentIdFromSessionKey rejects non-alias main keys when main is absent", () => {
+  test("resolveDeletedAgentIdFromSessionKey preserves qualified main ownership when main is absent", () => {
     const cfg = {
       session: { mainKey: "work" },
       agents: { list: [{ id: "ops", default: true }] },
     } as OpenClawConfig;
-    const legacyMainAlias = resolveSessionStoreKey({ cfg, sessionKey: "agent:main:main" });
+    const legacyMainAlias = resolveSessionStoreKey({ cfg, sessionKey: "main" });
 
     expect(legacyMainAlias).toBe("agent:ops:work");
     expect(resolveDeletedAgentIdFromSessionKey(cfg, legacyMainAlias)).toBeNull();
+    expect(resolveDeletedAgentIdFromSessionKey(cfg, "agent:main:main")).toBe("main");
     expect(resolveDeletedAgentIdFromSessionKey(cfg, "global")).toBeNull();
     expect(resolveDeletedAgentIdFromSessionKey(cfg, "unknown")).toBeNull();
     expect(resolveDeletedAgentIdFromSessionKey(cfg, "main")).toBeNull();
@@ -3733,46 +3727,32 @@ describe("gateway session utils", () => {
       session: { scope: "global", mainKey: "work" },
       agents: { list: [{ id: "ops", default: true }] },
     } as OpenClawConfig;
-    expect(resolveSessionStoreKey({ cfg, sessionKey: "main" })).toBe("global");
+    expect(resolveSessionStoreKey({ cfg, sessionKey: "main" })).toBe("agent:ops:global");
     const target = resolveGatewaySessionStoreTarget({ cfg, key: "main" });
-    expect(target.canonicalKey).toBe("global");
+    expect(target.canonicalKey).toBe("agent:ops:global");
     expect(target.agentId).toBe("ops");
   });
 
-  test("resolveGatewaySessionStoreTarget uses canonical key for main alias", () => {
-    const storeTemplate = path.join(
-      os.tmpdir(),
-      "openclaw-session-utils",
-      "{agentId}",
-      "sessions.json",
-    );
-    const cfg = {
-      session: { mainKey: "main", store: storeTemplate },
-      agents: { list: [{ id: "ops", default: true }] },
-    } as OpenClawConfig;
-    const target = resolveGatewaySessionStoreTarget({ cfg, key: "main" });
-    expect(target.canonicalKey).toBe("agent:ops:main");
-    expect(target.storeKeys).toContain("agent:ops:main");
-    expect(target.storeKeys).toContain("main");
-    expect(target.storePath).toBe(path.resolve(storeTemplate.replace("{agentId}", "ops")));
-  });
-
-  test("resolveGatewaySessionStoreTarget resolves a customized main alias to its canonical key", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "session-utils-alias-"));
-    const storePath = path.join(dir, "sessions.json");
-    fs.writeFileSync(
-      storePath,
-      JSON.stringify({ "agent:ops:main": { sessionId: "s1", updatedAt: 1 } }),
-      "utf8",
-    );
-    const cfg = {
-      session: { mainKey: "work", store: storePath },
-      agents: { list: [{ id: "ops", default: true }] },
-    } as OpenClawConfig;
-    const target = resolveGatewaySessionStoreTarget({ cfg, key: "agent:ops:main" });
-    expect(target.canonicalKey).toBe("agent:ops:work");
-    expect(target.storeKeys).toContain("agent:ops:main");
-  });
+  test.each(["main", "work"])(
+    "resolveGatewaySessionStoreTarget resolves the main alias with configured key %s",
+    (mainKey) => {
+      const storeTemplate = path.join(
+        os.tmpdir(),
+        "openclaw-session-utils",
+        "{agentId}",
+        "sessions.json",
+      );
+      const cfg = {
+        session: { mainKey, store: storeTemplate },
+        agents: { list: [{ id: "ops", default: true }] },
+      } as OpenClawConfig;
+      const target = resolveGatewaySessionStoreTarget({ cfg, key: "main" });
+      expect(target.canonicalKey).toBe(`agent:ops:${mainKey}`);
+      expect(target.storeKeys).toContain(`agent:ops:${mainKey}`);
+      expect(target.storeKeys).toContain("main");
+      expect(target.storePath).toBe(path.resolve(storeTemplate.replace("{agentId}", "ops")));
+    },
+  );
 
   test("resolveGatewaySessionStoreTarget keeps a fixed configured store authoritative", async () => {
     await withStateDirEnv("session-utils-fixed-store-", async ({ stateDir }) => {
@@ -3871,7 +3851,7 @@ describe("gateway session utils", () => {
         await replaceSessionEntry(
           {
             agentId,
-            sessionKey: "global",
+            sessionKey: `agent:${agentId}:global`,
             storePath: cfg.session.store.replaceAll("{agentId}", agentId),
           },
           { sessionId: `global-${agentId}`, updatedAt: 1 },
@@ -3883,8 +3863,11 @@ describe("gateway session utils", () => {
           targets: ["research", "ops"].map((agentId) => ({ key: "global", agentId })),
         }),
       ).toMatchObject([
-        { agentId: "research", store: { global: { sessionId: "global-research" } } },
-        { agentId: "ops", store: { global: { sessionId: "global-ops" } } },
+        {
+          agentId: "research",
+          store: { "agent:research:global": { sessionId: "global-research" } },
+        },
+        { agentId: "ops", store: { "agent:ops:global": { sessionId: "global-ops" } } },
       ]);
       for (const directory of ["Retired Agent", "retired-agent"]) {
         await seedSessionEntries(
@@ -4172,7 +4155,7 @@ describe("gateway session utils", () => {
     }
   });
 
-  test("loadGatewaySessionEntryReadOnly rejects a persisted main alias", async () => {
+  test("loadGatewaySessionEntryReadOnly keeps qualified main lineage separate from Home", async () => {
     resetConfigRuntimeState();
     try {
       await withStateDirEnv("session-utils-exact-alias-children-", async ({ stateDir }) => {
@@ -4181,28 +4164,29 @@ describe("gateway session utils", () => {
           session: { mainKey: "work", store: storePath },
           agents: { list: [{ id: "main", default: true }] },
         } as OpenClawConfig;
-        const legacyParentKey = "agent:main:main";
+        const parentKey = "agent:main:main";
         const childKey = "agent:main:child";
         const now = Date.now();
         await seedSessionEntries(storePath, {
-          [legacyParentKey]: { sessionId: "parent", updatedAt: now },
+          [parentKey]: { sessionId: "parent", updatedAt: now },
           [childKey]: {
             sessionId: "child",
-            spawnedBy: legacyParentKey,
+            spawnedBy: parentKey,
             updatedAt: now + 1,
           },
         });
         setRuntimeConfigSnapshot(cfg, cfg);
 
-        expect(() =>
-          loadGatewaySessionEntryReadOnly("main", {
-            clone: false,
-            includeStoreChildEntries: true,
-          }),
-        ).toThrow("openclaw doctor --fix");
-        expect(() =>
+        const loaded = loadGatewaySessionEntryReadOnly(parentKey, {
+          clone: false,
+          includeStoreChildEntries: true,
+        });
+        expect(loaded.entry?.sessionId).toBe("parent");
+        expect(Object.keys(loaded.store).toSorted()).toEqual([childKey, parentKey]);
+        expect(loadGatewaySessionEntryReadOnly("main").entry).toBeUndefined();
+        expect(
           resolveGatewaySessionStoreTargetsReadOnly({ cfg, targets: [{ key: "main" }] }),
-        ).toThrow("openclaw doctor --fix");
+        ).toMatchObject([{ canonicalKey: "agent:main:work", store: {} }]);
       });
     } finally {
       resetConfigRuntimeState();
@@ -4238,8 +4222,8 @@ describe("gateway session utils", () => {
     }
   });
 
-  test.each([undefined, "main", "research"])(
-    "keeps private deleted-main discovery ahead of replacement selection (%s)",
+  test.each([undefined, "main"])(
+    "reads retired main from its physical store without consulting the current agent (%s)",
     async (agentId) => {
       resetConfigRuntimeState();
       try {
@@ -4360,7 +4344,7 @@ describe("gateway session utils", () => {
     },
   );
 
-  test("loadSessionEntry rejects deleted main aliases when mainKey is customized", async () => {
+  test("loadSessionEntry keeps deleted-agent keys exact when Home is customized", async () => {
     resetConfigRuntimeState();
     try {
       await withStateDirEnv("session-utils-load-deleted-main-alias-", async ({ stateDir }) => {
@@ -4388,10 +4372,11 @@ describe("gateway session utils", () => {
         } as OpenClawConfig;
         setRuntimeConfigSnapshot(cfg, cfg);
 
-        expect(() => loadSessionEntry("agent:main:work")).toThrow("openclaw doctor --fix");
-        expect(() =>
+        expect(loadSessionEntry("agent:main:main").entry?.sessionId).toBe("sess-deleted-main");
+        expect(loadSessionEntry("agent:main:work").entry).toBeUndefined();
+        expect(
           resolveGatewaySessionStoreTargetsReadOnly({ cfg, targets: [{ key: "agent:main:work" }] }),
-        ).toThrow("openclaw doctor --fix");
+        ).toMatchObject([{ canonicalKey: "agent:main:work", store: {} }]);
       });
     } finally {
       resetConfigRuntimeState();
@@ -4432,7 +4417,7 @@ describe("gateway session utils", () => {
     }
   });
 
-  test("resolveCanonicalGatewaySessionStoreKey rejects legacy aliases", () => {
+  test("resolveCanonicalGatewaySessionStoreKey keeps qualified main rows distinct and rejects persisted bare aliases", () => {
     const cfg = {
       session: { mainKey: "work" },
       agents: { list: [{ id: "ops", default: true }] },
@@ -4448,10 +4433,17 @@ describe("gateway session utils", () => {
       } as SessionEntry,
     };
 
+    for (const key of Object.keys(store)) {
+      expect(resolveCanonicalGatewaySessionStoreKey({ cfg, key, store })).toMatchObject({
+        primaryKey: key,
+        entry: store[key],
+      });
+    }
+    store.main = { sessionId: "legacy", updatedAt: 3 };
     expect(() =>
       resolveCanonicalGatewaySessionStoreKey({
         cfg,
-        key: "agent:ops:main",
+        key: "main",
         store,
       }),
     ).toThrow("openclaw doctor --fix");
@@ -5206,14 +5198,15 @@ describe("session list selected model display", () => {
       } as OpenClawConfig,
       storePath: "/tmp/sessions.json",
       store: {
-        global: { sessionId: "global", updatedAt: now } as SessionEntry,
+        "agent:main:global": { sessionId: "main-global", updatedAt: now } as SessionEntry,
+        "agent:work:global": { sessionId: "work-global", updatedAt: now } as SessionEntry,
         "agent:main:main": { sessionId: "main", updatedAt: now - 1 } as SessionEntry,
         "agent:work:main": { sessionId: "work", updatedAt: now - 2 } as SessionEntry,
       },
       opts: { agentId: "work", includeGlobal: true, search: "global" },
     });
 
-    expect(result.sessions.map((session) => session.key)).toEqual(["global"]);
+    expect(result.sessions.map((session) => session.key)).toEqual(["agent:work:global"]);
     expect(result.sessions[0]).toMatchObject({
       modelProvider: "anthropic",
       model: "claude-opus-4-6",
@@ -5235,14 +5228,14 @@ describe("session list selected model display", () => {
       } as OpenClawConfig,
       storePath: "/tmp/sessions.json",
       store: {
-        global: { sessionId: "global", updatedAt: now } as SessionEntry,
+        "agent:work:global": { sessionId: "global", updatedAt: now } as SessionEntry,
       },
       opts: { agentId: "work", includeGlobal: true, search: "claude-opus" },
     });
 
     expect(result.sessions).toHaveLength(1);
     expect(result.sessions[0]).toMatchObject({
-      key: "global",
+      key: "agent:work:global",
       agentId: "work",
       modelProvider: "anthropic",
       model: "claude-opus-4-6",

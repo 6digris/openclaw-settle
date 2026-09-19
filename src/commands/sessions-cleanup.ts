@@ -5,6 +5,7 @@
  * with dry-run tables that explain every planned pruning action.
  */
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { GATEWAY_CLIENT_CAPS } from "../../packages/gateway-protocol/src/client-info.js";
 import { visibleWidth } from "../../packages/terminal-core/src/ansi.js";
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
 import { getTerminalTableWidth, renderTable } from "../../packages/terminal-core/src/table.js";
@@ -267,6 +268,7 @@ async function maybeRunGatewayCleanup(
   try {
     const result = await callGateway<SessionsCleanupResult>({
       method: "sessions.cleanup",
+      caps: [GATEWAY_CLIENT_CAPS.CANONICAL_SESSION_KEYS],
       params: {
         agent: opts.agent,
         allAgents: opts.allAgents,

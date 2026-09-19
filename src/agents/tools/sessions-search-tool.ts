@@ -1,11 +1,16 @@
 /** Full-text search over visible session transcripts. */
+import { normalizeAgentSessionKeyParts } from "@openclaw/session-url-contract";
 import { Type } from "typebox";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { jsonUtf8Bytes } from "../../infra/json-utf8-bytes.js";
 import { redactToolPayloadText } from "../../logging/redact.js";
-import { isIncognitoSessionKey, parseAgentSessionKey } from "../../routing/session-key.js";
+import {
+  isIncognitoSessionKey,
+  normalizeAgentId,
+  parseAgentSessionKey,
+  toAgentStoreSessionKey,
+} from "../../routing/session-key.js";
 import { truncateUtf16Safe } from "../../utils.js";
-import { resolveSessionAgentId } from "../agent-scope.js";
 import { optionalPositiveIntegerSchema } from "../schema/typebox.js";
 import {
   describeSessionLinkRule,
@@ -30,7 +35,7 @@ import {
 import {
   createSessionVisibilityRowChecker,
   formatSessionToolAccessDenial,
-  resolveDisplaySessionKey,
+  resolveInternalSessionKey,
   resolveSessionReference,
   resolveSessionToolAccess,
   resolveSessionToolContext,
@@ -116,19 +121,14 @@ type SanitizedSearchHit = {
 type SearchSessionCandidate = {
   key: string;
   access: "authorized" | "row";
-  agentId?: string;
+  agentId: string;
   expectedSessionId?: string;
   ownerSessionKey?: string;
   parentSessionKey?: string;
   spawnedBy?: string;
 };
 
-function sanitizeHit(params: {
-  alias: string;
-  hit: GatewaySearchHit;
-  mainKey: string;
-}): SanitizedSearchHit | undefined {
-  const { hit } = params;
+function sanitizeHit(hit: GatewaySearchHit): SanitizedSearchHit | undefined {
   if (
     typeof hit.sessionKey !== "string" ||
     (hit.role !== "user" && hit.role !== "assistant") ||
@@ -144,11 +144,7 @@ function sanitizeHit(params: {
       ? `${truncateUtf16Safe(sanitized, SESSIONS_SEARCH_SNIPPET_MAX_CHARS)}…`
       : sanitized;
   return {
-    sessionKey: resolveDisplaySessionKey({
-      key: hit.sessionKey,
-      alias: params.alias,
-      mainKey: params.mainKey,
-    }),
+    sessionKey: hit.sessionKey,
     timestamp: hit.timestamp,
     role: hit.role,
     snippet,
@@ -177,8 +173,8 @@ function capSearchHits(items: SanitizedSearchHit[]): {
 }
 
 async function listVisibleSearchSessions(params: {
+  cfg: OpenClawConfig;
   unscopedAgentId: string;
-  effectiveRequesterAgentId?: string;
   effectiveRequesterKey: string;
   gatewayCall: GatewayCaller;
   rowGuard: {
@@ -193,22 +189,18 @@ async function listVisibleSearchSessions(params: {
   restrictToSpawned: boolean;
 }): Promise<SearchSessionCandidate[]> {
   const candidates = new Map<string, SearchSessionCandidate>();
-  const candidateId = (candidate: Pick<SearchSessionCandidate, "agentId" | "key">) =>
-    parseAgentSessionKey(candidate.key)
-      ? candidate.key
-      : `${candidate.agentId ?? ""}\0${candidate.key}`;
   if (
     params.rowGuard.check({
       key: params.effectiveRequesterKey,
-      ...(params.effectiveRequesterAgentId ? { agentId: params.effectiveRequesterAgentId } : {}),
+      agentId: params.unscopedAgentId,
     }).allowed
   ) {
     const requesterCandidate = {
       key: params.effectiveRequesterKey,
       access: "row",
-      ...(params.effectiveRequesterAgentId ? { agentId: params.effectiveRequesterAgentId } : {}),
+      agentId: params.unscopedAgentId,
     } satisfies SearchSessionCandidate;
-    candidates.set(candidateId(requesterCandidate), requesterCandidate);
+    candidates.set(requesterCandidate.key, requesterCandidate);
   }
   const listPages = async (agentId?: string) => {
     for (const archived of [false, true]) {
@@ -237,30 +229,57 @@ async function listVisibleSearchSessions(params: {
           },
         });
         for (const row of Array.isArray(page.sessions) ? page.sessions : []) {
-          if (typeof row.key !== "string" || (!agentId && parseAgentSessionKey(row.key) === null)) {
+          if (typeof row.key !== "string") {
             continue;
           }
+          const identity = normalizeAgentSessionKeyParts(row.key);
+          const rowAgentId = identity.ok
+            ? identity.value.agentId
+            : typeof row.agentId === "string"
+              ? row.agentId
+              : agentId;
+          if (!rowAgentId) {
+            continue;
+          }
+          const ownerAgentId = normalizeAgentId(rowAgentId);
           const visibilityRow = {
-            key: row.key,
-            ...(typeof row.agentId === "string"
-              ? { agentId: row.agentId }
-              : agentId
-                ? { agentId }
-                : {}),
+            key: identity.ok
+              ? identity.value.sessionKey
+              : resolveInternalSessionKey({
+                  agentId: ownerAgentId,
+                  key: row.key,
+                  cfg: params.cfg,
+                }),
+            agentId: ownerAgentId,
             ...(typeof row.ownerSessionKey === "string"
-              ? { ownerSessionKey: row.ownerSessionKey }
+              ? {
+                  ownerSessionKey: toAgentStoreSessionKey({
+                    agentId: ownerAgentId,
+                    requestKey: row.ownerSessionKey,
+                  }),
+                }
               : {}),
             ...(typeof row.parentSessionKey === "string"
-              ? { parentSessionKey: row.parentSessionKey }
+              ? {
+                  parentSessionKey: toAgentStoreSessionKey({
+                    agentId: ownerAgentId,
+                    requestKey: row.parentSessionKey,
+                  }),
+                }
               : {}),
             ...(typeof row.spawnedBy === "string"
-              ? { spawnedBy: row.spawnedBy }
+              ? {
+                  spawnedBy: toAgentStoreSessionKey({
+                    agentId: ownerAgentId,
+                    requestKey: row.spawnedBy,
+                  }),
+                }
               : params.restrictToSpawned
                 ? { spawnedBy: params.effectiveRequesterKey }
                 : {}),
           };
           if (params.rowGuard.check(visibilityRow).allowed) {
-            const id = candidateId(visibilityRow);
+            const id = visibilityRow.key;
             candidates.set(id, {
               ...candidates.get(id),
               ...visibilityRow,
@@ -295,30 +314,6 @@ function compareSearchHits(left: SanitizedSearchHit, right: SanitizedSearchHit):
     left.sessionKey.localeCompare(right.sessionKey) ||
     (left.messageId ?? "").localeCompare(right.messageId ?? "")
   );
-}
-
-function createSearchHitMatcher(agentId: string, candidates: SearchSessionCandidate[]) {
-  const exactKeys = new Map<string, number>();
-  const aliases = new Map<string, number>();
-  for (const [ordinal, candidate] of candidates.entries()) {
-    if (!exactKeys.has(candidate.key)) {
-      exactKeys.set(candidate.key, ordinal);
-    }
-    if (!parseAgentSessionKey(candidate.key)) {
-      const alias = candidate.key.trim();
-      if (alias && !aliases.has(alias)) {
-        aliases.set(alias, ordinal);
-      }
-    }
-  }
-  return (hitKey: string): SearchSessionCandidate | undefined => {
-    const exact = exactKeys.get(hitKey);
-    const parsed = parseAgentSessionKey(hitKey);
-    const alias = parsed?.agentId === agentId ? aliases.get(parsed.rest) : undefined;
-    // An authorized alias may precede an exact key in the original candidate order.
-    const ordinal = alias !== undefined && (exact === undefined || alias < exact) ? alias : exact;
-    return ordinal === undefined ? undefined : candidates[ordinal];
-  };
 }
 
 export function createSessionsSearchTool(opts?: {
@@ -362,16 +357,12 @@ export function createSessionsSearchTool(opts?: {
         mainKey,
         alias,
         effectiveRequesterKey,
+        requesterAgentId,
         mainSessionKey,
         restrictToSpawned,
         sessionVisibility: visibility,
         a2aPolicy,
       } = resolveSessionToolContext(opts);
-      const requesterAgentId = resolveSessionAgentId({
-        sessionKey: effectiveRequesterKey,
-        config: cfg,
-        agentId: opts?.agentId,
-      });
 
       let sessionTarget:
         | {
@@ -401,8 +392,7 @@ export function createSessionsSearchTool(opts?: {
           action: "search",
           sessionKey: requestedSessionKey,
           keyAgentId: semanticTargetAgentId ?? requesterAgentId,
-          alias,
-          mainKey,
+          cfg,
           requesterInternalKey: effectiveRequesterKey,
           restrictToSpawned,
           callGateway: gatewayCall,
@@ -411,6 +401,7 @@ export function createSessionsSearchTool(opts?: {
           return jsonResult({ status: resolved.status, error: resolved.error });
         }
         const visible = await resolveVisibleSessionReference({
+          cfg,
           action: "search",
           resolvedSession: resolved,
           requesterSessionKey: effectiveRequesterKey,
@@ -487,14 +478,12 @@ export function createSessionsSearchTool(opts?: {
                 ...(sessionTarget.expectedSessionId
                   ? { expectedSessionId: sessionTarget.expectedSessionId }
                   : {}),
-                ...(!parseAgentSessionKey(sessionTarget.key)
-                  ? { agentId: sessionTarget.agentId }
-                  : {}),
+                agentId: sessionTarget.agentId,
               },
             ]
           : await listVisibleSearchSessions({
+              cfg,
               unscopedAgentId: requesterAgentId,
-              effectiveRequesterAgentId: opts?.agentId,
               effectiveRequesterKey,
               gatewayCall,
               rowGuard,
@@ -510,11 +499,7 @@ export function createSessionsSearchTool(opts?: {
       let backendTruncated = false;
       const sessionsByAgent = new Map<string, SearchSessionCandidate[]>();
       for (const candidate of searchSessions) {
-        const agentId = resolveSessionAgentId({
-          sessionKey: candidate.key,
-          config: cfg,
-          agentId: parseAgentSessionKey(candidate.key) ? undefined : candidate.agentId,
-        });
+        const { agentId } = candidate;
         const candidates = sessionsByAgent.get(agentId) ?? [];
         candidates.push(candidate);
         sessionsByAgent.set(agentId, candidates);
@@ -561,12 +546,20 @@ export function createSessionsSearchTool(opts?: {
           if (hits.length === 0) {
             continue;
           }
-          const matchHit = createSearchHitMatcher(agentId, chunk);
+          const candidatesByKey = new Map(chunk.map((candidate) => [candidate.key, candidate]));
           for (const hit of hits) {
             if (typeof hit.sessionKey !== "string") {
               continue;
             }
-            const candidate = matchHit(hit.sessionKey);
+            const identity = normalizeAgentSessionKeyParts(hit.sessionKey);
+            const visibilityKey = identity.ok
+              ? identity.value.sessionKey
+              : resolveInternalSessionKey({
+                  agentId,
+                  key: hit.sessionKey,
+                  cfg,
+                });
+            const candidate = candidatesByKey.get(visibilityKey);
             if (!candidate) {
               continue;
             }
@@ -577,11 +570,7 @@ export function createSessionsSearchTool(opts?: {
             if (!access.allowed) {
               continue;
             }
-            const sanitized = sanitizeHit({
-              alias,
-              hit: { ...hit, sessionKey: candidate.key },
-              mainKey,
-            });
+            const sanitized = sanitizeHit({ ...hit, sessionKey: visibilityKey });
             if (sanitized) {
               visibleHits.push(sanitized);
             }

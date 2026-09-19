@@ -13,7 +13,6 @@ import type { DB } from "../../state/openclaw-agent-db.generated.js";
 import {
   canonicalSessionValidationQuery,
   hasCanonicalSessionValidationProjection,
-  readCanonicalSessionMainKey,
 } from "./session-canonical-key.js";
 import {
   validateCanonicalSessionRow,
@@ -24,7 +23,6 @@ type ValidationDatabase = { agentId: string; db: DatabaseSync };
 type PendingDatabase = Pick<DB, "session_nodes" | "session_canonical_validation_pending">;
 
 export type CanonicalSessionValidationBatch = {
-  mainKey: string;
   rows: readonly CanonicalSessionValidationRow[];
   absentKeys: readonly string[];
   hasMore: boolean;
@@ -72,7 +70,7 @@ export function seedCanonicalSessionValidation(database: ValidationDatabase): nu
   return Number(result.numAffectedRows ?? 0n);
 }
 
-/** Capture bounded source bytes and policy in one committed snapshot before write admission. */
+/** Capture bounded source bytes in one committed snapshot before write admission. */
 export function readPendingCanonicalSessionValidationBatch(
   database: ValidationDatabase,
   options: { maxRows: number; maxBytes: number },
@@ -86,10 +84,9 @@ export function readPendingCanonicalSessionValidationBatch(
     throw new Error("Canonical validation batch limits must be positive safe integers");
   }
   if (!hasCanonicalSessionValidationProjection(database)) {
-    return { mainKey: "main", rows: [], absentKeys: [], hasMore: false, oversizedRows: 0 };
+    return { rows: [], absentKeys: [], hasMore: false, oversizedRows: 0 };
   }
   return runSqliteDeferredTransactionSync(database.db, () => {
-    const mainKey = readCanonicalSessionMainKey(database);
     const db = getNodeSqliteKysely<PendingDatabase>(database.db);
     const candidates = executeSqliteQuerySync(
       database.db,
@@ -134,7 +131,6 @@ export function readPendingCanonicalSessionValidationBatch(
       : [];
     const found = new Set(rows.map((row) => row.session_key));
     return {
-      mainKey,
       rows,
       absentKeys: keys.filter((key) => !found.has(key)),
       hasMore: keys.length < candidates.length,
@@ -149,7 +145,7 @@ export function validateCanonicalSessionValidationBatch(
 ): ValidatedCanonicalSessionValidationBatch {
   const rows = batch.rows.map((row) => {
     const snapshot = { ...row };
-    validateCanonicalSessionRow(snapshot, batch.mainKey);
+    validateCanonicalSessionRow(snapshot);
     return Object.freeze(snapshot);
   });
   const validated: ValidatedCanonicalSessionValidationBatch = {
@@ -185,10 +181,7 @@ export function compareAndCertifyCanonicalSessionValidationBatch(
   if (!database.db.isTransaction) {
     throw new Error("Canonical validation certification requires write admission");
   }
-  if (
-    !hasCanonicalSessionValidationProjection(database) ||
-    readCanonicalSessionMainKey(database) !== batch.mainKey
-  ) {
+  if (!hasCanonicalSessionValidationProjection(database)) {
     return 0;
   }
   const keys = [...batch.rows.map((row) => row.session_key), ...batch.absentKeys];
@@ -283,7 +276,7 @@ export function certifyCanonicalSessionValidationRow(
   // Validate stored metadata after native TEXT binding; saved prompts are not canonical inputs.
   const row = queries.row(pending.session_key);
   if (row) {
-    validateCanonicalSessionRow(row, readCanonicalSessionMainKey(database));
+    validateCanonicalSessionRow(row);
   }
   // The row was just reread and validated without yielding under the same reservation.
   queries.certify(pending.session_key);

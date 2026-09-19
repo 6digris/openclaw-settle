@@ -14,7 +14,7 @@ import { resolveSwarmConfig } from "../../agents/subagents/swarm/swarm-config.js
 import { validateStructuredOutputSchema } from "../../agents/subagents/swarm/swarm-output-schema.js";
 import { resolveSessionStorePathCore } from "../../config/sessions.js";
 import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
-import { parseAgentSessionKey } from "../../routing/session-key.js";
+import { classifySessionKeyShape, parseAgentSessionKey } from "../../routing/session-key.js";
 import {
   isMainSessionRestartRecoveryInputProvenance,
   normalizeInputProvenance,
@@ -70,24 +70,35 @@ export function prepareAgentRequestPreflight(params: {
   const { request } = params;
   const cfg = params.context.getRuntimeConfig();
   const canUseInternalRuntimeHandoff = resolveCanUseInternalRuntimeHandoff(params.client);
-  const requestSessionKey = request.sessionKey?.trim();
-  const parsedRequestSessionKey = requestSessionKey
-    ? parseAgentSessionKey(requestSessionKey)
-    : undefined;
-  const bareSessionAgent =
-    requestSessionKey && !parsedRequestSessionKey
-      ? resolveRequestedSessionAgentId(cfg, requestSessionKey, request.agentId)
-      : undefined;
-  if (bareSessionAgent && !bareSessionAgent.ok) {
-    params.io.emitAcceptance([false, undefined, bareSessionAgent.error]);
+  const sessionKeyParam = normalizeOptionalString(request.sessionKey);
+  const toShape = classifySessionKeyShape(request.to);
+  const requestSessionKey =
+    sessionKeyParam ??
+    (!normalizeOptionalString(request.sessionId) &&
+    (toShape === "agent" || toShape === "malformed_agent")
+      ? normalizeOptionalString(request.to)
+      : undefined);
+  if (classifySessionKeyShape(requestSessionKey) === "malformed_agent") {
+    params.io.emitAcceptance([
+      false,
+      undefined,
+      errorShape(
+        ErrorCodes.INVALID_REQUEST,
+        `invalid agent params: malformed session key "${requestSessionKey}"`,
+      ),
+    ]);
     return undefined;
   }
-  const selectedAgentId = requestSessionKey
-    ? (parsedRequestSessionKey?.agentId ??
-      bareSessionAgent?.agentId ??
-      normalizeOptionalString(request.agentId) ??
-      tryResolveLegacyCompatibilityAgentId(cfg))
-    : (normalizeOptionalString(request.agentId) ?? tryResolveLegacyCompatibilityAgentId(cfg));
+  const requestedSessionAgent =
+    requestSessionKey || request.agentId !== undefined
+      ? resolveRequestedSessionAgentId(cfg, requestSessionKey, request.agentId)
+      : undefined;
+  if (requestedSessionAgent && !requestedSessionAgent.ok) {
+    params.io.emitAcceptance([false, undefined, requestedSessionAgent.error]);
+    return undefined;
+  }
+  const selectedAgentId =
+    requestedSessionAgent?.agentId ?? tryResolveLegacyCompatibilityAgentId(cfg);
   const refusal = selectedAgentId ? readAgentDatabaseAdmissionRefusal(selectedAgentId) : undefined;
   if (refusal) {
     params.io.emitAcceptance([

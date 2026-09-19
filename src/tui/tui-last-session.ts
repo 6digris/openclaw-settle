@@ -1,8 +1,13 @@
 // Stores and resolves the last TUI session per workspace.
 import { createHash } from "node:crypto";
 import { normalizeLowercaseStringOrEmpty as normalizeMarker } from "@openclaw/normalization-core/string-coerce";
+import { resolveCanonicalMainSessionKey } from "../config/sessions/main-session-key.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
-import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
+import {
+  normalizeAgentId,
+  parseAgentSessionKey,
+  toAgentStoreSessionKey,
+} from "../routing/session-key.js";
 import {
   writeConfigMachineState,
   updateConfigMachineState,
@@ -11,8 +16,8 @@ import { readConfigMachineStateWithMetadata } from "../state/config-machine-stat
 import { withExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
-import type { TuiSessionList } from "./tui-backend.js";
-import type { SessionScope } from "./tui-types.js";
+import type { ChatSendOptions, TuiSessionList } from "./tui-backend.js";
+import type { SessionScope, TuiStateAccess } from "./tui-types.js";
 
 type TuiLastSessionDatabase = Pick<OpenClawStateKyselyDatabase, "config_machine_state">;
 
@@ -72,6 +77,25 @@ export async function readTuiLastSessionKey(params: {
   return rememberedKey && !isHeartbeatSessionKey(rememberedKey) ? rememberedKey : null;
 }
 
+/** Published pointer strings do not always have the same meaning as fresh /session input. */
+export function resolveRememberedTuiSessionSelector(
+  sessionKey: string,
+  context: Pick<TuiStateAccess, "currentAgentId" | "sessionScope" | "sessionMainKey">,
+): string {
+  if (context.sessionScope !== "global") {
+    return sessionKey;
+  }
+  if (sessionKey === "global") {
+    return "main";
+  }
+  return normalizeMarker(sessionKey) === "main"
+    ? resolveCanonicalMainSessionKey({
+        agentId: context.currentAgentId,
+        mainKey: context.sessionMainKey,
+      })
+    : sessionKey;
+}
+
 /** Writes the remembered session key unless it is empty, unknown, or heartbeat-owned. */
 export async function writeTuiLastSessionKey(params: {
   scopeKey: string;
@@ -95,26 +119,31 @@ export async function writeTuiLastSessionKey(params: {
  * is reported once instead of spamming every session switch.
  */
 export function createRememberSessionKeyWriter(params: {
-  buildScopeKey: (sessionKey: string) => string;
+  buildScopeKey: (sessionKey: string, sessionScope: SessionScope) => string;
   reportFailure: (message: string) => void;
   write: typeof writeTuiLastSessionKey;
-}): (sessionKey: string) => void {
+}): (
+  selection: Pick<ChatSendOptions, "sessionKey" | "targetIntent">,
+  sessionScope: SessionScope,
+) => void {
   const write = params.write;
   let failureReported = false;
-  return (sessionKey: string) => {
+  return ({ sessionKey, targetIntent }, sessionScope) => {
     const trimmed = sessionKey.trim();
-    if (!trimmed || trimmed === "unknown") {
+    if (!trimmed || trimmed === "unknown" || isHeartbeatSessionKey(trimmed)) {
       return;
     }
-    void write({ scopeKey: params.buildScopeKey(trimmed), sessionKey: trimmed }).catch(
-      (err: unknown) => {
-        if (failureReported) {
-          return;
-        }
-        failureReported = true;
-        params.reportFailure(err instanceof Error ? err.message : String(err));
-      },
-    );
+    void write({
+      scopeKey: params.buildScopeKey(trimmed, sessionScope),
+      sessionKey:
+        targetIntent === "home" ? (sessionScope === "global" ? "global" : "main") : trimmed,
+    }).catch((err: unknown) => {
+      if (failureReported) {
+        return;
+      }
+      failureReported = true;
+      params.reportFailure(err instanceof Error ? err.message : String(err));
+    });
   };
 }
 
@@ -189,16 +218,14 @@ export function resolveRememberedTuiSessionKey(params: {
   if (parsed && normalizeAgentId(parsed.agentId) !== currentAgentId) {
     return null;
   }
-  const rememberedRest = parsed?.rest ?? rememberedKey;
-  // Agent-prefixed and bare keys can refer to the same session; compare the session rest too.
-  const match = params.sessions.find((session) => {
-    if (isHeartbeatLikeTuiSession(session)) {
-      return false;
-    }
-    if (session.key === rememberedKey) {
-      return true;
-    }
-    return parseAgentSessionKey(session.key)?.rest === rememberedRest;
+  const canonicalKey = toAgentStoreSessionKey({
+    agentId: currentAgentId,
+    requestKey: rememberedKey,
   });
-  return match?.key ?? null;
+  const match = params.sessions.find(
+    (session) =>
+      !isHeartbeatLikeTuiSession(session) &&
+      toAgentStoreSessionKey({ agentId: currentAgentId, requestKey: session.key }) === canonicalKey,
+  );
+  return match ? canonicalKey : null;
 }

@@ -46,7 +46,7 @@ vi.mock("../infra/device-auth-store.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../infra/device-auth-store.js")>();
   return {
     ...actual,
-    loadOriginDeviceToken: (...args: unknown[]) => loadOriginDeviceTokenMock(...args),
+    loadOriginDeviceToken: async (...args: unknown[]) => loadOriginDeviceTokenMock(...args),
   };
 });
 

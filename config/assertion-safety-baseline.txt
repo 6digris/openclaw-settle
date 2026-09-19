@@ -2712,7 +2712,6 @@ src/gateway/server-methods/sessions-compact.ts	1
 src/gateway/server-methods/sessions-create.ts	1
 src/gateway/server-methods/sessions-messaging.ts	11
 src/gateway/server-methods/sessions-patch-engine.ts	1
-src/gateway/server-methods/sessions-read.ts	1
 src/gateway/server-methods/sessions-sharing.ts	1
 src/gateway/server-methods/sessions-suggestions.ts	1
 src/gateway/server-methods/skills-workspace-handler.ts	1
@@ -3473,7 +3472,7 @@ src/tts/tts-settings.ts	4
 src/tts/tts-telephony.ts	1
 src/tts/voice-models.ts	4
 src/tui/components/chat-log.ts	2
-src/tui/embedded-backend.ts	4
+src/tui/embedded-backend.ts	3
 src/tui/gateway-chat.ts	2
 src/tui/tui-autocomplete.ts	1
 src/tui/tui-command-handlers.ts	5

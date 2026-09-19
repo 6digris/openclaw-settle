@@ -91,7 +91,7 @@ export function respondUnavailableAgentSessionForKey(params: {
   agentId?: string;
   respond: GatewayRequestHandlerOptions["respond"];
 }): boolean {
-  const { cfg, entry, canonicalKey, legacyKey } = loadSessionEntry(params.sessionKey, {
+  const { cfg, entry, canonicalKey } = loadSessionEntry(params.sessionKey, {
     ...(params.agentId ? { agentId: params.agentId } : {}),
     clone: false,
     projection: "list",
@@ -101,7 +101,6 @@ export function respondUnavailableAgentSessionForKey(params: {
       cfg,
       canonicalKey,
       entry,
-      acpMetadataSessionKey: legacyKey,
       respond: params.respond,
     })
   ) {

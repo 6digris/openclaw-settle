@@ -38,6 +38,7 @@ import { MAX_BUFFERED_BYTES, WEBSOCKET_OPEN_READY_STATE } from "./server-constan
 import type { GatewayClientRegistry } from "./server/client-registry.js";
 import { closeGatewayTransportWithGrace } from "./server/connection-transport-close.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
+import { legacySessionKey, projectSessionWireEvent } from "./session-wire-identity.js";
 import { logWs, summarizeAgentEventForWsLog } from "./ws-log.js";
 
 // Pairing scope is for device-pairing handshakes only; chat transcript events
@@ -386,6 +387,7 @@ export function createGatewayBroadcaster(params: {
     let outboundEventLogged = false;
     let lastFrameSequence = 0;
     let lastFrameRecipientProfileId: string | undefined;
+    let lastFramePayloadFragment: string | undefined;
     let lastFrame: string | undefined;
     let frameBase: FrameBase | undefined = retained?.base;
     let frameFields: Omit<FrameBase, "payloadFragment"> | undefined;
@@ -609,6 +611,7 @@ export function createGatewayBroadcaster(params: {
       try {
         const base = getFrameBase();
         let payloadFragment = base.payloadFragment;
+        let projectedPayload = payload;
         if (presencePayload) {
           // Presence contains session references. Only the connection owner's
           // recipient projection may cross this boundary; never send the raw roster.
@@ -634,6 +637,19 @@ export function createGatewayBroadcaster(params: {
             continue;
           }
           payloadFragment = serializeFrameField("payload", projected);
+          projectedPayload = projected;
+        }
+        const canonicalSessionKeys = hasGatewayClientCap(
+          c.connect.caps,
+          GATEWAY_CLIENT_CAPS.CANONICAL_SESSION_KEYS,
+        );
+        if (!canonicalSessionKeys) {
+          const wirePayload = projectSessionWireEvent(event, projectedPayload, (key, owner) =>
+            legacySessionKey(key, owner, sessionMessageSubscribers?.getWireKey(c.connId, key)),
+          );
+          if (wirePayload !== projectedPayload) {
+            payloadFragment = serializeFrameField("payload", wirePayload);
+          }
         }
         // A drained write can refresh the recipient; cache only the profile at this send.
         const recipientProfileId =
@@ -643,6 +659,7 @@ export function createGatewayBroadcaster(params: {
           !projectSession &&
           lastFrame !== undefined &&
           lastFrameSequence === nextSeq &&
+          lastFramePayloadFragment === payloadFragment &&
           lastFrameRecipientProfileId === recipientProfileId
         ) {
           frame = lastFrame;
@@ -650,6 +667,7 @@ export function createGatewayBroadcaster(params: {
           frame = frameWithSequence(base, nextSeq, payloadFragment, recipientProfileId);
           if (!presencePayload && !projectSession) {
             lastFrameSequence = nextSeq;
+            lastFramePayloadFragment = payloadFragment;
             lastFrameRecipientProfileId = recipientProfileId;
             lastFrame = frame;
           }

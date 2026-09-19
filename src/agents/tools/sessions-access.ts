@@ -257,8 +257,6 @@ export async function resolveSessionToolAccess(params: {
   const scoped = await createSessionVisibilityChecker.resolveScopedAccessAsync({
     action: params.action,
     requesterSessionKey: params.requesterSessionKey,
-    // A bare key is not globally unique under explicit ownership. Callers
-    // qualify cross-agent targets so a grant cannot cross store owners.
     targetSessionKey: authorizationTargetSessionKey,
   });
   if (scoped) {
@@ -352,42 +350,36 @@ export function resolveSandboxedSessionToolContext(params: {
   const { mainKey, alias, scope } = resolveMainSessionAlias(params.cfg);
   const visibility = resolveSandboxSessionToolsVisibility(params.cfg);
   const requesterSessionKey = normalizeOptionalString(params.agentSessionKey);
+  const requesterAgentId = resolveSessionAgentId({
+    config: params.cfg,
+    sessionKey: requesterSessionKey,
+    agentId: params.requesterAgentId,
+  });
+  const mainSessionKey = resolveCanonicalMainSessionKey({
+    agentId: requesterAgentId,
+    mainKey,
+    sessionScope: scope,
+  });
   const requesterInternalKey = requesterSessionKey
     ? resolveInternalSessionKey({
         key: requesterSessionKey,
-        alias,
-        mainKey,
+        agentId: requesterAgentId,
+        cfg: params.cfg,
       })
     : undefined;
-  const effectiveRequesterKey = requesterInternalKey ?? alias;
+  const effectiveRequesterKey = requesterInternalKey ?? mainSessionKey;
   const restrictToSpawned =
     params.sandboxed === true &&
     visibility === "spawned" &&
     Boolean(requesterInternalKey) &&
     !isSubagentSessionKey(requesterInternalKey);
-  const requesterAgentId =
-    parseAgentSessionKey(requesterInternalKey)?.agentId ??
-    (!restrictToSpawned && requesterInternalKey === alias
-      ? resolveSessionAgentId({
-          config: params.cfg,
-          sessionKey: requesterInternalKey,
-          agentId: params.requesterAgentId,
-        })
-      : undefined);
-  const mainSessionKey =
-    !restrictToSpawned && requesterAgentId
-      ? resolveCanonicalMainSessionKey({
-          agentId: requesterAgentId,
-          mainKey,
-          sessionScope: scope,
-        })
-      : undefined;
   return {
     mainKey,
     alias,
     visibility,
+    requesterAgentId,
     requesterInternalKey,
-    mainSessionKey,
+    mainSessionKey: restrictToSpawned ? undefined : mainSessionKey,
     effectiveRequesterKey,
     restrictToSpawned,
   };

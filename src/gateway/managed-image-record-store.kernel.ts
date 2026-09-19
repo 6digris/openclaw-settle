@@ -4,6 +4,11 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
+import {
+  normalizeAgentId,
+  parseAgentSessionKey,
+  scopeLegacySessionKeyToAgent,
+} from "../routing/session-key.js";
 import type {
   ManagedImageRecord,
   ManagedImageRecordDatabase,
@@ -32,6 +37,33 @@ export const MANAGED_IMAGE_RECORD_COLUMNS = [
   "cleanup_pending",
 ] as const satisfies readonly (keyof ManagedImageRecordRow)[];
 
+export function normalizeManagedImageRecord(record: ManagedImageRecord): ManagedImageRecord {
+  return { ...record, sessionKey: scopeLegacySessionKeyToAgent(record) ?? record.sessionKey };
+}
+
+export function resolveManagedImageRecordOwner(
+  record: Pick<ManagedImageRecord, "sessionKey" | "agentId">,
+  compatibilityAgentId?: string,
+): string | undefined {
+  const owner =
+    record.agentId?.trim() ||
+    parseAgentSessionKey(record.sessionKey)?.agentId ||
+    compatibilityAgentId?.trim();
+  return owner ? normalizeAgentId(owner) : undefined;
+}
+
+export function managedImageRecordMatchesSession(
+  record: ManagedImageRecord,
+  sessionKey: string,
+  compatibilityAgentId?: string,
+): boolean {
+  const agentId = resolveManagedImageRecordOwner(record, compatibilityAgentId);
+  return (
+    scopeLegacySessionKeyToAgent({ agentId, sessionKey: record.sessionKey }) ===
+    scopeLegacySessionKeyToAgent({ agentId, sessionKey })
+  );
+}
+
 export function managedImageRecordToRow(record: ManagedImageRecord): ManagedImageRecordInsert {
   return {
     attachment_id: record.attachmentId,
@@ -55,7 +87,7 @@ export function managedImageRecordToRow(record: ManagedImageRecord): ManagedImag
 }
 
 export function managedImageRecordFromRow(row: ManagedImageRecordRow): ManagedImageRecord {
-  return {
+  return normalizeManagedImageRecord({
     attachmentId: row.attachment_id,
     sessionKey: row.session_key,
     ...(row.agent_id ? { agentId: row.agent_id } : {}),
@@ -76,14 +108,17 @@ export function managedImageRecordFromRow(row: ManagedImageRecordRow): ManagedIm
       sizeBytes: row.original_size_bytes,
       filename: row.original_filename,
     },
-  };
+  });
 }
 
 export function managedImageRecordsEqual(
   left: ManagedImageRecord,
   right: ManagedImageRecord,
 ): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+  return (
+    JSON.stringify(normalizeManagedImageRecord(left)) ===
+    JSON.stringify(normalizeManagedImageRecord(right))
+  );
 }
 
 export function readManagedImageRecordInDatabase(
@@ -110,7 +145,15 @@ export function listManagedImageRecordEntriesInDatabase(
     .selectFrom("managed_outgoing_image_records")
     .select(MANAGED_IMAGE_RECORD_COLUMNS);
   if (sessionKey) {
-    query = query.where("session_key", "=", sessionKey);
+    const parsed = parseAgentSessionKey(sessionKey);
+    query = query.where((eb) =>
+      parsed
+        ? eb.or([
+            eb("session_key", "=", sessionKey),
+            eb.and([eb("agent_id", "=", parsed.agentId), eb("session_key", "=", parsed.rest)]),
+          ])
+        : eb("session_key", "=", sessionKey),
+    );
   }
   return executeSqliteQuerySync(
     db,

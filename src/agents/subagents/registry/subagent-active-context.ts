@@ -7,10 +7,7 @@ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { parseAgentSessionKey } from "../../../routing/session-key.js";
 import { sanitizeForPromptLiteral } from "../../sanitize-for-prompt.js";
-import {
-  resolveInternalSessionKey,
-  resolveMainSessionAlias,
-} from "../../tools/sessions-helpers.js";
+import { resolveInternalSessionKey } from "../../tools/sessions-helpers.js";
 import { resolveSubagentCompletionResultText } from "../completion/subagent-completion-result.js";
 import { isSubagentRunVisibleToSession } from "./subagent-control-scope.js";
 import { buildSubagentList } from "./subagent-list.js";
@@ -82,16 +79,17 @@ export function buildActiveSubagentRuntimeContext(params: {
   if (!rawControllerSessionKey) {
     return undefined;
   }
-  const { mainKey, alias } = resolveMainSessionAlias(params.cfg);
+  const agentId =
+    params.controllerAgentId ?? parseAgentSessionKey(rawControllerSessionKey)?.agentId;
+  if (!agentId) {
+    return undefined;
+  }
   const controllerSessionKey = resolveInternalSessionKey({
     key: rawControllerSessionKey,
-    alias,
-    mainKey,
+    agentId,
+    cfg: params.cfg,
   });
-  const agentId = params.controllerAgentId ?? parseAgentSessionKey(controllerSessionKey)?.agentId;
-  const snapshot = agentId
-    ? getSubagentRunsSnapshotForSession(subagentRuns, controllerSessionKey)
-    : new Map<string, SubagentRunRecord>();
+  const snapshot = getSubagentRunsSnapshotForSession(subagentRuns, controllerSessionKey);
   const readSnapshot = getSubagentSessionListRunsSnapshotForRead(subagentRuns);
   for (const [runId, entry] of snapshot) {
     readSnapshot.set(runId, entry);
@@ -99,25 +97,21 @@ export function buildActiveSubagentRuntimeContext(params: {
   const latest = buildSubagentRunReadIndexFromRuns({
     runs: readSnapshot,
   }).latestRunsByChildSessionKey;
-  const visible = agentId
-    ? [...snapshot.values()].filter((entry) =>
-        isSubagentRunVisibleToSession(entry, controllerSessionKey, agentId, params.cfg),
-      )
-    : [];
+  const visible = [...snapshot.values()].filter((entry) =>
+    isSubagentRunVisibleToSession(entry, controllerSessionKey, agentId, params.cfg),
+  );
   const runs = sortSubagentRuns(
     visible.filter((entry) => latest.get(entry.childSessionKey.trim())?.runId === entry.runId),
   );
   // Read every retained generation through the same visibility policy. A newer
   // execution or a recent-history cutoff cannot acknowledge an older result.
-  const pending = agentId
-    ? visible
-        .filter(hasOutstandingCompletion)
-        .toSorted(
-          (left, right) =>
-            (left.execution.endedAt ?? 0) - (right.execution.endedAt ?? 0) ||
-            (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0),
-        )
-    : [];
+  const pending = visible
+    .filter(hasOutstandingCompletion)
+    .toSorted(
+      (left, right) =>
+        (left.execution.endedAt ?? 0) - (right.execution.endedAt ?? 0) ||
+        (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0),
+    );
   if (runs.length === 0 && pending.length === 0) {
     return undefined;
   }

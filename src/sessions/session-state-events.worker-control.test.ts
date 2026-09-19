@@ -152,7 +152,7 @@ describe("Goal event worker reconciliation", () => {
       input: {
         now,
         event: {
-          sessionKey: "global",
+          sessionKey: "agent:ops:global",
           sessionId: "original-session",
           agentId: "ops",
           kind: "goal_changed",

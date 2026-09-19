@@ -1,11 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { stableStringify } from "@openclaw/normalization-core";
-import {
-  type FastMode,
-  normalizeOptionalLowercaseString,
-  normalizeOptionalString,
-} from "@openclaw/normalization-core/string-coerce";
+import { type FastMode, normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import {
   ErrorCodes,
@@ -408,15 +404,12 @@ export async function createGatewaySession(params: {
       ),
     };
   }
-  const loweredRequestedKey = normalizeOptionalLowercaseString(requestedKey);
   const explicitTargetKey = requestedKey
-    ? loweredRequestedKey === "global" || loweredRequestedKey === "unknown"
-      ? loweredRequestedKey
-      : toAgentStoreSessionKey({
-          agentId,
-          requestKey: requestedKey,
-          mainKey: params.cfg.session?.mainKey,
-        })
+    ? toAgentStoreSessionKey({
+        agentId,
+        requestKey: requestedKey,
+        mainKey: params.cfg.session?.mainKey,
+      })
     : undefined;
   const explicitTargetParts = parseAgentSessionKey(explicitTargetKey);
   const explicitIncognito = isIncognitoSessionKey(explicitTargetKey);

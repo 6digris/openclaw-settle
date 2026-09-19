@@ -105,8 +105,14 @@ describe("session member picker identities", () => {
         ["main", "agent:main:archived", "archived-creator", "Archive", 1],
         ["main", "agent:main:duplicate-a", "duplicate", "First label", undefined],
         ["main", "agent:main:duplicate-z", "duplicate", "Last label", 1],
-        ["main", "global", "sentinel-main", "Main sentinel", undefined],
-        ["research", "global", "sentinel-research", "Research sentinel", undefined],
+        ["main", "agent:main:global", "main-global-creator", "Main global", undefined],
+        [
+          "research",
+          "agent:research:global",
+          "research-global-creator",
+          "Research global",
+          undefined,
+        ],
       ] as const) {
         replaceSessionEntrySync(
           { agentId, sessionKey: key },
@@ -136,8 +142,8 @@ describe("session member picker identities", () => {
       await call("session.members.list", { sessionKey }, requestContext);
       const projection = getSessionRowProjection(requestContext)!;
       await projection.ensureMaterialized();
-      const legacy = new Map<string, SessionSharingIdentity>();
-      // Reference the old combined-store reduction, including its federation order.
+      const creators = new Map<string, SessionSharingIdentity>();
+      // Match creator label precedence and current profile display names.
       for (const actor of [
         ...Object.values(
           combinedStore.loadCombinedSessionStoreForGatewayCore(requestContext.getRuntimeConfig(), {
@@ -153,10 +159,10 @@ describe("session member picker identities", () => {
         if (!actor?.id) {
           continue;
         }
-        const label = actor.label ?? legacy.get(actor.id)?.label;
-        legacy.set(actor.id, { type: actor.type, id: actor.id, ...(label ? { label } : {}) });
+        const label = actor.label ?? creators.get(actor.id)?.label;
+        creators.set(actor.id, { type: actor.type, id: actor.id, ...(label ? { label } : {}) });
       }
-      const expected = [...legacy.values()].toSorted(
+      const expected = [...creators.values()].toSorted(
         (a, b) => (a.label ?? a.id).localeCompare(b.label ?? b.id) || a.id.localeCompare(b.id),
       );
       expect(expected).toEqual(
@@ -164,11 +170,12 @@ describe("session member picker identities", () => {
           { type: "agent", id: "archived-creator", label: "Archive" },
           { type: "agent", id: "duplicate", label: "Last label" },
           { type: "agent", id: "incognito-creator", label: "Incognito" },
+          { type: "agent", id: "main-global-creator", label: "Main global" },
+          { type: "agent", id: "research-global-creator", label: "Research global" },
           { type: "human", id: profile.id, label: "Member" },
           { type: "human", id: profileOnly.id, label: "Profile only" },
         ]),
       );
-      expect(expected.filter((identity) => identity.id.startsWith("sentinel-"))).toHaveLength(1);
       const scans = vi.spyOn(combinedStore, "loadCombinedSessionStoreForGatewayCore");
       const parse = JSON.parse;
       let unrelatedDecodes = 0;
@@ -259,23 +266,23 @@ describe("session member picker identities", () => {
         );
       }
       replaceSessionEntrySync(
-        { agentId: "main", sessionKey: "global" },
-        { sessionId: "sentinel-without-creator", updatedAt: 1 },
+        { agentId: "main", sessionKey: "agent:main:global" },
+        { sessionId: "main-global-without-creator", updatedAt: 1 },
       );
       replaceSessionEntrySync(
-        { agentId: "research", sessionKey: "global" },
+        { agentId: "research", sessionKey: "agent:research:global" },
         {
-          sessionId: "sentinel-next",
+          sessionId: "research-global",
           updatedAt: 1,
           createdActor: { type: "agent", id: "next-creator" },
         },
       );
-      expect((await list()).some((identity) => identity.id === "next-creator")).toBe(false);
+      expect(await list()).toContainEqual({ type: "agent", id: "next-creator" });
       await deleteSessionEntryLifecycle({
         agentId: "main",
         storePath: resolveSessionStorePathCore(undefined, { agentId: "main" }),
         archiveTranscript: false,
-        target: { canonicalKey: "global", storeKeys: ["global"] },
+        target: { canonicalKey: "agent:main:global", storeKeys: ["agent:main:global"] },
       });
       expect(await list()).toContainEqual({ type: "agent", id: "next-creator" });
     });

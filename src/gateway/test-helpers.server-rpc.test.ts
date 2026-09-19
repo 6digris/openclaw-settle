@@ -167,11 +167,7 @@ describe("Gateway RPC fixture session writes", () => {
               assertAllowed: () => {},
             })
           : await retainGatewayEvent();
-      // Resolve this fixture's canonical path before the continuation runs, so the
-      // release must retain its selector across a real event-loop turn.
-      const realpath = vi.spyOn(fs, "realpath").mockResolvedValueOnce(dir);
       const releasing = releaseSessionTestDirectories([dir]);
-      realpath.mockRestore();
       try {
         await yieldToEventLoop();
         expect(testState.sessionStorePath).toBe(storePath);
@@ -194,7 +190,7 @@ describe("Gateway RPC fixture session writes", () => {
     },
   );
 
-  test.each(["raw WebSocket", "rpcReq", "fixture release"])(
+  test.each(["raw WebSocket", "rpcReq", "fixture release", "message directory release"])(
     "%s preserves queued session writes",
     async (request) => {
       const dir = await fs.realpath(
@@ -259,7 +255,11 @@ describe("Gateway RPC fixture session writes", () => {
           // Schedule after closing the handle: disposal must join work that has not reopened it yet.
           startSessionTranscriptIndexReconcile(options);
           try {
-            await releaseGatewaySessionStoreFixture(releasedDir);
+            if (request === "message directory release") {
+              await releaseSessionTestDirectories([releasedDir]);
+            } else {
+              await releaseGatewaySessionStoreFixture(releasedDir);
+            }
             expect(
               withOpenClawAgentDatabaseReadOnly(
                 ({ db }) => listSessionsNeedingTranscriptIndexReconcile(db),

@@ -34,7 +34,7 @@ describe("resolveCronAgentSessionKey", () => {
     ).toBe("agent:ops:work");
   });
 
-  it("canonicalizes agent:id:main alias to configured mainKey (#29683)", () => {
+  it("keeps qualified main identity when the configured mainKey changes", () => {
     const cfg = { session: { mainKey: "work" } };
     expect(
       resolveCronAgentSessionKey({
@@ -43,7 +43,17 @@ describe("resolveCronAgentSessionKey", () => {
         mainKey: "work",
         cfg,
       }),
-    ).toBe("agent:ops:work");
+    ).toBe("agent:ops:main");
+  });
+
+  it("resolves bare main in global scope without moving an existing qualified session", () => {
+    const cfg = { session: { scope: "global" as const, mainKey: "work" } };
+    expect(resolveCronAgentSessionKey({ sessionKey: "main", agentId: "ops", cfg })).toBe(
+      "agent:ops:global",
+    );
+    expect(resolveCronAgentSessionKey({ sessionKey: "agent:ops:main", agentId: "ops", cfg })).toBe(
+      "agent:ops:main",
+    );
   });
 
   it("does not change non-alias keys when cfg is provided", () => {

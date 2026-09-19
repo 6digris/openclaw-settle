@@ -40,15 +40,11 @@ import {
   ApnsRegistrationPairingChangedError as DefaultApnsRegistrationPairingChangedError,
   registerApnsRegistration as defaultRegisterApnsRegistration,
 } from "../infra/push-apns.js";
-import { withSystemEventOwner as defaultWithSystemEventOwner } from "../infra/system-event-ownership.js";
 import { enqueueSystemEvent as defaultEnqueueSystemEvent } from "../infra/system-events.js";
 import type { PromptImageOrderEntry } from "../media/prompt-image-order.js";
 import { deleteMediaBuffer } from "../media/store.js";
 import { runWithGatewayIndependentRootWorkContinuation } from "../process/gateway-work-admission.js";
-import {
-  isUnscopedSessionKeySentinel,
-  normalizeMainKey as defaultNormalizeMainKey,
-} from "../routing/session-key.js";
+import { normalizeMainKey as defaultNormalizeMainKey } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 import { resolveAgentHarnessSessionContextError } from "../sessions/agent-harness-session-key.js";
 import { NODE_HOST_STATS_EVENT } from "../shared/node-host-stats.js";
@@ -103,7 +99,6 @@ function resolveDefaultServerNodeEventDependencies() {
     sendDurableMessageBatchCore,
     updatePairedDevicePresence: defaultUpdatePairedDevicePresence,
     upsertSessionEntryCore,
-    withSystemEventOwner: defaultWithSystemEventOwner,
   };
 }
 
@@ -604,7 +599,6 @@ export const handleNodeEvent = async (
     resolveSessionModelRef,
     resolveSystemMainSessionTarget,
     updatePairedDevicePresence,
-    withSystemEventOwner,
   } = dependencies;
   if (!(await isNodeEventConnectionCurrent(opts))) {
     return pairingChangedResult(evt.event);
@@ -1021,10 +1015,10 @@ export const handleNodeEvent = async (
         }
       }
 
-      const queued = enqueueSystemEvent(
-        summary,
-        withSystemEventOwner({ sessionKey, contextKey: `notification:${keyRaw}` }, agentId),
-      );
+      const queued = enqueueSystemEvent(summary, {
+        sessionKey,
+        contextKey: `notification:${keyRaw}`,
+      });
       if (queued) {
         requestHeartbeat({
           source: "notifications-event",
@@ -1063,8 +1057,6 @@ export const handleNodeEvent = async (
         return undefined;
       }
       const sessionKeyRaw = normalizeOptionalString(obj.sessionKey) ?? `node-${nodeId}`;
-      const { canonicalKey: sessionKey, agentId } = loadSessionEntry(sessionKeyRaw);
-
       const cfg = getRuntimeConfig();
       const runId = normalizeOptionalString(obj.runId) ?? "";
       if (
@@ -1096,6 +1088,7 @@ export const handleNodeEvent = async (
       if (evt.event === "exec.denied") {
         return undefined;
       }
+      const { canonicalKey: sessionKey } = loadSessionEntry(sessionKeyRaw);
       const command = normalizeOptionalString(obj.command) ?? "";
       const exitCode =
         typeof obj.exitCode === "number" && Number.isFinite(obj.exitCode)
@@ -1103,7 +1096,6 @@ export const handleNodeEvent = async (
           : undefined;
       const timedOut = obj.timedOut === true;
       const output = normalizeOptionalString(obj.output) ?? "";
-
       let text;
       if (evt.event === "exec.started") {
         text = `Exec started (node=${nodeId}${runId ? ` id=${runId}` : ""})`;
@@ -1134,18 +1126,11 @@ export const handleNodeEvent = async (
       }
 
       const eventRouting = resolveEventSessionRoutingPolicy({ cfg, sessionKey });
-      const queued = enqueueSystemEvent(
-        text,
-        withSystemEventOwner(
-          {
-            sessionKey: resolveEventSessionKeyForPolicy(sessionKey, eventRouting),
-            contextKey: runId ? `exec:${runId}` : "exec",
-          },
-          agentId,
-        ),
-      );
+      const queued = enqueueSystemEvent(text, {
+        sessionKey: resolveEventSessionKeyForPolicy(sessionKey, eventRouting),
+        contextKey: runId ? `exec:${runId}` : "exec",
+      });
       if (queued) {
-        // Global keys retain the loaded owner; synthetic node-* keys keep unscoped wakes.
         requestHeartbeat(
           scopedHeartbeatWakeOptionsForPolicy(
             sessionKey,
@@ -1154,7 +1139,6 @@ export const handleNodeEvent = async (
               intent: "event",
               reason: "exec-event",
               coalesceMs: 0,
-              ...(isUnscopedSessionKeySentinel(sessionKey) ? { agentId } : {}),
             },
             eventRouting,
           ),

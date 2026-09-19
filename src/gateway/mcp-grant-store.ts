@@ -20,6 +20,7 @@ import type { CronScheduledToolCallerOrigin } from "../cron/scheduled-tool-polic
 import type { AgentRunDelegatedAuthority } from "../infra/agent-run-registry.js";
 import type { ExecMode } from "../infra/exec-approvals.js";
 import type { PluginHookChannelContext } from "../plugins/hook-types.js";
+import { parseAgentSessionKey } from "../routing/session-key.js";
 import { resolveGlobalMap } from "../shared/global-singleton.js";
 import type { SkillLibraryAuthoringCapability } from "../skills/library/authoring.js";
 import type { SkillWorkshopRunOptions } from "../skills/workshop/types.js";
@@ -103,8 +104,6 @@ interface McpAttachGrant {
   readonly token: string;
   /** The openclaw session this grant is bound to; tool scope is resolved for this key. */
   readonly sessionKey: string;
-  /** Explicit agent owner for canonical global sessions, whose key cannot encode one. */
-  readonly agentId?: string;
   /** Absolute expiry (ms epoch). */
   readonly expiresAtMs: number;
   /** Absolute mint time (ms epoch). */
@@ -183,22 +182,19 @@ function clampTtlMs(ttlMs: number | undefined): number {
 
 export function mintAttachGrant(params: {
   sessionKey: string;
-  agentId?: string;
   ttlMs?: number;
   nowMs?: number;
 }): McpAttachGrant {
-  const sessionKey = params.sessionKey?.trim() ?? "";
-  if (!sessionKey) {
-    throw new Error("mintAttachGrant: sessionKey is required");
+  const sessionKey = params.sessionKey.trim();
+  if (!parseAgentSessionKey(sessionKey)) {
+    throw new Error("mintAttachGrant: an agent-qualified sessionKey is required");
   }
-  const agentId = sessionKey === "global" ? params.agentId?.trim() || undefined : undefined;
   const nowMs = params.nowMs ?? Date.now();
   // Mint sweeps stale entries so abandoned grants do not accumulate.
   sweepExpiredAttachGrants(nowMs);
   const grant: McpAttachGrant = {
     token: crypto.randomBytes(32).toString("hex"),
     sessionKey,
-    ...(agentId ? { agentId } : {}),
     issuedAtMs: nowMs,
     expiresAtMs: nowMs + clampTtlMs(params.ttlMs),
   };

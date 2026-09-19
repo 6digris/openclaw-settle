@@ -1,12 +1,10 @@
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 // Shared sessions.changed broadcaster for gateway RPC and chat-command mutations.
-import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { bumpGatewayAccessRevision } from "../gateway-access-revision.js";
 import { hasSessionChangeReceivers } from "../session-change-receivers.js";
 import { buildGatewaySessionSnapshot } from "../session-event-payload.js";
 import {
-  resolvePrivateSessionEventBroadcastScope,
   resolveSessionEventAgentScope,
   type SessionEventAgentScope,
 } from "../session-request-agent.js";
@@ -53,15 +51,12 @@ const pendingChangesByContext = new WeakMap<object, Map<string, PendingSessionCh
 const pendingSessionChanges = new Set<PendingSessionChange>();
 
 function sessionChangeKey(payload: SessionChangedPayload, scope: SessionEventAgentScope | null) {
-  return `${scope?.[1] ?? payload.agentId ?? ""}\0${payload.sessionKey ?? ""}`;
+  return scope?.sessionKey ?? `${payload.agentId ?? ""}\0`;
 }
 
 function snapshotTarget(payload: SessionChangedPayload, scope: SessionEventAgentScope | null) {
-  return payload.reason !== "delete" &&
-    payload.sessionKey &&
-    scope?.[1] &&
-    (scope[0] || scope[2] || parseAgentSessionKey(payload.sessionKey))
-    ? { key: payload.sessionKey, agentId: scope[1] }
+  return payload.reason !== "delete" && payload.sessionKey && scope
+    ? { key: scope.sessionKey, agentId: scope.agentId }
     : undefined;
 }
 
@@ -74,20 +69,20 @@ function broadcastSessionsChanged(
   if (!hasSessionChangeReceivers(connIds)) {
     return;
   }
-  if (scope === null) {
+  if (payload.sessionKey && scope === null) {
     return;
   }
-  const [eventAgentId, routingAgentId, compatibilityOwnerAgentId] = scope;
-  const privateBroadcastScope = resolvePrivateSessionEventBroadcastScope(payload.sessionKey, scope);
-  const broadcastAgentId = routingAgentId;
   const broadcastOptions = {
-    ...(broadcastAgentId ? { agentId: broadcastAgentId } : {}),
-    ...privateBroadcastScope,
+    ...(scope
+      ? { agentId: scope.agentId, sessionKeys: [scope.sessionKey] }
+      : payload.agentId
+        ? { agentId: payload.agentId }
+        : {}),
     dropIfSlow: true,
   };
   const eventPayload = {
     ...payload,
-    ...(eventAgentId ? { agentId: eventAgentId } : {}),
+    ...scope,
     ts: Date.now(),
   };
   // A deletion describes the removed generation, never the row now occupying its key.
@@ -100,18 +95,16 @@ function broadcastSessionsChanged(
   const currentRow = projection?.snapshot(query).row;
   const sessionRow =
     payload.sessionId && payload.sessionId !== currentRow?.sessionId ? null : currentRow;
-  const activeRunState =
-    sessionRow && (sessionRow.key !== "global" || routingAgentId !== undefined)
-      ? resolveVisibleActiveSessionRunState({
-          context,
-          requestedKey: payload.sessionKey ?? sessionRow.key,
-          canonicalKey: sessionRow.key,
-          sessionId: sessionRow.sessionId,
-          agentId: routingAgentId,
-          defaultAgentId: compatibilityOwnerAgentId,
-          projectedAgentRunIndex: projection?.state.rowContext.projectedAgentRuns,
-        })
-      : null;
+  const activeRunState = sessionRow
+    ? resolveVisibleActiveSessionRunState({
+        context,
+        requestedKey: payload.sessionKey ?? sessionRow.key,
+        canonicalKey: sessionRow.key,
+        sessionId: sessionRow.sessionId,
+        agentId: scope?.agentId,
+        projectedAgentRunIndex: projection?.state.rowContext.projectedAgentRuns,
+      })
+    : null;
   context.broadcastToConnIds(
     "sessions.changed",
     {
@@ -121,7 +114,7 @@ function broadcastSessionsChanged(
             ...buildGatewaySessionSnapshot({
               sessionRow,
               includeSession: true,
-              agentId: eventAgentId,
+              agentId: scope?.agentId,
               activeRunState,
             }),
             ...(context.workerSessionPlacementService
@@ -202,9 +195,16 @@ export async function flushPendingSessionsChangedEvents(context?: object): Promi
 
 export function emitSessionsChanged(
   context: SessionChangeContext,
-  payload: SessionChangedPayload,
+  change: SessionChangedPayload,
   options: { accessChanged?: boolean; preparedPublication?: boolean; catalogOnly?: boolean } = {},
 ): void {
+  const scope = change.sessionKey
+    ? resolveSessionEventAgentScope(context.getRuntimeConfig(), change.sessionKey, change.agentId)
+    : null;
+  if (change.sessionKey && !scope) {
+    return;
+  }
+  const payload = { ...change, ...scope };
   // Catalog absorption changes no session facts. Rename/delete callers retain
   // normal invalidation because their sweeps can have committed member changes.
   const catalogOnly = options.catalogOnly && payload.reason === "groups" && !payload.sessionKey;
@@ -231,9 +231,6 @@ export function emitSessionsChanged(
   if (!hasSessionChangeReceivers(connIds)) {
     return;
   }
-  const scope: SessionEventAgentScope | null = payload.sessionKey
-    ? resolveSessionEventAgentScope(context.getRuntimeConfig(), payload.sessionKey, payload.agentId)
-    : [payload.agentId, payload.agentId, undefined];
   if (options.preparedPublication) {
     return broadcastSessionsChanged(context, payload, scope);
   }

@@ -1,7 +1,6 @@
 import crypto from "node:crypto";
 import type { SessionEntry } from "../../config/sessions.js";
 import { updateSessionEntry } from "../../config/sessions/session-accessor.js";
-import { withSystemEventOwner } from "../../infra/system-event-ownership.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { sessionDeliveryChannel } from "../../utils/delivery-context.shared.js";
 import { DEFAULT_HEARTBEAT_ACK_MAX_CHARS, stripHeartbeatToken } from "../heartbeat.js";
@@ -99,10 +98,7 @@ export async function completeReplyAgentRun(input: {
         agentId: followupRun.run.agentId,
       });
       if (contextContent) {
-        enqueueSystemEvent(
-          contextContent,
-          withSystemEventOwner({ sessionKey }, followupRun.run.agentId),
-        );
+        enqueueSystemEvent(contextContent, { sessionKey });
       }
     }
 

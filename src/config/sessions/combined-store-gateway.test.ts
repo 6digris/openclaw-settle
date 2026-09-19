@@ -5,6 +5,7 @@ import {
   createSessionRowProjection,
   type SessionRowProjection,
 } from "../../gateway/session-row-projection.js";
+import { resolveSessionStoreKey } from "../../gateway/session-store-key.js";
 import { listProjectedSessions } from "../../gateway/session-utils-list.js";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import {
@@ -26,7 +27,6 @@ import {
   persistSessionTranscriptTurn,
   replaceSessionEntrySync,
 } from "./session-accessor.js";
-import { setCanonicalSqliteSessionMainKey } from "./session-canonical-key.js";
 
 async function withResidentRows(
   cfg: OpenClawConfig,
@@ -167,15 +167,20 @@ it.each(["global", "unknown"])("projects the recorded aggregate %s owner", async
       { sessionId: "research-only", updatedAt: 42 },
     );
     const combined = loadCombinedSessionStoreForGatewayCore(cfg);
-    expect(combined.targetsBySessionKey.get(sessionKey)?.agentId).toBe("research");
+    expect(combined.targetsBySessionKey.get(`agent:research:${sessionKey}`)?.agentId).toBe(
+      "research",
+    );
     await withResidentRows(cfg, async (projection) => {
       const opts = { includeGlobal: true, includeUnknown: true };
       const result = await listProjectedSessions({ projection, opts });
-      expect
-        .soft(result.sessions)
-        .toMatchObject([
-          { key: sessionKey, sessionId: "research-only", agentId: "research", model: "gpt-5.5" },
-        ]);
+      expect.soft(result.sessions).toMatchObject([
+        {
+          key: `agent:research:${sessionKey}`,
+          sessionId: "research-only",
+          agentId: "research",
+          model: "gpt-5.5",
+        },
+      ]);
       const searched = await listProjectedSessions({
         projection,
         opts: { ...opts, search: "gpt-5.5" },
@@ -209,7 +214,7 @@ it("projects shared rows under their logical owner while retaining the physical 
       );
     }
     await persistSessionTranscriptTurn(
-      { agentId: "main", storePath, sessionKey: "global", sessionId: "session-global" },
+      { agentId: "ops", storePath, sessionKey: "agent:ops:global", sessionId: "session-global" },
       {
         messages: [{ message: { role: "user", content: "Shared physical global preview" } }],
         touchSessionEntry: false,
@@ -220,7 +225,7 @@ it("projects shared rows under their logical owner while retaining the physical 
       await vi.waitFor(() =>
         expect(
           projection.snapshot(
-            { key: "global", agentId: "ops", storePath },
+            { key: "agent:ops:global", agentId: "ops", storePath },
             { includeDerivedTitles: true, includeLastMessage: true },
           ).row,
         ).toMatchObject({
@@ -243,15 +248,11 @@ it("projects shared rows under their logical owner while retaining the physical 
             [...combined.targetsBySessionKey].map(([key, target]) => [key, target.agentId]),
           ),
         ).toEqual({
-          global: "ops",
-          unknown: "ops",
+          "agent:ops:global": "ops",
+          "agent:ops:unknown": "ops",
           "agent:worker:task": "worker",
         });
 
-        const ownerPreserving = loadCombinedSessionStoreForGatewayCore(cfg, {
-          configuredAgentsOnly,
-          preserveSentinelOwners: true,
-        });
         const listed = await listProjectedSessions({
           projection,
           opts: {
@@ -276,19 +277,14 @@ it("projects shared rows under their logical owner while retaining the physical 
           expect.objectContaining({ kind: "unknown", agentId: "ops" }),
         );
         const globalRow = listed.sessions.find((row) => row.kind === "global")!;
-        expect(
-          [...ownerPreserving.targetsBySessionKey.values()].find(
-            (target) => target.storeKey === globalRow.key && target.agentId === globalRow.agentId,
-          ),
-        ).toMatchObject({
+        expect(combined.targetsBySessionKey.get(globalRow.key)).toMatchObject({
           agentId: "ops",
-          storeKey: "global",
           storeTarget: { agentId: "main", storePath },
         });
       }
       for (const [agentId, keys] of [
         ["main", []],
-        ["ops", ["global", "unknown"]],
+        ["ops", ["agent:ops:global", "agent:ops:unknown"]],
         ["worker", ["agent:worker:task"]],
       ] as const) {
         const combined = loadCombinedSessionStoreForGatewayCore(cfg, { agentId });
@@ -317,8 +313,8 @@ it("keeps fixed-store ownership out of separate registered and suffixed database
     }
     for (const agentId of ["main", "ops"]) {
       const combined = loadCombinedSessionStoreForGatewayCore(cfg, { agentId });
-      expect(combined.store.global?.sessionId).toBe(`global-${agentId}`);
-      expect(combined.targetsBySessionKey.get("global")?.agentId).toBe(agentId);
+      expect(combined.store[`agent:${agentId}:global`]?.sessionId).toBe(`global-${agentId}`);
+      expect(combined.targetsBySessionKey.get(`agent:${agentId}:global`)?.agentId).toBe(agentId);
     }
 
     const registeredPath = state.statePath("separate.sqlite");
@@ -327,8 +323,8 @@ it("keeps fixed-store ownership out of separate registered and suffixed database
       { sessionId: "separate-main", updatedAt: 1 },
     );
     const combined = loadCombinedSessionStoreForGatewayCore(cfg, { configuredAgentsOnly: true });
-    expect(combined.store.unknown?.sessionId).toBe("separate-main");
-    expect(combined.targetsBySessionKey.get("unknown")).toMatchObject({
+    expect(combined.store["agent:main:unknown"]?.sessionId).toBe("separate-main");
+    expect(combined.targetsBySessionKey.get("agent:main:unknown")).toMatchObject({
       agentId: "main",
       storeTarget: { agentId: "main", storePath: registeredPath },
     });
@@ -336,20 +332,30 @@ it("keeps fixed-store ownership out of separate registered and suffixed database
 });
 
 it.each([
-  { name: "physical sentinel", parent: "global", model: "qwen3:14b", source: "inherited" },
   {
-    name: "qualified main alias",
-    parent: "agent:main:main",
-    model: "qwen3:8b",
+    name: "same-agent global parent",
+    parent: "agent:work:global",
+    model: "qwen3:14b",
     source: "inherited",
   },
   {
-    name: "literal scoped sentinel",
-    parent: "agent:main:global",
+    name: "qualified main parent",
+    parent: "agent:main:main",
+    model: "qwen3:4b",
+    source: "inherited",
+  },
+  {
+    name: "separate qualified parent",
+    parent: "agent:main:separate",
     model: "qwen3:32b",
     source: "inherited",
   },
-  { name: "missing physical parent", parent: "global", model: "llama3.1:8b", source: null },
+  {
+    name: "missing same-agent parent",
+    parent: "agent:work:global",
+    model: "llama3.1:8b",
+    source: null,
+  },
   {
     name: "missing qualified parent",
     parent: "agent:main:dashboard:missing",
@@ -368,11 +374,12 @@ it.each([
         },
       };
       const parents: Array<[string, string, string]> = [
-        ["main", "global", "qwen3:8b"],
-        ["main", "agent:main:global", "qwen3:32b"],
+        ["main", "agent:main:global", "qwen3:8b"],
+        ["main", "agent:main:main", "qwen3:4b"],
+        ["main", "agent:main:separate", "qwen3:32b"],
       ];
-      if (name !== "missing physical parent") {
-        parents.push(["work", "global", "qwen3:14b"]);
+      if (name !== "missing same-agent parent") {
+        parents.push(["work", "agent:work:global", "qwen3:14b"]);
       }
       for (const [agentId, sessionKey, selectedModel] of parents) {
         replaceSessionEntrySync(
@@ -390,7 +397,11 @@ it.each([
       const key = "agent:work:dashboard:child";
       replaceSessionEntrySync(
         { agentId: "work", sessionKey: key },
-        { sessionId: "child", updatedAt: 2, parentSessionKey: parent },
+        {
+          sessionId: "child",
+          updatedAt: 2,
+          parentSessionKey: resolveSessionStoreKey({ cfg, sessionKey: parent }),
+        },
       );
       await withResidentRows(cfg, async (projection) => {
         for (const opts of [{}, { agentId: "work" }]) {
@@ -400,7 +411,7 @@ it.each([
             modelProvider: "ollama",
             model,
             modelOverrideSource: source,
-            parentSessionKey: parent === "agent:main:main" ? "global" : parent,
+            parentSessionKey: parent,
           });
           const searched = await listProjectedSessions({
             projection,
@@ -413,7 +424,7 @@ it.each([
   },
 );
 
-it("reads a raw parent from the child's captured shared physical store", async () => {
+it("reads a qualified parent from the child's captured shared physical store", async () => {
   await withOpenClawTestState({ label: "combined-shared-parent-model" }, async (state) => {
     const storePath = state.statePath("shared.sqlite");
     const cfg: OpenClawConfig = {
@@ -439,7 +450,7 @@ it("reads a raw parent from the child's captured shared physical store", async (
     const key = "agent:work:dashboard:shared-child";
     replaceSessionEntrySync(
       { agentId: "work", sessionKey: key, storePath },
-      { sessionId: "shared-child", updatedAt: 2, parentSessionKey: "global" },
+      { sessionId: "shared-child", updatedAt: 2, parentSessionKey: "agent:ops:global" },
     );
     const combined = loadCombinedSessionStoreForGatewayCore(cfg);
     expect(combined.targetsBySessionKey.get(key)?.storeTarget).toEqual({
@@ -510,21 +521,21 @@ it.for([false, true])(
           expect(combined.store["agent:main:main"]?.sessionId).toBe("retired-main");
           expect(combined.targetsBySessionKey.get("agent:main:main")?.agentId).toBe("main");
         }
-        expect(combined.targetsBySessionKey.get("global")?.agentId).toBe("ops");
-        expect(combined.store.global).toMatchObject({
+        expect(combined.targetsBySessionKey.get("agent:ops:global")?.agentId).toBe("ops");
+        expect(combined.store["agent:ops:global"]).toMatchObject({
           parentSessionKey: "agent:main:main",
           spawnedBy: "agent:main:main",
         });
       }
       expect(loadCombinedSessionStoreForGatewayCore(cfg, { agentId: "ops" }).store).toEqual({
-        global: expect.objectContaining({ sessionId: "ops-global" }),
+        "agent:ops:global": expect.objectContaining({ sessionId: "ops-global" }),
       });
     });
   },
 );
 
 it.for(["main", "unknown", "global"])(
-  "resolves global lineage aliases without folding sentinels (mainKey=%s)",
+  "keeps qualified global and unknown lineage distinct (mainKey=%s)",
   async (mainKey) => {
     await withOpenClawTestState({ label: "combined-store-global-lineage" }, async (state) => {
       const storePath = state.statePath("shared.sqlite");
@@ -537,7 +548,7 @@ it.for(["main", "unknown", "global"])(
         session: { scope: "global", mainKey, store: storePath },
       };
       const database = openOpenClawAgentDatabase({ agentId: "main", path: storePath });
-      setCanonicalSqliteSessionMainKey(database, mainKey);
+      database.db.prepare("UPDATE session_key_contract SET main_key = ? WHERE id = 1").run(mainKey);
       for (const sessionKey of ["global", "unknown"]) {
         replaceSessionEntrySync(
           { agentId: "ops", sessionKey, storePath },
@@ -545,9 +556,9 @@ it.for(["main", "unknown", "global"])(
         );
       }
       for (const [name, parentSessionKey, parentSessionId] of [
-        ["alias", `agent:ops:${mainKey}`, "parent-global"],
-        ["global", "global", "parent-global"],
-        ["unknown", "unknown", "parent-unknown"],
+        ["alias", "agent:ops:global", "parent-global"],
+        ["global", "agent:ops:global", "parent-global"],
+        ["unknown", "agent:ops:unknown", "parent-unknown"],
       ] as const) {
         replaceSessionEntrySync(
           { agentId: "worker", sessionKey: `agent:worker:subagent:${name}`, storePath },
@@ -563,8 +574,8 @@ it.for(["main", "unknown", "global"])(
       }
       await withResidentRows(cfg, async (projection) => {
         for (const [spawnedBy, children] of [
-          ["global", ["alias", "global"]],
-          ["unknown", ["unknown"]],
+          ["agent:ops:global", ["alias", "global"]],
+          ["agent:ops:unknown", ["unknown"]],
         ] as const) {
           const selected = await listProjectedSessions({
             projection,
@@ -642,17 +653,17 @@ it.skipIf(process.platform === "win32")(
       );
       for (const configuredAgentsOnly of [false, true, true]) {
         const combined = loadCombinedSessionStoreForGatewayCore(cfg, { configuredAgentsOnly });
-        expect(combined.store.unknown?.sessionId).toBe("worker-unknown");
-        expect(combined.targetsBySessionKey.get("unknown")?.agentId).toBe("worker");
-        expect(combined.store.global?.sessionId).toBe("main-global");
-        expect(combined.targetsBySessionKey.get("global")?.agentId).toBe("main");
+        expect(combined.store["agent:worker:unknown"]?.sessionId).toBe("worker-unknown");
+        expect(combined.targetsBySessionKey.get("agent:worker:unknown")?.agentId).toBe("worker");
+        expect(combined.store["agent:main:global"]?.sessionId).toBe("main-global");
+        expect(combined.targetsBySessionKey.get("agent:main:global")?.agentId).toBe("main");
       }
       const scoped = loadCombinedSessionStoreForGatewayCore(cfg, { agentId: "worker" });
-      expect(scoped.targetsBySessionKey.get("unknown")?.agentId).toBe("worker");
+      expect(scoped.targetsBySessionKey.get("agent:worker:unknown")?.agentId).toBe("worker");
       expect(loadCombinedSessionStoreForGatewayCore(cfg, { agentId: "ops" }).store).toEqual({});
       expect(
         loadCombinedSessionStoreForGatewayCore(cfg, { agentId: "main" }).targetsBySessionKey.get(
-          "global",
+          "agent:main:global",
         )?.agentId,
       ).toBe("main");
     });

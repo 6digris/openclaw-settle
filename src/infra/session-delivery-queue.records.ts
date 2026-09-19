@@ -1,6 +1,11 @@
 import type { ReplyMediaAttachment } from "../auto-reply/reply-payload.js";
 import type { SourceReplyDeliveryMode } from "../auto-reply/source-reply-delivery-mode.types.js";
 import type { ChatType } from "../channels/chat-type.js";
+import {
+  isUnscopedSessionKeySentinel,
+  parseAgentSessionKey,
+  scopeLegacySessionKeyToAgent,
+} from "../routing/session-key.js";
 import type { InputProvenance } from "../sessions/input-provenance.js";
 import { sha256Hex } from "./crypto-digest.js";
 import type { DeliveryQueueCompletionRetention } from "./delivery-queue-sqlite.types.js";
@@ -85,6 +90,39 @@ export type QueuedSessionDelivery = QueuedSessionDeliveryPayload & {
   availableAt?: number;
   retainOnFailure?: true;
 };
+
+/** Resolve only identity carried by the delivery; current Home configuration is not evidence. */
+export function resolveSessionDeliveryTarget(
+  entry: QueuedSessionDeliveryPayload,
+): string | undefined {
+  const key =
+    entry.kind === "systemEvent" && isUnscopedSessionKeySentinel(entry.sessionKey)
+      ? scopeLegacySessionKeyToAgent(entry)
+      : entry.sessionKey;
+  return parseAgentSessionKey(key) ? key : undefined;
+}
+
+export function resolveSessionDeliverySettlementOutcome(
+  entry: QueuedSessionDelivery,
+): SessionDeliverySettledOutcome | undefined {
+  return entry.settlementOutcome ?? (entry.acknowledgedAt !== undefined ? "recovered" : undefined);
+}
+
+/** Missing historical identity is permanent only before execution or producer settlement owns it. */
+export function resolveSessionDeliveryIdentityBlock(
+  entry: QueuedSessionDelivery,
+): string | undefined {
+  if (
+    resolveSessionDeliverySettlementOutcome(entry) ||
+    entry.deliveryStartedAt !== undefined ||
+    (entry.kind === "agentTurn" &&
+      (entry.owner?.kind === "subagent_completion" || Boolean(entry.expectedSessionId?.trim()))) ||
+    resolveSessionDeliveryTarget(entry)
+  ) {
+    return undefined;
+  }
+  return "Legacy session delivery has no recorded exact target. Review the retained message and send a new message to an explicit agent-qualified session; do not replay this row.";
+}
 
 export function prepareClaimedSessionDelivery(
   params: QueuedSessionDeliveryPayload,

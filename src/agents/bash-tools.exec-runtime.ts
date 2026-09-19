@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { canonicalizeMainSessionAlias } from "../config/sessions/main-session.js";
 import { emitDiagnosticEventWithTrustedTraceContext } from "../infra/diagnostic-events.js";
 import { recordDiagnosticToolExecutionDeadline } from "../infra/diagnostic-tool-execution-liveness.js";
 import { formatErrorMessage } from "../infra/errors.js";
@@ -19,13 +20,13 @@ import {
 } from "../infra/exec-approvals.js";
 import { requestHeartbeat } from "../infra/heartbeat-wake.js";
 import { findPathKey, mergePathPrepend } from "../infra/path-prepend.js";
-import { withSystemEventOwner } from "../infra/system-event-ownership.js";
 import { enqueueSystemEventWithReceipt } from "../infra/system-events.js";
 import { logWarn } from "../logger.js";
 import { redactToolPayloadText } from "../logging/redact.js";
 import type { ManagedRun } from "../process/supervisor/index.js";
 import { getProcessSupervisor } from "../process/supervisor/index.js";
 import type { RunExit, SpawnInput, TerminationReason } from "../process/supervisor/types.js";
+import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import type {
   SecretEgressProcessGrant,
   SecretEgressSentinelBinding,
@@ -372,22 +373,15 @@ function maybeNotifyOnExit(session: ProcessSession, status: "completed" | "faile
   ) {
     return;
   }
-  const summary = output
-    ? `Exec ${status} (${session.id.slice(0, 8)}, ${exitLabel}) :: ${output}`
-    : `Exec ${status} (${session.id.slice(0, 8)}, ${exitLabel})`;
+  const summary = `Exec ${status} (${session.id.slice(0, 8)}, ${exitLabel})${output ? ` :: ${output}` : ""}`;
   const eventText = appendExecTimeoutRetryGuidance(summary, session.exitReason);
   const eventRouting = session.eventRouting ?? {};
-  const eventSessionKey = resolveEventSessionKeyForPolicy(sessionKey, eventRouting);
   const eventOptions = {
-    sessionKey: eventSessionKey,
+    sessionKey: resolveEventSessionKeyForPolicy(sessionKey, eventRouting),
     contextKey: `exec:${session.id}`,
     deliveryContext: session.notifyDeliveryContext,
   };
-  const remove = enqueueSystemEventWithReceipt(
-    eventText,
-    session.agentId ? withSystemEventOwner(eventOptions, session.agentId) : eventOptions,
-    { allowDuplicate: true },
-  );
+  const remove = enqueueSystemEventWithReceipt(eventText, eventOptions, { allowDuplicate: true });
   if (remove) {
     recordNotifyOnExitRemoval(session, remove);
   }
@@ -404,11 +398,7 @@ function maybeNotifyOnExit(session: ProcessSession, status: "completed" | "faile
       },
       eventRouting,
     );
-    requestHeartbeat(
-      sessionKey === "global" && session.agentId
-        ? { ...wakeOptions, agentId: session.agentId }
-        : wakeOptions,
-    );
+    requestHeartbeat(wakeOptions);
   }
 }
 
@@ -653,6 +643,15 @@ export async function runExecProcess({
   /** Rechecks host policy at the supervisor's final synchronous spawn boundary. */
   assertCurrent?: () => void;
 }): Promise<ExecProcessHandle> {
+  const sessionKey = opts.sessionKey?.trim()
+    ? canonicalizeMainSessionAlias({
+        cfg: {
+          session: { scope: opts.eventRouting?.sessionScope, mainKey: opts.eventRouting?.mainKey },
+        },
+        agentId: resolveAgentIdFromSessionKey(opts.sessionKey, opts.agentId),
+        sessionKey: opts.sessionKey,
+      })
+    : undefined;
   let assertSourceActive: (() => void) | undefined =
     captureAgentToolSourceExecutionGuard(initialStartupSignal);
   const startedAt = Date.now();
@@ -669,7 +668,7 @@ export async function runExecProcess({
     id: sessionId,
     command: opts.command,
     scopeKey: opts.scopeKey,
-    sessionKey: opts.sessionKey,
+    sessionKey,
     cleanupMs: resolveProcessCleanupMs(opts.cleanupMs),
     agentId: opts.agentId,
     eventRouting: opts.eventRouting,
@@ -972,7 +971,7 @@ export async function runExecProcess({
       command: opts.command,
       mode: usingPty ? "pty" : "child",
       outcome,
-      sessionKey: opts.sessionKey,
+      sessionKey,
       target: diagnosticTarget,
     });
     throw error;
@@ -1015,7 +1014,7 @@ export async function runExecProcess({
         command: opts.command,
         mode: usingPty ? "pty" : "child",
         outcome: finalOutcome,
-        sessionKey: opts.sessionKey,
+        sessionKey,
         target: diagnosticTarget,
       });
       return finalOutcome;

@@ -278,6 +278,7 @@ export function formatDeliveryQueueHealthLine(
   now = Date.now(),
 ): string | null {
   const failed = summary.deliveryQueues?.failed ?? [];
+  const blocked = summary.deliveryQueues?.blocked ?? [];
   const ingressFailed = summary.deliveryQueues?.ingressFailed ?? [];
   const ingressPressure = summary.deliveryQueues?.ingressPressure ?? [];
   const warnings: string[] = [];
@@ -294,6 +295,11 @@ export function formatDeliveryQueueHealthLine(
     oldest.length > 0 ? `; oldest ${formatDurationHuman(now - Math.min(...oldest))} ago` : "";
   if (deadLetterCounts) {
     warnings.push(`dead-lettered entries — ${deadLetterCounts}${oldestNote}`);
+  }
+  for (const queue of blocked) {
+    warnings.push(
+      `blocked pending deliveries — ${queue.queueName}: ${queue.count}; ${queue.reason}`,
+    );
   }
   if (ingressPressure.length > 0) {
     const pressureCounts = ingressPressure

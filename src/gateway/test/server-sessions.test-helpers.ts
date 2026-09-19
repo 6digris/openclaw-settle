@@ -419,14 +419,14 @@ function createGatewaySessionsTestHarness(startServer: boolean, setup?: GatewayS
     await gatewayTestHelpers.writeSessionStore({
       agentId: "main",
       entries: {
-        global: sessionStoreEntry("sess-main-global"),
+        "agent:main:global": sessionStoreEntry("sess-main-global"),
       },
       storePath: mainStorePath,
     });
     await gatewayTestHelpers.writeSessionStore({
       agentId: "work",
       entries: {
-        global: sessionStoreEntry("sess-work-global", {
+        "agent:work:global": sessionStoreEntry("sess-work-global", {
           authProfileOverride: "github-copilot:work",
         }),
       },
@@ -437,14 +437,14 @@ function createGatewaySessionsTestHarness(startServer: boolean, setup?: GatewayS
         agentId: "main",
         contents: ["main one", "main two"],
         sessionId: "sess-main-global",
-        sessionKey: "global",
+        sessionKey: "agent:main:global",
         storePath: mainStorePath,
       });
       await seedLinearSessionTranscript({
         agentId: "work",
         contents: ["work one", "work two"],
         sessionId: "sess-work-global",
-        sessionKey: "global",
+        sessionKey: "agent:work:global",
         storePath: workStorePath,
       });
     }

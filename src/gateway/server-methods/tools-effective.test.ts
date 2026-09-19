@@ -80,7 +80,6 @@ const runtimeMocks = vi.hoisted(() => ({
       spawnedWorkspaceDir: undefined as string | undefined,
     },
     storeKeys: ["main:abc"],
-    legacyKey: undefined,
   })),
   peekSessionMcpRuntime: vi.fn<ToolsEffectiveDependencies["peekSessionMcpRuntime"]>(
     () => undefined,
@@ -370,7 +369,6 @@ describe("tools.effective handler", () => {
       cfg: {},
       canonicalKey: "missing-session",
       entry: undefined,
-      legacyKey: undefined,
       storePath: "/tmp/sessions.json",
     } as never);
     const { respond, invoke } = createInvokeParams({ sessionKey: "missing-session" });
@@ -599,7 +597,6 @@ describe("tools.effective handler", () => {
       store: {},
       canonicalKey: sessionKey,
       storeKeys: [sessionKey],
-      legacyKey: undefined,
       entry: {
         sessionId: "prepared-policy-session",
         updatedAt: 1,

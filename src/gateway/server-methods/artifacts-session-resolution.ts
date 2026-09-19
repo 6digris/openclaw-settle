@@ -23,6 +23,7 @@ import {
 } from "../session-sharing.js";
 import {
   resolveSessionStoreAgentId,
+  resolveSessionStoreKey,
   resolveStoredSessionKeyForAgentStore,
 } from "../session-store-key.js";
 import type { GatewayClient } from "./types.js";
@@ -83,9 +84,7 @@ function resolveScopedArtifactSessionKey(
     agentId: scopedAgentId,
     sessionKey: key,
   });
-  return scopedKey !== "global" &&
-    scopedKey !== "unknown" &&
-    resolveSessionStoreAgentId(cfg, scopedKey) !== normalizeAgentId(scopedAgentId)
+  return resolveSessionStoreAgentId(cfg, scopedKey) !== normalizeAgentId(scopedAgentId)
     ? undefined
     : scopedKey;
 }
@@ -95,7 +94,10 @@ function resolveQuerySession(
   cfg?: OpenClawConfig,
 ): ResolvedArtifactSession | undefined {
   if (query.sessionKey) {
-    const sessionKey = resolveScopedArtifactSessionKey(query.sessionKey, query.agentId, cfg);
+    const requestedKey = cfg
+      ? resolveSessionStoreKey({ cfg, sessionKey: query.sessionKey, storeAgentId: query.agentId })
+      : query.sessionKey;
+    const sessionKey = resolveScopedArtifactSessionKey(requestedKey, query.agentId, cfg);
     return sessionKey
       ? { sessionKey, ...(query.agentId ? { agentId: query.agentId } : {}) }
       : undefined;

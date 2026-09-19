@@ -29,11 +29,24 @@ DM channels, with group activity and background work flowing into it — see
 | Webhooks        | Isolated per hook             |
 
 With `session.scope: "global"`, the selected agent still owns its session.
-The shared key `global` does not merge different agents' conversations:
-commands, skills, replies, and background task notifications retain the
-agent selected by the route or explicit request.
-Session lists, model filters, previews, and sharing controls also retain the
-stored conversation's agent, rather than the aggregate view's default agent.
+Its canonical key is `agent:<agentId>:global`, so different agents have distinct
+conversation identities. Inputs such as `main`, `global`, and `unknown` resolve
+against the selected agent before work enters the session runtime. A bare alias
+without an unambiguous configured or recorded owner requires an explicit agent.
+
+For a fixed shared `session.store`, unqualified selectors resolve under the store's
+recorded owner. Passing a different `agentId` is rejected. To select another
+agent's conversation in the same file, use its fully qualified key, such as
+`agent:research:global`.
+
+Fully qualified keys identify exact conversations. Changing `session.scope`
+does not redirect `agent:ops:main`, for example. The bare `main` alias selects
+the agent's Home conversation: `agent:<id>:global` under global scope and
+`agent:<id>:main` otherwise. The retired `session.mainKey` setting is ignored.
+
+Older stored `global` and `unknown` rows are qualified by `openclaw doctor --fix`,
+preserving their transcripts and conversation state. Stop the Gateway and back
+up its state before running Doctor manually. Runtime readers do not rename rows.
 
 ## DM isolation
 

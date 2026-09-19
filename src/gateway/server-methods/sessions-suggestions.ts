@@ -24,7 +24,6 @@ import {
 import { presenceUserKey } from "../../shared/presence-user.js";
 import { operatorSessionCap } from "../operator-role-policy.js";
 import { sessionObserverScopeKey } from "../session-observer-model.js";
-import { tryResolveSessionCompatibilityOwnerAgentId } from "../session-request-agent.js";
 import {
   authorizeIncognitoSessionTarget,
   canManageSessionSharing,
@@ -631,16 +630,7 @@ export const sessionSuggestionHandlers: GatewayRequestHandlers = {
           ts: Date.now(),
         };
         context.broadcast("session.typing", event, {
-          sessionKeys: subscriptionKeys(
-            current.canonicalKey,
-            current.agentId,
-            current.canonicalKey === "global"
-              ? tryResolveSessionCompatibilityOwnerAgentId(
-                  context.getRuntimeConfig(),
-                  current.canonicalKey,
-                )
-              : undefined,
-          ),
+          sessionKeys: subscriptionKeys(current.canonicalKey, current.agentId),
           agentId: target.agentId,
           dropIfSlow: true,
         });

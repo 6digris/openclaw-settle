@@ -1,9 +1,7 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { resolveActiveEmbeddedRunSessionId } from "../../agents/embedded-agent-runner/active-run-projections.js";
-import {
-  resolveInternalSessionKey,
-  resolveMainSessionAlias,
-} from "../../agents/tools/sessions-helpers.js";
+import { resolveInternalSessionKey } from "../../agents/tools/sessions-helpers.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   isAuthorizedTextSlashCommandTurn,
@@ -48,8 +46,12 @@ function resolveSteerSourceSessionKey(params: {
     return undefined;
   }
 
-  const { mainKey, alias } = resolveMainSessionAlias(params.cfg);
-  return resolveInternalSessionKey({ key: raw, alias, mainKey });
+  const agentId = resolveSessionAgentId({
+    config: params.cfg,
+    sessionKey: raw,
+    agentId: params.ctx.AgentId,
+  });
+  return resolveInternalSessionKey({ key: raw, agentId, cfg: params.cfg });
 }
 
 /**

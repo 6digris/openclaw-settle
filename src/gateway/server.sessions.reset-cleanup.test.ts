@@ -149,11 +149,27 @@ async function expectResetWithConfigSkipsBrowserCleanup(config: ConfigFilePatch)
   }
 }
 
+test.each(["!!!", " "])(
+  "sessions.reset rejects invalid owner %j before changing main",
+  async (agentId) => {
+    const { storePath } = await seedWaitingActiveMainSession();
+    const scope = { agentId: "main", sessionKey: "agent:main:main", storePath };
+    const before = loadSessionEntry(scope);
+    const result = await directSessionReq("sessions.reset", { key: scope.sessionKey, agentId });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatchObject({ code: "INVALID_REQUEST" });
+    expect(embeddedRunMock.abortCalls).toEqual([]);
+    expect(loadSessionEntry(scope)).toEqual(before);
+  },
+);
+
 test("sessions.reset aborts active runs and clears queues", async () => {
   const { storePath } = await seedWaitingActiveMainSession();
   enqueueSystemEvent("stale event via alias", { sessionKey: "main" });
   enqueueSystemEvent("stale event via canonical key", { sessionKey: "agent:main:main" });
-  enqueueSystemEvent("stale event via session id", { sessionKey: "sess-main" });
+  enqueueSystemEvent("separate conversation sharing the incarnation label", {
+    sessionKey: "agent:main:sess-main",
+  });
   const waitCallCountAtSnapshotClear: number[] = [];
   bootstrapCacheMocks.clearBootstrapSnapshot.mockImplementation(() => {
     waitCallCountAtSnapshotClear.push(embeddedRunMock.waitCalls.length);
@@ -184,7 +200,9 @@ test("sessions.reset aborts active runs and clears queues", async () => {
     "main",
   );
   expect(peekSystemEvents("agent:main:main")).toStrictEqual([]);
-  expect(peekSystemEvents("agent:main:sess-main")).toStrictEqual([]);
+  expect(peekSystemEvents("agent:main:sess-main")).toStrictEqual([
+    "separate conversation sharing the incarnation label",
+  ]);
   expect(bundleMcpRuntimeMocks.retireSessionMcpRuntime).toHaveBeenNthCalledWith(1, {
     sessionId: "sess-main",
     reason: "gateway-session-cleanup",

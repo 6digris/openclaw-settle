@@ -1,14 +1,19 @@
+import { normalizeAgentSessionKeyParts } from "@openclaw/session-url-contract";
 import {
+  GATEWAY_CLIENT_CAPS,
   GATEWAY_CLIENT_MODES,
   GATEWAY_CLIENT_NAMES,
 } from "../../packages/gateway-protocol/src/client-info.js";
 import { classifyGatewayConnectFailure } from "../../packages/gateway-protocol/src/connect-error-details.js";
 import type {
   AgentsListResult,
+  ChatHistoryParams,
+  HelloOk,
   SessionsResolveResult,
 } from "../../packages/gateway-protocol/src/index.js";
 import { visibleWidth } from "../../packages/terminal-core/src/ansi.js";
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
+import { isAbortRequestText } from "../auto-reply/reply/abort-primitives.js";
 import { formatTextCell } from "../commands/text-format.js";
 import { resolveCanonicalMainSessionKey } from "../config/sessions/main-session-key.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -17,8 +22,10 @@ import {
   GatewayStoredDeviceAuthUnavailableError,
   GatewayTransportError,
 } from "../gateway/call.js";
+import { sanitizeChatSendMessageInput } from "../gateway/chat-input-sanitize.js";
 import { GatewayClientRequestError } from "../gateway/client.js";
 import { projectGatewayUrlForDiagnostics } from "../gateway/connection-details.js";
+import { normalizeAgentIdStrict, parseAgentSessionKey } from "../routing/session-key.js";
 import {
   parseSessionTargetInput,
   SessionTargetParseError,
@@ -49,6 +56,8 @@ export async function callSessionTargetGateway<T>(params: {
   request?: unknown;
   requiredScope: "operator.read" | "operator.admin";
   shortRef?: boolean;
+  onHelloOk?: (hello: HelloOk) => void;
+  requiredCapabilities?: string[];
 }): Promise<T> {
   const explicitUrl = params.gateway.url?.trim() || undefined;
   try {
@@ -61,7 +70,10 @@ export async function callSessionTargetGateway<T>(params: {
       method: params.method,
       params: params.request,
       mode: GATEWAY_CLIENT_MODES.CLI,
+      caps: [GATEWAY_CLIENT_CAPS.CANONICAL_SESSION_KEYS],
       clientName: GATEWAY_CLIENT_NAMES.CLI,
+      onHelloOk: params.onHelloOk,
+      requiredCapabilities: params.requiredCapabilities,
       ...(explicitUrl
         ? {
             useStoredDeviceAuth: true,
@@ -72,6 +84,171 @@ export async function callSessionTargetGateway<T>(params: {
   } catch (error) {
     throw shapeTargetError(error, explicitUrl, params.shortRef === true);
   }
+}
+
+export type SessionWireHistory = {
+  sessionKey?: string;
+  sessionId?: string;
+  sessionInfo?: { key?: string; agentId?: string; activeLeafEntryId?: string | null };
+};
+
+/** Preserve the recorded physical identity while adapting published session-key formats. */
+export async function resolveSessionWireTarget<History extends SessionWireHistory>(params: {
+  sessionKey?: string;
+  agentId?: string;
+  targetIntent?: "home" | "exact";
+  sendMessage?: string;
+  canonicalSessionKeys: boolean;
+  readHistory: (request: ChatHistoryParams) => Promise<History>;
+}): Promise<{
+  sessionKey?: string;
+  agentId?: string;
+  sessionId?: string;
+  activeLeafEntryId?: string | null;
+  legacyMain?: boolean;
+  legacyGlobal?: boolean;
+  history?: History;
+}> {
+  const parsed = parseAgentSessionKey(params.sessionKey);
+  if (!parsed || !["main", "global", "unknown"].includes(parsed.rest)) {
+    return { sessionKey: params.sessionKey, agentId: params.agentId };
+  }
+  const explicitOwner =
+    params.agentId === undefined ? null : normalizeAgentIdStrict(params.agentId);
+  if (explicitOwner && (!explicitOwner.ok || explicitOwner.value !== parsed.agentId)) {
+    throw new Error("Session key does not match the selected agent.");
+  }
+  const qualifiedKey = `agent:${parsed.agentId}:${parsed.rest}`;
+  if (params.canonicalSessionKeys) {
+    return { sessionKey: qualifiedKey, agentId: params.agentId };
+  }
+  const history = (sessionKey: string) =>
+    params.readHistory({ sessionKey, agentId: parsed.agentId, limit: 1 });
+  const rejectCollision = (qualified: SessionWireHistory, legacy: SessionWireHistory) => {
+    if (qualified.sessionId && legacy.sessionId && qualified.sessionId !== legacy.sessionId) {
+      throw new Error(
+        "Gateway has distinct qualified and legacy sessions for this identity. Update and repair the Gateway before selecting it.",
+      );
+    }
+  };
+  if (params.targetIntent === "home") {
+    const home = await history("main");
+    if (home.sessionInfo?.key === "global") {
+      rejectCollision(await history(`agent:${parsed.agentId}:global`), home);
+    }
+    return { sessionKey: "main", agentId: parsed.agentId, history: home };
+  }
+  const exact = await history(qualifiedKey);
+  if (exact.sessionInfo?.key !== qualifiedKey) {
+    throw new Error("Gateway resolved the session to a different conversation.");
+  }
+  if (parsed.rest === "main") {
+    return {
+      sessionKey: qualifiedKey,
+      agentId: parsed.agentId,
+      sessionId: exact.sessionId,
+      legacyMain: true,
+      history: exact,
+    };
+  }
+  let legacy: History;
+  try {
+    legacy = await history(parsed.rest);
+  } catch (error) {
+    if (
+      !(error instanceof GatewayClientRequestError) ||
+      error.gatewayCode !== "INVALID_REQUEST" ||
+      exact.sessionInfo.agentId !== parsed.agentId ||
+      !error.message.startsWith(`agent "${parsed.agentId}" does not match session key agent "`)
+    ) {
+      throw error;
+    }
+    // Published fixed stores can assign the raw alias to a different owner.
+    const raw = await params.readHistory({ sessionKey: parsed.rest, limit: 1 });
+    const owner = normalizeAgentIdStrict(raw.sessionInfo?.agentId);
+    if (
+      raw.sessionInfo?.key !== parsed.rest ||
+      !owner.ok ||
+      owner.value !== raw.sessionInfo.agentId ||
+      owner.value === parsed.agentId ||
+      error.message !==
+        `agent "${parsed.agentId}" does not match session key agent "${owner.value}"`
+    ) {
+      throw error;
+    }
+    return {
+      sessionKey: qualifiedKey,
+      agentId: parsed.agentId,
+      sessionId: exact.sessionId,
+      history: exact,
+    };
+  }
+  if (legacy.sessionInfo?.key !== parsed.rest) {
+    throw new Error("Gateway resolved the session to a different conversation.");
+  }
+  rejectCollision(exact, legacy);
+  if (exact.sessionId || !legacy.sessionId) {
+    return {
+      sessionKey: qualifiedKey,
+      agentId: parsed.agentId,
+      sessionId: exact.sessionId,
+      history: exact,
+    };
+  }
+  if (parsed.rest === "global" && params.sendMessage !== undefined) {
+    const message = sanitizeChatSendMessageInput(params.sendMessage);
+    // Published peers stop work before checking the captured session and leaf.
+    if (message.ok && isAbortRequestText(message.message)) {
+      throw new Error(
+        "Update this Gateway to stop this exact legacy global session, or select Home.",
+      );
+    }
+  }
+  return {
+    sessionKey: parsed.rest,
+    agentId: parsed.agentId,
+    sessionId: legacy.sessionId,
+    activeLeafEntryId: legacy.sessionInfo?.activeLeafEntryId,
+    legacyGlobal: parsed.rest === "global",
+    history: legacy,
+  };
+}
+
+export async function resolveLegacySessionRoutingFacts(
+  snapshot: {
+    valid: boolean;
+    runtimeConfig: OpenClawConfig;
+    configRevisionHash?: string;
+    appliedConfigHash?: string | null;
+  },
+  agents: AgentsListResult,
+) {
+  const cfg = snapshot.runtimeConfig;
+  if (
+    !snapshot.valid ||
+    !snapshot.appliedConfigHash ||
+    snapshot.appliedConfigHash !== snapshot.configRevisionHash ||
+    (cfg.session?.scope ?? "per-sender") !== agents.scope
+  ) {
+    throw new Error("Gateway routing is not ready for an exact session send. Refresh and retry.");
+  }
+  const owner = normalizeAgentIdStrict(agents.defaultId);
+  if (!owner.ok || !["sole", "legacy", "explicit"].includes(agents.ownership ?? "")) {
+    throw new Error("Gateway did not provide the owner needed to protect this exact session.");
+  }
+  const [{ retainLegacyDefaultAgentId }, { resolveSessionRoutingContract }] = await Promise.all([
+    import("../config/legacy.default-agent-owner.js"),
+    import("../config/sessions/main-session.js"),
+  ]);
+  // Published config snapshots omit the retained owner; agents.list supplies that same owner's fact.
+  const routingConfig = retainLegacyDefaultAgentId(
+    { ...cfg },
+    agents.ownership === "explicit" ? undefined : owner.value,
+  );
+  return {
+    scope: cfg.session?.scope ?? "per-sender",
+    contract: resolveSessionRoutingContract(routingConfig),
+  };
 }
 
 function candidateId(key: string): string {
@@ -230,7 +407,22 @@ export async function resolveSessionTarget(params: {
     shortRef: ref.kind === "short",
   });
   if (result.ok) {
-    return { parsed, gateway, sessionKey: result.key };
+    const owner = normalizeAgentIdStrict(result.agentId);
+    const resolved = normalizeAgentSessionKeyParts(result.key);
+    const sessionKey = resolved.ok
+      ? resolved.value.sessionKey
+      : owner.ok && (result.key === "global" || result.key === "unknown")
+        ? `agent:${owner.value}:${result.key}`
+        : undefined;
+    if (
+      !owner.ok ||
+      !sessionKey ||
+      (resolved.ok && resolved.value.agentId !== owner.value) ||
+      (ref.kind === "literal" && ref.sessionKey !== sessionKey)
+    ) {
+      throw new Error("Gateway resolved the session to a different conversation.");
+    }
+    return { parsed, gateway, sessionKey };
   }
   if (result.candidates?.length) {
     throw new Error(formatAmbiguousCandidates(result.candidates, gateway.url));

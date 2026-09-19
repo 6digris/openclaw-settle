@@ -270,6 +270,16 @@ describe("gateway tool defaults", () => {
     expect(opts.token).toBe("explicit-token");
   });
 
+  it.each([
+    { name: "omitted", caps: undefined },
+    { name: "empty", caps: [] },
+    { name: "selected", caps: ["canonical-session-keys"] },
+  ])("preserves public tool $name capabilities", async ({ caps }) => {
+    mocks.callGateway.mockResolvedValueOnce({ sessions: [] });
+    await callGatewayTool("sessions.list", {}, { includeGlobal: true }, { caps });
+    expect(capturedGatewayCall().caps).toEqual(caps);
+  });
+
   it("uses least-privilege write scope for write methods", async () => {
     mocks.callGateway.mockResolvedValueOnce({ ok: true });
     await callGatewayTool("wake", {}, { mode: "now", text: "hi" });

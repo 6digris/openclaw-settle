@@ -89,14 +89,14 @@ describe("sessions-list-tool", () => {
       ],
       modelVisible: [
         { key: "agent:main:main", kind: "main" },
-        { key: "agent:main:slack:channel:C123", kind: "group" },
+        { key: "agent:main:slack:channel:c123", kind: "group" },
         { key: "agent:main:cron:nightly", kind: "cron" },
         { key: "agent:main:hook:deploy", kind: "hook" },
         { key: "agent:main:node-device", kind: "node" },
       ],
       filteredKeys: {
         main: ["agent:main:main"],
-        group: ["agent:main:slack:channel:C123"],
+        group: ["agent:main:slack:channel:c123"],
         cron: ["agent:main:cron:nightly"],
         hook: ["agent:main:hook:deploy"],
         node: ["agent:main:node-device"],
@@ -478,64 +478,86 @@ describe("sessions-list-tool", () => {
     expect(getSessionsListDetails(result).sessions?.[0]).toMatchObject({ agentId: "ops" });
     expect(mocks.gatewayCall).toHaveBeenLastCalledWith({
       method: "chat.history",
-      params: { sessionKey: "global", agentId: "ops", limit: 1 },
+      params: { sessionKey: "agent:ops:global", agentId: "ops", limit: 1 },
     });
   });
 
-  it("preserves active sentinel rows and state versions from different agent stores", async () => {
-    mocks.gatewayCall.mockResolvedValue({
-      sessions: [
-        {
-          key: "global",
-          agentId: "ops",
-          classification: "global",
-          kind: "global",
-          sessionId: "ops-session",
-          status: "running",
+  it.each([
+    { scope: "global", qualified: false, tail: "global" },
+    { scope: "global", qualified: true, tail: "global" },
+    { scope: "per-sender", qualified: false, tail: "global" },
+    { scope: "per-sender", qualified: true, tail: "global" },
+    { scope: "global", qualified: true, tail: "main" },
+    { scope: "per-sender", qualified: true, tail: "main" },
+    { scope: "global", qualified: true, tail: "unknown" },
+    { scope: "per-sender", qualified: true, tail: "unknown" },
+  ] as const)(
+    "preserves active $tail conversations in $scope scope (qualified=$qualified)",
+    async ({ scope, qualified, tail }) => {
+      mocks.gatewayCall.mockResolvedValue({
+        sessions: [
+          {
+            key: qualified ? `agent:ops:${tail}` : "global",
+            agentId: "ops",
+            classification: tail,
+            kind: tail,
+            sessionId: "ops-session",
+            status: "running",
+          },
+          {
+            key: qualified ? `agent:research:${tail}` : "global",
+            agentId: "research",
+            classification: tail,
+            kind: tail,
+            sessionId: "research-session",
+            status: "queued",
+          },
+        ],
+      });
+      mocks.getSessionStateVersions.mockReturnValue({
+        ops: { [`agent:ops:${tail}`]: 7 },
+        research: { [`agent:research:${tail}`]: 9 },
+      });
+      const result = await createSessionsListTool({
+        agentSessionKey: `agent:ops:${tail}`,
+        requesterAgentIdOverride: "ops",
+        config: {
+          session: { scope },
+          agents: {
+            ownership: "explicit",
+            defaults: { sessionStore: { agentId: "ops" } },
+            entries: { ops: {}, research: {} },
+          },
+          tools: {
+            sessions: { visibility: "all" },
+            agentToAgent: { enabled: true, allow: ["ops", "research"] },
+          },
         },
+      }).execute("active-sentinels", { activeOnly: true });
+      expect(mocks.getSessionStateVersions).toHaveBeenCalledWith([
+        { sessionKey: `agent:ops:${tail}`, agentId: "ops" },
+        { sessionKey: `agent:research:${tail}`, agentId: "research" },
+      ]);
+      expect(
+        getSessionsListDetails(result).sessions?.map(
+          ({ key, agentId, sessionId, stateVersion }) => ({
+            key,
+            agentId,
+            sessionId,
+            stateVersion,
+          }),
+        ),
+      ).toEqual([
+        { key: `agent:ops:${tail}`, agentId: "ops", sessionId: "ops-session", stateVersion: 7 },
         {
-          key: "global",
+          key: `agent:research:${tail}`,
           agentId: "research",
-          classification: "global",
-          kind: "global",
           sessionId: "research-session",
-          status: "queued",
+          stateVersion: 9,
         },
-      ],
-    });
-    mocks.getSessionStateVersions.mockReturnValue({ ops: { global: 7 }, research: { global: 9 } });
-    const result = await createSessionsListTool({
-      agentSessionKey: "global",
-      requesterAgentIdOverride: "ops",
-      config: {
-        session: { scope: "global" },
-        agents: {
-          ownership: "explicit",
-          defaults: { sessionStore: { agentId: "ops" } },
-          entries: { ops: {}, research: {} },
-        },
-        tools: {
-          sessions: { visibility: "all" },
-          agentToAgent: { enabled: true, allow: ["ops", "research"] },
-        },
-      },
-    }).execute("active-sentinels", { activeOnly: true });
-    expect(mocks.getSessionStateVersions).toHaveBeenCalledWith([
-      { sessionKey: "global", agentId: "ops" },
-      { sessionKey: "global", agentId: "research" },
-    ]);
-    expect(
-      getSessionsListDetails(result).sessions?.map(({ key, agentId, sessionId, stateVersion }) => ({
-        key,
-        agentId,
-        sessionId,
-        stateVersion,
-      })),
-    ).toEqual([
-      { key: "main", agentId: "ops", sessionId: "ops-session", stateVersion: 7 },
-      { key: "main", agentId: "research", sessionId: "research-session", stateVersion: 9 },
-    ]);
-  });
+      ]);
+    },
+  );
 
   it("does not attribute an ownerless fixed-store bare row to the requester", async () => {
     mocks.gatewayCall.mockResolvedValue({

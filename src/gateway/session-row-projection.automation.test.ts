@@ -89,7 +89,7 @@ it("keeps automation aliases scoped to their logical agent in a shared store", a
     };
     for (const agentId of ["main", "work"]) {
       replaceSessionEntrySync(
-        { agentId, storePath, sessionKey: "global" },
+        { agentId, storePath, sessionKey: `agent:${agentId}:global` },
         { sessionId: `${agentId}-global`, updatedAt: 1 },
       );
     }
@@ -99,15 +99,18 @@ it("keeps automation aliases scoped to their logical agent in a shared store", a
     const projection = await createSessionRowProjection({ cfg });
     try {
       await projection.ensureMaterialized();
-      const work = projection.describe({ agentId: "work", key: "global", storePath });
+      const work = projection.describe({ agentId: "work", key: "agent:work:global", storePath });
       const count = projection.materializedCount;
       binding.enabled = false;
       invalidateSessionAutomationIndex();
       await projection.ensureMaterialized();
       expect(projection.materializedCount - count).toBe(1);
-      expect(projection.describe({ agentId: "work", key: "global", storePath })).toBe(work);
+      expect(projection.describe({ agentId: "work", key: "agent:work:global", storePath })).toBe(
+        work,
+      );
       expect(
-        projection.snapshot({ agentId: "main", key: "global", storePath }).row?.hasAutomation,
+        projection.snapshot({ agentId: "main", key: "agent:main:global", storePath }).row
+          ?.hasAutomation,
       ).toBeUndefined();
     } finally {
       projection.dispose();

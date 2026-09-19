@@ -55,6 +55,8 @@ The runtime config snapshot, durable plugin-scoped storage, system utilities, ev
 
     `requestHeartbeatNow(...)` is tracked as `plugin-runtime-api-compat-aliases` in the [compatibility registry](/plugins/compatibility#current-compatibility-areas) with a `removeAfter` date of 2026-10-01; use `requestHeartbeat({ source, intent, reason })` in new code.
 
+    System-event queues use agent-qualified session keys, including
+    `agent:<id>:global`; queue readers never combine different agents' events.
     The `openclaw/plugin-sdk/system-event-runtime` helpers resolve legacy session
     aliases at the SDK boundary. Pass a resolved `agentId` alongside `sessionKey`
     to `api.runtime.system.enqueueSystemEvent(...)` to retain the plugin runtime's

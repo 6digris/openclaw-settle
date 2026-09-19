@@ -30,13 +30,11 @@ const { deliverQueuedSessionDelivery } = await import("./server-restart-sentinel
 const deliveryContext = { channel: "telegram", to: "42", accountId: "work", threadId: "7" };
 const cases = [
   {
-    name: "legacy system event",
-    loadedAgentId: "research",
-    payload: { kind: "systemEvent", sessionKey: "global", text: "resume work" },
+    name: "qualified system event",
+    payload: { kind: "systemEvent", sessionKey: "agent:research:main", text: "resume work" },
   },
   {
     name: "stored system-event owner",
-    loadedAgentId: "main",
     payload: {
       kind: "systemEvent",
       sessionKey: "global",
@@ -46,20 +44,18 @@ const cases = [
   },
   {
     name: "agent turn without a route",
-    loadedAgentId: "research",
     payload: {
       kind: "agentTurn",
-      sessionKey: "global",
+      sessionKey: "agent:research:global",
       message: "resume work",
       messageId: "resume-1",
     },
   },
   {
     name: "replaced agent-turn session",
-    loadedAgentId: "research",
     payload: {
       kind: "agentTurn",
-      sessionKey: "global",
+      sessionKey: "agent:research:global",
       message: "resume work",
       messageId: "resume-1",
       expectedSessionId: "old-session",
@@ -68,7 +64,6 @@ const cases = [
   },
 ] satisfies Array<{
   name: string;
-  loadedAgentId: string;
   payload: QueuedSessionDeliveryPayload;
 }>;
 
@@ -81,20 +76,20 @@ afterEach(resetSystemEventsForTest);
 
 it.each(cases)(
   "binds $name to its destination without rewriting its queued key",
-  async ({ loadedAgentId, payload }) => {
+  async ({ payload }) => {
+    const canonicalKey =
+      payload.sessionKey === "global" ? "agent:research:global" : payload.sessionKey;
     mocks.loadSessionEntry.mockReturnValue({
       cfg: {},
-      agentId: loadedAgentId,
+      agentId: "research",
       entry: { sessionId: "current-session", updatedAt: 1 },
       store: {},
       storePath: "/tmp/restart-owner/openclaw-agent.sqlite",
-      canonicalKey: "global",
-      storeKeys: ["global"],
-      legacyKey: undefined,
+      canonicalKey,
+      storeKeys: [canonicalKey],
     });
     const entry = {
       ...payload,
-      sessionKey: "global",
       deliveryContext,
       id: "queued-1",
       enqueuedAt: 1,
@@ -109,7 +104,11 @@ it.each(cases)(
       queueContext: captureOpenClawStateWorkerContext(),
     });
 
-    expect(peekSystemEventEntries("agent:research:global")).toMatchObject([
+    expect(mocks.loadSessionEntry).toHaveBeenCalledExactlyOnceWith(
+      canonicalKey,
+      payload.kind === "systemEvent" ? { agentId: payload.agentId } : undefined,
+    );
+    expect(peekSystemEventEntries(canonicalKey)).toMatchObject([
       { text: "resume work", deliveryContext },
     ]);
     expect(peekSystemEvents("agent:main:global")).toEqual(["keep other agent"]);
@@ -118,7 +117,7 @@ it.each(cases)(
       intent: "immediate",
       reason: "wake",
       agentId: "research",
-      sessionKey: "global",
+      sessionKey: canonicalKey,
     });
     expect(entry).toEqual(original);
   },
@@ -140,7 +139,7 @@ it("carries a persisted owner through global session lookup in an explicit roste
       setRuntimeConfigSnapshot(config, config);
       for (const agentId of ["main", "research"]) {
         await replaceSessionEntry(
-          { agentId, sessionKey: "global" },
+          { agentId, sessionKey: `agent:${agentId}:global` },
           { sessionId: `${agentId}-session`, updatedAt: 1 },
         );
       }
@@ -163,7 +162,7 @@ it("carries a persisted owner through global session lookup in an explicit roste
       expect(peekSystemEvents("agent:research:global")).toEqual(["resume work"]);
       expect(peekSystemEvents("agent:main:global")).toEqual([]);
       expect(mocks.requestHeartbeat).toHaveBeenCalledWith(
-        expect.objectContaining({ agentId: "research", sessionKey: "global" }),
+        expect.objectContaining({ agentId: "research", sessionKey: "agent:research:global" }),
       );
     },
   );

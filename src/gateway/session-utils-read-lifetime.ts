@@ -14,7 +14,6 @@ export function retainGatewaySessionEntryReadOnly(sessionKey: string, agentId: s
     return (
       current.agentId === selected.agentId &&
       current.canonicalKey === selected.canonicalKey &&
-      current.legacyKey === selected.legacyKey &&
       current.storePath === selected.storePath &&
       current.readSource?.agentId === selected.readSource?.agentId &&
       current.readSource?.path === selected.readSource?.path
@@ -51,7 +50,7 @@ export function retainGatewaySessionEntryReadOnly(sessionKey: string, agentId: s
     claim.release();
   };
   try {
-    entryRead = captureSessionEntryRead(database, selected.legacyKey ?? selected.canonicalKey);
+    entryRead = captureSessionEntryRead(database, selected.canonicalKey);
     const read = entryRead;
     unregister = registerOpenClawAgentDatabaseAsyncResource({
       agentId: database.agentId,

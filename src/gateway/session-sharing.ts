@@ -1,4 +1,7 @@
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import {
+  normalizeOptionalString,
+  readStringValue,
+} from "@openclaw/normalization-core/string-coerce";
 import {
   ErrorCodes,
   errorShape,
@@ -219,12 +222,16 @@ export function resolveSessionMutationAuthorization(params: {
     targetRef: SessionMutationTarget,
     targetCount: number,
   ): { target: SessionSharingTarget | null } | { error: ErrorShape } => {
+    const agent = resolveRequestedSessionAgentId(getCfg(), targetRef.sessionKey, targetRef.agentId);
+    if (!agent.ok) {
+      return { error: agent.error };
+    }
     try {
       return {
         target: resolveSessionSharingTarget({
           cfg: getCfg(),
           sessionKey: targetRef.sessionKey,
-          agentId: targetRef.agentId,
+          agentId: agent.agentId,
           ...(lookupCaches ??= createLookupCaches()),
           exactRead: targetCount === 1,
         }),
@@ -501,7 +508,7 @@ export function resolveSessionMutationAuthorization(params: {
           // Batch outcomes preserve caller identities, but authorization owns normalized targets.
           // Resolve the same normalized identity so padded aliases cannot escape the snapshot fence.
           const sessionKey = normalizeOptionalString(targetRef.sessionKey);
-          const agentId = normalizeOptionalString(targetRef.agentId);
+          const agentId = readStringValue(targetRef.agentId)?.trim();
           const normalizedTarget = { sessionKey: sessionKey ?? targetRef.sessionKey, agentId };
           const expected = authorizedTargets.find(
             (target) => target.sessionKey === sessionKey && target.agentId === agentId,

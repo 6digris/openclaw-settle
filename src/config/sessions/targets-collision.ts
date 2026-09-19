@@ -39,6 +39,7 @@ export function dedupeSessionStoreTargetsBySqliteTarget(
     defaultAgentId: string;
     env?: NodeJS.ProcessEnv;
     registeredDatabases?: readonly { agentId: string; path: string }[];
+    readDatabaseOwner?: (pathname: string) => string | undefined;
     onDiagnostic?: (diagnostic: SessionStoreTargetCollisionDiagnostic) => void;
     onSharedTarget?: (selected: SessionStoreTarget, sharedStorePaths: ReadonlySet<string>) => void;
     onResolvedTarget?: (selected: SessionStoreTarget, physical: SessionStoreTarget) => void;
@@ -72,6 +73,7 @@ export function dedupeSessionStoreTargetsBySqliteTarget(
       defaultAgentId: options.defaultAgentId,
       env: options.env,
       registeredDatabases,
+      readDatabaseOwner: options.readDatabaseOwner,
       isSameDatabasePath,
     });
     const sqlitePath = resolvePhysicalGroupKey(grouped, resolved.path ?? target.storePath);

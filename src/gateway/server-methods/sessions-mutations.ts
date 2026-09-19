@@ -31,7 +31,7 @@ import {
   resolveSessionSharingTarget,
   SessionMutationAuthorizationChangedError,
 } from "../session-sharing.js";
-import { resolveStoredSessionKeyForAgentStore } from "../session-store-key.js";
+import { resolveSessionStoreKey } from "../session-store-key.js";
 import type { SessionActorProfileIdentity } from "../session-utils-contracts.js";
 import { projectSessionPatchResult } from "../session-utils-model.js";
 import { gatewayClientSessionCreator } from "./gateway-client-identity.js";
@@ -471,9 +471,9 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
       respond(false, undefined, requestedAgent.error);
       return;
     }
-    const canonicalKey = resolveStoredSessionKeyForAgentStore({
+    const canonicalKey = resolveSessionStoreKey({
       cfg: context.getRuntimeConfig(),
-      agentId: requestedAgent.agentId,
+      storeAgentId: requestedAgent.agentId,
       sessionKey: key,
     });
     const patched = await patchPluginSessionExtension({
@@ -511,7 +511,7 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
     const { performGatewaySessionReset } = await loadSessionsRuntimeModule();
     const result = await performGatewaySessionReset({
       key,
-      ...(p.agentId ? { agentId: p.agentId } : {}),
+      ...(p.agentId !== undefined ? { agentId: p.agentId } : {}),
       reason,
       commandSource: "gateway:sessions.reset",
       creation: resolveOperatorSessionCreation(client),

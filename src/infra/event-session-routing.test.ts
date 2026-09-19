@@ -99,40 +99,44 @@ describe("event session routing", () => {
     ).toBe(expected);
   });
 
-  it("routes single-owner dmScope=main direct event keys to the agent main session", () => {
-    const cfg: OpenClawConfig = {
-      agents: { entries: { main: { default: true } } },
-      session: { dmScope: "main" },
-      channels: {
-        telegram: {
-          accounts: {
-            work: { allowFrom: ["123"] },
+  it.each(["per-sender", "global"] as const)(
+    "routes single-owner direct events in %s scope",
+    (scope) => {
+      const cfg: OpenClawConfig = {
+        agents: { entries: { main: { default: true } } },
+        session: { dmScope: "main", scope },
+        channels: {
+          telegram: {
+            accounts: {
+              work: { allowFrom: ["123"] },
+            },
           },
         },
-      },
-    } as unknown as OpenClawConfig;
-    const policy = resolveEventSessionRoutingPolicy({
-      cfg,
-      sessionKey: "agent:main:telegram:work:direct:123",
-    });
+      };
+      const policy = resolveEventSessionRoutingPolicy({
+        cfg,
+        sessionKey: "agent:main:telegram:work:direct:123",
+      });
 
-    expect(resolveEventSessionKeyForPolicy("agent:main:telegram:work:direct:123", policy)).toBe(
-      "agent:main:main",
-    );
-    expect(
-      scopedHeartbeatWakeOptionsForPolicy(
-        "agent:main:telegram:work:direct:123",
-        { reason: "exec-event" },
-        policy,
-      ),
-    ).toEqual({ reason: "exec-event", sessionKey: "agent:main:main" });
-    expect(
-      resolveEventSessionKeyForPolicy(
-        "agent:main:telegram:work:direct:123:thread:1712345678.123",
-        policy,
-      ),
-    ).toBe("agent:main:main");
-  });
+      const mainSessionKey = scope === "global" ? "agent:main:global" : "agent:main:main";
+      expect(resolveEventSessionKeyForPolicy("agent:main:telegram:work:direct:123", policy)).toBe(
+        mainSessionKey,
+      );
+      expect(
+        scopedHeartbeatWakeOptionsForPolicy(
+          "agent:main:telegram:work:direct:123",
+          { reason: "exec-event" },
+          policy,
+        ),
+      ).toEqual({ reason: "exec-event", sessionKey: mainSessionKey });
+      expect(
+        resolveEventSessionKeyForPolicy(
+          "agent:main:telegram:work:direct:123:thread:1712345678.123",
+          policy,
+        ),
+      ).toBe(mainSessionKey);
+    },
+  );
 
   it("does not route multi-owner or wildcard direct sessions to main", () => {
     const baseCfg: OpenClawConfig = {

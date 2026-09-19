@@ -88,16 +88,15 @@ export function createSessionListSearchMatcher(params: {
   const context = () => (rowContext ??= params.getRowContext());
   return (key: string, entry: SessionEntry): boolean => {
     const target = expectDefined(params.getTarget(key), "search row owner");
-    const storeKey = target.storeKey ?? key;
     const fields = [
-      storeKey,
+      key,
       entry.label,
       entry.subject,
       entry.sessionId,
       entry.category,
-      resolveSessionListSearchDisplayName(storeKey, entry),
-      resolveGatewaySessionDisplayName(storeKey, entry),
-      resolveGatewaySessionKind(storeKey, entry),
+      resolveSessionListSearchDisplayName(key, entry),
+      resolveGatewaySessionDisplayName(key, entry),
+      resolveGatewaySessionKind(key, entry),
     ];
     addSessionListSearchModelFields(fields, { provider: entry.modelProvider, model: entry.model });
     if (matchesSessionListSearch(fields, search)) {
@@ -108,7 +107,7 @@ export function createSessionListSearchMatcher(params: {
       params.modelCatalog?.get(agentId),
     );
     const run = projectGatewaySessionRunState({
-      key: storeKey,
+      key,
       entry,
       now,
       rowContext: context(),
@@ -145,7 +144,7 @@ export function createSessionListSearchMatcher(params: {
       "prepared search row model facts",
     );
     if (shouldResolveDerivedSessionModelSearchFields(search)) {
-      const subagentRun = context().subagentRuns.getDisplaySubagentRun(storeKey);
+      const subagentRun = context().subagentRuns.getDisplaySubagentRun(key);
       const resolvedModel = resolveSessionModelIdentityRef(
         cfg,
         entry,

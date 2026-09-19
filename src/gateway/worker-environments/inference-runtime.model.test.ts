@@ -121,8 +121,11 @@ describe("worker.inference.start executing model", () => {
   it.each([
     { name: "session ID", mismatch: { sessionId: "foreign-session" } },
     { name: "session key", mismatch: { sessionKey: "agent:runtime-agent:foreign" } },
-    { name: "agent", mismatch: { agentId: "foreign-agent" } },
-  ])("ignores a run with a different $name", async ({ mismatch }) => {
+    {
+      name: "agent",
+      mismatch: { agentId: "foreign-agent", sessionKey: "agent:foreign-agent:main" },
+    },
+  ])("ignores a run with a different $name", async ({ name, mismatch }) => {
     const inference = startInference({ context: { ...runContext, ...mismatch } });
     inference.message.responseModel = REROUTED_MODEL;
     inference.stream.push({ type: "start", partial: inference.message });
@@ -131,6 +134,12 @@ describe("worker.inference.start executing model", () => {
     await expect(inference.pending).resolves.toMatchObject({ type: "done" });
     expect(inference.modelEvents).toEqual([]);
     expect(getAgentRunContext(RUN_ID)?.activeModel).toBeUndefined();
+    if (name === "agent") {
+      expect(
+        resolveProjectedAgentRunModel({ agentId: "foreign-agent", sessionId: SESSION_ID }),
+      ).toBeNull();
+      expect(projectedModel()).toBeUndefined();
+    }
   });
 
   it("does not bind to a replacement run context after model preparation awaits", async () => {

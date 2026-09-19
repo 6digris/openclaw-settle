@@ -634,6 +634,7 @@ export async function callGatewayTool<T = Record<string, unknown>>(
   extra?: {
     expectFinal?: boolean;
     scopes?: OperatorScope[];
+    caps?: Parameters<typeof callGateway>[0]["caps"];
     requireAgentRuntimeIdentity?: boolean;
     signal?: AbortSignal;
     dispatchAuthority?: { version: 2; kind: "run" | "source-bound"; assertCurrent: () => void };
@@ -714,6 +715,7 @@ export async function callGatewayTool<T = Record<string, unknown>>(
     assertDispatchCurrent: extra?.dispatchAuthority?.assertCurrent,
     clientName: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT,
     clientDisplayName: "agent",
+    caps: extra?.caps,
     mode: GATEWAY_CLIENT_MODES.BACKEND,
     ...(approvalRuntimeToken ? { approvalRuntimeToken } : {}),
     ...(agentRuntimeIdentityToken ? { agentRuntimeIdentityToken } : {}),

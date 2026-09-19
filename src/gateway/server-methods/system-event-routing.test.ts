@@ -26,9 +26,23 @@ vi.mock("../session-utils.js", async (importOriginal) => ({
   loadGatewaySessionEntryReadOnly: mocks.loadGatewaySessionEntryReadOnly,
 }));
 
+import { agentIdentityGetHandler } from "./agent-identity.js";
 import { systemHandlers } from "./system.js";
 
 describe("system-event routing", () => {
+  it("rejects an invalid explicit owner at identity ingress instead of selecting main", async () => {
+    const respond = vi.fn();
+    await agentIdentityGetHandler({
+      params: { sessionKey: "agent:main:notes", agentId: "!!!" },
+      respond,
+      context: { getRuntimeConfig: () => ({ agents: { entries: { main: { default: true } } } }) },
+    } as unknown as GatewayRequestHandlerOptions);
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ code: "INVALID_REQUEST" }),
+    );
+  });
   beforeEach(() => {
     resetSystemEventsForTest();
   });
@@ -38,6 +52,62 @@ describe("system-event routing", () => {
     mocks.requestHeartbeat.mockReset();
     mocks.loadGatewaySessionEntryReadOnly.mockReset();
   });
+
+  it.each([
+    ["agent:Bad Agent:notes", "agent:bad-agent:notes"],
+    ["AGENT: bad :Signal:Group:AbC+123=", "agent:bad:signal:group:AbC+123="],
+  ])("normalizes a qualified owner at system-event ingress: %s", async (sessionKey, expected) => {
+    const respond = vi.fn();
+    await expectDefined(
+      systemHandlers["system-event"],
+      "system-event handler",
+    )({
+      params: { text: "Owned event", sessionKey },
+      respond,
+      context: {
+        broadcast: vi.fn(),
+        incrementPresenceVersion: vi.fn(() => 1),
+        getHealthVersion: vi.fn(() => 1),
+        getRuntimeConfig: () => ({
+          agents: { entries: { main: { default: true }, bad: {}, "bad-agent": {} } },
+        }),
+      },
+    } as unknown as GatewayRequestHandlerOptions);
+    expect(respond).toHaveBeenCalledWith(true, { ok: true }, undefined);
+    expect(peekSystemEvents(expected)).toEqual(["Owned event"]);
+    expect(peekSystemEvents("agent:main:notes")).toEqual([]);
+  });
+
+  it.each(["agent:---:notes", "agent::notes", "agent:ops", "agent:ops:", "agent:ops::notes"])(
+    "rejects malformed qualified owners at Gateway ingress: %s",
+    async (sessionKey) => {
+      for (const handler of [systemHandlers["system-event"], agentIdentityGetHandler]) {
+        const respond = vi.fn();
+        await expectDefined(
+          handler,
+          "Gateway identity handler",
+        )({
+          params:
+            handler === agentIdentityGetHandler
+              ? { sessionKey }
+              : { text: "Invalid event", sessionKey },
+          respond,
+          context: {
+            broadcast: vi.fn(),
+            incrementPresenceVersion: vi.fn(() => 1),
+            getHealthVersion: vi.fn(() => 1),
+            getRuntimeConfig: () => ({ agents: { entries: { main: { default: true }, ops: {} } } }),
+          },
+        } as unknown as GatewayRequestHandlerOptions);
+        expect(respond).toHaveBeenCalledWith(
+          false,
+          undefined,
+          expect.objectContaining({ code: "INVALID_REQUEST" }),
+        );
+      }
+      expect(mocks.requestHeartbeat).not.toHaveBeenCalled();
+    },
+  );
 
   it("queues and immediately wakes the requested session", async () => {
     const respond = vi.fn();
@@ -102,11 +172,11 @@ describe("system-event routing", () => {
       'systemHandlers["system-event"] test invariant',
     )(request);
 
-    expect(mocks.loadGatewaySessionEntryReadOnly).toHaveBeenCalledWith("global", {
+    expect(mocks.loadGatewaySessionEntryReadOnly).toHaveBeenCalledWith("agent:ops:global", {
       agentId: "ops",
     });
     expect(mocks.requestHeartbeat).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionKey: "global" }),
+      expect.objectContaining({ sessionKey: "agent:ops:global" }),
     );
     expect(respond).toHaveBeenCalledWith(true, { ok: true }, undefined);
   });
@@ -143,7 +213,7 @@ describe("system-event routing", () => {
       intent: "immediate",
       reason: "wake",
       agentId: "main",
-      sessionKey: "global",
+      sessionKey: "agent:main:global",
       heartbeat: { target: "last" },
     });
     expect(respond).toHaveBeenCalledWith(true, { ok: true }, undefined);

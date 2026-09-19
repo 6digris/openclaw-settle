@@ -171,7 +171,7 @@ async function fixture(kind: "shared" | "canonical-nonshared" | "custom-nonshare
       : resolveSqliteTargetFromSessionStorePath(storePath, { agentId: "main", env: state.env })
           .path;
   openOpenClawAgentDatabase({ agentId: "main", env: state.env, path: databasePath });
-  const victimKey = bare ? "unknown" : "agent:secondary:explicit:owner-parity";
+  const victimKey = bare ? "agent:main:unknown" : "agent:secondary:explicit:owner-parity";
   const victimAgent = bare ? "main" : "secondary";
   const victimId = "owner-parity-victim";
   const survivorKey = "agent:main:main";
@@ -184,7 +184,12 @@ async function fixture(kind: "shared" | "canonical-nonshared" | "custom-nonshare
     archiveReason: "active-session-cap" as const,
   };
   if (kind === "shared") {
-    const victimScope = { agentId: victimAgent, env: state.env, storePath, sessionKey: victimKey };
+    const victimScope = {
+      agentId: victimAgent,
+      env: state.env,
+      storePath,
+      sessionKey: bare ? "unknown" : victimKey,
+    };
     replaceSessionEntrySync(victimScope, { sessionId: victimId, updatedAt: 1 });
     await retain(
       appendTranscriptMessage(
@@ -382,7 +387,12 @@ describe("budget cap-entry logical ownership", () => {
   it.each([
     { name: "omitted qualified owner", explicit: false, bare: false, expectedAgent: "secondary" },
     { name: "explicit secondary owner", explicit: true, bare: false, expectedAgent: "secondary" },
-    { name: "omitted canonical bare unknown", explicit: false, bare: true, expectedAgent: "main" },
+    {
+      name: "omitted owner for normalized unknown",
+      explicit: false,
+      bare: true,
+      expectedAgent: "main",
+    },
   ] as const)(
     "deletes the matching receipt for $name in a shared physical main store",
     async (scenario) => {

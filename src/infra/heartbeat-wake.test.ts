@@ -52,6 +52,17 @@ describe("heartbeat-wake", () => {
     return { source, intent, reason, ...opts };
   }
 
+  function requestTask(jobId: string) {
+    requestHeartbeat({
+      source: "interval",
+      intent: "task",
+      reason: `heartbeat-task:${jobId}`,
+      agentId: "main",
+      tasks: [{ jobId, name: jobId, prompt: `Run ${jobId}` }],
+      coalesceMs: 0,
+    });
+  }
+
   function setRetryOnceHeartbeatHandler() {
     const handler = vi
       .fn()
@@ -381,15 +392,6 @@ describe("heartbeat-wake", () => {
       return { status: "ran" as const, durationMs: 1 };
     });
     setHeartbeatWakeHandler(handler);
-    const requestTask = (jobId: string) =>
-      requestHeartbeat({
-        source: "interval",
-        intent: "task",
-        reason: `heartbeat-task:${jobId}`,
-        agentId: "main",
-        tasks: [{ jobId, name: jobId, prompt: `Run ${jobId}` }],
-        coalesceMs: 0,
-      });
 
     requestTask("job-a");
     await vi.advanceTimersByTimeAsync(1);
@@ -428,15 +430,6 @@ describe("heartbeat-wake", () => {
       return { status: "ran" as const, durationMs: 1 };
     });
     setHeartbeatWakeHandler(handler);
-    const requestTask = (jobId: string) =>
-      requestHeartbeat({
-        source: "interval",
-        intent: "task",
-        reason: `heartbeat-task:${jobId}`,
-        agentId: "main",
-        tasks: [{ jobId, name: jobId, prompt: `Run ${jobId}` }],
-        coalesceMs: 0,
-      });
 
     requestTask("job-a");
     requestHeartbeat({
@@ -473,15 +466,6 @@ describe("heartbeat-wake", () => {
       })
       .mockResolvedValue({ status: "ran", durationMs: 1 });
     setHeartbeatWakeHandler(handler);
-    const requestTask = (jobId: string) =>
-      requestHeartbeat({
-        source: "interval",
-        intent: "task",
-        reason: `heartbeat-task:${jobId}`,
-        agentId: "main",
-        tasks: [{ jobId, name: jobId, prompt: `Run ${jobId}` }],
-        coalesceMs: 0,
-      });
 
     requestTask("job-a");
     await vi.advanceTimersByTimeAsync(1);
@@ -866,14 +850,8 @@ describe("heartbeat-wake", () => {
 
   it("does not let a stale heartbeat lifecycle release a newer active wake", async () => {
     vi.useFakeTimers();
-    let finishOldWake!: () => void;
-    let finishNewWake!: () => void;
-    const oldWakeFinished = new Promise<void>((resolve) => {
-      finishOldWake = resolve;
-    });
-    const newWakeFinished = new Promise<void>((resolve) => {
-      finishNewWake = resolve;
-    });
+    const { promise: oldWakeFinished, resolve: finishOldWake } = createDeferred();
+    const { promise: newWakeFinished, resolve: finishNewWake } = createDeferred();
     const oldHandler = vi.fn(async () => {
       await oldWakeFinished;
       return { status: "ran" as const, durationMs: 1 };
@@ -1071,6 +1049,53 @@ describe("heartbeat-wake", () => {
       sessionKey: "agent:ops:guildchat:channel:alerts",
       heartbeat: { target: "last" },
     });
+  });
+
+  it.each(["global", "unknown"])(
+    "coalesces owned %s aliases without merging agents",
+    async (alias) => {
+      vi.useFakeTimers();
+      const handler = vi.fn().mockResolvedValue({ status: "ran", durationMs: 1 });
+      setHeartbeatWakeHandler(handler);
+      for (const agentId of ["ops", "research"]) {
+        for (const sessionKey of [
+          alias,
+          `agent:${agentId}:${alias}`,
+          `AGENT:${agentId.toUpperCase()}:${alias.toUpperCase()}`,
+        ]) {
+          requestHeartbeat(wake("manual", { agentId, sessionKey, coalesceMs: 100 }));
+        }
+      }
+      await vi.advanceTimersByTimeAsync(100);
+      expect(handler).toHaveBeenCalledTimes(2);
+      for (const agentId of ["ops", "research"]) {
+        expect(handler).toHaveBeenCalledWith(
+          wake("manual", {
+            agentId,
+            sessionKey: `agent:${agentId}:${alias}`,
+          }),
+        );
+      }
+    },
+  );
+
+  it("rejects ambiguous and conflicting wake identities before enqueueing", async () => {
+    vi.useFakeTimers();
+    const handler = vi.fn().mockResolvedValue({ status: "ran", durationMs: 1 });
+    setHeartbeatWakeHandler(handler);
+    expect(() => requestHeartbeat(wake("manual", { sessionKey: "global" }))).toThrow(
+      "explicit agentId",
+    );
+    expect(() =>
+      requestHeartbeat(
+        wake("manual", {
+          sessionKey: "agent:research:global",
+          agentId: "ops",
+        }),
+      ),
+    ).toThrow("does not match");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(handler).not.toHaveBeenCalled();
   });
 
   it("executes distinct targeted wakes queued in the same coalescing window", async () => {

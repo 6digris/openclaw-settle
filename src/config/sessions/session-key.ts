@@ -1,13 +1,10 @@
 // Session key resolution maps inbound message context to persisted store buckets.
 import type { MsgContext } from "../../auto-reply/templating.js";
-import {
-  buildAgentMainSessionKey,
-  normalizeAgentId,
-  normalizeMainKey,
-} from "../../routing/session-key.js";
+import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { normalizeE164 } from "../../utils.js";
 import { normalizeExplicitSessionKey } from "./explicit-session-key-normalization.js";
 import { resolveGroupSessionKey } from "./group.js";
+import { canonicalizeMainSessionAlias, resolveAgentMainSessionKey } from "./main-session.js";
 import type { SessionScope } from "./types.js";
 
 /**
@@ -41,25 +38,24 @@ export function resolveSessionKey(
   agentId?: string,
 ) {
   const explicit = ctx.SessionKey?.trim();
-  if (explicit) {
-    return normalizeExplicitSessionKey(explicit, ctx);
-  }
-  const raw = deriveSessionKey(scope, ctx);
-  if (scope === "global") {
-    return raw;
-  }
-  if (!agentId?.trim()) {
+  const ownerAgentId =
+    agentId?.trim() || parseAgentSessionKey(explicit)?.agentId || ctx.AgentId?.trim();
+  if (!ownerAgentId) {
     throw new Error("Session key resolution requires an explicit configured agent id.");
   }
-  const canonicalAgentId = normalizeAgentId(agentId);
-  const canonicalMainKey = normalizeMainKey(mainKey);
-  const canonical = buildAgentMainSessionKey({
-    agentId: canonicalAgentId,
-    mainKey: canonicalMainKey,
-  });
+  const canonicalAgentId = normalizeAgentId(ownerAgentId);
+  const cfg = { session: { scope, mainKey } };
+  if (explicit) {
+    return canonicalizeMainSessionAlias({
+      cfg,
+      agentId: canonicalAgentId,
+      sessionKey: normalizeExplicitSessionKey(explicit, ctx),
+    });
+  }
+  const raw = deriveSessionKey(scope, ctx);
   const isGroup = raw.includes(":group:") || raw.includes(":channel:");
   if (!isGroup) {
-    return canonical;
+    return resolveAgentMainSessionKey({ cfg, agentId: canonicalAgentId });
   }
   // Keep channel/group sessions separate from direct main sessions while still namespacing them
   // by agent id so multi-agent stores do not collide on provider-owned group keys.

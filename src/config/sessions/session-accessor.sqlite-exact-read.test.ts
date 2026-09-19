@@ -23,10 +23,7 @@ import {
 import { captureSessionEntryRead } from "./session-accessor.sqlite-entry-read-lifetime.js";
 import { loadExactSessionEntryCandidates } from "./session-accessor.sqlite-exact-read.js";
 import { ensureTranscriptSessionRoot } from "./session-accessor.sqlite-transcript-state.js";
-import {
-  assertCanonicalSqliteSessionKeysCurrent,
-  setCanonicalSqliteSessionMainKey,
-} from "./session-canonical-key.js";
+import { assertCanonicalSqliteSessionKeysCurrent } from "./session-canonical-key.js";
 
 const autoTempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -38,7 +35,7 @@ afterEach(() => {
 describe("exact SQLite session batches", () => {
   it.each(
     (["single", "batch"] as const).flatMap((reader) =>
-      (["cold", "warm", "policy", "receipt"] as const).map((admission) => ({
+      (["cold", "warm", "receipt"] as const).map((admission) => ({
         reader,
         admission,
       })),
@@ -68,9 +65,7 @@ describe("exact SQLite session batches", () => {
       if (admission !== "cold") {
         expect(read()?.entry.label).toBe("before");
       }
-      if (admission === "policy") {
-        setCanonicalSqliteSessionMainKey(database, "custom");
-      } else if (admission === "receipt") {
+      if (admission === "receipt") {
         invalidateOpenClawAgentDatabaseValidation(database.path);
       }
       const external = new DatabaseSync(database.path);

@@ -1,9 +1,10 @@
 import type { DatabaseSync } from "node:sqlite";
 import { safeParseJson } from "@openclaw/normalization-core";
-import type { Selectable } from "kysely";
+import { sql, type Selectable } from "kysely";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { normalizeSqliteNumber } from "../infra/sqlite-number.js";
 import type { SessionUpstreamJsonValue, SessionUpstreamKind } from "../plugins/session-catalog.js";
+import { toAgentStoreSessionKey } from "../routing/session-key.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 
 type SessionUpstreamLinkRow = Selectable<OpenClawStateKyselyDatabase["session_upstream_links"]>;
@@ -32,7 +33,7 @@ function parseJson(value: string | null): SessionUpstreamJsonValue | null {
 
 export function rowToSessionUpstreamLink(row: SessionUpstreamLinkRow): SessionUpstreamLink {
   return {
-    sessionKey: row.session_key,
+    sessionKey: toAgentStoreSessionKey({ agentId: row.agent_id, requestKey: row.session_key }),
     agentId: row.agent_id,
     catalogId: row.catalog_id,
     hostId: row.host_id,
@@ -65,7 +66,16 @@ export function listWatchedSessionUpstreamLinksInDatabase(db: DatabaseSync): Ses
           eb
             .selectFrom("session_watch_cursors as cursors")
             .select("cursors.target_session_key")
-            .whereRef("cursors.target_session_key", "=", "links.session_key"),
+            .where(
+              "cursors.target_session_key",
+              "=",
+              eb
+                .case()
+                .when("links.session_key", "in", ["global", "unknown"])
+                .then(sql<string>`'agent:' || links.agent_id || ':' || links.session_key`)
+                .else(eb.ref("links.session_key"))
+                .end(),
+            ),
         ),
       )
       .orderBy("links.catalog_id", "asc")

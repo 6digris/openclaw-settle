@@ -89,9 +89,13 @@ describe("resolveSandboxContext", () => {
     { name: "context", resolve: resolveSandboxContext },
     { name: "workspace", resolve: ensureSandboxWorkspaceForSession },
   ])("sandbox $name", ({ resolve }) => {
-    it.each(["per-sender", "global"] as const)(
-      "bypasses the selected main session in %s scope",
-      async (scope) => {
+    it.each([
+      { scope: "per-sender", sessionKey: "agent:main:main" },
+      { scope: "global", sessionKey: "global" },
+      { scope: "global", sessionKey: "agent:main:global" },
+    ] as const)(
+      "bypasses the selected main session $sessionKey in $scope scope",
+      async ({ scope, sessionKey }) => {
         const cfg: OpenClawConfig = {
           session: { scope },
           agents: {
@@ -106,7 +110,7 @@ describe("resolveSandboxContext", () => {
         const result = await resolve({
           config: cfg,
           agentId: "main",
-          sessionKey: scope === "global" ? "global" : "agent:main:main",
+          sessionKey,
           workspaceDir: "/tmp/openclaw-test",
         });
 
@@ -257,7 +261,7 @@ describe("resolveSandboxContext", () => {
     expect(
       await resolveSandboxContext({
         config: cfg,
-        sessionKey: "agent:main:main",
+        sessionKey: "agent:main:work",
         workspaceDir: "/tmp/openclaw-test",
       }),
     ).toBeNull();
@@ -273,7 +277,7 @@ describe("resolveSandboxContext", () => {
     expect(
       await ensureSandboxWorkspaceForSession({
         config: cfg,
-        sessionKey: "agent:main:main",
+        sessionKey: "agent:main:work",
         workspaceDir: "/tmp/openclaw-test",
       }),
     ).toBeNull();

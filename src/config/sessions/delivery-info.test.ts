@@ -5,6 +5,7 @@ import type { ChannelRouteRef } from "../../plugin-sdk/channel-route.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import { createSessionConversationTestRegistry } from "../../test-utils/session-conversation-registry.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
+import type { OpenClawConfig } from "../types.openclaw.js";
 import { parseSessionThreadInfo } from "./thread-info.js";
 import type { SessionEntry, SessionOrigin } from "./types.js";
 
@@ -245,22 +246,48 @@ describe("extractDeliveryInfo", () => {
     });
   });
 
-  it("keeps qualified global main delivery in its owner's store", () => {
-    storeState.stores["/tmp/sessions.json"] = {
-      global: buildEntry({ channel: "telegram", to: "telegram:ops", accountId: "ops" }),
-    };
-    const deliveryContext = { channel: "telegram", to: "telegram:worker", accountId: "worker" };
-    storeState.stores["/tmp/worker-sessions.json"] = { global: buildEntry(deliveryContext) };
-
-    expect(
-      extractDeliveryInfo("agent:worker:main", {
-        cfg: {
-          session: { scope: "global" },
-          agents: { ownership: "explicit", entries: { ops: {}, worker: {} } },
-        },
-      }),
-    ).toEqual({ deliveryContext, threadId: undefined });
-  });
+  it.each(["global", "per-sender"] as const)(
+    "keeps qualified main and global delivery literal in their owner's store under %s scope",
+    (scope) => {
+      storeState.stores["/tmp/sessions.json"] = {
+        "agent:ops:global": buildEntry({
+          channel: "telegram",
+          to: "telegram:ops",
+          accountId: "ops",
+        }),
+      };
+      const mainDelivery = { channel: "telegram", to: "telegram:worker-main", accountId: "worker" };
+      const globalDelivery = {
+        channel: "telegram",
+        to: "telegram:worker-global",
+        accountId: "worker",
+      };
+      const workerStore = {
+        "agent:worker:main": buildEntry(mainDelivery),
+        "agent:worker:global": buildEntry(globalDelivery),
+      };
+      storeState.stores["/tmp/worker-sessions.json"] = workerStore;
+      const cfg: OpenClawConfig = {
+        session: { scope },
+        agents: { ownership: "explicit", entries: { ops: {}, worker: {} } },
+      };
+      expect(extractDeliveryInfo("agent:worker:main", { cfg })).toEqual({
+        deliveryContext: mainDelivery,
+        threadId: undefined,
+      });
+      expect(extractDeliveryInfo("agent:worker:global", { cfg })).toEqual({
+        deliveryContext: globalDelivery,
+        threadId: undefined,
+      });
+      storeState.stores["/tmp/worker-sessions.json"] = {
+        "agent:worker:global": workerStore["agent:worker:global"],
+      };
+      expect(extractDeliveryInfo("agent:worker:main", { cfg })).toEqual({
+        deliveryContext: undefined,
+        threadId: undefined,
+      });
+    },
+  );
 
   it("continues across per-agent stores until it finds a routable deliveryContext", () => {
     const sessionKey = "agent:shadow:telegram:dm:user-789";
@@ -778,10 +805,12 @@ describe("extractDeliveryInfoBatch", () => {
     const workerDelivery = { channel: "telegram", to: "telegram:worker" };
     const shadowDelivery = { channel: "telegram", to: "telegram:shadow" };
     storeState.stores["/tmp/sessions.json"] = {
-      global: buildEntry(opsDelivery),
+      "agent:ops:global": buildEntry(opsDelivery),
       [shadowKey]: buildEntry(shadowDelivery),
     };
-    storeState.stores["/tmp/worker-sessions.json"] = { global: buildEntry(workerDelivery) };
+    storeState.stores["/tmp/worker-sessions.json"] = {
+      "agent:worker:global": buildEntry(workerDelivery),
+    };
     storeState.stores["/tmp/shadow-sessions.json"] = {};
     Object.defineProperty(storeState.stores["/tmp/shadow-sessions.json"], shadowKey, {
       enumerable: true,
@@ -791,7 +820,7 @@ describe("extractDeliveryInfoBatch", () => {
     });
 
     expect(
-      extractDeliveryInfoBatch(["agent:worker:main", shadowKey, "agent:ops:main"], {
+      extractDeliveryInfoBatch(["agent:worker:global", shadowKey, "agent:ops:global"], {
         cfg: {
           session: { scope: "global" },
           agents: { ownership: "explicit", entries: { ops: {}, worker: {}, shadow: {} } },

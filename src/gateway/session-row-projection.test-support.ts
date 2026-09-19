@@ -74,7 +74,7 @@ export function createSessionRowProjectionFixture(params: {
       params.agentId ??
       expectDefined(listAgentIds(cfg)[0], "fixture session owner");
     const storeTarget = target?.storeTarget ?? { agentId, storePath };
-    const fields = { key: target?.storeKey ?? key, agentId, storeTarget };
+    const fields = { key, agentId, storeTarget };
     const previous = rows.get(id(fields));
     delete store[key];
     revision++;

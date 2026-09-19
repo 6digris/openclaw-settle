@@ -389,15 +389,15 @@ it("resolves the current agent store and main alias after committed changes", as
               },
             }
           : { ...initial, session: { scope: "global" } };
-      for (const [agentId, key] of [
-        ["main", "global"],
-        ["work", "global"],
-        ["main", "agent:main:main"],
+      for (const [agentId, key, sessionId] of [
+        ["main", "agent:main:global", "main-global"],
+        ["work", "agent:work:global", "work-global"],
+        ["main", "agent:main:main", "main-agent:main:main"],
       ] as const) {
         await upsertSessionEntryCore(
           { agentId, sessionKey: key },
           {
-            sessionId: `${agentId}-${key}`,
+            sessionId,
             updatedAt: Date.now(),
             visibility: "shared",
           },
@@ -423,9 +423,14 @@ it("resolves the current agent store and main alias after committed changes", as
       );
       context.readPreparedGatewayModelCatalog = catalogs;
       setRuntimeConfigSnapshot(initial);
-      const key = route === "agent" ? "global" : "agent:main:main";
+      const key = route === "agent" ? "global" : "main";
       expect(await describeSession(context, viewer, key)).toMatchObject({
-        session: { agentId: "main", thinkingLevels: [] },
+        session: {
+          key: route === "agent" ? "agent:main:global" : "agent:main:main",
+          agentId: "main",
+          sessionId: route === "agent" ? "main-global" : "main-agent:main:main",
+          thinkingLevels: [],
+        },
       });
       catalogs.mockClear();
       const response = await afterCommittedChange(
@@ -445,13 +450,18 @@ it("resolves the current agent store and main alias after committed changes", as
       );
       expect(response).toMatchObject({
         session: {
-          key: "global",
+          key: route === "agent" ? "agent:work:global" : "agent:main:global",
           agentId: route === "agent" ? "work" : "main",
           sessionId: route === "agent" ? "work-global" : "main-global",
           thinkingLevels:
             route === "agent" ? expect.arrayContaining([{ id: "low", label: "low" }]) : [],
         },
       });
+      if (route === "main alias") {
+        expect(await describeSession(context, viewer, "agent:main:main")).toMatchObject({
+          session: null,
+        });
+      }
     });
   }
 });

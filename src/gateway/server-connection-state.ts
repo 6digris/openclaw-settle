@@ -1,5 +1,4 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { parseAgentSessionKey } from "../routing/session-key.js";
 // Gateway connection and run registries.
 // This state is transport-fed but can be constructed without HTTP or WebSocket servers.
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
@@ -67,7 +66,9 @@ export function createGatewayConnectionState(params: {
                   sharing: prepared.sharing,
                   target: (key: string, owner?: string) => {
                     const scope = resolveSessionEventAgentScope(loadRuntimeConfig(), key, owner);
-                    return scope?.[1] ? prepared.target({ key, agentId: scope[1] }) : null;
+                    return scope
+                      ? prepared.target({ key: scope.sessionKey, agentId: scope.agentId })
+                      : null;
                   },
                 },
               }
@@ -95,10 +96,10 @@ export function createGatewayConnectionState(params: {
         source.sessionKey,
         typeof source.agentId === "string" ? source.agentId : eventScope.agentId,
       );
-      if (!scope?.[1] || (!scope[0] && !scope[2] && !parseAgentSessionKey(source.sessionKey))) {
+      if (!scope) {
         return undefined;
       }
-      const query = { key: source.sessionKey, agentId: scope[1] };
+      const query = { key: scope.sessionKey, agentId: scope.agentId };
       const record = projection.describe(query);
       if (
         !record ||
@@ -111,7 +112,7 @@ export function createGatewayConnectionState(params: {
         : {
             ...buildGatewaySessionSnapshot({
               sessionRow: projection.snapshot(query).row,
-              agentId: scope[0],
+              agentId: scope.agentId,
               includeSession: true,
             }),
             ...source,

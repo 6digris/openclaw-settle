@@ -9,7 +9,6 @@ import { isDeliverableMessageChannel, normalizeMessageChannel } from "../utils/m
 import { formatSingleUnitDuration } from "./format-time/format-duration-internal.js";
 import { pruneMapToMaxSize } from "./map-size.js";
 import { buildOutboundSessionContext } from "./outbound/session-context.js";
-import { resolveSystemEventQueueKey } from "./system-event-ownership.js";
 import { enqueueSystemEvent } from "./system-events.js";
 
 // Session maintenance warnings notify an active session before warn-only
@@ -105,10 +104,9 @@ export async function deliverSessionMaintenanceWarning(params: WarningParams): P
   }
 
   const contextKey = buildWarningContext(params);
-  const queueKey = resolveSystemEventQueueKey(params.sessionKey, params.agentId);
   // Dedupe by effective warning context so repeated maintenance scans do not
   // spam the same session, but changed limits still produce a fresh warning.
-  if (shouldSuppressWarning(queueKey, contextKey)) {
+  if (shouldSuppressWarning(params.sessionKey, contextKey)) {
     return;
   }
 
@@ -116,13 +114,13 @@ export async function deliverSessionMaintenanceWarning(params: WarningParams): P
   const target = resolveWarningDeliveryTarget(params.entry);
 
   if (!target.channel || !target.to) {
-    enqueueSystemEvent(text, { sessionKey: queueKey });
+    enqueueSystemEvent(text, { sessionKey: params.sessionKey });
     return;
   }
 
   const channel = normalizeMessageChannel(target.channel) ?? target.channel;
   if (!isDeliverableMessageChannel(channel)) {
-    enqueueSystemEvent(text, { sessionKey: queueKey });
+    enqueueSystemEvent(text, { sessionKey: params.sessionKey });
     return;
   }
 
@@ -146,6 +144,6 @@ export async function deliverSessionMaintenanceWarning(params: WarningParams): P
     }
   } catch (err) {
     log.warn(`Failed to deliver session maintenance warning: ${String(err)}`);
-    enqueueSystemEvent(text, { sessionKey: queueKey });
+    enqueueSystemEvent(text, { sessionKey: params.sessionKey });
   }
 }

@@ -15,6 +15,7 @@ import { TUI_PTY_RECONNECT_FIXTURE } from "./tui-pty-reconnect-fixture-test-supp
 import { TUI_PTY_RENDERING_FIXTURE_SCRIPT } from "./tui-pty-rendering-test-support.js";
 import { TUI_PTY_RESET_FIXTURE } from "./tui-pty-reset-fixture-test-support.js";
 import { tuiPtyRuntimeEntrypoints } from "./tui-pty-runtime-test-support.js";
+import { TUI_PTY_SESSION_FIXTURE_SCRIPT } from "./tui-pty-session-fixture-test-support.js";
 import { TUI_PTY_STARTUP_SESSION_FIXTURE } from "./tui-pty-startup-session-fixture-test-support.js";
 import { TUI_PTY_SESSION_SUBSCRIPTION_FIXTURE_SCRIPT } from "./tui-pty-subscription-fixture-test-support.js";
 import { TUI_PTY_TASK_FIXTURE } from "./tui-pty-task-fixture-test-support.js";
@@ -52,6 +53,7 @@ export async function startTuiFixture(
       cwd: process.cwd(),
       env: {
         OPENCLAW_CONFIG_PATH: configPath,
+        OPENCLAW_OFFLINE: "1",
         OPENCLAW_THEME: "dark",
         OPENCLAW_TUI_PTY_LOG_PATH: logPath,
         NO_COLOR: undefined,
@@ -117,7 +119,6 @@ export async function writeTuiPtyFixtureScript(dir: string) {
 
       const actionLogPath = process.env.OPENCLAW_TUI_PTY_LOG_PATH;
       const gatewayStatus = process.env.OPENCLAW_TUI_PTY_GATEWAY_STATUS ?? "fixture gateway ok";
-      const startupDelayMs = Number(process.env.OPENCLAW_TUI_PTY_STARTUP_DELAY_MS ?? 0);
       ${TUI_PTY_STARTUP_SESSION_FIXTURE.variables}
       const footerModel = process.env.OPENCLAW_TUI_PTY_MODEL;
       const footerThinkingLevel = process.env.OPENCLAW_TUI_PTY_THINKING_LEVEL;
@@ -125,6 +126,7 @@ export async function writeTuiPtyFixtureScript(dir: string) {
       let modeTargetTraceLevel: string | undefined;
       const launchThinkingLevel = process.env.OPENCLAW_TUI_PTY_LAUNCH_THINKING;
       const initialMessage = process.env.OPENCLAW_TUI_PTY_INITIAL_MESSAGE;
+      const sessionScope = process.env.OPENCLAW_TUI_PTY_SESSION_SCOPE === "global" ? "global" : "per-sender";
       const inFlightRunText = process.env.OPENCLAW_TUI_PTY_IN_FLIGHT_TEXT;
       const dynamicCommandDescription = process.env.OPENCLAW_TUI_PTY_DYNAMIC_COMMAND_DESCRIPTION;
       const thinkingLabel = process.env.OPENCLAW_TUI_PTY_THINKING_LABEL;
@@ -178,30 +180,7 @@ export async function writeTuiPtyFixtureScript(dir: string) {
         appendFileSync(actionLogPath, JSON.stringify({ method, payload }) + "\\n", "utf8");
       }
 
-      function sessionEntry(key = "main") {
-        const isModeSource = key.endsWith(":mode-source");
-        const isModeTarget = key.endsWith(":mode-target");
-        const entryFastMode = isModeSource ? true : isModeTarget ? undefined : fastMode;
-        const entryVerboseLevel = isModeSource ? "full" : isModeTarget ? undefined : verboseLevel;
-        const entryTraceLevel = isModeSource ? "raw" : isModeTarget ? modeTargetTraceLevel : undefined;
-        return {
-          key,
-          ...(isModeSource
-            ? { displayName: "Production incident" }
-            : isModeTarget
-              ? {}
-              : { displayName: key === pickerSessionKey ? pickerSessionDisplayName : "Main" }),
-          model: currentModel,
-          modelProvider: "fixture-provider",
-          contextTokens: 128,
-          ...(entryFastMode !== undefined ? { fastMode: entryFastMode } : {}),
-          ...(currentThinkingLevel ? { thinkingLevel: currentThinkingLevel } : {}),
-          ...(entryVerboseLevel ? { verboseLevel: entryVerboseLevel } : {}),
-          ...(entryTraceLevel ? { traceLevel: entryTraceLevel } : {}),
-          ...(isModeSource ? { reasoningLevel: "stream" } : {}),
-          thinkingLevels,
-        };
-      }
+      ${TUI_PTY_SESSION_FIXTURE_SCRIPT}
 
       ${TUI_PTY_GAP_HISTORY_FIXTURE_SCRIPT}
       ${TUI_PTY_ASSISTANT_FIXTURE_SCRIPT}
@@ -522,23 +501,24 @@ export async function writeTuiPtyFixtureScript(dir: string) {
           };
         }
 
+        async describeSession(opts: Parameters<TuiBackend["describeSession"]>[0]) {
+          record("describeSession", opts);
+          ${TUI_PTY_STARTUP_SESSION_FIXTURE.describeSessionDelay}
+          const session = fixtureSessions().find(({ key }) =>
+            (key.startsWith("agent:") ? key : "agent:main:" + key) === opts.sessionKey,
+          );
+          return {
+            session: session ? { ...session, key: opts.sessionKey } : null,
+            defaults: sessionDefaults(),
+          };
+        }
+
         async listSessions(opts?: Parameters<TuiBackend["listSessions"]>[0]) {
-          ${TUI_PTY_STARTUP_SESSION_FIXTURE.listSessionsSetup}
           record("listSessions", {
             ...opts,
             purpose: opts?.includeDerivedTitles ? "picker" : "refresh",
           });
-          ${TUI_PTY_STARTUP_SESSION_FIXTURE.listSessionsDelay}
-          const sessions = enablePickerFixture
-            ? [
-                sessionEntry("main"),
-                {
-                  ...sessionEntry(pickerSessionKey),
-                  derivedTitle: pickerSessionTitle,
-                  lastMessagePreview: pickerSessionPreview,
-                },
-              ]
-            : [];
+          const sessions = fixtureSessions();
           const visibleSessions = sessions.filter(
             (session) => session.key !== "global" || opts?.includeGlobal === true,
           );
@@ -547,20 +527,15 @@ export async function writeTuiPtyFixtureScript(dir: string) {
             path: "",
             count: visibleSessions.length,
             sessions: visibleSessions,
-            defaults: {
-              model: currentModel,
-              modelProvider: "fixture-provider",
-              contextTokens: 128,
-              thinkingLevels,
-            },
+            defaults: sessionDefaults(),
           };
         }
 
         async listAgents() {
           return {
             defaultId: "main",
-            mainKey: "main",
-            scope: "per-sender",
+            mainKey: sessionMainKey,
+            scope: sessionScope,
             agents: [{ id: "main", name: enablePickerFixture ? pickerSessionDisplayName : "Main" }],
           };
         }
@@ -677,7 +652,7 @@ export async function writeTuiPtyFixtureScript(dir: string) {
               defaults: { model: "fixture-provider/fixture-model" },
               entries: { main: { default: true } },
             },
-            session: { scope: "per-sender", mainKey: "main" },
+            session: { scope: sessionScope, mainKey: sessionMainKey },
           },
           deliver: process.env.OPENCLAW_TUI_PTY_DELIVER === "1",
           session: process.env.OPENCLAW_TUI_PTY_SESSION,

@@ -35,7 +35,6 @@ export function canonicalSessionKeyMigrationRequiredError(
 /** One validator serves full Doctor scans, pending rows, and final writer certification. */
 export function validateCanonicalSessionRow(
   row: CanonicalSessionValidationRow,
-  canonicalMainKey: string,
 ): SessionEntry | undefined {
   if (
     row.entry_json === "{}" &&
@@ -75,27 +74,23 @@ export function validateCanonicalSessionRow(
   }
   const trimmed = row.session_key.trim();
   const parsed = parseAgentSessionKey(trimmed);
-  if (
-    row.session_key !== trimmed ||
-    normalizeStoreSessionKey(trimmed) !== trimmed ||
-    (!parsed && trimmed !== "global" && trimmed !== "unknown") ||
-    (parsed && parsed.rest === "main" && canonicalMainKey !== "main")
-  ) {
+  if (row.session_key !== trimmed || normalizeStoreSessionKey(trimmed) !== trimmed || !parsed) {
     throw canonicalSessionKeyMigrationRequiredError(
       `non-canonical persisted row resolves to session key ${trimmed || row.session_key}`,
     );
   }
-  for (const lineageKey of [row.parent_session_key, row.spawned_by, row.fork_source_session_key]) {
+  for (const lineageKey of [
+    row.parent_session_key,
+    row.spawned_by,
+    row.fork_source_session_key,
+    entry.heartbeatIsolatedBaseSessionKey,
+  ]) {
     if (!lineageKey) {
       continue;
     }
     const normalized = normalizeStoreSessionKey(lineageKey);
     const lineageParsed = parseAgentSessionKey(normalized);
-    if (
-      normalized !== lineageKey ||
-      (!lineageParsed && normalized !== "global" && normalized !== "unknown") ||
-      (lineageParsed?.rest === "main" && canonicalMainKey !== "main")
-    ) {
+    if (normalized !== lineageKey || !lineageParsed) {
       throw canonicalSessionKeyMigrationRequiredError(
         `non-canonical persisted row resolves to session key ${normalized || lineageKey}`,
       );

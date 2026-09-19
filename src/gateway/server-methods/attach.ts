@@ -3,7 +3,6 @@ import { asRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import { resolveSessionEntryAccessTarget } from "../../config/sessions/session-accessor.js";
-import { parseAgentSessionKey } from "../../routing/session-key.js";
 import {
   AGENT_HARNESS_SESSION_KEY_RESERVED_MESSAGE,
   isAgentHarnessSessionKey,
@@ -33,20 +32,17 @@ export const attachHandlers: GatewayRequestHandlers = {
       respond(false, undefined, requestedAgent.error);
       return;
     }
-    const storageSessionKey = resolveSessionStoreKey({
+    const sessionKey = resolveSessionStoreKey({
       cfg,
       sessionKey: requestedSessionKey,
       storeAgentId: requestedAgent.agentId,
     });
-    const sessionKey = parseAgentSessionKey(storageSessionKey)
-      ? storageSessionKey
-      : `agent:${requestedAgent.agentId}:${storageSessionKey}`;
-    const harnessEntry = isAgentHarnessSessionKey(storageSessionKey)
-      ? resolveSessionEntryAccessTarget({ cfg, sessionKey: storageSessionKey }).entry
+    const harnessEntry = isAgentHarnessSessionKey(sessionKey)
+      ? resolveSessionEntryAccessTarget({ cfg, sessionKey }).entry
       : undefined;
     if (
-      isAgentHarnessSessionKey(storageSessionKey) &&
-      (!harnessEntry || isAgentHarnessSessionStoreEntryProtected(storageSessionKey, harnessEntry))
+      isAgentHarnessSessionKey(sessionKey) &&
+      (!harnessEntry || isAgentHarnessSessionStoreEntryProtected(sessionKey, harnessEntry))
     ) {
       respond(
         false,

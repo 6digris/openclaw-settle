@@ -23,7 +23,6 @@ import {
 import { assignSessionOwner } from "./session-accessor.sqlite-owner.js";
 import { listSessionParticipantsReadOnly } from "./session-accessor.sqlite-participant-read.js";
 import { recordSessionParticipant } from "./session-accessor.sqlite-participants.js";
-import { setCanonicalSqliteSessionMainKey } from "./session-canonical-key.js";
 
 const tempDirs = createTempDirTracker();
 const sessionKey = "agent:main:entry-revalidation";
@@ -131,96 +130,6 @@ describe("SQLite session entry patch commit revalidation", () => {
     ).rejects.toMatchObject({ name: "SqliteSessionMutationConflictError" });
     expect(loadExactSessionEntry(scope)?.entry).toMatchObject({ label: "other writer" });
   });
-
-  describe.each([
-    { route: "ordinary", replaceEntry: false },
-    { route: "lifecycle", replaceEntry: false },
-    { route: "lifecycle", replaceEntry: true },
-  ] as const)(
-    "canonical validation for $route patches (replacement: $replaceEntry)",
-    ({ route, replaceEntry }) => {
-      it.each([false, true])(
-        "rejects invalidated main keys even when the target row is unchanged (no-op: %s)",
-        async (noop) => {
-          await upsertSessionEntryCore(
-            { ...scope, sessionKey: "agent:main:main" },
-            { sessionId: "main-session", updatedAt: 10 },
-          );
-          const before = database.db
-            .prepare("SELECT * FROM session_nodes WHERE session_key = ?")
-            .get(sessionKey);
-
-          await expect(
-            patchEntry(
-              route,
-              (entry) => {
-                setCanonicalSqliteSessionMainKey(database, "work");
-                expect(
-                  database.db
-                    .prepare("SELECT * FROM session_nodes WHERE session_key = ?")
-                    .get(sessionKey),
-                ).toEqual(before);
-                return noop ? null : { ...entry, label: "must not commit" };
-              },
-              replaceEntry,
-            ),
-          ).rejects.toThrow("openclaw doctor --fix");
-
-          setCanonicalSqliteSessionMainKey(database, "main");
-          expect(loadExactSessionEntry(scope)?.entry.label).toBe("original");
-        },
-      );
-    },
-  );
-
-  it.each([false, true])(
-    "keeps the exact-replacement reader exception after main-key invalidation (no-op: %s)",
-    async (noop) => {
-      await upsertSessionEntryCore(
-        { ...scope, sessionKey: "agent:main:main" },
-        { sessionId: "main-session", updatedAt: 10 },
-      );
-      const result = await patchEntry(
-        "ordinary",
-        (entry) => {
-          setCanonicalSqliteSessionMainKey(database, "work");
-          return noop ? null : { ...entry, label: "exact replacement" };
-        },
-        true,
-      );
-      expect(result?.label).toBe(noop ? "original" : "exact replacement");
-      setCanonicalSqliteSessionMainKey(database, "main");
-      expect(loadExactSessionEntry(scope)?.entry.label).toBe(
-        noop ? "original" : "exact replacement",
-      );
-    },
-  );
-
-  it.each(["ordinary", "lifecycle"] as const)(
-    "rejects a no-op %s patch after reopening with an invalid main key",
-    async (route) => {
-      await upsertSessionEntryCore(
-        { ...scope, sessionKey: "agent:main:main" },
-        { sessionId: "main-session", updatedAt: 10 },
-      );
-      await expect(
-        patchEntry(route, () => {
-          setCanonicalSqliteSessionMainKey(database, "work");
-          expect(closeOpenClawAgentDatabaseByPath(database.path)).toBe(true);
-          return null;
-        }),
-      ).rejects.toThrow("openclaw doctor --fix");
-      // Test cleanup must not depend on admitting the deliberately invalid store.
-      closeOpenClawAgentDatabaseByPath(database.path);
-      const cleanup = new DatabaseSync(database.path);
-      try {
-        setCanonicalSqliteSessionMainKey({ db: cleanup }, "main");
-      } finally {
-        cleanup.close();
-      }
-      expect(loadExactSessionEntry(scope)?.entry.label).toBe("original");
-    },
-  );
 
   it("rejects an intervening owner assignment even when entry JSON is unchanged", async () => {
     assignSessionOwner(scope, {

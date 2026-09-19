@@ -107,7 +107,7 @@ describe("Home session creation notices", () => {
       drainFormattedSystemEvents({
         cfg,
         agentId,
-        sessionKey: "global",
+        sessionKey: `agent:${agentId}:global`,
         isMainSession: true,
         isNewSession: false,
       });

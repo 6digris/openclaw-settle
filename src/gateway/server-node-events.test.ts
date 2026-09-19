@@ -17,13 +17,12 @@ import {
 import { buildOutboundSessionContext } from "../infra/outbound/session-context.js";
 import { resolveOutboundTarget } from "../infra/outbound/targets.js";
 import { normalizeLegacySessionEntryDelivery } from "../infra/state-migrations.legacy-session-store.js";
-import { withSystemEventOwner } from "../infra/system-event-ownership.js";
 import {
   getActiveGatewayRootWorkCount,
   resetGatewayWorkAdmission,
   tryBeginGatewayRootWorkAdmission,
 } from "../process/gateway-work-admission.js";
-import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
+import { resolveAgentIdFromSessionKey, toAgentStoreSessionKey } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 import { NodeRegistry } from "./node-registry.js";
 import { normalizeRpcAttachmentsToChatAttachments } from "./server-methods/attachment-normalize.js";
@@ -47,31 +46,34 @@ const buildSessionLookup = (
     spawnedBy?: string;
     parentSessionKey?: string;
   } = {},
-): ReturnType<typeof loadSessionEntryType> => ({
-  cfg: { session: { mainKey: "agent:main:main" } } as OpenClawConfig,
-  agentId: resolveAgentIdFromSessionKey(sessionKey, "main"),
-  storePath: "/tmp/sessions.json",
-  store: {} as ReturnType<typeof loadSessionEntryType>["store"],
-  entry: {
-    agentHarnessId: entry.agentHarnessId,
-    modelSelectionLocked: entry.modelSelectionLocked,
-    sessionId: entry.sessionId ?? `sid-${sessionKey}`,
-    updatedAt: entry.updatedAt ?? Date.now(),
-    model: entry.model,
-    modelProvider: entry.modelProvider,
-    delivery: normalizeLegacySessionEntryDelivery({
-      ...entry,
+): ReturnType<typeof loadSessionEntryType> => {
+  const agentId = resolveAgentIdFromSessionKey(sessionKey, "main");
+  const canonicalKey = toAgentStoreSessionKey({ agentId, requestKey: sessionKey });
+  return {
+    cfg: { session: { mainKey: "agent:main:main" } } as OpenClawConfig,
+    agentId,
+    storePath: "/tmp/sessions.json",
+    store: {} as ReturnType<typeof loadSessionEntryType>["store"],
+    entry: {
+      agentHarnessId: entry.agentHarnessId,
+      modelSelectionLocked: entry.modelSelectionLocked,
       sessionId: entry.sessionId ?? `sid-${sessionKey}`,
       updatedAt: entry.updatedAt ?? Date.now(),
-    } as SessionEntry).delivery,
-    label: entry.label,
-    spawnedBy: entry.spawnedBy,
-    parentSessionKey: entry.parentSessionKey,
-  },
-  canonicalKey: sessionKey,
-  storeKeys: [sessionKey],
-  legacyKey: undefined,
-});
+      model: entry.model,
+      modelProvider: entry.modelProvider,
+      delivery: normalizeLegacySessionEntryDelivery({
+        ...entry,
+        sessionId: entry.sessionId ?? `sid-${sessionKey}`,
+        updatedAt: entry.updatedAt ?? Date.now(),
+      } as SessionEntry).delivery,
+      label: entry.label,
+      spawnedBy: entry.spawnedBy,
+      parentSessionKey: entry.parentSessionKey,
+    },
+    canonicalKey,
+    storeKeys: canonicalKey === sessionKey ? [canonicalKey] : [canonicalKey, sessionKey],
+  };
+};
 
 const ingressAgentCommandMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const registerApnsRegistrationMock = vi.hoisted(() => vi.fn());
@@ -170,7 +172,6 @@ const serverNodeEventDependencies: ServerNodeEventDependencies = {
   defaultRuntime,
   normalizeRpcAttachmentsToChatAttachments,
   resolveOutboundTarget,
-  withSystemEventOwner,
   sendDurableMessageBatchCore: runtimeMocks.sendDurableMessageBatch,
   updatePairedDevicePresence: updatePairedDevicePresenceMock,
 };
@@ -542,7 +543,9 @@ describe("node exec events", () => {
         contextKey: "exec:run-finished",
       },
     );
-    expect(requestHeartbeatMock).toHaveBeenCalledWith(execEventHeartbeatOptions());
+    expect(requestHeartbeatMock).toHaveBeenCalledWith(
+      execEventHeartbeatOptions("agent:main:node-node-2"),
+    );
   });
 
   it("accepts legacy exec.finished events when authorization matches without runId", async () => {
@@ -610,10 +613,7 @@ describe("node exec events", () => {
   });
 
   it("canonicalizes exec session key before enqueue and wake", async () => {
-    loadSessionEntryMock.mockReturnValueOnce({
-      ...buildSessionLookup("node-node-2"),
-      canonicalKey: "agent:main:node-node-2",
-    });
+    loadSessionEntryMock.mockReturnValueOnce(buildSessionLookup("node-node-2"));
     const ctx = buildExecCtx();
     await handleNodeEvent(ctx, "node-2", {
       event: "exec.finished",
@@ -674,7 +674,9 @@ describe("node exec events", () => {
     expect(text.startsWith("Exec finished (node=node-2 id=run-long, code 0)\n")).toBe(true);
     expect(text.endsWith("…")).toBe(true);
     expect(text.length).toBeLessThan(280);
-    expect(requestHeartbeatMock).toHaveBeenCalledWith(execEventHeartbeatOptions());
+    expect(requestHeartbeatMock).toHaveBeenCalledWith(
+      execEventHeartbeatOptions("agent:main:node-node-2"),
+    );
   });
 
   it("does not split surrogate pairs when truncating exec.finished output", async () => {
@@ -1586,10 +1588,7 @@ describe("notifications changed events", () => {
   });
 
   it("canonicalizes notifications session key before enqueue and wake", async () => {
-    loadSessionEntryMock.mockReturnValueOnce({
-      ...buildSessionLookup("node-node-n5"),
-      canonicalKey: "agent:main:node-node-n5",
-    });
+    loadSessionEntryMock.mockReturnValueOnce(buildSessionLookup("node-node-n5"));
     const ctx = buildCtx();
     await handleNodeEvent(ctx, "node-n5", {
       event: "notifications.changed",

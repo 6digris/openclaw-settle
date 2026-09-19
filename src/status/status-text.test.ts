@@ -139,8 +139,8 @@ describe("buildStatusText global subagent scope", () => {
         addSubagentRunForTests({
           runId: `status-global-${agentId}`,
           childSessionKey: `agent:${agentId}:subagent:status-worker`,
-          controllerSessionKey: "global",
-          requesterSessionKey: "global",
+          controllerSessionKey: `agent:${agentId}:global`,
+          requesterSessionKey: `agent:${agentId}:global`,
           requesterAgentId: agentId,
           requesterDisplayKey: "global",
           task: `${agentId} status worker`,

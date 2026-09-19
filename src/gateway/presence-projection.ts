@@ -3,7 +3,6 @@ import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import type { SessionEntry } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { SystemPresence } from "../infra/system-presence.js";
-import { parseAgentSessionKey } from "../routing/session-key.js";
 import { authorizeOperatorScopesForRequiredScope, READ_SCOPE } from "./method-scopes.js";
 import { isGatewayClientProfilePending } from "./server-methods/gateway-client-identity.js";
 import type { GatewayClient } from "./server-methods/types.js";
@@ -24,14 +23,7 @@ export function createPresenceRecipientProjection(params: {
     const prepared = prepareGatewaySessionStoreTargetsReadOnly({
       cfg: params.cfg,
       projection: "list",
-      targets: keys.map((sessionKey) => {
-        const parsed = parseAgentSessionKey(sessionKey);
-        // Viewer declarations qualify sentinels; their stored keys remain global/unknown.
-        return {
-          key: parsed?.rest === "global" || parsed?.rest === "unknown" ? parsed.rest : sessionKey,
-          agentId: parsed?.agentId,
-        };
-      }),
+      targets: keys.map((key) => ({ key })),
     });
     return new Map<string, Result<PresenceTarget, unknown>>(
       keys.map((sessionKey, index) => {

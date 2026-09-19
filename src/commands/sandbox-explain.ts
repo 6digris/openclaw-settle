@@ -14,7 +14,6 @@ import { colorize, isRich, theme } from "../../packages/terminal-core/src/theme.
 import {
   resolveAgentConfig,
   resolveConfiguredAgentId,
-  resolveSessionAgentId,
   resolveAgentWorkspaceDir,
 } from "../agents/agent-scope.js";
 import { resolveSandboxConfigForAgent } from "../agents/sandbox.js";
@@ -26,19 +25,14 @@ import { resolveSandboxToolPolicyForAgent } from "../agents/sandbox/tool-policy.
 import { resolveIngressWorkspaceOverrideForSessionRun } from "../agents/spawned-context.js";
 import { normalizeAnyChannelId } from "../channels/registry.js";
 import { getRuntimeConfig } from "../config/config.js";
-import {
-  resolveAgentMainSessionKey,
-  resolveSessionStorePathCore,
-  type SessionEntry,
-} from "../config/sessions.js";
+import { resolveSessionStorePathCore, type SessionEntry } from "../config/sessions.js";
 import { loadSessionEntryReadOnly } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { resolveSessionStoreIdentity } from "../gateway/session-store-key.js";
 import {
-  buildAgentMainSessionKey,
   normalizeAgentId,
   normalizeMainKey,
   parseAgentSessionKey,
-  resolveAgentIdFromSessionKey,
 } from "../routing/session-key.js";
 import { type RuntimeEnv, writeRuntimeJson } from "../runtime.js";
 import { sessionDeliveryChannel } from "../utils/delivery-context.shared.js";
@@ -51,32 +45,6 @@ type SandboxExplainOptions = {
 };
 
 const SANDBOX_DOCS_URL = "https://docs.openclaw.ai/sandbox";
-
-function normalizeExplainSessionKey(params: {
-  cfg: OpenClawConfig;
-  agentId: string;
-  session?: string;
-}): string {
-  const raw = (params.session ?? "").trim();
-  if (!raw) {
-    return resolveAgentMainSessionKey({
-      cfg: params.cfg,
-      agentId: params.agentId,
-    });
-  }
-  if (raw.includes(":")) {
-    // Fully-qualified session keys are already scoped; only short names need
-    // agent/main-key expansion.
-    return raw;
-  }
-  if (raw === "global") {
-    return "global";
-  }
-  return buildAgentMainSessionKey({
-    agentId: params.agentId,
-    mainKey: normalizeMainKey(raw),
-  });
-}
 
 function inferProviderFromSessionKey(params: {
   cfg: OpenClawConfig;
@@ -150,10 +118,7 @@ export async function sandboxExplainCommand(
     throw new Error("--agent must not be blank");
   }
   const requestedAgentId = requestedAgent ? normalizeAgentId(requestedAgent) : undefined;
-  const sessionAgentId =
-    requestedSession && requestedSession !== "global" && requestedSession.includes(":")
-      ? normalizeAgentId(resolveAgentIdFromSessionKey(requestedSession))
-      : undefined;
+  const sessionAgentId = parseAgentSessionKey(requestedSession)?.agentId;
   if (requestedAgentId && sessionAgentId && requestedAgentId !== sessionAgentId) {
     throw new Error(
       `Sandbox explain agent "${requestedAgentId}" does not match session agent "${sessionAgentId}".`,
@@ -162,16 +127,10 @@ export async function sandboxExplainCommand(
   if (requestedAgentId) {
     resolveConfiguredAgentId(cfg, requestedAgentId);
   }
-  const resolvedAgentId = resolveSessionAgentId({
-    sessionKey: requestedSession,
-    config: cfg,
-    agentId: requestedAgentId,
-  });
-
-  const sessionKey = normalizeExplainSessionKey({
+  const { agentId: resolvedAgentId, canonicalKey: sessionKey } = resolveSessionStoreIdentity({
     cfg,
-    agentId: resolvedAgentId,
-    session: opts.session,
+    sessionKey: requestedSession ?? "main",
+    agentId: requestedAgentId,
   });
 
   const toolPolicy = resolveSandboxToolPolicyForAgent(cfg, resolvedAgentId);
@@ -218,13 +177,7 @@ export async function sandboxExplainCommand(
     cfg: sandboxCfg,
     agentId: resolvedAgentId,
     isolationSubject: sandboxRuntime.isolationSubject,
-    rawSessionKey:
-      sessionKey === "global"
-        ? buildAgentMainSessionKey({
-            agentId: resolvedAgentId,
-            mainKey: normalizeMainKey(cfg.session?.mainKey),
-          })
-        : sessionKey,
+    rawSessionKey: sessionKey,
     workspaceDir: effectiveAgentWorkspaceDir,
   });
   const sandboxWorkdir = getSandboxBackendWorkdirResolver(sandboxCfg.backend)?.({

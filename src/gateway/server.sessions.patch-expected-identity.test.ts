@@ -1,13 +1,18 @@
 // Compare-and-swap session patches must reject reset replacements atomically.
+import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { loadSessionEntry, patchSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { applySessionEntryCanonicalReplacements } from "../config/sessions/session-accessor.sqlite-replacement-projection.js";
 import { createDeferredCore as createDeferred } from "../shared/deferred.js";
+import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
+import { SQLITE_SESSION_WRITER_QUEUES } from "../state/openclaw-agent-write-admission.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { embeddedRunMock, writeSessionStore } from "./test-helpers.js";
+import { testState } from "./test-helpers.runtime-state.js";
 import {
   directSessionReq,
   expectNoSessionQueueCleanup,
+  getGatewayConfigModule,
   sessionHookMocks,
   sessionStoreEntry,
   setupGatewaySessionsHandlerTestHarness,
@@ -578,3 +583,180 @@ test("sessions.patch archives the expected session under its lifecycle lock", as
     archivedAt: expect.any(Number),
   });
 });
+
+const creationOwnerMethods = ["sessions.patch", "sessions.patchMany"] as const;
+type CreationOwnerMethod = (typeof creationOwnerMethods)[number];
+
+function creationOwnerPatch(method: CreationOwnerMethod, key: string) {
+  return method === "sessions.patchMany"
+    ? { targets: [{ key }], patch: { pinned: true } }
+    : { key, pinned: true };
+}
+
+function expectCreationOwnerRefused(
+  method: CreationOwnerMethod,
+  result: Awaited<ReturnType<typeof directSessionReq>>,
+  key: string,
+  agentId: string,
+) {
+  const error = { code: "INVALID_REQUEST", message: `Unknown agent id "${agentId}"` };
+  expect(result).toMatchObject(
+    method === "sessions.patchMany"
+      ? { ok: true, payload: { outcomes: [{ key, ok: false, error }] } }
+      : { ok: false, error },
+  );
+}
+
+async function createPatchOwnerFixture() {
+  const { dir } = await createSessionStoreDir();
+  const storePath = path.join(dir, "shared.sqlite");
+  testState.sessionStorePath = storePath;
+  testState.agentsConfig = { ownership: "explicit", entries: { main: {}, work: {} } };
+  const { clearRuntimeConfigSnapshot, getRuntimeConfig, setRuntimeConfigSnapshot } =
+    await getGatewayConfigModule();
+  clearRuntimeConfigSnapshot();
+  await writeSessionStore({ agentId: "main", storePath, entries: {} });
+  const database = openOpenClawAgentDatabase({ agentId: "main", path: storePath });
+  const broadcastToConnIds = vi.fn();
+  return {
+    storePath,
+    database,
+    broadcastToConnIds,
+    context: {
+      getRuntimeConfig,
+      broadcastToConnIds,
+      getSessionEventSubscriberConnIds: () => new Set(["creation-owner-observer"]),
+    },
+    removeWork() {
+      const current = getRuntimeConfig();
+      setRuntimeConfigSnapshot({
+        ...current,
+        agents: { ...current.agents, entries: { main: {} } },
+      });
+    },
+  };
+}
+
+test.each(creationOwnerMethods)(
+  "%s rejects missing rows for an unconfigured qualified owner without publication",
+  async (method) => {
+    const fixture = await createPatchOwnerFixture();
+    const key = "agent:retired:missing-patch-owner";
+    const result = await directSessionReq(method, creationOwnerPatch(method, key), {
+      context: fixture.context,
+    });
+
+    expectCreationOwnerRefused(method, result, key, "retired");
+    expect(
+      loadSessionEntry({ agentId: "retired", sessionKey: key, storePath: fixture.storePath }),
+    ).toBeUndefined();
+    expectNoSessionQueueCleanup();
+    expect(sessionHookMocks.triggerInternalHook).not.toHaveBeenCalled();
+    expect(fixture.broadcastToConnIds).not.toHaveBeenCalled();
+  },
+);
+
+test.each(creationOwnerMethods)(
+  "%s preserves authorized metadata edits of an existing retired owner's row",
+  async (method) => {
+    const fixture = await createPatchOwnerFixture();
+    const key = "agent:retired:retained-patch-owner";
+    await writeSessionStore({
+      agentId: "main",
+      storePath: fixture.storePath,
+      entries: { [key]: sessionStoreEntry("retained-owner-session") },
+    });
+    const result = await directSessionReq(method, creationOwnerPatch(method, key), {
+      context: fixture.context,
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    if (method === "sessions.patchMany") {
+      expect(result.payload).toMatchObject({ outcomes: [{ key, ok: true }] });
+    }
+    expect(
+      loadSessionEntry({ agentId: "retired", sessionKey: key, storePath: fixture.storePath }),
+    ).toMatchObject({ sessionId: "retained-owner-session", pinnedAt: expect.any(Number) });
+    expect(fixture.broadcastToConnIds).toHaveBeenCalledWith(
+      "sessions.changed",
+      expect.objectContaining({ sessionKey: key, reason: "patch" }),
+      expect.any(Set),
+      expect.objectContaining({ agentId: "retired", sessionKeys: [key] }),
+    );
+  },
+);
+
+test.each(creationOwnerMethods)(
+  "%s rejects new-row creation when its owner is removed behind the writer queue",
+  async (method) => {
+    const fixture = await createPatchOwnerFixture();
+    const key = "agent:work:queued-patch-owner";
+    const writerEntered = createDeferred();
+    const releaseWriter = createDeferred();
+    const writer = applySessionEntryCanonicalReplacements({
+      agentId: "work",
+      storePath: fixture.storePath,
+      sessionKeys: [key],
+      update: async () => {
+        writerEntered.resolve();
+        await releaseWriter.promise;
+        return { result: undefined };
+      },
+    });
+    await writerEntered.promise;
+    const patched = directSessionReq(method, creationOwnerPatch(method, key), {
+      context: fixture.context,
+    });
+    try {
+      await Promise.race([
+        vi.waitFor(() =>
+          expect(
+            SQLITE_SESSION_WRITER_QUEUES.get(fixture.storePath)?.pending.length,
+          ).toBeGreaterThan(0),
+        ),
+        patched.then(() => {
+          throw new Error("Patch completed before the held writer was released");
+        }),
+      ]);
+      fixture.removeWork();
+      releaseWriter.resolve();
+      await writer;
+      expectCreationOwnerRefused(method, await patched, key, "work");
+      expect(
+        loadSessionEntry({ agentId: "work", sessionKey: key, storePath: fixture.storePath }),
+      ).toBeUndefined();
+      expect(sessionHookMocks.triggerInternalHook).not.toHaveBeenCalled();
+      expect(fixture.broadcastToConnIds).not.toHaveBeenCalled();
+    } finally {
+      releaseWriter.resolve();
+      await Promise.allSettled([writer, patched]);
+    }
+  },
+);
+
+test.each(creationOwnerMethods)(
+  "%s rechecks a missing row's owner after authority callbacks at final commit",
+  async (method) => {
+    const fixture = await createPatchOwnerFixture();
+    const key = "agent:work:commit-patch-owner";
+    let removedAtCommit = false;
+    const assertCurrent = () => {
+      if (fixture.database.db.isTransaction && !removedAtCommit) {
+        removedAtCommit = true;
+        fixture.removeWork();
+      }
+    };
+    const result = await directSessionReq(method, creationOwnerPatch(method, key), {
+      context: fixture.context,
+      sessionMutationAuthorization: { assertCurrent, assertTargetCurrent: assertCurrent },
+    });
+
+    expect(removedAtCommit).toBe(true);
+    expectCreationOwnerRefused(method, result, key, "work");
+    expect(
+      loadSessionEntry({ agentId: "work", sessionKey: key, storePath: fixture.storePath }),
+    ).toBeUndefined();
+    expect(sessionHookMocks.triggerInternalHook).not.toHaveBeenCalled();
+    expect(fixture.broadcastToConnIds).not.toHaveBeenCalled();
+  },
+);

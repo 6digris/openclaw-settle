@@ -813,7 +813,7 @@ describe("main-session-restart-recovery", () => {
         const admission = await beginSessionWorkAdmission({
           resolveGatewayContext,
           scope: storePath,
-          identities: [retired.sessionKey, "retired-active-session"],
+          identities: ["agent:main:global", "retired-active-session"],
           assertAllowed: () => undefined,
         });
         try {
@@ -920,7 +920,7 @@ describe("main-session-restart-recovery", () => {
         const child = createSubagentRunRecord({
           runId: `yielded-owner-${layout}`,
           childSessionKey: `agent:ops:subagent:yielded-${layout}`,
-          requesterSessionKey: "global",
+          requesterSessionKey: "agent:ops:global",
           requesterAgentId: "ops",
           expectsCompletionMessage: true,
           requesterSettleWake: {
@@ -938,7 +938,7 @@ describe("main-session-restart-recovery", () => {
               cfg,
               stateDir: tmpDir,
               resolveGatewayContext,
-              activeRuns: [activeRestartRun("global", "yielded-requester")],
+              activeRuns: [activeRestartRun("agent:ops:global", "yielded-requester")],
             }),
           ).resolves.toEqual({ marked: 0, skipped: 0 });
           expect(sessionAccessor.loadSessionEntry(target)?.abortedLastRun).toBe(false);
@@ -1005,6 +1005,8 @@ describe("main-session-restart-recovery", () => {
         );
         const mainBefore = sessionAccessor.loadExactSessionEntryReadOnly(mainTarget)?.entry;
         const target = { agentId: "ops", storePath, sessionKey };
+        const canonicalKey = sessionKey === "global" ? "agent:ops:global" : sessionKey;
+        const readTarget = { ...target, sessionKey: canonicalKey };
         await replaceSessionEntry(
           target,
           mainSessionEntry({
@@ -1030,10 +1032,10 @@ describe("main-session-restart-recovery", () => {
         const request = gatewayParams();
         expect(request).toMatchObject({
           agentId: "ops",
-          sessionKey,
+          sessionKey: canonicalKey,
           idempotencyKey: expect.any(String),
         });
-        expect(sessionAccessor.loadExactSessionEntryReadOnly(target)?.entry).toMatchObject({
+        expect(sessionAccessor.loadExactSessionEntryReadOnly(readTarget)?.entry).toMatchObject({
           sessionId: "ops-startup-session",
           restartRecoveryDeliveryRunId: request.idempotencyKey,
         });
@@ -1117,13 +1119,10 @@ describe("main-session-restart-recovery", () => {
             .mock.calls.filter(([call]) => call.method === "agent")
             .map(([call]) => call.params);
           expect(dispatches).toHaveLength(2);
-          expect(dispatches).toEqual(
-            expect.arrayContaining(
-              targets.map(({ agentId, sessionKey }) =>
-                expect.objectContaining({ agentId, sessionKey }),
-              ),
-            ),
-          );
+          for (const { agentId, sessionKey: storedKey } of targets) {
+            const sessionKey = scoped ? storedKey : `agent:${agentId}:global`;
+            expect(dispatches).toContainEqual(expect.objectContaining({ agentId, sessionKey }));
+          }
           await expect(
             recoverRestartAbortedMainSessions({ cfg, stateDir: tmpDir, handledSessionKeys }),
           ).resolves.toMatchObject({ started: 0, failed: 0 });
@@ -1164,7 +1163,7 @@ describe("main-session-restart-recovery", () => {
         storePath,
       }),
     ).resolves.toEqual({ started: 1, settled: 0, failed: 0, skipped: 0 });
-    expect(gatewayParams()).toMatchObject({ agentId: "ops", sessionKey: "global" });
+    expect(gatewayParams()).toMatchObject({ agentId: "ops", sessionKey: "agent:ops:global" });
   });
 
   it("dispatches a config-less bare recovery under the legacy implicit owner", async () => {
@@ -1183,7 +1182,7 @@ describe("main-session-restart-recovery", () => {
         storePath,
       }),
     ).resolves.toEqual({ started: 1, settled: 0, failed: 0, skipped: 0 });
-    expect(gatewayParams()).toMatchObject({ agentId: "main", sessionKey: "global" });
+    expect(gatewayParams()).toMatchObject({ agentId: "main", sessionKey: "agent:main:global" });
   });
 
   it("persists abort-registry runs after their event context was cleared", async () => {

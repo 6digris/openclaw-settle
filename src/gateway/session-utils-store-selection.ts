@@ -12,7 +12,7 @@ export type GatewaySessionStoreLookup = {
   canonicalValidationError?: Error;
 };
 
-export function findCanonicalStoreMatch(
+function findCanonicalStoreMatch(
   store: Record<string, SessionEntry>,
   candidates: readonly string[],
   onCanonicalError?: (error: Error) => void,

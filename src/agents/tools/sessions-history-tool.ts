@@ -19,7 +19,7 @@ import { jsonUtf8Bytes } from "../../infra/json-utf8-bytes.js";
 import { redactToolPayloadText } from "../../logging/redact.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { truncateUtf16Safe } from "../../utils.js";
-import { resolveSessionAgentId, resolveSessionAgentIds } from "../agent-scope.js";
+import { resolveSessionAgentId } from "../agent-scope.js";
 import {
   describeSessionLinkRule,
   describeSessionsHistoryTool,
@@ -431,16 +431,12 @@ export function createSessionsHistoryTool(opts?: {
         mainKey,
         alias,
         effectiveRequesterKey,
+        requesterAgentId,
         mainSessionKey,
         restrictToSpawned,
         sessionVisibility: visibility,
         a2aPolicy,
       } = resolveSessionToolContext(opts);
-      const requesterAgentId = resolveSessionAgentIds({
-        config: cfg,
-        sessionKey: effectiveRequesterKey,
-        agentId: opts?.requesterAgentIdOverride,
-      }).sessionAgentId;
       const normalizedInputKey = sessionKeyParam.trim();
       const isCurrentSession = normalizedInputKey === "current";
       const isConfiguredMainAlias =
@@ -461,8 +457,7 @@ export function createSessionsHistoryTool(opts?: {
             ? { agentId: inputStoreOwner.agentId }
             : {}),
         keyAgentId: requesterAgentId,
-        alias,
-        mainKey,
+        cfg,
         requesterInternalKey: effectiveRequesterKey,
         restrictToSpawned,
         callGateway: gatewayCall,
@@ -482,6 +477,7 @@ export function createSessionsHistoryTool(opts?: {
         a2aPolicy,
       }).check({ key: resolvedSession.key });
       const visibleSession = await resolveVisibleSessionReference({
+        cfg,
         action: "history",
         resolvedSession,
         requesterSessionKey: effectiveRequesterKey,
