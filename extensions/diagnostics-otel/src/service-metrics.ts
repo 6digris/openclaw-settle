@@ -218,6 +218,7 @@ export function createDiagnosticsMetrics(
     modelCallDurationHistogram: createHistogram("openclaw.model_call.duration_ms", {
       unit: "ms",
       description: "Model call duration",
+      advice: { explicitBucketBoundaries: AGENT_DURATION_MS_BUCKETS },
     }),
     modelCallRequestBytesHistogram: createHistogram("openclaw.model_call.request_bytes", {
       unit: "By",
@@ -241,6 +242,7 @@ export function createDiagnosticsMetrics(
     toolExecutionDurationHistogram: createHistogram("openclaw.tool.execution.duration_ms", {
       unit: "ms",
       description: "Tool execution duration",
+      advice: { explicitBucketBoundaries: AGENT_DURATION_MS_BUCKETS },
     }),
     toolExecutionBlockedCounter: createCounter("openclaw.tool.execution.blocked", {
       unit: "1",
