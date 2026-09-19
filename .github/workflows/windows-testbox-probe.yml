@@ -67,6 +67,11 @@ on:
         required: false
         default: ""
         type: string
+      retained_package_transport:
+        description: 'Transport-only PR147054 draft asset binding JSON: {"releaseId":N,"assetId":N}'
+        required: false
+        default: ""
+        type: string
       installed_startup_package:
         description: "Optional Package Acceptance binding, or {baseline, candidate} bindings for a matched comparison"
         required: false
@@ -91,7 +96,7 @@ env:
 
 jobs:
   probe:
-    if: ${{ !inputs.run_winget_acceptance && !inputs.run_portable_node_recovery && !inputs.run_packaged_gateway_147054 }}
+    if: ${{ inputs.retained_package_transport == '' && (!inputs.run_winget_acceptance && !inputs.run_portable_node_recovery && !inputs.run_packaged_gateway_147054) }}
     name: Windows probe
     runs-on: ${{ inputs.runner_label }}
     timeout-minutes: 75
@@ -692,7 +697,7 @@ jobs:
   # Native session qualification must not depend on headless CI or WSL results.
   native-schtasks:
     name: Native Scheduled Task proof
-    if: ${{ inputs.run_windows_ci && !inputs.run_packaged_gateway_147054 }}
+    if: ${{ inputs.retained_package_transport == '' && (inputs.run_windows_ci && !inputs.run_packaged_gateway_147054) }}
     runs-on: windows-2025
     timeout-minutes: 75
     steps:
@@ -951,7 +956,7 @@ jobs:
 
   winget-acceptance:
     name: Native Winget acceptance (${{ matrix.scenario }})
-    if: ${{ inputs.run_winget_acceptance && !inputs.run_packaged_gateway_147054 }}
+    if: ${{ inputs.retained_package_transport == '' && (inputs.run_winget_acceptance && !inputs.run_packaged_gateway_147054) }}
     runs-on: windows-2025
     timeout-minutes: 35
     strategy:
@@ -1037,7 +1042,7 @@ jobs:
 
   portable-node-recovery:
     name: Portable Node recovery (${{ matrix.engine }})
-    if: ${{ inputs.run_portable_node_recovery && !inputs.run_packaged_gateway_147054 }}
+    if: ${{ inputs.retained_package_transport == '' && (inputs.run_portable_node_recovery && !inputs.run_packaged_gateway_147054) }}
     runs-on: windows-2025
     timeout-minutes: 20
     strategy:
@@ -1122,7 +1127,7 @@ jobs:
 
   native-git-installer:
     name: Full Windows Git installer and published-driver proof
-    if: ${{ inputs.run_windows_launcher_integration && !inputs.run_packaged_gateway_147054 }}
+    if: ${{ inputs.retained_package_transport == '' && (inputs.run_windows_launcher_integration && !inputs.run_packaged_gateway_147054) }}
     runs-on: windows-2025
     timeout-minutes: 90
     steps:
@@ -1153,7 +1158,7 @@ jobs:
 
   packaged-gateway-147054:
     name: Packaged Windows Gateway lifecycle PR147054
-    if: ${{ inputs.run_packaged_gateway_147054 }}
+    if: ${{ inputs.retained_package_transport == '' && (inputs.run_packaged_gateway_147054) }}
     runs-on: windows-2025
     timeout-minutes: 40
     permissions:
@@ -1217,7 +1222,13 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $head -cne $env:WORKFLOW_SHA) { throw 'Tooling differs from workflow.' }
           $dirty = @(git -C tooling status --porcelain=v1 --untracked-files=all)
           if ($LASTEXITCODE -ne 0 -or $dirty.Count -ne 0) { throw 'Tooling checkout is not clean.' }
-          $artifact | ConvertTo-Json -Depth 8 | Set-Content "$env:RUNNER_TEMP/pr147054-transport.json"
+          if ($artifact.name -cnotmatch '^pr147054-retained-package-([1-9][0-9]*)-([1-9][0-9]*)$') { throw 'Not a retained-package producer artifact.' }
+          $producerRunId = $Matches[1]
+          $producerAttempt = $Matches[2]
+          if ([string]$artifact.workflow_run.id -cne $producerRunId) { throw 'Producer run/name mismatch.' }
+          $producer = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$env:REPOSITORY/actions/runs/$producerRunId/attempts/$producerAttempt"
+          if ($producer.status -ne 'completed' -or $producer.conclusion -ne 'success' -or [string]$producer.run_attempt -cne $producerAttempt -or $producer.path -ne '.github/workflows/windows-testbox-probe.yml' -or $producer.event -ne 'workflow_dispatch' -or $producer.head_sha -cnotmatch '^[0-9a-f]{40}$' -or $producer.head_sha -cne $artifact.workflow_run.head_sha -or $producer.head_sha -cne $env:WORKFLOW_SHA) { throw 'Producer attempt is not a successful bound transport.' }
+          @{ artifact = $artifact; producer = $producer; producerRunId = $producerRunId; producerRunAttempt = $producerAttempt; artifactDigest = $artifact.digest; tarballSha256 = 'f2b2c7c81cc0c5d9273bbd22615ced4f244330d646c51ba407d7c22b646f078e' } | ConvertTo-Json -Depth 12 | Set-Content "$env:RUNNER_TEMP/pr147054-transport.json"
           "run_id=$($artifact.workflow_run.id)" >> $env:GITHUB_OUTPUT
       - name: Download retained tarball (no rebuild)
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1293,3 +1304,107 @@ jobs:
           Remove-Item -LiteralPath "$env:RUNNER_TEMP/pr147054-owned" -Recurse -Force -ErrorAction Stop
           Remove-Item -LiteralPath "$env:RUNNER_TEMP/pr147054-package" -Recurse -Force -ErrorAction Stop
           if ((Test-Path "$env:RUNNER_TEMP/pr147054-owned") -or (Test-Path "$env:RUNNER_TEMP/pr147054-package")) { throw 'Owned artifact removal incomplete.' }
+
+  retained-package-transport-147054:
+    name: Transport retained PR147054 tarball only
+    if: ${{ inputs.retained_package_transport != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    concurrency:
+      group: retained-package-transport-147054
+      cancel-in-progress: false
+    steps:
+      - name: Require exclusive transport and measure whole-operation destination growth
+        env:
+          SELECTION: ${{ toJSON(inputs) }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, pathlib, shutil
+          selected = json.loads(os.environ['SELECTION'])
+          for name, value in selected.items():
+              if name.startswith('run_') or name in ('require_wsl2', 'import_ubuntu_wsl2', 'enable_wsl2_features', 'installed_startup_cpu_diagnostic'):
+                  if value not in (False, 'false', ''):
+                      raise SystemExit('Transport must run alone: ' + name)
+          if selected.get('installed_startup_package') or selected.get('packaged_gateway_artifact_id'):
+              raise SystemExit('Transport cannot consume another package')
+          if selected.get('target_ref') != '0aba608fe540de6650f070d4a46aef17cbef61fd':
+              raise SystemExit('Exact candidate required')
+          rows = []
+          for path in (os.environ['GITHUB_WORKSPACE'], os.environ['RUNNER_TEMP']):
+              available = shutil.disk_usage(path).free
+              growth = 512 * 1024**2
+              if available < growth:
+                  raise SystemExit('Transport destination capacity insufficient')
+              rows.append(dict(path=str(pathlib.Path(path).resolve()), freeBytes=available,
+                               wholeOperationAdditionalBytes=growth, concurrentJobsOnVM=0))
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'pr147054-transport-capacity.json').write_text(json.dumps(rows, indent=2))
+          PYTHON
+      - name: Checkout immutable transport helper only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: transport-tooling
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/proof/pr147054
+            .github/workflows
+      - name: Fetch exact retained package from task-owned draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          TRANSPORT_BINDING: ${{ inputs.retained_package_transport }}
+        run: python3 -B transport-tooling/scripts/proof/pr147054/transport.py fetch --root "$RUNNER_TEMP/pr147054-transport"
+      - name: Upload unchanged tarball as immutable Actions artifact
+        id: package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pr147054-retained-package-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pr147054-transport/package/openclaw-pr147054-0aba608f.tgz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+          overwrite: false
+      - name: Record immutable artifact producer tuple
+        env:
+          ARTIFACT_ID: ${{ steps.package.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.package.outputs.artifact-digest }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, pathlib, re
+          artifact_id = os.environ['ARTIFACT_ID']
+          digest = os.environ['ARTIFACT_DIGEST']
+          if not re.fullmatch(r'[1-9][0-9]*', artifact_id) or not re.fullmatch(r'[0-9a-f]{64}', digest):
+              raise SystemExit('Missing immutable artifact identity')
+          record = dict(artifactId=artifact_id, artifactDigest='sha256:' + digest,
+                        producerRunId=os.environ['GITHUB_RUN_ID'], producerRunAttempt=os.environ['GITHUB_RUN_ATTEMPT'],
+                        workflowSha=os.environ['WORKFLOW_SHA'], repository=os.environ['GITHUB_REPOSITORY'],
+                        tarballSha256='f2b2c7c81cc0c5d9273bbd22615ced4f244330d646c51ba407d7c22b646f078e',
+                        tarballBytes=74557440, candidate='0aba608fe540de6650f070d4a46aef17cbef61fd',
+                        compiledCommit='104710db892c724c0b07fffd263dbcbe578684bc',
+                        compiledScope='CI merge snapshot, not pure-head compiler output')
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'pr147054-transport', 'artifact-binding.json').write_text(json.dumps(record, indent=2))
+          PYTHON
+      - name: Upload transport metadata (never mixed with the package artifact)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pr147054-transport-metadata-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/pr147054-transport/*.json
+            ${{ runner.temp }}/pr147054-transport-capacity.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove disposable transport bytes
+        if: ${{ always() }}
+        run: |
+          python3 - <<'PYTHON'
+          import os, pathlib, shutil
+          root = pathlib.Path(os.environ['RUNNER_TEMP'], 'pr147054-transport')
+          if root.exists():
+              shutil.rmtree(root)
+          if root.exists():
+              raise SystemExit('Transport cleanup incomplete')
+          PYTHON
