@@ -1,4 +1,10 @@
 // Declaration paths are shared metadata; only the runner imports their build values.
+export const nativeSchtasksIntegrationEnabled =
+  process.platform === "win32" && process.env.CI_WINDOWS_SCHTASKS_INTEGRATION === "1";
+
+// The CLI loads this package-root supervisor by URL instead of bundling it.
+export const vitestWorkerRuntimeAssets = ["node-host-launcher.mjs"];
+
 export const runtimeProcessDeclarationEntries = {
   "extensions/memory-core/manager-cpu-entrypoints":
     "extensions/memory-core/src/memory/manager-cpu-entrypoints.ts",
@@ -10,6 +16,9 @@ export const runtimeProcessDeclarationEntries = {
 };
 export const vitestWorkerDeclarationEntries = {
   ...runtimeProcessDeclarationEntries,
+  // Codex is package-owned and excluded from the root runtime bundle.
+  "extensions/codex/catalog-page-worker-entrypoint":
+    "extensions/codex/catalog-page-worker-entrypoint.ts",
   "extensions/memory-core/manager-publication-fault-entrypoint.test-support":
     "extensions/memory-core/src/memory/manager-publication-fault-entrypoint.test-support.ts",
   "state/openclaw-agent-worker-store.runtime.test-support":
@@ -26,6 +35,12 @@ export const vitestWorkerDeclarationEntries = {
     "src/infra/update-managed-service-handoff-runtime-assets.ts",
   "infra/triage-runtime.test-support": "src/infra/triage-runtime.test-support.ts",
   "cli/cli-entrypoint.test-support": "src/cli/cli-entrypoint.test-support.ts",
+  ...(nativeSchtasksIntegrationEnabled
+    ? {
+        "daemon/schtasks-native-entrypoints.test-support":
+          "src/daemon/schtasks-native-entrypoints.test-support.ts",
+      }
+    : {}),
   "cli/update-cli/update-command-executor-native-runtime.test-support":
     "src/cli/update-cli/update-command-executor-native-runtime.test-support.ts",
   "commands/doctor-config-runtime.test-support":

@@ -121,7 +121,11 @@ const PACKED_PLUGIN_SDK_SETUP_CONSUMER_FIXTURE = new URL(
   "./fixtures/packed-plugin-sdk-setup-consumer.ts",
   import.meta.url,
 );
-const PACKED_PLUGIN_SDK_SETUP_SURFACE_OMISSION_VERSIONS = new Set(["2026.7.33"]);
+const PACKED_PLUGIN_SDK_PROGRESS_CONSUMER_FIXTURE = new URL(
+  "./fixtures/packed-plugin-sdk-progress-consumer.ts",
+  import.meta.url,
+);
+const PACKED_PLUGIN_SDK_SETUP_SURFACE_OMISSION_VERSIONS = new Set(["2026.7.33", "2026.7.34"]);
 
 export function packedPluginSdkMayOmitSetupSurface(packageVersion: string): boolean {
   return PACKED_PLUGIN_SDK_SETUP_SURFACE_OMISSION_VERSIONS.has(packageVersion);
@@ -704,6 +708,7 @@ export function createPackedPluginSdkTypescriptSmokeProject(params: {
   consumerDir: string;
   packageSpec: string;
   aiPackageSpec?: string;
+  progressConsumerOnly?: boolean;
 }): void {
   const dependencies: Record<string, string> = {
     openclaw: params.packageSpec,
@@ -743,7 +748,9 @@ export function createPackedPluginSdkTypescriptSmokeProject(params: {
           types: ["node"],
           target: "ES2022",
         },
-        include: ["src/index.ts"],
+        include: params.progressConsumerOnly
+          ? ["src/packed-plugin-sdk-progress-consumer.ts"]
+          : ["src/index.ts"],
       },
       null,
       2,
@@ -758,6 +765,12 @@ export function createPackedPluginSdkTypescriptSmokeProject(params: {
     PACKED_PLUGIN_SDK_SETUP_CONSUMER_FIXTURE,
     join(params.consumerDir, "src", "packed-plugin-sdk-setup-consumer.ts"),
   );
+  if (params.progressConsumerOnly) {
+    copyFileSync(
+      PACKED_PLUGIN_SDK_PROGRESS_CONSUMER_FIXTURE,
+      join(params.consumerDir, "src", "packed-plugin-sdk-progress-consumer.ts"),
+    );
+  }
 }
 
 function runPackedPluginSdkTypescriptSmoke(
@@ -1342,40 +1355,58 @@ async function verifyPackedContents(
   packedRoot: string,
   tarballPath: string,
 ): Promise<void> {
-  // WORKER_BUNDLE_*_PATH exports declare the target's sealed deploy artifacts.
-  // Trusted tooling may be newer than the frozen target in the working directory.
-  // The producer owns this contract; shared worker helpers can predate deploy output.
   const workerProducerPath = resolve("src/worker/worker-deploy-entry.ts");
   const workerBundlePath = resolve("src/shared/worker-bundle-hash.ts");
-  const workerDeployEntrypoints = existsSync(workerProducerPath)
-    ? Object.entries(
-        await importToolingTypeScript(pathToFileURL(workerBundlePath).href, import.meta.url),
-      )
-        .filter(([name]) => /^WORKER_BUNDLE_.*_PATH$/u.test(name))
-        .map(([name, value]) => {
-          if (typeof value !== "string" || !value.trim()) {
-            throw new Error(
-              `release-check: target worker artifact ${name} must be a non-empty path string.`,
-            );
-          }
-          const normalizedPath = posix.normalize(value);
-          const workerPath = posix.join("dist/worker", normalizedPath);
-          if (
-            value !== value.trim() ||
-            value !== normalizedPath ||
-            value.includes("\\") ||
-            normalizedPath.split("/").includes("..") ||
-            win32.isAbsolute(value) ||
-            !workerPath.startsWith("dist/worker/")
-          ) {
-            throw new Error(
-              `release-check: target worker artifact ${name} must be a normalized relative path within dist/worker.`,
-            );
-          }
-          return workerPath;
-        })
-    : [];
-  if (existsSync(workerProducerPath) && workerDeployEntrypoints.length === 0) {
+  // Frozen targets can have shared hash helpers without a deploy entrypoint.
+  const hasWorkerProducer = existsSync(workerProducerPath);
+  let workerArtifactDeclarations: Array<[string, unknown]> = [];
+  if (hasWorkerProducer) {
+    const target = await importToolingTypeScript(
+      pathToFileURL(workerBundlePath).href,
+      import.meta.url,
+    );
+    if (Object.hasOwn(target, "WORKER_BUNDLE_ARTIFACT_PATHS")) {
+      const paths = target.WORKER_BUNDLE_ARTIFACT_PATHS;
+      if (!Array.isArray(paths) || paths.length === 0) {
+        throw new Error(
+          "release-check: target WORKER_BUNDLE_ARTIFACT_PATHS must be a non-empty array.",
+        );
+      }
+      workerArtifactDeclarations = paths.map((value, index): [string, unknown] => [
+        `WORKER_BUNDLE_ARTIFACT_PATHS[${index}]`,
+        value,
+      ]);
+    } else {
+      // v2026.9.4 deploy targets expose individual paths. Remove this fallback once
+      // every supported frozen release target declares the canonical array.
+      workerArtifactDeclarations = Object.entries(target).filter(([name]) =>
+        /^WORKER_BUNDLE_.*_PATH$/u.test(name),
+      );
+    }
+  }
+  const workerDeployEntrypoints = workerArtifactDeclarations.map(([name, value]) => {
+    if (typeof value !== "string" || !value.trim()) {
+      throw new Error(
+        `release-check: target worker artifact ${name} must be a non-empty path string.`,
+      );
+    }
+    const normalizedPath = posix.normalize(value);
+    const workerPath = posix.join("dist/worker", normalizedPath);
+    if (
+      value !== value.trim() ||
+      value !== normalizedPath ||
+      value.includes("\\") ||
+      normalizedPath.split("/").includes("..") ||
+      win32.isAbsolute(value) ||
+      !workerPath.startsWith("dist/worker/")
+    ) {
+      throw new Error(
+        `release-check: target worker artifact ${name} must be a normalized relative path within dist/worker.`,
+      );
+    }
+    return workerPath;
+  });
+  if (hasWorkerProducer && workerDeployEntrypoints.length === 0) {
     throw new Error(
       "release-check: target worker producer is missing WORKER_BUNDLE_*_PATH declarations.",
     );

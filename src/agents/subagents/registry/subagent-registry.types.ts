@@ -50,6 +50,7 @@ export type SubagentRestartRecoveryReceipt = {
   sessionId: string;
   sessionMarker: string;
   sessionLifecycleRevision?: string;
+  sessionLifecycleRunId?: string;
   idempotencyKey: string;
   phase: "reserved" | "attempted" | "consumed" | "accepted" | "abandoned";
   lifecycleGeneration?: string;
@@ -115,6 +116,8 @@ export type RequesterSettleWakeState = {
   afterRequesterYield?: true;
   /** Monotonic process generation protecting a newer yield from stale completion. */
   rearmGeneration?: number;
+  /** Reference to the conversation receipt for this presentation, not completion credit. */
+  progressOperationId?: string;
   /** Number of times this batch has been deferred due to unsettled descendants. */
   deferralCount?: number;
   lastError?: string | null;

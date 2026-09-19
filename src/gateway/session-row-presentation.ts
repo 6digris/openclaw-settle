@@ -1,6 +1,11 @@
 import { isIncognitoSessionKey } from "../routing/session-key.js";
-import { createVisibleActiveSessionRunProjector } from "./server-methods/session-active-runs.js";
-import type { GatewayClient, GatewayRequestContext } from "./server-methods/types.js";
+import { gatewayClientSessionCreator } from "./server-methods/gateway-client-identity.js";
+import type { createVisibleActiveSessionRunProjector } from "./server-methods/session-active-runs.js";
+import type { GatewayClient } from "./server-methods/types.js";
+import {
+  projectSessionParticipant,
+  projectSessionProfileInvolvement,
+} from "./session-identity-projection.js";
 import { tryResolveSessionCompatibilityOwnerAgentId } from "./session-request-agent.js";
 import type { SessionRowReadView } from "./session-row-prepared-read.js";
 import type * as records from "./session-row-projection-record.js";
@@ -31,13 +36,10 @@ export function prepareProjectedSessionPresentation(
   projection: SessionRowReadView,
   client?: GatewayClient | null,
   now = Date.now(),
-  context?: Partial<Pick<GatewayRequestContext, "chatAbortControllers">>,
+  projectRun?: ReturnType<typeof createVisibleActiveSessionRunProjector>,
 ) {
   const { cfg, rowContext } = projection.state;
   const subagentRuns = rowContext.subagentRuns.atTime(now);
-  const projectRun = context
-    ? createVisibleActiveSessionRunProjector(context, rowContext.projectedAgentRuns)
-    : undefined;
   const active = (key: string, entry: records.MaterializedRow["entry"], agentId: string) =>
     projectRun?.({
       requestedKey: key,
@@ -62,8 +64,19 @@ export function prepareProjectedSessionPresentation(
         })
         ?.membership.has(identityId) ?? false,
   });
+  const profile = gatewayClientSessionCreator(client ?? null);
+  const profiles = rowContext.userProfileIdentityById;
+  const profileId = profile
+    ? projectSessionParticipant({ type: "profile", id: profile.id }, profiles).identity.id
+    : undefined;
   const viewer = (value: SessionSharingTarget) => ({
     visibility: resolveSessionVisibility(value.entry),
+    ...(profileId && !value.entry.incognito && !isIncognitoSessionKey(value.canonicalKey)
+      ? {
+          hiddenFromInvolvingMe:
+            projectSessionProfileInvolvement(value.entry, profileId, profiles)?.hidden ?? false,
+        }
+      : {}),
     sharingRole: sharing.roleForTarget(value),
     canEnsure:
       !authorizeIncognitoSessionTarget({
@@ -107,7 +120,7 @@ export function prepareProjectedSessionPresentation(
               !excludedChildKeys.has(sessionKey) &&
               (client === undefined ||
                 !projection
-                  .select({ key: sessionKey })
+                  .selectEntries({ key: sessionKey })
                   .some((child) => sharing.entryFilter?.(child.key, child.entry) === false)),
           ),
         })),
