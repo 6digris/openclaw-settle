@@ -252,7 +252,21 @@ flow:
                         expr: "receipts.filter((receipt) => receipt.phase === 'shortened-final')"
                     - assert:
                         expr: rewrites.length === 1 && rewrites[0].fullText === fullText && rewrites[0].shortenedText === `${prefix}...` && rewrites[0].hadTarget === true && rewrites[0].outputHasTarget === false && rewrites[0].mediaReferences === 0
-                        message: one public hook rewrite must shorten the real final and remove its target before transcript recovery
+                        message:
+                          expr: |-
+                            JSON.stringify({
+                              case: caseName,
+                              receiptCount: receipts.length,
+                              rewriteCount: rewrites.length,
+                              phases: receipts.map(({ phase }) => phase),
+                              rewrites: rewrites.map((receipt) => ({
+                                fullTextMatches: receipt.fullText === fullText,
+                                shortenedTextMatches: receipt.shortenedText === `${prefix}...`,
+                                hadTarget: receipt.hadTarget,
+                                outputHasTarget: receipt.outputHasTarget,
+                                mediaReferences: receipt.mediaReferences,
+                              })),
+                            })
                     - assert:
                         expr: 'receipts.length === (caseName === "media" ? 2 : 1) && (caseName !== "media" || (receipts[0].phase === "cancelled-full-block" && receipts[0].fullText === fullText && receipts[0].mediaReferences === 1 && sequence.events.some((event) => event.kind === "sent" && event.message.text === blockCaption && event.cursor < sequence.events.find((entry) => entry.message.id === sequence.final.id).cursor)))'
                         message: media recovery must follow one observed document and exactly one scoped full-answer block cancellation
