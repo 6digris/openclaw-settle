@@ -4,7 +4,6 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { evaluateEntryRequirementsForCurrentPlatform } from "../../shared/entry-status.js";
 import { CONFIG_DIR } from "../../utils.js";
-import { loadSkillLibrarySelection } from "../library/selection.js";
 import { resolveBundledSkillsDir } from "../loading/bundled-dir.js";
 import {
   hasBinary,
@@ -17,10 +16,7 @@ import {
 } from "../loading/config.js";
 import { resolveSkillKey } from "../loading/frontmatter.js";
 import { resolveSkillSource } from "../loading/source.js";
-import {
-  loadWorkspaceSkills,
-  prepareWorkspaceSkillEntries,
-} from "../loading/workspace-skill-loader.js";
+import { loadWorkspaceSkills } from "../loading/workspace-skill-loader.js";
 import type { WorkspaceSkillSources } from "../loading/workspace-skill-sources.js";
 import { mergeRemoteNodeSkillEntries } from "../runtime/remote-skills.js";
 import type {
@@ -28,7 +24,6 @@ import type {
   SkillEligibilityContext,
   SkillInstallSpec,
   SkillsInstallPreferences,
-  SkillSnapshot,
 } from "../types.js";
 import { resolveEffectiveAgentSkillFilter } from "./agent-filter.js";
 import {
@@ -275,58 +270,6 @@ type WorkspaceSkillStatusOptions = {
   eligibility?: SkillEligibilityContext;
   agentId?: string;
 };
-
-/** Assemble status from the workspace host's files and Gateway-owned policy. */
-export async function prepareWorkspaceSkillStatus(
-  workspaceDir: string,
-  opts?: WorkspaceSkillStatusOptions & {
-    librarySelections?: SkillSnapshot["librarySelections"];
-    skillCardKey?: string;
-  },
-): Promise<{ report: SkillStatusReport; files: WorkspaceSkillStatusFacts["files"] }> {
-  const { eligibility: _eligibility, ...loadOptions } = opts ?? {};
-  const sources = await prepareWorkspaceSkillEntries(workspaceDir, {
-    ...loadOptions,
-    agentSkillFilter: "ignore",
-    status: { skillCardKey: opts?.skillCardKey },
-  });
-  if (sources.runtime && !sources.status) {
-    throw new Error("Remote workspace skill status is unavailable");
-  }
-  const localEntries = sources.status
-    ? [
-        ...loadSkillLibrarySelection(opts?.librarySelections ?? []),
-        ...sources.entries.filter((entry) => entry.skill.fileHost === "gateway"),
-      ]
-    : sources.entries;
-  const localFacts =
-    localEntries.length || !sources.status
-      ? readWorkspaceSkillStatusFacts({
-          entries: localEntries,
-          workspaceDir,
-          managedSkillsDir: opts?.managedSkillsDir ?? path.join(CONFIG_DIR, "skills"),
-          skillCardKey: opts?.skillCardKey,
-        })
-      : undefined;
-  const hostPaths = new Set(
-    sources.entries
-      .filter((entry) => entry.skill.fileHost === "workspace")
-      .map((entry) => entry.skill.filePath),
-  );
-  const files = [
-    ...(sources.status?.files.filter((file) => hostPaths.has(file.filePath)) ?? []),
-    ...(localFacts?.files ?? []),
-  ];
-  return {
-    report: buildWorkspaceSkillStatus(workspaceDir, {
-      ...opts,
-      entries: sources.entries,
-      files,
-      runtime: sources.runtime,
-    }),
-    files,
-  };
-}
 
 export function buildWorkspaceSkillStatus(
   workspaceDir: string,

@@ -401,7 +401,7 @@ function mergeSkillTiers(
 }
 
 /** Acquire host source tiers before the native node/execution/Library merge. */
-export async function prepareWorkspaceSkillEntries(
+async function prepareWorkspaceSkillEntries(
   workspaceDir: string,
   opts?: WorkspaceSkillLoadOptions & {
     entries?: SkillEntry[];
