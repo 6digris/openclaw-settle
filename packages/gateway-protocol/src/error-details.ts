@@ -1,3 +1,4 @@
+export * from "./capability-consent-error-details.js";
 export * from "./clawhub-trust-error-details.js";
 export * from "./install-policy-warning-error-details.js";
 export * from "./system-agent-error-details.js";
@@ -22,6 +23,8 @@ export type {
   ProjectCloneErrorDetails,
   ProjectCloneFailureCause,
   WizardNotFoundErrorDetails,
+  SetupAdmissionBusyErrorDetails,
+  SessionWorkspaceRecoveryRequiredErrorDetails,
 } from "./gateway-error-details.js";
 export {
   CronJobNotFoundErrorDetailsSchema,
@@ -32,7 +35,11 @@ export {
   ProjectCloneErrorDetailsSchema,
   SkillProposalRevisionChangedErrorDetailsSchema,
   WizardNotFoundErrorDetailsSchema,
+  SetupAdmissionBusyErrorDetailsSchema,
+  SessionWorkspaceRecoveryRequiredErrorDetailsSchema,
   buildMissingScopeErrorDetails,
   errorShape,
   missingScopeErrorShape,
 } from "./schema/error-codes.js";
+
+export { readSessionWorkspaceRecoveryRequiredError } from "./session-workspace-recovery-error-details.js";

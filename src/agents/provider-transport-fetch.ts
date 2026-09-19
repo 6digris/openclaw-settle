@@ -1,10 +1,10 @@
+import { emitModelTransportDebug, formatModelTransportDebugUrl } from "@openclaw/ai/diagnostics";
 /**
  * Guarded provider fetch transport utilities.
  *
  * Applies request timeouts, proxy/TLS overrides, SSRF policy, local-service leases, retry hints, and SSE normalization.
  */
-import { parseRetryAfterHttpDateMs } from "@openclaw/ai/internal/retry-after";
-import { emitModelTransportDebug, formatModelTransportDebugUrl } from "@openclaw/ai/transports";
+import { parseRetryAfterHeadersSeconds as parseRetryAfterSeconds } from "@openclaw/ai/internal/retry-after";
 import {
   isCloudMetadataIpAddress,
   isLinkLocalIpAddress,
@@ -15,7 +15,6 @@ import {
   asFiniteNumberInRange,
   clampTimerTimeoutMs,
   parseStrictFiniteNumber,
-  parseStrictNonNegativeInteger,
 } from "@openclaw/normalization-core/number-coercion";
 import {
   fetchWithSsrFGuard,
@@ -39,11 +38,13 @@ import {
   SECRET_SENTINEL_PATTERN,
   swapSecretSentinelsInText,
 } from "../secrets/sentinel.js";
-import { ProviderHttpError, readResponseTextLimited } from "./provider-http-errors.js";
 import {
-  ensureModelProviderLocalService,
-  type ProviderLocalServiceLease,
-} from "./provider-local-service.js";
+  ProviderHttpError,
+  readResponseTextLimited,
+  summarizeProviderTransportError,
+} from "./provider-http-errors.js";
+import type { ProviderLocalServiceLease } from "./provider-local-service-target.js";
+import { ensureModelProviderLocalService } from "./provider-local-service.js";
 import {
   buildProviderRequestDispatcherPolicy,
   getModelProviderRequestRouteFacts,
@@ -54,6 +55,7 @@ import {
 import { getProviderTransportDispatcherPool } from "./provider-transport-dispatcher-pool.js";
 
 const DEFAULT_MAX_SDK_RETRY_WAIT_SECONDS = 60;
+const SLOW_MODEL_FETCH_MS = 1_000;
 const OPENAI_SDK_STREAM_CONTENT_SNIFF_BYTES = 2 * 1024;
 const log = createSubsystemLogger("provider-transport-fetch");
 
@@ -72,17 +74,9 @@ const BLOCKED_EXACT_ORIGIN_TRUST_HOSTNAME_LABELS = new Set(["instance-data"]);
 const PLAIN_DECIMAL_NUMBER_RE = /^\d+(?:\.\d+)?$/;
 
 function hasReadableSseData(block: string): boolean {
-  const dataLines = block
+  return block
     .split(/\r\n|\n|\r/)
-    .filter((line) => line === "data" || line.startsWith("data:"))
-    .map((line) => {
-      if (line === "data") {
-        return "";
-      }
-      const value = line.slice("data:".length);
-      return value.startsWith(" ") ? value.slice(1) : value;
-    });
-  return dataLines.length > 0 && dataLines.join("\n").trim().length > 0;
+    .some((line) => line.startsWith("data:") && line.slice("data:".length).trim().length > 0);
 }
 
 function findSseEventBoundary(buffer: string): { index: number; length: number } | undefined {
@@ -464,37 +458,6 @@ function requestBodyHasStreamTrue(
   }
 }
 
-function parseRetryAfterSeconds(headers: Headers): number | undefined {
-  const retryAfterMs = headers.get("retry-after-ms");
-  if (retryAfterMs) {
-    const trimmedRetryAfterMs = retryAfterMs.trim();
-    if (/^\d+(?:\.\d+)?$/.test(trimmedRetryAfterMs)) {
-      const milliseconds = asFiniteNumberInRange(parseStrictFiniteNumber(trimmedRetryAfterMs), {
-        min: 0,
-        max: Number.MAX_SAFE_INTEGER,
-      });
-      return milliseconds === undefined ? Number.POSITIVE_INFINITY : milliseconds / 1000;
-    }
-  }
-
-  const retryAfter = headers.get("retry-after");
-  if (!retryAfter) {
-    return undefined;
-  }
-
-  const trimmedRetryAfterSeconds = retryAfter.trim();
-  if (/^\d+$/.test(trimmedRetryAfterSeconds)) {
-    return parseStrictNonNegativeInteger(trimmedRetryAfterSeconds) ?? Number.POSITIVE_INFINITY;
-  }
-
-  const retryAt = parseRetryAfterHttpDateMs(trimmedRetryAfterSeconds);
-  if (retryAt === undefined) {
-    return undefined;
-  }
-
-  return Math.max(0, (retryAt - Date.now()) / 1000);
-}
-
 function resolveMaxSdkRetryWaitSeconds(): number | undefined {
   const raw = process.env.OPENCLAW_SDK_RETRY_MAX_WAIT_SECONDS?.trim();
   if (!raw) {
@@ -821,24 +784,6 @@ export function buildGuardedModelFetch(
   const requestConfig = resolveModelRequestPolicy(model);
   const dispatcherPolicy = buildProviderRequestDispatcherPolicy(requestConfig);
   const requestTimeoutMs = resolveModelRequestTimeoutMs(model, timeoutMs);
-  const summarizeError = (error: unknown): string => {
-    if (!error || typeof error !== "object") {
-      return `type=${typeof error}`;
-    }
-    const record = error as Record<string, unknown>;
-    const cause =
-      record.cause && typeof record.cause === "object"
-        ? (record.cause as Record<string, unknown>)
-        : undefined;
-    const read = (value: unknown) => (typeof value === "string" ? value : typeof value);
-    return [
-      `name=${read(record.name)}`,
-      `code=${read(record.code)}`,
-      `causeName=${read(cause?.name)}`,
-      `causeCode=${read(cause?.code)}`,
-      `message=${error instanceof Error ? error.message : read(record.message)}`,
-    ].join(" ");
-  };
   return async (input, init) => {
     let localServiceLease: ProviderLocalServiceLease | undefined;
     const request = input instanceof Request ? new Request(input, init) : undefined;
@@ -929,19 +874,23 @@ export function buildGuardedModelFetch(
       });
       log.warn(
         `[model-fetch] error provider=${model.provider} api=${model.api} model=${model.id} ` +
-          `elapsedMs=${Date.now() - fetchStartedAt} ${summarizeError(remediatedError)}`,
+          `elapsedMs=${Date.now() - fetchStartedAt} ${summarizeProviderTransportError(remediatedError)}`,
       );
       localServiceLease?.release();
       throw remediatedError;
     }
     let response = result.response;
-    emitModelTransportDebug(
-      log,
+    const elapsedMs = Date.now() - fetchStartedAt;
+    const responseMessage =
       `[model-fetch] response provider=${model.provider} api=${model.api} model=${model.id} ` +
-        `status=${response.status} elapsedMs=${Date.now() - fetchStartedAt} ` +
-        `dispatcher=${result.dispatcherReused ? "reused" : "new"} ` +
-        `contentType=${response.headers.get("content-type") ?? ""}`,
-    );
+      `status=${response.status} elapsedMs=${elapsedMs} ` +
+      `dispatcher=${result.dispatcherReused ? "reused" : "new"} ` +
+      `contentType=${response.headers.get("content-type") ?? ""}`;
+    if (!response.ok || elapsedMs >= SLOW_MODEL_FETCH_MS) {
+      log.info(responseMessage);
+    } else {
+      emitModelTransportDebug(log, responseMessage);
+    }
     if (shouldBypassLongSdkRetry(response)) {
       const headers = new Headers(response.headers);
       headers.set("x-should-retry", "false");

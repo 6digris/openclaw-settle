@@ -1,5 +1,4 @@
 // Discord message processing coverage split by cohesive behavior.
-import { DEFAULT_EMOJIS } from "openclaw/plugin-sdk/channel-feedback";
 import { describe, expect, it, vi } from "vitest";
 import {
   BASE_CHANNEL_ROUTE,
@@ -264,7 +263,10 @@ describe("processDiscordMessage session routing", () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
-  it("does not inject the bot's previous message body when users reply to it", async () => {
+  it.each([
+    'Automation "daily update" failed 1 times\nCheck automation history for details.',
+    "The deployment is waiting for review.",
+  ])("preserves a user's reply to bot text without fetching self media: %s", async (body) => {
     const fetchImpl = vi.fn(async () => {
       throw new Error("self-reply media should not be fetched");
     });
@@ -290,7 +292,7 @@ describe("processDiscordMessage session routing", () => {
         referencedMessage: {
           id: "m-bot-previous",
           channelId: "c1",
-          content: "The same stale bot response keeps looping.",
+          content: body,
           timestamp: new Date().toISOString(),
           attachments: [
             {
@@ -318,8 +320,9 @@ describe("processDiscordMessage session routing", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(dispatchCtx.ReplyToId).toBe("m-bot-previous");
     expect(dispatchCtx.ReplyToSender).toBe("Spartacus");
-    expect(dispatchCtx.ReplyToBody).toBeUndefined();
-    expect(JSON.stringify(dispatchCtx)).not.toContain("The same stale bot response keeps looping.");
+    expect(dispatchCtx.ReplyToBody).toBe(body);
+    expect(dispatchCtx.RawBody).toBe("<@bot> hit that again");
+    expect(dispatchCtx.MediaPaths).toBeUndefined();
   });
 
   it("stores DM lastRoute with user target for direct-session continuity", async () => {
@@ -468,7 +471,7 @@ describe("processDiscordMessage session routing", () => {
   it("honors explicit status reactions for always-on guild replies", async () => {
     vi.useFakeTimers();
     dispatchInboundMessage.mockImplementationOnce(async (params?: DispatchInboundParams) => {
-      await params?.replyOptions?.onReasoningStream?.();
+      await params?.replyOptions?.onReasoningStream?.({});
       await new Promise((resolve) => {
         setTimeout(resolve, 1_000);
       });
@@ -499,9 +502,6 @@ describe("processDiscordMessage session routing", () => {
     await runPromise;
 
     expect(getLastDispatchReplyOptions()?.sourceReplyDeliveryMode).toBe("message_tool_only");
-    const emojis = getReactionEmojis();
-    expect(emojis).toContain("👀");
-    expect(emojis).toContain(DEFAULT_EMOJIS.thinking);
-    expect(emojis).toContain(DEFAULT_EMOJIS.done);
+    expect(getReactionEmojis()).toEqual(["👀"]);
   });
 });

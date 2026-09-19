@@ -1,4 +1,3 @@
-// Discord plugin module implements send.voice behavior.
 import fs from "node:fs/promises";
 import path from "node:path";
 import { recordChannelActivity } from "openclaw/plugin-sdk/channel-activity-runtime";
@@ -12,6 +11,7 @@ import { requireRuntimeConfig } from "openclaw/plugin-sdk/plugin-config-runtime"
 import { withTempWorkspace, resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import { loadWebMediaRaw } from "openclaw/plugin-sdk/web-media";
 import type { RequestClient } from "./internal/discord.js";
+import { withDiscordRequestAuthority } from "./internal/request-authority.js";
 import { parseAndResolveChannelRecipient } from "./recipient-resolution.js";
 import type { DiscordReplyReference } from "./reply-reference.js";
 import type { sendMessageDiscord } from "./send.outbound.js";
@@ -38,6 +38,7 @@ type VoiceMessageOpts = Pick<
   | "mediaLocalRoots"
   | "mediaReadFile"
   | "onPlatformSendDispatch"
+  | "assertPlatformSendAuthorized"
 >;
 
 function toDiscordSendResult(
@@ -96,6 +97,16 @@ export async function sendVoiceMessageDiscord(
   audioPath: string,
   opts: VoiceMessageOpts,
 ): Promise<DiscordSendResult> {
+  return await withDiscordRequestAuthority(opts.assertPlatformSendAuthorized, () =>
+    sendVoiceMessageDiscordInternal(to, audioPath, opts),
+  );
+}
+
+async function sendVoiceMessageDiscordInternal(
+  to: string,
+  audioPath: string,
+  opts: VoiceMessageOpts,
+): Promise<DiscordSendResult> {
   const cfg = requireRuntimeConfig(opts.cfg, "Discord voice send");
   return await withMaterializedVoiceMessageInput(audioPath, opts, async (localInputPath) => {
     let oggPath: string | null = null;
@@ -129,6 +140,7 @@ export async function sendVoiceMessageDiscord(
         opts.silent,
         token,
         opts.onPlatformSendDispatch,
+        opts.assertPlatformSendAuthorized,
       );
 
       recordChannelActivity({

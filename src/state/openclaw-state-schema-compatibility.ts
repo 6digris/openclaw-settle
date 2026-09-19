@@ -4,6 +4,7 @@ import {
   type SqliteSchemaIssue,
 } from "../infra/sqlite-schema-contract.js";
 import {
+  ORDERED_STARTUP_ADDITIVE_STATE_COLUMNS,
   CLAW_FIRST_USE_ADDITIVE_STATE_COLUMN_DEFINITIONS,
   CLAW_LAZY_ADDITIVE_STATE_COLUMN_DEFINITIONS,
   CLAW_STARTUP_ADDITIVE_STATE_COLUMN_DEFINITIONS,
@@ -28,11 +29,14 @@ const CLAW_FIRST_USE_ADDITIVE_STATE_COLUMNS = CLAW_FIRST_USE_ADDITIVE_STATE_COLU
 const CLAW_FIRST_USE_ADDITIVE_STATE_COLUMN_SET = new Set<string>(
   CLAW_FIRST_USE_ADDITIVE_STATE_COLUMNS,
 );
-const CLAW_STARTUP_ADDITIVE_STATE_COLUMN_SET = new Set<string>(
-  CLAW_STARTUP_ADDITIVE_STATE_COLUMN_DEFINITIONS.map(
+const CLAW_STARTUP_ADDITIVE_STATE_COLUMN_SET = new Set<string>([
+  ...CLAW_STARTUP_ADDITIVE_STATE_COLUMN_DEFINITIONS.map(
     ({ columnName, tableName }) => `${tableName}.${columnName}`,
   ),
-);
+  ...Object.values(ORDERED_STARTUP_ADDITIVE_STATE_COLUMNS)
+    .flat()
+    .map(([tableName, definition]) => `${tableName}.${definition.split(" ", 1)[0]}`),
+]);
 const CLAW_STARTUP_ADDITIVE_STATE_TABLES = [
   "worker_session_tool_operations",
   "worker_turn_tool_authorities",
@@ -50,15 +54,22 @@ function getOpenClawStateCanonicalNamedIndexSet(): ReadonlySet<string> {
   return openClawStateCanonicalNamedIndexSet;
 }
 
+const runtimeSchemaCache = new Map<boolean, string>();
+
 /** Project canonical SQL to the tables the shared runtime may create during this open. */
 export function getOpenClawStateRuntimeSchema(options: {
   includeVersionLazyAdditiveTables: boolean;
 }): string {
+  const { includeVersionLazyAdditiveTables } = options;
+  const cached = runtimeSchemaCache.get(includeVersionLazyAdditiveTables);
+  if (cached !== undefined) {
+    return cached;
+  }
   let schema = OPENCLAW_STATE_SCHEMA_SQL;
-  const omittedTables = options.includeVersionLazyAdditiveTables
+  const omittedTables = includeVersionLazyAdditiveTables
     ? FIRST_USE_STATE_TABLES
     : LAZY_ADDITIVE_STATE_TABLES;
-  const omittedIndexes = options.includeVersionLazyAdditiveTables
+  const omittedIndexes = includeVersionLazyAdditiveTables
     ? FIRST_USE_STATE_INDEXES
     : LAZY_ADDITIVE_STATE_INDEXES;
   for (const tableName of omittedTables) {
@@ -80,6 +91,7 @@ export function getOpenClawStateRuntimeSchema(options: {
     }
     schema = `${schema.slice(0, start)}${schema.slice(end + 1)}`;
   }
+  runtimeSchemaCache.set(includeVersionLazyAdditiveTables, schema);
   return schema;
 }
 
@@ -92,18 +104,11 @@ export const STATE_PERSISTENT_SCHEMA_COMPATIBILITY: SqliteSchemaCompatibility = 
       "package_integrity TEXT NOT NULL DEFAULT 'sha256:0000000000000000000000000000000000000000000000000000000000000000'",
     ],
     "claw_package_refs.updated_at_ms": ["updated_at_ms INTEGER NOT NULL DEFAULT 0"],
-    "cron_jobs.created_at_ms": ["created_at_ms INTEGER NOT NULL DEFAULT 0"],
     "cron_jobs.enabled": ["enabled INTEGER NOT NULL DEFAULT 1"],
     "cron_jobs.name": ["name TEXT NOT NULL DEFAULT ''"],
     "cron_jobs.payload_kind": ["payload_kind TEXT NOT NULL DEFAULT 'message'"],
-    "cron_jobs.schedule_kind": ["schedule_kind TEXT NOT NULL DEFAULT 'manual'"],
-    "cron_jobs.session_target": ["session_target TEXT NOT NULL DEFAULT 'main'"],
-    "cron_jobs.wake_mode": ["wake_mode TEXT NOT NULL DEFAULT 'auto'"],
     "current_conversation_bindings.conversation_kind": [
       "conversation_kind TEXT NOT NULL DEFAULT 'channel'",
-    ],
-    "current_conversation_bindings.target_agent_id": [
-      "target_agent_id TEXT NOT NULL DEFAULT 'main'",
     ],
     "operator_approvals.resolution_ref": ["resolution_ref TEXT"],
     "worker_environments.desktop_json": ["desktop_json TEXT"],

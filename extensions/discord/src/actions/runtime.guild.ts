@@ -1,21 +1,19 @@
-// Discord plugin module implements runtime.guild behavior.
 import { PermissionFlagsBits } from "discord-api-types/v10";
 import type { AgentToolResult } from "openclaw/plugin-sdk/agent-core";
-import { resolveDefaultDiscordAccountId } from "../accounts.js";
-import { isDiscordThreadChannelType } from "../channel-type.js";
-import { getGateway } from "../monitor/gateway-registry.js";
-import { getPresence } from "../monitor/presence-cache.js";
+import type { ActionGate } from "openclaw/plugin-sdk/channel-actions";
 import {
-  type ActionGate,
   jsonResult,
   readNonNegativeIntegerParam,
   readPositiveIntegerParam,
   readStringArrayParam,
   readStringParam,
-  type DiscordActionConfig,
-  type OpenClawConfig,
-} from "../runtime-api.js";
-import { discordGuildActionRuntime } from "./runtime-deps.js";
+} from "openclaw/plugin-sdk/channel-actions";
+import type { DiscordActionConfig, OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { resolveDefaultDiscordAccountId } from "../accounts.js";
+import { isDiscordThreadChannelType } from "../channel-type.js";
+import { getGateway } from "../monitor/gateway-registry.js";
+import { getPresence } from "../monitor/presence-cache.js";
+import * as discordGuildActionRuntime from "../send.js";
 import {
   createDiscordMessagingActionContext,
   type DiscordMessagingActionOptions,
@@ -183,20 +181,16 @@ async function resolveGuildAdminActionPermissions(params: {
     return params.guard.permissions;
   }
 
+  const edit = readDiscordChannelEditParams(params.values);
   const onlyReopen =
-    params.values.archived === false &&
-    !("name" in params.values) &&
-    !("topic" in params.values) &&
-    !("position" in params.values) &&
-    !("parentId" in params.values) &&
-    !("clearParent" in params.values) &&
-    !("nsfw" in params.values) &&
-    !("rateLimitPerUser" in params.values) &&
-    !("locked" in params.values) &&
-    !("autoArchiveDuration" in params.values) &&
+    edit.archived === false &&
+    // Derive the exception from the normalized final payload so future edit fields fail closed.
+    Object.entries(edit).every(
+      ([field, value]) => value === undefined || field === "channelId" || field === "archived",
+    ) &&
     !isLockedThreadChannel(channel);
   return onlyReopen
-    ? [PermissionFlagsBits.ManageThreads, PermissionFlagsBits.SendMessagesInThreads]
+    ? [PermissionFlagsBits.ManageThreads, PermissionFlagsBits.SendMessages]
     : [PermissionFlagsBits.ManageThreads];
 }
 
@@ -240,7 +234,20 @@ async function verifySenderGuildAdminPermission(params: {
         requiredPermissions,
         actionOptions,
       );
-  if (!hasPermission) {
+  const requiresCurrentThreadAccess =
+    params.action === "channelEdit" &&
+    requiredPermissions.includes(PermissionFlagsBits.SendMessages);
+  if (
+    !hasPermission ||
+    (requiresCurrentThreadAccess &&
+      (!targetChannelId ||
+        !(await discordGuildActionRuntime.canViewDiscordGuildChannel(
+          guildId,
+          targetChannelId,
+          senderUserId,
+          actionOptions,
+        ))))
+  ) {
     throw new Error("Sender does not have required permissions for this guild action.");
   }
 
@@ -322,6 +329,12 @@ export async function handleDiscordGuildAction(
   });
   const withOpts = (extra?: Record<string, unknown>) =>
     createDiscordActionOptions({ cfg, accountId, extra });
+  // Sender-scoped media policy must reach every guild action that reads a host-local source.
+  const mediaPolicyOptions = {
+    mediaAccess: options?.mediaAccess,
+    mediaLocalRoots: options?.mediaLocalRoots,
+    mediaReadFile: options?.mediaReadFile,
+  };
   const assertGuildMetadataReadAllowed = async (
     guildId: string,
     readOptions?: { filteredResults?: boolean },
@@ -416,7 +429,7 @@ export async function handleDiscordGuildAction(
           mediaUrl,
           roleIds: roleIds?.length ? roleIds : undefined,
         },
-        withOpts(),
+        createDiscordActionOptions({ cfg, accountId, extra: mediaPolicyOptions }),
       );
       return jsonResult({ ok: true, emoji });
     }
@@ -443,7 +456,7 @@ export async function handleDiscordGuildAction(
           tags,
           mediaUrl,
         },
-        withOpts(),
+        createDiscordActionOptions({ cfg, accountId, extra: mediaPolicyOptions }),
       );
       return jsonResult({ ok: true, sticker });
     }
@@ -551,9 +564,7 @@ export async function handleDiscordGuildAction(
       const entityTypeRaw = readStringParam(params, "entityType");
       const entityType = entityTypeRaw === "stage" ? 1 : entityTypeRaw === "external" ? 3 : 2;
       const image = imageUrl
-        ? await discordGuildActionRuntime.resolveEventCoverImage(imageUrl, {
-            localRoots: options?.mediaLocalRoots,
-          })
+        ? await discordGuildActionRuntime.resolveEventCoverImage(imageUrl, mediaPolicyOptions)
         : undefined;
       const payload = {
         name,

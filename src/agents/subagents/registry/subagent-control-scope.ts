@@ -1,11 +1,14 @@
 /** Controller identity, authorization, and controlled-run read scope. */
-import { sortSubagentRuns } from "../../../auto-reply/reply/subagents-utils.js";
+import type { TaskSummary } from "../../../../packages/gateway-protocol/src/schema/tasks.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import {
   isSubagentSessionKey,
   normalizeAgentId,
   parseAgentSessionKey,
 } from "../../../routing/session-key.js";
+import { readTaskBackingInstance } from "../../../tasks/task-backing-records.js";
+import { getTaskExecutionObservation } from "../../../tasks/task-execution-observation.js";
+import { findTaskByRunId } from "../../../tasks/task-registry-query.js";
 import { resolveSessionAgentId } from "../../agent-scope.js";
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
 import {
@@ -13,11 +16,13 @@ import {
   resolveMainSessionAlias,
 } from "../../tools/sessions-helpers.js";
 import { resolveStoredSubagentCapabilities } from "../spawn/subagent-capabilities.js";
-import { subagentRuns } from "./subagent-registry-memory.js";
+import { observeSubagentExecution } from "./subagent-execution-observation.js";
+import { getSubagentRunsForRequesterSession, subagentRuns } from "./subagent-registry-memory.js";
 import { buildSubagentRunReadIndexFromRuns } from "./subagent-registry-queries.js";
 import { getLatestLiveSubagentRunByChildSessionKey } from "./subagent-registry-read.js";
 import { getSubagentRunsSnapshotForRead } from "./subagent-registry-state.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
+import { sortSubagentRuns } from "./subagent-run-view.js";
 
 /** Recent-run default window used by subagent control UI/tools. */
 export const DEFAULT_RECENT_MINUTES = 30;
@@ -87,7 +92,7 @@ function resolveRunRequesterAgentId(
   return resolveSubagentRequesterAgentId(cfg, entry);
 }
 
-function isSubagentRunVisibleToSession(
+export function isSubagentRunVisibleToSession(
   entry: SubagentRunRecord,
   sessionKey: string,
   agentId: string,
@@ -107,21 +112,25 @@ function isSubagentRunVisibleToSession(
   );
 }
 
+export type ControlledSubagentRunsReadContext = {
+  runs: SubagentRunRecord[];
+  countPendingDescendantRuns(rootSessionKey: string): number;
+  getExecutionObservation(entry: SubagentRunRecord): NonNullable<TaskSummary["execution"]>;
+};
+
 /** Builds one stable snapshot for controlled-run listing and descendant status reads. */
 export function buildControlledSubagentRunsReadContext(
   controllerSessionKey: string,
   controllerAgentId?: string,
   cfg?: OpenClawConfig,
-): {
-  runs: SubagentRunRecord[];
-  countPendingDescendantRuns(rootSessionKey: string): number;
-} {
+): ControlledSubagentRunsReadContext {
   const key = controllerSessionKey.trim();
   const agentId = controllerAgentId ?? parseAgentSessionKey(key)?.agentId;
   if (!key || !agentId) {
     return {
       runs: [],
       countPendingDescendantRuns: () => 0,
+      getExecutionObservation: () => ({ state: "unknown" }),
     };
   }
 
@@ -134,6 +143,32 @@ export function buildControlledSubagentRunsReadContext(
     runs: sortSubagentRuns(filtered),
     countPendingDescendantRuns: (rootSessionKey) =>
       readIndex.countPendingDescendantRuns(rootSessionKey),
+    getExecutionObservation: (entry) => {
+      const taskRunId = entry.taskRunId ?? entry.runId;
+      const task = findTaskByRunId(taskRunId);
+      const backing = readTaskBackingInstance(task?.detail);
+      const requesterAgentId = resolveRunRequesterAgentId(entry, cfg);
+      // Child sessions and logical tasks survive successor runs; only the selected
+      // backing generation may contribute activity to this snapshot's detail row.
+      if (
+        task?.runtime === "subagent" &&
+        task.runId === taskRunId &&
+        task.childSessionKey === entry.childSessionKey &&
+        task.requesterSessionKey === entry.requesterSessionKey &&
+        requesterAgentId !== undefined &&
+        task.requesterAgentId === requesterAgentId &&
+        task.agentId ===
+          (parseAgentSessionKey(entry.childSessionKey)?.agentId ?? requesterAgentId) &&
+        backing?.runtime === "subagent" &&
+        backing.generation === entry.generation
+      ) {
+        return getTaskExecutionObservation(task);
+      }
+      return observeSubagentExecution(
+        entry,
+        getSubagentRunsForRequesterSession(entry.childSessionKey),
+      );
+    },
   };
 }
 
@@ -148,7 +183,7 @@ export function listControlledSubagentRuns(
 
 export function ensureSubagentControllerOwnsRun(params: {
   cfg: OpenClawConfig;
-  controller: ResolvedSubagentController;
+  controller: Pick<ResolvedSubagentController, "controllerSessionKey" | "controllerAgentId">;
   entry: SubagentRunRecord;
 }) {
   const owner = params.entry.controllerSessionKey?.trim() || params.entry.requesterSessionKey;
@@ -161,17 +196,6 @@ export function ensureSubagentControllerOwnsRun(params: {
     return undefined;
   }
   return "Subagents can only control runs spawned from their own session.";
-}
-
-export function isFinishedSubagentRunForSteer(
-  entry: SubagentRunRecord,
-  hasPendingDescendants: boolean,
-) {
-  return (
-    Boolean(entry.execution.endedAt) &&
-    entry.pauseReason !== "sessions_yield" &&
-    !hasPendingDescendants
-  );
 }
 
 export function getLatestOwnedSubagentRun(

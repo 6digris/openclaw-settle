@@ -1,8 +1,8 @@
-// Memory Core plugin module implements flush plan behavior.
 import {
   DEFAULT_AGENT_COMPACTION_RESERVE_TOKENS_FLOOR,
   parseNonNegativeByteSize,
   resolveCronStyleNow,
+  resolveEffectiveCompactionReserveTokens,
   SILENT_REPLY_TOKEN,
   type MemoryFlushPlan,
   type OpenClawConfig,
@@ -98,6 +98,7 @@ export function buildMemoryFlushPlan(
   params: {
     cfg?: OpenClawConfig;
     nowMs?: number;
+    contextWindowTokens?: number;
   } = {},
 ): MemoryFlushPlan | null {
   const resolved = params;
@@ -108,12 +109,23 @@ export function buildMemoryFlushPlan(
     return null;
   }
 
-  const softThresholdTokens =
+  let softThresholdTokens =
     normalizeNonNegativeInt(defaults?.softThresholdTokens) ?? DEFAULT_MEMORY_FLUSH_SOFT_TOKENS;
   const forceFlushTranscriptBytes =
     parseNonNegativeByteSize(defaults?.forceFlushTranscriptBytes) ??
     DEFAULT_MEMORY_FLUSH_FORCE_TRANSCRIPT_BYTES;
-  const reserveTokensFloor = DEFAULT_AGENT_COMPACTION_RESERVE_TOKENS_FLOOR;
+  let reserveTokensFloor = DEFAULT_AGENT_COMPACTION_RESERVE_TOKENS_FLOOR;
+  const contextWindowTokens = normalizeNonNegativeInt(params.contextWindowTokens);
+  if (contextWindowTokens !== null && contextWindowTokens > 0) {
+    reserveTokensFloor = resolveEffectiveCompactionReserveTokens({
+      contextTokenBudget: contextWindowTokens,
+      reserveTokens: reserveTokensFloor,
+    });
+    softThresholdTokens = Math.min(
+      softThresholdTokens,
+      Math.floor((contextWindowTokens - reserveTokensFloor) / 2),
+    );
+  }
 
   const { timeLine, userTimezone } = resolveCronStyleNow(cfg ?? {}, nowMs);
   const dateStamp = formatDateStampInTimezone(nowMs, userTimezone);

@@ -4,6 +4,7 @@ import {
   parseTerminalToolCallArguments,
   type ToolArgumentPreviewSchedule,
 } from "@openclaw/ai/internal/runtime";
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { WORKER_PROTOCOL_MAX_IDENTIFIER_LENGTH } from "../../packages/gateway-protocol/src/schema/worker-admission.js";
 import type {
   WorkerInferenceContext,
@@ -11,8 +12,11 @@ import type {
   WorkerInferenceModelRef,
   WorkerInferenceOptions,
   WorkerInferenceStartParams,
-  WorkerInferenceTerminalOutcome,
 } from "../../packages/gateway-protocol/src/schema/worker-inference.js";
+import {
+  invalidateComputerFrameIfMissing,
+  type ComputerContextEpoch,
+} from "../agents/tools/computer-tool.js";
 import type {
   AssistantMessage,
   AssistantMessageEvent,
@@ -20,7 +24,11 @@ import type {
   ToolCall,
 } from "../llm/types.js";
 import { createAssistantMessageEventStream } from "../llm/utils/event-stream.js";
-import { isWorkerTranscriptMessageFrameSafe } from "./transcript-message.js";
+import { fitWorkerReplayImages } from "./replay-message-window.js";
+import {
+  isWorkerTranscriptMessageFrameSafe,
+  WORKER_PROVIDER_REPLAY_LOCAL_RETRY_MESSAGE,
+} from "./transcript-message.js";
 import type { WorkerInferenceProxyClient } from "./worker-rpc-clients.js";
 
 type StreamingToolCall = ToolCall & {
@@ -34,6 +42,7 @@ type WorkerInferenceStreamAdapterOptions = {
   runId: string;
   turnId: string;
   modelRef: WorkerInferenceModelRef;
+  computerContextEpoch?: ComputerContextEpoch;
 };
 
 type WorkerInferenceStreamRequest = {
@@ -207,18 +216,6 @@ function processInferenceEvent(
   return undefined;
 }
 
-function terminalErrorMessage(
-  partial: AssistantMessage,
-  outcome: Extract<WorkerInferenceTerminalOutcome, { type: "error" }>,
-): AssistantMessage {
-  partial.stopReason = outcome.reason === "cancelled" ? "aborted" : "error";
-  partial.errorMessage = outcome.message;
-  if (outcome.usage) {
-    partial.usage = structuredClone(outcome.usage);
-  }
-  return partial;
-}
-
 function transcriptSafeErrorMessage(
   modelRef: WorkerInferenceModelRef,
   message: AssistantMessage,
@@ -227,9 +224,55 @@ function transcriptSafeErrorMessage(
     return message;
   }
   const replacement = emptyAssistantMessage(modelRef);
+  replacement.api = message.api;
+  replacement.provider = message.provider;
+  replacement.model = message.model;
+  replacement.timestamp = message.timestamp;
   replacement.stopReason = message.stopReason === "aborted" ? "aborted" : "error";
-  replacement.errorMessage = "Worker inference result exceeds the transcript message limit.";
+  replacement.errorMessage = truncateUtf16Safe(
+    message.errorMessage ?? "Worker inference result exceeds the transcript message limit.",
+    256,
+  );
+  replacement.usage = structuredClone(message.usage);
   return replacement;
+}
+
+function createInferenceRequestMeasure(request: WorkerInferenceStartParams) {
+  const measureFull = (messages: WorkerInferenceContext["messages"]) =>
+    Buffer.byteLength(
+      JSON.stringify({
+        type: "req",
+        // The dispatcher creates UUID request IDs: this has the exact same encoded size.
+        id: "00000000-0000-4000-8000-000000000000",
+        method: "worker.inference.start",
+        params: { ...request, context: { ...request.context, messages } },
+      }),
+      "utf8",
+    );
+  let envelopeBytes = 0;
+  let messageBytes: WeakMap<WorkerInferenceContext["messages"][number], number> | undefined;
+  return (messages: WorkerInferenceContext["messages"]) => {
+    // Fitting requests keep the single full encoding; allocate only after pruning starts.
+    if (messages === request.context.messages) {
+      return measureFull(messages);
+    }
+    if (!messageBytes) {
+      envelopeBytes = measureFull([]);
+      messageBytes = new WeakMap();
+    }
+    let bytes = envelopeBytes + Math.max(0, messages.length - 1);
+    for (const message of messages) {
+      // The fitter replaces each changed message but reuses its candidate array.
+      // Cache message sizes only, scoped to this cloned request's synchronous fitting.
+      let size = messageBytes.get(message);
+      if (size === undefined) {
+        size = Buffer.byteLength(JSON.stringify(message), "utf8");
+        messageBytes.set(message, size);
+      }
+      bytes += size;
+    }
+    return bytes;
+  };
 }
 
 export function createWorkerInferenceStreamAdapter(
@@ -253,41 +296,69 @@ export function createWorkerInferenceStreamAdapter(
         WORKER_PROTOCOL_MAX_IDENTIFIER_LENGTH - turnSuffix.length,
       )}${turnSuffix}`,
     };
-    const request: WorkerInferenceStartParams = {
+    let request: WorkerInferenceStartParams = {
       ...identity,
       modelRef: inferenceRequest.modelRef,
       context: structuredClone(inferenceRequest.context),
       options: structuredClone(inferenceRequest.options),
     };
-    const finishAborted = () => {
+    const finishError = (
+      error: unknown,
+      reason: "aborted" | "error",
+      usage?: AssistantMessage["usage"],
+    ) => {
       if (settled) {
         return;
       }
       settled = true;
-      partial.stopReason = "aborted";
-      partial.errorMessage = "Worker inference aborted.";
+      partial.stopReason = reason;
+      partial.errorMessage = error instanceof Error ? error.message : String(error);
+      if (usage) {
+        partial.usage = structuredClone(usage);
+      }
       stream.push({
         type: "error",
-        reason: "aborted",
+        reason,
         error: transcriptSafeErrorMessage(adapter.modelRef, partial),
       });
       stream.end();
     };
+    const fail = (error: unknown) =>
+      finishError(error, inferenceRequest.signal?.aborted ? "aborted" : "error");
     const abort = () => {
       void adapter.client
         .cancel(identity)
         .catch(() => undefined)
-        .finally(finishAborted);
+        .finally(() => finishError("Worker inference aborted.", "aborted"));
     };
     if (inferenceRequest.signal?.aborted) {
-      partial.stopReason = "aborted";
-      partial.errorMessage = "Worker inference aborted before start.";
-      stream.push({
-        type: "error",
-        reason: "aborted",
-        error: transcriptSafeErrorMessage(adapter.modelRef, partial),
-      });
-      stream.end();
+      finishError("Worker inference aborted before start.", "aborted");
+      return stream;
+    }
+    try {
+      const messages = fitWorkerReplayImages(
+        request.context.messages,
+        createInferenceRequestMeasure(request),
+        adapter.computerContextEpoch?.frameToolCallId,
+      );
+      if (!messages) {
+        throw new Error(
+          request.context.messages.some(
+            (message) => message.role === "assistant" && message.providerReplay !== undefined,
+          )
+            ? `${WORKER_PROVIDER_REPLAY_LOCAL_RETRY_MESSAGE} (inference payload limit)`
+            : "Worker inference context exceeds the image transport limit. Use fewer or smaller images in this turn, then retry.",
+        );
+      }
+      request = { ...request, context: { ...request.context, messages } };
+      if (adapter.computerContextEpoch) {
+        invalidateComputerFrameIfMissing({
+          contextEpoch: adapter.computerContextEpoch,
+          messages: messages.filter((message) => message.role === "toolResult"),
+        });
+      }
+    } catch (error) {
+      fail(error);
       return stream;
     }
     inferenceRequest.signal?.addEventListener("abort", abort, { once: true });
@@ -312,12 +383,13 @@ export function createWorkerInferenceStreamAdapter(
         if (settled) {
           return;
         }
-        settled = true;
         if (outcome.type === "done") {
+          settled = true;
           if (!isWorkerTranscriptMessageFrameSafe(outcome.message)) {
             const message = emptyAssistantMessage(adapter.modelRef);
             message.stopReason = "error";
             message.errorMessage = "Worker inference result exceeds the transcript message limit.";
+            message.usage = structuredClone(outcome.message.usage);
             stream.push({ type: "error", reason: "error", error: message });
             stream.end();
             return;
@@ -328,28 +400,13 @@ export function createWorkerInferenceStreamAdapter(
           stream.end();
           return;
         }
-        const message = transcriptSafeErrorMessage(
-          adapter.modelRef,
-          terminalErrorMessage(partial, outcome),
+        finishError(
+          outcome.message,
+          outcome.reason === "cancelled" ? "aborted" : "error",
+          outcome.usage,
         );
-        const reason = outcome.reason === "cancelled" ? "aborted" : "error";
-        stream.push({ type: "error", reason, error: message });
-        stream.end();
       })
-      .catch((error: unknown) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        partial.stopReason = inferenceRequest.signal?.aborted ? "aborted" : "error";
-        partial.errorMessage = error instanceof Error ? error.message : String(error);
-        stream.push({
-          type: "error",
-          reason: partial.stopReason,
-          error: transcriptSafeErrorMessage(adapter.modelRef, partial),
-        });
-        stream.end();
-      })
+      .catch(fail)
       .finally(() => {
         inferenceRequest.signal?.removeEventListener("abort", abort);
       });

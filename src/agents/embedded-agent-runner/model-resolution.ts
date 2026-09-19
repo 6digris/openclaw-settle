@@ -1,5 +1,6 @@
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { AuthProfileCredential } from "../auth-profiles/types.js";
+import type { ModelFallbackRouteResolution } from "../model-fallback.types.js";
 import {
   prepareModelRuntimeSnapshot,
   type PreparedModelRuntimeSnapshot,
@@ -10,9 +11,11 @@ type ModelResolution = Awaited<ReturnType<typeof resolveModelAsync>>;
 
 /** Resolves embedded-run models through discovery first, then the prepared static catalog. */
 export async function resolveTieredModel(params: {
+  assertCurrent?: () => void;
   provider: string;
   fallbackProvider?: string;
   modelId: string;
+  requestedRouteResolution?: ModelFallbackRouteResolution;
   agentDir: string;
   config?: OpenClawConfig;
   workspaceDir: string;
@@ -25,40 +28,39 @@ export async function resolveTieredModel(params: {
     params.fallbackProvider && params.fallbackProvider !== params.provider
       ? [params.provider, params.fallbackProvider]
       : [params.provider];
-  let firstResolution: ModelResolution | undefined;
   const resolveCandidates = async (options: Parameters<typeof resolveModelAsync>[4]) => {
+    const modelOptions: Parameters<typeof resolveModelAsync>[4] = {
+      ...options,
+      assertCurrent: params.assertCurrent,
+      workspaceDir: params.workspaceDir,
+      authProfileId: params.authProfileId,
+      authProfileMode: params.authProfileMode,
+      modelIdSource: params.requestedRouteResolution === "resolved" ? "selected" : "input",
+    };
+    let firstFailure: { provider: string; resolution: ModelResolution } | undefined;
     for (const provider of providers) {
       const resolution = await resolveModelAsync(
         provider,
         params.modelId,
         params.agentDir,
         params.config,
-        options,
+        modelOptions,
       );
-      firstResolution ??= resolution;
       if (resolution.model) {
-        return { provider, resolution };
+        return { provider: resolution.logicalRef.provider, resolution };
       }
+      firstFailure ??= { provider, resolution };
     }
-    return undefined;
+    return firstFailure!;
   };
   const firstTier = await resolveCandidates({
     skipAgentDiscovery: true,
     allowBundledStaticCatalogFallback: params.staticCatalogOwnsTransport,
     preferBundledStaticCatalogTransport: params.staticCatalogOwnsTransport,
     preparedModelRuntime: params.preparedModelRuntime,
-    workspaceDir: params.workspaceDir,
-    authProfileId: params.authProfileId,
-    authProfileMode: params.authProfileMode,
   });
-  if (firstTier) {
+  if (firstTier.resolution.model || params.staticCatalogOwnsTransport) {
     return firstTier;
-  }
-  if (params.staticCatalogOwnsTransport) {
-    return {
-      provider: params.fallbackProvider ?? params.provider,
-      resolution: firstResolution!,
-    };
   }
   const config = params.config ?? {};
   const preparedModelRuntime =
@@ -68,17 +70,11 @@ export async function resolveTieredModel(params: {
       agentDir: params.agentDir,
       workspaceDir: params.workspaceDir,
     }));
-  return (
-    (await resolveCandidates({
-      ...preparedModelRuntime.createStores(),
-      workspaceDir: params.workspaceDir,
-      authProfileId: params.authProfileId,
-      authProfileMode: params.authProfileMode,
-      allowBundledStaticCatalogFallback: true,
-      preparedModelRuntime,
-    })) ?? {
-      provider: params.fallbackProvider ?? params.provider,
-      resolution: firstResolution!,
-    }
-  );
+  // The prepared tier owns the final failure; an earlier discovery miss lacks
+  // the route metadata needed to explain a provider-declared retirement.
+  return await resolveCandidates({
+    ...preparedModelRuntime.createStores(),
+    allowBundledStaticCatalogFallback: true,
+    preparedModelRuntime,
+  });
 }

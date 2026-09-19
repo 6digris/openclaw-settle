@@ -3,6 +3,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushDiagnosticsTimeline } from "../infra/diagnostics-timeline.js";
 import { ExpectedCliError, formatCliJsonFailure } from "./failure-output.js";
 import { createHostedMarketplaceFeedFixture } from "./plugins-marketplace-feed.test-support.js";
 
@@ -54,6 +55,7 @@ async function createTimelinePath(): Promise<string> {
 }
 
 async function readTimeline(pathname: string): Promise<Record<string, unknown>[]> {
+  flushDiagnosticsTimeline();
   const content = await readFile(pathname, "utf8");
   return content
     .trim()
@@ -73,6 +75,7 @@ describe("plugins marketplace entries", () => {
   });
 
   afterEach(() => {
+    flushDiagnosticsTimeline();
     vi.unstubAllEnvs();
   });
 
@@ -194,7 +197,7 @@ describe("plugins marketplace entries", () => {
     expect(JSON.stringify(mocks.defaultRuntime.writeJson.mock.calls)).not.toContain(privateQuery);
   });
 
-  it("prints bundled fallback entries without failing", async () => {
+  it("prints npm first even for a catalog with the old ClawHub default", async () => {
     mocks.getRuntimeConfig.mockReturnValue({});
     mocks.loadConfiguredHostedOfficialExternalPluginCatalogEntries.mockResolvedValue({
       source: "bundled-fallback",
@@ -206,7 +209,7 @@ describe("plugins marketplace entries", () => {
             install: {
               clawhubSpec: "clawhub:@openclaw/acpx",
               npmSpec: "@openclaw/acpx",
-              defaultChoice: "npm",
+              defaultChoice: "clawhub",
             },
           },
         },
@@ -323,7 +326,18 @@ describe("plugins marketplace list", () => {
   const manifest = {
     name: "QA Marketplace",
     version: "1.0.0",
-    plugins: [{ name: "demo", source: { kind: "path", path: "./plugins/demo" } }],
+    plugins: [
+      { name: "numeric", version: "1.2.3" },
+      { name: "prefixed", version: "v1.2.3" },
+      { name: "uppercase", version: "V1.2.3" },
+      { name: "opaque", version: "canary" },
+      { name: "padded", version: "  v1.2.3  " },
+      { name: "missing" },
+    ].map((plugin) => ({
+      name: plugin.name,
+      version: plugin.version,
+      source: { kind: "path", path: "./plugins/demo" },
+    })),
   };
 
   beforeEach(() => {
@@ -347,7 +361,8 @@ describe("plugins marketplace list", () => {
 
   it("keeps remote source progress out of JSON output", async () => {
     mockMarketplaceListResult({ ok: true });
-    const { runPluginMarketplaceListCommand } = await import("./plugins-cli.runtime.js");
+    const { runPluginMarketplaceListCommand } =
+      await import("./plugins-marketplace-list-command.js");
 
     await runPluginMarketplaceListCommand(source, { json: true });
 
@@ -364,13 +379,21 @@ describe("plugins marketplace list", () => {
 
   it("preserves remote source progress and marketplace entries in human output", async () => {
     mockMarketplaceListResult({ ok: true });
-    const { runPluginMarketplaceListCommand } = await import("./plugins-cli.runtime.js");
+    const { runPluginMarketplaceListCommand } =
+      await import("./plugins-marketplace-list-command.js");
 
     await runPluginMarketplaceListCommand(source, {});
 
     const output = mocks.defaultRuntime.log.mock.calls.map(([line]) => String(line));
     expect(output[0]).toBe(`Cloning marketplace source ${source}...`);
-    expect(output.join("\n")).toContain("demo");
+    expect(output.slice(2)).toEqual([
+      "numeric v1.2.3",
+      "prefixed v1.2.3",
+      "uppercase V1.2.3",
+      "opaque canary",
+      "padded v1.2.3",
+      "missing",
+    ]);
     expect(mocks.defaultRuntime.writeJson).not.toHaveBeenCalled();
     expect(mocks.defaultRuntime.error).not.toHaveBeenCalled();
   });
@@ -378,7 +401,8 @@ describe("plugins marketplace list", () => {
   it("hands quiet remote source failures to the canonical JSON error renderer", async () => {
     const message = "mock git remote unavailable";
     mockMarketplaceListResult({ ok: false, error: message });
-    const { runPluginMarketplaceListCommand } = await import("./plugins-cli.runtime.js");
+    const { runPluginMarketplaceListCommand } =
+      await import("./plugins-marketplace-list-command.js");
 
     const failure = await runPluginMarketplaceListCommand(source, { json: true }).catch(
       (error: unknown) => error,

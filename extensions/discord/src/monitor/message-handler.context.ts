@@ -1,4 +1,3 @@
-// Discord plugin module implements message handler.context behavior.
 import {
   buildChannelInboundEventContext,
   createCommandTurnContext,
@@ -38,12 +37,9 @@ import {
 } from "./message-handler.history.js";
 import type { DiscordMessagePreflightContext } from "./message-handler.preflight.js";
 import { removeDiscordReplayHistoryEntry } from "./message-handler.retry.js";
-import {
-  formatDiscordMediaText,
-  resolveReferencedReplyMediaList,
-  resolveDiscordMessageText,
-  type DiscordMediaInfo,
-} from "./message-utils.js";
+import { formatDiscordMediaText, resolveReferencedReplyMediaList } from "./message-media.js";
+import type { DiscordMediaInfo } from "./message-media.js";
+import { resolveDiscordMessageText } from "./message-text.js";
 import { buildDirectLabel, buildGuildLabel, resolveReplyContext } from "./reply-context.js";
 import { buildDiscordRoutePeer } from "./route-resolution.js";
 import { resolveDiscordAutoThreadReplyPlan, resolveDiscordThreadStarter } from "./threading.js";
@@ -56,10 +52,6 @@ function normalizeDiscordDmOwnerEntry(entry: string): string | undefined {
   const normalized = normalizeDiscordAllowList([entry], ["discord:", "user:", "pk:"]);
   const candidate = normalized?.ids.values().next().value;
   return typeof candidate === "string" && /^\d+$/.test(candidate) ? candidate : undefined;
-}
-
-function isContextAborted(abortSignal?: AbortSignal): boolean {
-  return Boolean(abortSignal?.aborted);
 }
 
 export async function buildDiscordMessageProcessContext(params: {
@@ -187,12 +179,12 @@ export async function buildDiscordMessageProcessContext(params: {
         })
       : body;
   const bodyWithMediaNotice = appendMediaUnavailableNotice(text) ?? text;
-  // Agent-facing body prefers the framed transcript and falls back to typed
-  // text; machine transcriptions are always labeled untrusted for the model.
+  // Keep prepared message content separate from command provenance; machine
+  // transcriptions are always labeled untrusted for the model.
   const agentFacingBody =
     preflightAudioTranscript !== undefined
       ? formatAudioTranscriptForAgent(preflightAudioTranscript)
-      : (baseText ?? text);
+      : text;
   let combinedBody = formatInboundEnvelope({
     channel: "Discord",
     from: fromLabel,
@@ -247,14 +239,6 @@ export async function buildDiscordMessageProcessContext(params: {
         memberRoleIds: replyContext.memberRoleIds,
       })
     : true;
-  const replyVisible = evaluateSupplementalContextVisibility({
-    mode: contextVisibilityMode,
-    kind: "quote",
-    senderAllowed: replySenderAllowed,
-  }).include;
-  if (replyContext && !replyVisible && isGuildMessage) {
-    logVerbose(`discord: drop reply context (mode=${contextVisibilityMode})`);
-  }
   if (forumContextLine) {
     combinedBody = `${combinedBody}\n${forumContextLine}`;
   }
@@ -269,6 +253,7 @@ export async function buildDiscordMessageProcessContext(params: {
       const starter = await resolveDiscordThreadStarter({
         channel: threadChannel,
         client,
+        accountId,
         parentId: threadParentId,
         parentType: threadParentType,
         resolveTimestampMs,
@@ -397,6 +382,8 @@ export async function buildDiscordMessageProcessContext(params: {
     channelIngress,
     channel: "discord",
     resolveSupplementalMedia: true,
+    // User-selected bot text is reply context, not a new bot-authored event.
+    suppressSelfQuoteBody: false,
     contextVisibility: contextVisibilityMode,
     accountId: route.accountId,
     messageId: canonicalMessageId ?? message.id,
@@ -480,34 +467,33 @@ export async function buildDiscordMessageProcessContext(params: {
       transcribed: (_media, index) => index === preflightAudioIndex,
     }),
     supplemental: {
-      quote:
-        replyContext && replyVisible
-          ? {
-              id: replyContext.id,
-              body: replyContext.body,
-              sender: replyContext.sender,
-              senderAllowed: replySenderAllowed,
-              isSelf: Boolean(botUserId && replyContext.senderId === botUserId),
-              media: async () => {
-                const referencedReplyMediaList = await resolveReferencedReplyMediaList(
-                  message,
-                  mediaMaxBytes,
-                  {
-                    fetchImpl: discordRestFetch,
-                    ssrfPolicy: cfg.browser?.ssrfPolicy,
-                    readIdleTimeoutMs: DISCORD_ATTACHMENT_IDLE_TIMEOUT_MS,
-                    totalTimeoutMs: DISCORD_ATTACHMENT_TOTAL_TIMEOUT_MS,
-                    abortSignal,
-                  },
-                );
-                return isContextAborted(abortSignal)
-                  ? []
-                  : await toInboundMediaFactsWithMetadata(referencedReplyMediaList, {
-                      messageId: replyContext.id,
-                    });
-              },
-            }
-          : undefined,
+      quote: replyContext
+        ? {
+            id: replyContext.id,
+            body: replyContext.body,
+            sender: replyContext.sender,
+            senderAllowed: replySenderAllowed,
+            isSelf: Boolean(botUserId && replyContext.senderId === botUserId),
+            media: async () => {
+              const referencedReplyMediaList = await resolveReferencedReplyMediaList(
+                message,
+                mediaMaxBytes,
+                {
+                  fetchImpl: discordRestFetch,
+                  ssrfPolicy: cfg.browser?.ssrfPolicy,
+                  readIdleTimeoutMs: DISCORD_ATTACHMENT_IDLE_TIMEOUT_MS,
+                  totalTimeoutMs: DISCORD_ATTACHMENT_TOTAL_TIMEOUT_MS,
+                  abortSignal,
+                },
+              );
+              return abortSignal?.aborted
+                ? []
+                : await toInboundMediaFactsWithMetadata(referencedReplyMediaList, {
+                    messageId: replyContext.id,
+                  });
+            },
+          }
+        : undefined,
       thread: {
         starterBody: !effectivePreviousTimestamp ? threadStarterBody : undefined,
         label: threadLabel,
@@ -516,6 +502,7 @@ export async function buildDiscordMessageProcessContext(params: {
       groupSystemPrompt: isGuildMessage ? groupSystemPrompt : undefined,
     },
     extra: {
+      GroupThread: ctx.groupThread,
       ...(preflightAudioTranscript !== undefined ? { Transcript: preflightAudioTranscript } : {}),
       GroupSubject: isDirectMessage ? undefined : groupChannel,
       GroupChannel: groupChannel,

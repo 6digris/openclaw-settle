@@ -1,24 +1,19 @@
+import type {
+  ApprovalDecision,
+  ApprovalTerminalReason,
+} from "../../../packages/gateway-protocol/src/schema/approvals.js";
 import type { AnyAgentTool } from "../tools/common.js";
 
-type AgentHarnessHostApprovalDecision = "allow-once" | "allow-always" | "deny";
-
-type AgentHarnessHostApprovalTerminalReason =
-  | "user"
-  | "timeout"
-  | "malformed-verdict"
-  | "no-route"
-  | "run-aborted"
-  | "gateway-restart"
-  | "storage-corrupt";
-
 type AgentHarnessHostApprovalResult = Readonly<{
-  decision: AgentHarnessHostApprovalDecision | null | undefined;
-  terminalReason: AgentHarnessHostApprovalTerminalReason | null | undefined;
+  decision: ApprovalDecision | null | undefined;
+  terminalReason: ApprovalTerminalReason | null | undefined;
 }>;
 
 type AgentHarnessPreparedEnvironment = Readonly<{
   credentialScrubEnv: Readonly<Record<string, string>>;
   localIdentityEnv: Readonly<Record<string, string>>;
+  /** Local child destination facts; must not be projected into a remote or sandbox process. */
+  localProcessEnv?: Readonly<Record<string, string>>;
   /** Non-secret fact used to select the local GitHub identity overlay. */
   managedLocalIdentity: boolean;
 }>;
@@ -33,6 +28,17 @@ export type AgentHarnessHostCapabilities = Readonly<{
   version: 1;
   /** Fails closed unless this exact admitted run capability remains active. */
   assertActive: () => void;
+  /** Reports one completed model call's output tokens to this admitted run's live total. */
+  reportOutputTokens?: (outputTokens: number) => void;
+  /** Adds native provenance only to this host's exact current admitted prompt. */
+  annotateCurrentUserTurn?: (
+    annotation: import("../../sessions/user-turn-transcript.types.js").UserTurnTranscriptAnnotation,
+  ) => Promise<void>;
+  /** Rebuilds retained attachments under this host's captured media policy and run authority. */
+  prepareContextMedia?: (request: {
+    message: import("../runtime/index.js").AgentMessage;
+    maxChars: number;
+  }) => Promise<{ text?: string; images: import("../../llm/types.js").ImageContent[] }>;
   /** Closure-bound event sink backed by the host-owned trajectory recorder. */
   trajectory?: Readonly<{
     recordEvent: (type: string, data?: Record<string, unknown>) => void;
@@ -69,15 +75,19 @@ export type AgentHarnessHostCapabilities = Readonly<{
     },
   ) => ReturnType<(typeof import("../agent-tools.before-tool-call.js"))["runBeforeToolCallHook"]>;
   requestApproval: (request: {
+    signal?: AbortSignal;
     title: string;
     description: string;
     severity: "info" | "warning";
     toolName: string;
     toolCallId?: string;
-    allowedDecisions?: AgentHarnessHostApprovalDecision[];
+    mcpTool?: { server: string; tool: string };
+    /** Persistence-only proof; loss of correlation does not cancel a one-shot approval. */
+    isMcpToolApprovalActive?: () => boolean;
+    allowedDecisions?: ApprovalDecision[];
     timeoutMs: number;
     transportTimeoutMs?: number;
-  }) => Promise<{ id?: string; decision?: AgentHarnessHostApprovalDecision | null } | undefined>;
+  }) => Promise<{ id?: string; decision?: ApprovalDecision | null } | undefined>;
   waitForApproval: (request: {
     approvalId: string;
     timeoutMs: number;

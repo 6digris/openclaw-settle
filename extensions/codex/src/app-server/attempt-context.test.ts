@@ -10,16 +10,17 @@ import {
   clearMemoryPluginState,
   registerMemoryCapability,
 } from "openclaw/plugin-sdk/memory-host-core";
+import { withTempDir } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildCodexOpenClawPromptContext,
   buildCodexWatchedSessionsContext,
-  buildCodexWorkspaceBootstrapContext,
   buildCodexSystemPromptReport,
   readContextEngineThreadBootstrapProjection,
   readMirroredSessionHistoryMessages,
   resolveContextEngineBootstrapProjectionDecision,
 } from "./attempt-context.js";
+import { buildCodexWorkspaceBootstrapContext } from "./attempt-workspace-context.js";
 import type { CodexDynamicToolSpec } from "./protocol.js";
 import type { CodexAppServerContextEngineBinding } from "./session-binding.js";
 
@@ -119,34 +120,36 @@ describe("Codex app-server attempt context", () => {
   });
 
   it("keeps MEMORY.md injected when sandbox effective workspace differs", async () => {
-    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-memory-workspace-"));
-    const sandboxWorkspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-memory-sandbox-"));
-    const memorySummary = "Sandboxed turns need bounded memory fallback.";
-    await fs.writeFile(path.join(workspaceDir, "MEMORY.md"), memorySummary);
+    await withTempDir("codex-memory-workspace-", async (workspaceDir) => {
+      await withTempDir("codex-memory-sandbox-", async (sandboxWorkspaceDir) => {
+        const memorySummary = "Sandboxed turns need bounded memory fallback.";
+        await fs.writeFile(path.join(workspaceDir, "MEMORY.md"), memorySummary);
 
-    const context = await buildCodexWorkspaceBootstrapContext({
-      params: {
-        sessionId: "session-1",
-        sessionKey: "agent:main:session-1",
-        config: {
-          agents: {
-            defaults: {
-              workspace: workspaceDir,
+        const context = await buildCodexWorkspaceBootstrapContext({
+          params: {
+            sessionId: "session-1",
+            sessionKey: "agent:main:session-1",
+            config: {
+              agents: {
+                defaults: {
+                  workspace: workspaceDir,
+                },
+              },
             },
-          },
-        },
-      } as EmbeddedRunAttemptParams,
-      resolvedWorkspace: workspaceDir,
-      effectiveWorkspace: sandboxWorkspaceDir,
-      sessionKey: "agent:main:session-1",
-      sessionAgentId: "main",
-      memoryToolNames: ["memory_search", "memory_get"],
-      ringZeroActive: false,
-    });
+          } as EmbeddedRunAttemptParams,
+          resolvedWorkspace: workspaceDir,
+          effectiveWorkspace: sandboxWorkspaceDir,
+          sessionKey: "agent:main:session-1",
+          sessionAgentId: "main",
+          memoryToolNames: ["memory_search", "memory_get"],
+          ringZeroActive: false,
+        });
 
-    expect(context.memoryReferenceFiles).toEqual([]);
-    expect(context.promptContext).toContain(memorySummary);
-    expect(context.memoryToolRouted).toBe(false);
+        expect(context.memoryReferenceFiles).toEqual([]);
+        expect(context.promptContext).toContain(memorySummary);
+        expect(context.memoryToolRouted).toBe(false);
+      });
+    });
   });
 
   it("passes agent context to Codex memory collaboration guidance", async () => {
@@ -258,6 +261,7 @@ describe("Codex app-server attempt context", () => {
           pluginHarnessToolPolicyRestricted: true,
           config: { agents: { defaults: { workspace: workspaceDir } } },
         } as EmbeddedRunAttemptParams,
+        agentWorkspaceDeveloperInstructions: "Saved ordinary thread instructions",
         resolvedWorkspace: workspaceDir,
         executionWorkspace: executionDir,
         effectiveWorkspace: executionDir,
@@ -274,6 +278,72 @@ describe("Codex app-server attempt context", () => {
       await fs.rm(executionDir, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    {
+      name: "ring-zero",
+      ringZeroActive: true,
+      inheritedWorkspace: true,
+      overrides: { toolsAllow: ["openclaw"], pluginHarnessToolPolicyRestricted: true },
+    },
+    {
+      name: "lightweight cron",
+      ringZeroActive: false,
+      inheritedWorkspace: true,
+      overrides: { bootstrapContextMode: "lightweight", bootstrapContextRunKind: "cron" },
+    },
+    {
+      name: "tool-disabled restricted",
+      ringZeroActive: false,
+      inheritedWorkspace: false,
+      overrides: { pluginHarnessToolPolicyRestricted: true, disableTools: true },
+    },
+    {
+      name: "message-only restricted",
+      ringZeroActive: false,
+      inheritedWorkspace: false,
+      overrides: {
+        pluginHarnessToolPolicyRestricted: true,
+        toolsAllow: ["message"],
+        sourceReplyDeliveryMode: "message_tool_only",
+      },
+    },
+  ])(
+    "keeps saved workspace instructions suppressed after $name bootstrap failure",
+    async (entry) => {
+      const bootstrapRuntime = await import("openclaw/plugin-sdk/agent-harness-runtime");
+      const failure = new Error("synthetic workspace bootstrap failure");
+      const load = vi
+        .spyOn(bootstrapRuntime, "resolveBootstrapFilesForRun")
+        .mockRejectedValueOnce(failure);
+      vi.spyOn(embeddedAgentLog, "warn").mockImplementation(() => undefined);
+      const workspaceDir = path.join(os.tmpdir(), "codex-suppressed-bootstrap-workspace");
+      const executionDir = entry.inheritedWorkspace
+        ? path.join(workspaceDir, "execution")
+        : workspaceDir;
+
+      const context = await buildCodexWorkspaceBootstrapContext({
+        params: {
+          sessionId: "session-1",
+          sessionKey: "agent:main:session-1",
+          config: { agents: { defaults: { workspace: workspaceDir } } },
+          ...entry.overrides,
+        } as EmbeddedRunAttemptParams,
+        agentWorkspaceDeveloperInstructions: "Saved ordinary thread instructions",
+        resolvedWorkspace: workspaceDir,
+        executionWorkspace: executionDir,
+        effectiveWorkspace: executionDir,
+        sessionKey: "agent:main:session-1",
+        sessionAgentId: "main",
+        memoryToolNames: [],
+        ringZeroActive: entry.ringZeroActive,
+      });
+
+      expect(load).toHaveBeenCalledOnce();
+      expect(context.threadDeveloperInstructions).toBeUndefined();
+      expect(context.bootstrapFiles).toEqual([]);
+    },
+  );
 
   it("reads and compares thread-bootstrap context-engine projections", () => {
     const projection = readContextEngineThreadBootstrapProjection({

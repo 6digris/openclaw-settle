@@ -1,15 +1,9 @@
 // Normalizes payloads and applies post-send presentation/media effects.
+import { copyReplyPayloadMetadata } from "../../auto-reply/reply-payload.js";
 import type { ReplyPayload } from "../../auto-reply/types.js";
 import { resolveReceiptSourceId } from "../../channels/message/receipt.js";
-import { adaptMessagePresentationForChannel } from "../../channels/plugins/outbound/interactive.js";
 import type { ChannelOutboundTargetRef } from "../../channels/plugins/types.adapters.js";
-import {
-  hasReplyPayloadContent,
-  type MessagePresentationBlock,
-  normalizeMessagePresentation,
-  renderMessagePresentationFallbackText,
-  type ReplyPayloadDeliveryPin,
-} from "../../interactive/payload.js";
+import { hasReplyPayloadContent, type ReplyPayloadDeliveryPin } from "../../interactive/payload.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { OutboundMediaAccess } from "../../media/load-options.js";
 import { resolveAgentScopedOutboundMediaAccess } from "../../media/read-capability.js";
@@ -50,10 +44,10 @@ export function normalizeEmptyPayloadForDelivery(payload: ReplyPayload): ReplyPa
       return null;
     }
     if (text) {
-      return {
+      return copyReplyPayloadMetadata(payload, {
         ...payload,
         text: "",
-      };
+      });
     }
   }
   return payload;
@@ -67,17 +61,23 @@ export function normalizePayloadsForChannelDelivery(
   for (const entry of plan) {
     let sanitizedPayload = stripInternalRuntimeScaffoldingFromPayload(entry.payload);
     if (!handler.preserveMarkdownDetails && sanitizedPayload.text) {
-      sanitizedPayload = {
-        ...sanitizedPayload,
-        text: flattenMarkdownDetails(sanitizedPayload.text),
-      };
+      const text = flattenMarkdownDetails(sanitizedPayload.text);
+      if (text !== sanitizedPayload.text) {
+        sanitizedPayload = copyReplyPayloadMetadata(sanitizedPayload, {
+          ...sanitizedPayload,
+          text,
+        });
+      }
     }
     if (handler.sanitizeText && sanitizedPayload.text) {
       if (!handler.shouldSkipPlainTextSanitization?.(sanitizedPayload)) {
-        sanitizedPayload = {
-          ...sanitizedPayload,
-          text: handler.sanitizeText(sanitizedPayload),
-        };
+        const text = handler.sanitizeText(sanitizedPayload);
+        if (text !== sanitizedPayload.text) {
+          sanitizedPayload = copyReplyPayloadMetadata(sanitizedPayload, {
+            ...sanitizedPayload,
+            text,
+          });
+        }
       }
     }
     const normalizedPayload = handler.normalizePayload
@@ -118,13 +118,20 @@ function stripInternalRuntimeScaffoldingFromValue(value: unknown): unknown {
     return value;
   }
   let changed = false;
-  const next: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value)) {
-    const stripped = stripInternalRuntimeScaffoldingFromValue(entry);
-    changed ||= stripped !== entry;
-    next[key] = stripped;
+  const entries = Object.entries(value);
+  for (const entry of entries) {
+    const stripped = stripInternalRuntimeScaffoldingFromValue(entry[1]);
+    changed ||= stripped !== entry[1];
+    entry[1] = stripped;
   }
-  return changed ? next : value;
+  if (!changed) {
+    return value;
+  }
+  const next: Record<string, unknown> = {};
+  for (const [key, entry] of entries) {
+    next[key] = entry;
+  }
+  return next;
 }
 
 /** Every media reference a payload set carries, in payload order. */
@@ -166,8 +173,11 @@ export function resolveOutboundMediaAccessForSend(
 
 export function stripInternalRuntimeScaffoldingFromPayload(payload: ReplyPayload): ReplyPayload {
   const stripped = stripInternalRuntimeScaffoldingFromValue(payload);
-  return stripped && typeof stripped === "object" && !Array.isArray(stripped)
-    ? (stripped as ReplyPayload)
+  return stripped !== payload &&
+    stripped &&
+    typeof stripped === "object" &&
+    !Array.isArray(stripped)
+    ? copyReplyPayloadMetadata(payload, stripped as ReplyPayload)
     : payload;
 }
 
@@ -206,6 +216,7 @@ export async function maybePinDeliveredMessage(params: {
   target: ChannelOutboundTargetRef;
   messageId?: string;
   gatewayClientScopes?: readonly string[];
+  assertDirectAdapterHandoff?: () => void;
 }): Promise<void> {
   const pin = normalizeDeliveryPin(params.payload);
   if (!pin) {
@@ -232,11 +243,13 @@ export async function maybePinDeliveredMessage(params: {
     return;
   }
   try {
+    params.assertDirectAdapterHandoff?.();
     await params.handler.pinDeliveredMessage({
       target: params.target,
       messageId: params.messageId,
       pin,
       gatewayClientScopes: params.gatewayClientScopes,
+      assertDirectAdapterHandoff: params.assertDirectAdapterHandoff,
     });
   } catch (err) {
     if (pin.required) {
@@ -273,72 +286,4 @@ export async function maybeNotifyAfterDeliveredPayload(params: {
       error: formatErrorMessage(err),
     });
   }
-}
-
-export async function renderPresentationForDelivery(
-  handler: ChannelHandler,
-  payload: ReplyPayload,
-): Promise<ReplyPayload> {
-  const presentation = normalizeMessagePresentation(payload.presentation);
-  if (!presentation) {
-    return payload;
-  }
-  const adaptedPresentation = adaptMessagePresentationForChannel({
-    presentation,
-    capabilities: handler.presentationCapabilities,
-  });
-  const textIsFallback = payload.presentationTextMode === "fallback";
-  const countDataBlocks = (blocks: readonly MessagePresentationBlock[]) =>
-    blocks.filter((block) => block.type === "table" || block.type === "chart").length;
-  const hasInteractiveBlocks = presentation.blocks.some(
-    (block) => block.type === "buttons" || block.type === "select",
-  );
-  // When every structured data block degraded to text and nothing interactive
-  // remains, the producer's authored fallback text beats generic block
-  // flattening; skip the channel renderer so that text survives verbatim.
-  if (
-    textIsFallback &&
-    payload.text?.trim() &&
-    !hasInteractiveBlocks &&
-    countDataBlocks(presentation.blocks) > 0 &&
-    countDataBlocks(adaptedPresentation.blocks) === 0
-  ) {
-    const {
-      presentation: _degradedPresentation,
-      presentationTextMode: _degradedPresentationTextMode,
-      ...authoredFallback
-    } = payload;
-    return authoredFallback;
-  }
-  const adaptedPayload = {
-    ...payload,
-    ...(textIsFallback ? { text: undefined } : {}),
-    presentation: adaptedPresentation,
-  };
-  const rendered = handler.renderPresentation
-    ? await handler.renderPresentation(adaptedPayload)
-    : null;
-  if (rendered) {
-    const {
-      presentation: _presentation,
-      presentationTextMode: _presentationTextMode,
-      ...withoutPresentation
-    } = rendered;
-    return withoutPresentation;
-  }
-  const {
-    presentation: _presentation,
-    presentationTextMode: _presentationTextMode,
-    ...withoutPresentation
-  } = payload;
-  // Native controls may be clipped or split; plain fallback must retain authored labels.
-  return {
-    ...withoutPresentation,
-    text: textIsFallback
-      ? (payload.text ?? renderMessagePresentationFallbackText({ presentation }))
-      : renderMessagePresentationFallbackText({
-          text: payload.text,
-          presentation,
-        }),
-  };
 }

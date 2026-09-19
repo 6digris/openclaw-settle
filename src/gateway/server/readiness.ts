@@ -9,6 +9,7 @@ import {
   type ChannelHealthEvaluation,
 } from "../channel-health-policy.js";
 import type { ChannelManager } from "../server-channels.js";
+import type { GatewayPluginReloadStatus } from "../server-plugin-runtime-generation.js";
 import type { GatewayEventLoopHealth } from "./event-loop-health.js";
 
 /** Snapshot returned by the gateway readiness probe. */
@@ -18,6 +19,7 @@ type ReadinessResult = {
   suppressed?: string[];
   uptimeMs: number;
   eventLoop?: GatewayEventLoopHealth;
+  pluginReload?: GatewayPluginReloadStatus;
 };
 
 /** Function form used by HTTP readiness endpoints and tests. */
@@ -88,6 +90,8 @@ export function createReadinessChecker(
   deps: GatewayStartupStateDeps & {
     channelManager: ChannelManager;
     getEventLoopHealth?: () => GatewayEventLoopHealth | undefined;
+    getStateDatabaseFailure?: () => Error | undefined;
+    getPluginReloadStatus?: () => GatewayPluginReloadStatus | undefined;
     shouldSkipChannelReadiness?: () => boolean;
     cacheTtlMs?: number;
   },
@@ -114,8 +118,13 @@ export function createReadinessChecker(
         deps.getEventLoopHealth,
       );
     }
-    if (deps.shouldSkipChannelReadiness?.()) {
-      return withEventLoopHealth({ ready: true, failing: [], uptimeMs }, deps.getEventLoopHealth);
+    const pluginReload = deps.getPluginReloadStatus?.();
+    if (pluginReload) {
+      cachedState = null;
+      return withEventLoopHealth(
+        { ready: false, failing: ["plugin-reload"], pluginReload, uptimeMs },
+        deps.getEventLoopHealth,
+      );
     }
     if (
       cachedState &&
@@ -123,6 +132,15 @@ export function createReadinessChecker(
       now - cachedAt < cacheTtlMs
     ) {
       return withEventLoopHealth({ ...cachedState, uptimeMs }, deps.getEventLoopHealth);
+    }
+    if (deps.getStateDatabaseFailure?.()) {
+      return withEventLoopHealth(
+        { ready: false, failing: ["state-database"], uptimeMs },
+        deps.getEventLoopHealth,
+      );
+    }
+    if (deps.shouldSkipChannelReadiness?.()) {
+      return withEventLoopHealth({ ready: true, failing: [], uptimeMs }, deps.getEventLoopHealth);
     }
 
     const snapshot = channelManager.getRuntimeSnapshot();

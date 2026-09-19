@@ -1,4 +1,3 @@
-// Memory Core plugin module implements tools.citations behavior.
 import {
   parseAgentSessionKey,
   type MemoryCitationsMode,
@@ -24,7 +23,7 @@ export function decorateCitations(
   }
   return results.map((entry) => {
     const citation = formatCitation(entry);
-    const snippet = `${entry.snippet.trim()}\n\nSource: ${citation}`;
+    const snippet = `${entry.snippet.trimEnd()}\n\nSource: ${citation}`;
     return { ...entry, citation, snippet };
   });
 }

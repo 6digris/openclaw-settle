@@ -98,7 +98,7 @@ describe("nodes-cli coverage", () => {
       return;
     }
     sharedProgram.exitOverride();
-    await registerNodesCli(sharedProgram);
+    await registerNodesCli(sharedProgram, ["node", "openclaw", "nodes", "status"]);
   });
 
   beforeEach(() => {
@@ -291,6 +291,42 @@ describe("nodes-cli coverage", () => {
       command: "rename",
       args: ["nodes", "rename", "--node", "mac-1", "--name", "   "],
       message: "--name must not be empty",
+    },
+    {
+      label: "push with an invalid environment",
+      command: "push",
+      args: ["nodes", "push", "--node", "mac-1", "--environment", "staging"],
+      message: "invalid --environment (use sandbox|production)",
+    },
+    {
+      label: "notify without a title or body",
+      command: "notify",
+      args: ["nodes", "notify", "--node", "mac-1", "--title", " ", "--body", " "],
+      message: "missing --title or --body",
+    },
+    {
+      label: "camera snap with an invalid facing",
+      command: "camera snap",
+      args: ["nodes", "camera", "snap", "--node", "mac-1", "--facing", "side"],
+      message: "invalid facing: side (expected front|back|both)",
+    },
+    {
+      label: "camera clip with an invalid facing",
+      command: "camera clip",
+      args: ["nodes", "camera", "clip", "--node", "mac-1", "--facing", "both"],
+      message: "invalid facing: both (expected front|back)",
+    },
+    {
+      label: "camera clip with an invalid duration",
+      command: "camera clip",
+      args: ["nodes", "camera", "clip", "--node", "mac-1", "--duration", "later"],
+      message: "Invalid duration",
+    },
+    {
+      label: "screen record with an invalid duration",
+      command: "screen record",
+      args: ["nodes", "screen", "record", "--node", "mac-1", "--duration", "later"],
+      message: "Invalid duration",
     },
   ])("reports $label once before calling the gateway", async ({ command, args, message }) => {
     await expect(sharedProgram.parseAsync(args, { from: "user" })).rejects.toThrow("__exit__:1");
@@ -536,78 +572,37 @@ describe("nodes-cli coverage", () => {
   });
 
   it.each([
-    {
-      args: ["nodes", "location", "get", "--node", "mac-1", "--max-age", "1000ms"],
-      flag: "--max-age",
-    },
-    {
-      args: ["nodes", "location", "get", "--node", "mac-1", "--location-timeout", "5s"],
-      flag: "--location-timeout",
-    },
-    {
-      args: ["nodes", "location", "get", "--node", "mac-1", "--invoke-timeout", "6s"],
-      flag: "--invoke-timeout",
-    },
-    {
-      args: ["nodes", "camera", "snap", "--node", "mac-1", "--max-width", "1024px"],
-      flag: "--max-width",
-    },
-    {
-      args: ["nodes", "camera", "snap", "--node", "mac-1", "--delay-ms", "20ms"],
-      flag: "--delay-ms",
-    },
-    {
-      args: ["nodes", "camera", "snap", "--node", "mac-1", "--invoke-timeout", "20s"],
-      flag: "--invoke-timeout",
-    },
-    {
-      args: ["nodes", "camera", "snap", "--node", "mac-1", "--quality", "0.8jpg"],
-      flag: "--quality",
-    },
-    {
-      args: ["nodes", "camera", "snap", "--node", "mac-1", "--quality", "1.1"],
-      flag: "--quality",
-    },
-    {
-      args: ["nodes", "camera", "clip", "--node", "mac-1", "--invoke-timeout", "90s"],
-      flag: "--invoke-timeout",
-    },
-    {
-      args: ["nodes", "screen", "record", "--node", "mac-1", "--screen", "1x"],
-      flag: "--screen",
-    },
-    {
-      args: ["nodes", "screen", "record", "--node", "mac-1", "--invoke-timeout", "120s"],
-      flag: "--invoke-timeout",
-    },
-    {
-      args: ["nodes", "screen", "record", "--node", "mac-1", "--fps", "10fps"],
-      flag: "--fps",
-    },
-    {
-      args: ["nodes", "screen", "record", "--node", "mac-1", "--fps", "0"],
-      flag: "--fps",
-    },
-    {
-      args: ["nodes", "notify", "--node", "mac-1", "--title", "Ping", "--invoke-timeout", "15s"],
-      flag: "--invoke-timeout",
-    },
-    {
-      args: [
-        "nodes",
-        "invoke",
-        "--node",
-        "mac-1",
-        "--command",
-        "canvas.eval",
-        "--invoke-timeout",
-        "15s",
-      ],
-      flag: "--invoke-timeout",
-    },
-  ])("rejects partial numeric option for $args", async ({ args, flag }) => {
+    [["nodes", "location", "get", "--node", "mac-1", "--max-age", "1000ms"], "--max-age"],
+    [
+      ["nodes", "location", "get", "--node", "mac-1", "--location-timeout", "5s"],
+      "--location-timeout",
+    ],
+    [["nodes", "location", "get", "--node", "mac-1", "--invoke-timeout", "6s"], "--invoke-timeout"],
+    [["nodes", "camera", "snap", "--node", "mac-1", "--max-width", "1024px"], "--max-width"],
+    [["nodes", "camera", "snap", "--node", "mac-1", "--delay-ms", "20ms"], "--delay-ms"],
+    [["nodes", "camera", "snap", "--node", "mac-1", "--invoke-timeout", "20s"], "--invoke-timeout"],
+    [["nodes", "camera", "snap", "--node", "mac-1", "--quality", "0.8jpg"], "--quality"],
+    [["nodes", "camera", "snap", "--node", "mac-1", "--quality", "1.1"], "--quality"],
+    [["nodes", "camera", "clip", "--node", "mac-1", "--invoke-timeout", "90s"], "--invoke-timeout"],
+    [["nodes", "screen", "record", "--node", "mac-1", "--screen", "1x"], "--screen"],
+    [
+      ["nodes", "screen", "record", "--node", "mac-1", "--invoke-timeout", "120s"],
+      "--invoke-timeout",
+    ],
+    [["nodes", "screen", "record", "--node", "mac-1", "--fps", "10fps"], "--fps"],
+    [["nodes", "screen", "record", "--node", "mac-1", "--fps", "0"], "--fps"],
+    [
+      ["nodes", "notify", "--node", "mac-1", "--title", "Ping", "--invoke-timeout", "15s"],
+      "--invoke-timeout",
+    ],
+    [
+      ["nodes", "invoke", "--node", "mac-1", "--command", "canvas.eval", "--invoke-timeout", "15s"],
+      "--invoke-timeout",
+    ],
+  ])("rejects invalid numeric option before calling the gateway for %s", async (args, flag) => {
     await expect(sharedProgram.parseAsync(args, { from: "user" })).rejects.toThrow("__exit__:1");
     expect(runtimeErrors.at(-1)).toContain(`${flag} must be`);
+    expect(callGateway).not.toHaveBeenCalled();
     expect(lastNodeInvokeCall).toBeNull();
   });
 });

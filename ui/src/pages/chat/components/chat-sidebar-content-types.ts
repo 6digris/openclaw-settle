@@ -1,3 +1,6 @@
+import type { TemplateResult } from "lit";
+import type { ChatMediaPlaybackMode } from "./chat-media-playback.ts";
+import type { ArtifactDownloadResolver } from "./chat-message-media.ts";
 import type { SessionDiffFileTextLoader, SessionDiffLoader } from "./session-diff-panel.ts";
 
 type DetailUnavailableReason = "not_found" | "oversized" | "not_visible";
@@ -42,13 +45,62 @@ type ImageSidebarContent = {
   rawText?: string | null;
 };
 
+type AttachmentSidebarSource = {
+  src: string;
+  playback?: ChatMediaPlaybackMode;
+  authToken?: string | null;
+  sizeBytes?: number;
+  durationMs?: number;
+  width?: number;
+  height?: number;
+};
+
+export type AttachmentSidebarState =
+  | { status: "pending" }
+  | ({ status: "ready" } & AttachmentSidebarSource)
+  | { status: "unavailable"; onRetry?: () => void }
+  | { status: "error"; reason: string; onRetry?: () => void };
+
+export type AttachmentSidebarRuntime = {
+  sessionKey?: string;
+  agentId?: string;
+  policyKey?: string;
+  connectionEpoch?: number;
+  authToken?: string | null;
+  resourceBasePath?: string;
+  resolveArtifactDownload?: ArtifactDownloadResolver;
+};
+
+type AttachmentSidebarContent = {
+  kind: "attachment";
+  attachmentKind?: "audio" | "video" | "document" | "image";
+  title: string;
+  /** Static sources only; expiring sources are resolved live through resolveSource. */
+  src?: string;
+  mimeType?: string | null;
+  sourceIdentity?: string;
+  playback?: ChatMediaPlaybackMode;
+  authToken?: string | null;
+  sizeBytes?: number;
+  durationMs?: number;
+  width?: number;
+  height?: number;
+  voiceNote?: boolean;
+  plainText?: boolean;
+  renderActions?: () => TemplateResult;
+  resolveSource?: (
+    onRequestUpdate: () => void,
+    runtime: AttachmentSidebarRuntime,
+  ) => AttachmentSidebarState;
+  rawText?: string | null;
+};
+
 type SessionDiffSidebarContent = {
   kind: "session-diff";
   /** Fetches a fresh sessions.diff snapshot; the panel refetches on refresh. */
   load: SessionDiffLoader;
   loadFileText?: SessionDiffFileTextLoader;
   openFile?: (path: string) => void;
-  revealFile?: (path: string) => void;
   rawText?: string | null;
 };
 
@@ -64,6 +116,8 @@ type FileSidebarEdit = {
   fetchLatest: () => Promise<{ content: string; hash: string; editable: boolean } | null>;
 };
 
+export type FileSidebarNavigation = { line: number };
+
 type FileSidebarContent = {
   kind: "file";
   path: string;
@@ -72,8 +126,11 @@ type FileSidebarContent = {
   /** Stable per-session identity used to retain an unsaved in-memory draft. */
   draftKey?: string;
   root?: string | null;
+  mimeType?: string;
   language?: string;
   line?: number | null;
+  /** New identity for an explicit line request; ordinary tab selection retains it. */
+  navigation?: FileSidebarNavigation;
   rawText?: string | null;
   edit?: FileSidebarEdit;
 };
@@ -82,6 +139,15 @@ export type SidebarContent =
   | MarkdownSidebarContent
   | CanvasSidebarContent
   | ImageSidebarContent
+  | AttachmentSidebarContent
   | FileSidebarContent
   | SessionDiffSidebarContent
   | { kind: "task"; taskId: string };
+
+export type SidebarSelection = (
+  | SidebarContent
+  | { kind: "loading" }
+  // Keep failed opens attached to their selected surface instead of falling back
+  // to unrelated content.
+  | { kind: "unavailable"; message: string }
+) & { fileTab?: { id: string; label: string } };

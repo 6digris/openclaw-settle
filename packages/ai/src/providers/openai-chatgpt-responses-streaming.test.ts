@@ -152,6 +152,213 @@ describe("OpenAI ChatGPT Responses inference streaming", () => {
     });
   });
 
+  it("projects a structured ChatGPT cyber-policy error as a provider refusal", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          `data: ${JSON.stringify({
+            type: "error",
+            message: "This request was blocked by the provider's cyber policy.",
+            codexErrorInfo: "cyberPolicy",
+          })}\n\n`,
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        ),
+      ),
+    );
+
+    const stream = streamOpenAICodexResponses(model, context, {
+      apiKey: createJwt({
+        "https://api.openai.com/auth": { chatgpt_account_id: "acct-1" },
+      }),
+      transport: "sse",
+    });
+    const events = [];
+    for await (const event of stream) {
+      events.push(event);
+    }
+
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      error: {
+        stopReason: "error",
+        diagnostics: [
+          {
+            type: "provider_refusal",
+            details: { provider: "openai", category: "cyber" },
+          },
+        ],
+      },
+    });
+  });
+
+  it("projects a Responses-native cyber_policy error event as a provider refusal", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          `data: ${JSON.stringify({
+            type: "error",
+            error: {
+              code: "cyber_policy",
+              message: "This request has been flagged for possible cybersecurity risk.",
+            },
+          })}\n\n`,
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        ),
+      ),
+    );
+
+    const stream = streamOpenAICodexResponses(model, context, {
+      apiKey: createJwt({
+        "https://api.openai.com/auth": { chatgpt_account_id: "acct-1" },
+      }),
+      transport: "sse",
+    });
+    const events = [];
+    for await (const event of stream) {
+      events.push(event);
+    }
+
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      error: {
+        stopReason: "error",
+        diagnostics: [
+          {
+            type: "provider_refusal",
+            details: { provider: "openai", category: "cyber" },
+          },
+        ],
+      },
+    });
+  });
+
+  it("projects a Responses-native cyber_policy response.failed event as a provider refusal", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          `data: ${JSON.stringify({
+            type: "response.failed",
+            response: {
+              id: "resp_cyber",
+              error: {
+                code: "cyber_policy",
+                message: "This request has been flagged for possible cybersecurity risk.",
+              },
+            },
+          })}\n\n`,
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        ),
+      ),
+    );
+
+    const stream = streamOpenAICodexResponses(model, context, {
+      apiKey: createJwt({
+        "https://api.openai.com/auth": { chatgpt_account_id: "acct-1" },
+      }),
+      transport: "sse",
+    });
+    const events = [];
+    for await (const event of stream) {
+      events.push(event);
+    }
+
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      error: {
+        stopReason: "error",
+        diagnostics: [
+          {
+            type: "provider_refusal",
+            details: { provider: "openai", category: "cyber" },
+          },
+        ],
+      },
+    });
+  });
+
+  it("projects a Responses-native cyber_policy HTTP error body as a provider refusal", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "cyber_policy",
+              message: "This request has been flagged for possible cybersecurity risk.",
+            },
+          }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+
+    const stream = streamOpenAICodexResponses(model, context, {
+      apiKey: createJwt({
+        "https://api.openai.com/auth": { chatgpt_account_id: "acct-1" },
+      }),
+      transport: "sse",
+    });
+    const events = [];
+    for await (const event of stream) {
+      events.push(event);
+    }
+
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      error: {
+        stopReason: "error",
+        diagnostics: [
+          {
+            type: "provider_refusal",
+            details: { provider: "openai", category: "cyber" },
+          },
+        ],
+      },
+    });
+  });
+
+  it("projects a ChatGPT codexErrorInfo HTTP body as a provider refusal", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            message: "This request was blocked by the provider's cyber policy.",
+            codexErrorInfo: "cyberPolicy",
+          }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+
+    const stream = streamOpenAICodexResponses(model, context, {
+      apiKey: createJwt({
+        "https://api.openai.com/auth": { chatgpt_account_id: "acct-1" },
+      }),
+      transport: "sse",
+    });
+    const events = [];
+    for await (const event of stream) {
+      events.push(event);
+    }
+
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      error: {
+        stopReason: "error",
+        diagnostics: [
+          {
+            type: "provider_refusal",
+            details: { provider: "openai", category: "cyber" },
+          },
+        ],
+      },
+    });
+  });
+
   it("reports acceptance before the default WebSocket stream starts", async () => {
     class AcceptedWebSocket extends EventTarget {
       constructor() {
@@ -262,6 +469,80 @@ describe("OpenAI ChatGPT Responses inference streaming", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("logs the caller abort reason with bounded ChatGPT transport metadata", async () => {
+    const logWarn = vi.fn();
+    configureAiTransportHost({ logWarn });
+    const controller = new AbortController();
+    class AbortedWebSocket extends EventTarget {
+      constructor() {
+        super();
+        queueMicrotask(() => this.dispatchEvent(new Event("open")));
+      }
+
+      send(): void {
+        controller.abort(new Error("Compaction timed out"));
+      }
+
+      close(): void {}
+    }
+    vi.stubGlobal("WebSocket", AbortedWebSocket);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await streamOpenAICodexResponses(model, context, {
+      apiKey: createJwt({
+        "https://api.openai.com/auth": { chatgpt_account_id: "acct-1" },
+      }),
+      signal: controller.signal,
+    }).result();
+
+    expect(result).toMatchObject({ stopReason: "aborted", errorMessage: "Request was aborted" });
+    expect(logWarn).toHaveBeenCalledWith(
+      "openai-transport",
+      "ChatGPT Responses stream terminated",
+      {
+        api: "openai-chatgpt-responses",
+        elapsedMs: expect.any(Number),
+        failureKind: "caller-abort",
+        model: "gpt-5.6-luna",
+        provider: "openai",
+        stopReason: "aborted",
+        transport: "auto",
+      },
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("classifies a direct HTTP rejection as a provider failure without logging its text", async () => {
+    const logWarn = vi.fn();
+    configureAiTransportHost({ logWarn });
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          error: { message: "hostile prompt echo in a 400 body", code: "invalid_request" },
+        }),
+        { status: 400, statusText: "Bad Request" },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await streamOpenAICodexResponses(model, context, {
+      apiKey: createJwt({
+        "https://api.openai.com/auth": { chatgpt_account_id: "acct-1" },
+      }),
+      transport: "sse",
+    }).result();
+
+    expect(result.stopReason).toBe("error");
+    expect(logWarn).toHaveBeenCalledTimes(1);
+    const logged = logWarn.mock.calls[0]?.[2];
+    expect(logged).toMatchObject({ stopReason: "error", failureKind: "provider-failure" });
+    const serialized = JSON.stringify(logged);
+    for (const hostile of ["hostile", "invalid_request", "400 body"]) {
+      expect(serialized).not.toContain(hostile);
+    }
+  });
+
   it.each(["sse", "websocket"] as const)(
     "preserves failed response identity and provider error details over %s",
     async (transport) => {
@@ -270,9 +551,15 @@ describe("OpenAI ChatGPT Responses inference streaming", () => {
         response: {
           id: "resp_failed",
           status: "failed",
-          error: { code: "invalid_prompt", message: "rejected" },
+          error: {
+            code: "invalid_prompt",
+            type: "hostile type: user prompt echoed here",
+            message: "rejected",
+          },
         },
       };
+      const logWarn = vi.fn();
+      configureAiTransportHost({ logWarn });
       const fetchMock = vi.fn();
       vi.stubGlobal("fetch", fetchMock);
 
@@ -323,6 +610,23 @@ describe("OpenAI ChatGPT Responses inference streaming", () => {
           errorMessage: "invalid_prompt: rejected",
         },
       });
+      // Provider message text reaches the stream consumer only; the transport
+      // log keeps timing and classification and never the message body.
+      expect(logWarn).toHaveBeenCalledTimes(1);
+      const logged = logWarn.mock.calls[0]?.[2];
+      expect(logged).toEqual({
+        api: "openai-chatgpt-responses",
+        elapsedMs: expect.any(Number),
+        failureKind: "provider-failure",
+        model: "gpt-5.6-luna",
+        provider: "openai",
+        stopReason: "error",
+        transport,
+      });
+      const serialized = JSON.stringify(logged);
+      for (const hostile of ["rejected", "invalid_prompt", "hostile type", "echoed"]) {
+        expect(serialized).not.toContain(hostile);
+      }
       if (transport === "websocket") {
         expect(fetchMock).not.toHaveBeenCalled();
       }

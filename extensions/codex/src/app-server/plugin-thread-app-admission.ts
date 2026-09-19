@@ -1,16 +1,19 @@
 import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { codexAppIdentityKey } from "./app-identity.js";
 import {
   serializeCodexAppInventoryError,
   type CodexAppInventoryCache,
   type CodexAppInventoryRequest,
   type CodexAppInventorySnapshot,
 } from "./app-inventory-cache.js";
+import { CODEX_SESSION_OVERRIDABLE_LAYER_TYPES } from "./config-layer-policy.js";
 import type { ResolvedCodexPluginsPolicy } from "./config.js";
-import type {
-  CodexPluginInventory,
-  CodexPluginInventoryRecord,
-  CodexPluginOwnedApp,
-  CodexPluginRuntimeRequest,
+import {
+  resolveOwnedAppApprovalOverrideKeys,
+  type CodexPluginInventory,
+  type CodexPluginInventoryRecord,
+  type CodexPluginOwnedApp,
+  type CodexPluginRuntimeRequest,
 } from "./plugin-inventory.js";
 import {
   type CodexAppServerRequestResult,
@@ -95,12 +98,12 @@ export function collectCodexPluginOwnedAppIds(inventory: CodexPluginInventory): 
 export function collectCodexReservedPluginAppIds(params: {
   policy: ResolvedCodexPluginsPolicy;
   inventory: CodexPluginInventory;
-  accountApps: readonly v2.AppInfo[];
+  accountApps: CodexAppInventorySnapshot["apps"];
 }): Set<string> {
   const reserved = new Set(
-    params.inventory.records.flatMap((record) =>
-      record.appOwnership === "proven" ? record.ownedAppIds : [],
-    ),
+    params.inventory.records
+      .flatMap((record) => (record.appOwnership === "proven" ? record.ownedAppIds : []))
+      .map(codexAppIdentityKey),
   );
   const recordsByConfigKey = new Map(
     params.inventory.records.map((record) => [record.policy.configKey, record] as const),
@@ -120,7 +123,7 @@ export function collectCodexReservedPluginAppIds(params: {
         configuredOwnerNames.has(normalizeCodexPluginOwnerName(name)),
       )
     ) {
-      reserved.add(app.id);
+      reserved.add(codexAppIdentityKey(app.id));
     }
   }
   return reserved;
@@ -137,7 +140,8 @@ export async function readCodexThreadAdmissibleAccountApps(
   params: CodexPluginThreadAppAdmissionParams,
   appCache: CodexAppInventoryCache,
 ): Promise<{
-  apps: v2.AppInfo[];
+  apps: CodexAppInventorySnapshot["apps"];
+  installedApps: CodexAppInventorySnapshot["installedApps"];
   diagnostic?: CodexPluginThreadAppAdmissionDiagnostic;
 }> {
   // Account-wide policy must use a complete snapshot; a targeted plugin read
@@ -160,6 +164,7 @@ export async function readCodexThreadAdmissibleAccountApps(
   if (!snapshot) {
     return {
       apps: [],
+      installedApps: [],
       diagnostic: {
         code: "account_app_inventory_unavailable",
         message: "Codex account app inventory was unavailable; account apps were not exposed.",
@@ -172,21 +177,26 @@ export async function readCodexThreadAdmissibleAccountApps(
       .filter(
         (app) =>
           resolveCodexInstalledAppThreadAdmission(
-            toCodexPluginOwnedAccountApp(app),
+            toCodexPluginOwnedAccountApp(app, installedAppsById.get(app.id)),
             installedAppsById.get(app.id),
           ) !== "blocked",
       )
       .toSorted((left, right) => left.id.localeCompare(right.id)),
+    installedApps: snapshot.installedApps,
   };
 }
 
-export function toCodexPluginOwnedAccountApp(app: v2.AppInfo): CodexPluginOwnedApp {
+export function toCodexPluginOwnedAccountApp(
+  app: CodexAppInventorySnapshot["apps"][number],
+  installedApp: v2.InstalledApp | undefined,
+): CodexPluginOwnedApp {
   return {
     id: app.id,
     name: app.name,
-    accessible: app.isAccessible,
-    enabled: app.isEnabled,
-    needsAuth: !app.isAccessible,
+    accessible: true,
+    enabled: installedApp?.enabled ?? false,
+    needsAuth: false,
+    ...resolveOwnedAppApprovalOverrideKeys(app),
   };
 }
 
@@ -230,7 +240,7 @@ function resolveCodexInstalledAppThreadAdmission(
 
 export async function readCodexConfigForAppAdmission(
   params: CodexPluginThreadAppAdmissionParams,
-): Promise<CodexPluginThreadAppAdmissionConfig | undefined> {
+): Promise<CodexPluginThreadAppAdmissionConfig> {
   try {
     const response = await params.request("config/read", {
       includeLayers: true,
@@ -258,14 +268,27 @@ export async function readCodexConfigForAppAdmission(
         if (!isJsonObject(layer.config)) {
           throw new Error("Codex config/read returned an invalid layer config");
         }
+        if (!isJsonObject(layer.name) || typeof layer.name.type !== "string") {
+          throw new Error("Codex config/read returned an invalid config layer source");
+        }
+        if (
+          layer.config.apps !== undefined &&
+          !CODEX_SESSION_OVERRIDABLE_LAYER_TYPES.has(layer.name.type)
+        ) {
+          throw new Error(
+            `Codex app policy cannot override ${layer.name.type}; move app settings to a supported user or project config layer before exposing native apps`,
+          );
+        }
         return [layer.config];
       }),
     };
   } catch (error) {
-    embeddedAgentLog.warn("codex plugin app admission config read failed", {
-      error: serializeCodexAppInventoryError(error),
-    });
-    return undefined;
+    const details = serializeCodexAppInventoryError(error);
+    embeddedAgentLog.warn("codex plugin app admission config read failed", { error: details });
+    throw new Error(
+      `Could not verify the Codex app allowlist: ${String(details.message)}. No native thread was started; resolve the native configuration error and retry.`,
+      { cause: error },
+    );
   }
 }
 
@@ -277,9 +300,19 @@ export function resolveCodexExplicitAppEnablement(
   // explicitly selected plugin from safely requesting thread-only enablement.
   for (const layer of layersHighestPrecedenceFirst) {
     const apps = layer.apps;
-    const app = isJsonObject(apps) ? apps[appId] : undefined;
-    if (isJsonObject(app) && Object.hasOwn(app, "enabled")) {
-      return app.enabled === true;
+    const values = isJsonObject(apps)
+      ? Object.entries(apps)
+          .filter(
+            ([id, app]) =>
+              codexAppIdentityKey(id) === codexAppIdentityKey(appId) &&
+              isJsonObject(app) &&
+              Object.hasOwn(app, "enabled"),
+          )
+          .map(([, app]) => isJsonObject(app) && app.enabled === true)
+      : [];
+    if (values.length > 0) {
+      // A conflicting alias in the same layer must not undo an explicit denial.
+      return values.every(Boolean);
     }
   }
   return undefined;

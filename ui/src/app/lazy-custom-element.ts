@@ -1,3 +1,4 @@
+import { t } from "../i18n/index.ts";
 import {
   isStaleChunkImportError,
   retryStaleChunkReloadWhenReachable,
@@ -72,7 +73,8 @@ export class LazyCustomElementRequestController {
   constructor(
     private readonly host: UpdatingHost,
     private readonly onClose?: () => void,
-    private readonly retryStale = retryStaleChunkReloadWhenReachable,
+    private readonly retryStale = (canReload: () => boolean) =>
+      retryStaleChunkReloadWhenReachable({ canReload }),
   ) {}
 
   get visibleState(): LazyCustomElementRequestState | undefined {
@@ -142,7 +144,8 @@ export class LazyCustomElementRequestController {
     } satisfies LazyCustomElementRequest;
     this.current = retryRequest;
     this.host.requestUpdate();
-    void (request.stale ? this.retryStale() : Promise.resolve(false)).then((reloading) => {
+    const canReload = () => this.current === retryRequest;
+    void (request.stale ? this.retryStale(canReload) : Promise.resolve(false)).then((reloading) => {
       if (!reloading && this.current === retryRequest) {
         this.load(retryRequest);
       }
@@ -181,10 +184,11 @@ export class LazyCustomElementRequestController {
   private load(request: LazyCustomElementRequest): void {
     void ensureCustomElementDefined(request.element.tagName, request.element.loadModule).then(
       async () => {
+        // Registration outlives dismissal; mount the closed element so the next open works.
+        this.host.requestUpdate();
         if (this.current !== request) {
           return;
         }
-        this.host.requestUpdate();
         await this.host.updateComplete;
         if (this.current === request) {
           // Replay only once the host has actually rendered the element.
@@ -228,11 +232,11 @@ export const COMMAND_PALETTE_ELEMENT = {
   loadModule: () => import("../components/command-palette.ts"),
 } satisfies OptionalCustomElement;
 
-const DEBUG_OVERLAY_TAG = "openclaw-debug-overlay";
-
 export const DEBUG_OVERLAY_ELEMENT = {
-  tagName: DEBUG_OVERLAY_TAG,
-  label: DEBUG_OVERLAY_TAG,
+  tagName: "openclaw-debug-overlay",
+  get label() {
+    return t("debug.overlay.title");
+  },
   loadModule: () => import("../pages/debug/debug-overlay.ts"),
 } satisfies OptionalCustomElement;
 
@@ -240,8 +244,24 @@ const KEYBOARD_SHORTCUTS_TAG = "openclaw-keyboard-shortcuts-dialog";
 
 export const KEYBOARD_SHORTCUTS_ELEMENT = {
   tagName: KEYBOARD_SHORTCUTS_TAG,
-  label: KEYBOARD_SHORTCUTS_TAG,
+  get label() {
+    return t("shortcutsOverlay.title");
+  },
   loadModule: () => import("../components/keyboard-shortcuts-dialog.ts"),
+} satisfies OptionalCustomElement;
+
+const MACOS_TITLEBAR_TAG = "openclaw-macos-titlebar-controls";
+
+export const MACOS_TITLEBAR_ELEMENT = {
+  tagName: MACOS_TITLEBAR_TAG,
+  label: MACOS_TITLEBAR_TAG,
+  loadModule: () => import("../components/macos-titlebar-controls.runtime.ts"),
+} satisfies OptionalCustomElement;
+
+export const SIDEBAR_ATTENTION_ELEMENT = {
+  tagName: "openclaw-sidebar-attention",
+  label: t("attention.issues"),
+  loadModule: () => import("../components/sidebar-attention.ts"),
 } satisfies OptionalCustomElement;
 
 export const TERMINAL_PANEL_ELEMENT = {
@@ -262,16 +282,18 @@ export const DESKTOP_PANEL_ELEMENT = {
   loadModule: () => import("../components/desktop/desktop-panel.ts"),
 } satisfies OptionalCustomElement;
 
+export const LINK_READER_PANEL_ELEMENT = {
+  tagName: "openclaw-link-reader-panel",
+  get label() {
+    return t("linkReader.title");
+  },
+  loadModule: () => import("../components/link-reader-panel.ts"),
+} satisfies OptionalCustomElement;
+
 export const DASHBOARD_DOCUMENT_ELEMENT = {
   tagName: "openclaw-board-document",
   label: "dashboard document",
   loadModule: () => import("../components/board/board-document.ts"),
-} satisfies OptionalCustomElement;
-
-export const CUSTODIAN_PANEL_ELEMENT = {
-  tagName: "openclaw-custodian-panel",
-  label: "custodian panel",
-  loadModule: () => import("../components/custodian/custodian-panel.ts"),
 } satisfies OptionalCustomElement;
 
 // Loaded only for approval document URLs: the approval page pulls the protocol
@@ -282,17 +304,32 @@ export const APPROVAL_PAGE_ELEMENT = {
   loadModule: () => import("../pages/approval/approval-page-registration.ts"),
 } satisfies OptionalCustomElement;
 
+const QUESTION_PAGE_TAG = "openclaw-question-page";
+
+export const QUESTION_PAGE_ELEMENT = {
+  tagName: QUESTION_PAGE_TAG,
+  label: QUESTION_PAGE_TAG,
+  loadModule: () => import("../pages/question/question-page-registration.ts"),
+} satisfies OptionalCustomElement;
+
 // The card is in the chat graph, but modal-only queue controls stay off the
 // startup path until an approval is actually pending.
 const EXEC_APPROVAL_TAG = "openclaw-exec-approval";
 
 export const EXEC_APPROVAL_ELEMENT = {
   tagName: EXEC_APPROVAL_TAG,
-  // This diagnostic uses the tag rather than user-facing copy.
-  label: EXEC_APPROVAL_TAG,
+  get label() {
+    return t("tabs.approvals");
+  },
   loadModule: () => import("../components/exec-approval.ts"),
 } satisfies OptionalCustomElement;
 
 export function isOptionalElementDefined(element: OptionalCustomElement): boolean {
   return customElements.get(element.tagName) !== undefined;
 }
+
+export const LOGIN_GATE_ELEMENT = {
+  tagName: "openclaw-login-gate",
+  label: "login screen",
+  loadModule: () => import("../components/login-gate.ts"),
+} satisfies OptionalCustomElement;

@@ -1,4 +1,3 @@
-// Telegram plugin module implements action runtime behavior.
 import type { AgentToolResult } from "openclaw/plugin-sdk/agent-core";
 import { readBooleanParam } from "openclaw/plugin-sdk/boolean-param";
 import {
@@ -32,6 +31,13 @@ import {
   resolveDefaultTelegramAccountId,
   resolveTelegramPollActionGateState,
 } from "./accounts.js";
+import {
+  readTelegramChatId,
+  readTelegramForumTopicIconColor,
+  readTelegramReplyToMessageId,
+  readTelegramSendMediaUrls,
+  readTelegramThreadId,
+} from "./action-params.js";
 import { TELEGRAM_CALLBACK_DATA_MAX_BYTES } from "./approval-callback-data.js";
 import {
   appendTelegramDroppedControlFallback,
@@ -39,6 +45,7 @@ import {
   type TelegramButtonBuildOptions,
   type TelegramDroppedControl,
 } from "./button-types.js";
+import { readTelegramHistoryAction } from "./history-read.js";
 import { telegramInboundEventDelivery } from "./inbound-event-delivery.js";
 import {
   resolveTelegramInlineButtonsScope,
@@ -89,9 +96,6 @@ export const telegramActionRuntime = {
   sendStickerTelegram,
 };
 
-const TELEGRAM_FORUM_TOPIC_ICON_COLORS = [
-  0x6fb9f0, 0xffd67e, 0xcb86db, 0x8eee98, 0xff93b2, 0xfb6f5f,
-] as const;
 const TELEGRAM_EMOJI_LIST_LIMIT = 100;
 const TELEGRAM_REACTION_HINT_LIMIT = 20;
 const TELEGRAM_ACTION_ALIASES = {
@@ -104,6 +108,7 @@ const TELEGRAM_ACTION_ALIASES = {
   "emoji-list": "emoji-list",
   poll: "poll",
   react: "react",
+  read: "read",
   searchSticker: "searchSticker",
   send: "sendMessage",
   sendMessage: "sendMessage",
@@ -119,47 +124,12 @@ type TelegramActionName = (typeof TELEGRAM_ACTION_ALIASES)[keyof typeof TELEGRAM
 type ConversationReadInvocationOrigin = NonNullable<
   ChannelMessageActionContext["conversationReadOrigin"]
 >;
-type TelegramForumTopicIconColor = (typeof TELEGRAM_FORUM_TOPIC_ICON_COLORS)[number];
-
-function readTelegramForumTopicIconColor(
-  params: Record<string, unknown>,
-): TelegramForumTopicIconColor | undefined {
-  const iconColor = readPositiveIntegerParam(params, "iconColor", {
-    message: "iconColor must be one of Telegram's supported forum topic colors.",
-  });
-  if (iconColor == null) {
-    return undefined;
-  }
-  if (!TELEGRAM_FORUM_TOPIC_ICON_COLORS.includes(iconColor as TelegramForumTopicIconColor)) {
-    throw new Error("iconColor must be one of Telegram's supported forum topic colors.");
-  }
-  return iconColor as TelegramForumTopicIconColor;
-}
 function normalizeTelegramActionName(action: string): TelegramActionName {
   const normalized = TELEGRAM_ACTION_ALIASES[action as keyof typeof TELEGRAM_ACTION_ALIASES];
   if (!normalized) {
     throw new Error(`Unsupported Telegram action: ${action}`);
   }
   return normalized;
-}
-
-function readTelegramChatId(params: Record<string, unknown>) {
-  return (
-    readStringOrNumberParam(params, "chatId") ??
-    readStringOrNumberParam(params, "channelId") ??
-    readStringOrNumberParam(params, "to", { required: true })
-  );
-}
-
-function readTelegramThreadId(params: Record<string, unknown>) {
-  return (
-    readPositiveIntegerParam(params, "messageThreadId", {
-      message: "messageThreadId must be a positive integer.",
-    }) ??
-    readPositiveIntegerParam(params, "threadId", {
-      message: "threadId must be a positive integer.",
-    })
-  );
 }
 
 function resolveActionTopicNameCacheScope(cfg: OpenClawConfig, accountId?: string | null): string {
@@ -181,59 +151,6 @@ function formatTelegramDeliveryTarget(to: string, messageThreadId?: number | nul
     return to;
   }
   return `${parsed.chatId}:topic:${topicId}`;
-}
-
-function readTelegramReplyToMessageId(params: Record<string, unknown>) {
-  return (
-    readPositiveIntegerParam(params, "replyToMessageId", {
-      message: "replyToMessageId must be a positive integer.",
-    }) ??
-    readPositiveIntegerParam(params, "replyTo", {
-      message: "replyTo must be a positive integer.",
-    })
-  );
-}
-
-function pushTelegramMediaUrl(mediaUrls: string[], seen: Set<string>, value: unknown): void {
-  if (typeof value !== "string") {
-    return;
-  }
-  const normalized = value.trim();
-  if (!normalized || seen.has(normalized)) {
-    return;
-  }
-  seen.add(normalized);
-  mediaUrls.push(normalized);
-}
-
-function readTelegramSendMediaUrls(params: Record<string, unknown>) {
-  const mediaUrls: string[] = [];
-  const seen = new Set<string>();
-  pushTelegramMediaUrl(mediaUrls, seen, params.mediaUrl);
-  pushTelegramMediaUrl(mediaUrls, seen, params.media);
-  pushTelegramMediaUrl(mediaUrls, seen, params.path);
-  pushTelegramMediaUrl(mediaUrls, seen, params.filePath);
-  pushTelegramMediaUrl(mediaUrls, seen, params.fileUrl);
-  if (Array.isArray(params.mediaUrls)) {
-    for (const mediaUrl of params.mediaUrls) {
-      pushTelegramMediaUrl(mediaUrls, seen, mediaUrl);
-    }
-  }
-  if (Array.isArray(params.attachments)) {
-    for (const attachment of params.attachments) {
-      if (!attachment || typeof attachment !== "object" || Array.isArray(attachment)) {
-        continue;
-      }
-      const record = attachment as Record<string, unknown>;
-      pushTelegramMediaUrl(mediaUrls, seen, record.media);
-      pushTelegramMediaUrl(mediaUrls, seen, record.mediaUrl);
-      pushTelegramMediaUrl(mediaUrls, seen, record.path);
-      pushTelegramMediaUrl(mediaUrls, seen, record.filePath);
-      pushTelegramMediaUrl(mediaUrls, seen, record.fileUrl);
-      pushTelegramMediaUrl(mediaUrls, seen, record.url);
-    }
-  }
-  return mediaUrls;
 }
 
 function resolveTelegramButtonsFromParams(
@@ -378,7 +295,7 @@ function buildTelegramActionSendPayload(params: {
 
 function getLastDurableTelegramActionResult(
   result: Extract<DurableMessageBatchSendResult, { status: "sent" }>,
-): { messageId?: string; chatId?: string } {
+) {
   const lastResult = result.results.at(-1);
   const receipt = result.receipt;
   return {
@@ -387,6 +304,7 @@ function getLastDurableTelegramActionResult(
       receipt.primaryPlatformMessageId ??
       receipt.platformMessageIds.at(-1),
     chatId: lastResult?.target?.kind === "chat" ? lastResult.target.id : undefined,
+    receipt: { threadId: receipt.threadId, replyToId: receipt.replyToId },
   };
 }
 
@@ -402,12 +320,25 @@ async function describeTelegramAllowedReactionSample(params: {
       token: params.token,
       accountId: params.accountId,
     })
-    .catch(() => null);
-  const emojis = reactions
-    ?.filter((reaction) => reaction.type === "emoji")
+    .catch(() => undefined);
+  if (reactions === undefined) {
+    return "";
+  }
+  const allowed =
+    reactions ??
+    TELEGRAM_SUPPORTED_REACTION_EMOJI_LIST.map((emoji) => ({ type: "emoji" as const, emoji }));
+  // Preserve portable alternatives when Telegram returns custom reactions first.
+  const emojis = allowed
+    .filter((reaction) => reaction.type === "emoji")
     .slice(0, TELEGRAM_REACTION_HINT_LIMIT)
     .map((reaction) => reaction.emoji);
-  return emojis?.length ? ` This chat allows: ${emojis.join(" ")}.` : "";
+  const customIds = allowed
+    .filter((reaction) => reaction.type === "custom_emoji")
+    .slice(0, TELEGRAM_REACTION_HINT_LIMIT - emojis.length)
+    .map((reaction) => reaction.custom_emoji_id);
+  const customSample = customIds.length ? `numeric custom IDs ${customIds.join(", ")}` : "";
+  const sample = [emojis.join(" "), customSample].filter(Boolean).join("; ");
+  return sample ? ` This chat allows: ${sample}.` : "";
 }
 
 export async function handleTelegramAction(
@@ -421,8 +352,12 @@ export async function handleTelegramAction(
     inboundEventKind?: string;
     gatewayClientScopes?: readonly string[];
     deliveryRetryOwner?: ChannelMessageActionContext["deliveryRetryOwner"];
+    onPlatformSendDispatch?: ChannelMessageActionContext["onPlatformSendDispatch"];
+    assertDirectAdapterHandoff?: ChannelMessageActionContext["assertDirectAdapterHandoff"];
+    skipQueue?: boolean;
     conversationReadOrigin?: ConversationReadInvocationOrigin;
     requesterAccountId?: string | null;
+    requesterSenderId?: string | null;
     reply?: ChannelMessageActionContext["reply"];
     toolContext?: TelegramMessageMutationContext["toolContext"];
   },
@@ -444,6 +379,10 @@ export async function handleTelegramAction(
       inboundEventKind: options?.inboundEventKind,
     });
   };
+
+  if (action === "read") {
+    return await readTelegramHistoryAction(params, cfg, options);
+  }
 
   if (action === "emoji-list") {
     if (!isActionEnabled("reactions")) {
@@ -733,6 +672,9 @@ export async function handleTelegramAction(
       durability: "required",
       gatewayClientScopes: options?.gatewayClientScopes,
       deliveryRetryOwner: options?.deliveryRetryOwner,
+      onPlatformSendDispatch: options?.onPlatformSendDispatch,
+      assertDirectAdapterHandoff: options?.assertDirectAdapterHandoff,
+      skipQueue: options?.skipQueue,
       ...(mediaAccess ? { mediaAccess } : {}),
       ...(outboundSession ? { session: outboundSession } : {}),
     });
@@ -740,7 +682,18 @@ export async function handleTelegramAction(
       throw durableResult.error;
     }
     if (durableResult.status === "suppressed") {
-      throw new Error("Telegram sendMessage was suppressed before delivery.");
+      const mayHaveReachedRecipient =
+        durableResult.reason === "adapter_returned_no_identity" ||
+        durableResult.payloadOutcomes?.some((outcome) =>
+          outcome.status === "failed"
+            ? outcome.sentBeforeError
+            : outcome.status === "sent" || outcome.reason === "adapter_returned_no_identity",
+        );
+      if (mayHaveReachedRecipient) {
+        throw new Error("Telegram sendMessage was suppressed before delivery.");
+      }
+      // Hook diagnostics remain private; only the durable owner's bounded reason crosses here.
+      return jsonResult({ status: "suppressed", reason: durableResult.reason });
     }
     const result = getLastDurableTelegramActionResult(durableResult);
     notifyVisibleOutboundSuccess(to, messageThreadId);
@@ -748,6 +701,7 @@ export async function handleTelegramAction(
       ok: true,
       messageId: result.messageId,
       chatId: result.chatId,
+      receipt: result.receipt,
       ...buildTelegramControlDegradation(droppedControls, Boolean(content.trim())),
     });
   }
@@ -1016,7 +970,7 @@ export async function handleTelegramAction(
       readPositiveIntegerParam(params, "limit", {
         message: "limit must be a positive integer.",
       }) ?? 5;
-    const results = telegramActionRuntime.searchStickers(query, limit);
+    const results = await telegramActionRuntime.searchStickers(query, limit);
     return jsonResult({
       ok: true,
       count: results.length,
@@ -1030,7 +984,7 @@ export async function handleTelegramAction(
   }
 
   if (action === "stickerCacheStats") {
-    const stats = telegramActionRuntime.getCacheStats();
+    const stats = await telegramActionRuntime.getCacheStats();
     return jsonResult({ ok: true, ...stats });
   }
 

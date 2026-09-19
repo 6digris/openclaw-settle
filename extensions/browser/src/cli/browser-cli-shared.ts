@@ -2,6 +2,7 @@
  * Shared Browser CLI option parsing and gateway request helpers.
  */
 import {
+  addTimerTimeoutGraceMs,
   parseStrictNonNegativeInteger,
   parseStrictPositiveInteger,
 } from "openclaw/plugin-sdk/number-runtime";
@@ -9,9 +10,15 @@ import {
   BROWSER_REQUEST_GATEWAY_METHOD,
   BROWSER_REQUEST_GATEWAY_SCOPES,
 } from "../browser-gateway-contract.js";
+import { BROWSER_ACTION_TRANSPORT_SLACK_MS } from "../browser/act-policy.js";
 import { normalizeBrowserTimerDelayMs } from "../browser/timer-delay.js";
-import { danger, defaultRuntime, runCommandWithRuntime } from "../core-api.js";
-import { callGatewayFromCli, type GatewayRpcOpts } from "./core-api.js";
+import {
+  callGatewayFromCli,
+  danger,
+  defaultRuntime,
+  runCommandWithRuntime,
+  type GatewayRpcOpts,
+} from "./core-api.js";
 
 /** Parent Browser CLI options inherited by subcommands. */
 export type BrowserParentOpts = GatewayRpcOpts & {
@@ -30,12 +37,71 @@ type BrowserRequestParams = {
   body?: unknown;
 };
 
+/** Adds gateway slack to a Browser action timeout so route work can finish cleanly. */
+export function withBrowserActionTimeoutSlack(timeoutMs: number | undefined): number {
+  return addTimerTimeoutGraceMs(timeoutMs ?? 20_000, BROWSER_ACTION_TRANSPORT_SLACK_MS) ?? 1;
+}
+
 /** Runs a Browser CLI command with the standard runtime error handling. */
 export function runBrowserCliCommand(action: () => Promise<void>) {
   return runCommandWithRuntime(defaultRuntime, action, (error) => {
     defaultRuntime.error(danger(String(error)));
     defaultRuntime.exit(1);
   });
+}
+
+/** Execute a scoped request with the command family's existing error and output policy. */
+export async function runBrowserCliRequest<T = unknown>(params: {
+  parent: BrowserParentOpts;
+  method?: BrowserRequestParams["method"];
+  path: string;
+  query?: BrowserRequestParams["query"];
+  body?: unknown;
+  /** Global commands pass null instead of applying the selected profile. */
+  profile?: string | null;
+  timeoutMs?: number;
+  errorPolicy?: "runtime" | "inline";
+  successMessage?: string | ((result: T) => string);
+  print?: (result: T) => void;
+  json?: (result: T) => unknown;
+}): Promise<void> {
+  const action = async () => {
+    const profile =
+      params.profile === null ? undefined : (params.profile ?? params.parent.browserProfile);
+    const result = await callBrowserRequest<T>(
+      params.parent,
+      {
+        method: params.method ?? "POST",
+        path: params.path,
+        query: resolveBrowserProfileQuery(profile, params.query),
+        body: params.body,
+      },
+      { timeoutMs: params.timeoutMs },
+    );
+    if (params.parent.json) {
+      defaultRuntime.writeJson(params.json ? params.json(result) : result);
+    } else if (params.print) {
+      params.print(result);
+    } else if (params.successMessage !== undefined) {
+      defaultRuntime.log(
+        typeof params.successMessage === "function"
+          ? params.successMessage(result)
+          : params.successMessage,
+      );
+    }
+  };
+  if (params.errorPolicy !== "inline") {
+    await runBrowserCliCommand(action);
+    return;
+  }
+  // These older commands report even expected/JSON-mode errors locally. Keep
+  // that public CLI behavior distinct from runCommandWithRuntime's rethrow path.
+  try {
+    await action();
+  } catch (err) {
+    defaultRuntime.error(danger(String(err)));
+    defaultRuntime.exit(1);
+  }
 }
 
 /** Writes a Browser command result when structured output was requested. */

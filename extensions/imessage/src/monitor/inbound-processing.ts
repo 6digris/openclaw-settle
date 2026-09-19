@@ -1,4 +1,3 @@
-// Imessage plugin module implements inbound processing behavior.
 import {
   buildChannelInboundEventContext,
   buildMentionRegexes,
@@ -183,7 +182,9 @@ function describeReplyContext(message: IMessagePayload): IMessageReplyContext | 
   if (!body) {
     return null;
   }
-  const id = normalizeReplyField(message.reply_to_id);
+  const id =
+    normalizeReplyField(message.thread_originator_guid) ??
+    normalizeReplyField(message.reply_to_guid);
   const sender = normalizeReplyField(message.reply_to_sender);
   return { body, id, sender };
 }
@@ -251,13 +252,13 @@ export function rememberIMessageSkippedFromMeForSelfChatDedupe(params: {
   }
 }
 
-function hasIMessageEchoMatch(params: {
+async function hasIMessageEchoMatch(params: {
   echoCache: {
     has: (
       scope: string,
       lookup: { text?: string; media?: MediaPlaceholderTextFact; messageId?: string },
       options?: boolean | { skipIdShortCircuit?: boolean; includePendingText?: boolean },
-    ) => boolean;
+    ) => boolean | Promise<boolean>;
   };
   scope: string | readonly string[];
   text?: string;
@@ -265,7 +266,7 @@ function hasIMessageEchoMatch(params: {
   messageIds: string[];
   skipIdShortCircuit?: boolean;
   includePendingText?: boolean;
-}): boolean {
+}): Promise<boolean> {
   // Outbound sends persist echo scopes keyed by whichever target shape was
   // used (chat_id, chat_guid, chat_identifier, or imessage:<handle>). Inbound
   // messages from chat.db typically carry chat_id + chat_guid + chat_identifier
@@ -280,7 +281,7 @@ function hasIMessageEchoMatch(params: {
       continue;
     }
     for (const messageId of params.messageIds) {
-      if (params.echoCache.has(scope, { messageId })) {
+      if (await params.echoCache.has(scope, { messageId })) {
         return true;
       }
     }
@@ -289,7 +290,7 @@ function hasIMessageEchoMatch(params: {
       continue;
     }
     if (
-      params.echoCache.has(
+      await params.echoCache.has(
         scope,
         { text: params.text, media: params.media, messageId: fallbackMessageId },
         {
@@ -304,25 +305,30 @@ function hasIMessageEchoMatch(params: {
   return false;
 }
 
-function isKnownFromMeIMessageReactionTarget(params: {
-  messageId: string;
+async function isKnownFromMeIMessageReactionTarget(params: {
+  messageIds: string[];
   accountId: string;
   chatId?: number;
   chatGuid?: string;
   chatIdentifier?: string;
-  isKnownFromMeMessageId?: typeof isKnownFromMeIMessageMessageId;
-}): boolean {
-  const { messageId, accountId, chatId, chatGuid, chatIdentifier } = params;
+  isKnownFromMeMessageId?: (
+    ...args: Parameters<typeof isKnownFromMeIMessageMessageId>
+  ) => boolean | Promise<boolean>;
+}): Promise<boolean> {
+  const { accountId, chatId, chatGuid, chatIdentifier } = params;
   const ctx = {
     accountId,
     chatId,
     chatGuid,
     chatIdentifier,
   };
-  if (params.isKnownFromMeMessageId) {
-    return params.isKnownFromMeMessageId(messageId, ctx);
+  const isKnownFromMe = params.isKnownFromMeMessageId ?? isKnownFromMeIMessageMessageId;
+  for (const messageId of params.messageIds) {
+    if (await isKnownFromMe(messageId, ctx)) {
+      return true;
+    }
   }
-  return isKnownFromMeIMessageMessageId(messageId, ctx);
+  return false;
 }
 
 /**
@@ -418,11 +424,13 @@ export async function resolveIMessageInboundDecision(params: {
       scope: string,
       lookup: { text?: string; media?: MediaPlaceholderTextFact; messageId?: string },
       options?: boolean | { skipIdShortCircuit?: boolean; includePendingText?: boolean },
-    ) => boolean;
+    ) => boolean | Promise<boolean>;
   };
   selfChatCache?: SelfChatCache;
   reactionNotifications?: IMessageReactionNotificationMode;
-  isKnownFromMeMessageId?: typeof isKnownFromMeIMessageMessageId;
+  isKnownFromMeMessageId?: (
+    ...args: Parameters<typeof isKnownFromMeIMessageMessageId>
+  ) => boolean | Promise<boolean>;
   logVerbose?: (msg: string) => void;
 }): Promise<IMessageInboundDecision> {
   const senderRaw = params.message.sender ?? "";
@@ -516,7 +524,7 @@ export async function resolveIMessageInboundDecision(params: {
       if (
         params.echoCache &&
         (bodyText || inboundMessageId || mediaFacts.length > 0) &&
-        hasIMessageEchoMatch({
+        (await hasIMessageEchoMatch({
           echoCache: params.echoCache,
           scope: echoScope,
           text: bodyText || undefined,
@@ -524,7 +532,7 @@ export async function resolveIMessageInboundDecision(params: {
           messageIds: inboundMessageIds,
           skipIdShortCircuit: !hasInboundGuid,
           includePendingText: true,
-        })
+        }))
       ) {
         return { kind: "drop", reason: "agent echo in self-chat" };
       }
@@ -640,7 +648,7 @@ export async function resolveIMessageInboundDecision(params: {
     const targetIsOwn = Boolean(
       targetGuid &&
       ((params.echoCache &&
-        hasIMessageEchoMatch({
+        (await hasIMessageEchoMatch({
           echoCache: params.echoCache,
           scope: buildIMessageEchoScope({
             accountId: params.accountId,
@@ -651,17 +659,15 @@ export async function resolveIMessageInboundDecision(params: {
             sender,
           }),
           messageIds: targetGuids,
-        })) ||
-        targetGuids.some((messageId) =>
-          isKnownFromMeIMessageReactionTarget({
-            messageId,
-            accountId: params.accountId,
-            chatId,
-            chatGuid,
-            chatIdentifier,
-            isKnownFromMeMessageId: params.isKnownFromMeMessageId,
-          }),
-        )),
+        }))) ||
+        (await isKnownFromMeIMessageReactionTarget({
+          messageIds: targetGuids,
+          accountId: params.accountId,
+          chatId,
+          chatGuid,
+          chatIdentifier,
+          isKnownFromMeMessageId: params.isKnownFromMeMessageId,
+        }))),
     );
     if (notificationMode === "own" && !targetIsOwn) {
       return { kind: "drop", reason: "reaction target not sent by agent" };
@@ -724,7 +730,7 @@ export async function resolveIMessageInboundDecision(params: {
       sender,
     });
     if (
-      hasIMessageEchoMatch({
+      await hasIMessageEchoMatch({
         echoCache: params.echoCache,
         scope: echoScope,
         text: bodyText || undefined,
@@ -922,7 +928,7 @@ export async function buildIMessageInboundContext(params: {
     decision.isGroup && chatId != null ? formatIMessageChatTarget(chatId) : undefined;
   const messageGuid = normalizeReplyField(params.message.guid);
   const rememberedMessage = messageGuid
-    ? rememberIMessageReplyCache({
+    ? await rememberIMessageReplyCache({
         accountId: decision.route.accountId,
         messageId: messageGuid,
         chatGuid: decision.chatGuid,
@@ -946,12 +952,21 @@ export async function buildIMessageInboundContext(params: {
       }]\n${decision.replyContext.body}\n[/Replying]`
     : "";
 
+  const senderDisplayName = normalizeNonEmpty(params.message.sender_name ?? "");
+  const directConversationName =
+    senderDisplayName ??
+    normalizeNonEmpty(params.message.chat_name ?? "") ??
+    decision.senderNormalized;
+  const conversationName = decision.isGroup
+    ? (normalizeNonEmpty(params.message.chat_name ?? "") ?? undefined)
+    : directConversationName;
+
   const fromLabel = formatInboundFromLabel({
     isGroup: decision.isGroup,
     groupLabel: params.message.chat_name ?? undefined,
     groupId: chatId !== undefined ? String(chatId) : "unknown",
     groupFallback: "Group",
-    directLabel: decision.senderNormalized,
+    directLabel: directConversationName,
     directId: decision.sender,
   });
 
@@ -961,7 +976,7 @@ export async function buildIMessageInboundContext(params: {
     timestamp: decision.createdAt,
     body: `${decision.agentBodyText ?? decision.bodyText}${replySuffix}`,
     chatType: decision.isGroup ? "group" : "direct",
-    sender: { name: decision.senderNormalized, id: decision.sender },
+    sender: { name: senderDisplayName ?? decision.senderNormalized, id: decision.sender },
     previousTimestamp: params.previousTimestamp,
     envelope: envelopeOptions,
   });
@@ -994,10 +1009,16 @@ export async function buildIMessageInboundContext(params: {
   const imessageTo = decision.isGroup
     ? chatTarget || `imessage:${decision.sender}`
     : `${directService}:${decision.sender}`;
-  // Async follow-ups can resume from the stored origin instead of the immediate
-  // reply target. Keep direct SMS origins service-qualified the same way as To,
-  // or the final resumed message can fall back to imessage:<phone>.
+  // Async follow-ups need a service-qualified durable origin. Immediate direct replies use the
+  // provider's exact chat ID instead, so service auto-detection cannot erase the current binding.
   const imessageFrom = decision.isGroup ? `imessage:group:${chatId ?? "unknown"}` : imessageTo;
+  const replyTarget = decision.isGroup
+    ? imessageTo
+    : chatId != null
+      ? `chat_id:${chatId}`
+      : decision.chatGuid
+        ? `chat_guid:${decision.chatGuid}`
+        : imessageTo;
   const inboundHistory =
     !decision.isGroup && params.dmHistory?.inboundHistory
       ? params.dmHistory.inboundHistory
@@ -1031,7 +1052,8 @@ export async function buildIMessageInboundContext(params: {
     from: imessageFrom,
     sender: {
       id: decision.sender,
-      name: decision.senderNormalized,
+      name: senderDisplayName ?? decision.senderNormalized,
+      isSelf: params.message.is_from_me === true,
     },
     conversation: {
       kind: decision.isGroup ? "group" : "direct",
@@ -1044,7 +1066,7 @@ export async function buildIMessageInboundContext(params: {
               id: decision.isGroup ? String(chatId) : decision.senderNormalized,
             },
           }),
-      label: fromLabel,
+      label: conversationName,
     },
     route: {
       agentId: decision.route.agentId,
@@ -1053,7 +1075,7 @@ export async function buildIMessageInboundContext(params: {
       routeSessionKey: decision.route.sessionKey,
     },
     reply: {
-      to: imessageTo,
+      to: replyTarget,
     },
     message: {
       body: combinedBody,

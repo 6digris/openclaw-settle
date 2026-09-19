@@ -24,20 +24,28 @@ import {
 } from "../config/sessions/session-accessor.js";
 import { appendAssistantMessageToSessionTranscript } from "../config/sessions/transcript.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { resolveCronDeliveryPlan } from "../cron/delivery-plan.js";
 import { dispatchCronDelivery } from "../cron/isolated-agent/delivery-dispatch.js";
+import type { CronJob } from "../cron/types.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import { claimAgentRunContext, clearAgentRunContext } from "../infra/agent-run-registry.js";
 import * as secureRandom from "../infra/secure-random.js";
 import { emitSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
-import * as transcriptEvents from "../sessions/transcript-events.js";
 import { emitSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import { persistUserTurnTranscript } from "../sessions/user-turn-transcript.test-support.js";
-import { ensureProfileForEmail, setAvatar, setDisplayName } from "../state/user-profiles.js";
+import {
+  ensureProfileForEmail,
+  listProfiles,
+  setAvatar,
+  setDisplayName,
+} from "../state/user-profiles.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
 import { resolveCurrentUserProfileDisplay } from "./current-user-profile-display.js";
+import { seedCompletedSessionTranscript } from "./session-row-fixtures.test-support.js";
+import { removeSessionTestDirectories } from "./session-test-directories.test-support.js";
 import { testState } from "./test-helpers.runtime-state.js";
 import {
   connectOk,
@@ -88,9 +96,7 @@ afterEach(async () => {
   for (const state of cleanupTestStates.splice(0).toReversed()) {
     await state.cleanup();
   }
-  await Promise.all(
-    cleanupDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })),
-  );
+  await removeSessionTestDirectories(cleanupDirs.splice(0));
 });
 
 async function createSessionStoreFile(): Promise<string> {
@@ -219,6 +225,7 @@ function attributedMessageProjection(value: unknown) {
     content: message.content,
     __openclaw: {
       senderId: metadata.senderId,
+      senderIdentity: metadata.senderIdentity,
       senderName: metadata.senderName,
       senderUsername: metadata.senderUsername,
       senderProfileAvatarUrl: metadata.senderProfileAvatarUrl,
@@ -272,6 +279,17 @@ describe("session.message websocket events", () => {
         );
       };
       const declaredKeys = ["agent:main:watch-00", "agent:main:watch-01"];
+      const replacementKey = "agent:main:replacement";
+      const storePath = await createSessionStoreFile();
+      await writeSessionStore({
+        storePath,
+        entries: Object.fromEntries(
+          [...declaredKeys, replacementKey].map((key) => [
+            key,
+            { sessionId: key, updatedAt: Date.now() },
+          ]),
+        ),
+      });
       const declaredPresence = onceMessage(observerWs, (message) => {
         const entry = findWatchedEntry(message);
         return (
@@ -286,7 +304,14 @@ describe("session.message websocket events", () => {
       const declaredEvent = await declaredPresence;
       const declaredEntry = findWatchedEntry(declaredEvent);
       expect(declaredEntry?.watchedSessions).toEqual(declaredKeys);
-      expect(declaredEntry?.user).toBeUndefined();
+      const ownerProfile = (await listProfiles()).find((profile) => profile.emails.length === 0);
+      expect(ownerProfile).toBeDefined();
+      expect(declaredEntry?.user).toEqual({
+        id: ownerProfile!.id,
+        identity: { type: "profile", id: ownerProfile!.id },
+        avatarUrl: currentProfileAvatarUrl(ownerProfile!.id),
+        ...(ownerProfile!.displayName ? { name: ownerProfile!.displayName } : {}),
+      });
       expect(declaredEvent.stateVersion?.presence).toBeGreaterThan(initialPresenceVersion ?? 0);
 
       // Sidebar narration owns message subscriptions for running rows, but those
@@ -318,7 +343,6 @@ describe("session.message websocket events", () => {
         )?.watchedSessions,
       ).toEqual(declaredKeys);
 
-      const replacementKey = "agent:main:replacement";
       const replacementPresence = onceMessage(observerWs, (message) => {
         const entry = findWatchedEntry(message);
         return Array.isArray(entry?.watchedSessions) && entry.watchedSessions[0] === replacementKey;
@@ -657,6 +681,7 @@ describe("session.message websocket events", () => {
       persistOrThrow: vi.fn(),
       clearPendingLifecycleError: vi.fn(),
       countPendingDescendantRuns: () => 0,
+      getLatestRunForChildSession: () => null,
       suppressAnnounceForSteerRestart: () => false,
       resolveSubagentTask: () => ({ lookup: "available" }),
       shouldEmitEndedHookForRun: () => false,
@@ -998,33 +1023,36 @@ describe("session.message websocket events", () => {
       });
       await rpcReq(webWs, "sessions.messages.subscribe", { key: sessionKey });
 
+      const job: CronJob = {
+        id: "job-webchat",
+        name: "Current WebChat completion",
+        sessionTarget: "current",
+        sessionKey,
+        wakeMode: "now",
+        enabled: true,
+        state: {},
+        createdAtMs: 1,
+        updatedAtMs: 1,
+        schedule: { kind: "at", at: "2030-01-01T00:00:00.000Z" },
+        payload: { kind: "agentTurn", message: "Finish later" },
+      };
       const liveEventPromise = waitForSessionMessageEvent(webWs, sessionKey);
       const dispatched = await dispatchCronDelivery({
-        cfg: { session: { store: storePath } },
         cfgWithAgentDefaults: { session: { store: storePath } },
         deps: {},
-        job: {
-          id: "job-webchat",
-          name: "Current WebChat completion",
-          sessionTarget: "current",
-          sessionKey,
-          wakeMode: "now",
-          enabled: true,
-          state: {},
-          createdAtMs: 1,
-          updatedAtMs: 1,
-          schedule: { kind: "at", at: "2030-01-01T00:00:00.000Z" },
-          payload: { kind: "agentTurn", message: "Finish later" },
-        },
+        job,
         agentId: "main",
         agentSessionKey: "cron:job-webchat",
         sourceSessionKey: sessionKey,
+        sourceSessionGeneration: {
+          sessionId,
+          lifecycleRevision: "current-cron-revision",
+        },
         runSessionKey: "cron:job-webchat:run:3000",
         sessionId: "detached-cron-session",
         lifecycleRevision: "detached-cron-revision",
         sessionUpdatedAt: 3_000,
         runStartedAt: 3_000,
-        runEndedAt: 3_001,
         timeoutMs: 30_000,
         resolvedDelivery: {
           ok: false,
@@ -1032,8 +1060,9 @@ describe("session.message websocket events", () => {
           mode: "implicit",
           error: new Error("WebChat uses canonical session events"),
         },
+        deliveryPlan: resolveCronDeliveryPlan(job),
         deliveryRequested: true,
-        skipHeartbeatDelivery: false,
+        undeliveredRunStatus: "ok",
         spawnOnlyHandoff: false,
         sourceDeliveryOutcome: {
           visibleDeliveries: [],
@@ -1049,11 +1078,6 @@ describe("session.message websocket events", () => {
         outputText: "The detached cron finished without another user message.",
         isAborted: () => false,
         abortReason: () => "aborted",
-        withRunSession: (result) => ({
-          ...result,
-          sessionId: "detached-cron-session",
-          sessionKey: "cron:job-webchat:run:3000",
-        }),
       });
       expect(dispatched).toMatchObject({ delivered: true, deliveryAttempted: true });
 
@@ -1175,6 +1199,7 @@ describe("session.message websocket events", () => {
             idempotencyKey: params.idempotencyKey,
             sender: {
               id: profile.id,
+              identity: { type: "profile", id: profile.id },
               name: params.senderName,
               username: "ada",
             },
@@ -1212,6 +1237,7 @@ describe("session.message websocket events", () => {
         content: text,
         __openclaw: {
           senderId: profile.id,
+          senderIdentity: { type: "profile", id: profile.id },
           senderName,
           senderUsername: "ada",
           senderProfileAvatarUrl: avatarUrl,
@@ -1633,47 +1659,44 @@ describe("session.message websocket events", () => {
       storePath,
     });
 
-    const emitSpy = vi.spyOn(transcriptEvents, "emitSessionTranscriptUpdate");
-    try {
-      const appended = await appendAssistantMessageToSessionTranscript({
-        sessionKey: "agent:main:main",
-        text: "live websocket message",
-        storePath,
-      });
-      expect(appended.ok).toBe(true);
-      if (!appended.ok) {
-        throw new Error(`append failed: ${appended.reason}`);
-      }
-      const emitParams = requireRecord(emitSpy.mock.calls.at(0)?.[0], "transcript update params");
-      expect(emitParams.sessionKey).toBe("agent:main:main");
-      expect(emitParams.target).toMatchObject({
+    const delivered = withOperatorSessionSubscriber((ws) =>
+      waitForSessionMessageEvent(ws, "agent:main:main"),
+    );
+    const appended = await appendAssistantMessageToSessionTranscript({
+      sessionKey: "agent:main:main",
+      text: "live websocket message",
+      storePath,
+    });
+    expect(appended.ok).toBe(true);
+    if (!appended.ok) {
+      throw new Error(`append failed: ${appended.reason}`);
+    }
+    const payload = requireRecord((await delivered).payload, "transcript message event");
+    expectRecordFields(payload, {
+      agentId: "main",
+      sessionId: "sess-main",
+      sessionKey: "agent:main:main",
+      messageId: appended.messageId,
+    });
+    expectRecordFields(payload.message, {
+      role: "assistant",
+      content: [{ type: "text", text: "live websocket message" }],
+    });
+    await expect(
+      loadTranscriptEvents({
         agentId: "main",
         sessionId: "sess-main",
         sessionKey: "agent:main:main",
-      });
-      expect(emitParams.messageId).toBe(appended.messageId);
-      expectRecordFields(emitParams.message, {
-        role: "assistant",
-        content: [{ type: "text", text: "live websocket message" }],
-      });
-      await expect(
-        loadTranscriptEvents({
-          agentId: "main",
-          sessionId: "sess-main",
-          sessionKey: "agent:main:main",
-          storePath,
+        storePath,
+      }),
+    ).resolves.toContainEqual(
+      expect.objectContaining({
+        message: expect.objectContaining({
+          content: [{ type: "text", text: "live websocket message" }],
         }),
-      ).resolves.toContainEqual(
-        expect.objectContaining({
-          message: expect.objectContaining({
-            content: [{ type: "text", text: "live websocket message" }],
-          }),
-          type: "message",
-        }),
-      );
-    } finally {
-      emitSpy.mockRestore();
-    }
+        type: "message",
+      }),
+    );
   });
 
   test("strips blocked original content from live session.message events", async () => {
@@ -1910,7 +1933,10 @@ describe("session.message websocket events", () => {
 
   test("includes live usage metadata on session.message transcript events", async () => {
     const storePath = await createSessionStoreFile();
-    await writeSessionStore({
+    const transcriptMessage = await seedCompletedSessionTranscript({
+      storePath,
+      sessionId: "sess-main",
+      sessionKey: "agent:main:main",
       entries: {
         main: {
           sessionId: "sess-main",
@@ -1926,34 +1952,21 @@ describe("session.message websocket events", () => {
           totalTokensFresh: false,
         },
       },
-      storePath,
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "usage snapshot" }],
+        provider: "openai",
+        model: "gpt-5.4",
+        usage: {
+          input: 2_000,
+          output: 400,
+          cacheRead: 300,
+          cacheWrite: 100,
+          cost: { total: 0.0042 },
+        },
+        timestamp: Date.now(),
+      },
     });
-    const transcriptMessage = {
-      role: "assistant",
-      content: [{ type: "text", text: "usage snapshot" }],
-      provider: "openai",
-      model: "gpt-5.4",
-      usage: {
-        input: 2_000,
-        output: 400,
-        cacheRead: 300,
-        cacheWrite: 100,
-        cost: { total: 0.0042 },
-      },
-      timestamp: Date.now(),
-    };
-    await persistSessionTranscriptTurn(
-      {
-        agentId: "main",
-        sessionId: "sess-main",
-        sessionKey: "agent:main:main",
-        storePath,
-      },
-      {
-        messages: [{ message: transcriptMessage }],
-        updateMode: "none",
-      },
-    );
 
     await withOperatorSessionSubscriber(async (ws) => {
       const { messageEvent } = await emitTranscriptUpdateAndCollectMessageEvent({
@@ -2062,7 +2075,7 @@ describe("session.message websocket events", () => {
       content: [{ type: "text", text: "early selected prompt" }],
       timestamp: Date.now(),
     };
-    await persistSessionTranscriptTurn(
+    const persisted = await persistSessionTranscriptTurn(
       {
         agentId: "main",
         sessionId: "sess-main",
@@ -2070,10 +2083,11 @@ describe("session.message websocket events", () => {
         storePath,
       },
       {
-        messages: [{ message: transcriptMessage }],
+        messages: [{ eventId: "msg-selected", message: transcriptMessage }],
         updateMode: "none",
       },
     );
+    expect(persisted.appendedCount).toBe(1);
 
     const ws = await harness.openWs();
     try {
@@ -2092,7 +2106,10 @@ describe("session.message websocket events", () => {
           sessionKey: "agent:main:main",
           storePath,
         },
-        message: transcriptMessage,
+        message: {
+          ...transcriptMessage,
+          content: [{ type: "text", text: "stale queued prompt" }],
+        },
         messageId: "msg-selected",
       });
 
@@ -2101,6 +2118,14 @@ describe("session.message websocket events", () => {
         sessionKey: "agent:main:main",
         messageId: "msg-selected",
         messageSeq: 1,
+      });
+      expect(requireRecord(messageEvent.payload, "selected session event").message).toMatchObject({
+        ...transcriptMessage,
+        __openclaw: {
+          id: "msg-selected",
+          seq: 1,
+          transcriptPosition: { source: expect.any(String), rawSeq: expect.any(Number) },
+        },
       });
     } finally {
       ws.close();
@@ -2692,6 +2717,7 @@ describe("session.message websocket events", () => {
     const ledger: WorkerTranscriptCommitStore = {
       begin: () => ({ kind: "claimed" }),
       complete: ({ outcome }) => outcome,
+      discardUncommitted: () => {},
     };
     const committer = createWorkerTranscriptCommitter({ getConfig: () => config, store: ledger });
     const identity: WorkerConnectionIdentity = {
@@ -2752,6 +2778,7 @@ describe("session.message websocket events", () => {
         ),
       );
       const outcome = await committer.commit({
+        assertCurrent: () => undefined,
         identity,
         request: {
           runEpoch: identity.ownerEpoch,
@@ -2807,14 +2834,16 @@ describe("session.message websocket events", () => {
         waitForChat("worker"),
         expectNoMessageWithin({
           watch: (timeoutMs) => waitForSessionMessageEvent(ws, sessionKey, timeoutMs),
-          action: () => expect(push().ok).toBe(true),
+          action: async () => {
+            expect((await push()).ok).toBe(true);
+          },
         }),
       ]);
       const workerChat = requireRecord(workerEvent.payload, "worker chat");
       await expectNoMessageWithin({
         watch: (timeoutMs) => waitForChat("worker", timeoutMs),
-        action: () => {
-          expect(push()).toEqual({ ok: true, result: { ackedSeq: 1 } });
+        action: async () => {
+          expect(await push()).toEqual({ ok: true, result: { ackedSeq: 1 } });
         },
       });
       expect(workerChats).toHaveLength(1);
@@ -2839,7 +2868,9 @@ describe("session.message websocket events", () => {
       expect(workerChat).toEqual(localChat);
       await expectNoMessageWithin({
         watch: (timeoutMs) => waitForChat("stale", timeoutMs),
-        action: () => expect(push(3, "stale").ok).toBe(false),
+        action: async () => {
+          expect((await push(3, "stale")).ok).toBe(false);
+        },
       });
     } finally {
       receiver.clear();

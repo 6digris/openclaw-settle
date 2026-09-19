@@ -12,7 +12,7 @@ const suite = createControlUiE2eSuite({
 });
 
 const sessionKeys = ["agent:main:perf-a", "agent:main:perf-b", "agent:main:perf-c"] as const;
-const hydrationMethods = new Set(["tasks.list", "sessions.files.list", "artifacts.list"]);
+const hydrationMethods = new Set(["tasks.list", "artifacts.list"]);
 
 function countSessionHydrationRequests(requests: MockGatewayRequest[], sessionKey: string): number {
   return requests.filter((request) => {
@@ -66,11 +66,23 @@ suite.define(() => {
       });
       try {
         await page.goto(new URL(controlUiSessionPath(sessionKeys[0]), suite.server.baseUrl).href);
-        for (const key of sessionKeys.slice(1)) {
+        // A route URL can settle before its lazy pane mounts and becomes retainable.
+        await expect.poll(() => page.locator("openclaw-chat-pane").count()).toBe(1);
+        for (const [index, key] of sessionKeys.slice(1).entries()) {
+          if (key === sessionKeys[2]) {
+            await gateway.deferNext("chat.startup");
+          }
           await page.locator(`.sidebar-recent-session[data-session-key="${key}"] a`).click();
           await expect.poll(() => new URL(page.url()).pathname).toBe(controlUiSessionPath(key));
+          await expect.poll(() => page.locator("openclaw-chat-pane").count()).toBe(index + 2);
         }
-        await expect.poll(() => page.locator("openclaw-chat-pane").count()).toBe(3);
+        // Initial after-paint hydration belongs outside the reconnect measurement.
+        await gateway.resolveDeferred("chat.startup");
+        await expect
+          .poll(async () =>
+            countSessionHydrationRequests(await gateway.getRequests(), sessionKeys[2]),
+          )
+          .toBe(2);
         const before = (await gateway.getRequests()).length;
         const connectBefore = (await gateway.getRequests("connect")).length;
         await gateway.closeLatest(1012, "retained pane reconnect proof");
@@ -78,13 +90,23 @@ suite.define(() => {
           .poll(async () => (await gateway.getRequests("connect")).length, { timeout: 10_000 })
           .toBeGreaterThan(connectBefore);
         await expect
-          .poll(async () => (await gateway.getRequests()).length, { timeout: 10_000 })
-          .toBeGreaterThan(before + 6);
+          .poll(
+            async () =>
+              countSessionHydrationRequests(
+                (await gateway.getRequests()).slice(before),
+                sessionKeys[2],
+              ),
+            { timeout: 10_000 },
+          )
+          .toBe(2);
         const requests = (await gateway.getRequests()).slice(before);
         const counts: Record<string, number> = {};
         for (const key of sessionKeys) {
           counts[key] = countSessionHydrationRequests(requests, key);
         }
+        expect(requests.filter((request) => request.method === "sessions.files.list")).toHaveLength(
+          0,
+        );
         rounds.push(counts);
         const beforeEvents = (await gateway.getRequests()).length;
         const sessionListCount = (await gateway.getRequests("sessions.list")).length;
@@ -141,7 +163,7 @@ suite.define(() => {
             const later = (await gateway.getRequests()).slice(before + requests.length);
             return countSessionHydrationRequests(later, hiddenSessionKey);
           })
-          .toBe(4);
+          .toBe(2);
       } finally {
         await suite.closeBrowserContext(context);
       }
@@ -150,7 +172,7 @@ suite.define(() => {
       Array.from({ length: 5 }, () => ({
         [sessionKeys[0]]: 0,
         [sessionKeys[1]]: 0,
-        [sessionKeys[2]]: 4,
+        [sessionKeys[2]]: 2,
       })),
     );
   });

@@ -118,6 +118,20 @@ function projectedReportCellStatus(cell: Record<string, unknown>) {
   return cell.runtimeErrorClass || cell.transportErrorClass ? "fail" : "pass";
 }
 
+function acceptedReportCellStatuses(cell: Record<string, unknown>) {
+  const health = projectedReportCellStatus(cell);
+  // Reports written since #129616 preserve an approved scenario-level skip on
+  // the cell itself; older frozen candidates still project only health.
+  return cell.status === "skip" ? new Set([health, "skip"]) : new Set([health]);
+}
+
+function formatRuntimePairReportValue(value: unknown) {
+  if (typeof value === "string") {
+    return value;
+  }
+  return value === undefined ? "undefined" : (JSON.stringify(value) ?? "<undefined>");
+}
+
 function hasPassingRuntimeCellStatus(cell: Record<string, unknown>) {
   // Early frozen candidates did not serialize the derived cell status. Accept
   // only that absent legacy field when the same runtime evidence projects pass.
@@ -348,9 +362,12 @@ export function validateQaRuntimePairReport(
         scenario.status !== expectedStatus ||
         scenario.drift !== source.runtimeParity.drift ||
         scenario.driftDetails !== source.runtimeParity.driftDetails ||
-        scenario.openclawStatus !==
-          projectedReportCellStatus(source.runtimeParity.cells.openclaw) ||
-        scenario.codexStatus !== projectedReportCellStatus(source.runtimeParity.cells.codex)
+        ![...acceptedReportCellStatuses(source.runtimeParity.cells.openclaw)].some(
+          (status) => status === scenario.openclawStatus,
+        ) ||
+        ![...acceptedReportCellStatuses(source.runtimeParity.cells.codex)].some(
+          (status) => status === scenario.codexStatus,
+        )
       );
     })
   ) {
@@ -360,7 +377,7 @@ export function validateQaRuntimePairReport(
     .filter((scenario) => scenario.status === "skip")
     .map(
       (scenario) =>
-        `${scenario.name} drift=${scenario.runtimeParity.drift} (${scenario.runtimeParity.driftDetails}).`,
+        `${formatRuntimePairReportValue(scenario.name)} drift=${formatRuntimePairReportValue(scenario.runtimeParity.drift)} (${formatRuntimePairReportValue(scenario.runtimeParity.driftDetails)}).`,
     );
   const reportFailures = reportSummary.failures;
   if (
@@ -374,7 +391,7 @@ export function validateQaRuntimePairReport(
     !reportMarkdown.startsWith("# OpenClaw Runtime Parity Report") ||
     !reportMarkdown.includes(`- Verdict: ${counts.skipped === 0 ? "pass" : "fail"}`) ||
     scenarios.some((scenario) => {
-      const heading = `\n### ${scenario.name}\n`;
+      const heading = `\n### ${formatRuntimePairReportValue(scenario.name)}\n`;
       const start = reportMarkdown.indexOf(heading);
       if (start < 0) {
         return true;
@@ -386,15 +403,17 @@ export function validateQaRuntimePairReport(
       const expectedStatus = scenario.status === "skip" ? "fail" : "pass";
       return (
         !sectionLines.has(`- status: ${expectedStatus}`) ||
-        !sectionLines.has(`- drift: ${scenario.runtimeParity.drift}`) ||
+        !sectionLines.has(
+          `- drift: ${formatRuntimePairReportValue(scenario.runtimeParity.drift)}`,
+        ) ||
         ![...sectionLines].some((line) =>
-          line.startsWith(
-            `- openclaw: ${projectedReportCellStatus(scenario.runtimeParity.cells.openclaw)} `,
+          [...acceptedReportCellStatuses(scenario.runtimeParity.cells.openclaw)].some((status) =>
+            line.startsWith(`- openclaw: ${status} `),
           ),
         ) ||
         ![...sectionLines].some((line) =>
-          line.startsWith(
-            `- codex: ${projectedReportCellStatus(scenario.runtimeParity.cells.codex)} `,
+          [...acceptedReportCellStatuses(scenario.runtimeParity.cells.codex)].some((status) =>
+            line.startsWith(`- codex: ${status} `),
           ),
         )
       );

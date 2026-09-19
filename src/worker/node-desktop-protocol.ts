@@ -2,6 +2,7 @@ import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { WorkerDesktopApp } from "../plugins/capability-provider.types.js";
 import { NODE_DESKTOP_ATTACH_PATH } from "../shared/node-desktop-stream.js";
+import { hasExactOwnKeys } from "./protocol-record.js";
 
 const REQUEST_MAX_BYTES = 16 * 1024;
 const PATH_MAX_BYTES = 4 * 1024;
@@ -12,6 +13,7 @@ type NodeWorkerDesktopStreamInput = {
   attachPath: string;
   port: number;
   passwordFilePath?: string;
+  username?: string;
 };
 
 function parseJson(raw?: string | null): unknown {
@@ -23,18 +25,6 @@ function parseJson(raw?: string | null): unknown {
   } catch {
     throw new Error("INVALID_REQUEST: malformed node worker desktop request");
   }
-}
-
-function hasExactKeys(
-  value: Record<string, unknown>,
-  required: readonly string[],
-  optional: readonly string[] = [],
-): boolean {
-  const allowed = new Set([...required, ...optional]);
-  return (
-    required.every((key) => Object.hasOwn(value, key)) &&
-    Object.keys(value).every((key) => allowed.has(key))
-  );
 }
 
 function isValidPort(value: unknown): value is number {
@@ -59,7 +49,7 @@ export function parseNodeWorkerDesktopStreamInput(
   const value = parseJson(raw);
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, ["ticket", "attachPath", "port"], ["passwordFilePath"])
+    !hasExactOwnKeys(value, ["ticket", "attachPath", "port"], ["passwordFilePath", "username"])
   ) {
     throw new Error("INVALID_REQUEST: invalid node worker desktop stream request");
   }
@@ -77,11 +67,25 @@ export function parseNodeWorkerDesktopStreamInput(
     value.passwordFilePath === undefined
       ? undefined
       : requireAbsolutePath(value.passwordFilePath, "passwordFilePath");
+  const username = value.username;
+  if (
+    username !== undefined &&
+    (typeof username !== "string" ||
+      !username.trim() ||
+      username.includes("\0") ||
+      Buffer.byteLength(username, "utf8") > 63 ||
+      !passwordFilePath)
+  ) {
+    throw new Error(
+      "INVALID_REQUEST: desktop username requires a bounded account name and password file",
+    );
+  }
   return {
     ticket,
     attachPath,
     port: value.port,
     ...(passwordFilePath ? { passwordFilePath } : {}),
+    ...(username === undefined ? {} : { username }),
   };
 }
 
@@ -92,12 +96,12 @@ export function parseNodeWorkerDesktopLaunchInput(raw?: string | null): WorkerDe
   }
   const executablePath = requireAbsolutePath(value.executablePath, "executablePath");
   if (value.id === "terminal") {
-    if (!hasExactKeys(value, ["id", "executablePath"])) {
+    if (!hasExactOwnKeys(value, ["id", "executablePath"])) {
       throw new Error("INVALID_REQUEST: invalid node worker terminal descriptor");
     }
     return { id: "terminal", executablePath };
   }
-  if (!hasExactKeys(value, ["id", "executablePath", "cdpPort"]) || !isValidPort(value.cdpPort)) {
+  if (!hasExactOwnKeys(value, ["id", "executablePath", "cdpPort"]) || !isValidPort(value.cdpPort)) {
     throw new Error("INVALID_REQUEST: invalid node worker browser descriptor");
   }
   return { id: "browser", executablePath, cdpPort: value.cdpPort };

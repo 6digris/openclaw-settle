@@ -1,15 +1,18 @@
-import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import type { Locator, Page } from "playwright";
-import { expect, it } from "vitest";
+import type { Page } from "playwright";
+import { beforeEach, expect, it } from "vitest";
+import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import {
   controlUiBundledSettingsStorageKey,
+  controlUiSessionUrl,
+  defaultControlUiFeatureMethods,
   installMockGateway,
   type ControlUiMockGatewayScenario,
 } from "../test-helpers/control-ui-e2e.ts";
 import {
   activateChatHeaderPanelAction,
   failNextDeviceIdentityMint,
+  focusChatSidePanel,
 } from "./chat-side-panel.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
@@ -19,7 +22,13 @@ const suite = createControlUiE2eSuite({
 });
 
 const sessionKey = "agent:main:side-panel-clearance";
-const proofDir = process.env.OPENCLAW_UI_RAIL_PROOF_DIR?.trim();
+const proofDirParent = process.env.OPENCLAW_UI_RAIL_PROOF_DIR?.trim();
+let proofDir: string | undefined;
+beforeEach(() => {
+  proofDir = proofDirParent
+    ? createControlUiE2eArtifactDir("chat-side-panel-clearance", proofDirParent)
+    : undefined;
+});
 const limitedScopes = ["operator.read", "operator.write"];
 const historyMessages = [
   {
@@ -38,16 +47,15 @@ const historyMessages = [
 
 function scenario(
   options: {
-    custodian?: boolean;
+    home?: boolean;
     operatorScopes?: string[];
-    updateAvailable?: ControlUiMockGatewayScenario["updateAvailable"];
   } = {},
 ): ControlUiMockGatewayScenario {
   return {
     featureMethods: [
       "device.scopes.requestUpgrade",
       "device.scopes.waitUpgrade",
-      ...(options.custodian ? ["openclaw.chat"] : []),
+      ...(options.home ? ["chat.history", "chat.send"] : []),
     ],
     historyMessages,
     methodResponses: {
@@ -84,7 +92,6 @@ function scenario(
       },
     },
     ...(options.operatorScopes ? { operatorScopes: options.operatorScopes } : {}),
-    ...(options.updateAvailable ? { updateAvailable: options.updateAvailable } : {}),
     sessionKey,
     workspace: "/workspace/openclaw",
     workspaceGit: true,
@@ -110,10 +117,6 @@ async function seedSettings(page: Page, themeMode: "light" | "dark") {
   );
 }
 
-function sidePanel(page: Page): Locator {
-  return page.locator(".sidebar-region__right-runtime .side-panel");
-}
-
 async function openExpandedFilesPanel(page: Page, beforeExpandProof?: string): Promise<void> {
   await page.goto(`${suite.server.baseUrl}chat?session=${encodeURIComponent(sessionKey)}`);
   await page.locator(".chat-group").first().waitFor();
@@ -121,8 +124,7 @@ async function openExpandedFilesPanel(page: Page, beforeExpandProof?: string): P
   if (beforeExpandProof) {
     await capturePanel(page, beforeExpandProof);
   }
-  await sidePanel(page).getByRole("button", { name: "Expand side panel" }).click();
-  await sidePanel(page).getByRole("button", { name: "Restore side panel" }).waitFor();
+  await focusChatSidePanel(page);
 }
 
 async function waitForShellLayout(page: Page): Promise<void> {
@@ -134,10 +136,11 @@ async function waitForShellLayout(page: Page): Promise<void> {
   });
 }
 
-async function expectPanelHeaderControlsClearShellChrome(page: Page): Promise<void> {
-  const panelControls = sidePanel(page).locator(
-    ":scope > .side-panel__header :is(button, wa-tab):visible",
-  );
+async function expectPanelHeaderControlsClearShellChrome(
+  page: Page,
+  shellChromeExpected: boolean,
+): Promise<void> {
+  const panelControls = page.locator(".chat-pane__actions button:visible");
   const panelCount = await panelControls.count();
   expect(panelCount).toBeGreaterThan(0);
 
@@ -146,43 +149,44 @@ async function expectPanelHeaderControlsClearShellChrome(page: Page): Promise<vo
       const box = element.getBoundingClientRect();
       return { bottom: box.bottom, left: box.left, right: box.right, top: box.top };
     };
-    const header = document.querySelector(
-      ".sidebar-region__right-runtime .side-panel > .side-panel__header",
-    );
+    const header = document.querySelector(".chat-pane__header");
     if (!header) {
-      throw new Error("Expanded side panel has no header");
+      throw new Error("Focused main panel has no task toolbar");
     }
     const headerRect = rect(header);
     const headerStyle = getComputedStyle(header);
-    const panels = [
-      ...document.querySelectorAll(
-        ".sidebar-region__right-runtime .side-panel > .side-panel__header :is(button, wa-tab):not([hidden])",
-      ),
-    ].map(rect);
+    const panels = [...document.querySelectorAll(".chat-pane__actions button:not([hidden])")]
+      .map(rect)
+      .filter((button) => button.bottom > button.top && button.right > button.left);
     const shells = [
       ...document.querySelectorAll(
         ":is(.shell-chrome-controls, .macos-titlebar-controls, .sidebar-attention--floating) button:not([hidden])",
       ),
     ]
       .map(rect)
-      .filter((shell) => shell.bottom > headerRect.top && shell.top < headerRect.bottom);
+      .filter((shell) => shell.bottom > shell.top && shell.right > shell.left);
     return {
       contentLeft: headerRect.left + Number.parseFloat(headerStyle.paddingLeft),
       contentRight: headerRect.right - Number.parseFloat(headerStyle.paddingRight),
-      direction: headerStyle.direction,
       panels,
       shells,
     };
   });
 
-  expect(geometry.shells.length).toBeGreaterThan(0);
-  const shellRight = Math.max(...geometry.shells.map((box) => box.right));
-  const panelLeft = Math.min(...geometry.panels.map((box) => box.left));
-  expect(geometry.contentLeft - shellRight).toBeGreaterThanOrEqual(4);
-  expect(geometry.contentLeft - shellRight).toBeLessThanOrEqual(16);
-  expect(panelLeft - shellRight).toBeGreaterThanOrEqual(8);
-  if (geometry.direction !== "rtl") {
-    expect(panelLeft - shellRight).toBeLessThanOrEqual(16);
+  if (shellChromeExpected) {
+    expect(geometry.shells.length).toBeGreaterThan(0);
+  } else {
+    expect(geometry.shells).toEqual([]);
+  }
+  for (const panel of geometry.panels) {
+    for (const shell of geometry.shells) {
+      expect(
+        panel.left >= shell.right + 4 ||
+          panel.right <= shell.left - 4 ||
+          panel.top >= shell.bottom + 4 ||
+          panel.bottom <= shell.top - 4,
+      ).toBe(true);
+    }
   }
   expect(
     geometry.panels.every(
@@ -198,73 +202,205 @@ async function capturePanel(page: Page, name: string): Promise<void> {
   if (!proofDir) {
     return;
   }
-  await mkdir(proofDir, { recursive: true });
   await page.screenshot({ fullPage: true, path: path.join(proofDir, `${name}.png`) });
 }
 
 suite.define(() => {
+  it.each(["ltr", "rtl"] as const)(
+    "keeps session Actions clickable beside an attachment in %s",
+    async (direction) => {
+      await suite.withPage(
+        { locale: "en-US", serviceWorkers: "block", viewport: { width: 1416, height: 707 } },
+        async ({ page }) => {
+          const title = "QA worktree attachment delivery";
+          const filename = "worktree-report.txt";
+          const mediaUrl = `/__openclaw__/assistant-media?source=${filename}&mediaTicket=fixture`;
+          await page.route("**/__openclaw__/assistant-media?**", (route) =>
+            route.fulfill({ contentType: "text/plain", body: "WORKTREE_ATTACHMENT\n" }),
+          );
+          await seedSettings(page, "dark");
+          await installMockGateway(page, {
+            ...scenario(),
+            featureMethods: [...defaultControlUiFeatureMethods, "browser.request", "terminal.open"],
+            terminalEnabled: true,
+            methodResponses: {
+              ...scenario().methodResponses,
+              "session.members.listEvidence": {
+                sessionKey,
+                members: [],
+                identities: [],
+                role: "owner",
+                allowedVisibilities: ["shared", "draft"],
+              },
+            },
+            workspace: "/workspace/worktree-attachment-fixture",
+            sessions: [
+              { key: "agent:main:main", displayName: "Main Session", kind: "direct" },
+              {
+                key: sessionKey,
+                displayName: title,
+                kind: "direct",
+                parentSessionKey: "agent:main:main",
+                sharingRole: "owner",
+                visibility: "shared",
+              },
+            ],
+            historyMessages: [
+              {
+                role: "assistant",
+                content: [
+                  {
+                    type: "attachment",
+                    attachment: {
+                      kind: "document",
+                      label: filename,
+                      mimeType: "text/plain",
+                      url: mediaUrl,
+                    },
+                  },
+                ],
+                timestamp: Date.now(),
+              },
+            ],
+          });
+          await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
+          await page.evaluate((value) => {
+            document.documentElement.dir = value;
+          }, direction);
+          await page
+            .getByRole("button", { name: `Open ${filename} in the side panel`, exact: true })
+            .click();
+          await page.locator("openclaw-chat-detail-panel:visible pre").waitFor();
+          await waitForShellLayout(page);
+          const actions = page.getByRole("button", { name: `Actions for ${title}`, exact: true });
+          const expectActionsReachable = async () => {
+            const geometry = await actions.evaluate((button) => {
+              const box = button.getBoundingClientRect();
+              const header = button.closest(".chat-pane__header")!.getBoundingClientRect();
+              const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+              return {
+                contained: box.left >= header.left && box.right <= header.right,
+                reachable: hit === button || button.contains(hit),
+              };
+            });
+            expect(geometry).toEqual({ contained: true, reachable: true });
+            await actions.click();
+            await expect.poll(() => actions.getAttribute("aria-expanded")).toBe("true");
+            await page.keyboard.press("Escape");
+            await expect.poll(() => actions.getAttribute("aria-expanded")).toBe("false");
+          };
+          await expectActionsReachable();
+          if (direction === "ltr") {
+            const divider = page.getByRole("separator", { name: "Resize side panel", exact: true });
+            const before = await divider.boundingBox();
+            if (!before) {
+              throw new Error("The attachment panel has no resize handle");
+            }
+            const centerX = before.x + before.width / 2;
+            const centerY = before.y + before.height / 2;
+            await page.mouse.move(centerX, centerY);
+            await page.mouse.down();
+            await page.mouse.move(centerX - 80, centerY, { steps: 4 });
+            await page.mouse.up();
+            await expect
+              .poll(async () => (await divider.boundingBox())!.x)
+              .toBeLessThan(before.x - 50);
+            await expectActionsReachable();
+          }
+        },
+      );
+    },
+  );
+
+  it("keeps the page title centered beside the collapsed-navigation controls", async () => {
+    await suite.withPage(
+      {
+        locale: "en-US",
+        serviceWorkers: "block",
+        viewport: { height: 900, width: 1600 },
+      },
+      async ({ page }) => {
+        await installMockGateway(page);
+        await page.goto(`${suite.server.baseUrl}sessions`);
+
+        const shell = page.locator(".shell");
+        const header = page.locator(".content:not(.content--chat) .content-header").first();
+        const tabs = header.locator(".hub-page-header__tabs");
+        await tabs.waitFor();
+        const rowCenter = async () => {
+          const box = await tabs.boundingBox();
+          return box ? box.y + box.height / 2 : -1;
+        };
+        // The toolbar row sits at the top of the content column in both states.
+        await expect.poll(rowCenter).toBe(26);
+
+        await page.locator(".sidebar-brand__collapse").click();
+        await expect.poll(() => shell.getAttribute("class")).toContain("shell--nav-collapsed");
+        await expect.poll(rowCenter).toBe(26);
+        const controls = page.locator(".shell-chrome-controls button:visible");
+        const controlBoxes = await controls.evaluateAll((buttons) =>
+          buttons.map((button) => button.getBoundingClientRect()),
+        );
+        expect(controlBoxes.length).toBeGreaterThan(0);
+        const tabsBox = (await tabs.boundingBox())!;
+        for (const box of controlBoxes) {
+          expect(box.top + box.height / 2).toBe(26);
+          expect(box.right).toBeLessThan(tabsBox.x);
+        }
+      },
+    );
+  });
+
   it.each([
     {
       beforeExpandProof: "right-docked",
-      custodian: false,
+      home: false,
       deviceLess: false,
       direction: "ltr",
-      expectedControl: ".shell-chrome-controls__search",
-      expectedUpdate: false,
+      expectedControl: ".sidebar-brand__search",
       name: "expanded navigation",
       navCollapsed: false,
       operatorScopes: undefined,
       proof: "expanded-nav",
       themeMode: "dark" as const,
-      updateAvailable: undefined,
     },
     {
       beforeExpandProof: undefined,
-      custodian: false,
+      home: false,
       deviceLess: false,
       direction: "ltr",
       expectedControl: ".shell-chrome-controls__search",
-      expectedUpdate: false,
       name: "collapsed navigation",
       navCollapsed: true,
       operatorScopes: undefined,
       proof: "collapsed-nav",
       themeMode: "dark" as const,
-      updateAvailable: undefined,
     },
     {
       beforeExpandProof: undefined,
-      custodian: true,
+      home: true,
       deviceLess: false,
       direction: "ltr",
-      expectedControl: ".shell-chrome-controls__custodian",
-      expectedUpdate: true,
-      name: "collapsed navigation with custodian and attention",
+      expectedControl: ".shell-chrome-controls__home",
+      name: "collapsed navigation with Home and attention",
       navCollapsed: true,
       operatorScopes: undefined,
-      proof: "collapsed-nav-custodian-attention",
+      proof: "collapsed-nav-home-attention",
       themeMode: "dark" as const,
-      updateAvailable: {
-        channel: "stable",
-        currentVersion: "2026.8.1",
-        latestVersion: "2026.8.2",
-      },
     },
     {
       beforeExpandProof: undefined,
-      custodian: false,
+      home: false,
       deviceLess: true,
       direction: "rtl",
       expectedControl: ".sidebar-attention--floating .sidebar-issues-button",
-      expectedUpdate: false,
       name: "collapsed RTL limited-access status and attention",
       navCollapsed: true,
       operatorScopes: limitedScopes,
       proof: "collapsed-rtl-limited-attention",
       themeMode: "dark" as const,
-      updateAvailable: undefined,
     },
-  ])("keeps expanded panel controls in a compact safe gap for $name", async (testCase) => {
+  ])("keeps focused main controls clear of shell chrome for $name", async (testCase) => {
     await suite.withPage(
       {
         colorScheme: testCase.themeMode,
@@ -280,9 +416,8 @@ suite.define(() => {
         await installMockGateway(
           page,
           scenario({
-            custodian: testCase.custodian,
+            home: testCase.home,
             operatorScopes: testCase.operatorScopes,
-            updateAvailable: testCase.updateAvailable,
           }),
         );
         await openExpandedFilesPanel(page, testCase.beforeExpandProof);
@@ -290,28 +425,15 @@ suite.define(() => {
           document.documentElement.dir = direction;
         }, testCase.direction);
         if (testCase.navCollapsed) {
-          await page.getByRole("button", { name: "Collapse sidebar", exact: true }).click();
+          await page.locator(".sidebar-brand__collapse").click();
           await expect
             .poll(() => page.locator(".shell").getAttribute("class"))
             .toContain("shell--nav-collapsed");
           await page.locator(".sidebar-attention--floating .sidebar-issues-button").waitFor();
         }
         await page.locator(testCase.expectedControl).waitFor();
-        if (testCase.expectedUpdate) {
-          const updateSlot = page.locator(
-            ".sidebar-attention--floating .sidebar-footer-update-slot",
-          );
-          await updateSlot.waitFor();
-          await updateSlot.hover();
-          await waitForShellLayout(page);
-          await expectPanelHeaderControlsClearShellChrome(page);
-          await page.mouse.move(800, 700);
-          await updateSlot.locator(".sidebar-footer-update").focus();
-          await waitForShellLayout(page);
-          await expectPanelHeaderControlsClearShellChrome(page);
-        }
         await waitForShellLayout(page);
-        await expectPanelHeaderControlsClearShellChrome(page);
+        await expectPanelHeaderControlsClearShellChrome(page, testCase.navCollapsed);
         await capturePanel(page, testCase.proof);
       },
     );

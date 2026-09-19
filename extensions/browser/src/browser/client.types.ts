@@ -125,10 +125,14 @@ export type BrowserTab = {
   targetId: string;
   /** Stable, human-friendly tab handle for this profile runtime (for example t1). */
   tabId?: string;
+  /** Runtime-scoped native Chrome tab id exposed only by the browser-extension driver. */
+  webExtensionTabId?: number;
   /** Optional user-assigned tab label. */
   label?: string;
   title: string;
   url: string;
+  /** Listing-time observation; unavailable URLs stay redacted, not implicitly trusted. */
+  urlUnavailableReason?: "navigation_blocked" | "navigation_check_failed";
   wsUrl?: string;
   /** Internal CDP lookup pin paired with wsUrl; omitted from model-facing summaries. */
   wsLookup?: BrowserCdpLookup;

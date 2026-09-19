@@ -1,11 +1,10 @@
-// Discord plugin module implements message handler.preflight history behavior.
 import { resolveTimestampMs } from "./format.js";
 import {
   createDiscordHistorySenderProvenance,
   type DiscordHistoryEntry,
 } from "./message-handler.history.js";
 import type { DiscordMessagePreflightContext } from "./message-handler.preflight.types.js";
-import { resolveDiscordMessageHistoryText } from "./message-utils.js";
+import { resolveDiscordMessageHistoryText } from "./message-text.js";
 import type { DiscordSenderIdentity } from "./sender-identity.js";
 
 export function buildDiscordPreflightHistoryEntry(params: {

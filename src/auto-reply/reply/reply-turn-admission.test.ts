@@ -1,15 +1,13 @@
 // Tests reply turn admission decisions for active, queued, and aborted runs.
-import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
-import * as sessionAccessor from "../../config/sessions/session-accessor.js";
+import { SESSION_RESTART_RECOVERY_TOMBSTONE_ERROR_CODE } from "../../config/sessions/lifecycle.js";
 import {
   deleteSessionEntryLifecycle,
   loadSessionEntry,
   replaceSessionEntry,
-  replaceSessionEntrySync,
 } from "../../config/sessions/session-accessor.js";
+import * as sessionAccessor from "../../config/sessions/session-accessor.js";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions/types.js";
 import {
   resetDiagnosticRunActivityForTest,
@@ -29,7 +27,12 @@ import {
   type ReplyOperation,
 } from "./reply-run-registry.js";
 import { testing } from "./reply-run-registry.test-support.js";
-import { admitReplyTurn, runWithReplyOperationLifecycleAdmission } from "./reply-turn-admission.js";
+import { runWithReplyOperationLifecycleAdmission } from "./reply-turn-admission.js";
+import {
+  admitTestReplyTurn,
+  createSessionStore,
+  createSessionStoreFor,
+} from "./reply-turn-admission.test-support.js";
 
 const recoveryOwnerReleaseMocks = vi.hoisted(() => ({
   beforeRelease: vi.fn(async () => {}),
@@ -65,8 +68,6 @@ vi.mock(
   }),
 );
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-
 function createTestReplyOperation(
   overrides: Omit<Parameters<typeof createReplyOperation>[0], "resetTriggered"> &
     Partial<Pick<Parameters<typeof createReplyOperation>[0], "resetTriggered">>,
@@ -74,26 +75,12 @@ function createTestReplyOperation(
   return createReplyOperation({ resetTriggered: false, ...overrides });
 }
 
-function admitTestReplyTurn(
-  overrides: Omit<Parameters<typeof admitReplyTurn>[0], "kind" | "resetTriggered"> &
-    Partial<Pick<Parameters<typeof admitReplyTurn>[0], "kind" | "resetTriggered">>,
-) {
-  return admitReplyTurn({ kind: "visible", resetTriggered: false, ...overrides });
-}
-
-function createSessionStore(entries: Record<string, object>): string {
-  const root = tempDirs.make("openclaw-reply-admission-");
-  // The store handle stays a sessions.json path; the sqlite-backed accessor
-  // resolves it to the per-agent DB, so fixtures must seed through the accessor.
-  const storePath = path.join(root, "sessions.json");
-  for (const [sessionKey, entry] of Object.entries(entries)) {
-    replaceSessionEntrySync({ sessionKey, storePath }, entry as SessionEntry);
+async function admitTestReplyOperation(params: Parameters<typeof admitTestReplyTurn>[0]) {
+  const admission = await admitTestReplyTurn(params);
+  if (admission.status !== "owned") {
+    throw new Error("Fixture requires an admitted reply operation");
   }
-  return storePath;
-}
-
-function createSessionStoreFor(sessionKey: string, sessionId: string) {
-  return createSessionStore({ [sessionKey]: { sessionId, updatedAt: Date.now() } });
+  return admission.operation;
 }
 
 async function readSessionEntry(
@@ -189,7 +176,7 @@ describe("reply turn admission", () => {
     releaseMutation.resolve();
     await mutation;
 
-    await expect(admission).rejects.toThrow(/deleted while starting work/i);
+    await expect(admission).rejects.toMatchObject({ code: "SESSION_WORK_START_CHANGED" });
   });
 
   it("uses the persisted session id when reset commits before admission", async () => {
@@ -259,7 +246,7 @@ describe("reply turn admission", () => {
     releaseMutation.resolve();
     await mutation;
 
-    await expect(admission).rejects.toThrow(/changed while starting work/i);
+    await expect(admission).rejects.toMatchObject({ code: "SESSION_WORK_START_CHANGED" });
   });
 
   it("drops queued work when reset cleanup cancels admission", async () => {
@@ -661,17 +648,91 @@ describe("reply turn admission", () => {
         },
       });
 
-      await expect(
-        admitTestReplyTurn({
-          sessionKey,
-          sessionId,
-          expectedSessionId: sessionId,
-          storePath,
-          kind,
-        }),
-      ).rejects.toThrow(/changed while starting work/i);
+      const rejection = await admitTestReplyTurn({
+        sessionKey,
+        sessionId,
+        expectedSessionId: sessionId,
+        storePath,
+        kind,
+      }).catch((error: unknown) => error);
+
+      expect(rejection).toBeInstanceOf(Error);
+      expect(rejection).toMatchObject({ code: SESSION_RESTART_RECOVERY_TOMBSTONE_ERROR_CODE });
+      expect((rejection as Error).message).toMatch(/ended during restart recovery/i);
     },
   );
+
+  it("admits an explicit reset without reopening its restart tombstone", async () => {
+    const sessionKey = "agent:main:matrix:channel:recovery-reset";
+    const sessionId = "tombstoned-session";
+    const archivedAt = Date.now() - 1_000;
+    const storePath = createSessionStore({
+      [sessionKey]: {
+        sessionId,
+        updatedAt: 100,
+        archivedAt,
+        status: "failed",
+        mainRestartRecovery: {
+          cycleId: "cycle-1",
+          revision: 4,
+          chargedAttempts: 3,
+          tombstone: {
+            reason: "automatic recovery exhausted",
+            recoveredSessionId: "dashboard-successor",
+            recoveredSessionKey: "agent:main:dashboard:successor",
+          },
+        },
+      },
+    });
+
+    const admission = await admitTestReplyTurn({
+      sessionKey,
+      sessionId,
+      expectedSessionId: sessionId,
+      storePath,
+      resetTriggered: true,
+      allowRestartTombstoneReset: true,
+    });
+
+    expect(admission.status).toBe("owned");
+    expect(await readSessionEntry(storePath, sessionKey)).toMatchObject({
+      sessionId,
+      archivedAt,
+      mainRestartRecovery: {
+        tombstone: { recoveredSessionId: "dashboard-successor" },
+      },
+    });
+    if (admission.status === "owned") {
+      admission.operation.complete();
+    }
+  });
+
+  it("does not treat resetTriggered alone as restart-tombstone authority", async () => {
+    const sessionKey = "agent:main:matrix:channel:untrusted-reset-flag";
+    const sessionId = "tombstoned-session";
+    const storePath = createSessionStore({
+      [sessionKey]: {
+        sessionId,
+        updatedAt: 100,
+        mainRestartRecovery: {
+          cycleId: "cycle-1",
+          revision: 4,
+          chargedAttempts: 3,
+          tombstone: { reason: "automatic recovery exhausted" },
+        },
+      },
+    });
+
+    await expect(
+      admitTestReplyTurn({
+        sessionKey,
+        sessionId,
+        expectedSessionId: sessionId,
+        storePath,
+        resetTriggered: true,
+      }),
+    ).rejects.toThrow(/ended during restart recovery/i);
+  });
 
   it("admits a visible turn after clearing orphaned restart-recovery fences", async () => {
     const sessionKey = "agent:main:telegram:topic:orphaned-recovery-fence";
@@ -1113,7 +1174,7 @@ describe("reply turn admission", () => {
     active.completeWithAfterClearBarrier(barrier);
     const visibleAdmission = await admitTestReplyTurn({
       sessionKey: "agent:main:discord:channel:42",
-      sessionId: "visible-session",
+      sessionId: "active-session",
     });
     expect(visibleAdmission.status).toBe("owned");
     if (visibleAdmission.status === "owned") {
@@ -1167,9 +1228,10 @@ describe("reply turn admission", () => {
     const sessionId = "pre-compact-session";
     const nextSessionId = "post-compact-session";
     const storePath = createSessionStoreFor(sessionKey, sessionId);
-    const active = createTestReplyOperation({
+    const active = await admitTestReplyOperation({
       sessionKey,
       sessionId,
+      storePath,
     });
     active.setPhase("preflight_compacting");
 
@@ -1203,9 +1265,10 @@ describe("reply turn admission", () => {
     const sessionId = "pre-compact-session";
     const nextSessionId = "post-compact-session";
     const storePath = createSessionStoreFor(sessionKey, sessionId);
-    const active = createTestReplyOperation({
+    const active = await admitTestReplyOperation({
       sessionKey,
       sessionId,
+      storePath,
     });
     active.setPhase("preflight_compacting");
     active.updateSessionId(nextSessionId);
@@ -1235,9 +1298,10 @@ describe("reply turn admission", () => {
     const sessionId = "pre-compact-session";
     const nextSessionId = "post-compact-session";
     const storePath = createSessionStoreFor(sessionKey, sessionId);
-    const active = createTestReplyOperation({
+    const active = await admitTestReplyOperation({
       sessionKey,
       sessionId,
+      storePath,
     });
     active.setPhase("preflight_compacting");
     active.updateSessionId(nextSessionId);
@@ -1273,9 +1337,10 @@ describe("reply turn admission", () => {
     const storePath = createSessionStore({
       [sessionKey]: { sessionId: nextSessionId, updatedAt: Date.now() },
     });
-    const freshOwner = createTestReplyOperation({
+    const freshOwner = await admitTestReplyOperation({
       sessionKey,
       sessionId: nextSessionId,
+      storePath,
     });
 
     const admitted = admitTestReplyTurn({
@@ -1291,7 +1356,13 @@ describe("reply turn admission", () => {
   });
 
   it.each([
-    ["failed", (operation: ReplyOperation) => operation.fail("run_failed")],
+    [
+      "failed",
+      (operation: ReplyOperation) => {
+        operation.fail("run_failed");
+        operation.complete();
+      },
+    ],
     [
       "user-aborted",
       (operation: ReplyOperation) => {
@@ -1304,9 +1375,10 @@ describe("reply turn admission", () => {
     const sessionId = "pre-compact-session";
     const nextSessionId = "post-compact-session";
     const storePath = createSessionStoreFor(sessionKey, sessionId);
-    const active = createTestReplyOperation({
+    const active = await admitTestReplyOperation({
       sessionKey,
       sessionId,
+      storePath,
     });
     active.setPhase("preflight_compacting");
     active.updateSessionId(nextSessionId);

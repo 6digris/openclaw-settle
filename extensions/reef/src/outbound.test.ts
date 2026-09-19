@@ -4,11 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   canonicalBytes,
   generateIdentity,
-  MemoryAuditStore,
-  MemoryReplayStore,
   PipelineError,
   REEF_MAX_PLAINTEXT_BYTES,
 } from "../protocol/index.js";
+import { MemoryAuditStore, MemoryReplayStore } from "../protocol/memory-stores.test-support.js";
 import { ReefMessageFlow } from "./flow.js";
 import {
   allow,
@@ -135,7 +134,8 @@ describe("reefOutboundAdapter", () => {
       guard: classifier,
       audit: new MemoryAuditStore(new Uint8Array(32).fill(9)),
       replay: new MemoryReplayStore(),
-      reviews: {} as never,
+      // The send path consults the review store before classifying.
+      reviews: { lookupDecision: async () => "none", request: async () => undefined } as never,
       delivered: {} as never,
       authoritySignal: firstAuthority.signal,
       onIngress: async () => {},
