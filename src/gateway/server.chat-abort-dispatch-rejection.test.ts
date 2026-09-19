@@ -356,81 +356,139 @@ describe("gateway WebSocket chat abort ownership", () => {
     },
   );
 
-  test("does not replace an acknowledged abort with a later dispatch rejection", async () => {
-    const sessionDirectory = temporaryDirectories.make("openclaw-chat-abort-dispatch-");
-    testState.sessionStorePath = path.join(sessionDirectory, "sessions.json");
-    await writeSessionStore({
-      entries: {
-        main: {
-          sessionId: "sess-main",
-          updatedAt: Date.now(),
+  test.each(["rejection", "fulfillment"] as const)(
+    "settles an acknowledged abort after dispatch %s while persistence is pending",
+    async (outcome) => {
+      const sessionDirectory = temporaryDirectories.make("openclaw-chat-abort-dispatch-");
+      testState.sessionStorePath = path.join(sessionDirectory, "sessions.json");
+      await writeSessionStore({
+        entries: {
+          main: {
+            sessionId: "sess-main",
+            updatedAt: Date.now(),
+          },
         },
-      },
-    });
-
-    const socket = await gateway.openWs();
-    const dispatchRelease = createDeferred();
-    const runId = "real-websocket-explicit-abort-before-dispatch-rejection";
-    let dispatchRejected = false;
-    const terminalStates = trackChatTerminalStates(socket, runId);
-
-    try {
-      await connectOk(socket);
-      dispatchInboundMessageMock.mockImplementationOnce(async () => {
-        await dispatchRelease.promise;
-        dispatchRejected = true;
-        throw new Error("dispatch rejected after an explicitly aborted run");
       });
 
-      const sendParameters = {
-        sessionKey: "main",
-        message: "abort this dispatched message",
-        idempotencyKey: runId,
-      };
-      const started = await rpcReq(socket, "chat.send", sendParameters);
-      expect(started.ok).toBe(true);
-      expect(started.payload).toMatchObject({ runId, status: "started" });
-      await vi.waitFor(() => expect(dispatchInboundMessageMock).toHaveBeenCalledOnce(), {
-        interval: 10,
-        timeout: 2_000,
+      const socket = await gateway.openWs();
+      const dispatchRelease = createDeferred();
+      const runId = `real-websocket-explicit-abort-before-dispatch-${outcome}`;
+      const terminalRelease = createDeferred();
+      const terminalEntered = createDeferred();
+      const waitEntered = createDeferred();
+      const dispatchEntered = createDeferred();
+      const work: Promise<unknown>[] = [];
+      let wait: ReturnType<typeof rpcReq> | undefined;
+      const lifecycle = await import("./session-lifecycle-state.js");
+      const jobs = await import("./agent-turn/agent-job.js");
+      const persist = lifecycle.persistGatewaySessionLifecycleEvent;
+      const waitForJob = jobs.waitForAgentJob;
+      const persistenceSpy = vi
+        .spyOn(lifecycle, "persistGatewaySessionLifecycleEvent")
+        .mockImplementation((params) => {
+          const persisted = persist(params);
+          if (
+            params.event.runId !== runId ||
+            params.event.data?.phase !== "end" ||
+            params.event.data?.status !== "cancelled"
+          ) {
+            return persisted;
+          }
+          const held = Promise.all([persisted, terminalRelease.promise]).then(() => {});
+          work.push(held);
+          terminalEntered.resolve();
+          return held;
+        });
+      const waitSpy = vi.spyOn(jobs, "waitForAgentJob").mockImplementation((params) => {
+        const pending = waitForJob(params);
+        if (params.runId === runId) {
+          expect(params.source).toBe("chat");
+          waitEntered.resolve();
+        }
+        return pending;
       });
+      const terminalStates = trackChatTerminalStates(socket, runId);
 
-      const abortedFrame = onceMessage(
-        socket,
-        (frame) =>
-          frame.type === "event" &&
-          frame.event === "chat" &&
-          frame.payload?.runId === runId &&
-          frame.payload?.state === "aborted",
-        2_000,
-      );
-      const aborted = await rpcReq(socket, "chat.abort", {
-        sessionKey: "main",
-        runId,
-      });
-      expect(aborted.ok).toBe(true);
-      expect(aborted.payload).toMatchObject({ ok: true, aborted: true, runIds: [runId] });
-      await expect(abortedFrame).resolves.toMatchObject({
-        payload: { runId, state: "aborted" },
-      });
+      try {
+        await connectOk(socket);
+        dispatchInboundMessageMock.mockImplementationOnce((args: unknown) => {
+          const { replyOptions } = args as Parameters<typeof dispatchInboundMessage>[0];
+          const dispatched = (async () => {
+            if (outcome === "fulfillment") {
+              replyOptions?.onAgentRunStart?.(runId);
+            }
+            dispatchEntered.resolve();
+            await dispatchRelease.promise;
+            if (outcome === "rejection") {
+              throw new Error("dispatch rejected after an explicitly aborted run");
+            }
+            return { queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } };
+          })();
+          work.push(dispatched);
+          return dispatched;
+        });
 
-      dispatchRelease.resolve();
-      await vi.waitFor(() => expect(dispatchRejected).toBe(true), {
-        interval: 10,
-        timeout: 2_000,
-      });
+        const sendParameters = {
+          sessionKey: "main",
+          message: "abort this dispatched message",
+          idempotencyKey: runId,
+        };
+        const started = await rpcReq(socket, "chat.send", sendParameters);
+        expect(started.ok).toBe(true);
+        expect(started.payload).toMatchObject({ runId, status: "started" });
+        await dispatchEntered.promise;
 
-      // The replay response is a real WebSocket ordering barrier: any prior
-      // contradictory terminal frame must arrive before this cached response.
-      const replay = await rpcReq(socket, "chat.send", sendParameters);
-      expect(replay.ok).toBe(true);
-      expect(replay.payload).toMatchObject({ runId, status: "timeout", summary: "aborted" });
-      expect(terminalStates).toEqual(["aborted"]);
-    } finally {
-      dispatchRelease.resolve();
-      socket.close();
-    }
-  });
+        const abortedFrame = onceMessage(
+          socket,
+          (frame) =>
+            frame.type === "event" &&
+            frame.event === "chat" &&
+            frame.payload?.runId === runId &&
+            frame.payload?.state === "aborted",
+          2_000,
+        );
+        const aborted = await rpcReq(socket, "chat.abort", {
+          sessionKey: "main",
+          runId,
+        });
+        expect(aborted.ok).toBe(true);
+        expect(aborted.payload).toMatchObject({ ok: true, aborted: true, runIds: [runId] });
+        await expect(abortedFrame).resolves.toMatchObject({
+          payload: { runId, state: "aborted" },
+        });
+
+        await terminalEntered.promise;
+        wait = rpcReq(socket, "agent.wait", { runId, timeoutMs: 50_000 }, 55_000);
+        await waitEntered.promise;
+        dispatchRelease.resolve();
+        terminalRelease.resolve();
+        await Promise.allSettled(work);
+        const completed = await wait;
+        expect(completed.ok).toBe(true);
+        expect(completed.payload).toMatchObject({
+          runId,
+          status: "error",
+          stopReason: "rpc",
+          endedAt: expect.any(Number),
+        });
+
+        // The replay response is a real WebSocket ordering barrier: any prior
+        // contradictory terminal frame must arrive before this cached response.
+        const replay = await rpcReq(socket, "chat.send", sendParameters);
+        expect(replay.ok).toBe(true);
+        expect(replay.payload).toMatchObject({ runId, status: "timeout", summary: "aborted" });
+        expect(terminalStates).toEqual(["aborted"]);
+      } finally {
+        dispatchRelease.resolve();
+        terminalRelease.resolve();
+        await Promise.allSettled([...work, wait]);
+        persistenceSpy.mockRestore();
+        waitSpy.mockRestore();
+        socket.close();
+      }
+    },
+    60_000,
+  );
 
   test("does not let a late abort replace an established dispatch error", async () => {
     const sessionDirectory = temporaryDirectories.make("openclaw-chat-error-late-abort-");

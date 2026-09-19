@@ -153,6 +153,29 @@ export function createChatSendDispatchErrorLifecycle(params: {
   let persistDispatchErrorUserTurn: (() => Promise<void>) | undefined;
   let publishDispatchError: (() => void) | undefined;
 
+  const publishAbortedCompletion = () => {
+    const abortMarker = context.chatRunState.runs.get(clientRunId)?.abortMarker;
+    if (!activeRunAbort.controller.signal.aborted || abortMarker === undefined) {
+      return false;
+    }
+    const endedAt = chatAbortMarkerTimestampMs(abortMarker);
+    setGatewayDedupeEntry({
+      dedupe: context.dedupe,
+      key: `chat:${clientRunId}`,
+      session: captureAgentJobSession(jobSessionBinding),
+      entry: {
+        ts: endedAt,
+        ok: true,
+        payload: buildAbortedChatSendPayload({
+          runId: clientRunId,
+          stopReason: activeRunAbort.entry?.abortStopReason ?? "rpc",
+          endedAt,
+        }),
+      },
+    });
+    return true;
+  };
+
   const handleError = async (err: unknown) => {
     const errorMessage = renderFailoverCodeUserCopy(describeFailoverError(err).code) ?? String(err);
     const failureDisposition =
@@ -187,32 +210,16 @@ export function createChatSendDispatchErrorLifecycle(params: {
     // Capture terminal ownership before durable cleanup yields: an explicit
     // abort has both its signal and canonical marker, but a restart may abort
     // only the signal and must retain its real dispatch-failure outcome.
-    const abortedAtDispatchReject = activeRunAbort.controller.signal.aborted;
     const abortMarkerAtDispatchReject = context.chatRunState.runs.get(clientRunId)?.abortMarker;
     const agentTerminalPersistenceOwnedAtDispatchReject =
       activeRunAbort.entry?.projectSessionTerminalPending === true ||
       activeRunAbort.entry?.projectSessionTerminalPersistence !== undefined ||
       activeRunAbort.entry?.projectSessionTerminalPersisted === true;
 
-    if (abortedAtDispatchReject && abortMarkerAtDispatchReject !== undefined) {
+    if (publishAbortedCompletion()) {
       // chat.abort has already emitted the canonical terminal lifecycle and
       // retained its registration until that durable projection settles.
       // A competing restart-admission write can strand an acknowledged abort.
-      const endedAt = chatAbortMarkerTimestampMs(abortMarkerAtDispatchReject);
-      setGatewayDedupeEntry({
-        dedupe: context.dedupe,
-        key: `chat:${clientRunId}`,
-        session: captureAgentJobSession(jobSessionBinding),
-        entry: {
-          ts: endedAt,
-          ok: true,
-          payload: buildAbortedChatSendPayload({
-            runId: clientRunId,
-            stopReason: activeRunAbort.entry?.abortStopReason ?? "rpc",
-            endedAt,
-          }),
-        },
-      });
       context.logGateway.warn(
         `chat.send post-dispatch threw after abort for runId=${clientRunId}: ${formatForLog(err)}`,
       );
@@ -396,5 +403,5 @@ export function createChatSendDispatchErrorLifecycle(params: {
     }
   };
 
-  return { finalize, handleError };
+  return { finalize, handleError, publishAbortedCompletion };
 }

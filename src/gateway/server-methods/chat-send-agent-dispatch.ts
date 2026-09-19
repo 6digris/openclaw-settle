@@ -665,6 +665,8 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                 ...(returnedAgentError ? { error: returnedAgentError } : {}),
               },
             });
+          } else {
+            dispatchErrorLifecycle.publishAbortedCompletion();
           }
         },
         {
