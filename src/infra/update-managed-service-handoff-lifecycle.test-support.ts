@@ -258,7 +258,7 @@ export function registerManagedSystemdHandoffConvergenceTests(
     expect(
       commands.filter((command) => command.includes("start openclaw-gateway.service")),
     ).toHaveLength(0);
-    expect(state).toEqual({ nativeRelease: {} });
+    expect(state).toEqual({ nativeRelease: {}, cutoverPrepared: true, cutoverReleased: true });
     expect(sentinel).toMatchObject({
       payload: {
         status: "skipped",

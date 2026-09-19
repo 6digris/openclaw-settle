@@ -33,6 +33,7 @@ export type ManagedServiceBoundaryOptions = ManagedServiceManagerBoundaryOptions
   revokeWhileValidating?: boolean;
   replaceLedgerWriter?: boolean;
   finalizationWorkMs?: number;
+  cutover?: "busy" | "unavailable" | "stale";
   beforeParkNotice?: "acknowledged" | "stalled" | "rejected";
   repair?: ManagedRepairBoundary;
 };

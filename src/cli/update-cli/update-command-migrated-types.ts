@@ -36,6 +36,8 @@ export type MigratedUpdateFinalizationInput = {
   };
   executor?: UpdateCommandChildGrant;
   recoveryHandoff?: UpdateRecoveryHandoff;
+  /** Absent in published 2026.9.3/9.4 drivers; the candidate reconciles after parent exit. */
+  captureRetirement?: "parent-settled-v1";
   bufferedSteps: UpdateRunStep[];
   windowsTaskAutoStartSuspended?: true;
   resultPath: string;

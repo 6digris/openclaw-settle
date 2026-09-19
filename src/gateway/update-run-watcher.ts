@@ -28,6 +28,9 @@ export function startUpdateRunWatcher(params: {
   let publicationTimer: ReturnType<typeof setTimeout> | undefined;
   let watched: { runId: string; revision?: number; phase?: UpdateRunPhase } | undefined;
   let notices = Promise.resolve();
+  let captureReconciliation: Promise<void> | undefined;
+  let capturesPending = true;
+  let captureGeneration = 0;
   const reconciled: UpdateRunRecord[] = [];
 
   const schedulePublication = () => {
@@ -53,6 +56,41 @@ export function startUpdateRunWatcher(params: {
     }
   };
 
+  const reconcileCaptures = () => {
+    if (!capturesPending || captureReconciliation || work.isClosing) {
+      return;
+    }
+    const generation = captureGeneration;
+    captureReconciliation = work.track(async () => {
+      try {
+        const { reconcileCandidateUpdateCaptureRetirement } =
+          await import("../commands/doctor-update-candidate-retirement.js");
+        if (work.isClosing) {
+          return;
+        }
+        const { defaultRuntime } = await import("../runtime.js");
+        const pending = await reconcileCandidateUpdateCaptureRetirement({
+          runtime: {
+            ...defaultRuntime,
+            log: () => {},
+            error: (...args) => params.log.warn(args.map(String).join(" ")),
+          },
+          signal: work.signal,
+        });
+        capturesPending = pending || generation !== captureGeneration;
+      } catch (error) {
+        capturesPending = false;
+        params.log.warn(`update capture reconciliation deferred: ${formatErrorMessage(error)}`);
+      } finally {
+        captureReconciliation = undefined;
+        if (capturesPending && !work.isClosing && !timer) {
+          timer = setTimeout(poll, UPDATE_RUN_POLL_MS);
+          timer.unref?.();
+        }
+      }
+    });
+  };
+
   const poll = () => {
     if (work.isClosing) {
       return;
@@ -63,6 +101,7 @@ export function startUpdateRunWatcher(params: {
         ...reconcileAbandonedUpdateRuns().filter((run) => run.runId !== watched?.runId),
       );
       schedulePublication();
+      reconcileCaptures();
       const run = watched
         ? getUpdateRun(watched.runId)
         : (reconciled.shift() ?? findActiveUpdateRun());
@@ -107,6 +146,8 @@ export function startUpdateRunWatcher(params: {
         }
       }
       if (terminal) {
+        captureGeneration++;
+        capturesPending = true;
         watched = undefined;
         poll();
         return;

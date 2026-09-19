@@ -29,3 +29,5 @@ export {
 } from "../infra/update-run-ledger.js";
 
 export { createManagedUpdateRequesterAuthority } from "../infra/update-requester-authority.js";
+
+export { prepareGatewayUpdateCutover } from "./daemon-cli/update-cutover.js";

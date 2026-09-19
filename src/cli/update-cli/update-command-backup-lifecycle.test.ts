@@ -222,6 +222,8 @@ it.each([
 const retirementScenarios = [
   "healthy",
   "delegated",
+  "late-writer",
+  "gateway-writer",
   "readiness-missing",
   "wrong-version",
   "settlement-failed",
@@ -241,7 +243,12 @@ it.each(retirementScenarios)(
         outputs.push(value);
       });
       const root = state.path("install");
-      await fs.mkdir(root);
+      await fs.mkdir(path.join(root, "dist"), { recursive: true });
+      await fs.writeFile(
+        path.join(root, "package.json"),
+        JSON.stringify({ name: "openclaw", version: "2026.9.4" }),
+      );
+      await fs.writeFile(path.join(root, "dist", "index.js"), "export {};\n");
       const run: NonNullable<UpdateCommandOptions["run"]> = {
         runId: createUpdateRun({ trigger: "cli" }, { env: state.env }).runId,
         env: state.env,
@@ -257,12 +264,48 @@ it.each(retirementScenarios)(
         durationMs: 1,
       };
       let capturePath = "";
+      let lateLease: string | undefined;
       const execution = withUpdateCommandTerminalResult((registerRun) => {
         registerRun(run);
         return withUpdateCommandExecutor(run.runId, async (executor) => {
           run.executorFence = await executor.enter(root);
           const backup = await createUpdateCommandBackup({ opts, root, env: state.env });
           capturePath = backup.directory;
+          if (scenario === "late-writer" || scenario === "gateway-writer") {
+            lateLease = claimOpenClawAgentDatabaseLease({
+              agentId: "independent",
+              path: state.path("late-agent.sqlite"),
+              env: state.env,
+            });
+          }
+          if (scenario === "gateway-writer") {
+            const startTime = processIdentity.getFileLockProcessStartTime(process.pid);
+            if (startTime === null) {
+              throw new Error("Missing process identity");
+            }
+            vi.spyOn(gatewayLock, "readActiveGatewayLockIdentity").mockResolvedValue({
+              pid: process.pid,
+              startTime,
+              ownerId: "gateway",
+              createdAt: new Date().toISOString(),
+              port: 18792,
+            });
+            vi.spyOn(serviceState, "readGatewayServiceState").mockResolvedValue({
+              installed: true,
+              loadState: { status: "loaded" },
+              running: true,
+              env: state.env,
+              command: {
+                programArguments: [
+                  process.execPath,
+                  path.join(root, "dist", "index.js"),
+                  "gateway",
+                  "run",
+                ],
+              },
+              runtime: { status: "running", pid: process.pid },
+            });
+          }
           recordUpdateRunVerification(
             run.runId,
             {
@@ -326,11 +369,17 @@ it.each(retirementScenarios)(
       } else {
         await execution;
       }
+      if (lateLease) {
+        expect(readActiveOpenClawAgentDatabaseLeasesReadOnly({ env: state.env })).toEqual(
+          expect.arrayContaining([expect.objectContaining({ lease_id: lateLease })]),
+        );
+        releaseOpenClawAgentDatabaseLease(lateLease, { env: state.env });
+      }
       const retained = await fs.stat(capturePath).then(
         () => true,
         () => false,
       );
-      expect(retained).toBe(scenario !== "healthy");
+      expect(retained).toBe(scenario !== "healthy" && scenario !== "gateway-writer");
       expect(outputs).toHaveLength(1);
       expect(getUpdateRun(run.runId, { env: state.env })?.status).toBe(
         scenario === "settlement-failed" ? "failed" : "succeeded",

@@ -395,6 +395,7 @@ export async function continueMigratedUpdateInFreshProcess(
           : {}),
         ...(preManagedServiceStop ? { preManagedServiceStop: stopState } : {}),
       },
+      captureRetirement: "parent-settled-v1",
       bufferedSteps,
       ...(windowsRecovery ? { windowsTaskAutoStartSuspended: true } : {}),
       resultPath,

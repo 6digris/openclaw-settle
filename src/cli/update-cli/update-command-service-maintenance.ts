@@ -291,6 +291,7 @@ async function maybeSuspendWindowsTaskAutoStartForUpdate(params: {
   restoreOnFailure?: false;
   assertCurrentService?: () => Promise<void>;
   assertCurrent?: () => void;
+  assertForwardCurrent?: () => void;
   updateRun?: UpdateCommandOptions["run"];
 }): Promise<WindowsTaskAutoStartRecovery | undefined> {
   if (process.platform !== "win32" || !params.serviceEnv) {
@@ -550,10 +551,11 @@ async function stopManagedServiceBeforeMutableUpdate(
       : undefined;
     return blockMessage ? { ...inspected, blockMessage } : inspected;
   }
-  const suspendTask = async () => {
+  const suspendTask = async (assertCutover?: () => void) => {
     return await maybeSuspendWindowsTaskAutoStartForUpdate({
       serviceEnv: serviceState.env,
       restoreOnFailure: params.restoreWindowsTaskOnFailure,
+      assertForwardCurrent: assertCutover,
       updateRun,
       assertCurrentService: createWindowsTaskAutoStartGuard({
         root: params.root,
@@ -604,9 +606,20 @@ async function stopManagedServiceBeforeMutableUpdate(
     const message = `Stopping managed gateway service before ${params.updateInstallKind} update...`;
     defaultRuntime.log(theme.muted(message));
   }
-  const windowsTaskAutoStartRecovery = await suspendTask();
+  const { prepareGatewayUpdateCutover } = await import("../daemon-cli/update-cutover.js");
+  const cutover = serviceState.running
+    ? await prepareGatewayUpdateCutover({
+        expectedPid: serviceState.runtime?.pid ?? 0,
+        assertCurrent,
+        timeoutMs: params.timeoutMs,
+      })
+    : undefined;
+  let stopRequested = false;
+  let windowsTaskAutoStartRecovery: WindowsTaskAutoStartRecovery | undefined;
   let stoppedAtMs: number | undefined;
   try {
+    cutover?.assertCurrent();
+    windowsTaskAutoStartRecovery = await suspendTask(cutover?.assertCurrent);
     // Ownership inspection and native preparation await work. Recheck the exact
     // launcher before stopping so a replacement service cannot inherit authority.
     const currentState = await readGatewayServiceState(service, {
@@ -628,6 +641,8 @@ async function stopManagedServiceBeforeMutableUpdate(
     if (currentBlockMessage) {
       throw new UpdatePreMutationError("managed-service-preflight", currentBlockMessage);
     }
+    await cutover?.refresh();
+    assertCurrent();
     stoppedAtMs = Date.now();
     if (params.updateRun) {
       if (!params.deferLedgerWrites) {
@@ -636,47 +651,68 @@ async function stopManagedServiceBeforeMutableUpdate(
         });
       }
     }
+    // Once handed to the native adapter, a failed or lost reply does not prove
+    // that termination was rejected. Only pre-request failures may reopen admission.
+    cutover?.assertCurrent();
+    stopRequested = true;
     await service.stop({
       env: currentState.env,
       stdout: params.jsonMode ? JSON_MODE_SERVICE_STDOUT : process.stdout,
-      assertCurrent,
+      assertCurrent: () => {
+        assertCurrent();
+        cutover?.assertCurrent();
+      },
       // Native stop may unload the service before a later port check fails.
-      onMutation: () => params.onStopped?.({ ...inspected, stopped: true, stoppedAtMs }),
+      onMutation: () => {
+        params.onStopped?.({ ...inspected, stopped: true, stoppedAtMs });
+      },
     });
     assertCurrent();
     if (windowsTaskAutoStartRecovery) {
       await abortWindowsTaskUpdateIfInterrupted(windowsTaskAutoStartRecovery);
     }
   } catch (err) {
+    let admissionMayReopen = !windowsTaskAutoStartRecovery;
     try {
-      assertCurrent();
-    } catch (cause) {
-      throw new AggregateError([err, cause], "Update executor was lost during native preparation", {
-        cause,
-      });
-    }
-    if (err instanceof UpdateCommandAbort) {
-      throw err;
-    }
-    if (windowsTaskAutoStartRecovery) {
-      let autostartRestored = false;
       try {
-        await windowsTaskAutoStartRecovery.restore();
-        autostartRestored = true;
-      } catch (resumeErr) {
-        throw new ScheduledTaskAutoStartRecoveryError(
-          [err, resumeErr],
-          `Failed to stop the managed gateway (${String(err)}) and restore Windows Scheduled Task autostart (${String(resumeErr)})`,
-          serviceState.env,
+        assertCurrent();
+      } catch (cause) {
+        throw new AggregateError(
+          [err, cause],
+          "Update executor was lost during native preparation",
+          {
+            cause,
+          },
         );
-      } finally {
-        await windowsTaskAutoStartRecovery.complete(autostartRestored);
       }
-      if (windowsTaskAutoStartRecovery.interrupted()) {
-        throw new UpdateCommandAbort();
+      if (err instanceof UpdateCommandAbort) {
+        throw err;
+      }
+      if (windowsTaskAutoStartRecovery) {
+        let autostartRestored = false;
+        try {
+          await windowsTaskAutoStartRecovery.restore();
+          autostartRestored = true;
+          admissionMayReopen = true;
+        } catch (resumeErr) {
+          throw new ScheduledTaskAutoStartRecoveryError(
+            [err, resumeErr],
+            `Failed to stop the managed gateway (${String(err)}) and restore Windows Scheduled Task autostart (${String(resumeErr)})`,
+            serviceState.env,
+          );
+        } finally {
+          await windowsTaskAutoStartRecovery.complete(autostartRestored);
+        }
+        if (windowsTaskAutoStartRecovery.interrupted()) {
+          throw new UpdateCommandAbort();
+        }
+      }
+      throw err;
+    } finally {
+      if (!stopRequested && admissionMayReopen) {
+        await cutover?.release();
       }
     }
-    throw err;
   }
   return {
     ...inspected,

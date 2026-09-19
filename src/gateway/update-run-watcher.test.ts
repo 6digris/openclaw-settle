@@ -8,7 +8,11 @@ const ledger = vi.hoisted(() => ({
     | Pick<UpdateRunRecord, "runId" | "phase" | "status" | "updatedAtMs" | "steps">
     | undefined,
   reads: vi.fn(),
+  reconcileCaptures: vi.fn(async (_params: { signal: AbortSignal }) => false),
   notice: vi.fn(async (_run: UpdateRunRecord) => {}),
+}));
+vi.mock("../commands/doctor-update-candidate-retirement.js", () => ({
+  reconcileCandidateUpdateCaptureRetirement: ledger.reconcileCaptures,
 }));
 vi.mock("../state/openclaw-state-db.js", () => ({
   reconcileOpenClawStateSchemaPublication: () => undefined,
@@ -31,6 +35,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   ledger.run = undefined;
   ledger.reads.mockClear();
+  ledger.reconcileCaptures.mockReset().mockResolvedValue(false);
   ledger.notice.mockClear();
 });
 afterEach(async () => {
@@ -169,4 +174,39 @@ describe("Gateway update run watcher", () => {
     wakeUpdateRunWatcher();
     expect(ledger.reads).toHaveBeenCalledTimes(reads);
   });
+});
+
+it("joins capture reconciliation on close and revokes its mutation authority", async () => {
+  const entered = createDeferredCore();
+  const finish = createDeferredCore();
+  let signal: AbortSignal | undefined;
+  ledger.reconcileCaptures.mockImplementationOnce(async (params) => {
+    signal = params.signal;
+    entered.resolve();
+    await finish.promise;
+    return true;
+  });
+  watcher = startUpdateRunWatcher({ broadcast: vi.fn(), log: { warn: vi.fn() } });
+  await entered.promise;
+  let stopped = false;
+  const stopping = watcher.stop().then(() => {
+    stopped = true;
+  });
+  expect(signal?.aborted).toBe(true);
+  expect(stopped).toBe(false);
+  finish.resolve();
+  await stopping;
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(ledger.reconcileCaptures).toHaveBeenCalledOnce();
+});
+
+it("uses the existing poll until a legacy parent settles, then becomes idle", async () => {
+  ledger.reconcileCaptures.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+  watcher = startUpdateRunWatcher({ broadcast: vi.fn(), log: { warn: vi.fn() } });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(ledger.reconcileCaptures).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(2_000);
+  expect(ledger.reconcileCaptures).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(ledger.reconcileCaptures).toHaveBeenCalledTimes(2);
 });

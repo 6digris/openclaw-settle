@@ -172,6 +172,7 @@ it.each([
           throw new Error("Expected serialized finalization input");
         }
         const input: MigratedUpdateFinalizationInput = JSON.parse(options.input);
+        expect(input.captureRetirement).toBe("parent-settled-v1");
         const result = {
           ...input.params.result,
           status,

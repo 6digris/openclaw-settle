@@ -41,7 +41,7 @@ import {
   withOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
-import { resolveCompletedDoctorUpdateRecovery } from "./doctor-update-recovery.js";
+import { resolveCompletedDoctorUpdateRecovery } from "./doctor-update-capture-retirement.js";
 import { doctorCommand } from "./doctor.js";
 const mocks = vi.hoisted(() => ({
   coordinator: vi.fn<() => string>(),
@@ -326,6 +326,7 @@ describe("Doctor recovery ledger reconciliation", () => {
       const newer = { agentId: "main", sessionKey: "agent:main:newer", env: state.env };
       await upsertSessionEntryCore(newer, { sessionId: "after-upgrade", updatedAt: 2 });
       const config = await fs.readFile(state.configPath, "utf8");
+      await closeOpenClawAgentDatabasesAsync();
       const next = createUpdateRun({ trigger: "cli" }, { env: state.env });
       const runtime = output();
 
@@ -661,6 +662,7 @@ describe("Doctor recovery ledger reconciliation", () => {
       });
       const config = await fs.readFile(state.configPath, "utf8");
       const runtime = output();
+      await closeOpenClawAgentDatabasesAsync();
 
       await doctorCommand(runtime, { repair: true, nonInteractive: true });
 

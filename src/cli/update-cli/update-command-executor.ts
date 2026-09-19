@@ -27,6 +27,10 @@ import { UpdateCommandRecoveryPendingError } from "./update-command-recovery.js"
 
 export type { UpdateCommandExecutor } from "./update-command-executor-contract.js";
 
+export class UpdateCommandExecutorBusyError extends UpdateCommandRecoveryPendingError {
+  override name = "UpdateCommandExecutorBusyError";
+}
+
 type ManagedUpdateLeaseAuthority = ManagedUpdateLeaseDatabaseIdentity &
   Readonly<{ installKey: string; owner: string }>;
 const admittedAuthorities = new WeakMap<UpdateRecoveryFence, ManagedUpdateLeaseAuthority>();
@@ -445,7 +449,7 @@ export async function withUpdateCommandExecutor<T>(
             } else {
               const acquired = store.acquire(key, randomUUID(), { kind: "update" });
               if (acquired.kind !== "acquired") {
-                throw new UpdateCommandRecoveryPendingError(
+                throw new UpdateCommandExecutorBusyError(
                   "Another update executor owns this installation.",
                 );
               }

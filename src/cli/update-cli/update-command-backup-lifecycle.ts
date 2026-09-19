@@ -22,9 +22,12 @@ import {
 } from "../../infra/update-run-recovery.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
-import { getFileLockProcessStartTime } from "../../shared/pid-alive.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { UpdatePreMutationError, type UpdateCommandOptions } from "./shared.js";
+import {
+  assertUpdateBackupWriters,
+  withUpdateBackupWriterExclusion,
+} from "./update-command-backup-writers.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
 import type { FinishUpdateParams } from "./update-command-finish-types.js";
 import { assertUpdateCommandRecovery } from "./update-command-recovery.js";
@@ -65,7 +68,7 @@ export async function reconcileUpdateCommandBackups(params: UpdateBackupParams):
   }
   assertCaptureStateOwner(run.env, params.env);
   const { resolveCompletedDoctorUpdateRecovery } =
-    await import("../../commands/doctor-update-recovery.js");
+    await import("../../commands/doctor-update-capture-retirement.js");
   try {
     await withOwnedManagedUpdateEnv(params.env, () =>
       resolveCompletedDoctorUpdateRecovery({
@@ -85,64 +88,6 @@ export async function reconcileUpdateCommandBackups(params: UpdateBackupParams):
     );
   }
   assertOwned();
-}
-
-async function assertUpdateBackupWriters(params: UpdateBackupParams): Promise<void> {
-  const { readActiveOpenClawAgentDatabaseLeasesReadOnly } =
-    await import("../../state/openclaw-agent-db-lease.js");
-  const leases = readActiveOpenClawAgentDatabaseLeasesReadOnly({ env: params.env });
-  if (leases.length === 0) {
-    return;
-  }
-  const [
-    { readActiveGatewayLockIdentity, isSameGatewayLockIdentity },
-    { readGatewayServiceState, resolveGatewayService },
-    { gatewayServiceCommandUsesRoot },
-  ] = await Promise.all([
-    import("../../infra/gateway-lock.js"),
-    import("../../daemon/service.js"),
-    import("./update-command-service-plan.js"),
-  ]);
-  const gateway = await readActiveGatewayLockIdentity({ env: params.env, requireInspection: true });
-  const service = await readGatewayServiceState(resolveGatewayService(), {
-    env: params.env,
-    requireEffective: true,
-  });
-  const runtimePid = service.runtime?.pid;
-  const launcherStart = runtimePid === undefined ? null : getFileLockProcessStartTime(runtimePid);
-  const ownsRoot =
-    gateway &&
-    (await gatewayServiceCommandUsesRoot({ root: params.root, command: service.command }));
-  let ownsGateway = ownsRoot === true && runtimePid === gateway?.pid;
-  if (gateway && ownsRoot && runtimePid !== undefined && !ownsGateway && launcherStart !== null) {
-    const { readProcessParentPidSync } = await import("../../infra/restart-stale-pids.js");
-    const parentPid = readProcessParentPidSync(gateway.pid);
-    const currentGateway = await readActiveGatewayLockIdentity({
-      env: params.env,
-      requireInspection: true,
-    });
-    // Native managers can track the CLI launcher while its child owns the listener and stores.
-    ownsGateway =
-      getFileLockProcessStartTime(runtimePid) === launcherStart &&
-      currentGateway !== undefined &&
-      isSameGatewayLockIdentity(gateway, currentGateway) &&
-      currentGateway.pid === gateway.pid &&
-      currentGateway.startTime === gateway.startTime &&
-      parentPid === runtimePid;
-  }
-  const unknown = leases.find(
-    (lease) =>
-      !gateway ||
-      !ownsGateway ||
-      lease.owner_pid !== gateway.pid ||
-      lease.owner_start_time === null ||
-      lease.owner_start_time !== gateway.startTime,
-  );
-  if (unknown) {
-    throw new Error(
-      `Agent ${unknown.agent_id} database has an independent or unverified writer in process ${unknown.owner_pid}. Update refused before Gateway shutdown. Stop that writer, then inspect openclaw update status --json and retry; npx openclaw@latest doctor --fix provides explicit recovery.`,
-    );
-  }
 }
 
 export async function assertUpdateCommandBackupRecovery(params: UpdateBackupParams): Promise<void> {
@@ -392,50 +337,52 @@ export async function retireVerifiedUpdateCommandCapture(
   const { backup, run, env } = params;
   assertCaptureStateOwner(run.env, env);
   let retired = false;
-  const retire = async (fence: UpdateRecoveryFence) => {
-    fence.assertCurrent();
-    await assertUpdateRecoveryAdmission({ env });
-    const manifest = await verifyUpdateRecoveryBackup(backup);
-    const assertOwned = () => {
+  const retire = (fence: UpdateRecoveryFence) =>
+    withUpdateBackupWriterExclusion(params, async (assertWritersOwned) => {
       fence.assertCurrent();
-      assertNoPendingUpdateRecovery({ env });
-      const saved = getUpdateRun(run.runId, { env: run.env });
-      const health = saved?.verification;
-      if (
-        finalResult.status !== "ok" ||
-        manifest.runId !== run.runId ||
-        manifest.installRoot !== path.resolve(params.root) ||
-        finalResult.runId !== run.runId ||
-        saved?.status !== "succeeded" ||
-        !saved.finishedAtMs ||
-        !saved.confirmedAtMs ||
-        !saved.after.version ||
-        saved.after.version !== finalResult.after?.version ||
-        health?.runningVersion !== saved.after.version ||
-        (saved.after.buildId && health.runningBuildId !== saved.after.buildId) ||
-        health.serviceRunning !== true ||
-        health.versionMatch !== true ||
-        health.readyz !== true ||
-        health.settled !== true ||
-        health.channelsReady !== true ||
-        health.pluginErrors?.length !== 0 ||
-        !saved.steps.some(
-          (step) => step.step === "gateway verification" && step.status === "completed",
-        )
-      ) {
-        throw new Error("The update has no matching durable, verified terminal success");
-      }
-    };
-    assertOwned();
-    await writeUpdateRecoveryBackupOutcome(backup, { status: "committed" }, { assertOwned });
-    await retireUpdateRecoveryBackup(backup, { assertOwned });
-    retired = true;
-    recordUpdateRunDiagnostic(
-      run.runId,
-      `Update recovery capture retired: ${backup.manifestPath}`,
-      { env: run.env },
-    );
-  };
+      await assertUpdateRecoveryAdmission({ env });
+      const manifest = await verifyUpdateRecoveryBackup(backup);
+      const assertOwned = () => {
+        fence.assertCurrent();
+        assertWritersOwned();
+        assertNoPendingUpdateRecovery({ env });
+        const saved = getUpdateRun(run.runId, { env: run.env });
+        const health = saved?.verification;
+        if (
+          finalResult.status !== "ok" ||
+          manifest.runId !== run.runId ||
+          manifest.installRoot !== path.resolve(params.root) ||
+          finalResult.runId !== run.runId ||
+          saved?.status !== "succeeded" ||
+          !saved.finishedAtMs ||
+          !saved.confirmedAtMs ||
+          !saved.after.version ||
+          saved.after.version !== finalResult.after?.version ||
+          health?.runningVersion !== saved.after.version ||
+          (saved.after.buildId && health.runningBuildId !== saved.after.buildId) ||
+          health.serviceRunning !== true ||
+          health.versionMatch !== true ||
+          health.readyz !== true ||
+          health.settled !== true ||
+          health.channelsReady !== true ||
+          health.pluginErrors?.length !== 0 ||
+          !saved.steps.some(
+            (step) => step.step === "gateway verification" && step.status === "completed",
+          )
+        ) {
+          throw new Error("The update has no matching durable, verified terminal success");
+        }
+      };
+      assertOwned();
+      await writeUpdateRecoveryBackupOutcome(backup, { status: "committed" }, { assertOwned });
+      await retireUpdateRecoveryBackup(backup, { assertOwned });
+      retired = true;
+      recordUpdateRunDiagnostic(
+        run.runId,
+        `Update recovery capture retired: ${backup.manifestPath}`,
+        { env: run.env },
+      );
+    });
   try {
     await withOwnedManagedUpdateEnv(env, () =>
       params.executorFence

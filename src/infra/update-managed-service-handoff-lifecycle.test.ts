@@ -329,6 +329,34 @@ describe("managed service update handoff", () => {
     },
   );
 
+  itUnix.each(
+    (["systemd", "launchd"] as const).flatMap((kind) =>
+      (["busy", "unavailable", "stale"] as const).map((cutover) => ({ kind, cutover })),
+    ),
+  )(
+    "refuses $kind native mutation when mandatory cutover is $cutover",
+    async ({ kind, cutover }) => {
+      const result = await runManagedServiceManagerBoundary(kind, {
+        controlDisconnect: "transferred",
+        beforeParkNotice: "rejected",
+        cutover,
+        helperExitCode: 1,
+        updaterExitCode: 1,
+        updaterResult: { status: "error", mode: "npm" },
+      });
+      expect(
+        result.commands.some((command) => /(?:stop openclaw|disable |bootout )/.test(command)),
+      ).toBe(false);
+      expect(result.state.parked).not.toBe(true);
+      expect(result.log).toContain(
+        cutover === "unavailable" ? "cannot prepare a lossless cutover" : `cutover ${cutover}`,
+      );
+      if (cutover === "stale") {
+        expect(result.state.cutoverReleased).toBe(true);
+      }
+    },
+  );
+
   itUnix.each(["acknowledged", "stalled", "rejected"] as const)(
     "parks after the transferred pre-park notice is %s, within its bounded attempt",
     async (beforeParkNotice) => {

@@ -96,6 +96,26 @@ export function createManagedServiceManagerBoundary({
     import fs from "node:fs";
     import { createRequire } from "node:module";
     const require = createRequire(import.meta.url);
+    ${
+      options?.cutover === "unavailable"
+        ? ""
+        : `
+    export async function prepareGatewayUpdateCutover({ assertCurrent }) {
+      assertCurrent();
+      if (${JSON.stringify(options?.cutover)} === "busy") throw new Error("cutover busy");
+      let checks = 0;
+      ${managedServiceStateUpdateScript(statePath, "state.cutoverPrepared = true;")};
+      return {
+        assertCurrent() {
+          assertCurrent();
+          if (${JSON.stringify(options?.cutover)} === "stale" && ++checks > 1) throw new Error("cutover stale");
+        },
+        async refresh() { assertCurrent(); },
+        async release() { ${managedServiceStateUpdateScript(statePath, "state.cutoverReleased = true;")}; },
+      };
+    }
+    `
+    }
     export async function waitForGatewayUpdateRecovery(expectedVersion, expectedBuildId) {
       ${managedServiceStateUpdateScript(
         statePath,
@@ -523,6 +543,7 @@ export function createManagedServiceManagerBoundary({
         const activated =
           options.controlDisconnect === "transferred" &&
           !options.validationResult &&
+          !options.cutover &&
           !options.cancelDuringValidation &&
           !options.cancelAtActivation &&
           !options.revokeWhileValidating &&

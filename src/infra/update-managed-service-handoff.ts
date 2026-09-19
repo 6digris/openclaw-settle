@@ -41,6 +41,7 @@ import { applyDevUpdateTargetEnv, type DevUpdateTarget } from "./update-dev-targ
 import { resolvePnpmGlobalInstallOwner, verifyPackageUpdateRecovery } from "./update-global.js";
 import { resolveUpdateInstallRoot } from "./update-install-root.js";
 import { MANAGED_SERVICE_UPDATE_HANDOFF_TEMP_PREFIX } from "./update-managed-service-handoff-cleanup.js";
+import { buildManagedUpdateCutoverScript } from "./update-managed-service-handoff-cutover.js";
 import {
   assertManagedUpdateLeaseDatabaseIdentity,
   captureManagedUpdateLeaseDatabaseIdentity,
@@ -612,6 +613,9 @@ function recordUpdateHandoffOutcome(reason, restored, completedStatus, expectedR
 
 
 function runServiceCommand(command, args, onSpawn, deadline, timeoutCap) {
+  if (cutover && ["disable", "bootout", "stop", "/End", "/DISABLE"].some((arg) => args.includes(arg))) {
+    cutover.assertCurrent();
+  }
   if ((durableNative && nativeCancellation) || !(durableNative ? ownsManagedUpdateLease() : hasManagedUpdateLease())) return Promise.resolve({ code: 1, stdout: "", stderr: "" });
   return new Promise((resolve) => {
     const remaining = deadline === undefined ? params.recoveryTimeoutMs : deadline - Date.now();
@@ -865,78 +869,6 @@ function assertGatewayParkOwner() {
   }
 }
 
-async function parkGatewayService() {
-  const recovery = params.serviceRecovery;
-  if (!recovery) return;
-  assertGatewayParkOwner();
-  if (recovery.kind === "schtasks") {
-    pendingServiceStop = runServiceCommand("schtasks.exe", ["/End", "/TN", recovery.taskName], () => {
-      restorationArmed = true;
-      recordServiceStop();
-    }, params.parentExitDeadlineAt, params.parentExitTimeoutMs);
-    if ((await pendingServiceStop).code !== 0) throw new Error("scheduled task stop failed");
-    return;
-  }
-  if (recovery.kind === "systemd") {
-    const current = await inspectSystemdService(recovery.unit, params.parentExitDeadlineAt);
-    if (
-      !current ||
-      current.Id !== recovery.unit ||
-      current.LoadState !== "loaded" ||
-      current.ActiveState !== "active" ||
-      current.MainPID !== String(params.parentPid) ||
-      !/^[1-9]\d*$/.test(current.ExecMainStartTimestampMonotonic || "") ||
-      !/^[a-f0-9]{32}$/i.test(current.InvocationID || "")) {
-      throw new Error("systemd service does not match the exact active gateway parent");
-    }
-    assertGatewayParkOwner();
-    parkedServiceGeneration = current.ExecMainStartTimestampMonotonic;
-    parkedServiceInvocation = current.InvocationID;
-    parkedServiceFragment = current.FragmentPath;
-    // Keep the exact stop job open across parent exit; its completion is the
-    // authoritative systemd fact, even after inactive-unit metadata is collected.
-    await new Promise((resolve, reject) => {
-      pendingServiceStop = runServiceCommand(
-        "systemctl",
-        ["--user", "stop", recovery.unit],
-        () => {
-          restorationArmed = true;
-          recordServiceStop();
-          resolve();
-        },
-        params.parentExitDeadlineAt,
-        params.parentExitTimeoutMs,
-      );
-      pendingServiceStop.then((result) => {
-        if (!restorationArmed) reject(new Error("systemd stop failed: " + result.stderr));
-      });
-    });
-    return;
-  }
-  if (recovery.kind !== "launchd") throw new Error("unsupported managed update supervisor");
-  const target = "gui/" + recovery.uid + "/" + recovery.label;
-  const inspection = await runServiceCommand("launchctl", ["print", target], undefined, params.parentExitDeadlineAt);
-  const parentMatch = /^\s*pid\s*=\s*([1-9]\d*)\s*$/im.exec(inspection.stdout);
-  if (inspection.code !== 0 || Number(parentMatch?.[1]) !== params.parentPid) {
-    throw new Error("launchd service does not match the exact active gateway parent");
-  }
-  assertGatewayParkOwner();
-  restorationArmed = true;
-  if (!durableNative) {
-    const disabled = await runServiceCommand("launchctl", ["disable", target], undefined, params.parentExitDeadlineAt);
-    if (disabled.code !== 0) throw new Error("launchctl disable failed: " + disabled.stderr);
-  }
-  assertGatewayParkOwner();
-  // bootout shares the activation deadline; its accepted spawn acknowledges parking.
-  await new Promise((resolve, reject) => {
-    pendingServiceStop = runServiceCommand("launchctl", ["bootout", target], () => { recordServiceStop(); resolve(); }, params.parentExitDeadlineAt);
-    pendingServiceStop.then((result) => {
-      if (result.code !== 0 && !isLaunchdNotLoaded(result)) {
-        reject(new Error("launchctl bootout failed: " + result.stderr));
-      }
-    });
-  });
-}
 
 async function restoreGatewayService(reason, decision = params.recovery, childStatus, previousGeneration = false) {
   if (durableNative) return false;
@@ -1164,40 +1096,11 @@ async function finishGatewayServicePark() {
   if (!durableNative) runLedger?.recordUpdateRunVerification(params.runId, { serviceRunning: false });
 }
 
-let transferPrepared = false;
-async function prepareTransferredGateway() {
-  if (!transferPrepared) {
-    const delayedUntil = Date.now() + params.restartDelayMs;
-    while (Date.now() < delayedUntil) {
-      if (updateCancelled || nativeCancellation || !ownsManagedUpdateLease()) throw new Error("managed update activation cancelled");
-      await sleep(Math.min(250, Math.max(0, delayedUntil - Date.now())));
-    }
-    // The serving Gateway owns its final notice; the retained control pipe joins
-    // that durable write before native stop, without extending the 10s notice bound.
-    if (params.beforePark && !process.stdin.destroyed) {
-      await new Promise((resolve) => {
-        const finish = () => { clearTimeout(timer); finishBeforeParkNotice = undefined; resolve(); };
-        const timer = setTimeout(() => {
-          appendLog("pre-park notice timed out after 10 seconds");
-          finish();
-        }, 10_000);
-        finishBeforeParkNotice = finish;
-        fs.writeSync(1, ${JSON.stringify(HANDOFF_NOTICE_MARKER)});
-      });
-    }
-  }
-  if (params.requester) {
-    const { isManagedUpdateRequesterOwner } = await import(pathToFileURL(params.recoveryModulePath).href);
-    if (!(await isManagedUpdateRequesterOwner(params.requester))) {
-      throw Object.assign(new Error("owner_required: chat requester is no longer a configured command owner"), { code: "owner_required" });
-    }
-  }
-  assertGatewayParkOwner();
-  transferPrepared = true;
-}
+${buildManagedUpdateCutoverScript(HANDOFF_NOTICE_MARKER)}
 
 async function suppressTransferredGateway() {
   await prepareTransferredGateway();
+  await prepareCutover();
   const recovery = params.serviceRecovery;
   assertGatewayParkOwner();
   let result;
@@ -1750,6 +1653,10 @@ let automaticRequested = false;
         outcome = "triage";
         reply("committed");
         break;
+      } else if (command === "prepare" && params.action === "update" && !parked) {
+        await prepareCutover();
+        preDrainPrepared = true;
+        reply("prepared");
       } else if (command === "park" && params.action !== "triage") {
 
         try {
@@ -1912,6 +1819,10 @@ let automaticRequested = false;
     process.exitCode = 1;
   } finally {
     clearTimeout(parentExitDeadline);
+    if (cutover && !restorationArmed && isPidAlive(params.parentPid) && parentIdentityCurrent()) {
+      try { await cutover.release(); }
+      catch (error) { appendLog("Gateway admission restoration pending: " + String(error)); process.exitCode = 1; }
+    }
     try { await finishManagedUpdateRun(); }
     catch (error) {
       appendLog("failed to finalize update run: " + String(error));
@@ -2713,6 +2624,17 @@ function sendManagedServiceUpdateHandoffCommand(
     command === "park" ? owner.parentExitTimeoutMs : owner.recoveryTimeoutMs,
     command,
   ).catch(() => null);
+}
+
+/** Prepare while the serving host can still refuse without entering restart drain. */
+export async function prepareManagedServiceUpdateHandoffPark(
+  identity: NonNullable<GatewayRestartIntent["successorOwner"]>,
+): Promise<boolean> {
+  return (
+    claimManagedServiceUpdateHandoff(identity) &&
+    (await sendManagedServiceUpdateHandoffCommand(identity, "prepare")) === "prepared" &&
+    claimManagedServiceUpdateHandoff(identity)
+  );
 }
 
 export async function requestManagedServiceUpdateHandoffPark(

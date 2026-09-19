@@ -31,6 +31,23 @@ describe("Scheduled Task stop/restart cleanup", () => {
     });
   });
 
+  it("refuses expired cutover before disabling autostart", async () => {
+    await withPreparedGatewayTask(async ({ env }) => {
+      schtasksResponses.push({
+        ...SUCCESS_RESPONSE,
+        stdout: "<Task><Settings><Enabled>true</Enabled></Settings></Task>",
+      });
+      await expect(
+        suspendScheduledTaskAutoStartForUpdate(env, {
+          assertForwardCurrent: () => {
+            throw new Error("cutover expired");
+          },
+        }),
+      ).rejects.toThrow("cutover expired");
+      expect(schtasksCalls).toEqual([["/Query", "/TN", "OpenClaw Gateway", "/XML"]]);
+    });
+  });
+
   it("preserves an already-disabled task", async () => {
     await withPreparedGatewayTask(async ({ env }) => {
       schtasksResponses.push({
@@ -95,7 +112,7 @@ describe("Scheduled Task stop/restart cleanup", () => {
     });
   });
 
-  it("restores an enabled task after an ambiguous disable failure", async () => {
+  it("restores an enabled task after an ambiguous disable failure and cutover expiry", async () => {
     await withPreparedGatewayTask(async ({ env }) => {
       schtasksResponses.push(
         {
@@ -106,10 +123,18 @@ describe("Scheduled Task stop/restart cleanup", () => {
         { ...SUCCESS_RESPONSE },
       );
 
-      await expect(suspendScheduledTaskAutoStartForUpdate(env)).rejects.toThrow(
-        "schtasks disable failed: schtasks timed out after 15000ms",
-      );
+      let forwardChecks = 0;
+      await expect(
+        suspendScheduledTaskAutoStartForUpdate(env, {
+          assertForwardCurrent: () => {
+            if (++forwardChecks > 1) {
+              throw new Error("cutover expired after disable");
+            }
+          },
+        }),
+      ).rejects.toThrow("schtasks disable failed: schtasks timed out after 15000ms");
 
+      expect(forwardChecks).toBe(1);
       expect(schtasksCalls).toEqual([
         ["/Query", "/TN", "OpenClaw Gateway", "/XML"],
         ["/Change", "/TN", "OpenClaw Gateway", "/DISABLE"],

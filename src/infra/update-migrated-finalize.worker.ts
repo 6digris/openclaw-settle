@@ -331,6 +331,21 @@ async function finalizeInput(
   };
   executorFence.assertCurrent();
   registerRun(run);
+  // Shipped drivers cannot schedule --retire-capture after releasing their lease.
+  // Persist custody for the existing Gateway reconciler before terminal publication;
+  // this marker authorizes no deletion while any driver or executor remains live.
+  if (input.captureRetirement !== "parent-settled-v1") {
+    recordUpdateRunStep(
+      run.runId,
+      {
+        step: "finalize:capture-retirement",
+        status: "completed",
+        detail: "candidate-reconciliation-v1",
+        endedAtMs: Date.now(),
+      },
+      { env: run.env },
+    );
+  }
   for (const step of input.bufferedSteps) {
     executorFence?.assertCurrent();
     recordUpdateRunStep(run.runId, step, { env: run.env });

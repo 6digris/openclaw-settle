@@ -34,6 +34,7 @@ export function createWindowsTaskAutoStartRecovery(params: {
   serviceEnv: NodeJS.ProcessEnv;
   assertCurrentService?: () => Promise<void>;
   assertCurrent?: () => void;
+  assertForwardCurrent?: () => void;
   alreadySuspended?: true;
   restoreOnFailure?: false;
   updateRun?: UpdateCommandOptions["run"];
@@ -202,6 +203,8 @@ export function createWindowsTaskAutoStartRecovery(params: {
     : suspendScheduledTaskAutoStartForUpdate(params.serviceEnv, {
         ...(params.restoreOnFailure === false ? { restoreOnFailure: false } : {}),
         assertCurrent: params.assertCurrent,
+        // An expiring preparation authorizes initial disable, never its compensation.
+        assertForwardCurrent: params.assertForwardCurrent,
         beforeMutation: async () => {
           params.assertCurrent?.();
           await guard?.();

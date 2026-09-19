@@ -44,6 +44,10 @@ import { drainGlobalSingletonLifecycleState } from "../../shared/global-singleto
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { createGatewayHostLifecycle } from "./host-lifecycle.js";
 import {
+  prepareGatewayManagedUpdateRestart,
+  sameManagedUpdateOwner,
+} from "./managed-update-cutover.js";
+import {
   armShutdownHardExitWatchdog,
   type ShutdownHardExitWatchdog,
 } from "./shutdown-hard-exit.js";
@@ -265,13 +269,6 @@ export async function runGatewayLoop(params: {
   const waitForHealthyChild = params.waitForHealthyChild ?? waitForHealthyGatewayChild;
   const getManagedUpdateOwner = () =>
     (pendingStartupRequest ?? activeRestartRequest)?.restartIntent?.successorOwner;
-  const sameManagedUpdateOwner = (
-    left: GatewayRestartIntent["successorOwner"],
-    right: GatewayRestartIntent["successorOwner"],
-  ) =>
-    Boolean(
-      left && right && left.handoffId === right.handoffId && left.installRoot === right.installRoot,
-    );
 
   const cleanupSignals = () => {
     process.removeListener("SIGTERM", onSigterm);
@@ -1245,6 +1242,13 @@ export async function runGatewayLoop(params: {
     gatewayLog.debug("signal SIGINT received");
     request("stop", "SIGINT");
   };
+  const prepareManagedUpdate = (intent: GatewayRestartIntent | null) =>
+    prepareGatewayManagedUpdateRestart({
+      intent,
+      host: hostLifecycle?.capability.externalRestart,
+      runtime: eagerLifecycleRuntime,
+      warn: (message) => gatewayLog.warn(message),
+    });
   const onSigusr1 = () => {
     observeSignal("SIGUSR1");
     gatewayLog.debug("signal SIGUSR1 received");
@@ -1261,19 +1265,16 @@ export async function runGatewayLoop(params: {
       } = await loadGatewayLifecycleRuntimeModule();
       const restartIntent = consumeGatewayRestartIntentPayloadSync();
       if (restartIntent) {
-        abortPendingChannelReloads();
         const authorized = consumeGatewaySigusr1RestartAuthorization();
         const processLocalIntent = authorized ? consumeGatewaySigusr1RestartIntent() : null;
         if (processLocalIntent?.successorOwner) {
           Object.assign(restartIntent, processLocalIntent);
         }
-        markRestartDraining(
-          formatShutdownReason({
-            action: "restart",
-            signal: "SIGUSR1",
-            restartReason: restartIntent.reason ?? "gateway.restart",
-          }),
-        );
+        if (!(await prepareManagedUpdate(restartIntent))) {
+          markGatewaySigusr1RestartHandled();
+          return;
+        }
+        abortPendingChannelReloads();
         if (authorized) {
           markGatewaySigusr1RestartHandled();
         }
@@ -1302,16 +1303,13 @@ export async function runGatewayLoop(params: {
         scheduleGatewaySigusr1Restart({ delayMs: 0, reason: "SIGUSR1" });
         return;
       }
-      abortPendingChannelReloads();
       const sigusr1RestartIntent = consumeGatewaySigusr1RestartIntent();
       const restartReason = peekGatewaySigusr1RestartReason();
-      markRestartDraining(
-        formatShutdownReason({
-          action: "restart",
-          signal: "SIGUSR1",
-          restartReason: sigusr1RestartIntent?.reason ?? restartReason,
-        }),
-      );
+      if (!(await prepareManagedUpdate(sigusr1RestartIntent))) {
+        markGatewaySigusr1RestartHandled();
+        return;
+      }
+      abortPendingChannelReloads();
       markGatewaySigusr1RestartHandled();
       request(
         "restart",

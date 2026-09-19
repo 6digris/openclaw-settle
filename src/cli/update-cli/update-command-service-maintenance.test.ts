@@ -33,6 +33,14 @@ import {
 const mocks = vi.hoisted(() => ({
   service: vi.fn<() => GatewayService>(),
   taskState: 3 as number | string,
+  prepareCutover: vi.fn(),
+  cutoverAssert: vi.fn(),
+  cutoverRefresh: vi.fn(),
+  cutoverRelease: vi.fn(),
+}));
+
+vi.mock("../daemon-cli/update-cutover.js", () => ({
+  prepareGatewayUpdateCutover: mocks.prepareCutover,
 }));
 
 vi.mock("../../daemon/service.js", async (importOriginal) => ({
@@ -52,7 +60,17 @@ vi.mock("node:child_process", async (importOriginal) => ({
   })),
 }));
 
-beforeEach(() => mockSystemAccountHome());
+beforeEach(() => {
+  mockSystemAccountHome();
+  mocks.cutoverAssert.mockReset();
+  mocks.cutoverRefresh.mockReset().mockResolvedValue(undefined);
+  mocks.cutoverRelease.mockReset().mockResolvedValue(undefined);
+  mocks.prepareCutover.mockReset().mockResolvedValue({
+    assertCurrent: mocks.cutoverAssert,
+    refresh: mocks.cutoverRefresh,
+    release: mocks.cutoverRelease,
+  });
+});
 afterEach(() => vi.restoreAllMocks());
 
 async function withServiceHome(run: (home: string) => Promise<void>): Promise<void> {
@@ -864,12 +882,18 @@ it.each(["before stop", "after stop"] as const)(
     }),
 );
 
-it.each(["disable", "restore", "compensation", "never"] as const)(
+it.each(["disable", "restore", "compensation", "cutover expiry", "never"] as const)(
   "retains caller authority when Windows task recovery loses its owner before %s",
   (lostBefore) =>
     withServiceHome(async (home) => {
       mockProcessPlatform("win32");
       let current = true;
+      let cutoverCurrent = true;
+      mocks.cutoverAssert.mockImplementation(() => {
+        if (!cutoverCurrent) {
+          throw new Error("cutover preparation expired");
+        }
+      });
       let revokeDuringInspection = false;
       let enabled = true;
       const mutations: string[] = [];
@@ -931,6 +955,7 @@ it.each(["disable", "restore", "compensation", "never"] as const)(
           if (!recovery) {
             throw new Error("Missing Windows task recovery");
           }
+          cutoverCurrent = lostBefore !== "cutover expiry";
           revokeDuringInspection = lostBefore === "restore";
           await recovery.restore();
           revokeDuringInspection = lostBefore === "compensation";
@@ -948,13 +973,54 @@ it.each(["disable", "restore", "compensation", "never"] as const)(
                 : ["/DISABLE", "/ENABLE", "/DISABLE"],
         );
         expect(enabled).toBe(lostBefore === "disable" || lostBefore === "compensation");
-        if (lostBefore === "never") {
+        if (lostBefore === "never" || lostBefore === "cutover expiry") {
           expect(failure).toBeUndefined();
         } else {
           expect(String(failure)).toContain("Repair continuation no longer owns this task");
         }
       } finally {
         await stopped?.windowsTaskAutoStartRecovery?.complete();
+      }
+    }),
+);
+
+it.each(["busy", "unavailable", "timeout", "stale"])(
+  "defers direct CLI stop on mandatory cutover %s",
+  (reason) =>
+    withServiceHome(async (home) => {
+      mockProcessPlatform("linux");
+      const service = createMockGatewayService({
+        readCommand: async () => ({
+          programArguments: [process.execPath, path.join(process.cwd(), "openclaw.mjs"), "gateway"],
+          environment: { HOME: home },
+        }),
+        readRuntime: async () => ({
+          status: "running",
+          pid: 543210,
+          systemd: { managerUid: 2001 },
+        }),
+        isLoaded: async () => true,
+      });
+      mocks.service.mockReturnValue(service);
+      if (reason === "stale") {
+        mocks.cutoverRefresh.mockRejectedValue(new Error("cutover stale"));
+      } else {
+        mocks.prepareCutover.mockRejectedValue(new Error(`cutover ${reason}`));
+      }
+      await expect(
+        maybeStopManagedServiceBeforeMutableUpdate({
+          root: process.cwd(),
+          updateInstallKind: "package",
+          shouldRestart: true,
+          jsonMode: true,
+        }),
+      ).rejects.toThrow(`cutover ${reason}`);
+      expect(mocks.prepareCutover).toHaveBeenCalledWith(
+        expect.objectContaining({ expectedPid: 543210 }),
+      );
+      expect(service.stop).not.toHaveBeenCalled();
+      if (reason === "stale") {
+        expect(mocks.cutoverRelease).toHaveBeenCalledOnce();
       }
     }),
 );

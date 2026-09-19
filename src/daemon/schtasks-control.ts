@@ -211,6 +211,7 @@ async function changeScheduledTaskEnabledState(params: {
   beforeMutation?: () => Promise<void>;
   assertCurrent?: () => void;
   restoreOnFailure?: boolean;
+  assertForwardCurrent?: () => void;
 }): Promise<boolean> {
   const taskName = resolveTaskName(params.env);
   if (!params.enabled) {
@@ -235,6 +236,7 @@ async function changeScheduledTaskEnabledState(params: {
   const action = params.enabled ? "/ENABLE" : "/DISABLE";
   await params.beforeMutation?.();
   params.assertCurrent?.();
+  params.assertForwardCurrent?.();
   const result = await execSchtasks(["/Change", "/TN", taskName, action]);
   if (result.code !== 0) {
     const detail = (result.stderr || result.stdout).trim() || "unknown error";
@@ -270,6 +272,7 @@ export async function suspendScheduledTaskAutoStartForUpdate(
     beforeMutation?: () => Promise<void>;
     assertCurrent?: () => void;
     restoreOnFailure?: boolean;
+    assertForwardCurrent?: () => void;
   },
 ): Promise<boolean> {
   const assertCaller = options?.assertCurrent;
