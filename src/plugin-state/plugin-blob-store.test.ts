@@ -35,7 +35,10 @@ function options(
 function createPluginBlobStore<TMetadata>(pluginId: string, testOptions: TestBlobStoreOptions) {
   const { env, ...storeOptions } = testOptions;
   const store = createPluginBlobStoreForTests<TMetadata>(pluginId, storeOptions, env);
-  return { ...store, lookupInfo: expectDefined(store.lookupInfo, "metadata-only blob lookup") };
+  return {
+    ...store,
+    lookupInfo: expectDefined(store.lookupInfo?.bind(store), "metadata-only blob lookup"),
+  };
 }
 
 describe("plugin blob store", () => {

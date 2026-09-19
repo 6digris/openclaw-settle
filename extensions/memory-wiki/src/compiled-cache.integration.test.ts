@@ -505,9 +505,9 @@ describe("Memory Wiki compiled cache lifecycle", () => {
           ...blobStore,
           async lookupInfo(key) {
             const entry = await expectDefined(
-              blobStore.lookupInfo,
+              blobStore.lookupInfo?.bind(blobStore),
               "metadata-only blob lookup",
-            ).call(blobStore, key);
+            )(key);
             if (publishDuringLookup) {
               publishDuringLookup = false;
               await appendMemoryWikiLog(config.vault.path, {
@@ -783,10 +783,10 @@ describe("Memory Wiki compiled cache lifecycle", () => {
               failNextRead = false;
               throw new Error("transient reconciliation failure");
             }
-            return await expectDefined(blobStore.lookupInfo, "metadata-only blob lookup").call(
-              blobStore,
-              key,
-            );
+            return await expectDefined(
+              blobStore.lookupInfo?.bind(blobStore),
+              "metadata-only blob lookup",
+            )(key);
           },
         };
       },

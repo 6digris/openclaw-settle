@@ -30,7 +30,10 @@ function createStore(env: NodeJS.ProcessEnv) {
     { namespace: "readonly", maxEntries: 3, maxBytesPerEntry: 16, maxBytesPerNamespace: 32 },
     env,
   );
-  return { ...store, lookupInfo: expectDefined(store.lookupInfo, "metadata-only blob lookup") };
+  return {
+    ...store,
+    lookupInfo: expectDefined(store.lookupInfo?.bind(store), "metadata-only blob lookup"),
+  };
 }
 
 describe("plugin blob read-only access", () => {
