@@ -15,7 +15,10 @@ $originalPaths = @{}
 $breakpoints = @()
 $ownedProduct = $null
 $portableOwned = $false
-$portableRegistryPath = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\OpenJS.NodeJS.LTS__DefaultSource'
+# Supported public-source setup lets Winget write its own portable identity.
+$portableSourceIdentifier = 'Microsoft.Winget.Source_8wekyb3d8bbwe'
+$portableProductCode = "OpenJS.NodeJS.LTS_$portableSourceIdentifier"
+$portableRegistryPath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$portableProductCode"
 $localManifestsEnabled = $false
 $setupStarted = $false
 $transcriptStarted = $false
@@ -201,7 +204,7 @@ try {
     # Native local-manifest installation enforces the pinned InstallerSha256,
     # instead of resolving the setup artifact from today's mutable catalog.
     # Candidate install/repair below still use their unmodified public source.
-    if ($Scenario -ne 'unsupported-node') {
+    if ($Scenario -notin @('unsupported-node','non-msi')) {
         Assert-Proof ((Invoke-Native $winget @('settings','--enable','LocalManifestFiles') 'enable-local-manifests') -eq 0) 'Native local-manifest setup unavailable.'
         $localManifestsEnabled = $true
     }
@@ -245,9 +248,20 @@ try {
         $scope = if ($Scenario -eq 'non-msi') { 'user' } else { 'machine' }
         $arguments = @('install','--manifest',$manifestDirectory,'--architecture','x64','--installer-type',$type,'--scope',$scope,'--accept-package-agreements','--accept-source-agreements','--disable-interactivity','--silent')
         if ($Scenario -eq 'non-msi') {
-            Assert-Proof (-not (Test-Path -LiteralPath $portableRegistryPath)) 'Preexisting local-manifest portable registration is not task-owned.'
+            Assert-Proof (-not (Test-Path -LiteralPath $portableRegistryPath)) 'Preexisting public-source portable registration is not task-owned.'
+            Assert-Proof ((Invoke-Native $winget @('source','export','--name','winget') 'portable-source') -eq 0) 'Could not inspect the public Winget source.'
+            $publicSource = Get-Content (Join-Path $ProofRoot 'portable-source.log') -Raw | ConvertFrom-Json
+            Assert-Proof ($publicSource.Identifier -ceq $portableSourceIdentifier -and $publicSource.Arg -ceq 'https://cdn.winget.microsoft.com/cache') 'Unexpected public Winget source identity.'
+            # Local --manifest setup writes *DefaultSource and cannot qualify this
+            # candidate's unchanged --source winget lookup. Use the catalog flow.
+            # Refuse catalog drift; keep the pinned upstream ZIP URL and SHA256.
+            $selection = @('--id','OpenJS.NodeJS.LTS','--exact','--source','winget','--version',$proof.manifest.version,'--architecture','x64','--installer-type','zip','--scope','user','--accept-source-agreements','--disable-interactivity')
+            Assert-Proof ((Invoke-Native $winget (@('show') + $selection) 'portable-catalog-installer') -eq 0) 'Pinned public portable installer is unavailable.'
+            $catalogInstaller = Get-Content (Join-Path $ProofRoot 'portable-catalog-installer.log') -Raw
+            Assert-Proof ($catalogInstaller -match [regex]::Escape('https://nodejs.org/dist/v24.19.0/node-v24.19.0-win-x64.zip') -and $catalogInstaller -match '57F71AB3652E797D84ACDDC79C81CC9FF1C6DDB2A1974CDB83F00FEE9BFF4C73') 'Public portable installer differs from pinned artifact.'
+            $proof.portableSetup = @{ source=$publicSource; version=$proof.manifest.version; installerSha256='57F71AB3652E797D84ACDDC79C81CC9FF1C6DDB2A1974CDB83F00FEE9BFF4C73'; qualification='Native public-source registration; no metadata rewritten' }
             $portableOwned = $true
-            $arguments += @('--location',(Join-Path $WorkRoot 'portable'))
+            $arguments = @('install') + $selection + @('--accept-package-agreements','--silent','--location',(Join-Path $WorkRoot 'portable'))
         } else { $ownedProduct = $proof.manifest.productCode }
         Assert-Proof ((Invoke-Native $winget $arguments 'setup-node') -eq 0) 'Exact native package setup failed.'
         Refresh-ProcessPath
@@ -255,11 +269,12 @@ try {
         $proof.registration = @(Get-NodeRegistration)
         if ($Scenario -eq 'non-msi') {
             Assert-Proof (@($proof.registration | Where-Object WindowsInstaller -eq 1).Count -eq 0) 'Portable control unexpectedly has MSI registration.'
-            Assert-Proof (Test-Path -LiteralPath $portableRegistryPath) 'Native local-manifest portable registration is absent.'
-            $proof.portableRegistration = Get-ItemProperty -LiteralPath $portableRegistryPath | Select-Object PSPath, PSChildName, DisplayName, DisplayVersion, InstallLocation, UninstallString, WinGetPackageIdentifier, WinGetSourceIdentifier
-            # Read both native identities; never fabricate public-source correlation.
-            [void](Invoke-Native $winget @('list','--product-code','OpenJS.NodeJS.LTS__DefaultSource','--exact','--accept-source-agreements','--disable-interactivity') 'portable-local-identity')
-            [void](Invoke-Native $winget @('list','--id','OpenJS.NodeJS.LTS','--exact','--source','winget','--accept-source-agreements','--disable-interactivity') 'portable-catalog-correlation')
+            Assert-Proof (Test-Path -LiteralPath $portableRegistryPath) 'Native public-source portable registration is absent.'
+            $proof.portableRegistration = Get-ItemProperty -LiteralPath $portableRegistryPath | Select-Object PSPath, PSChildName, DisplayName, DisplayVersion, InstallLocation, UninstallString, WinGetPackageIdentifier, WinGetSourceIdentifier, WinGetInstallerType, WindowsInstaller
+            $registration = $proof.portableRegistration
+            Assert-Proof ($registration.WinGetPackageIdentifier -ceq 'OpenJS.NodeJS.LTS' -and $registration.WinGetSourceIdentifier -ceq $portableSourceIdentifier -and $registration.WinGetInstallerType -ceq 'portable' -and $registration.WindowsInstaller -ne 1 -and $registration.DisplayVersion -ceq $proof.manifest.version) 'Real portable registration does not match the pinned public package.'
+            # Verify public-source discovery in addition to the exact native registry identity.
+            Assert-Proof ((Invoke-Native $winget @('list','--id','OpenJS.NodeJS.LTS','--exact','--source','winget','--scope','user','--accept-source-agreements','--disable-interactivity') 'portable-catalog-correlation') -eq 0) 'Portable registration is not correlated to the public source.'
             $executables = @(Get-ChildItem (Join-Path $WorkRoot 'portable') -Filter node.exe -Recurse -File)
             Assert-Proof ($executables.Count -eq 1) 'Portable install location is ambiguous.'
             $runtime = $executables[0].FullName
@@ -347,9 +362,9 @@ try {
         } },
         @{ name='owned-portable'; action={
             if ($portableOwned -and (Test-Path -LiteralPath $portableRegistryPath)) {
-                # Local-manifest installs have a native _DefaultSource product code,
-                # not public winget-source identity. Target their real registration.
-                $code = Invoke-Native $winget @('uninstall','--product-code','OpenJS.NodeJS.LTS__DefaultSource','--exact','--scope','user','--silent','--disable-interactivity') 'cleanup-owned-portable'
+                # Target the product code written by the supported catalog install;
+                # do not fall back to another package/source or rewrite metadata.
+                $code = Invoke-Native $winget @('uninstall','--product-code',$portableProductCode,'--exact','--scope','user','--silent','--disable-interactivity') 'cleanup-owned-portable'
                 Assert-Proof ($code -eq 0) 'Portable native cleanup failed.'
                 Assert-Proof (-not (Test-Path -LiteralPath $portableRegistryPath)) 'Portable registration remains.'
             }
