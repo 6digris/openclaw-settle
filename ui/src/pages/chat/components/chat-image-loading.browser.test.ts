@@ -232,11 +232,17 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
     expect(newPane.height).toBe(120);
   });
 
-  it("keeps a pending inline frame when its canonical source gains dimensions", () => {
+  it("keeps an inline frame after its canonical source gains dimensions and becomes available", async () => {
     const container = mount(500);
+    const ready = createDeferred<void>();
+    const requestUpdate = () => {};
+    subscribers.push(requestUpdate);
     vi.stubGlobal(
       "fetch",
-      vi.fn(() => new Promise<Response>(() => {})),
+      vi.fn(async () => {
+        await ready.promise;
+        return Response.json({ available: true });
+      }),
     );
     const paint = (
       url: string,
@@ -247,16 +253,27 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
         html`${renderMessageImages([{ url, factIndex, ...dimensions }], {
           sessionKey: "pending-handoff",
           canonicalMessageKey: "pending-message",
+          onRequestUpdate: requestUpdate,
         })}`,
         container,
       );
       return frame(container).getBoundingClientRect();
     };
     const before = paint(preview, 0);
-    const after = paint("media://inbound/pending.png", 0, { width: 320, height: 120 });
+    paint("media://inbound/pending.png", 0, { width: 320, height: 120 });
+    expect(frame(container).classList.contains("chat-image-frame--compact")).toBe(true);
+    ready.resolve();
+    await vi.waitFor(() => {
+      expect(frame(container).classList.contains("chat-image-frame--compact")).toBe(false);
+    });
+    const after = frame(container).getBoundingClientRect();
     expect(after.width).toBe(before.width);
     expect(after.height).toBe(before.height);
-    const replacement = paint("media://inbound/replacement.png", 0, { width: 240, height: 160 });
+    paint("media://inbound/replacement.png", 0, { width: 240, height: 160 });
+    await vi.waitFor(() => {
+      expect(frame(container).classList.contains("chat-image-frame--compact")).toBe(false);
+    });
+    const replacement = frame(container).getBoundingClientRect();
     expect(replacement.width).toBe(240);
     expect(replacement.height).toBe(160);
   });
@@ -377,7 +394,7 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
   );
 
   it.each(["assistant", "user"])(
-    "uses natural decoded geometry for a $role image without dimensions",
+    "keeps the initial fallback for a $role image without dimensions",
     async (role) => {
       const container = mount(500);
       const response = createDeferred<Response>();
@@ -395,12 +412,13 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
         </div>`,
         container,
       );
-      expect(geometry(container).height).toBe(74);
+      const initial = geometry(container);
+      expect(initial.width).toBe(400);
+      expect(initial.height).toBeCloseTo(400 / 1.5, 1);
       response.resolve(svgResponse(800, 1600));
       await vi.waitFor(() => expect(container.querySelector("img")).not.toBeNull());
       await container.querySelector("img")!.decode();
-      expect(geometry(container).width).toBe(180);
-      expect(geometry(container).height).toBe(360);
+      expect(geometry(container)).toEqual(initial);
     },
   );
 
@@ -578,7 +596,9 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
       expect(frames[1]!.getBoundingClientRect().top).toBeGreaterThan(
         frames[0]!.getBoundingClientRect().bottom,
       );
-      for (const [index, expectedWidth] of [160, 84, 160, 160, 160].entries()) {
+      const messageColumn = container.querySelector<HTMLElement>(".chat-group-messages")!;
+      const fallbackWidth = Math.min(400, messageColumn.clientWidth);
+      for (const [index, expectedWidth] of [160, 84, 160, fallbackWidth, fallbackWidth].entries()) {
         const element = frames[index]!;
         await page.getByAltText(images[index]!.alt, { exact: true }).hover();
         for (const animation of element.getAnimations({ subtree: true })) {

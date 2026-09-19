@@ -1,4 +1,3 @@
-import { asPositiveFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { asNonArrayRecord } from "@openclaw/normalization-core/record-coerce";
 import type { GatewaySessionRow } from "../../../api/types.ts";
 import type { ImageLightboxItem } from "../../../components/image-lightbox.types.ts";
@@ -14,6 +13,7 @@ import {
   isVideoTranscriptMediaPath,
   labelForMediaPath,
 } from "../../../lib/media-file-extension.ts";
+import { applyTranscriptImageDimensions } from "./chat-message-image-dimensions.ts";
 
 export type ImageBlock = {
   url: string;
@@ -614,32 +614,7 @@ export function projectMessageMedia(
     }
   }
   const mediaEntries = readTranscriptMediaEntries(message);
-  const imageFacts = mediaEntries.filter(
-    (entry) =>
-      isImageMediaPath(entry.path, entry.mediaType) &&
-      !isSvgImageMediaPath(entry.path, entry.mediaType),
-  );
-  for (const image of images) {
-    if (asPositiveFiniteNumber(image.width) && asPositiveFiniteNumber(image.height)) {
-      continue;
-    }
-    const matches = imageFacts.filter((entry) =>
-      image.factIndex !== undefined
-        ? entry.factIndex === image.factIndex
-        : entry.path === image.url,
-    );
-    const dimensions = matches[0];
-    if (
-      dimensions?.width !== undefined &&
-      dimensions.height !== undefined &&
-      matches.every(
-        (entry) => entry.width === dimensions.width && entry.height === dimensions.height,
-      )
-    ) {
-      image.width = dimensions.width;
-      image.height = dimensions.height;
-    }
-  }
+  applyTranscriptImageDimensions(images, mediaEntries);
   for (const {
     path: mediaPath,
     mediaType,
