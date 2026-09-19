@@ -1,6 +1,7 @@
 // Tests media-only get-reply runs and sandboxed media attachment handling.
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import * as sessionEventStore from "../../../test/helpers/infra/session-event-store.js";
 import { createTestAdmittedRunContext } from "../../agents/admitted-run-context.test-support.js";
 import {
   createCronCreatorAuthorityCapability,
@@ -235,11 +236,18 @@ vi.mock("../../config/sessions/group.js", () => ({
   resolveGroupSessionKey: vi.fn().mockReturnValue(undefined),
 }));
 
-vi.mock("../../config/sessions/paths.js", () => ({
-  resolveSessionFilePathCore: vi.fn().mockReturnValue("/tmp/session.jsonl"),
-  resolveSessionFilePathOptions: vi.fn().mockReturnValue({}),
-  resolveSessionStorePathCore: vi.fn().mockReturnValue("/tmp/session-store"),
-}));
+vi.mock("../../config/sessions/paths.js", async () => {
+  const { resolveExplicitSessionStorePathForScope, resolveSessionStorePathCore } =
+    await vi.importActual<typeof import("../../config/sessions/paths.js")>(
+      "../../config/sessions/paths.js",
+    );
+  return {
+    resolveSessionFilePathCore: vi.fn().mockReturnValue("/tmp/session.jsonl"),
+    resolveSessionFilePathOptions: vi.fn().mockReturnValue({}),
+    resolveExplicitSessionStorePathForScope,
+    resolveSessionStorePathCore,
+  };
+});
 
 const loadSessionEntryMock = vi.hoisted(() => vi.fn());
 const updateAmbientTranscriptWatermarkMock = vi.hoisted(() => vi.fn().mockResolvedValue(null));
@@ -499,6 +507,7 @@ function runPrepared(overrides: Partial<Parameters<typeof runPreparedReply>[0]> 
 }
 
 async function useActualSystemEventDrain() {
+  sessionEventStore.acceptSessionEventStoreTestConfig(baseParams().cfg);
   const actual = await vi.importActual<typeof import("./session-system-events.js")>(
     "./session-system-events.js",
   );
@@ -537,14 +546,10 @@ function requireRunReplyAgentCall(index = 0) {
 }
 
 function requireLastRunReplyAgentCall() {
-  const calls = vi.mocked(runReplyAgent).mock.calls;
-  const call = calls[calls.length - 1]?.[0];
-  if (!call) {
-    throw new Error("last runReplyAgent call missing");
-  }
-  return call;
+  return requireRunReplyAgentCall(vi.mocked(runReplyAgent).mock.calls.length - 1);
 }
 
+sessionEventStore.installSessionEventStoreTestConfig();
 describe("runPreparedReply media-only handling", () => {
   it.each(["fresh-non-owner", "fresh-owner", "inter-session", "heartbeat", "replay"] as const)(
     "retires pending owner task authority only for new channel input: %s",
@@ -5499,12 +5504,7 @@ describe("runPreparedReply media-only handling", () => {
   });
 
   it("admits only system events visible to the prepared agent", async () => {
-    const actualSystemEvents = await vi.importActual<typeof import("./session-system-events.js")>(
-      "./session-system-events.js",
-    );
-    vi.mocked(drainFormattedSystemEvents).mockImplementationOnce(
-      actualSystemEvents.drainFormattedSystemEvents,
-    );
+    await useActualSystemEventDrain();
     enqueueSystemEvent(
       "Alpha hook finished",
       withSystemEventOwner({ sessionKey: "global" }, "alpha"),

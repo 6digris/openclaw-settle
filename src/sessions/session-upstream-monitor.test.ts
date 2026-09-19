@@ -1,10 +1,15 @@
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import {
+  acceptSessionEventStoreTestConfig,
+  installSessionEventStoreTestConfig,
+} from "../../test/helpers/infra/session-event-store.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
 import {
   appendTranscriptMessage,
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
+import { resolveSystemEventStorePath } from "../config/sessions/session-store-path.js";
 import { importSessionCatalogHistory } from "../plugins/session-catalog-history-import.js";
 import type { SessionCatalogProvider, SessionUpstreamProbe } from "../plugins/session-catalog.js";
 import {
@@ -12,7 +17,8 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
-import { listSessionStateEventsSince, registerSessionStateWatch } from "./session-state-events.js";
+import { listSessionStateEventsSince } from "./session-state-events.js";
+import { registerSessionStateWatch } from "./session-state-watches.js";
 import {
   deleteSessionUpstreamLink,
   readSessionUpstreamLink,
@@ -31,6 +37,7 @@ function createMissingCounts() {
 function createDatabaseOptions() {
   const stateDir = makeTempDir(tempDirs, "openclaw-session-upstream-monitor-");
   vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+  acceptSessionEventStoreTestConfig({});
   return { env: { ...process.env, OPENCLAW_STATE_DIR: stateDir } };
 }
 
@@ -54,7 +61,20 @@ function createLink(
     database,
   );
   if (watched) {
-    registerSessionStateWatch({ watcherSessionKey, targetSessionKey: sessionKey }, database);
+    expect(
+      registerSessionStateWatch(
+        {
+          watcherSessionKey,
+          watcherStorePath: resolveSystemEventStorePath({
+            cfg: {},
+            sessionKey: watcherSessionKey,
+            env: database.env,
+          }),
+          targetSessionKey: sessionKey,
+        },
+        database,
+      ),
+    ).toBe(true);
   }
 }
 
@@ -81,6 +101,8 @@ afterEach(async () => {
 afterAll(() => {
   cleanupTempDirs(tempDirs);
 });
+
+installSessionEventStoreTestConfig();
 
 describe("session upstream monitor", () => {
   it("discards discovery after the monitor is aborted", async () => {

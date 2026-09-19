@@ -22,6 +22,10 @@ import {
   getInstallationTarget,
   LOCAL_INSTALLATION_TARGET_UNSUPPORTED,
 } from "../infra/installation-target-context.js";
+import {
+  getPublishedSystemEventStoreSelection,
+  publishSystemEventStoreSelection,
+} from "../infra/system-event-ownership.js";
 import { writeRuntimeJson, writeRuntimeStdout, type RuntimeEnv } from "../runtime.js";
 import {
   buildExecRunConfig,
@@ -233,6 +237,7 @@ export async function agentExecCommand(
   let restoreEnvironment: (() => void) | undefined;
   let restoreConfigEnvironment: (() => void) | undefined;
   let restoreRuntimeConfigSnapshot: (() => void) | undefined;
+  let restoreNotificationSelection: (() => void) | undefined;
   let runtimePaths: typeof import("../config/paths.js") | undefined;
   let configIo: typeof import("../config/io.js") | undefined;
   let stopLocalAuditWriter: (() => Promise<void>) | undefined;
@@ -281,10 +286,11 @@ export async function agentExecCommand(
     // caller's and is left alone.
     temporaryStateDir = opts.stateDir ? undefined : stateDir;
     configIo = await import("../config/io.js");
-    // Both process globals are captured before the config is resolved: an ambient
+    // Capture caller selections before the config is resolved: an ambient
     // load publishes a runtime snapshot of its own, so reading "previous" after it
     // would record exec's snapshot as the caller's.
     const previousRuntimeConfigSnapshot = configIo.getRuntimeConfigSnapshot();
+    const previousNotificationSelection = getPublishedSystemEventStoreSelection();
     const snapshotIo = configIo;
     restoreRuntimeConfigSnapshot = () => {
       if (previousRuntimeConfigSnapshot) {
@@ -395,6 +401,15 @@ export async function agentExecCommand(
     // env-substituted provider keys to disk where the run's own exec tool
     // could read them.
     snapshotIo.setRuntimeConfigSnapshot(runConfig);
+    const { publishSystemEventStoreConfig } =
+      await import("../config/sessions/session-store-path.js");
+    publishSystemEventStoreConfig(runConfig);
+    const ownedNotificationSelection = getPublishedSystemEventStoreSelection();
+    restoreNotificationSelection = () => {
+      if (getPublishedSystemEventStoreSelection() === ownedNotificationSelection) {
+        publishSystemEventStoreSelection(previousNotificationSelection);
+      }
+    };
     const [
       { withAuthProfileStoreAgentDir, withEnvOnlyAuthProfileStore },
       { withHostExecInheritedEnvOmitted },
@@ -555,6 +570,7 @@ export async function agentExecCommand(
       ? restoreRuntimeConfigSnapshot()
       : configIo?.clearRuntimeConfigSnapshot(),
   );
+  runCleanupStep(() => restoreNotificationSelection?.());
   runCleanupStep(() => runtimePaths?.pinRuntimePaths());
   if (temporaryStateDir && !cleanupError) {
     try {

@@ -2,11 +2,9 @@ import fs, { writeFileSync } from "node:fs";
 import path from "node:path";
 import { Command } from "commander";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import * as sessionEventStore from "../../test/helpers/infra/session-event-store.js";
 import { createPluginMetadataSnapshot } from "../config/plugin-auto-enable.test-helpers.js";
-import {
-  clearRuntimeConfigSnapshot,
-  setRuntimeConfigSnapshot,
-} from "../config/runtime-snapshot.js";
+import { clearRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import { requestHeartbeat, setHeartbeatWakeHandler } from "../infra/heartbeat-wake.js";
@@ -134,6 +132,7 @@ it.each(["cjs", "ts"])(
         OPENCLAW_DISABLE_BUNDLED_PLUGINS: undefined,
       },
       async () => {
+        const restoreConfig = sessionEventStore.captureSessionEventStoreTestConfig();
         const heartbeat = vi.fn(async () => ({ status: "skipped" as const, reason: "disabled" }));
         const disposeHeartbeat = setHeartbeatWakeHandler(heartbeat);
         try {
@@ -177,7 +176,7 @@ it.each(["cjs", "ts"])(
             },
             plugins: { entries: { [plugin.id]: { enabled: true } } },
           };
-          setRuntimeConfigSnapshot(config);
+          sessionEventStore.acceptSessionEventStoreTestConfig(config);
           const metadata = await loadOpenClawPluginCliRegistry({
             config,
             pluginSdkResolution: "src",
@@ -228,7 +227,7 @@ it.each(["cjs", "ts"])(
           const runtime = getPluginRegistryRuntime(registry)!;
           const configApi = runtime.config;
           const refreshedConfig = { ...config, agents: { defaults: { workspace: "/refreshed" } } };
-          setRuntimeConfigSnapshot(refreshedConfig);
+          sessionEventStore.acceptSessionEventStoreTestConfig(refreshedConfig);
           expect(configApi.current()).toBe(refreshedConfig);
           const state = runtime.state;
           const system = runtime.system;
@@ -296,7 +295,7 @@ it.each(["cjs", "ts"])(
           expect(resolveRuntime).toHaveBeenCalledTimes(1);
           expect(factories).toHaveBeenCalledTimes(1);
           expect(runtime.config).toBe(configApi);
-          setRuntimeConfigSnapshot(config);
+          sessionEventStore.acceptSessionEventStoreTestConfig(config);
           expect(configApi.current()).toBe(config);
           expect(runtime.state).toBe(state);
           expect(runtime.system).toBe(system);
@@ -413,6 +412,7 @@ it.each(["cjs", "ts"])(
         } finally {
           disposeHeartbeat();
           drainSystemEvents("agent:main:prepared-runtime-system");
+          restoreConfig();
         }
       },
     );

@@ -37,6 +37,7 @@ export async function prepareEmbeddedSessionState(params: {
   persistedVerbose?: VerboseLevel;
   verboseDefault?: VerboseLevel;
   sessionStateActor: Parameters<typeof recordSessionHumanDirectMessage>[0]["actor"];
+  watcherStorePaths: Readonly<Record<string, string | null>>;
   pluginMetadataSnapshot?: PluginMetadataSnapshot;
 }) {
   const requestedThinkLevel = params.thinkOnce ?? params.thinkOverride ?? params.persistedThinking;
@@ -164,6 +165,7 @@ export async function prepareEmbeddedSessionState(params: {
       actor: params.sessionStateActor,
       channel: params.opts.channel,
       runId: params.runId,
+      watcherStorePaths: params.watcherStorePaths,
     });
   }
 

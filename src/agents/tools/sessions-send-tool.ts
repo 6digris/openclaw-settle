@@ -47,7 +47,6 @@ import {
 } from "../../sessions/session-key-utils.js";
 import { SESSION_LABEL_MAX_LENGTH } from "../../sessions/session-label.js";
 import { recordSessionParticipantBestEffort } from "../../sessions/session-participant-recording.js";
-import { registerSessionStateWatch } from "../../sessions/session-state-events.js";
 import { stripFormattedReasoningMessage } from "../../shared/text/formatted-reasoning-message.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
 import { listAgentIds, resolveSessionAgentId } from "../agent-scope.js";
@@ -92,7 +91,10 @@ import {
 import { buildAgentToAgentMessageContext } from "./sessions-send-helpers.js";
 import { resumeSessionsSendTask } from "./sessions-send-resume.js";
 import { runSessionsSendA2AFlow } from "./sessions-send-tool.a2a.js";
-import { startSessionsSendAgentRun } from "./sessions-send-tool.delivery.js";
+import {
+  prepareSessionsSendWatch,
+  startSessionsSendAgentRun,
+} from "./sessions-send-tool.delivery.js";
 
 const SessionsSendToolSchema = Type.Object({
   sessionKey: Type.Optional(Type.String()),
@@ -403,6 +405,22 @@ export function createSessionsSendTool(opts?: {
           error: formatErrorMessage(err),
         });
       }
+      const requesterSession = resolveGatewaySessionStoreTargetWithStore({
+        cfg,
+        key: effectiveRequesterKey,
+        agentId: requesterAgentId,
+        readOnly: true,
+        exactRead: true,
+        clone: false,
+        projection: "full",
+      });
+      const registerWatchIfRequested = prepareSessionsSendWatch({
+        cfg,
+        requested: params.watch === true,
+        requesterSessionKey: effectiveRequesterKey,
+        requesterAgentId,
+        storePath: requesterSession.storePath,
+      });
 
       const sessionKeyParam = readToolStringParam(params, "sessionKey");
       const labelParam = normalizeOptionalString(readToolStringParam(params, "label"));
@@ -646,15 +664,6 @@ export function createSessionsSendTool(opts?: {
       const mayUseRequesterForLiteralSentinel =
         isLiteralUnscopedMainTarget && normalizeAgentId(targetAgentId) === requesterAgentId;
       const rawRequesterSessionKey = opts?.agentSessionKey ? effectiveRequesterKey : undefined;
-      const requesterSession = resolveGatewaySessionStoreTargetWithStore({
-        cfg,
-        key: effectiveRequesterKey,
-        agentId: requesterAgentId,
-        readOnly: true,
-        exactRead: true,
-        clone: false,
-        projection: "full",
-      });
       const requesterSessionEntry = requesterSession.store[requesterSession.canonicalKey];
       const requesterIsSubagent = isSubagentSessionFromEntry(
         requesterSession.canonicalKey,
@@ -895,24 +904,6 @@ export function createSessionsSendTool(opts?: {
             targetSessionEntry,
             targetAcpMeta,
           );
-          // Watch registration follows successful dispatch: a failed send must not leave
-          // a hidden watch, and cron run-scoped sends can fall back to the durable parent
-          // session, which is the key that receives future state changes.
-          const watchRequested = params.watch === true;
-          const registerWatchIfRequested = (targetSessionKey: string) => {
-            const watched =
-              watchRequested &&
-              !expectedSessionId &&
-              replyRequesterSessionKey &&
-              replyRequesterSessionKey !== targetSessionKey
-                ? registerSessionStateWatch({
-                    watcherSessionKey: replyRequesterSessionKey,
-                    targetSessionKey,
-                    targetAgentId,
-                  })
-                : false;
-            return watchRequested ? { watched } : {};
-          };
           const agentMessageContext =
             requesterIsSubagent || targetIsSubagent
               ? undefined
@@ -1065,7 +1056,12 @@ export function createSessionsSendTool(opts?: {
             log.warn("failed to record session participant", { error });
           }
           runId = start.runId;
-          const watchField = registerWatchIfRequested(acceptedTargetSessionKey);
+          const watchField = registerWatchIfRequested(
+            replyRequesterSessionKey,
+            acceptedTargetSessionKey,
+            targetAgentId,
+            expectedSessionId,
+          );
           const startReplyFlow = ({
             reply,
             notifyRequesterOnWaitFailure = false,

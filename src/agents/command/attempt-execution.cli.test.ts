@@ -854,13 +854,11 @@ describe("CLI attempt execution", () => {
         defaults: { model: { primary: "claude-cli/sonnet", fallbacks: ["claude-cli/opus"] } },
       },
     };
-    const opts =
-      params.configuredSelection?.opts ??
-      ({
-        message: "outer fallback",
-        modelFallbacksOverride: ["claude-cli/opus"],
-        bootstrapContextRunKind: params.suppression === "heartbeat" ? "heartbeat" : undefined,
-      } satisfies RunAgentAttemptParams["opts"]);
+    const opts: RunAgentAttemptParams["opts"] = params.configuredSelection?.opts ?? {
+      message: "outer fallback",
+      modelFallbacksOverride: ["claude-cli/opus"],
+      bootstrapContextRunKind: params.suppression === "heartbeat" ? "heartbeat" : undefined,
+    };
     const lifecycleGeneration = getAgentEventLifecycleGeneration();
     const manifestMetadataSnapshot = params.configuredSelection?.metadataSnapshot;
     const modelManifestContext = { manifestPlugins: manifestMetadataSnapshot ?? [] };
@@ -871,6 +869,7 @@ describe("CLI attempt execution", () => {
       ...params,
       opts,
       cfg,
+      watcherStorePaths: {},
       body: opts.message,
       transcriptBody: opts.message,
       configuredThinkingCatalog,

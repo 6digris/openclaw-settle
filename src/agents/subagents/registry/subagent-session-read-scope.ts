@@ -1,4 +1,83 @@
+import { resolveSqliteTargetFromSessionStorePath } from "../../../config/sessions/session-sqlite-target.js";
+import { resolveSessionStorePathForScope } from "../../../config/sessions/session-store-path.js";
+import type { OpenClawConfig } from "../../../config/types.openclaw.js";
+import { resolveIdentityPathViaExistingAncestorSync } from "../../../infra/boundary-path.js";
+import { isIncognitoSessionKey, parseAgentSessionKey } from "../../../routing/session-key.js";
+import { createOpenClawAgentDatabasePathMatcher } from "../../../state/openclaw-agent-db-registry.js";
+import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
 import type { SubagentRunReadRecord } from "./subagent-registry-read.types.js";
+
+/** Keep generation contenders in one physical scope before applying logical ownership. */
+export function createSubagentRunStoreScope(
+  cfg?: OpenClawConfig,
+  admitted?: { sessionKey: string; agentId: string; storePath: string },
+) {
+  const matchesPath = createOpenClawAgentDatabasePathMatcher();
+  const configuredPaths = new Map<string, string>();
+  const configuredPath = (sessionKey: string, agentId: string): string => {
+    const key = JSON.stringify([agentId, isIncognitoSessionKey(sessionKey)]);
+    let storePath = configuredPaths.get(key);
+    if (!storePath) {
+      storePath = resolveIdentityPathViaExistingAncestorSync(
+        resolveSqliteTargetFromSessionStorePath(
+          resolveSessionStorePathForScope({ sessionKey, agentId }, cfg),
+          { agentId },
+        ).path,
+      );
+      configuredPaths.set(key, storePath);
+    }
+    return storePath;
+  };
+  const replacedPath = admitted && configuredPath(admitted.sessionKey, admitted.agentId);
+  const admittedPath = admitted && resolveIdentityPathViaExistingAncestorSync(admitted.storePath);
+  const resolveStorePath = (sessionKey: string, agentId: string): string => {
+    const selected = configuredPath(sessionKey, agentId);
+    // Other logical owners of this same physical target retain their generation veto.
+    // Distinct child/agent stores keep their own configured placement.
+    return replacedPath && admittedPath && matchesPath(selected, replacedPath)
+      ? admittedPath
+      : selected;
+  };
+  const matches = (entry: SubagentRunReadRecord, role?: "requester" | "controller"): boolean => {
+    const requesterAgentId =
+      entry.requesterAgentId ??
+      parseAgentSessionKey(entry.requesterSessionKey)?.agentId ??
+      (cfg ? resolveSubagentRequesterAgentId(cfg, entry) : undefined);
+    const owns = (key: string, storePath: string | undefined, agentId: string | undefined) =>
+      Boolean(storePath && agentId && matchesPath(storePath, resolveStorePath(key, agentId)));
+    const requester = () =>
+      owns(entry.requesterSessionKey, entry.requesterStorePath, requesterAgentId);
+    const controller = () => {
+      const key = entry.controllerSessionKey?.trim();
+      return key
+        ? owns(
+            key,
+            entry.controllerStorePath,
+            parseAgentSessionKey(key)?.agentId ?? requesterAgentId,
+          )
+        : requester();
+    };
+    return role === "requester"
+      ? requester()
+      : role === "controller"
+        ? controller()
+        : requester() || controller();
+  };
+  return { matches, resolveStorePath };
+}
+
+/** Notification ownership follows the physical parent selected when its child was registered. */
+export function resolveSubagentRequesterStoreFailure(
+  cfg: OpenClawConfig,
+  entry: SubagentRunReadRecord,
+): string | undefined {
+  if (!entry.requesterStorePath) {
+    return "Requester session store is unknown for this retained completion; automatic delivery is suspended.";
+  }
+  return createSubagentRunStoreScope(cfg).matches(entry, "requester")
+    ? undefined
+    : "Requester session store was replaced; completion remains bound to its original store.";
+}
 
 type RunIdentity = Pick<SubagentRunReadRecord, "childSessionKey" | "requesterSessionKey">;
 type LookupIdentity = RunIdentity & Pick<SubagentRunReadRecord, "controllerSessionKey">;

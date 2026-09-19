@@ -1,9 +1,10 @@
-// Session goal state tracks objective progress and token budgets in the session store.
+import { captureSystemEventStorePaths } from "../../infra/system-event-ownership.js";
 import {
   recordSessionGoalChanged,
   type SessionStateActorType,
 } from "../../sessions/session-state-events.js";
 import { formatTokenCount } from "../../utils/token-format.js";
+import { getRuntimeConfigSnapshot } from "../runtime-snapshot.js";
 import {
   accountSessionGoalUsage,
   buildCreatedSessionGoal,
@@ -11,6 +12,8 @@ import {
   buildUpdatedSessionGoalStatus,
 } from "./goals-transitions.js";
 import { loadSessionEntryReadOnly, patchSessionEntryCore } from "./session-accessor.js";
+// Session goal state tracks objective progress and token budgets in the session store.
+import { resolveSystemEventStorePath } from "./session-store-path.js";
 import type { SessionEntry, SessionGoal, SessionGoalStatus } from "./types.js";
 
 type SessionGoalSnapshot = {
@@ -52,14 +55,41 @@ function recordGoalChange(
   options: SessionGoalStoreOptions,
   entry: SessionEntry,
   summary: string,
+  admission: ReturnType<typeof captureGoalWatcherStoreAdmission>,
 ): Promise<void> {
+  const watcherSessionKey = entry.spawnedBy ?? entry.parentSessionKey;
   return recordSessionGoalChanged({
     sessionKey: options.sessionKey,
     entry,
     actor: options.actor,
     agentId: options.agentId,
     summary,
+    watcherStorePaths:
+      watcherSessionKey && watcherSessionKey !== admission.watcherSessionKey
+        ? { ...admission.watcherStorePaths, [watcherSessionKey]: null }
+        : admission.watcherStorePaths,
   });
+}
+
+function captureGoalWatcherStoreAdmission(options: SessionGoalStoreOptions) {
+  const cfg = getRuntimeConfigSnapshot();
+  const watcherStorePaths = { ...captureSystemEventStorePaths(cfg) };
+  let watcherSessionKey: string | undefined;
+  try {
+    // Fork lineage can predate its first watch; capture that parent before storage admission waits.
+    const entry =
+      loadSessionEntryReadOnly({ sessionKey: options.sessionKey, storePath: options.storePath }) ??
+      options.fallbackEntry;
+    watcherSessionKey = entry?.spawnedBy ?? entry?.parentSessionKey;
+    if (watcherSessionKey && watcherStorePaths[watcherSessionKey] === undefined) {
+      watcherStorePaths[watcherSessionKey] = cfg
+        ? (resolveSystemEventStorePath({ cfg, sessionKey: watcherSessionKey }) ?? null)
+        : null;
+    }
+  } catch {
+    // Signaling must not prevent the requested Goal mutation.
+  }
+  return { watcherSessionKey, watcherStorePaths };
 }
 
 export function resolveSessionGoalDisplayState(
@@ -150,6 +180,7 @@ export async function createSessionGoal(options: CreateSessionGoalOptions): Prom
     throw new Error("objective required");
   }
   const now = nowMs(options.now);
+  const watcherAdmission = captureGoalWatcherStoreAdmission(options);
   let created: SessionGoal | undefined;
   const result = await patchSessionEntryCore(
     { sessionKey: options.sessionKey, storePath: options.storePath },
@@ -166,7 +197,7 @@ export async function createSessionGoal(options: CreateSessionGoalOptions): Prom
   if (!result || !created) {
     throw new Error("session not found");
   }
-  await recordGoalChange(options, result, "goal created");
+  await recordGoalChange(options, result, "goal created", watcherAdmission);
   return cloneGoal(created);
 }
 
@@ -174,6 +205,7 @@ export async function updateSessionGoalStatus(
   options: UpdateSessionGoalStatusOptions,
 ): Promise<SessionGoal> {
   const now = nowMs(options.now);
+  const watcherAdmission = captureGoalWatcherStoreAdmission(options);
   let updated: SessionGoal | undefined;
   let foundSession = false;
   const result = await patchSessionEntryCore(
@@ -187,7 +219,12 @@ export async function updateSessionGoalStatus(
   if (!result || !updated) {
     throw new Error(foundSession ? "goal not found" : "session not found");
   }
-  await recordGoalChange(options, result, `goal status changed to ${updated.status}`);
+  await recordGoalChange(
+    options,
+    result,
+    `goal status changed to ${updated.status}`,
+    watcherAdmission,
+  );
   return cloneGoal(updated);
 }
 
@@ -199,6 +236,7 @@ export async function updateSessionGoalObjective(
     throw new Error("objective required");
   }
   const now = nowMs(options.now);
+  const watcherAdmission = captureGoalWatcherStoreAdmission(options);
   let updated: SessionGoal | undefined;
   let foundSession = false;
   const result = await patchSessionEntryCore(
@@ -212,11 +250,12 @@ export async function updateSessionGoalObjective(
   if (!result || !updated) {
     throw new Error(foundSession ? "goal not found" : "session not found");
   }
-  await recordGoalChange(options, result, "goal objective changed");
+  await recordGoalChange(options, result, "goal objective changed", watcherAdmission);
   return cloneGoal(updated);
 }
 
 export async function clearSessionGoal(options: SessionGoalStoreOptions): Promise<boolean> {
+  const watcherAdmission = captureGoalWatcherStoreAdmission(options);
   let removed = false;
   const result = await patchSessionEntryCore(
     { sessionKey: options.sessionKey, storePath: options.storePath },
@@ -229,7 +268,7 @@ export async function clearSessionGoal(options: SessionGoalStoreOptions): Promis
     },
   );
   if (result && removed) {
-    await recordGoalChange(options, result, "goal cleared");
+    await recordGoalChange(options, result, "goal cleared", watcherAdmission);
   }
   return Boolean(result && removed);
 }

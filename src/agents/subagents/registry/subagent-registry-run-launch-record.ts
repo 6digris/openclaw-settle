@@ -8,6 +8,8 @@ export function createSubagentRegistrationRecord(
     generation: number;
     lifecycleGeneration: string;
     requesterAgentId?: string;
+    requesterStorePath?: string;
+    controllerStorePath?: string;
     requesterOrigin?: SubagentRunRecord["requesterOrigin"];
     swarmWaitOwnerSessionKeys?: string[];
   },
@@ -28,6 +30,8 @@ export function createSubagentRegistrationRecord(
     childSessionKey,
     controllerSessionKey,
     requesterSessionKey,
+    requesterStorePath: prepared.requesterStorePath,
+    controllerStorePath: prepared.controllerStorePath,
     requesterOrigin,
     progressOrigin: registerParams.progressOrigin,
     requesterDisplayKey: registerParams.requesterDisplayKey,

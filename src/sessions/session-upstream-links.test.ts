@@ -1,13 +1,18 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import {
+  acceptSessionEventStoreTestConfig,
+  installSessionEventStoreTestConfig,
+} from "../../test/helpers/infra/session-event-store.js";
 import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
+import { resolveSystemEventStorePath } from "../config/sessions/session-store-path.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
 } from "../state/openclaw-state-db.js";
 import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.js";
-import { registerSessionStateWatch } from "./session-state-events.js";
+import { registerSessionStateWatch } from "./session-state-watches.js";
 import {
   deleteSessionUpstreamLink,
   listWatchedSessionUpstreamLinks,
@@ -20,6 +25,7 @@ const tempDirs: string[] = [];
 function createDatabaseOptions() {
   const stateDir = makeTempDir(tempDirs, "openclaw-session-upstream-links-");
   vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+  acceptSessionEventStoreTestConfig({});
   return { env: { ...process.env, OPENCLAW_STATE_DIR: stateDir } };
 }
 
@@ -53,6 +59,8 @@ afterAll(() => {
   cleanupTempDirs(tempDirs);
 });
 
+installSessionEventStoreTestConfig();
+
 describe("session upstream links", () => {
   it("returns each watched link once and skips ambiguous agent ownership without host SQL", async () => {
     const database = createDatabaseOptions();
@@ -62,13 +70,29 @@ describe("session upstream links", () => {
     upsertLink(unwatched, "codex", database);
     expect(
       registerSessionStateWatch(
-        { watcherSessionKey: "agent:main:main", targetSessionKey: watched },
+        {
+          watcherSessionKey: "agent:main:main",
+          targetSessionKey: watched,
+          watcherStorePath: resolveSystemEventStorePath({
+            cfg: {},
+            sessionKey: "agent:main:main",
+            env: database.env,
+          }),
+        },
         database,
       ),
     ).toBe(true);
     expect(
       registerSessionStateWatch(
-        { watcherSessionKey: "agent:other:main", targetSessionKey: watched },
+        {
+          watcherSessionKey: "agent:other:main",
+          targetSessionKey: watched,
+          watcherStorePath: resolveSystemEventStorePath({
+            cfg: {},
+            sessionKey: "agent:other:main",
+            env: database.env,
+          }),
+        },
         database,
       ),
     ).toBe(true);
@@ -91,7 +115,15 @@ describe("session upstream links", () => {
     ).toBe(true);
     expect(
       registerSessionStateWatch(
-        { watcherSessionKey: "agent:main:main", targetSessionKey: ambiguous },
+        {
+          watcherSessionKey: "agent:main:main",
+          targetSessionKey: ambiguous,
+          watcherStorePath: resolveSystemEventStorePath({
+            cfg: {},
+            sessionKey: "agent:main:main",
+            env: database.env,
+          }),
+        },
         database,
       ),
     ).toBe(true);
@@ -152,7 +184,15 @@ describe("session upstream links", () => {
     const sessionKey = "agent:main:adopted:refresh";
     upsertLink(sessionKey, "claude", database);
     registerSessionStateWatch(
-      { watcherSessionKey: "agent:main:main", targetSessionKey: sessionKey },
+      {
+        watcherSessionKey: "agent:main:main",
+        targetSessionKey: sessionKey,
+        watcherStorePath: resolveSystemEventStorePath({
+          cfg: {},
+          sessionKey: "agent:main:main",
+          env: database.env,
+        }),
+      },
       database,
     );
     updateSessionUpstreamLinkMarker(sessionKey, "main", { offset: 4 }, database);

@@ -266,6 +266,9 @@ function scheduleRequesterSettleWakeRetry(
   runId: string,
   entry: SubagentRunRecord,
 ): void {
+  if (!context.admitRequesterStore(entry)) {
+    return;
+  }
   const params = context.options;
   const nextAttemptAt =
     getPendingWakeCommit(context, entry)?.nextAttemptAt ?? entry.requesterSettleWake?.nextAttemptAt;
@@ -322,6 +325,9 @@ export function scheduleRequesterSettleWake(
   ) {
     return;
   }
+  if (!context.admitRequesterStore(entry)) {
+    return;
+  }
   const now = Date.now();
   const nextAttemptAt =
     getPendingWakeCommit(context, entry)?.nextAttemptAt ?? entry.requesterSettleWake?.nextAttemptAt;
@@ -343,6 +349,9 @@ export function scheduleRequesterSettleWake(
   runWithoutOwnedSessionTranscriptWrites(() => {
     void context
       .runRequesterSettleWake(entry, async () => {
+        if (!context.admitRequesterStore(entry)) {
+          return false;
+        }
         // Admission may wait behind restored work. Revalidate the durable block
         // after that wait, not only when the wake was initially scheduled.
         if (
@@ -360,6 +369,7 @@ export function scheduleRequesterSettleWake(
           requesterSessionKey,
           requesterOrigin: entry.requesterOrigin,
           settledEntry: entry,
+          isDeliveryAllowed: () => context.admitRequesterStore(entry),
           transitionBatch: (batch, state) =>
             commitRequesterWake(
               context,

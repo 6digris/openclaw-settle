@@ -39,6 +39,7 @@ import {
 } from "./subagent-registry-read.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { compareSubagentRunGeneration } from "./subagent-run-generation.js";
+import { createSubagentRunStoreScope } from "./subagent-session-read-scope.js";
 
 type KillBinding = {
   entry: SubagentRunRecord;
@@ -63,6 +64,7 @@ type KillSelection = {
   assertCurrent?: () => void;
   ownsRoot?: (entry: SubagentRunRecord) => boolean;
   controller?: Pick<ResolvedSubagentController, "controllerSessionKey" | "controllerAgentId">;
+  storeScope?: ReturnType<typeof createSubagentRunStoreScope> | null;
 };
 
 type KillScope = {
@@ -83,6 +85,13 @@ async function withSubagentKillScope<T>(
   preparePublication?: KillPublicationPreparation,
 ): Promise<T> {
   const lifecycleGeneration = getAgentEventLifecycleGeneration();
+  // Administrative maintenance owns retained runs independently of their parent-store projection.
+  const storeScope =
+    params.storeScope === undefined
+      ? params.controller || params.ownsRoot
+        ? createSubagentRunStoreScope(params.cfg)
+        : null
+      : params.storeScope;
   const taskControl = captureTaskCancellationControl();
   const cancellationControl = params.assertCurrent
     ? {
@@ -117,6 +126,7 @@ async function withSubagentKillScope<T>(
         snapshot.childSessionKey,
         snapshot.requesterAgentId,
         params.cfg,
+        storeScope,
       );
       if (
         !entry ||
@@ -130,8 +140,13 @@ async function withSubagentKillScope<T>(
         isParentCurrent?.() !== false &&
         ownsRoot?.(candidate) !== false &&
         (!controller ||
-          !ensureSubagentControllerOwnsRun({ cfg: params.cfg, controller, entry: candidate }));
-      if (!ownerCurrent(entry) || !isCurrentSubagentRun(entry, params.cfg)) {
+          !ensureSubagentControllerOwnsRun({
+            cfg: params.cfg,
+            controller,
+            entry: candidate,
+            storeScope,
+          }));
+      if (!ownerCurrent(entry) || !isCurrentSubagentRun(entry, params.cfg, storeScope)) {
         continue;
       }
       selected.add(entry.childSessionKey);
@@ -164,7 +179,8 @@ async function withSubagentKillScope<T>(
         ownsSessionIncarnation = () => false;
       }
       const { childSessionKey, requesterAgentId } = entry;
-      const latest = () => getLatestOwnedSubagentRun(childSessionKey, requesterAgentId, params.cfg);
+      const latest = () =>
+        getLatestOwnedSubagentRun(childSessionKey, requesterAgentId, params.cfg, storeScope);
       const retirement = subagentRuns.captureRetirement(
         entry,
         (candidate) => latest() === candidate,
@@ -182,7 +198,7 @@ async function withSubagentKillScope<T>(
         const isCurrent = (candidate: SubagentRunRecord) =>
           retirement.observation.entry === candidate &&
           ownerCurrent(candidate) &&
-          isCurrentSubagentRun(candidate, params.cfg) &&
+          isCurrentSubagentRun(candidate, params.cfg, storeScope) &&
           (candidate !== current || ownsRun()) &&
           ownsSessionIncarnation();
         const canTraverse = () => {
@@ -507,8 +523,10 @@ export async function killSessionSubagentRuns(params: {
   assertCurrent?: () => void;
 }) {
   const controller = { controllerSessionKey: params.sessionKey, controllerAgentId: params.agentId };
+  const storeScope = createSubagentRunStoreScope(params.cfg);
   return killSelectedSubagentRuns({
     cfg: params.cfg,
+    storeScope,
     assertCurrent: params.assertCurrent,
     runs: [
       ...listSubagentRunsForRequester(params.sessionKey, { requesterAgentId: params.agentId }),
@@ -517,9 +535,10 @@ export async function killSessionSubagentRuns(params: {
     // Ordinary controller mutations retain their narrower authority. Only an admitted
     // lifecycle boundary can retire work whose completion belongs to this session.
     ownsRoot: (entry) =>
-      !ensureSubagentControllerOwnsRun({ cfg: params.cfg, controller, entry }) ||
+      !ensureSubagentControllerOwnsRun({ cfg: params.cfg, controller, entry, storeScope }) ||
       (entry.requesterSessionKey === params.sessionKey &&
-        resolveSubagentRequesterAgentId(params.cfg, entry) === params.agentId),
+        resolveSubagentRequesterAgentId(params.cfg, entry) === params.agentId &&
+        storeScope.matches(entry, "requester")),
     suppressTaskDelivery: true,
   });
 }
@@ -576,7 +595,7 @@ export async function killSubagentRunAdmin(
   if (!targetSessionKey) {
     return publish({ found: false as const, killed: false as const });
   }
-  const entry = getLatestOwnedSubagentRun(targetSessionKey, params.agentId, params.cfg);
+  const entry = getLatestOwnedSubagentRun(targetSessionKey, params.agentId, params.cfg, null);
   if (!entry) {
     return publish({ found: false as const, killed: false as const });
   }
@@ -598,7 +617,7 @@ export async function killSubagentRunAdmin(
 
   let rootStopSuperseded = false;
   return withSubagentKillScope<SubagentAdminKillResult>(
-    { cfg: params.cfg, runs: [entry], assertCurrent: control?.assertCurrent },
+    { cfg: params.cfg, runs: [entry], assertCurrent: control?.assertCurrent, storeScope: null },
     async (scope, [tree]) => {
       if (!tree) {
         return { found: false as const, killed: false as const };

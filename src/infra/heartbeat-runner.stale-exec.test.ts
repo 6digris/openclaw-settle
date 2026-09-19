@@ -1,15 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { installHeartbeatRunnerStoreTestConfig } from "../../test/helpers/infra/heartbeat-runner.js";
 import { resetConfigRuntimeState } from "../config/config.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { resetHeartbeatEventsForTest } from "./heartbeat-events.js";
-import {
-  runHeartbeatOnce,
-  setHeartbeatsEnabled,
-  startHeartbeatRunner,
-} from "./heartbeat-runner.js";
+import { runHeartbeatOnce, setHeartbeatsEnabled } from "./heartbeat-runner.js";
 import {
   heartbeatTestConfig,
   seedMainSessionStore,
@@ -22,6 +19,8 @@ import {
   setHeartbeatWakeHandler as setRuntimeHeartbeatWakeHandler,
 } from "./heartbeat-wake.js";
 import { enqueueSystemEvent, peekSystemEvents, resetSystemEventsForTest } from "./system-events.js";
+
+const startHeartbeatRunner = installHeartbeatRunnerStoreTestConfig();
 
 describe("stale exec heartbeat wakes", () => {
   type WakeRequest = Parameters<typeof requestHeartbeat>[0];

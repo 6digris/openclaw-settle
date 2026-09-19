@@ -1,3 +1,4 @@
+import { getRuntimeConfig } from "../../../config/io.js";
 import type { DeliveryQueueStoredStatus } from "../../../infra/delivery-queue-sqlite.kernel.js";
 import { scheduleSessionDelivery } from "../../../infra/session-delivery-queue-runtime.js";
 import { releaseSessionDeliveryClaim } from "../../../infra/session-delivery-queue-storage.js";
@@ -23,6 +24,7 @@ import { loadPendingFinalDeliveryPayload } from "../registry/subagent-registry-l
 import type { SubagentLifecycleController } from "../registry/subagent-registry-lifecycle.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
+import { resolveSubagentRequesterStoreFailure } from "../registry/subagent-session-read-scope.js";
 import {
   admitSubagentCompletionDelivery,
   blockSubagentCompletionDelivery,
@@ -36,6 +38,24 @@ import { resolveSubagentCompletionResultText } from "./subagent-completion-resul
 const CLAIM_LEASE_MS = 125_000;
 const MAX_DELIVERY_GENERATION = 10;
 const CANONICAL_RESULT_PROMPT = `A completed subagent task is ready for parent review. ${SUBAGENT_COMPLETION_OUTCOME_INSTRUCTION} The canonical result follows.`;
+
+function assertRequesterStoreCurrent(entry: SubagentRunRecord, taskId: string): void {
+  const reason = resolveSubagentRequesterStoreFailure(getRuntimeConfig(), entry);
+  if (!reason) {
+    return;
+  }
+  if (
+    !blockSubagentCompletionDelivery({
+      subagent: entry,
+      taskId,
+      reason,
+      suspendedReason: "permanent_failure",
+    })
+  ) {
+    throw new SessionDeliveryDeferredError("completion owner changed before store suspension");
+  }
+  throw new SessionDeliveryDeadLetteredError(reason);
+}
 type CompletionDeliveryRecoveryResult = {
   ok: boolean;
   reason?: string;
@@ -85,6 +105,7 @@ export function admitCorrelatedSubagentSessionDelivery(params: {
   if (!task || task.runtime !== "subagent") {
     throw new Error(`subagent completion task not found: ${params.runId}`);
   }
+  assertRequesterStoreCurrent(current, task.taskId);
   const now = Date.now();
   const subagent = structuredClone(current);
   const delivery = ensureDeliveryState(subagent);
@@ -152,6 +173,7 @@ export function resolveCorrelatedSubagentDelivery(
     throw new SessionDeliveryDeferredError("correlated subagent delivery owner mismatch");
   }
   const result = resolveSubagentCompletionResultText(entry) ?? "(no output)";
+  assertRequesterStoreCurrent(entry, queued.owner.taskId);
   return {
     ...queued,
     message: `${CANONICAL_RESULT_PROMPT}\n\n${result}`,

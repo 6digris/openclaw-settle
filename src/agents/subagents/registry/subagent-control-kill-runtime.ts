@@ -22,7 +22,6 @@ import { SUBAGENT_KILL_TASK_ERROR } from "../../../tasks/detached-task-runtime-c
 import type { TaskCancellationControl } from "../../../tasks/task-cancellation-context.js";
 import type { SubagentKillTargetState } from "../../../tasks/task-registry-control.types.js";
 import { createAgentRunDirectAbortError } from "../../run-termination.js";
-import { isCurrentSubagentRun } from "./subagent-control-scope.js";
 import { SUBAGENT_ENDED_REASON_KILLED } from "./subagent-lifecycle-events.js";
 import {
   resolveFinalizedSubagentTaskState,
@@ -150,7 +149,7 @@ export async function killSubagentRun(params: {
   cancellationControl?: TaskCancellationControl;
   suppressTaskDelivery?: boolean;
   beforeSessionKill?: () => boolean;
-  isCurrent?: (entry: SubagentRunRecord) => boolean;
+  isCurrent: (entry: SubagentRunRecord) => boolean;
   withdrawQueuedReservation: () => void;
   refreshDescendants: () => void;
 }): Promise<{
@@ -161,8 +160,7 @@ export async function killSubagentRun(params: {
   targetState?: SubagentKillTargetState;
   error?: string;
 }> {
-  const isCurrent = () =>
-    isCurrentSubagentRun(params.entry, params.cfg) && params.isCurrent?.(params.entry) !== false;
+  const isCurrent = () => params.isCurrent(params.entry);
   const markKilledBestEffort = () =>
     markSubagentRunTerminatedBestEffort({
       runId: params.entry.runId,

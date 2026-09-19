@@ -11,6 +11,8 @@ import {
   SessionGoalOperationError,
   type SessionGoalOperation,
 } from "../../config/sessions/goals-operations.js";
+import { resolveSystemEventStorePath } from "../../config/sessions/session-store-path.js";
+import { captureSystemEventStorePaths } from "../../infra/system-event-ownership.js";
 import { recordSessionGoalChanged } from "../../sessions/session-state-events.js";
 import { resolvePluginSessionOwnershipError } from "../session-plugin-ownership.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
@@ -134,6 +136,12 @@ async function handleSessionGoalMutation(
             ...("note" in request && request.note ? { note: request.note } : {}),
           }
     ) satisfies SessionGoalOperation;
+    const watcherSessionKey = target.entry.spawnedBy ?? target.entry.parentSessionKey;
+    const watcherStorePaths = { ...captureSystemEventStorePaths(cfg) };
+    if (watcherSessionKey && watcherStorePaths[watcherSessionKey] === undefined) {
+      watcherStorePaths[watcherSessionKey] =
+        resolveSystemEventStorePath({ cfg, sessionKey: watcherSessionKey }) ?? null;
+    }
     const committed = await mutateSessionGoal({
       agentId: target.agentId,
       sessionKey: target.storeKey,
@@ -149,6 +157,7 @@ async function handleSessionGoalMutation(
         entry: committed.sessionEntry,
         actor: gatewayClientSessionCreator(client),
         summary: `goal ${request.action}`,
+        watcherStorePaths,
       });
       try {
         // Fence the committed projection before yielding to best-effort shared-state signaling.

@@ -96,7 +96,7 @@ async function handleChatSendWithOptions(
   if (!setup) {
     return;
   }
-  const { normalizedRequest, preparedSession, admitted } = setup;
+  const { normalizedRequest, preparedSession, admitted, watcherStorePaths } = setup;
   const { chatSendReceivedAtMs, clientInfo, p, systemInputProvenance, reconnectResumeRequested } =
     normalizedRequest.value;
   const {
@@ -414,6 +414,7 @@ async function handleChatSendWithOptions(
           entry: persistedUserTurn.sessionEntry,
           actor: gatewayClientSessionCreator(client),
           summary: `goal ${goalOperation.action}`,
+          watcherStorePaths,
         });
         try {
           // Publish the committed Goal before yielding; retain its event through terminalization.

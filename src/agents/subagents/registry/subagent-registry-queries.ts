@@ -3,6 +3,8 @@
  *
  * Combines snapshot traversal with current execution and reservation ownership.
  */
+import { parseAgentSessionKey } from "../../../routing/session-key.js";
+import { createOpenClawAgentDatabasePathMatcher } from "../../../state/openclaw-agent-db-registry.js";
 import type { DeliveryContext } from "../../../utils/delivery-context.types.js";
 import { isDeliverySuspended } from "./subagent-delivery-state.js";
 import type { SubagentRunReadRecord } from "./subagent-registry-read.types.js";
@@ -16,6 +18,7 @@ import {
   isRetainedUnendedSubagentRun,
   isSubagentRunQueued,
 } from "./subagent-run-liveness.js";
+import type { createSubagentRunStoreScope } from "./subagent-session-read-scope.js";
 
 function resolveControllerSessionKey(
   entry: Pick<SubagentRunRecord, "controllerSessionKey" | "requesterSessionKey">,
@@ -99,11 +102,13 @@ export function listRunsForControllerFromRuns<T extends SubagentRunReadRecord>(
 
 /** Cached read index for display, controller grouping, and descendant queries. */
 export type SubagentRunReadIndex<T extends SubagentRunReadRecord = SubagentRunRecord> = {
-  inputs: { runs: Map<string, T>; inMemoryRuns: T[] };
+  inputs: Omit<SubagentRunReadIndexParams<T>, "inMemoryRuns" | "now"> & { inMemoryRuns: T[] };
   /** Reuse prepared topology while leaving the captured view unchanged. */
   atTime(now: number): SubagentRunReadIndex<T>;
   getDisplaySubagentRun(childSessionKey: string): T | null;
   latestRunsByChildSessionKey: ReadonlyMap<string, T>;
+  latestRunsByRequesterSessionKey: ReadonlyMap<string, readonly T[]>;
+  latestRunsByControllerSessionKey: ReadonlyMap<string, readonly T[]>;
   runsByChildSessionKey: ReadonlyMap<string, readonly T[]>;
   countActiveDescendantRuns(rootSessionKey: string): number;
   countPendingDescendantRuns(rootSessionKey: string): number;
@@ -139,20 +144,44 @@ type SubagentRunReadIndexParams<T extends SubagentRunReadRecord> = {
   runs: Map<string, T>;
   inMemoryRuns?: Iterable<T>;
   now?: number;
+  storeScope?: ReturnType<typeof createSubagentRunStoreScope>;
+  rootRequester?: { sessionKey: string; agentId?: string; storePath?: string };
 };
 
 /** Builds a read index from snapshot and optional in-memory runs. */
 export function buildSubagentRunReadIndexFromRuns<T extends SubagentRunReadRecord>(
   params: SubagentRunReadIndexParams<T>,
 ): SubagentRunReadIndex<T> {
-  const { runs } = params;
+  const rootRequester = params.rootRequester;
+  // Bare child keys are partitioned by their recorded agent. Qualified keys
+  // retain every physical contender so an ownership transfer vetoes the older row.
+  const isCandidate = (entry: T) =>
+    params.storeScope?.matches(entry) !== false &&
+    (!rootRequester?.agentId ||
+      entry.requesterSessionKey !== rootRequester.sessionKey ||
+      parseAgentSessionKey(entry.childSessionKey) !== null ||
+      entry.requesterAgentId === rootRequester.agentId);
+  const runs =
+    params.storeScope || rootRequester?.agentId
+      ? new Map([...params.runs].filter(([, entry]) => isCandidate(entry)))
+      : params.runs;
+  const matchesStore = createOpenClawAgentDatabasePathMatcher();
+  const requesterMatches = (entry: T) =>
+    params.storeScope?.matches(entry, "requester") !== false &&
+    (!rootRequester ||
+      entry.requesterSessionKey !== rootRequester.sessionKey ||
+      ((!rootRequester.agentId || entry.requesterAgentId === rootRequester.agentId) &&
+        (!rootRequester.storePath ||
+          (entry.requesterStorePath !== undefined &&
+            matchesStore(entry.requesterStorePath, rootRequester.storePath)))));
   const now = params.now ?? Date.now();
   const inMemoryDisplayByChildSessionKey = new Map<string, T>();
   const runsByChildSessionKey = new Map<string, T[]>();
   const latestRunsByChildSessionKey = new Map<string, T>();
   const runsByControllerSessionKey = new Map<string, T[]>();
   const swarmRunsByRequesterSessionKey = new Map<string, T[]>();
-  const latestRunByRequesterAndChildSessionKey = new Map<string, Map<string, T>>();
+  const latestRunsByRequesterSessionKey = new Map<string, T[]>();
+  const latestRunsByControllerSessionKey = new Map<string, T[]>();
 
   const isRetainedReadRun = (entry: T, clock = now): boolean => {
     if (isRetainedUnendedSubagentRun(entry, clock)) {
@@ -172,6 +201,9 @@ export function buildSubagentRunReadIndexFromRuns<T extends SubagentRunReadRecor
   };
 
   for (const entry of params.inMemoryRuns ?? []) {
+    if (!isCandidate(entry)) {
+      continue;
+    }
     const childSessionKey = entry.childSessionKey.trim();
     if (!childSessionKey) {
       continue;
@@ -195,7 +227,7 @@ export function buildSubagentRunReadIndexFromRuns<T extends SubagentRunReadRecor
     }
     const childSessionKey = entry.childSessionKey.trim();
     const controllerSessionKey = resolveControllerSessionKey(entry);
-    if (controllerSessionKey) {
+    if (controllerSessionKey && params.storeScope?.matches(entry, "controller") !== false) {
       let controllerRuns = runsByControllerSessionKey.get(controllerSessionKey);
       if (!controllerRuns) {
         controllerRuns = [];
@@ -207,20 +239,29 @@ export function buildSubagentRunReadIndexFromRuns<T extends SubagentRunReadRecor
       continue;
     }
     recordLatestSubagentRun(latestRunsByChildSessionKey, childSessionKey, entry);
-
-    const requesterSessionKey = entry.requesterSessionKey;
-    if (!requesterSessionKey) {
-      continue;
+  }
+  // Relationships are projected only from the complete latest-generation set.
+  // A row may own its controller while its former requester store is retired.
+  for (const entry of latestRunsByChildSessionKey.values()) {
+    if (entry.requesterSessionKey && requesterMatches(entry)) {
+      const children = latestRunsByRequesterSessionKey.get(entry.requesterSessionKey) ?? [];
+      children.push(entry);
+      latestRunsByRequesterSessionKey.set(entry.requesterSessionKey, children);
     }
-    let latestByChild = latestRunByRequesterAndChildSessionKey.get(requesterSessionKey);
-    if (!latestByChild) {
-      latestByChild = new Map<string, T>();
-      latestRunByRequesterAndChildSessionKey.set(requesterSessionKey, latestByChild);
+    const controller = resolveControllerSessionKey(entry);
+    if (controller && params.storeScope?.matches(entry, "controller") !== false) {
+      const children = latestRunsByControllerSessionKey.get(controller) ?? [];
+      children.push(entry);
+      latestRunsByControllerSessionKey.set(controller, children);
     }
-    recordLatestSubagentRun(latestByChild, childSessionKey, entry);
   }
 
-  const inputs = { runs, inMemoryRuns: [...inMemoryDisplayByChildSessionKey.values()] };
+  const inputs = {
+    runs,
+    inMemoryRuns: [...inMemoryDisplayByChildSessionKey.values()],
+    ...(params.storeScope ? { storeScope: params.storeScope } : {}),
+    ...(rootRequester ? { rootRequester } : {}),
+  };
   const atTime = (clock: number, captured?: ReadonlySet<T>): SubagentRunReadIndex<T> => {
     const activeDescendantCountBySessionKey = new Map<string, number>();
     const pendingDescendantCountBySessionKey = new Map<string, number>();
@@ -256,13 +297,8 @@ export function buildSubagentRunReadIndexFromRuns<T extends SubagentRunReadRecor
       const pending = [root];
       const visited = new Set<string>([root]);
       for (const requester of pending) {
-        for (const [childSessionKey, entry] of latestRunByRequesterAndChildSessionKey.get(
-          requester,
-        ) ?? []) {
-          // Only traverse the latest run per child; older retries should not keep descendants alive.
-          if (latestRunsByChildSessionKey.get(childSessionKey) !== entry) {
-            continue;
-          }
+        for (const entry of latestRunsByRequesterSessionKey.get(requester) ?? []) {
+          const childSessionKey = entry.childSessionKey.trim();
           if (visitor(entry) === true) {
             return;
           }
@@ -361,6 +397,8 @@ export function buildSubagentRunReadIndexFromRuns<T extends SubagentRunReadRecor
       atTime,
       getDisplaySubagentRun,
       latestRunsByChildSessionKey,
+      latestRunsByRequesterSessionKey,
+      latestRunsByControllerSessionKey,
       runsByChildSessionKey,
       countActiveDescendantRuns,
       countPendingDescendantRuns,
@@ -541,20 +579,22 @@ export function countActiveRunsForSessionFromRuns(
   return count;
 }
 
-function scopeRootDescendantsToRequesterAgent(
+function buildRequesterDescendantIndex(
   runs: Map<string, SubagentRunRecord>,
   rootSessionKey: string,
   requesterAgentId?: string,
-): Map<string, SubagentRunRecord> {
-  return requesterAgentId
-    ? new Map(
-        [...runs].filter(
-          ([, entry]) =>
-            entry.requesterSessionKey !== rootSessionKey ||
-            entry.requesterAgentId === requesterAgentId,
-        ),
-      )
-    : runs;
+  requesterStorePath?: string,
+  storeScope?: ReturnType<typeof createSubagentRunStoreScope>,
+) {
+  return buildSubagentRunReadIndexFromRuns({
+    runs,
+    storeScope,
+    rootRequester: {
+      sessionKey: rootSessionKey,
+      agentId: requesterAgentId,
+      storePath: requesterStorePath,
+    },
+  });
 }
 
 /** Counts live descendants under a requester/session tree. */
@@ -562,18 +602,33 @@ export function countActiveDescendantRunsFromRuns(
   runs: Map<string, SubagentRunRecord>,
   rootSessionKey: string,
   requesterAgentId?: string,
+  requesterStorePath?: string,
+  storeScope?: ReturnType<typeof createSubagentRunStoreScope>,
 ): number {
-  return buildSubagentRunReadIndexFromRuns({
-    runs: scopeRootDescendantsToRequesterAgent(runs, rootSessionKey, requesterAgentId),
-  }).countActiveDescendantRuns(rootSessionKey);
+  return buildRequesterDescendantIndex(
+    runs,
+    rootSessionKey,
+    requesterAgentId,
+    requesterStorePath,
+    storeScope,
+  ).countActiveDescendantRuns(rootSessionKey);
 }
 
 /** Counts descendants that are live or ended but not yet cleaned up. */
 export function countPendingDescendantRunsFromRuns(
   runs: Map<string, SubagentRunRecord>,
   rootSessionKey: string,
+  requesterAgentId?: string,
+  requesterStorePath?: string,
+  storeScope?: ReturnType<typeof createSubagentRunStoreScope>,
 ): number {
-  return buildSubagentRunReadIndexFromRuns({ runs }).countPendingDescendantRuns(rootSessionKey);
+  return buildRequesterDescendantIndex(
+    runs,
+    rootSessionKey,
+    requesterAgentId,
+    requesterStorePath,
+    storeScope,
+  ).countPendingDescendantRuns(rootSessionKey);
 }
 
 /**
@@ -587,10 +642,16 @@ export function hasDescendantRunAwaitingSettleFromRuns(
   rootSessionKey: string,
   excludeRunId?: string,
   requesterAgentId?: string,
+  requesterStorePath?: string,
+  storeScope?: ReturnType<typeof createSubagentRunStoreScope>,
 ): boolean {
-  return buildSubagentRunReadIndexFromRuns({
-    runs: scopeRootDescendantsToRequesterAgent(runs, rootSessionKey, requesterAgentId),
-  }).hasDescendantRunAwaitingSettle(rootSessionKey, excludeRunId);
+  return buildRequesterDescendantIndex(
+    runs,
+    rootSessionKey,
+    requesterAgentId,
+    requesterStorePath,
+    storeScope,
+  ).hasDescendantRunAwaitingSettle(rootSessionKey, excludeRunId);
 }
 
 /** Lists latest descendant runs under a requester/session tree. */

@@ -5,6 +5,7 @@ import {
   resetGatewayWorkAdmission,
 } from "../../../process/gateway-work-admission.js";
 import { AsyncWorkScope, getAsyncWorkSignal } from "../../../shared/async-work-scope.js";
+import { resolveOpenClawAgentSqlitePath } from "../../../state/openclaw-agent-db.paths.js";
 import {
   SubagentLifecycleController,
   type SubagentLifecycleOptions,
@@ -15,8 +16,10 @@ import type { SubagentRunRecord } from "./subagent-registry.types.js";
 vi.mock("./subagent-registry-lifecycle-completion.js", () => ({
   completeSubagentRunAttempt: vi.fn(),
 }));
-vi.mock("./subagent-registry-lifecycle-announce-cleanup.js", () => ({
+vi.mock("./subagent-registry-lifecycle-cleanup.js", () => ({
   finalizeResumedAnnounceGiveUp: vi.fn(),
+}));
+vi.mock("./subagent-registry-lifecycle-announce-cleanup.js", () => ({
   resumeAncestorCleanup: vi.fn(),
   startSubagentAnnounceCleanupFlow: vi.fn(),
 }));
@@ -77,6 +80,7 @@ describe("requester settle retry lifetime", () => {
         runId: "retry-run",
         childSessionKey: "agent:main:subagent:retry-child",
         requesterSessionKey: "agent:main:main",
+        requesterStorePath: resolveOpenClawAgentSqlitePath({ agentId: "main" }),
         requesterDisplayKey: "main",
         task: "return the child result",
         cleanup: "keep",

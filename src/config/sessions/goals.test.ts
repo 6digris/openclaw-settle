@@ -1,5 +1,19 @@
 // Session goal tests cover persisted session goal state and transitions.
+import fs from "node:fs/promises";
+import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it } from "vitest";
+import {
+  acceptSessionEventStoreTestConfig,
+  captureSessionEventStoreTestConfig,
+} from "../../../test/helpers/infra/session-event-store.js";
+import { createDeferred } from "../../../test/helpers/promise.js";
+import { peekSystemEventEntries, resetSystemEventsForTest } from "../../infra/system-events.js";
+import { listSessionStateEventsSince } from "../../sessions/session-state-events.js";
+import { registerSessionStateWatch } from "../../sessions/session-state-watches.js";
+import { runOpenClawAgentWriteAdmission } from "../../state/openclaw-agent-write-admission.js";
+import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
+import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
   clearSessionGoal,
   createSessionGoal,
@@ -13,6 +27,7 @@ import {
   loadSessionEntry,
   upsertSessionEntryCore as upsertAccessorSessionEntry,
 } from "./session-accessor.js";
+import { resolveSystemEventStorePath } from "./session-store-path.js";
 import { useTempSessionsFixture } from "./test-helpers.js";
 import type { SessionEntry } from "./types.js";
 
@@ -526,4 +541,149 @@ describe("session goals", () => {
     );
     expect(getSessionEntry({ storePath: fixture.storePath(), sessionKey })?.goal).toBeUndefined();
   });
+});
+
+describe("Goal watcher store admission", () => {
+  it.each(
+    (["create", "status", "objective", "clear"] as const).flatMap((operation) =>
+      [false, true].map((replaceStore) => ({ operation, replaceStore })),
+    ),
+  )(
+    "retains the parent store while $operation queues (replaced=$replaceStore)",
+    async ({ operation, replaceStore }) => {
+      await withOpenClawTestState(
+        { label: "goal-watcher-store", layout: "state-only" },
+        async (state) => {
+          const restoreConfig = captureSessionEventStoreTestConfig();
+          const originalDir = state.path("original");
+          const replacementDir = state.path("replacement");
+          const alias = state.path("parent-store");
+          await fs.mkdir(originalDir);
+          await fs.mkdir(replacementDir);
+          await fs.symlink(originalDir, alias, process.platform === "win32" ? "junction" : "dir");
+          const parentStore = path.join(alias, "sessions.json");
+          const targetStore = state.path("target", "sessions.json");
+          const parent = "agent:main:main";
+          const target = "agent:main:forked-goal";
+          const config = { session: { store: parentStore } };
+          const entered = createDeferred();
+          const release = createDeferred();
+          let heldWriter: Promise<unknown> | undefined;
+          let mutation: Promise<unknown> | undefined;
+          try {
+            acceptSessionEventStoreTestConfig(config);
+            await upsertAccessorSessionEntry(
+              { sessionKey: parent, storePath: parentStore },
+              { sessionId: "original-parent", updatedAt: Date.now() },
+            );
+            await upsertAccessorSessionEntry(
+              { sessionKey: target, storePath: targetStore },
+              {
+                sessionId: "goal-session",
+                updatedAt: Date.now(),
+                parentSessionKey: parent,
+                ...(operation === "create"
+                  ? {}
+                  : {
+                      goal: {
+                        schemaVersion: 1 as const,
+                        id: "existing-goal",
+                        objective: "original objective",
+                        status: "active" as const,
+                        createdAt: 1,
+                        updatedAt: 1,
+                        tokenStart: 0,
+                        tokensUsed: 0,
+                        continuationTurns: 0,
+                      },
+                    }),
+              },
+            );
+            if (replaceStore) {
+              expect(
+                registerSessionStateWatch({ watcherSessionKey: parent, targetSessionKey: target }),
+              ).toBe(true);
+            }
+            const targetPath = expectDefined(
+              resolveSystemEventStorePath({
+                cfg: { session: { store: targetStore } },
+                sessionKey: target,
+              }),
+              "physical target store",
+            );
+            heldWriter = runOpenClawAgentWriteAdmission(
+              { agentId: "main", path: targetPath },
+              async () => {
+                entered.resolve();
+                await release.promise;
+              },
+            );
+            await entered.promise;
+            const options = { sessionKey: target, storePath: targetStore, agentId: "main" };
+            mutation =
+              operation === "create"
+                ? createSessionGoal({ ...options, objective: "new objective" })
+                : operation === "status"
+                  ? updateSessionGoalStatus({ ...options, status: "complete" })
+                  : operation === "objective"
+                    ? updateSessionGoalObjective({ ...options, objective: "new objective" })
+                    : clearSessionGoal(options);
+            if (replaceStore) {
+              const replacementAlias = state.path("parent-store-next");
+              await fs.symlink(
+                replacementDir,
+                replacementAlias,
+                process.platform === "win32" ? "junction" : "dir",
+              );
+              await fs.rename(replacementAlias, alias);
+              acceptSessionEventStoreTestConfig({ session: { store: parentStore } });
+              await upsertAccessorSessionEntry(
+                { sessionKey: parent, storePath: parentStore },
+                { sessionId: "replacement-parent", updatedAt: Date.now() },
+              );
+              expect(
+                registerSessionStateWatch({ watcherSessionKey: parent, targetSessionKey: target }),
+              ).toBe(true);
+            }
+            const { db } = openOpenClawStateDatabase();
+            const readWatch = () =>
+              db
+                .prepare(
+                  "SELECT * FROM session_watch_cursors WHERE watcher_session_key = ? AND target_session_key = ?",
+                )
+                .get(parent, target);
+            const watchBefore = readWatch();
+            expect(peekSystemEventEntries(parent)).toEqual([]);
+            release.resolve();
+            await heldWriter;
+            await mutation;
+
+            expect(listSessionStateEventsSince(target, "main", 0).events).toMatchObject([
+              { kind: "goal_changed" },
+            ]);
+            const goal = loadSessionEntry({ sessionKey: target, storePath: targetStore })?.goal;
+            if (operation === "clear") {
+              expect(goal).toBeUndefined();
+            } else {
+              expect(goal).toMatchObject(
+                operation === "status" ? { status: "complete" } : { objective: "new objective" },
+              );
+            }
+            if (replaceStore) {
+              expect.soft(readWatch()).toEqual(watchBefore);
+              expect(peekSystemEventEntries(parent)).toEqual([]);
+            } else {
+              expect(watchBefore).toBeUndefined();
+              expect(peekSystemEventEntries(parent)).toHaveLength(1);
+            }
+          } finally {
+            release.resolve();
+            await Promise.allSettled([heldWriter, mutation]);
+            resetSystemEventsForTest();
+            restoreConfig();
+          }
+        },
+      );
+    },
+  );
 });

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+import { acceptSessionEventStoreTestConfig } from "../../test/helpers/infra/session-event-store.js";
 import { createHeartbeatToolResponsePayload } from "../auto-reply/heartbeat-tool-response.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
@@ -169,6 +170,7 @@ it.each(
             ...(globalSession ? { scope: "global" } : {}),
           },
         };
+        acceptSessionEventStoreTestConfig(cfg);
         if (baseExists) {
           await replaceSessionEntry(scope, {
             sessionId: "existing-user-session",

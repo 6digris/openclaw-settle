@@ -45,6 +45,15 @@ never guesses their owner. Confirmed process-exit settlement uses existing task
 terminal fields and retention rules. Downgrading code does not undo a terminal
 outcome already recorded by restore.
 
+Session notifications use three bare nullable `TEXT` columns at the same shared
+schema version: `session_watch_cursors.watcher_store_path`,
+`subagent_runs.requester_store_path`, and `subagent_runs.controller_store_path`.
+The owning writer installs them once on first use; read-only inspection leaves
+older stores unchanged. They preserve the physical parent-store provenance of
+watches and child records across reloads and restart. Older readers can ignore
+the columns. Legacy NULL values remain unknown: history is retained, but a
+matching session key alone does not assign those records to a physical parent.
+
 Retained ACP imports use the same-version additive-column exception for the bare
 nullable `session_nodes.legacy_acp_migration_json TEXT` column. Legacy session
 import ensures it on first use and records exact source-component provenance;

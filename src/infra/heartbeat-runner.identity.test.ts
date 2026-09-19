@@ -1,5 +1,6 @@
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { acceptSessionEventStoreTestConfig } from "../../test/helpers/infra/session-event-store.js";
 import { drainFormattedSystemEvents } from "../auto-reply/reply/session-system-events.js";
 import { getReplySystemEventContext } from "../auto-reply/reply/system-event-session-key.js";
 import { resolveSessionStorePathCore } from "../config/sessions.js";
@@ -71,6 +72,7 @@ describe("runHeartbeatOnce identity", () => {
           },
           session: { scope: "global", dmScope: "per-channel-peer", store: storeTemplate },
         };
+        acceptSessionEventStoreTestConfig(cfg);
         const mainStorePath = resolveSessionStorePathCore(storeTemplate, { agentId: "main" });
         const historianStorePath = resolveSessionStorePathCore(storeTemplate, {
           agentId: "historian2",
@@ -142,6 +144,7 @@ describe("runHeartbeatOnce identity", () => {
         },
         session: { scope: "global", store: storeTemplate },
       };
+      acceptSessionEventStoreTestConfig(cfg);
       const hooksStorePath = resolveSessionStorePathCore(storeTemplate, { agentId: "hooks" });
       await seedSessionStore(hooksStorePath, "global", {});
       enqueueSystemEvent(
@@ -187,6 +190,7 @@ describe("runHeartbeatOnce identity", () => {
         },
         session: { scope: "global", store: storeTemplate },
       };
+      acceptSessionEventStoreTestConfig(cfg);
       await seedSessionStore(
         resolveSessionStorePathCore(storeTemplate, { agentId: "alpha" }),
         "global",

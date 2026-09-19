@@ -51,6 +51,7 @@ describe("enqueueSessionStateNotice", () => {
   it("coalesces active wakes for 20 seconds and leaves queue-only notices asleep", () => {
     const notice = {
       watcherSessionKey: "agent:main:main",
+      watcherStorePath: "/synthetic/old-store/openclaw-agent.sqlite",
       targetSessionKey: "agent:main:slack:channel:C01234567",
       lastSeenSequence: 42,
     };
@@ -61,6 +62,7 @@ describe("enqueueSessionStateNotice", () => {
       intent: "immediate",
       reason: `session-state:${notice.targetSessionKey}`,
       sessionKey: notice.watcherSessionKey,
+      sessionStorePath: notice.watcherStorePath,
       coalesceMs: 20_000,
     });
 

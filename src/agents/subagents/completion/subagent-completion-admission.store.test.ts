@@ -7,11 +7,7 @@ import {
   moveSessionDeliveryToFailed,
   releaseSessionDeliveryClaim,
 } from "../../../infra/session-delivery-queue-storage.js";
-import {
-  SessionDeliveryDeadLetteredError,
-  SessionDeliveryDeferredError,
-  type QueuedSessionDelivery,
-} from "../../../infra/session-delivery-queue.records.js";
+import type { QueuedSessionDelivery } from "../../../infra/session-delivery-queue.records.js";
 import { resolvePreferredOpenClawTmpDir } from "../../../infra/tmp-openclaw-dir.js";
 import {
   closeOpenClawStateDatabaseAsync,
@@ -45,6 +41,7 @@ import {
   expectLinkedGenerationTransaction,
   records,
   requesterWakeDriver,
+  registerCompletionQueueOwnerCases,
 } from "./subagent-completion-admission.test-helpers.js";
 import {
   admitCorrelatedSubagentSessionDelivery,
@@ -626,26 +623,14 @@ describe("atomic subagent completion admission store", () => {
     ).toEqual({ status: "completed" });
   });
 
-  it("dead-letters expired orphan generations before resolving their logical owner", () => {
-    const { queueEntry } = records();
-    if (queueEntry.kind !== "agentTurn" || queueEntry.owner?.kind !== "subagent_completion") {
-      throw new Error("expected correlated subagent completion queue entry");
-    }
-    queueEntry.owner.deadlineAt = Date.now() - 1;
-
-    expect(() => resolveCorrelatedSubagentDelivery(queueEntry)).toThrow(
-      SessionDeliveryDeadLetteredError,
-    );
-  });
-
-  it("defers an unexpired generation whose logical owner has moved on", () => {
-    const { queueEntry, subagent } = records();
-    subagent.delivery!.generation = 2;
-    subagentRuns.set(subagent.runId, subagent);
-
-    expect(() => resolveCorrelatedSubagentDelivery(queueEntry)).toThrow(
-      SessionDeliveryDeferredError,
-    );
+  registerCompletionQueueOwnerCases({
+    persistOwner,
+    withCurrentState: (run) =>
+      withEnvAsync({ OPENCLAW_STATE_DIR: tempDir }, async () => {
+        closeOpenClawStateDatabaseForTest();
+        database = openOpenClawStateDatabase();
+        await run(tempDir);
+      }),
   });
 
   it("recovers canonical completion guidance after restart and clears payload after redrive success", async () => {

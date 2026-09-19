@@ -1,6 +1,9 @@
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { setRuntimeConfigSnapshot } from "../config/config.js";
+import {
+  acceptSessionEventStoreTestConfig,
+  installSessionEventStoreTestConfig,
+} from "../../test/helpers/infra/session-event-store.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import type { QueuedSessionDeliveryPayload } from "../infra/session-delivery-queue.records.js";
 import {
@@ -72,6 +75,7 @@ const cases = [
   payload: QueuedSessionDeliveryPayload;
 }>;
 
+installSessionEventStoreTestConfig();
 beforeEach(() => {
   vi.clearAllMocks();
   resetSystemEventsForTest();
@@ -137,7 +141,7 @@ it("carries a persisted owner through global session lookup in an explicit roste
           store: path.join(state.stateDir, "agents", "{agentId}", "sessions", "sessions.json"),
         },
       };
-      setRuntimeConfigSnapshot(config, config);
+      acceptSessionEventStoreTestConfig(config);
       for (const agentId of ["main", "research"]) {
         await replaceSessionEntry(
           { agentId, sessionKey: "global" },

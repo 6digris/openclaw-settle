@@ -1,5 +1,7 @@
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import type { SessionGoalOperation } from "../../config/sessions/goals-operations.js";
+import { resolveSystemEventStorePath } from "../../config/sessions/session-store-path.js";
+import { captureSystemEventStorePaths } from "../../infra/system-event-ownership.js";
 import { admitChatSend } from "./chat-send-admission.js";
 import { runChatSendPreAdmission } from "./chat-send-pre-admission.js";
 import { normalizeChatSendRequest } from "./chat-send-request.js";
@@ -72,6 +74,22 @@ export async function prepareAndAdmitChatSend(
     );
     return undefined;
   }
+  const watcherStorePaths = normalizedRequest.value.goalOperation
+    ? { ...captureSystemEventStorePaths(preparedSession.value.cfg) }
+    : {};
+  const watcherSessionKey =
+    preparedSession.value.entry?.spawnedBy ?? preparedSession.value.entry?.parentSessionKey;
+  if (
+    normalizedRequest.value.goalOperation &&
+    watcherSessionKey &&
+    watcherStorePaths[watcherSessionKey] === undefined
+  ) {
+    watcherStorePaths[watcherSessionKey] =
+      resolveSystemEventStorePath({
+        cfg: preparedSession.value.cfg,
+        sessionKey: watcherSessionKey,
+      }) ?? null;
+  }
   if (normalizedRequest.value.mentions) {
     const mentions = context.mentionInbox?.validateRecipients(
       client,
@@ -117,5 +135,5 @@ export async function prepareAndAdmitChatSend(
   if (!admitted.ok) {
     return undefined;
   }
-  return { normalizedRequest, preparedSession, admitted };
+  return { normalizedRequest, preparedSession, admitted, watcherStorePaths };
 }

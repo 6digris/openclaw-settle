@@ -5,6 +5,7 @@ import {
   clearAgentRunContext,
   getAgentRunLifecycleGeneration,
 } from "../../infra/agent-run-registry.js";
+import { recordSessionHumanDirectMessage } from "../../sessions/session-state-events.js";
 import { prepareEmbeddedSessionState } from "./session-preparation.js";
 
 vi.mock("../embedded-agent-runner/runs.js", () => ({
@@ -80,6 +81,7 @@ it.each([
         isSubagentLaneTurn: false,
         suppressVisibleSessionEffects: internal,
         sessionStateActor: { actorType: "human" },
+        watcherStorePaths: {},
       });
       const hidden = internal || coordination;
       const active = hidden ? { active: false, runIds: [] } : { active: true };
@@ -95,3 +97,38 @@ it.each([
     expect(state()).toEqual({ active: false, runIds: [] });
   },
 );
+
+it("retains admitted cross-agent parent facts through asynchronous session preparation", async () => {
+  const runId = "parent-store-command";
+  const cfg = { session: { store: "/synthetic/original/{agentId}/sessions.json" } };
+  vi.mocked(recordSessionHumanDirectMessage).mockClear();
+  const watcherStorePaths = { "agent:parent:main": "/synthetic/original/parent.sqlite" };
+  try {
+    const preparation = prepareEmbeddedSessionState({
+      cfg,
+      opts: { message: "hello" },
+      sessionEntry: { sessionId: "child-session", updatedAt: 1, spawnedBy: "agent:parent:main" },
+      sessionKey: "agent:child:command",
+      sessionId: "child-session",
+      storePath: "/synthetic/child.sqlite",
+      sessionAgentId: "child",
+      lifecycleGeneration: getAgentRunLifecycleGeneration(),
+      runId,
+      workspaceDir: "/workspace",
+      executionWorkspaceDir: "/workspace",
+      watchSkills: false,
+      isNewSession: false,
+      isSubagentLaneTurn: false,
+      suppressVisibleSessionEffects: false,
+      sessionStateActor: { actorType: "human" },
+      watcherStorePaths,
+    });
+    cfg.session.store = "/synthetic/replacement/{agentId}/sessions.json";
+    await preparation;
+    expect(recordSessionHumanDirectMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ watcherStorePaths }),
+    );
+  } finally {
+    clearAgentRunContext(runId);
+  }
+});

@@ -240,6 +240,8 @@ export type RegisterSubagentRunParams = {
   childSessionKey: string;
   controllerSessionKey?: string;
   requesterSessionKey: string;
+  controllerStorePath?: string;
+  requesterStorePath?: string;
   requesterOrigin?: DeliveryContext;
   progressOrigin?: SubagentProgressOrigin;
   requesterDisplayKey: string;

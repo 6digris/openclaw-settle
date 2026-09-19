@@ -6,8 +6,11 @@ import {
 import { readAcpSessionMeta } from "../../acp/runtime/session-meta.js";
 import { getLatestLiveSubagentRunByChildSessionKey } from "../../agents/subagents/registry/subagent-registry-read.js";
 import { resolveAgentIdFromSessionKey, resolveAgentMainSessionKey } from "../../config/sessions.js";
+import { resolveSqliteTargetFromSessionStorePath } from "../../config/sessions/session-sqlite-target.js";
+import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { resolveIdentityPathViaExistingAncestorSync } from "../../infra/boundary-path.js";
 import type { PluginSubagentRequesterContext } from "../../plugins/runtime/subagent-requester-context.js";
 import { isAcpSessionKey } from "../../routing/session-key.js";
 import type { InputProvenance } from "../../sessions/input-provenance.js";
@@ -229,6 +232,17 @@ export async function registerPluginSubagentRunFromGateway(params: {
     agentId: resolveAgentIdFromSessionKey(childSessionKey),
   });
   const requesterSessionKey = params.requester?.sessionKey ?? ownerSessionKey;
+  const parentStorePath = (sessionKey: string) => {
+    const agentId = resolveAgentIdFromSessionKey(sessionKey);
+    return resolveIdentityPathViaExistingAncestorSync(
+      resolveSqliteTargetFromSessionStorePath(
+        resolveSessionStorePathForScope({ sessionKey, agentId }, params.cfg),
+        { agentId },
+      ).path,
+    );
+  };
+  const requesterStorePath = parentStorePath(requesterSessionKey);
+  const controllerStorePath = parentStorePath(ownerSessionKey);
   const { adoptPausedSubagentRunForFollowUp, registerSubagentRun } =
     await import("../../agents/subagents/registry/subagent-registry.js");
   // A follow-up aimed at a session paused by sessions_yield continues that run.
@@ -255,6 +269,8 @@ export async function registerPluginSubagentRunFromGateway(params: {
     childSessionKey,
     controllerSessionKey: ownerSessionKey,
     requesterSessionKey,
+    requesterStorePath,
+    controllerStorePath,
     requesterOrigin: params.requester?.origin,
     requesterDisplayKey: params.requester ? requesterSessionKey : "main",
     task: params.task,

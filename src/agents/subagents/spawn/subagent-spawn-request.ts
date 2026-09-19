@@ -1,8 +1,15 @@
 import crypto from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { resolveSqliteTargetFromSessionStorePath } from "../../../config/sessions/session-sqlite-target.js";
+import { resolveSessionStorePathForScope } from "../../../config/sessions/session-store-path.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
+import { resolveIdentityPathViaExistingAncestorSync } from "../../../infra/boundary-path.js";
 import type { SubagentLifecycleHookRunner } from "../../../plugins/hooks.js";
-import { isValidAgentId, normalizeAgentId } from "../../../routing/session-key.js";
+import {
+  isValidAgentId,
+  normalizeAgentId,
+  resolveAgentIdFromSessionKey,
+} from "../../../routing/session-key.js";
 import { listAgentIds } from "../../agent-scope-config.js";
 import { resolveSessionAgentId } from "../../agent-scope.js";
 import { reserveChildAdmissionSlot } from "../../child-admission.js";
@@ -46,6 +53,7 @@ type ResolvedSubagentSpawnRequest = {
     ownership: ReturnType<typeof resolveSubagentSpawnOwnership>;
     requesterAgentId: string;
     targetAgentId: string;
+    parentStorePaths: { requester: string; controller: string; watcher: string };
   };
   swarm: {
     config: ReturnType<typeof resolveSwarmConfig>;
@@ -196,6 +204,20 @@ export function resolveSubagentSpawnRequest(
     sessionKey: requesterInternalKey,
     agentId: ctx.requesterAgentIdOverride,
   });
+  const parentStorePath = (sessionKey: string) => {
+    const agentId = resolveAgentIdFromSessionKey(sessionKey, requesterAgentId);
+    return resolveIdentityPathViaExistingAncestorSync(
+      resolveSqliteTargetFromSessionStorePath(
+        resolveSessionStorePathForScope({ sessionKey, agentId }, cfg),
+        { agentId },
+      ).path,
+    );
+  };
+  const parentStorePaths = {
+    requester: parentStorePath(ownership.completionRequesterSessionKey),
+    controller: parentStorePath(ownership.controllerSessionKey),
+    watcher: parentStorePath(requesterInternalKey),
+  };
   const swarmConfig = resolveSwarmConfig(cfg, requesterAgentId);
   const hasSwarmParams =
     params.collect !== undefined ||
@@ -355,6 +377,7 @@ export function resolveSubagentSpawnRequest(
         ownership,
         requesterAgentId,
         targetAgentId,
+        parentStorePaths,
       },
       swarm: {
         config: swarmConfig,

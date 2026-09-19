@@ -1,6 +1,8 @@
 // Exercises heartbeat wake coalescing, retries, and skip handling.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { installSessionEventStoreTestConfig } from "../../test/helpers/infra/session-event-store.js";
 import { createDeferred } from "../../test/helpers/promise.js";
+import { resolveSystemEventStorePath } from "../config/sessions/session-store-path.js";
 import {
   getActiveGatewayRootWorkCount,
   resetGatewayWorkAdmission,
@@ -13,6 +15,8 @@ import {
   requestHeartbeatAndWait,
   setHeartbeatWakeHandler as setRuntimeHeartbeatWakeHandler,
 } from "./heartbeat-wake.js";
+
+installSessionEventStoreTestConfig();
 
 describe("heartbeat-wake", () => {
   type HeartbeatWakeHandler = Parameters<typeof setRuntimeHeartbeatWakeHandler>[0];
@@ -1003,6 +1007,9 @@ describe("heartbeat-wake", () => {
   it("forwards wake target fields and preserves them across retries", async () => {
     vi.useFakeTimers();
     const handler = setRetryOnceHeartbeatHandler();
+    const sessionStorePath = resolveSystemEventStorePath({
+      sessionKey: "agent:ops:guildchat:channel:alerts",
+    });
 
     requestHeartbeat({
       source: "cron",
@@ -1022,6 +1029,7 @@ describe("heartbeat-wake", () => {
       reason: "cron:job-1",
       agentId: "ops",
       sessionKey: "agent:ops:guildchat:channel:alerts",
+      sessionStorePath,
       heartbeat: { target: "last" },
     });
 
@@ -1033,6 +1041,7 @@ describe("heartbeat-wake", () => {
       reason: "cron:job-1",
       agentId: "ops",
       sessionKey: "agent:ops:guildchat:channel:alerts",
+      sessionStorePath,
       heartbeat: { target: "last" },
     });
   });
@@ -1041,6 +1050,9 @@ describe("heartbeat-wake", () => {
     vi.useFakeTimers();
     const handler = vi.fn().mockResolvedValue({ status: "ran", durationMs: 1 });
     setHeartbeatWakeHandler(handler);
+    const sessionStorePath = resolveSystemEventStorePath({
+      sessionKey: "agent:ops:guildchat:channel:alerts",
+    });
 
     requestHeartbeat({
       source: "manual",
@@ -1069,6 +1081,7 @@ describe("heartbeat-wake", () => {
       reason: "manual",
       agentId: "ops",
       sessionKey: "agent:ops:guildchat:channel:alerts",
+      sessionStorePath,
       heartbeat: { target: "last" },
     });
   });
@@ -1077,6 +1090,12 @@ describe("heartbeat-wake", () => {
     vi.useFakeTimers();
     const handler = vi.fn().mockResolvedValue({ status: "ran", durationMs: 1 });
     setHeartbeatWakeHandler(handler);
+    const opsStorePath = resolveSystemEventStorePath({
+      sessionKey: "agent:ops:guildchat:channel:alerts",
+    });
+    const mainStorePath = resolveSystemEventStorePath({
+      sessionKey: "agent:main:forum:group:-1001",
+    });
 
     requestHeartbeat({
       source: "cron",
@@ -1108,6 +1127,7 @@ describe("heartbeat-wake", () => {
         reason: "cron:job-a",
         agentId: "ops",
         sessionKey: "agent:ops:guildchat:channel:alerts",
+        sessionStorePath: opsStorePath,
       },
       {
         source: "cron",
@@ -1115,6 +1135,7 @@ describe("heartbeat-wake", () => {
         reason: "cron:job-b",
         agentId: "main",
         sessionKey: "agent:main:forum:group:-1001",
+        sessionStorePath: mainStorePath,
       },
     ]);
   });

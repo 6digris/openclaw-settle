@@ -1,10 +1,18 @@
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
 import { drainFormattedSystemEvents } from "../auto-reply/reply/session-system-events.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
+import {
+  publishSystemEventStoreConfig,
+  resolveSystemEventStorePath,
+} from "../config/sessions/session-store-path.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { getLastHeartbeatEvent, resetHeartbeatEventsForTest } from "../infra/heartbeat-events.js";
 import { requestHeartbeat, setHeartbeatWakeHandler } from "../infra/heartbeat-wake.js";
+import { assertSqliteSchemaContains } from "../infra/sqlite-schema-contract.js";
+import { captureSystemEventStorePaths } from "../infra/system-event-ownership.js";
 import {
   enqueueSystemEvent,
   peekSystemEventEntries,
@@ -15,7 +23,12 @@ import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
+  runOpenClawStateWriteTransaction,
 } from "../state/openclaw-state-db.js";
+import {
+  getOpenClawStateRuntimeSchema,
+  STATE_PERSISTENT_SCHEMA_COMPATIBILITY,
+} from "../state/openclaw-state-schema-compatibility.js";
 import { recordSessionCreated } from "./session-created.js";
 import {
   acknowledgeSessionStateNotices,
@@ -32,9 +45,10 @@ import {
   recordSubagentSpawned,
   recordSubagentTerminalState,
   registerMainSessionGroupWatch,
-  registerSessionStateWatch,
   sweepSessionStateWatchNotices,
 } from "./session-state-events.js";
+import { recordSessionStateEventInDatabase } from "./session-state-events.kernel.js";
+import { registerSessionStateWatch } from "./session-state-watches.js";
 
 const SESSION_STATE_MAX_ROWS = 50_000;
 const SESSION_STATE_RETENTION_MS = 30 * 24 * 60 * 60_000;
@@ -49,6 +63,7 @@ let disposeHeartbeatWakeHandler: (() => void) | undefined;
 function createDatabaseOptions() {
   const stateDir = makeTempDir(tempDirs, "openclaw-session-state-");
   vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+  publishSystemEventStoreConfig(cfg);
   return { env: { ...process.env, OPENCLAW_STATE_DIR: stateDir } };
 }
 
@@ -121,6 +136,8 @@ afterEach(async () => {
   await closeOpenClawStateDatabaseAsync();
   closeOpenClawStateDatabaseForTest();
   resetSystemEventsForTest();
+  publishSystemEventStoreConfig(cfg);
+  resetHeartbeatEventsForTest();
   cleanupTempDirs(tempDirs);
   vi.unstubAllEnvs();
 });
@@ -242,6 +259,35 @@ describe("session state events", () => {
     },
   );
 
+  it("retries first-use watcher provenance after its signal transaction rolls back", () => {
+    const database = createDatabaseOptions();
+    const { db } = openOpenClawStateDatabase(database);
+    const watcherStorePath = resolveSystemEventStorePath({ sessionKey: watcher }) ?? null;
+    db.exec("ALTER TABLE session_watch_cursors DROP COLUMN watcher_store_path");
+    expect(() =>
+      runOpenClawStateWriteTransaction(({ db: writeDb }) => {
+        recordSessionStateEventInDatabase(
+          writeDb,
+          eventInput({ watcherStorePaths: { [watcher]: watcherStorePath } }),
+          Date.now(),
+        );
+        expect(
+          writeDb.prepare("SELECT watcher_store_path FROM session_watch_cursors").get(),
+        ).toEqual({
+          watcher_store_path: expect.stringContaining(database.env.OPENCLAW_STATE_DIR),
+        });
+        throw new Error("synthetic signal transaction rollback");
+      }, database),
+    ).toThrow("synthetic signal transaction rollback");
+
+    const event = recordSessionStateEvent(eventInput(), database);
+    expect(event).toBeDefined();
+    expect(peekSystemEventEntries(watcher)).toHaveLength(1);
+    expect(db.prepare("SELECT watcher_store_path FROM session_watch_cursors").get()).toEqual({
+      watcher_store_path: expect.stringContaining(database.env.OPENCLAW_STATE_DIR),
+    });
+  });
+
   it("suppresses watcher-originated material events", () => {
     const database = createDatabaseOptions();
     const seeded = seedChild(database)!;
@@ -306,6 +352,149 @@ describe("session state events", () => {
 
     expect(peekSystemEventEntries(watcher)).toHaveLength(1);
     expect(readCursor(database)?.notified_sequence).toBe(material.sequence);
+  });
+
+  it.each([false, true])(
+    "does not rehydrate notices into a replacement watcher store (legacy=%s)",
+    async (legacy) => {
+      const database = createDatabaseOptions();
+      const oldStore = path.join(database.env.OPENCLAW_STATE_DIR, "old-store", "sessions.json");
+      const newStore = path.join(database.env.OPENCLAW_STATE_DIR, "new-store", "sessions.json");
+      publishSystemEventStoreConfig({ session: { store: oldStore } });
+      await upsertSessionEntryCore(
+        { sessionKey: watcher, storePath: oldStore, env: database.env },
+        { sessionId: "original-watcher", updatedAt: Date.now() },
+      );
+      registerSessionStateWatch({ watcherSessionKey: watcher, targetSessionKey: child }, database);
+      const event = recordSessionStateEvent(eventInput(), database)!;
+      expect(peekSystemEventEntries(watcher)).toHaveLength(1);
+      resetSystemEventsForTest();
+      if (legacy) {
+        openOpenClawStateDatabase(database)
+          .db.prepare("UPDATE session_watch_cursors SET watcher_store_path = NULL")
+          .run();
+      }
+      publishSystemEventStoreConfig({ session: { store: newStore } });
+      await upsertSessionEntryCore(
+        { sessionKey: watcher, storePath: newStore, env: database.env },
+        { sessionId: "replacement-watcher", updatedAt: Date.now() },
+      );
+
+      sweepSessionStateWatchNotices(database);
+      acknowledgeSessionStateNotices(watcher, [child], database);
+      recordSessionStateEvent(eventInput(), database);
+
+      expect(peekSystemEventEntries(watcher)).toEqual([]);
+      expect(readCursor(database)?.last_seen_sequence).toBeLessThan(event.sequence);
+      expect(listSessionStateEventsSince(child, "main", 0, 200, database).events).toHaveLength(2);
+
+      registerSessionStateWatch({ watcherSessionKey: watcher, targetSessionKey: child }, database);
+      const newHead = getSessionStateVersion(child, "main", database);
+      expect(readCursor(database)).toEqual({
+        last_seen_sequence: newHead,
+        notified_sequence: newHead,
+        material_sequence: newHead,
+      });
+      recordSessionStateEvent(eventInput(), database);
+      expect(peekSystemEventEntries(watcher)).toHaveLength(1);
+    },
+  );
+
+  it.each([false, true])(
+    "retains signal history without relabeling a producer across watcher stores (re-registered=%s)",
+    (reregistered) => {
+      const database = createDatabaseOptions();
+      const oldConfig = {
+        session: { store: path.join(database.env.OPENCLAW_STATE_DIR, "old", "sessions.json") },
+      };
+      const newConfig = {
+        session: { store: path.join(database.env.OPENCLAW_STATE_DIR, "new", "sessions.json") },
+      };
+      publishSystemEventStoreConfig(oldConfig);
+      const oldStorePath = resolveSystemEventStorePath({ sessionKey: watcher })!;
+      registerSessionStateWatch({ watcherSessionKey: watcher, targetSessionKey: child }, database);
+      publishSystemEventStoreConfig(newConfig);
+      const newStorePath = resolveSystemEventStorePath({ sessionKey: watcher })!;
+      if (reregistered) {
+        registerSessionStateWatch(
+          { watcherSessionKey: watcher, targetSessionKey: child },
+          database,
+        );
+      }
+      const cursorBefore = readCursor(database);
+      resetHeartbeatEventsForTest();
+
+      const recorded = recordSessionStateEvent(
+        eventInput({
+          kind: "goal_changed",
+          watcherStorePaths: { [watcher]: reregistered ? oldStorePath : newStorePath },
+        }),
+        database,
+      );
+
+      expect(recorded).toBeDefined();
+      expect(readCursor(database)).toEqual(cursorBefore);
+      expect(peekSystemEventEntries(watcher)).toEqual([]);
+      expect(getLastHeartbeatEvent()).toMatchObject({
+        status: "skipped",
+        reason: "store-replaced",
+      });
+      expect(listSessionStateEventsSince(child, "main", 0, 200, database).events).toHaveLength(1);
+
+      recordSessionStateEvent(eventInput({ watcherSessionKeys: [] }), database);
+      expect(peekSystemEventEntries(watcher)).toHaveLength(reregistered ? 1 : 0);
+      if (!reregistered) {
+        publishSystemEventStoreConfig(oldConfig);
+        recordSessionStateEvent(eventInput({ watcherSessionKeys: [] }), database);
+        expect(peekSystemEventEntries(watcher)).toHaveLength(1);
+      }
+    },
+  );
+
+  it("preserves older readers and version markers when watcher provenance is first written", () => {
+    const database = createDatabaseOptions();
+    const before = openOpenClawStateDatabase(database);
+    before.db.exec("ALTER TABLE session_watch_cursors DROP COLUMN watcher_store_path");
+    const userVersion = before.db.prepare("PRAGMA user_version").get();
+    closeOpenClawStateDatabaseForTest();
+    const reopened = openOpenClawStateDatabase(database);
+    const schemaBeforeRead = reopened.db.prepare("PRAGMA schema_version").get();
+    expect(getSessionStateVersion(child, "main", database)).toBe(0);
+    expect(reopened.db.prepare("PRAGMA schema_version").get()).toEqual(schemaBeforeRead);
+    expect(
+      reopened.db
+        .prepare(
+          "SELECT name FROM pragma_table_info('session_watch_cursors') WHERE name = 'watcher_store_path'",
+        )
+        .get(),
+    ).toBeUndefined();
+
+    seedChild(database);
+    assertSqliteSchemaContains(
+      reopened.db,
+      reopened.path,
+      getOpenClawStateRuntimeSchema({ includeVersionLazyAdditiveTables: false }).replace(
+        /^ {2}(?:watcher_store_path|requester_store_path|controller_store_path) TEXT,\n/gm,
+        "",
+      ),
+      STATE_PERSISTENT_SCHEMA_COMPATIBILITY,
+    );
+    reopened.db
+      .prepare(
+        "INSERT INTO session_watch_cursors (watcher_session_key, target_session_key, updated_at) VALUES (?, ?, ?)",
+      )
+      .run(watcher, "legacy-target", Date.now());
+    expect(
+      reopened.db
+        .prepare(
+          "SELECT last_seen_sequence, watcher_store_path FROM session_watch_cursors WHERE target_session_key = 'legacy-target'",
+        )
+        .get(),
+    ).toEqual({ last_seen_sequence: 0, watcher_store_path: null });
+    const installedSchema = reopened.db.prepare("PRAGMA schema_version").get();
+    recordSessionStateEvent(eventInput(), database);
+    expect(reopened.db.prepare("PRAGMA schema_version").get()).toEqual(installedSchema);
+    expect(reopened.db.prepare("PRAGMA user_version").get()).toEqual(userVersion);
   });
 
   it("self-heals a lost queued notice on the next material event", () => {
@@ -699,6 +888,7 @@ describe("session state events", () => {
     for (const actorId of ["human-1", "human-2"]) {
       recordSessionHumanDirectMessage(
         {
+          watcherStorePaths: captureSystemEventStorePaths(),
           sessionKey: group,
           entry: { sessionId: "session-group", updatedAt: Date.now(), chatType: "group" },
           agentId: "main",
@@ -734,6 +924,7 @@ describe("session state events", () => {
     const activeAt = registeredAt + SESSION_STATE_RETENTION_MS + 1;
     recordSessionHumanDirectMessage(
       {
+        watcherStorePaths: captureSystemEventStorePaths(),
         sessionKey: group,
         entry: { sessionId: "session-group", updatedAt: activeAt, chatType: "group" },
         agentId: "main",
@@ -766,6 +957,7 @@ describe("session state events", () => {
 
     recordSessionHumanDirectMessage(
       {
+        watcherStorePaths: captureSystemEventStorePaths(),
         sessionKey: group,
         entry: { sessionId: "session-group", updatedAt: Date.now(), chatType: "group" },
         agentId: "main",
@@ -780,49 +972,11 @@ describe("session state events", () => {
     expect(wakes).toHaveBeenCalledTimes(1);
   });
 
-  it("promotes an ambient main-to-group watch to explicit immediate delivery", async () => {
-    vi.useFakeTimers();
-    const wakes = vi.fn(async () => ({ status: "ran" as const, durationMs: 1 }));
-    disposeHeartbeatWakeHandler = setHeartbeatWakeHandler(wakes);
-    await vi.runAllTimersAsync();
-    wakes.mockClear();
-    const database = createDatabaseOptions();
-    registerMainSessionGroupWatch({ sessionKey: group, agentId: "main" }, database);
-    expect(listAmbientGroupWatchTargets(watcher, database)).toEqual(new Set([group]));
-
-    registerSessionStateWatch({ watcherSessionKey: watcher, targetSessionKey: group }, database);
-    expect(listAmbientGroupWatchTargets(watcher, database)).toEqual(new Set());
-    expect(
-      openOpenClawStateDatabase(database)
-        .db.prepare(
-          `SELECT provenance FROM session_watch_cursors
-           WHERE watcher_session_key = ? AND target_session_key = ?`,
-        )
-        .get(watcher, group),
-    ).toEqual({ provenance: "explicit" });
-    // Later inbound group registration must not downgrade the explicit watch.
-    registerMainSessionGroupWatch({ sessionKey: group, agentId: "main" }, database);
-
-    recordSessionHumanDirectMessage(
-      {
-        sessionKey: group,
-        entry: { sessionId: "session-group", updatedAt: Date.now(), chatType: "group" },
-        agentId: "main",
-        actor: { actorType: "human", actorId: "human-1" },
-        channel: "telegram",
-      },
-      database,
-    );
-    await vi.advanceTimersByTimeAsync(21_000);
-
-    expect(peekSystemEventEntries(watcher)).toHaveLength(1);
-    expect(wakes).toHaveBeenCalledTimes(1);
-  });
-
   it("gates unparented human turns on registered watchers", () => {
     const database = createDatabaseOptions();
     const entry = { sessionId: "session-child", updatedAt: Date.now() };
     recordSessionHumanDirectMessage({
+      watcherStorePaths: captureSystemEventStorePaths(),
       sessionKey: child,
       entry,
       agentId: "main",
@@ -833,6 +987,7 @@ describe("session state events", () => {
 
     registerSessionStateWatch({ watcherSessionKey: watcher, targetSessionKey: child }, database);
     recordSessionHumanDirectMessage({
+      watcherStorePaths: captureSystemEventStorePaths(),
       sessionKey: child,
       entry,
       agentId: "main",
@@ -884,6 +1039,7 @@ describe("session state events", () => {
       outcomeStatus: "cancelled",
     });
     await recordSessionGoalChanged({
+      watcherStorePaths: captureSystemEventStorePaths(),
       sessionKey: child,
       entry: {
         sessionId: "session-child",

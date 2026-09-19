@@ -77,6 +77,9 @@ import {
 import { measureAgentStartup } from "./startup-timing.js";
 
 const log = createSubsystemLogger("agents/agent-command");
+type AgentCommandRecoveryAdmission = {
+  restoreAdmittedRecovery?: () => Promise<MainSessionRecoveryPendingTarget | undefined>;
+};
 
 async function agentCommandInternal(
   prepared: Awaited<ReturnType<typeof prepareAgentCommandExecution>>,
@@ -440,6 +443,7 @@ async function agentCommandInternal(
             opts,
             sessionEntry,
             sessionStore,
+            watcherStorePaths: prepared.watcherStorePaths,
             sessionKey,
             sessionId,
             storePath,
@@ -638,9 +642,7 @@ async function agentCommandFromIngressInternal(
   opts: AgentCommandGatewayIngressOpts,
   runtime: RuntimeEnv = defaultRuntime,
   deps?: CliDeps,
-  recovery?: {
-    restoreAdmittedRecovery?: () => Promise<MainSessionRecoveryPendingTarget | undefined>;
-  },
+  recovery?: AgentCommandRecoveryAdmission,
   runtimeContext?: PreparedAgentCommandRuntimeContext,
 ) {
   if (typeof opts.allowModelOverride !== "boolean") {
@@ -719,9 +721,7 @@ export async function agentCommandFromGatewayIngress(
   opts: AgentCommandGatewayIngressOpts,
   runtime: RuntimeEnv,
   deps: CliDeps | undefined,
-  recovery: {
-    restoreAdmittedRecovery?: () => Promise<MainSessionRecoveryPendingTarget | undefined>;
-  },
+  recovery: AgentCommandRecoveryAdmission,
   runtimeContext?: PreparedAgentCommandRuntimeContext,
 ) {
   return await agentCommandFromIngressInternal(opts, runtime, deps, recovery, runtimeContext);

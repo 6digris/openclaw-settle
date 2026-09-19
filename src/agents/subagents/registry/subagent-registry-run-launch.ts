@@ -1,11 +1,15 @@
+import { resolveSqliteTargetFromSessionStorePath } from "../../../config/sessions/session-sqlite-target.js";
+import { resolveSessionStorePathForScope } from "../../../config/sessions/session-store-path.js";
 import type { GatewayContextResolver } from "../../../gateway/server-methods/types.js";
 /** Owns subagent registration and queued collector launch transitions. */
 import {
   getAgentEventLifecycleGeneration,
   isAgentEventLifecycleGenerationCurrent,
 } from "../../../infra/agent-events.js";
+import { resolveIdentityPathViaExistingAncestorSync } from "../../../infra/boundary-path.js";
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
 import { bindGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
+import { resolveAgentIdFromSessionKey } from "../../../routing/session-key.js";
 import { emitSessionLifecycleEvent } from "../../../sessions/session-lifecycle-events.js";
 import {
   createQueuedTaskRun,
@@ -78,12 +82,35 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
     const runTimeoutSeconds = registerParams.runTimeoutSeconds ?? 0;
     const waitTimeoutMs = this.options.resolveSubagentWaitTimeoutMs(cfg, runTimeoutSeconds);
     const requesterOrigin = normalizeDeliveryContext(registerParams.requesterOrigin);
+    const requesterAgentId = resolveSubagentRequesterAgentId(cfg, registerParams);
+    const controllerSessionKey = registerParams.controllerSessionKey?.trim() || requesterSessionKey;
+    const previous = this.options.runs.get(runId);
+    const resolveStorePath = (sessionKey: string, storePath?: string) => {
+      if (storePath !== undefined) {
+        return storePath;
+      }
+      const agentId = resolveAgentIdFromSessionKey(sessionKey, requesterAgentId);
+      return resolveIdentityPathViaExistingAncestorSync(
+        resolveSqliteTargetFromSessionStorePath(
+          resolveSessionStorePathForScope({ sessionKey, agentId }, cfg),
+          { agentId },
+        ).path,
+      );
+    };
     const queued = registerParams.queued === true;
     const entry = createSubagentRegistrationRecord(registerParams, {
       now,
       generation,
       lifecycleGeneration: getAgentEventLifecycleGeneration(),
-      requesterAgentId: resolveSubagentRequesterAgentId(cfg, registerParams),
+      requesterAgentId,
+      requesterStorePath:
+        previous !== undefined
+          ? previous.requesterStorePath
+          : resolveStorePath(requesterSessionKey, registerParams.requesterStorePath),
+      controllerStorePath:
+        previous !== undefined
+          ? previous.controllerStorePath
+          : resolveStorePath(controllerSessionKey, registerParams.controllerStorePath),
       requesterOrigin,
       swarmWaitOwnerSessionKeys:
         registerParams.collect && registerParams.swarmRequesterSessionKey

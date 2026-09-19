@@ -5,6 +5,8 @@
  * this module selects a drained wave and delivers its synthesized wake.
  */
 import { getRuntimeConfig } from "../../../config/config.js";
+import { resolveSqliteTargetFromSessionStorePath } from "../../../config/sessions/session-sqlite-target.js";
+import { resolveSessionStorePathForScope } from "../../../config/sessions/session-store-path.js";
 import { logWarn } from "../../../logger.js";
 import { getSharedGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
 import { isCronSessionKey } from "../../../sessions/session-key-utils.js";
@@ -30,6 +32,7 @@ import type {
   SubagentRunRecord,
 } from "../registry/subagent-registry.types.js";
 import { hasSubagentRunEnded } from "../registry/subagent-run-liveness.js";
+import { createSubagentRunStoreScope } from "../registry/subagent-session-read-scope.js";
 import { withRequesterCronAuthority } from "../requester-cron-authority.js";
 import {
   consumeRequesterFinalAttachment,
@@ -166,14 +169,23 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
     requesterOrigin?: DeliveryContext;
     settledEntry: SubagentRunRecord;
     signal?: AbortSignal;
+    isDeliveryAllowed?: () => boolean;
   },
 ): Promise<boolean> {
-  if (params.signal?.aborted) {
+  if (params.signal?.aborted || params.isDeliveryAllowed?.() === false) {
     return false;
   }
   const requesterSessionKey = params.requesterSessionKey.trim();
   const cfg = getRuntimeConfig();
   const requesterAgentId = resolveSubagentRequesterAgentId(cfg, params.settledEntry);
+  const requesterStorePath = resolveSqliteTargetFromSessionStorePath(
+    resolveSessionStorePathForScope(
+      { sessionKey: requesterSessionKey, agentId: requesterAgentId },
+      cfg,
+    ),
+    { agentId: requesterAgentId },
+  ).path;
+  const storeScope = createSubagentRunStoreScope(cfg);
   const initialState = params.settledEntry.requesterSettleWake;
   if (!requesterSessionKey || !initialState) {
     return false;
@@ -232,6 +244,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
 
   const listedRuns = listSubagentRunsForRequester(requesterSessionKey, {
     requesterAgentId,
+    requesterStorePath,
   });
   const requesterRuns = Array.isArray(listedRuns) ? listedRuns : [];
   const currentSettledEntry = requesterRuns.find(
@@ -252,6 +265,8 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
       requesterSessionKey,
       currentSettledEntry.runId,
       requesterAgentId,
+      requesterStorePath,
+      storeScope,
     );
 
   const frozenBatchRunIds = currentState.batchRunIds;
@@ -334,7 +349,12 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
   }
   function deferBatch(
     state: RequesterSettleWakeBatchState,
-    countTowardsLimit = countActiveDescendantRuns(requesterSessionKey, requesterAgentId) === 0,
+    countTowardsLimit = countActiveDescendantRuns(
+      requesterSessionKey,
+      requesterAgentId,
+      requesterStorePath,
+      storeScope,
+    ) === 0,
   ): void {
     const now = Date.now();
     if ((state.nextAttemptAt ?? 0) > now) {
@@ -471,7 +491,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
   activeRequesterSettleWakeBatches.set(wakeKeyBase, isGatewayClosed);
 
   try {
-    if (params.signal?.aborted) {
+    if (params.signal?.aborted || params.isDeliveryAllowed?.() === false) {
       return false;
     }
     let state = readSharedBatchState(settledBatch);
@@ -548,7 +568,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
     };
     const isBatchCurrent = () => {
       const currentRuns = filterCurrentDirectChildCompletionRows(
-        listSubagentRunsForRequester(requesterSessionKey, { requesterAgentId }),
+        listSubagentRunsForRequester(requesterSessionKey, { requesterAgentId, requesterStorePath }),
         {
           requesterSessionKey,
           requesterAgentId,
@@ -563,12 +583,16 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
     };
     const isSourceSessionEffectsAllowed = () =>
       !params.signal?.aborted &&
+      params.isDeliveryAllowed?.() !== false &&
       preparedFindings.isCurrent() &&
       !isGatewayClosed() &&
       isBatchCurrent() &&
       isRequesterCurrent() &&
       !isBatchDeliveryClosed();
     const settleRevokedBatch = (): boolean => {
+      if (params.isDeliveryAllowed?.() === false) {
+        return true;
+      }
       if (isGatewayClosed() || !isBatchCurrent()) {
         return true;
       }

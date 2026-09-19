@@ -5,6 +5,7 @@ import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import * as sessionEventStore from "../../../test/helpers/infra/session-event-store.js";
 import * as mcpFixture from "../../agents/agent-bundle-mcp-manager.test-support.js";
 import { testing as sessionMcpTesting } from "../../agents/agent-bundle-mcp-runtime.js";
 import * as bootstrapCache from "../../agents/bootstrap-cache.js";
@@ -169,13 +170,6 @@ async function makeStorePath(prefix: string): Promise<string> {
 
 const createStorePath = makeStorePath;
 const TEST_NATIVE_MODEL_PROFILE_ID = "openai:secondary@example.test";
-
-function requireString(value: string | undefined, label: string): string {
-  if (!value) {
-    throw new Error(`expected ${label}`);
-  }
-  return value;
-}
 
 function requireMockCallArg(
   mockFn: { mock: { calls: unknown[][] } },
@@ -458,6 +452,7 @@ function registerCurrentConversationBindingAdapterForTest(params: {
   });
 }
 
+sessionEventStore.installSessionEventStoreTestConfig();
 beforeEach(() => {
   channelSummaryMocks.buildChannelSummary.mockReset().mockResolvedValue([]);
   browserMaintenanceMocks.closeTrackedBrowserTabsForSessions.mockReset().mockResolvedValue(0);
@@ -488,6 +483,7 @@ describe("initSessionState guarded initialization", () => {
     const groupSessionKey = "agent:main:telegram:group:family";
 
     await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+      sessionEventStore.acceptSessionEventStoreTestConfig({ session: { store: storePath } });
       await initSessionState({
         ctx: {
           Body: "hello group",
@@ -1185,6 +1181,7 @@ describe("initSessionState thread forking", () => {
       undefined,
       false,
     );
+    sessionEventStore.acceptSessionEventStoreTestConfig({ session: { store: storePath } });
     enqueueSystemEvent("retained event", { sessionKey: threadSessionKey });
     const cancel = vi.fn();
     const activeReply = createReplyOperation({
@@ -1850,6 +1847,7 @@ describe("initSessionState RawBody", () => {
         systemSent: true,
       },
     });
+    sessionEventStore.acceptSessionEventStoreTestConfig({ session: { store: storePath } });
     enqueueSystemEvent("stale session-key event", { sessionKey });
     enqueueSystemEvent("stale session-id event", { sessionKey: `agent:main:${existingSessionId}` });
 
@@ -2978,6 +2976,7 @@ describe("initSessionState reset policy", () => {
         updatedAt: new Date(2026, 0, 18, 4, 45, 0).getTime(),
       },
     });
+    sessionEventStore.acceptSessionEventStoreTestConfig({ session: { store: storePath } });
     enqueueSystemEvent("stale idle rollover event", { sessionKey });
     enqueueSystemEvent("stale idle rollover session-id event", {
       sessionKey: `agent:main:${existingSessionId}`,
@@ -5489,7 +5488,7 @@ describe("drainFormattedSystemEvents", () => {
         isNewSession: false,
       });
 
-      const expectedTimestampText = requireString(expectedTimestamp, "formatted timestamp");
+      const expectedTimestampText = expectDefined(expectedTimestamp || undefined, "timestamp");
       expect(result).toContain(`System: [${expectedTimestampText}] Model switched.`);
     } finally {
       resetSystemEventsForTest();

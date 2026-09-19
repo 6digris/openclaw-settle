@@ -134,7 +134,7 @@ describe("Ghost reminder bug (issue #13317)", () => {
     result: Awaited<ReturnType<typeof runHeartbeatOnce>>;
     sendTelegram: ReturnType<typeof vi.fn>;
     calledCtx: HeartbeatReplyContext | null;
-    sessionKey: string;
+    remainingEvents: string[];
     replyCallCount: number;
   }> => {
     return withTempHeartbeatSandbox(
@@ -206,7 +206,7 @@ describe("Ghost reminder bug (issue #13317)", () => {
           result,
           sendTelegram,
           calledCtx,
-          sessionKey,
+          remainingEvents: peekSystemEvents(sessionKey),
           replyCallCount: getReplySpy.mock.calls.length,
         };
       },
@@ -302,7 +302,7 @@ describe("Ghost reminder bug (issue #13317)", () => {
   });
 
   it("delivers a targeted cron event while its owning job is active", async () => {
-    const { result, calledCtx, sessionKey } = await runHeartbeatCase({
+    const { result, calledCtx, remainingEvents } = await runHeartbeatCase({
       tmpPrefix: "openclaw-cron-active-job-",
       replyText: "Handled the reminder",
       reason: "cron:nightly-report",
@@ -320,7 +320,7 @@ describe("Ghost reminder bug (issue #13317)", () => {
 
     expect(result.status).toBe("ran");
     expectCronEventPrompt(calledCtx, "Reminder: Send the nightly report");
-    expect(peekSystemEvents(sessionKey)).toEqual([]);
+    expect(remainingEvents).toEqual([]);
   });
 
   it("still blocks an owning cron wake while the nested cron lane is busy", async () => {
@@ -603,12 +603,7 @@ describe("Ghost reminder bug (issue #13317)", () => {
   });
 
   it("uses an internal-only cron prompt when delivery target is none", async () => {
-    const {
-      result,
-      sendTelegram,
-      calledCtx,
-      sessionKey: processedSessionKey,
-    } = await runHeartbeatCase({
+    const { result, sendTelegram, calledCtx, remainingEvents } = await runHeartbeatCase({
       tmpPrefix: "openclaw-cron-internal-",
       replyText: "Handled internally",
       reason: "cron:reminder-job",
@@ -622,16 +617,11 @@ describe("Ghost reminder bug (issue #13317)", () => {
     expect(calledCtx?.InternalTurnSource).toBe("cron");
     expect(calledCtx?.Body).toContain("Handle this reminder internally");
     expect(sendTelegram).not.toHaveBeenCalled();
-    expect(peekSystemEvents(processedSessionKey)).toEqual([]);
+    expect(remainingEvents).toEqual([]);
   });
 
   it("uses an internal-only exec prompt when delivery target is none", async () => {
-    const {
-      result,
-      sendTelegram,
-      calledCtx,
-      sessionKey: processedSessionKey,
-    } = await runHeartbeatCase({
+    const { result, sendTelegram, calledCtx, remainingEvents } = await runHeartbeatCase({
       tmpPrefix: "openclaw-exec-internal-",
       replyText: "Handled internally",
       reason: "exec-event",
@@ -645,7 +635,7 @@ describe("Ghost reminder bug (issue #13317)", () => {
     expect(calledCtx?.InternalTurnSource).toBe("exec");
     expect(calledCtx?.Body).toContain("Handle the result internally");
     expect(sendTelegram).not.toHaveBeenCalled();
-    expect(peekSystemEvents(processedSessionKey)).toEqual([]);
+    expect(remainingEvents).toEqual([]);
   });
 
   it("includes untrusted exec completion details in user-relay prompts", async () => {
@@ -665,7 +655,7 @@ describe("Ghost reminder bug (issue #13317)", () => {
   });
 
   it("consumes exec completion entries without dropping later generic events", async () => {
-    const { result, calledCtx, sessionKey } = await runHeartbeatCase({
+    const { result, calledCtx, remainingEvents } = await runHeartbeatCase({
       tmpPrefix: "openclaw-exec-preserve-generic-",
       replyText: "Deploy succeeded",
       reason: "exec-event",
@@ -681,32 +671,33 @@ describe("Ghost reminder bug (issue #13317)", () => {
     expect(calledCtx?.InternalTurnSource).toBe("exec");
     expect(calledCtx?.Body).toContain("deploy succeeded");
     expect(calledCtx?.Body).not.toContain("Node connected");
-    expect(peekSystemEvents(sessionKey)).toEqual(["Node connected"]);
+    expect(remainingEvents).toEqual(["Node connected"]);
   });
 
   it("ignores an acknowledged exec-event wake without consuming unrelated events", async () => {
-    const { result, sendTelegram, calledCtx, replyCallCount, sessionKey } = await runHeartbeatCase({
-      tmpPrefix: "openclaw-exec-acknowledged-",
-      replyText: "Unexpected heartbeat",
-      reason: "exec-event",
-      enqueue: (key) => {
-        const completion = enqueueSystemEventEntry(
-          "Exec completed (abc12345, code 0) :: deploy succeeded",
-          { sessionKey: key },
-        );
-        if (!completion) {
-          throw new Error("expected exec completion event");
-        }
-        expect(consumeSelectedSystemEventEntries(key, [completion])).toHaveLength(1);
-        enqueueSystemEvent("Node connected", { sessionKey: key });
-      },
-    });
+    const { result, sendTelegram, calledCtx, replyCallCount, remainingEvents } =
+      await runHeartbeatCase({
+        tmpPrefix: "openclaw-exec-acknowledged-",
+        replyText: "Unexpected heartbeat",
+        reason: "exec-event",
+        enqueue: (key) => {
+          const completion = enqueueSystemEventEntry(
+            "Exec completed (abc12345, code 0) :: deploy succeeded",
+            { sessionKey: key },
+          );
+          if (!completion) {
+            throw new Error("expected exec completion event");
+          }
+          expect(consumeSelectedSystemEventEntries(key, [completion])).toHaveLength(1);
+          enqueueSystemEvent("Node connected", { sessionKey: key });
+        },
+      });
 
     expect(result).toEqual({ status: "skipped", reason: "no-pending-event" });
     expect(replyCallCount).toBe(0);
     expect(calledCtx).toBeNull();
     expect(sendTelegram).not.toHaveBeenCalled();
-    expect(peekSystemEvents(sessionKey)).toEqual(["Node connected"]);
+    expect(remainingEvents).toEqual(["Node connected"]);
   });
 
   it("classifies hook:wake exec completions as exec-event prompts", async () => {

@@ -1,3 +1,5 @@
+import { mkdirSync, realpathSync, symlinkSync, unlinkSync } from "node:fs";
+import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { getRuntimeConfig } from "../../../config/config.js";
 import { loadSessionEntry } from "../../../config/sessions/session-accessor.js";
@@ -17,7 +19,10 @@ import { getSubagentRunsForChildSession, subagentRuns } from "./subagent-registr
 import { getLatestSubagentRunByChildSessionKeyFromRuns } from "./subagent-registry-queries.js";
 import { recoverInterruptedSubagentRow } from "./subagent-registry-restart-recovery.js";
 import { createSubagentRunManager } from "./subagent-registry-run-manager.js";
-import { persistSubagentRunsToDiskOrThrow } from "./subagent-registry-state.js";
+import {
+  getSubagentRunsSnapshotForSession,
+  persistSubagentRunsToDiskOrThrow,
+} from "./subagent-registry-state.js";
 import { registerSubagentRun } from "./subagent-registry.js";
 import {
   removeSubagentSessionEntry,
@@ -29,6 +34,45 @@ import {
 } from "./subagent-registry.store.sqlite.js";
 
 const fixture = useSubagentControlFixture();
+
+it("captures the original parent store before a symlink locator is retargeted", () => {
+  const parentKey = "agent:main:main";
+  const original = path.join(fixture.stateDir, "original");
+  const replacement = path.join(fixture.stateDir, "replacement");
+  const alias = path.join(fixture.stateDir, "selected");
+  const equivalent = path.join(fixture.stateDir, "equivalent");
+  mkdirSync(original);
+  mkdirSync(replacement);
+  symlinkSync(original, alias, "junction");
+  symlinkSync(original, equivalent, "junction");
+  const databasePath = (root: string) =>
+    path.join(root, "agents", "main", "agent", "openclaw-agent.sqlite");
+  vi.spyOn(subagentRegistryDeps, "getRuntimeConfig").mockReturnValue({
+    session: { store: databasePath(alias) },
+  });
+  registerSubagentRun({
+    runId: "parent-store-alias",
+    childSessionKey: "agent:main:subagent:parent-store-alias",
+    requesterSessionKey: parentKey,
+    requesterDisplayKey: "main",
+    task: "keep the original parent store",
+    cleanup: "keep",
+    expectsCompletionMessage: false,
+  });
+  const entry = subagentRuns.get("parent-store-alias")!;
+  const captured = databasePath(realpathSync(original));
+  expect(entry.requesterStorePath).toBe(captured);
+  expect(entry.controllerStorePath).toBe(captured);
+  const read = (storePath: string) => [
+    ...getSubagentRunsSnapshotForSession(subagentRuns, parentKey, storePath).keys(),
+  ];
+  expect(read(databasePath(equivalent))).toEqual([entry.runId]);
+  unlinkSync(alias);
+  symlinkSync(replacement, alias, "junction");
+  expect(read(databasePath(alias))).toEqual([]);
+  expect(read(captured)).toEqual([entry.runId]);
+  expect(loadSubagentRegistryFromSqlite().get(entry.runId)?.requesterStorePath).toBe(captured);
+});
 
 async function setupAcceptedRecovery(persistedPhase: "attempted" | "consumed" = "consumed") {
   const sessionKey = "agent:main:subagent:acceptance-write";

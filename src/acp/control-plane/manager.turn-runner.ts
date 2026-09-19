@@ -105,19 +105,20 @@ export async function runManagerTurn(params: {
     agentId,
   });
   const initialMeta = requireReadySessionMeta(initialResolution);
+  const spawnedByWatcher =
+    initialResolution.kind === "ready"
+      ? (initialResolution.entry?.spawnedBy ?? initialResolution.entry?.parentSessionKey)
+      : undefined;
   recordSessionHumanDirectMessage({
     sessionKey,
     entry: initialResolution.kind === "ready" ? initialResolution.entry : undefined,
     actor: { actorType: input.provenance },
     channel: "acp",
     runId: input.requestId,
+    watcherStorePaths: params.acceptedTurn.watcherStorePaths,
   });
   // ACP children bypass the subagent registry; terminal outcomes are projected into
   // the signal log here so changesSince histories are not spawn-only for ACP runs.
-  const spawnedByWatcher =
-    initialResolution.kind === "ready"
-      ? (initialResolution.entry?.spawnedBy ?? initialResolution.entry?.parentSessionKey)
-      : undefined;
   const { candidateBackends, describeBackendCandidate } = resolveBackendCandidatePlan({
     configuredPrimaryBackend: input.cfg.acp?.backend,
     resolvedPrimaryBackend: initialMeta.backend,

@@ -1,8 +1,11 @@
-import { beforeEach, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
+import { resolveOpenClawAgentSqlitePath } from "../../../state/openclaw-agent-db.paths.js";
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
 import type { maybeWakeRequesterAfterAllChildrenSettled } from "./subagent-announce.requester-settle-wake.js";
 import {
   REQUESTER,
+  requesterSettleKey,
+  deliveredCallArg,
   makeSettledChild,
   transitionBatch,
   completeBatch,
@@ -119,3 +122,44 @@ export {
   listedRequesterRuns,
   wakeParams,
 };
+
+export function registerRequesterSettleDrainCase(
+  maybeWakeRequesterAfterAllChildrenSettled: typeof import("./subagent-announce.requester-settle-wake.js").maybeWakeRequesterAfterAllChildrenSettled,
+): void {
+  it("wakes the requester once with a batch-stable idempotency key when the fan-out drains", async () => {
+    registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([
+      makeSettledChild({
+        runId: "run-b",
+        completion: { required: true, resultText: "network findings" },
+      }),
+      makeSettledChild({
+        runId: "run-a",
+        completion: { required: true, resultText: "social findings" },
+      }),
+    ]);
+
+    const woke = await maybeWakeRequesterAfterAllChildrenSettled(wakeParams());
+
+    expect(woke).toBe(true);
+    expect(deliverSpy).toHaveBeenCalledTimes(1);
+    const call = deliveredCallArg();
+    expect(call.targetRequesterSessionKey).toBe(REQUESTER);
+    expect(call.requesterIsSubagent).toBe(false);
+    expect(call.expectsCompletionMessage).toBe(false);
+    expect(call.requireDirectDelivery).toBe(true);
+    expect(call.requireVisibleReply).toBeUndefined();
+    expect(call.directIdempotencyKey).toBe(requesterSettleKey("run-a,run-b"));
+    const message = String(call.triggerMessage);
+    expect(message).toContain("settled");
+    expect(message).toContain("social findings");
+    expect(message).toContain("network findings");
+    expect(message).toContain("NO_REPLY");
+    expect(registryRuntimeMock.hasDescendantRunAwaitingSettle).toHaveBeenCalledWith(
+      REQUESTER,
+      "run-b",
+      "main",
+      resolveOpenClawAgentSqlitePath({ agentId: "main" }),
+      expect.objectContaining({ matches: expect.any(Function) }),
+    );
+  });
+}

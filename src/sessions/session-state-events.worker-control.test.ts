@@ -55,6 +55,9 @@ vi.mock("../infra/kysely-sync.js", () => ({
   executeSqliteQueryTakeFirstSync: edge.forbidden,
 }));
 vi.mock("../config/sessions/session-accessor.js", () => ({ loadSessionEntryReadOnly: vi.fn() }));
+vi.mock("../config/sessions/session-store-path.js", () => ({
+  resolveSystemEventStorePath: edge.forbidden,
+}));
 vi.mock("../logging/subsystem.js", () => ({
   createSubsystemLogger: () => ({ warn: edge.warn }),
 }));
@@ -69,6 +72,7 @@ vi.mock("../state/openclaw-state-worker-store.js", () => ({
   runOpenClawStateWorkerOperation: edge.run,
 }));
 vi.mock("./session-state-events.kernel.js", () => ({
+  isNotifiableWatcherKey: vi.fn(),
   recordSessionStateEventInDatabase: edge.nativeRecord,
   pruneSessionStateEventsInDatabase: edge.nativePrune,
 }));
@@ -77,6 +81,7 @@ vi.mock("./session-upstream-links.js", () => ({ deleteSessionUpstreamLink: vi.fn
 
 const notice: SessionStateNotice = {
   watcherSessionKey: "agent:main:main",
+  watcherStorePath: "/synthetic/original-store/openclaw-agent.sqlite",
   targetSessionKey: "agent:main:child",
   lastSeenSequence: 17,
   queueOnly: false,
@@ -95,17 +100,23 @@ function goalChange() {
     },
     actor: { type: "human", id: "operator" },
     summary: "goal complete",
+    watcherStorePaths: { [notice.watcherSessionKey]: notice.watcherStorePath },
   });
 }
 
 function synchronousSibling() {
-  return recordSessionStateEvent({
+  const warningsBefore = edge.warn.mock.calls.length;
+  const recordsBefore = edge.nativeRecord.mock.calls.length;
+  const result = recordSessionStateEvent({
     sessionKey: "agent:main:sibling",
     agentId: "main",
     kind: "compacted",
     actorType: "system",
     summary: "session compacted",
   });
+  expect(edge.nativeRecord.mock.calls.length).toBe(recordsBefore + 1);
+  expect(edge.warn.mock.calls.length).toBe(warningsBefore);
+  return result;
 }
 
 beforeEach(() => {
@@ -160,6 +171,7 @@ describe("Goal event worker reconciliation", () => {
           actorId: "operator",
           summary: "goal complete",
           watcherSessionKeys: ["agent:main:main"],
+          watcherStorePaths: { "agent:main:main": notice.watcherStorePath },
         },
       },
     });
@@ -168,6 +180,7 @@ describe("Goal event worker reconciliation", () => {
     expect(edge.phases).toEqual(["record", "notice", "prune"]);
     expect(returned).toBe(false);
     expect(edge.run.mock.calls[0]?.[0]).toBe(edge.context);
+    expect(edge.notice).toHaveBeenCalledWith(notice);
     expect(edge.nativeTransaction).not.toHaveBeenCalled();
     pruning.resolve();
     await pending;

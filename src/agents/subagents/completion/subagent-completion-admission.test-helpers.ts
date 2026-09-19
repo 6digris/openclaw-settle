@@ -1,5 +1,12 @@
-import { expect, vi } from "vitest";
-import { prepareClaimedSessionDelivery } from "../../../infra/session-delivery-queue.records.js";
+import path from "node:path";
+import { expect, it, vi } from "vitest";
+import { resolveSqliteTargetFromSessionStorePath } from "../../../config/sessions/session-sqlite-target.js";
+import { resolveSessionStorePathForScope } from "../../../config/sessions/session-store-path.js";
+import {
+  prepareClaimedSessionDelivery,
+  SessionDeliveryDeadLetteredError,
+  SessionDeliveryDeferredError,
+} from "../../../infra/session-delivery-queue.records.js";
 import { getActiveGatewayRootWorkCount } from "../../../process/gateway-work-admission.js";
 import type { OpenClawStateDatabase } from "../../../state/openclaw-state-db.js";
 import { getTaskById } from "../../../tasks/runtime-internal.js";
@@ -8,12 +15,16 @@ import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpe
 import { SubagentLifecycleController } from "../registry/subagent-registry-lifecycle.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
 import { getLatestLiveSubagentRunByChildSessionKey } from "../registry/subagent-registry-read.js";
-import { saveSubagentRegistryToSqlite } from "../registry/subagent-registry.store.sqlite.js";
+import {
+  loadSubagentRegistryFromSqlite,
+  saveSubagentRegistryToSqlite,
+} from "../registry/subagent-registry.store.sqlite.js";
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
 import {
   admitSubagentCompletionDelivery,
   settleSubagentCompletionDelivery,
 } from "./subagent-completion-admission.store.js";
+import { resolveCorrelatedSubagentDelivery } from "./subagent-completion-delivery.js";
 
 export function records() {
   const now = Date.now();
@@ -42,6 +53,13 @@ export function records() {
     requesterSessionKey: task.requesterSessionKey,
     requesterDisplayKey: task.requesterSessionKey,
     requesterAgentId: "main",
+    requesterStorePath: resolveSqliteTargetFromSessionStorePath(
+      resolveSessionStorePathForScope(
+        { sessionKey: task.requesterSessionKey, agentId: "main" },
+        {},
+      ),
+      { agentId: "main" },
+    ).path,
     requesterOrigin: { channel: "discord", to: "channel:requester", accountId: "primary" },
     task: task.task,
     createdAt: task.createdAt,
@@ -220,4 +238,60 @@ export function expectLinkedGenerationTransaction({
   expect(rowCount("delivery_queue_entries")).toBe(0);
   expect(rowCount("subagent_runs")).toBe(0);
   expect(rowCount("task_runs")).toBe(0);
+}
+
+export function registerCompletionQueueOwnerCases({
+  withCurrentState,
+  persistOwner,
+}: {
+  withCurrentState: (run: (stateDir: string) => Promise<void>) => Promise<void>;
+  persistOwner: (input: ReturnType<typeof records>) => unknown;
+}): void {
+  it("dead-letters expired orphan generations before resolving their logical owner", () => {
+    const { queueEntry } = records();
+    if (queueEntry.kind !== "agentTurn" || queueEntry.owner?.kind !== "subagent_completion") {
+      throw new Error("expected correlated subagent completion queue entry");
+    }
+    queueEntry.owner.deadlineAt = Date.now() - 1;
+
+    expect(() => resolveCorrelatedSubagentDelivery(queueEntry)).toThrow(
+      SessionDeliveryDeadLetteredError,
+    );
+  });
+
+  it.each([false, true])(
+    "retains queued completion history without adopting a replaced requester store (unknown: %s)",
+    async (unknown) => {
+      await withCurrentState(async (tempDir) => {
+        const input = records();
+        input.subagent.requesterStorePath = unknown
+          ? undefined
+          : path.join(tempDir, "previous-store.sqlite");
+        persistOwner(input);
+
+        expect(() => resolveCorrelatedSubagentDelivery(input.queueEntry)).toThrow(
+          SessionDeliveryDeadLetteredError,
+        );
+        const retained = loadSubagentRegistryFromSqlite().get(input.subagent.runId);
+        expect(retained?.completion?.resultText).toBe("canonical result");
+        expect(retained?.delivery).toMatchObject({
+          status: "suspended",
+          suspendedReason: "permanent_failure",
+          lastError: expect.stringContaining(unknown ? "unknown" : "was replaced"),
+        });
+        expect(retained?.delivery?.deliveredAt).toBeUndefined();
+        expect(getTaskById(input.task.taskId)?.deliveryStatus).toBe("failed");
+      });
+    },
+  );
+
+  it("defers an unexpired generation whose logical owner has moved on", () => {
+    const { queueEntry, subagent } = records();
+    subagent.delivery!.generation = 2;
+    subagentRuns.set(subagent.runId, subagent);
+
+    expect(() => resolveCorrelatedSubagentDelivery(queueEntry)).toThrow(
+      SessionDeliveryDeferredError,
+    );
+  });
 }

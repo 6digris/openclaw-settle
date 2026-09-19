@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  acceptSessionEventStoreTestConfig,
+  captureSessionEventStoreTestConfig,
+} from "../../test/helpers/infra/session-event-store.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { drainFormattedSystemEvents } from "../auto-reply/reply/session-system-events.js";
 import type { SessionEntry } from "../config/sessions/types.js";
@@ -18,6 +22,7 @@ import {
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const sessionKey = "agent:ops:dashboard:new-session";
 const mainSessionKey = "agent:ops:main";
+let restoreConfig: () => void;
 
 function entry(overrides: Partial<SessionEntry> = {}): SessionEntry {
   return {
@@ -32,9 +37,12 @@ function entry(overrides: Partial<SessionEntry> = {}): SessionEntry {
 
 beforeEach(() => {
   vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("openclaw-created-notice-"));
+  restoreConfig = captureSessionEventStoreTestConfig();
+  acceptSessionEventStoreTestConfig({});
 });
 
 afterEach(async () => {
+  restoreConfig();
   await closeOpenClawStateDatabaseAsync();
   resetSystemEventsForTest();
   vi.unstubAllEnvs();
@@ -147,6 +155,7 @@ describe("Home session creation notices", () => {
     expect(notices[0]).not.toContain("x".repeat(201));
     drainSystemEvents(mainSessionKey);
     recordSessionHumanDirectMessage({
+      watcherStorePaths: {},
       sessionKey,
       entry: created,
       agentId: "ops",

@@ -326,14 +326,14 @@ export class AcpSessionManager {
 
   async runTurn(input: AcpRunTurnInput): Promise<void> {
     const target = resolveAcpSessionTarget(input);
-    const startedAt = Date.now();
     await runAcceptedManagerTurn({
       input,
       ...target,
       stopping: this.stopping,
       turns: this.acceptedTurns,
+      loadSessionEntry: this.deps.loadSessionEntry.bind(this.deps),
       withSessionActor: this.withSessionActor.bind(this),
-      onQueuedCancellation: async () => {
+      onQueuedCancellation: async (startedAt) => {
         recordQueuedBackgroundTaskCancellation({ input, ...target, deps: this.deps, startedAt });
         await emitCancelledAcpTurn(input.onEvent);
         this.recordTurnCompletion({ startedAt });

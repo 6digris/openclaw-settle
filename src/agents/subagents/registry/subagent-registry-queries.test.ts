@@ -1,5 +1,6 @@
 // Subagent registry query tests cover liveness, descendant counting, requester
 // lookup, and stale-row handling for in-memory run snapshots.
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { claimAgentRunContext, releaseAgentRunContext } from "../../../infra/agent-run-registry.js";
 import {
@@ -9,6 +10,7 @@ import {
 import {
   buildSubagentRunReadIndexFromRuns,
   countActiveRunsForSessionFromRuns,
+  countActiveDescendantRunsFromRuns,
   countPendingDescendantRunsFromRuns,
   hasDescendantRunAwaitingSettleFromRuns,
   getSubagentRunByChildSessionKeyFromRuns,
@@ -17,6 +19,7 @@ import {
   shouldIgnorePostCompletionAnnounceForSessionFromRuns,
 } from "./subagent-registry-queries.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
+import { createSubagentRunStoreScope } from "./subagent-session-read-scope.js";
 
 const STALE_UNENDED_SUBAGENT_RUN_MS = 2 * 60 * 60 * 1_000;
 
@@ -41,6 +44,103 @@ function toRunMap(runs: SubagentRunRecord[]): Map<string, SubagentRunRecord> {
 }
 
 describe("subagent registry query regressions", () => {
+  it("scopes notification blockers to the parent store without excluding cross-agent descendants", () => {
+    const root = "agent:main:main";
+    const original = path.resolve("old-parent.sqlite");
+    const current = path.resolve("current-parent.sqlite");
+    const worker = path.resolve("worker-parent.sqlite");
+    const child = "agent:worker:subagent:current";
+    const scope = (storePath: string) =>
+      createSubagentRunStoreScope(
+        { session: { store: path.resolve("{agentId}-parent.sqlite") } },
+        { sessionKey: root, agentId: "main", storePath },
+      );
+    const runs = toRunMap([
+      makeRun({ runId: "old", requesterAgentId: "main", requesterStorePath: original }),
+      makeRun({ runId: "unknown", requesterAgentId: "main", requesterStorePath: undefined }),
+      makeRun({
+        runId: "current",
+        childSessionKey: child,
+        requesterAgentId: "main",
+        requesterStorePath: current,
+        endedAt: 10,
+        cleanupCompletedAt: 11,
+      }),
+    ]);
+    expect(countActiveDescendantRunsFromRuns(runs, root, "main", current, scope(current))).toBe(0);
+    expect(
+      hasDescendantRunAwaitingSettleFromRuns(
+        runs,
+        root,
+        undefined,
+        "main",
+        current,
+        scope(current),
+      ),
+    ).toBe(false);
+    expect(countActiveDescendantRunsFromRuns(runs, root, "main", original, scope(original))).toBe(
+      1,
+    );
+    expect(
+      hasDescendantRunAwaitingSettleFromRuns(
+        runs,
+        root,
+        undefined,
+        "main",
+        original,
+        scope(original),
+      ),
+    ).toBe(true);
+
+    const grandchild = makeRun({
+      runId: "cross-agent-grandchild",
+      requesterSessionKey: child,
+      requesterAgentId: "worker",
+      requesterStorePath: worker,
+    });
+    runs.set(grandchild.runId, grandchild);
+    expect(countActiveDescendantRunsFromRuns(runs, root, "main", current, scope(current))).toBe(1);
+    expect(
+      hasDescendantRunAwaitingSettleFromRuns(
+        runs,
+        root,
+        undefined,
+        "main",
+        current,
+        scope(current),
+      ),
+    ).toBe(true);
+    expect(countActiveDescendantRunsFromRuns(runs, root, "main", original, scope(original))).toBe(
+      1,
+    );
+  });
+
+  it.each(["legacy-child", "agent:main:subagent:owned"])(
+    "preserves the requester-agent partition for bare child keys (%s)",
+    (childSessionKey) => {
+      const root = "global";
+      const runs = toRunMap([
+        makeRun({
+          runId: "main-child",
+          childSessionKey,
+          requesterSessionKey: root,
+          requesterAgentId: "main",
+          generation: 1,
+        }),
+        makeRun({
+          runId: "work-child",
+          childSessionKey,
+          requesterSessionKey: root,
+          requesterAgentId: "work",
+          generation: 2,
+        }),
+      ]);
+      expect(countActiveDescendantRunsFromRuns(runs, root, "main")).toBe(
+        childSessionKey === "legacy-child" ? 1 : 0,
+      );
+    },
+  );
+
   it("preserves complete snapshot inputs and exact memory winners after the source changes", () => {
     const ungrouped = makeRun({ runId: "ungrouped", requesterSessionKey: "", endedAt: 50 });
     const older = makeRun({ runId: "older", createdAt: 10, endedAt: 15 });

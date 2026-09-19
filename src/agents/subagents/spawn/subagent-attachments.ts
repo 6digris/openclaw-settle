@@ -27,6 +27,18 @@ export { cleanupMaterializedSubagentAttachments } from "../subagent-attachment-c
 // ~2.5K tokens at maxFiles=50. Making the child reconstruct paths caused the bug.
 const SUBAGENT_ATTACHMENT_PATH_BLOCK_MAX_CHARS = 4096;
 
+export function sanitizeMountPathHint(value?: string): string | undefined {
+  const trimmed = normalizeOptionalString(value);
+  if (
+    !trimmed ||
+    hasPromptUnsafeControlCharacter(trimmed) ||
+    !/^[A-Za-z0-9._\-/:]+$/.test(trimmed)
+  ) {
+    return undefined;
+  }
+  return trimmed;
+}
+
 function decodeStrictBase64(value: string, maxDecodedBytes: number): Buffer | null {
   const maxEncodedBytes = Math.ceil(maxDecodedBytes / 3) * 4;
   if (value.length > maxEncodedBytes * 2) {

@@ -6,6 +6,7 @@ import { loadSessionEntryReadOnly } from "../config/sessions/session-accessor.js
 import { resolveSessionStorePathForScope } from "../config/sessions/session-store-path.js";
 import { readRecentUserAssistantTextForSession } from "../config/sessions/transcript.js";
 import type { SessionEntry } from "../config/sessions/types.js";
+import { captureSystemEventStorePaths } from "../infra/system-event-ownership.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getPluginRegistryState } from "../plugins/runtime-state.js";
 import type { SessionCatalogProvider, SessionUpstreamProbe } from "../plugins/session-catalog.js";
@@ -187,6 +188,7 @@ async function runSessionUpstreamMonitorTick(
   if (options.signal?.aborted) {
     return;
   }
+  const watcherStorePaths = captureSystemEventStorePaths();
   const dbOptions = databaseOptions(options);
   const linksByCatalog = await listWatchedSessionUpstreamLinks(dbOptions);
   if (options.signal?.aborted) {
@@ -318,6 +320,7 @@ async function runSessionUpstreamMonitorTick(
               dedupeKey: `upstream-missing:${probe.sessionKey}:${sourceKey}:${currentLink.updatedAt}`,
               summary: `upstream missing via ${catalogId}`,
               payload: { channel: catalogId },
+              watcherStorePaths,
             },
             { ...dbOptions, now: (options.now ?? Date.now)() },
           );
@@ -386,6 +389,7 @@ async function runSessionUpstreamMonitorTick(
             dedupeKey: `upstream:${probe.sessionKey}:${upstreamSourceKey(probe)}:${activity.dedupeId}`,
             ...(activity.humanTurns > 1 ? { payload: { turns: activity.humanTurns } } : {}),
             occurredAt: activity.occurredAt as number,
+            watcherStorePaths,
           },
           // Local clock for bookkeeping: upstream occurredAt is event history only
           // and is clamped inside the recorder against this same clock.

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { expect, it } from "vitest";
+import { installSessionEventStoreTestConfig } from "../../test/helpers/infra/session-event-store.js";
 import {
   getCachedPluginModuleLoader,
   getPluginModuleLoaderStats,
@@ -8,6 +9,8 @@ import {
   requestSessionEventWakeAndWait,
   setSessionEventWakeHandler,
 } from "./session-event-wake.js";
+
+installSessionEventStoreTestConfig();
 
 it("shares the installed wake owner with a source-transformed runtime module", async () => {
   const modulePath = path.resolve("src/infra/session-event-wake.ts");

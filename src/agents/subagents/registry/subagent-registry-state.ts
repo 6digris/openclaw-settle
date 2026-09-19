@@ -4,6 +4,7 @@ import {
   emitSessionLifecycleEvent,
   type SessionLifecycleEvent,
 } from "../../../sessions/session-lifecycle-events.js";
+import { createOpenClawAgentDatabasePathMatcher } from "../../../state/openclaw-agent-db-registry.js";
 import { isStateDatabaseReadAdmissionInvalidatedError } from "../../../state/openclaw-state-db-async-lifecycle.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
@@ -621,15 +622,21 @@ export function getSubagentRunsSnapshotForController(
 export function getSubagentRunsSnapshotForSession(
   inMemoryRuns: Map<string, SubagentRunRecord>,
   sessionKey: string,
+  storePath?: string,
 ): Map<string, SubagentRunRecord> {
   const key = sessionKey.trim();
   if (!key) {
     return new Map();
   }
+  const matchesStore = createOpenClawAgentDatabasePathMatcher();
+  // Unbound legacy rows remain readable by maintenance, never guessed into a new parent store.
+  const ownsStore = (ownerPath: string | undefined) =>
+    storePath === undefined || (ownerPath !== undefined && matchesStore(ownerPath, storePath));
   return getSubagentRunsSnapshot(inMemoryRuns, persistedSubagentRunsReadCache, {
     load: () => loadSubagentRunsForSessionFromSqlite(key),
     matches: (entry) =>
-      entry.controllerSessionKey?.trim() === key || entry.requesterSessionKey.trim() === key,
+      (entry.controllerSessionKey?.trim() === key && ownsStore(entry.controllerStorePath)) ||
+      (entry.requesterSessionKey.trim() === key && ownsStore(entry.requesterStorePath)),
   });
 }
 

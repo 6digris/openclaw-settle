@@ -2,6 +2,10 @@
 import path from "node:path";
 import { vi } from "vitest";
 import { heartbeatRunnerTelegramPlugin } from "../../test/helpers/infra/heartbeat-runner-channel-plugins.js";
+import {
+  acceptSessionEventStoreTestConfig,
+  captureSessionEventStoreTestConfig,
+} from "../../test/helpers/infra/session-event-store.js";
 import { resolveReplyOperationRunState } from "../auto-reply/reply/reply-operation-run-state.js";
 import { createReplyOperation } from "../auto-reply/reply/reply-run-registry.js";
 import type { MsgContext } from "../auto-reply/templating.js";
@@ -16,6 +20,7 @@ import { writeCronJobScratch } from "../cron/scratch-store.js";
 import { CronService } from "../cron/service.js";
 import { resolveCronJobsStorePath } from "../cron/store.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
+import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
@@ -155,9 +160,27 @@ export async function seedMainSessionStore(
   cfg: OpenClawConfig,
   session: HeartbeatSessionSeed,
 ): Promise<string> {
+  acceptSessionEventStoreTestConfig(cfg);
   const sessionKey = resolveMainSessionKey(cfg);
   await seedSessionStore(storePath, sessionKey, session);
   return sessionKey;
+}
+
+/** Seed the WhatsApp target together with the physical store accepted by its runner fixture. */
+export async function seedWhatsAppSession(
+  storePath: string,
+  sessionKey: string,
+  entry: Partial<Parameters<typeof seedSessionStore>[2]> = {},
+): Promise<void> {
+  acceptSessionEventStoreTestConfig({ session: { store: storePath } });
+  await seedSessionStore(storePath, sessionKey, {
+    sessionId: "sid",
+    updatedAt: Date.now(),
+    lastChannel: "whatsapp",
+    lastProvider: "whatsapp",
+    lastTo: "120363401234567890@g.us",
+    ...entry,
+  });
 }
 
 /** Run a heartbeat test inside a temporary prompt/session-store sandbox. */
@@ -179,13 +202,26 @@ export async function withTempHeartbeatSandbox<T>(
       ]),
     );
     return withEnvAsync(env, async () => {
+      const restoreConfig = captureSessionEventStoreTestConfig();
       try {
+        acceptSessionEventStoreTestConfig({ session: { store: storePath } });
         await seedHeartbeatScratchForTest({ content: "- Check status\n" });
         return await fn({ tmpDir, storePath, replySpy });
       } finally {
-        replySpy.mockReset();
-        await closeOpenClawStateDatabaseAsync();
-        closeOpenClawStateDatabaseForTest();
+        try {
+          replySpy.mockReset();
+          restoreConfig();
+        } finally {
+          try {
+            await closeOpenClawAgentDatabasesAsync();
+          } finally {
+            try {
+              await closeOpenClawStateDatabaseAsync();
+            } finally {
+              closeOpenClawStateDatabaseForTest();
+            }
+          }
+        }
       }
     });
   });

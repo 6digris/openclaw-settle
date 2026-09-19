@@ -77,7 +77,12 @@ import {
   setSubagentRegistryDepsForTest,
   subagentRegistryDeps,
 } from "./subagent-registry-deps.js";
-import { mockBlockedCompletionDeliveryOwner } from "./subagent-registry-lifecycle-completion.test-support.js";
+import {
+  mockBlockedCompletionDeliveryOwner,
+  registerSubagentParentStoreLifecycleCases,
+  createRunEntry,
+  type RunEntryOverrides,
+} from "./subagent-registry-lifecycle-completion.test-support.js";
 import { loadPendingFinalDeliveryPayload } from "./subagent-registry-lifecycle-delivery.js";
 import {
   SubagentLifecycleController,
@@ -265,37 +270,9 @@ vi.mock("./subagent-registry-helpers.js", () => ({
   updateSubagentArchiveAtMs: () => false,
 }));
 
-type RunEntryOverrides = Omit<Partial<SubagentRunRecord>, "execution"> & {
-  execution?: SubagentRunRecord["execution"];
-  startedAt?: number;
-  endedAt?: number;
-  outcome?: SubagentRunRecord["execution"]["outcome"];
-};
 type RunModeCleanupEntryOverrides = Omit<RunEntryOverrides, "execution"> & {
   execution?: Partial<SubagentRunRecord["execution"]>;
 };
-
-function createRunEntry(overrides: RunEntryOverrides = {}): SubagentRunRecord {
-  const { startedAt = 2_000, endedAt, outcome, execution, ...recordOverrides } = overrides;
-  return {
-    runId: "run-1",
-    childSessionKey: "agent:main:subagent:child",
-    requesterSessionKey: "agent:main:main",
-    requesterDisplayKey: "main",
-    task: "finish the task",
-    cleanup: "keep",
-    createdAt: 1_000,
-    ...recordOverrides,
-    execution: execution
-      ? { startedAt, ...execution }
-      : {
-          status: endedAt !== undefined || outcome !== undefined ? "terminal" : "running",
-          startedAt,
-          ...(endedAt === undefined ? {} : { endedAt }),
-          ...(outcome === undefined ? {} : { outcome }),
-        },
-  };
-}
 
 describe("pending final delivery payload", () => {
   it("uses the authoritative completion reply after a retry payload was captured", () => {
@@ -514,6 +491,8 @@ function createLifecycleController({
   }
   return new SubagentLifecycleController(params);
 }
+
+registerSubagentParentStoreLifecycleCases({ createRunEntry, createLifecycleController });
 
 function completeRun(
   controller: LifecycleController,
@@ -5559,6 +5538,7 @@ describe("requester settle wake trigger", () => {
       requesterSessionKey: "agent:main:main",
       requesterOrigin: undefined,
       settledEntry: entry,
+      isDeliveryAllowed: expect.any(Function),
       transitionBatch: expect.any(Function),
       completeBatch: expect.any(Function),
     });

@@ -24,7 +24,6 @@ import {
   tryResolveSoleAgentId,
 } from "../agents/agent-scope-config.js";
 import { measureAgentStartup } from "../agents/startup-timing.js";
-import { isExecutionIdentityCollectionEnabled } from "../audit/audit-config.js";
 import { readAgentRunTerminalOutcome } from "../channels/turn/agent-run-terminal-outcome.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import type { CliDeps } from "../cli/deps.types.js";
@@ -62,10 +61,6 @@ import {
 import type { GatewayLockIdentity, GatewayLockOptions } from "../infra/gateway-lock.js";
 import { routeLogsToStderr } from "../logging/console.js";
 import {
-  startOneShotDiagnosticsExporters,
-  type OneShotDiagnosticsHandle,
-} from "../plugins/one-shot-diagnostics.js";
-import {
   buildAgentMainSessionKey,
   classifySessionKeyShape,
   isUnscopedSessionKeySentinel,
@@ -76,6 +71,7 @@ import {
 import { type RuntimeEnv, writeRuntimeJson } from "../runtime.js";
 import { createLazyPromiseLoader } from "../shared/lazy-runtime.js";
 import { normalizeMessageChannel } from "../utils/message-channel-normalize.js";
+import type { runEmbeddedAgentCommand } from "./agent-local-runtime.js";
 
 type AgentGatewayResult = {
   payloads?: Array<{
@@ -190,12 +186,9 @@ const AGENT_CLI_SIGNAL_EXIT_CODES: Record<AgentCliSignal, number> = {
 const MESSAGE_FILE_DECODER = new TextDecoder("utf-8", { fatal: true });
 
 const embeddedAgentCommandLoader = createLazyPromiseLoader(
-  () => import("./agent.js").then((module) => module.agentCommand),
+  () => import("./agent-local-runtime.js").then((module) => module.runEmbeddedAgentCommand),
   { cacheRejections: true },
 );
-const localAuditModuleLoader = createLazyPromiseLoader(() => import("./agent-local-audit.js"), {
-  cacheRejections: true,
-});
 const agentSessionModuleCache = createLazyPromiseLoader(
   () => import("./agent/session.runtime.js"),
   { cacheRejections: true },
@@ -218,66 +211,6 @@ function resolveGatewayAbortRetryDelaysMs(): readonly number[] {
 }
 
 const loadAgentSessionModule = agentSessionModuleCache.load;
-
-type EmbeddedAgentCommandOpts = Parameters<
-  Awaited<ReturnType<typeof embeddedAgentCommandLoader.load>>
->[0];
-type EmbeddedRunDiagnosticsOptions = {
-  suppressStdoutDiagnosticLogs: boolean;
-};
-
-async function startEmbeddedRunDiagnosticsExporters(
-  runtime: RuntimeEnv,
-  options: EmbeddedRunDiagnosticsOptions,
-  config: OpenClawConfig,
-): Promise<OneShotDiagnosticsHandle | null> {
-  try {
-    return await startOneShotDiagnosticsExporters({
-      config,
-      suppressStdoutDiagnosticLogs: options.suppressStdoutDiagnosticLogs,
-    });
-  } catch (err) {
-    // Exporter startup must never break the agent run itself.
-    runtime.error?.(`diagnostics exporter startup failed for embedded run: ${String(err)}`);
-    return null;
-  }
-}
-
-/**
- * Run the embedded agent command with OTel diagnostics export for this
- * one-shot process: the Gateway only starts diagnostics exporters in its own
- * process, so embedded runs start one here and flush it before the CLI exits
- * (including signal exits, which happen after this returns).
- */
-async function runEmbeddedAgentCommand(
-  opts: EmbeddedAgentCommandOpts,
-  runtime: RuntimeEnv,
-  deps: AgentCliDeps | undefined,
-  diagnosticsOptions: EmbeddedRunDiagnosticsOptions,
-) {
-  const agentCommand = await measureAgentStartup("command-import", () =>
-    embeddedAgentCommandLoader.load(),
-  );
-  const config = await loadRuntimeConfig();
-  const diagnostics = await startEmbeddedRunDiagnosticsExporters(
-    runtime,
-    diagnosticsOptions,
-    config,
-  );
-  let stopLocalAuditWriter: (() => Promise<void>) | undefined;
-  if (isExecutionIdentityCollectionEnabled(config)) {
-    try {
-      stopLocalAuditWriter = (await localAuditModuleLoader.load()).startAgentLocalAuditWriter();
-    } catch {
-      // Admission emits one bounded warning if evidence cannot be queued.
-    }
-  }
-  try {
-    return await agentCommand(opts, runtime, deps);
-  } finally {
-    await Promise.all([diagnostics?.stop(), stopLocalAuditWriter?.().catch(() => undefined)]);
-  }
-}
 
 async function loadRuntimeConfig(): Promise<OpenClawConfig> {
   const { getRuntimeConfig } = await runtimeConfigModuleLoader.load();
@@ -351,7 +284,6 @@ const loadReplyPayloadModule = replyPayloadModuleLoader.load;
 export const agentViaGatewayTesting = {
   resetLazyImportsForTests(): void {
     embeddedAgentCommandLoader.clear();
-    localAuditModuleLoader.clear();
     agentSessionModuleCache.clear();
     runtimeConfigModuleLoader.clear();
     embeddedStateLockModuleLoader.clear();
@@ -1280,6 +1212,9 @@ export async function agentCliCommand(
       );
       let result: Awaited<ReturnType<typeof runEmbeddedAgentCommand>>;
       try {
+        const runEmbeddedAgentCommand = await measureAgentStartup("command-import", () =>
+          embeddedAgentCommandLoader.load(),
+        );
         result = await runEmbeddedAgentCommand(
           {
             ...gatewayDispatchOpts,

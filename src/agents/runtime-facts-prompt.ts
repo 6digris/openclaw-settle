@@ -18,6 +18,7 @@ type RuntimeFactsParams = {
   capabilityToolNames: ReadonlySet<string>;
   sessionKey?: string;
   sessionId?: string;
+  storePath?: string;
   agentId: string;
   cfg: OpenClawConfig;
 };
@@ -110,6 +111,7 @@ export async function buildRuntimeFactsContext(
     cfg: params.cfg,
     controllerSessionKey: params.sessionKey,
     controllerAgentId: params.agentId,
+    storePath: params.storePath,
     includeSpawnContext: canSpawn,
   });
   if (subagentContext || canSpawn) {

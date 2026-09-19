@@ -12,6 +12,7 @@ import {
   upsertSessionEntryCore,
 } from "../../../config/sessions/session-accessor.js";
 import { buildSessionCreationStamp } from "../../../config/sessions/session-entry-provenance.js";
+import { resolveSystemEventStorePath } from "../../../config/sessions/session-store-path.js";
 import type { SessionEntry } from "../../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
@@ -204,6 +205,11 @@ export async function spawnAcpDirect(
     config: cfg,
     sessionKey: requesterInternalKey,
     agentId: ctx.requesterAgentIdOverride,
+  });
+  const watcherStorePath = resolveSystemEventStorePath({
+    cfg,
+    sessionKey: requesterInternalKey,
+    agentId: requesterAgentId,
   });
   const runtimePolicyError = resolveAcpSpawnRuntimePolicyError({
     cfg,
@@ -521,6 +527,7 @@ export async function spawnAcpDirect(
         childRunId: childIdem,
         requesterSessionKey: requesterInternalKey,
         agentId: targetAgentId,
+        watcherStorePath,
       });
       const startParentRelay = (runId: string) =>
         effectiveStreamToParent && parentSessionKey

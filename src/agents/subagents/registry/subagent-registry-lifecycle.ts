@@ -11,10 +11,10 @@ import {
   getDeliveryLastError,
 } from "./subagent-delivery-state.js";
 import {
-  finalizeResumedAnnounceGiveUp,
   resumeAncestorCleanup,
   startSubagentAnnounceCleanupFlow,
 } from "./subagent-registry-lifecycle-announce-cleanup.js";
+import { finalizeResumedAnnounceGiveUp } from "./subagent-registry-lifecycle-cleanup.js";
 import { completeSubagentRunAttempt } from "./subagent-registry-lifecycle-completion.js";
 import type {
   CleanupBookkeepingParams,
@@ -22,7 +22,10 @@ import type {
   ScheduledRequesterSettleWake,
   SubagentLifecycleOptions,
 } from "./subagent-registry-lifecycle-context.js";
-import { refreshFrozenResultFromSession } from "./subagent-registry-lifecycle-delivery.js";
+import {
+  refreshFrozenResultFromSession,
+  safeSetSubagentTaskDeliveryStatus,
+} from "./subagent-registry-lifecycle-delivery.js";
 import {
   completeCleanupBookkeeping,
   scheduleRequesterSettleWake,
@@ -30,6 +33,7 @@ import {
 import { settleRequesterTurnAfterSessionSpawns } from "./subagent-registry-requester-yield.js";
 import type { SubagentCompletionRequest, SubagentRunRecord } from "./subagent-registry.types.js";
 import { compareSubagentRunGeneration } from "./subagent-run-generation.js";
+import { resolveSubagentRequesterStoreFailure } from "./subagent-session-read-scope.js";
 
 export type { SubagentLifecycleOptions } from "./subagent-registry-lifecycle-context.js";
 
@@ -61,6 +65,49 @@ export class SubagentLifecycleController {
   private readonly cleanupFailureCounts = new WeakMap<SubagentRunRecord, number>();
 
   constructor(readonly options: SubagentLifecycleOptions) {}
+
+  /** Delivery debt remains with its captured parent store when config selects another store. */
+  admitRequesterStore(entry: SubagentRunRecord): boolean {
+    if (this.options.runs.get(entry.runId) !== entry) {
+      return false;
+    }
+    const error = resolveSubagentRequesterStoreFailure(this.options.getRuntimeConfig(), entry);
+    if (!error) {
+      return true;
+    }
+    if (entry.delivery?.status === "suspended" && entry.delivery.lastError === error) {
+      return false;
+    }
+    const previous = { delivery: entry.delivery, cleanupHandled: entry.cleanupHandled };
+    entry.delivery = {
+      ...entry.delivery,
+      status: "suspended",
+      suspendedReason: "permanent_failure",
+      suspendedAt: Date.now(),
+      lastError: error,
+      nextAttemptAt: undefined,
+    };
+    entry.cleanupHandled = false;
+    try {
+      this.options.persistOrThrow(entry.runId);
+    } catch (failure) {
+      Object.assign(entry, previous);
+      throw failure;
+    }
+    this.options.resumedRuns.delete(entry.runId);
+    const timer = this.scheduledRequesterSettleWakeTimers.get(entry.runId);
+    if (timer) {
+      clearTimeout(timer.timer);
+      this.scheduledRequesterSettleWakeTimers.delete(entry.runId);
+    }
+    safeSetSubagentTaskDeliveryStatus(this.options, {
+      entry,
+      deliveryStatus: "failed",
+      deliveryError: error,
+    });
+    this.options.warn(error);
+    return false;
+  }
 
   newerGenerationOwnsSession(entry: SubagentRunRecord): boolean {
     if (entry.killReconciliation?.supersededAt !== undefined) {

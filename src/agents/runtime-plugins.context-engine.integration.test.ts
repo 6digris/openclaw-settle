@@ -1,6 +1,10 @@
 // Verifies prepared agent turns retain their selected runtime context-engine owner.
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, expect, it, onTestFinished, vi } from "vitest";
+import {
+  acceptSessionEventStoreTestConfig,
+  captureSessionEventStoreTestConfig,
+} from "../../test/helpers/infra/session-event-store.js";
 import { resetContextEngineRuntimeQuarantineForTests } from "../context-engine/registry.test-support.js";
 import { drainSystemEvents } from "../infra/system-events.js";
 import { loadAndActivateRootPluginRegistry, loadPluginRegistryHandle } from "../plugins/loader.js";
@@ -470,6 +474,8 @@ it("revokes earlier engine callbacks while its raw disposal remains admitted", a
       slots: { memory: "none", contextEngine: plugin.id },
     },
   };
+  onTestFinished(captureSessionEventStoreTestConfig());
+  acceptSessionEventStoreTestConfig(config);
   loadAndActivateRootPluginRegistry({ config, cache: false });
   const lease = await createContextEngineLogicalTurnLease({
     identity: { runId: "closing-turn", sessionId: "closing-session" },

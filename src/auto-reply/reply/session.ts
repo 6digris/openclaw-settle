@@ -22,7 +22,6 @@ import {
 } from "../../config/sessions/lifecycle.js";
 import { canonicalizeMainSessionAlias } from "../../config/sessions/main-session.js";
 import { deriveSessionMetaPatch } from "../../config/sessions/metadata.js";
-import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { resolveResetPreservedSelection } from "../../config/sessions/reset-preserved-selection.js";
 import {
   evaluateSessionFreshness,
@@ -40,7 +39,10 @@ import { sessionEntryForkedFromParent } from "../../config/sessions/session-entr
 import { buildSessionCreationStamp } from "../../config/sessions/session-entry-provenance.js";
 import { resolveSessionKey } from "../../config/sessions/session-key.js";
 import type { SessionResetBoundaryRequest } from "../../config/sessions/session-reset-boundary-event.js";
-import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
+import {
+  resolveSessionStorePathForScope,
+  resolveSystemEventStorePath,
+} from "../../config/sessions/session-store-path.js";
 import { resolveMaintenanceConfigFromInput } from "../../config/sessions/store-maintenance.js";
 import { runExclusiveSessionStoreWrite } from "../../config/sessions/store-writer.js";
 import {
@@ -165,13 +167,6 @@ function resolveExplicitSessionEndReason(
   return matchedResetTriggerLower === "/reset" ? "reset" : "new";
 }
 
-function resolveStaleSessionEndReason(params: {
-  entry: SessionEntry | undefined;
-  freshness?: SessionFreshness;
-}): ReplySessionEndReason | undefined {
-  return params.entry ? params.freshness?.staleReason : undefined;
-}
-
 function hasProviderOwnedSession(entry: SessionEntry | undefined): boolean {
   const provider = normalizeOptionalString(entry?.providerOverride ?? entry?.modelProvider);
   return Boolean(provider && getCliSessionBinding(entry, provider));
@@ -220,6 +215,7 @@ type InitSessionStateAttemptContext = {
   sessionKey: string;
   sessionCtxForState: FinalizedRuntimeMsgContext;
   storePath: string;
+  watcherStorePath?: string | null;
 };
 
 type InitSessionStateAttemptOutcome =
@@ -322,11 +318,10 @@ function resolveInitSessionStateAttemptContext(
       ),
     }),
     sessionCtxForState,
-    storePath: resolveSessionStorePathForScope({
-      agentId,
-      sessionKey: sessionCtxForState.SessionKey,
-      storePath: resolveSessionStorePathCore(cfg.session?.store, { agentId }),
-    }),
+    storePath: resolveSessionStorePathForScope(
+      { agentId, sessionKey: sessionCtxForState.SessionKey },
+      cfg,
+    ),
   };
 }
 
@@ -436,6 +431,12 @@ async function initSessionStateAttempt(
   staleSnapshotRetried: boolean,
 ): Promise<SessionInitResult> {
   const attemptContext = resolveInitSessionStateAttemptContext(params);
+  attemptContext.watcherStorePath =
+    resolveSystemEventStorePath({
+      cfg: params.cfg,
+      agentId: attemptContext.agentId,
+      storePath: attemptContext.storePath,
+    }) ?? null;
   const parentSessionKey = normalizeOptionalString(params.ctx.ParentSessionKey);
   const snapshot = loadReplySessionInitializationSnapshot({
     agentId: attemptContext.agentId,
@@ -677,16 +678,16 @@ async function initSessionStateAttemptLocked(
     parentSessionKey && parentSessionKey !== sessionKey
       ? initializationSnapshot.readEntry(parentSessionKey)
       : undefined;
+  const sessionStateActorType = isSystemEvent
+    ? "system"
+    : classifySessionStateActor({ inputProvenance: ctx.InputProvenance }).actorType;
   const restartTombstoneReset =
     resetTriggered &&
     isRestartRecoveryTombstone(entry) &&
     entry?.pluginOwnerId === undefined &&
-    !isSystemEvent &&
-    classifySessionStateActor({ inputProvenance: ctx.InputProvenance }).actorType === "human";
+    sessionStateActorType === "human";
   const restartTombstoneParentFork = canReplaceRestartTombstoneFromParent({
-    actorType: isSystemEvent
-      ? "system"
-      : classifySessionStateActor({ inputProvenance: ctx.InputProvenance }).actorType,
+    actorType: sessionStateActorType,
     entry,
     hasParentForkSource: Boolean(parentForkSourceEntry?.sessionId),
     inboundAccessAuthorized: ctx.InboundAccessAuthorized,
@@ -833,10 +834,7 @@ async function initSessionStateAttemptLocked(
     (resetTriggered || !effectiveFreshEntry) && entry ? { ...entry } : undefined;
   const previousSessionEndReason = resetTriggered
     ? resolveExplicitSessionEndReason(matchedResetTriggerLower)
-    : resolveStaleSessionEndReason({
-        entry,
-        freshness: entryFreshness,
-      });
+    : entryFreshness?.staleReason;
   const lifecycleMutationMatches = Boolean(
     previousSessionEntry &&
     lifecycleMutationIdentity?.sessionKey === sessionKey &&
@@ -1213,15 +1211,13 @@ async function initSessionStateAttemptLocked(
   if (createdNewEntry) {
     recordSessionCreated(cfg, { sessionKey, agentId, entry: sessionEntry });
   }
-  if (
-    !isSystemEvent &&
-    classifySessionStateActor({ inputProvenance: ctx.InputProvenance }).actorType === "human"
-  ) {
+  if (sessionStateActorType === "human") {
     registerMainSessionGroupWatch({
       sessionKey,
       agentId,
       entry: sessionEntry,
       mainKey,
+      watcherStorePath: attemptContext.watcherStorePath ?? null,
     });
   }
   const sessionStore = committed.sessionStoreView;

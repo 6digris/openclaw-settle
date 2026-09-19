@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { installSessionEventStoreTestConfig } from "../../test/helpers/infra/session-event-store.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
 import {
@@ -11,6 +12,8 @@ import {
   requestSessionEventWakeAndWait,
   setSessionEventWakeHandler,
 } from "./session-event-wake.js";
+
+installSessionEventStoreTestConfig();
 
 describe("heartbeat wake settlement", () => {
   let disposeHandler: (() => void) | undefined;

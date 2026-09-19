@@ -1,10 +1,12 @@
 /** Executes new turns and active-run steering for sessions_send. */
 import crypto from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { resolveSystemEventStorePath } from "../../config/sessions/session-store-path.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { GatewaySessionStoreTarget } from "../../gateway/session-utils-store.types.js";
 import type { InputProvenance } from "../../sessions/input-provenance.js";
 import { isCronRunSessionKey, parseAgentSessionKey } from "../../sessions/session-key-utils.js";
+import { registerSessionStateWatch } from "../../sessions/session-state-watches.js";
 import {
   buildRunUserTurnIdempotencyKey,
   createUserTurnTranscriptRecorder,
@@ -18,6 +20,44 @@ import {
 } from "../embedded-agent-runner/runs.js";
 import { jsonResult } from "./common.js";
 import type { AgentToolGatewayRequestCaller } from "./in-process-gateway.js";
+
+/** Capture requester ownership now; register only the target accepted by delivery. */
+export function prepareSessionsSendWatch(params: {
+  cfg: OpenClawConfig;
+  requested: boolean;
+  requesterSessionKey?: string;
+  requesterAgentId: string;
+  storePath: string;
+}): (
+  requesterSessionKey: string | undefined,
+  targetSessionKey: string,
+  targetAgentId: string,
+  expectedSessionId?: string,
+) => { watched?: boolean } {
+  const watcherStorePath = params.requested
+    ? resolveSystemEventStorePath({
+        cfg: params.cfg,
+        sessionKey: params.requesterSessionKey,
+        agentId: params.requesterAgentId,
+        storePath: params.storePath,
+      })
+    : undefined;
+  return (requesterSessionKey, targetSessionKey, targetAgentId, expectedSessionId) => {
+    const watched =
+      params.requested &&
+      !expectedSessionId &&
+      requesterSessionKey &&
+      requesterSessionKey !== targetSessionKey
+        ? registerSessionStateWatch({
+            watcherSessionKey: requesterSessionKey,
+            watcherStorePath: watcherStorePath ?? null,
+            targetSessionKey,
+            targetAgentId,
+          })
+        : false;
+    return params.requested ? { watched } : {};
+  };
+}
 
 function isRunScopedAgentSessionKey(sessionKey: string): boolean {
   const parsed = parseAgentSessionKey(normalizeOptionalString(sessionKey));

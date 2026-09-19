@@ -1,5 +1,6 @@
 /** Stale-state notice text, coalescing keys, and watcher eligibility. */
 import { requestHeartbeat } from "../infra/heartbeat-wake.js";
+import { recordSystemEventStoreReplaced } from "../infra/system-event-ownership.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
 import { isSubagentSessionKey } from "../routing/session-key.js";
 
@@ -43,12 +44,19 @@ function shouldWakeWatcher(watcherSessionKey: string): boolean {
 
 export function enqueueSessionStateNotice(params: {
   watcherSessionKey: string;
+  watcherStorePath: string | null;
   targetSessionKey: string;
   lastSeenSequence: number;
   queueOnly?: boolean;
+  storeReplaced?: true;
 }): void {
+  if (params.storeReplaced) {
+    recordSystemEventStoreReplaced();
+    return;
+  }
   enqueueSystemEvent(sessionStateNoticeText(params.targetSessionKey, params.lastSeenSequence), {
     sessionKey: params.watcherSessionKey,
+    sessionStorePath: params.watcherStorePath,
     contextKey: `${SESSION_STATE_CONTEXT_PREFIX}${encodeNoticeTarget(params.targetSessionKey)}`,
     ...(params.queueOnly ? { replace: true } : {}),
   });
@@ -67,6 +75,7 @@ export function enqueueSessionStateNotice(params: {
     intent: "immediate",
     reason: `session-state:${params.targetSessionKey}`,
     sessionKey: params.watcherSessionKey,
+    sessionStorePath: params.watcherStorePath,
     coalesceMs: SESSION_STATE_WAKE_COALESCE_MS,
   });
 }

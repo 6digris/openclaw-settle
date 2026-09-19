@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { installSessionEventStoreTestConfig } from "../../test/helpers/infra/session-event-store.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import {
   getActiveGatewayRootWorkCount,
@@ -9,6 +10,8 @@ import {
   requestSessionEventWakeAndWait,
   setSessionEventWakeHandler as setRuntimeSessionEventWakeHandler,
 } from "./session-event-wake.js";
+
+installSessionEventStoreTestConfig();
 
 describe("session event wake target concurrency", () => {
   type WakeRequest = Parameters<typeof requestSessionEventWake>[0];

@@ -1,6 +1,7 @@
 // Tests heartbeat runner wake dispatch, cooldown bookkeeping, and cleanup.
 // Interval cadence is owned by persisted, per-agent cron monitor jobs.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { installHeartbeatRunnerStoreTestConfig } from "../../test/helpers/infra/heartbeat-runner.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import {
   getRuntimeConfig,
@@ -8,7 +9,6 @@ import {
   setRuntimeConfigSnapshot,
   type OpenClawConfig,
 } from "../config/config.js";
-import { startHeartbeatRunner } from "./heartbeat-runner-scheduler.js";
 import {
   getHeartbeatWakeAbortSignal,
   HEARTBEAT_SKIP_PREEMPTED,
@@ -16,6 +16,8 @@ import {
   requestHeartbeat,
   setHeartbeatWakeHandler,
 } from "./heartbeat-wake.js";
+
+const startHeartbeatRunner = installHeartbeatRunnerStoreTestConfig();
 
 describe("startHeartbeatRunner", () => {
   type RunOnce = Parameters<typeof startHeartbeatRunner>[0]["runOnce"];

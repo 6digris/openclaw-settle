@@ -1,4 +1,5 @@
 import { afterEach, expect, it } from "vitest";
+import { installSessionEventStoreTestConfig } from "../../test/helpers/infra/session-event-store.js";
 import {
   getOwnedSessionTranscriptWriterFence,
   withOwnedSessionTranscriptWrites,
@@ -18,6 +19,8 @@ afterEach(() => {
 
 // Real timers on purpose: fake timers fire callbacks from the test's own async
 // context, so they cannot observe the AsyncLocalStorage inheritance under test.
+installSessionEventStoreTestConfig();
+
 it("dispatches outside the requesting attempt transcript context", async () => {
   const observedFence = new Promise<ReturnType<typeof getOwnedSessionTranscriptWriterFence>>(
     (resolve) => {

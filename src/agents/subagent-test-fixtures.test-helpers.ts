@@ -2,6 +2,8 @@ import { expect, vi } from "vitest";
 import type { InternalSessionEntry } from "../config/sessions.js";
 import type { SessionOrigin } from "../config/sessions/types.js";
 import { normalizeLegacySessionEntryDelivery } from "../infra/state-migrations.legacy-session-store.js";
+import { parseAgentSessionKey } from "../routing/session-key.js";
+import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
 import type { AgentInternalEvent } from "./internal-events.js";
 import type { RegisterSubagentRunParams } from "./subagents/registry/subagent-registry-run-manager.js";
@@ -107,10 +109,18 @@ export type SubagentRunRecordOverrides = Pick<SubagentRunRecord, "runId"> &
 
 export function createSubagentRunRecord(overrides: SubagentRunRecordOverrides): SubagentRunRecord {
   const { startedAt, endedAt, outcome, execution, ...record } = overrides;
+  const requester = overrides.requesterSessionKey ?? "agent:main:main";
+  const controller = overrides.controllerSessionKey ?? requester;
+  const storePathFor = (sessionKey: string) => {
+    const agentId = parseAgentSessionKey(sessionKey)?.agentId ?? overrides.requesterAgentId;
+    return agentId ? resolveOpenClawAgentSqlitePath({ agentId }) : undefined;
+  };
   return {
     childSessionKey: "agent:main:subagent:child",
     requesterSessionKey: "agent:main:main",
     requesterDisplayKey: "main",
+    requesterStorePath: storePathFor(requester),
+    controllerStorePath: storePathFor(controller),
     task: overrides.runId,
     cleanup: "keep",
     createdAt: Date.now(),

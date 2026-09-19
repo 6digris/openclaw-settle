@@ -3,6 +3,7 @@
  *
  * Combines persisted snapshots with in-memory live runs for UI, announce, control, and recovery paths.
  */
+import { createOpenClawAgentDatabasePathMatcher } from "../../../state/openclaw-agent-db-registry.js";
 import { normalizeDeliveryContext } from "../../../utils/delivery-context.shared.js";
 import type { DeliveryContext } from "../../../utils/delivery-context.types.js";
 import { getSubagentRunsForChildSession, subagentRuns } from "./subagent-registry-memory.js";
@@ -34,6 +35,7 @@ import {
 import { loadSubagentRunsForChildSessionFromSqlite } from "./subagent-registry.store.sqlite.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { isSubagentRunLive } from "./subagent-run-liveness.js";
+import type { createSubagentRunStoreScope } from "./subagent-session-read-scope.js";
 export { isSubagentRunLive, isSubagentRunQueued } from "./subagent-run-liveness.js";
 
 export type { SubagentRunReadIndex } from "./subagent-registry-queries.js";
@@ -102,11 +104,15 @@ export function listSubagentRunsForController(
 export function countActiveDescendantRuns(
   rootSessionKey: string,
   requesterAgentId?: string,
+  requesterStorePath?: string,
+  storeScope?: ReturnType<typeof createSubagentRunStoreScope>,
 ): number {
   return countActiveDescendantRunsFromRuns(
     getSubagentRunsSnapshotForSessions(subagentRuns, [rootSessionKey]),
     rootSessionKey,
     requesterAgentId,
+    requesterStorePath,
+    storeScope,
   );
 }
 
@@ -131,12 +137,16 @@ export function hasDescendantRunAwaitingSettle(
   rootSessionKey: string,
   excludeRunId?: string,
   requesterAgentId?: string,
+  requesterStorePath?: string,
+  storeScope?: ReturnType<typeof createSubagentRunStoreScope>,
 ): boolean {
   return hasDescendantRunAwaitingSettleFromRuns(
     getSubagentRunsSnapshotForSessions(subagentRuns, [rootSessionKey]),
     rootSessionKey,
     excludeRunId,
     requesterAgentId,
+    requesterStorePath,
+    storeScope,
   );
 }
 
@@ -179,10 +189,19 @@ export function isSubagentSessionRunActive(childSessionKey: string): boolean {
 /** Lists process-local runs requested by one session key. */
 export function listSubagentRunsForRequester(
   requesterSessionKey: string,
-  options?: { requesterRunId?: string; requesterAgentId?: string },
+  options?: { requesterRunId?: string; requesterAgentId?: string; requesterStorePath?: string },
 ): SubagentRunRecord[] {
   // Request-run lifetime scoping must observe the raw live map, including rows not persisted yet.
-  return listRunsForRequesterFromRuns(subagentRuns, requesterSessionKey, options);
+  const runs = listRunsForRequesterFromRuns(subagentRuns, requesterSessionKey, options);
+  const storePath = options?.requesterStorePath;
+  if (storePath === undefined) {
+    return runs;
+  }
+  const matchesStore = createOpenClawAgentDatabasePathMatcher();
+  return runs.filter(
+    (entry) =>
+      entry.requesterStorePath !== undefined && matchesStore(entry.requesterStorePath, storePath),
+  );
 }
 
 /** Whether any current or durable generation still owns this logical task, including waits/recovery. */

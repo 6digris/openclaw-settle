@@ -11,6 +11,10 @@ import {
   GATEWAY_CLIENT_IDS,
   GATEWAY_CLIENT_MODES,
 } from "../../packages/gateway-protocol/src/client-info.js";
+import {
+  acceptSessionEventStoreTestConfig,
+  installSessionEventStoreTestConfig,
+} from "../../test/helpers/infra/session-event-store.js";
 import { createHeartbeatToolResponsePayload } from "../auto-reply/heartbeat-tool-response.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { runHeartbeatOnce } from "../infra/heartbeat-runner.js";
@@ -27,6 +31,7 @@ import {
 
 // Exercise accepted heartbeat publication through real Gateway sockets and history.
 installGatewayTestHooks({ scope: "suite" });
+installSessionEventStoreTestConfig();
 
 const cleanupDirs: string[] = [];
 const requireRecord = createRequireRecord("object", "expected-label-object");
@@ -103,6 +108,7 @@ describe("exec completion WebChat publication", () => {
         messages: { visibleReplies: "message_tool" },
         session: { store: storePath },
       };
+      acceptSessionEventStoreTestConfig(cfg);
       const deviceIdentityPath = path.join(path.dirname(storePath), "exec-web-device.json");
       const connect = async () => {
         const ws = await harness.openWs({ origin: `http://127.0.0.1:${harness.port}` });

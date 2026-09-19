@@ -75,6 +75,12 @@ Hot reload and secrets reload preserve that distinction: catalog compatibility
 metadata does not become a custom request override that switches a native runtime
 back to OpenClaw.
 
+Changing `session.store` selects a different physical session database; it does
+not migrate conversations or child ownership. Pending notifications from the
+previous store end with a `store-replaced` outcome instead of creating sessions
+in the replacement store. Restarting or reloading models while keeping the same
+store preserves pending notification handoff.
+
 | Category                  | Fields                                                                                                                                                                                                                                                             | Gateway restart needed?                |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------- |
 | Channels                  | `channels.*`, `web` (WhatsApp)                                                                                                                                                                                                                                     | Depends on setting and loaded plugin   |

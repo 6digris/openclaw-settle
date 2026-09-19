@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { installHeartbeatRunnerStoreTestConfig } from "../../test/helpers/infra/heartbeat-runner.js";
 import { resolveAgentMainSessionKey } from "../config/sessions/main-session.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { HeartbeatRunOptions } from "../infra/heartbeat-runner-execution.js";
@@ -6,7 +7,6 @@ import {
   resolveHeartbeatPreflight,
   resolveHeartbeatRunPrompt,
 } from "../infra/heartbeat-runner-prompt.js";
-import { startHeartbeatRunner } from "../infra/heartbeat-runner-scheduler.js";
 import { requestHeartbeat as requestHeartbeatWake } from "../infra/heartbeat-wake.js";
 import {
   drainSystemEvents,
@@ -21,6 +21,7 @@ const { logger, makeStorePath } = setupCronServiceSuite({
   prefix: "openclaw-cron-failure-notification-",
   baseTimeIso: "2026-01-01T00:00:00.000Z",
 });
+const startHeartbeatRunner = installHeartbeatRunnerStoreTestConfig();
 
 describe("CronService failure notification delivery", () => {
   it.each([

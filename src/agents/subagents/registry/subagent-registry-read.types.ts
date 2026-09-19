@@ -99,6 +99,9 @@ export type SubagentRunReadRecord = {
   childSessionKey: string;
   controllerSessionKey?: string;
   requesterSessionKey: string;
+  /** Physical parent stores captured at registration; absent for legacy unbound rows. */
+  controllerStorePath?: string;
+  requesterStorePath?: string;
   /** Effective requester agent, including cron/hook overrides not encoded in the session key. */
   requesterAgentId?: string;
   model?: string;

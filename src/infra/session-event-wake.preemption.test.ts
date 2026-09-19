@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { installSessionEventStoreTestConfig } from "../../test/helpers/infra/session-event-store.js";
 import {
   resetGatewayWorkAdmission,
   tryBeginGatewaySuspendAdmission,
@@ -8,6 +9,8 @@ import {
   requestSessionEventWakeAndWait,
   setSessionEventWakeHandler as setRuntimeSessionEventWakeHandler,
 } from "./session-event-wake.js";
+
+installSessionEventStoreTestConfig();
 
 describe("session event wake preemption retry", () => {
   type SessionEventWakeHandler = Parameters<typeof setRuntimeSessionEventWakeHandler>[0];

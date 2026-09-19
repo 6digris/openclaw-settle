@@ -62,10 +62,8 @@ import type {
   OpenClawPluginDefinition,
   OpenClawPluginMcpServerConnectionResolver,
 } from "../src/plugins/types.js";
-import {
-  listSessionStateEventsSince,
-  registerSessionStateWatch,
-} from "../src/sessions/session-state-events.js";
+import { listSessionStateEventsSince } from "../src/sessions/session-state-events.js";
+import { registerSessionStateWatch } from "../src/sessions/session-state-watches.js";
 import { readSessionUpstreamLink } from "../src/sessions/session-upstream-links.js";
 import { runSessionUpstreamMonitorTick } from "../src/sessions/session-upstream-monitor.test-support.js";
 import {

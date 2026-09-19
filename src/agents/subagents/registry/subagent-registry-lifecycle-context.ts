@@ -64,6 +64,7 @@ export type SubagentLifecycleOptions = {
 
 export interface SubagentLifecycleCommonContext {
   readonly options: SubagentLifecycleOptions;
+  admitRequesterStore(entry: SubagentRunRecord): boolean;
   newerGenerationOwnsSession(entry: SubagentRunRecord): boolean;
 }
 

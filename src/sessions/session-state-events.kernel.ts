@@ -7,7 +7,10 @@ import {
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
 import { normalizeSqliteNumber } from "../infra/sqlite-number.js";
+import { deferSqlitePostCommitPublication } from "../infra/sqlite-post-commit.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
+import { createOpenClawAgentDatabasePathMatcher } from "../state/openclaw-agent-db-registry.js";
+import { ensureColumn, tableHasColumn } from "../state/openclaw-state-db-schema-helpers.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
   SESSION_WATCH_PROVENANCE_AMBIENT_GROUP,
@@ -33,13 +36,16 @@ export type SessionStateEventInput = {
   payload?: Record<string, unknown>;
   occurredAt?: number;
   watcherSessionKeys?: readonly string[];
+  watcherStorePaths?: Readonly<Record<string, string | null>>;
 };
 
 export type SessionStateNotice = {
   watcherSessionKey: string;
+  watcherStorePath: string | null;
   targetSessionKey: string;
   lastSeenSequence: number;
   queueOnly: boolean;
+  storeReplaced?: true;
 };
 
 type SessionStateDatabase = Pick<
@@ -52,6 +58,22 @@ type SessionWatchCursorRow = Selectable<OpenClawStateKyselyDatabase["session_wat
 
 const SESSION_STATE_RETENTION_MS = 30 * 24 * 60 * 60_000;
 const SESSION_STATE_MAX_ROWS = 50_000;
+const watcherStoreSchemas = new WeakSet<DatabaseSync>();
+
+function ensureWatcherStoreSchema(db: DatabaseSync): void {
+  if (watcherStoreSchemas.has(db)) {
+    return;
+  }
+  if (!tableHasColumn(db, "session_watch_cursors", "watcher_store_path")) {
+    ensureColumn(db, "session_watch_cursors", "watcher_store_path TEXT");
+  }
+  // First-use DDL may still roll back with its enclosing signal transaction.
+  if (db.isTransaction) {
+    deferSqlitePostCommitPublication(db, () => watcherStoreSchemas.add(db));
+  } else {
+    watcherStoreSchemas.add(db);
+  }
+}
 
 // Bare keys (session.scope="global") are store-local per agent, but cursors, the
 // system-event queue, and heartbeat wakes are keyed by session key alone. A notice
@@ -65,6 +87,23 @@ export function isNotifiableWatcherKey(watcherSessionKey: string): boolean {
 
 export function getSessionStateKysely(db: DatabaseSync) {
   return getNodeSqliteKysely<SessionStateDatabase>(db);
+}
+
+/** Read actual durable watcher identities without installing or changing their schema. */
+export function listSessionStateWatcherKeysInDatabase(
+  db: DatabaseSync,
+  targetSessionKey?: string,
+): string[] {
+  let query = getSessionStateKysely(db)
+    .selectFrom("session_watch_cursors")
+    .select("watcher_session_key")
+    .distinct();
+  if (targetSessionKey !== undefined) {
+    query = query.where("target_session_key", "=", targetSessionKey);
+  }
+  return executeSqliteQuerySync(db, query)
+    .rows.map((row) => row.watcher_session_key)
+    .filter(isNotifiableWatcherKey);
 }
 
 export function normalizeOptionalSqliteNumber(
@@ -97,7 +136,7 @@ export function readCursor(
   watcherSessionKey: string,
   targetSessionKey: string,
 ): SessionWatchCursorRow | undefined {
-  return executeSqliteQueryTakeFirstSync(
+  const row = executeSqliteQueryTakeFirstSync(
     db,
     getSessionStateKysely(db)
       .selectFrom("session_watch_cursors")
@@ -105,6 +144,7 @@ export function readCursor(
       .where("watcher_session_key", "=", watcherSessionKey)
       .where("target_session_key", "=", targetSessionKey),
   );
+  return row ? { ...row, watcher_store_path: row.watcher_store_path ?? null } : undefined;
 }
 
 export function isAmbientGroupWatchCursor(row: SessionWatchCursorRow | undefined): boolean {
@@ -115,16 +155,19 @@ export function upsertSeedCursor(params: {
   db: DatabaseSync;
   watcherSessionKey: string;
   targetSessionKey: string;
+  watcherStorePath: string | null;
   sequence: number;
   now: number;
   provenance?: SessionWatchCursorProvenance;
 }): void {
+  ensureWatcherStoreSchema(params.db);
   executeSqliteQuerySync(
     params.db,
     getSessionStateKysely(params.db)
       .insertInto("session_watch_cursors")
       .values({
         watcher_session_key: params.watcherSessionKey,
+        watcher_store_path: params.watcherStorePath,
         target_session_key: params.targetSessionKey,
         last_seen_sequence: params.sequence,
         notified_sequence: params.sequence,
@@ -137,6 +180,8 @@ export function upsertSeedCursor(params: {
           last_seen_sequence: params.sequence,
           notified_sequence: params.sequence,
           material_sequence: params.sequence,
+          watcher_store_path: params.watcherStorePath,
+          provenance: params.provenance ?? SESSION_WATCH_PROVENANCE_EXPLICIT,
           updated_at: params.now,
         }),
       ),
@@ -147,11 +192,31 @@ function updateMaterialCursor(params: {
   db: DatabaseSync;
   watcherSessionKey: string;
   targetSessionKey: string;
+  watcherStorePath?: string | null;
   sequence: number;
   now: number;
-}): { lastSeenSequence: number; queueOnly: boolean } {
+}): Pick<
+  SessionStateNotice,
+  "lastSeenSequence" | "queueOnly" | "watcherStorePath" | "storeReplaced"
+> {
   const current = readCursor(params.db, params.watcherSessionKey, params.targetSessionKey);
   const lastSeen = normalizeOptionalSqliteNumber(current?.last_seen_sequence) ?? 0;
+  const sourceStorePath = params.watcherStorePath ?? null;
+  if (
+    !sourceStorePath ||
+    (current &&
+      (!current.watcher_store_path ||
+        !createOpenClawAgentDatabasePathMatcher()(current.watcher_store_path, sourceStorePath)))
+  ) {
+    return {
+      lastSeenSequence: lastSeen,
+      queueOnly: isAmbientGroupWatchCursor(current),
+      watcherStorePath: sourceStorePath,
+      storeReplaced: true,
+    };
+  }
+  ensureWatcherStoreSchema(params.db);
+  const watcherStorePath = current ? current.watcher_store_path : (params.watcherStorePath ?? null);
   const notified = normalizeOptionalSqliteNumber(current?.notified_sequence) ?? 0;
   const frozenNotified = notified === lastSeen ? params.sequence : notified;
   executeSqliteQuerySync(
@@ -160,6 +225,7 @@ function updateMaterialCursor(params: {
       .insertInto("session_watch_cursors")
       .values({
         watcher_session_key: params.watcherSessionKey,
+        watcher_store_path: watcherStorePath,
         target_session_key: params.targetSessionKey,
         last_seen_sequence: lastSeen,
         notified_sequence: frozenNotified,
@@ -175,7 +241,11 @@ function updateMaterialCursor(params: {
         }),
       ),
   );
-  return { lastSeenSequence: lastSeen, queueOnly: isAmbientGroupWatchCursor(current) };
+  return {
+    lastSeenSequence: lastSeen,
+    queueOnly: isAmbientGroupWatchCursor(current),
+    watcherStorePath,
+  };
 }
 
 const SESSION_STATE_OCCURRED_AT_MAX_SKEW_MS = 24 * 60 * 60_000;
@@ -245,13 +315,7 @@ export function recordSessionStateEventInDatabase(
   // union them with producer-passed watchers so sessions_send coordinators get
   // notices without every producer knowing about registration.
   const registeredWatcherKeys = NOTIFY_BY_KIND[input.kind]
-    ? executeSqliteQuerySync(
-        db,
-        getSessionStateKysely(db)
-          .selectFrom("session_watch_cursors")
-          .select("watcher_session_key")
-          .where("target_session_key", "=", input.sessionKey),
-      ).rows.map((row) => row.watcher_session_key)
+    ? listSessionStateWatcherKeysInDatabase(db, input.sessionKey)
     : [];
   const watcherSessionKeys = [
     ...new Set([...(input.watcherSessionKeys ?? []), ...registeredWatcherKeys]),
@@ -261,6 +325,7 @@ export function recordSessionStateEventInDatabase(
       upsertSeedCursor({
         db,
         watcherSessionKey,
+        watcherStorePath: input.watcherStorePaths?.[watcherSessionKey] ?? null,
         targetSessionKey: input.sessionKey,
         sequence: insertedSequence,
         now,
@@ -273,6 +338,7 @@ export function recordSessionStateEventInDatabase(
     const materialCursor = updateMaterialCursor({
       db,
       watcherSessionKey,
+      watcherStorePath: input.watcherStorePaths?.[watcherSessionKey],
       targetSessionKey: input.sessionKey,
       sequence: insertedSequence,
       now,
@@ -280,8 +346,7 @@ export function recordSessionStateEventInDatabase(
     notices.push({
       watcherSessionKey,
       targetSessionKey: input.sessionKey,
-      lastSeenSequence: materialCursor.lastSeenSequence,
-      queueOnly: materialCursor.queueOnly,
+      ...materialCursor,
     });
   }
 

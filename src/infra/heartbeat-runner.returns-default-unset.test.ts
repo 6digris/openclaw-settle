@@ -4,6 +4,10 @@ import path from "node:path";
 // Tests heartbeat runner behavior when defaults are unset.
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  acceptSessionEventStoreTestConfig,
+  installSessionEventStoreTestConfig,
+} from "../../test/helpers/infra/session-event-store.js";
 import { HEARTBEAT_PROMPT } from "../auto-reply/heartbeat.js";
 import type { MsgContext } from "../auto-reply/templating.js";
 import type { ChannelOutboundAdapter } from "../channels/plugins/types.public.js";
@@ -38,6 +42,7 @@ import {
   readSessionStoreForTest,
   seedHeartbeatScratchForTest,
   seedSessionStore,
+  seedWhatsAppSession,
 } from "./heartbeat-runner.test-utils.js";
 import {
   resolveHeartbeatDeliveryTarget,
@@ -242,22 +247,7 @@ function replyBody(
   >;
 }
 
-type HeartbeatSeedOverride = Partial<Parameters<typeof seedSessionStore>[2]>;
-
-async function seedWhatsAppSession(
-  storePath: string,
-  sessionKey: string,
-  entry: HeartbeatSeedOverride = {},
-): Promise<void> {
-  await seedSessionStore(storePath, sessionKey, {
-    sessionId: "sid",
-    updatedAt: Date.now(),
-    lastChannel: "whatsapp",
-    lastProvider: "whatsapp",
-    lastTo: "120363401234567890@g.us",
-    ...entry,
-  });
-}
+installSessionEventStoreTestConfig();
 
 beforeAll(async () => {
   previousRegistry = getActivePluginRegistry();
@@ -1014,6 +1004,7 @@ describe("runHeartbeatOnce", () => {
       session: { store: storePath },
     };
     const sessionKey = resolveMainSessionKey(cfg);
+    acceptSessionEventStoreTestConfig(cfg);
     await seedSessionStore(storePath, sessionKey, {
       sessionId: "sid-no-route-events",
       updatedAt: Date.now(),
@@ -1051,6 +1042,7 @@ describe("runHeartbeatOnce", () => {
       session: { store: storePath },
     };
     const sessionKey = resolveMainSessionKey(cfg);
+    acceptSessionEventStoreTestConfig(cfg);
     await seedSessionStore(storePath, sessionKey, {
       sessionId: "sid-rejected-explicit-target",
       updatedAt: Date.now(),

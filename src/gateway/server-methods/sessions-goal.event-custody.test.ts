@@ -8,6 +8,8 @@ const edge = vi.hoisted(() => ({
   record: vi.fn(),
   emit: vi.fn(),
   current: vi.fn(),
+  resolveStore: vi.fn(),
+  captureWatcherStores: vi.fn(),
   forbidden: vi.fn((): never => {
     throw new Error("Pure Goal RPC control crossed a native or process boundary");
   }),
@@ -16,7 +18,12 @@ const edge = vi.hoisted(() => ({
     storePath: "/synthetic/agents/main/sessions.json",
     storeKey: "agent:main:goal",
     canonicalKey: "agent:main:goal",
-    entry: { sessionId: "goal-session", lifecycleRevision: "original", updatedAt: 1 },
+    entry: {
+      sessionId: "goal-session",
+      lifecycleRevision: "original",
+      updatedAt: 1,
+      spawnedBy: "agent:parent:main",
+    },
   },
 }));
 
@@ -52,6 +59,12 @@ vi.mock("../../config/sessions/goals-operations.js", () => ({
 }));
 vi.mock("../../sessions/session-state-events.js", () => ({
   recordSessionGoalChanged: edge.record,
+}));
+vi.mock("../../config/sessions/session-store-path.js", () => ({
+  resolveSystemEventStorePath: edge.resolveStore,
+}));
+vi.mock("../../infra/system-event-ownership.js", () => ({
+  captureSystemEventStorePaths: edge.captureWatcherStores,
 }));
 vi.mock("../session-plugin-ownership.js", () => ({
   resolvePluginSessionOwnershipError: () => null,
@@ -107,6 +120,10 @@ function invoke() {
 beforeEach(() => {
   vi.clearAllMocks();
   edge.record.mockResolvedValue(undefined);
+  edge.resolveStore.mockReturnValue("/synthetic/original-parent.sqlite");
+  edge.captureWatcherStores.mockReturnValue({
+    "agent:coordinator:main": "/synthetic/original-coordinator.sqlite",
+  });
   edge.emit.mockImplementation(() => undefined);
   edge.mutate.mockResolvedValue({
     replayed: false,
@@ -148,6 +165,14 @@ describe("Goal RPC event custody", () => {
       const { pending, respond } = invoke();
       expect(edge.record).not.toHaveBeenCalled();
       expect(edge.emit).not.toHaveBeenCalled();
+      expect(edge.resolveStore).toHaveBeenCalledExactlyOnceWith({
+        cfg: {},
+        sessionKey: "agent:parent:main",
+      });
+      edge.resolveStore.mockReturnValue("/synthetic/replacement-parent.sqlite");
+      edge.captureWatcherStores.mockReturnValue({
+        "agent:coordinator:main": "/synthetic/replacement-coordinator.sqlite",
+      });
       committed.resolve();
       await emitted.promise;
       expect(order).toEqual(["commit", "event-start", "projection"]);
@@ -157,6 +182,14 @@ describe("Goal RPC event custody", () => {
       expect(respond).toHaveBeenCalledOnce();
       expect(respond.mock.calls[0]?.[0]).toBe(!broadcastFails);
       expect(edge.record).toHaveBeenCalledOnce();
+      expect(edge.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          watcherStorePaths: {
+            "agent:parent:main": "/synthetic/original-parent.sqlite",
+            "agent:coordinator:main": "/synthetic/original-coordinator.sqlite",
+          },
+        }),
+      );
     },
   );
 

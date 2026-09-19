@@ -1,3 +1,4 @@
+import path from "node:path";
 import { setImmediate as nextTask } from "node:timers/promises";
 // Subagent registry persistence-resume tests cover restoring SQLite-backed child runs.
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -139,7 +140,7 @@ describe("subagent registry persistence resume", () => {
     { name: "unspecified completion" },
     { name: "collector", expectsCompletionMessage: false, collect: true },
   ])("preserves the registered parent turn through SQLite reopen: $name", async (options) => {
-    await withRegistryState(async () => {
+    await withRegistryState(async (stateDir) => {
       vi.mocked(callGatewayModule.callGateway).mockImplementation(() => new Promise(() => {}));
       const { name, ...registration } = options;
       const childSessionKey = "agent:main:subagent:parent-association";
@@ -155,6 +156,14 @@ describe("subagent registry persistence resume", () => {
       });
       const expected = {
         requesterTurnRunId: "parent-turn",
+        requesterStorePath: path.join(stateDir, "agents", "main", "agent", "openclaw-agent.sqlite"),
+        controllerStorePath: path.join(
+          stateDir,
+          "agents",
+          "main",
+          "agent",
+          "openclaw-agent.sqlite",
+        ),
         completion: { required: registration.expectsCompletionMessage === true },
         delivery: {
           status: registration.expectsCompletionMessage === false ? "not_required" : "pending",

@@ -1,17 +1,27 @@
 // Active subagent prompt tests cover the compact current-turn facts that tells
 // a parent session which child runs are still in flight.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { resolveSessionStorePathCore } from "../../../config/sessions/paths.js";
+import { resolveSqliteTargetFromSessionStorePath } from "../../../config/sessions/session-sqlite-target.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { SubagentRunRecordOverrides } from "../../subagent-test-fixtures.test-helpers.js";
 import { buildActiveSubagentRuntimeContext } from "./subagent-active-context.js";
 import {
-  addSubagentRunForTests,
+  addSubagentRunForTests as addRegistryRun,
   resetSubagentRegistryForTests,
 } from "./subagent-registry.test-helpers.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 /** Keep in sync with module-private RECENT_PROMPT_MAX_ENTRIES. */
 const RECENT_PROMPT_MAX_ENTRIES = 8;
+
+function addSubagentRunForTests(entry: Parameters<typeof addRegistryRun>[0]) {
+  const storePath = resolveSqliteTargetFromSessionStorePath(
+    resolveSessionStorePathCore(undefined, { agentId: "main" }),
+    { agentId: "main" },
+  ).path;
+  addRegistryRun({ requesterStorePath: storePath, controllerStorePath: storePath, ...entry });
+}
 
 beforeEach(() => {
   resetSubagentRegistryForTests();

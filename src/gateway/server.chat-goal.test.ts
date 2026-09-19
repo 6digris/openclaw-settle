@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  acceptSessionEventStoreTestConfig,
+  captureSessionEventStoreTestConfig,
+} from "../../test/helpers/infra/session-event-store.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
 import * as embeddedAgent from "../agents/embedded-agent.js";
@@ -11,17 +16,21 @@ import {
   loadSessionEntry,
   loadTranscriptEventsSync,
   patchSessionEntryCore,
+  upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
 import { runExclusiveSessionStoreWrite } from "../config/sessions/store-writer.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { waitForGatewayActiveWork } from "../infra/gateway-active-work.js";
+import { peekSystemEventEntries, resetSystemEventsForTest } from "../infra/system-events.js";
 import { initializeGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import {
   getSessionWorkAdmissionRelease,
   isSessionWorkAdmissionActive,
 } from "../sessions/session-lifecycle-admission.js";
 import { listSessionStateEventsSince } from "../sessions/session-state-events.js";
+import { registerSessionStateWatch } from "../sessions/session-state-watches.js";
+import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import { handleGatewayRequest } from "./server-methods.js";
@@ -228,6 +237,131 @@ async function waitForModelRun(count = 1) {
 }
 
 describe("Goal chat admission and continuation", () => {
+  it("keeps the Goal parent store captured before asynchronous chat admission", async () => {
+    const originalMainDir = path.dirname(storePath);
+    const root = temporaryDirs.make("openclaw-goal-parent-store-");
+    const original = path.join(root, "original-parent");
+    const replacement = path.join(root, "replacement-parent");
+    const alias = path.join(root, "parent");
+    await fs.mkdir(original);
+    await fs.mkdir(replacement);
+    await fs.symlink(original, alias, process.platform === "win32" ? "junction" : "dir");
+    await fs.symlink(
+      originalMainDir,
+      path.join(root, "main"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    const storeTemplate = path.join(root, "{agentId}", "sessions.json");
+    const parentStore = storeTemplate.replace("{agentId}", "parent");
+    const parentKey = "agent:parent:main";
+    storePath = storeTemplate.replace("{agentId}", "main");
+    testState.sessionStorePath = storeTemplate;
+    const restoreConfig = captureSessionEventStoreTestConfig();
+    const admissionEntered = createDeferred();
+    const releaseAdmission = createDeferred();
+    const releaseModel = createDeferred();
+    modelRelease = releaseModel.promise;
+    let send: Promise<void> | undefined;
+    try {
+      await writeSessionStore({
+        storePath,
+        entries: {
+          [sessionKey]: {
+            sessionId,
+            updatedAt: Date.now(),
+            parentSessionKey: parentKey,
+            status: "done",
+          },
+        },
+      });
+      await upsertSessionEntryCore(
+        { sessionKey: parentKey, agentId: "parent", storePath: parentStore },
+        { sessionId: "original-parent", updatedAt: Date.now() },
+      );
+      await prepareGatewayReplyRuntimeForTest({ force: true });
+      const config = getRuntimeConfig();
+      acceptSessionEventStoreTestConfig(config);
+      getSessionRowProjection(context)?.dispose();
+      context = createDirectChatContext({ getRuntimeConfig });
+      const projection = await createSessionRowProjection({
+        cfg: config,
+        getConfig: getRuntimeConfig,
+        context,
+      });
+      bindSessionRowProjection(context, () => projection);
+      expect(
+        registerSessionStateWatch({ watcherSessionKey: parentKey, targetSessionKey: sessionKey }),
+      ).toBe(true);
+      const params = goalStart("Keep the original parent notification owner");
+      const respond = vi.fn<RespondFn>();
+      send = handleChatSend(
+        {
+          req: { type: "req", id: "goal-parent-store", method: "chat.send", params },
+          params,
+          client,
+          context,
+          respond,
+          isWebchatConnect: () => true,
+        },
+        async () => {
+          admissionEntered.resolve();
+          await releaseAdmission.promise;
+          return true;
+        },
+      );
+      await Promise.race([
+        admissionEntered.promise,
+        send.then(() => {
+          throw new Error("Goal did not reach the admission pause");
+        }),
+      ]);
+      const replacementAlias = path.join(root, "parent-next");
+      await fs.symlink(
+        replacement,
+        replacementAlias,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+      await fs.rename(replacementAlias, alias);
+      acceptSessionEventStoreTestConfig({ ...config });
+      await upsertSessionEntryCore(
+        { sessionKey: parentKey, agentId: "parent", storePath: parentStore },
+        { sessionId: "replacement-parent", updatedAt: Date.now() },
+      );
+      expect(
+        registerSessionStateWatch({ watcherSessionKey: parentKey, targetSessionKey: sessionKey }),
+      ).toBe(true);
+      const { db } = openOpenClawStateDatabase();
+      const readWatch = () =>
+        db
+          .prepare(
+            "SELECT * FROM session_watch_cursors WHERE watcher_session_key = ? AND target_session_key = ?",
+          )
+          .get(parentKey, sessionKey);
+      const replacementWatch = readWatch();
+      releaseAdmission.resolve();
+      await send;
+
+      expect(respond.mock.calls[0]?.[0]).toBe(true);
+      expect(loadSessionEntry(scope())?.goal).toMatchObject({
+        objective: params.message,
+        status: "active",
+      });
+      expect(listSessionStateEventsSince(sessionKey, "main", 0).events).toContainEqual(
+        expect.objectContaining({ kind: "goal_changed", sessionId }),
+      );
+      expect.soft(readWatch()).toEqual(replacementWatch);
+      expect(peekSystemEventEntries(parentKey)).toEqual([]);
+      await waitForModelRun();
+    } finally {
+      releaseAdmission.resolve();
+      releaseModel.resolve();
+      await Promise.allSettled([send]);
+      await waitForDispatchEnd();
+      resetSystemEventsForTest();
+      restoreConfig();
+    }
+  });
+
   it("starts the first message as a Goal with an ACP-scoped hook and replays without a second session or run", async () => {
     await useFreshSessionStore();
     const acpDispatch = installReplyDispatchHook(["acp"]);

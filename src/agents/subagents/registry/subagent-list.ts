@@ -5,7 +5,6 @@
  */
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { resolveSubagentLabel } from "../../../auto-reply/reply/subagents-utils.js";
-import { resolveSessionStorePathCore } from "../../../config/sessions/paths.js";
 import { listSessionEntriesReadOnly } from "../../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
@@ -36,6 +35,7 @@ import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { shouldKeepSubagentRunChildLink } from "./subagent-run-liveness.js";
 import { buildSubagentRunView } from "./subagent-run-view.js";
 import { resolveSubagentDisplayStatus } from "./subagent-session-metrics.js";
+import { createSubagentRunStoreScope } from "./subagent-session-read-scope.js";
 
 type SubagentListItem = {
   index: number;
@@ -67,14 +67,16 @@ type BuiltSubagentList = {
 };
 
 function loadSubagentSessionEntries(
-  cfg: OpenClawConfig,
+  storeScope: ReturnType<typeof createSubagentRunStoreScope>,
   runs: readonly SubagentRunRecord[],
 ): Map<string, SessionEntry> {
   const keysByStore = new Map<string, string[]>();
   for (const run of runs) {
-    const storePath = resolveSessionStorePathCore(cfg.session?.store, {
-      agentId: parseAgentSessionKey(run.childSessionKey)?.agentId,
-    });
+    const agentId = parseAgentSessionKey(run.childSessionKey)?.agentId ?? run.requesterAgentId;
+    if (!agentId) {
+      continue;
+    }
+    const storePath = storeScope.resolveStorePath(run.childSessionKey, agentId);
     const keys = keysByStore.get(storePath);
     if (keys) {
       keys.push(run.childSessionKey);
@@ -100,41 +102,31 @@ function loadSubagentSessionEntries(
 /** Build child-session indexes from the latest run associated with each child key. */
 function buildLatestSubagentRunIndex(
   runs: Map<string, SubagentRunReadRecord>,
+  storeScope: ReturnType<typeof createSubagentRunStoreScope>,
   options?: { now?: number },
 ) {
   const now = options?.now ?? Date.now();
   const readIndex = buildSubagentRunReadIndexFromRuns({
     runs,
-    inMemoryRuns: subagentRuns.values(),
+    inMemoryRuns: [...subagentRuns.values()].filter((entry) => runs.has(entry.runId)),
+    storeScope,
     now,
   });
 
   const childSessionsByController = new Map<string, string[]>();
-  for (const [childSessionKey, entry] of readIndex.latestRunsByChildSessionKey) {
-    const controllerSessionKey =
-      entry.controllerSessionKey?.trim() || entry.requesterSessionKey?.trim();
-    if (!controllerSessionKey) {
-      continue;
+  for (const [controller, children] of readIndex.latestRunsByControllerSessionKey) {
+    const childSessions = children
+      .filter((entry) =>
+        shouldKeepSubagentRunChildLink(entry, {
+          activeDescendants: readIndex.countActiveDescendantRuns(entry.childSessionKey),
+          now,
+        }),
+      )
+      .map((entry) => entry.childSessionKey)
+      .toSorted();
+    if (childSessions.length > 0) {
+      childSessionsByController.set(controller, childSessions);
     }
-    if (
-      !shouldKeepSubagentRunChildLink(entry, {
-        activeDescendants: readIndex.countActiveDescendantRuns(childSessionKey),
-        now,
-      })
-    ) {
-      // Completed child links age out unless active descendants still depend on
-      // the controller relationship.
-      continue;
-    }
-    const existing = childSessionsByController.get(controllerSessionKey);
-    if (existing) {
-      existing.push(childSessionKey);
-      continue;
-    }
-    childSessionsByController.set(controllerSessionKey, [childSessionKey]);
-  }
-  for (const [controllerSessionKey, childSessions] of childSessionsByController) {
-    childSessionsByController.set(controllerSessionKey, childSessions.toSorted());
   }
 
   return {
@@ -192,10 +184,15 @@ export function buildSubagentList(params: {
   recentMinutes: number;
   taskMaxChars?: number;
   readSnapshot?: Map<string, SubagentRunReadRecord>;
+  storeScope?: ReturnType<typeof createSubagentRunStoreScope>;
 }): BuiltSubagentList {
   const now = Date.now();
+  const storeScope = params.storeScope ?? createSubagentRunStoreScope(params.cfg);
   const snapshot = params.readSnapshot ?? getSubagentSessionListRunsSnapshotForRead(subagentRuns);
-  const { childSessionsByController, readIndex } = buildLatestSubagentRunIndex(snapshot);
+  const { childSessionsByController, readIndex } = buildLatestSubagentRunIndex(
+    snapshot,
+    storeScope,
+  );
   const pendingDescendantCount = (sessionKey: string) =>
     readIndex.countPendingDescendantRuns(sessionKey);
   const runView = buildSubagentRunView({
@@ -204,7 +201,7 @@ export function buildSubagentList(params: {
     countPendingDescendantRuns: pendingDescendantCount,
     now,
   });
-  const sessionEntries = loadSubagentSessionEntries(params.cfg, [
+  const sessionEntries = loadSubagentSessionEntries(storeScope, [
     ...runView.active,
     ...runView.recent,
   ]);
@@ -214,10 +211,20 @@ export function buildSubagentList(params: {
     const totalTokens = resolveTotalTokens(sessionEntry);
     const usageText = formatTokenUsageDisplay(sessionEntry);
     const pendingDescendants = pendingDescendantCount(entry.childSessionKey);
+    const requesterChildren =
+      entry.pauseReason === "sessions_yield"
+        ? new Set(
+            (readIndex.latestRunsByRequesterSessionKey.get(entry.childSessionKey) ?? []).map(
+              (child) => child.runId,
+            ),
+          )
+        : undefined;
     const execution = observeSubagentExecution(
       entry,
-      entry.pauseReason === "sessions_yield"
-        ? getSubagentRunsSnapshotForSession(subagentRuns, entry.childSessionKey).values()
+      requesterChildren
+        ? [
+            ...getSubagentRunsSnapshotForSession(subagentRuns, entry.childSessionKey).values(),
+          ].filter((child) => requesterChildren.has(child.runId))
         : [],
     );
     const status = resolveSubagentDisplayStatus(

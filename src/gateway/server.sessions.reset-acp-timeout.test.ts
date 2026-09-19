@@ -13,8 +13,8 @@ import { drainSystemEvents, peekSystemEvents } from "../infra/system-events.js";
 import {
   acknowledgeSessionStateNotices,
   recordSessionStateEvent,
-  registerSessionStateWatch,
 } from "../sessions/session-state-events.js";
+import { registerSessionStateWatch } from "../sessions/session-state-watches.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { onGatewaySessionReset } from "./session-reset-notifications.js";
 import { writeSessionStore } from "./test-helpers.js";

@@ -54,6 +54,12 @@ A watcher is a session that holds a cursor (`session_watch_cursors`) on a target
 
 Watcher identity must be an agent-qualified session key. Under `session.scope="global"` the shared `global` key is ambiguous across agents, so such sessions get the durable log and `changesSince` but no proactive notices.
 
+Each watch also belongs to the physical store of its watcher. Changing
+`session.store` does not transfer that watch or its queued notices to a different
+conversation with the same key. Older watches without recorded store ownership
+retain their history but need a fresh explicit watch registration to resume
+proactive notices; OpenClaw does not guess which store owns them.
+
 Watches clean themselves up: cursor rows expire with signal-log retention, are removed when the watcher session resets, and are removed with either session. A reset that has committed still clears its watches if a later cleanup step fails. There is no unwatch verb in v1.
 
 Watched Claude, Codex, OpenCode, and Pi sessions adopted from a session catalog are checked for direct upstream human activity on a fixed cadence. Pi monitoring starts after the session is in its append-only v3 format. Detected activity enters the same signal log and watcher flow as other direct human turns.

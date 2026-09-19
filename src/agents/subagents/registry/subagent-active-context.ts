@@ -4,6 +4,8 @@
  * Renders sanitized runtime-owned subagent facts for the current-turn carrier.
  */
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { resolveSqliteTargetFromSessionStorePath } from "../../../config/sessions/session-sqlite-target.js";
+import { resolveSessionStorePathForScope } from "../../../config/sessions/session-store-path.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { parseAgentSessionKey } from "../../../routing/session-key.js";
 import { sanitizeForPromptLiteral } from "../../sanitize-for-prompt.js";
@@ -22,6 +24,7 @@ import {
 } from "./subagent-registry-state.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { sortSubagentRuns } from "./subagent-run-view.js";
+import { createSubagentRunStoreScope } from "./subagent-session-read-scope.js";
 
 // Prompt data is sanitized then JSON-quoted so active subagent state cannot add
 // executable prompt instructions through labels or task text.
@@ -75,6 +78,7 @@ export function buildActiveSubagentRuntimeContext(params: {
   cfg: OpenClawConfig;
   controllerSessionKey?: string;
   controllerAgentId?: string;
+  storePath?: string;
   recentMinutes?: number;
   includeSpawnContext?: boolean;
 }): string | undefined {
@@ -89,15 +93,29 @@ export function buildActiveSubagentRuntimeContext(params: {
     mainKey,
   });
   const agentId = params.controllerAgentId ?? parseAgentSessionKey(controllerSessionKey)?.agentId;
+  const storePath = agentId
+    ? resolveSqliteTargetFromSessionStorePath(
+        resolveSessionStorePathForScope(
+          { agentId, sessionKey: controllerSessionKey, storePath: params.storePath },
+          params.cfg,
+        ),
+        { agentId },
+      ).path
+    : undefined;
   const snapshot = agentId
-    ? getSubagentRunsSnapshotForSession(subagentRuns, controllerSessionKey)
+    ? getSubagentRunsSnapshotForSession(subagentRuns, controllerSessionKey, storePath)
     : new Map<string, SubagentRunRecord>();
-  const readSnapshot = getSubagentSessionListRunsSnapshotForRead(subagentRuns);
+  const storeScope = createSubagentRunStoreScope(
+    params.cfg,
+    agentId && storePath ? { sessionKey: controllerSessionKey, agentId, storePath } : undefined,
+  );
+  const readSnapshot = new Map(getSubagentSessionListRunsSnapshotForRead(subagentRuns));
   for (const [runId, entry] of snapshot) {
     readSnapshot.set(runId, entry);
   }
   const latest = buildSubagentRunReadIndexFromRuns({
     runs: readSnapshot,
+    storeScope,
   }).latestRunsByChildSessionKey;
   const visible = agentId
     ? [...snapshot.values()].filter((entry) =>
@@ -128,6 +146,7 @@ export function buildActiveSubagentRuntimeContext(params: {
     recentMinutes,
     taskMaxChars: 96,
     readSnapshot,
+    storeScope,
   });
   // buildSubagentList returns recent runs in registry order, so sort before
   // capping to keep the prompt block deterministic across turns.

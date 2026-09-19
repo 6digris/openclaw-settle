@@ -8,10 +8,12 @@ import {
   normalizeVerboseLevel,
 } from "../../auto-reply/thinking.js";
 import { formatCliCommand } from "../../cli/command-format.js";
+import { resolveSystemEventStorePath } from "../../config/sessions/session-store-path.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveAgentExplicitRecipientSession } from "../../infra/outbound/agent-delivery.js";
 import { buildOutboundSessionContext } from "../../infra/outbound/session-context.js";
+import { captureSystemEventStorePaths } from "../../infra/system-event-ownership.js";
 import { resolvePluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.js";
 import {
   classifySessionKeyShape,
@@ -135,6 +137,7 @@ export async function prepareAgentCommandExecution(
         ? { channel: recipientChannel, accountId: opts.accountId }
         : undefined,
   });
+  const watcherStorePaths = { ...captureSystemEventStorePaths(cfg) };
   const normalizedSpawned = normalizeSpawnedRunMetadata({
     spawnedBy: opts.spawnedBy,
     groupId: opts.groupId,
@@ -259,6 +262,11 @@ export async function prepareAgentCommandExecution(
     persistedThinking,
     persistedVerbose,
   } = sessionResolution;
+  const watcherSessionKey = sessionEntryRaw?.spawnedBy ?? sessionEntryRaw?.parentSessionKey;
+  if (watcherSessionKey && watcherStorePaths[watcherSessionKey] === undefined) {
+    watcherStorePaths[watcherSessionKey] =
+      resolveSystemEventStorePath({ cfg, sessionKey: watcherSessionKey }) ?? null;
+  }
   const harnessSessionError = sessionKey
     ? resolveAgentHarnessSessionContextError(sessionKey, sessionEntryRaw)
     : undefined;
@@ -448,6 +456,7 @@ export async function prepareAgentCommandExecution(
       sessionKey,
       sessionEntry: sessionEntryRaw,
       sessionStore,
+      watcherStorePaths,
       storePath,
       isNewSession,
       previousSessionId,

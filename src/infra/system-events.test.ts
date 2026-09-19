@@ -1,7 +1,7 @@
-// Covers system event queue routing, draining, and formatting.
-
 import { expectDefined } from "@openclaw/normalization-core";
+// Covers system event queue routing, draining, and formatting.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { installSessionEventStoreTestConfig } from "../../test/helpers/infra/session-event-store.js";
 import { drainFormattedSystemEvents } from "../auto-reply/reply/session-system-events.js";
 import type { OpenClawConfig } from "../config/config.js";
 import {
@@ -56,6 +56,8 @@ async function drainFormattedEvents(
     ...params,
   });
 }
+
+installSessionEventStoreTestConfig();
 
 describe("system events (session routing)", () => {
   beforeEach(() => {

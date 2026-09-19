@@ -40,6 +40,8 @@ export type HeartbeatWakeRequest = {
   reason?: string;
   agentId?: string;
   sessionKey?: string;
+  /** Physical store captured by the producer; null is retained legacy work without provenance. */
+  sessionStorePath?: string | null;
   heartbeat?: HeartbeatWakeOverride;
   /** Persisted cron monitor cadence carried with a scheduled heartbeat tick. */
   scheduledEveryMs?: number;

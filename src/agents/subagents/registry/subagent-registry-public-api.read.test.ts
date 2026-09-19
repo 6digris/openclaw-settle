@@ -1,3 +1,5 @@
+import { mkdirSync, symlinkSync } from "node:fs";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
 import {
@@ -5,9 +7,11 @@ import {
   openOpenClawStateDatabase,
 } from "../../../state/openclaw-state-db.js";
 import { withEnvAsync } from "../../../test-utils/env.js";
+import { buildControlledSubagentRunsReadContext } from "./subagent-control-scope.js";
 import { createSubagentRegistryPublicApi } from "./subagent-registry-public-api.js";
 import {
   clearSubagentRunsReadCacheForTest,
+  getSubagentRunsSnapshotForSession,
   getSubagentSessionListRunsSnapshotForRead,
 } from "./subagent-registry-state.js";
 import { saveSubagentRegistryToSqlite } from "./subagent-registry.store.sqlite.js";
@@ -67,6 +71,45 @@ async function withPersistedReads(run: () => Promise<void>): Promise<void> {
 }
 
 describe("subagent registry known-run reads", () => {
+  it("keeps parent-store history across reopen without lending it to the same key in another store", async () => {
+    await withPersistedReads(async () => {
+      const parentKey = "agent:main:main";
+      const root = tempDirs.make("openclaw-subagent-parent-stores-");
+      const originalRoot = path.join(root, "original");
+      const aliasRoot = path.join(root, "alias");
+      mkdirSync(originalRoot);
+      symlinkSync(originalRoot, aliasRoot, "junction");
+      const original = path.join(originalRoot, "openclaw-agent.sqlite");
+      const alias = path.join(aliasRoot, "openclaw-agent.sqlite");
+      const replacement = path.join(root, "replacement.sqlite");
+      const bound = createRun("bound", {
+        requesterStorePath: original,
+        controllerStorePath: original,
+      });
+      const unknown = createRun("legacy-unbound");
+      saveSubagentRegistryToSqlite(new Map([bound, unknown].map((run) => [run.runId, run])));
+      closeOpenClawStateDatabaseForTest();
+      clearSubagentRunsReadCacheForTest();
+
+      const read = (storePath: string) => [
+        ...getSubagentRunsSnapshotForSession(new Map(), parentKey, storePath).keys(),
+      ];
+      expect(read(replacement)).toEqual([]);
+      expect(read(original)).toEqual(["bound"]);
+      expect(read(alias)).toEqual(["bound"]);
+      const control = (store: string) =>
+        buildControlledSubagentRunsReadContext(parentKey, "main", { session: { store } });
+      expect(control(original).runs.map((run) => run.runId)).toEqual(["bound"]);
+      expect(control(replacement).runs).toEqual([]);
+      expect(control(replacement).countPendingDescendantRuns(parentKey)).toBe(0);
+      expect(createReadApi().getSubagentRunByRunId("legacy-unbound")).toBeDefined();
+      expect(createReadApi().getSubagentRunByRunId("bound")).toMatchObject({
+        requesterStorePath: original,
+        controllerStorePath: original,
+      });
+    });
+  });
+
   it("resolves retained collector aliases without hydrating unrelated results", async () => {
     await withPersistedReads(async () => {
       const retainedResult = "unrelated-retained-result".repeat(128);

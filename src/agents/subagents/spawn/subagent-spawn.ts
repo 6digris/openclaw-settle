@@ -3,7 +3,6 @@
  *
  * Validates spawn requests, prepares child sessions, stages attachments, binds delivery context, and registers runs.
  */
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { isAcpRuntimeSpawnAvailable } from "../../../acp/runtime/availability.js";
 import { isExecutionIdentityCollectionEnabled } from "../../../audit/audit-config.js";
 import { resolveSessionStorePathCore } from "../../../config/sessions/paths.js";
@@ -17,7 +16,6 @@ import { recordSessionCreated } from "../../../sessions/session-created.js";
 import { recordSessionParticipantBestEffort } from "../../../sessions/session-participant-recording.js";
 import { recordSubagentSpawned } from "../../../sessions/session-state-events.js";
 import { hasDeliveryTargetFields } from "../../../utils/delivery-context.shared.js";
-import { hasPromptUnsafeControlCharacter } from "../../sanitize-for-prompt.js";
 import {
   runSpawnPipeline,
   type SpawnBackendAdapter,
@@ -32,7 +30,7 @@ import {
 import { cleanupMaterializedSubagentAttachments } from "../subagent-attachment-cleanup.js";
 import { activateSwarmRun, removeQueuedSwarmRun } from "../swarm/swarm-scheduler.js";
 import { readParentExecutionIdentity } from "./execution-identity-spawn-context.js";
-import { materializeSubagentAttachments } from "./subagent-attachments.js";
+import { materializeSubagentAttachments, sanitizeMountPathHint } from "./subagent-attachments.js";
 import { resolveSubagentChildPlan } from "./subagent-spawn-child-plan.js";
 import {
   cleanupFailedSpawnBeforeAgentStart,
@@ -67,18 +65,6 @@ import { buildSubagentSpawnEnvelope } from "./subagent-system-prompt.js";
 
 export { SUBAGENT_SPAWN_CONTEXT_MODES, SUBAGENT_SPAWN_MODES } from "./subagent-spawn.types.js";
 
-function sanitizeMountPathHint(value?: string): string | undefined {
-  const trimmed = normalizeOptionalString(value);
-  if (
-    !trimmed ||
-    hasPromptUnsafeControlCharacter(trimmed) ||
-    !/^[A-Za-z0-9._\-/:]+$/.test(trimmed)
-  ) {
-    return undefined;
-  }
-  return trimmed;
-}
-
 export async function spawnSubagentDirect(
   params: SpawnSubagentParams,
   ctx: SpawnSubagentContext,
@@ -112,6 +98,7 @@ export async function spawnSubagentDirect(
       ownership,
       requesterAgentId,
       targetAgentId,
+      parentStorePaths,
     },
     swarm: {
       config: swarmConfig,
@@ -355,6 +342,7 @@ export async function spawnSubagentDirect(
       });
     }
     recordSubagentSpawned({
+      watcherStorePath: parentStorePaths.watcher,
       childSessionKey,
       childRunId,
       requesterSessionKey: requesterInternalKey,
@@ -531,6 +519,8 @@ export async function spawnSubagentDirect(
           childSessionKey,
           controllerSessionKey: ownership.controllerSessionKey,
           requesterSessionKey: ownership.completionRequesterSessionKey,
+          requesterStorePath: parentStorePaths.requester,
+          controllerStorePath: parentStorePaths.controller,
           requesterOrigin,
           progressOrigin,
           requesterDisplayKey: ownership.completionRequesterDisplayKey,

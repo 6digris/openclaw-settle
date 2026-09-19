@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { installSessionEventStoreTestConfig } from "../../test/helpers/infra/session-event-store.js";
+import { resolveSystemEventStorePath } from "../config/sessions/session-store-path.js";
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
 import {
   HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT,
   requestHeartbeat,
   setHeartbeatWakeHandler as setRuntimeHeartbeatWakeHandler,
 } from "./heartbeat-wake.js";
+
+installSessionEventStoreTestConfig();
 
 describe("heartbeat wake preemption retry", () => {
   type HeartbeatWakeHandler = Parameters<typeof setRuntimeHeartbeatWakeHandler>[0];
@@ -112,6 +116,7 @@ describe("heartbeat wake preemption retry", () => {
 
   it("lets a fresh manual wake bypass a scheduled idle grace", async () => {
     const target = { agentId: "main", sessionKey: "agent:main:main" };
+    const sessionStorePath = resolveSystemEventStorePath(target);
     const handler = vi
       .fn()
       .mockResolvedValueOnce({ status: "skipped", reason: HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT })
@@ -122,11 +127,12 @@ describe("heartbeat wake preemption retry", () => {
 
     requestHeartbeat(wake("manual", { ...target, coalesceMs: 0 }));
     await vi.advanceTimersByTimeAsync(1);
-    expect(handler.mock.calls[1]?.[0]).toEqual(wake("manual", target));
+    expect(handler.mock.calls[1]?.[0]).toEqual({ ...wake("manual", target), sessionStorePath });
 
     await vi.advanceTimersByTimeAsync(59_998);
     expect(handler.mock.calls[2]?.[0]).toEqual({
       ...wake("interval", target),
+      sessionStorePath,
       retainedWork: true,
     });
   });

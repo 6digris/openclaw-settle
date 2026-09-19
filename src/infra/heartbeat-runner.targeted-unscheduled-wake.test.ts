@@ -3,11 +3,14 @@
 // heartbeat-runner.scheduler.test.ts so that file stays inside the oxlint
 // max-lines budget.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { installHeartbeatRunnerStoreTestConfig } from "../../test/helpers/infra/heartbeat-runner.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { resetConfigRuntimeState, type OpenClawConfig } from "../config/config.js";
 import { wake as wakeCronService } from "../cron/service/wake.js";
-import { setHeartbeatsEnabled, startHeartbeatRunner } from "./heartbeat-runner.js";
+import { setHeartbeatsEnabled } from "./heartbeat-runner.js";
 import { requestHeartbeat } from "./heartbeat-wake.js";
+
+const startHeartbeatRunner = installHeartbeatRunnerStoreTestConfig();
 
 describe("startHeartbeatRunner targeted unscheduled wake dispatch", () => {
   type RunOnce = Parameters<typeof startHeartbeatRunner>[0]["runOnce"];
