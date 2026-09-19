@@ -371,7 +371,9 @@ cat "$root/result.json"
         assert_eq!(
             fs::read_to_string(fixture.0.join("calls")).unwrap(),
             ["inspect", "install", "verify"]
-                .map(|action| format!("browser extension setup --action {action} --json --wait-ms 1000\n"))
+                .map(|action| format!(
+                    "browser extension setup --action {action} --json --wait-ms 1000\n"
+                ))
                 .concat()
         );
         fs::write(fixture.0.join("fail"), "").unwrap();
