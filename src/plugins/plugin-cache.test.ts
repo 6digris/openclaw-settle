@@ -53,11 +53,26 @@ describe("plugin package facts", () => {
       path.relative(process.cwd(), packageDir),
       ...(process.platform === "win32" ? [packageDir.toUpperCase()] : []),
     ];
+    const nativeRealpath = vi.spyOn(fs.realpathSync, "native");
     for (const targetPath of paths) {
       const expected = fs.realpathSync(targetPath);
-      withPluginCache(createPluginCache(), () => {
-        expect(pluginCacheRealpathSync(targetPath)).toBe(expected);
-      });
+      const nativeExpected = fs.realpathSync.native(targetPath);
+      for (const nativeFirst of [false, true]) {
+        nativeRealpath.mockClear();
+        const cache = createPluginCache();
+        withPluginCache(cache, () => {
+          if (nativeFirst) {
+            expect(pluginCacheRealpathSync(targetPath, true)).toBe(nativeExpected);
+          }
+          expect(pluginCacheRealpathSync(targetPath)).toBe(expected);
+          expect(pluginCacheRealpathSync(targetPath, true)).toBe(nativeExpected);
+          expect(nativeRealpath).toHaveBeenCalledTimes(1);
+          invalidatePluginCacheMetadata(cache);
+          expect(pluginCacheRealpathSync(targetPath)).toBe(expected);
+          expect(pluginCacheRealpathSync(targetPath, true)).toBe(nativeExpected);
+          expect(nativeRealpath).toHaveBeenCalledTimes(2);
+        });
+      }
     }
   });
 
@@ -89,10 +104,16 @@ describe("plugin package facts", () => {
         }),
       );
       fs.writeFileSync(providerDiscoverySource, "export default {};\n", "utf8");
+      const nativeRealpath = fs.realpathSync.native;
       const nativeRealpathSpy = vi.spyOn(fs.realpathSync, "native");
       if (resolver === "javascript") {
-        nativeRealpathSpy.mockImplementation(() => {
-          throw new Error("native realpath unavailable");
+        nativeRealpathSpy.mockImplementation((filePath, options) => {
+          // Exercise metadata fallback without disabling fs-safe's native
+          // canonicalization when it admits the manifest descriptor.
+          if (filePath === providerDiscoverySource) {
+            throw new Error("native realpath unavailable");
+          }
+          return nativeRealpath(filePath, options);
         });
       }
       const realpathSpy = vi.spyOn(fs, "realpathSync");

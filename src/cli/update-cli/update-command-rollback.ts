@@ -64,6 +64,7 @@ import {
   resolveUpdatedGatewayRestartPort,
   type PreManagedServiceStop,
 } from "./update-command-service.js";
+import { settleUpdateWriterCustodyForActivation } from "./update-command-writer-custody.js";
 /** Restore the verified state set before restarting the retained package. */
 export async function rollbackFailedUpdate(params: {
   result: UpdateRunResult;
@@ -246,7 +247,7 @@ export async function rollbackFailedUpdate(params: {
       const supported = params.previousSchemaVersions?.[kind];
       if (supported === undefined || version > supported) {
         throw new Error(
-          `Automatic rollback refused: newly created ${kind} database ${entry.path} uses schema ${version}; retained previous package support is ${supported ?? "unknown"}. Keep the candidate installed.`,
+          `Automatic rollback refused: newly created ${kind} database ${entry.path} uses schema ${version}; retained previous package support is ${supported ?? "unknown"}. Keep the update installed.`,
         );
       }
     }
@@ -334,7 +335,7 @@ export async function rollbackFailedUpdate(params: {
       stopped.serviceMutationAllowed === false ||
       (stopped.running && !stopped.stopped)
     ) {
-      throw new Error(stopped.blockMessage ?? "Candidate service could not be stopped safely.");
+      throw new Error(stopped.blockMessage ?? "Update service could not be stopped safely.");
     }
     return stopped;
   };
@@ -551,6 +552,9 @@ export async function rollbackFailedUpdate(params: {
       return failed("previous-version-unverified");
     }
     failureReason = "service-revalidation-failed";
+    // The retained runtime needs the same writer handback as forward activation.
+    await settleUpdateWriterCustodyForActivation();
+    assertCurrent();
     await maybeResumeWindowsTaskAutoStartAfterPackageUpdate(
       stopped,
       true,
@@ -565,7 +569,6 @@ export async function rollbackFailedUpdate(params: {
     // A failed candidate does not authorize its restart. The previous package's
     // pre-activation verification authorizes restarting this schema-neutral restoration.
     let verdict = stopped.serviceUpdateVerdict ?? before?.serviceUpdateVerdict;
-    const nodeRunner = before?.serviceNodeRunner ?? params.nodeRunner;
     if (verdict?.kind === "owned" && verdict.refreshDefinition) {
       try {
         await runUpdatedInstallGatewayCommand(
@@ -574,7 +577,7 @@ export async function rollbackFailedUpdate(params: {
             opts,
             invocationEnv: env,
             serviceInstallEnv: before?.serviceDefinitionEnv,
-            nodeRunner,
+            nodeRunner: before?.serviceNodeRunner ?? params.nodeRunner,
             timeoutMs: params.timeoutMs,
             invocationCwd: params.invocationCwd,
             assertCurrent,
@@ -614,6 +617,7 @@ export async function rollbackFailedUpdate(params: {
       serviceRestartSafe: true,
       packageRollbackVerified: true,
       version: result.before.version,
+      reason: "gateway-verification-incomplete",
       ...(result.before.buildId ? { buildId: result.before.buildId } : {}),
     };
     assertCurrent();
@@ -629,6 +633,7 @@ export async function rollbackFailedUpdate(params: {
       );
     }
     failureReason = "restart-unhealthy";
+    let verificationFailure: string | undefined;
     let verifiedAtMs: number | undefined;
     const restartOutcome = await maybeRestartService({
       shouldRestart: true,
@@ -643,10 +648,13 @@ export async function rollbackFailedUpdate(params: {
       requireRunningServiceAfterRestart: true,
       timeoutMs: params.timeoutMs,
       // Prior verification covers this executable, not the candidate's newer Node.
-      nodeRunner,
+      nodeRunner: before?.serviceNodeRunner ?? params.nodeRunner,
       invocationCwd: params.invocationCwd,
       onVerified: (at) => {
         verifiedAtMs = at;
+      },
+      onVerificationFailure: (reason) => {
+        verificationFailure = reason;
       },
     });
     assertCurrent();
@@ -654,7 +662,24 @@ export async function rollbackFailedUpdate(params: {
     return {
       result: {
         ...result,
-        recovery: healthy ? { ...result.recovery, service: "healthy" } : result.recovery,
+        recovery: {
+          ...result.recovery,
+          service: healthy
+            ? "healthy"
+            : restartOutcome === "readiness-pending" || verificationFailure === "timeout"
+              ? undefined
+              : verificationFailure || restartOutcome === "restart-health-failed"
+                ? "failed"
+                : undefined,
+          reason: healthy
+            ? undefined
+            : (verificationFailure ??
+              (restartOutcome === "readiness-pending"
+                ? "gateway-readiness-pending"
+                : restartOutcome === "failed"
+                  ? "restart-failed"
+                  : "restart-unhealthy")),
+        },
       },
       rolledBack: healthy,
       stateRestored,

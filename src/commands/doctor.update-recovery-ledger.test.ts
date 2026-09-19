@@ -59,6 +59,7 @@ vi.mock("../flows/doctor-health.js", () => ({ runDoctorHealthFlow: async () => {
 vi.mock("./doctor-maintenance.js", () => ({
   beginDoctorMaintenance: async () => ({
     assertCurrent() {},
+    run: <T>(operation: () => T) => operation(),
     closeStores: async () => {
       await closeOpenClawAgentDatabasesAsync();
       closeOpenClawStateDatabaseForTest();
@@ -864,6 +865,8 @@ describe("Doctor recovery ledger reconciliation", () => {
       finishUpdateRun(run.runId, { status }, { env: state.env });
       const newer = { agentId: "main", sessionKey: "agent:main:newer", env: state.env };
       await upsertSessionEntryCore(newer, { sessionId: "after-recovery", updatedAt: 2 });
+      // Settle this fixture writer before asking Doctor to retire its old capture.
+      await closeOpenClawAgentDatabasesAsync();
       await doctorCommand(output(), { repair: true, nonInteractive: true });
       expect(loadSessionEntryReadOnly(newer)?.sessionId).toBe("after-recovery");
       await expect(fs.lstat(ref.directory)).rejects.toMatchObject({ code: "ENOENT" });

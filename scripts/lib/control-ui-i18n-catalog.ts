@@ -16,19 +16,23 @@ import { registerDebugEnglish } from "../../ui/src/i18n/locales/en-debug.ts";
 import { registerDesktopEnglish } from "../../ui/src/i18n/locales/en-desktop.ts";
 import { registerDevicesEnglish } from "../../ui/src/i18n/locales/en-devices.ts";
 import { registerDreamingEnglish } from "../../ui/src/i18n/locales/en-dreaming.ts";
+import { registerFilePreviewEnglish } from "../../ui/src/i18n/locales/en-file-preview.ts";
 import { registerGitHubPreviewEnglish } from "../../ui/src/i18n/locales/en-github-preview.ts";
 import { registerLoginEnglish } from "../../ui/src/i18n/locales/en-login.ts";
 import { registerMeetingsEnglish } from "../../ui/src/i18n/locales/en-meetings.ts";
 import { registerMemoryImportEnglish } from "../../ui/src/i18n/locales/en-memory-import.ts";
 import { registerModelAccountsEnglish } from "../../ui/src/i18n/locales/en-model-accounts.ts";
 import { registerModelControlsEnglish } from "../../ui/src/i18n/locales/en-model-controls.ts";
+import { registerModelSetupEnglish } from "../../ui/src/i18n/locales/en-model-setup.ts";
 import { registerNewSessionSetupEnglish } from "../../ui/src/i18n/locales/en-new-session-setup.ts";
 import { registerPluginConsentEnglish } from "../../ui/src/i18n/locales/en-plugin-consent.ts";
 import { registerPluginManagementEnglish } from "../../ui/src/i18n/locales/en-plugin-management.ts";
+import { registerPortalsEnglish } from "../../ui/src/i18n/locales/en-portals.ts";
 import { registerSessionPlacementEnglish } from "../../ui/src/i18n/locales/en-session-placement.ts";
 import { registerSettingsEnglish } from "../../ui/src/i18n/locales/en-settings.ts";
 import { registerSkillLibraryEnglish } from "../../ui/src/i18n/locales/en-skill-library.ts";
 import { registerSkillWorkshopEnglish } from "../../ui/src/i18n/locales/en-skill-workshop.ts";
+import { registerSkillsBrowserEnglish } from "../../ui/src/i18n/locales/en-skills-browser.ts";
 import { registerSystemsEnglish } from "../../ui/src/i18n/locales/en-systems.ts";
 import { registerTranscriptsEnglish } from "../../ui/src/i18n/locales/en-transcripts.ts";
 import { registerUpdateActionsEnglish } from "../../ui/src/i18n/locales/en-update-actions.ts";
@@ -62,19 +66,23 @@ const sourceFiles = [
   "en-desktop.ts",
   "en-devices.ts",
   "en-dreaming.ts",
+  "en-file-preview.ts",
   "en-github-preview.ts",
   "en-login.ts",
   "en-meetings.ts",
   "en-memory-import.ts",
   "en-model-accounts.ts",
   "en-model-controls.ts",
+  "en-model-setup.ts",
   "en-session-placement.ts",
   "en-new-session-setup.ts",
   "en-plugin-consent.ts",
   "en-plugin-management.ts",
+  "en-portals.ts",
   "en-settings.ts",
   "en-skill-library.ts",
   "en-skill-workshop.ts",
+  "en-skills-browser.ts",
   "en-systems.ts",
   "en-update-actions.ts",
   "en-transcripts.ts",
@@ -109,6 +117,7 @@ export function loadControlUiSourceCatalog(): TranslationMap {
     // Preserve partial-fragment key order while keeping shared labels eager.
     {
       ...en,
+      custodian: { ...registerPluginManagementEnglish.catalog.custodian, ...en.custodian },
       chat: { ...en.chat, messages: registerChatMessageMetadataEnglish.catalog.chat.messages },
       board: { ...en.board, widget: boardWidget },
       newSession,
@@ -124,18 +133,22 @@ export function loadControlUiSourceCatalog(): TranslationMap {
     registerCronEnglish.catalog,
     registerDevicesEnglish.catalog,
     registerDreamingEnglish.catalog,
+    registerFilePreviewEnglish.catalog,
     registerGitHubPreviewEnglish.catalog,
     registerLoginEnglish.catalog,
     registerMeetingsEnglish.catalog,
     registerMemoryImportEnglish.catalog,
     registerModelAccountsEnglish.catalog,
     registerModelControlsEnglish.catalog,
+    registerModelSetupEnglish.catalog,
     registerSessionPlacementEnglish.catalog,
     registerNewSessionSetupEnglish.catalog,
     registerPluginConsentEnglish.catalog,
     registerPluginManagementEnglish.catalog,
+    registerPortalsEnglish.catalog,
     registerSettingsEnglish.catalog,
     registerSkillWorkshopEnglish.catalog,
+    registerSkillsBrowserEnglish.catalog,
     registerSystemsEnglish.catalog,
     registerUpdateActionsEnglish.catalog,
     registerTranscriptsEnglish.catalog,

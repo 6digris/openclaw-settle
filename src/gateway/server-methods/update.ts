@@ -31,6 +31,7 @@ import {
   UPDATE_RUN_ID_ENV,
 } from "../../infra/update-control-plane-sentinel.js";
 import { devUpdateTargetFromGitTarget } from "../../infra/update-dev-target.js";
+import { createUpdateErrorFact } from "../../infra/update-failure-facts.js";
 import { FreeBsdPkgOwnershipError } from "../../infra/update-freebsd-pkg-ownership.js";
 import { resolveUpdateInstallRoot } from "../../infra/update-install-root.js";
 import {
@@ -57,7 +58,6 @@ import {
   declareUnprotectedGatewayUpdate,
   finishUpdateRun,
   getUpdateRun,
-  heartbeatUpdateRun,
   recordUpdateRunPhase,
   recordUpdateRunStep,
   recordUpdateRunVerification,
@@ -66,7 +66,7 @@ import { withUnprotectedGatewayUpdateAdvisory } from "../../infra/update-run-rec
 import { renderUpdateRunNotice } from "../../infra/update-run-report.js";
 import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
 import { runGatewayUpdate, runGatewayUpdatePreflight } from "../../infra/update-runner.js";
-import { getUpdateAvailable } from "../../infra/update-startup.js";
+import { getUpdateAvailable } from "../../infra/update-status-state.js";
 import { mergeDeliveryContext } from "../../utils/delivery-context.shared.js";
 import { INTERNAL_MESSAGE_CHANNEL, isInternalMessageChannel } from "../../utils/message-channel.js";
 import { VERSION } from "../../version.js";
@@ -83,6 +83,10 @@ import {
 } from "./update-admission.js";
 import { buildGatewayUpdateRunOrigin } from "./update-origin.js";
 import { updateReportHandler } from "./update-report.js";
+import {
+  createUnexpectedUpdateFailureResult,
+  createUpdateRunRecording,
+} from "./update-run-recording.js";
 import { updateStatusHandlers } from "./update-status.js";
 import { assertValidParams } from "./validation.js";
 // Update gateway methods run self-update flows, report status, write restart
@@ -151,7 +155,12 @@ export const updateHandlers: GatewayRequestHandlers = {
     });
     wakeUpdateRunWatcher();
 
-    let result: Awaited<ReturnType<typeof runGatewayUpdate>>;
+    let result: Awaited<ReturnType<typeof runGatewayUpdate>> = {
+      status: "error",
+      mode: "unknown",
+      steps: [],
+      durationMs: 0,
+    };
     let unprotectedGatewayUpdate = false;
     let handoff:
       | { status: "started"; pid?: number; command: string }
@@ -221,6 +230,8 @@ export const updateHandlers: GatewayRequestHandlers = {
       const configChannel = normalizeUpdateChannel(config.update?.channel);
       const { status, installSurface } = await resolveGatewayUpdateAdmission(timeoutMs);
       const installRoot = installSurface.root;
+      result.mode = installSurface.mode;
+      result.root = installRoot;
       const refusedUpdate = createControlPlaneUpdateRefusal(installSurface);
       const effectiveChannel = resolveEffectiveUpdateChannel({
         configChannel,
@@ -506,20 +517,7 @@ export const updateHandlers: GatewayRequestHandlers = {
           getDoctorEnv: unprotectedGatewayUpdate
             ? () => ({ [UPDATE_RUN_ID_ENV]: runId })
             : undefined,
-          progress: {
-            onHeartbeat: () => heartbeatUpdateRun(runId, driver),
-            onStepStart: (step) =>
-              recordUpdateRunStep(runId, {
-                step: step.name,
-                status: "in_progress",
-                startedAtMs: Date.now(),
-              }),
-            onStepComplete: (step) => {
-              for (const entry of updateRunStepsFromResultStep(step)) {
-                recordUpdateRunStep(runId, { ...entry, endedAtMs: Date.now() });
-              }
-            },
-          },
+          ...createUpdateRunRecording(runId, driver, sentinelMeta),
           timeoutMs,
           cwd: installSurface.root,
           channel:
@@ -557,13 +555,7 @@ export const updateHandlers: GatewayRequestHandlers = {
         outcomeMessage = error.message;
       }
       context?.logGateway?.warn(`update.run failed error=${formatErrorMessage(error)}`);
-      result = {
-        status: "error",
-        mode: "unknown",
-        reason: error instanceof FreeBsdPkgOwnershipError ? error.reason : "unexpected-error",
-        steps: [],
-        durationMs: 0,
-      };
+      result = createUnexpectedUpdateFailureResult(run, result, error);
     }
 
     if (unprotectedGatewayUpdate) {
@@ -624,12 +616,17 @@ export const updateHandlers: GatewayRequestHandlers = {
         await writeRestartSentinel(payload);
         sentinelPersisted = true;
         recordLatestUpdateRestartSentinel(payload);
-      } catch {
+      } catch (error) {
         if (result.status === "ok" && handoff?.status !== "started") {
           outcomeMessage =
             "The update was installed, but its restart notice could not be saved. Run openclaw update status after the gateway restarts.";
           recordUpdateRunPhase(runId, "restarting", {
             origin: { nextAction: outcomeMessage },
+            step: {
+              step: "restarting",
+              status: "failed",
+              failureFacts: [createUpdateErrorFact("restarting", error)],
+            },
           });
           outcomeRun = finishUpdateRun(runId, {
             status: "failed",

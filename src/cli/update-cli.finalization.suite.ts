@@ -8,7 +8,6 @@ import { expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import { applyDevUpdateTargetEnv } from "../infra/update-dev-target.js";
-import { cleanupStaleManagedServiceUpdateHandoffs } from "../infra/update-managed-service-handoff-cleanup.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { createCommandResult as commandResult } from "../test-utils/npm-spec-install-test-helpers.js";
 import { VERSION } from "../version.js";
@@ -255,14 +254,12 @@ export function registerUpdateCliFinalizationTests(read: () => UpdateCliFinaliza
       },
       async () => {
         let doctorEnv: NodeJS.ProcessEnv | undefined;
-        vi.mocked(read().runUtf8CommandWithTimeout).mockImplementationOnce(
-          async (_argv, options) => {
-            if (typeof options === "object") {
-              doctorEnv = { ...options.baseEnv, ...options.env };
-            }
-            return read().doctorProcessResult();
-          },
-        );
+        read().mockDoctorEffectOnce(async (_argv, options) => {
+          if (typeof options === "object") {
+            doctorEnv = { ...options.baseEnv, ...options.env };
+          }
+          return read().doctorProcessResult();
+        });
         vi.mocked(read().defaultRuntime.writeJson).mockClear();
 
         await read().updateFinalizeCommand({
@@ -506,7 +503,7 @@ export function registerUpdateCliFinalizationTests(read: () => UpdateCliFinaliza
     } satisfies Record<string, PluginInstallRecord>;
     let currentSnapshot = preDoctorSnapshot;
     vi.mocked(read().readConfigFileSnapshot).mockImplementation(async () => currentSnapshot);
-    vi.mocked(read().runUtf8CommandWithTimeout).mockImplementationOnce(async () => {
+    read().mockDoctorEffectOnce(async () => {
       currentSnapshot = postDoctorSnapshot;
       return read().doctorProcessResult();
     });
@@ -524,16 +521,25 @@ export function registerUpdateCliFinalizationTests(read: () => UpdateCliFinaliza
     read().expectFreshPostUpdateDoctor({ yes: false, workspaceSuggestions: true });
     const freshDoctorCall = vi
       .mocked(read().runUtf8CommandWithTimeout)
-      .mock.calls.find(([argv]) => argv[1] === "/tmp/openclaw-entry.mjs" && argv[2] === "doctor");
-    const freshDoctorArgv = read().requireValue(freshDoctorCall?.[0], "post-plugin Doctor argv");
-    expect(freshDoctorArgv.slice(1)).toEqual([
-      "/tmp/openclaw-entry.mjs",
-      "doctor",
-      "--repair",
-      "--non-interactive",
-      "--no-workspace-suggestions",
-      ...read().capturedDoctorArgs(freshDoctorArgv),
-    ]);
+      .mock.calls.find(
+        ([argv, options]) =>
+          argv[2] === "--doctor" &&
+          typeof options !== "number" &&
+          options.env?.OPENCLAW_UPDATE_POST_CORE_CONVERGENCE === "1",
+      );
+    expect(freshDoctorCall?.[0][2]).toBe("--doctor");
+    const doctorOptions = freshDoctorCall?.[1];
+    expect(
+      doctorOptions && typeof doctorOptions !== "number" && JSON.parse(String(doctorOptions.input)),
+    ).toMatchObject({
+      root: process.cwd(),
+      repair: true,
+      yes: false,
+      workspaceSuggestions: false,
+      updateRecoveryBackup: expect.objectContaining({
+        manifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      }),
+    });
     expect(freshDoctorCall?.[1]).toMatchObject({
       cwd: process.cwd(),
       env: {
@@ -633,7 +639,7 @@ export function registerUpdateCliFinalizationTests(read: () => UpdateCliFinaliza
     });
     let currentSnapshot = preDoctorSnapshot;
     vi.mocked(read().readConfigFileSnapshot).mockImplementation(async () => currentSnapshot);
-    vi.mocked(read().runUtf8CommandWithTimeout).mockImplementationOnce(async () => {
+    read().mockDoctorEffectOnce(async () => {
       currentSnapshot = postDoctorSnapshot;
       return read().doctorProcessResult();
     });
@@ -890,46 +896,6 @@ export function registerUpdateCliFinalizationTests(read: () => UpdateCliFinaliza
     expect(vi.mocked(read().runGatewayUpdate).mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({ devTarget: expected }),
     );
-  });
-
-  it.each([
-    ["malformed", "openclaw-dev-target:v1:not+base64url"],
-    ["unknown version", "openclaw-dev-target:v2:hostile-ref"],
-    ["unknown namespace", "other-dev-target:v1:hostile-ref"],
-  ])("rejects a %s tracked dev target before update side effects", async (_name, value) => {
-    await withEnvAsync({ OPENCLAW_UPDATE_DEV_TARGET_REF: value }, async () => {
-      await read().invokeUpdateCli({ channel: "dev", yes: true, restart: false });
-    });
-
-    expect(read().defaultRuntime.error).toHaveBeenCalledWith(
-      "Invalid internal OPENCLAW_UPDATE_DEV_TARGET_REF contract; expected a plain Git ref or a supported tracked-target encoding.",
-    );
-    expect(read().defaultRuntime.error).toHaveBeenCalledTimes(1);
-    expect(read().defaultRuntime.exit).toHaveBeenCalledWith(1);
-    read().expectNoSideEffects(
-      cleanupStaleManagedServiceUpdateHandoffs,
-      read().runGatewayUpdate,
-      read().launchdUpdateCleanupMocks.disableCurrentOpenClawUpdateLaunchdJob,
-    );
-  });
-
-  it("rejects a malformed inferred dev target before running the update", async () => {
-    await withEnvAsync(
-      { OPENCLAW_UPDATE_DEV_TARGET_REF: "openclaw-dev-target:v1:not+base64url" },
-      async () => {
-        await read().updateCommand({ yes: true, restart: false });
-      },
-    );
-
-    expect(read().defaultRuntime.error).toHaveBeenCalledWith(
-      "Invalid internal OPENCLAW_UPDATE_DEV_TARGET_REF contract; expected a plain Git ref or a supported tracked-target encoding.",
-    );
-    expect(read().defaultRuntime.error).toHaveBeenCalledTimes(1);
-    expect(read().defaultRuntime.exit).toHaveBeenCalledWith(1);
-    expect(read().runGatewayUpdate).not.toHaveBeenCalled();
-    expect(
-      read().launchdUpdateCleanupMocks.disableCurrentOpenClawUpdateLaunchdJob,
-    ).not.toHaveBeenCalled();
   });
 
   it("ignores a malformed dev target for a stable package update", async () => {

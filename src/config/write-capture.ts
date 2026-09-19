@@ -1,5 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
+import { hashConfigRaw } from "./io.read-helpers.js";
+import { configWritePostCommitCapture, type ConfigWriteOptions } from "./io.types.js";
+import type { ConfigFileSnapshot } from "./types.js";
 export type ConfigFileWrite = {
   path: string;
   beforeHash: string | null;
@@ -43,4 +46,38 @@ export function recordConfigFileWrite(
     afterHash,
     contiguous: previous ? previous.contiguous && previous.afterHash === beforeHash : true,
   });
+}
+
+/** Runtime activation decides whether a factory write remains committed. */
+export function deferConfigFileWriteCapture() {
+  let recordCommittedWrite: (() => void) | undefined;
+  const options: Pick<ConfigWriteOptions, typeof configWritePostCommitCapture> =
+    fileWrites.getStore()
+      ? {
+          [configWritePostCommitCapture]: (record) => {
+            recordCommittedWrite = record;
+          },
+        }
+      : {};
+  return { options, record: () => recordCommittedWrite?.() };
+}
+
+export function captureCommittedConfigFileWrite(
+  configPath: string,
+  snapshot: Pick<ConfigFileSnapshot, "exists" | "raw">,
+  nextHash: string,
+  options: ConfigWriteOptions,
+): void {
+  if (!fileWrites.getStore() || (snapshot.exists && typeof snapshot.raw !== "string")) {
+    return;
+  }
+  const beforeHash =
+    snapshot.exists && typeof snapshot.raw === "string" ? hashConfigRaw(snapshot.raw) : null;
+  const record = () => recordConfigFileWrite(configPath, beforeHash, nextHash);
+  const deferCapture = options[configWritePostCommitCapture];
+  if (deferCapture) {
+    deferCapture(record);
+  } else {
+    record();
+  }
 }

@@ -4,8 +4,6 @@
     "tsBuildInfoFile": "../../.artifacts/tsgo-cache/core-test-services.tsbuildinfo"
   },
   "include": [
-    "../../src/cli/update-cli/**/*.test.ts",
-    "../../src/cli/update-cli/**/*.test.tsx",
     "../../src/infra/update-*.test.ts",
     "../../src/infra/update-*.test.tsx",
     "../../src/infra/package-update-*.test.ts",

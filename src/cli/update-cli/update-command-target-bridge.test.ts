@@ -5,11 +5,9 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import * as packageMetadata from "../../infra/update-check-package-target.js";
 import * as updateCheck from "../../infra/update-check.js";
 import { createFreeBsdPkgOwnershipInspection } from "../../infra/update-freebsd-pkg-ownership.js";
-import {
-  globalInstallArgs,
-  resolveNpmGlobalPrefixLayoutFromGlobalRoot,
-} from "../../infra/update-global.js";
+import { globalInstallArgs } from "../../infra/update-global.js";
 import * as updateGlobal from "../../infra/update-global.js";
+import { resolveNpmGlobalPrefixLayoutFromGlobalRoot } from "../../infra/update-npm-prefix.js";
 import * as processOwner from "../../process/exec.js";
 import * as shared from "./shared.js";
 import { resolveUpdateCommandTarget } from "./update-command-target.js";
@@ -70,6 +68,16 @@ it.each([true, false])(
             stderr: "",
           };
         }
+        if (argv.at(-2) === "prefix" && argv.at(-1) === "-g") {
+          return {
+            code: 0,
+            signal: null,
+            killed: false,
+            termination: "exit" as const,
+            stdout: path.dirname(path.dirname(shellGlobalRoot)) + "\n",
+            stderr: "",
+          };
+        }
         throw new Error("Unexpected package-manager command: " + argv.join(" "));
       });
     const enter = vi.fn(async () => {
@@ -94,7 +102,7 @@ it.each([true, false])(
         requestedChannel: "stable",
         devTarget: undefined,
         controlPlaneUpdateSentinelMeta: null,
-        discoveredRoot: targetRoot,
+        discoveredRoot: bridge ? targetRoot : shellRoot,
         installKind: "package",
         servicePlan: { rootRedirect: null },
         pkgOwnership: createFreeBsdPkgOwnershipInspection(1000),

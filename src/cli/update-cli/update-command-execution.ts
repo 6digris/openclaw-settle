@@ -21,7 +21,7 @@ import type { UpdateRecoveryBackupRef } from "../../infra/update-recovery-backup
 import { recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import { readCurrentGitUpdateRecovery } from "../../infra/update-runner-git-recovery.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
-import { defaultRuntime } from "../../runtime.js";
+import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import {
   parsePackageOpenClawSchemaVersions,
   type OpenClawSchemaVersions,
@@ -70,7 +70,7 @@ import {
 } from "./update-command-recovery.js";
 import { runUpdateCommandRepair } from "./update-command-repair.js";
 import {
-  createUpdateCommandFailureResult,
+  resolveMutableUpdateFailure,
   type MutableUpdateExecutionResult,
 } from "./update-command-result.js";
 import { isUpdatedInstallGatewayExecutorSupported } from "./update-command-service-command.js";
@@ -352,7 +352,7 @@ export async function executeMutableUpdate(
         if (!executor) {
           throw new UpdatePreMutationError(
             "target-native-unsupported",
-            "Native candidate admission requires its original update executor.",
+            "Starting the update requires its original update process.",
           );
         }
         const supported = await isUpdatedInstallGatewayExecutorSupported({
@@ -380,6 +380,7 @@ export async function executeMutableUpdate(
         : (validatedConfigSnapshot ??
           (await readUpdateCandidateSource(env, params.legacyConfigPlan)));
       const validation = await validateUpdateCandidateCanary({
+        requireWriterCustody: Boolean(opts.run),
         root,
         config: snapshot.config,
         stateDir: resolveStateDir(env),
@@ -399,7 +400,7 @@ export async function executeMutableUpdate(
         candidateUpdateRecovery = validation.candidateUpdateRecovery;
         doctorConfigWrites = validation.doctorConfigWrites === true;
         observedGatewayStartupMs = validation.steps.find(
-          (step) => step.name === "candidate gateway canary" && step.exitCode === 0,
+          (step) => step.name === "Checking Gateway startup" && step.exitCode === 0,
         )?.durationMs;
       }
       return validation;
@@ -431,7 +432,7 @@ export async function executeMutableUpdate(
             score: repairValidation.steps.filter((step) => step.exitCode === 0).length,
             summary:
               repairValidation.status === "ok"
-                ? "Candidate validation passed."
+                ? "Update checks passed."
                 : repairValidation.logTail.join("\n"),
           };
         },
@@ -464,7 +465,7 @@ export async function executeMutableUpdate(
     ) {
       throw new UpdatePreMutationError(
         "invalid-config",
-        "Config changed during candidate validation; rerun the update before activating.",
+        "Config changed during update checks; rerun the update before activating.",
       );
     }
     const config = snapshot.config;
@@ -647,7 +648,7 @@ export async function executeMutableUpdate(
           if (failed) {
             throw new UpdatePreMutationError(
               failed.name,
-              failed.stderrTail ?? "Candidate validation failed.",
+              failed.stderrTail ?? "Update checks failed.",
               { failureFacts: failed.failureFacts },
             );
           }
@@ -674,23 +675,16 @@ export async function executeMutableUpdate(
     }
   } catch (err) {
     params.stop();
-    if (err instanceof UpdateCommandAbort) {
+    if (err instanceof UpdateCommandAbort && !hasCommandProcessCleanupError(err)) {
       return null;
     }
-    const preMutationFailure = err instanceof UpdatePreMutationError;
-    failure = { cause: err, detail: formatErrorMessage(err) };
-    defaultRuntime.error(failure.detail);
-    // Only explicit pre-mutation refusal permits original-runtime recovery.
-    // Mutable exceptions retain an unsafe outcome through cleanup/reporting.
-    result = createUpdateCommandFailureResult({
+    ({ result, failure } = await resolveMutableUpdateFailure({
+      cause: err,
       durationMs: Date.now() - params.startedAt,
       mode,
       root: params.root,
-      recovery: preMutationFailure
-        ? await originalRecovery()
-        : { serviceRestartSafe: false, reason: "runtime-verification-failed" },
-      failure,
-    });
+      originalRecovery,
+    }));
   }
 
   if (candidateFailureReason && result.status === "error") {

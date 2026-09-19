@@ -7,6 +7,7 @@ import {
   resumeGatewaySuspend,
 } from "../infra/gateway-suspend-coordinator.js";
 import {
+  beginGatewayUpdateSettlementAdmission,
   getActiveGatewayRootWorkCount,
   resetGatewayWorkAdmission,
   retainGatewayRootWorkAdmissionContinuation,
@@ -91,6 +92,37 @@ afterEach(() => {
 });
 
 describe("gateway request suspension admission", () => {
+  it.each([
+    "health",
+    "gateway.suspend.status",
+    "gateway.suspend.prepare",
+    "gateway.suspend.resume",
+    "gateway.suspend.handoff",
+  ])("allows only settlement probes on the successor (%s)", async (method) => {
+    const update = beginGatewayUpdateSettlementAdmission("settling-update");
+    const handler = vi.fn<GatewayRequestHandler>();
+    try {
+      expect(tryBeginGatewaySuspendAdmission(() => {})).toBeNull();
+      const result = dispatch({ method, scope: "operator.admin", core: true, handler });
+      await result.request;
+      if (method === "health" || method === "gateway.suspend.status") {
+        expect(handler).toHaveBeenCalledOnce();
+      } else {
+        expect(handler).not.toHaveBeenCalled();
+        expect(result.respond).toHaveBeenCalledWith(
+          false,
+          undefined,
+          expect.objectContaining({ code: "UNAVAILABLE" }),
+        );
+      }
+    } finally {
+      update.release();
+    }
+    const reopened = dispatch({ method, scope: "operator.admin", core: true, handler });
+    await reopened.request;
+    expect(handler).toHaveBeenCalled();
+  });
+
   it.each(["armed", "read-scope", "other-pid", "new-process-same-pid", "retired-host"])(
     "binds an external handoff to the authenticated live owner: %s",
     async (mode) => {

@@ -4,17 +4,24 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { serialize } from "node:v8";
 import { INCOGNITO_AGENT_SQLITE_BASENAME } from "../state/openclaw-agent-db.paths.js";
+import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "../state/openclaw-state-db-contract.js";
+import { acquireWithWait } from "./acquire-with-wait.js";
+import { sleepWithAbort } from "./backoff.js";
+import { runWithSqliteCoordinator } from "./sqlite-coordinator.js";
 import type {
   PreparedSqliteWorkerOpen,
   SqliteWorkerStoreOptions,
   Actor,
   Job,
 } from "./sqlite-worker-broker.types.js";
-import type { SqliteWorkerRequest } from "./sqlite-worker-contract.js";
 import { readDatabasePathIdentity, type DatabasePathIdentity } from "./sqlite-worker-identity.js";
 import { createSqliteWorkerOperationAdmission } from "./sqlite-worker-operation-admission.js";
 import type { SqliteWorkerStateContext } from "./sqlite-worker-state-context.js";
+import { captureStateLifecycleTransfer } from "./state-database-coordinator-transfer.js";
 import {
+  acquireStateDatabaseCoordinator,
+  resolveStateDatabaseCoordinatorPath,
+  StateDatabaseCoordinatorContentionError,
   tryCreateGatewaySchemaFenceDelegate,
   tryCreateStateLifecycleDelegate,
   withStateDatabaseCoordinatorRuntimeDirectory,
@@ -86,6 +93,7 @@ export function captureSqliteWorkerOpen(
           stateContext: {
             environment: { ...stateContext.environment },
             coordinatorRuntime: { ...stateContext.coordinatorRuntime },
+            existingSchemaPath: stateContext.existingSchemaPath,
           },
         }
       : {}),
@@ -204,16 +212,34 @@ export async function resolveSqliteWorkerModuleUrl(sourceUrl: URL) {
   return { modulePath, moduleUrl };
 }
 
-export function prepareSqliteWorkerActorContext(
-  actor: Actor | undefined,
-  request: SqliteWorkerRequest,
+export function assertSqliteWorkerActorReusable(
+  actor: Actor,
+  moduleUrl: string,
+  inputHash: string,
+  stateContext: SqliteWorkerStateContext | undefined,
 ): void {
+  if (actor.slot.failed) {
+    throw actor.slot.failed;
+  }
+  if (actor.moduleUrl !== moduleUrl || actor.inputHash !== inputHash) {
+    throw new Error("SQLite database already belongs to another worker backend");
+  }
+  if (actor.stateContext?.existingSchemaPath !== stateContext?.existingSchemaPath) {
+    throw new Error("Shared-state worker schema policy changed; close its actor first");
+  }
+}
+
+function prepareSqliteWorkerActorContext(actor: Actor | undefined, job: Job): void {
+  const { request } = job;
   const stateContext = request.stateContext ?? actor?.stateContext;
   if (actor && stateContext) {
     if (
       actor.stateContext?.coordinatorRuntime.directory !== stateContext.coordinatorRuntime.directory
     ) {
       throw new Error("Shared-state worker coordinator scope changed; close its actor first");
+    }
+    if (actor.stateContext?.existingSchemaPath !== stateContext.existingSchemaPath) {
+      throw new Error("Shared-state worker schema policy changed; close its actor first");
     }
     request.stateContext = stateContext;
     if (!actor.cleanupState && !actor.gatewaySchemaFence) {
@@ -224,6 +250,7 @@ export function prepareSqliteWorkerActorContext(
       });
       if (delegate) {
         actor.gatewaySchemaFence = delegate;
+        job.gatewaySchemaFence = { actor, delegate };
         try {
           request.gatewaySchemaFence = delegate.port;
         } catch (error) {
@@ -235,42 +262,139 @@ export function prepareSqliteWorkerActorContext(
   }
 }
 
-export function prepareSqliteWorkerLifecycle(job: Job, actor: Actor | undefined): void {
-  const context = job.request.stateContext;
+export function prepareSqliteWorkerLifecycle(
+  job: Job,
+  actor: Actor | undefined,
+  assertDispatchable: () => void,
+  signal?: AbortSignal,
+): void | Promise<void> {
+  const context = job.request.stateContext ?? actor?.stateContext;
   if (!actor || !context) {
-    return;
-  }
-  const schemaFence = actor.gatewaySchemaFence
-    ? undefined
-    : job.maintenanceScope?.createSchemaFenceDelegate({
-        databasePath: actor.databasePath,
-        runtimeDirectory: context.coordinatorRuntime.directory,
-        actorId: `${actor.id}:${job.request.id}`,
-      });
-  if (schemaFence) {
-    job.maintenanceSchemaFence = { actor, delegate: schemaFence };
-    job.request.maintenanceSchemaFence = schemaFence.port;
+    if (job.requireStateLifecycle) {
+      throw new Error("SQLite worker lifecycle custody requires its captured state owner");
+    }
+    return undefined;
   }
   // Retirement must veto pooling on the physical owner, including a borrowed lease.
   const runtime =
     job.request.type === "close"
       ? { ...context.coordinatorRuntime, keepAlive: false }
       : context.coordinatorRuntime;
-  const delegate = withStateDatabaseCoordinatorRuntimeDirectory(runtime, () =>
-    tryCreateStateLifecycleDelegate({
-      databasePath: actor.databasePath,
-      actorId: `${actor.id}:${job.request.id}`,
-    }),
-  );
-  if (delegate) {
-    job.stateLifecycle = { actor, delegate };
-    job.request.stateLifecycle = delegate.port;
-  }
+  return withStateDatabaseCoordinatorRuntimeDirectory(runtime, () => {
+    const prepare = () => {
+      assertDispatchable();
+      prepareSqliteWorkerActorContext(actor, job);
+      if (job.request.type === "close" && actor.closeCustody) {
+        // This exact actor reserved disposal custody at open while authority was
+        // live. No write/open job can consume it after executor revocation.
+        if (job.request.id !== actor.closeRequestId) {
+          throw new Error("SQLite worker close custody changed identity");
+        }
+        const { schema, lifecycle } = actor.closeCustody;
+        if (schema) {
+          job.maintenanceSchemaFence = { actor, delegate: schema };
+          job.request.maintenanceSchemaFence = schema.port;
+        }
+        if (lifecycle) {
+          job.stateLifecycle = { actor, delegate: lifecycle };
+          job.request.stateLifecycle = lifecycle.port;
+        }
+        actor.closeCustody = undefined;
+        return;
+      }
+      if (
+        job.request.type === "open" &&
+        actor.closeRequestId !== undefined &&
+        job.maintenanceScope &&
+        captureStateLifecycleTransfer(
+          resolveStateDatabaseCoordinatorPath({
+            databasePath: actor.databasePath,
+            runtimeDirectory: context.coordinatorRuntime.directory,
+            uid: typeof process.getuid === "function" ? process.getuid() : undefined,
+          }),
+        )
+      ) {
+        const target = {
+          databasePath: actor.databasePath,
+          runtimeDirectory: context.coordinatorRuntime.directory,
+          actorId: `${actor.id}:${actor.closeRequestId}`,
+        };
+        const custody: NonNullable<Actor["closeCustody"]> = {};
+        actor.closeCustody = custody;
+        custody.schema = job.maintenanceScope.createSchemaFenceDelegate(target);
+        if (custody.schema) {
+          actor.pendingStateLifecycles.add(custody.schema);
+        }
+        custody.lifecycle = tryCreateStateLifecycleDelegate(target);
+        if (custody.lifecycle) {
+          actor.pendingStateLifecycles.add(custody.lifecycle);
+        }
+      }
+      const schemaFence = actor.gatewaySchemaFence
+        ? undefined
+        : job.maintenanceScope?.createSchemaFenceDelegate({
+            databasePath: actor.databasePath,
+            runtimeDirectory: context.coordinatorRuntime.directory,
+            actorId: `${actor.id}:${job.request.id}`,
+          });
+      if (schemaFence) {
+        job.maintenanceSchemaFence = { actor, delegate: schemaFence };
+        job.request.maintenanceSchemaFence = schemaFence.port;
+      }
+      const delegate = tryCreateStateLifecycleDelegate({
+        databasePath: actor.databasePath,
+        actorId: `${actor.id}:${job.request.id}`,
+      });
+      if (!delegate && job.requireStateLifecycle) {
+        throw new Error("SQLite worker did not retain its required lifecycle custody");
+      }
+      if (delegate) {
+        job.stateLifecycle = { actor, delegate };
+        job.request.stateLifecycle = delegate.port;
+      }
+    };
+    if (!job.requireStateLifecycle) {
+      prepare();
+      return undefined;
+    }
+    let acquisitionError: unknown;
+    return acquireWithWait({
+      deadlineMs: performance.now() + OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
+      pollIntervalMs: 25,
+      maxPollIntervalMs: 250,
+      sleep: (ms) =>
+        sleepWithAbort(ms, signal).catch((error: unknown) => {
+          signal?.throwIfAborted();
+          throw error;
+        }),
+      shouldRetry: (error) =>
+        error === acquisitionError &&
+        error instanceof StateDatabaseCoordinatorContentionError &&
+        error.family === "state-lifecycle",
+      acquire: () => {
+        acquisitionError = undefined;
+        assertDispatchable();
+        let coordinator: ReturnType<typeof acquireStateDatabaseCoordinator>;
+        try {
+          coordinator = acquireStateDatabaseCoordinator({
+            databasePath: actor.databasePath,
+            busyTimeoutMs: 0,
+          });
+        } catch (error) {
+          acquisitionError = error;
+          throw error;
+        }
+        // Only acquisition retries. Install delegates once, before releasing this real reference.
+        runWithSqliteCoordinator(coordinator, "SQLite worker lifecycle delegation", prepare);
+      },
+    });
+  });
 }
 
 export function releaseSqliteWorkerLifecycle(job: Job): void {
   const errors: unknown[] = [];
-  for (const held of [job.stateLifecycle, job.maintenanceSchemaFence]) {
+  const unpostedGatewayFence = job.nativeDispatched ? undefined : job.gatewaySchemaFence;
+  for (const held of [job.stateLifecycle, job.maintenanceSchemaFence, unpostedGatewayFence]) {
     if (!held) {
       continue;
     }
@@ -279,8 +403,10 @@ export function releaseSqliteWorkerLifecycle(job: Job): void {
       delegate.release();
     } catch (error) {
       if (!delegate.closed) {
-        actor.pendingStateLifecycles.add(delegate);
         actor.cleanupState = "pending";
+      }
+      if (!delegate.closed && held !== unpostedGatewayFence) {
+        actor.pendingStateLifecycles.add(delegate);
         job.maintenanceScope?.own(delegate, "shared-resources", () => {
           try {
             delegate.release();
@@ -292,8 +418,16 @@ export function releaseSqliteWorkerLifecycle(job: Job): void {
         });
       }
       errors.push(error);
+    } finally {
+      if (delegate.closed) {
+        actor.pendingStateLifecycles.delete(delegate);
+      }
+      if (held === unpostedGatewayFence && delegate.closed) {
+        actor.gatewaySchemaFence = undefined;
+      }
     }
   }
+  job.gatewaySchemaFence = undefined;
   job.stateLifecycle = undefined;
   job.maintenanceSchemaFence = undefined;
   if (errors.length === 1) {
@@ -325,4 +459,16 @@ export function releaseSqliteWorkerActorCoordinators(actor: Actor): void {
       actor.gatewaySchemaFence = undefined;
     }
   }
+}
+
+export function forgetSqliteWorkerActor(actors: Map<string, Actor>, actor: Actor): void {
+  if (actor.gatewaySchemaFence || actor.pendingStateLifecycles.size) {
+    actor.cleanupState = "pending";
+    return;
+  }
+  if (actors.get(actor.key) === actor) {
+    actors.delete(actor.key);
+  }
+  actor.slot.actors.delete(actor);
+  actor.cleanupState = "complete";
 }

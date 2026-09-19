@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -443,8 +444,13 @@ it.each([false, true])(
             } else {
               const backup = await capture;
               expect((await fs.stat(backup.manifestPath)).isFile()).toBe(true);
+              // The executor retains writer custody between capture and fresh Doctor.
+              expect(peerCanAcquire(anchor.path)).toBe(false);
             }
           });
+          if (!active) {
+            expect(peerCanAcquire(anchor.path)).toBe(true);
+          }
           expect(await fs.readFile(state.configPath)).toEqual(before);
         } finally {
           writer?.release();
@@ -453,3 +459,24 @@ it.each([false, true])(
     );
   },
 );
+
+function peerCanAcquire(pathname: string): boolean {
+  const module = new URL("../../infra/sqlite-coordinator.ts", import.meta.url).href;
+  return (
+    execFileSync(
+      process.execPath,
+      [
+        "--import",
+        path.resolve("scripts/tsx.mjs"),
+        "--input-type=module",
+        "-e",
+        `
+      import {tryAcquireExclusiveSqliteCoordinator} from ${JSON.stringify(module)};
+      const owner=tryAcquireExclusiveSqliteCoordinator(process.argv[1],{busyTimeoutMs:0});
+      process.stdout.write(String(!!owner));owner?.release();`,
+        pathname,
+      ],
+      { encoding: "utf8", timeout: 30_000 },
+    ).trim() === "true"
+  );
+}

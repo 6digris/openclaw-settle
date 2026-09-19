@@ -13,8 +13,9 @@ import {
 } from "../../infra/update-managed-service-handoff-lease.js";
 import { isCurrentManagedServiceUpdateHandoffProcess } from "../../infra/update-managed-service-handoff.js";
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
+import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { withCommandProcessScope } from "../../process/exec-spawn.js";
-import { createUpdateActivationDeadline } from "./update-command-activation.js";
+import { UpdateActivationTimeoutError } from "./update-command-activation.js";
 import {
   childLineageDigest,
   createChildOwner,
@@ -24,6 +25,8 @@ import {
 import type { UpdateCommandExecutor } from "./update-command-executor-contract.js";
 import { createUpdateIdentityWarningReporter } from "./update-command-identity-warning.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery.js";
+import { withUpdateWriterCustody } from "./update-command-writer-custody.js";
+import { createUpdateOperationDeadline } from "./update-operation-deadline.js";
 
 export type { UpdateCommandExecutor } from "./update-command-executor-contract.js";
 
@@ -85,7 +88,7 @@ export async function withDelegatedUpdateCommandExecutor<T>(
   operation: (fence: UpdateRecoveryFence) => Promise<T>,
   options?: { activationTimeoutMs: number },
 ): Promise<T> {
-  const activation = createUpdateActivationDeadline();
+  const activation = createUpdateOperationDeadline();
   return await activation.run(() =>
     withCommandProcessScope(async () => {
       const original = grant.originalParent ?? grant.parent;
@@ -135,6 +138,8 @@ export async function withDelegatedUpdateCommandExecutor<T>(
         (!lineageBound && !legacyGrant) ||
         (!legacyGrant && databasePath !== grant.databasePath) ||
         grant.runId !== runId ||
+        (grant.writerCustody?.activationChannel !== undefined &&
+          grant.writerCustody.activationChannel.runId !== runId) ||
         grant.root !== resolveUpdateInstallRoot(root) ||
         parent.kind !== "current" ||
         !isDeepStrictEqual(parent.lease, grant.parent) ||
@@ -165,7 +170,7 @@ export async function withDelegatedUpdateCommandExecutor<T>(
         !isDeepStrictEqual(child.lease.helper, spawner.executor)
       ) {
         throw new UpdateCommandRecoveryPendingError(
-          "Candidate executor binding does not match its parent.",
+          "The update process does not match its parent.",
         );
       }
       let active = true;
@@ -176,11 +181,13 @@ export async function withDelegatedUpdateCommandExecutor<T>(
         !store.acceptParentBoundExecutor(child.lease)
       ) {
         throw new UpdateCommandRecoveryPendingError(
-          "Candidate executor ownership is no longer current.",
+          "The update process no longer has permission to continue.",
         );
       }
       const assertBase = () => {
-        activation.assertCurrent();
+        if (active || activation.failure) {
+          activation.assertCurrent();
+        }
         if (
           !active ||
           !store.current(original) ||
@@ -196,7 +203,7 @@ export async function withDelegatedUpdateCommandExecutor<T>(
           !store.owns(child.lease, "executor")
         ) {
           throw new UpdateCommandRecoveryPendingError(
-            "Candidate executor ownership is no longer current.",
+            "The update process no longer has permission to continue.",
           );
         }
       };
@@ -220,51 +227,63 @@ export async function withDelegatedUpdateCommandExecutor<T>(
         },
       };
       childOwners.set(fence, (childRoot, childOperation) => owner.run(childRoot, childOperation));
-      let outcome: { result: T } | { error: unknown };
       try {
-        fence.assertCurrent();
-        if (databaseIdentity) {
-          admittedAuthorities.set(
-            fence,
-            Object.freeze({
-              ...databaseIdentity,
-              installKey: original.key,
-              owner: original.owner,
+        return await withUpdateWriterCustody(
+          assertBase,
+          () =>
+            withCommandProcessScope(async () => {
+              let outcome: { result: T } | { error: unknown };
+              try {
+                fence.assertCurrent();
+                if (databaseIdentity) {
+                  admittedAuthorities.set(
+                    fence,
+                    Object.freeze({
+                      ...databaseIdentity,
+                      installKey: original.key,
+                      owner: original.owner,
+                    }),
+                  );
+                }
+                if (options) {
+                  activation.start(
+                    new UpdateActivationTimeoutError(root, options.activationTimeoutMs),
+                    options.activationTimeoutMs,
+                  );
+                }
+                outcome = { result: await operation(fence) };
+              } catch (error) {
+                outcome = { error };
+              }
+              owner.close();
+              try {
+                await owner.settle();
+                fence.assertCurrent();
+                identityWarnings.flush();
+              } catch (cause) {
+                outcome = {
+                  error:
+                    "error" in outcome && outcome.error !== cause
+                      ? new AggregateError(
+                          [outcome.error, cause],
+                          "Unable to finish stopping the update process and its children",
+                          { cause },
+                        )
+                      : cause,
+                };
+              }
+              if ("error" in outcome) {
+                throw outcome.error;
+              }
+              return outcome.result;
             }),
-          );
-        }
-        if (options) {
-          activation.start(root, options.activationTimeoutMs);
-        }
-        outcome = { result: await operation(fence) };
-      } catch (error) {
-        outcome = { error };
-      }
-      owner.close();
-      try {
-        await owner.settle();
-        fence.assertCurrent();
-        identityWarnings.flush();
-      } catch (cause) {
-        outcome = {
-          error:
-            "error" in outcome && outcome.error !== cause
-              ? new AggregateError(
-                  [outcome.error, cause],
-                  "Candidate and descendant settlement failed",
-                  { cause },
-                )
-              : cause,
-        };
+          grant.writerCustody,
+        );
       } finally {
         active = false;
         childOwners.delete(fence);
         admittedAuthorities.delete(fence);
       }
-      if ("error" in outcome) {
-        throw outcome.error;
-      }
-      return outcome.result;
     }, activation.signal),
   );
 }
@@ -287,7 +306,7 @@ export async function withUpdateCommandExecutor<T>(
         legacyManagedParent: { runId: string; handoffId: string; root: string };
       },
 ): Promise<T> {
-  const activation = createUpdateActivationDeadline();
+  const activation = createUpdateOperationDeadline();
   return await activation.run(() =>
     withCommandProcessScope(async () => {
       let active = true;
@@ -299,7 +318,9 @@ export async function withUpdateCommandExecutor<T>(
       let legacyChild: ManagedHandoffLease | undefined;
       const identityWarnings = createUpdateIdentityWarningReporter(runId);
       const assertBase = () => {
-        activation.assertCurrent();
+        if (active || activation.failure) {
+          activation.assertCurrent();
+        }
         if (
           !active ||
           !store ||
@@ -352,7 +373,10 @@ export async function withUpdateCommandExecutor<T>(
       });
       const executor: UpdateCommandExecutor = {
         async enter(root, enterOptions) {
-          activation.assertCurrent();
+          // Executor closure owns its recovery error unless a deadline already failed.
+          if (active || activation.failure) {
+            activation.assertCurrent();
+          }
           if (!active || entering) {
             throw new UpdateCommandRecoveryPendingError(
               "Update executor admission is closed or busy.",
@@ -374,7 +398,10 @@ export async function withUpdateCommandExecutor<T>(
               preflightReleases.delete(fence);
             }
             if (enterOptions?.activationTimeoutMs !== undefined) {
-              activation.start(key, enterOptions.activationTimeoutMs);
+              activation.start(
+                new UpdateActivationTimeoutError(key, enterOptions.activationTimeoutMs),
+                enterOptions.activationTimeoutMs,
+              );
             }
             return fence;
           }
@@ -499,7 +526,10 @@ export async function withUpdateCommandExecutor<T>(
               });
             }
             if (enterOptions?.activationTimeoutMs !== undefined) {
-              activation.start(key, enterOptions.activationTimeoutMs);
+              activation.start(
+                new UpdateActivationTimeoutError(key, enterOptions.activationTimeoutMs),
+                enterOptions.activationTimeoutMs,
+              );
             }
             return fence;
           } finally {
@@ -509,42 +539,69 @@ export async function withUpdateCommandExecutor<T>(
       };
       let outcome: { result: T } | { error: Error };
       try {
-        const result = await operation(executor);
-        children.close();
-        await children.settle();
-        if (lease) {
-          assertCurrent();
-        }
-        identityWarnings.flush();
-        outcome = { result };
+        outcome = {
+          result: await withUpdateWriterCustody(assertBase, () =>
+            withCommandProcessScope(async () => {
+              let operationOutcome: { result: T } | { error: Error };
+              try {
+                operationOutcome = { result: await operation(executor) };
+              } catch (cause) {
+                operationOutcome = {
+                  error:
+                    cause instanceof Error
+                      ? cause
+                      : new Error("Update execution failed", { cause }),
+                };
+              }
+              // Admitted children retain authority after the callback returns or
+              // rejects. Join them before this scope stops its remaining commands.
+              children.close();
+              try {
+                await children.settle();
+                if ("result" in operationOutcome) {
+                  if (lease) {
+                    assertCurrent();
+                  }
+                  identityWarnings.flush();
+                }
+              } catch (cause) {
+                operationOutcome = {
+                  error:
+                    "error" in operationOutcome && operationOutcome.error !== cause
+                      ? new AggregateError(
+                          [operationOutcome.error, cause],
+                          "Update cleanup failed",
+                          {
+                            cause,
+                          },
+                        )
+                      : cause instanceof Error
+                        ? cause
+                        : new Error("Update settlement failed", { cause }),
+                };
+              }
+              if ("error" in operationOutcome) {
+                throw operationOutcome.error;
+              }
+              return operationOutcome.result;
+            }),
+          ),
+        };
       } catch (cause) {
         outcome = {
           error: cause instanceof Error ? cause : new Error("Update execution failed", { cause }),
-        };
-      }
-      children.close();
-      try {
-        await children.settle();
-      } catch (cause) {
-        outcome = {
-          error:
-            "error" in outcome && outcome.error !== cause
-              ? new AggregateError(
-                  [outcome.error, cause],
-                  "Update and candidate settlement failed",
-                  {
-                    cause,
-                  },
-                )
-              : cause instanceof Error
-                ? cause
-                : new Error("Candidate settlement failed", { cause }),
         };
       }
       active = false;
       preflightReleases.delete(fence);
       childOwners.delete(fence);
       admittedAuthorities.delete(fence);
+      if ("error" in outcome && hasCommandProcessCleanupError(outcome.error)) {
+        throw new UpdateCommandRecoveryPendingError(
+          "Command cleanup is unconfirmed; update ownership remains retained.",
+          { cause: outcome.error },
+        );
+      }
       try {
         if (legacyChild && store && !store.release(legacyChild)) {
           throw new UpdateCommandRecoveryPendingError("Legacy finalizer has not settled.");

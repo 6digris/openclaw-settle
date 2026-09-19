@@ -261,6 +261,7 @@ it("waits for actual maintenance release before printing the original plugin fai
     }
     return {
       ...admitted,
+      assertCurrent: () => admitted.assertCurrent(),
       release: async () => {
         entered.resolve();
         await permit.promise;
@@ -298,6 +299,7 @@ it("retains both refusal and maintenance cleanup cause as pending without ordina
     }
     return {
       ...admitted,
+      assertCurrent: () => admitted.assertCurrent(),
       release: async () => {
         await admitted.release();
         throw new Error("fixture maintenance settlement failed");
@@ -339,6 +341,7 @@ it.each(["revoked", "release-fails"])(
       }
       return {
         ...admitted,
+        assertCurrent: () => admitted.assertCurrent(),
         release: async () => {
           await admitted.release();
           if (kind === "revoked") {

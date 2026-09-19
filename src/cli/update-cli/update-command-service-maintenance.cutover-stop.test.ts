@@ -147,3 +147,44 @@ it.each(["before request", "lost reply", "reported mutation"] as const)(
       expect(mocks.cutoverRelease).toHaveBeenCalledTimes(failureAt === "before request" ? 1 : 0);
     }),
 );
+
+it.each(["busy", "unavailable", "timeout", "stale"])(
+  "defers direct CLI stop on mandatory cutover %s",
+  (reason) =>
+    withServiceHome(async (home) => {
+      mockProcessPlatform("linux");
+      const service = createMockGatewayService({
+        readCommand: async () => ({
+          programArguments: [process.execPath, path.join(process.cwd(), "openclaw.mjs"), "gateway"],
+          environment: { HOME: home },
+        }),
+        readRuntime: async () => ({
+          status: "running",
+          pid: 543210,
+          systemd: { managerUid: 2001 },
+        }),
+        isLoaded: async () => true,
+      });
+      mocks.service.mockReturnValue(service);
+      if (reason === "stale") {
+        mocks.cutoverRefresh.mockRejectedValue(new Error("cutover stale"));
+      } else {
+        mocks.prepareCutover.mockRejectedValue(new Error(`cutover ${reason}`));
+      }
+      await expect(
+        maybeStopManagedServiceBeforeMutableUpdate({
+          root: process.cwd(),
+          updateInstallKind: "package",
+          shouldRestart: true,
+          jsonMode: true,
+        }),
+      ).rejects.toThrow(`cutover ${reason}`);
+      expect(mocks.prepareCutover).toHaveBeenCalledWith(
+        expect.objectContaining({ expectedPid: 543210 }),
+      );
+      expect(service.stop).not.toHaveBeenCalled();
+      if (reason === "stale") {
+        expect(mocks.cutoverRelease).toHaveBeenCalledOnce();
+      }
+    }),
+);

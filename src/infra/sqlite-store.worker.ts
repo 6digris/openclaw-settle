@@ -3,7 +3,9 @@ import { deserialize, serialize } from "node:v8";
 import { parentPort, type MessagePort } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { routeLogsToStderr } from "../logging/console.js";
+import { drainProcessOutput } from "../process/output-drain.js";
 import { encodeOpenClawStateWorkerError } from "../state/openclaw-state-worker-error.js";
+import { withSqliteReaderOwner } from "./sqlite-reader-lifecycle.js";
 import {
   SQLITE_WORKER_MAX_RESULT_BYTES,
   type SqliteWorkerBackend,
@@ -31,6 +33,7 @@ import {
   attachStateLifecycleDelegate,
   withStateDatabaseCoordinatorRuntimeDirectory,
 } from "./state-database-coordinator.js";
+import { ownedWorkerBytes } from "./worker-transfer-bytes.js";
 
 const port = parentPort;
 if (!port) {
@@ -198,10 +201,21 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
         }
       };
       try {
-        value = runInActorContext(request.actor, () => ({
-          // SAFETY: The typed host command is serialized once; framing validates complete reconstruction.
-          result: backend.execute(command as SqliteWorkerCommand<SqliteWorkerOperations>),
-        })).result;
+        // SAFETY: The broker serialized a command from this actor's typed store contract.
+        const typedCommand = command as SqliteWorkerCommand<SqliteWorkerOperations>;
+        value = runInActorContext(request.actor, () =>
+          withSqliteReaderOwner(
+            {
+              operation: typedCommand.type,
+              ownerKind: "worker",
+              actorId: request.actor,
+            },
+            () => ({
+              // SAFETY: The typed host command is serialized once; framing validates complete reconstruction.
+              result: backend.execute(typedCommand),
+            }),
+          ),
+        ).result;
       } catch (error) {
         assertSettled({ error });
         throw error;
@@ -394,7 +408,18 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
     operationAdmission?.port.close();
     operationAdmission = undefined;
   }
-  port!.postMessage(reply, []);
+  if (request.type === "close" && reply.ok && actors.size === 0) {
+    // The broker can terminate this worker as soon as the final close is acknowledged.
+    await new Promise<void>((resolve) => {
+      drainProcessOutput(resolve);
+    });
+  }
+  if (reply.ok) {
+    const bytes = ownedWorkerBytes(reply.value);
+    port!.postMessage({ ...reply, value: bytes }, [bytes.buffer]);
+  } else {
+    port!.postMessage(reply, []);
+  }
 }
 
 // The broker sends one request at a time, including module initialization.

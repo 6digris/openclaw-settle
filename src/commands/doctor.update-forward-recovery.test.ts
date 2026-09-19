@@ -50,6 +50,7 @@ vi.mock("../flows/doctor-health.js", () => ({ runDoctorHealthFlow: async () => {
 vi.mock("./doctor-maintenance.js", () => ({
   beginDoctorMaintenance: async () => ({
     assertCurrent() {},
+    run: <T>(operation: () => T) => operation(),
     closeStores: async () => {
       await closeOpenClawAgentDatabasesAsync();
       closeOpenClawStateDatabaseForTest();

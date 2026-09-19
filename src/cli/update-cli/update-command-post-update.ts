@@ -5,6 +5,7 @@ import {
   buildControlPlaneUpdateRestartHealthPendingResult,
   resolveManagedServiceUpdateFailureExitCode,
 } from "../../infra/update-control-plane-sentinel.js";
+import { collectUpdateDoctorFailureFacts } from "../../infra/update-doctor-result.js";
 import { verifyPackageUpdateRecovery } from "../../infra/update-global.js";
 import { recordUpdateRunStep } from "../../infra/update-run-ledger.js";
 import { isUpdateGatewayReadinessPending } from "../../infra/update-run-step.js";
@@ -27,6 +28,7 @@ import {
 import { repairUpdateService } from "./update-command-repair-service.js";
 import { prepareUpdateRestart } from "./update-command-restart-context.js";
 import {
+  appendUnavailableServiceAdvisory,
   describeWindowsTaskRecoveryFailure,
   markControlPlaneUpdateRestartSentinelFailureBestEffort,
   UpdateCommandFailure,
@@ -56,6 +58,7 @@ import {
   publishUpdateCommandTerminalResult,
   resolveSettledUpdateCommandResult,
 } from "./update-command-terminal.js";
+import { settleUpdateWriterCustodyForActivation } from "./update-command-writer-custody.js";
 export type { FinishUpdateParams } from "./update-command-finish-types.js";
 
 export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRunResult> {
@@ -73,6 +76,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
   assertCurrent();
   await assertUpdateCommandPackageFinalization(params);
   assertCurrent();
+  appendUnavailableServiceAdvisory(params);
   const shouldRestart =
     params.shouldRestart &&
     (!params.coreAlreadyCurrent || params.preManagedServiceStop?.running === true);
@@ -158,24 +162,12 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
       rollbackAttempted = true;
       const rollback = await withOwnedManagedUpdateEnv(params.ownedManagedUpdateEnv, () =>
         rollbackFailedUpdate({
+          ...params,
           result,
           previousRoot: params.root,
-          packageTransaction: params.packageTransaction,
-          unchangedCore: params.unchangedCore,
           allowGatewayRestart: params.shouldRestart,
-          updateRecoveryBackup: params.updateRecoveryBackup,
-          rollbackBlockedReason: params.rollbackBlockedReason,
-          schemaVersions: params.schemaVersions,
-          candidateSchemaVersions: params.candidateSchemaVersions,
-          previousSchemaVersions: params.previousSchemaVersions,
-          previousVerified: params.previousVerified,
-          configSnapshot: params.configSnapshot,
-          activationConfig: params.activationConfig,
-          opts: params.opts,
-          preManagedServiceStop: params.preManagedServiceStop,
           timeoutMs: params.updateStepTimeoutMs,
           nodeRunner: params.packageUpdateNodeRunner,
-          invocationCwd: params.invocationCwd,
         }),
       );
       rollbackStopState = rollback.stoppedForRollback;
@@ -514,6 +506,8 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
     }
     let verificationFailure = "restart-unhealthy";
     const restart = async () => {
+      await settleUpdateWriterCustodyForActivation();
+      assertCurrent();
       const restarted = await withOwnedManagedUpdateEnv(params.ownedManagedUpdateEnv, async () =>
         maybeRestartService({
           shouldRestart: shouldRestart && restartContext.serviceMutationAllowed,
@@ -700,6 +694,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
       throw error;
     }
     const message = formatErrorMessage(error);
+    const failureFacts = collectUpdateDoctorFailureFacts(error);
     defaultRuntime.error(`Post-update verification failed: ${message}`);
     const preMutation = error instanceof UpdatePreMutationError && !params.updateRecoveryBackup;
     const reported = await reportResult(
@@ -717,6 +712,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
             durationMs: Math.max(0, Date.now() - params.startedAt),
             exitCode: 1,
             stderrTail: message,
+            ...(failureFacts.length ? { failureFacts } : {}),
           },
         ],
       },

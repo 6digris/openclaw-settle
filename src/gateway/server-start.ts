@@ -13,6 +13,7 @@ import { createGatewayHttpTransport } from "./server-runtime-state.js";
 import { rethrowGatewayStartupError, runGatewayCloseSteps } from "./server-shutdown.js";
 import { finishGatewayStartup } from "./server-startup-finish.js";
 import { beginMacOSSystemCaWarmupOnce } from "./system-ca-warmup.js";
+import { beginGatewayUpdateStartupAdmission } from "./update-startup-admission.js";
 
 const loadGatewayStartupPostAttachModule = createLazyRuntimeModule(
   () => import("./server-startup-post-attach.js"),
@@ -54,6 +55,7 @@ async function startGatewayServerWithSdkHost(
     // shared promise before plugins can use TLS.
     void beginMacOSSystemCaWarmupOnce({ log });
   }
+  let updateStartup: ReturnType<typeof beginGatewayUpdateStartupAdmission>;
   let startupSettled: Promise<void>;
   const {
     beginClosePrelude,
@@ -63,6 +65,7 @@ async function startGatewayServerWithSdkHost(
     shutdownRuntime,
   } = gatewayKernel;
   try {
+    updateStartup = beginGatewayUpdateStartupAdmission();
     const transport = await createGatewayHttpTransport({
       ...gatewayKernel.createHttpTransportOptions(),
       updateCanary: opts.updateCanary,
@@ -104,11 +107,12 @@ async function startGatewayServerWithSdkHost(
     startupSettled = startup.startupSettled;
   } catch (err) {
     // Failed startup must release work whose normal timer was never armed.
+    updateStartup?.close();
     releasePostReadyWork();
     return await rethrowGatewayStartupError(err, closeOnStartupFailure);
   }
   let postReadyWorkTimer: ReturnType<typeof setTimeout> | undefined;
-  void startupSettled.then(
+  void Promise.all([startupSettled, updateStartup?.settled]).then(
     () => {
       if (gatewayKernel.lifecycle.closePreludeStarted) {
         return;
@@ -134,6 +138,7 @@ async function startGatewayServerWithSdkHost(
             clearTimeout(postReadyWorkTimer);
             releasePostReadyWork();
             await prelude;
+            updateStartup?.close();
             const close = await prepareClose(optsLocal);
             await runGatewayCloseSteps({
               owner: gatewayKernel,

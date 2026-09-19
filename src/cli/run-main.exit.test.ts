@@ -194,6 +194,12 @@ const maybeRunCliInContainerMock = vi.hoisted(() =>
   >((argv: string[]) => ({ handled: false, argv })),
 );
 const serviceEnvSnapshot = captureEnv([
+  "OPENCLAW_GATEWAY_PORT",
+  "OPENCLAW_PROFILE",
+  "OPENCLAW_CONTAINER_HINT",
+  "OPENCLAW_GATEWAY_TOKEN",
+  "OPENCLAW_GATEWAY_PASSWORD",
+
   "OPENCLAW_SERVICE_MARKER",
   "OPENCLAW_SERVICE_KIND",
   GATEWAY_SERVICE_RUNTIME_PID_ENV,
@@ -252,8 +258,8 @@ vi.mock("./banner.js", () => ({
   emitCliBanner: emitCliBannerMock,
 }));
 
-vi.mock("../logging.js", async () => ({
-  ...(await vi.importActual<typeof import("../logging.js")>("../logging.js")),
+vi.mock("../logging/console.js", async () => ({
+  ...(await vi.importActual<typeof import("../logging/console.js")>("../logging/console.js")),
   enableConsoleCapture: enableConsoleCaptureMock,
 }));
 
@@ -325,6 +331,7 @@ vi.mock("../infra/runtime-guard.js", async (importOriginal) => ({
 }));
 
 vi.mock("../commands/doctor-update-recovery.js", () => ({
+  runWithPreparedDoctorUpdateRecovery: <T>(run: () => T) => run(),
   prepareDoctorUpdateRecovery: prepareDoctorUpdateRecoveryMock,
   withDoctorUpdateRecovery: withDoctorUpdateRecoveryMock,
   doctorUpdateRecoveryRuntime: (runtime: unknown) => runtime,
@@ -584,6 +591,9 @@ describe("runCli exit behavior", () => {
   });
 
   beforeEach(() => {
+    delete process.env.OPENCLAW_GATEWAY_PORT;
+    delete process.env.OPENCLAW_PROFILE;
+    delete process.env.OPENCLAW_CONTAINER_HINT;
     delete process.env.OPENCLAW_SERVICE_MARKER;
     delete process.env.OPENCLAW_SERVICE_KIND;
     // Sibling CLI suites run `gateway run --token/--password`, which exports

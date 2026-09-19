@@ -305,7 +305,7 @@ syncFixtureBuiltinExports();\n`,
       [
         "run",
         "--config",
-        "test/vitest/vitest.gateway-core.config.ts",
+        "test/vitest/vitest.gateway-database-workers.config.ts",
         "gateway-cron-process-identity.windows.test.ts",
       ],
       "runtime",

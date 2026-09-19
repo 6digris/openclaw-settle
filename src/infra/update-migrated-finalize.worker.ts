@@ -23,7 +23,7 @@ import { createWindowsTaskAutoStartGuard } from "../cli/update-cli/update-comman
 import { withUpdateCommandTerminalResult } from "../cli/update-cli/update-command-terminal.js";
 import { createWindowsTaskAutoStartRecovery } from "../cli/update-cli/update-command-windows-task.js";
 import { routeLogsToStderr } from "../logging/console.js";
-import { defaultRuntime } from "../runtime.js";
+import { defaultRuntime, ExitError } from "../runtime.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contract.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
@@ -50,11 +50,12 @@ async function finalizeMigratedUpdate(): Promise<void> {
   if (process.argv[2] === "--check") {
     routeLogsToStderr();
     if (typeof finishUpdateRun !== "function") {
-      throw new Error("Candidate recovery writer is unavailable.");
+      throw new Error("Update recovery writer is unavailable.");
     }
     process.stdout.write(
       JSON.stringify({
         executorDelegation: "pid-start-v1",
+        writerCustody: "native-pins-v1",
         updateRecovery: "parent-v1",
         captureRetirement: "settled-v1",
         doctorConfigWrites: "pid-start-v1",
@@ -212,7 +213,7 @@ async function finalizeMigratedUpdate(): Promise<void> {
   }
   const terminal = getUpdateRun(finalized.run.runId, { env: finalized.run.env });
   if (!terminal || terminal.status === "running") {
-    throw new Error("Candidate finalization left the update run nonterminal.");
+    throw new Error("Update finalization left the update run nonterminal.");
   }
   const response: MigratedUpdateFinalizationResult = {
     result: finalized.result,
@@ -273,25 +274,51 @@ async function runDelegatedDoctor(input: UpdateDoctorInput): Promise<void> {
       }
       const { runDoctorHealthFlow } = await import("../flows/doctor-health.js");
       assertCurrent();
-      await runDoctorHealthFlow(
-        {
-          ...defaultRuntime,
-          exit: (code) => {
-            process.exitCode = code;
+      const {
+        withDoctorUpdateRecovery,
+        prepareDoctorUpdateRecovery,
+        runWithPreparedDoctorUpdateRecovery,
+      } = await import("../commands/doctor-update-recovery.js");
+      const runtime = {
+        ...defaultRuntime,
+        exit(code: number): never {
+          // The recovery owner must finish before this executable publishes exit.
+          throw new ExitError(code);
+        },
+      };
+      const options = {
+        repair: input.repair,
+        yes: input.yes,
+        workspaceSuggestions: input.workspaceSuggestions,
+        nonInteractive: true,
+        ...(input.updateRecoveryBackup
+          ? {
+              updateRecoveryOwner: "driver" as const,
+              updateRecoveryBackup: JSON.stringify(input.updateRecoveryBackup),
+            }
+          : {}),
+      };
+      try {
+        await withDoctorUpdateRecovery(
+          runtime,
+          async () => {
+            await prepareDoctorUpdateRecovery(options);
+            assertCurrent();
+            await runWithPreparedDoctorUpdateRecovery(() =>
+              runDoctorHealthFlow(runtime, options, {
+                inputHash: input.configInputHash,
+                assertCurrent,
+              }),
+            );
           },
-        },
-        {
-          repair: input.repair,
-          nonInteractive: true,
-          ...(input.updateRecoveryBackup
-            ? {
-                updateRecoveryOwner: "driver",
-                updateRecoveryBackup: JSON.stringify(input.updateRecoveryBackup),
-              }
-            : {}),
-        },
-        { inputHash: input.configInputHash, assertCurrent },
-      );
+          assertCurrent,
+        );
+      } catch (error) {
+        if (!(error instanceof ExitError)) {
+          throw error;
+        }
+        process.exitCode = error.code;
+      }
     },
   );
 }
@@ -310,7 +337,7 @@ async function finalizeInput(
       input.params.rollbackBlockedReason !== "state-migrated-no-rollback" &&
       input.params.rollbackBlockedReason !== "rollback-state-unverified")
   ) {
-    throw new Error("Candidate finalization requires its migrated update run.");
+    throw new Error("Update finalization requires its migrated update run.");
   }
   const { requesterAuthority: descriptor, ...runIdentity } = transferredRun;
   executorFence?.assertCurrent();

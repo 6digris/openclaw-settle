@@ -1,4 +1,3 @@
-import { expectDefined } from "@openclaw/normalization-core";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
@@ -7,7 +6,6 @@ import type { SessionsListParams } from "../../packages/gateway-protocol/src/ind
 import { listAgentIds } from "../agents/agent-scope-config.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import type { SessionEntry } from "../config/sessions.js";
-import type { GatewayStoredSessionTargets } from "../config/sessions/combined-store-gateway.js";
 import {
   MAX_SESSION_PARTICIPANTS,
   sessionCreatorProfileId,
@@ -21,6 +19,7 @@ import type { SessionOwnerFacetIdentity } from "../shared/session-types.js";
 import type { SynchronousWork } from "../shared/synchronous-work.js";
 import {
   projectSessionOwner,
+  projectSessionProfileInvolvement,
   addSessionOwnerFacetIdentity,
   sortSessionOwnerFacet,
   projectSessionParticipants,
@@ -30,6 +29,7 @@ import {
   resolveSessionListProfileReference,
 } from "./session-identity-projection.js";
 import type { SessionEntryPair } from "./session-list-order.js";
+import type { SessionListTargetLookup } from "./session-list-target.js";
 import type {
   SessionActorProfileIdentity,
   SessionListActiveRunProjector,
@@ -37,7 +37,6 @@ import type {
   SessionListRowContextProvider,
 } from "./session-utils-contracts.js";
 import { isFinitePositiveTimestamp, resolveSessionChildOwners } from "./session-utils-core.js";
-import { buildSessionListRowMetadataContext } from "./session-utils-projection.js";
 import { createSessionListSearchMatcher } from "./session-utils-search.js";
 import type { SessionListModelCatalog, SessionsListResult } from "./session-utils.types.js";
 
@@ -53,14 +52,14 @@ export type SessionListFilteredEntries = {
 
 export type SessionListFilterParams = {
   cfg: OpenClawConfig;
-  store: Record<string, SessionEntry>;
-  targetsBySessionKey?: GatewayStoredSessionTargets;
+  entries: Iterable<SessionEntryPair>;
+  getTarget: SessionListTargetLookup;
   modelCatalog?: SessionListModelCatalog | ModelCatalogEntry[];
   opts: SessionsListParams;
   now: number;
   userProfileIdentityById?: Map<string, SessionActorProfileIdentity | undefined>;
   configuredAgentIds?: ReadonlySet<string>;
-  getRowContext?: SessionListRowContextProvider;
+  getRowContext: SessionListRowContextProvider;
   entryFilter?: (key: string, entry: SessionEntry) => boolean;
   restrictProfileReferences?: boolean;
   involvingActorId?: string;
@@ -72,10 +71,9 @@ export type SessionListFilterParams = {
 export function* filterSessionEntries(
   params: SessionListFilterParams,
 ): SynchronousWork<SessionListFilteredEntries> {
-  const { cfg, store, opts, now, shouldYield } = params;
+  const { cfg, opts, now, shouldYield } = params;
   let rowContext: SessionListRowContext | undefined;
-  const getRowContext = () =>
-    (rowContext ??= params.getRowContext?.() ?? buildSessionListRowMetadataContext({ now }));
+  const getRowContext = () => (rowContext ??= params.getRowContext());
   const includeGlobal = opts.includeGlobal === true;
   const includeUnknown = opts.includeUnknown === true;
   const spawnedBy = typeof opts.spawnedBy === "string" ? opts.spawnedBy : "";
@@ -112,11 +110,9 @@ export function* filterSessionEntries(
     : undefined;
   const involvingActorId = normalizeOptionalString(params.involvingActorId);
 
-  // The caller owns this store snapshot and its prepared visibility filter.
-  // Allocate pairs incrementally instead of materializing every pair before the first yield.
+  // The caller owns these resident entries and their prepared visibility filter.
   const visibleEntries: SessionEntryPair[] = [];
-  for (const key of Object.keys(store)) {
-    const entry = store[key]!;
+  for (const [key, entry] of params.entries) {
     if (params.entryFilter?.(key, entry) ?? true) {
       visibleEntries.push([key, entry]);
     }
@@ -129,7 +125,7 @@ export function* filterSessionEntries(
   if (allowedProfileIds) {
     for (const [, entry] of visibleEntries) {
       const owner = projectSessionOwner(entry, identities, cfg, configuredAgentIds)?.actor;
-      for (const person of projectSessionPeople(entry, identities, cfg, owner)) {
+      for (const person of projectSessionPeople(entry, identities, owner)) {
         allowedProfileIds.add(person.identity.id);
       }
       if (shouldYield?.()) {
@@ -152,7 +148,7 @@ export function* filterSessionEntries(
   const selectedProfileId = profileReference?.value;
 
   const keepCandidate = ([key, entry]: SessionEntryPair) => {
-    const target = params.targetsBySessionKey?.get(key);
+    const target = params.getTarget(key);
     const storeKey = target?.storeKey ?? key;
     if (
       isCronRunSessionKey(key) ||
@@ -230,14 +226,13 @@ export function* filterSessionEntries(
       yield;
     }
   }
-  // Search batches runtime metadata; excluded rows must not participate in ownership resolution.
+  // Excluded rows must not participate in search or ownership resolution.
   const matchesSearch = search
     ? createSessionListSearchMatcher({
         cfg,
         search,
         now,
-        visibleEntries: candidateEntries,
-        targetsBySessionKey: expectDefined(params.targetsBySessionKey, "search row owners"),
+        getTarget: params.getTarget,
         modelCatalog: params.modelCatalog instanceof Map ? params.modelCatalog : undefined,
         getRowContext,
         projectActiveRun: params.projectActiveRun,
@@ -249,7 +244,7 @@ export function* filterSessionEntries(
       yield;
     }
     const [key, entry] = pair;
-    if (matchesSearch && !(yield* matchesSearch(key, entry))) {
+    if (matchesSearch && !matchesSearch(key, entry)) {
       continue;
     }
     if (
@@ -277,17 +272,22 @@ export function* filterSessionEntries(
         continue;
       }
     }
-    const participants =
-      involvingActorId || profileRelation?.relationship === "involving"
-        ? projectSessionParticipants(entry, identities, cfg)
-        : undefined;
+    let participants: ReturnType<typeof projectSessionParticipants> | undefined;
+    const matchesInvolvement = (profileId: string, personal: boolean) => {
+      const state = projectSessionProfileInvolvement(entry, profileId, identities);
+      return (
+        !(personal && state?.hidden) &&
+        (Boolean(state?.lastMention || (personal && state?.hidden === false)) ||
+          (effectiveOwner?.identity?.type === "profile" &&
+            effectiveOwner.identity.id === profileId) ||
+          (participants ??= projectSessionParticipants(entry, identities, cfg)).has(
+            JSON.stringify({ type: "profile", id: profileId }),
+          ))
+      );
+    };
     if (
       profileRelation?.relationship === "involving" &&
-      !(
-        (effectiveOwner?.identity?.type === "profile" &&
-          effectiveOwner.identity.id === profileRelation.profileId) ||
-        participants?.has(JSON.stringify({ type: "profile", id: profileRelation.profileId }))
-      )
+      !matchesInvolvement(profileRelation.profileId, false)
     ) {
       continue;
     }
@@ -301,18 +301,11 @@ export function* filterSessionEntries(
       continue;
     }
     // Preserve the existing viewer-independent owner facet; explicit relations still narrow it.
-    if (
-      involvingActorId &&
-      !(
-        (effectiveOwner?.identity?.type === "profile" &&
-          effectiveOwner.identity.id === involvingActorId) ||
-        participants?.has(JSON.stringify({ type: "profile", id: involvingActorId }))
-      )
-    ) {
+    if (involvingActorId && !matchesInvolvement(involvingActorId, true)) {
       continue;
     }
     if (opts.includePeople || opts.involvingProfileId) {
-      const associated = projectSessionPeople(entry, identities, cfg, effectiveOwner);
+      const associated = projectSessionPeople(entry, identities, effectiveOwner);
       peopleSessionCount += 1;
       peopleIncomplete ||=
         (entry.participantCount ?? entry.participants?.length ?? 0) >= MAX_SESSION_PARTICIPANTS ||

@@ -76,6 +76,7 @@ export async function syncPluginsForUpdateChannel(params: {
   config: OpenClawConfig;
   channel: UpdateChannel;
   coreVersion?: string;
+  skipIds?: ReadonlySet<string>;
   workspaceDir?: string;
   env?: NodeJS.ProcessEnv;
   logger?: PluginUpdateLogger;
@@ -126,7 +127,7 @@ async function syncPluginsForUpdateChannelWithLease(
   const retainedLinks = new Set<string>();
   for (const [pluginId, record] of Object.entries(installs)) {
     const bundledInfo = bundled.get(pluginId);
-    if (record.source !== "path" || !bundledInfo) {
+    if (params.skipIds?.has(pluginId) || record.source !== "path" || !bundledInfo) {
       continue;
     }
     const linkedPath = loadHelpers.paths.find(
@@ -147,7 +148,7 @@ async function syncPluginsForUpdateChannelWithLease(
   if (params.channel === "dev") {
     for (const [pluginId, record] of Object.entries(installs)) {
       const bundledInfo = bundled.get(pluginId);
-      if (!bundledInfo || retainedLinks.has(pluginId)) {
+      if (!bundledInfo || retainedLinks.has(pluginId) || params.skipIds?.has(pluginId)) {
         continue;
       }
 
@@ -179,6 +180,13 @@ async function syncPluginsForUpdateChannelWithLease(
         continue;
       }
       const existing = resolveBridgeInstallRecord({ installs, bridge });
+      if (
+        params.skipIds?.has(bridge.bundledPluginId) ||
+        params.skipIds?.has(targetPluginId) ||
+        (existing && params.skipIds?.has(existing.pluginId))
+      ) {
+        continue;
+      }
       if (
         !isExternalizedBundledPluginEnabled({
           config: next,
@@ -423,7 +431,7 @@ async function syncPluginsForUpdateChannelWithLease(
 
     for (const [pluginId, record] of Object.entries(installs)) {
       const bundledInfo = bundled.get(pluginId);
-      if (!bundledInfo || retainedLinks.has(pluginId)) {
+      if (!bundledInfo || retainedLinks.has(pluginId) || params.skipIds?.has(pluginId)) {
         continue;
       }
 

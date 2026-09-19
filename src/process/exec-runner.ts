@@ -1,3 +1,4 @@
+import type { Serializable } from "node:child_process";
 import process from "node:process";
 import { expectDefined } from "@openclaw/normalization-core";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
@@ -7,6 +8,7 @@ import {
   decodeWindowsOutputBuffer,
   resolveWindowsConsoleEncoding,
 } from "../infra/windows-encoding.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { releaseChildProcessOutputAfterExit } from "./child-process.js";
 import {
   appendCapturedOutput,
@@ -38,7 +40,9 @@ import {
 import {
   COMMAND_PROCESS_TREE_KILL_GRACE_MS,
   resolveCommandProcessSignal,
+  retainCommandProcessCleanup,
   spawnCommandWithInvocation,
+  waitForCommandSpawn,
 } from "./exec-spawn.js";
 import { createCommandTerminationController } from "./exec-termination.js";
 
@@ -53,6 +57,11 @@ export type CommandOptions = {
   input?: string | Uint8Array;
   /** Synchronous admission with the spawned PID and argv, before input is released. */
   beforeInput?: (pid: number, argv?: readonly string[]) => void;
+  /** Private IPC owned by the exact spawned process; handlers settle before command completion. */
+  onChildMessage?: (
+    message: unknown,
+    reply: (message: Serializable) => Promise<void>,
+  ) => void | Promise<void>;
   baseEnv?: NodeJS.ProcessEnv;
   env?: NodeJS.ProcessEnv;
   windowsVerbatimArguments?: boolean;
@@ -209,6 +218,7 @@ async function runCommandWithOutputEncoding(
 
   const { child, invocation } = spawnCommandWithInvocation(argv, {
     buffer: false,
+    ipc: Boolean(options.onChildMessage),
     cancelSignal: cancelController.signal,
     inheritScopeCancellation: false,
     cwd,
@@ -224,6 +234,9 @@ async function runCommandWithOutputEncoding(
     stripFinalNewline: false,
     windowsVerbatimArguments: options.windowsVerbatimArguments,
   });
+  const startupReady = child.pid === undefined ? waitForCommandSpawn(child) : undefined;
+  let waitingForSpawn = startupReady !== undefined;
+  const startupCanceled = createDeferredCore<Exclude<CommandTerminationReason, "exit">>();
   const nodeChild = child.nodeChildProcess;
   const ownsExitedProcessTree = Boolean(killProcessTree && process.platform !== "win32");
   const shouldTrackOutputTimeout =
@@ -239,6 +252,7 @@ async function runCommandWithOutputEncoding(
   let releaseOutput: (() => void) | undefined;
   const terminationController = createCommandTerminationController({
     child: nodeChild,
+    spawned: startupReady,
     cancelController,
     baseEnv,
     env,
@@ -248,6 +262,17 @@ async function runCommandWithOutputEncoding(
     killGraceMs: resolvedKillGraceMs,
     killSignal,
   });
+  const processCleanup = (async () => {
+    await child.then(
+      () => undefined,
+      () => undefined,
+    );
+    commandSettled = true;
+    await startupReady?.catch(() => {});
+    return await terminationController.settle();
+  })();
+  retainCommandProcessCleanup(processCleanup);
+  void processCleanup.catch(() => {});
   nodeChild.once("exit", (code, signalValue) => {
     childExitState = { code, signal: signalValue };
     // Successful tree output belongs to its command deadline, not the diagnostic
@@ -282,6 +307,9 @@ async function runCommandWithOutputEncoding(
       return;
     }
     termination = reason;
+    if (waitingForSpawn) {
+      startupCanceled.resolve(reason);
+    }
     if (childExitState) {
       // An escaped pipe holder can survive group termination; bound its final drain.
       releaseOutput ??= releaseChildProcessOutputAfterExit(nodeChild);
@@ -311,6 +339,48 @@ async function runCommandWithOutputEncoding(
   const onAbort = () => cancel("signal");
   signal?.addEventListener("abort", onAbort, { once: true });
   armNoOutputTimer();
+  const clearTimers = () => {
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer);
+    }
+    clearNoOutputTimer();
+    signal?.removeEventListener("abort", onAbort);
+  };
+  if (startupReady) {
+    let interrupted: Exclude<CommandTerminationReason, "exit"> | undefined;
+    try {
+      interrupted = await Promise.race([
+        startupReady.then(() => undefined),
+        startupCanceled.promise,
+      ]);
+    } catch (error) {
+      clearTimers();
+      throw error;
+    }
+    if (interrupted) {
+      clearTimers();
+      // The result cannot claim extinction before PID delivery. Keep the same
+      // termination owner through late readiness and final output drainage.
+      void processCleanup.finally(() => releaseOutput?.()).catch(() => {});
+      const stopped = {
+        pid: nodeChild.pid,
+        code:
+          interrupted === "timeout" || interrupted === "no-output-timeout"
+            ? TIMEOUT_EXIT_CODE
+            : null,
+        signal: null,
+        killed: nodeChild.killed,
+        cleanup: "uncertain" as const,
+        termination: interrupted === "output-limit" ? ("signal" as const) : interrupted,
+        noOutputTimedOut: interrupted === "no-output-timeout",
+        outputLimitExceeded: interrupted === "output-limit" || undefined,
+      };
+      return raw
+        ? { ...stopped, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), windowsEncoding }
+        : { ...stopped, stdout: "", stderr: "" };
+    }
+    waitingForSpawn = false;
+  }
 
   const captureOutput = (
     capture: CapturedOutputBuffers,
@@ -439,6 +509,41 @@ async function runCommandWithOutputEncoding(
   });
 
   let inputAdmissionError: Error | undefined;
+  const controlWork = new Set<Promise<void>>();
+  const onChildMessage = (message: unknown) => {
+    const handler = options.onChildMessage;
+    if (!handler) {
+      return;
+    }
+    if (controlWork.size >= 32) {
+      inputAdmissionError ??= new Error("Command control channel capacity exceeded");
+      cancel("signal");
+      return;
+    }
+    const task = Promise.resolve()
+      .then(() =>
+        handler(
+          message,
+          (response) =>
+            new Promise<void>((resolve, reject) => {
+              if (!nodeChild.connected) {
+                reject(new Error("Command control channel disconnected"));
+                return;
+              }
+              nodeChild.send(response, (error) => (error ? reject(error) : resolve()));
+            }),
+        ),
+      )
+      .catch((cause: unknown) => {
+        inputAdmissionError ??= toErrorObject(cause, "Command control channel failed");
+        cancel("signal");
+      })
+      .finally(() => controlWork.delete(task));
+    controlWork.add(task);
+  };
+  if (options.onChildMessage) {
+    nodeChild.on("message", onChildMessage);
+  }
   if (options.beforeInput) {
     nodeChild.stdin?.once("error", (cause) => {
       inputAdmissionError ??= toErrorObject(cause, "Command input failed");
@@ -465,16 +570,14 @@ async function runCommandWithOutputEncoding(
 
   const result = await child.finally(() => {
     commandSettled = true;
-    if (timeoutTimer) {
-      clearTimeout(timeoutTimer);
-    }
-    clearNoOutputTimer();
-    signal?.removeEventListener("abort", onAbort);
+    nodeChild.off("message", onChildMessage);
+    clearTimers();
     releaseOutput?.();
   });
-  let cleanup = await terminationController.settle();
+  let cleanup = await processCleanup;
+  await Promise.all(controlWork);
   const resolvedSignal = result.signal ?? childExitState?.signal ?? nodeChild.signalCode ?? null;
-  if (cleanup !== "forced" && resolvedSignal) {
+  if (cleanup === "normal" && resolvedSignal) {
     cleanup = "uncertain";
   }
   if (inputAdmissionError) {

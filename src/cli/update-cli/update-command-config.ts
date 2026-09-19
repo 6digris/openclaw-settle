@@ -238,7 +238,7 @@ function resolveRestoredAuthoredChannels(params: {
 
 export async function persistValidatedDowngradeConfig(
   snapshot: Awaited<ReturnType<typeof readConfigFileSnapshot>>,
-  beforePersistentEffect?: () => void | Promise<void>,
+  assertCurrent?: () => void,
 ): Promise<void> {
   if (
     snapshot.valid &&
@@ -247,9 +247,8 @@ export async function persistValidatedDowngradeConfig(
     // Strict target validation permits this write even when Doctor execution failed.
     // Committing unchanged config through its normal writer stamps the target version,
     // so same-channel downgrades retain ordinary restart eligibility.
-    await beforePersistentEffect?.();
-    await withPluginLifecycleLease({}, async () => {
-      await mutateConfigFileWithRetry({ mutate: () => undefined });
+    await withPluginLifecycleLease({ assertCurrent }, async () => {
+      await mutateConfigFileWithRetry({ mutate: () => undefined, writeOptions: { assertCurrent } });
     });
   }
 }
@@ -258,6 +257,7 @@ export async function persistRequestedUpdateChannel(params: {
   configSnapshot: Awaited<ReturnType<typeof readConfigFileSnapshot>>;
   requestedChannel: UpdateChannel | null;
   beforePersistentEffect?: () => void | Promise<void>;
+  assertCurrent?: () => void;
 }): Promise<Awaited<ReturnType<typeof readConfigFileSnapshot>>> {
   if (!params.requestedChannel || !params.configSnapshot.valid) {
     return params.configSnapshot;
@@ -269,7 +269,7 @@ export async function persistRequestedUpdateChannel(params: {
   const requestedChannel = params.requestedChannel;
   await params.beforePersistentEffect?.();
   const mutation = await mutateConfigFileWithRetry({
-    writeOptions: { skipPluginValidation: true },
+    writeOptions: { skipPluginValidation: true, assertCurrent: params.assertCurrent },
     mutate: (draft) => {
       draft.update = {
         ...draft.update,
@@ -287,6 +287,7 @@ export async function preparePostCorePluginConfig(params: {
   preUpdateConfig?: PreUpdateConfigRestoreInput;
   suppressFutureVersionWarning?: boolean;
   observe?: boolean;
+  assertCurrent?: () => void;
 }) {
   const io = createConfigIO({
     pluginValidation: "skip",
@@ -298,6 +299,7 @@ export async function preparePostCorePluginConfig(params: {
     configSnapshot: prepared.snapshot,
     requestedChannel: params.requestedChannel,
     beforePersistentEffect: params.beforePersistentEffect,
+    assertCurrent: params.assertCurrent,
   });
   if (channelSnapshot !== prepared.snapshot) {
     prepared = await io.readConfigFileSnapshotForWrite();
@@ -305,7 +307,15 @@ export async function preparePostCorePluginConfig(params: {
   const restored = restoreDroppedPreUpdateChannels(prepared.snapshot, params.preUpdateConfig);
   return {
     configSnapshot: restored.snapshot,
-    configWriteOptions: prepared.writeOptions,
+    configWriteOptions: params.assertCurrent
+      ? {
+          ...prepared.writeOptions,
+          assertCurrent: () => {
+            params.assertCurrent?.();
+            prepared.writeOptions.assertCurrent?.();
+          },
+        }
+      : prepared.writeOptions,
     configChanged: restored.changed,
     restoredAuthoredChannels: restored.authoredChannels,
   };
@@ -398,7 +408,10 @@ export async function maybeRepairLegacyConfigForUpdateChannel(params: {
   await params.beforePersistentEffect?.();
   const { repairLegacyConfigForUpdateChannel } =
     await import("../../commands/doctor/legacy-config-repair.js");
-  const { snapshot, repaired } = await repairLegacyConfigForUpdateChannel(params);
+  const { snapshot, repaired, warnings } = await repairLegacyConfigForUpdateChannel(params);
+  for (const warning of warnings ?? []) {
+    defaultRuntime.error(`Warning: ${warning}`);
+  }
   if (!params.jsonMode && repaired) {
     defaultRuntime.log(theme.muted("Migrated legacy config before changing update channel."));
   }

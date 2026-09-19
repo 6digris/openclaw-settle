@@ -13,14 +13,11 @@ import type { PluginInstallRecord } from "../../config/types.plugins.js";
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import * as temporaryState from "../../infra/tmp-openclaw-dir.js";
 import {
-  createUpdateRun,
   getUpdateRun,
   listUpdateRuns,
-  recordUpdateRunPhase,
   recordUpdateRunStep,
 } from "../../infra/update-run-ledger.js";
 import type { UpdateRunRecord } from "../../infra/update-run-record.js";
-import { ABANDONED_UPDATE_RUN_MS } from "../../infra/update-run-timeouts.js";
 import { loadInstalledPluginIndexInstallRecords } from "../../plugins/installed-plugin-index-records.js";
 import { seedInstalledPluginIndex } from "../../plugins/test-helpers/installed-plugin-index.js";
 import { runExec } from "../../process/exec.js";
@@ -35,6 +32,11 @@ import { registerUpdateCli } from "../update-cli.js";
 import { convergeUpdatePlugins } from "./update-command-convergence.js";
 import { updateExecutorNativeEntrypoints } from "./update-command-executor-native-runtime.test-support.js";
 import { updateFinalizeCommand } from "./update-command-finalize.js";
+import {
+  seedInterruptedPostCoreRun,
+  expectRecoveredRun,
+  mockRepairManagedService,
+} from "./update-command-lease-service.test-support.js";
 import type { LeaseScenario } from "./update-command-lease.test-support.js";
 import type { ProducedPluginUpdateResult } from "./update-command-plugins-internals.js";
 import { finishUpdate } from "./update-command-post-update.js";
@@ -278,6 +280,52 @@ it("passes standalone repair ownership to both fresh Doctor phases through the p
   expect(process.env.OPENCLAW_UPDATE_RUN_ID).toBeUndefined();
 });
 
+it.each([
+  { failDoctor: undefined, restartFails: false },
+  { failDoctor: "pre", restartFails: false },
+  { failDoctor: undefined, restartFails: true },
+] as const)(
+  "the repair parent restores its managed service (Doctor failure=$failDoctor, restart failure=$restartFails)",
+  async ({ failDoctor, restartFails }) => {
+    const recovery = seedInterruptedPostCoreRun();
+    await writeScenario("repair", {
+      verifyRepairOwner: true,
+      verifyServiceCustody: true,
+      failDoctor,
+    });
+    const { serviceState, stop, restart } = await mockRepairManagedService(
+      state,
+      entrypoint,
+      restartFails,
+    );
+
+    await runRegisteredCli({
+      register: registerUpdateCli,
+      argv: ["update", "repair", "--yes", "--json", "--timeout", "15"],
+    });
+
+    expect(stop.mock.calls.filter(([params]) => params.phase !== "inspect")).toHaveLength(1);
+    expect(restart).toHaveBeenCalledOnce();
+    expect(await fs.readFile(serviceState, "utf8")).toBe(restartFails ? "stopped" : "running");
+    if (restartFails) {
+      expect(listUpdateRuns()[0]).toMatchObject({
+        status: "failed",
+        reason: "doctor-gateway-restoration-failed",
+      });
+      const diagnostics = vi.mocked(defaultRuntime.error).mock.calls.flat().join("\n");
+      expect(diagnostics).toContain("managed Gateway could not be restored");
+      expect(diagnostics).toContain("openclaw gateway restart");
+      expect(getUpdateRun(recovery.runId)).toEqual(recovery);
+    } else if (failDoctor) {
+      expect(listUpdateRuns()[0]).toMatchObject({ status: "failed", reason: "doctor-failed" });
+      expect(getUpdateRun(recovery.runId)).toEqual(recovery);
+    } else {
+      expectSuccess("repair");
+      expectRecoveredRun(getUpdateRun(recovery.runId));
+    }
+  },
+);
+
 async function events(): Promise<string[]> {
   return (await fs.readFile(state.statePath("events.jsonl"), "utf8"))
     .trim()
@@ -319,28 +367,6 @@ function reportedResult(lane: Lane): unknown {
   return lane === "repair"
     ? vi.mocked(defaultRuntime.writeJson).mock.lastCall?.[0]
     : mocks.print.mock.lastCall?.[0];
-}
-
-function seedInterruptedPostCoreRun(): UpdateRunRecord {
-  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() - 2 * ABANDONED_UPDATE_RUN_MS);
-  try {
-    const run = createUpdateRun({ trigger: "cli", before: { version: "2026.9.2" } });
-    return recordUpdateRunPhase(run.runId, "verifying", {
-      step: { step: "post-update verification", status: "in_progress" },
-    });
-  } finally {
-    clock.mockRestore();
-  }
-}
-
-function expectRecoveredRun(run: UpdateRunRecord | undefined): void {
-  expect(run).toMatchObject({
-    status: "failed",
-    reason: "abandoned",
-    steps: expect.arrayContaining([
-      expect.objectContaining({ step: "reconcile:acknowledged", status: "completed" }),
-    ]),
-  });
 }
 
 async function prepareIncompleteSourceRuntime() {

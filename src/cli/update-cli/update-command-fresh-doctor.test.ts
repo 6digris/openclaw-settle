@@ -41,11 +41,17 @@ vi.mock("../../daemon/gateway-entrypoint.js", () => ({
   resolveGatewayInstallEntrypoint: mocks.resolveEntrypoint,
 }));
 
-vi.mock("../../process/exec.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../process/exec.js")>()),
-  runExec: mocks.runExec,
-  runUtf8CommandWithTimeout: mocks.runDoctor,
-}));
+vi.mock("../../process/exec.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../process/exec.js")>();
+  return {
+    ...actual,
+    runExec: mocks.runExec,
+    runUtf8CommandWithTimeout: (...args: Parameters<typeof actual.runUtf8CommandWithTimeout>) =>
+      args[0][1] === "--input-type=commonjs"
+        ? actual.runUtf8CommandWithTimeout([process.execPath, ...args[0].slice(1)], args[1])
+        : mocks.runDoctor(...args),
+  };
+});
 
 vi.mock("../../runtime.js", () => ({
   defaultRuntime: { error: vi.fn(), log: vi.fn() },
@@ -120,6 +126,42 @@ describe("post-plugin update readiness", () => {
       stderr: "",
     }));
   });
+
+  it.each([
+    { phase: "pre-plugin", operatorPolicy: "external" },
+    { phase: "post-plugin", operatorPolicy: "external" },
+    { phase: "pre-plugin", operatorPolicy: undefined },
+    { phase: "post-plugin", operatorPolicy: undefined },
+  ] as const)(
+    "keeps service authority with the parent in the $phase child (operator policy: $operatorPolicy)",
+    async ({ phase, operatorPolicy }) => {
+      vi.stubEnv("OPENCLAW_SERVICE_REPAIR_POLICY", operatorPolicy);
+      const { runExec } =
+        await vi.importActual<typeof import("../../process/exec.js")>("../../process/exec.js");
+      mocks.runExec.mockImplementationOnce(async (_command, _args, options) => {
+        const result = await runExec(
+          process.execPath,
+          [
+            "-e",
+            "process.stdout.write(JSON.stringify({ policy: process.env.OPENCLAW_SERVICE_REPAIR_POLICY, repair: process.env.OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_SERVICE_REPAIR, activation: process.env.OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION }))",
+          ],
+          options,
+        );
+        expect(JSON.parse(result.stdout)).toEqual({
+          policy: "external",
+          repair: "0",
+          activation: "0",
+        });
+        return result;
+      });
+
+      await runUpdateFinalizationDoctorInFreshProcess({
+        ...updateOptions,
+        phase,
+        root: tempDirs.make("fresh-doctor-policy-"),
+      });
+    },
+  );
 
   it.each([undefined, 5_000])("propagates the primary Doctor timeout %s", async (timeoutMs) => {
     await runUpdateFinalizationDoctorInFreshProcess({
@@ -581,37 +623,51 @@ describe("post-plugin update readiness", () => {
     });
   });
 
-  it("retains posture warnings while accepting post-plugin readiness", async () => {
-    mocks.runExec.mockImplementation(async (_command, args: string[]) => ({
-      stdout: args.includes("--lint")
-        ? JSON.stringify({
-            ok: true,
-            checksRun: 1,
-            findings: [],
-            warnings: [
-              {
-                checkId: "core/doctor/security",
-                severity: "warning",
-                message: "Open group policy permits mention-gated requests.",
-                fixHint: "Review the group allowlist.",
-              },
-            ],
-          })
-        : "",
-      stderr: "",
-    }));
-    const result = await completePostCorePluginUpdate(updateOptions);
-    expect(result.pluginUpdate).toMatchObject({
-      status: "warning",
-      warnings: [
-        {
-          reason: "doctor-advisory",
-          message: "Open group policy permits mention-gated requests.",
-          guidance: ["Review the group allowlist."],
-        },
-      ],
-    });
-  });
+  it.each([
+    {
+      checkId: "core/doctor/security",
+      message: "Open group policy permits mention-gated requests.",
+      fixHint: "Review the group allowlist.",
+    },
+    {
+      checkId: "core/doctor/lint-state-inspection",
+      message: "Temporary doctor lint state snapshot cleanup did not complete.",
+      fixHint: "Rerun doctor after the update.",
+    },
+  ])(
+    "retains $checkId warnings while accepting post-plugin readiness",
+    async ({ checkId, message, fixHint }) => {
+      mocks.runExec.mockImplementation(async (_command, args: string[]) => ({
+        stdout: args.includes("--lint")
+          ? JSON.stringify({
+              ok: true,
+              checksRun: 1,
+              findings: [],
+              warnings: [
+                {
+                  checkId,
+                  severity: "warning",
+                  message,
+                  fixHint,
+                },
+              ],
+            })
+          : "",
+        stderr: "",
+      }));
+      const result = await completePostCorePluginUpdate(updateOptions);
+      expect(result.pluginUpdate).toMatchObject({
+        status: "warning",
+        warnings: [
+          {
+            reason: "doctor-advisory",
+            message,
+            guidance: [fixHint],
+          },
+        ],
+      });
+    },
+  );
 
   it.each([
     {

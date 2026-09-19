@@ -2,15 +2,23 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { acquireWithWait } from "../infra/acquire-with-wait.js";
 import { formatErrorMessage, isErrno } from "../infra/errors.js";
 import { withFileLock } from "../infra/file-lock.js";
+import {
+  acquireStateDatabaseCoordinator,
+  StateDatabaseCoordinatorContentionError,
+} from "../infra/state-database-coordinator.js";
 import {
   getUpdateDoctorConfigWriteAuthority,
   recordUpdateDoctorConfigWriteRefusal,
 } from "../infra/update-doctor-result.js";
 import { createManagedHandoffLeaseStore } from "../infra/update-managed-service-handoff-lease.js";
 import { KeyedAsyncQueue } from "../plugin-sdk/keyed-async-queue.js";
+import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "../state/openclaw-state-db-contract.js";
+import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { assertConfigWriteAllowedInCurrentMode } from "./config-write-guard.js";
+import { captureConfigWriteTransferGuard, trackTransferredConfigWrite } from "./write-transfer.js";
 
 const CONFIG_MUTATION_LOCK_OPTIONS = {
   retries: { retries: 80, factor: 1.2, minTimeout: 25, maxTimeout: 250, randomize: true },
@@ -102,11 +110,55 @@ export async function withConfigWriteLock<T>(
   env?: NodeJS.ProcessEnv,
   assertCurrent?: () => void,
 ): Promise<T> {
+  const coordinator = await acquireWithWait({
+    acquire: () => {
+      assertConfigWriteAllowedInCurrentMode({ configPath: path.resolve(pathname), env });
+      assertCurrent?.();
+      return acquireStateDatabaseCoordinator({
+        databasePath: resolveOpenClawStateSqlitePath(env ?? process.env),
+        busyTimeoutMs: 0,
+      });
+    },
+    shouldRetry: (error) =>
+      error instanceof StateDatabaseCoordinatorContentionError &&
+      error.family === "state-lifecycle",
+    deadlineMs: performance.now() + OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
+    pollIntervalMs: 25,
+    maxPollIntervalMs: 250,
+  });
+  let outcome: { value: T } | { error: unknown };
+  try {
+    outcome = { value: await withCoordinatedConfigWriteLock(pathname, fn, env, assertCurrent) };
+  } catch (error) {
+    outcome = { error };
+  }
+  try {
+    coordinator.release();
+  } catch (error) {
+    throw new AggregateError(
+      "error" in outcome ? [outcome.error, error] : [error],
+      "Config write coordinator did not settle.",
+      { cause: error },
+    );
+  }
+  if ("error" in outcome) {
+    throw outcome.error;
+  }
+  return outcome.value;
+}
+
+async function withCoordinatedConfigWriteLock<T>(
+  pathname: string,
+  fn: () => Promise<T>,
+  env?: NodeJS.ProcessEnv,
+  assertCurrent?: () => void,
+): Promise<T> {
   const configPath = path.resolve(pathname);
   assertConfigWriteAllowedInCurrentMode({ configPath, env });
   const assertResourceUnborrowed = (targetPath: string) =>
     createManagedHandoffLeaseStore().assertSourceUnborrowed(targetPath);
   assertResourceUnborrowed(configPath);
+  const transferred = captureConfigWriteTransferGuard(configPath);
   const inherited = activeConfigMutationLocks.getStore();
   const guardedParent = [...(inherited?.paths.entries() ?? [])].find(
     ([, scope]) => scope.assertCurrent,
@@ -117,8 +169,9 @@ export async function withConfigWriteLock<T>(
   }
   const doctorAuthority = getUpdateDoctorConfigWriteAuthority(configPath);
   const guard =
-    assertCurrent || doctorAuthority
+    assertCurrent || doctorAuthority || transferred
       ? () => {
+          transferred?.();
           parentGuard?.();
           assertCurrent?.();
           doctorAuthority?.assertCurrent();
@@ -140,6 +193,12 @@ export async function withConfigWriteLock<T>(
     } finally {
       inheritedScope.pending.delete(running);
     }
+  }
+  if (transferred) {
+    transferred();
+    return await trackTransferredConfigWrite(() =>
+      configMutationQueue.enqueue(configPath, () => runConfigLockScope(configPath, fn, guard)),
+    );
   }
   const configDir = path.dirname(configPath);
   await fs.mkdir(configDir, { recursive: true, mode: 0o700 });

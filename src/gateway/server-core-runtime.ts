@@ -238,6 +238,7 @@ export async function startGatewayCoreRuntime(input: {
   } = await startupTrace.measure("runtime.subscriptions", () =>
     startGatewayEventSubscriptions({
       signal: runtime.connectionWork.signal,
+      getSessionRowProjection: runtime.getSessionRowProjection,
       log,
       broadcast,
       broadcastToConnIds,
@@ -295,6 +296,8 @@ export async function startGatewayCoreRuntime(input: {
     questionManager,
     cancelRunBoundApprovals,
     forwardPluginApprovalRequest,
+    forwardExecApprovalRequest,
+    execApprovalIosPushDelivery,
     approvalWebPushDelivery,
     pluginApprovalIosPushDelivery,
     pluginApprovalManager,
@@ -406,7 +409,8 @@ export async function startGatewayCoreRuntime(input: {
       (descriptor) =>
         (workerEnvironmentService ||
           (descriptor.name !== "environments.create" &&
-            descriptor.name !== "environments.destroy")) &&
+            descriptor.name !== "environments.destroy" &&
+            !descriptor.name.startsWith("environments.session."))) &&
         (workerPlacementDispatchAvailable || descriptor.name !== "sessions.dispatch") &&
         (workerPlacementControlAvailable ||
           (descriptor.name !== "sessions.reclaim" && descriptor.name !== "sessions.move")) &&
@@ -528,6 +532,8 @@ export async function startGatewayCoreRuntime(input: {
     questionManager,
     cancelRunBoundApprovals,
     forwardPluginApprovalRequest,
+    forwardExecApprovalRequest,
+    execApprovalIosPushDelivery,
     approvalWebPushDelivery,
     pluginApprovalIosPushDelivery,
     pluginApprovalManager,

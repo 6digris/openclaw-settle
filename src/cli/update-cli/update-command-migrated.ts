@@ -59,6 +59,10 @@ import {
   resolveSettledUpdateCommandResult,
 } from "./update-command-terminal.js";
 import { createWindowsTaskAutoStartRecovery } from "./update-command-windows-task.js";
+import {
+  captureUpdateWriterCustody,
+  createUpdateWriterCustodyControl,
+} from "./update-command-writer-custody.js";
 
 /** Inspect private state copies without reopening migrated state through the previous runtime. */
 export async function inspectActivatedUpdateState(
@@ -285,7 +289,7 @@ export async function continueMigratedUpdateInFreshProcess(
     assertCurrent();
     const root = result.root;
     if (!root) {
-      throw new Error("The active installation root is unknown; candidate finalization is unsafe.");
+      throw new Error("The active installation root is unknown; update finalization is unsafe.");
     }
     const workerCommand = [
       params.packageUpdateNodeRunner ?? resolveNodeRunner(),
@@ -329,6 +333,11 @@ export async function continueMigratedUpdateInFreshProcess(
       ) {
         throw new UpdateCommandRecoveryPendingError(
           "Candidate runtime does not support the required live executor delegation.",
+        );
+      }
+      if (captureUpdateWriterCustody() && contract.writerCustody !== "native-pins-v1") {
+        throw new UpdateCommandRecoveryPendingError(
+          "Candidate runtime cannot inherit the live writer-custody owner.",
         );
       }
       parentRecoverySupported = contract.updateRecovery === "parent-v1";
@@ -405,11 +414,23 @@ export async function continueMigratedUpdateInFreshProcess(
       beforeInput?: (pid: number, argv?: readonly string[]) => void,
     ) => {
       try {
+        const onChildMessage = createUpdateWriterCustodyControl(run.runId);
+        const delegatedGrant =
+          grant?.writerCustody && onChildMessage
+            ? {
+                ...grant,
+                writerCustody: { ...grant.writerCustody, activationChannel: { runId: run.runId } },
+              }
+            : grant;
         const command = await runUtf8CommandWithTimeout(workerCommand, {
           cwd: root,
           baseEnv: {},
           env: workerEnv,
-          input: JSON.stringify({ ...input, ...(grant ? { executor: grant } : {}) }),
+          input: JSON.stringify({
+            ...input,
+            ...(delegatedGrant ? { executor: delegatedGrant } : {}),
+          }),
+          onChildMessage,
           beforeInput,
           // This continuation includes bounded plugin steps as well as service
           // verification; the whole-process bound must exceed one step's budget.
@@ -473,9 +494,7 @@ export async function continueMigratedUpdateInFreshProcess(
       response.result.runId !== run.runId ||
       !Number.isInteger(response.exitCode)
     ) {
-      throw new Error(
-        "Candidate finalization did not confirm the admitted run's terminal outcome.",
-      );
+      throw new Error("Update finalization did not confirm the admitted run's terminal outcome.");
     }
     if (params.updateRecoveryBackup && response.result.reason === "update-processes-unsettled") {
       throw new UpdateCommandPendingRecoveryFailure(
@@ -634,7 +653,7 @@ export async function continueMigratedUpdateInFreshProcess(
     } catch (cause) {
       throw new AggregateError(
         [error, cause],
-        `Candidate finalization failed (${formatErrorMessage(error)}) and Windows task autostart compensation failed (${formatErrorMessage(cause)})`,
+        `Update finalization failed (${formatErrorMessage(error)}) and Windows task autostart compensation failed (${formatErrorMessage(cause)})`,
         { cause },
       );
     }

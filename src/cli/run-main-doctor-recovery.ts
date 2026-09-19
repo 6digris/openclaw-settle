@@ -1,3 +1,4 @@
+import type { DoctorDatabasePreflight } from "../commands/doctor-database-preflight.js";
 import { getFlagValue, hasFlag } from "./argv.js";
 import { isDoctorStateMutationInvocation } from "./run-main-policy.js";
 export async function withDoctorBootstrapRecovery<T>(
@@ -18,13 +19,15 @@ export async function withDoctorBootstrapRecovery<T>(
   return withDoctorUpdateRecovery(defaultRuntime, run);
 }
 
-export async function prepareDoctorBootstrapRecovery(
+export async function prepareDoctorBootstrapRecovery<T>(
   argv: string[],
   json: boolean | undefined,
-): Promise<void> {
+  run: (preflight: DoctorDatabasePreflight | undefined) => Promise<T>,
+): Promise<T> {
   // Debug capture can migrate shared state before Commander reaches Doctor.
   // Capture recovery after selectors settle, before any bootstrap writer.
-  const { prepareDoctorUpdateRecovery } = await import("../commands/doctor-update-recovery.js");
+  const { prepareDoctorUpdateRecovery, runWithPreparedDoctorUpdateRecovery } =
+    await import("../commands/doctor-update-recovery.js");
   const recoveryOwner = getFlagValue(argv, "--update-recovery-owner");
   const recoveryBackup = getFlagValue(argv, "--update-recovery-backup");
   if (
@@ -44,12 +47,15 @@ export async function prepareDoctorBootstrapRecovery(
     yes: hasFlag(argv, "--yes"),
     nonInteractive: hasFlag(argv, "--non-interactive"),
   });
-  const [{ guardUpdateDoctorSchemaUpgrade }, { defaultRuntime }] = await Promise.all([
-    import("../commands/doctor-update-schema-guard.js"),
-    import("../runtime.js"),
-  ]);
-  await guardUpdateDoctorSchemaUpgrade({
-    runtime: defaultRuntime,
-    json,
+  return runWithPreparedDoctorUpdateRecovery(async () => {
+    const [{ guardUpdateDoctorSchemaUpgrade }, { defaultRuntime }] = await Promise.all([
+      import("../commands/doctor-update-schema-guard.js"),
+      import("../runtime.js"),
+    ]);
+    const preflight = await guardUpdateDoctorSchemaUpgrade({
+      runtime: defaultRuntime,
+      json,
+    });
+    return run(preflight);
   });
 }

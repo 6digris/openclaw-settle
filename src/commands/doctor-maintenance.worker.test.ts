@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import { MessagePort } from "node:worker_threads";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,11 +9,30 @@ import type { ManagedTaskFlowRecord } from "../plugins/runtime/runtime-taskflow.
 import { createRuntimeAsyncTasks } from "../plugins/runtime/runtime-tasks-async.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db-cache.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { executeOpenClawStateWorker } from "../state/openclaw-state-worker-store.js";
 import { resetTaskFlowRegistryForTests } from "../tasks/task-runtime.test-helpers.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { beginDoctorMaintenance } from "./doctor-maintenance.js";
+
+const coordinatorLoader = new URL("../../scripts/tsx.mjs", import.meta.url).href;
+const coordinatorModule = new URL("../infra/sqlite-coordinator.ts", import.meta.url).href;
+
+function acquireCoordinatorFromPeer(pathname: string): string {
+  // A same-process open/close can drop POSIX locks held by another SQLite handle.
+  const script = `
+    import { tryAcquireExclusiveSqliteCoordinator } from ${JSON.stringify(coordinatorModule)};
+    const lease = tryAcquireExclusiveSqliteCoordinator(process.argv[1]);
+    process.stdout.write(lease ? "held" : "blocked");
+    lease?.release();
+  `;
+  return execFileSync(
+    process.execPath,
+    ["--import", coordinatorLoader, "--input-type=module", "-e", script, pathname],
+    { encoding: "utf8", timeout: 15_000, stdio: ["ignore", "pipe", "pipe"] },
+  ).trim();
+}
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -21,6 +41,45 @@ afterEach(async () => {
 });
 
 describe("Doctor maintenance with managed-flow workers", () => {
+  it("drains a capture interval and admits forward repair without releasing physical custody", async () => {
+    await withOpenClawTestState(
+      { scenario: "external-service", label: "doctor-resource-interval" },
+      async () => {
+        const maintenance = await beginDoctorMaintenance({
+          options: { repair: true, nonInteractive: true },
+          root: null,
+          runtime: { log() {}, error() {}, exit() {} },
+        });
+        const flows = createRuntimeAsyncTasks().managedFlows.bindSession({
+          sessionKey: "agent:main:doctor-interval",
+        });
+        const coordinatorPath = stateCoordinator.resolveStateDatabaseCoordinatorPath({
+          databasePath: resolveOpenClawStateSqlitePath(),
+          runtimeDirectory: stateCoordinator.resolveStateLifecycleRuntimeDirectory(),
+          uid: typeof process.getuid === "function" ? process.getuid() : undefined,
+        });
+        try {
+          await maintenance!.run(() =>
+            flows.createManaged({ controllerId: "tests/doctor", goal: "capture" }),
+          );
+          await maintenance!.closeStores();
+          expect(acquireCoordinatorFromPeer(coordinatorPath)).toBe("blocked");
+          await maintenance!.run(async () => {
+            expect(await flows.list()).toHaveLength(1);
+            await flows.createManaged({ controllerId: "tests/doctor", goal: "forward repair" });
+          });
+        } finally {
+          await maintenance?.release();
+        }
+        expect(acquireCoordinatorFromPeer(coordinatorPath)).toBe("held");
+        expect((await flows.list()).map((flow) => flow.goal).toSorted()).toEqual([
+          "capture",
+          "forward repair",
+        ]);
+      },
+    );
+  });
+
   it.each([false, true])(
     "preserves pooling until worker close requests retirement (close before owner release=%s)",
     async (closeBeforeRelease) => {

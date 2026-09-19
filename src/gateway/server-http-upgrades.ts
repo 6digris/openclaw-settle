@@ -11,6 +11,7 @@ import {
   getGatewaySuspendAdmissionPhase,
   isGatewayRestartDraining,
   isGatewayWorkAdmissionClosed,
+  isGatewayUpdateSettlementPending,
 } from "../process/gateway-work-admission.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import {
@@ -136,7 +137,8 @@ function handleBudgetedGatewayWebSocketUpgrade(params: {
     !allowsRestartStartupPreauth &&
     (ingressName === "Worker" ||
       isGatewayRestartDraining() ||
-      (getGatewaySuspendAdmissionPhase() !== "draining" &&
+      (!isGatewayUpdateSettlementPending() &&
+        getGatewaySuspendAdmissionPhase() !== "draining" &&
         getGatewaySuspendAdmissionPhase() !== "prepared"))
   ) {
     rejectGatewayUpgradeServiceUnavailable(socket, `${ingressName} websocket admission closed`);

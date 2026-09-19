@@ -20,7 +20,10 @@ import { VERSION } from "../../version.js";
 import { readPackageVersion, type UpdateCommandOptions } from "./shared.js";
 import { preparePostCorePluginConfig } from "./update-command-config.js";
 import { completePostCorePluginUpdate } from "./update-command-fresh-doctor.js";
-import { collectPostCorePluginFailureFacts } from "./update-command-plugins-internals.js";
+import {
+  collectPostCorePluginAdvisories,
+  collectPostCorePluginFailureFacts,
+} from "./update-command-plugins-internals.js";
 import { updatePluginsAfterCoreUpdate } from "./update-command-plugins.js";
 import {
   continuePostCoreUpdateInFreshProcess,
@@ -218,6 +221,9 @@ async function convergeUpdatePluginsInternal(params: {
                   durationMs: 0,
                   exitCode: freshProcessResult.exitCode,
                   ...(freshProcessResult.error ? { stderrTail: freshProcessResult.error } : {}),
+                  ...(freshProcessResult.failureFacts?.length
+                    ? { failureFacts: freshProcessResult.failureFacts }
+                    : {}),
                 },
               ],
             },
@@ -258,6 +264,7 @@ async function convergeUpdatePluginsInternal(params: {
             preUpdateConfig,
             suppressFutureVersionWarning: shouldResumePostCoreInFreshProcess,
             beforePersistentEffect: params.beforePersistentEffect,
+            assertCurrent,
           });
           assertCurrent?.();
           postUpdateConfigSnapshot = preparedConfig.configSnapshot;
@@ -282,6 +289,8 @@ async function convergeUpdatePluginsInternal(params: {
         // Release the plugin lease before fresh Doctor. The finalizer either
         // retains its stopped interval or parks an already-current core here.
         const completedPluginUpdate = await completePostCorePluginUpdate({
+          executorFence: params.opts.run?.executorFence,
+          runId: params.opts.run?.runId,
           updateRecoveryBackup:
             params.candidateUpdateRecovery === "parent-v1"
               ? params.updateRecoveryBackup
@@ -340,24 +349,14 @@ async function convergeUpdatePluginsInternal(params: {
           advisory: { kind: "package-post-install-doctor" as const, message },
         })),
       );
-      const pluginAdvisories = [
-        ...(postCorePluginUpdate?.warnings ?? []).filter(
-          (warning) =>
-            warning.reason === "plugin-target-unavailable" || warning.reason === "doctor-advisory",
-        ),
-        // Committed handoff files can acknowledge success without npm details.
-        ...(postCorePluginUpdate?.npm?.outcomes ?? []).filter(
-          (outcome) => outcome.code === "source-bundled-plugin",
-        ),
-      ];
       resultWithPostUpdate.steps.push(
-        ...pluginAdvisories.map((warning, index) => ({
+        ...collectPostCorePluginAdvisories(postCorePluginUpdate).map((message, index) => ({
           name: `finalize:plugins:${index}`,
           command: "openclaw plugins update",
           cwd: postUpdateRoot,
           durationMs: 0,
           exitCode: 0,
-          advisory: { kind: "recoverable-maintenance" as const, message: warning.message },
+          advisory: { kind: "recoverable-maintenance" as const, message },
         })),
       );
       if (

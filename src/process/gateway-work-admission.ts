@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { GatewaySuspension } from "../../packages/gateway-protocol/src/schema/gateway-suspend.js";
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import { AsyncWorkScope } from "../shared/async-work-scope.js";
+import { AsyncWorkScope, getAsyncWorkSignal } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 
@@ -31,6 +31,7 @@ type GatewayRootWorkAdmission = {
 };
 
 type GatewayWorkAdmissionState = {
+  updateSettlement?: { runId: string };
   restartDraining: boolean;
   restartDrainController: AbortController;
   restartSignalPending: boolean;
@@ -209,12 +210,40 @@ function resolveSuspendOpenWaiters(): void {
   }
 }
 
+/** A successor may answer probes while the exact update owner settles activation. */
+export function beginGatewayUpdateSettlementAdmission(runId: string) {
+  if (GATEWAY_WORK_ADMISSION_STATE.updateSettlement) {
+    throw new Error("Gateway update settlement already has an owner");
+  }
+  const owner = { runId };
+  GATEWAY_WORK_ADMISSION_STATE.updateSettlement = owner;
+  let resolve!: () => void;
+  const settled = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return {
+    settled,
+    release() {
+      if (GATEWAY_WORK_ADMISSION_STATE.updateSettlement === owner) {
+        GATEWAY_WORK_ADMISSION_STATE.updateSettlement = undefined;
+        resolveSuspendOpenWaiters();
+      }
+      resolve();
+    },
+  };
+}
+
+export function isGatewayUpdateSettlementPending(): boolean {
+  return GATEWAY_WORK_ADMISSION_STATE.updateSettlement !== undefined;
+}
+
 /** True while restart signal/drain or host suspension rejects new process work. */
 export function isGatewayWorkAdmissionClosed(): boolean {
   return (
     GATEWAY_WORK_ADMISSION_STATE.restartDraining ||
     GATEWAY_WORK_ADMISSION_STATE.restartSignalPending ||
-    GATEWAY_WORK_ADMISSION_STATE.suspendPhase !== "accepting"
+    GATEWAY_WORK_ADMISSION_STATE.suspendPhase !== "accepting" ||
+    isGatewayUpdateSettlementPending()
   );
 }
 
@@ -233,7 +262,9 @@ export function isGatewaySubordinateWorkAdmissionClosed(): boolean {
     // re-enter admission instead of spawning untracked subordinate work.
     return current.released;
   }
-  return GATEWAY_WORK_ADMISSION_STATE.suspendPhase !== "accepting";
+  return (
+    GATEWAY_WORK_ADMISSION_STATE.suspendPhase !== "accepting" || isGatewayUpdateSettlementPending()
+  );
 }
 
 export function getGatewaySuspendAdmissionPhase(): GatewaySuspendAdmissionPhase {
@@ -365,7 +396,8 @@ export function tryBeginGatewayRootWorkAdmission(
   if (
     GATEWAY_WORK_ADMISSION_STATE.restartDraining ||
     GATEWAY_WORK_ADMISSION_STATE.restartSignalPending ||
-    GATEWAY_WORK_ADMISSION_STATE.suspendPhase !== "accepting"
+    GATEWAY_WORK_ADMISSION_STATE.suspendPhase !== "accepting" ||
+    isGatewayUpdateSettlementPending()
   ) {
     return null;
   }
@@ -410,7 +442,8 @@ export function tryBeginGatewayIndependentRootWorkAdmission(
   if (
     GATEWAY_WORK_ADMISSION_STATE.restartDraining ||
     GATEWAY_WORK_ADMISSION_STATE.restartSignalPending ||
-    GATEWAY_WORK_ADMISSION_STATE.suspendPhase !== "accepting"
+    GATEWAY_WORK_ADMISSION_STATE.suspendPhase !== "accepting" ||
+    isGatewayUpdateSettlementPending()
   ) {
     return null;
   }
@@ -529,7 +562,7 @@ function runWithGatewayRootWorkContinuation<T>(
   if (!parent || parent.released) {
     return detachedWork
       ? runWithGatewayDetachedWorkAdmission(run, origin)
-      : runWithGatewayIndependentRootWorkAdmission(run, origin);
+      : runWithGatewayIndependentRootWorkAdmission(run, origin, getAsyncWorkSignal());
   }
   const admission = createGatewayRootWorkAdmission(origin, detachedWork);
   return admission.run(run).finally(admission.release);
@@ -643,7 +676,8 @@ export function tryBeginGatewaySuspendAdmission(
   if (
     GATEWAY_WORK_ADMISSION_STATE.restartDraining ||
     GATEWAY_WORK_ADMISSION_STATE.restartSignalPending ||
-    GATEWAY_WORK_ADMISSION_STATE.suspendPhase !== "accepting"
+    GATEWAY_WORK_ADMISSION_STATE.suspendPhase !== "accepting" ||
+    isGatewayUpdateSettlementPending()
   ) {
     return null;
   }
@@ -694,6 +728,7 @@ export function resetGatewayWorkAdmission(): void {
     admission.released = true;
   }
   GATEWAY_WORK_ADMISSION_STATE.activeRootWork.clear();
+  GATEWAY_WORK_ADMISSION_STATE.updateSettlement = undefined;
   GATEWAY_WORK_ADMISSION_STATE.restartDraining = false;
   GATEWAY_WORK_ADMISSION_STATE.restartDrainController = new AbortController();
   GATEWAY_WORK_ADMISSION_STATE.restartSignalPending = false;

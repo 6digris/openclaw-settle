@@ -23,6 +23,7 @@ import { getRuntimeConfig } from "../../config/config.js";
 import { conversationIdentityFromMsgContext } from "../../config/sessions/conversation-identity.js";
 import { resolveGroupSessionKey } from "../../config/sessions/group.js";
 import { normalizeMediaFacts } from "../../media/media-facts.js";
+import { normalizeAccountId } from "../../routing/account-id.js";
 import { MEDIA_ONLY_USER_TEXT } from "../../sessions/user-turn-media.js";
 import {
   createUserTurnTranscriptRecorder,
@@ -435,6 +436,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
       sessionKey,
       runtimePolicySessionKey,
       messageProvider,
+      mediaNormalizationOwner: opts?.mediaNormalizationOwner,
       clientCaps: ctx.GatewayClientCaps,
       gatewayUiCommandTarget: ctx.GatewayUiCommandTarget,
       toolBindings: ctx.GatewayRunToolBindings,
@@ -588,12 +590,23 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     freshChannelCronAuthorityTurn && command.senderIsOwner
       ? (opts?.runId ?? crypto.randomUUID())
       : undefined;
+  const channelRequester =
+    authorityRunId && messageProvider === "discord" && sessionCtx.SenderId
+      ? {
+          version: 1 as const,
+          channel: messageProvider,
+          accountId: normalizeAccountId(replyRoute.accountId),
+          senderId: sessionCtx.SenderId,
+        }
+      : undefined;
   const inheritedCronCreatorAuthorityCapability = opts?.cronCreatorAuthorityCapability;
   const cronOwner = {
     channel: messageProvider,
     accountId: replyRoute.accountId,
     senderId: normalizeOptionalString(command.senderId),
   };
+  const isCurrentChannelOwner = () => isConfiguredCommandOwner(getRuntimeConfig(), cronOwner);
+  // Only fresh owner ingress mints this identity. Management-only admissions do not imply it.
   const createdCronCreatorAuthorityCapability =
     !inheritedCronCreatorAuthorityCapability && authorityRunId && messageProvider
       ? createCronCreatorAuthorityCapability(
@@ -601,8 +614,11 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
           { kind: "external", channel: messageProvider },
           {
             source: "channel-owner",
-            isCurrent: () => isConfiguredCommandOwner(getRuntimeConfig(), cronOwner),
+            isCurrent: isCurrentChannelOwner,
           },
+          undefined,
+          channelRequester,
+          { isCurrent: isCurrentChannelOwner, ...cronOwner },
         )
       : undefined;
   const cronCreatorAuthorityCapability =

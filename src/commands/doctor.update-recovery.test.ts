@@ -72,6 +72,7 @@ vi.mock("./doctor-maintenance.js", () => ({
     await mocks.enterMaintenance();
     return {
       assertCurrent: mocks.current,
+      run: <T>(operation: () => T) => operation(),
       closeStores: mocks.closeStores,
       release: mocks.release,
     };

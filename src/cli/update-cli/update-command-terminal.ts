@@ -31,6 +31,7 @@ type Run = NonNullable<UpdateCommandOptions["run"]>;
 type Publisher = (failure?: unknown) => Promise<UpdateRunResult>;
 type TerminalOwner = {
   publish?: Publisher;
+  observation?: { root: string; result: UpdateRunResult };
   retireCapture?: (result: UpdateRunResult) => Promise<void>;
   captureResult?: UpdateRunResult;
   settled: boolean;
@@ -48,6 +49,19 @@ export function deferUpdateCommandTerminalResult(
   }
   owner.publish = publish;
   return true;
+}
+
+/** Migrated runtimes already publish their ledger; defer only caller observation. */
+export function deferUpdateCommandResultObservation(
+  run: Run,
+  result: UpdateRunResult,
+  root: string,
+): void {
+  const owner = terminalOwners.get(run);
+  if (!owner || owner.settled || owner.observation) {
+    throw new Error("Update result observation requires its unsettled invocation owner.");
+  }
+  owner.observation = { result, root };
 }
 
 /** Only the enclosing settled invocation may retire its own recovery capture. */
@@ -72,7 +86,7 @@ export function hasDeferredUpdateCommandTerminalResult(run: Run): boolean {
 /** Enclose the real executor so its final checks and release precede terminal output. */
 export async function withUpdateCommandTerminalResult<T>(
   operation: (registerRun: (run: Run) => void) => Promise<T>,
-  opts: Pick<UpdateCommandOptions, "json"> = {},
+  opts: Pick<UpdateCommandOptions, "json" | "onResult"> = {},
 ): Promise<T> {
   const owner: TerminalOwner = { settled: false };
   let run: Run | undefined;
@@ -101,7 +115,7 @@ export async function withUpdateCommandTerminalResult<T>(
               error instanceof UpdateActivationTimeoutError,
           )
         : undefined;
-    if (run && activationTimeout && !owner.publish) {
+    if (run && activationTimeout && !owner.publish && !owner.observation) {
       const admittedRun = run;
       owner.publish = async (failure) => {
         const params = { opts: { ...opts, run: admittedRun }, root: activationTimeout.root };
@@ -121,6 +135,7 @@ export async function withUpdateCommandTerminalResult<T>(
     }
     if (owner.publish) {
       const result = await owner.publish("error" in outcome ? outcome.error : undefined);
+      opts.onResult?.(result);
       if ("error" in outcome) {
         const failure = outcome.error;
         if (
@@ -145,11 +160,31 @@ export async function withUpdateCommandTerminalResult<T>(
         );
       }
     }
+    if (!owner.publish) {
+      if (!("error" in outcome) && owner.captureResult) {
+        try {
+          await owner.retireCapture?.(owner.captureResult);
+        } catch (error) {
+          outcome = { error };
+        }
+      }
+      if (owner.observation) {
+        // Do not read or rewrite the migrated runtime's terminal ledger with old code.
+        const { result } = resolveUpdateCommandSettlementResult(
+          owner.observation.root,
+          owner.observation.result,
+          "error" in outcome ? outcome.error : undefined,
+        );
+        try {
+          opts.onResult?.(result);
+        } catch (error) {
+          // Recovery policy belongs to settlement, not its diagnostic observer.
+          throw "error" in outcome ? outcome.error : error;
+        }
+      }
+    }
     if ("error" in outcome) {
       throw outcome.error;
-    }
-    if (!owner.publish && owner.captureResult) {
-      await owner.retireCapture?.(owner.captureResult);
     }
     return outcome.value;
   } finally {
@@ -159,12 +194,11 @@ export async function withUpdateCommandTerminalResult<T>(
   }
 }
 
-/** Resolve diagnostic output without reusing a released mutation fence. */
-export async function resolveSettledUpdateCommandResult(
-  params: Pick<FinishUpdateParams, "opts" | "ownedManagedUpdateEnv" | "root">,
+function resolveUpdateCommandSettlementResult(
+  root: string,
   pendingResult: UpdateRunResult,
   failure?: unknown,
-): Promise<{ result: UpdateRunResult; settlementFailed: boolean }> {
+): { result: UpdateRunResult; settlementFailed: boolean } {
   const settlementFailed =
     failure !== undefined &&
     (!(failure instanceof UpdateCommandFailure) ||
@@ -173,27 +207,40 @@ export async function resolveSettledUpdateCommandResult(
   const activationTimeout = collectNestedErrorCandidates(failure).find(
     (error): error is UpdateActivationTimeoutError => error instanceof UpdateActivationTimeoutError,
   );
-  const result: UpdateRunResult = settlementFailed
+  const failedStep: UpdateStepResult | undefined = settlementFailed
+    ? {
+        name: "update executor settlement",
+        command: "openclaw update",
+        cwd: base.root ?? root,
+        durationMs: 0,
+        exitCode: 1,
+        stderrTail: activationTimeout?.message ?? formatErrorMessage(failure),
+      }
+    : undefined;
+  const result: UpdateRunResult = failedStep
     ? {
         ...base,
         status: "error",
         reason: activationTimeout?.reason ?? "update-executor-settlement-failed",
-        // A failed owner cannot carry a previous success verdict, but the helper
-        // still needs the explicit unsafe result to keep its Gateway parked.
         recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
-        steps: [
-          ...base.steps,
-          {
-            name: "update executor settlement",
-            command: "openclaw update",
-            cwd: base.root ?? params.root,
-            durationMs: 0,
-            exitCode: 1,
-            stderrTail: activationTimeout?.message ?? formatErrorMessage(failure),
-          },
-        ],
+        failedStep,
+        steps: [...base.steps, failedStep],
       }
     : base;
+  return { result, settlementFailed };
+}
+
+/** Resolve diagnostic output without reusing a released mutation fence. */
+export async function resolveSettledUpdateCommandResult(
+  params: Pick<FinishUpdateParams, "opts" | "ownedManagedUpdateEnv" | "root">,
+  pendingResult: UpdateRunResult,
+  failure?: unknown,
+): Promise<{ result: UpdateRunResult; settlementFailed: boolean }> {
+  const { result, settlementFailed } = resolveUpdateCommandSettlementResult(
+    params.root,
+    pendingResult,
+    failure,
+  );
   // The mutation owner is now closed. This is diagnostic publication only,
   // never authority to reopen displaced state or replace another terminal row.
   try {
@@ -280,7 +327,7 @@ export async function recordUpdatePackageCompletion(
     // A caller's successful activation does not establish recovery/cleanup safety.
     // Unknown exceptions and unqualified completion refusals must fail the command.
     return new UpdateCommandFailure(
-      { ...result, status: "error", reason: "package-backup-retention-failed" },
+      { ...result, status: "error", reason: "package-backup-retention-failed", failedStep: step },
       1,
       step.stderrTail ?? "Package backup completion was not verified.",
       { cause: cleanupFailure },
@@ -338,6 +385,9 @@ export async function reportPreMutationUpdateResult(
         }
       : {}),
   }));
+  if (!params.opts.run && params.opts.dryRun && params.reason === "invalid-dev-target") {
+    return exitCliAfterOutput(defaultRuntime, 1);
+  }
   throw new UpdateCommandFailure(
     result,
     params.status === "skipped" ? 0 : resolveManagedServiceUpdateFailureExitCode(result),
@@ -355,35 +405,41 @@ async function publishPreMutationUpdateOutcome(
     recordUpdateRunPhase(
       run.runId,
       active.phase,
-      { origin: { nextAction: params.message } },
+      {
+        origin: { nextAction: params.message },
+        ...(params.installKind !== "unknown" ? { target: { kind: params.installKind } } : {}),
+      },
       { env: run.env },
     );
   }
   const outcome = await prepareOutcome();
+  const failedStep: UpdateStepResult | undefined =
+    outcome.status === "error" || params.failureFacts?.length
+      ? {
+          // A skipped admission adds facts to its phase, not evidence of update work.
+          name: outcome.status === "skipped" ? (active?.phase ?? "requested") : params.reason,
+          command: "openclaw update",
+          cwd: params.root,
+          durationMs: 0,
+          exitCode: outcome.status === "error" ? 1 : 0,
+          stderrTail: params.message,
+          ...(params.recoverySteps ? { recoverySteps: params.recoverySteps } : {}),
+          failureFacts: normalizeUpdateFailureFacts(
+            params.failureFacts ?? [
+              { check: params.reason, code: params.reason, message: params.message },
+            ],
+            run?.env,
+          ),
+        }
+      : undefined;
   const result = completeUpdateCommandRun(
     {
       ...outcome,
-      mode: params.installKind === "git" ? "git" : "unknown",
+      mode: params.mode ?? (params.installKind === "git" ? "git" : "unknown"),
       root: params.root,
       reason: params.reason,
-      steps:
-        outcome.status === "error"
-          ? [
-              {
-                name: params.reason,
-                command: "openclaw update",
-                cwd: params.root,
-                durationMs: 0,
-                exitCode: 1,
-                failureFacts: normalizeUpdateFailureFacts(
-                  params.failureFacts ?? [
-                    { check: params.reason, code: params.reason, message: params.message },
-                  ],
-                  run?.env,
-                ),
-              },
-            ]
-          : [],
+      failedStep: outcome.status === "error" ? failedStep : undefined,
+      steps: failedStep ? [failedStep] : [],
       ...(outcome.status === "skipped"
         ? { before: { version: await readPackageVersion(params.root) } }
         : {}),
@@ -398,6 +454,11 @@ async function publishPreMutationUpdateOutcome(
       jsonMode: Boolean(params.opts.json),
       env: run?.env,
     });
+  }
+  // Existing runs and dry runs keep the legacy stderr-only target refusal.
+  if ((run || params.opts.dryRun) && params.reason === "invalid-dev-target" && params.message) {
+    defaultRuntime.error(params.message);
+    return result;
   }
   if (params.opts.json && params.message) {
     defaultRuntime.error(params.message);

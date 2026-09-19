@@ -110,6 +110,8 @@ vi.mock("./update-command-result.js", async (importOriginal) => ({
   writeControlPlaneUpdateRestartSentinelBestEffort: mocks.writeSentinel,
 }));
 
+import { registerDoctorRestorationRollbackTests } from "./update-command-doctor-rollback.test-support.js";
+
 type FinishUpdateParams = Parameters<typeof finishUpdate>[0];
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -616,6 +618,8 @@ describe("failed package update recovery safety", () => {
     vi.resetAllMocks();
     vi.spyOn(defaultRuntime, "exit").mockImplementation(() => undefined as never);
   });
+
+  registerDoctorRestorationRollbackTests(mocks, (prefix) => tempDirs.make(prefix));
 
   it("retains and reports the recovery backup after candidate publication and compensation fail", async () => {
     const base = tempDirs.make("update-older-target-backup-");

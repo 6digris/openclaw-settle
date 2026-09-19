@@ -45,11 +45,19 @@ function isCompletedDoctorExit(error: unknown): boolean {
 export async function withDoctorUpdateRecovery<T>(
   runtime: RuntimeEnv,
   run: () => Promise<T>,
+  assertRecoveryClaim?: () => void,
 ): Promise<T> {
+  assertRecoveryClaim?.();
   if (doctorRecovery.getStore()) {
     return run();
   }
-  const scope: DoctorRecoveryScope = { runtime, active: true, prepared: false, protected: false };
+  const scope: DoctorRecoveryScope = {
+    runtime,
+    active: true,
+    prepared: false,
+    protected: false,
+    assertRecoveryClaim,
+  };
   return withConfigFileWriteCapture(() =>
     doctorRecovery.run(scope, async () => {
       let outcome: DoctorRunOutcome<T>;
@@ -163,6 +171,16 @@ export async function withDoctorUpdateRecovery<T>(
       return outcome.value;
     }),
   );
+}
+
+/** Keep bootstrap and direct Doctor work inside the owner that drains its handles. */
+export function runWithPreparedDoctorUpdateRecovery<T>(run: () => T): T {
+  const scope = doctorRecovery.getStore();
+  if (!scope?.maintenance) {
+    return run();
+  }
+  assertDoctorRecoveryCurrent(scope);
+  return scope.maintenance.run(run);
 }
 
 function assertDoctorRecoveryCurrent(scope: DoctorRecoveryScope): void {
@@ -561,18 +579,20 @@ export async function prepareDoctorUpdateRecovery(options: DoctorOptions = {}): 
     if (!drivers.some((driver) => sameUpdateRunDriver(driver, parent))) {
       drivers.push(parent);
     }
-    reference = await backup.createUpdateRecoveryBackup({
-      runId: run.runId,
-      installRoot: root,
-      drivers,
-      ...(isPostCoreConvergencePass(process.env) &&
-      run.steps.some(
-        (step) => step.step === "post-update verification" && step.status === "in_progress",
-      )
-        ? { resumeFromDriver: postCoreDriver ?? parent }
-        : {}),
-      assertOwned: () => assertDoctorRecoveryCurrent(scope),
-    });
+    reference = await maintenance.run(() =>
+      backup.createUpdateRecoveryBackup({
+        runId: run.runId,
+        installRoot: root,
+        drivers,
+        ...(isPostCoreConvergencePass(process.env) &&
+        run.steps.some(
+          (step) => step.step === "post-update verification" && step.status === "in_progress",
+        )
+          ? { resumeFromDriver: postCoreDriver ?? parent }
+          : {}),
+        assertOwned: () => assertDoctorRecoveryCurrent(scope),
+      }),
+    );
   }
   const capturedManifest = await backup.verifyUpdateRecoveryBackup(reference);
   assertDoctorRecoveryCurrent(scope);

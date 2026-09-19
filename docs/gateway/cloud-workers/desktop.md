@@ -6,6 +6,55 @@ read_when: "You want to observe or drive a cloud worker's desktop, or you are en
 
 Enabling the interactive desktop on a Linux Crabbox profile, what Crabbox provisions for it, and how the viewer reaches it without public ingress.
 
+## Ask the agent to open an app
+
+With a configured Crabbox profile, ask **"Open this in Crabbox and show me."**
+The agent can attach a temporary environment to the current conversation, run
+the application there, and open its view in the chat side panel. The agent's
+primary workspace and session placement stay unchanged.
+
+For open-and-show requests, the agent passes `presentation: "desktop"` or
+`presentation: "portal"` when creating the attachment. The side panel opens
+before allocation and shows machine startup progress. A web preview waits for
+the requested application rather than displaying another portal. If the
+requesting browser cannot receive the initial presentation, a fresh reservation
+is canceled before provisioning; an existing attachment remains available.
+
+For a native Linux app, use a profile with `settings.desktop: true` and enable
+the **Cloud Worker Desktop** lab. The agent launches the application and opens
+the Desktop panel. When its model supports vision and tool policy permits
+`computer`, it can observe and control the same desktop using the attachment's
+`environmentId`. Taking manual control pauses agent input; observations remain
+available. Release manual control before asking the agent to interact again.
+
+For a web app, the agent starts a server and opens a [portal](/gateway/portals)
+in the side panel. A browser on the attached desktop can test that server with
+CUA, but it has separate browser state and cookies from your portal view.
+
+The Crabbox plugin's `crabbox` tool owns creation, status, remote commands,
+background app processes, and stop. It is available only with a configured
+Crabbox profile and outside sandboxed sessions. The existing `screen` tool
+opens the Desktop or Portal panel in the browser that requested the turn.
+Remote commands retain the conversation's `exec` and `process` tool policy and
+use normal one-shot execution approval when configured. Executable allowlists
+from the Gateway are not portable to the temporary machine: an allowlist policy
+with approval disabled refuses remote commands rather than bypassing that policy.
+Desktop support is still Linux only; a macOS or Windows application needs a
+supported desktop provider rather than being silently run on Linux.
+
+Follow-ups reuse the conversation's attached machine. Closing the side panel
+hides its view; background apps remain available under the profile's lifetime.
+Ask to stop a particular app or stop the entire Crabbox when finished. The
+machine is disposable: save required outputs before stopping it. Attaching a
+machine does not automatically synchronize the primary workspace; the agent
+must copy the required files or prepare the project on the machine.
+
+Stop attached machines before downgrading to a build without conversation
+attachments. Older builds can read the database, but they treat these machines
+as ordinary unassigned environments and do not maintain conversation activity
+or cleanup. See [conversation environment storage](/reference/database-schemas/layout#conversation-environments)
+for the backup, retention, and re-upgrade contract.
+
 ## Desktop (interactive)
 
 Cloud Worker Desktop lets an administrator watch or control a capable worker from the Control UI without exposing its cloud node as an ordinary paired node. Enable the **Cloud Worker Desktop** lab, then set `settings.desktop: true` on a Linux Crabbox profile. Desktop setup is Linux only. Desktop capability is fixed at warm time: changing the setting affects newly provisioned workers, while an existing non-desktop lease must be stopped and reprovisioned.
@@ -19,6 +68,10 @@ The enrolled node starts CUA inside that same XFCE session. A vision-capable age
 The desktop never gains public ingress. The node reads `/var/lib/crabbox/vnc.password` locally, inspects the loopback RFB security offer, and keeps that same connection for the viewer. It redeems a single-use Gateway broker ticket over the node's already-connected origin. Opening viewers therefore creates no extra unauthenticated probe connections. TLS deployments pin the same Gateway certificate used by the node connection. The Gateway revalidates the durable environment, lease, node, owner epoch, desktop descriptor, connection, and pairing both before dispatch and after attach; drain, replacement, or teardown aborts the stream and any pending app launch. The shared desktop session owner performs RFB preauthentication, view-only input filtering, and single-controller arbitration. Browser protocol negotiation overlaps worker authentication, but authentication success and desktop traffic wait for both sides to finish.
 
 An open chat updates its desktop target when committed session placement events arrive, including worker replacement and teardown, without waiting for a sidebar refresh.
+
+Closing the requesting Gateway connection cancels pending viewer setup and unclaimed node streams, freeing their observer slots without waiting for ticket expiry. Other connected viewers retain their streams.
+
+If you close or replace a Desktop panel during setup, it releases the unused observation when setup returns. This frees that attempt's node stream and viewer slot without waiting for ticket expiry or interrupting another viewer. A connected viewer retains the existing brief-hide behavior.
 
 The Gateway sends WebSocket keepalives on desktop observer and node desktop or portal streams while idle, so an unchanged screen or quiet preview does not go silent behind a proxy. Backpressure may delay pong replies without revoking the stream; the owning session and control connection still govern teardown.
 

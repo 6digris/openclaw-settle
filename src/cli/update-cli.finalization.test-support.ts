@@ -123,6 +123,7 @@ export type UpdateCliFinalizationSuiteContext = {
   resolveGatewayInstallEntrypoint: typeof import("../daemon/gateway-entrypoint.js").resolveGatewayInstallEntrypoint;
   resolveGitInstallDir: () => string;
   resolveOpenClawPackageRoot: typeof import("../infra/openclaw-root.js").resolveOpenClawPackageRoot;
+  mockDoctorEffectOnce: (run: typeof import("../process/exec.js").runCommandWithTimeout) => void;
   runCommandWithTimeout: typeof import("../process/exec.js").runCommandWithTimeout;
   runDaemonInstall: typeof import("./daemon-cli.js").runDaemonInstall;
   runExec: Mock<

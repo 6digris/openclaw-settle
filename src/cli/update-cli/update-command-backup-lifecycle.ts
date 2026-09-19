@@ -33,6 +33,7 @@ import type { FinishUpdateParams } from "./update-command-finish-types.js";
 import { assertUpdateCommandRecovery } from "./update-command-recovery.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
 import { deferUpdateCommandCaptureRetirement } from "./update-command-terminal.js";
+import { beginUpdateWriterCustody } from "./update-command-writer-custody.js";
 function assertCaptureStateOwner(runEnv: NodeJS.ProcessEnv, captureEnv: NodeJS.ProcessEnv): void {
   if (
     resolvePathViaExistingAncestorSync(resolveOpenClawStateSqlitePath(runEnv)) !==
@@ -181,6 +182,8 @@ export async function createUpdateCommandBackup(params: {
   const backup = await withOwnedManagedUpdateEnv(params.env, async () => {
     const { beginDoctorMaintenance } = await import("../../commands/doctor-maintenance.js");
     assertOwned();
+    await beginUpdateWriterCustody(params.env);
+    assertOwned();
     const maintenance = await beginDoctorMaintenance({
       root: null,
       options: { repair: true },
@@ -196,14 +199,16 @@ export async function createUpdateCommandBackup(params: {
       assertUpdateCommandRecovery(params.opts);
       outcome = {
         ok: true,
-        value: await createUpdateRecoveryBackup({
-          runId: run.runId,
-          installRoot: params.root,
-          assertOwned() {
-            assertOwned();
-            maintenance.assertCurrent();
-          },
-        }),
+        value: await maintenance.run(() =>
+          createUpdateRecoveryBackup({
+            runId: run.runId,
+            installRoot: params.root,
+            assertOwned() {
+              assertOwned();
+              maintenance.assertCurrent();
+            },
+          }),
+        ),
       };
       assertOwned();
       maintenance.assertCurrent();
@@ -212,7 +217,8 @@ export async function createUpdateCommandBackup(params: {
       outcome = { ok: false, error };
     }
     try {
-      // Fresh Doctor children acquire these physical owners themselves.
+      // The executor retains transferable lifecycle/config owners; close only this
+      // capture scope before the next authenticated Doctor borrows those owners.
       await maintenance.release();
     } catch (error) {
       if (!outcome.ok) {
