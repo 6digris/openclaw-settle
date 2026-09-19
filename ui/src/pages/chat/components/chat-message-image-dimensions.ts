@@ -1,10 +1,14 @@
 import { asPositiveFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import type { readTranscriptMediaEntries } from "../../../lib/chat/message-extract.ts";
 import { isImageMediaPath, isSvgImageMediaPath } from "../../../lib/media-file-extension.ts";
-import type { ImageBlock } from "./chat-message-media.ts";
 
 export function applyTranscriptImageDimensions(
-  images: ImageBlock[],
+  images: Array<{
+    url: string;
+    factIndex?: number;
+    width?: number;
+    height?: number;
+  }>,
   mediaEntries: ReturnType<typeof readTranscriptMediaEntries>,
 ): void {
   const imageFacts = mediaEntries.filter(
