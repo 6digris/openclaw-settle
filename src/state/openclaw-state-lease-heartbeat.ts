@@ -1,6 +1,9 @@
 import { Worker } from "node:worker_threads";
 import { runtimeProcessEntrypoints } from "../infra/runtime-process-entrypoints.js";
-import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
+import {
+  resolveRuntimeWorkerThreadExecArgv,
+  resolveRuntimeWorkerUrl,
+} from "../infra/runtime-worker-url.js";
 import {
   acquireStateDatabaseHandleLease,
   retainHeldStateDatabaseCoordinator,
@@ -60,7 +63,7 @@ export function startOpenClawStateLeaseHeartbeat(
         shared: shared.buffer,
       } satisfies LeaseHeartbeatWorkerData,
       env: {},
-      execArgv: resolveRuntimeWorkerArgv(url).slice(0, -1),
+      execArgv: resolveRuntimeWorkerThreadExecArgv(url),
       stdout: true,
       stderr: true,
     });
