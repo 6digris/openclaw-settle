@@ -170,11 +170,13 @@ Session previews are hidden by default for compact, single-line rows. Enable **S
 
 **Hide empty groups** in the same menu shows your current choice and opens three options:
 
-- **When filtering** (default): hide native session sections with no matching sessions while a specific owner or **Involving me** is selected.
+- **When filtering** (default): hide native session sections with no matching sessions while viewing one agent in a multi-agent sidebar, a specific owner, or **Involving me**.
 - **Always**: also hide empty native sections in the unfiltered view.
 - **Never**: keep empty groups available while filtering. Sessions still obey the active filters.
 
 This is a personal display preference, stored in this browser separately for each signed-in user and Gateway. It does not change another person’s view, group membership, order, or session access, and it is not synced across devices. Connections without an identified user keep a separate browser-only choice. An existing on/off browser choice is adopted once by the first resolved viewer: on becomes **Always**, while off becomes **When filtering**. Later viewers do not inherit that migrated choice.
+
+Agent selection changes which sessions and populated groups appear, not group ownership. Custom group names, defaults, ordering, and rename/delete operations remain shared across agents; equal names are not independent groups. Choose **Never** to keep intentionally empty groups visible in an agent-filtered view.
 
 Changing or clearing a filter never changes the saved preference. Populated groups stay visible even when collapsed, and hidden custom groups remain available in **Move to group**. Choose **Never** to recover their headers as drag targets. Catalog sections and empty agent groups in team mode retain their existing behavior. On narrow screens, the three choices open in the same menu with a **Back** action instead of a flyout.
 

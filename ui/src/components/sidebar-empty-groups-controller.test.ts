@@ -25,12 +25,18 @@ function fixture() {
     snapshot: { phase: "connected", selfUser: { id: "ada" } as { id: string } | null },
   };
   const host = {
+    sidebarAgentsMode: "chip",
+    sessionOwnerFilterActive: false,
+    sessionInvolvingMeFilterActive: false,
     addController: vi.fn(),
     removeController: vi.fn(),
     requestUpdate: vi.fn(),
     updateComplete: Promise.resolve(true),
-  };
-  const controller = new SidebarEmptyGroupsController(host, () => ({ gateway }));
+  } satisfies ConstructorParameters<typeof SidebarEmptyGroupsController>[0];
+  const controller = new SidebarEmptyGroupsController(host, () => ({
+    gateway,
+    agents: { state: { agentsList: null } },
+  }));
   controller.reconcile();
   return { controller, gateway, host };
 }

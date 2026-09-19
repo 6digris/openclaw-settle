@@ -1,5 +1,6 @@
 import { gatewayOriginScope } from "@openclaw/gateway-client/browser";
 import type { ReactiveControllerHost } from "lit";
+import type { AgentsListResult } from "../api/types.ts";
 import { getSafeLocalStorage } from "../local-storage.ts";
 import type { SidebarEmptyGroupsMode } from "./app-sidebar-session-types.ts";
 
@@ -7,11 +8,18 @@ const STORAGE_PREFIX = "openclaw.control.sidebarEmptyGroups.v1:";
 const LEGACY_STORAGE_KEY = "openclaw:sidebar:sessions:hide-empty-groups";
 
 type PreferenceContext = {
+  agents: { state: { agentsList: Pick<AgentsListResult, "agents"> | null } };
   gateway: {
     connection: { gatewayUrl: string };
     connectionRevision: number;
     snapshot: { phase: string; selfUser?: { id: string } | null };
   };
+};
+
+type SidebarFilterHost = ReactiveControllerHost & {
+  sidebarAgentsMode: "chip" | "roster";
+  readonly sessionOwnerFilterActive: boolean;
+  readonly sessionInvolvingMeFilterActive: boolean;
 };
 
 /** Personal presentation only: filter transitions never persist an effective value. */
@@ -25,9 +33,21 @@ export class SidebarEmptyGroupsController {
   } | null = null;
 
   constructor(
-    private readonly host: ReactiveControllerHost,
+    private readonly host: SidebarFilterHost,
     private readonly getContext: () => PreferenceContext | undefined,
   ) {}
+
+  get hidesEmptyGroups(): boolean {
+    // Chip mode filters a shared catalog; the saved personal choice still wins.
+    const agentFiltered =
+      this.host.sidebarAgentsMode === "chip" &&
+      (this.getContext()?.agents.state.agentsList?.agents.length ?? 0) > 1;
+    const filtered =
+      agentFiltered ||
+      this.host.sessionOwnerFilterActive ||
+      this.host.sessionInvolvingMeFilterActive;
+    return this.mode === "always" || (this.mode === "filtering" && filtered);
+  }
 
   set(mode: SidebarEmptyGroupsMode): void {
     // A menu rendered for a retired account must not write into its replacement.

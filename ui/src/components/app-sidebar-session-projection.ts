@@ -6,7 +6,6 @@ import {
 } from "../lib/sessions/grouping.ts";
 import {
   SIDEBAR_SESSION_PAGE_SIZE,
-  type SidebarEmptyGroupsMode,
   type SidebarRecentSession,
   type SidebarSessionSortMode,
   type SidebarSessionStatusFilter,
@@ -33,8 +32,7 @@ type SidebarProjectionInput = {
   catalogIds?: readonly string[];
   sectionOrder?: readonly string[];
   collapsedSections: ReadonlySet<string>;
-  emptyGroupsMode: SidebarEmptyGroupsMode;
-  ownerFiltered: boolean;
+  hideEmptyGroups: boolean;
   visibleSessionLimits: ReadonlyMap<string, number>;
   sortMode: SidebarSessionSortMode;
   statusFilter: SidebarSessionStatusFilter;
@@ -194,10 +192,7 @@ export class SidebarSessionProjection {
       this.heldSubtitles.delete(key);
     }
 
-    const { grouping, knownGroups, selfOwnerId, sectionOrder, catalogIds } = input;
-    const hideEmptyGroups =
-      input.emptyGroupsMode === "always" ||
-      (input.emptyGroupsMode === "filtering" && input.ownerFiltered);
+    const { grouping, knownGroups, selfOwnerId, sectionOrder, catalogIds, hideEmptyGroups } = input;
     const sections =
       input.sections ??
       groupSidebarSessionRows(input.rows, {
