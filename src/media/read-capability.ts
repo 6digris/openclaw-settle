@@ -76,13 +76,11 @@ function createAgentScopedHostMediaReadFile(
     localRoots: readonly string[];
     workspaceDir?: string;
     excludedLocalRoots?: readonly string[];
+    workspaceOnly?: boolean;
   } & OutboundHostMediaPolicyContext,
 ): OutboundMediaReadFile | undefined {
   if (
-    !resolveEffectiveToolFsRootExpansionAllowed({
-      cfg: params.cfg,
-      agentId: params.agentId,
-    }) ||
+    !resolveEffectiveToolFsRootExpansionAllowed(params) ||
     !isAgentScopedMediaReadAllowedByToolPolicy(params)
   ) {
     return undefined;
@@ -166,12 +164,18 @@ export function resolveAgentScopedOutboundMediaAccess(
     mediaSources?: readonly string[];
     workspaceDir?: string;
     sessionWorkspaceDir?: string;
+    workspaceOnly?: boolean;
+    /** False when local execution paths belong to another host. */
+    allowHostWorkspace?: boolean;
     mediaAccess?: OutboundMediaAccess;
     /** Workspace-bounded transport reader; sender policy remains owned by this resolver. */
     workspaceMediaAccess?: OutboundMediaAccess;
     mediaReadFile?: OutboundMediaReadFile;
   } & OutboundHostMediaPolicyContext,
 ): OutboundMediaAccess {
+  if (params.allowHostWorkspace === false) {
+    return { localRoots: getManagedMediaLocalRoots(params.mediaSources) };
+  }
   const resolvedWorkspaceDir =
     params.workspaceDir ??
     params.mediaAccess?.workspaceDir ??
@@ -191,6 +195,7 @@ export function resolveAgentScopedOutboundMediaAccess(
           agentId: params.agentId,
           mediaSources: params.mediaSources,
           sessionWorkspaceDir: params.sessionWorkspaceDir,
+          workspaceOnly: params.workspaceOnly,
         }));
   // The remote reader intercepts these namespaces. Native host reads also exclude
   // their opened real paths, so granted ancestor roots can still serve sibling files.
@@ -227,6 +232,7 @@ export function resolveAgentScopedOutboundMediaAccess(
       localRoots: localRoots ?? [],
       workspaceDir: resolvedWorkspaceDir,
       excludedLocalRoots: registeredRoots,
+      workspaceOnly: params.workspaceOnly,
       sessionKey: params.sessionKey,
       messageProvider: params.messageProvider,
       groupId: params.groupId,
