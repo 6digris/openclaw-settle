@@ -50,7 +50,7 @@ import {
   armShutdownHardExitWatchdog,
   type ShutdownHardExitWatchdog,
 } from "./shutdown-hard-exit.js";
-import { GatewayUpdateSuccessor, waitForHealthyGatewayChild } from "./update-child-health.js";
+import { GatewayUpdateSuccessor } from "./update-successor.js";
 const gatewayLog = createSubsystemLogger("gateway");
 const LAUNCHD_SUPERVISED_RESTART_EXIT_DELAY_MS = 1500;
 const DEFAULT_RESTART_DRAIN_TIMEOUT_MS = 300_000;
@@ -76,7 +76,6 @@ export async function runGatewayLoop(params: {
   lockPort?: number;
   lifecycleLockDeadlineMs?: number;
   healthHost?: string;
-  waitForHealthyChild?: (port: number, pid?: number, host?: string) => Promise<boolean>;
   beginBoot?: (startedAtMs: number) => void | Promise<void>;
   completeBoot?: (completion: GatewayBootLifecycleCompletion) => void;
   onRestartStartupFailure?: (error: unknown, signal: AbortSignal) => Promise<void>;
@@ -120,7 +119,7 @@ export async function runGatewayLoop(params: {
   // Defer lifecycle signals from that window until the loop can close and advance.
   let pendingStartupRequest: GatewayRunSignalRequest | null = null;
   let activeRestartRequest: GatewayRunSignalRequest | null = null;
-  const updateSuccessor = new GatewayUpdateSuccessor(gatewayLog);
+  const updateSuccessor = new GatewayUpdateSuccessor(gatewayLog, eagerLifecycleRuntime);
   let foregroundUpdateClosed = false;
   let forceActiveRestartExit: (() => void) | null = null;
   let pendingStartupForceExitTimer: ReturnType<typeof setTimeout> | null = null;
@@ -129,7 +128,6 @@ export async function runGatewayLoop(params: {
   let startupFailedWithoutServerHandle = false;
   let failureWork: { controller: AbortController; settled: Promise<void> } | undefined;
   const processInstanceId = randomUUID();
-  const waitForHealthyChild = params.waitForHealthyChild ?? waitForHealthyGatewayChild;
   const getManagedUpdateOwner = () =>
     (pendingStartupRequest ?? activeRestartRequest)?.restartIntent?.successorOwner;
 
@@ -452,25 +450,22 @@ export async function runGatewayLoop(params: {
       : eagerLifecycleRuntime.restartGatewayProcessWithFreshPid(respawnOptions);
     if (respawn.mode === "spawned") {
       const child = respawn.child;
-      if (foregroundUpdateClosed && child) {
+      if (foregroundUpdateClosed) {
         updateSuccessor.commit(child);
       }
-      const port = params.lockPort;
-      const healthy =
-        typeof port === "number"
-          ? await waitForHealthyChild(port, respawn.pid, params.healthHost ?? "127.0.0.1")
-          : false;
+      const observedRestartRequest = activeRestartRequest;
+      const accepted = await updateSuccessor.observeReadiness(child, {
+        port: params.lockPort,
+        host: params.healthHost,
+        foreground: foregroundUpdateClosed,
+        // Old-server cleanup must not consume the replacement's readiness window.
+        beforeWait: () => forceActiveRestartExit?.(),
+        isCurrent: () => !foregroundUpdateClosed && activeRestartRequest === observedRestartRequest,
+      });
       if (updateSuccessor.stopRequested) {
         return exitProcessAfterLogFlush(0);
       }
-      // The replacement owns startup; a bounded observation cannot revoke that handoff.
-      if (healthy || (foregroundUpdateClosed && updateSuccessor.running)) {
-        updateSuccessor.commit(respawn.child ?? true);
-        if (!healthy) {
-          gatewayLog.warn(
-            "fresh Gateway readiness remains unverified; leaving the successor running",
-          );
-        }
+      if (accepted) {
         gatewayLog.info(
           `restart mode: update process respawn (spawned pid ${respawn.pid ?? "unknown"})`,
         );
@@ -480,7 +475,7 @@ export async function runGatewayLoop(params: {
         `update respawn child did not become healthy (${respawn.pid ?? "unknown"}); ${foregroundUpdateClosed ? "leaving Gateway stopped for recovery" : "falling back to in-process restart"}`,
       );
       try {
-        respawn.child?.kill();
+        child.kill();
       } catch (error) {
         gatewayLog.warn(`update respawn child did not settle: ${formatErrorMessage(error)}`);
       }

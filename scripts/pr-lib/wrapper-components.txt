@@ -449,6 +449,7 @@ src/config/validation-plugin-rules.ts
 src/config/validation-prepared.ts
 src/config/validation.ts
 src/config/validation.types.ts
+src/config/value-tree.ts
 src/config/version.ts
 src/config/web-search-legacy-provider-keys.ts
 src/config/write-lock.ts
@@ -1087,6 +1088,7 @@ src/shared/sandbox-workspace-paths.ts
 src/shared/update-outcome.ts
 src/skills/discovery/agent-filter.ts
 src/skills/discovery/filter.ts
+src/skills/lifecycle/upload-store-error.ts
 src/state/config-machine-state-write.ts
 src/state/config-machine-state.ts
 src/state/openclaw-agent-db-contract.ts
