@@ -12,7 +12,6 @@ import {
 } from "../../app/question-prompt.ts";
 import { readPresenceEntries } from "../../app/user-profile.ts";
 import { BROWSER_ANNOTATION_EVENT } from "../../components/browser/browser-annotation.ts";
-import type { ComposerEditor } from "../../components/composer-editor.ts";
 import {
   BROWSER_PANEL_TOGGLE_EVENT,
   LINK_READER_PANEL_TOGGLE_EVENT,
@@ -659,7 +658,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
       this.dispatchEvent(new Event(CHAT_ROUTE_READY_EVENT, { bubbles: true, composed: true }));
     }
     if (changedProperties.has("focusComposer") && this.focusComposer) {
-      const textarea = this.querySelector<ComposerEditor>(CHAT_COMPOSER_EDITOR_SELECTOR);
+      const textarea = this.querySelector<HTMLElement>(CHAT_COMPOSER_EDITOR_SELECTOR);
       const input = textarea?.closest<HTMLElement>(".agent-chat__input");
       textarea?.focus({ preventScroll: true });
       if (input && this.draft) {

@@ -29,6 +29,7 @@ import {
   type ControlUiMockGatewayScenario,
   type ControlUiE2eServer,
 } from "../../test-helpers/control-ui-e2e.ts";
+import { readUiCss } from "./chat-responsive.styles.test-support.ts";
 
 const VIEWPORTS = [
   [320, 568],
@@ -64,7 +65,6 @@ let sharedAppPage: Page | null = null;
 let sharedAppPagePromise: Promise<Page> | null = null;
 const sharedAppPageErrors: string[] = [];
 let realChatServer: ControlUiE2eServer | null = null;
-let cachedUiCss: string | null = null;
 
 const SHARED_APP_CONTEXT_TEXT = "Context hover regression fixture.";
 const SHARED_APP_SLASH_TEXT = "Short landscape slash command keyboard regression fixture.";
@@ -280,38 +280,6 @@ function expectControlRect(rect: ControlRect | null, label: string): ControlRect
   }
   expectFiniteRect(rect);
   return rect;
-}
-
-function readUiCss(): string {
-  if (cachedUiCss !== null) {
-    return cachedUiCss;
-  }
-  const files = [
-    "ui/src/styles/base.css",
-    "ui/src/styles/layout.css",
-    "ui/src/styles/layout.mobile.css",
-    "ui/src/styles/components.css",
-    "ui/src/styles/chat/startup-layout.css",
-    "ui/src/styles/chat/layout.css",
-    "ui/src/styles/chat/message-layout.css",
-    "ui/src/styles/chat/composer-surface.css",
-    "ui/src/styles/chat/composer.css",
-    "ui/src/styles/chat/composer-queue.css",
-    "ui/src/styles/chat/progress-card.css",
-    "ui/src/styles/chat/composer-progress.css",
-    "ui/src/styles/chat/composer-context-strip.css",
-    "ui/src/styles/chat/text.css",
-    "ui/src/styles/chat/grouped.css",
-    "ui/src/styles/chat/tool-cards.css",
-    "ui/src/styles/chat/working-indicator.css",
-    "ui/src/styles/chat/question-card.css",
-    "ui/src/styles/rail-header.css",
-    "ui/src/styles/chat/sidebar.css",
-    "ui/src/styles/chat/session-rail.css",
-    "ui/src/styles/chat/side-panel.css",
-  ];
-  cachedUiCss = files.map((file) => readStyleSheet(file)).join("\n");
-  return cachedUiCss;
 }
 
 function iconSvg() {
@@ -779,7 +747,7 @@ function chatHtml(opts: ChatFixtureOptions = {}, mobileNavLayout = false) {
                   </div>
                   <div class="agent-chat__composer-input-row">
                     <div class="agent-chat__composer-combobox">
-                      <textarea rows="1">Queued follow-up for the active operator session</textarea>
+                      <openclaw-composer-editor placeholder="Message"></openclaw-composer-editor>
                     </div>
                   </div>
                   <div class="agent-chat__composer-footer">
@@ -861,9 +829,29 @@ async function syncFixtureComposerPopoverAnchor(page: Page) {
 async function openFixture(width: number, height: number, opts: ChatFixtureOptions = {}) {
   const page = await openBrowserPage(width, height);
   try {
-    await page.setContent(
-      `<!doctype html><html><head><style>${readUiCss()}</style></head><body>${chatHtml(opts, width <= 1100)}</body></html>`,
+    if (!realChatServer) {
+      throw new Error("Expected the Control UI server to be ready");
+    }
+    const fixtureUrl = `${realChatServer.baseUrl}chat-responsive-fixture`;
+    await page.route(fixtureUrl, (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: `<!doctype html><html><head><style>${readUiCss()}</style></head><body>${chatHtml(opts, width <= 1100)}</body></html>`,
+      }),
     );
+    await page.goto(fixtureUrl);
+    // Browser-owned source keeps these imports out of Vitest's SSR callback transform.
+    await page.evaluate(`(async () => {
+      const baseUrl = ${JSON.stringify(realChatServer.baseUrl)};
+      await import(baseUrl + "src/components/composer-editor.ts");
+      const { adjustTextareaHeight } = await import(
+        baseUrl + "src/pages/chat/components/chat-composer-dom.ts"
+      );
+      const editor = document.querySelector("openclaw-composer-editor");
+      editor.value = "Queued follow-up for the active operator session";
+      editor.addEventListener("input", () => adjustTextareaHeight(editor));
+      adjustTextareaHeight(editor);
+    })()`);
     await syncFixtureComposerPopoverAnchor(page);
     return page;
   } catch (error) {
@@ -3891,8 +3879,13 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
           if (!textareaNode) {
             throw new Error("Missing composer textarea");
           }
-          const fontSize = (node: Element, pseudo?: string) =>
-            Number.parseFloat(getComputedStyle(node, pseudo).fontSize);
+          const fontSize = (node: Element) => Number.parseFloat(getComputedStyle(node).fontSize);
+          const draft = textareaNode.value;
+          textareaNode.value = "";
+          const placeholderSize = fontSize(
+            textareaNode.shadowRoot!.querySelector(".cm-placeholder")!,
+          );
+          textareaNode.value = draft;
           return {
             labels: selectors.map((selector) => {
               const label = document.querySelector(selector);
@@ -3901,7 +3894,7 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
               }
               return fontSize(label);
             }),
-            placeholder: fontSize(textareaNode.shadowRoot!.querySelector(".cm-placeholder")!),
+            placeholder: placeholderSize,
             textarea: fontSize(textareaNode),
           };
         });
@@ -5142,13 +5135,16 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
         const activeRect = active.getBoundingClientRect();
         return {
           activeDescendant: input.getAttribute("aria-activedescendant"),
-          focusedTag: document.activeElement?.tagName,
+          composerFocused:
+            document.activeElement === input &&
+            input.shadowRoot?.activeElement ===
+              input.shadowRoot?.querySelector("[contenteditable=true]"),
           scrollTop: scrollRegion.scrollTop,
           visible: activeRect.top >= menuRect.top - 1 && activeRect.bottom <= menuRect.bottom + 1,
         };
       });
 
-      expect(result.focusedTag).toBe("TEXTAREA");
+      expect(result.composerFocused).toBe(true);
       expect(result.activeDescendant).toBe(initiallyHidden.id);
       expect(result.scrollTop).toBeGreaterThan(0);
       expect(result.visible).toBe(true);
