@@ -79,6 +79,11 @@ export const TSGO_CORE_TEST_SHARDS = [
     group: "src",
     config: "test/tsconfig/tsconfig.core.test.commands-doctor.json",
   },
+  {
+    name: "gateway-talk",
+    group: "src",
+    config: "test/tsconfig/tsconfig.core.test.gateway-talk.json",
+  },
 ] as const;
 
 export const TSGO_CORE_GRAPHS = [

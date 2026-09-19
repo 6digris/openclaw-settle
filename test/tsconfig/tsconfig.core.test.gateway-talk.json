@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.core.test.shard.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "../../.artifacts/tsgo-cache/core-test-gateway-talk.tsbuildinfo"
+  },
+  "include": [
+    "../../src/gateway/talk/**/*.test.ts",
+    "../../src/gateway/talk/**/*.test.tsx"
+  ]
+}
