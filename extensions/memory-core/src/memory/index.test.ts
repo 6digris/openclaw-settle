@@ -23,6 +23,10 @@ import {
   createManagerIndexFixture,
   type ManagerIndexFixture,
 } from "./manager-index.test-support.js";
+import {
+  describeSqliteFailure,
+  installMemoryWorkspaceLockDiagnostic,
+} from "./manager-index.workspace-lock-diagnostic.test-support.js";
 import type { MemoryIndexMeta } from "./manager-reindex-state.js";
 import { MemoryIndexManager } from "./manager.js";
 
@@ -1561,6 +1565,7 @@ describe("memory index", () => {
   });
 
   it("drains retained queued targets through the next idle sync call", async () => {
+    const diagnostic = installMemoryWorkspaceLockDiagnostic(fixture.paths.workspace);
     const markers = {
       blocker: "BLOCKER LOCKED SYNC 729",
       retained: "RETAINED RETRY TARGET 729",
@@ -1576,7 +1581,9 @@ describe("memory index", () => {
     );
     let lock: DatabaseSync | null = null;
     try {
+      diagnostic.phase("baseline");
       await manager.sync({ reason: "test-baseline", force: true });
+      diagnostic.phase("seeding");
       for (const [sessionId, marker] of Object.entries(markers)) {
         await seedMemoryIndexSessionTranscript({
           sessionId,
@@ -1591,11 +1598,13 @@ describe("memory index", () => {
         });
       }
 
+      diagnostic.phase("sql-lock");
       const dbPath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
       lock = new DatabaseSync(dbPath);
       lock.exec("PRAGMA busy_timeout = 0");
       lock.exec("BEGIN EXCLUSIVE");
 
+      diagnostic.phase("initial-syncs");
       const active = manager.sync({
         reason: "test-locked-owner",
         sessions: [
@@ -1617,29 +1626,12 @@ describe("memory index", () => {
         ],
       });
       const failures = await Promise.allSettled([active, failedQueued]);
+      diagnostic.settled("active", failures[0]);
+      diagnostic.settled("queued", failures[1]);
+      diagnostic.phase("rollback");
       lock.exec("ROLLBACK");
       lock.close();
       lock = null;
-      const describeSqliteFailure = (failure: unknown): string => {
-        const details = [String(failure)];
-        if (failure && typeof failure === "object") {
-          const record = failure as Record<string, unknown>;
-          for (const key of ["message", "code"] as const) {
-            if (typeof record[key] === "string") {
-              details.push(record[key]);
-            }
-          }
-          if (record.cause && typeof record.cause === "object") {
-            const cause = record.cause as Record<string, unknown>;
-            for (const key of ["message", "code"] as const) {
-              if (typeof cause[key] === "string") {
-                details.push(cause[key]);
-              }
-            }
-          }
-        }
-        return details.join(" ");
-      };
       for (const result of failures) {
         expect(result.status).toBe("rejected");
         if (result.status !== "rejected") {
@@ -1680,6 +1672,7 @@ describe("memory index", () => {
       expect(recoveryState.sessionsDirtyFiles.size).toBe(0);
       expect(recoveryState.sessionsFullRetryDirty).toBe(false);
 
+      diagnostic.phase("recovery");
       const recoveryProgress = vi.fn();
       const recovery = manager.sync({
         reason: "test-recovery-trigger",
@@ -1703,6 +1696,7 @@ describe("memory index", () => {
       expect(recoveryState.queuedSessions.size).toBe(0);
       expect(recoveryProgress).toHaveBeenCalled();
     } finally {
+      diagnostic.phase("close");
       if (lock) {
         try {
           lock.exec("ROLLBACK");
