@@ -1,3 +1,4 @@
+# Demo only: verify dependency review after the warning updates. Do not merge.
 packages:
   - .
   - ui
