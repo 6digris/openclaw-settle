@@ -5,7 +5,16 @@ import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import chokidar from "chokidar";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFailed,
+  onTestFinished,
+  vi,
+} from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 
@@ -202,6 +211,10 @@ it("refreshes skills created beneath an initially missing project skills root", 
 });
 
 describe("shared missing skill ancestors", () => {
+  let currentTestSignal: AbortSignal;
+  beforeEach(({ signal }) => {
+    currentTestSignal = signal;
+  });
   const roots = useAutoCleanupTempDirTracker((cleanup) =>
     afterEach(async () => {
       const { closeSkillsWatchers } = await import("./refresh.js");
@@ -231,11 +244,15 @@ describe("shared missing skill ancestors", () => {
       const { ensureSkillsWatcher, registerSkillsChangeListener } = await import("./refresh.js");
       const { loadWorkspaceSkills } = await import("../loading/workspace-skill-loader.js");
       const originalWatch = chokidar.watch;
-      const observed: Array<{ watcher: ReturnType<typeof chokidar.watch>; ready: boolean }> = [];
+      const observed: Array<{
+        watcher: ReturnType<typeof chokidar.watch>;
+        ready: boolean;
+        target: Parameters<typeof chokidar.watch>[0];
+      }> = [];
       const watcherErrors: unknown[] = [];
       const watch = vi.spyOn(chokidar, "watch").mockImplementation((...args) => {
         const watcher = originalWatch(...args);
-        const observation = { watcher, ready: false };
+        const observation = { watcher, ready: false, target: args[0] };
         observed.push(observation);
         // Attach before returning: promotion can create more watchers during ready.
         watcher.once("ready", () => {
@@ -248,11 +265,65 @@ describe("shared missing skill ancestors", () => {
       const originalClearTimeout = globalThis.clearTimeout;
       const pendingTimers = new Map<
         Parameters<typeof clearTimeout>[0],
-        { settled: Promise<void>; finish: () => void }
+        {
+          settled: Promise<void>;
+          finish: () => void;
+          createdAt: number;
+          delay: number | undefined;
+          origin: string;
+        }
       >();
+      let phase = "install timer observation";
+      let settleIterations = 0;
+      let createdTimers = 0;
+      let firedTimers = 0;
+      let clearedTimers = 0;
+      const startedAt = Date.now();
+      const diagnostic = (event: string) => {
+        console.error(
+          "[watch-diagnostic]",
+          JSON.stringify({
+            event,
+            ancestor,
+            phase,
+            platform: process.platform,
+            node: process.version,
+            elapsedMs: Date.now() - startedAt,
+            settleIterations,
+            createdTimers,
+            firedTimers,
+            clearedTimers,
+            pendingCount: pendingTimers.size,
+            pendingTimers: Array.from(pendingTimers, ([timer, details]) => ({
+              timer: Number(timer),
+              ageMs: Date.now() - details.createdAt,
+              delay: details.delay,
+              origin: details.origin,
+            })).slice(0, 40),
+            observedCount: observed.length,
+            watchers: observed.slice(-40).map(({ target, watcher, ready }) => ({
+              target,
+              ready,
+              closed: watcher.closed,
+            })),
+            errors: watcherErrors.map(String),
+          }),
+        );
+      };
+      const markPhase = (next: string) => {
+        phase = next;
+        diagnostic("phase");
+      };
+      onTestFailed(() => diagnostic("test-failed"));
+      const signal = currentTestSignal;
+      const captureTimeout = () => diagnostic("test-timeout-or-cancel");
+      signal.addEventListener("abort", captureTimeout, { once: true });
+      onTestFinished(() => signal.removeEventListener("abort", captureTimeout));
       vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, delay, ...args) => {
+        createdTimers += 1;
         const { promise: settled, resolve: finish } = createDeferredCore();
         const timer = originalSetTimeout(() => {
+          firedTimers += 1;
           pendingTimers.delete(timer);
           try {
             callback.apply(timer, args);
@@ -260,16 +331,27 @@ describe("shared missing skill ancestors", () => {
             finish();
           }
         }, delay);
-        pendingTimers.set(timer, { settled, finish });
+        pendingTimers.set(timer, {
+          settled,
+          finish,
+          createdAt: Date.now(),
+          delay,
+          origin: new Error("timer created").stack?.split("\n").slice(1, 9).join("\n") ?? "",
+        });
         return timer;
       });
       vi.spyOn(globalThis, "clearTimeout").mockImplementation((timer) => {
+        if (pendingTimers.has(timer)) {
+          clearedTimers += 1;
+        }
         originalClearTimeout(timer);
         pendingTimers.get(timer)?.finish();
         pendingTimers.delete(timer);
       });
-      const settleWatchers = async () => {
+      const settleWatchers = async (label: string) => {
+        markPhase(`settle:${label}`);
         for (;;) {
+          settleIterations += 1;
           await vi.waitFor(() => {
             expect(watcherErrors).toEqual([]);
             expect(observed.every(({ watcher, ready }) => ready || watcher.closed)).toBe(true);
@@ -287,6 +369,7 @@ describe("shared missing skill ancestors", () => {
             observed.length === generationCount &&
             observed.every(({ watcher, ready }) => ready || watcher.closed)
           ) {
+            diagnostic("settled");
             return;
           }
         }
@@ -294,7 +377,7 @@ describe("shared missing skill ancestors", () => {
       for (const current of [first, second]) {
         ensureSkillsWatcher(current);
       }
-      await settleWatchers();
+      await settleWatchers("initial");
       expect(
         watch.mock.calls.filter(([watched]) => watched === root.replaceAll("\\", "/")),
       ).toHaveLength(1);
@@ -311,12 +394,15 @@ describe("shared missing skill ancestors", () => {
           managedSkillsDir: path.join(root, "unused"),
         }).map((entry) => entry.skill.name);
       const writeSkill = async (current: typeof first, name: string) => {
+        markPhase(`write:${name}:mkdir`);
         const directory = path.join(current.sourceRoot, name);
         await fs.mkdir(directory, { recursive: true });
+        markPhase(`write:${name}:file`);
         await fs.writeFile(
           path.join(directory, "SKILL.md"),
           `---\nname: ${name}\ndescription: Shared ancestor proof\n---\n`,
         );
+        markPhase(`write:${name}:done`);
       };
       try {
         expect(read(first)).toEqual([]);
@@ -335,22 +421,24 @@ describe("shared missing skill ancestors", () => {
             ),
           ).toBe(true);
         });
-        await settleWatchers();
+        await settleWatchers("promoted-first");
         // Prime after promoted root/companion scans and queued refreshes settle:
         // late initial reconciliation must not mask a missed ancestor move.
         expect(read(first)).toContain("first-proof");
         const movedAncestor =
           ancestor === "higher" ? path.join(root, "left") : path.join(root, "left", "nested");
+        markPhase("remove-or-move-ancestor");
         if (process.platform === "win32") {
           // Windows cannot rename an ancestor with live descendant directory watches.
           await fs.rm(movedAncestor, { recursive: true });
         } else {
           await fs.rename(movedAncestor, `${movedAncestor}-away`);
         }
+        markPhase("await-removed-first");
         await expect.poll(() => read(first), { timeout: 3_000 }).toEqual([]);
         await writeSkill(first, "returned-proof");
         await expect.poll(() => read(first), { timeout: 3_000 }).toEqual(["returned-proof"]);
-        await settleWatchers();
+        await settleWatchers("returned-first");
         expect(read(first)).toEqual(["returned-proof"]);
         // Retiring one logical workspace must not retire the shared missing-root observer.
         ensureSkillsWatcher({
@@ -361,14 +449,21 @@ describe("shared missing skill ancestors", () => {
         await expect.poll(() => read(second), { timeout: 3_000 }).toContain("remaining-proof");
         const skillFile = path.join(second.sourceRoot, "remaining-proof", "SKILL.md");
         const renamedSkillFile = path.join(second.sourceRoot, "remaining-proof", "SKILL.saved");
+        markPhase("rename-second-away");
         await fs.rename(skillFile, renamedSkillFile);
+        markPhase("await-second-absent");
         await expect.poll(() => read(second), { timeout: 3_000 }).toEqual([]);
+        markPhase("rename-second-back");
         await fs.rename(renamedSkillFile, skillFile);
+        markPhase("await-second-returned");
         await expect.poll(() => read(second), { timeout: 3_000 }).toContain("remaining-proof");
+        markPhase("remove-second-ancestor");
         await fs.rm(path.join(root, "right"), { recursive: true });
+        markPhase("await-second-removed");
         await expect.poll(() => read(second), { timeout: 3_000 }).toEqual([]);
         await writeSkill(second, "recreated-proof");
         await expect.poll(() => read(second), { timeout: 3_000 }).toContain("recreated-proof");
+        markPhase("test-body-complete");
       } finally {
         unregister();
       }
