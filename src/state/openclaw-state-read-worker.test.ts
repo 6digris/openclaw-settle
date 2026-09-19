@@ -52,7 +52,7 @@ import {
 } from "./openclaw-state-db.js";
 import { withOpenClawStateSettlementRead } from "./openclaw-state-settlement-read.js";
 import { captureOpenClawStateWorkerContext } from "./openclaw-state-worker-context.js";
-import { selectProfileDisplayEntries } from "./user-profile-list.js";
+import { selectProfileDisplayEntries } from "./user-profiles-internal.js";
 import { ensureProfileForEmail } from "./user-profiles.js";
 
 beforeEach(() => mock.selectLibrary.mockClear());

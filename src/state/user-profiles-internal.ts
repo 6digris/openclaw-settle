@@ -1,7 +1,12 @@
 import type { DatabaseSync } from "node:sqlite";
 import { expressionBuilder, type SelectQueryBuilder } from "kysely";
 import type { UserProfile as UserProfileListItem } from "../../packages/gateway-protocol/src/schema/users.js";
-import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
+import {
+  executeSqliteQuerySync,
+  executeSqliteQueryTakeFirstSync,
+  getNodeSqliteKysely,
+} from "../infra/kysely-sync.js";
+import { tableHasColumn } from "./openclaw-state-db-schema-helpers.js";
 import {
   openOpenClawStateDatabase,
   type OpenClawStateDatabaseOptions,
@@ -14,8 +19,8 @@ import {
 import {
   USER_PROFILE_AVATAR_MIME_TYPES,
   type UserProfileAvatarMime,
-} from "./user-profiles-tailscale-avatar.js";
-import type { UserProfilesDatabase } from "./user-profiles.types.js";
+  type UserProfilesDatabase,
+} from "./user-profiles.types.js";
 
 export type UserProfileRow = UserProfilesDatabase["user_profiles"];
 export type UserProfileMetadataRow = Omit<UserProfileRow, "avatar">;
@@ -48,6 +53,30 @@ type UserProfileAvatar = {
 
 export function userProfilesDb(db: DatabaseSync) {
   return getNodeSqliteKysely<UserProfilesDatabase>(db);
+}
+
+export const userProfileDisplaySelection = [
+  "id",
+  "display_name",
+  "avatar_mime",
+  "avatar_sha256",
+  "merged_into",
+  "updated_at",
+  userProfileAvatarPresence,
+] as const;
+
+export function selectProfileDisplayEntries(db: DatabaseSync, ids?: string[]) {
+  const query = userProfilesDb(db)
+    .selectFrom("user_profiles")
+    .select([
+      ...userProfileDisplaySelection,
+      ...(hasEnsuredUserProfileRoleSchema(db) || tableHasColumn(db, "user_profiles", "role")
+        ? (["role"] as const)
+        : []),
+    ]);
+  const rows = executeSqliteQuerySync(db, ids ? query.where("id", "in", ids) : query).rows;
+  // Worker transfer removes SQLite rows' null prototype; compare plain descriptors on both sides.
+  return rows.map((row): [string, typeof row] => [row.id, { ...row }]);
 }
 
 export function normalizeUserProfileAvatarMime(value: string | null): UserProfileAvatarMime | null {

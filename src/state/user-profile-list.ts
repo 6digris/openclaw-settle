@@ -27,7 +27,8 @@ import {
   selectResolvedUserProfile,
   selectResolvedUserProfileMetadataById,
   normalizeUserProfileAvatarMime,
-  userProfileAvatarPresence,
+  userProfileDisplaySelection,
+  selectProfileDisplayEntries,
   userProfilesDb,
 } from "./user-profiles-internal.js";
 import {
@@ -184,29 +185,6 @@ export function readUserProfileAliases(
   return new Set([profileId, ...(readUserProfileIdentity(profileId, options)?.aliases ?? [])]);
 }
 
-const userProfileDisplaySelection = [
-  "id",
-  "display_name",
-  "avatar_mime",
-  "avatar_sha256",
-  "merged_into",
-  "updated_at",
-  userProfileAvatarPresence,
-] as const;
-
-export function selectProfileDisplayEntries(db: DatabaseSync, ids?: string[]) {
-  const query = userProfilesDb(db)
-    .selectFrom("user_profiles")
-    .select([
-      ...userProfileDisplaySelection,
-      ...(hasEnsuredUserProfileRoleSchema(db) || tableHasColumn(db, "user_profiles", "role")
-        ? (["role"] as const)
-        : []),
-    ]);
-  const rows = executeSqliteQuerySync(db, ids ? query.where("id", "in", ids) : query).rows;
-  // Worker transfer removes SQLite rows' null prototype; compare plain descriptors on both sides.
-  return rows.map((row): [string, typeof row] => [row.id, { ...row }]);
-}
 function resolveCatalogProfile(rows: Map<string, ProfileDisplayRow>, id: string) {
   const raw = rows.get(id);
   return rows.get(raw?.merged_into ?? id) ?? raw;

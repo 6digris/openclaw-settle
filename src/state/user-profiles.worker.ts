@@ -9,15 +9,15 @@ import {
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db.js";
 import { listUserProfileGitHubLogins } from "./user-profile-github-identity.js";
-import { listUserProfilesSync, selectProfileDisplayEntries } from "./user-profile-list.js";
+import { listUserProfilesSync } from "./user-profile-list.js";
 import {
+  selectProfileDisplayEntries,
   selectResolvedUserProfileById,
   toUserProfile,
   userProfilesDb,
 } from "./user-profiles-internal.js";
 import { ensureUserProfilesSchema } from "./user-profiles-schema.js";
-import type { UserProfileAvatarMime } from "./user-profiles-tailscale-avatar.js";
-import type { ProfileDisplayRow } from "./user-profiles.types.js";
+import type { ProfileDisplayRow, UserProfileAvatarMime } from "./user-profiles.types.js";
 
 type UserProfileReadWorkerOperations = {
   "userProfiles.list": { input: undefined; output: ReturnType<typeof listUserProfilesSync> };

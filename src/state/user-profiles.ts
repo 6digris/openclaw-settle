@@ -41,14 +41,14 @@ import {
   UserProfileOwnerError,
 } from "./user-profiles-schema.js";
 import {
-  MAX_USER_PROFILE_AVATAR_BYTES,
-  USER_PROFILE_AVATAR_MIME_TYPES,
-  type UserProfileAvatarMime,
-} from "./user-profiles-tailscale-avatar.js";
-import {
   classifyTailscaleLogin,
   type TailscaleProfileIdentity,
 } from "./user-profiles-tailscale-login.js";
+import {
+  MAX_USER_PROFILE_AVATAR_BYTES,
+  USER_PROFILE_AVATAR_MIME_TYPES,
+  type UserProfileAvatarMime,
+} from "./user-profiles.types.js";
 
 export { formatUserProfileAvatarEtag, getProfileAvatar } from "./user-profiles-internal.js";
 export {

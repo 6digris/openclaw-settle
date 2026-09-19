@@ -15,7 +15,7 @@ import type {
   OpenClawStateReadRequest,
 } from "./openclaw-state-read.types.js";
 import { encodeOpenClawStateWorkerError } from "./openclaw-state-worker-error.js";
-import { selectProfileDisplayEntries } from "./user-profile-list.js";
+import { selectProfileDisplayEntries } from "./user-profiles-internal.js";
 
 function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
   if (!isRecord(input) || !isRecord(input.context) || !isRecord(input.command)) {
