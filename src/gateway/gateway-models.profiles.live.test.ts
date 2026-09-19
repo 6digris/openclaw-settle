@@ -155,6 +155,7 @@ const GATEWAY_LIVE_TOOL_NONCE_MISS_SKIP_MODEL_KEYS = new Set([
   "google/gemini-3.1-pro-preview",
 ]);
 const GATEWAY_LIVE_MAX_MODELS = resolveGatewayLiveMaxModels();
+const GATEWAY_LIVE_FALLBACK_POOL_SIZE = 2;
 const GATEWAY_LIVE_SUITE_TIMEOUT_MS = resolveGatewayLiveSuiteTimeoutMs(GATEWAY_LIVE_MAX_MODELS);
 const QUIET_LIVE_LOGS = process.env.OPENCLAW_LIVE_TEST_QUIET !== "0";
 
@@ -305,6 +306,46 @@ function resolveGatewayLiveMaxModels(): number {
       ? DEFAULT_SMALL_LIVE_MODEL_LIMIT
       : DEFAULT_HIGH_SIGNAL_LIVE_MODEL_LIMIT,
   });
+}
+
+function resolveGatewayLiveCandidatePoolLimit(params: {
+  availableModels: number;
+  maxSuccessfulModels: number;
+}): number {
+  if (params.maxSuccessfulModels <= 0) {
+    return params.availableModels;
+  }
+  return Math.min(
+    params.availableModels,
+    params.maxSuccessfulModels + GATEWAY_LIVE_FALLBACK_POOL_SIZE,
+  );
+}
+
+function appendGatewayLiveFallbackCandidates<T>(params: {
+  expanded: T[];
+  key: (item: T) => string;
+  maxItems: number;
+  primary: T[];
+}): T[] {
+  const primaryKeys = new Set(params.primary.map(params.key));
+  return [
+    ...params.primary,
+    ...params.expanded
+      .filter((item) => !primaryKeys.has(params.key(item)))
+      .slice(0, Math.max(0, params.maxItems - params.primary.length)),
+  ];
+}
+
+function shouldStopGatewayLiveCandidatePool(params: {
+  failureCount: number;
+  passedCount: number;
+  successfulModelTarget: number | undefined;
+}): boolean {
+  return (
+    params.successfulModelTarget !== undefined &&
+    params.passedCount >= params.successfulModelTarget &&
+    params.failureCount === 0
+  );
 }
 
 function resolveGatewayLiveSuiteTimeoutMs(maxModels: number): number {
@@ -1214,6 +1255,51 @@ describe("resolveGatewayLiveMaxModels", () => {
 
     process.env.OPENCLAW_LIVE_GATEWAY_MAX_MODELS = "2";
     expect(resolveGatewayLiveMaxModels()).toBe(2);
+  });
+});
+
+describe("resolveGatewayLiveCandidatePoolLimit", () => {
+  it("retains bounded replacement candidates for capped live proof", () => {
+    expect(
+      resolveGatewayLiveCandidatePoolLimit({ availableModels: 20, maxSuccessfulModels: 1 }),
+    ).toBe(3);
+    expect(
+      resolveGatewayLiveCandidatePoolLimit({ availableModels: 2, maxSuccessfulModels: 1 }),
+    ).toBe(2);
+  });
+
+  it("keeps uncapped sweeps unchanged", () => {
+    expect(
+      resolveGatewayLiveCandidatePoolLimit({ availableModels: 20, maxSuccessfulModels: 0 }),
+    ).toBe(20);
+  });
+
+  it("keeps curated primary candidates ahead of discovery-order fallbacks", () => {
+    expect(
+      appendGatewayLiveFallbackCandidates({
+        expanded: ["ollama", "lmstudio", "fallback"],
+        key: (item) => item,
+        maxItems: 3,
+        primary: ["lmstudio"],
+      }),
+    ).toEqual(["lmstudio", "ollama", "fallback"]);
+  });
+
+  it("stops only after the requested proof succeeds without a real failure", () => {
+    expect(
+      shouldStopGatewayLiveCandidatePool({
+        failureCount: 0,
+        passedCount: 1,
+        successfulModelTarget: 1,
+      }),
+    ).toBe(true);
+    expect(
+      shouldStopGatewayLiveCandidatePool({
+        failureCount: 1,
+        passedCount: 1,
+        successfulModelTarget: 1,
+      }),
+    ).toBe(false);
   });
 });
 
@@ -3482,6 +3568,7 @@ type GatewayModelSuiteParams = {
   extraToolProbes: boolean;
   extraImageProbes: boolean;
   thinkingLevel: string;
+  successfulModelTarget?: number;
   providerOverrides?: Record<string, ModelProviderConfig>;
 };
 
@@ -5270,6 +5357,18 @@ async function runGatewayModelSuite(params: GatewayModelSuiteParams) {
           error: "strict GPT-5.6 Ultra proof was skipped; inspect the preceding live log",
         });
       }
+      if (
+        shouldStopGatewayLiveCandidatePool({
+          failureCount: failures.length,
+          passedCount,
+          successfulModelTarget: params.successfulModelTarget,
+        })
+      ) {
+        logProgress(
+          `[${params.label}] satisfied ${params.successfulModelTarget} successful model target after ${index + 1}/${total} candidate(s)`,
+        );
+        break;
+      }
     }
 
     if (failures.length > 0) {
@@ -5529,33 +5628,52 @@ describeLive("gateway live (dev agent, profile keys)", () => {
           skipped,
         });
         const selectCandidates = useSmall ? selectSmallLiveItems : selectHighSignalLiveItems;
+        const successfulModelTarget =
+          maxModels > 0 ? Math.min(maxModels, candidates.length) : candidates.length;
+        const candidatePoolLimit = resolveGatewayLiveCandidatePoolLimit({
+          availableModels: candidates.length,
+          maxSuccessfulModels: maxModels,
+        });
         const selectedCandidates = selectCandidates(
           candidates,
-          maxModels > 0 ? maxModels : candidates.length,
+          successfulModelTarget,
           (model) => ({ provider: model.provider, id: model.id }),
           (model) => model.provider,
         );
+        const expandedCandidates = selectCandidates(
+          candidates,
+          candidatePoolLimit,
+          (model) => ({ provider: model.provider, id: model.id }),
+          (model) => model.provider,
+        );
+        const candidatePool = appendGatewayLiveFallbackCandidates({
+          expanded: expandedCandidates,
+          key: (model) => `${model.provider}/${model.id}`,
+          maxItems: candidatePoolLimit,
+          primary: selectedCandidates,
+        });
         logProgress(
           `[all-models] selection=${useExplicit ? "explicit" : useSmall ? "small" : "high-signal"}`,
         );
-        if (selectedCandidates.length < candidates.length) {
+        if (candidatePool.length < candidates.length) {
           logProgress(
-            `[all-models] capped to ${selectedCandidates.length}/${candidates.length} via OPENCLAW_LIVE_GATEWAY_MAX_MODELS=${maxModels}`,
+            `[all-models] retained ${candidatePool.length}/${candidates.length} candidates for ${successfulModelTarget} successful model(s) via OPENCLAW_LIVE_GATEWAY_MAX_MODELS=${maxModels}`,
           );
         }
-        expect(selectedCandidates.length).toBeGreaterThan(0);
-        const imageCandidates = selectedCandidates.filter((m) => m.input?.includes("image"));
+        expect(candidatePool.length).toBeGreaterThan(0);
+        const imageCandidates = candidatePool.filter((model) => model.input?.includes("image"));
         if (imageCandidates.length === 0) {
           logProgress("[all-models] no image-capable models selected; image probe will be skipped");
         }
         await runGatewayModelSuite({
           label: "all-models",
           cfg,
-          candidates: selectedCandidates,
+          candidates: candidatePool,
           allowNotFoundSkip: useModern || useSmall,
           extraToolProbes: ENABLE_EXTRA_TOOL_PROBES,
           extraImageProbes: ENABLE_EXTRA_IMAGE_PROBES,
           thinkingLevel: THINKING_LEVEL,
+          successfulModelTarget,
         });
 
         const minimaxCandidates = selectedCandidates.filter(
