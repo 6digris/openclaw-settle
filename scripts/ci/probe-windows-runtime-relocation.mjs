@@ -77,7 +77,7 @@ try {
   );
   const install = spawnSync(
     process.env.ComSpec,
-    ["/d", "/s", "/c", `pnpm install --ignore-scripts --store-dir "${path.join(root, "store")}"`],
+    ["/d", "/s", "/c", "pnpm install --ignore-scripts --store-dir ../store"],
     { cwd: source, encoding: "utf8", timeout: 300000 },
   );
   if (install.status !== 0) {
