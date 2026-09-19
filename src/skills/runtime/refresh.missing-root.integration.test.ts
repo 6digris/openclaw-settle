@@ -202,8 +202,14 @@ it("refreshes skills created beneath an initially missing project skills root", 
 });
 
 describe("shared missing skill ancestors", () => {
+  const diagnosticCleanups = new Set<() => void>();
   const roots = useAutoCleanupTempDirTracker((cleanup) =>
     afterEach(async () => {
+      // Timed-out test promises need not reach their own finally block.
+      for (const stopDiagnostic of diagnosticCleanups) {
+        stopDiagnostic();
+      }
+      diagnosticCleanups.clear();
       const { closeSkillsWatchers } = await import("./refresh.js");
       await closeSkillsWatchers(true);
       vi.restoreAllMocks();
@@ -230,29 +236,111 @@ describe("shared missing skill ancestors", () => {
       }
       const { ensureSkillsWatcher, registerSkillsChangeListener } = await import("./refresh.js");
       const { loadWorkspaceSkills } = await import("../loading/workspace-skill-loader.js");
+      const diagnosticStarted = Date.now();
+      let diagnosticStage = "setup";
+      const trace = (event: string, detail: unknown = {}) => {
+        try {
+          nativeFs.writeSync(
+            2,
+            `${JSON.stringify({
+              diagnostic: "skills-ancestor",
+              ancestor,
+              elapsed: Date.now() - diagnosticStarted,
+              stage: diagnosticStage,
+              event,
+              detail,
+            })}\n`,
+          );
+        } catch {
+          // Diagnostic output must not replace the original test failure.
+        }
+      };
+      const traceStage = async <T>(stage: string, run: () => Promise<T>): Promise<T> => {
+        diagnosticStage = stage;
+        trace("stage-enter");
+        let completed = false;
+        try {
+          const result = await run();
+          completed = true;
+          return result;
+        } finally {
+          trace("stage-exit", { completed });
+          diagnosticStage = `${stage}:${completed ? "done" : "failed"}`;
+        }
+      };
       const originalWatch = chokidar.watch;
-      const observed: Array<{ watcher: ReturnType<typeof chokidar.watch>; ready: boolean }> = [];
+      const observed: Array<{
+        watcher: ReturnType<typeof chokidar.watch>;
+        ready: boolean;
+        root: Parameters<typeof chokidar.watch>[0];
+      }> = [];
       const watcherErrors: unknown[] = [];
       const watch = vi.spyOn(chokidar, "watch").mockImplementation((...args) => {
         const watcher = originalWatch(...args);
-        const observation = { watcher, ready: false };
+        const observation = { watcher, ready: false, root: args[0] };
         observed.push(observation);
+        const generation = observed.length;
+        trace("watcher-created", { generation, root: observation.root });
         // Attach before returning: promotion can create more watchers during ready.
         watcher.once("ready", () => {
           observation.ready = true;
+          trace("watcher-ready", { generation, root: observation.root, closed: watcher.closed });
         });
-        watcher.on("error", (error) => watcherErrors.push(error));
+        watcher.on("error", (error) => {
+          watcherErrors.push(error);
+          trace("watcher-error", { generation, root: observation.root, error: String(error) });
+        });
         return watcher;
       });
       const originalSetTimeout = globalThis.setTimeout;
       const originalClearTimeout = globalThis.clearTimeout;
+      const nativeTimerState = (timer: Parameters<typeof clearTimeout>[0]) =>
+        typeof timer === "object" && timer !== null
+          ? {
+              destroyed: Reflect.get(timer, "_destroyed"),
+              idleTimeout: Reflect.get(timer, "_idleTimeout"),
+            }
+          : { handle: timer };
+      let nextTimerId = 0;
       const pendingTimers = new Map<
         Parameters<typeof clearTimeout>[0],
-        { settled: Promise<void>; finish: () => void }
+        {
+          settled: Promise<void>;
+          finish: () => void;
+          diagnostic: {
+            id: number;
+            delay: number | undefined;
+            created: number;
+            stack: string | undefined;
+          };
+        }
       >();
+      const dumpPending = (event: string) => {
+        trace(event, {
+          generationCount: observed.length,
+          watchers: observed.map(({ watcher, ready, root: watchedRoot }, index) => ({
+            generation: index + 1,
+            root: watchedRoot,
+            ready,
+            closed: watcher.closed,
+          })),
+          timers: Array.from(pendingTimers, ([timer, { diagnostic }]) => ({
+            ...diagnostic,
+            age: Date.now() - diagnostic.created,
+            ...nativeTimerState(timer),
+          })),
+        });
+      };
       vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, delay, ...args) => {
         const { promise: settled, resolve: finish } = createDeferredCore();
+        const diagnostic = {
+          id: ++nextTimerId,
+          delay,
+          created: Date.now(),
+          stack: new Error("Timer creation").stack,
+        };
         const timer = originalSetTimeout(() => {
+          trace("timer-fire", { ...diagnostic, ...nativeTimerState(timer) });
           pendingTimers.delete(timer);
           try {
             callback.apply(timer, args);
@@ -260,14 +348,40 @@ describe("shared missing skill ancestors", () => {
             finish();
           }
         }, delay);
-        pendingTimers.set(timer, { settled, finish });
+        pendingTimers.set(timer, { settled, finish, diagnostic });
+        trace("timer-create", { ...diagnostic, ...nativeTimerState(timer) });
         return timer;
       });
       vi.spyOn(globalThis, "clearTimeout").mockImplementation((timer) => {
+        const pending = pendingTimers.get(timer);
         originalClearTimeout(timer);
-        pendingTimers.get(timer)?.finish();
+        if (pending) {
+          trace("timer-cancel", { ...pending.diagnostic, ...nativeTimerState(timer) });
+        }
+        pending?.finish();
         pendingTimers.delete(timer);
       });
+      let diagnosticsActive = true;
+      let diagnosticTimer: ReturnType<typeof setTimeout> | undefined;
+      const stopDiagnostics = () => {
+        if (!diagnosticsActive) {
+          return;
+        }
+        diagnosticsActive = false;
+        originalClearTimeout(diagnosticTimer);
+        diagnosticCleanups.delete(stopDiagnostics);
+        dumpPending("diagnostic-stop");
+      };
+      diagnosticCleanups.add(stopDiagnostics);
+      const periodicDump = () => {
+        if (!diagnosticsActive) {
+          return;
+        }
+        dumpPending("periodic-pending");
+        diagnosticTimer = originalSetTimeout(periodicDump, 2_000);
+      };
+      // Saved native timers keep this observer outside the tracked drain.
+      diagnosticTimer = originalSetTimeout(periodicDump, 2_000);
       const settleWatchers = async () => {
         for (;;) {
           await vi.waitFor(() => {
@@ -275,9 +389,11 @@ describe("shared missing skill ancestors", () => {
             expect(observed.every(({ watcher, ready }) => ready || watcher.closed)).toBe(true);
           });
           const generationCount = observed.length;
+          dumpPending("drain-enter");
           // Drain actual debounce/stability work, including timers chained by its
           // continuations. Keep native time and watchers; do not sleep past a guess.
           await Promise.all(Array.from(pendingTimers.values(), ({ settled }) => settled));
+          dumpPending("drain-complete");
           await new Promise<void>((resolve) => {
             setImmediate(resolve);
           });
@@ -294,7 +410,7 @@ describe("shared missing skill ancestors", () => {
       for (const current of [first, second]) {
         ensureSkillsWatcher(current);
       }
-      await settleWatchers();
+      await traceStage("settle-initial", settleWatchers);
       expect(
         watch.mock.calls.filter(([watched]) => watched === root.replaceAll("\\", "/")),
       ).toHaveLength(1);
@@ -335,7 +451,7 @@ describe("shared missing skill ancestors", () => {
             ),
           ).toBe(true);
         });
-        await settleWatchers();
+        await traceStage("settle-promoted", settleWatchers);
         // Prime after promoted root/companion scans and queued refreshes settle:
         // late initial reconciliation must not mask a missed ancestor move.
         expect(read(first)).toContain("first-proof");
@@ -343,14 +459,16 @@ describe("shared missing skill ancestors", () => {
           ancestor === "higher" ? path.join(root, "left") : path.join(root, "left", "nested");
         if (process.platform === "win32") {
           // Windows cannot rename an ancestor with live descendant directory watches.
-          await fs.rm(movedAncestor, { recursive: true });
+          await traceStage("remove-first-ancestor", () =>
+            fs.rm(movedAncestor, { recursive: true }),
+          );
         } else {
           await fs.rename(movedAncestor, `${movedAncestor}-away`);
         }
         await expect.poll(() => read(first), { timeout: 3_000 }).toEqual([]);
         await writeSkill(first, "returned-proof");
         await expect.poll(() => read(first), { timeout: 3_000 }).toEqual(["returned-proof"]);
-        await settleWatchers();
+        await traceStage("settle-recreated", settleWatchers);
         expect(read(first)).toEqual(["returned-proof"]);
         // Retiring one logical workspace must not retire the shared missing-root observer.
         ensureSkillsWatcher({
@@ -365,12 +483,15 @@ describe("shared missing skill ancestors", () => {
         await expect.poll(() => read(second), { timeout: 3_000 }).toEqual([]);
         await fs.rename(renamedSkillFile, skillFile);
         await expect.poll(() => read(second), { timeout: 3_000 }).toContain("remaining-proof");
-        await fs.rm(path.join(root, "right"), { recursive: true });
+        await traceStage("remove-second-ancestor", () =>
+          fs.rm(path.join(root, "right"), { recursive: true }),
+        );
         await expect.poll(() => read(second), { timeout: 3_000 }).toEqual([]);
         await writeSkill(second, "recreated-proof");
         await expect.poll(() => read(second), { timeout: 3_000 }).toContain("recreated-proof");
       } finally {
         unregister();
+        stopDiagnostics();
       }
     },
   );
