@@ -157,7 +157,9 @@ try {
     # authorize concurrent repairs while an unmanaged Gateway owns the state.
     Stop-ProofGateway
     $proof.baselineGateway.stoppedBeforeUpdate = $true
-    Invoke-ProofCommand -Name 'published-driver-update' -File $node -Arguments @($driver, 'update', '--channel', 'dev', '--yes', '--json', '--no-restart', '--timeout', '1200')
+    # CLI timeout is per step; this aggregate budget includes fetch, install, build,
+    # Doctor and finalization, and remains below the workflow's 90-minute limit.
+    Invoke-ProofCommand -Name 'published-driver-update' -File $node -Arguments @($driver, 'update', '--channel', 'dev', '--yes', '--json', '--no-restart', '--timeout', '1200') -Seconds 3600
     Assert-CandidateHead
     $proof.cases += 'published2026.9.5 driver to exact candidate after owned Gateway stopped'
     $entry = Join-Path $CandidateRoot 'dist/entry.js'
