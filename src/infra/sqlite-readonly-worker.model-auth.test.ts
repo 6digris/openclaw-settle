@@ -388,6 +388,7 @@ describe("model resolution auth row snapshots", () => {
       const databasePath = resolveAuthProfileDatabasePath(state.agentDir());
       const reads = () => read.mock.calls.filter(([pathname]) => pathname === databasePath);
       const resolve = modelResolver(state);
+      const clock = vi.spyOn(performance, "now").mockReturnValue(0);
       try {
         for (let turn = 0; turn < 8; turn += 1) {
           expect((await resolve()).model?.name).toBe(`${PROFILE_ID}:api_key`);
@@ -412,6 +413,7 @@ describe("model resolution auth row snapshots", () => {
         expect(current.profiles).toEqual(rotated.profiles);
         expect.soft(reads()).toHaveLength(2);
       } finally {
+        clock.mockRestore();
         read.mockRestore();
       }
     });
@@ -423,6 +425,7 @@ describe("model resolution auth row snapshots", () => {
       const read = vi.spyOn(sqliteWorker, "runSqliteReadOnlyWorker");
       const databasePath = resolveAuthProfileDatabasePath(state.agentDir());
       const resolve = modelResolver(state);
+      const clock = vi.spyOn(performance, "now").mockReturnValue(0);
       try {
         expect((await resolve()).model?.name).toBe(`${PROFILE_ID}:api_key`);
         const inode = fs.statSync(databasePath).ino;
@@ -446,6 +449,10 @@ describe("model resolution auth row snapshots", () => {
         expect(getRuntimeAuthProfileStoreMutationRevisionAtDatabasePath(databasePath)).toBe(
           mutationRevision,
         );
+        clock.mockReturnValue(99);
+        expect((await resolve()).model?.name).toBe(`${PROFILE_ID}:api_key`);
+        expect(read.mock.calls.filter(([pathname]) => pathname === databasePath)).toHaveLength(1);
+        clock.mockReturnValue(100);
         expect((await resolve()).model?.name).toBe(`${PROFILE_ID}:token`);
         const current = await loadAuthProfileStoreForRuntimeAsync(state.agentDir(), {
           readOnly: true,
@@ -457,6 +464,7 @@ describe("model resolution auth row snapshots", () => {
           .soft(read.mock.calls.filter(([pathname]) => pathname === databasePath))
           .toHaveLength(2);
       } finally {
+        clock.mockRestore();
         read.mockRestore();
       }
     });
