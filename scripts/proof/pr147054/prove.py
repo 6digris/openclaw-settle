@@ -107,6 +107,41 @@ def bounded_env(cell, profile):
     return env
 
 
+def capture_install_diagnostics(cli, package, task, env, cell):
+    # Failure-only, read-only observations. Never retry installation or reinterpret failure.
+    module = package / 'dist/schtasks-layout-ClZuVTuI.mjs'
+    script = """
+import fs from 'node:fs';
+import {pathToFileURL} from 'node:url';
+const m = await import(pathToFileURL(process.argv[1]));
+const paths = [m.d(process.env), ...m.c(process.env)].map(path => {
+  try { const stat = fs.lstatSync(path); return {path, present: true,
+    file: stat.isFile(), directory: stat.isDirectory(), symlink: stat.isSymbolicLink()}; }
+  catch (error) { return {path, errorCode: error.code}; }
+});
+const state = m._(process.argv[2]);
+let command;
+try { command = {readable: true, absent: (await m.o(process.env, {requireEffective: true})) === null}; }
+catch (error) { command = {readable: false, error: String(error)}; }
+console.log(JSON.stringify({scope: 'read-only after failed install; not lifecycle acceptance',
+  state, paths, command}));
+"""
+    queries = (
+        ('installedStatus', cli + ['gateway', 'status', '--json', '--no-probe'], 90),
+        ('installedTaskInspection', [cli[0], '--input-type=module', '-e', script,
+                                     str(module), task], 30),
+    )
+    result = {}
+    for name, args, timeout in queries:
+        try:
+            p = subprocess.run(args, capture_output=True, text=True, env=env,
+                               cwd=cell, timeout=timeout)
+            result[name] = {'exitCode': p.returncode, 'stdout': p.stdout, 'stderr': p.stderr}
+        except Exception as exc:
+            result[name] = {'error': type(exc).__name__ + ': ' + str(exc)}
+    return result
+
+
 def cleanup(root, owner, row):
     errors = []
     def attempt(name, operation):
@@ -224,8 +259,12 @@ def run_cell(root, seal, mode, owner):
             row['canonicalProfile'] = profile_home.claim(root, owner, node, env)
             require(not native.task_xml(task), 'Fixture task already exists')
             owner['tasks'].append(task); save(root / 'OWNER.json', owner)
-            row['install'] = command(['gateway', 'install', '--port', str(gport),
-                                      '--runtime', 'node', '--runtime-path', node, '--json']).stdout
+            try:
+                row['install'] = command(['gateway', 'install', '--port', str(gport),
+                                          '--runtime', 'node', '--runtime-path', node, '--json']).stdout
+            except Exception:
+                row['installDiagnostics'] = capture_install_diagnostics(cli, package, task, env, cell)
+                raise
             xml = native.task_xml(task)
             require(xml and str(root).casefold() in xml.casefold(), 'Native task absent or action unowned; no Startup fallback acceptance')
             require('<LogonType>InteractiveToken</LogonType>' in xml, 'Not an interactive Scheduled Task')

@@ -47,6 +47,32 @@ class ProofControls(unittest.TestCase):
         identity.save(self.root / 'OWNER.json', {'pr': 147054, 'root': str(self.root),
                       'sealSha256': self.sha, 'tasks': [], 'ports': []})
 
+    def test_install_diagnostics_keep_nonzero_status_and_use_only_read_operations(self):
+        env = {'OPENCLAW_PROFILE': 'isolated', 'HOME': str(self.base)}
+        outputs = [subprocess.CompletedProcess([], 1, 'status failure', 'status stderr'),
+                   subprocess.CompletedProcess([], 0, '{"state":"unknown"}', '')]
+        with patch.object(prove.subprocess, 'run', side_effect=outputs) as run:
+            result = prove.capture_install_diagnostics(['node', 'openclaw.mjs'], self.package,
+                                                       'owned-task', env, self.base)
+        self.assertEqual(result['installedStatus']['exitCode'], 1)
+        self.assertEqual(result['installedStatus']['stderr'], 'status stderr')
+        self.assertEqual(run.call_args_list[0].args[0],
+                         ['node', 'openclaw.mjs', 'gateway', 'status', '--json', '--no-probe'])
+        self.assertEqual(run.call_args_list[1].args[0][-2:],
+                         [str(self.package / 'dist/schtasks-layout-ClZuVTuI.mjs'), 'owned-task'])
+        for call in run.call_args_list:
+            self.assertIs(call.kwargs['env'], env)
+            self.assertEqual(call.kwargs['cwd'], self.base)
+        self.assertEqual([call.kwargs['timeout'] for call in run.call_args_list], [90, 30])
+
+    def test_install_diagnostic_errors_are_evidence_not_a_new_failure(self):
+        errors = [subprocess.TimeoutExpired('status', 90), OSError('diagnostic unavailable')]
+        with patch.object(prove.subprocess, 'run', side_effect=errors):
+            result = prove.capture_install_diagnostics(['node', 'openclaw.mjs'], self.package,
+                                                       'owned-task', {}, self.base)
+        self.assertIn('TimeoutExpired', result['installedStatus']['error'])
+        self.assertIn('OSError', result['installedTaskInspection']['error'])
+
     def test_rejects_wrong_archive(self):
         with self.archive.open('ab') as f:
             f.write(b'changed')
