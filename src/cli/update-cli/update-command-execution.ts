@@ -534,13 +534,16 @@ export async function executeMutableUpdate(
     // Health and candidate work can outlive the inspected service/config generation.
     await recheckSchemas(admittedTargetSchemaVersions);
     assertExecutionCurrent();
-    const activationTimeoutMs = await resolveUpdateFinalizationTimeoutMs(updateStepTimeoutMs, {
-      env,
-      databases: schemaVersions,
-      observedStartupMs: observedGatewayStartupMs,
-      pluginCount: Object.keys(config.plugins?.entries ?? {}).length,
-      nodeRunner: params.packageUpdateNodeRunner,
-    });
+    const activationTimeoutMs =
+      params.timeoutMs === undefined
+        ? undefined
+        : await resolveUpdateFinalizationTimeoutMs(updateStepTimeoutMs, {
+            env,
+            databases: schemaVersions,
+            observedStartupMs: observedGatewayStartupMs,
+            pluginCount: Object.keys(config.plugins?.entries ?? {}).length,
+            nodeRunner: params.packageUpdateNodeRunner,
+          });
     assertExecutionCurrent();
     await params.prepareMutableUpdate(env, activationTimeoutMs);
     assertExecutionCurrent();
@@ -662,7 +665,6 @@ export async function executeMutableUpdate(
             ? createBeforeGitMutation({
                 updateRun: opts.run,
                 roots: gitMutationRoots ?? [params.root],
-                shouldRestart: params.shouldRestart,
                 stopManagedService: beforeActivate,
                 getPreManagedServiceStop: () => preManagedServiceStop,
                 checkTargetSchemas: recheckSchemas,
@@ -670,7 +672,6 @@ export async function executeMutableUpdate(
                   params.prepareMutableUpdate(
                     ownedManagedUpdateContext?.env ?? admission?.managedEnv,
                   ),
-                switchToGit: params.switchToGit,
               })
             : undefined,
         allowGatewayServiceRepair: false,
@@ -688,6 +689,7 @@ export async function executeMutableUpdate(
       mode,
       root: params.root,
       originalRecovery,
+      run: params.opts.run,
     }));
   }
 
