@@ -2026,12 +2026,15 @@ describe("release validation no-push transport", () => {
         "Validate OpenClaw npm preflight manifest",
       ).run,
     ).toContain("Preflight manifest SHA mismatch");
-    expect(
-      step(
-        job(releasePublish, "resolve_release_target"),
-        "Validate full release validation manifest",
-      ).run,
-    ).toContain("Full release validation target SHA mismatch");
+    const fullValidation = step(
+      job(releasePublish, "resolve_release_target"),
+      "Validate full release validation manifest",
+    );
+    expect(fullValidation.env?.EXPECTED_SHA).toBe("${{ steps.ref.outputs.sha }}");
+    expect(fullValidation.run).toContain(
+      'node "${GITHUB_WORKSPACE}/.release-validation-tooling/scripts/lib/release-publish-gates.mts"',
+    );
+    expect(fullValidation.run).toContain('--consumer publisher --manifest "$manifest"');
     expect(job(releasePublish, "finalize_github_release").needs).toEqual([
       "publish",
       "publish_docker",

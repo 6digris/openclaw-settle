@@ -131,7 +131,7 @@ function recordedCloseout(fixture: ReturnType<typeof closeoutFixture>, mode: str
     fullReleaseValidationRunId: "123",
     fullReleaseValidationRunAttempt: "1",
     releasePublishRunId: "456",
-    rollbackDrillId: "recorded-drill",
+    rollbackDrillId: mode === "opaque drill identifier" ? " recorded-drill " : "recorded-drill",
     rollbackDrillDate: "2025-01-01",
     nowMs: Date.parse("2025-01-02"),
   });
@@ -171,6 +171,19 @@ function recordedCloseout(fixture: ReturnType<typeof closeoutFixture>, mode: str
 }
 
 describe("publication preflight closeout phase", () => {
+  it("rejects an unnormalized rollback drill date exactly as the closeout owner does", () => {
+    const fixture = closeoutFixture();
+    const date = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    const result = fixture.inspect({
+      "git/ref/heads/main": { object: { sha: fixture.sha } },
+      "actions/variables/RELEASE_ROLLBACK_DRILL_ID": { value: "verified-fixture-drill" },
+      "actions/variables/RELEASE_ROLLBACK_DRILL_DATE": { value: ` ${date} ` },
+    });
+    expect(result.rows).toContainEqual(
+      expect.objectContaining({ id: "stable-closeout.rollback-drill-date", status: "FAIL" }),
+    );
+  });
+
   it("reports pending main reconciliation without making it a publication prerequisite", () => {
     const dir = mkdtempSync(join(tmpdir(), "release-closeout-readiness-"));
     try {
@@ -233,6 +246,7 @@ describe("publication preflight closeout phase", () => {
 
   it.each([
     ["valid", "PASS"],
+    ["opaque drill identifier", "PASS"],
     ["missing checksum", "WARN"],
     ["bad checksum", "FAIL"],
     ["checksum without receipt", "FAIL"],

@@ -5,7 +5,7 @@ import {
   renderGithubReleaseNotes,
   verifyGithubReleaseNotes,
 } from "../render-github-release-notes.mts";
-import { isRecord, trimString } from "./record-shared.mjs";
+import { isRecord } from "./record-shared.mjs";
 import { loadReleaseChangelog } from "./release-changelog.mjs";
 import {
   evaluateReleasePublishGates,
@@ -240,6 +240,11 @@ function readExistingCloseoutReceipt(input: CloseoutPreflightInput) {
     );
   }
   const drill = requirePreflightRecord(manifest.rollbackDrill, "recorded rollback drill");
+  if (typeof drill.id !== "string" || typeof drill.date !== "string") {
+    throw new Error("Recorded rollback drill must contain string id and date fields.");
+  }
+  // The closeout owner preserves these bytes in its immutable receipt.
+  // Normalizing them here can reject a valid receipt or hide an invalid date.
   return {
     manifest,
     fullManifest,
@@ -247,8 +252,8 @@ function readExistingCloseoutReceipt(input: CloseoutPreflightInput) {
     release,
     mainSha: manifest.mainSha,
     publisherRunId: evidence.releasePublishRunId,
-    drillId: trimString(drill.id),
-    drillDate: trimString(drill.date),
+    drillId: drill.id,
+    drillDate: drill.date,
     checksummed: Boolean(checksum),
   };
 }
@@ -258,6 +263,13 @@ export async function inspectStableCloseoutPreflight(
 ): Promise<ReleasePublishGate[]> {
   const rows: ReleasePublishGate[] = [];
   const api = (endpoint: string) => preflightApi(input.runGh, input.repo, endpoint);
+  const variable = (name: string) => {
+    const value = requirePreflightRecord(api(`actions/variables/${name}`), name).value;
+    if (typeof value !== "string") {
+      throw new Error(`${name} must have a string value.`);
+    }
+    return value;
+  };
   const add = (
     id: string,
     status: ReleasePublishGate["status"],
@@ -278,22 +290,8 @@ export async function inspectStableCloseoutPreflight(
     );
   }
   try {
-    drillId =
-      existing?.drillId ??
-      trimString(
-        requirePreflightRecord(
-          api("actions/variables/RELEASE_ROLLBACK_DRILL_ID"),
-          "rollback drill id",
-        ).value ?? "",
-      );
-    drillDate =
-      existing?.drillDate ??
-      trimString(
-        requirePreflightRecord(
-          api("actions/variables/RELEASE_ROLLBACK_DRILL_DATE"),
-          "rollback drill date",
-        ).value ?? "",
-      );
+    drillId = existing?.drillId ?? variable("RELEASE_ROLLBACK_DRILL_ID");
+    drillDate = existing?.drillDate ?? variable("RELEASE_ROLLBACK_DRILL_DATE");
     rows.push(
       ...evaluateStableRollbackDrill({
         rollbackDrillId: drillId,
