@@ -46,9 +46,14 @@ describe("service definition backup receipts", () => {
     "rejects an operator replacement with %s bytes before acknowledgement",
     async (bytes) => {
       const f = await fixture("win32");
+      const replacement = `${f.sourcePath}.operator`;
+      // Allocate while the original exists so publication cannot recycle its inode.
+      await fs.copyFile(f.sourcePath, replacement);
+      const originalIdentity = await fs.stat(f.sourcePath);
+      const replacementIdentity = await fs.stat(replacement);
+      expect(replacementIdentity.ino).not.toBe(originalIdentity.ino);
       const acknowledge = f.capture.hooks.fileWritten;
       vi.spyOn(f.capture.hooks, "fileWritten").mockImplementationOnce(async (source, contents) => {
-        const replacement = `${source}.operator`;
         await fs.copyFile(source, replacement);
         if (bytes === "original") {
           await fs.writeFile(replacement, f.original);
