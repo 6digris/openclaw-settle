@@ -27,6 +27,10 @@ import {
   pathInfo,
   stableChromeExtensionDir,
 } from "./extension-install-layout.js";
+import {
+  expectedOriginsForExtensionIds,
+  isSafeOriginMigration,
+} from "./extension-install-origins.js";
 import { BROWSER_NATIVE_HOST_DESCRIPTION as NATIVE_HOST_DESCRIPTION } from "./extension-native-host.constants.js";
 import { BROWSER_NATIVE_HOST_NAME } from "./extension-native-host.js";
 import { isValidProfileName } from "./profiles.js";
@@ -111,41 +115,6 @@ export async function resolveNativeHostPath(
 function launcherPathForManifest(manifestPath: string, deps: ExtensionInstallDeps): string {
   const suffix = crypto.createHash("sha256").update(manifestPath).digest("hex").slice(0, 16);
   return path.join(nativeMessagingRoot(deps), `${BROWSER_NATIVE_HOST_NAME}.${suffix}.sh`);
-}
-
-function expectedExtensionIds(extensionIds: string[]): string[] {
-  // The Store ID also authorizes trusted unpacked builds that preserve it;
-  // it never proves that an arbitrary extension path is OpenClaw-owned.
-  return [...new Set([...extensionIds, FOUNDATION_CHROME_WEB_STORE_EXTENSION_ID])].toSorted();
-}
-
-function expectedOriginsForExtensionIds(extensionIds: string[]): string[] {
-  return expectedExtensionIds(extensionIds).map(
-    (extensionId) => `chrome-extension://${extensionId}/`,
-  );
-}
-
-function pathDerivedExtensionIds(extensionIds: string[]): string[] {
-  return extensionIds.filter(
-    (extensionId) => extensionId !== FOUNDATION_CHROME_WEB_STORE_EXTENSION_ID,
-  );
-}
-
-function isSafeOriginMigration(existingIds: string[], desiredPathIds: string[]): boolean {
-  const existingPathIds = pathDerivedExtensionIds(existingIds).toSorted();
-  const desiredIds = [...new Set(desiredPathIds)].toSorted();
-  if (JSON.stringify(existingPathIds) === JSON.stringify(desiredIds)) {
-    return true;
-  }
-  const removed = existingPathIds.filter((id) => !desiredIds.includes(id));
-  const added = desiredIds.filter((id) => !existingPathIds.includes(id));
-  const overlap = existingPathIds.some((id) => desiredIds.includes(id));
-  return (
-    existingPathIds.length === desiredIds.length &&
-    removed.length === 1 &&
-    added.length === 1 &&
-    overlap
-  );
 }
 
 function escapeRegExp(value: string): string {
@@ -287,8 +256,7 @@ async function inspectRegistration(
       (manifest as { description?: unknown }).description !== NATIVE_HOST_DESCRIPTION ||
       (manifest as { type?: unknown }).type !== "stdio" ||
       !validOrigins ||
-      JSON.stringify(origins) !== JSON.stringify(canonicalOrigins) ||
-      (expectedOrigins !== null && JSON.stringify(origins) !== JSON.stringify(expectedOrigins))
+      JSON.stringify(origins) !== JSON.stringify(canonicalOrigins)
     ) {
       throw new Error("native host manifest does not contain exact allowed origins");
     }
@@ -302,14 +270,26 @@ async function inspectRegistration(
     if (!launcherTargets) {
       throw new Error("native host launcher and manifest origins do not match");
     }
-    // Removed package versions break readiness, not ownership or managed repair/removal.
+    // Recover selection only after validating the private manifest and its exact
+    // launcher. A supported bundle-path migration changes readiness, not ownership.
     let issue: string | undefined;
+    if (
+      expectedPathExtensionIds !== undefined &&
+      JSON.stringify(origins) !== JSON.stringify(expectedOrigins)
+    ) {
+      if (!isSafeOriginMigration(ids, expectedPathExtensionIds)) {
+        throw new Error("native host manifest does not contain exact allowed origins");
+      }
+      issue =
+        "registered native host origins require a supported path migration; run openclaw browser extension install";
+    }
+    // Removed package versions also remain repairable without losing saved selection.
     try {
       for (const [index, target] of launcherTargets.targets.entries()) {
         await assertNativeHostTarget(target, index === 0 ? fs.constants.X_OK : fs.constants.R_OK);
       }
     } catch {
-      issue =
+      issue ??=
         "registered native host runtime or entry is unavailable or unsafe; run openclaw browser extension install";
     }
     return {

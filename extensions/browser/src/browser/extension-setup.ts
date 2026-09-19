@@ -233,6 +233,13 @@ export async function runBrowserExtensionSetup(
     observed = selection.observed;
     windowsProfile = selection.profile;
   }
+  if (
+    observed &&
+    observed.platform !== "win32" &&
+    observed.registrations.some((entry) => entry.state !== "owned" && entry.state !== "missing")
+  ) {
+    throw new Error("Chrome setup cannot recover the saved profile from an unverified native host");
+  }
   const savedProfiles = new Set(
     observed?.registrations
       .filter((entry) => entry.state === "owned")

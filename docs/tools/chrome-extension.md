@@ -175,6 +175,14 @@ bootstrap. Existing pairings and an explicit automatic-setup opt-out remain inta
 `verify` authenticates the exact local profile relay with the existing per-host
 key. It does not create a key, start another relay, or fetch a remote Gateway key.
 
+On macOS and Linux, a supported bundle-path migration retains the saved profile
+from the validated private manifest and launcher. The existing one-slot origin
+migration rule is unchanged: until repair, the registration is owned but not
+ready for the new bundle. Selector-free setup refuses an unverified or foreign
+registration rather than guessing `chrome`; an explicit profile remains a
+deliberate choice and cannot bypass ownership or origin checks. Setup does not
+rotate the existing relay key or rewrite Chrome pairing preferences.
+
 On Windows, omitted profile selection uses bounded, serial read-only inspection of
 already-configured extension profiles. Only a current matching C# registration
 descriptor, independently validated against its binding and requested context,
