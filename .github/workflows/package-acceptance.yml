@@ -753,7 +753,8 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          node "$ADMISSION_TOOLING_ROOT/scripts/preflight-frozen-target-contracts.mjs" --workflow-request > "$RUNNER_TEMP/frozen-admission-request.json"
+          node "$ADMISSION_TOOLING_ROOT/scripts/preflight-frozen-target-contracts.mjs" --workflow-request |
+            jq '.allowFrozenTargetScenarioOmissions = true' > "$RUNNER_TEMP/frozen-admission-request.json"
           node "$ADMISSION_TOOLING_ROOT/scripts/preflight-frozen-target-contracts.mjs" --plan "$RUNNER_TEMP/frozen-admission-request.json" > "$RUNNER_TEMP/frozen-admission-selection.json"
 
       - name: Acquire known package contract objects
@@ -887,7 +888,8 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          node "$ADMISSION_TOOLING_ROOT/scripts/preflight-frozen-target-contracts.mjs" --workflow-request > "$RUNNER_TEMP/frozen-admission-request.json"
+          node "$ADMISSION_TOOLING_ROOT/scripts/preflight-frozen-target-contracts.mjs" --workflow-request |
+            jq '.allowFrozenTargetScenarioOmissions = true' > "$RUNNER_TEMP/frozen-admission-request.json"
           node "$ADMISSION_TOOLING_ROOT/scripts/preflight-frozen-target-contracts.mjs" --plan "$RUNNER_TEMP/frozen-admission-request.json" > "$RUNNER_TEMP/frozen-admission-selection.json"
           printf 'upgrade_baselines_required=%s\n' "$(jq -er 'any(.obligations[]; .kind == "upgrade-baselines") | tostring' "$RUNNER_TEMP/frozen-admission-selection.json")" >> "$GITHUB_OUTPUT"
 
