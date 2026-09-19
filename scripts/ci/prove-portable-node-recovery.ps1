@@ -51,7 +51,8 @@ function Write-PortableProofCheckpoint {
         $proof | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $pendingPath -Encoding UTF8
         # Same-directory publication preserves the last complete JSON on cancellation.
         if ([IO.File]::Exists($EvidencePath)) {
-            [IO.File]::Replace($pendingPath, $EvidencePath, $null)
+            # Windows PowerShell 5.1 coerces $null to an empty string for this .NET parameter.
+            [IO.File]::Replace($pendingPath, $EvidencePath, [System.Management.Automation.Language.NullString]::Value)
         } else {
             [IO.File]::Move($pendingPath, $EvidencePath)
         }
@@ -128,7 +129,8 @@ try {
     $result = @(Install-Node)
     Write-PortableProofCheckpoint 'package-manager-recovery-returned'
     if (-not (Test-BooleanSuccessResult -Results $result)) { throw 'Package-manager failure did not recover through portable Node.' }
-    $calls = @(Get-Content -LiteralPath $script:ManagerCalls)
+    # Read plain CLR strings: 5.1 JSON traverses Get-Content's provider metadata.
+    $calls = @([IO.File]::ReadAllLines($script:ManagerCalls))
     if (($calls -join ',') -cne 'winget,choco,scoop') { throw 'Did not exercise all three failing package managers in order.' }
     if ($script:ArchiveProof.Count -ne 1) { throw 'Recovery did not download exactly one official ZIP.' }
     $nodeExe = Get-PortableNodeCommandPath
