@@ -8349,7 +8349,7 @@ test "$package_manager" = "pnpm@12.1.0"
     expect(manifestStep.run).toBe("node scripts/full-release-validation-state.mjs write-manifest");
   });
 
-  it("keeps beta performance advisory at the publish gate", () => {
+  it("routes publication controls through the trusted shared owner for each consumer", () => {
     const validationStep = workflowStep(
       workflowJob(RELEASE_PUBLISH_WORKFLOW, "resolve_release_target"),
       "Validate full release validation manifest",
@@ -8359,13 +8359,21 @@ test "$package_manager" = "pnpm@12.1.0"
       "Verify full release validation target",
     );
 
+    for (const step of [validationStep, npmValidationStep]) {
+      expect(step.env).toMatchObject({
+        RELEASE_TAG: "${{ inputs.tag }}",
+        RELEASE_NPM_DIST_TAG: "${{ inputs.npm_dist_tag }}",
+        STABLE_SOAK_WAIVER: "${{ inputs.stable_soak_waiver }}",
+      });
+    }
+    expect(validationStep.env?.EXPECTED_RELEASE_PROFILE).toBe("${{ inputs.release_profile }}");
     expectTextToIncludeAll(validationStep.run, [
-      'if [[ "$release_profile" != "beta" && "$performance_blocking" != "true" ]]',
-      "Full release validation manifest does not record blocking product performance evidence.",
+      'node "${GITHUB_WORKSPACE}/.release-validation-tooling/scripts/lib/release-publish-gates.mts"',
+      '--consumer publisher --manifest "$manifest"',
     ]);
     expectTextToIncludeAll(npmValidationStep.run, [
-      'if [[ "$RELEASE_NPM_DIST_TAG" != "beta" && "$PERFORMANCE_BLOCKING" != "true" ]]',
-      "Full release validation manifest does not record blocking product performance evidence.",
+      "node trusted-workflow/scripts/lib/release-publish-gates.mts",
+      '--consumer core-npm --manifest "$MANIFEST_FILE"',
     ]);
   });
 
