@@ -1,0 +1,142 @@
+"""Portable negative controls; not native Windows acceptance."""
+import io
+import json
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+import identity
+import prove
+import prepare
+
+
+class ProofControls(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        self.root = self.base / 'owned'; self.root.mkdir()
+        self.driver = self.base / 'driver'; self.driver.mkdir()
+        self.package = self.root / 'runtime/node_modules/openclaw'
+        (self.package / 'dist').mkdir(parents=True)
+        self.build = {'commit': 'a' * 40, 'version': 'fixture'}
+        files = {'openclaw.mjs': b'// fixture, never executed',
+                 'dist/build-info.json': json.dumps(self.build).encode()}
+        self.archive = self.root / 'candidate.tgz'
+        with tarfile.open(self.archive, 'w:gz') as tar:
+            for name, data in files.items():
+                info = tarfile.TarInfo('package/' + name); info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+                (self.package / name).write_bytes(data)
+        self.spec = {'packageSha256': identity.digest(self.archive), 'candidateHead': 'b' * 40,
+                     'buildInfo': self.build, 'scope': 'synthetic negative control'}
+        identity.save(self.driver / 'spec.json', self.spec)
+        self.seal = {'root': str(self.root), 'runtime': identity.snapshot(self.root / 'runtime'),
+                     'driver': identity.snapshot(self.driver), 'node': sys.executable,
+                     'nodeSha256': identity.digest(sys.executable), 'python': sys.executable,
+                     'pythonSha256': identity.digest(sys.executable),
+                     'packageSha256': identity.digest(self.archive)}
+        identity.save(self.root / 'execution-seal.json', self.seal)
+        self.sha = identity.digest(self.root / 'execution-seal.json')
+        identity.save(self.root / 'OWNER.json', {'pr': 147054, 'root': str(self.root),
+                      'sealSha256': self.sha, 'tasks': [], 'ports': []})
+
+    def test_rejects_wrong_archive(self):
+        with self.archive.open('ab') as f:
+            f.write(b'changed')
+        with self.assertRaisesRegex(RuntimeError, 'Wrong package archive'):
+            identity.verify_archive(self.archive, self.package, self.spec)
+
+    def test_rejects_wrong_build_even_with_valid_archive(self):
+        identity.save(self.package / 'dist/build-info.json', {'commit': 'c' * 40})
+        with self.assertRaisesRegex(RuntimeError, 'build identity'):
+            identity.verify_archive(self.archive, self.package, self.spec)
+
+    def test_rejects_dependency_closure_change(self):
+        identity.verify_seal(self.root, self.driver, self.sha)
+        (self.root / 'runtime/injected.js').write_text('changed')
+        with self.assertRaisesRegex(RuntimeError, 'dependency closure'):
+            identity.verify_seal(self.root, self.driver, self.sha)
+
+    def test_rejects_alternate_root_with_same_package(self):
+        alternate = self.base / 'alternate'
+        shutil.copytree(self.root, alternate)
+        with self.assertRaisesRegex(RuntimeError, 'Alternate installation'):
+            identity.verify_seal(alternate, self.driver, self.sha)
+
+    def test_correlates_provider_admission(self):
+        log = self.base / 'requests.jsonl'
+        row = {'seq': 3, 'method': 'POST', 'path': '/v1/responses',
+               'body': {'model': prove.MODEL, 'input': 'unique-proof-request'}}
+        for field, value in [('path', '/other'), ('method', 'GET')]:
+            wrong = dict(row); wrong[field] = value
+            log.write_text(json.dumps(wrong) + '\n')
+            self.assertIsNone(prove.admission(log, 'unique-proof-request'))
+        log.write_text(json.dumps(row) + '\n')
+        self.assertIsNone(prove.admission(log, 'other-proof-request'))
+        self.assertEqual(prove.admission(log, 'unique-proof-request')['seq'], 3)
+
+    def test_wrong_package_finalizes_receipt_without_native_allocation(self):
+        self.spec['packageSha256'] = '0' * 64
+        identity.save(self.driver / 'spec.json', self.spec)
+        self.seal['driver'] = identity.snapshot(self.driver)
+        identity.save(self.root / 'execution-seal.json', self.seal)
+        self.sha = identity.digest(self.root / 'execution-seal.json')
+        owner = json.loads((self.root / 'OWNER.json').read_text()); owner['sealSha256'] = self.sha
+        identity.save(self.root / 'OWNER.json', owner)
+        argv = ['prove.py', '--root', str(self.root), '--seal', self.sha]
+        with patch.object(prove, 'DRIVER', self.driver), patch.object(sys, 'platform', 'win32'), \
+             patch.object(sys, 'argv', argv), patch.object(prove, 'run_cell') as native:
+            self.assertEqual(prove.main(), 1)
+            native.assert_not_called()
+        receipt = json.loads((self.root / 'RESULT.json').read_text())
+        self.assertEqual(receipt['state'], 'FAIL')
+        self.assertIn('Wrong package archive', receipt['error'])
+        self.assertTrue(receipt['completedAt'])
+
+    def test_prepare_wrong_tarball_records_rejection_before_npm(self):
+        target = self.base / 'prepare-owned'
+        self.spec['packageSha256'] = '0' * 64
+        identity.save(self.driver / 'spec.json', self.spec)
+        argv = ['prepare.py', '--root', str(target), '--archive', str(self.archive),
+                '--candidate', str(self.base / 'unused-candidate')]
+        with patch.object(prepare, 'DRIVER', self.driver), patch.object(sys, 'platform', 'win32'), \
+             patch.object(sys, 'argv', argv), patch.dict(prepare.os.environ, {'RUNNER_ENVIRONMENT': 'github-hosted'}), \
+             patch.object(prepare.subprocess, 'run') as npm:
+            with self.assertRaisesRegex(RuntimeError, 'Wrong transported package'):
+                prepare.main()
+            npm.assert_not_called()
+        receipt = json.loads((target / 'INSTALL.json').read_text())
+        self.assertEqual(receipt['state'], 'FAIL')
+        self.assertEqual(receipt['expectedPackageSha256'], '0' * 64)
+        self.assertEqual(receipt['actualPackageSha256'], identity.digest(self.archive))
+        owner = json.loads((target / 'OWNER.json').read_text())
+        self.assertEqual(owner['tasks'], [])
+        self.assertFalse((target / 'runtime').exists())
+
+    def test_cleanup_attempts_later_phases_after_task_error(self):
+        row = {}
+        owner = {'tasks': ['fixture'], 'ports': []}
+        with patch.object(prove.native, 'remove_task', side_effect=RuntimeError('fixture refusal')), \
+             patch.object(prove.native, 'owned', return_value={}) as processes, \
+             patch.object(prove.native, 'task_xml', return_value='still registered'):
+            self.assertFalse(prove.cleanup(self.root, owner, row))
+            self.assertEqual(processes.call_count, 2)
+        self.assertTrue(row['cleanup']['errors'])
+
+    def test_child_timeout_is_joined(self):
+        child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+        try:
+            prove.join_child(child, .05)
+            self.assertIsNotNone(child.poll())
+        finally:
+            if child.poll() is None:
+                child.kill(); child.wait()
+
+
+if __name__ == '__main__':
+    unittest.main()

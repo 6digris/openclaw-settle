@@ -57,6 +57,16 @@ on:
         required: false
         default: false
         type: boolean
+      run_packaged_gateway_147054:
+        description: "Full installed PR147054 native console and Scheduled Task Gateway lifecycle"
+        required: false
+        default: false
+        type: boolean
+      packaged_gateway_artifact_id:
+        description: "Artifact containing only retained openclaw-pr147054-0aba608f.tgz (fixed SHA256)"
+        required: false
+        default: ""
+        type: string
       installed_startup_package:
         description: "Optional Package Acceptance binding, or {baseline, candidate} bindings for a matched comparison"
         required: false
@@ -81,7 +91,7 @@ env:
 
 jobs:
   probe:
-    if: ${{ !inputs.run_winget_acceptance && !inputs.run_portable_node_recovery }}
+    if: ${{ !inputs.run_winget_acceptance && !inputs.run_portable_node_recovery && !inputs.run_packaged_gateway_147054 }}
     name: Windows probe
     runs-on: ${{ inputs.runner_label }}
     timeout-minutes: 75
@@ -682,7 +692,7 @@ jobs:
   # Native session qualification must not depend on headless CI or WSL results.
   native-schtasks:
     name: Native Scheduled Task proof
-    if: ${{ inputs.run_windows_ci }}
+    if: ${{ inputs.run_windows_ci && !inputs.run_packaged_gateway_147054 }}
     runs-on: windows-2025
     timeout-minutes: 75
     steps:
@@ -941,7 +951,7 @@ jobs:
 
   winget-acceptance:
     name: Native Winget acceptance (${{ matrix.scenario }})
-    if: ${{ inputs.run_winget_acceptance }}
+    if: ${{ inputs.run_winget_acceptance && !inputs.run_packaged_gateway_147054 }}
     runs-on: windows-2025
     timeout-minutes: 35
     strategy:
@@ -1027,7 +1037,7 @@ jobs:
 
   portable-node-recovery:
     name: Portable Node recovery (${{ matrix.engine }})
-    if: ${{ inputs.run_portable_node_recovery }}
+    if: ${{ inputs.run_portable_node_recovery && !inputs.run_packaged_gateway_147054 }}
     runs-on: windows-2025
     timeout-minutes: 20
     strategy:
@@ -1112,7 +1122,7 @@ jobs:
 
   native-git-installer:
     name: Full Windows Git installer and published-driver proof
-    if: ${{ inputs.run_windows_launcher_integration }}
+    if: ${{ inputs.run_windows_launcher_integration && !inputs.run_packaged_gateway_147054 }}
     runs-on: windows-2025
     timeout-minutes: 90
     steps:
@@ -1140,3 +1150,146 @@ jobs:
           path: ${{ runner.temp }}/full-git-install-evidence
           if-no-files-found: error
           retention-days: 7
+
+  packaged-gateway-147054:
+    name: Packaged Windows Gateway lifecycle PR147054
+    if: ${{ inputs.run_packaged_gateway_147054 }}
+    runs-on: windows-2025
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Validate exclusive native request and whole-operation destination capacity
+        env:
+          TARGET: ${{ inputs.target_ref }}
+          RUN_WINDOWS_CI: ${{ inputs.run_windows_ci }}
+          RUN_LAUNCHER: ${{ inputs.run_windows_launcher_integration }}
+          RUN_WINGET: ${{ inputs.run_winget_acceptance }}
+          RUN_PORTABLE: ${{ inputs.run_portable_node_recovery }}
+          STARTUP_PACKAGE: ${{ inputs.installed_startup_package }}
+          CPU: ${{ inputs.installed_startup_cpu_diagnostic }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:TARGET -cne '0aba608fe540de6650f070d4a46aef17cbef61fd') { throw 'Requires a fresh hosted VM and exact candidate.' }
+          if ($env:RUN_WINDOWS_CI -eq 'true' -or $env:RUN_LAUNCHER -eq 'true' -or $env:RUN_WINGET -eq 'true' -or $env:RUN_PORTABLE -eq 'true' -or $env:STARTUP_PACKAGE -ne '' -or $env:CPU -eq 'true') { throw 'Packaged lifecycle must be dispatched alone.' }
+          if (-not [Environment]::UserInteractive) { throw 'Native Scheduled Task needs an interactive runner session.' }
+          $rows = @()
+          foreach ($path in @($env:GITHUB_WORKSPACE, $env:RUNNER_TEMP)) {
+            $drive = Get-PSDrive -Name ([IO.Path]::GetPathRoot($path).Substring(0,1))
+            # Two source checkouts/toolchain plus 6 GiB install/runtime/proof peak; dedicated job.
+            if ($drive.Free -lt 8GB) { throw "Whole operation does not fit destination $path." }
+            $rows += @{ path = $path; freeBytes = $drive.Free; wholeOperationAdditionalBytes = 8GB; concurrentJobsOnVM = 0 }
+          }
+          $rows | ConvertTo-Json | Set-Content "$env:RUNNER_TEMP/pr147054-capacity.json"
+          git config --global core.autocrlf false
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot preserve source LF bytes.' }
+      - name: Checkout immutable proof tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: tooling
+          persist-credentials: false
+      - name: Checkout exact reviewed candidate without build or install
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 0aba608fe540de6650f070d4a46aef17cbef61fd
+          path: candidate
+          persist-credentials: false
+      - name: Resolve retained package transport
+        id: package
+        env:
+          ARTIFACT_ID: ${{ inputs.packaged_gateway_artifact_id }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:ARTIFACT_ID -notmatch '^[1-9][0-9]*$') { throw 'A published retained-package artifact ID is required.' }
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' }
+          $artifact = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$env:REPOSITORY/actions/artifacts/$env:ARTIFACT_ID"
+          if ($artifact.expired -or $artifact.digest -notmatch '^sha256:[0-9a-f]{64}$' -or $artifact.workflow_run.id -le 0) { throw 'Artifact is expired or lacks producer/digest binding.' }
+          $head = (git -C tooling rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -cne $env:WORKFLOW_SHA) { throw 'Tooling differs from workflow.' }
+          $dirty = @(git -C tooling status --porcelain=v1 --untracked-files=all)
+          if ($LASTEXITCODE -ne 0 -or $dirty.Count -ne 0) { throw 'Tooling checkout is not clean.' }
+          $artifact | ConvertTo-Json -Depth 8 | Set-Content "$env:RUNNER_TEMP/pr147054-transport.json"
+          "run_id=$($artifact.workflow_run.id)" >> $env:GITHUB_OUTPUT
+      - name: Download retained tarball (no rebuild)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ inputs.packaged_gateway_artifact_id }}
+          run-id: ${{ steps.package.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/pr147054-package
+      - name: Setup exact native Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.20.0
+          package-manager-cache: false
+      - name: Setup Python for proof only
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Run focused driver controls
+        run: |
+          python -B -m unittest discover -s tooling/scripts/proof/pr147054 -p test_controls.py -v
+          if ($LASTEXITCODE -ne 0) { throw 'Driver controls failed.' }
+      - name: Install once and seal actual Windows dependencies and driver
+        id: install
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @(Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/pr147054-package" -Recurse -File)
+          if ($files.Count -ne 1 -or $files[0].Name -cne 'openclaw-pr147054-0aba608f.tgz') { throw 'Artifact must contain exactly the retained package.' }
+          python -B tooling/scripts/proof/pr147054/prepare.py --root "$env:RUNNER_TEMP/pr147054-owned" --archive $files[0].FullName --candidate "$env:GITHUB_WORKSPACE/candidate"
+          if ($LASTEXITCODE -ne 0) { throw 'Package preparation failed; no proof accepted.' }
+      - name: Exercise full installed Gateway through native consoles and Scheduler
+        env:
+          EXECUTION_SEAL: ${{ steps.install.outputs.seal }}
+        run: |
+          python -B tooling/scripts/proof/pr147054/prove.py --root "$env:RUNNER_TEMP/pr147054-owned" --seal $env:EXECUTION_SEAL
+          if ($LASTEXITCODE -ne 0) { throw 'Full packaged lifecycle failed.' }
+      - name: Join owned native state even after interruption
+        id: cleanup
+        if: ${{ always() && steps.install.outcome != 'skipped' && steps.install.outcome != '' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $owner = "$env:RUNNER_TEMP/pr147054-owned/OWNER.json"
+          if (Test-Path -LiteralPath $owner) {
+            $seal = (Get-Content -LiteralPath $owner -Raw | ConvertFrom-Json).sealSha256
+            python -B tooling/scripts/proof/pr147054/prove.py --root "$env:RUNNER_TEMP/pr147054-owned" --seal "$seal" --cleanup-only
+            if ($LASTEXITCODE -ne 0) { throw 'Owned native cleanup incomplete.' }
+          }
+      - name: Upload compact native proof including failures
+        id: upload
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: packaged-gateway-147054-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/pr147054-capacity.json
+            ${{ runner.temp }}/pr147054-transport.json
+            ${{ runner.temp }}/pr147054-owned/*.json
+            ${{ runner.temp }}/pr147054-owned/*.log
+            ${{ runner.temp }}/pr147054-owned/ctrl-c/*.json
+            ${{ runner.temp }}/pr147054-owned/ctrl-c/*.log
+            ${{ runner.temp }}/pr147054-owned/ctrl-break/*.json
+            ${{ runner.temp }}/pr147054-owned/ctrl-break/*.log
+            ${{ runner.temp }}/pr147054-owned/scheduled-task/*.json
+            ${{ runner.temp }}/pr147054-owned/scheduled-task/*.log
+            ${{ runner.temp }}/pr147054-owned/scheduled-task/task.xml
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove completed proof installation and caches after upload
+        if: ${{ always() && steps.cleanup.outcome == 'success' && steps.upload.outcome == 'success' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Remove-Item -LiteralPath "$env:RUNNER_TEMP/pr147054-owned" -Recurse -Force -ErrorAction Stop
+          Remove-Item -LiteralPath "$env:RUNNER_TEMP/pr147054-package" -Recurse -Force -ErrorAction Stop
+          if ((Test-Path "$env:RUNNER_TEMP/pr147054-owned") -or (Test-Path "$env:RUNNER_TEMP/pr147054-package")) { throw 'Owned artifact removal incomplete.' }
