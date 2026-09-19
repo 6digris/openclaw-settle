@@ -19,6 +19,7 @@ import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 const sessionKey = "agent:main:dashboard:legacy-project-worktree";
+const otherSessionKey = "agent:main:dashboard:legacy-project-sentinel";
 const original = {
   shared: { project: [{ id: "project" }], worktrees: [{ id: "worktree" }] },
   agent: {
@@ -35,7 +36,12 @@ const original = {
           worktree: { id: "worktree", repoRoot: "/fixture/project" },
         }),
       },
-      { session_key: "other", current_session_id: "sentinel", updated_at: 20, entry_json: "{}" },
+      {
+        session_key: otherSessionKey,
+        current_session_id: "sentinel",
+        updated_at: 20,
+        entry_json: "{}",
+      },
     ],
     transcript: [{ session_id: "target", seq: 1, event_json: "original bytes", created_at: 10 }],
   },
@@ -46,6 +52,9 @@ function migrated() {
   const entry = JSON.parse(row.entry_json);
   entry.worktree.canonicalWorkspaceDir = "/fixture/project";
   row.entry_json = JSON.stringify(entry);
+  result.agent.sessions[1]!.entry_json = JSON.stringify({
+    displayName: "Preserve this imported history.",
+  });
   return result;
 }
 
@@ -173,7 +182,7 @@ describe("published project-worktree Doctor ownership evidence", () => {
     ).toThrow(/Package owner changed/);
   });
 
-  it("prepares the independent schema before startup and repairs workspace metadata between runs", () => {
+  it("runs plain Doctor before repairing workspace metadata between independent startups", () => {
     const root = tempDirs.make("openclaw-project-worktree-doctor-order-");
     const bin = path.join(root, "bin");
     const artifacts = path.join(root, "artifacts");
@@ -187,13 +196,18 @@ describe("published project-worktree Doctor ownership evidence", () => {
       path.join(bin, "openclaw"),
       `#!/bin/bash
 set -eu
-if [ "$*" = 'doctor --fix --non-interactive' ]; then
+if [ "$*" = 'doctor --non-interactive' ] || [ "$*" = 'doctor --fix --non-interactive' ]; then
   [ -z "\${OPENCLAW_UPDATE_IN_PROGRESS+x}" ]
   [ -z "\${OPENCLAW_UPDATE_POST_CORE_CONVERGENCE+x}" ]
   [ -z "\${OPENCLAW_UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE+x}" ]
   [ -z "\${OPENCLAW_UPDATE_DEFER_CONFIGURED_PLUGIN_INSTALL_REPAIR+x}" ]
-  printf repaired > "$OPENCLAW_STATE_DIR/workspace-state"
-  printf 'doctor %s\\n' "$OPENCLAW_STATE_DIR" >> "$UNIT_EVENTS"
+  if [ "$*" = 'doctor --fix --non-interactive' ]; then
+    printf repaired > "$OPENCLAW_STATE_DIR/workspace-state"
+    printf 'doctor %s\\n' "$OPENCLAW_STATE_DIR" >> "$UNIT_EVENTS"
+  else
+    [ "$(cat "$OPENCLAW_STATE_DIR/workspace-state")" = legacy ]
+    printf 'plain-doctor %s\\n' "$OPENCLAW_STATE_DIR" >> "$UNIT_EVENTS"
+  fi
 else
   printf '{}\\n'
 fi
@@ -312,6 +326,8 @@ ${scenario}
       `start ${second} legacy`,
       `stop ${second}`,
       `snapshot after-first-stop ${second} legacy`,
+      `plain-doctor ${second}`,
+      `snapshot after-plain-doctor ${second} legacy`,
       `doctor ${second}`,
       `snapshot after-doctor ${second} repaired`,
       `start ${second} repaired`,
@@ -320,7 +336,7 @@ ${scenario}
     ]);
   });
 
-  it("preserves the imported shape until Doctor adds only the canonical workspace", () => {
+  it("preserves the imported shape until the expected workspace and title repairs", () => {
     expect(() =>
       assertProjectWorktreeStartupPreservation(original, original, undefined),
     ).not.toThrow();
@@ -333,6 +349,14 @@ ${scenario}
     expect(() =>
       assertProjectWorktreeStartupPreservation(original, original, "/fixture/project"),
     ).toThrow();
+  });
+
+  it("rejects title repair before the expected repair stages", () => {
+    const result = structuredClone(original);
+    result.agent.sessions[1]!.entry_json = JSON.stringify({
+      displayName: "Preserve this imported history.",
+    });
+    expect(() => assertProjectWorktreeStartupPreservation(result, original, undefined)).toThrow();
   });
 
   it("rejects startup rewriting the imported session JSON without changing its fields", () => {
@@ -352,6 +376,11 @@ ${scenario}
     "unrelated",
     "missing",
     "wrong-workspace",
+    "wrong-title",
+    "missing-title",
+    "unrelated-entry-field",
+    "unexpected-row",
+    "assistant-title",
   ])("rejects a changed %s instead of accepting readiness as migration proof", (change) => {
     const result = migrated();
     if (change === "activity") {
@@ -371,6 +400,31 @@ ${scenario}
     }
     if (change === "missing") {
       result.agent.sessions.pop();
+    }
+    if (change === "wrong-title" || change === "missing-title") {
+      const row = result.agent.sessions[1]!;
+      const entry = JSON.parse(row.entry_json);
+      if (change === "wrong-title") {
+        entry.displayName = "A different title";
+      } else {
+        delete entry.displayName;
+      }
+      row.entry_json = JSON.stringify(entry);
+    }
+    if (change === "unrelated-entry-field") {
+      const row = result.agent.sessions[0]!;
+      const entry = JSON.parse(row.entry_json);
+      entry.label = "Unexpected label";
+      row.entry_json = JSON.stringify(entry);
+    }
+    if (change === "unexpected-row") {
+      result.agent.sessions[1]!.session_key = "agent:main:unexpected";
+    }
+    if (change === "assistant-title") {
+      const row = result.agent.sessions[0]!;
+      const entry = JSON.parse(row.entry_json);
+      entry.displayName = "Preserve this imported history.";
+      row.entry_json = JSON.stringify(entry);
     }
     if (change === "wrong-workspace") {
       const entry = JSON.parse(result.agent.sessions[0]!.entry_json);

@@ -84,6 +84,11 @@ on:
         required: false
         default: ""
         type: string
+      prepublish_plugin_registry_json:
+        description: Immutable prerelease plugin registry tuple from the package producer
+        required: false
+        default: ""
+        type: string
       shared_image_policy:
         description: Shared Docker image transport for package acceptance
         required: true
@@ -118,11 +123,6 @@ on:
         description: Published OpenClaw package baseline for the published-upgrade-survivor Docker lane
         required: false
         default: openclaw@latest
-        type: string
-      published_upgrade_survivor_baselines:
-        description: Optional baseline list; use supported-lines for latest/previous/extended/floor, last-stable-4, all-since-2026.4.23, release-history, or exact versions
-        required: false
-        default: ""
         type: string
       published_upgrade_survivor_scenarios:
         description: Optional scenario list for published-upgrade-survivor/update-migration; use reported-issues for known upgrade failure shapes

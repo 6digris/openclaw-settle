@@ -1990,6 +1990,21 @@ jobs:
         shell: bash
         run: *prerelease_registry_contents_run
 
+      - name: Materialize reviewed project startup bindings
+        if: env.OPENCLAW_UPGRADE_SURVIVOR_SCENARIOS == 'projects-startup-migration'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$OPENCLAW_DOCKER_E2E_SELECTED_SHA" = "b264d169826cd6a65cac5012ecf46ac7a2758a01"
+          test "$OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_CANDIDATE_VERSION" = "2026.9.5"
+          test "$OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_MANIFEST_SHA256" = "cfcf1b1abfcb50593249bef8b3d3f475379e4b88bd9351c00730bc6b39a06007"
+          printf '%s  %s\n' 'b601d6df60f4ab71f7c14a057bd43b302fa2c72720e2feb0728ab82e111fac8d' "$OPENCLAW_CURRENT_PACKAGE_TGZ" | sha256sum --check --strict -
+          bindings=".release-harness/scripts/e2e/lib/upgrade-survivor/fixtures/projects-startup-b264d169.json"
+          printf '%s  %s\n' 'ca5819f50e8dad8057b3b3d674cc66ae3cf516bf22f2762edc1174048192b119' "$bindings" | sha256sum --check --strict -
+          destination="$GITHUB_WORKSPACE/.artifacts/docker-tests/projects-startup-bindings.json"
+          cp "$bindings" "$destination"
+          printf 'OPENCLAW_UPGRADE_SURVIVOR_STARTUP_BINDINGS=%s\n' "$destination" >> "$GITHUB_ENV"
+
       - &docker_e2e_image_binding_step
         name: Validate Docker E2E image artifact binding
         if: inputs.shared_image_policy == 'no-push-artifact' && needs.prepare_docker_e2e_image.outputs.needs_e2e_image == '1'

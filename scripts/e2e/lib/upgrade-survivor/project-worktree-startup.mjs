@@ -17,12 +17,22 @@ const KEY = "agent:main:dashboard:legacy-project-worktree";
 const OTHER_KEY = "agent:main:dashboard:legacy-project-sentinel";
 const SESSION = "00000000-0000-4000-8000-000000000001";
 const OTHER_SESSION = "00000000-0000-4000-8000-000000000002";
+const LEGACY_ASSISTANT_EVENT = {
+  type: "message",
+  id: `message-${SESSION}`,
+  parentId: null,
+  message: {
+    role: "assistant",
+    content: [{ type: "text", text: "[[reply_to_current]] Preserve this imported history." }],
+  },
+};
 const STAGES = new Set([
   "published-import",
   "after-update",
   "before-schema",
   "before-startup",
   "after-first-stop",
+  "after-plain-doctor",
   "after-doctor",
   "after-second-stop",
 ]);
@@ -423,12 +433,14 @@ async function seed(ctx, packageRoot) {
   for (const id of [SESSION, OTHER_SESSION]) {
     const events = [
       { type: "session", id, version: 3 },
-      {
-        type: "message",
-        id: `message-${id}`,
-        parentId: null,
-        message: { role: "user", content: "Preserve this imported history." },
-      },
+      id === SESSION
+        ? LEGACY_ASSISTANT_EVENT
+        : {
+            type: "message",
+            id: `message-${id}`,
+            parentId: null,
+            message: { role: "user", content: "Preserve this imported history." },
+          },
     ];
     fs.writeFileSync(
       path.join(path.dirname(legacyStore), `${id}.jsonl`),
@@ -529,11 +541,13 @@ function assertImport(ctx, reportFile) {
   );
   assert(childOf(ctx.stateDir, target.sqlitePath));
   const moves = manifest.targets[0].completedMoves;
+  const archivedInputHashes = {};
   for (const [source, expected] of Object.entries(f.inputHashes)) {
     const matching = moves.filter((move) => move.sourcePath === source);
     assert.equal(matching.length, 1, `Missing unique archived original: ${source}`);
     assert(childOf(ctx.stateDir, matching[0].archivePath));
     assert.equal(digest(matching[0].archivePath), expected, "Archived legacy input bytes changed");
+    archivedInputHashes[matching[0].archivePath] = expected;
   }
   writeJson(ctx.importReceipt, {
     agentDb: target.sqlitePath,
@@ -542,6 +556,7 @@ function assertImport(ctx, reportFile) {
     manifestPath: report.migrationRun.manifestPath,
     manifestSha256: digest(report.migrationRun.manifestPath),
     archivedInputHashes: f.inputHashes,
+    archivedFiles: archivedInputHashes,
     backupReportSha256: digest(backupFile),
     backupArchivePath: backup.archivePath,
     backupArchiveSha256: digest(backup.archivePath),
@@ -570,15 +585,21 @@ export function assertProjectWorktreeStartupPreservation(actual, original, expec
   for (const row of actual.agent.sessions) {
     const before = original.agent.sessions.find((s) => s.session_key === row.session_key);
     assert(before, `Unexpected session row: ${row.session_key}`);
-    if (row.session_key !== KEY || expectedWorkspace === undefined) {
+    if (expectedWorkspace === undefined || ![KEY, OTHER_KEY].includes(row.session_key)) {
       assert.deepEqual(row, before);
       continue;
     }
     const expected = JSON.parse(before.entry_json);
-    expected.worktree.canonicalWorkspaceDir = expectedWorkspace;
-    assert.deepEqual(JSON.parse(row.entry_json), expected);
-    assert.equal(row.updated_at, before.updated_at);
-    assert.equal(row.current_session_id, before.current_session_id);
+    if (row.session_key === KEY) {
+      expected.worktree.canonicalWorkspaceDir = expectedWorkspace;
+    }
+    if (row.session_key === OTHER_KEY && expected.displayName === undefined) {
+      expected.displayName = "Preserve this imported history.";
+    }
+    assert.deepEqual(
+      { ...row, entry_json: JSON.parse(row.entry_json) },
+      { ...before, entry_json: expected },
+    );
   }
 }
 
@@ -611,6 +632,12 @@ async function snapshot(ctx, stage, packageRoot, bindings) {
         "SELECT session_id,seq,event_json,created_at FROM transcript_events WHERE session_id IN ('00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000002') ORDER BY session_id,seq",
       ),
     ),
+    transcriptMigrationCursor:
+      db
+        .prepare(
+          "SELECT app_version FROM schema_meta WHERE meta_key = 'historical-transcript-directives-v1'",
+        )
+        .get()?.app_version ?? null,
   }));
   const expectedSchema = ["published-import", "before-schema"].includes(stage)
     ? BASELINE_AGENT_SCHEMA
@@ -622,6 +649,38 @@ async function snapshot(ctx, stage, packageRoot, bindings) {
   });
   assert.equal(agent.sessions.length, 2);
   assert.equal(agent.transcript.length, 4);
+  const converted = [
+    "after-update",
+    "after-plain-doctor",
+    "after-doctor",
+    "after-second-stop",
+  ].includes(stage);
+  if (converted) {
+    assert.deepEqual(JSON.parse(agent.transcriptMigrationCursor), { phase: "complete" });
+  } else {
+    assert.equal(
+      agent.transcriptMigrationCursor,
+      null,
+      "Do not reset an existing migration cursor",
+    );
+  }
+  if (stage === "published-import") {
+    const targetEvents = agent.transcript.filter((event) => event.session_id === SESSION);
+    assert.deepEqual(
+      targetEvents.map((event) => event.event_json),
+      [
+        JSON.stringify({
+          type: "session",
+          id: SESSION,
+          version: 3,
+          timestamp: "",
+          cwd: "",
+        }),
+        JSON.stringify(LEGACY_ASSISTANT_EVENT),
+      ],
+      "Published import must preserve the authored legacy assistant bytes",
+    );
+  }
   const row = agent.sessions.find((s) => s.session_key === KEY);
   const entry = JSON.parse(row.entry_json);
   assert.equal(row.current_session_id, SESSION);
@@ -643,6 +702,9 @@ async function snapshot(ctx, stage, packageRoot, bindings) {
   for (const [file, expected] of Object.entries(f.sentinelHashes)) {
     assert.equal(digest(file), expected);
   }
+  for (const [file, expected] of Object.entries(imported.archivedFiles)) {
+    assert.equal(digest(file), expected, "Archived legacy input bytes changed");
+  }
   assert.deepEqual(retainedSnapshots(ctx.tempRoots), [], "Observer retained private snapshots");
   const result = {
     stage,
@@ -653,7 +715,28 @@ async function snapshot(ctx, stage, packageRoot, bindings) {
   };
   if (stage !== "published-import") {
     const original = readJson(path.join(ctx.artifacts, "worktree-published-import.json"));
-    assertProjectWorktreeStartupPreservation(result, original, expectedWorkspace);
+    const expected = structuredClone(original);
+    if (converted) {
+      const targets = expected.agent.transcript.filter(
+        (event) =>
+          event.session_id === SESSION &&
+          event.event_json === JSON.stringify(LEGACY_ASSISTANT_EVENT),
+      );
+      assert.equal(targets.length, 1);
+      targets[0].event_json = JSON.stringify({
+        ...LEGACY_ASSISTANT_EVENT,
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Preserve this imported history." }],
+          openclawDelivery: { replyToCurrent: true },
+        },
+      });
+    }
+    assertProjectWorktreeStartupPreservation(result, expected, expectedWorkspace);
+  }
+  if (stage === "after-doctor") {
+    const normalized = readJson(path.join(ctx.artifacts, "worktree-after-plain-doctor.json"));
+    assert.equal(agent.transcriptMigrationCursor, normalized.agent.transcriptMigrationCursor);
   }
   if (stage === "after-second-stop") {
     const repaired = readJson(path.join(ctx.artifacts, "worktree-after-doctor.json"));

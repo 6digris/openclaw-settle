@@ -2088,13 +2088,15 @@ run_project_worktree_startup_fixture() {
 }
 
 run_project_worktree_doctor() {
+  local log="$1"
+  shift
   openclaw_e2e_maybe_timeout "$COMMAND_TIMEOUT" env \
     -u OPENCLAW_UPDATE_IN_PROGRESS \
     -u OPENCLAW_UPDATE_POST_CORE_CONVERGENCE \
     -u OPENCLAW_UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE \
     -u OPENCLAW_UPDATE_DEFER_CONFIGURED_PLUGIN_INSTALL_REPAIR \
-    openclaw doctor --fix --non-interactive \
-    >"$ARTIFACT_ROOT/worktree-doctor.log" 2>&1
+    openclaw doctor "$@" --non-interactive \
+    >"$log" 2>&1
 }
 
 validate_worker_cell() {
@@ -2171,7 +2173,10 @@ if [ "$WORKER_CELL" = "1" ]; then
       phase "snapshot-$startup-worktree-stop" run_project_worktree_startup_fixture \
         snapshot "after-$startup-stop" "$(package_root)" "$OPENCLAW_UPGRADE_SURVIVOR_STARTUP_BINDINGS"
       if [ "$startup" = first ]; then
-        phase repair-project-worktree run_project_worktree_doctor
+        phase normalize-legacy-transcript run_project_worktree_doctor "$ARTIFACT_ROOT/worktree-plain-doctor.log"
+        phase snapshot-after-plain-doctor run_project_worktree_startup_fixture \
+          snapshot after-plain-doctor "$(package_root)" "$OPENCLAW_UPGRADE_SURVIVOR_STARTUP_BINDINGS"
+        phase repair-project-worktree run_project_worktree_doctor "$ARTIFACT_ROOT/worktree-doctor.log" --fix
         phase snapshot-after-worktree-doctor run_project_worktree_startup_fixture \
           snapshot after-doctor "$(package_root)" "$OPENCLAW_UPGRADE_SURVIVOR_STARTUP_BINDINGS"
       fi
