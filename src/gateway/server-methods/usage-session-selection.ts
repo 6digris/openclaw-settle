@@ -8,6 +8,7 @@ import {
   resolveSessionFilePathCore,
   resolveSessionFilePathOptions,
 } from "../../config/sessions/paths.js";
+import { loadExactSessionEntryCandidates } from "../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveExistingUsageSessionFile } from "../../infra/session-cost-usage.js";
@@ -37,10 +38,10 @@ export function resolveSessionUsageTarget(
   config: OpenClawConfig,
   agentIdHint?: string,
 ): ResolvedSessionUsageTarget | undefined {
-  const { canonicalKey, entry, storePath } = loadGatewaySessionEntryReadOnly(
-    key,
-    agentIdHint ? { agentId: agentIdHint } : undefined,
-  );
+  const { canonicalKey, entry, storePath } = loadGatewaySessionEntryReadOnly(key, {
+    ...(agentIdHint ? { agentId: agentIdHint } : {}),
+    projection: "list",
+  });
   const parsed = parseAgentSessionKey(key);
   const agentId =
     parsed?.agentId ?? agentIdHint ?? resolveSessionAgentId({ config, sessionKey: key });
@@ -190,6 +191,7 @@ export async function selectUsageSessions(params: {
   groupingMode: UsageGroupingMode;
   startMs: number;
   endMs: number;
+  limit: number;
   visibilityFilter?: (key: string, entry: SessionEntry) => boolean;
 }): Promise<UsageSessionSelection[]> {
   const {
@@ -203,10 +205,9 @@ export async function selectUsageSessions(params: {
   } = params;
   // Load session store for named sessions only on a result-cache miss.
   const sessionStoreOpts = effectiveAgentId ? { agentId: effectiveAgentId } : {};
-  // Usage exposes saved prompt reports as context weight, including its availability flag.
   const { store, targetsBySessionKey } = loadCombinedSessionStoreForGatewayCore(config, {
     ...sessionStoreOpts,
-    projection: "full",
+    projection: "list",
   });
   const scopedStore = Object.fromEntries(
     Object.entries(store).filter(
@@ -381,6 +382,33 @@ export async function selectUsageSessions(params: {
 
   // Sort by most recent first
   mergedEntries.sort((a, b) => b.updatedAt - a.updatedAt);
+
+  // Context availability is visible even when the report itself was not requested.
+  // Read only the emitted rows from their captured physical stores.
+  for (const [index, selected] of mergedEntries.entries()) {
+    if (index >= params.limit) {
+      break;
+    }
+    if (!selected.storeEntry) {
+      continue;
+    }
+    const target = expectDefined(targetsBySessionKey.get(selected.key), "usage context owner");
+    const [loaded] = loadExactSessionEntryCandidates({
+      readSource: { agentId: target.storeTarget.agentId, path: target.storeTarget.storePath },
+      readOnly: true,
+      sessionKeys: [target.storeKey ?? selected.key],
+      projection: "full",
+    });
+    if (
+      loaded?.entry.sessionId === selected.sessionId &&
+      (!visibilityFilter || visibilityFilter(selected.key, loaded.entry))
+    ) {
+      selected.storeEntry = {
+        ...selected.storeEntry,
+        systemPromptReport: loaded.entry.systemPromptReport,
+      };
+    }
+  }
 
   return mergedEntries;
 }

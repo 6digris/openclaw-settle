@@ -257,6 +257,7 @@ export const usageHandlers: GatewayRequestHandlers = {
             groupingMode,
             startMs,
             endMs,
+            limit,
             visibilityFilter,
           });
 

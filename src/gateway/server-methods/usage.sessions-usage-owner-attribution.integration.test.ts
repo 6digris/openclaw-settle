@@ -8,15 +8,180 @@ import { encodeSessionArchiveContent } from "../../config/sessions/archive-compr
 import { loadCombinedSessionStoreForGatewayCore } from "../../config/sessions/combined-store-gateway.js";
 import {
   listSessionTranscriptInstances,
+  loadSessionEntryReadOnly,
   persistSessionTranscriptTurn,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import type { SessionSystemPromptReport } from "../../config/sessions/types.js";
 import { discoverAllSessions, loadSessionCostSummary } from "../../infra/session-cost-usage.js";
 import type { AssistantMessage } from "../../llm/types.js";
 import type { SessionsUsageResult } from "../../shared/usage-types.js";
 import { SYSTEM_AGENT_ID } from "../../system-agent/agent-id.js";
 import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
+import type { RespondFn } from "./types.js";
 import { usageHandlers } from "./usage.js";
+
+it("hydrates context metadata only for emitted usage rows while aggregating every match", async () => {
+  const state = await createOpenClawTestState({ label: "usage-page-metadata" });
+  try {
+    await state.writeConfig({
+      agents: { ownership: "explicit", entries: { main: {}, opus: {} } },
+      plugins: { enabled: false },
+    });
+    const config = getRuntimeConfig();
+    const timestamp = Date.now() - 60_000;
+    const fixtures = ["main", "opus"].flatMap((agentId, agentIndex) =>
+      Array.from({ length: 8 }, (_, index) => {
+        const ordinal = agentIndex * 8 + index;
+        const report: SessionSystemPromptReport | undefined =
+          ordinal === 0
+            ? undefined
+            : {
+                source: "run",
+                generatedAt: timestamp + ordinal,
+                systemPrompt: {
+                  chars: 100 + ordinal,
+                  projectContextChars: ordinal,
+                  nonProjectContextChars: 100,
+                },
+                injectedWorkspaceFiles: [],
+                skills: { promptChars: 65_536, entries: [] },
+                tools: { listChars: ordinal, schemaChars: 0, entries: [] },
+              };
+        return {
+          agentId,
+          sessionId: `usage-page-${index}`,
+          key: `agent:${agentId}:usage-page-${index}`,
+          label: `${agentId} usage ${index}`,
+          updatedAt: timestamp + ordinal,
+          tokens: agentIndex * 100 + index + 1,
+          promptMarker: `usage-page-prompt-${agentId}-${index}:`,
+          report,
+        };
+      }),
+    );
+    for (const fixture of fixtures) {
+      const scope = {
+        agentId: fixture.agentId,
+        sessionId: fixture.sessionId,
+        sessionKey: fixture.key,
+        storePath: path.join(state.sessionsDir(fixture.agentId), "sessions.json"),
+      };
+      await upsertSessionEntryCore(scope, {
+        sessionId: fixture.sessionId,
+        label: fixture.label,
+        updatedAt: fixture.updatedAt,
+        skillsSnapshot: { prompt: fixture.promptMarker + "x".repeat(65_536), skills: [] },
+        systemPromptReport: fixture.report,
+      });
+      const message: AssistantMessage = {
+        role: "assistant",
+        content: [{ type: "text", text: "Recorded usage" }],
+        api: "openai-responses",
+        provider: "fixture",
+        model: "usage-model",
+        stopReason: "stop",
+        timestamp: fixture.updatedAt,
+        usage: {
+          input: fixture.tokens,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: fixture.tokens,
+          cost: { input: 0.01, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.01 },
+        },
+      };
+      await persistSessionTranscriptTurn(scope, {
+        cwd: state.workspaceDir,
+        updateMode: "none",
+        messages: [{ message, now: fixture.updatedAt }],
+      });
+      fixture.updatedAt = expectDefined(
+        loadSessionEntryReadOnly({ ...scope, projection: "list" }),
+        "persisted usage fixture",
+      ).updatedAt;
+    }
+    // Refresh outside the observation window so transcript work cannot hide metadata overreads.
+    for (const agentId of ["main", "opus"]) {
+      for (const { sessionId, sessionFile } of await discoverAllSessions({ agentId })) {
+        await loadSessionCostSummary({ agentId, sessionId, sessionFile, config });
+      }
+    }
+    const newest = expectDefined(fixtures.at(-1), "newest usage row");
+    const secondNewest = expectDefined(fixtures.at(-2), "second newest usage row");
+    const older = expectDefined(fixtures[3], "older main usage row");
+    const withoutReport = expectDefined(fixtures[0], "usage row without context report");
+    const totalTokens = fixtures.reduce((total, fixture) => total + fixture.tokens, 0);
+    for (const scenario of [
+      { selected: [newest], includeContextWeight: false },
+      { selected: [newest], includeContextWeight: true },
+      { selected: [older], includeContextWeight: true, key: older.key },
+      { selected: [withoutReport], includeContextWeight: true, key: withoutReport.key },
+      { selected: [newest, secondNewest], includeContextWeight: false },
+    ]) {
+      const respond = vi.fn<RespondFn>();
+      const parse = vi.spyOn(JSON, "parse");
+      let parsedPrompts: string[];
+      try {
+        await expectDefined(
+          usageHandlers["sessions.usage"],
+          "usage handler",
+        )({
+          params: {
+            ...(scenario.key ? { key: scenario.key } : { agentScope: "all" }),
+            range: "all",
+            limit: scenario.selected.length,
+            includeContextWeight: scenario.includeContextWeight,
+          },
+          context: createDirectChatContext({ getRuntimeConfig: () => config }),
+          req: { type: "req", id: "usage-page-metadata", method: "sessions.usage" },
+          client: null,
+          isWebchatConnect: () => false,
+          respond,
+        });
+        parsedPrompts = fixtures
+          .filter((fixture) =>
+            parse.mock.calls.some(([json]) => json.includes(fixture.promptMarker)),
+          )
+          .map((fixture) => fixture.promptMarker);
+      } finally {
+        parse.mockRestore();
+      }
+      expect(respond).toHaveBeenCalledOnce();
+      const [ok, payload] = expectDefined(respond.mock.calls[0], "usage response");
+      expect(ok).toBe(true);
+      expect(payload).toMatchObject({
+        sessions: scenario.selected.map((fixture) => ({
+          key: fixture.key,
+          agentId: fixture.agentId,
+          sessionId: fixture.sessionId,
+          label: fixture.label,
+          updatedAt: fixture.updatedAt,
+          usage: { totalTokens: fixture.tokens },
+          hasContextWeight: Boolean(fixture.report),
+          ...(scenario.includeContextWeight ? { contextWeight: fixture.report ?? null } : {}),
+        })),
+        totals: {
+          totalTokens: scenario.key ? scenario.selected[0]?.tokens : totalTokens,
+        },
+        aggregates: { sessionCount: scenario.key ? 1 : fixtures.length },
+      });
+      if (!scenario.includeContextWeight) {
+        expect(JSON.stringify(payload)).not.toContain('"contextWeight":');
+      }
+      const emittedPrompts = new Set(scenario.selected.map((fixture) => fixture.promptMarker));
+      expect
+        .soft(
+          parsedPrompts.filter((marker) => !emittedPrompts.has(marker)),
+          "large saved prompts outside the emitted usage page must remain unparsed",
+        )
+        .toEqual([]);
+    }
+  } finally {
+    await state.cleanup();
+  }
+});
 
 it.each([
   { owner: "opus", key: undefined },
