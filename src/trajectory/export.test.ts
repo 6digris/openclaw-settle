@@ -1,6 +1,5 @@
 // Trajectory export tests cover packaged trajectory output and metadata.
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import type { Message, Usage } from "openclaw/plugin-sdk/llm";
@@ -11,9 +10,8 @@ import {
   replaceSessionEntry,
   replaceTranscriptEvents,
 } from "../config/sessions/session-accessor.js";
-import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { exportTrajectoryBundle, resolveDefaultTrajectoryExportDir } from "./export.js";
+import { cleanupTrajectoryExportFixture, makeTempDir } from "./export.test-support.js";
 import {
   TRAJECTORY_POINTER_FILE_MAX_BYTES,
   TRAJECTORY_RUNTIME_FILE_MAX_BYTES,
@@ -22,15 +20,6 @@ import {
 } from "./paths.js";
 import { appendSqliteTrajectoryRuntimeEvents } from "./runtime-store.sqlite.js";
 import type { TrajectoryEvent } from "./types.js";
-
-const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-trajectory-"));
-let tempDirId = 0;
-
-function makeTempDir(): string {
-  const dir = path.join(tempRoot, `case-${tempDirId++}`);
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
-}
 
 const emptyUsage: Usage = {
   input: 0,
@@ -244,11 +233,7 @@ function writeToolCallSessionFile(sessionFile: string, toolResultText = "README 
   );
 }
 
-afterAll(() => {
-  closeOpenClawAgentDatabasesForTest();
-  closeOpenClawStateDatabaseForTest();
-  fs.rmSync(tempRoot, { recursive: true, force: true });
-});
+afterAll(cleanupTrajectoryExportFixture);
 
 describe("exportTrajectoryBundle", () => {
   it("rejects a structured transcript target for a different session", async () => {
