@@ -1901,44 +1901,6 @@ describe("runGatewayLoop", () => {
     });
   });
 
-  it("does not start a second active-work drain for repeated shutdown signals", async () => {
-    vi.clearAllMocks();
-
-    await withIsolatedSignals(async ({ captureSignal }) => {
-      const { exited } = await createSignaledLoopHarness();
-      let releaseDrain: (() => void) | undefined;
-      const pendingDrain = new Promise<void>((resolve) => {
-        releaseDrain = resolve;
-      });
-      waitForGatewayActiveWork.mockImplementationOnce(async () => {
-        await pendingDrain;
-        return { drained: true, snapshot: idleActiveWorkSnapshot };
-      });
-
-      try {
-        const sigterm = captureSignal("SIGTERM");
-        const sigint = captureSignal("SIGINT");
-        sigterm();
-        await waitForLoopCondition(
-          () => waitForGatewayActiveWork.mock.calls.length === 1,
-          "expected first shutdown signal to begin the active-work drain",
-        );
-
-        sigint();
-
-        expect(waitForGatewayActiveWork).toHaveBeenCalledOnce();
-        expect(gatewayWorkAdmissionActual.isGatewayWorkAdmissionClosed()).toBe(true);
-        expect(gatewayLog.info).toHaveBeenCalledWith("received SIGINT during shutdown; ignoring");
-
-        releaseDrain?.();
-        await expect(exited).resolves.toBe(0);
-      } finally {
-        releaseDrain?.();
-        await exited;
-      }
-    });
-  });
-
   it.each([
     { signal: "SIGTERM", timeoutMs: 4_000 },
     { signal: "SIGUSR1", timeoutMs: 1_000 },
@@ -3662,6 +3624,7 @@ describe("runGatewayLoop", () => {
   });
 
   registerUpdateRespawnTests({
+    waitForGatewayActiveWork,
     peekGatewaySigusr1RestartReason,
     respawnGatewayProcessForUpdate,
     waitForGatewayHealthyRestart,
@@ -3681,6 +3644,7 @@ describe("runGatewayLoop", () => {
     consumeGatewaySigusr1RestartIntent,
     managedUpdateSuccessorOwner,
     isForegroundUpdateHandoff,
+    requestManagedServiceUpdateHandoffPark,
     hasManagedProviderLocalServices,
     stopManagedProviderLocalServices,
     cancelManagedServiceUpdateHandoff,
@@ -3689,6 +3653,7 @@ describe("runGatewayLoop", () => {
     killProcessTree,
     flushLogger,
     gatewayLog,
+    isGatewayWorkAdmissionClosed: () => gatewayWorkAdmissionActual.isGatewayWorkAdmissionClosed(),
     consumeGatewayRestartIntentPayloadSync,
     commitManagedServiceUpdateHandoff,
     setPlatform,

@@ -1,6 +1,8 @@
 import type { ChildProcess } from "node:child_process";
 import { formatErrorMessage } from "../../infra/errors.js";
+import type { GatewayRestartIntent } from "../../infra/restart-intent.js";
 import type { SubsystemLogger } from "../../logging/subsystem.js";
+import { sameManagedUpdateOwner } from "./run-loop-request.js";
 
 export class GatewayUpdateSuccessor {
   private child: ChildProcess | true | null = null;
@@ -11,6 +13,7 @@ export class GatewayUpdateSuccessor {
     private readonly logger: Pick<SubsystemLogger, "info" | "warn" | "error">,
     private readonly lifecycle: Pick<
       typeof import("./lifecycle.runtime.js"),
+      | "cancelManagedServiceUpdateHandoff"
       | "readRestartSentinelReadOnly"
       | "writeRestartSentinelIfUnchanged"
       | "waitForGatewayHealthyRestart"
@@ -111,6 +114,35 @@ export class GatewayUpdateSuccessor {
       } catch (error) {
         this.logger.warn(`fresh Gateway stop signal failed: ${formatErrorMessage(error)}`);
       }
+    }
+  }
+
+  async cancelHandoff(
+    getOwner: () => GatewayRestartIntent["successorOwner"],
+    initialOwner = getOwner(),
+  ): Promise<false | "restored-in-process" | "restart-after-exit"> {
+    let owner = initialOwner;
+    let requiresParentExit = false;
+    try {
+      for (;;) {
+        if (!owner) {
+          return requiresParentExit ? "restart-after-exit" : "restored-in-process";
+        }
+        const restoration = await this.lifecycle.cancelManagedServiceUpdateHandoff(owner);
+        if (!restoration) {
+          this.logger.error("managed update handoff cancellation unconfirmed; remaining draining");
+          return false;
+        }
+        requiresParentExit ||= restoration === "restart-after-exit";
+        const replacement = getOwner();
+        if (!replacement || sameManagedUpdateOwner(owner, replacement)) {
+          return requiresParentExit ? "restart-after-exit" : "restored-in-process";
+        }
+        owner = replacement;
+      }
+    } catch (err) {
+      this.logger.error(`managed update handoff cancellation failed: ${formatErrorMessage(err)}`);
+      return false;
     }
   }
 
