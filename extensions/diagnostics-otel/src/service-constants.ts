@@ -53,7 +53,7 @@ export const GEN_AI_OPERATION_DURATION_BUCKETS = [
 const OTEL_DEFAULT_HISTOGRAM_BUCKETS = [
   0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000,
 ];
-// Agent run / harness durations routinely exceed the SDK default's 10s ceiling.
+// Agent run, harness, model, and tool durations can exceed the SDK default's 10s ceiling.
 // Extend the existing layout through one hour without changing prior buckets.
 export const AGENT_DURATION_MS_BUCKETS = [
   ...OTEL_DEFAULT_HISTOGRAM_BUCKETS,
