@@ -57,3 +57,13 @@ export async function runUpdateCandidateSnapshotWorker(input: SnapshotInput) {
   return UpdateCandidateStateSnapshotSchema.parse(JSON.parse(result.stdout.toString("utf8")))
     .versions;
 }
+
+/** Inspection fixtures model an executable updater, not a borrowed Windows caller. */
+export async function retainUpdateInspectionCliProcessForTests(): Promise<void> {
+  if (process.platform !== "win32") {
+    return;
+  }
+  const { retainCliProcessJobUntilExit, withCliProcessScope } =
+    await import("../cli/runtime-cleanup-scope.js");
+  await withCliProcessScope(retainCliProcessJobUntilExit);
+}

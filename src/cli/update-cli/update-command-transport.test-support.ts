@@ -3,6 +3,7 @@ import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, vi } from "vitest";
+import { resolveNpmGlobalPrefixLayoutFromPrefix } from "../../infra/update-npm-prefix.js";
 import type { runCommandWithTimeout, runUtf8CommandWithTimeout } from "../../process/exec.js";
 import { createCommandResult as commandResult } from "../../test-utils/npm-spec-install-test-helpers.js";
 
@@ -19,7 +20,7 @@ export async function createUpdateCommandTransportFixture(transport: {
     await vi.importActual<typeof import("node:child_process")>("node:child_process");
   return async (...[argv, options]: Parameters<typeof transport.run>) => {
     if (
-      argv.at(-2) === "prefix" &&
+      (argv.at(-2) === "prefix" || argv.at(-2) === "root") &&
       argv.at(-1) === "-g" &&
       ((argv.length === 3 && argv[0] === "npm") ||
         (argv.length === 4 &&
@@ -27,9 +28,13 @@ export async function createUpdateCommandTransportFixture(transport: {
           path.basename(argv[1] ?? "") === "npm-cli.js"))
     ) {
       const result = await transport.run(argv, options);
-      // Supply the fixture's inspected empty prefix when an effect double omits read-only metadata.
+      // Prefix and selected-manager root probes describe the same empty fixture destination.
+      const value =
+        argv.at(-2) === "root"
+          ? resolveNpmGlobalPrefixLayoutFromPrefix(transport.npmPrefix).globalRoot
+          : transport.npmPrefix;
       return result.code === 0 && result.stdout === ""
-        ? { ...result, stdout: `${transport.npmPrefix}\n` }
+        ? { ...result, stdout: `${value}\n` }
         : result;
     }
     if (typeof options === "number" || !options.beforeInput) {

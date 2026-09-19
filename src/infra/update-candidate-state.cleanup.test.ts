@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { waitForDead, waitForPidFile } from "../../test/helpers/process-wait.js";
 import * as commands from "../process/exec.js";
 import { runCommandBuffered, runUtf8CommandWithTimeout } from "../process/exec.js";
@@ -16,8 +16,13 @@ import {
   discoverUpdateStateSchemaInspectionInProcess,
   readUpdateStateSchemaVersions,
 } from "./update-candidate-state.js";
-import { inventoryUpdateCandidateStateWorker } from "./update-candidate-state.test-support.js";
+import {
+  inventoryUpdateCandidateStateWorker,
+  retainUpdateInspectionCliProcessForTests,
+} from "./update-candidate-state.test-support.js";
 import { updateRunStepsFromResultStep } from "./update-run-step.js";
+
+beforeAll(retainUpdateInspectionCliProcessForTests);
 
 let root: string;
 beforeEach(async () => {

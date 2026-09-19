@@ -83,6 +83,12 @@ const mocks = vi.hoisted(() => ({
     >(),
 }));
 
+// This suite simulates Gateway/native transport; cutover RPC generation has its own tests.
+vi.mock("../daemon-cli/update-cutover.js", async () => ({
+  prepareGatewayUpdateCutover: (await import("./update-command-transport.test-support.js"))
+    .prepareGatewayCutoverFixture,
+}));
+
 vi.mock(
   "../daemon-cli/lifecycle.runtime.js",
   async () => await import("../daemon-cli/lifecycle.js"),

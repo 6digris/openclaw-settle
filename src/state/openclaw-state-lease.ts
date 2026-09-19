@@ -413,11 +413,16 @@ export async function withOpenClawStateLease<T>(
   const heartbeatMs = Math.max(250, Math.min(30_000, Math.floor(validated.leaseMs / 3)));
   let expiryTimer: ReturnType<typeof setTimeout> | undefined;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let renewalRetry: ReturnType<typeof setTimeout> | undefined;
+  let renewalAttempts = 0;
   const stopTimers = () => {
     // Canceled Node timers retain their async context until the handles are released.
     // Escaped lease owners must not keep completed callers alive.
     clearInterval(heartbeat);
     clearTimeout(expiryTimer);
+    clearTimeout(renewalRetry);
+    renewalRetry = undefined;
+    renewalAttempts = 0;
     heartbeat = undefined;
     expiryTimer = undefined;
   };
@@ -451,6 +456,9 @@ export async function withOpenClawStateLease<T>(
       operationLabel: validated.operationLabel,
       leaseMs: validated.leaseMs,
     });
+    clearTimeout(renewalRetry);
+    renewalRetry = undefined;
+    renewalAttempts = 0;
     scheduleExpiry();
   };
   const renewOperation = () => {
@@ -468,6 +476,11 @@ export async function withOpenClawStateLease<T>(
     }
   };
   const renewFromTimer = () => {
+    clearTimeout(renewalRetry);
+    renewalRetry = undefined;
+    if (closed || leaseLost.signal.aborted) {
+      return;
+    }
     try {
       renewAndSchedule();
     } catch (error) {
@@ -475,6 +488,18 @@ export async function withOpenClawStateLease<T>(
         abortLost(error);
       } else if (confirmedExpiresAt !== undefined && Date.now() >= confirmedExpiresAt) {
         abortLost(error);
+      } else if (isLeaseWriteContention(error) && confirmedExpiresAt !== undefined) {
+        // A zero-wait lifecycle admission can collide with a brief writer. Retry
+        // inside the confirmed lifetime instead of losing an entire heartbeat.
+        renewalAttempts += 1;
+        renewalRetry = setTimeout(
+          renewFromTimer,
+          Math.min(
+            confirmedExpiresAt - Date.now(),
+            computeBackoff(ACQUIRE_BACKOFF, renewalAttempts),
+          ),
+        );
+        renewalRetry.unref?.();
       }
     }
   };

@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it } from "vitest";
 import { closeOpenClawStateDatabaseByPath } from "../state/openclaw-state-db-cache.js";
 import { readStateSchemaContentVersion } from "../state/openclaw-state-db-schema-version.js";
 import {
@@ -14,7 +14,12 @@ import {
   readUpdateStateSchemaVersions,
   updateStateSchemaVersionsMatch,
 } from "./update-candidate-state.js";
-import { runUpdateCandidateSnapshotWorker } from "./update-candidate-state.test-support.js";
+import {
+  runUpdateCandidateSnapshotWorker,
+  retainUpdateInspectionCliProcessForTests,
+} from "./update-candidate-state.test-support.js";
+
+beforeAll(retainUpdateInspectionCliProcessForTests);
 
 let root: string;
 beforeEach(async () => {

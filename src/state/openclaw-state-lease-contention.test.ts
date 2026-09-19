@@ -1,4 +1,4 @@
-import { setImmediate as yieldImmediate } from "node:timers/promises";
+import { setImmediate as yieldImmediate, setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
 import { tryAcquireExclusiveSqliteCoordinator } from "../infra/sqlite-coordinator.js";
 import {
@@ -87,3 +87,85 @@ describe.each([undefined, "existing"] as const)(
     );
   },
 );
+
+describe("lease renewal after lifecycle contention", () => {
+  it("retries before expiry and keeps independent allocations excluded", async () => {
+    await withOpenClawTestState({ label: "lease-renew-contention" }, async (state) => {
+      const database = openOpenClawStateDatabase({ env: state.env });
+      const options = {
+        scope: "core:test",
+        key: "renew-contention",
+        database: { scope: "shared" as const, options: { env: state.env } },
+        leaseMs: 1_200,
+        waitMs: 0,
+      };
+      const coordinatorPath = resolveStateDatabaseCoordinatorPath({
+        databasePath: database.path,
+        runtimeDirectory: resolveStateLifecycleRuntimeDirectory(),
+        uid: typeof process.getuid === "function" ? process.getuid() : undefined,
+      });
+      await withOpenClawStateLease(options, async (lease) => {
+        const writer = tryAcquireExclusiveSqliteCoordinator(coordinatorPath);
+        if (!writer) {
+          throw new Error("independent writer did not acquire its coordinator");
+        }
+        // Miss both normal heartbeat opportunities, then release before expiry.
+        const release = setTimeout(() => writer.release(), 850);
+        try {
+          await delay(1_350);
+          lease.assertOwned();
+          let entered = false;
+          await expect(
+            withOpenClawStateLease(options, async () => {
+              entered = true;
+            }),
+          ).rejects.toMatchObject({ code: "OPENCLAW_STATE_LEASE_TIMEOUT" });
+          expect(entered).toBe(false);
+        } finally {
+          clearTimeout(release);
+          writer.release();
+        }
+      });
+      expect(
+        database.db
+          .prepare("SELECT owner FROM state_leases WHERE scope = ? AND lease_key = ?")
+          .all(options.scope, options.key),
+      ).toEqual([]);
+    });
+  });
+
+  it("still loses ownership when contention lasts beyond confirmed expiry", async () => {
+    await withOpenClawTestState({ label: "lease-renew-expired" }, async (state) => {
+      const database = openOpenClawStateDatabase({ env: state.env });
+      const coordinatorPath = resolveStateDatabaseCoordinatorPath({
+        databasePath: database.path,
+        runtimeDirectory: resolveStateLifecycleRuntimeDirectory(),
+        uid: typeof process.getuid === "function" ? process.getuid() : undefined,
+      });
+      await expect(
+        withOpenClawStateLease(
+          {
+            scope: "core:test",
+            key: "renew-expired",
+            database: { scope: "shared", options: { env: state.env } },
+            leaseMs: 1_200,
+            waitMs: 0,
+          },
+          async (lease) => {
+            const writer = tryAcquireExclusiveSqliteCoordinator(coordinatorPath);
+            if (!writer) {
+              throw new Error("independent writer did not acquire its coordinator");
+            }
+            try {
+              await delay(1_350);
+              expect(lease.signal.aborted).toBe(true);
+              expect(() => lease.assertOwned()).toThrow("was lost");
+            } finally {
+              writer.release();
+            }
+          },
+        ),
+      ).rejects.toMatchObject({ code: "OPENCLAW_STATE_LEASE_LOST" });
+    });
+  });
+});

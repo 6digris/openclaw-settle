@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as realSetTimeout } from "node:timers";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { waitForDead } from "../../test/helpers/process-wait.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import * as commands from "../process/exec.js";
@@ -14,6 +14,9 @@ import { observeUpdateCandidateIoProgress } from "./update-candidate-io.test-sup
 import { prepareUpdateCandidateStateSnapshot } from "./update-candidate-snapshot.js";
 import { readUpdateStateSchemaVersions } from "./update-candidate-state.js";
 import { readUpdateStateDatabaseSizes } from "./update-candidate-state.sizes.js";
+import { retainUpdateInspectionCliProcessForTests } from "./update-candidate-state.test-support.js";
+
+beforeAll(retainUpdateInspectionCliProcessForTests);
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => {
