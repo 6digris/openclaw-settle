@@ -1,23 +1,32 @@
-import {
-  executeSqliteQuerySync,
-  executeSqliteQueryTakeFirstSync,
-} from "../../infra/kysely-sync.js";
+import { collectErrorGraphCandidates } from "../../infra/errors.js";
+import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
+import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
+import { isSqliteWorkerError, type SqliteWorkerStore } from "../../infra/sqlite-worker-contract.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
+import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
+  openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
   type OpenClawAgentDatabase,
   type OpenClawAgentDatabaseOptions,
 } from "../../state/openclaw-agent-db.js";
+import { openOpenClawAgentSqliteWorkerStore } from "../../state/openclaw-agent-worker-store.js";
+import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
+import { resolveStateDir } from "../state-dir.js";
 import type { SessionAccessScope } from "./session-accessor.sqlite-contract.js";
-import { readSessionEntryInstanceId } from "./session-accessor.sqlite-entry-identity.js";
 import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
 import {
-  getSessionMemberKysely,
+  addSessionMemberInDatabase,
+  removeSessionMemberInDatabase,
   hasSessionMemberInDatabase,
   listSessionMembersInDatabase,
   type SessionMember,
 } from "./session-sharing-store.kernel.js";
+import type {
+  SessionMemberWriteOperations,
+  SessionMemberWriteOutcome,
+} from "./session-sharing-store.operations.js";
 
 function resolveDatabaseOptions(scope: SessionAccessScope): OpenClawAgentDatabaseOptions {
   return toDatabaseOptions(resolveSqliteScope(scope));
@@ -52,97 +61,131 @@ export function isSessionMember(scope: SessionAccessScope, identityId: string): 
   );
 }
 
-// Membership is bound to a live session entry, never a transcript placeholder.
-// Authorization is rechecked before these transactions, but a reset/recreate
-// can replace the row under the same key in between; the optional expected id
-// adds a caller snapshot check after the canonical node/entry check.
-function assertAuthorizedSessionInstance(
-  database: OpenClawAgentDatabase,
-  sessionKey: string,
-  expectedSessionId: string | undefined,
-): void {
-  const sessionId = readSessionEntryInstanceId(database, sessionKey);
-  if (
-    sessionId === undefined ||
-    (expectedSessionId !== undefined && sessionId !== expectedSessionId)
-  ) {
-    throw new Error("session changed before sharing mutation");
+type SessionMemberWriteOptions = { assertCurrent?: () => void };
+
+async function writeSessionMember<T>(
+  scope: SessionAccessScope,
+  options: SessionMemberWriteOptions | undefined,
+  native: (database: OpenClawAgentDatabase, sessionKey: string) => SessionMemberWriteOutcome<T>,
+  worker: (
+    store: Pick<SqliteWorkerStore<SessionMemberWriteOperations>, "execute">,
+    sessionKey: string,
+  ) => Promise<SessionMemberWriteOutcome<T>>,
+): Promise<T> {
+  const env = cloneEnvWithPlatformSemantics(scope.env ?? process.env);
+  env.OPENCLAW_STATE_DIR = resolveStateDir(env);
+  const resolved = resolveSqliteScope({ ...scope, env });
+  const databaseOptions = toDatabaseOptions(resolved);
+  options?.assertCurrent?.();
+  const database = openOpenClawAgentDatabase(databaseOptions);
+  const change = {
+    agentId: resolved.agentId,
+    storePath: database.path,
+    sessionKey: resolved.sessionKey,
+  };
+  if (typeof readOpenClawAgentDatabaseIdentity(database).identity === "symbol") {
+    return runOpenClawAgentWriteTransaction((current) => {
+      options?.assertCurrent?.();
+      const result = native(current, resolved.sessionKey);
+      if (result.changed) {
+        sessionChanges.emit(change, current.db);
+      }
+      return result.value;
+    }, databaseOptions);
+  }
+  const publication = await openOpenClawAgentSqliteWorkerStore<SessionMemberWriteOperations>(
+    databaseOptions,
+    database.db,
+    {
+      moduleUrl: resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sessionSharingStore),
+      input: undefined,
+    },
+  );
+  try {
+    return await publication.run(
+      async (store) => {
+        let result: SessionMemberWriteOutcome<T>;
+        try {
+          result = await worker(store, resolved.sessionKey);
+        } catch (error) {
+          if (
+            collectErrorGraphCandidates(error, (current) =>
+              current instanceof AggregateError ? [current.cause] : [],
+            ).some((current) => isSqliteWorkerError(current, "outcome-unknown"))
+          ) {
+            sessionChanges.emit(change);
+          }
+          throw error;
+        }
+        if (result.changed) {
+          sessionChanges.emit(change);
+        }
+        return result.value;
+      },
+      () => options?.assertCurrent?.(),
+    );
+  } finally {
+    await publication.close();
   }
 }
 
-export function addSessionMember(
+export async function addSessionMember(
   scope: SessionAccessScope,
-  params: { identityId: string; addedBy: string; addedAt?: number; expectedSessionId?: string },
-): { member: SessionMember; inserted: boolean } {
+  params: Parameters<typeof addSessionMemberInDatabase>[2],
+  options?: SessionMemberWriteOptions,
+): Promise<ReturnType<typeof addSessionMemberInDatabase>> {
   const identityId = params.identityId.trim();
   const addedBy = params.addedBy.trim();
   if (!identityId || !addedBy) {
     throw new Error("session member identity and actor are required");
   }
-  const options = resolveDatabaseOptions(scope);
-  const { agentId, sessionKey } = resolveSqliteScope(scope);
-  const addedAt = params.addedAt ?? Date.now();
-  const inserted = runOpenClawAgentWriteTransaction((database) => {
-    assertAuthorizedSessionInstance(database, sessionKey, params.expectedSessionId);
-    const db = getSessionMemberKysely(database);
-    const result = executeSqliteQuerySync(
-      database.db,
-      db
-        .insertInto("session_members")
-        .values({
-          session_key: sessionKey,
-          identity_id: identityId,
-          added_by: addedBy,
-          added_at: addedAt,
-        })
-        .onConflict((conflict) => conflict.columns(["session_key", "identity_id"]).doNothing()),
-    );
-    const changed = (result.numAffectedRows ?? 0n) > 0n;
-    if (changed) {
-      sessionChanges.emit({ agentId, storePath: database.path, sessionKey }, database.db);
-    }
-    return changed;
-  }, options);
-  return { member: { identityId, addedBy, addedAt }, inserted };
+  const captured = { ...params, identityId, addedBy, addedAt: params.addedAt ?? Date.now() };
+  return await writeSessionMember(
+    scope,
+    options,
+    (database, sessionKey) => {
+      const value = addSessionMemberInDatabase(database, sessionKey, captured);
+      return { value, changed: value.inserted };
+    },
+    (store, sessionKey) =>
+      store.execute({ type: "members.add", input: { sessionKey, params: captured } }),
+  );
 }
 
-export function removeSessionMember(
+export async function removeSessionMember(
   scope: SessionAccessScope,
   identityId: string,
   expected?: Pick<SessionMember, "addedBy" | "addedAt">,
   expectedSessionId?: string,
-): SessionMember | null {
+  options?: SessionMemberWriteOptions,
+): Promise<SessionMember | null> {
   const normalizedIdentityId = identityId.trim();
   if (!normalizedIdentityId) {
     return null;
   }
-  const options = resolveDatabaseOptions(scope);
-  const { agentId, sessionKey } = resolveSqliteScope(scope);
-  return runOpenClawAgentWriteTransaction((database) => {
-    assertAuthorizedSessionInstance(database, sessionKey, expectedSessionId);
-    const db = getSessionMemberKysely(database);
-    const row = executeSqliteQueryTakeFirstSync(
-      database.db,
-      db
-        .selectFrom("session_members")
-        .select(["identity_id", "added_by", "added_at"])
-        .where("session_key", "=", sessionKey)
-        .where("identity_id", "=", normalizedIdentityId),
-    );
-    if (
-      !row ||
-      (expected && (row.added_by !== expected.addedBy || row.added_at !== expected.addedAt))
-    ) {
-      return null;
-    }
-    executeSqliteQuerySync(
-      database.db,
-      db
-        .deleteFrom("session_members")
-        .where("session_key", "=", sessionKey)
-        .where("identity_id", "=", normalizedIdentityId),
-    );
-    sessionChanges.emit({ agentId, storePath: database.path, sessionKey }, database.db);
-    return { identityId: row.identity_id, addedBy: row.added_by, addedAt: row.added_at };
-  }, options);
+  const captured = expected ? { ...expected } : undefined;
+  return await writeSessionMember(
+    scope,
+    options,
+    (database, sessionKey) => {
+      const value = removeSessionMemberInDatabase(
+        database,
+        sessionKey,
+        normalizedIdentityId,
+        captured,
+        expectedSessionId,
+      );
+      return { value, changed: value !== null };
+    },
+    (store, sessionKey) =>
+      store.execute({
+        type: "members.remove",
+        input: {
+          sessionKey,
+          identityId: normalizedIdentityId,
+          expected: captured,
+          expectedSessionId,
+        },
+      }),
+  );
 }

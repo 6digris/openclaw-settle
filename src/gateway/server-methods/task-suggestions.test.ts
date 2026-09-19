@@ -191,7 +191,7 @@ describe("task suggestion gateway methods", () => {
         });
         expect(dismissed.response?.[1]).toEqual({ taskId, dismissed: false });
         expect(mocks.handleChatSend).not.toHaveBeenCalled();
-        addSessionMember(
+        await addSessionMember(
           { agentId: "main", sessionKey: SOURCE_SESSION_KEY },
           {
             identityId: profile.id,

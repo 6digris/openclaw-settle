@@ -268,9 +268,11 @@ describe("session sharing handlers", () => {
         ["real-prefix-member", "actor-evidence:profile-ada", 3],
       ] as const) {
         expect(
-          addSessionMember(
-            { agentId: "main", sessionKey },
-            { identityId, addedBy, addedAt, expectedSessionId: sessionId },
+          (
+            await addSessionMember(
+              { agentId: "main", sessionKey },
+              { identityId, addedBy, addedAt, expectedSessionId: sessionId },
+            )
           ).inserted,
         ).toBe(true);
       }
@@ -528,9 +530,11 @@ describe("session sharing handlers", () => {
         },
       );
       expect(
-        addSessionMember(
-          { agentId: "main", sessionKey },
-          { identityId: memberIdentity.id, addedBy: "owner@example.com", addedAt: 1 },
+        (
+          await addSessionMember(
+            { agentId: "main", sessionKey },
+            { identityId: memberIdentity.id, addedBy: "owner@example.com", addedAt: 1 },
+          )
         ).inserted,
       ).toBe(true);
       const responses: Parameters<RespondFn>[] = [];
@@ -572,9 +576,11 @@ describe("session sharing handlers", () => {
         // A member of the (soon-draft) session must also lose it: drafts are
         // owner+admin only.
         expect(
-          addSessionMember(
-            { agentId: "main", sessionKey },
-            { identityId: "member@example.com", addedBy: "owner@example.com", addedAt: 1 },
+          (
+            await addSessionMember(
+              { agentId: "main", sessionKey },
+              { identityId: "member@example.com", addedBy: "owner@example.com", addedAt: 1 },
+            )
           ).inserted,
         ).toBe(true);
         const outsider = identifiedClient("outsider@example.com");
@@ -709,9 +715,11 @@ describe("session sharing handlers", () => {
         },
       );
       expect(
-        addSessionMember(
-          { agentId: "main", sessionKey },
-          { identityId: memberIdentity.id, addedBy: owner.id, addedAt: 1 },
+        (
+          await addSessionMember(
+            { agentId: "main", sessionKey },
+            { identityId: memberIdentity.id, addedBy: owner.id, addedAt: 1 },
+          )
         ).inserted,
       ).toBe(true);
       const requestContext = {

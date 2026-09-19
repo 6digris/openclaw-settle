@@ -163,7 +163,7 @@ it("keeps archived visibility and membership current without warming hidden rows
       );
     }
     const target = { agentId: "main", sessionKey: "agent:main:visible" };
-    addSessionMember(target, { identityId: viewer, addedBy: owner });
+    await addSessionMember(target, { identityId: viewer, addedBy: owner });
     const release = retainSessionListForegroundWork();
     const context = requestContext(cfg);
     const client = identifiedClient(viewer);
@@ -176,7 +176,7 @@ it("keeps archived visibility and membership current without warming hidden rows
         sessions: [{ key: target.sessionKey, sharingRole: "member" }],
       });
       expect(projection.materializedCount).toBe(1);
-      removeSessionMember(target, viewer);
+      await removeSessionMember(target, viewer);
       const second = await listSessions({ context, client, request: { archived: true } });
       expect(second).toMatchObject({
         totalCount: 1,

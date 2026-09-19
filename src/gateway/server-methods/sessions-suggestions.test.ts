@@ -266,7 +266,7 @@ describe("session suggestion handlers", () => {
       );
       expect(viewer.responses[0]?.[0]).toBe(false);
 
-      addSessionMember(
+      await addSessionMember(
         { agentId: "main", sessionKey },
         { identityId: "member", addedBy: "owner", expectedSessionId: "session-main" },
       );

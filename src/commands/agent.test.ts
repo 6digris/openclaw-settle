@@ -3,12 +3,11 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
-import { withTempHome as withTempHomeBase } from "openclaw/plugin-sdk/test-env";
 import { beforeEach, describe, expect, it, type MockInstance, vi } from "vitest";
+import { testing as acpManagerTesting } from "../acp/control-plane/manager.js";
 // Register shared mocks before imports bind their production exports.
 import "./agent-command.test-mocks.js";
 import "./agent-command-attempt.test-mocks.js";
-import { testing as acpManagerTesting } from "../acp/control-plane/manager.js";
 import { executionIdentity } from "../agents/agent-command-execution-identity.js";
 import { createHostWorkspaceWriteTool } from "../agents/agent-tools.read.js";
 import * as authProfileStoreModule from "../agents/auth-profiles/store-runtime.js";
@@ -81,6 +80,7 @@ import {
 } from "../utils/delivery-context.shared.js";
 import { getAgentAttemptExecutionMocks } from "./agent-command-state.test-mocks.js";
 import { agentCommand, agentCommandFromIngress } from "./agent.js";
+import { withTempHome } from "./agent.test-support.js";
 import { createThrowingTestRuntime } from "./test-runtime-config-helpers.js";
 
 const configIoMocks = vi.hoisted(() => ({
@@ -308,12 +308,6 @@ vi.mock("../config/sessions/transcript-resolve.runtime.js", () => {
 const attemptExecutionMocks = getAgentAttemptExecutionMocks();
 
 const runtime = createThrowingTestRuntime();
-
-async function withTempHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
-  return withTempHomeBase(fn, {
-    prefix: "openclaw-agent-",
-  });
-}
 
 function mockConfig(
   home: string,
@@ -575,7 +569,7 @@ describe("agentCommand", () => {
         ];
         await replaceTranscriptEvents(priorScope, transcript);
         const priorEntry = loadSessionEntry(priorScope);
-        const { member } = addSessionMember(priorScope, {
+        const { member } = await addSessionMember(priorScope, {
           identityId: "boot-history-reader",
           addedBy: "operator",
         });

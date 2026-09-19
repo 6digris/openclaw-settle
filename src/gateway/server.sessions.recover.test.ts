@@ -856,7 +856,7 @@ test("sessions.recover revalidates participation at the recovery writer commit",
       createdActor: { type: "human", source: "profile", id: "owner" },
     },
   });
-  addSessionMember(
+  await addSessionMember(
     { agentId: "main", sessionKey: sourceKey, storePath },
     { identityId: "member", addedBy: "owner", expectedSessionId: sourceSessionId },
   );
@@ -912,7 +912,7 @@ test("sessions.recover revalidates participation at the recovery writer commit",
 
   try {
     await requestStarted.promise;
-    removeSessionMember(
+    await removeSessionMember(
       { agentId: "main", sessionKey: sourceKey, storePath },
       "member",
       undefined,

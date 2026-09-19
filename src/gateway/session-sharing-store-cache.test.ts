@@ -114,7 +114,7 @@ describe("session event authorization store work", () => {
           );
         }
         for (const sessionKey of sessionKeys) {
-          addSessionMember(
+          await addSessionMember(
             { agentId: "main", sessionKey },
             { identityId: "member", addedBy: "owner" },
           );
@@ -155,9 +155,9 @@ describe("session event authorization store work", () => {
         checkRecipient("viewer", false);
         checkRecipient("author", true);
         const revokedKey = sessionKeys.at(-1)!;
-        removeSessionMember({ agentId: "main", sessionKey: revokedKey }, "member");
+        await removeSessionMember({ agentId: "main", sessionKey: revokedKey }, "member");
         checkRecipient("member", false);
-        addSessionMember(
+        await addSessionMember(
           { agentId: "main", sessionKey: revokedKey },
           { identityId: "member", addedBy: "owner" },
         );

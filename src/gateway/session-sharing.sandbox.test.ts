@@ -86,7 +86,7 @@ describe("session sharing sandbox requirements", () => {
           sandbox: "required",
         },
       );
-      addSessionMember(
+      await addSessionMember(
         { agentId: "main", sessionKey: hostSessionKey },
         {
           identityId: guestId,

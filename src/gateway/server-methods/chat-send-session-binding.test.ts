@@ -85,7 +85,7 @@ it.each(admissionScenarios)(
           visibility: "suggest",
           createdActor,
         });
-        addSessionMember(scope, { identityId: profile.id, addedBy: owner.id });
+        await addSessionMember(scope, { identityId: profile.id, addedBy: owner.id });
       }
       const connection = new AbortController();
       const hasCurrentClientAuthority = vi.fn(() => true);
@@ -249,7 +249,7 @@ it.each(admissionScenarios)(
               "Dashboard message read admission is no longer active.",
             );
           } else if (membershipRequired) {
-            removeSessionMember(scope, profile.id, undefined, binding.sessionId);
+            await removeSessionMember(scope, profile.id, undefined, binding.sessionId);
             expect(admission.activeRunAbort.controller.signal.aborted).toBe(false);
             expect(hasCurrentClientAuthority()).toBe(true);
             expect(dashboardRead.assertCurrent).toThrow("session is suggest for this connection");

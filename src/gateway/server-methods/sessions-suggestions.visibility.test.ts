@@ -120,7 +120,7 @@ describe("session suggestion visibility and role ceilings", () => {
       );
       expect(suggested.responses[0]?.[0]).toBe(true);
 
-      addSessionMember(
+      await addSessionMember(
         { agentId: "main", sessionKey },
         {
           identityId: guestProfile.id,
@@ -150,7 +150,7 @@ describe("session suggestion visibility and role ceilings", () => {
           visibility: "draft",
         },
       );
-      addSessionMember(
+      await addSessionMember(
         { agentId: "main", sessionKey: draftKey },
         { identityId: "member", addedBy: "owner", expectedSessionId: "session-draft" },
       );

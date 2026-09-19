@@ -40,7 +40,7 @@ import {
   resolveSqliteStoreScope,
   runExclusiveSqliteSessionWrite,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
-import { addSessionMember, removeSessionMember } from "../config/sessions/session-sharing-store.js";
+import { addSessionMember } from "../config/sessions/session-sharing-store.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
 import { peekSystemEvents } from "../infra/system-events.js";
@@ -90,6 +90,7 @@ import {
   waitForCreatedSessionRun,
 } from "./server.sessions.create.projects.test-support.js";
 import { listSessionGroups } from "./session-groups.js";
+import { revokeSessionMemberForTest } from "./session-sharing-fixtures.test-support.js";
 import {
   resolveSessionMutationAuthorization,
   SessionMutationAuthorizationChangedError,
@@ -1133,6 +1134,7 @@ test("sessions.create revalidates parent participation before committing a fork 
   const parentSessionKey = "agent:main:dashboard:participation-race-parent";
   const parentSessionId = "participation-race-parent-session";
   const childSessionKey = "agent:main:dashboard:participation-race-child";
+  const parentScope = { agentId: "main", sessionKey: parentSessionKey, storePath };
   await writeSessionStore({
     entries: {
       [parentSessionKey]: sessionStoreEntry(parentSessionId, {
@@ -1142,16 +1144,15 @@ test("sessions.create revalidates parent participation before committing a fork 
     },
   });
   await seedSessionTranscript({
-    agentId: "main",
+    ...parentScope,
     sessionId: parentSessionId,
-    sessionKey: parentSessionKey,
-    storePath,
     messages: [{ role: "user", content: "private parent context" }],
   });
-  addSessionMember(
-    { agentId: "main", sessionKey: parentSessionKey, storePath },
-    { identityId: "member", addedBy: "owner", expectedSessionId: parentSessionId },
-  );
+  await addSessionMember(parentScope, {
+    identityId: "member",
+    addedBy: "owner",
+    expectedSessionId: parentSessionId,
+  });
   const client = {
     authenticatedUserId: "member@example.com",
     authenticatedUserProfile: {
@@ -1221,12 +1222,8 @@ test("sessions.create revalidates parent participation before committing a fork 
 
   try {
     await firstGuard.promise;
-    removeSessionMember(
-      { agentId: "main", sessionKey: parentSessionKey, storePath },
-      "member",
-      undefined,
-      parentSessionId,
-    );
+    // Commit revocation while the transcript writer is deliberately blocked.
+    expect(revokeSessionMemberForTest(parentScope, "member", parentSessionId)).not.toBeNull();
   } finally {
     releaseWriter.resolve();
     await heldWriter;

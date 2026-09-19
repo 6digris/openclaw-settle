@@ -489,7 +489,7 @@ describe("tasks gateway handlers", () => {
         expect(result.payload?.results).toEqual([{ taskId, ok: false, reason: "task not found" }]);
       }
       if (visibleForeign) {
-        addSessionMember(
+        await addSessionMember(
           { agentId: "main", sessionKey: foreignKey },
           {
             identityId: profileId,

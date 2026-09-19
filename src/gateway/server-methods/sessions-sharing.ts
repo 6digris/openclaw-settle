@@ -14,11 +14,7 @@ import {
   type SessionSharingEvidenceEvent,
   type SessionVisibility,
 } from "../../../packages/gateway-protocol/src/index.js";
-import {
-  addSessionMember,
-  listSessionMembers,
-  removeSessionMember,
-} from "../../config/sessions.js";
+import { addSessionMember, removeSessionMember } from "../../config/sessions.js";
 import {
   loadExactSessionEntryReadOnly,
   patchSessionEntryCore,
@@ -87,9 +83,7 @@ function sharingActorStorageRef(facts: SharingActorFacts): string {
       : UNATTRIBUTED_SHARING_ACTOR_STORAGE_REF;
 }
 
-function projectSessionMemberEvidence(
-  member: ReturnType<typeof listSessionMembers>[number],
-): SessionMemberEvidence {
+function projectSessionMemberEvidence(member: SessionMember): SessionMemberEvidence {
   // Sentinel ids satisfy the existing non-null storage contract only. Project
   // actor evidence here so persistence markers never become protocol identities.
   const common = { identityId: member.identityId, addedAt: member.addedAt };
@@ -624,12 +618,24 @@ export const sessionSharingHandlers: GatewayRequestHandlers = {
         storePath: current.storePath,
       };
       const now = Date.now();
-      const added = addSessionMember(scope, {
-        identityId: params.identityId,
-        addedBy: sharingActorStorageRef(actor),
-        addedAt: now,
-        expectedSessionId: current.entry.sessionId,
-      });
+      const added = await addSessionMember(
+        scope,
+        {
+          identityId: params.identityId,
+          addedBy: sharingActorStorageRef(actor),
+          addedAt: now,
+          expectedSessionId: current.entry.sessionId,
+        },
+        {
+          assertCurrent: () => {
+            requireCurrentManagedTarget({
+              cfg: context.getRuntimeConfig(),
+              client,
+              authorized: managed.target,
+            });
+          },
+        },
+      );
       if (!added.inserted) {
         return;
       }
@@ -682,17 +688,26 @@ export const sessionSharingHandlers: GatewayRequestHandlers = {
         sessionKey: current.storeKey,
         storePath: current.storePath,
       };
-      const removed = removeSessionMember(
+      const actor = actorIdentity(client);
+      const removed = await removeSessionMember(
         scope,
         params.identityId,
         undefined,
         current.entry.sessionId,
+        {
+          assertCurrent: () => {
+            requireCurrentManagedTarget({
+              cfg: context.getRuntimeConfig(),
+              client,
+              authorized: managed.target,
+            });
+          },
+        },
       );
       if (!removed) {
         return;
       }
       const now = Date.now();
-      const actor = actorIdentity(client);
       publishSharingChange({
         context,
         agentId: current.agentId,

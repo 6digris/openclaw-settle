@@ -7,10 +7,7 @@ import {
 } from "../../../packages/gateway-protocol/src/client-info.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
-import {
-  addSessionMember,
-  removeSessionMember,
-} from "../../config/sessions/session-sharing-store.js";
+import { addSessionMember } from "../../config/sessions/session-sharing-store.js";
 import { NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE } from "../../infra/node-runner-inventory.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
@@ -25,6 +22,7 @@ import {
   identifiedClient,
   sessionSharingTestContext,
 } from "../server-methods/sessions-sharing.test-support.js";
+import { revokeSessionMemberForTest } from "../session-sharing-fixtures.test-support.js";
 import { resolveSessionMutationAuthorization } from "../session-sharing.js";
 import { bindDeviceWorkerAvailability } from "./device-provider.js";
 import { type PlacementStore, REQUEST } from "./placement-dispatch-test-fixtures.js";
@@ -366,7 +364,7 @@ describe("worker placement dispatch authority", () => {
           visibility: "read-only",
           createdActor: { type: "human", source: "profile", id: owner.id },
         });
-        addSessionMember(scope, {
+        await addSessionMember(scope, {
           identityId: member.id,
           addedBy: owner.id,
           expectedSessionId: REQUEST.sessionId,
@@ -383,8 +381,13 @@ describe("worker placement dispatch authority", () => {
         }
         const revokeAt = (phase: string) => {
           if (phase === boundary) {
+            // The activation callback must revoke before dispatch resumes synchronously.
             expect(
-              removeSessionMember(scope, member.id, undefined, REQUEST.sessionId),
+              revokeSessionMemberForTest(
+                { ...scope, env: state.env },
+                member.id,
+                REQUEST.sessionId,
+              ),
             ).not.toBeNull();
           }
         };

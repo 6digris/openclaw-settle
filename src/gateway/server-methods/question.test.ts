@@ -176,7 +176,7 @@ describe("question gateway methods", () => {
           undefined,
           { details: { code: "SESSION_PARTICIPATION_REQUIRED" } },
         ]);
-        addSessionMember(
+        await addSessionMember(
           { agentId: "main", sessionKey: requestParams.sessionKey },
           { identityId: guest.id, addedBy: owner.id, expectedSessionId: "question-session" },
         );

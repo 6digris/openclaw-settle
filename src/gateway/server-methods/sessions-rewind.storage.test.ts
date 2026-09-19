@@ -26,10 +26,7 @@ import {
   runExclusiveSqliteSessionWrite,
   toDatabaseOptions,
 } from "../../config/sessions/session-accessor.sqlite-scope.js";
-import {
-  addSessionMember,
-  removeSessionMember,
-} from "../../config/sessions/session-sharing-store.js";
+import { addSessionMember } from "../../config/sessions/session-sharing-store.js";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
@@ -47,6 +44,7 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import { getSessionRepositoryWorkspaceStore } from "../../state/session-repository-workspaces.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { revokeSessionMemberForTest } from "../session-sharing-fixtures.test-support.js";
 import {
   resolveSessionMutationAuthorization,
   SessionMutationAuthorizationChangedError,
@@ -663,7 +661,7 @@ it.each(["SQLite writer fault injection", "public lifecycle predecessor"] as con
     await withOpenClawTestState({ label: "message-fork-participation" }, async (testState) => {
       await testState.writeConfig(cfg);
       const scope = await seedMessageCutSource();
-      addSessionMember(scope, {
+      await addSessionMember(scope, {
         identityId: "member",
         addedBy: "owner",
         expectedSessionId: scope.sessionId,
@@ -703,9 +701,8 @@ it.each(["SQLite writer fault injection", "public lifecycle predecessor"] as con
         revocation === "public lifecycle predecessor"
           ? await revokeWithPublicLifecyclePredecessor(scope, requestContext, invoke)
           : await revokeDuringWriterWait(scope, invoke, () => {
-              expect(
-                removeSessionMember(scope, "member", undefined, scope.sessionId),
-              ).not.toBeNull();
+              // Revoke inside the fault injection while the ordinary writer remains held.
+              expect(revokeSessionMemberForTest(scope, "member", scope.sessionId)).not.toBeNull();
               expect(loadSessionEntry(scope)).toEqual(before.source);
             });
 

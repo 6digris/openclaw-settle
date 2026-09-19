@@ -232,7 +232,7 @@ test.for(
         messages: [{ role: "user", content: "Physical database preview" }],
       });
       if (change === "leave") {
-        addSessionMember(scope, {
+        await addSessionMember(scope, {
           identityId: "viewer",
           addedBy: "owner",
           expectedSessionId: entry.sessionId,
@@ -276,13 +276,13 @@ test.for(
         } else if (change === "draft") {
           replaceSessionEntrySync(scope, { ...entry, visibility: "draft" });
         } else if (change === "join") {
-          addSessionMember(scope, {
+          await addSessionMember(scope, {
             identityId: "viewer",
             addedBy: "owner",
             expectedSessionId: entry.sessionId,
           });
         } else {
-          removeSessionMember(scope, "viewer", undefined, entry.sessionId);
+          await removeSessionMember(scope, "viewer", undefined, entry.sessionId);
         }
         await ensure();
       });

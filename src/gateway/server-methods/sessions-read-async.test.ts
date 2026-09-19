@@ -94,7 +94,7 @@ it.each([
         },
       );
       if (membershipChange) {
-        addSessionMember(scope, { identityId: viewer, addedBy: owner });
+        await addSessionMember(scope, { identityId: viewer, addedBy: owner });
       }
       let config = viewerConfig("view");
       const context = requestContext(config);
@@ -131,7 +131,7 @@ it.each([
             // External writers publish committed changes through their owning bridge.
             sessionChanges.emit(scope);
           } else if (membershipChange) {
-            expect(removeSessionMember(scope, viewer)).not.toBeNull();
+            expect(await removeSessionMember(scope, viewer)).not.toBeNull();
           } else {
             replaceSessionEntrySync(scope, {
               ...selected,

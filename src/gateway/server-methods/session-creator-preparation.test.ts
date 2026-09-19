@@ -376,7 +376,7 @@ describe("creator preparation at synchronous fan-out boundaries", () => {
           createdActor: { type: "human", source: "profile", id: "other-creator" },
         },
       );
-      addSessionMember(scope, { identityId: callerId, addedBy: "fixture" });
+      await addSessionMember(scope, { identityId: callerId, addedBy: "fixture" });
       const recipients = eventClients(callerId);
       let cfg: OpenClawConfig = {};
       const decisions: Array<[string, boolean]> = [];
@@ -416,14 +416,14 @@ describe("creator preparation at synchronous fan-out boundaries", () => {
       cfg = {};
       emit();
       expect(recipients.map(({ socket }) => socket.send.mock.calls.length)).toEqual([2, 1]);
-      removeSessionMember(scope, callerId);
+      await removeSessionMember(scope, callerId);
       emit();
       await closeOpenClawAgentDatabaseByPathAsync(
         path.join(stateDir, "agents", "main", "agent", "openclaw-agent.sqlite"),
       );
       emit();
       expect(recipients.map(({ socket }) => socket.send.mock.calls.length)).toEqual([2, 1]);
-      addSessionMember(scope, { identityId: callerId, addedBy: "fixture" });
+      await addSessionMember(scope, { identityId: callerId, addedBy: "fixture" });
       emit();
       expect(recipients.map(({ socket }) => socket.send.mock.calls.length)).toEqual([3, 2]);
     }, 1);
@@ -517,9 +517,9 @@ describe("creator preparation at synchronous fan-out boundaries", () => {
       try {
         await write("work", workKey, callerId);
         const workScope = { agentId: "work", sessionKey: workKey };
-        addSessionMember(workScope, { identityId: creatorId, addedBy: callerId });
+        await addSessionMember(workScope, { identityId: creatorId, addedBy: callerId });
         expect(receive([...keys, workKey])).toBe(true);
-        removeSessionMember(workScope, creatorId);
+        await removeSessionMember(workScope, creatorId);
         expect(receive([...keys, workKey])).toBe(false);
         expect(receive(keys)).toBe(true);
         await write("main", "global", creatorId);

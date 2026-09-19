@@ -643,6 +643,14 @@ during orderly shutdown. Delayed results cannot overwrite newer synchronous
 writes or refreshes. Reconciliation failures leave the flow projection dirty and
 preserve the durable mutation result without replaying the write.
 
+Session member additions and removals execute their row mutation and session-instance
+checks inside a synchronous transaction on the canonical agent database worker.
+Gateway callers await the durable result before publishing sharing events, and
+recheck current manager authority at both transaction and commit admission.
+Committed row invalidation stays with the original database. Native database
+preparation, manager reads, and process-local incognito storage retain their
+existing owners; this does not change membership permissions or the schema.
+
 Synchronous callers keep their existing transaction behavior. Native cancellation,
 child-task linkage, and compound task/subagent completion retain their existing
 owners until their complete persistence and lifecycle boundaries move together.

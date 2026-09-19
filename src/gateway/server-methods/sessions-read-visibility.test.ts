@@ -54,7 +54,7 @@ test("projects recap eligibility from current sharing authority, including cappe
       },
     );
   }
-  addSessionMember(
+  await addSessionMember(
     { agentId: "main", sessionKey: "agent:main:recap-member", storePath },
     { identityId: ownerId, addedBy: foreignId },
   );
@@ -323,9 +323,11 @@ test("sessions.describe preserves caller roles and sessions.get hides foreign dr
     storePath,
   });
   expect(
-    addSessionMember(
-      { agentId: "main", sessionKey, storePath },
-      { identityId: memberId, addedBy: ownerId, addedAt: 1 },
+    (
+      await addSessionMember(
+        { agentId: "main", sessionKey, storePath },
+        { identityId: memberId, addedBy: ownerId, addedAt: 1 },
+      )
     ).inserted,
   ).toBe(true);
   for (let index = 0; index < 5; index += 1) {

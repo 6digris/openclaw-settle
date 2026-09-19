@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
 import { initializeSessionReadContext } from "../../gateway/server-methods/sessions-read-cache.test-support.js";
@@ -19,8 +20,48 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { patchSessionEntryCore, upsertSessionEntryCore } from "./session-accessor.js";
-import { addSessionMember } from "./session-sharing-store.js";
+import {
+  addSessionMember,
+  listSessionMembers,
+  removeSessionMember,
+} from "./session-sharing-store.js";
 import { listSessionMembersInWorker } from "./session-transcript-worker-runtime.js";
+
+it.runIf(process.platform !== "win32")(
+  "repairs warm membership writer permission drift before add and remove complete",
+  async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const scope = { agentId: "main", sessionKey: "agent:main:member-permission-drift" };
+      await upsertSessionEntryCore(scope, { sessionId: "member-permission-drift", updatedAt: 1 });
+      const warm = { identityId: "warm", addedBy: "owner", addedAt: 2 };
+      await addSessionMember(scope, warm);
+      const databasePath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
+      const directory = path.dirname(databasePath);
+      const files = [databasePath, `${databasePath}-wal`, `${databasePath}-shm`];
+      const member = { identityId: "guest", addedBy: "owner", addedAt: 3 };
+
+      for (const action of ["add", "remove"] as const) {
+        fs.chmodSync(directory, 0o1700);
+        fs.chmodSync(databasePath, 0o4600);
+        for (const file of files.slice(1)) {
+          fs.chmodSync(file, 0o644);
+        }
+        if (action === "add") {
+          expect(await addSessionMember(scope, member)).toEqual({ member, inserted: true });
+        } else {
+          expect(await removeSessionMember(scope, member.identityId)).toEqual(member);
+        }
+        expect.soft(fs.statSync(directory).mode & 0o7777, `${action}: agent directory`).toBe(0o700);
+        for (const file of files) {
+          expect
+            .soft(fs.statSync(file).mode & 0o7777, `${action}: ${path.basename(file)}`)
+            .toBe(0o600);
+        }
+        expect(listSessionMembers(scope)).toEqual(action === "add" ? [member, warm] : [warm]);
+      }
+    });
+  },
+);
 
 it("reads complete current member rows without executing SQLite on the caller", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
@@ -30,8 +71,12 @@ it("reads complete current member rows without executing SQLite on the caller", 
       fallbackEntry: entry,
       skipMaintenance: true,
     });
-    addSessionMember(scope, { identityId: "zoe", addedBy: "actor-evidence:unknown", addedAt: 2 });
-    addSessionMember(scope, {
+    await addSessionMember(scope, {
+      identityId: "zoe",
+      addedBy: "actor-evidence:unknown",
+      addedAt: 2,
+    });
+    await addSessionMember(scope, {
       identityId: "alice",
       addedBy: "actor-evidence:unattributed",
       addedAt: 3,
@@ -59,7 +104,7 @@ it("reads complete current member rows without executing SQLite on the caller", 
         method.mockRestore();
       }
     }
-    addSessionMember(scope, { identityId: "bob", addedBy: "owner", addedAt: 4 });
+    await addSessionMember(scope, { identityId: "bob", addedBy: "owner", addedAt: 4 });
     expect(await listSessionMembersInWorker(scope)).toEqual([
       { identityId: "alice", addedBy: "actor-evidence:unattributed", addedAt: 3 },
       { identityId: "bob", addedBy: "owner", addedAt: 4 },
@@ -79,10 +124,18 @@ it("retains the physical owner and logical partition of a shared member store", 
     });
     const scope = { agentId: "other", sessionKey: "agent:other:members", storePath: database.path };
     await upsertSessionEntryCore(scope, { sessionId: "other-members", updatedAt: 1 });
-    addSessionMember(scope, { identityId: "other-guest", addedBy: "other-owner", addedAt: 2 });
+    await addSessionMember(scope, {
+      identityId: "other-guest",
+      addedBy: "other-owner",
+      addedAt: 2,
+    });
     const sibling = { ...scope, agentId: "main", sessionKey: "agent:main:members" };
     await upsertSessionEntryCore(sibling, { sessionId: "main-members", updatedAt: 1 });
-    addSessionMember(sibling, { identityId: "main-guest", addedBy: "main-owner", addedAt: 3 });
+    await addSessionMember(sibling, {
+      identityId: "main-guest",
+      addedBy: "main-owner",
+      addedAt: 3,
+    });
     expect(await listSessionMembersInWorker(scope)).toEqual([
       { identityId: "other-guest", addedBy: "other-owner", addedAt: 2 },
     ]);
@@ -99,7 +152,7 @@ it("keeps process-local incognito membership with its native owner", async () =>
       updatedAt: 1,
       incognito: true,
     });
-    addSessionMember(scope, { identityId: "guest", addedBy: "owner", addedAt: 2 });
+    await addSessionMember(scope, { identityId: "guest", addedBy: "owner", addedAt: 2 });
     expect(await listSessionMembersInWorker(scope)).toEqual([
       { identityId: "guest", addedBy: "owner", addedAt: 2 },
     ]);
@@ -130,8 +183,8 @@ it.each(["session.members.list", "session.members.listEvidence"] as const)(
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const scope = { agentId: "main", sessionKey: "agent:main:worker-members" };
       await upsertSessionEntryCore(scope, { sessionId: "worker-members", updatedAt: 1 });
-      addSessionMember(scope, { identityId: "zoe", addedBy: "owner", addedAt: 2 });
-      addSessionMember(scope, { identityId: "alice", addedBy: "owner", addedAt: 3 });
+      await addSessionMember(scope, { identityId: "zoe", addedBy: "owner", addedAt: 2 });
+      await addSessionMember(scope, { identityId: "alice", addedBy: "owner", addedAt: 3 });
       const requestContext = context(vi.fn());
       await initializeSessionReadContext(requestContext);
       const database = openOpenClawAgentDatabase({ agentId: "main" });
@@ -170,7 +223,7 @@ it("rechecks the current manager after the membership read yields", async () => 
       updatedAt: 1,
       createdActor: { type: "human", source: "profile", id: "owner" },
     });
-    addSessionMember(scope, { identityId: "guest", addedBy: "owner", addedAt: 2 });
+    await addSessionMember(scope, { identityId: "guest", addedBy: "owner", addedAt: 2 });
     const client = identifiedClient("owner");
     const requestContext = context(vi.fn());
     await initializeSessionReadContext(requestContext);
@@ -184,3 +237,60 @@ it("rechecks the current manager after the membership read yields", async () => 
     await expect(pending).rejects.toThrow("session ownership changed before sharing read");
   });
 });
+
+it.each(["add", "remove"] as const)(
+  "session.members.%s commits member rows off the Gateway thread before publication",
+  async (action) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const scope = { agentId: "main", sessionKey: "agent:main:member-writer" };
+      await upsertSessionEntryCore(scope, {
+        sessionId: "member-writer",
+        updatedAt: 1,
+        createdActor: { type: "human", source: "profile", id: "owner" },
+      });
+      if (action === "remove") {
+        await addSessionMember(scope, { identityId: "owner", addedBy: "owner", addedAt: 2 });
+      }
+      const requestContext = context(vi.fn());
+      await initializeSessionReadContext(requestContext);
+      const database = openOpenClawAgentDatabase({ agentId: "main" });
+      const prototype: StatementSync = Object.getPrototypeOf(database.db.prepare("SELECT 1"));
+      const execution = ["all", "get", "iterate", "run"] as const;
+      const methods = execution.map((method) => vi.spyOn(prototype, method));
+      const responses: Parameters<RespondFn>[] = [];
+      try {
+        await sessionSharingHandlers[`session.members.${action}`]?.({
+          req: { type: "req", id: "member-writer-test", method: `session.members.${action}` },
+          params: { sessionKey: scope.sessionKey, identityId: "owner" },
+          client: identifiedClient("owner"),
+          isWebchatConnect: () => false,
+          context: requestContext,
+          respond: (...response: Parameters<RespondFn>) => responses.push(response),
+        });
+        expect(responses[0]?.[0]).toBe(true);
+        expect(
+          methods
+            .flatMap((method) => method.mock.contexts)
+            .map((statement) => (statement as StatementSync).sourceSQL)
+            .filter((sql) =>
+              /(?:insert into|delete from|update) ["`]?session_members["`]?/i.test(sql),
+            ),
+        ).toEqual([]);
+      } finally {
+        for (const method of methods) {
+          method.mockRestore();
+        }
+      }
+      expect(await listSessionMembersInWorker(scope)).toEqual(
+        action === "add"
+          ? [expect.objectContaining({ identityId: "owner", addedBy: "owner" })]
+          : [],
+      );
+      expect(requestContext.broadcast).toHaveBeenCalledWith(
+        "session.sharing",
+        expect.objectContaining({ action: action === "add" ? "member-added" : "member-removed" }),
+        expect.anything(),
+      );
+    });
+  },
+);
