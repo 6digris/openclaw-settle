@@ -457,7 +457,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$NODE_BIN:$PATH"
-          node scripts/run-vitest.mjs src/agents/cli-executable-identity.test.ts
+          node scripts/run-vitest.mjs src/skills/runtime/refresh-watch-close.test.ts src/skills/runtime/refresh.missing-root.integration.test.ts
 
       - name: Keep runner alive for SSH inspection
         if: ${{ always() && !cancelled() }}
