@@ -62,11 +62,11 @@ it.each(["acquire", "release", "rollup", "prune"] as const)(
         database.db
           .prepare("SELECT value_json FROM cache_entries WHERE scope = ? AND key = ?")
           .get("session-cost-usage", "refresh-lock");
-      const readSnapshot = () => ({
+      const readSnapshot = async () => ({
         lock: readLock(),
-        rows: readSessionCostUsageRollupRows(agentId, databasePath),
+        rows: await readSessionCostUsageRollupRows(agentId, databasePath),
       });
-      const before = readSnapshot();
+      const before = await readSnapshot();
       const entered = createDeferredCore();
       const release = createDeferredCore();
       const reservation = runOpenClawAgentWorkerWrite({ agentId, path: databasePath }, async () => {
@@ -112,7 +112,7 @@ it.each(["acquire", "release", "rollup", "prune"] as const)(
       try {
         try {
           await setImmediate();
-          expect(readSnapshot()).toEqual(before);
+          expect(await readSnapshot()).toEqual(before);
           expect(settled).toBe(false);
         } finally {
           release.resolve();
@@ -125,7 +125,7 @@ it.each(["acquire", "release", "rollup", "prune"] as const)(
         } else if (operation === "release") {
           expect(readLock()).toBeUndefined();
         } else {
-          expect(readSessionCostUsageRollupRows(agentId, databasePath)).toEqual(
+          expect(await readSessionCostUsageRollupRows(agentId, databasePath)).toEqual(
             operation === "prune"
               ? []
               : [{ key: "session.jsonl", valueJson: '{"totalTokens":2}', updatedAt: 2 }],
@@ -217,7 +217,7 @@ it.each([
         await nativeFinished.promise;
         await setImmediate();
         expect(writeSettled).toBe(false);
-        expect(readSessionCostUsageRollupRows(agentId, databasePath)).toEqual([]);
+        expect(await readSessionCostUsageRollupRows(agentId, databasePath)).toEqual([]);
         cwd?.mockReturnValue(retargeted);
         if (closing) {
           drain = closeOpenClawAgentDatabasesAsync(root).then(() => {
@@ -232,11 +232,11 @@ it.each([
         if (closing) {
           await drain;
           expect(outcome.status).toBe("rejected");
-          expect(readSessionCostUsageRollupRows(agentId, databasePath)).toEqual([]);
+          expect(await readSessionCostUsageRollupRows(agentId, databasePath)).toEqual([]);
         } else {
           expect(outcome).toEqual({ status: "fulfilled", value: refresh ? "refreshed" : true });
           expect(fs.existsSync(path.join(retargeted, path.basename(databasePath)))).toBe(false);
-          const rows = readSessionCostUsageRollupRows(agentId, databasePath);
+          const rows = await readSessionCostUsageRollupRows(agentId, databasePath);
           if (refresh) {
             expect(rows.map((row) => row.key)).toEqual([sessionFile]);
           } else {
@@ -316,7 +316,7 @@ it("reads the committed refresh lock while acquisition waits for the writer rese
     });
     const outcomes = Promise.allSettled([acquiring, reading]);
     try {
-      await setImmediate();
+      expect(await reading).toBe(false);
       expect(observed).toBe(false);
       expect(owner).toBeUndefined();
       expect(readLock()).toEqual({ value_json: "{}" });

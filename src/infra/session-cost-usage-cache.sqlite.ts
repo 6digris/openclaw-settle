@@ -1,23 +1,22 @@
-import type { DatabaseSync } from "node:sqlite";
 import { cloneEnvWithPlatformSemantics } from "../config/config-env-vars.js";
+import { withSessionHistoryWorkerDatabase } from "../config/sessions/session-transcript-worker-runtime.js";
+import { resolveStateDir } from "../config/state-dir.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { isPidAlive } from "../shared/pid-alive.js";
-import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
 import { withOpenClawAgentDatabaseWrite } from "../state/openclaw-agent-db-write.js";
 import {
   runOpenClawAgentWriteTransaction,
   resolveOpenClawAgentSqlitePath,
+  isIncognitoOpenClawAgentSqlitePath,
 } from "../state/openclaw-agent-db.js";
+import type { SessionCostUsageCacheRead } from "./session-cost-usage-cache-read.js";
 import {
   acquireSessionCostUsageRefreshLockInDatabase,
   deleteSessionCostUsageRefreshLockInDatabase,
   pruneSessionCostUsageRollupsInDatabase,
-  readSessionCostUsageRefreshLockInDatabase,
-  readSessionCostUsageRollupRowsInDatabase,
   writeSessionCostUsageRollupInDatabase,
   type SessionCostUsageRollupRow,
 } from "./session-cost-usage-cache.kernel.js";
-import { isTransientSqliteError } from "./unhandled-rejections.js";
 
 // Per-agent SQLite storage for rebuildable per-session usage rollups.
 type SessionCostUsageRefreshLock = {
@@ -33,6 +32,7 @@ function captureCacheDatabaseOptions(
     ...inputOptions,
     env: cloneEnvWithPlatformSemantics(inputOptions.env ?? process.env),
   };
+  options.env.OPENCLAW_STATE_DIR = resolveStateDir(options.env);
   return { ...options, path: resolveOpenClawAgentSqlitePath(options) };
 }
 
@@ -51,32 +51,30 @@ function runCacheWriteTransaction<T>(
   );
 }
 
-function readCacheDatabase<T>(
-  agentId: string | undefined,
-  databasePath: string | undefined,
-  operation: (database: { db: DatabaseSync }) => T,
-): T | undefined {
-  try {
-    const result = withOpenClawAgentDatabaseReadOnly(operation, {
-      agentId: normalizeAgentId(agentId),
-      ...(databasePath ? { path: databasePath } : {}),
-    });
-    return result.found ? result.value : undefined;
-  } catch (error) {
-    if (!isTransientSqliteError(error)) {
-      throw error;
-    }
-    // Usage rollups are rebuildable cache; stale or empty data beats failing the dashboard.
-    return undefined;
+async function readCacheDatabase(
+  options: ReturnType<typeof captureCacheDatabaseOptions>,
+  request: SessionCostUsageCacheRead,
+) {
+  if (isIncognitoOpenClawAgentSqlitePath(options.path, options)) {
+    const { readSessionCostUsageCache } = await import("./session-cost-usage-cache-read.js");
+    return readSessionCostUsageCache(options, request);
   }
+  return withSessionHistoryWorkerDatabase(options, (owner) =>
+    owner.readUsageCache({
+      request,
+      env: { ...options.env, OPENCLAW_STATE_DIR: options.env.OPENCLAW_STATE_DIR },
+    }),
+  );
 }
 
-function readRefreshLock(agentId: string | undefined, databasePath?: string): string | null {
-  return (
-    readCacheDatabase(agentId, databasePath, (database) =>
-      readSessionCostUsageRefreshLockInDatabase(database.db),
-    ) ?? null
-  );
+async function readRefreshLock(
+  options: ReturnType<typeof captureCacheDatabaseOptions>,
+): Promise<string | null> {
+  const result = await readCacheDatabase(options, { kind: "usage-refresh-lock" });
+  if (result.kind !== "usage-refresh-lock") {
+    throw new Error("Usage cache worker returned rollups instead of a refresh lock");
+  }
+  return result.value;
 }
 
 async function deleteRefreshLockIfUnchanged(params: {
@@ -96,16 +94,23 @@ async function deleteRefreshLockIfUnchanged(params: {
   );
 }
 
-export function readSessionCostUsageRollupRows(
+export async function readSessionCostUsageRollupRows(
   agentId?: string,
   databasePath?: string,
   filePaths?: readonly string[],
-): SessionCostUsageRollupRow[] {
-  return (
-    readCacheDatabase(agentId, databasePath, (database) =>
-      readSessionCostUsageRollupRowsInDatabase(database.db, filePaths),
-    ) ?? []
-  );
+): Promise<SessionCostUsageRollupRow[]> {
+  const options = captureCacheDatabaseOptions({
+    agentId: normalizeAgentId(agentId),
+    path: databasePath,
+  });
+  const result = await readCacheDatabase(options, {
+    kind: "usage-rollups",
+    filePaths: filePaths ? [...filePaths] : undefined,
+  });
+  if (result.kind !== "usage-rollups") {
+    throw new Error("Usage cache worker returned a refresh lock instead of rollups");
+  }
+  return result.rows;
 }
 
 export async function writeSessionCostUsageRollup(params: {
@@ -177,7 +182,7 @@ export async function isSessionCostUsageRefreshRunning(
     agentId: normalizeAgentId(agentId),
     path: databasePath,
   });
-  const lock = parseRefreshLock(readRefreshLock(options.agentId, options.path));
+  const lock = parseRefreshLock(await readRefreshLock(options));
   // Status never waits for a writer; acquisition replaces stale locks with its existing CAS.
   return lock !== null && isPidAlive(lock.pid);
 }
@@ -190,7 +195,7 @@ export async function acquireSessionCostUsageRefreshLock(
     agentId: normalizeAgentId(agentId),
     path: databasePath,
   });
-  const previousRaw = readRefreshLock(options.agentId, options.path);
+  const previousRaw = await readRefreshLock(options);
   const previousLock = parseRefreshLock(previousRaw);
   // Process liveness is resolved before BEGIN. The transaction only compares
   // the authoritative row and commits the prepared replacement synchronously.

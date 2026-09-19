@@ -860,8 +860,14 @@ its compare-and-set transaction remains synchronous on the admitted connection.
 Refresh completion and cleanup await persistence. Operations capture their resolved
 database path before admission, and refresh-lock release retains that path and its
 original environment when the caller's directory or environment changes. Doctor reports rejected
-pruning operations before continuing to the next agent. Read-only cache snapshots
-retain their existing synchronous owner and do not create missing databases.
+pruning operations before continuing to the next agent. File-backed rollup and
+refresh-lock reads use the existing session-transcript worker and its retained
+read-only database scope. They capture the database path and environment before
+awaiting dispatch, do not create or register missing databases, and preserve the
+empty-cache fallback for transient SQLite failures. Status reads do not wait for
+the writer queue. Incognito cache reads retain their process-held database.
+Cache mutations, transcript discovery, and usage scanning retain their existing
+native execution paths.
 
 Memory managers admit writes on their exact borrowed agent connection. Provider
 calls and source preparation run before admission; generated-cache and source

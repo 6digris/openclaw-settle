@@ -134,18 +134,18 @@ function normalizeUsageCostRollup(
   return record as UsageCostRollupEntry;
 }
 
-export function readUsageCostRollups(
+export async function readUsageCostRollups(
   agentId: string,
   pricingFingerprint: string,
   databasePath?: string,
   params: {
-    rows?: ReturnType<typeof readSessionCostUsageRollupRows>;
+    rows?: Awaited<ReturnType<typeof readSessionCostUsageRollupRows>>;
     filePaths?: readonly string[];
   } = {},
-): Map<string, UsageCostStoredRollup> {
+): Promise<Map<string, UsageCostStoredRollup>> {
   const result = new Map<string, UsageCostStoredRollup>();
   const rows =
-    params.rows ?? readSessionCostUsageRollupRows(agentId, databasePath, params.filePaths);
+    params.rows ?? (await readSessionCostUsageRollupRows(agentId, databasePath, params.filePaths));
   for (const row of rows) {
     try {
       const entry = normalizeUsageCostRollup(JSON.parse(row.valueJson), pricingFingerprint);
@@ -605,9 +605,9 @@ export async function refreshCostUsageCacheForAgent(params: {
   try {
     const agentDir = params.agentDir ?? resolveUsageCostAgentDir(params.config, params.agentId);
     const pricingFingerprint = await resolveUsageCostPricingFingerprint(params.config, agentDir);
-    const rows = readSessionCostUsageRollupRows(params.agentId, databasePath);
+    const rows = await readSessionCostUsageRollupRows(params.agentId, databasePath);
     const rawValues = new Map(rows.map((row) => [row.key, row.valueJson]));
-    const rollups = readUsageCostRollups(params.agentId, pricingFingerprint, databasePath, {
+    const rollups = await readUsageCostRollups(params.agentId, pricingFingerprint, databasePath, {
       rows,
     });
     const discoveredFiles = await listUsageCountedTranscriptStats(params.agentId, {
