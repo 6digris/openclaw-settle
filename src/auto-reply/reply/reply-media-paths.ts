@@ -133,6 +133,9 @@ export function createReplyMediaSourcePreparer(params: {
   sessionKey?: string;
   agentId?: string;
   workspaceDir: string;
+  sessionWorkspaceDir?: string;
+  workspaceOnly?: boolean;
+  allowHostWorkspace?: boolean;
   messageProvider?: string;
   accountId?: string;
   groupId?: string;
@@ -212,7 +215,9 @@ export function createReplyMediaSourcePreparer(params: {
       cfg: params.cfg,
       agentId,
       workspaceDir: workspaceDir ?? params.workspaceDir,
-      ...(sessionWorkspaceDir ? { sessionWorkspaceDir } : {}),
+      sessionWorkspaceDir: sessionWorkspaceDir ?? params.sessionWorkspaceDir,
+      workspaceOnly: params.workspaceOnly,
+      allowHostWorkspace: params.allowHostWorkspace,
       mediaSources: [media],
       mediaAccess: params.mediaAccess,
       workspaceMediaAccess: params.workspaceMediaAccess,
@@ -493,9 +498,14 @@ export type ReplyMediaContext = {
 };
 
 export function createReplyMediaContext(
-  params: Parameters<typeof createReplyMediaPathNormalizer>[0],
+  params: Parameters<typeof createReplyMediaPathNormalizer>[0] & {
+    mediaNormalizationOwner?: "gateway";
+  },
 ): ReplyMediaContext {
   return {
-    normalizePayload: createReplyMediaPathNormalizer(params),
+    normalizePayload:
+      params.mediaNormalizationOwner === "gateway"
+        ? async (payload) => payload
+        : createReplyMediaPathNormalizer(params),
   };
 }
