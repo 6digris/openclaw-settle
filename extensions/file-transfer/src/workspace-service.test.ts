@@ -1,5 +1,8 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
+import { createServer } from "node:http";
+import os from "node:os";
 import path from "node:path";
 import {
   getAgentWorkspaceAccess,
@@ -21,8 +24,16 @@ import { handleFileCreate } from "./node-host/file-create.js";
 import { handleFileFetch } from "./node-host/file-fetch.js";
 import { handleFileStat } from "./node-host/file-stat.js";
 import { handleFileWrite } from "./node-host/file-write.js";
+import {
+  createWorkspaceMemoryCommand,
+  createWorkspaceSkillsCommand,
+} from "./node-host/workspace-memory.js";
 import { createFileTransferNodeInvokePolicy } from "./shared/node-invoke-policy.js";
 import { createCtx } from "./shared/node-invoke-policy.test-support.js";
+import {
+  createWorkspaceMemoryPolicy,
+  createWorkspaceSkillsPolicy,
+} from "./shared/workspace-memory-policy.js";
 import { registerNodeWorkspaces } from "./workspace-service.js";
 
 vi.mock("./shared/audit.js", () => ({ appendFileTransferAudit: vi.fn() }));
@@ -35,6 +46,7 @@ let api: OpenClawPluginApi;
 let nodePolicy: {
   allowReadPaths: string[];
   allowWritePaths: string[];
+  denyPaths?: string[];
   followSymlinks: boolean;
   ask: "off";
   maxBytes?: number;
@@ -134,6 +146,270 @@ afterEach(async () => {
 });
 
 describe("registered node workspace service", () => {
+  it("discovers Harness Skills, reads their source and installs a dependency on the Harness", async ({
+    onTestFinished,
+  }) => {
+    const home = await fs.realpath(tempDirs.make("node-skills-home-"));
+    vi.stubEnv("HOME", home);
+    // The test runner pins os.homedir separately from process.env.HOME.
+    const homeSpy = vi.spyOn(os, "homedir").mockReturnValue(home);
+    onTestFinished(() => homeSpy.mockRestore());
+    const skillDir = path.join(remote, "skills", "local-tool");
+    await fs.mkdir(skillDir, { recursive: true });
+    const instructions =
+      "---\nname: local-tool\ndescription: Test the workspace tool\n---\nRun local-tool.\n";
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), instructions);
+    const packageDir = path.join(remote, "package");
+    await fs.mkdir(packageDir);
+    await fs.writeFile(
+      path.join(packageDir, "package.json"),
+      JSON.stringify({
+        name: "workspace-node-test-tool",
+        version: "1.0.0",
+        bin: { "local-tool": "cli.cjs" },
+      }),
+    );
+    await fs.writeFile(
+      path.join(packageDir, "cli.cjs"),
+      '#!/usr/bin/env node\nconsole.log("Harness dependency works");\n',
+      { mode: 0o755 },
+    );
+    const tarball = execFileSync("tar", ["-czf", "-", "-C", remote, "package"]);
+    let registry = "";
+    const registryRequests: string[] = [];
+    const server = createServer((request, response) => {
+      registryRequests.push(request.url ?? "");
+      if (request.url === "/workspace-node-test-tool") {
+        response.setHeader("Content-Type", "application/json");
+        response.end(
+          JSON.stringify({
+            name: "workspace-node-test-tool",
+            "dist-tags": { latest: "1.0.0" },
+            versions: {
+              "1.0.0": {
+                name: "workspace-node-test-tool",
+                version: "1.0.0",
+                bin: { "local-tool": "cli.cjs" },
+                dist: { tarball: `${registry}/fixture.tgz` },
+              },
+            },
+          }),
+        );
+      } else if (request.url === "/fixture.tgz") {
+        response.end(tarball);
+      } else {
+        response.writeHead(404).end();
+      }
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    onTestFinished(async () => {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      });
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Missing fixture registry port");
+    }
+    registry = `http://127.0.0.1:${address.port}`;
+    await fs.writeFile(
+      path.join(home, ".npmrc"),
+      `registry=${registry}\naudit=false\nfund=false\nupdate-notifier=false\nfetch-retries=0\n`,
+    );
+    nodePolicy.allowWritePaths.push(`${remote}/skills`);
+    enableAttachmentTransport();
+    await service.start(context());
+    const access = getAgentWorkspaceAccess(local)!;
+    const sources = await access.loadSkills!({
+      sourcePlan: {
+        workspaceDir: local,
+        stateDir: local,
+        managedSkillsDir: path.join(local, "managed"),
+        pluginSkillsDir: path.join(local, "plugins"),
+        roots: [
+          { dir: path.join(local, "skills"), source: "openclaw-workspace", tier: "workspace" },
+        ],
+        pluginSkillRoots: [],
+      },
+      limits: {
+        maxCandidatesPerRoot: 100,
+        maxSkillsLoadedPerSource: 100,
+        maxSkillFileBytes: 65536,
+      },
+      additionalBins: [],
+    });
+    const skill = sources.entries.find((entry) => entry.skill.name === "local-tool")!.skill;
+    expect(skill.filePath).toBe(path.join(skillDir, "SKILL.md"));
+    expect(await access.skillResources!.readInstructions(skill.filePath, {})).toBe(instructions);
+    const result = await access.installSkillDependencies!({
+      skillKey: "local-tool",
+      spec: { kind: "node", package: "workspace-node-test-tool" },
+      preferences: { nodeManager: "npm", preferBrew: false },
+      timeoutMs: 30_000,
+    });
+    expect(result, JSON.stringify({ result, registryRequests })).toMatchObject({ ok: true });
+    const executable = path.join(home, ".openclaw/tools/node/npm/bin/local-tool");
+    expect(execFileSync(process.execPath, [executable], { encoding: "utf8" }).trim()).toBe(
+      "Harness dependency works",
+    );
+    expect(await fs.readdir(local)).toEqual(["AGENTS.md"]);
+  }, 60_000);
+
+  it.each(["workspace", "execution", "symlink", "byte limit"])(
+    "does not send denied Skill discovery metadata (%s)",
+    async (kind) => {
+      const workspace = kind === "execution" ? path.join(remote, "execution") : remote;
+      const skillDir = path.join(workspace, "skills", "private-tool");
+      await fs.mkdir(skillDir, { recursive: true });
+      const skillFile = path.join(skillDir, "SKILL.md");
+      const deniedFile = kind === "symlink" ? path.join(skillDir, "private.md") : skillFile;
+      await fs.writeFile(
+        deniedFile,
+        "---\nname: private-tool\ndescription: Private metadata\n---\nPrivate instructions.\n",
+      );
+      if (kind === "symlink") {
+        await fs.symlink("private.md", skillFile);
+        nodePolicy.followSymlinks = true;
+      }
+      const output: Uint8Array[] = [];
+      enableAttachmentTransport(undefined, (bytes) => output.push(bytes));
+      await service.start(context());
+      const request = {
+        sourcePlan: {
+          workspaceDir: local,
+          managedSkillsDir: path.join(local, "managed"),
+          roots: [
+            {
+              dir: path.join(local, "skills"),
+              source: "openclaw-workspace",
+              tier: "workspace" as const,
+            },
+          ],
+          pluginSkillRoots: [],
+        },
+        executionWorkspaceDir: kind === "execution" ? path.join(local, "execution") : undefined,
+        limits: {
+          maxCandidatesPerRoot: 100,
+          maxSkillsLoadedPerSource: 100,
+          maxSkillFileBytes: 65536,
+        },
+        additionalBins: [],
+      };
+      const loadSkills = getAgentWorkspaceAccess(local)!.loadSkills!;
+      const allowed = await loadSkills(request);
+      const entries = kind === "execution" ? allowed.executionEntries : allowed.entries;
+      expect(entries.map((entry) => entry.skill.name)).toContain("private-tool");
+      expect(output.length).toBeGreaterThan(0);
+      if (kind === "byte limit") {
+        nodePolicy.maxBytes = 1;
+      } else {
+        nodePolicy.denyPaths = [deniedFile];
+      }
+      output.length = 0;
+      await expect(loadSkills(request)).rejects.toMatchObject({
+        message: "Remote workspace skill discovery failed",
+        cause: {
+          message: expect.stringContaining(
+            kind === "byte limit" ? "response exceeds" : "denied by the node file read policy",
+          ),
+        },
+      });
+      expect(output).toEqual([]);
+    },
+  );
+
+  it.each(["file", "symlink"])(
+    "does not send a Skill bundle containing a denied child %s",
+    async (kind) => {
+      const skillDir = path.join(remote, "skills", "local-tool");
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(
+        path.join(skillDir, "SKILL.md"),
+        "---\nname: local-tool\ndescription: Test resources\n---\nUse supporting files.\n",
+      );
+      const privatePath = path.join(skillDir, "private.txt");
+      await fs.writeFile(privatePath, "Private bytes");
+      if (kind === "symlink") {
+        await fs.symlink("private.txt", path.join(skillDir, "alias.txt"));
+        nodePolicy.followSymlinks = true;
+      }
+      const output: Uint8Array[] = [];
+      enableAttachmentTransport(undefined, (bytes) => output.push(bytes));
+      await service.start(context());
+      const reader = getAgentWorkspaceAccess(local)!.skillResources!;
+      const skill = await reader.resolveExplicitSkill({
+        name: "local-tool",
+        path: path.join(skillDir, "SKILL.md"),
+      });
+      expect(skill).not.toBeNull();
+      const files = await reader.readSkillFiles(skill!, { allowMissingRoot: false });
+      expect(files?.some((file) => file.path === "private.txt")).toBe(true);
+      nodePolicy.denyPaths = [privatePath];
+      output.length = 0;
+
+      await expect(reader.readSkillFiles(skill!, { allowMissingRoot: false })).rejects.toThrow(
+        "denied by the node file read policy",
+      );
+      expect(output).toEqual([]);
+    },
+  );
+
+  it("reads and maintains Harness Memory through the shared client and native worker", async () => {
+    vi.stubEnv("HOME", tempDirs.make("node-memory-home-"));
+    await fs.mkdir(path.join(remote, "memory"));
+    await fs.mkdir(path.join(local, "memory"));
+    const file = path.join(local, "memory", "note.md");
+    const remoteFile = path.join(remote, "memory", "note.md");
+    await fs.writeFile(file, "Gateway decoy");
+    await fs.writeFile(remoteFile, "Harness memory");
+    nodePolicy.allowWritePaths.push(`${remote}/memory/**`);
+    enableAttachmentTransport();
+    await service.start(context());
+    const memory = getAgentWorkspaceAccess(local)!.memoryFiles!;
+    expect(await memory.listFiles(local)).toContain(file);
+    expect(await memory.readForIndexing(file)).toMatchObject({ content: "Harness memory" });
+    await memory.maintenance!.commitContent({
+      filePath: file,
+      content: "Updated memory",
+      expectedContent: "Harness memory",
+      tempPrefix: ".memory-test-",
+    });
+    expect(await fs.readFile(remoteFile, "utf8")).toBe("Updated memory");
+    expect(await fs.readFile(file, "utf8")).toBe("Gateway decoy");
+    const controller = new AbortController();
+    const changes: string[] = [];
+    const watching = memory.watch(
+      {
+        agentId: "main",
+        settings: {
+          extraPaths: [],
+          multimodal: { enabled: false, modalities: [], maxFileBytes: 1024 },
+          sync: { watchDebounceMs: 10 },
+        },
+      },
+      (event) => changes.push(event),
+      controller.signal,
+    );
+    void watching.catch(() => {});
+    try {
+      await vi.waitFor(
+        async () => {
+          await fs.writeFile(remoteFile, "New Harness memory");
+          expect(changes).toContain("change");
+        },
+        { timeout: 5_000, interval: 200 },
+      );
+    } finally {
+      controller.abort();
+      await watching.catch(() => {});
+    }
+    nodePolicy.allowReadPaths = [`${remote}/AGENTS.md`];
+    await expect(memory.readForIndexing(file)).rejects.toThrow(/file grant/);
+  }, 30_000);
+
   it("retries a structured unary size refusal through bounded binary file.fetch", async () => {
     const bytes = Buffer.alloc(32 * 1024 * 1024, 0x6d);
     await fs.writeFile(path.join(remote, "output.bin"), bytes);
@@ -433,7 +709,10 @@ describe("registered node workspace service", () => {
 });
 
 /** Real policy and file handlers; only the paired connection is replaced here. */
-function enableAttachmentTransport(afterChunk?: () => void) {
+function enableAttachmentTransport(
+  afterChunk?: () => void,
+  onOutput?: (bytes: Uint8Array) => void,
+) {
   openDuplex = async (request) => {
     const controller = new AbortController();
     const signal = request.signal
@@ -455,6 +734,7 @@ function enableAttachmentTransport(afterChunk?: () => void) {
           };
         },
         send: async (message) => {
+          onOutput?.(message);
           await acknowledge?.(message);
         },
       },
@@ -467,6 +747,24 @@ function enableAttachmentTransport(afterChunk?: () => void) {
     invokeNode.mockImplementation(async ({ params } = {}) => {
       request.assertCurrent?.();
       signal.throwIfAborted();
+      if (request.command === "workspace.memory" || request.command === "workspace.skills") {
+        const nodeApi = createTestPluginApi({
+          config: { agents: { defaults: { workspace: remote } } },
+          runtime: {
+            agent: { resolveAgentWorkspaceDir: () => remote },
+          } as unknown as OpenClawPluginApi["runtime"],
+        });
+        return {
+          ok: true,
+          payload: JSON.parse(
+            await (
+              request.command === "workspace.memory"
+                ? createWorkspaceMemoryCommand(nodeApi)
+                : createWorkspaceSkillsCommand(nodeApi)
+            ).handle(JSON.stringify(params ?? request.params), io),
+          ),
+        };
+      }
       return {
         ok: true,
         payload:
@@ -475,14 +773,18 @@ function enableAttachmentTransport(afterChunk?: () => void) {
             : await handleFileCreate(params as Record<string, unknown>, io),
       };
     });
-    const closed = Promise.resolve(createFileTransferNodeInvokePolicy().handle(ctx)).then(
-      (result) => {
-        if (!result.ok) {
-          throw new Error(`${result.code}: ${result.message}`);
-        }
-        return result;
-      },
-    );
+    const policy =
+      request.command === "workspace.memory"
+        ? createWorkspaceMemoryPolicy()
+        : request.command === "workspace.skills"
+          ? createWorkspaceSkillsPolicy()
+          : createFileTransferNodeInvokePolicy();
+    const closed = Promise.resolve(policy.handle(ctx)).then((result) => {
+      if (!result.ok) {
+        throw new Error(`${result.code}: ${result.message}`);
+      }
+      return result;
+    });
     await Promise.race([
       ready.promise,
       closed.then(() => {

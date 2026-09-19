@@ -381,11 +381,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
       // +4: approved workspace access exports.
       // +2: approved reply attachment preparation exports.
-      // +4: workspace Memory file access and worker exports.
-      // +1: shared workspace bootstrap file policy.
-      // +1: host workspace Skill resource reader.
-      // +1: task-time Skill command preparation.
-      4498,
+      // +8: approved Memory and Skills host integration exports.
+      4499,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -529,11 +526,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
       // +3: approved workspace access callables.
       // +2: approved reply attachment preparation callables.
-      // +3: workspace Memory file access and worker callables.
-      // +1: shared workspace bootstrap file policy.
-      // +1: host workspace Skill resource reader.
-      // +1: task-time Skill command preparation.
-      2660,
+      // +7: approved Memory and Skills host integration callables.
+      2661,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

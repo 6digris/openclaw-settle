@@ -156,7 +156,6 @@ provider can invoke it through its existing subprocess transport.
 errors for this worker. Supply `request` for one JSON exchange and `subscribe`
 for the `--watch-files` JSON-line stream, plus the binding's abort signal.
 Neither callback depends on Codex; providers own transport and authorization.
-
 `memoryFiles.maintenance` routes existing dreaming, promotion, corpus and forget
 file operations to the host. Compound writes reuse native atomic publication and
 conflict handling; maintenance decisions, locks and SQLite state stay on Gateway.
