@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
 import { KeyedAsyncQueue } from "openclaw/plugin-sdk/keyed-async-queue";
 import type {
   PluginStateCompareIntent,
@@ -22,9 +23,14 @@ const MEMORY_WORKSPACE_LOCK_WAIT_TIMEOUT_MS = 10_000;
 const SHORT_TERM_LOCK_STALE_MS = 60_000;
 const MEMORY_WORKSPACE_LOCK_RETRY_DELAY_MS = 40;
 const inProcessMemoryWorkspaceLocks = new KeyedAsyncQueue();
-const activeMemoryWorkspaceLockOwners = new Map<string, string>();
+const memoryWorkspaceLockOwners = new Map<string, MemoryWorkspaceLease>();
 
-type MemoryWorkspaceLease = { key: string; active: boolean };
+type MemoryWorkspaceLease = {
+  key: string;
+  entry: ShortTermLockEntry;
+  store: PluginStateKeyedStore<ShortTermLockEntry>;
+  active: boolean;
+};
 type MemoryWorkspaceLockScope = {
   lease: MemoryWorkspaceLease;
   active: boolean;
@@ -90,9 +96,9 @@ export function isShortTermLockStealable(
     return true;
   }
   if (ownerPid === process.pid) {
-    // The current process can own this row only through the tracked local lease.
-    // A same-PID row without that lease survived a prior process or failed cleanup.
-    return activeMemoryWorkspaceLockOwners.get(lockKey) !== existing.owner;
+    // Preserve tracked live owners; abandoned rows can survive cleanup failure or PID reuse.
+    const local = memoryWorkspaceLockOwners.get(lockKey);
+    return !local?.active || local.entry.owner !== existing.owner;
   }
   if (isPidDefinitelyDead(ownerPid)) {
     return true;
@@ -137,6 +143,26 @@ export async function deleteShortTermLockEntryIfCurrent(
   }
 }
 
+async function releaseMemoryWorkspaceLease(lease: MemoryWorkspaceLease): Promise<void> {
+  lease.active = false;
+  memoryWorkspaceLockOwners.delete(lease.key);
+  try {
+    await deleteShortTermLockEntryIfCurrent(lease.store, lease.key, lease.entry);
+  } catch (error) {
+    memoryWorkspaceLockOwners.set(lease.key, lease);
+    // Eviction forgets only settled cleanup; durable rows retain normal stale recovery.
+    for (const [key, retained] of memoryWorkspaceLockOwners) {
+      if (memoryWorkspaceLockOwners.size <= SHORT_TERM_LOCK_MAX_ENTRIES) {
+        break;
+      }
+      if (!retained.active) {
+        memoryWorkspaceLockOwners.delete(key);
+      }
+    }
+    throw error;
+  }
+}
+
 /** Captured input preparation shares local ordering without claiming a durable write lease. */
 export async function withMemoryWorkspacePreparation<T>(
   workspaceDir: string,
@@ -172,26 +198,28 @@ export async function withMemoryWorkspaceLock<T>(
     maxEntries: SHORT_TERM_LOCK_MAX_ENTRIES,
   });
   return await inProcessMemoryWorkspaceLocks.enqueue(lockKey, async () => {
+    const retained = memoryWorkspaceLockOwners.get(lockKey);
+    if (retained && !retained.active) {
+      await releaseMemoryWorkspaceLease(retained);
+    }
     const startedAt = Date.now();
 
     while (true) {
       const acquiredAt = Date.now();
       const ownerStartTime = getFileLockProcessStartTime(process.pid);
       const lockEntry: ShortTermLockEntry = {
-        owner: `${process.pid}:${acquiredAt}`,
+        owner: `${process.pid}:${acquiredAt}:${randomUUID()}`,
         acquiredAt,
         ...(ownerStartTime === null ? {} : { ownerStartTime }),
       };
       const acquired = await lockStore.registerIfAbsent(lockKey, lockEntry);
       if (acquired) {
-        const lease = { key: lockKey, active: true };
-        activeMemoryWorkspaceLockOwners.set(lockKey, lockEntry.owner);
+        const lease = { key: lockKey, entry: lockEntry, store: lockStore, active: true };
+        memoryWorkspaceLockOwners.set(lockKey, lease);
         try {
           return await runWorkspaceLockScope(lease, task);
         } finally {
-          lease.active = false;
-          activeMemoryWorkspaceLockOwners.delete(lockKey);
-          await deleteShortTermLockEntryIfCurrent(lockStore, lockKey, lockEntry).catch(() => false);
+          await releaseMemoryWorkspaceLease(lease).catch(() => undefined);
         }
       }
 

@@ -466,6 +466,12 @@ Chunk preparation from captured session text uses the existing local workspace
 queue without a durable write lease. File and multimodal preparation retain that
 lease, as do all cache, index, and publication mutations. Those mutations recheck
 current ownership and session tombstones after awaited preparation.
+Workspace lease release waits for accepted child work. Failed releases retain
+bounded cleanup custody through the granting store; the next writer reconciles
+that exact settled lease before acquiring another. Unique lease identities keep
+delayed cleanup from deleting a replacement acquired in the same millisecond.
+Reconciliation failures prevent the next write, while unfamiliar owners retain
+the existing stale-lock policy. Schema, durable retention, and expiry are unchanged.
 Incognito databases, archive materialization, and caller-owned transcript
 observers retain their existing local execution. Index publication and
 restoration remain with their existing database and lifecycle owners.
