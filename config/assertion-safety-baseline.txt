@@ -853,7 +853,7 @@ extensions/onepassword/index.ts	2
 extensions/onepassword/src/op-client.ts	2
 extensions/onepassword/src/tool.ts	1
 extensions/openai/embedding-batch.ts	2
-extensions/openai/image-generation-provider.ts	2
+extensions/openai/image-generation-provider.ts	1
 extensions/openai/index.ts	2
 extensions/openai/native-web-search.ts	1
 extensions/openai/openai-chatgpt-device-code.ts	4

@@ -57,7 +57,10 @@ import {
 
 export type { FinishUpdateParams } from "./update-command-finish-types.js";
 
-export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRunResult> {
+export async function finishUpdate(
+  params: FinishUpdateParams,
+  { candidateRuntime = false } = {},
+): Promise<UpdateRunResult> {
   const definitionRecovery: UpdateServiceDefinitionRecovery = {};
   if (params.serviceLoadBoundary && process.platform !== "linux") {
     throw new Error("Deferred native service loading is not supported on this platform.");
@@ -147,13 +150,15 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
 
   let pendingResult = params.result;
   let pendingNotify = true;
+  const writeRestartSentinel = (result: UpdateRunResult) =>
+    writeControlPlaneUpdateRestartSentinelBestEffort({ ...sentinelOptions, result });
   const publishFinalResult = async (failure?: unknown): Promise<UpdateRunResult> => {
     const settled = await resolveSettledUpdateCommandResult(params, pendingResult, failure);
     const result = resolveCompletedUpdateResult(params, settled.result);
     result.recovery = settled.settlementFailed ? undefined : result.recovery;
     const reportDowntime = !settled.settlementFailed && pendingRestartAtMs === undefined;
     if (pendingNotify) {
-      await writeControlPlaneUpdateRestartSentinelBestEffort({ ...sentinelOptions, result });
+      await writeRestartSentinel(result);
     }
     return publishUpdateCommandTerminalResult(params, result, {
       rolledBack: rolledBack && !settled.settlementFailed,
@@ -328,10 +333,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
     recordNextAction(finalResult);
     if (notify && recoverService) {
       pendingNotify = false;
-      await writeControlPlaneUpdateRestartSentinelBestEffort({
-        ...sentinelOptions,
-        result: finalResult,
-      });
+      await writeRestartSentinel(finalResult);
     }
     // The recovering Gateway reads this notification at startup. Persist once
     // before restarting; rewriting a consumed sentinel could deliver it twice.
@@ -440,6 +442,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
         beforeDoctor: beforeDoctor ?? parkForegroundOrigin,
         beforeRuntimePublication: parkForegroundOrigin,
         assertCurrent,
+        candidateRuntime,
       };
       const convergence = await convergeUpdatePlugins(pluginParams);
       if (convergence.resultWithPostUpdate.status === "error") {
@@ -498,10 +501,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
       });
     }
     const notifyRestart = () =>
-      writeControlPlaneUpdateRestartSentinelBestEffort({
-        ...sentinelOptions,
-        result: buildControlPlaneUpdateRestartHealthPendingResult(resultWithPostUpdate),
-      });
+      writeRestartSentinel(buildControlPlaneUpdateRestartHealthPendingResult(resultWithPostUpdate));
     if (!params.coreAlreadyCurrent) {
       await notifyRestart();
       await restoreWindowsAutoStart(resultWithPostUpdate);
