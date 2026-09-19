@@ -138,9 +138,7 @@ function filterSkillEntries(
 ): SkillEntry[] {
   const bundledAllowlist = resolveBundledAllowlist(config);
   assertUnambiguousManagedSkillNames(entries);
-  let filtered = entries.filter((entry) =>
-    shouldIncludeSkill({ entry, config, bundledAllowlist, eligibility, hasBin }),
-  );
+  let filtered = entries;
   if (skillFilter !== undefined || skillOverrides !== undefined) {
     const normalized = normalizeSkillFilter(skillFilter) ?? [];
     const label = normalized.length > 0 ? normalized.join(", ") : "(none)";
@@ -154,6 +152,11 @@ function filterSkillEntries(
         resolveSkillKey(entry.skill, entry),
       ),
     );
+  }
+  filtered = filtered.filter((entry) =>
+    shouldIncludeSkill({ entry, config, bundledAllowlist, eligibility, hasBin }),
+  );
+  if (skillFilter !== undefined || skillOverrides !== undefined) {
     skillsLogger.debug(
       `After skill filter: ${filtered.map((entry) => entry.skill.name).join(", ") || "(none)"}`,
     );
@@ -451,7 +454,12 @@ export async function resolveWorkspaceSkillPromptEntries(
     const sourceVersion = getSkillsSourceVersion(workspaceDir, opts);
     const skillFilter = resolveEffectiveWorkspaceSkillFilter(opts);
     const skillEntries = opts?.entries ?? loadSkillEntries(workspaceDir, opts);
-    const probe = await prepareSkillBinaryProbe(skillEntries, opts, opts?.assertCurrent);
+    const probe = await prepareSkillBinaryProbe(
+      skillEntries,
+      skillFilter,
+      opts,
+      opts?.assertCurrent,
+    );
     if (
       probe.needsRetry() ||
       (!opts?.entries && getSkillsSourceVersion(workspaceDir, opts) !== sourceVersion)
@@ -476,7 +484,8 @@ export async function resolveWorkspaceSkillPromptEntries(
 
 async function prepareSkillBinaryProbe(
   entries: SkillEntry[],
-  opts?: Pick<WorkspaceSkillLoadOptions, "config" | "eligibility">,
+  skillFilter: string[] | undefined,
+  opts?: Pick<WorkspaceSkillLoadOptions, "config" | "eligibility" | "skillOverrides">,
   assertCurrent?: () => void,
 ) {
   const bins = new Set<string>();
@@ -487,6 +496,17 @@ async function prepareSkillBinaryProbe(
     return true;
   };
   for (const entry of entries) {
+    if (
+      (skillFilter !== undefined || opts?.skillOverrides !== undefined) &&
+      !isSessionSkillEnabled(
+        entry.skill.name,
+        skillFilter,
+        opts?.skillOverrides,
+        resolveSkillKey(entry.skill, entry),
+      )
+    ) {
+      continue;
+    }
     const requires = entry.metadata?.requires;
     if (!requires?.bins?.length && !requires?.anyBins?.length) {
       continue;
@@ -557,7 +577,7 @@ export async function prepareWorkspaceSkills(
     if (!shouldFilter) {
       return entries;
     }
-    const probe = await prepareSkillBinaryProbe(entries, opts, assertCurrent);
+    const probe = await prepareSkillBinaryProbe(entries, effectiveSkillFilter, opts, assertCurrent);
     if (probe.needsRetry() || getSkillsSourceVersion(workspaceDir, opts) !== sourceVersion) {
       continue;
     }

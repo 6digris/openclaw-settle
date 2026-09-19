@@ -96,7 +96,7 @@ describe.each(["prompt", "runtime"] as const)("%s asynchronous binary preparatio
     }
     const config: OpenClawConfig = { plugins: { enabled: false }, browser: { enabled: false } };
     const eligibility: SkillEligibilityContext = {};
-    const options = {
+    const options: NonNullable<Parameters<typeof prepareWorkspaceSkills>[1]> = {
       config,
       eligibility,
       bundledSkillsDir,
@@ -115,7 +115,7 @@ describe.each(["prompt", "runtime"] as const)("%s asynchronous binary preparatio
           : await prepareWorkspaceSkills(workspaceDir, options, assertCurrent);
       return entries.map((entry) => entry.skill.name);
     };
-    return { binDir, config, eligibility, resolve };
+    return { binDir, config, eligibility, options, resolve };
   }
 
   function degrade(name: string) {
@@ -173,10 +173,60 @@ describe.each(["prompt", "runtime"] as const)("%s asynchronous binary preparatio
     ]);
   });
 
-  it("keeps concurrent binary preparations independent when one caller is canceled", async () => {
-    const { binDir, resolve } = await fixture([
-      { name: "ordinary", metadata: { requires: { bins: ["installed-tool"] } } },
+  it("prepares only session-selected prerequisites without hiding later installation", async () => {
+    const { binDir, config, options, resolve } = await fixture([
+      { name: "always", metadata: { always: true } },
+      { name: "selected", metadata: { requires: { bins: ["selected-tool"] } } },
+      { name: "excluded", metadata: { requires: { bins: ["excluded-tool"] } } },
+      { name: "disabled", metadata: { requires: { bins: ["disabled-tool"] } } },
+      {
+        name: "override",
+        metadata: { skillKey: "canonical-override", requires: { bins: ["override-tool"] } },
+      },
     ]);
+    config.agents = { defaults: { skills: ["always", "selected", "disabled"] } };
+    options.agentId = "fixture";
+    options.skillOverrides = { "canonical-override": true, disabled: false };
+    await fs.writeFile(path.join(binDir, "override-tool"), "fixture", { mode: 0o755 });
+    const access = vi.spyOn(fs, "access");
+    expect(await resolve()).toEqual(["always", "override"]);
+    expect(access.mock.calls.map(([file]) => path.basename(String(file))).toSorted()).toEqual([
+      "override-tool",
+      "selected-tool",
+    ]);
+
+    options.agentId = undefined;
+    options.skillOverrides = undefined;
+    access.mockClear();
+    expect(await resolve()).toEqual(["always", "override"]);
+    expect(access.mock.calls.map(([file]) => path.basename(String(file))).toSorted()).toEqual([
+      "disabled-tool",
+      "excluded-tool",
+      "selected-tool",
+    ]);
+
+    options.agentId = "fixture";
+    options.skillOverrides = { "canonical-override": true, disabled: false };
+    await fs.writeFile(path.join(binDir, "selected-tool"), "fixture", { mode: 0o755 });
+    access.mockClear();
+    expect(await resolve()).toEqual(["always", "override", "selected"]);
+    expect(access.mock.calls.map(([file]) => path.basename(String(file)))).toEqual([
+      "selected-tool",
+    ]);
+
+    options.skillFilter = [];
+    options.skillOverrides = undefined;
+    access.mockClear();
+    expect(await resolve()).toEqual([]);
+    expect(access.mock.calls).toEqual([]);
+  });
+
+  it("keeps concurrent binary preparations independent when one caller is canceled", async () => {
+    const { binDir, options, resolve } = await fixture([
+      { name: "ordinary", metadata: { requires: { bins: ["installed-tool"] } } },
+      { name: "excluded", metadata: { requires: { bins: ["excluded-tool"] } } },
+    ]);
+    options.skillFilter = ["ordinary"];
     const executable = path.join(binDir, "installed-tool");
     await fs.writeFile(executable, "fixture", { mode: 0o755 });
     const entered = createDeferred();
@@ -211,8 +261,8 @@ describe.each(["prompt", "runtime"] as const)("%s asynchronous binary preparatio
     ]);
   });
 
-  it("prepares newly eligible binaries after awaited env, config, secret and remote changes", async () => {
-    const { binDir, config, eligibility, resolve } = await fixture([
+  it("prepares newly eligible binaries after awaited selection, env, config, secret and remote changes", async () => {
+    const { binDir, config, eligibility, options, resolve } = await fixture([
       { name: "gate", metadata: { requires: { bins: ["gate-tool"] } } },
       {
         name: "env",
@@ -230,8 +280,14 @@ describe.each(["prompt", "runtime"] as const)("%s asynchronous binary preparatio
         metadata: { os: ["remote-fixture-os"], requires: { bins: ["remote-tool"] } },
       },
       { name: "revoked", metadata: { requires: { bins: ["revoked-tool"] } } },
+      {
+        name: "selection",
+        metadata: { skillKey: "canonical-selection", requires: { bins: ["selection-tool"] } },
+      },
     ]);
-    for (const name of ["gate", "env", "config", "secret", "revoked"]) {
+    const skillOverrides = { "canonical-selection": false, gate: true };
+    options.skillOverrides = skillOverrides;
+    for (const name of ["gate", "env", "config", "secret", "revoked", "selection"]) {
       await fs.writeFile(path.join(binDir, `${name}-tool`), "fixture", { mode: 0o755 });
     }
     degrade("secret");
@@ -251,6 +307,8 @@ describe.each(["prompt", "runtime"] as const)("%s asynchronous binary preparatio
     const pending = resolve();
     try {
       await entered.promise;
+      skillOverrides["canonical-selection"] = true;
+      skillOverrides.gate = false;
       vi.stubEnv("OPENCLAW_TEST_PROBE_KEY", "available");
       config.browser = { enabled: true };
       config.skills = { entries: { revoked: { enabled: false } } };
@@ -263,7 +321,7 @@ describe.each(["prompt", "runtime"] as const)("%s asynchronous binary preparatio
     } finally {
       release.resolve();
     }
-    expect(await pending).toEqual(["config", "env", "gate", "remote", "secret"]);
+    expect(await pending).toEqual(["config", "env", "remote", "secret", "selection"]);
     expect(access.mock.calls.map(([file]) => path.basename(String(file)))).toEqual(
       expect.arrayContaining([
         "env-tool",
@@ -271,13 +329,14 @@ describe.each(["prompt", "runtime"] as const)("%s asynchronous binary preparatio
         "missing-tool",
         "remote-tool",
         "secret-tool",
+        "selection-tool",
       ]),
     );
     expect(syncAccess.mock.calls.filter(([file]) => path.dirname(String(file)) === binDir)).toEqual(
       [],
     );
     eligibility.remote.hasBin = () => false;
-    expect(await resolve()).toEqual(["config", "env", "gate", "secret"]);
+    expect(await resolve()).toEqual(["config", "env", "secret", "selection"]);
   });
 
   it("discards binary facts when PATH changes during an awaited probe", async () => {
