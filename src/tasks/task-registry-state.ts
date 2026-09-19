@@ -36,6 +36,7 @@ import {
   publishTaskRegistryWorkerMutation,
   reconcileTaskRegistryWorkerSnapshot,
   type TaskRegistryWorkerMutationContext,
+  type TaskRegistryPublicationHandoff,
 } from "./task-registry-worker-publication.js";
 import {
   addRunIdIndex,
@@ -667,7 +668,7 @@ function refreshTaskRegistryProjection(): void {
 
 export async function runTaskRegistryWorkerMutation<T>(
   context: TaskRegistryWorkerMutationContext,
-  mutate: (beginRecovery: () => void) => Promise<T>,
+  mutate: (beginRecovery: () => TaskRegistryPublicationHandoff | undefined) => Promise<T>,
   readCurrent: () => Promise<TaskRegistryStoreSnapshot>,
 ): Promise<T> {
   const { scope, admission } = context;

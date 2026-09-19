@@ -4,8 +4,16 @@ import {
   getTaskRegistryProcessState,
   type TaskRegistryEventMutations,
 } from "./task-registry.process-state.js";
+import type { TaskRecord } from "./task-registry.types.js";
 
 const taskRegistryProcessState = getTaskRegistryProcessState();
+
+export function prepareTaskRegistryNativePublication(
+  previous: TaskRecord,
+  next: TaskRecord,
+): ((succeeded: boolean) => void) | undefined {
+  return taskRegistryProcessState.listener?.events.preparePublication(previous, next);
+}
 let listenerStarter: () => void = () => {};
 export function withPendingTaskRegistryEvents<T>(refresh: () => void, operation: () => T): T {
   const lease = taskRegistryProcessState.listener?.events.prepare();

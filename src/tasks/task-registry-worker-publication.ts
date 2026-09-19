@@ -62,6 +62,12 @@ function captureTaskRegistryWorkerSnapshot(
   return captured;
 }
 
+export type TaskRegistryPublicationHandoff = {
+  unchanged: () => boolean;
+  /** Relinquish this owner's claim; the native transaction retains its rollback. */
+  transfer: () => () => void;
+};
+
 export function createTaskRegistryPublicationRecovery(
   pending: PendingTaskRegistryMutation,
   recover: (snapshot: TaskRegistryStoreSnapshot) => TaskRecord | undefined,
@@ -70,9 +76,22 @@ export function createTaskRegistryPublicationRecovery(
   pending.recoveryWitness = witness;
   let expected: TaskRecord | undefined;
   return {
-    begin() {
+    begin(): TaskRegistryPublicationHandoff {
       witness.writtenTaskIds.clear();
       witness.replaced = false;
+      return {
+        unchanged: () => !witness.replaced && !witness.writtenTaskIds.has(pending.scope.taskId),
+        transfer() {
+          const publication = pending.publication;
+          const previousExpected = expected;
+          delete pending.publication;
+          expected = undefined;
+          return () => {
+            pending.publication = publication;
+            expected = previousExpected;
+          };
+        },
+      };
     },
     recover,
     bindExpected(record: TaskRecord | undefined) {

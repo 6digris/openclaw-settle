@@ -86,6 +86,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/state/backup-run-records.test.ts",
   "src/tasks/task-registry.async-restore.test.ts",
   "src/tasks/task-registry-agent-events.test.ts",
+  "src/tasks/task-registry-agent-events.native-publication.test.ts",
   "src/tasks/task-registry-agent-events.lineage.test.ts",
   "src/tasks/task-registry-read.test.ts",
   "src/tasks/task-registry-progress-runtime.test.ts",

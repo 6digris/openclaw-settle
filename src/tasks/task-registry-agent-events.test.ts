@@ -26,6 +26,7 @@ import { createTaskFlowForTask, getTaskFlowById } from "./task-flow-registry.js"
 import { getTaskFlowRegistryStore } from "./task-flow-registry.store.js";
 import { updateTask } from "./task-registry-mutation.js";
 import { publishTaskRecordAfterAtomicStore } from "./task-registry-publication.js";
+import { prepareTaskRegistryRead } from "./task-registry-read.js";
 import { linkTaskToFlowById, markTaskTerminalById } from "./task-registry-record-api.js";
 import {
   tasks,
@@ -850,19 +851,33 @@ describe("task agent event persistence", () => {
   it("joins a granted lifecycle write before native finalization consumes its successor events", async () => {
     await withOpenClawTestState({ layout: "state-only" }, async () => {
       const task = createTaskFixture("cli", {
+        requesterSessionKey: "agent:main:main",
         runId: "granted-event",
         task: "Granted write",
         status: "queued",
         startedAt: 1_000,
-        notifyPolicy: "silent",
-        deliveryStatus: "not_applicable",
+        notifyPolicy: "done_only",
+        deliveryStatus: "pending",
       });
+      const flow = createTaskFlowForTask({ task });
+      expect(flow).not.toBeNull();
+      expect(linkTaskToFlowById({ taskId: task.taskId, flowId: flow!.flowId })).not.toBeNull();
+      const observed: string[] = [];
+      const observedFlows: Array<string | undefined> = [];
+      const stop = onTaskRegistryChange((event) => {
+        if (event?.kind === "upserted" && event.task.taskId === task.taskId) {
+          observed.push(event.task.status);
+          observedFlows.push(getTaskFlowById(flow!.flowId)?.status);
+        }
+      });
+      const warnings = vi.spyOn(taskRegistryLog, "warn");
       const store = getTaskRegistryStore();
       const mutate = store.runAgentEventMutationAsync.bind(store);
       const finalized = createDeferred();
       let returned = false;
-      vi.spyOn(store, "runAgentEventMutationAsync").mockImplementation(
-        (context, input, assertCurrent, onGranted) => {
+      const writes = vi
+        .spyOn(store, "runAgentEventMutationAsync")
+        .mockImplementation((context, input, assertCurrent, onGranted) => {
           const operation = mutate(context, input, assertCurrent, (owner) => {
             onGranted(owner);
             if (input.change.kind !== "start") {
@@ -887,8 +902,7 @@ describe("task agent event persistence", () => {
           return operation.finally(() => {
             returned = true;
           });
-        },
-      );
+        });
       emitAgentEvent({
         runId: task.runId!,
         stream: "lifecycle",
@@ -900,13 +914,36 @@ describe("task agent event persistence", () => {
         stream: "lifecycle",
         data: { phase: "end", endedAt: 2_000 },
       });
+      const prepared = prepareTaskRegistryRead();
       await finalized.promise;
-      await joinEvents();
-      expect(loadTaskRegistryStateFromSqliteReadOnly().tasks.get(task.taskId)).toMatchObject({
+      const read = await prepared.finally(stop);
+      expect(read?.getTaskById(task.taskId)).toMatchObject({
         toolUseCount: 1,
+        lastToolName: "held",
         status: "succeeded",
         createdAt: 0,
         startedAt: 0,
+      });
+      await joinEvents();
+      expect(writes).toHaveBeenCalledOnce();
+      expect(warnings).not.toHaveBeenCalled();
+      expect(observed).toContain("succeeded");
+      expect(observedFlows).toEqual(observed);
+      expect(observed.slice(observed.indexOf("succeeded"))).not.toContain("running");
+      expect(peekSystemEvents(task.ownerKey)).toHaveLength(1);
+      expect(getTaskFlowById(flow!.flowId)?.status).toBe("succeeded");
+      expect(loadTaskRegistryStateFromSqliteReadOnly().tasks.get(task.taskId)).toMatchObject({
+        toolUseCount: 1,
+        lastToolName: "held",
+        status: "succeeded",
+        createdAt: 0,
+        startedAt: 0,
+      });
+      await closeOpenClawStateDatabaseAsync();
+      expect(loadTaskRegistryStateFromSqliteReadOnly().tasks.get(task.taskId)).toMatchObject({
+        toolUseCount: 1,
+        lastToolName: "held",
+        status: "succeeded",
       });
     });
   });

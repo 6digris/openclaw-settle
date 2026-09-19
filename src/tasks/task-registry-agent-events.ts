@@ -23,6 +23,7 @@ import { finishTaskMutation, retainTaskMutationFlowEffects } from "./task-execut
 import { getTaskFlowRegistryStore } from "./task-flow-registry.store.js";
 import { clearTaskActivity, flushTaskActivity } from "./task-registry-activity.js";
 import { recoverTaskAgentEventPublication } from "./task-registry-agent-event-commit.js";
+import { createTaskAgentEventNativePublication } from "./task-registry-agent-event-native-publication.js";
 import type { TaskAgentEventTarget } from "./task-registry-agent-event-target.js";
 import {
   captureTaskAgentEventChange,
@@ -80,6 +81,7 @@ type PendingEvent = {
   commitFacts?: unknown;
   committedTarget?: TaskAgentEventInput["expectedTask"];
   lineageResident?: TaskRecord;
+  nativePublication?: ReturnType<typeof createTaskAgentEventNativePublication>;
 };
 
 const pendingEvents = new Set<PendingEvent>();
@@ -256,6 +258,7 @@ function prepareNativeEventConsumption(): { consume: () => void; release: () => 
           const completed = entry.phase.owner.waitForSettlement(deadlineMs);
           if (completed.committed) {
             advanceCommittedLineage(entry, completed.committed.facts);
+            entry.nativePublication?.join(completed.committed.facts);
           }
         }
       });
@@ -267,6 +270,9 @@ function prepareNativeEventConsumption(): { consume: () => void; release: () => 
   return {
     release,
     consume() {
+      for (const entry of pending) {
+        entry.nativePublication?.capture(tasks.get(entry.input.taskId));
+      }
       for (const entry of claimed) {
         try {
           assertCurrent(entry);
@@ -323,6 +329,17 @@ function prepareNativeEventConsumption(): { consume: () => void; release: () => 
 }
 
 export const taskAgentEventMutations = {
+  preparePublication(previous: TaskRecord, next: TaskRecord): (succeeded: boolean) => void {
+    const completions = [...(pendingByTask.get(previous.taskId) ?? [])].flatMap((entry) => {
+      const complete = entry.nativePublication?.preparePublication(previous, next);
+      return complete ? [complete] : [];
+    });
+    return (succeeded) => {
+      for (const complete of completions) {
+        complete(succeeded);
+      }
+    };
+  },
   prepare: prepareNativeEventConsumption,
   pending() {
     for (const entry of pendingEvents) {
@@ -363,6 +380,8 @@ async function persist(pending: PendingEvent): Promise<void> {
     runId: input.expectedTask.runId,
     childSessionKey: input.expectedTask.childSessionKey,
   };
+  const ownsPublication = () =>
+    pending.phase.kind !== "consumed" && !pending.nativePublication?.published;
   let flowEffectsSettled = false;
   let publicationFailure: { error: unknown } | undefined;
   try {
@@ -377,16 +396,10 @@ async function persist(pending: PendingEvent): Promise<void> {
           },
           publicationRecords: () =>
             new Map(
-              pending.publication && pending.phase.kind !== "consumed"
-                ? [[taskId, pending.publication.task]]
-                : [],
+              pending.publication && ownsPublication() ? [[taskId, pending.publication.task]] : [],
             ),
           recoverPublication: (snapshot) => {
-            if (
-              pending.commitFacts === undefined ||
-              pending.receipt ||
-              pending.phase.kind === "consumed"
-            ) {
+            if (pending.commitFacts === undefined || pending.receipt || !ownsPublication()) {
               return undefined;
             }
             pending.publication = recoverTaskAgentEventPublication(
@@ -397,7 +410,7 @@ async function persist(pending: PendingEvent): Promise<void> {
             return pending.publication?.task;
           },
           beforeObservers: async (assertCurrentPublication) => {
-            if (pending.publication && pending.phase.kind !== "consumed") {
+            if (pending.publication && ownsPublication()) {
               const current = tasks.get(taskId);
               if (
                 pending.publication.becomesTerminal &&
@@ -421,11 +434,11 @@ async function persist(pending: PendingEvent): Promise<void> {
               flowEffectsSettled = true;
             }
           },
-          forcePublish: () => pending.publication?.task,
+          forcePublish: () => (ownsPublication() ? pending.publication?.task : undefined),
           onPublished: (task) => {
             if (
               pending.publication &&
-              pending.phase.kind !== "consumed" &&
+              ownsPublication() &&
               isEquivalentTaskRecord(task, pending.publication.task)
             ) {
               publishDelivery(pending.publication);
@@ -458,7 +471,15 @@ async function persist(pending: PendingEvent): Promise<void> {
                   assertCurrent(pending);
                 },
                 (owner) => {
-                  beginRecovery();
+                  pending.nativePublication = createTaskAgentEventNativePublication({
+                    input,
+                    admission: context.admission,
+                    claim: beginRecovery(),
+                    assertCurrent: (expectedTask) =>
+                      assertCurrent(pending, { ...input, expectedTask }),
+                    current: () => tasks.get(taskId),
+                    deliver: publishDelivery,
+                  });
                   pending.lineageResident = tasks.get(taskId);
                   pending.phase = { kind: "granted", owner };
                 },
@@ -502,7 +523,7 @@ async function persist(pending: PendingEvent): Promise<void> {
       throw publicationFailure.error;
     }
   } finally {
-    if (!flowEffectsSettled && pending.committedTarget && pending.phase.kind !== "consumed") {
+    if (!flowEffectsSettled && pending.committedTarget && ownsPublication()) {
       const current = tasks.get(taskId);
       if (
         current &&

@@ -109,6 +109,7 @@ export type TaskProgressBatch = {
 };
 
 export type TaskRegistryEventMutations = {
+  preparePublication: (previous: TaskRecord, next: TaskRecord) => (succeeded: boolean) => void;
   prepare: () => { consume: () => void; release: () => void } | undefined;
   pending: () => boolean;
   captureReadFence: (admission: OpenClawStateDatabaseReadAdmission) => Promise<void>;

@@ -7,6 +7,7 @@ import {
 import { buildManagedFlowCancellationPatch } from "./task-initial-flow.rules.js";
 import { clearTaskActivity, flushTaskActivity } from "./task-registry-activity.js";
 import { ensureLinkedTaskFlowRegistryReady } from "./task-registry-flow-link.js";
+import { prepareTaskRegistryNativePublication } from "./task-registry-listener-state.js";
 import { listTasksForFlowId } from "./task-registry-query.js";
 import {
   cloneTaskDeliveryState,
@@ -146,22 +147,32 @@ export function publishTaskRecordUpdate(
       addParentFlowIdIndex(taskId, next);
     }
   }
-  // Storage no-ops still repair linked flows and retry failed observer publications.
-  syncFlowFromTaskAfterTaskMutation(next, "update");
+  const completePublication =
+    tasks.get(taskId) === published
+      ? prepareTaskRegistryNativePublication(current, published)
+      : undefined;
+  let publicationSucceeded = false;
   try {
-    syncManagedFlowCancellationFromTask(next);
-  } catch (error) {
-    taskRegistryLog.warn("Failed to finalize managed flow cancellation from task update", {
-      taskId,
-      flowId: next.parentFlowId,
-      error,
-    });
+    // Storage no-ops still repair linked flows and retry failed observer publications.
+    syncFlowFromTaskAfterTaskMutation(next, "update");
+    try {
+      syncManagedFlowCancellationFromTask(next);
+    } catch (error) {
+      taskRegistryLog.warn("Failed to finalize managed flow cancellation from task update", {
+        taskId,
+        flowId: next.parentFlowId,
+        error,
+      });
+    }
+    emitTaskRegistryObserverEvent(() => ({
+      kind: "upserted",
+      task: cloneTaskRecordForObserver(next),
+      previous: cloneTaskRecordForObserver(current),
+    }));
+    publicationSucceeded = true;
+  } finally {
+    completePublication?.(publicationSucceeded);
   }
-  emitTaskRegistryObserverEvent(() => ({
-    kind: "upserted",
-    task: cloneTaskRecordForObserver(next),
-    previous: cloneTaskRecordForObserver(current),
-  }));
   return { task: cloneTaskRecord(next), isCurrent: () => tasks.get(taskId) === published };
 }
 
