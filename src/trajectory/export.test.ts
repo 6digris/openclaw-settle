@@ -6,13 +6,13 @@ import { expectDefined } from "@openclaw/normalization-core";
 import type { Message, Usage } from "openclaw/plugin-sdk/llm";
 import { afterAll, describe, expect, it } from "vitest";
 import { createReadTool } from "../agents/sessions/tools/read.js";
+import { resolveStateDir } from "../config/paths.js";
 import { formatSqliteSessionFileMarker } from "../config/sessions/legacy-sqlite-marker.js";
 import {
   replaceSessionEntry,
   replaceTranscriptEvents,
 } from "../config/sessions/session-accessor.js";
-import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
 import { exportTrajectoryBundle, resolveDefaultTrajectoryExportDir } from "./export.js";
 import {
   TRAJECTORY_POINTER_FILE_MAX_BYTES,
@@ -244,9 +244,8 @@ function writeToolCallSessionFile(sessionFile: string, toolResultText = "README 
   );
 }
 
-afterAll(() => {
-  closeOpenClawAgentDatabasesForTest();
-  closeOpenClawStateDatabaseForTest();
+afterAll(async () => {
+  await cleanupSessionStateForTest({ stateDir: resolveStateDir(), rootPath: tempRoot });
   fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 
