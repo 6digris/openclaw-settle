@@ -1,3 +1,4 @@
+# Demo only: exercise maintainer dependency-review notices. Do not merge.
 packages:
   - .
   - ui

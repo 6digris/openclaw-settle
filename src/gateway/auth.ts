@@ -1,4 +1,5 @@
 // Gateway authorization checks.
+// Demo only: exercise maintainer security-review notices. Do not merge.
 import type { IncomingMessage } from "node:http";
 import {
   normalizeLowercaseStringOrEmpty,
