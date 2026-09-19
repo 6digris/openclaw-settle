@@ -13,8 +13,10 @@ import {
   OPENAI_GPT_55_MODEL_ID,
   OPENAI_GPT_55_PRO_MODEL_ID,
   OPENAI_GPT_56_MODEL_ID,
+  OPENAI_GPT_6_ASTRA_MODEL_ID,
   resolveOpenAICodexReasoningEfforts,
 } from "./model-route-contract.js";
+import manifest from "./openclaw.plugin.json" with { type: "json" };
 
 type OpenAIThinkingCompat = ProviderDefaultThinkingPolicyContext["compat"];
 type OpenAIThinkingApi = ProviderDefaultThinkingPolicyContext["api"];
@@ -93,8 +95,16 @@ function buildOpenAIThinkingProfile(params: {
   const modelId = normalizeModelId(params.modelId);
   const agentRuntime = normalizeModelId(params.agentRuntime ?? "");
   const codexEfforts = params.compat?.supportedReasoningEfforts?.map(normalizeModelId);
+  if (modelId === OPENAI_GPT_6_ASTRA_MODEL_ID) {
+    const efforts =
+      codexEfforts ??
+      manifest.modelCatalog.providers.openai.models.find((model) => model.id === modelId)?.compat
+        ?.supportedReasoningEfforts ??
+      [];
+    return { levels: buildCodexLevels(efforts) };
+  }
   const resolvedCodexEfforts =
-    params.api === "openai-chatgpt-responses"
+    params.api === undefined || params.api === "openai-chatgpt-responses"
       ? resolveOpenAICodexReasoningEfforts(modelId, codexEfforts)
       : undefined;
   const knownCodexEfforts = resolveOpenAICodexReasoningEfforts(modelId, undefined);

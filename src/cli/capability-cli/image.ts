@@ -268,11 +268,13 @@ function normalizeImageQuality(raw: string | undefined): ImageGenerationQuality 
     normalized === "low" ||
     normalized === "medium" ||
     normalized === "high" ||
+    normalized === "xhigh" ||
+    normalized === "max" ||
     normalized === "auto"
   ) {
     return normalized;
   }
-  throw new Error("--quality must be one of low, medium, high, or auto");
+  throw new Error("--quality must be one of low, medium, high, xhigh, max, or auto");
 }
 
 function normalizeOpenAIModeration(
@@ -304,7 +306,7 @@ function addImageGenerationOptions(command: Command): Command {
     .option("--background <value>", "Background hint: transparent, opaque, or auto")
     .option("--openai-background <value>", "OpenAI background hint: transparent, opaque, or auto")
     .option("--openai-moderation <value>", "OpenAI moderation hint: low or auto")
-    .option("--quality <value>", "Quality hint: low, medium, high, or auto")
+    .option("--quality <value>", "Quality hint: low, medium, high, xhigh, max, or auto")
     .option("--timeout-ms <ms>", "Provider request timeout in milliseconds")
     .option("--output <path>", "Output path")
     .option(
