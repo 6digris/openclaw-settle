@@ -2,5 +2,5 @@
   "version": 1,
   "kind": "openclaw-release-telegram-execution-evidence",
   "mode": "legacy-direct-runner-v1",
-  "candidateVersion": "2026.7.33"
+  "candidateVersion": "2026.7.34"
 }
