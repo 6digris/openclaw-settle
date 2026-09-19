@@ -1311,7 +1311,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
-      contents: read
+      # Draft release assets require push access; consumer remains contents: read.
+      contents: write
     concurrency:
       group: retained-package-transport-147054
       cancel-in-progress: false
