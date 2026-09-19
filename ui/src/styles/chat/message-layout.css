@@ -537,20 +537,45 @@
 .chat-image-carousel__viewport {
   --chat-image-fade-left: 0px;
   --chat-image-fade-right: 0px;
+  --chat-image-fade-size: min(56px, 10cqw);
   overflow-x: auto;
   overscroll-behavior-x: contain;
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+  padding-bottom: 6px;
+  /* Eased alpha stops soften the transition into the fully visible image. */
   mask-image: linear-gradient(
     to right,
-    transparent,
-    var(--text) var(--chat-image-fade-left),
-    var(--text) calc(100% - var(--chat-image-fade-right)),
-    transparent
+    transparent calc(var(--chat-image-fade-left) * 0),
+    color-mix(in srgb, var(--text) 3.8%, transparent) calc(var(--chat-image-fade-left) * 0.125),
+    color-mix(in srgb, var(--text) 14.6%, transparent) calc(var(--chat-image-fade-left) * 0.25),
+    color-mix(in srgb, var(--text) 30.9%, transparent) calc(var(--chat-image-fade-left) * 0.375),
+    color-mix(in srgb, var(--text) 50%, transparent) calc(var(--chat-image-fade-left) * 0.5),
+    color-mix(in srgb, var(--text) 69.1%, transparent) calc(var(--chat-image-fade-left) * 0.625),
+    color-mix(in srgb, var(--text) 85.4%, transparent) calc(var(--chat-image-fade-left) * 0.75),
+    color-mix(in srgb, var(--text) 96.2%, transparent) calc(var(--chat-image-fade-left) * 0.875),
+    var(--text) calc(var(--chat-image-fade-left) * 1),
+    var(--text) calc(100% - var(--chat-image-fade-right) * 1),
+    color-mix(in srgb, var(--text) 96.2%, transparent)
+      calc(100% - var(--chat-image-fade-right) * 0.875),
+    color-mix(in srgb, var(--text) 85.4%, transparent)
+      calc(100% - var(--chat-image-fade-right) * 0.75),
+    color-mix(in srgb, var(--text) 69.1%, transparent)
+      calc(100% - var(--chat-image-fade-right) * 0.625),
+    color-mix(in srgb, var(--text) 50%, transparent) calc(100% - var(--chat-image-fade-right) * 0.5),
+    color-mix(in srgb, var(--text) 30.9%, transparent)
+      calc(100% - var(--chat-image-fade-right) * 0.375),
+    color-mix(in srgb, var(--text) 14.6%, transparent)
+      calc(100% - var(--chat-image-fade-right) * 0.25),
+    color-mix(in srgb, var(--text) 3.8%, transparent)
+      calc(100% - var(--chat-image-fade-right) * 0.125),
+    transparent calc(100% - var(--chat-image-fade-right) * 0)
   );
 }
 
-.chat-image-carousel__viewport::-webkit-scrollbar {
-  display: none;
+.chat-image-carousel:not([data-scroll-left]):not([data-scroll-right])
+  > .chat-image-carousel__viewport {
+  mask-image: none;
 }
 
 .chat-image-carousel__viewport:focus-visible {
@@ -560,11 +585,11 @@
 }
 
 .chat-image-carousel[data-scroll-left] > .chat-image-carousel__viewport {
-  --chat-image-fade-left: 40px;
+  --chat-image-fade-left: var(--chat-image-fade-size);
 }
 
 .chat-image-carousel[data-scroll-right] > .chat-image-carousel__viewport {
-  --chat-image-fade-right: 40px;
+  --chat-image-fade-right: var(--chat-image-fade-size);
 }
 
 .chat-image-carousel__track,
@@ -604,67 +629,26 @@
 
 .chat-image-carousel--gallery .chat-image-frame {
   flex: none;
+  max-width: min(400px, calc(100cqw - 24px));
+  scroll-margin-inline: min(56px, 10cqw);
+}
+
+.chat-image-carousel--gallery .chat-image-frame--image:not(.chat-image-frame--compact) {
+  /* Preserve the source ratio instead of containing it in an unrelated tile. */
+  width: min(calc(min(220px, 60cqw) * var(--chat-image-natural-ratio)), 400px, calc(100cqw - 24px));
+  height: auto;
+  aspect-ratio: var(--chat-image-natural-ratio);
+}
+
+.chat-image-carousel--gallery .chat-image-frame--compact {
   width: clamp(160px, var(--chat-image-width, 280px), 320px);
-  max-width: calc(100cqw - 40px);
-  scroll-margin-inline: 40px;
 }
 
-.chat-image-carousel--gallery .chat-image-frame:not(.chat-image-frame--compact) {
-  height: min(220px, 60cqw);
-  aspect-ratio: auto;
-}
-
-.chat-image-carousel--gallery .chat-message-image-button,
-.chat-image-carousel--gallery .chat-message-image {
-  width: 100%;
-  height: 100%;
-  max-width: none;
-  max-height: none;
-  object-fit: contain;
-}
-
-.chat-image-carousel__arrow {
-  position: absolute;
-  z-index: 3;
-  top: 50%;
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-full);
-  color: var(--text);
-  background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
-  box-shadow: var(--shadow-sm);
-  transform: translateY(-50%);
-  cursor: var(--cursor-action);
-}
-
-.chat-image-carousel__arrow[hidden] {
-  display: none;
-}
-
-.chat-image-carousel__arrow--left {
-  left: 6px;
-}
-
-.chat-image-carousel__arrow--right {
-  right: 6px;
-}
-
-.chat-image-carousel__arrow:hover {
-  background: var(--bg-hover);
-}
-
-.chat-image-carousel__arrow:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
-}
-
-.chat-image-carousel__arrow svg {
-  width: 16px;
-  height: 16px;
+.chat-image-carousel--gallery .chat-image-frame:not(.chat-image-frame--image) .chat-message-image {
+  width: auto;
+  height: auto;
+  max-width: min(400px, calc(100cqw - 24px));
+  max-height: min(220px, 60cqw);
 }
 
 /* User media retains compact grids beside its prompt and upload state. */

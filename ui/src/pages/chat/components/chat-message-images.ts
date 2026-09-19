@@ -303,7 +303,7 @@ class MessageImageResourceDirective extends AsyncDirective {
     // Unknown images use their intrinsic size; gallery tiles keep their own layout.
     return html`<span
       class="chat-image-frame ${sized || compact ? "chat-image-frame--image" : ""} ${this.managed && !compact ? "chat-image-frame--managed" : ""} ${compact ? "chat-image-frame--compact" : ""}"
-      style=${`--chat-image-width: ${width}px; --chat-image-min-width: ${MIN_CHAT_IMAGE_PREVIEW_WIDTH}px; --chat-image-ratio: ${!compact && height ? `${width} / ${height}` : "auto"}`}
+      style=${`--chat-image-width: ${width}px; --chat-image-min-width: ${MIN_CHAT_IMAGE_PREVIEW_WIDTH}px; --chat-image-natural-ratio: ${ratio ?? 1}; --chat-image-ratio: ${!compact && height ? `${width} / ${height}` : "auto"}`}
       aria-busy=${pending ? "true" : "false"}
       role=${pending ? "status" : nothing}
       aria-label=${pending ? t("common.loading") : nothing}

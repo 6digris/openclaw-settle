@@ -4035,8 +4035,6 @@ export const en: TranslationMap & {
     },
     imageGallery: {
       label: "Image gallery",
-      previous: "Previous images",
-      next: "Next images",
     },
     imageLightbox: {
       previous: "Previous image",

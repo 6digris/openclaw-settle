@@ -13,15 +13,18 @@ import startupCss from "../../../styles/chat/startup-layout.css?inline";
 import textCss from "../../../styles/chat/text.css?inline";
 
 const container = document.createElement("section");
-const source =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAHElEQVR4nGP4z8DwnxLMMGrAsDCAQv2jBgwPAwAxtf4Q24P5oAAAAABJRU5ErkJggg==";
-const images = Array.from({ length: 50 }, (_, index) => ({
-  type: "image",
-  url: source + "#" + index,
-  alt: "Image " + index,
-  width: index % 2 ? 640 : 320,
-  height: index % 2 ? 360 : 480,
-}));
+const images = Array.from({ length: 50 }, (_, index) => {
+  const width = index % 2 ? 640 : 320;
+  const height = index % 2 ? 360 : 480;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><title>Image ${index}</title><rect width="100%" height="100%" fill="teal"/></svg>`;
+  return {
+    type: "image",
+    url: "data:image/svg+xml," + encodeURIComponent(svg),
+    alt: "Image " + index,
+    width,
+    height,
+  };
+});
 
 function draw(count: number, width: number, direction = "ltr") {
   document.body.append(container);
@@ -44,24 +47,16 @@ function gallery() {
   return {
     root,
     viewport: root.querySelector<HTMLElement>(".chat-image-carousel__viewport")!,
-    previous: root.querySelector<HTMLButtonElement>(".chat-image-carousel__arrow--left")!,
-    next: root.querySelector<HTMLButtonElement>(".chat-image-carousel__arrow--right")!,
   };
 }
 
 async function expectEdges(left: boolean, right: boolean) {
   await vi.waitFor(() => {
-    const { root, previous, next, viewport } = gallery();
-    expect(previous.hidden).toBe(!left);
-    expect(next.hidden).toBe(!right);
+    const { root, viewport } = gallery();
     expect(root.hasAttribute("data-scroll-left")).toBe(left);
     expect(root.hasAttribute("data-scroll-right")).toBe(right);
-    expect(getComputedStyle(viewport).getPropertyValue("--chat-image-fade-left").trim()).toBe(
-      left ? "40px" : "0px",
-    );
-    expect(getComputedStyle(viewport).getPropertyValue("--chat-image-fade-right").trim()).toBe(
-      right ? "40px" : "0px",
-    );
+    expect(getComputedStyle(viewport).maskImage === "none").toBe(!left && !right);
+    expect(getComputedStyle(viewport).scrollbarWidth).not.toBe("none");
   });
 }
 
@@ -76,7 +71,7 @@ describe("image carousel layout and navigation", () => {
     async (width) => {
       draw(50, width);
       await expectEdges(false, true);
-      const { root, viewport, next } = gallery();
+      const { root, viewport } = gallery();
       const frames = [...root.querySelectorAll<HTMLElement>(".chat-image-frame")];
       const bounds = frames.map((frame) => frame.getBoundingClientRect());
       expect(frames).toHaveLength(50);
@@ -86,7 +81,16 @@ describe("image carousel layout and navigation", () => {
       expect(container.scrollWidth).toBeLessThanOrEqual(width);
       expect(viewport.scrollWidth).toBeGreaterThan(viewport.clientWidth);
       expect(bounds.every((rect) => rect.width > 100 && rect.height > 100)).toBe(true);
-      next.click();
+      for (const [index, rect] of bounds.entries()) {
+        expect(rect.width / rect.height).toBeCloseTo(
+          images[index]!.width / images[index]!.height,
+          2,
+        );
+      }
+      viewport.focus();
+      viewport.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }),
+      );
       await expectEdges(true, true);
       viewport.focus();
       viewport.dispatchEvent(
@@ -178,13 +182,11 @@ describe("image carousel layout and navigation", () => {
   it("keeps physical edge fades correct in right-to-left content", async () => {
     draw(6, 390, "rtl");
     // The pure-media Markdown owner detects no RTL caption, so its default is LTR.
-    const { viewport, previous, next } = gallery();
+    const { viewport } = gallery();
     viewport.dir = "rtl";
     viewport.scrollLeft = 0;
     viewport.dispatchEvent(new Event("scroll"));
     await expectEdges(true, false);
-    expect(previous.getAttribute("aria-label")).toBe("Next images");
-    expect(next.getAttribute("aria-label")).toBe("Previous images");
     viewport.focus();
     viewport.dispatchEvent(
       new KeyboardEvent("keydown", { key: "End", bubbles: true, cancelable: true }),

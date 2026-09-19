@@ -65,16 +65,14 @@ suite.define(() => {
           expect(await row.getByRole("img", { name: "Separate image", exact: true }).count()).toBe(
             0,
           );
-          const next = row.getByRole("button", { name: "Next images", exact: true });
-          const previous = row.getByRole("button", { name: "Previous images", exact: true });
-          await next.waitFor({ state: "visible" });
-          expect(await previous.isVisible()).toBe(false);
-          await next.click();
-          await previous.waitFor({ state: "visible" });
+          const viewport = row.locator(".chat-image-carousel__viewport");
+          await viewport.focus();
+          await viewport.press("ArrowRight");
+          await expect.poll(() => row.getAttribute("data-scroll-left")).not.toBeNull();
           const last = row.getByRole("button", { name: "Open image Volume image 50", exact: true });
           await last.scrollIntoViewIfNeeded();
-          await expect.poll(() => next.isVisible()).toBe(false);
-          expect(await previous.isVisible()).toBe(true);
+          await expect.poll(() => row.getAttribute("data-scroll-right")).toBeNull();
+          expect(await row.getAttribute("data-scroll-left")).not.toBeNull();
           await last.click();
           const lightbox = page.locator("openclaw-image-lightbox");
           await lightbox.getByRole("dialog").waitFor({ state: "visible" });
