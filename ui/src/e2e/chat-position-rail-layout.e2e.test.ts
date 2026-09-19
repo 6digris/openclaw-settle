@@ -86,8 +86,8 @@ suite.define(() => {
           const markers = marks.locator(".chat-position-rail__marker");
           // Wait for the rail to reflect the visible reader before recording its anchor.
           await expect
-            .poll(() =>
-              marks.evaluate((element) => {
+            .poll(async () => {
+              const state = await marks.evaluate((element) => {
                 const thread = element.closest(".chat-thread")!;
                 const current = element.querySelector('[aria-current="true"]');
                 const message = current
@@ -96,21 +96,39 @@ suite.define(() => {
                     )
                   : null;
                 if (!current?.hasAttribute("data-visible") || !message) {
-                  return false;
+                  return {
+                    ready: false,
+                    currentId: current?.getAttribute("data-position-marker-id"),
+                    currentVisible: current?.hasAttribute("data-visible"),
+                    bubblePresent: Boolean(message),
+                  };
                 }
                 const marker = current.getBoundingClientRect();
                 const viewport = element.getBoundingClientRect();
                 const reader = thread.getBoundingClientRect();
                 const bubble = message.getBoundingClientRect();
-                return (
-                  Math.abs(thread.scrollHeight - thread.clientHeight - thread.scrollTop) <= 1 &&
-                  bubble.bottom > reader.top &&
-                  bubble.top < reader.bottom &&
-                  marker.top >= viewport.top &&
-                  marker.bottom <= viewport.top + element.clientHeight
-                );
-              }),
-            )
+                return {
+                  ready:
+                    Math.abs(thread.scrollHeight - thread.clientHeight - thread.scrollTop) <= 1 &&
+                    bubble.bottom > reader.top &&
+                    bubble.top < reader.bottom &&
+                    marker.top >= viewport.top &&
+                    marker.bottom <= viewport.top + element.clientHeight,
+                  distanceFromBottom: thread.scrollHeight - thread.clientHeight - thread.scrollTop,
+                  currentId: current.getAttribute("data-position-marker-id"),
+                  bubble: { top: bubble.top, bottom: bubble.bottom },
+                  reader: { top: reader.top, bottom: reader.bottom },
+                  marker: { top: marker.top, bottom: marker.bottom },
+                  viewport: { top: viewport.top, bottom: viewport.top + element.clientHeight },
+                  railScrollTop: element.scrollTop,
+                };
+              });
+              if (!state.ready) {
+                // Preserve the exact predicate while making a hosted failure diagnosable.
+                console.info("Rail baseline pending", { count, direction, ...state });
+              }
+              return state.ready;
+            })
             .toBe(true);
           const bounds = () =>
             track.evaluate((element) => element.getBoundingClientRect().toJSON());
