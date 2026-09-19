@@ -18,7 +18,7 @@ class ProofControls(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.base = Path(self.temp.name)
+        self.base = Path(self.temp.name).resolve()
         self.root = self.base / 'owned'; self.root.mkdir()
         self.driver = self.base / 'driver'; self.driver.mkdir()
         self.package = self.root / 'runtime/node_modules/openclaw'
