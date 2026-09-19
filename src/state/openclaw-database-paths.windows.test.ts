@@ -13,6 +13,7 @@ import {
   updateStateSchemaVersionsMatch,
 } from "../infra/update-candidate-state.js";
 import { createUpdateRun, finishUpdateRun } from "../infra/update-run-ledger.js";
+import { areRetainedWindowsProcessJobChildrenSettled } from "../process/supervisor/service-child-windows-job-native.js";
 import { withOpenClawAgentDatabaseReadOnly } from "./openclaw-agent-db-readonly.js";
 import {
   closeOpenClawAgentDatabasesForTest,
@@ -97,6 +98,10 @@ describe("OpenClaw database paths on Windows", () => {
       // Match the executable updater's real native owner. Borrowed programs do
       // not prove descendant settlement from a direct child exit alone.
       await withCliProcessScope(retainCliProcessJobUntilExit);
+      expect(
+        areRetainedWindowsProcessJobChildrenSettled(),
+        "native update fixture must own a settled process Job before inventory",
+      ).toBe(true);
       const env = { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-native-doctor-alias-") };
       const agent = openOpenClawAgentDatabase({ agentId: "main", env });
       const state = openOpenClawStateDatabase({ env });

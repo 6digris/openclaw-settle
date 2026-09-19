@@ -58,7 +58,11 @@ it("records a Doctor refusal before reporting standalone finalization", async ()
       ]);
     }),
   ).rejects.toThrow(message);
-  lifecycle.fail();
+  lifecycle.fail(
+    new UpdateDoctorError("Later cleanup failure", [
+      { check: "gateway-restoration", code: "doctor-gateway-restoration-failed" },
+    ]),
+  );
   expect(vi.mocked(defaultRuntime.error).mock.calls.flat().join("\n")).not.toContain(privatePath);
   closeOpenClawStateDatabaseForTest();
   const run = listUpdateRuns()[0]!;
@@ -75,6 +79,36 @@ it("records a Doctor refusal before reporting standalone finalization", async ()
   expect(report.body).toContain(`Failed phase finalize:doctor: ${message}`);
   expect(report.body).not.toContain("Failed phase finalize:doctor: exit unknown");
 });
+
+it.each([false, true])(
+  "records post-phase restoration failure (inherited=%s)",
+  async (inherited) => {
+    const parent = inherited ? ledger.createUpdateRun({ trigger: "cli" }) : undefined;
+    if (parent) {
+      vi.stubEnv(UPDATE_RUN_ID_ENV, parent.runId);
+    }
+    const lifecycle = new UpdateFinalizationLifecycle(false, 5_000, () => {});
+    const runId = lifecycle.attachLedger();
+    await lifecycle.run("plugins", async () => {});
+    const fact = {
+      check: "gateway-restoration",
+      code: "doctor-gateway-restoration-failed",
+      message: "The managed Gateway could not be restored.",
+    };
+    lifecycle.fail(new UpdateDoctorError(fact.message, [fact]));
+    expect(getUpdateRun(runId)).toMatchObject({
+      status: inherited ? "running" : "failed",
+      reason: fact.code,
+      steps: expect.arrayContaining([
+        expect.objectContaining({
+          step: "finalize:failure",
+          status: "failed",
+          failureFacts: [fact],
+        }),
+      ]),
+    });
+  },
+);
 
 it.each([
   "preflight",

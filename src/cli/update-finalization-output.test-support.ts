@@ -194,16 +194,22 @@ const blockedPhase = repairDeadline
       : scenario === "completion-hang"
         ? "completionCache"
         : undefined;
-if (blockedPhase) {
+const shortBudgetPhase = scenario === "borrowed-phase" ? "configSnapshot" : blockedPhase;
+if (shortBudgetPhase) {
   const lifecycleUrl = sourceUrl("./update-cli/update-finalization-lifecycle.ts");
-  // Keep real phase ownership; only the deliberately blocked phase gets a short budget.
+  // Keep the short budget on the phase under test, not sibling child startup.
   stubs.set(
     lifecycleUrl,
     `import { UpdateFinalizationLifecycle as RealLifecycle } from ${JSON.stringify(`${lifecycleUrl}?fixture-original`)};
 export class UpdateFinalizationLifecycle extends RealLifecycle {
-  budget(phase) { return phase === ${JSON.stringify(blockedPhase)} ? 1_000 : super.budget(phase); }
+  budget(phase) { return phase === ${JSON.stringify(shortBudgetPhase)} ? 1_000 : super.budget(phase); }
 }`,
   );
+}
+if (blockedPhase === "doctor") {
+  const { prepareDoctorOutputDeadlineFixture } =
+    await import("./update-finalization-deadline.test-support.js");
+  await prepareDoctorOutputDeadlineFixture(stubs, sourceUrl, root, scenario === "doctor-progress");
 }
 if (scenario === "human-recovery-plugin-error") {
   stubs.set(

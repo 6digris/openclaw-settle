@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stageBundledPluginRuntime } from "../../../scripts/stage-bundled-plugin-runtime.mts";
 import { createDeferred } from "../../../test/helpers/promise.js";
@@ -113,6 +113,7 @@ beforeEach(async () => {
     env: {
       // Doctor's source descendants inherit the synthetic install cwd.
       TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"),
+      OPENCLAW_PROFILE: undefined,
       OPENCLAW_COMPATIBILITY_HOST_VERSION: undefined,
       OPENCLAW_UPDATE_POST_CORE_RESULT_PATH: undefined,
       OPENCLAW_UPDATE_POST_CORE_INSTALL_RECORDS_PATH: undefined,
@@ -157,6 +158,11 @@ beforeEach(async () => {
       ${sourceFixture ? "await loader.unregister();" : ""}
     }
   `,
+  );
+  await fs.mkdir(state.path("dist", "infra"), { recursive: true });
+  await fs.writeFile(
+    state.path("dist", "infra", "update-migrated-finalize.worker.js"),
+    `import ${JSON.stringify(pathToFileURL(entrypoint).href)};\n`,
   );
   mocks.entrypoint.mockResolvedValue(entrypoint);
   mocks.root.mockResolvedValue(state.root);
@@ -670,15 +676,15 @@ describe("update orchestration lifecycle ownership", () => {
         }
       });
       void completed.promise.catch(() => {});
-      const beforeDoctor = createDeferred();
+      const beforeCapture = createDeferred();
       if (lane === "repair") {
-        // Enter with the old config, then release the foreign writer before the
-        // fixture's zero-retry Doctor acquisition. This still detects a parent
-        // retaining its own lease without racing the deliberately competing one.
-        mocks.entrypoint.mockImplementationOnce(async () => {
-          beforeDoctor.resolve();
+        // Finish the independent writer before capture closes canonical admission.
+        // The parent's cached install records still predate this commit and must
+        // be reloaded; a post-capture writer is intentionally excluded.
+        mocks.root.mockImplementationOnce(async () => {
+          beforeCapture.resolve();
           await completed.promise;
-          return entrypoint;
+          return state.root;
         });
       }
       try {
@@ -686,7 +692,7 @@ describe("update orchestration lifecycle ownership", () => {
         const update = invoke(lane);
         void update.catch(() => {});
         if (lane === "repair") {
-          await Promise.race([beforeDoctor.promise, update]);
+          await Promise.race([beforeCapture.promise, update]);
         }
         child.send("commit");
         await completed.promise;

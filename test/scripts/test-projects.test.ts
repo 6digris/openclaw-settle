@@ -175,7 +175,7 @@ describe("test runtime prerequisites", () => {
     ["plugins config", ["test/vitest/vitest.plugins.config.ts"], "runtime"],
     ["ordinary update unit test", ["src/infra/update-candidate-canary.test.ts"], undefined],
     ["CLI directory", ["src/cli"], "runtime"],
-    ["CLI config", ["test/vitest/vitest.cli.config.ts"], "runtime"],
+    ["CLI config", ["test/vitest/vitest.cli.config.ts"], undefined],
     ["CLI process config", ["test/vitest/vitest.cli-process.config.ts"], "runtime"],
     ["ordinary CLI unit test", ["src/cli/command-path-policy.test.ts"], undefined],
     ["Doctor CLI processes", ["src/commands/doctor-config-preflight.process.test.ts"], "runtime"],
@@ -3318,7 +3318,10 @@ describe("scripts/test-projects changed-target routing", () => {
         {
           config: "test/vitest/vitest.cli-process.config.ts",
           forwardedArgs: [],
-          includePatterns: ["src/state/openclaw-database-verify.process.test.ts"],
+          includePatterns: [
+            "src/state/openclaw-database-verify.process.test.ts",
+            "src/state/openclaw-database-paths.windows.test.ts",
+          ],
           watchMode: false,
         },
       ]);
@@ -3336,7 +3339,10 @@ describe("scripts/test-projects changed-target routing", () => {
       {
         config: "test/vitest/vitest.cli-process.config.ts",
         forwardedArgs: [],
-        includePatterns: ["src/state/openclaw-database-verify.process.test.ts"],
+        includePatterns: [
+          "src/state/openclaw-database-verify.process.test.ts",
+          "src/state/openclaw-database-paths.windows.test.ts",
+        ],
         watchMode: false,
       },
     ]);

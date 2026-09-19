@@ -5,7 +5,10 @@ import { extractErrorCode, formatErrorMessage } from "../../infra/errors.js";
 import { resolveAggregateSqliteInspectionTimeoutMs } from "../../infra/sqlite-readonly-worker.js";
 import { readUpdateStateDatabaseSizes } from "../../infra/update-candidate-state.sizes.js";
 import { UPDATE_RUN_ID_ENV } from "../../infra/update-control-plane-sentinel.js";
-import { UpdateDoctorError } from "../../infra/update-doctor-result.js";
+import {
+  collectUpdateDoctorFailureFacts,
+  UpdateDoctorError,
+} from "../../infra/update-doctor-result.js";
 import {
   createUpdateFailureFact,
   type UpdateFailureFact,
@@ -131,7 +134,7 @@ export class UpdateFinalizationLifecycle {
   }
 
   private record(
-    active: { phase: Phase; step: string },
+    active: { step: string },
     status: "in_progress" | "completed" | "failed",
     at: number,
     detail?: string,
@@ -165,12 +168,7 @@ export class UpdateFinalizationLifecycle {
 
   recordWarnings(warnings: readonly string[], phase: "doctor" | "plugins" = "doctor"): void {
     warnings.forEach((detail, index) => {
-      this.record(
-        { phase, step: `warning:finalize:${phase}:${index}` },
-        "completed",
-        Date.now(),
-        detail,
-      );
+      this.record({ step: `warning:finalize:${phase}:${index}` }, "completed", Date.now(), detail);
     });
   }
 
@@ -359,7 +357,7 @@ export class UpdateFinalizationLifecycle {
       const failure = deadline.failure;
       if (failure) {
         this.record(
-          { phase, step: `warning:finalize:${phase}:deadline` },
+          { step: `warning:finalize:${phase}:deadline` },
           "completed",
           Date.now(),
           failure.message,
@@ -425,7 +423,23 @@ export class UpdateFinalizationLifecycle {
     }
   }
 
-  fail(): void {
+  fail(error?: unknown): void {
+    // Service restoration settles outside the completed migration phases. Keep
+    // its structured failure in history, without replacing an earlier phase's cause.
+    const facts = collectUpdateDoctorFailureFacts(error);
+    if (facts.length && !this.phaseTimings.some((timing) => timing.outcome === "failed")) {
+      this.record(
+        { step: "finalize:failure" },
+        "failed",
+        Date.now(),
+        redactSupportDiagnosticLine(formatErrorMessage(error), {
+          env: process.env,
+          stateDir: resolveStateDir(process.env),
+        }),
+        facts,
+        error instanceof UpdateDoctorError ? error.exitCode : undefined,
+      );
+    }
     this.finishLedger(1);
   }
 

@@ -10,6 +10,7 @@ import { runActivePluginPayloadSmokeCheck } from "./active-payload-verification.
 import { loadInstalledPluginIndex } from "./installed-plugin-index.js";
 import { createInstalledPluginOwnershipResolver } from "./installed-plugin-package-ownership.js";
 import { createPluginCache, withPluginCache } from "./plugin-cache.js";
+import { withPluginLifecycleLease } from "./plugin-lifecycle-lease.js";
 import { convergePluginReleaseCohort } from "./update-cohort.js";
 describe("plugin release cohort real synchronization", () => {
   const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -88,18 +89,32 @@ describe("plugin release cohort real synchronization", () => {
       throw new Error("no persistent effect was requested");
     });
     await withEnvAsync(env, async () => {
-      const result = await withPluginCache(createPluginCache(), () =>
-        convergePluginReleaseCohort({
-          config: {},
-          channel: "stable",
-          timeoutMs: 60_000,
-          env,
-          preparePersistentEffect: beforePersistentEffect,
-        }),
-      );
-      expect(result.changed).toBe(false);
-      expect(beforePersistentEffect).not.toHaveBeenCalled();
-      expect(fs.existsSync(env.OPENCLAW_STATE_DIR)).toBe(false);
+      // Admission creates coordination state; an empty cohort must not create
+      // plugin/config payloads after that real ownership has been established.
+      await withPluginLifecycleLease({ env }, async () => {
+        const admittedPaths = fs
+          .readdirSync(env.OPENCLAW_STATE_DIR, { recursive: true, encoding: "utf8" })
+          .toSorted((a, b) => a.localeCompare(b));
+        const config: OpenClawConfig = {};
+        const result = await withPluginCache(createPluginCache(), () =>
+          convergePluginReleaseCohort({
+            config,
+            channel: "stable",
+            timeoutMs: 60_000,
+            env,
+            preparePersistentEffect: beforePersistentEffect,
+          }),
+        );
+        expect(result.changed).toBe(false);
+        expect(result.config).toEqual({});
+        expect(config).toEqual({});
+        expect(beforePersistentEffect).not.toHaveBeenCalled();
+        expect(
+          fs
+            .readdirSync(env.OPENCLAW_STATE_DIR, { recursive: true, encoding: "utf8" })
+            .toSorted((a, b) => a.localeCompare(b)),
+        ).toEqual(admittedPaths);
+      });
     });
   });
 

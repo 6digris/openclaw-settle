@@ -297,7 +297,7 @@ export async function updateFinalizeCommand(
         return;
       }
       if (!lifecycle.completed) {
-        lifecycle.fail();
+        lifecycle.fail(error);
       }
       throw error;
     } finally {

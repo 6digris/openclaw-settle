@@ -107,7 +107,7 @@ describe.each(["repair", "finalize"])("update %s process output", (command) => {
         "dev",
         ...(scenario === "human-recovery-plugin-error" ? [] : ["--yes"]),
         "--no-restart",
-        ...(blockedPhase ? [] : ["--timeout", scenario === "borrowed-phase" ? "1" : "9"]),
+        ...(blockedPhase ? [] : ["--timeout", "9"]),
         ...(json && scenario !== "inherited-json" ? ["--json"] : []),
       ];
       const readRun = () =>
@@ -228,8 +228,22 @@ describe.each(["repair", "finalize"])("update %s process output", (command) => {
         const timing = output.phaseTimings.find(
           (entry: { phase: string }) => entry.phase === "doctor",
         );
-        expect(timing.durationMs, failure).toBeGreaterThanOrEqual(1_000);
-        expect(timing.durationMs, failure).toBeLessThan(3_000);
+        const armed = JSON.parse(
+          await fs.readFile(path.join(root, "doctor-deadline.json"), "utf8"),
+        );
+        expect(armed.marker, failure).toBe(
+          scenario === "doctor-progress"
+            ? "PROGRESS fixture-validation"
+            : "STEP active fixture-validation",
+        );
+        const endedAtMs = readRun()?.steps.find(
+          (step) => step.step === "finalize:doctor",
+        )?.endedAtMs;
+        expect(endedAtMs, failure).toEqual(expect.any(Number));
+        const ownedDurationMs = endedAtMs! - armed.armedAtMs;
+        expect(ownedDurationMs, failure).toBeGreaterThanOrEqual(1_000);
+        expect(ownedDurationMs, failure).toBeLessThan(3_000);
+        expect(timing.durationMs, failure).toBeGreaterThanOrEqual(ownedDurationMs);
         if (scenario === "doctor-progress") {
           expect(output.doctorOutput.stderr.excerpt, failure).toContain(
             "PROGRESS fixture-validation",

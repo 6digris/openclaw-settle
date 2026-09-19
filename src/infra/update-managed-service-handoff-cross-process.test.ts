@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
 import { isPidAlive } from "../shared/pid-alive.js";
 import {
+  driveManagedHandoffProtocol,
   signalMockManagedUpdateHandoffReady,
   writeConcurrentManagedHandoffParams,
 } from "./update-managed-service-handoff.test-support.js";
@@ -133,28 +134,6 @@ const writeConcurrentHandoffParams = (
   params: Parameters<typeof writeConcurrentManagedHandoffParams>[0],
 ) => writeConcurrentManagedHandoffParams(params, handoffParents);
 
-function driveHandoffProtocol(
-  child: import("node:child_process").ChildProcess,
-  paramsPath: string,
-): void {
-  let buffered = "";
-  child.stdout?.on("data", (chunk: Buffer | string) => {
-    buffered += chunk.toString();
-    let newline: number;
-    while ((newline = buffered.indexOf("\n")) >= 0) {
-      const line = buffered.slice(0, newline);
-      buffered = buffered.slice(newline + 1);
-      if (line === "OPENCLAW_UPDATE_HANDOFF_READY") {
-        child.stdin?.write("park\n");
-      } else if (line === "parked") {
-        child.stdin?.write("commit\n");
-      } else if (line === "committed") {
-        handoffParents.get(paramsPath)?.stdin?.end();
-      }
-    }
-  });
-}
-
 async function runHelper(params: {
   execFile: typeof import("node:child_process").execFile;
   helperScriptPath: string;
@@ -177,7 +156,7 @@ async function runHelper(params: {
         });
       },
     );
-    driveHandoffProtocol(child, params.paramsPath);
+    driveManagedHandoffProtocol(child, params.paramsPath, handoffParents);
   });
 }
 
@@ -860,7 +839,7 @@ childProcess.spawnSync = function(command, args, options) {
       const firstClosed = new Promise<void>((resolve) => {
         first.once("close", () => resolve());
       });
-      driveHandoffProtocol(first, firstParamsPath);
+      driveManagedHandoffProtocol(first, firstParamsPath, handoffParents);
       let firstStdout = "";
       first.stdout.on("data", (chunk) => (firstStdout += chunk));
       let orphanPid = 0;
@@ -1001,7 +980,7 @@ childProcess.spawnSync = function(command, args, options) {
         cwd: tmpDir,
         stdio: ["pipe", "pipe", "pipe"],
       });
-      driveHandoffProtocol(first, firstParamsPath);
+      driveManagedHandoffProtocol(first, firstParamsPath, handoffParents);
       let firstStdout = "";
       let firstStderr = "";
       first.stdout.on("data", (chunk) => (firstStdout += chunk));

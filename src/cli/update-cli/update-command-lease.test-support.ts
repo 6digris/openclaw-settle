@@ -23,7 +23,27 @@ export type LeaseScenario = {
 };
 
 // A narrow child substitutes for the CLI, not for its cross-process lease.
-export async function runUpdateLeaseChild(): Promise<void> {
+export async function runUpdateLeaseChild(
+  doctorInput?: import("./update-command-migrated-types.js").UpdateDoctorInput,
+): Promise<void> {
+  if (process.argv[2] === "--doctor" && !doctorInput) {
+    let raw = "";
+    for await (const chunk of process.stdin) {
+      raw += chunk;
+    }
+    const input: import("./update-command-migrated-types.js").UpdateDoctorInput = JSON.parse(raw);
+    const { withDelegatedUpdateCommandExecutor } = await import("./update-command-executor.js");
+    return withDelegatedUpdateCommandExecutor(
+      input.executor,
+      input.runId,
+      input.root,
+      async (fence) => {
+        fence.assertCurrent();
+        await runUpdateLeaseChild(input);
+        fence.assertCurrent();
+      },
+    );
+  }
   const stateDir = process.env.OPENCLAW_STATE_DIR;
   const configPath = process.env.OPENCLAW_CONFIG_PATH;
   assert.ok(stateDir && configPath);
@@ -39,13 +59,14 @@ export async function runUpdateLeaseChild(): Promise<void> {
     assert.ok(scenario.writerConfig && scenario.writerRecords);
     const { seedInstalledPluginIndex } =
       await import("../../plugins/test-helpers/installed-plugin-index.js");
-    await fs.writeFile(configPath, JSON.stringify(scenario.writerConfig));
+    const { writeConfigFile } = await import("../../config/config.js");
+    await writeConfigFile(scenario.writerConfig);
     await seedInstalledPluginIndex(scenario.writerRecords, {
       config: scenario.writerConfig,
     });
     await record("writer-committed");
   };
-  const command = process.argv[2];
+  const command = doctorInput ? "doctor" : process.argv[2];
   if (scenario.runtimeRoot && (command === "doctor" || command === "runtime-proof")) {
     const runtimeRoot = path.join(scenario.runtimeRoot, "dist-runtime", "extensions", "demo");
     const runtime = await import(pathToFileURL(path.join(runtimeRoot, "index.js")).href);
@@ -125,9 +146,18 @@ export async function runUpdateLeaseChild(): Promise<void> {
       ...(scenario.lane === "repair" && phase === "pre" ? [] : ["--no-workspace-suggestions"]),
       "--yes",
     ];
+    if (doctorInput) {
+      assert.equal(doctorInput.repair, true);
+      assert.equal(doctorInput.yes, true);
+      assert.equal(doctorInput.workspaceSuggestions, scenario.lane === "repair" && phase === "pre");
+      assert.equal(doctorInput.root, scenario.installRoot);
+      assert.equal(doctorInput.runId, process.env.OPENCLAW_UPDATE_RUN_ID);
+    }
     if (scenario.lane === "repair") {
       const prefix = "--update-recovery-backup=";
-      const encoded = process.argv.at(-1);
+      const encoded = doctorInput
+        ? `${prefix}${JSON.stringify(doctorInput.updateRecoveryBackup)}`
+        : process.argv.at(-1);
       assert.ok(
         typeof encoded === "string" && encoded.startsWith(prefix),
         "Repair Doctor requires its parent's capture",
@@ -135,11 +165,13 @@ export async function runUpdateLeaseChild(): Promise<void> {
       const { readUpdateRecoveryBackupRef, verifyUpdateRecoveryBackup } =
         await import("../../infra/update-recovery-backup.js");
       const ref = readUpdateRecoveryBackupRef(encoded.slice(prefix.length));
-      assert.deepEqual(process.argv.slice(3), [
-        ...doctorArgs,
-        "--update-recovery-owner=driver",
-        `${prefix}${JSON.stringify(ref)}`,
-      ]);
+      if (!doctorInput) {
+        assert.deepEqual(process.argv.slice(3), [
+          ...doctorArgs,
+          "--update-recovery-owner=driver",
+          `${prefix}${JSON.stringify(ref)}`,
+        ]);
+      }
       const manifest = await verifyUpdateRecoveryBackup(ref);
       const runId = process.env.OPENCLAW_UPDATE_RUN_ID;
       assert.ok(runId, "Repair Doctor requires its admitted parent run");
@@ -153,7 +185,7 @@ export async function runUpdateLeaseChild(): Promise<void> {
       assert.equal(run?.status, "running");
       assert.equal(run?.origin.updateRecoveryCapture?.manifestSha256, ref.manifestSha256);
       assert.deepEqual(run?.origin.driver, manifest.creator);
-    } else {
+    } else if (!doctorInput) {
       assert.deepEqual(process.argv.slice(3), doctorArgs);
     }
     assert.equal(process.env.OPENCLAW_UPDATE_IN_PROGRESS, "1");

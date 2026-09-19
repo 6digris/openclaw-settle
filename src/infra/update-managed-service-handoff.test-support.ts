@@ -182,3 +182,26 @@ export async function writeConcurrentManagedHandoffParams(
   );
   return paramsPath;
 }
+
+export function driveManagedHandoffProtocol(
+  child: import("node:child_process").ChildProcess,
+  paramsPath: string,
+  handoffParents: ReadonlyMap<string, import("node:child_process").ChildProcess>,
+): void {
+  let buffered = "";
+  child.stdout?.on("data", (chunk: Buffer | string) => {
+    buffered += chunk.toString();
+    let newline: number;
+    while ((newline = buffered.indexOf("\n")) >= 0) {
+      const line = buffered.slice(0, newline);
+      buffered = buffered.slice(newline + 1);
+      if (line === "OPENCLAW_UPDATE_HANDOFF_READY") {
+        child.stdin?.write("park\n");
+      } else if (line === "parked") {
+        child.stdin?.write("commit\n");
+      } else if (line === "committed") {
+        handoffParents.get(paramsPath)?.stdin?.end();
+      }
+    }
+  });
+}

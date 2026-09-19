@@ -206,9 +206,14 @@ syncFixtureBuiltinExports();\n`,
     ],
     ["root config", "scripts/run-vitest.mts", ["run", "--config", "vitest.config.ts"]],
     [
-      "CLI",
+      "CLI process selected runtime reader",
       "scripts/run-vitest.mts",
-      ["run", "--config", "test/vitest/vitest.cli.config.ts"],
+      [
+        "run",
+        "--config",
+        "test/vitest/vitest.cli-process.config.ts",
+        "src/cli/update-dry-run-state.process.test.ts",
+      ],
       "runtime",
     ],
     [
