@@ -104,7 +104,7 @@ export function hasCompletedTerminalDeliveryEvidence(
   const explicitFinal = resolveExplicitFinalSourceReplyDeliveryEvidence(result);
   return (
     hasCompletedSourceReplyDeliveryEvidence(result) ||
-    (explicitFinal === undefined && hasVisibleOutboundDeliveryEvidence(result)) ||
+    (explicitFinal === undefined && hasVisibleMessagingToolDeliveryEvidence(result)) ||
     result.didSendDeterministicApprovalPrompt === true
   );
 }
@@ -487,16 +487,21 @@ export function hasCommittedSourceReplyDeliveryEvidence(
   );
 }
 
-/** Returns whether outbound metadata proves a visible message, spawn, or cron side effect. */
-export function hasVisibleOutboundDeliveryEvidence(result: AgentDeliveryEvidence): boolean {
+function hasVisibleMessagingToolDeliveryEvidence(result: AgentDeliveryEvidence): boolean {
   return (
     hasVisibleCommittedMessagingToolDeliveryEvidence(result) ||
-    // The coarse flag is the only evidence available for older callers. Once detailed
-    // metadata exists, it owns visibility so blank sends cannot suppress recovery.
+    // Preserve coarse legacy telemetry only when detailed metadata cannot disprove it.
     (result.didSendViaMessagingTool === true &&
       result.messagingToolSentTexts === undefined &&
       result.messagingToolSentMediaUrls === undefined &&
-      result.messagingToolSentTargets === undefined) ||
+      result.messagingToolSentTargets === undefined)
+  );
+}
+
+/** Returns whether outbound metadata proves a visible message, spawn, or cron side effect. */
+export function hasVisibleOutboundDeliveryEvidence(result: AgentDeliveryEvidence): boolean {
+  return (
+    hasVisibleMessagingToolDeliveryEvidence(result) ||
     hasAcceptedSessionSpawnEvidence(result.acceptedSessionSpawns) ||
     hasPositiveNumber(result.successfulCronAdds)
   );
