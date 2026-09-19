@@ -12,6 +12,7 @@ import { MEMORY_CHUNKING_VERSION } from "openclaw/plugin-sdk/memory-core-host-en
 import type { OpenClawConfig } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import {
   closeOpenClawAgentDatabasesForTest,
+  closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
 } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
@@ -241,6 +242,7 @@ describe("memory chunking upgrade fallback over a real embedding transport", () 
     await Promise.all(pendingServers.map((server) => server.close()));
     await closeAllMemorySearchManagers();
     closeOpenClawAgentDatabasesForTest();
+    await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
     resetMemoryCoreDreamingStateForTests();
     if (originalStateDir === undefined) {
