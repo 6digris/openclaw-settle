@@ -882,7 +882,11 @@ describe("doctor lint state isolation", () => {
     const databasePath = resolveOpenClawStateSqlitePath(process.env);
     await closeOpenClawStateDatabaseByPathAsync(databasePath);
     const lock = new DatabaseSync(databasePath);
-    lock.exec("BEGIN IMMEDIATE");
+    // Windows enforces SQLite's byte-range locks on ordinary file reads. Hash
+    // outside the write transaction; the actual inspection still runs while a
+    // writer holds the database, and rollback must leave its bytes unchanged.
+    // Prime the fixture's own WAL/SHM files before taking that baseline.
+    lock.exec("BEGIN IMMEDIATE; ROLLBACK");
     const before = snapshotDoctorLintSqliteFamily(databasePath);
     mocks.resolveDoctorContributionHealthChecks.mockResolvedValue([
       {
@@ -903,21 +907,25 @@ describe("doctor lint state isolation", () => {
 
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     try {
-      await expect(
-        runDoctorLintCli(runtime, {
-          json: true,
-          onlyIds: ["core/doctor/runtime-tool-schemas"],
-        }),
-      ).resolves.toBe(0);
-      expect(JSON.parse(String(stdout.mock.calls.at(-1)?.[0]))).toMatchObject({
-        ok: true,
-        checksRun: 1,
-        findings: [],
-      });
+      lock.exec("BEGIN IMMEDIATE");
+      try {
+        await expect(
+          runDoctorLintCli(runtime, {
+            json: true,
+            onlyIds: ["core/doctor/runtime-tool-schemas"],
+          }),
+        ).resolves.toBe(0);
+        expect(JSON.parse(String(stdout.mock.calls.at(-1)?.[0]))).toMatchObject({
+          ok: true,
+          checksRun: 1,
+          findings: [],
+        });
+      } finally {
+        lock.exec("ROLLBACK");
+      }
       expect(snapshotDoctorLintSqliteFamily(databasePath)).toEqual(before);
     } finally {
       stdout.mockRestore();
-      lock.exec("ROLLBACK");
       lock.close();
       await closeOpenClawStateDatabaseByPathAsync(databasePath);
       fs.rmSync(rootDir, { recursive: true, force: true });

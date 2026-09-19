@@ -37,6 +37,11 @@ on:
         required: false
         default: false
         type: boolean
+      run_windows_dependency_diagnostic:
+        description: "Diagnose Windows junction relocation without building or running acceptance"
+        required: false
+        default: false
+        type: boolean
       run_windows_ci:
         description: "Run the focused Windows CI shard and native Scheduled Task proof"
         required: false
@@ -81,7 +86,7 @@ env:
 
 jobs:
   probe:
-    if: ${{ !inputs.run_winget_acceptance && !inputs.run_portable_node_recovery }}
+    if: ${{ !inputs.run_windows_dependency_diagnostic && (!inputs.run_winget_acceptance && !inputs.run_portable_node_recovery) }}
     name: Windows probe
     runs-on: ${{ inputs.runner_label }}
     timeout-minutes: 75
@@ -682,7 +687,7 @@ jobs:
   # Native session qualification must not depend on headless CI or WSL results.
   native-schtasks:
     name: Native Scheduled Task proof
-    if: ${{ inputs.run_windows_ci }}
+    if: ${{ !inputs.run_windows_dependency_diagnostic && (inputs.run_windows_ci) }}
     runs-on: windows-2025
     timeout-minutes: 75
     steps:
@@ -941,7 +946,7 @@ jobs:
 
   winget-acceptance:
     name: Native Winget acceptance (${{ matrix.scenario }})
-    if: ${{ inputs.run_winget_acceptance }}
+    if: ${{ !inputs.run_windows_dependency_diagnostic && (inputs.run_winget_acceptance) }}
     runs-on: windows-2025
     timeout-minutes: 35
     strategy:
@@ -1027,7 +1032,7 @@ jobs:
 
   portable-node-recovery:
     name: Portable Node recovery (${{ matrix.engine }})
-    if: ${{ inputs.run_portable_node_recovery }}
+    if: ${{ !inputs.run_windows_dependency_diagnostic && (inputs.run_portable_node_recovery) }}
     runs-on: windows-2025
     timeout-minutes: 20
     strategy:
@@ -1112,7 +1117,7 @@ jobs:
 
   native-git-installer:
     name: Full Windows Git installer and published-driver proof
-    if: ${{ inputs.run_windows_launcher_integration }}
+    if: ${{ !inputs.run_windows_dependency_diagnostic && (inputs.run_windows_launcher_integration) }}
     runs-on: windows-2025
     timeout-minutes: 90
     steps:
@@ -1140,3 +1145,22 @@ jobs:
           path: ${{ runner.temp }}/full-git-install-evidence
           if-no-files-found: error
           retention-days: 7
+
+  dependency-diagnostic:
+    if: ${{ inputs.run_windows_dependency_diagnostic }}
+    name: Windows dependency junction diagnostic
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.20.0"
+      - name: Inspect actual Windows junction copies and path math
+        shell: pwsh
+        run: |
+          node scripts/ci/probe-windows-runtime-relocation.mjs
+          if ($LASTEXITCODE -ne 0) { throw "Dependency diagnostic failed." }

@@ -3,7 +3,7 @@ import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { hasErrnoCode } from "./errno.js";
-import { isPathInside } from "./path-guards.js";
+import { isPathInside, normalizeWindowsPathPreservingCase } from "./path-guards.js";
 
 export type RuntimeRelocation = {
   sourceRoot: string;
@@ -20,7 +20,13 @@ export function relocateRuntimePath(
       isPathInside(candidate, value),
     );
     if (root) {
-      return path.join(relocation.destinationRoot, path.relative(root, value));
+      // Junction readlink values can use the extended-length namespace while
+      // containment already compares normalized paths. Use that same spelling
+      // for relative math, preserving the target's case on the new volume.
+      const source = process.platform === "win32" ? normalizeWindowsPathPreservingCase(root) : root;
+      const target =
+        process.platform === "win32" ? normalizeWindowsPathPreservingCase(value) : value;
+      return path.join(relocation.destinationRoot, path.relative(source, target));
     }
   }
   return value;
