@@ -41,6 +41,29 @@ $proof = [ordered]@{
     cleanup = 'pending'
 }
 $failure = $null
+function Write-PortableProofCheckpoint {
+    param([string]$Phase, [switch]$Required)
+    $proof.phase = $Phase
+    $proof.observedAt = [DateTime]::UtcNow.ToString('o')
+    Write-Host ("[portable-proof] " + $proof.observedAt + " " + $Phase)
+    $pendingPath = $EvidencePath + '.pending'
+    try {
+        $proof | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $pendingPath -Encoding UTF8
+        # Same-directory publication preserves the last complete JSON on cancellation.
+        if ([IO.File]::Exists($EvidencePath)) {
+            [IO.File]::Replace($pendingPath, $EvidencePath, $null)
+        } else {
+            [IO.File]::Move($pendingPath, $EvidencePath)
+        }
+    } catch {
+        # Intermediate diagnostic failure must not prevent cleanup; final evidence is required.
+        if ($Required) { throw }
+        Write-Warning ("Could not checkpoint portable proof: " + $_.Exception.Message)
+    } finally {
+        Remove-Item -LiteralPath $pendingPath -Force -ErrorAction SilentlyContinue
+    }
+}
+Write-PortableProofCheckpoint 'initialized'
 try {
     New-Item -ItemType Directory -Path $root | Out-Null
     $shim = Join-Path $root 'bin'
@@ -101,13 +124,16 @@ try {
             $script:ArchiveProof += @{ url = $Uri; sha256 = $actual; bytes = (Get-Item -LiteralPath $OutFile).Length }
         } else { throw 'Portable recovery downloaded an unexpected artifact.' }
     }
+    Write-PortableProofCheckpoint 'package-manager-recovery-starting'
     $result = @(Install-Node)
+    Write-PortableProofCheckpoint 'package-manager-recovery-returned'
     if (-not (Test-BooleanSuccessResult -Results $result)) { throw 'Package-manager failure did not recover through portable Node.' }
     $calls = @(Get-Content -LiteralPath $script:ManagerCalls)
     if (($calls -join ',') -cne 'winget,choco,scoop') { throw 'Did not exercise all three failing package managers in order.' }
     if ($script:ArchiveProof.Count -ne 1) { throw 'Recovery did not download exactly one official ZIP.' }
     $nodeExe = Get-PortableNodeCommandPath
     if (-not $nodeExe -or -not (Check-Node -NodePath $nodeExe)) { throw 'Real runtime/SQLite validation failed.' }
+    Write-PortableProofCheckpoint 'recovered-runtime-validated'
     $resolvedNode = (Get-Command node -CommandType Application | Select-Object -First 1).Source
     if ($resolvedNode -ine $nodeExe) { throw 'Process PATH did not select the installed portable runtime.' }
     $nodeDir = Split-Path -Parent $nodeExe
@@ -116,13 +142,16 @@ try {
     }
     $proof.managers = $calls
     $proof.archive = $script:ArchiveProof[0]
+    Write-PortableProofCheckpoint 'process-and-user-path-validated'
     $proof.nodeVersion = (& $nodeExe -v).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Installed runtime failed to start.' }
+    Write-PortableProofCheckpoint 'hashing-recovered-runtime'
     $proof.nodeSha256 = (Get-FileHash -LiteralPath $nodeExe -Algorithm SHA256).Hash.ToLowerInvariant()
     $proof.sqliteCapabilityProbe = 'Exact Check-Node passed version, NUL TEXT, BLOB and JSON probes on the downloaded runtime.'
     $proof.processPath = 'portable runtime selected'
     $proof.userPath = 'portable runtime present'
-    $proof.result = 'passed'
+    $proof.acceptanceAssertions = 'passed'
+    Write-PortableProofCheckpoint 'acceptance-assertions-passed'
 } catch {
     $failure = $_
     $proof.error = $_.Exception.Message
@@ -131,28 +160,47 @@ try {
     foreach ($scope in @('Machine', 'User')) {
         try {
             $value = if ($scope -eq 'Machine') { $machinePath } else { $userPath }
+            Write-PortableProofCheckpoint ("restoring-$scope-path")
             [Environment]::SetEnvironmentVariable('Path', $value, $scope)
             if ([Environment]::GetEnvironmentVariable('Path', $scope) -cne $value) { throw "$scope PATH restoration mismatch." }
-        } catch { $cleanupErrors += $_.Exception.Message }
+            Write-PortableProofCheckpoint ("restored-$scope-path")
+        } catch {
+            $cleanupErrors += $_.Exception.Message
+            $proof.cleanupErrors = $cleanupErrors
+            $proof.cleanup = 'failed'
+            Write-PortableProofCheckpoint ("restore-$scope-path-failed")
+        }
     }
     foreach ($name in $names) {
         try {
+            Write-PortableProofCheckpoint ("restoring-process-$name")
             if ($null -eq $saved[$name]) {
                 Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
             } else {
                 [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process')
             }
             if ([Environment]::GetEnvironmentVariable($name, 'Process') -cne $saved[$name]) { throw "$name restoration mismatch." }
-        } catch { $cleanupErrors += $_.Exception.Message }
+        } catch {
+            $cleanupErrors += $_.Exception.Message
+            $proof.cleanupErrors = $cleanupErrors
+            $proof.cleanup = 'failed'
+            Write-PortableProofCheckpoint ("restore-process-$name-failed")
+        }
     }
     try {
+        Write-PortableProofCheckpoint 'removing-owned-proof-root'
         if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
         if (Test-Path -LiteralPath $root) { throw 'Owned portable proof root survived cleanup.' }
-    } catch { $cleanupErrors += $_.Exception.Message }
+    } catch {
+        $cleanupErrors += $_.Exception.Message
+        $proof.cleanupErrors = $cleanupErrors
+        $proof.cleanup = 'failed'
+        Write-PortableProofCheckpoint 'remove-owned-proof-root-failed'
+    }
     $proof.cleanup = if ($cleanupErrors.Count -eq 0) { 'restored-and-removed' } else { 'failed' }
     $proof.cleanupErrors = $cleanupErrors
-    if ($cleanupErrors.Count -ne 0) { $proof.result = 'failed' }
-    $proof | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $EvidencePath -Encoding UTF8
+    if (-not $failure -and $proof.acceptanceAssertions -eq 'passed' -and $cleanupErrors.Count -eq 0) { $proof.result = 'passed' }
+    Write-PortableProofCheckpoint 'completed' -Required
 }
 if ($failure) { throw $failure }
 if ($proof.result -ne 'passed') { throw 'Portable proof cleanup failed.' }

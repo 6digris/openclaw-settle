@@ -63,7 +63,7 @@ on:
         default: false
         type: boolean
       packaged_gateway_case:
-        description: 'Native cases: all, or missing Scheduled Task only (does not claim console acceptance)'
+        description: "Native cases: all, or missing Scheduled Task only (does not claim console acceptance)"
         required: false
         default: all
         type: choice
@@ -78,6 +78,15 @@ on:
         required: false
         default: ""
         type: string
+      portable_node_engine:
+        description: "Portable recovery engine (select one only for a missing cell)"
+        required: false
+        default: "both"
+        type: choice
+        options:
+          - both
+          - powershell
+          - pwsh
       installed_startup_package:
         description: "Optional Package Acceptance binding, or {baseline, candidate} bindings for a matched comparison"
         required: false
@@ -1054,7 +1063,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        engine: [powershell, pwsh]
+        engine: ${{ fromJSON(inputs.portable_node_engine == 'powershell' && '["powershell"]' || inputs.portable_node_engine == 'pwsh' && '["pwsh"]' || '["powershell","pwsh"]') }}
     steps:
       - name: Validate portable recovery selection
         shell: pwsh
