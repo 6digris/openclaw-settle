@@ -14,16 +14,21 @@ const suite = createChatFlowE2eSuite();
 const POSITION_RAIL_MIN_TRANSCRIPT_HEIGHT = 360;
 
 suite.define(() => {
-  it.each([
-    { count: 1, direction: "ltr" },
-    { count: 2, direction: "ltr" },
-    { count: 5, direction: "ltr" },
-    { count: 8, direction: "ltr" },
-    { count: 80, direction: "ltr" },
-    { count: 80, direction: "rtl" },
-  ])(
-    "keeps the rail anchored as Task progress and the composer grow ($count, $direction messages)",
-    async ({ count, direction }) => {
+  it.each(
+    [
+      { count: 1, direction: "ltr" },
+      { count: 2, direction: "ltr" },
+      { count: 5, direction: "ltr" },
+      { count: 8, direction: "ltr" },
+      { count: 80, direction: "ltr" },
+      { count: 80, direction: "rtl" },
+      { count: 2, direction: "ltr", collapsedNav: true },
+      { count: 80, direction: "ltr", collapsedNav: true },
+      { count: 80, direction: "rtl", collapsedNav: true },
+    ].map((scenario) => ({ collapsedNav: false, ...scenario })),
+  )(
+    "keeps the rail anchored as Task progress and the composer grow ($count, $direction messages, collapsed sidebar: $collapsedNav)",
+    async ({ count, direction, collapsedNav }) => {
       await suite.withPage(
         { colorScheme: "dark", viewport: { width: 1440, height: 900 } },
         async ({ page }) => {
@@ -66,6 +71,19 @@ suite.define(() => {
           await page.addInitScript(createControlUiMockSameOriginGatewayScript());
           await page.goto(`${suite.server.baseUrl}chat`);
           await page.locator(`.chat-text[dir="${direction}"]`).first().waitFor();
+          if (collapsedNav) {
+            await page.locator(".sidebar-brand__collapse").click();
+            await page.evaluate((dir) => {
+              document.documentElement.dir = dir;
+            }, direction);
+            await expect
+              .poll(() =>
+                page
+                  .locator(".chat-position-rail")
+                  .evaluate((element) => getComputedStyle(element).position),
+              )
+              .toBe("fixed");
+          }
           const card = page.locator(".session-progress-card--composer");
           await card.waitFor();
           // Let the transcript settle before measuring the rail and toggling the card.
@@ -115,6 +133,10 @@ suite.define(() => {
           const bounds = () =>
             track.evaluate((element) => element.getBoundingClientRect().toJSON());
           const collapsed = await bounds();
+          if (collapsedNav) {
+            expect(collapsed.left).toBe(4);
+            expect(collapsed.width).toBe(44);
+          }
           const collapsedComposer = (await composer.boundingBox())!;
           if (count === 80 && direction === "ltr") {
             const transcript = page.locator(".chat-thread");

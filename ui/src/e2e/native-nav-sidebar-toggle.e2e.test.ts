@@ -167,6 +167,11 @@ suite.define(() => {
       nativeNav: false,
       pathname: controlUiSessionPath("agent:main:work").slice(1),
       scenario: {
+        historyMessages: Array.from({ length: 12 }, (_, index) => ({
+          __openclaw: { id: `sidebar-history-${index}`, seq: index + 1 },
+          role: index % 2 ? "assistant" : "user",
+          content: `Sidebar history checkpoint ${index + 1}`,
+        })),
         sessionKey: "agent:main:work",
         featureMethods: [
           "chat.metadata",
@@ -208,6 +213,27 @@ suite.define(() => {
     await expect
       .poll(async () => Math.round((await page.locator(".content").boundingBox())!.x))
       .toBe(52);
+    await page.mouse.move(900, 450);
+    const togglePaint = () =>
+      expand.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return {
+          border: style.borderTopWidth,
+          background: style.backgroundColor,
+          shadow: style.boxShadow,
+          blur: style.backdropFilter,
+        };
+      });
+    expect(await togglePaint()).toEqual({
+      border: "0px",
+      background: "rgba(0, 0, 0, 0)",
+      shadow: "none",
+      blur: "none",
+    });
+    await expand.hover();
+    expect((await togglePaint()).border).toBe("0px");
+    expect((await togglePaint()).background).not.toBe("rgba(0, 0, 0, 0)");
+    await page.mouse.move(900, 450);
     const toggleBounds = (await expand.boundingBox())!;
     expect(toggleBounds).toMatchObject({ x: 10, y: 8, width: 32, height: 32 });
     const headerBounds = (await page.locator(".chat-pane__header:visible").first().boundingBox())!;
@@ -286,6 +312,13 @@ suite.define(() => {
     await page.keyboard.press("Escape");
     await openChatSidePanelType(page, "Side chat");
     await dockChatSidePanel(page, "left");
+    await expect
+      .poll(() =>
+        page
+          .locator("#control-ui-main .chat-position-rail")
+          .evaluate((element) => getComputedStyle(element).position),
+      )
+      .toBe("sticky");
     const leftPanel = (await page.locator(".sidebar-region--left").boundingBox())!;
     expect(leftPanel.x).toBeGreaterThanOrEqual(52);
     for (const button of await page.locator(".chat-pane__actions button:visible").all()) {
@@ -294,6 +327,7 @@ suite.define(() => {
     await newSession.click();
     await expect.poll(() => new URL(page.url()).pathname).toBe("/new");
     await page.locator(".new-session-page__message").waitFor();
+    expect(await page.locator(".chat-position-rail__marker:visible").count()).toBe(0);
     expect(await controls.evaluate((element) => getComputedStyle(element, "::after").content)).toBe(
       "none",
     );

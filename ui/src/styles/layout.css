@@ -150,6 +150,22 @@ html:not(
     left: var(--shell-chrome-controls-inset);
   }
 
+  .shell-chrome-controls__nav-toggle {
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+
+    &:hover {
+      background: var(--bg-hover);
+    }
+
+    &:focus-visible {
+      box-shadow: var(--focus-ring);
+    }
+  }
+
   /* The 48px session header and 32px toggle share a 24px centerline. The
      divider belongs to session chrome, not New Session or page headings. */
   .shell-chrome-controls--session::after {
@@ -184,6 +200,51 @@ html:not(
 
   .sidebar-attention--floating ~ .sidebar-update-card--floating .sidebar-update-card {
     margin-top: 12px;
+  }
+
+  /* Keep the existing rail inside its transcript owner, but paint it in the
+     shell strip. Only an unsplit, visible main conversation can occupy it;
+     splits and left/bottom-docked panels retain their local gutter rails. */
+  .chat-split-view__column:only-child
+    > .chat-split-view__cell:only-child
+    > .chat-pane-cache
+    > .chat-pane-cache__pane--visible[aria-hidden="false"]
+    .sidebar-region:not(.sidebar-region--expanded):not(
+      :is(.sidebar-region--left, .sidebar-region--bottom).sidebar-region--open
+    )
+    > .sidebar-region__primary
+    .chat-main__conversation
+    > .chat-thread
+    > .chat-position-rail {
+    /* The bottom stack swaps the old horizontal strip's toggle for Inbox,
+       so its span already accounts for the optional Home button. */
+    --chat-position-rail-viewport-height: max(
+      0px,
+      calc(100dvh - 58px - var(--shell-controls-width) - env(safe-area-inset-bottom, 0px))
+    );
+    --chat-position-rail-height: min(
+      45dvh,
+      calc(var(--chat-position-rail-count) * 12px),
+      max(0px, calc(var(--chat-position-rail-viewport-height) - 120px))
+    );
+
+    position: fixed;
+    z-index: 44;
+    top: calc(48px + var(--chat-position-rail-top));
+    left: 0;
+    display: block;
+
+    .chat-position-rail__track {
+      left: 4px;
+    }
+
+    @container chat-transcript (max-height: 360px) {
+      display: none;
+    }
+
+    .chat-position-rail__marker {
+      justify-content: center;
+    }
   }
 }
 
