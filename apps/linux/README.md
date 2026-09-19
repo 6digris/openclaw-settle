@@ -63,8 +63,9 @@ existing native browser document token, origin/path, and generation checks;
 reading tabs and other dashboard windows do not receive this bridge.
 
 The adapter invokes only
-`openclaw browser extension setup --action ACTION --json --browser-profile chrome --wait-ms 1000`
-through the companion's local CLI owner. Callers cannot choose commands, paths,
+`openclaw browser extension setup --action ACTION --json --wait-ms 1000`
+through the companion's local CLI owner. Profile selection is left to the CLI so
+a saved profile is not overridden. Callers cannot choose commands, paths,
 profiles, or URLs. Platform bootstrap support comes from the CLI result rather
 than the app platform: a Windows app build alone does not establish that native
 host bootstrap is supported or verified.
