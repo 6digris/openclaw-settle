@@ -18,6 +18,7 @@ export const oauthCredentialMetadataSchema = z.strictObject({
   deviceAuthorizationEndpoint: z.string().optional(),
   issuer: z.string().optional(),
   authFlow: z.string().optional(),
+  userId: z.string().optional(),
 });
 
 export type OAuthCredentialMetadata = z.infer<typeof oauthCredentialMetadataSchema>;

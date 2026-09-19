@@ -1418,6 +1418,10 @@
     "./plugin-sdk/provider-auth-login-flow-runtime": {
       "default": "./dist/plugin-sdk/provider-auth-login-flow-runtime.js"
     },
+    "./plugin-sdk/provider-auth-managed-login-runtime": {
+      "types": "./dist/plugin-sdk/provider-auth-managed-login-runtime.d.ts",
+      "default": "./dist/plugin-sdk/provider-auth-managed-login-runtime.js"
+    },
     "./plugin-sdk/provider-auth-api-key": {
       "default": "./dist/plugin-sdk/provider-auth-api-key.js"
     },

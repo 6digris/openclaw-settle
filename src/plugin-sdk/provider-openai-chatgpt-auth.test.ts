@@ -22,6 +22,7 @@ describe("OpenAI Codex provider auth helpers", () => {
         "https://api.openai.com/auth": {
           chatgpt_account_id: "acct_123",
           chatgpt_plan_type: "plus",
+          chatgpt_user_id: "user_456",
         },
         "https://api.openai.com/profile": {
           email: "codex@example.com",
@@ -35,12 +36,14 @@ describe("OpenAI Codex provider auth helpers", () => {
       chatgptPlanType: "plus",
       email: "codex@example.com",
       profileName: "codex@example.com",
+      userId: "user_456",
     });
     expect(resolveOpenAICodexImportProfileName(identity, "codex-import")).toBe("account-acct_123");
     expect(buildOpenAICodexCredentialExtra({ ...identity, idToken: "id-token" })).toEqual({
       accountId: "acct_123",
       chatgptPlanType: "plus",
       idToken: "id-token",
+      userId: "user_456",
     });
   });
 
@@ -58,6 +61,7 @@ describe("OpenAI Codex provider auth helpers", () => {
     expect(identity).toEqual({
       accountId: "acct/fallback",
       profileName: `id-${Buffer.from("user-123__acct-456").toString("base64url")}`,
+      userId: "user-123__acct-456",
     });
     expect(resolveOpenAICodexImportProfileName(identity, "codex-import")).toBe(
       "account-acct-fallback",

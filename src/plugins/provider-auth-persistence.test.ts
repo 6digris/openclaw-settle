@@ -524,4 +524,65 @@ describe("provider auth protected persistence", () => {
       },
     });
   });
+
+  it("leaves the transaction-current profile unchanged when managed same-account validation rejects", async () => {
+    const rootDir = tempDirs.make("openclaw-provider-auth-managed-guard-");
+    const stateDir = path.join(rootDir, "state");
+    const agentDir = path.join(stateDir, "agents", "main", "agent");
+    const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+    const profileId = "openai:managed";
+    const currentCredential: OAuthCredential = {
+      type: "oauth",
+      provider: "openai",
+      access: "current-access-token",
+      refresh: "current-refresh-token",
+      expires: Date.now() + 60_000,
+      userId: "user-current",
+    };
+    const incomingCredential: OAuthCredential = {
+      type: "oauth",
+      provider: "openai",
+      access: "incoming-access-token",
+      refresh: "incoming-refresh-token",
+      expires: Date.now() + 60_000,
+      userId: "user-incoming",
+    };
+    const guardError = new Error("managed owner changed");
+    let writes = 0;
+    saveAuthProfileStore(
+      {
+        version: 1,
+        profiles: { [profileId]: currentCredential },
+      },
+      agentDir,
+    );
+
+    await expect(
+      stageProviderAuthProfileBatch({
+        profiles: [
+          {
+            profileId,
+            credential: incomingCredential,
+          },
+        ],
+        config: {},
+        env,
+        stateDir,
+        agentDir,
+        beforeWrite: () => {
+          writes += 1;
+          if (writes === 2) {
+            throw guardError;
+          }
+        },
+      }),
+    ).rejects.toBe(guardError);
+
+    expect(writes).toBe(2);
+    expect(
+      ensureAuthProfileStore(agentDir, { readOnly: true, syncExternalCli: false }).profiles[
+        profileId
+      ],
+    ).toEqual(currentCredential);
+  });
 });

@@ -196,7 +196,6 @@ export async function persistAuthProfileBatch(
       const preparedOwner = runAuthProfileWriteTransaction(
         params.agentDir,
         (database, owner) => {
-          params.beforeWrite?.();
           storeWasAbsent =
             inspectPersistedAuthProfileStoreRaw(params.agentDir, database).status === "missing";
           stateWasAbsent =
@@ -226,6 +225,7 @@ export async function persistAuthProfileBatch(
                 `Refused to restore fenced OAuth refresh generation for profile "${profileId}".`,
               );
             }
+            params.beforeWrite?.();
             previousProfiles.set(profileId, next.profiles[profileId]);
             next.profiles[profileId] = entry.credential;
             const existingStats = next.usageStats?.[profileId];

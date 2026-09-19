@@ -12,6 +12,8 @@ import { ProviderAuthConfigApplyError } from "../../shared/provider-auth-result.
 
 type AuthRunCall = {
   agentDir?: string;
+  assertCurrent?: () => void;
+  env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   workspaceDir?: string;
 };
@@ -25,6 +27,9 @@ type ResolvePluginProvidersCall = {
 
 type PersistProviderAuthCall = {
   agentDir?: string;
+  beforeWrite?: () => void;
+  env?: NodeJS.ProcessEnv;
+  stateDir?: string;
   profiles?: Array<{
     profileId?: string;
     credential?: {
@@ -66,6 +71,7 @@ const mocks = vi.hoisted(() => ({
   logConfigUpdated: vi.fn(),
   openUrl: vi.fn(),
   isRemoteEnvironment: vi.fn(() => false),
+  findPersistedAuthProfileCredential: vi.fn(),
   validateAnthropicSetupToken: vi.fn<() => string | undefined>(() => undefined),
   promoteAuthProfileInOrder: vi.fn(),
   tryImportProviderCredential: vi.fn(),
@@ -94,6 +100,15 @@ vi.mock("../../agents/auth-profiles/profiles.js", () => ({
   upsertAuthProfileWithLock: mocks.upsertAuthProfileWithLock,
   upsertAuthProfileWithLockOrThrow: mocks.upsertAuthProfileWithLock,
 }));
+
+vi.mock("../../agents/auth-profiles.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../agents/auth-profiles.js")>();
+  return {
+    ...actual,
+    findPersistedAuthProfileCredential: mocks.findPersistedAuthProfileCredential,
+    removeProviderAuthProfilesWithLock: mocks.removeProviderAuthProfilesWithLock,
+  };
+});
 
 vi.mock("../../plugins/provider-auth-persistence.js", () => ({
   persistProviderAuthProfilesAfterLogin: mocks.persistProviderAuthProfilesAfterLogin,
@@ -313,6 +328,8 @@ vi.mock("../../plugins/provider-auth-choice-helpers.js", async (importOriginal) 
 });
 
 const {
+  MANAGED_MODELS_AUTH_LOGIN_ACCOUNT_MISMATCH_CODE,
+  MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY,
   modelsAuthAddCommand,
   modelsAuthLoginCommand,
   modelsAuthPasteApiKeyCommand,
@@ -434,6 +451,8 @@ describe("modelsAuthLoginCommand", () => {
     mocks.resolveAgentWorkspaceDir.mockReturnValue("/tmp/openclaw/workspace");
     mocks.resolveDefaultAgentWorkspaceDir.mockReturnValue("/tmp/openclaw/workspace");
     mocks.isRemoteEnvironment.mockReturnValue(false);
+    mocks.findPersistedAuthProfileCredential.mockReset();
+    mocks.findPersistedAuthProfileCredential.mockReturnValue(undefined);
     mocks.isCliProvider.mockReturnValue(false);
     mocks.resolvePluginSetupProviderCore.mockReturnValue(undefined);
     mocks.resolvePluginSetupRegistry.mockReturnValue({
@@ -598,6 +617,7 @@ describe("modelsAuthLoginCommand", () => {
     expect(mocks.persistProviderAuthProfilesAfterLogin).not.toHaveBeenCalled();
     expect(mocks.promoteAuthProfileInOrder).not.toHaveBeenCalled();
     expect(mocks.updateConfig).not.toHaveBeenCalled();
+    expect(mocks.completeProviderModelAccess).not.toHaveBeenCalled();
     expect(mocks.callGateway).not.toHaveBeenCalled();
   });
 
@@ -1123,6 +1143,188 @@ describe("modelsAuthLoginCommand", () => {
     expect(mocks.persistProviderAuthProfilesAfterLogin).not.toHaveBeenCalled();
     expect(mocks.promoteAuthProfileInOrder).not.toHaveBeenCalled();
     expect(mocks.updateConfig).not.toHaveBeenCalled();
+    expect(mocks.completeProviderModelAccess).not.toHaveBeenCalled();
+  });
+
+  it("runs explicit managed login without config, order, default, or force side effects", async () => {
+    const runtime = createRuntime();
+    const beforePersist = vi.fn(async () => {});
+    const assertCurrent = vi.fn();
+    const env = { OPENCLAW_STATE_DIR: "/tmp/openclaw-managed-state" };
+    const stateDir = "/tmp/openclaw-native-state";
+    const managedEnv = { ...env, OPENCLAW_STATE_DIR: stateDir };
+    const managedAgentDir = "/tmp/openclaw-native-state/agents/main/agent";
+    mocks.resolveAgentDir.mockImplementation(
+      (_cfg: OpenClawConfig, _agentId: string, envArg?: NodeJS.ProcessEnv) =>
+        envArg?.OPENCLAW_STATE_DIR === stateDir ? managedAgentDir : "/tmp/openclaw/agents/main",
+    );
+    const prompter = mocks.createClackPrompter();
+
+    const result = await runModelsAuthLoginFlowCore({
+      provider: "openai",
+      method: "oauth",
+      agent: "main",
+      config: currentConfig,
+      runtime,
+      prompter,
+      env,
+      managed: {
+        capability: MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY,
+        profileId: "openai:managed",
+        stateDir,
+        beforePersist,
+        assertCurrent,
+      },
+    });
+
+    expect(result).toEqual({
+      providerId: "openai",
+      methodId: "oauth",
+      authRefresh: "refreshed",
+      defaultModel: "openai/gpt-5.5",
+      profiles: [{ profileId: "openai:managed", provider: "openai", mode: "oauth" }],
+    });
+    expect(runProviderAuth).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentDir: managedAgentDir,
+        assertCurrent,
+        env: managedEnv,
+        workspaceDir: "/tmp/openclaw/workspace",
+      }),
+    );
+    expect(mocks.findPersistedAuthProfileCredential).toHaveBeenCalledWith({
+      agentDir: managedAgentDir,
+      profileId: "openai:managed",
+      stateDir,
+    });
+    expect(beforePersist).toHaveBeenCalledOnce();
+    expect(beforePersist.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.persistProviderAuthProfilesAfterLogin.mock.invocationCallOrder[0]!,
+    );
+    expect(mocks.persistProviderAuthProfilesAfterLogin).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentDir: managedAgentDir,
+        beforeWrite: expect.any(Function),
+        env: managedEnv,
+        stateDir,
+        profiles: [
+          expect.objectContaining({
+            profileId: "openai:managed",
+            credential: expect.objectContaining({ provider: "openai", type: "oauth" }),
+          }),
+        ],
+      }),
+    );
+    expect(mocks.promoteAuthProfileInOrder).not.toHaveBeenCalled();
+    expect(mocks.updateConfig).not.toHaveBeenCalled();
+    expect(mocks.completeProviderModelAccess).not.toHaveBeenCalled();
+    expect(mocks.removeProviderAuthProfilesWithLock).not.toHaveBeenCalled();
+  });
+
+  it("rejects managed login before provider execution without explicit config and isolated env", async () => {
+    const runtime = createRuntime();
+    const managed = {
+      capability: MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY,
+      profileId: "openai:managed",
+      stateDir: "/tmp/openclaw-native-state",
+      beforePersist: async () => {},
+      assertCurrent: () => {},
+    };
+    await expect(
+      runModelsAuthLoginFlowCore({
+        provider: "openai",
+        method: "oauth",
+        agent: "main",
+        runtime,
+        prompter: mocks.createClackPrompter(),
+        env: {},
+        managed,
+      }),
+    ).rejects.toThrow("Managed auth login requires an explicit config");
+
+    await expect(
+      runModelsAuthLoginFlowCore({
+        provider: "openai",
+        method: "oauth",
+        agent: "main",
+        config: currentConfig,
+        runtime,
+        prompter: mocks.createClackPrompter(),
+        managed,
+      }),
+    ).rejects.toThrow("Managed auth login requires an explicit isolated env");
+
+    expect(runProviderAuth).not.toHaveBeenCalled();
+    expect(mocks.persistProviderAuthProfilesAfterLogin).not.toHaveBeenCalled();
+  });
+
+  it("uses the provider same-account matcher before replacing an existing managed profile", async () => {
+    const runtime = createRuntime();
+    const matchesPersonalAccount = vi.fn(() => false);
+    runProviderAuth.mockResolvedValueOnce({
+      profiles: [
+        {
+          profileId: "openai:new-login",
+          credential: {
+            type: "oauth",
+            provider: "openai",
+            access: "new-access-token",
+            refresh: "new-refresh-token",
+            expires: Date.now() + 60_000,
+          },
+        },
+      ],
+    });
+    mocks.findPersistedAuthProfileCredential.mockReturnValueOnce({
+      type: "oauth",
+      provider: "openai",
+      access: "old-access-token",
+      refresh: "old-refresh-token",
+      expires: Date.now() + 60_000,
+      accountId: "acct-existing",
+      userId: "user-existing",
+    });
+    mocks.resolvePluginProvidersCore.mockReturnValueOnce([
+      createProvider({
+        id: "openai",
+        label: "OpenAI",
+        run: runProviderAuth as ProviderPlugin["auth"][number]["run"],
+        auth: [
+          {
+            id: "oauth",
+            label: "OAuth",
+            kind: "oauth",
+            run: runProviderAuth,
+            matchesPersonalAccount,
+          },
+        ],
+      }),
+    ]);
+
+    await expect(
+      runModelsAuthLoginFlowCore({
+        provider: "openai",
+        method: "oauth",
+        agent: "main",
+        config: currentConfig,
+        runtime,
+        prompter: mocks.createClackPrompter(),
+        env: {},
+        managed: {
+          capability: MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY,
+          profileId: "openai:managed",
+          stateDir: "/tmp/openclaw-native-state",
+          beforePersist: async () => {},
+          assertCurrent: () => {},
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: MANAGED_MODELS_AUTH_LOGIN_ACCOUNT_MISMATCH_CODE,
+      message: "Managed auth login returned credentials for a different account.",
+    });
+
+    expect(matchesPersonalAccount).toHaveBeenCalledOnce();
+    expect(mocks.persistProviderAuthProfilesAfterLogin).not.toHaveBeenCalled();
   });
 
   it("loads the owning plugin for an explicit provider even in a clean config", async () => {

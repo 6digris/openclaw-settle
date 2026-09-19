@@ -452,9 +452,6 @@
       "openclaw/plugin-sdk/provider-auth-runtime": [
         "../../packages/plugin-sdk/dist/src/plugin-sdk/provider-auth-runtime.d.ts"
       ],
-      "openclaw/plugin-sdk/provider-auth-login-flow-runtime": [
-        "../../packages/plugin-sdk/dist/src/plugin-sdk/provider-auth-login-flow-runtime.d.ts"
-      ],
       "openclaw/plugin-sdk/provider-auth-api-key": [
         "../../packages/plugin-sdk/dist/src/plugin-sdk/provider-auth-api-key.d.ts"
       ],
@@ -920,6 +917,9 @@
       ],
       "openclaw/plugin-sdk/sqlite-worker-runtime": [
         "../../packages/plugin-sdk/dist/src/plugin-sdk/sqlite-worker-runtime.d.ts"
+      ],
+      "openclaw/plugin-sdk/provider-auth-login-flow-runtime": [
+        "../../packages/plugin-sdk/dist/src/plugin-sdk/provider-auth-login-flow-runtime.d.ts"
       ]
     }
   }

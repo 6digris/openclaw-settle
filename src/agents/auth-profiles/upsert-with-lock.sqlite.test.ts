@@ -648,6 +648,33 @@ describe("auth profile batch persistence", () => {
     });
   });
 
+  it("runs the synchronous current-owner guard inside the batch transaction before replacing", async () => {
+    await withAgentDir(async (agentDir) => {
+      const profileId = "openai:target";
+      saveAuthProfileStore(
+        {
+          version: 1,
+          profiles: { [profileId]: apiKey("sk-stale") },
+        },
+        agentDir,
+      );
+
+      await expect(
+        persistAuthProfileBatch({
+          agentDir,
+          profiles: [{ profileId, credential: apiKey("sk-fresh") }],
+          assertCurrent: () => {
+            throw new Error("owner changed");
+          },
+        }),
+      ).rejects.toThrow("owner changed");
+
+      expect(loadPersistedAuthProfileStore(agentDir)?.profiles[profileId]).toEqual(
+        apiKey("sk-stale"),
+      );
+    });
+  });
+
   it("rolls the completed-login credential and state back together on write failure", async () => {
     await withAgentDir(async (agentDir) => {
       const profileId = "openai:existing";

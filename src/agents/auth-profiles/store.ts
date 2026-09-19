@@ -537,6 +537,7 @@ export function isSharedMainAuthProfileAgentDir(agentDir?: string): boolean {
 export function findPersistedAuthProfileCredential(params: {
   agentDir?: string;
   profileId: string;
+  stateDir?: string;
 }): AuthProfileStore["profiles"][string] | undefined {
   if (isEnvOnlyAuthProfileRuntime()) {
     return undefined;
@@ -547,7 +548,13 @@ export function findPersistedAuthProfileCredential(params: {
       : readUserModelAuthProfile(params.profileId)?.credential;
   }
   const agentDir = resolveRuntimeAuthProfileAgentDir(params.agentDir);
-  const requestedStore = loadPersistedAuthProfileStore(agentDir);
+  const stateDirEnv = params.stateDir
+    ? { ...process.env, OPENCLAW_STATE_DIR: params.stateDir, OPENCLAW_AGENT_DIR: undefined }
+    : undefined;
+  const requestedStore =
+    stateDirEnv && !agentDir
+      ? loadPersistedSharedAuthProfileStore(stateDirEnv)
+      : loadPersistedAuthProfileStore(agentDir);
   const requestedProfile = requestedStore?.profiles[params.profileId];
   const scopedSharedStore = getScopedSharedAuthStore();
   if (scopedSharedStore) {
@@ -559,6 +566,10 @@ export function findPersistedAuthProfileCredential(params: {
 
   if (isSharedMainAuthProfileAgentDir(agentDir)) {
     return requestedProfile;
+  }
+
+  if (stateDirEnv) {
+    return loadPersistedSharedAuthProfileStore(stateDirEnv)?.profiles[params.profileId];
   }
 
   return loadPersistedAuthProfileStore(resolveRuntimeAuthProfileAgentDir())?.profiles[

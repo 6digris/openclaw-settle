@@ -16,8 +16,11 @@ import {
 } from "@openclaw/normalization-core/string-coerce";
 import { styleSelectParams } from "../../../packages/terminal-core/src/prompt-select-styled-params.js";
 import { stylePromptMessage } from "../../../packages/terminal-core/src/prompt-style.js";
-import { resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
-import { removeProviderAuthProfilesWithLock } from "../../agents/auth-profiles.js";
+import { resolveAgentDir, resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
+import {
+  findPersistedAuthProfileCredential,
+  removeProviderAuthProfilesWithLock,
+} from "../../agents/auth-profiles.js";
 import {
   promoteAuthProfileInOrder,
   upsertAuthProfileWithLockOrThrow,
@@ -428,6 +431,7 @@ async function persistProviderAuthResult(params: {
   assertCurrent?: () => void;
   signal?: AbortSignal;
   refreshAfterLogin?: ModelsAuthLoginFlowOptions["refreshAfterLogin"];
+  managed?: ResolvedModelsAuthLoginManagedOptions;
 }): Promise<{ profiles: ProviderAuthResult["profiles"]; authRefresh: ModelAuthRefreshOutcome }> {
   const defaultModel = params.result.defaultModel
     ? normalizeAgentModelRefForConfig(params.result.defaultModel)
@@ -454,32 +458,53 @@ async function persistProviderAuthResult(params: {
         }),
       )
     : undefined;
-  const shouldUpdateConfig =
-    (isRecord(configPatch) && Object.keys(configPatch).length > 0) ||
-    Boolean(params.setDefault && defaultModel);
+  const shouldUpdateConfig = params.managed
+    ? false
+    : (isRecord(configPatch) && Object.keys(configPatch).length > 0) ||
+      Boolean(params.setDefault && defaultModel);
   if (profiles.length > 0 || shouldUpdateConfig) {
     await params.beforePersistentEffect?.();
   }
 
   try {
     for (const candidate of profiles) {
+      const managed = params.managed;
       const persisted = await persistProviderAuthProfilesAfterLogin({
         profiles: [candidate],
-        beforeWrite: params.assertCurrent,
+        beforeWrite: managed
+          ? () => {
+              params.assertCurrent?.();
+              assertManagedSamePersonalAccount({
+                method: managed.method,
+                incoming: candidate.credential,
+                current: findPersistedAuthProfileCredential({
+                  agentDir: params.agentDir,
+                  profileId: candidate.profileId,
+                  stateDir: managed.stateDir,
+                }),
+              });
+            }
+          : params.assertCurrent,
         config: params.config,
         env: params.env,
         agentDir: params.agentDir,
-        ...(params.env?.OPENCLAW_STATE_DIR ? { stateDir: params.env.OPENCLAW_STATE_DIR } : {}),
+        ...(params.managed
+          ? { stateDir: params.managed.stateDir }
+          : params.env?.OPENCLAW_STATE_DIR
+            ? { stateDir: params.env.OPENCLAW_STATE_DIR }
+            : {}),
       });
       const profile = expectDefined(persisted[0], "persisted auth profile");
       persistedProfiles.push(profile);
       params.assertCurrent?.();
-      await promotePersistedAuthProfile({
-        config: params.config,
-        agentDir: params.agentDir,
-        provider: profile.credential.provider,
-        profileId: profile.profileId,
-      });
+      if (!params.managed) {
+        await promotePersistedAuthProfile({
+          config: params.config,
+          agentDir: params.agentDir,
+          provider: profile.credential.provider,
+          profileId: profile.profileId,
+        });
+      }
     }
 
     // Replay only the login's changes; the writer may have newer unrelated settings.
@@ -620,6 +645,7 @@ async function runProviderAuthMethod(params: {
   beforePersistentEffect?: () => void | Promise<void>;
   refreshAfterLogin?: ModelsAuthLoginFlowOptions["refreshAfterLogin"];
   onModelAccessRequested?: (request: PreparedProviderModelAccess) => void;
+  managed?: ResolvedModelsAuthLoginManagedOptions;
 }): Promise<{
   result: ProviderAuthResult;
   profiles: ProviderAuthResult["profiles"];
@@ -669,6 +695,13 @@ async function runProviderAuthMethod(params: {
   const profiles = resolveLoginProfiles({
     result: connectionResult,
     requestedProfileId: params.profileId,
+    ...(params.managed
+      ? {
+          managedProvider: params.provider.id,
+          managedMethod: params.method,
+          managedExistingCredential: params.managed.existingCredential,
+        }
+      : {}),
   });
 
   const { profiles: persistedProfiles, authRefresh } = await persistProviderAuthResult({
@@ -684,10 +717,11 @@ async function runProviderAuthMethod(params: {
     prompter: params.prompter,
     setDefault: params.setDefault,
     env: params.env ?? process.env,
-    beforePersistentEffect: params.beforePersistentEffect,
+    beforePersistentEffect: params.managed?.beforePersist ?? params.beforePersistentEffect,
     refreshAfterLogin: params.refreshAfterLogin,
+    ...(params.managed ? { managed: params.managed } : {}),
   });
-  if (persistedProfiles.length > 0) {
+  if (!params.managed && persistedProfiles.length > 0) {
     await completeProviderModelAccess({
       prepared: modelAccess,
       prompter: params.prompter,
@@ -1008,6 +1042,46 @@ type LoginOptions = {
   force?: boolean;
 };
 
+export const MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY = "openclaw.models.auth.managed.v1";
+export const MANAGED_MODELS_AUTH_LOGIN_ACCOUNT_MISMATCH_CODE = "account_mismatch";
+
+export type ModelsAuthLoginManagedOptions = {
+  capability: typeof MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY;
+  profileId: string;
+  stateDir: string;
+  beforePersist: () => Promise<void>;
+  assertCurrent: () => void;
+};
+
+type ResolvedModelsAuthLoginManagedOptions = ModelsAuthLoginManagedOptions & {
+  method: ProviderAuthMethod;
+  existingCredential?: AuthProfileCredential;
+};
+
+function createManagedAuthLoginError(code: string, message: string): Error & { code: string } {
+  const error = new Error(message) as Error & { code: string };
+  error.name = "ManagedModelsAuthLoginError";
+  error.code = code;
+  return error;
+}
+
+function assertManagedSamePersonalAccount(params: {
+  method: ProviderAuthMethod;
+  incoming: AuthProfileCredential;
+  current: AuthProfileCredential | undefined;
+}) {
+  if (!params.current) {
+    return;
+  }
+  if (params.method.matchesPersonalAccount?.(params.incoming, params.current)) {
+    return;
+  }
+  throw createManagedAuthLoginError(
+    MANAGED_MODELS_AUTH_LOGIN_ACCOUNT_MISMATCH_CODE,
+    "Managed auth login returned credentials for a different account.",
+  );
+}
+
 export type ModelsAuthLoginFlowResult = {
   providerId: string;
   methodId: string;
@@ -1037,6 +1111,7 @@ export type ModelsAuthLoginFlowOptions = LoginOptions & {
   beforePersistentEffect?: () => void | Promise<void>;
   /** Publish a hosted login through its current Gateway instead of a separate CLI connection. */
   refreshAfterLogin?: (agentId: string) => Promise<void>;
+  managed?: ModelsAuthLoginManagedOptions;
 };
 
 /** Resolves a requested login provider or throws with available provider details. */
@@ -1061,8 +1136,35 @@ function credentialMode(credential: AuthProfileCredential): "api_key" | "oauth" 
 function resolveLoginProfiles(params: {
   result: ProviderAuthResult;
   requestedProfileId?: string;
+  managedProvider?: string;
+  managedMethod?: ProviderAuthMethod;
+  managedExistingCredential?: AuthProfileCredential;
 }): ProviderAuthResult["profiles"] {
   const requestedProfileId = params.requestedProfileId?.trim();
+  if (params.managedMethod) {
+    if (!requestedProfileId) {
+      throw new Error("Managed auth login requires an explicit profileId.");
+    }
+    if (params.result.profiles.length !== 1) {
+      throw new Error("Managed auth login requires exactly one returned auth profile.");
+    }
+    const profile = expectDefined(params.result.profiles[0], "auth profile");
+    if (profile.credential.type !== "oauth") {
+      throw new Error("Managed auth login requires an OAuth auth profile.");
+    }
+    const incomingProvider = resolveProviderIdForAuth(profile.credential.provider);
+    const expectedProvider = resolveProviderIdForAuth(params.managedProvider ?? "");
+    if (incomingProvider !== expectedProvider) {
+      throw new Error("Managed auth login returned an auth profile for another provider.");
+    }
+    assertManagedSamePersonalAccount({
+      method: params.managedMethod,
+      incoming: profile.credential,
+      current: params.managedExistingCredential,
+    });
+    return [{ ...profile, profileId: requestedProfileId }];
+  }
+
   if (!requestedProfileId) {
     return params.result.profiles;
   }
@@ -1089,6 +1191,9 @@ function maybeLogOpenAICodexNativeSearchTip(runtime: RuntimeEnv, providerId: str
 export async function runModelsAuthLoginFlowCore(
   opts: ModelsAuthLoginFlowOptions,
 ): Promise<ModelsAuthLoginFlowResult> {
+  if (opts.managed) {
+    return await runManagedModelsAuthLoginFlowCore({ ...opts, managed: opts.managed });
+  }
   return runModelsAuthLoginFlow(opts, true);
 }
 
@@ -1304,6 +1409,102 @@ async function runModelsAuthLoginFlow(
     onModelAccessRequested: opts.onModelAccessRequested,
   });
   maybeLogOpenAICodexNativeSearchTip(opts.runtime, selectedProvider.id);
+  return {
+    providerId: selectedProvider.id,
+    methodId: chosenMethod.id,
+    authRefresh,
+    ...(result.defaultModel ? { defaultModel: result.defaultModel } : {}),
+    profiles: profiles.map((profile) => ({
+      profileId: profile.profileId,
+      provider: profile.credential.provider,
+      mode: credentialMode(profile.credential),
+    })),
+  };
+}
+
+async function runManagedModelsAuthLoginFlowCore(
+  opts: ModelsAuthLoginFlowOptions & { managed: ModelsAuthLoginManagedOptions },
+): Promise<ModelsAuthLoginFlowResult> {
+  const rawProvider = normalizeOptionalString(opts.provider);
+  const rawMethod = normalizeOptionalString(opts.method);
+  const rawAgent = normalizeOptionalString(opts.agent);
+  const rawProfileId = normalizeOptionalString(opts.managed.profileId);
+  const rawStateDir = normalizeOptionalString(opts.managed.stateDir);
+  if (!rawProvider || !rawMethod || !rawAgent || !rawProfileId) {
+    throw new Error("Managed auth login requires explicit provider, method, agent, and profileId.");
+  }
+  if (opts.managed.capability !== MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY) {
+    throw new Error("Managed auth login requires the supported managed login capability marker.");
+  }
+  if (opts.force) {
+    throw new Error("Managed auth login does not support force cleanup.");
+  }
+  if (opts.setDefault) {
+    throw new Error("Managed auth login does not support default-model updates.");
+  }
+  if (!opts.config) {
+    throw new Error("Managed auth login requires an explicit config.");
+  }
+  if (!opts.env) {
+    throw new Error("Managed auth login requires an explicit isolated env.");
+  }
+  if (!rawStateDir) {
+    throw new Error("Managed auth login requires an explicit stateDir.");
+  }
+
+  const requestedProviderId = normalizeManualAuthProvider(rawProvider);
+  const context = await resolveModelsAuthContext({
+    requestedProvider: requestedProviderId,
+    rawAgentId: rawAgent,
+    config: opts.config,
+  });
+  const authProviders = listProvidersWithAuthMethods(context.providers);
+  const selectedProvider = resolveRequestedLoginProviderOrThrow(authProviders, requestedProviderId);
+  if (!selectedProvider) {
+    throw new Error(`Managed auth login could not resolve provider "${requestedProviderId}".`);
+  }
+  const chosenMethod = pickAuthMethod(selectedProvider, rawMethod);
+  if (!chosenMethod) {
+    throw new Error(
+      `Managed auth login could not resolve method "${rawMethod}" for provider "${selectedProvider.id}".`,
+    );
+  }
+  const managedEnv = { ...opts.env, OPENCLAW_STATE_DIR: rawStateDir };
+  const managedAgentDir = resolveAgentDir(context.config, context.agentId, managedEnv);
+  const existingCredential = findPersistedAuthProfileCredential({
+    agentDir: managedAgentDir,
+    profileId: rawProfileId,
+    stateDir: rawStateDir,
+  });
+  const managed: ResolvedModelsAuthLoginManagedOptions = {
+    ...opts.managed,
+    method: chosenMethod,
+    profileId: rawProfileId,
+    stateDir: rawStateDir,
+    ...(existingCredential ? { existingCredential } : {}),
+  };
+
+  const { result, profiles, authRefresh } = await runProviderAuthMethod({
+    config: context.config,
+    configSnapshot: context.configSnapshot,
+    agentId: context.agentId,
+    agentDir: managedAgentDir,
+    workspaceDir: context.workspaceDir,
+    provider: selectedProvider,
+    method: chosenMethod,
+    runtime: opts.runtime,
+    prompter: opts.prompter,
+    profileId: rawProfileId,
+    assertCurrent: opts.managed.assertCurrent,
+    env: managedEnv,
+    isRemote: opts.isRemote,
+    signal: opts.signal,
+    openUrl: opts.openUrl,
+    browserAuthorization: opts.browserAuthorization,
+    refreshAfterLogin: opts.refreshAfterLogin,
+    managed,
+  });
+
   return {
     providerId: selectedProvider.id,
     methodId: chosenMethod.id,

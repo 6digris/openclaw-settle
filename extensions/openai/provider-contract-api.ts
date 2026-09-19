@@ -29,9 +29,18 @@ const CODEX_API_KEY_IMPORT = {
   credentialKind: "api_key",
 } as const;
 
-function accountSubject(access: string): { accountId: string; userId: string } | undefined {
+function accountSubject(credential: {
+  access?: string;
+  accountId?: string;
+  userId?: string;
+}): { accountId: string; userId: string } | undefined {
+  const storedAccountId = normalizeOptionalString(credential.accountId);
+  const storedUserId = normalizeOptionalString(credential.userId);
+  if (storedAccountId && storedUserId) {
+    return { accountId: storedAccountId, userId: storedUserId };
+  }
   const claims = asNonArrayRecord(
-    decodeOpenAICodexJwtPayload(access)?.["https://api.openai.com/auth"],
+    decodeOpenAICodexJwtPayload(credential.access ?? "")?.["https://api.openai.com/auth"],
   );
   const accountId = normalizeOptionalString(claims.chatgpt_account_id);
   const userId =
@@ -52,8 +61,8 @@ const matchesPersonalAccount: NonNullable<
   }
   // A ChatGPT account is a workspace, not a person. Reconnect also requires
   // the exact user; missing claims must not replace any owned credential.
-  const subject = accountSubject(credential.access);
-  const previous = accountSubject(existing.access);
+  const subject = accountSubject(credential);
+  const previous = accountSubject(existing);
   return Boolean(
     subject && previous?.accountId === subject.accountId && previous.userId === subject.userId,
   );

@@ -447,10 +447,12 @@ function withCodexTransport(
 
 function buildCodexCredentialExtra(identity: {
   accountId?: string;
+  userId?: string;
   chatgptPlanType?: string;
 }): Record<string, unknown> | undefined {
   const extra = {
     ...(identity.accountId ? { accountId: identity.accountId } : {}),
+    ...(identity.userId ? { userId: identity.userId } : {}),
     ...(identity.chatgptPlanType ? { chatgptPlanType: identity.chatgptPlanType } : {}),
   };
   return Object.keys(extra).length > 0 ? extra : undefined;

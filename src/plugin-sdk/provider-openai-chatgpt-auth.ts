@@ -16,6 +16,10 @@ export type OpenAICodexAuthIdentity = {
    */
   accountId?: string;
   /**
+   * ChatGPT user id used with the account id to prove same-user reconnects.
+   */
+  userId?: string;
+  /**
    * ChatGPT subscription plan claim captured for diagnostics and credential metadata.
    */
   chatgptPlanType?: string;
@@ -70,10 +74,15 @@ export function resolveOpenAICodexAuthIdentity(params: {
   const profile = readRecord(payload?.[OPENAI_CODEX_PROFILE_CLAIM]);
   const email = normalizeOptionalString(profile.email) ?? normalizeOptionalString(params.email);
   const accountId = params.accountId ?? normalizeOptionalString(auth.chatgpt_account_id);
+  const userId =
+    normalizeOptionalString(auth.chatgpt_user_id) ??
+    normalizeOptionalString(auth.user_id) ??
+    normalizeOptionalString(auth.chatgpt_account_user_id);
   const chatgptPlanType = normalizeOptionalString(auth.chatgpt_plan_type);
   if (email) {
     return {
       ...(accountId ? { accountId } : {}),
+      ...(userId ? { userId } : {}),
       ...(chatgptPlanType ? { chatgptPlanType } : {}),
       email,
       profileName: email,
@@ -93,6 +102,7 @@ export function resolveOpenAICodexAuthIdentity(params: {
     (issuer && subject ? `${issuer}|${subject}` : subject);
   return {
     ...(accountId ? { accountId } : {}),
+    ...(userId ? { userId } : {}),
     ...(chatgptPlanType ? { chatgptPlanType } : {}),
     ...(stableSubject
       ? { profileName: `id-${Buffer.from(stableSubject).toString("base64url")}` }
@@ -117,6 +127,7 @@ export function buildOpenAICodexCredentialExtra(
 ): Record<string, unknown> | undefined {
   const extra = {
     ...(identity.accountId ? { accountId: identity.accountId } : {}),
+    ...(identity.userId ? { userId: identity.userId } : {}),
     ...(identity.chatgptPlanType ? { chatgptPlanType: identity.chatgptPlanType } : {}),
     ...(identity.idToken ? { idToken: identity.idToken } : {}),
   };
