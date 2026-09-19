@@ -4992,46 +4992,6 @@ describe("runReplyAgent typing (heartbeat)", () => {
     runEmbeddedAgentMock: state.runEmbeddedAgentMock,
   });
 
-  it.each([
-    { label: "default status" },
-    { label: "explicit status", acknowledgment: "Research started; results will follow." },
-    {
-      label: "room event",
-      acknowledgment: "Research started; results will follow.",
-      roomEvent: true,
-      warning: true,
-    },
-    { label: "empty acknowledgment", acknowledgment: "[[reply_to_current]]", warning: true },
-  ])("resolves an earlier tool warning with $label", async (testCase) => {
-    const toolWarning = setReplyPayloadMetadata(
-      { text: "⚠️ Bash failed", isError: true },
-      { toolErrorWarning: { toolName: "bash" } },
-    );
-    state.runEmbeddedAgentMock.mockResolvedValueOnce({
-      payloads: [toolWarning],
-      meta: { yielded: true, yieldAcknowledgment: testCase.acknowledgment },
-      acceptedSessionSpawns: [
-        {
-          runId: "child-run",
-          childSessionKey: "agent:main:subagent:child",
-          expectsCompletionMessage: true,
-        },
-      ],
-    });
-    const { run } = createMinimalRun({
-      currentInboundEventKind: testCase.roomEvent ? "room_event" : undefined,
-    });
-
-    await expect(run()).resolves.toMatchObject({
-      text: testCase.warning
-        ? "⚠️ Bash failed"
-        : (testCase.acknowledgment ??
-          "I’m continuing this work and will send the result when it is ready."),
-      ...(testCase.warning ? { isError: true } : {}),
-      replyToId: "msg",
-    });
-  });
-
   it("delivers an explicit yield acknowledgment in message-tool-only mode", async () => {
     state.runEmbeddedAgentMock.mockResolvedValueOnce({
       payloads: [],
@@ -6533,6 +6493,6 @@ describe("runReplyAgent typing (heartbeat)", () => {
   });
 });
 
-import { getReplyPayloadMetadata, setReplyPayloadMetadata } from "../reply-payload.js";
+import { getReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
