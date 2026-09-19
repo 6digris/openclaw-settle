@@ -458,22 +458,18 @@ class TalkModeManagerTest {
     }
 
   @Test
-  fun duplicateFinalForPendingTalkRunDoesNotStartAllResponseTts() {
-    val manager = createManager()
-    val final = CompletableDeferred<Boolean>()
-
-    manager.ttsOnAllResponses = true
-    setPrivateField(manager, "pendingRunId", "run-talk")
-    setPrivateField(manager, "pendingFinal", final)
-
-    manager.handleGatewayEvent("chat", chatFinalPayload(runId = "run-talk", text = "spoken once"))
-    assertTrue(final.isCompleted)
-    assertEquals(0L, playbackGeneration(manager).get())
-
-    manager.handleGatewayEvent("chat", chatFinalPayload(runId = "run-talk", text = "spoken once"))
-
-    assertEquals(0L, playbackGeneration(manager).get())
-  }
+  fun duplicateFinalForPendingTalkRunDoesNotStartAllResponseTts() =
+    runTest {
+      val manager = createManager(scope = this)
+      manager.ttsOnAllResponses = true
+      val final = async(start = CoroutineStart.UNDISPATCHED) { manager.waitForChatFinal("run-talk") }
+      manager.handleGatewayEvent("chat", chatFinalPayload(runId = "run-talk", text = "spoken once"))
+      runCurrent()
+      assertTrue(final.await())
+      assertEquals(0L, playbackGeneration(manager).get())
+      manager.handleGatewayEvent("chat", chatFinalPayload(runId = "run-talk", text = "spoken once"))
+      assertEquals(0L, playbackGeneration(manager).get())
+    }
 
   @Test
   fun nonPendingFinalStillUsesAllResponseTts() {
@@ -1006,6 +1002,101 @@ class TalkModeManagerTest {
     }.toString()
 
   @Test
+  fun capturedTalkPttFinalUsesSubmittedDestination() = assertCapturedPttReply(finalBeforeAck = false, remappedRun = false)
+
+  @Test
+  fun capturedTalkPttFinalBeforeAckUsesSubmittedDestination() = assertCapturedPttReply(finalBeforeAck = true, remappedRun = false)
+
+  @Test
+  fun capturedTalkPttRemappedFinalBeforeAckUsesSubmittedDestination() = assertCapturedPttReply(finalBeforeAck = true, remappedRun = true)
+
+  @Test
+  fun capturedTalkPttRetiredAckAndFinalCannotSettleReplacement() = assertCapturedPttReply(finalBeforeAck = true, remappedRun = true, retireBeforeAck = true)
+
+  private fun assertCapturedPttReply(
+    finalBeforeAck: Boolean,
+    remappedRun: Boolean,
+    retireBeforeAck: Boolean = false,
+  ) = runBlocking {
+    installSpeechRecognitionService()
+    val requests = ConcurrentLinkedQueue<Pair<JsonObject, WebSocket>>()
+    val historyReads = ConcurrentLinkedQueue<JsonObject>()
+    withStartedTalk(
+      responseForRequest = { frame, _ ->
+        when (frame.getValue("method").jsonPrimitive.content) {
+          "talk.config" -> {
+            nativeTalkConfig("en-US")
+          }
+
+          "chat.history" -> {
+            historyReads.add(frame)
+            """{"messages":[]}"""
+          }
+
+          else -> {
+            null
+          }
+        }
+      },
+      interceptRequest = { frame, socket ->
+        if (frame.getValue("method").jsonPrimitive.content == "chat.send") {
+          requests.add(frame to socket)
+          true
+        } else {
+          false
+        }
+      },
+    ) { proof ->
+      proof.manager.stopAllCapture()
+      proof.manager.setEnabled(true, capturedStart(proof, "agent:beta:call-a"))
+      awaitTalkWork(proof) { proof.manager.isListening.value }
+      proof.manager.setMainSessionKey("agent:beta:ptt-b")
+
+      suspend fun submitPtt(): Pair<JsonObject, WebSocket> {
+        val beginning = proof.scope.async { proof.manager.beginPushToTalk(allowNewCapture = true) }
+        awaitTalkWork(proof) { beginning.isCompleted }
+        beginning.await()
+        currentRecognizer().triggerOnResults(recognitionResults("PTT for B"))
+        val ending = proof.scope.async { proof.manager.endPushToTalk() }
+        awaitTalkWork(proof) { ending.isCompleted && requests.isNotEmpty() }
+        assertEquals("queued", ending.await().status)
+        return requests.remove()
+      }
+      var (frame, socket) = submitPtt()
+      if (retireBeforeAck) {
+        val retiredFrame = frame
+        proof.manager.stopAllCapture()
+        proof.manager.setEnabled(true, capturedStart(proof, "agent:beta:replacement"))
+        awaitTalkWork(proof) { proof.manager.isListening.value }
+        val replacement = submitPtt()
+        frame = replacement.first
+        socket = replacement.second
+        socket.send("""{"type":"res","id":${retiredFrame.getValue("id")},"ok":true,"payload":{"runId":"retired-ptt-run","status":"started"}}""")
+        proof.manager.handleGatewayEvent("chat", """{"sessionKey":"agent:beta:ptt-b","runId":"retired-ptt-run","state":"final","message":{"role":"assistant","content":"Retired answer"}}""")
+        proof.scheduler.runCurrent()
+        assertFalse(proof.synthesizer.requested.isCompleted)
+      }
+      val params = frame.getValue("params").jsonObject
+      assertEquals("agent:beta:ptt-b", params.getValue("sessionKey").jsonPrimitive.content)
+      val runId = if (remappedRun) "accepted-ptt-run" else params.getValue("idempotencyKey").jsonPrimitive.content
+
+      fun final(
+        key: String,
+        text: String,
+      ) = proof.manager.handleGatewayEvent("chat", """{"sessionKey":"$key","runId":"$runId","state":"final","message":{"role":"assistant","content":"$text"}}""")
+      final("agent:beta:call-a", "Wrong conversation")
+      proof.scheduler.runCurrent()
+      assertFalse(proof.synthesizer.requested.isCompleted)
+      if (finalBeforeAck) final("agent:beta:ptt-b", "PTT B answer")
+      socket.send("""{"type":"res","id":${frame.getValue("id")},"ok":true,"payload":{"runId":"$runId","status":"started"}}""")
+      if (!finalBeforeAck) final("agent:beta:ptt-b", "PTT B answer")
+      awaitTalkWork(proof) { proof.synthesizer.requested.isCompleted }
+      assertEquals(listOf("PTT B answer"), proof.synthesizer.texts)
+      assertTrue("A matching final must not fall back to history", historyReads.isEmpty())
+    }
+  }
+
+  @Test
   fun capturedNativeTalkKeepsSelectedChatWhenDefaultChanges() =
     runBlocking {
       withNativeTalk { proof, sends ->
@@ -1143,13 +1234,22 @@ class TalkModeManagerTest {
     }
 
   @Test
-  fun capturedRelayUsesOnlyGatewayVerifiedAlias() =
+  fun capturedRelayUsesOnlyGatewayVerifiedAlias() = assertCapturedRelayAlias(globalHello = false)
+
+  @Test
+  fun capturedRelayUsesGlobalHelloMainKey() = assertCapturedRelayAlias(globalHello = true)
+
+  private fun assertCapturedRelayAlias(globalHello: Boolean) =
     runBlocking {
       val creates = ConcurrentLinkedQueue<JsonObject>()
       withStartedTalk(responseForRequest = { request, _ ->
         when (request.getValue("method").jsonPrimitive.content) {
           "connect" -> {
-            """{"features":{"methods":["sessions.resolve"]},"snapshot":{"sessionDefaults":{"mainSessionKey":"agent:beta:shared"}}}"""
+            if (globalHello) {
+              """{"features":{"methods":[]},"snapshot":{"sessionDefaults":{"mainSessionKey":"global","mainKey":"shared","scope":"global"}}}"""
+            } else {
+              """{"features":{"methods":[]},"snapshot":{"sessionDefaults":{"mainSessionKey":"agent:beta:shared"}}}"""
+            }
           }
 
           "sessions.resolve" -> {
@@ -1174,6 +1274,7 @@ class TalkModeManagerTest {
             owner = ChatComposerOwner(lease.endpointStableId, "beta", "global"),
             lease = lease,
             mainAlias = proof.session.sessionRouting?.mainSessionKey,
+            mainKey = proof.session.sessionRouting?.mainKey,
             withCurrentSelection = { it() },
           )
         proof.manager.setEnabled(true, target)
@@ -1185,6 +1286,164 @@ class TalkModeManagerTest {
             .getValue("sessionKey")
             .jsonPrimitive.content,
         )
+      }
+    }
+
+  @Test
+  fun capturedRelayFreshGlobalUsesHelloWithoutStoredRow() = assertCapturedRoute("global", fresh = true)
+
+  @Test
+  fun capturedRelayFreshMainUsesHelloWithoutStoredRow() = assertCapturedRoute("shared", fresh = true)
+
+  @Test
+  fun capturedRelayExistingAliasUsesUnadvertisedResolver() = assertCapturedRoute("legacy-chat", fresh = false)
+
+  @Test
+  fun capturedRelayFreshDeviceChatKeepsExplicitOwner() = assertCapturedRoute("agent:beta:node-synthetic", fresh = true)
+
+  @Test
+  fun capturedRelayFreshPerAgentMainUsesCapturedOwner() = assertCapturedRoute("main", fresh = true, globalScope = false)
+
+  private fun assertCapturedRoute(
+    original: String,
+    fresh: Boolean,
+    globalScope: Boolean = true,
+  ) = runBlocking {
+    val resolves = ConcurrentLinkedQueue<JsonObject>()
+    val creates = ConcurrentLinkedQueue<JsonObject>()
+    withStartedTalk(
+      responseForRequest = { frame, _ ->
+        when (frame.getValue("method").jsonPrimitive.content) {
+          "connect" -> {
+            if (globalScope) {
+              """{"features":{"methods":[]},"snapshot":{"sessionDefaults":{"mainSessionKey":"global","mainKey":"shared","scope":"global"}}}"""
+            } else {
+              """{"features":{"methods":[]},"snapshot":{"sessionDefaults":{"mainSessionKey":"agent:alpha:shared","mainKey":"shared","scope":"per-sender"}}}"""
+            }
+          }
+
+          "sessions.resolve" -> {
+            """{"ok":true,"key":"agent:beta:restored","agentId":"beta"}"""
+          }
+
+          "talk.session.create" -> {
+            creates.add(frame.getValue("params").jsonObject)
+            null
+          }
+
+          else -> {
+            null
+          }
+        }
+      },
+      interceptRequest = { frame, socket ->
+        if (frame.getValue("method").jsonPrimitive.content == "sessions.resolve") {
+          resolves.add(frame.getValue("params").jsonObject)
+          if (fresh) socket.send("""{"type":"res","id":${frame.getValue("id")},"ok":false,"error":{"code":"INVALID_REQUEST","message":"No session found: $original"}}""")
+          fresh
+        } else {
+          false
+        }
+      },
+    ) { proof ->
+      proof.manager.stopAllCapture()
+      proof.drainCancelledCapture()
+      val lease = proof.session.captureRequestLease()!!
+      assertFalse(lease.supportsMethod("sessions.resolve"))
+      val target =
+        TalkModeManager.ChatStart(
+          owner = ChatComposerOwner(lease.endpointStableId, "beta", original),
+          lease = lease,
+          mainAlias = proof.session.sessionRouting?.mainSessionKey,
+          mainKey = proof.session.sessionRouting?.mainKey,
+          withCurrentSelection = { it() },
+        )
+      proof.manager.setEnabled(true, target)
+      awaitTalkWork(proof) { proof.manager.isListening.value || !proof.manager.isEnabled.value }
+      assertTrue("Talk must start without requiring a pre-existing main row: " + proof.manager.statusText.value, proof.manager.isListening.value)
+      assertEquals(if (fresh) 0 else 1, resolves.size)
+      assertEquals(
+        if (original.startsWith("agent:")) {
+          original
+        } else if (fresh) {
+          "agent:beta:shared"
+        } else {
+          "agent:beta:restored"
+        },
+        creates
+          .last()
+          .getValue("sessionKey")
+          .jsonPrimitive.content,
+      )
+    }
+  }
+
+  @Test
+  fun capturedRelayResolverRefusalsNeverUseAmbientOwner() =
+    runBlocking {
+      for (failure in listOf("unsupported", "owner", "different-key", "missing")) {
+        val resolves = ConcurrentLinkedQueue<JsonObject>()
+        val creates = ConcurrentLinkedQueue<JsonObject>()
+        withStartedTalk(
+          responseForRequest = { frame, _ ->
+            when (frame.getValue("method").jsonPrimitive.content) {
+              "talk.session.create" -> {
+                creates.add(frame)
+                null
+              }
+
+              "sessions.resolve" -> {
+                val key = if (failure == "different-key" && resolves.size > 1) "another-chat" else "legacy-chat"
+                val owner = if (failure == "owner") "other" else "beta"
+                """{"ok":true,"key":"$key","agentId":"$owner"}"""
+              }
+
+              else -> {
+                null
+              }
+            }
+          },
+          interceptRequest = { frame, socket ->
+            if (frame.getValue("method").jsonPrimitive.content == "sessions.resolve") {
+              resolves.add(frame)
+              if (failure == "unsupported" || failure == "missing") {
+                val message = if (failure == "unsupported") "unknown method: sessions.resolve" else "No session found: legacy-chat"
+                socket.send("""{"type":"res","id":${frame.getValue("id")},"ok":false,"error":{"code":"INVALID_REQUEST","message":"$message"}}""")
+                true
+              } else {
+                false
+              }
+            } else {
+              false
+            }
+          },
+        ) { proof ->
+          proof.manager.stopAllCapture()
+          proof.drainCancelledCapture()
+          val lease = proof.session.captureRequestLease()!!
+          proof.manager.setEnabled(
+            true,
+            TalkModeManager.ChatStart(
+              owner = ChatComposerOwner(lease.endpointStableId, "beta", "legacy-chat"),
+              lease = lease,
+              mainAlias = "agent:beta:shared",
+              withCurrentSelection = { it() },
+            ),
+          )
+          awaitTalkWork(proof) { !proof.manager.isEnabled.value }
+          assertTrue("Must try the unadvertised resolver ($failure)", resolves.isNotEmpty())
+          assertEquals("Must not create an ambient relay ($failure)", 1, creates.size)
+          assertTrue(
+            proof.manager.statusText.value
+              .startsWith("Start failed:"),
+          )
+          if (failure == "unsupported") {
+            assertTrue(
+              proof.manager.statusText.value
+                .contains("unknown method: sessions.resolve"),
+            )
+          }
+        }
       }
     }
 
@@ -3685,9 +3944,6 @@ class TalkModeManagerTest {
   fun chatFinalWaitUsesGatewayEventTimeout() =
     runTest {
       val manager = createManager(scope = this)
-
-      setPrivateField(manager, "pendingRunId", "run-missing-final")
-      setPrivateField(manager, "pendingFinal", CompletableDeferred<Boolean>())
 
       assertFalse(manager.waitForChatFinal("run-missing-final"))
       assertEquals(45_000, currentTime)

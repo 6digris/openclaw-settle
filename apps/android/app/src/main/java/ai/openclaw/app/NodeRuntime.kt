@@ -4065,6 +4065,7 @@ class NodeRuntime private constructor(
         owner = owner,
         lease = lease,
         mainAlias = operatorSession.sessionRouting?.mainSessionKey,
+        mainKey = operatorSession.sessionRouting?.mainKey,
         captureEpoch = ownershipEpoch,
         withCurrentSelection = { claim ->
           chat.withCurrentComposerOwner(owner, selectionGeneration) {
