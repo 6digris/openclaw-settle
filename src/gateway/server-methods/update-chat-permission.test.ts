@@ -6,10 +6,9 @@ import { createDeferredCore } from "../../shared/deferred.js";
 import {
   adoptUpdateCampaignMock,
   detectRespawnSupervisorMock,
-  initializeGatewayUpdateStatusMock,
   isRestartEnabledMock,
   resolveUpdateInstallSurfaceMock,
-  runGatewayUpdateMock,
+  resolveStartupInstallStatusMock,
   scheduleGatewaySigusr1RestartMock,
   sendGatewayLifecycleNoticeMock,
   sentinelState,
@@ -56,7 +55,7 @@ describe("update.run chat restart permission", () => {
 
   function prepareGlobalInstall(supervisor: "launchd" | "systemd") {
     detectRespawnSupervisorMock.mockReturnValue(supervisor);
-    initializeGatewayUpdateStatusMock.mockResolvedValue({
+    resolveStartupInstallStatusMock.mockResolvedValue({
       root: "/tmp/openclaw-global",
       status: { root: "/tmp/openclaw-global", installKind: "package", packageManager: "npm" },
       installReceipt: null,
@@ -81,7 +80,6 @@ describe("update.run chat restart permission", () => {
       status: "skipped",
       reason: "restart-disabled",
     });
-    expect(runGatewayUpdateMock).not.toHaveBeenCalled();
     expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
     expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
     expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();

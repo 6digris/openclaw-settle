@@ -1,11 +1,15 @@
 import os from "node:os";
-import { vi } from "vitest";
+import path from "node:path";
+import { expect, it, vi, type Mock } from "vitest";
 import { GATEWAY_SERVICE_SELECTOR_ENV_KEYS } from "../../daemon/constants.js";
 import type { GatewayServiceCommandConfig } from "../../daemon/service.js";
+import { createUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
+import { defaultRuntime } from "../../runtime.js";
 import { captureEnv } from "../../test-utils/env.js";
 import type { PostCorePluginUpdateResult } from "./update-command-plugins.js";
 import { finishUpdate } from "./update-command-post-update.js";
+import * as sourceRuntime from "./update-command-runtime.js";
 
 export function createManagedServiceIdentityFixture(home: string) {
   const keys = [
@@ -156,3 +160,129 @@ export const successfulPluginUpdate: PostCorePluginUpdateResult = {
   integrityDrifts: [],
   warnings: [],
 };
+
+export function registerForegroundFinalizationTests({
+  tempDirs,
+  mocks,
+}: {
+  tempDirs: { make(prefix: string): string };
+  mocks: {
+    parkForeground: Mock;
+    updatePlugins: Mock;
+    completePluginUpdate: Mock;
+    printResult: Mock;
+    stopService: Mock;
+    restartService: Mock;
+  };
+}): void {
+  it.each(["noop", "runtime", "plugins", "revoked", "park-failed"] as const)(
+    "keeps foreground no-op and mutation outcomes accurate: %s",
+    async (outcome) => {
+      const root = tempDirs.make("foreground-finalization-");
+      vi.stubEnv("OPENCLAW_STATE_DIR", root);
+      vi.stubEnv("OPENCLAW_CONFIG_PATH", path.join(root, "openclaw.json"));
+      vi.stubEnv("OPENCLAW_UPDATE_RUN_HANDOFF", undefined);
+      const run: NonNullable<FinishUpdateParams["opts"]["run"]> = {
+        runId: createUpdateRun({ trigger: "api" }).runId,
+        env: { ...process.env },
+        completionOwner: "gateway-restart",
+      };
+      const opts: FinishUpdateParams["opts"] = { run, json: true };
+      const events: string[] = [];
+      mocks.parkForeground.mockImplementation(async () => {
+        events.push("park");
+        if (outcome === "park-failed") {
+          throw new Error("fixture parking failed");
+        }
+        run.gatewayRestartRequired = true;
+      });
+      vi.spyOn(sourceRuntime, "completeSourceUpdateRuntime").mockImplementation(
+        async ({ beforePublication }) => {
+          const changed = outcome !== "noop" && outcome !== "plugins";
+          if (outcome === "revoked") {
+            opts.run = { ...run };
+          }
+          if (changed) {
+            await beforePublication?.();
+            events.push("publish");
+          }
+          return { changed };
+        },
+      );
+      const plugins = { ...successfulPluginUpdate, changed: outcome === "plugins" };
+      mocks.updatePlugins.mockResolvedValue(plugins);
+      mocks.completePluginUpdate.mockImplementation(async ({ beforeDoctor }) => {
+        await beforeDoctor?.();
+        events.push("doctor");
+        return { pluginUpdate: plugins, configSnapshot: validConfigSnapshot };
+      });
+      const finishing = finishSuccessfulPackageSwitch(
+        { packageRoot: root, run, json: true },
+        {
+          opts,
+          coreAlreadyCurrent: true,
+          shouldRestart: true,
+          result: {
+            status: "skipped",
+            reason: "already-current",
+            mode: "git",
+            root,
+            before: { sha: "same", version: "1.0.0" },
+            after: { sha: "same", version: "1.0.0" },
+            steps: [],
+            durationMs: 0,
+          },
+        },
+      );
+      if (outcome === "revoked" || outcome === "park-failed") {
+        await expect(finishing).rejects.toBeInstanceOf(Error);
+        expect(events).toEqual(outcome === "revoked" ? [] : ["park"]);
+      } else {
+        await finishing;
+        expect(events).toEqual(
+          outcome === "noop"
+            ? []
+            : outcome === "runtime"
+              ? ["park", "publish"]
+              : ["park", "doctor"],
+        );
+        expect(getUpdateRun(run.runId)).toMatchObject(
+          outcome === "noop"
+            ? { status: "skipped", phase: "finished", reason: "already-current" }
+            : { status: "running", phase: "restarting" },
+        );
+        expect(mocks.printResult.mock.lastCall?.[0].status).toBe(
+          outcome === "noop" ? "skipped" : "ok",
+        );
+      }
+      expect(mocks.stopService).not.toHaveBeenCalled();
+      expect(mocks.restartService).not.toHaveBeenCalled();
+    },
+  );
+}
+
+export function expectFailureReport(
+  printResult: Mock,
+  reason: string,
+  options: unknown = expect.any(Object),
+) {
+  expect(printResult).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "error", reason }),
+    options,
+    expect.any(Object),
+  );
+  expect(defaultRuntime.exit).not.toHaveBeenCalled();
+}
+
+export function expectUpdateFailure(
+  promise: Promise<unknown>,
+  reason: string,
+  details: object = {},
+) {
+  return expect(promise).rejects.toMatchObject({
+    name: "UpdateCommandFailure",
+    exitCode: 1,
+    result: { status: "error", reason },
+    ...details,
+  });
+}

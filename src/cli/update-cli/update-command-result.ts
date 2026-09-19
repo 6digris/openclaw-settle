@@ -20,12 +20,16 @@ import {
 import type { UpdateFailureFact } from "../../infra/update-failure-facts.js";
 import { FreeBsdPkgOwnershipError } from "../../infra/update-freebsd-pkg-ownership.js";
 import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
+import { normalizeControlPlaneUpdateResult } from "../../infra/update-restart-sentinel-payload.js";
 import { UpdateRunAdmissionBusyError } from "../../infra/update-run-admission.js";
 import { getUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { defaultRuntime } from "../../runtime.js";
-import type { UpdateRecoveryStep } from "../../shared/update-outcome.js";
+import {
+  UPDATE_ACTIVATION_TIMEOUT_REASON,
+  type UpdateRecoveryStep,
+} from "../../shared/update-outcome.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
 import { printResult } from "./progress.js";
@@ -369,6 +373,10 @@ export async function writeControlPlaneUpdateRestartSentinelBestEffort(params: {
       params.env,
     );
   } catch (err) {
+    if (params.meta.completionOwner === "gateway-restart") {
+      // The replacement cannot finish its run from a pending sentinel.
+      throw err;
+    }
     const message = `Failed to write update.run restart sentinel: ${String(err)}`;
     if (params.jsonMode) {
       defaultRuntime.error(message);
@@ -419,4 +427,20 @@ export function recordUpdateResultNextAction(
     recordUpdateRunPhase(run.runId, active.phase, { origin: { nextAction } }, { env: run.env });
   }
   return nextAction;
+}
+
+/** Finalization reports recovery, restart, and cleanup as one completed result. */
+export function resolveCompletedUpdateResult(
+  params: Pick<FinishUpdateParams, "rollbackBlockedReason" | "startedAt">,
+  result: UpdateRunResult,
+): UpdateRunResult {
+  return normalizeControlPlaneUpdateResult({
+    ...result,
+    ...(result.status === "error" &&
+    result.reason !== UPDATE_ACTIVATION_TIMEOUT_REASON &&
+    params.rollbackBlockedReason
+      ? { reason: params.rollbackBlockedReason }
+      : {}),
+    durationMs: Math.max(0, Date.now() - params.startedAt),
+  });
 }

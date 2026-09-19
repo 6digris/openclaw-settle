@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.core.test.shard.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "../../.artifacts/tsgo-cache/core-test-cli.tsbuildinfo"
+  },
+  "include": [
+    "../../src/cli/**/*.test.ts",
+    "../../src/cli/**/*.test.tsx"
+  ],
+  "exclude": [
+    "../../node_modules",
+    "../../dist",
+    "../../**/dist/**",
+    "../../src/cli/daemon-cli/**"
+  ]
+}
