@@ -187,11 +187,40 @@ tarball digest, and validation evidence before invoking `Docker Release`. It
 does not run the shared GitHub Release finalizer; use the core-resume path when
 the draft release also needs evidence attachment or publication.
 
-If only the root selector fails, use the generated
-`npm dist-tag add openclaw@YYYY.M.P extended-stable` repair command printed in
-the workflow summary. Repair existing plugin or other prepared-core selectors
-through approved credential-isolated tooling; the OIDC source cannot mutate
-them. Never republish an immutable version.
+For a root npm selector repair or an operator-approved rollback to an
+already-published version, use **OpenClaw NPM Dist-Tag Operations** in
+`openclaw/releases`, not the publish or resume path. The `set_extended_stable`
+mode requires [openclaw/releases#27](https://github.com/openclaw/releases/pull/27)
+to be merged and available on that repository's `main`:
+
+```bash
+gh workflow run openclaw-npm-dist-tags.yml \
+  --repo openclaw/releases --ref main \
+  -f mode=set_extended_stable \
+  -f tag=v2026.6.35
+```
+
+Replace `v2026.6.35` with the exact approved final release tag. The action checks
+that the public Git tag and exact npm version exist, permits older monthly lines
+and historical final/correction versions, and changes only core `openclaw`'s
+`extended-stable` selector. It uses the release repository's `NPM_TOKEN`; no local
+npm login or source-repository publish credentials are needed. It does not write
+`latest`, `beta`, plugin or other prepared-core selectors, Docker aliases, Git
+tags, or GitHub Releases, and does not republish packages.
+
+Wait for the run to succeed and verify the intended target:
+
+```bash
+npm view openclaw dist-tags --json --prefer-online --registry=https://registry.npmjs.org/
+```
+
+The job summary records the previous and target versions. The action skips an
+already-correct selector and retries registry readback, not the tag write. After
+an unconfirmed write or exhausted readback, inspect the live selector before
+retrying. Repair plugin or other prepared-core selectors separately through
+approved credential-isolated tooling. A selector rollback neither repairs the
+bad version's published bytes nor downgrades existing installations. Do not
+resume publication of a rejected release as part of rollback.
 
 Require `Docker Release` to verify exact default, slim, browser, and architecture
 images in GHCR and Docker Hub, including attestations and platform versions. It
@@ -203,7 +232,11 @@ native-app assets.
 
 For alias repair, run approval-gated `Docker Channel Promotion` from current
 `main` with the tag. It repeats digest, attestation, and platform checks, allows
-an explicit rollback, and never rebuilds images.
+an explicit rollback, and never rebuilds images. npm retagging does not invoke
+this action; if Docker aliases must also move, dispatch it separately with an
+existing extended-stable image tag (for example `v2026.6.35`) and verify all three
+aliases on both registries. Docker derives the channel from the target version,
+so a historical regular-stable tag is not an extended-stable Docker rollback.
 
 Slack, Discord, and Codex are the initial documented support surfaces, not a
 release allowlist: every npm-publishable official plugin ships. The shared
