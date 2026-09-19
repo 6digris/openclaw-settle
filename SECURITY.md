@@ -1,5 +1,7 @@
 # Security Policy
 
+<!-- Demo only: verify SecOps ownership and the SecOps-author exemption. Do not merge. -->
+
 If you believe you've found a security issue in OpenClaw, report it privately first.
 
 This policy does two things: it gives researchers a clear disclosure path, and it spells out the trust model maintainers use when triaging reports. OpenClaw is local-first agent infrastructure for trusted operators; it is not designed as a shared multi-tenant boundary between adversarial users on one gateway.
