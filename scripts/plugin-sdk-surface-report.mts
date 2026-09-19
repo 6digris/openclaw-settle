@@ -378,7 +378,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: approved shared native-command argument-menu applicability predicate.
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
-      4485,
+      // +1: approved canonical resolveConfigPath export for pre-config native browser admission.
+      4486,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -520,7 +521,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: approved shared native-command argument-menu applicability predicate.
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
-      2649,
+      // +1: approved canonical resolveConfigPath callable for pre-config native browser admission.
+      2650,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
