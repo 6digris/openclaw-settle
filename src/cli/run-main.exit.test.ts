@@ -2398,29 +2398,6 @@ describe("runCli exit behavior", () => {
     expect(shouldStartProxyForCli(argv)).toBe(false);
   });
 
-  it.each([true, false])(
-    "selects proxy config after async runtime support resolves to %s",
-    async (supported) => {
-      tryRouteCliMock.mockResolvedValueOnce(true);
-      isCurrentRuntimeSupportedMock.mockResolvedValueOnce(supported);
-      if (supported) {
-        loadConfigMock.mockReturnValueOnce({ proxy: { proxyUrl: "http://validated.invalid" } });
-      } else {
-        readSourceConfigBestEffortMock.mockResolvedValueOnce({
-          proxy: { proxyUrl: "http://source.invalid" },
-        });
-      }
-
-      await runCli(["node", "openclaw", "plugins", "marketplace", "list"]);
-
-      expect(readSourceConfigBestEffortMock).toHaveBeenCalledTimes(supported ? 0 : 1);
-      expect(loadConfigMock).toHaveBeenCalledTimes(supported ? 1 : 0);
-      expect(startProxyMock).toHaveBeenCalledWith({
-        proxyUrl: supported ? "http://validated.invalid" : "http://source.invalid",
-      });
-    },
-  );
-
   it.each([
     ["worker", { observe: false, pluginValidation: "core-only" }],
     ["run", { observe: false, skipPluginValidation: true }],

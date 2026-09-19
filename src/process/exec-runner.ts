@@ -287,12 +287,6 @@ async function runCommandWithOutputEncoding(
     }
   });
 
-  const clearNoOutputTimer = () => {
-    if (noOutputTimer) {
-      clearTimeout(noOutputTimer);
-      noOutputTimer = undefined;
-    }
-  };
   const cancel = (reason: Exclude<CommandTerminationReason, "exit">) => {
     // Failed roots already own a drain; later deadlines must preserve their exit result.
     // Successful POSIX roots retain deadline ownership of inherited descendants.
@@ -328,8 +322,9 @@ async function runCommandWithOutputEncoding(
     ) {
       return;
     }
-    clearNoOutputTimer();
-    noOutputTimer = setTimeout(() => cancel("no-output-timeout"), resolvedNoOutputTimeoutMs);
+    noOutputTimer =
+      noOutputTimer?.refresh() ??
+      setTimeout(() => cancel("no-output-timeout"), resolvedNoOutputTimeoutMs);
   };
 
   const timeoutTimer =
@@ -343,7 +338,8 @@ async function runCommandWithOutputEncoding(
     if (timeoutTimer) {
       clearTimeout(timeoutTimer);
     }
-    clearNoOutputTimer();
+    clearTimeout(noOutputTimer);
+    noOutputTimer = undefined;
     signal?.removeEventListener("abort", onAbort);
   };
   if (startupReady) {

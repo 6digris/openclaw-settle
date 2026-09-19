@@ -14,8 +14,8 @@ import { CONTROL_PLANE_UPDATE_SENTINEL_META_ENV } from "../../infra/update-contr
 import type { UpdateRecoveryBackupRef } from "../../infra/update-recovery-backup-contract.js";
 import { createUpdateRecoveryBackup } from "../../infra/update-recovery-backup.js";
 import { createUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
+import { readPersistedInstalledPluginIndexRowSync } from "../../plugins/installed-plugin-index-record-state.js";
 import { readPersistedInstalledPluginIndexInstallRecords } from "../../plugins/installed-plugin-index-records.js";
-import { readPersistedInstalledPluginIndexRowSync } from "../../plugins/installed-plugin-index-row.js";
 import { auditDeclaredOpenClawHostDependency } from "../../plugins/plugin-peer-link.js";
 import * as registryRefresh from "../../plugins/registry-refresh.js";
 import { seedInstalledPluginIndex } from "../../plugins/test-helpers/installed-plugin-index.js";

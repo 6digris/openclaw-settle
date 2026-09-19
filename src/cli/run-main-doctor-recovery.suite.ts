@@ -148,4 +148,28 @@ export function registerDoctorBootstrapRecoveryTests(
       ),
     );
   });
+  it.each([true, false])(
+    "selects proxy config after async runtime support resolves to %s",
+    async (supported) => {
+      read().tryRouteCliMock.mockResolvedValueOnce(true);
+      read().isCurrentRuntimeSupportedMock.mockResolvedValueOnce(supported);
+      if (supported) {
+        read().loadConfigMock.mockReturnValueOnce({
+          proxy: { proxyUrl: "http://validated.invalid" },
+        });
+      } else {
+        read().readSourceConfigBestEffortMock.mockResolvedValueOnce({
+          proxy: { proxyUrl: "http://source.invalid" },
+        });
+      }
+
+      await read().runCli(["node", "openclaw", "plugins", "marketplace", "list"]);
+
+      expect(read().readSourceConfigBestEffortMock).toHaveBeenCalledTimes(supported ? 0 : 1);
+      expect(read().loadConfigMock).toHaveBeenCalledTimes(supported ? 1 : 0);
+      expect(read().startProxyMock).toHaveBeenCalledWith({
+        proxyUrl: supported ? "http://validated.invalid" : "http://source.invalid",
+      });
+    },
+  );
 }

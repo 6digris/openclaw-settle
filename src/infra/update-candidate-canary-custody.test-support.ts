@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { validateUpdateCandidateCanary } from "./update-candidate-canary.js";
 import { stubHealthyGateway } from "./update-candidate-canary.test-support.js";
 
@@ -31,4 +31,21 @@ export function registerCanaryWriterCustodyTests(params: {
     expect(result).toMatchObject({ status: "error", phase: "runtime" });
     expect(params.spawnedGateway()).toBe(false);
   });
+  it.each([
+    { advertised: undefined, expected: undefined },
+    { advertised: "unknown-parent-v2", expected: undefined },
+    { advertised: "parent-v1", expected: "parent-v1" },
+  ])(
+    "reports parent recovery support only for the supported advertised contract ($advertised)",
+    async ({ advertised, expected }) => {
+      params.setContract({ state: 2, agent: 3, updateRecovery: advertised });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => Response.json({ status: "started", ready: true })),
+      );
+      const result = await validateUpdateCandidateCanary(params.options());
+      expect(result.status).toBe("ok");
+      expect(result.candidateUpdateRecovery).toBe(expected);
+    },
+  );
 }
