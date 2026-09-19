@@ -22,7 +22,6 @@ import type { MigrationItem, MigrationPlan, ProviderPlugin } from "../plugins/ty
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { getFreePort } from "../test-utils/ports.js";
 import { tryImportProviderCredential } from "./models/auth-credential-import.js";
-import { createManagedAuthBeforeWrite } from "./models/auth-managed-login.js";
 import {
   MANAGED_MODELS_AUTH_LOGIN_ACCOUNT_MISMATCH_CODE,
   MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY,
