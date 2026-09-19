@@ -87,6 +87,7 @@ export class NewSessionCapabilityController {
           : null;
     return {
       basePath: context.basePath,
+      scopeKey: `${agentId}:${gateway.connectionEpoch}`,
       skills: this.skillCatalog.rows(agentId, this.toolOverridesValue),
       skillsLoading: this.skillCatalog.isLoading(agentId),
       skillsError: this.skillCatalog.hasError(agentId),

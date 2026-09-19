@@ -32,7 +32,7 @@ suite.define(() => {
       const composer = page.locator(".new-session-page__composer");
       await composer.getByRole("button", { name: "Add attachment" }).click();
       await composer
-        .locator("wa-dropdown.agent-chat__capability-menu")
+        .locator("wa-dropdown.agent-chat__attach-menu")
         .getByRole("menuitem", { name: "Draft" })
         .click();
 
@@ -98,17 +98,18 @@ suite.define(() => {
 
       await page.goto(`${suite.server.baseUrl}new`);
       const composer = page.locator(".new-session-page__composer");
-      const menu = composer.locator("wa-dropdown.agent-chat__capability-menu");
+      const menu = composer.locator("wa-dropdown.agent-chat__attach-menu");
       await composer.getByRole("button", { name: "Add attachment" }).click();
       await expect.poll(() => menu.getAttribute("data-view")).toBe("root");
 
       await menu.getByRole("menuitem", { name: "Draft" }).click();
       await menu.getByRole("menuitem", { name: /^Skills/ }).click();
       await expect.poll(() => menu.getAttribute("data-view")).toBe("skills");
-      const release = menu.getByRole("menuitem", { name: "Release" });
+      const release = page.getByRole("switch", { name: "Enable Release for this session" });
       await expect.poll(() => release.isEnabled()).toBe(true);
-      await release.click();
-      await menu.getByRole("menuitem", { name: "Back" }).click();
+      await release.locator("..").click();
+      await page.keyboard.press("Escape");
+      await composer.getByRole("button", { name: "Add attachment" }).click();
 
       await menu.getByRole("menuitem", { name: /^Connectors/ }).click();
       await expect.poll(() => menu.getAttribute("data-view")).toBe("connectors");

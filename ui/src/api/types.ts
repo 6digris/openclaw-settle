@@ -287,6 +287,7 @@ export type SessionsPatchResult = SessionsPatchResultBase<{
   lastActivityAt?: number;
   lastInteractionAt?: number;
   permissionMode?: GatewaySessionRow["permissionMode"];
+  toolOverrides?: GatewaySessionRow["toolOverrides"];
   modelOverrideSource?: GatewayWireSessionsPatchResult["entry"]["modelOverrideSource"];
   boardPresentation?: GatewaySessionRow["boardPresentation"];
   archivedAt?: number;

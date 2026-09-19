@@ -250,7 +250,7 @@ export class ChatComposerCapabilityHost {
     context: ApplicationContext,
     state: ChatPageHost,
     next: SessionToolOverrides | null,
-  ): Promise<{ ok: true } | { ok: false; error: string }> {
+  ): Promise<{ ok: true; warning?: string } | { ok: false; error: string }> {
     if (!state.connected || !state.client) {
       return { ok: false, error: t("chat.composer.menu.offlineBlocked") };
     }
@@ -289,6 +289,15 @@ export class ChatComposerCapabilityHost {
       );
       if (!result) {
         throw new Error(t("chat.composer.menu.offlineBlocked"));
+      }
+      if (result.listRefreshError) {
+        const warning = t("chat.composer.menu.refreshFailed", { error: result.listRefreshError });
+        if (isCurrentPatch()) {
+          state.lastError = warning;
+          state.chatError = warning;
+          state.requestUpdate?.();
+        }
+        return { ok: true, warning };
       }
       return { ok: true };
     } catch (error) {
@@ -519,6 +528,10 @@ export class ChatComposerCapabilityHost {
     `;
   }
 
+  closeSkillReader(): void {
+    this.library.closeRead();
+  }
+
   props(
     context: ApplicationContext,
     state: ChatPageHost,
@@ -609,6 +622,7 @@ export class ChatComposerCapabilityHost {
         : null;
     return {
       basePath: state.basePath,
+      scopeKey: `${state.sessionKey}:${agentId}:${state.connectionEpoch}`,
       skills: this.skillCatalog.rows(agentId, session?.toolOverrides),
       skillsLoading: this.skillCatalog.isLoading(agentId),
       skillsError: this.skillCatalog.hasError(agentId),
@@ -666,7 +680,10 @@ export class ChatComposerCapabilityHost {
         this.loadSkills(context, state, agentId);
         void this.library.load(true);
       },
-      onPatchToolOverrides: (next) => void this.patch(context, state, next),
+      onPatchToolOverrides: (next) =>
+        current()
+          ? this.patch(context, state, next)
+          : Promise.resolve({ ok: false, error: t("chat.composer.menu.offlineBlocked") }),
       onNavigate: (routeId, options) => context.navigate(routeId, options),
       onAddServer: () => {
         if (!access.canAdmin || !gatewayAvailable) {

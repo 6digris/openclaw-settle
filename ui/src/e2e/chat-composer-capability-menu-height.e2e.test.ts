@@ -139,8 +139,8 @@ suite.define(() => {
       const attach = composer.locator("button.agent-chat__input-btn--attach");
       await expect.poll(() => attach.isVisible()).toBe(true);
       await attach.click();
-      await dropdown.locator('[value="open-skills"]').click();
-      await expect.poll(() => dropdown.getAttribute("data-view")).toBe("skills");
+      await dropdown.locator('[value="open-connectors"]').click();
+      await expect.poll(() => dropdown.getAttribute("data-view")).toBe("connectors");
 
       const artifactDirParent = process.env.OPENCLAW_UI_E2E_ARTIFACT_DIR?.trim();
       const artifactDir = artifactDirParent
@@ -202,10 +202,10 @@ suite.define(() => {
         return { ...layout, view };
       };
 
-      const layouts = [await inspectView("skills")];
+      const layouts = [await inspectView("connectors")];
 
       const back = dropdown.locator('[value="back"]');
-      const interactionTarget = dropdown.locator('[value="skill:19"]');
+      const interactionTarget = dropdown.locator('[value="connector:19"]');
       const captureInteraction = async (state: "focus" | "hover", theme: "dark" | "light") => {
         await page.evaluate((mode) => {
           document.documentElement.dataset.themeMode = mode;
@@ -220,7 +220,7 @@ suite.define(() => {
         } else {
           await back.focus();
           await page.keyboard.press("Home");
-          for (let index = 0; index < 20; index += 1) {
+          for (let index = 0; index < 39; index += 1) {
             await page.keyboard.press("ArrowDown");
           }
           await page.mouse.move(900, 500);
@@ -253,7 +253,7 @@ suite.define(() => {
                 targetRect.top >= menuRect.top &&
                 targetRect.bottom <= menuRect.bottom
               );
-            }, '[value="skill:19"]'),
+            }, '[value="connector:19"]'),
           )
           .toBe(true);
 
@@ -278,7 +278,7 @@ suite.define(() => {
         if (artifactDir && captureStage === "after") {
           await page.waitForTimeout(50);
           await page.screenshot({
-            path: path.join(artifactDir, `skill-20-${state}-${theme}-after.png`),
+            path: path.join(artifactDir, `connector-20-${state}-${theme}-after.png`),
           });
         }
       };
@@ -287,11 +287,6 @@ suite.define(() => {
       await captureInteraction("hover", "light");
       await captureInteraction("focus", "dark");
       await captureInteraction("focus", "light");
-
-      await back.click();
-      await dropdown.locator('[value="open-connectors"]').click();
-      await expect.poll(() => dropdown.getAttribute("data-view")).toBe("connectors");
-      layouts.push(await inspectView("connectors"));
 
       await dropdown.locator('[value="tools:0"]').click();
       await expect.poll(() => dropdown.getAttribute("data-view")).toBe("tools:connector-00");

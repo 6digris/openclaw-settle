@@ -288,6 +288,12 @@
   scrollbar-gutter: stable;
 }
 
+/* The capped Web Awesome flex column scrolls rows; it must not shrink wrapped
+   labels into neighboring rows. This includes library status and divider rows. */
+.agent-chat__capability-menu > :not([slot="trigger"]) {
+  flex-shrink: 0;
+}
+
 .agent-chat__capability-menu[data-view="root"]::part(menu) {
   /* Wide enough that "Web search" plus its trailing switch stays one line. */
   width: 208px;
@@ -390,6 +396,7 @@
   min-width: 0;
   flex-direction: column;
   gap: 2px;
+  overflow-wrap: anywhere;
 }
 
 .agent-chat__capability-menu-note,

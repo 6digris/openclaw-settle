@@ -17,6 +17,7 @@ function toComposerSkill(skill: SkillStatusEntry): ChatComposerMenuSkill {
   return {
     key: skill.skillKey,
     name: skill.name,
+    description: skill.description,
     enabled: baseEnabled && !missingDeps && !blocked,
     baseEnabled,
     ...(missingDeps ? { missingDeps: true } : {}),
