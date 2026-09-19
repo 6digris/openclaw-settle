@@ -410,6 +410,7 @@ async function persistProviderAuthResult(params: {
               expectedProfileId: candidate.profileId,
               incoming: candidate.credential,
               managed,
+              signal: params.signal,
             })
           : params.assertCurrent,
         config: params.config,

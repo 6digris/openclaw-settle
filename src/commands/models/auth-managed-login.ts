@@ -124,8 +124,10 @@ export function createManagedAuthBeforeWrite(params: {
   expectedProfileId: string;
   incoming: AuthProfileCredential;
   managed: ResolvedModelsAuthLoginManagedOptions;
+  signal?: AbortSignal;
 }): (current: AuthProfileCredential | undefined, profileId?: string) => void {
   return (current, profileId) => {
+    params.signal?.throwIfAborted();
     params.assertCurrent?.();
     if (profileId !== params.expectedProfileId) {
       return;

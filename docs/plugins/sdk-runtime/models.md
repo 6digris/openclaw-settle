@@ -230,7 +230,7 @@ await runManagedModelsAuthLoginFlow({
 });
 ```
 
-`beforePersist` runs after the provider returns the OAuth profile and before protected material is staged. `assertCurrent` is passed through the provider run and the persistence write boundary so native hosts can abort if profile ownership changes during the browser consent flow. Providers that can verify account identity should implement `matchesPersonalAccount`; managed reconnects use it before persistence and again at the write boundary. Same-account failures use `MANAGED_MODELS_AUTH_LOGIN_ACCOUNT_MISMATCH_CODE` (`"account_mismatch"`).
+`beforePersist` runs after the provider returns the OAuth profile and before protected material is staged. `assertCurrent` is passed through the provider run and the persistence write boundary so native hosts can abort if profile ownership changes during the browser consent flow. The persistence guard also rechecks the supplied `signal` after handoff and lock waits, immediately before credential replacement; a cancelled attempt cannot commit even if its owner remains current. Providers that can verify account identity should implement `matchesPersonalAccount`; managed reconnects use it before persistence and again at the write boundary. Same-account failures use `MANAGED_MODELS_AUTH_LOGIN_ACCOUNT_MISMATCH_CODE` (`"account_mismatch"`).
 
 ## Prepared completion SDK compatibility
 
