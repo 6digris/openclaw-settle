@@ -250,26 +250,36 @@ describe("oversized fenced block chunking", () => {
     expect(pipeline.hasSentPayload({ text: "```ts\nabcdefghijklmnopq\n```" })).toBe(false);
   });
 
-  it("delivers identical fenced chunks as distinct source occurrences", async () => {
-    const delivered: string[] = [];
-    const pipeline = createBlockReplyPipeline({
-      onBlockReply: (payload) => {
-        delivered.push(payload.text ?? "");
-      },
-      timeoutMs: 5000,
-    });
-    const { emit } = createParagraphChunkedBlockReplyHarness({
-      chunking: { minChars: 10, maxChars: 30 },
-      onBlockReply: (payload) => pipeline.enqueue(payload),
-    });
-    const text = `\`\`\`txt\n${"a".repeat(80)}\n\`\`\``;
+  it.each([
+    { name: "without coalescing", coalescing: undefined },
+    {
+      name: "with coalescing",
+      coalescing: { minChars: 1, maxChars: 30, idleMs: 0, joiner: "\n\n" },
+    },
+  ])(
+    "delivers identical fenced chunks as distinct source occurrences $name",
+    async ({ coalescing }) => {
+      const delivered: string[] = [];
+      const pipeline = createBlockReplyPipeline({
+        onBlockReply: (payload) => {
+          delivered.push(payload.text ?? "");
+        },
+        timeoutMs: 5000,
+        coalescing,
+      });
+      const { emit } = createParagraphChunkedBlockReplyHarness({
+        chunking: { minChars: 10, maxChars: 30 },
+        onBlockReply: (payload) => pipeline.enqueue(payload),
+      });
+      const text = `\`\`\`txt\n${"a".repeat(80)}\n\`\`\``;
 
-    emitAssistantTextDeltaAndEnd({ emit, text });
-    await pipeline.flush({ force: true });
+      emitAssistantTextDeltaAndEnd({ emit, text });
+      await pipeline.flush({ force: true });
 
-    expect(delivered.length).toBeGreaterThan(2);
-    expect(pipeline.hasSentPayload({ text })).toBe(true);
-  });
+      expect(delivered.length).toBeGreaterThan(2);
+      expect(pipeline.hasSentPayload({ text })).toBe(true);
+    },
+  );
 
   const cases = [
     {
