@@ -578,7 +578,10 @@ export async function deliverFinalAnswerText(
       replyTargetBeforeRecovery: answerPayload,
       infoKind: "final",
       buttons,
-      allowStream: !usesNativeTelegramQuote(turn, finalPayload),
+      allowStream:
+        !usesNativeTelegramQuote(turn, finalPayload) ||
+        (turn.replyQuoteText == null &&
+          resolveTelegramReplyId(finalPayload.replyToId) === turn.draftReplyToMessageId),
       promptContextSequence,
       onPlatformSendDispatch,
       assertPlatformSendAuthorized,

@@ -100,6 +100,10 @@ export function createDraftState(params: TurnConfig): TelegramDraftStateSlice {
           thread: params.context.threadSpec,
           replyToMessageId: params.draftReplyToMessageId,
           replyToMode: params.replyToMode,
+          replyQuote:
+            params.draftReplyToMessageId != null
+              ? params.replyQuoteByMessageId[String(params.draftReplyToMessageId)]
+              : undefined,
           richMessages: params.telegramCfg.richMessages,
           linkPreview: params.telegramCfg.linkPreview,
           minInitialChars: DRAFT_MIN_INITIAL_CHARS,

@@ -1,6 +1,11 @@
 // Telegram tests cover draft stream plugin behavior.
 import type { Bot } from "grammy";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  createDraftStream,
+  createMockDraftApi,
+  type MockSentMessage,
+} from "./draft-stream.api.test-fixtures.js";
 import { createTelegramDraftStream } from "./draft-stream.js";
 import {
   markdownToTelegramChunks,
@@ -8,32 +13,6 @@ import {
   telegramHtmlToPlainTextFallback,
 } from "./format.js";
 import { buildTelegramRichMarkdown, type TelegramInputRichMessage } from "./rich-message.js";
-
-type TelegramDraftStreamParams = Parameters<typeof createTelegramDraftStream>[0];
-type MockSentMessage = { message_id: number; message_thread_id?: number };
-type MockSendMessage = (
-  chatId: string | number,
-  text: string,
-  params?: Record<string, unknown>,
-) => Promise<MockSentMessage>;
-type MockSendRichMessage = (params: {
-  rich_message?: TelegramInputRichMessage;
-}) => Promise<MockSentMessage>;
-
-function createMockDraftApi(sendMessageImpl?: () => Promise<MockSentMessage>) {
-  const resolveSend = sendMessageImpl ?? (async () => ({ message_id: 17 }));
-  const sendRichMessage = vi.fn<MockSendRichMessage>(async () => await resolveSend());
-  const editRichMessageText = vi.fn().mockResolvedValue(true);
-  return {
-    sendMessage: vi.fn<MockSendMessage>(async () => await resolveSend()),
-    editMessageText: vi.fn().mockResolvedValue(true),
-    deleteMessage: vi.fn().mockResolvedValue(true),
-    raw: {
-      sendRichMessage,
-      editMessageText: editRichMessageText,
-    },
-  };
-}
 
 function createForumDraftStream(api: ReturnType<typeof createMockDraftApi>) {
   return createThreadedDraftStream(api, { id: 99, scope: "forum" });
@@ -44,17 +23,6 @@ function createThreadedDraftStream(
   thread: { id: number; scope: "direct-messages" | "dm" | "forum" },
 ) {
   return createDraftStream(api, { thread });
-}
-
-function createDraftStream(
-  api: ReturnType<typeof createMockDraftApi>,
-  overrides: Omit<Partial<TelegramDraftStreamParams>, "api" | "chatId"> = {},
-) {
-  return createTelegramDraftStream({
-    api: api as unknown as Bot["api"],
-    chatId: 123,
-    ...overrides,
-  });
 }
 
 async function expectInitialForumSend(

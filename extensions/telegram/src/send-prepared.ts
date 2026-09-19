@@ -15,6 +15,7 @@ import {
 } from "./outbound-media.js";
 import {
   getTelegramNativeQuoteReplyMessageId,
+  withTelegramNativeQuoteFallback,
   isTelegramQuoteParamError,
 } from "./reply-parameters.js";
 import { TELEGRAM_OUTBOUND_RETRY_AFTER_CAP_MS } from "./retry-after.js";
@@ -23,11 +24,7 @@ import {
   toTelegramRichMessageContextParams,
 } from "./rich-message.js";
 import { isTelegramEmptyContentError, isTelegramHtmlParseError } from "./rich-plain-fallback.js";
-import {
-  resolveTelegramMessageIdOrThrow,
-  withTelegramNativeQuoteFallback,
-  type TelegramApi,
-} from "./send-context.js";
+import { resolveTelegramMessageIdOrThrow, type TelegramApi } from "./send-context.js";
 import {
   isTelegramPhotoLimitError,
   isTelegramVoiceMessagesForbiddenError,

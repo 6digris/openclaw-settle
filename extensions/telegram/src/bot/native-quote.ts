@@ -4,7 +4,7 @@ import type { TelegramTextEntity } from "./body-helpers.js";
 
 const TELEGRAM_NATIVE_QUOTE_MAX_LENGTH = 1024;
 
-type TelegramNativeQuoteCandidate = {
+export type TelegramNativeQuoteCandidate = {
   text: string;
   position?: number;
   entities?: unknown[];
