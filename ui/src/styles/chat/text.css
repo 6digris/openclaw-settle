@@ -1313,6 +1313,7 @@
 :is(.chat-bubble, .chat-tool-msg-body, .chat-message-avatar-anchor) {
   > :is(
     .chat-message-images,
+    .chat-image-carousel,
     .chat-assistant-attachments,
     .chat-assistant-attachment-card,
     .chat-pairing-qr-notices,
@@ -1328,6 +1329,7 @@
 
     + :is(
       .chat-message-images,
+      .chat-image-carousel,
       .chat-assistant-attachments,
       .chat-assistant-attachment-card,
       .chat-pairing-qr-notices,

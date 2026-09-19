@@ -520,8 +520,154 @@
   transform: scale(1.02);
 }
 
-/* User media shares the text bubble's side. Multi-item turns use compact
-   gallery tiles; assistant transcript images remain one per row. */
+/* Assistant image runs scroll locally, without widening the transcript. The
+   wrapper also exists for one image, keeping decoded pixels on a streamed append. */
+.chat-bubble:has(.chat-image-carousel) {
+  width: 100%;
+}
+
+.chat-image-carousel {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  container-type: inline-size;
+}
+
+.chat-image-carousel__viewport {
+  --chat-image-fade-left: 0px;
+  --chat-image-fade-right: 0px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    var(--text) var(--chat-image-fade-left),
+    var(--text) calc(100% - var(--chat-image-fade-right)),
+    transparent
+  );
+}
+
+.chat-image-carousel__viewport::-webkit-scrollbar {
+  display: none;
+}
+
+.chat-image-carousel__viewport:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+  border-radius: var(--radius-xl);
+}
+
+.chat-image-carousel[data-scroll-left] > .chat-image-carousel__viewport {
+  --chat-image-fade-left: 40px;
+}
+
+.chat-image-carousel[data-scroll-right] > .chat-image-carousel__viewport {
+  --chat-image-fade-right: 40px;
+}
+
+.chat-image-carousel__track,
+.chat-message-images--inline {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  width: max-content;
+  min-width: 0;
+  gap: 8px;
+}
+
+.chat-image-carousel:not(.chat-image-carousel--gallery)
+  > .chat-image-carousel__viewport
+  > .chat-image-carousel__track {
+  width: 100%;
+}
+
+.chat-image-carousel__message {
+  flex: none;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.chat-image-carousel__message > .chat-bubble {
+  max-width: none;
+  padding-block: 0;
+}
+
+.chat-image-carousel:not(.chat-image-carousel--gallery) .chat-message-images--inline {
+  width: 100%;
+}
+
+.chat-image-carousel:not(.chat-image-carousel--gallery) .chat-image-frame {
+  max-width: min(100cqw, 400px);
+}
+
+.chat-image-carousel--gallery .chat-image-frame {
+  flex: none;
+  width: clamp(160px, var(--chat-image-width, 280px), 320px);
+  max-width: calc(100cqw - 40px);
+  scroll-margin-inline: 40px;
+}
+
+.chat-image-carousel--gallery .chat-image-frame:not(.chat-image-frame--compact) {
+  height: min(220px, 60cqw);
+  aspect-ratio: auto;
+}
+
+.chat-image-carousel--gallery .chat-message-image-button,
+.chat-image-carousel--gallery .chat-message-image {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  object-fit: contain;
+}
+
+.chat-image-carousel__arrow {
+  position: absolute;
+  z-index: 3;
+  top: 50%;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  color: var(--text);
+  background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-50%);
+  cursor: var(--cursor-action);
+}
+
+.chat-image-carousel__arrow[hidden] {
+  display: none;
+}
+
+.chat-image-carousel__arrow--left {
+  left: 6px;
+}
+
+.chat-image-carousel__arrow--right {
+  right: 6px;
+}
+
+.chat-image-carousel__arrow:hover {
+  background: var(--bg-hover);
+}
+
+.chat-image-carousel__arrow:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.chat-image-carousel__arrow svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* User media retains compact grids beside its prompt and upload state. */
 .chat-group.user .chat-message-images {
   --chat-user-image-grid-size: min(128px, calc((100vw - 48px) / 3));
   display: grid;

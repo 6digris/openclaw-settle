@@ -72,7 +72,7 @@ function mount(width: number, theme: string) {
 function blocks(container: HTMLElement) {
   return Array.from(
     container.querySelectorAll<HTMLElement>(
-      ".chat-text > p, .chat-image-frame, .chat-assistant-attachment-card",
+      ".chat-text > p, .chat-image-carousel, .chat-image-frame:not(.chat-image-carousel *), .chat-assistant-attachment-card:not(.chat-image-carousel *)",
     ),
   );
 }
@@ -121,16 +121,16 @@ describe("transcript media block spacing", () => {
         image,
       ];
       draw(content, streaming);
-      await vi.waitFor(() => expectRhythm(container, 11));
+      await vi.waitFor(() => expectRhythm(container, 10));
       const images = Array.from(
         container.querySelectorAll<HTMLImageElement>("img.chat-message-image"),
       );
       await Promise.all(images.map((element) => element.decode()));
-      expectRhythm(container, 11);
+      expectRhythm(container, 10);
       if (streaming) {
         for (const isStreaming of [true, false]) {
           draw([...content, text("\n\nStreaming continues.")], isStreaming);
-          expectRhythm(container, 12);
+          expectRhythm(container, 11);
           const updatedImages = Array.from(container.querySelectorAll("img.chat-message-image"));
           expect(updatedImages).toHaveLength(images.length);
           for (const [index, retainedImage] of images.entries()) {
@@ -162,7 +162,7 @@ describe("transcript media block spacing", () => {
       await vi.waitFor(() => expectRhythm(container, 2));
     }
     draw([image, { ...image, url: `${imageUrl}#second` }]);
-    expectRhythm(container, 2);
+    expectRhythm(container, 1);
   });
 
   it("reserves the image and both gaps while a streamed image loads", async () => {

@@ -7,6 +7,7 @@ import type { MessageContentItem, MessageImageSource } from "../../../lib/chat/c
 import { readTranscriptMediaEntries } from "../../../lib/chat/message-extract.ts";
 import { normalizeMessage } from "../../../lib/chat/message-normalizer.ts";
 import {
+  classifyImageAttachment,
   isAudioTranscriptMediaPath,
   isImageMediaPath,
   isSvgImageMediaPath,
@@ -31,7 +32,13 @@ export type ArtifactDownloadResolver = (params: {
   artifactId: string;
 }) => Promise<{ url: string; expiresAt?: string } | null>;
 
+export type ImageMessageGallery = {
+  media: ReturnType<typeof projectMessageMedia>;
+  images: readonly ImageBlock[];
+};
+
 export type ImageRenderOptions = {
+  layout?: "strip" | "inline";
   galleryImages?: readonly ImageBlock[];
   sessionKey?: string;
   agentId?: string;
@@ -72,6 +79,7 @@ export type AttachmentItem = Extract<MessageContentItem, { type: "attachment" }>
 type AttachmentFailureItem = Extract<MessageContentItem, { type: "attachment_error" }>;
 export type AssistantAttachmentItem = AttachmentItem | AttachmentFailureItem;
 export type ProjectedMessageContent =
+  | { type: "boundary" }
   | { type: "text"; text: string }
   | { type: "image"; image: ImageBlock }
   | AssistantAttachmentItem;
@@ -516,23 +524,38 @@ export function projectMessageMedia(
       continue;
     }
     if (item.type === "attachment" || item.type === "attachment_error") {
-      appendAttachment(item);
-      orderedContent.push(item);
       if (item.type === "attachment") {
         positionedSources.add(item.attachment.url);
+        if (classifyImageAttachment(item.attachment) === "raster") {
+          const image = {
+            ...item.attachment,
+            alt: item.attachment.label,
+            fileName: item.attachment.label,
+          };
+          images.push(image);
+          orderedContent.push({ type: "image", image });
+          continue;
+        }
       }
+      appendAttachment(item);
+      orderedContent.push(item);
       continue;
     }
     if (item.type === "omitted_media") {
       inlineIndex += 1;
+      orderedContent.push({ type: "boundary" });
       continue;
     }
     if (item.type !== "image") {
+      // Non-media content still separates image runs even when another renderer
+      // owns it (reasoning, tool calls, canvas, or omitted media).
+      orderedContent.push({ type: "boundary" });
       continue;
     }
     if (item.expiresAtMs !== undefined) {
       if (item.expiresAtMs <= nowMs) {
         expiredPairingQrCount += 1;
+        orderedContent.push({ type: "boundary" });
         continue;
       }
       nextPairingQrExpiresAt = Math.min(

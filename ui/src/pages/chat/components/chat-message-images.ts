@@ -11,6 +11,7 @@ import {
 } from "../../../lib/open-external-url.ts";
 import { showToast } from "../../../lib/toast.ts";
 import { renderChatImageActions } from "./chat-image-actions.ts";
+import { renderImageStrip } from "./chat-image-strip.ts";
 import {
   isManagedOutgoingMediaSource,
   loadAssistantAttachmentAvailability,
@@ -562,7 +563,17 @@ class MessageImagesDirective extends Directive {
     if (!mediaCount) {
       return nothing;
     }
+    const content = html`${repeat(
+      this.slots,
+      ({ key }) => key,
+      ({ image }) =>
+        html`${renderMessageImageResource(image, { ...opts, galleryImages: opts?.galleryImages ?? images })}`,
+    )}${previews}`;
+    if (opts?.layout === "strip") {
+      return renderImageStrip(content, images.length > 1);
+    }
     const layoutClasses = [
+      opts?.layout === "inline" ? "chat-message-images--inline" : "",
       "chat-message-images",
       mediaCount === 1 ? "chat-message-images--single" : "chat-message-images--gallery",
       mediaCount === 2 || mediaCount === 4 ? "chat-message-images--two-column" : "",
@@ -570,15 +581,7 @@ class MessageImagesDirective extends Directive {
     ]
       .filter(Boolean)
       .join(" ");
-    return html`<div class=${layoutClasses}>
-      ${repeat(
-        this.slots,
-        ({ key }) => key,
-        ({ image }) =>
-          html`${renderMessageImageResource(image, { ...opts, galleryImages: opts?.galleryImages ?? images })}`,
-      )}
-      ${previews}
-    </div>`;
+    return html`<div class=${layoutClasses}>${content}</div>`;
   }
 }
 

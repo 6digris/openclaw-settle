@@ -18,6 +18,21 @@ export class ChatMessageReveal {
     this.clear();
     // The layout read in scrolling also resets a repeated target's CSS animation.
     const rect = bubble.getBoundingClientRect();
+    const gallery = bubble.closest<HTMLElement>(".chat-image-carousel__viewport");
+    if (gallery) {
+      const viewport = gallery.getBoundingClientRect();
+      // Keep the vertical transcript anchor with the virtualizer. Only reveal
+      // the original message horizontally inside its local image gallery.
+      const left =
+        rect.left < viewport.left
+          ? rect.left - viewport.left
+          : rect.right > viewport.right
+            ? rect.right - viewport.right
+            : 0;
+      if (left) {
+        gallery.scrollBy({ left, behavior });
+      }
+    }
     const offset =
       element.scrollTop +
       rect.top -

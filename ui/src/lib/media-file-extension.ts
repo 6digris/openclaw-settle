@@ -92,6 +92,31 @@ export function isSvgImageMediaPath(path: string, mediaType: unknown): boolean {
   return normalizedMediaType === "image/svg+xml" || getMediaFileExtension(path) === "svg";
 }
 
+/** Keep structured files and MEDIA directives on the same raster/SVG renderer. */
+export function classifyImageAttachment(attachment: {
+  kind: string;
+  url: string;
+  label: string;
+  mimeType?: string;
+}): "raster" | "svg" | undefined {
+  const mime = attachment.mimeType?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  const inferExtension = !mime || mime === "application/octet-stream";
+  const image =
+    attachment.kind === "image" ||
+    (attachment.kind === "document" &&
+      (isImageMediaPath(attachment.url, mime) ||
+        (inferExtension && isImageMediaPath(attachment.label, undefined))));
+  if (!image) {
+    return undefined;
+  }
+  return mime === "image/svg+xml" ||
+    (inferExtension &&
+      (isSvgImageMediaPath(attachment.url, undefined) ||
+        isSvgImageMediaPath(attachment.label, undefined)))
+    ? "svg"
+    : "raster";
+}
+
 export function isAudioTranscriptMediaPath(path: string, mediaType: unknown): boolean {
   if (typeof mediaType === "string" && mediaType.trim().toLowerCase().startsWith("audio/")) {
     return true;

@@ -48,6 +48,8 @@ import {
   projectMessageMedia,
   schedulePairingQrExpiryRefresh,
   type ArtifactDownloadResolver,
+  type ImageMessageGallery,
+  type ImageRenderOptions,
 } from "./chat-message-media.ts";
 import {
   detectJson,
@@ -156,6 +158,7 @@ export function renderGroupedMessage(
   opts: {
     isStreaming: boolean;
     isForwarded?: boolean;
+    imageGallery?: ImageMessageGallery;
     sessionKey?: string;
     presented?: boolean;
     transcriptVisible?: boolean;
@@ -231,7 +234,7 @@ export function renderGroupedMessage(
     orderedContent,
     supplementalImages,
     supplementalAttachments,
-  } = projectMessageMedia(message, normalizedMessage.content);
+  } = opts.imageGallery?.media ?? projectMessageMedia(message, normalizedMessage.content);
   schedulePairingQrExpiryRefresh(messageKey, nextPairingQrExpiresAt, opts.onRequestUpdate);
   const hasImages = images.length > 0;
   const videoPreviews =
@@ -249,8 +252,9 @@ export function renderGroupedMessage(
         !isSentCommentAttachment(item) &&
         !isSentPastedTextAttachment(item),
     );
-  const imageRenderOptions = {
-    galleryImages: images,
+  const imageRenderOptions: ImageRenderOptions = {
+    layout: opts.imageGallery ? "inline" : normalizedRole === "assistant" ? "strip" : undefined,
+    galleryImages: opts.imageGallery?.images ?? images,
     sessionKey: opts.sessionKey,
     agentId: opts.agentId,
     policyKey: opts.mediaPolicyKey,
@@ -358,10 +362,10 @@ export function renderGroupedMessage(
   const bodyMarkdown = standaloneToolPayload ? null : markdown;
   const renderInOrder =
     normalizedRole === "assistant" &&
-    Boolean(markdown) &&
+    !opts.imageGallery &&
     !asyncQuestions &&
     (!disclosure?.expanded || Boolean(disclosure.message)) &&
-    orderedContent.some((item) => item.type !== "text");
+    orderedContent.some((item) => item.type !== "text" && item.type !== "boundary");
   // One expanded card already closes with its own outcome line; every other
   // shape renders inline rows only, so the message body records the failure.
   const expandsSingleToolCard =
@@ -477,8 +481,8 @@ export function renderGroupedMessage(
           : nothing;
   const renderOrderedContent = () => {
     const prepared = prepareMarkdownMedia(orderedContent, (item) => {
-      if (item.type === "image") {
-        return renderMessageImages([item.image], imageRenderOptions);
+      if (item.type === "images") {
+        return renderMessageImages(item.images, imageRenderOptions);
       }
       return renderAssistantAttachments(
         [item],

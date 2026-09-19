@@ -1,9 +1,11 @@
 import { html } from "lit";
 import { Directive, directive } from "lit/directive.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
-import type { ProjectedMessageContent } from "./chat-message-media.ts";
+import type { ImageBlock, ProjectedMessageContent } from "./chat-message-media.ts";
 
-type PositionedMedia = Exclude<ProjectedMessageContent, { type: "text" }>;
+type PositionedMedia =
+  | { type: "images"; images: ImageBlock[] }
+  | Exclude<ProjectedMessageContent, { type: "text" | "image" | "boundary" }>;
 export type MarkdownMedia = {
   prefix: string;
   text: string;
@@ -21,15 +23,31 @@ export function prepareMarkdownMedia(
     prefix += "X";
   }
   const items: PositionedMedia[] = [];
-  const markdown = content
-    .map((item) => {
-      if (item.type === "text") {
-        return item.text;
+  const fragments: string[] = [];
+  let imageRun: Extract<PositionedMedia, { type: "images" }> | undefined;
+  for (const item of content) {
+    if (item.type === "text" && !item.text.trim()) {
+      fragments.push(item.text);
+      continue;
+    }
+    if (item.type === "image") {
+      if (imageRun) {
+        imageRun.images.push(item.image);
+        continue;
+      }
+      imageRun = { type: "images", images: [item.image] };
+      items.push(imageRun);
+    } else {
+      imageRun = undefined;
+      if (item.type === "text" || item.type === "boundary") {
+        fragments.push(item.type === "text" ? item.text : "");
+        continue;
       }
       items.push(item);
-      return `${prefix}${items.length - 1}END`;
-    })
-    .join("\n");
+    }
+    fragments.push(`${prefix}${items.length - 1}END`);
+  }
+  const markdown = fragments.join("\n");
   return { markdown, media: { prefix, text, items, render } };
 }
 
