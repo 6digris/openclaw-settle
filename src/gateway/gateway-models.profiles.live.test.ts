@@ -2561,7 +2561,9 @@ async function runAnthropicRefusalProbe(params: {
     client: params.client,
     sessionKey: params.sessionKey,
     idempotencyKey: `idem-${randomUUID()}-refusal`,
-    message: `Reply with the single word ok. Test token: ${magic}`,
+    // Credential redaction masks values after "token:", including the
+    // nonce needed to correlate this probe with its persisted user turn.
+    message: `Reply with the single word ok. Test trigger: ${magic}`,
     thinkingLevel: params.thinkingLevel,
     context: `${params.label}: refusal-probe`,
     modelKey: params.modelKey,
