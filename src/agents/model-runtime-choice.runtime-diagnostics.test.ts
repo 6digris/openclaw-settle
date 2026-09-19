@@ -9,6 +9,7 @@ import {
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
+import { createPreparedConfiguredRuntimeModelLookup } from "./embedded-agent-runner/model.static-id.js";
 import { prepareModelChoice, preparePublishedModelRuntimeChoice } from "./model-runtime-choice.js";
 import { setPreparedModelRuntimeAuthStore } from "./prepared-model-runtime-auth.js";
 import type { PreparedModelRuntimeSnapshot } from "./prepared-model-runtime.types.js";
@@ -40,6 +41,8 @@ const request = {
 
 function publish(isCurrent = () => true, config = cfg, auth = true) {
   const entry = { provider: "fixture", id: "model", name: "Model" };
+  const metadataSnapshot = createPluginMetadataSnapshotFixture();
+  const configuredRuntimeModels: PreparedModelRuntimeSnapshot["configuredRuntimeModels"] = [];
   const owner: PreparedModelRuntimeSnapshot = {
     config,
     observationConfig: config,
@@ -49,11 +52,15 @@ function publish(isCurrent = () => true, config = cfg, auth = true) {
     workspaceDir: "/tmp/runtime-choice",
     activeProjectKeys: [],
     authModes: {},
-    metadataSnapshot: createPluginMetadataSnapshotFixture(),
+    metadataSnapshot,
     isCurrent,
     allowGatewaySubagentBinding: false,
     modelCatalog: { entries: [entry], routeVariants: [entry] },
-    configuredRuntimeModels: [],
+    configuredRuntimeModels,
+    findConfiguredRuntimeModel: createPreparedConfiguredRuntimeModelLookup(
+      configuredRuntimeModels,
+      metadataSnapshot,
+    ),
     inlineProviderModels: [],
     createStores() {
       const authStorage = AuthStorage.inMemory({});
