@@ -1,9 +1,7 @@
 import path from "node:path";
-import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { hashConfigRaw } from "../../config/io.read-helpers.js";
 import { resolveConfigPath } from "../../config/paths.js";
 import { resolveGatewayInstallEntrypoint } from "../../daemon/gateway-entrypoint.js";
-import { createLowDiskSpaceWarning } from "../../infra/disk-space.js";
 import {
   markPackagePostInstallDoctorAdvisory,
   runGlobalPackageUpdateSteps,
@@ -37,8 +35,7 @@ import {
   type UpdateRunResult,
   type UpdateStepResult,
 } from "../../infra/update-runner.js";
-import { runCommandWithTimeout, runUtf8CommandWithTimeout } from "../../process/exec.js";
-import { defaultRuntime } from "../../runtime.js";
+import { runCommandWithTimeout } from "../../process/exec.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { CLI_NAME } from "../cli-name.js";
 import { createUpdateProgress } from "./progress.js";
@@ -56,11 +53,7 @@ import {
   readUpdateConfigSnapshot,
   type UpdateConfigSnapshot,
 } from "./update-command-config-snapshot.js";
-import {
-  withUpdateCommandExecutorChild,
-  type UpdateCommandChildGrant,
-} from "./update-command-executor.js";
-import type { UpdateDoctorInput } from "./update-command-migrated-types.js";
+import { withUpdateDoctorChild } from "./update-command-doctor-child.js";
 import { resolveUpdateTargetEnv } from "./update-command-service-env.js";
 export async function readPackageUpdateIdentity(root: string) {
   const [version, buildId] = await Promise.all([
@@ -163,20 +156,8 @@ export async function runPackageUpdateDoctor(params: PackageDoctorOptions) {
   const configSnapshot = params.onConfigSnapshot
     ? await readUpdateConfigSnapshot(resolveConfigPath(doctorEnv))
     : undefined;
-  const runDoctor = (executor?: UpdateCommandChildGrant, beforeInput?: (pid: number) => void) => {
-    context?.assertRequesterCurrent();
-    const input: UpdateDoctorInput | undefined =
-      context && executor
-        ? {
-            executor,
-            runId: context.runId,
-            root: params.root,
-            configInputHash: context.inputHash,
-            requester: context.requester,
-            repair: doctorPolicy.fix,
-          }
-        : undefined;
-    return runUpdateStep({
+  const runDoctor = (runCommand?: Parameters<typeof runUpdateStep>[0]["runCommand"]) =>
+    runUpdateStep({
       name: `${CLI_NAME} doctor`,
       argv: doctorArgv,
       cwd: params.root,
@@ -192,31 +173,16 @@ export async function runPackageUpdateDoctor(params: PackageDoctorOptions) {
         [UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV]: doctorResultPath,
       },
       timeoutMs: params.timeoutMs,
-      ...(input
-        ? {
-            runCommand: async (argv, options) => {
-              const result = await runUtf8CommandWithTimeout(argv, {
-                ...options,
-                input: JSON.stringify(input),
-                beforeInput,
-                killProcessTree: true,
-                requireProcessTreeExtinction: true,
-              });
-              if (result.cleanup !== "normal") {
-                throw new Error("Doctor executor did not settle its child processes.");
-              }
-              return result;
-            },
-          }
-        : {}),
+      ...(runCommand ? { runCommand } : {}),
     });
-  };
   const doctorStep = context
-    ? await withUpdateCommandExecutorChild(context.executorFence, params.root, (grant, bindChild) =>
-        runDoctor(grant, (pid) => {
-          context.assertRequesterCurrent();
-          bindChild(pid);
-        }),
+    ? await withUpdateDoctorChild(
+        {
+          root: params.root,
+          context,
+          input: { configInputHash: context.inputHash, repair: doctorPolicy.fix },
+        },
+        runDoctor,
       )
     : await runDoctor();
   const doctorResult = await consumeUpdatePostInstallDoctorResult(doctorResultPath);
@@ -342,7 +308,6 @@ export type PackageInstallUpdateParams = {
   timeoutMs: number;
   startedAt: number;
   progress: ReturnType<typeof createUpdateProgress>["progress"];
-  jsonMode: boolean;
   managedServiceEnv?: NodeJS.ProcessEnv;
   invocationCwd?: string;
   honorPackageRoot?: boolean;
@@ -351,6 +316,7 @@ export type PackageInstallUpdateParams = {
   installTarget?: ResolvedGlobalInstallTarget;
   validateCandidate: (root: string) => Promise<UpdateStepResult[]>;
   beforeActivate: () => Promise<void>;
+  assertCurrent?: () => void;
   onTransaction: (transaction: PackageUpdateTransaction) => void;
   onConfigSnapshot?: PackageDoctorOptions["onConfigSnapshot"];
   getDoctorContext?: PackageDoctorOptions["getDoctorContext"];
@@ -403,8 +369,8 @@ export async function stagePackageInstallUpdate(
   if ("result" in ready) {
     throw new UpdatePreMutationError(
       ready.result.reason ?? "package-staging-failed",
-      ready.result.steps.find((step) => step.exitCode !== 0)?.stderrTail ??
-        "Package staging did not produce a target runtime.",
+      ready.result.failedStep?.stderrTail ?? "Package staging did not produce a target runtime.",
+      { failureFacts: ready.result.failedStep?.failureFacts },
     );
   }
   return {
@@ -463,18 +429,6 @@ export async function runPackageInstallUpdate(
 
   const before = pkgRoot ? await readPackageUpdateIdentity(pkgRoot) : { version: null };
 
-  const diskWarning = createLowDiskSpaceWarning({
-    targetPath: pkgRoot ? path.dirname(pkgRoot) : params.root,
-    purpose: "global package update",
-  });
-  if (diskWarning) {
-    if (params.jsonMode) {
-      defaultRuntime.error(`Warning: ${diskWarning}`);
-    } else {
-      defaultRuntime.log(theme.warn(diskWarning));
-    }
-  }
-
   const packageUpdate = await runGlobalPackageUpdateSteps({
     localOverrides: {
       reapply: params.reapplyLocalOverrides === true,
@@ -485,6 +439,7 @@ export async function runPackageInstallUpdate(
     },
     validateCandidate: params.validateCandidate,
     beforeActivate: params.beforeActivate,
+    assertCurrent: params.assertCurrent,
     onTransaction: params.onTransaction,
     installTarget,
     installSpec,
@@ -528,6 +483,7 @@ export async function runPackageInstallUpdate(
       ...(afterBuildId ? { buildId: afterBuildId } : {}),
     },
     steps: packageUpdate.steps,
+    failedStep: packageUpdate.failedStep ?? undefined,
     recovery: packageUpdate.recovery,
     localOverrides: packageUpdate.localOverrides,
     durationMs: Date.now() - params.startedAt,

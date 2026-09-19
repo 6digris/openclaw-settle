@@ -1,5 +1,8 @@
 import type { DatabaseSync } from "node:sqlite";
-import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db-contract.js";
+import type {
+  OpenClawStateDatabaseOptions,
+  OpenClawStateSchemaReadAdmission,
+} from "../state/openclaw-state-db-contract.js";
 import {
   withExistingOpenClawStateDatabaseArtifactPreservingReadOnly,
   withExistingOpenClawStateDatabaseArtifactPreservingReadOnlyAsync,
@@ -51,6 +54,10 @@ export function readActiveUpdateRun(db: DatabaseSync): UpdateRunRecord | undefin
   return readRuns(db, { limit: 1, active: true })[0];
 }
 
+export function readLatestUpdateRun(db: DatabaseSync): UpdateRunRecord | undefined {
+  return readRuns(db, { limit: 1 })[0];
+}
+
 export async function getUpdateRunAsync(
   runId: string,
   options: OpenClawStateDatabaseOptions = {},
@@ -96,11 +103,13 @@ function readRuns(db: DatabaseSync, input: ListInput): UpdateRunRecord[] {
 export function listUpdateRuns(
   input: ListInput = {},
   options: OpenClawStateDatabaseOptions = {},
+  openStateSchemaReadAdmission?: OpenClawStateSchemaReadAdmission,
 ): UpdateRunRecord[] {
   return (
     withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
       ({ db }) => readRuns(db, input),
       options,
+      openStateSchemaReadAdmission,
     ) ?? []
   );
 }

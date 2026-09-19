@@ -245,7 +245,6 @@ export async function maybeRestartServiceAfterFailedMutableUpdate(params: {
         assertCurrent,
       },
       "restart",
-      true,
     );
     assertCurrent();
     const health = await waitForGatewayHealthyRestart({

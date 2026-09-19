@@ -1,6 +1,6 @@
 import { asNonArrayRecord } from "@openclaw/normalization-core/record-coerce";
 import type { GatewaySessionRow } from "../../../api/types.ts";
-import type { ImageLightboxItem } from "../../../components/image-lightbox.ts";
+import type { ImageLightboxItem } from "../../../components/image-lightbox.types.ts";
 import { t } from "../../../i18n/index.ts";
 import { formatBytes } from "../../../lib/agents/display.ts";
 import type { MessageContentItem, MessageImageSource } from "../../../lib/chat/chat-types.ts";
@@ -32,6 +32,7 @@ export type ArtifactDownloadResolver = (params: {
 }) => Promise<{ url: string; expiresAt?: string } | null>;
 
 export type ImageRenderOptions = {
+  galleryImages?: readonly ImageBlock[];
   sessionKey?: string;
   agentId?: string;
   policyKey?: string;
@@ -94,6 +95,7 @@ export type ChatMediaResource<Value> = {
   abortController: AbortController | undefined;
   refresh: { at: number; timer: ReturnType<typeof setTimeout> } | undefined;
   retainUntil: number | undefined;
+  releaseAuthRecovery?: () => void;
 };
 
 type ChatMediaSubscriber = {
@@ -141,10 +143,9 @@ function detachChatMediaResourceSubscriber(
   if (resource.subscribers.size > 0) {
     return;
   }
-  if (resource.refresh) {
-    clearTimeout(resource.refresh.timer);
-    resource.refresh = undefined;
-  }
+  resource.releaseAuthRecovery?.();
+  resource.releaseAuthRecovery = undefined;
+  clearChatMediaResourceRefresh(resource);
   const resourceKey = chatMediaResourceKey(resource.kind, resource.cacheKey);
   if (chatMediaResources.get(resourceKey) === resource) {
     chatMediaResources.delete(resourceKey);
@@ -181,9 +182,7 @@ export function observeChatMediaResource<Value>(
   ) {
     chatMediaResources.delete(resourceKey);
     resource.abortController?.abort();
-    if (resource.refresh) {
-      clearTimeout(resource.refresh.timer);
-    }
+    clearChatMediaResourceRefresh(resource);
     resource = undefined;
   }
   if (!resource) {
@@ -201,7 +200,7 @@ export function observeChatMediaResource<Value>(
       refresh: undefined,
       retainUntil: undefined,
     };
-    chatMediaResources.set(resourceKey, resource as ChatMediaResource<unknown>);
+    chatMediaResources.set(resourceKey, resource);
   }
   const newObservation = !subscriber || !resource.subscribers.has(subscriber);
   if (subscriber) {
@@ -213,7 +212,7 @@ export function observeChatMediaResource<Value>(
     if (previous && previous !== resource) {
       detachChatMediaResourceSubscriber(previous, subscriber);
     }
-    subscriptions.set(subscriptionKey, resource as ChatMediaResource<unknown>);
+    subscriptions.set(subscriptionKey, resource);
   }
   if (cacheScope !== undefined && newObservation) {
     // Policy changes can replace the directive. Let active readers finish, but
@@ -263,6 +262,13 @@ export function notifyChatMediaResourceSubscribers<Value>(resource: ChatMediaRes
   }
 }
 
+export function clearChatMediaResourceRefresh(resource: ChatMediaResource<unknown>) {
+  if (resource.refresh) {
+    clearTimeout(resource.refresh.timer);
+    resource.refresh = undefined;
+  }
+}
+
 export function scheduleChatMediaResourceRefresh<Value>(
   resource: ChatMediaResource<Value>,
   refreshAt: number | undefined,
@@ -271,10 +277,7 @@ export function scheduleChatMediaResourceRefresh<Value>(
   if (resource.refresh?.at === refreshAt) {
     return;
   }
-  if (resource.refresh) {
-    clearTimeout(resource.refresh.timer);
-    resource.refresh = undefined;
-  }
+  clearChatMediaResourceRefresh(resource);
   if (refreshAt === undefined || resource.subscribers.size === 0) {
     return;
   }
@@ -576,6 +579,7 @@ export function projectMessageMedia(
     path: mediaPath,
     mediaType,
     fileName,
+    origin,
     sizeBytes,
     durationMs,
     width,
@@ -607,6 +611,7 @@ export function projectMessageMedia(
                 ? "video"
                 : "document",
           label: fileName?.trim() || labelForMediaPath(mediaPath),
+          ...(origin ? { origin } : {}),
           ...(typeof mediaType === "string" ? { mimeType: mediaType } : {}),
           ...(sizeBytes !== undefined ? { sizeBytes } : {}),
           ...(durationMs !== undefined ? { durationMs } : {}),

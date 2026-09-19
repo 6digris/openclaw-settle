@@ -14,6 +14,7 @@ import {
   extractCanvasShortcodes,
   isCanvasBoardWidgetName,
 } from "../../../../src/chat/canvas-render.js";
+import { readMessageClientSources } from "../../../../src/chat/message-client-source.js";
 import { readTranscriptSenderIdentity } from "../../../../src/chat/sender-identity.js";
 import {
   isToolCallContentType,
@@ -68,10 +69,12 @@ export function readMessageSenderSession(value: unknown): NormalizedMessage["sen
   }
   const sessionKey = normalizeOptionalString(source.sessionKey);
   const agentId = normalizeOptionalString(source.agentId);
+  const label = normalizeOptionalString(source.label);
   return sessionKey || agentId
     ? {
         ...("sessionKey" in source ? { sessionKey } : {}),
         ...("agentId" in source ? { agentId } : {}),
+        ...(label ? { label } : {}),
       }
     : undefined;
 }
@@ -132,7 +135,7 @@ export function resolveMessageRole(message: unknown): string {
     : (readStringField(m, "role") ?? "unknown");
 }
 
-function resolveMessageSender(
+export function resolveMessageSender(
   metadata: Record<string, unknown> | undefined,
 ): SenderIdentity | null {
   const identity = readTranscriptSenderIdentity(metadata?.senderIdentity);
@@ -599,6 +602,7 @@ export function normalizeMessage(message: unknown): NormalizedMessage {
   const metaSender = resolveMessageSender(openClawMeta);
   const senderLabel = resolveMessageSenderLabel(m, metaSender);
   const sender = metaSender ?? (senderLabel ? { name: senderLabel } : null);
+  const sourceClients = role === "user" ? readMessageClientSources(m) : [];
 
   content = stripMessageDisplayMetadata(content);
   const senderSession = readMessageSenderSession(m.senderSession);
@@ -611,6 +615,7 @@ export function normalizeMessage(message: unknown): NormalizedMessage {
     senderLabel,
     ...(senderSession ? { senderSession } : {}),
     ...(sender ? { sender } : {}),
+    ...(sourceClients.length ? { sourceClients } : {}),
     ...(audioAsVoice ? { audioAsVoice: true } : {}),
     ...(replyPreviewText
       ? {

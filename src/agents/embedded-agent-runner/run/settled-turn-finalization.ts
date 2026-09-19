@@ -1,4 +1,5 @@
 import {
+  isReplyPayloadTerminalContent,
   markReplyPayloadForSourceSuppressionDelivery,
   setReplyPayloadMetadata,
   type ReplyPayloadMetadata,
@@ -17,6 +18,7 @@ import type {
   AgentHarness,
   AgentHarnessSettledTurnFinalizationResult,
 } from "../../harness/types.js";
+import { observeReplyDelivery } from "../../reply-completion.js";
 import { resolveAgentRunSessionTarget } from "../../run-session-target.js";
 import { resolveAgentTimeoutMs } from "../../timeout.js";
 import {
@@ -95,8 +97,20 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
   const initial = input.initial;
   let attempt = initial.attempt;
   let lastRunPromptUsage = input.lastRunPromptUsage;
+  const minimumAssistantMessageIndex = (attempt.answerSegments?.at(-1)?.messageEnd ?? -1) + 1;
+  const observeSourceDelivery = () =>
+    observeReplyDelivery(
+      input.terminalBase.runParams.resolveReplyDelivery,
+      minimumAssistantMessageIndex,
+      (error) =>
+        log.warn(
+          `reply delivery observation failed; retaining custody: ${formatErrorMessage(error)}`,
+        ),
+    );
+  const replyDeliveryState = await observeSourceDelivery();
   let prepared = prepareEmbeddedRunTerminal({
     ...input.terminalBase,
+    replyDeliveryState,
     attempt,
     currentAttemptCompletedAssistant: initial.currentAttemptCompletedAssistant,
     sessionIdUsed: initial.sessionIdUsed,
@@ -115,6 +129,7 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
       prepared.recoveredFinalAssistantPayloadsAfterPromptTimeout,
     hasTerminalToolPresentation: input.finalization.hasTerminalToolPresentation,
     terminalState: initial.terminalState,
+    replyDeliveryState,
     settledTurnFinalizationAvailable:
       typeof input.finalization.harness.finalizeSettledTurn === "function",
   });
@@ -133,8 +148,6 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
   if (!assertFinalizationActive) {
     throw new Error("admitted run authority is no longer active");
   }
-  const settledFailureSignal = prepared.failureSignal;
-  const settledTerminalToolFailure = prepared.terminalToolFailure;
   const committedSessionTarget = resolveCommittedSessionTarget({
     preparedAttempt: input.finalization.preparedAttempt,
     sessionTarget: input.finalization.sessionTarget,
@@ -148,10 +161,15 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
 
   const runParams = input.terminalBase.runParams;
   const errorContext = input.terminalBase.activeErrorContext;
-  // A host summary cannot replace a tool failure. Keep its original warning
-  // when recovery produces no answer, including for silent helper runs.
+  // A host summary cannot replace a tool failure or an owner-recorded timeout.
+  // Keep the original outcome when recovery produces no answer, including for
+  // silent helper runs; a synthetic fallback would otherwise clear the timeout
+  // and report an aborted run as a delivered success.
+  const preserveOriginalTerminal =
+    Boolean(initial.attempt.lastToolError) ||
+    isEmbeddedRunTerminalTimeout(initial.terminalState.outcome);
   const terminalFallbackAllowed =
-    input.finalization.preparedAttempt.silentExpected !== true && !initial.attempt.lastToolError;
+    input.finalization.preparedAttempt.silentExpected !== true && !preserveOriginalTerminal;
   log.warn(
     `settled post-tool turn lacked a final answer: runId=${runParams.runId} sessionId=${runParams.sessionId} ` +
       `provider=${errorContext.provider}/${errorContext.model} — running isolated finalization`,
@@ -187,8 +205,7 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
         runParams.terminalReplyExpectation === "optional" &&
         !initial.attempt.lastToolError &&
         shouldTreatEmptyAssistantReplyAsSilent({
-          allowEmptyAssistantReplyAsSilent: runParams.allowEmptyAssistantReplyAsSilent,
-          terminalReplyExpectation: runParams.terminalReplyExpectation,
+          terminalReplyExpectation: "optional",
           onlyExplicitSilentReply: true,
           payloadCount: 0,
           aborted: input.finalization.abortSignal.aborted,
@@ -280,9 +297,9 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
       transcriptIdempotencyKey,
     });
   }
-  // Only an actual recovery replaces a failed tool turn's terminal ownership.
+  // Only an actual recovery replaces a failed or timed-out turn's terminal ownership.
   const completion =
-    finalizationOutcome !== "answered" && initial.attempt.lastToolError
+    finalizationOutcome !== "answered" && preserveOriginalTerminal
       ? initial
       : {
           attempt,
@@ -302,6 +319,7 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
   const finalizedPrepared = prepareEmbeddedRunTerminal({
     ...input.terminalBase,
     ...completion,
+    replyDeliveryState: await observeSourceDelivery(),
     lastRunPromptUsage,
   });
   // Only a real finalizer answer may cross source-reply suppression. The
@@ -314,17 +332,26 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
       setReplyPayloadMetadata(payload, { sessionWriterDeliveryAuthority });
     }
   });
-  // A failure-honest final answer cannot turn a settled cron denial into success.
+  // Tool-free finalization cannot resolve failures from the settled tools.
   prepared = {
     ...finalizedPrepared,
+    // Recovery can itself commit the source reply (notably WebChat history).
+    // Preserve supplements, but never hand an already-owned final to a second sender.
+    payloadsWithToolMedia:
+      finalizedPrepared.replyDeliveryState === "missing"
+        ? finalizedPrepared.payloadsWithToolMedia
+        : finalizedPrepared.payloadsWithToolMedia?.filter(
+            (payload) => !isReplyPayloadTerminalContent(payload),
+          ),
     // Do not offer the private diagnostic to stranded-reply recovery as an
     // undelivered model answer. Automatic-delivery callers retain their fallback.
     ...(finalizationOutcome !== "answered" &&
     runParams.sourceReplyDeliveryMode === "message_tool_only"
       ? { finalAssistantVisibleText: "", finalAssistantRawText: "" }
       : {}),
-    failureSignal: settledFailureSignal,
-    terminalToolFailure: settledTerminalToolFailure,
+    attemptToolSummary: prepared.attemptToolSummary,
+    failureSignal: prepared.failureSignal,
+    terminalToolFailure: prepared.terminalToolFailure,
   };
   return {
     ...completion,

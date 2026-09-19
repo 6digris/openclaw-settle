@@ -27,7 +27,8 @@ import { logMessageProcessed, logMessageReceived } from "../../logging/diagnosti
 import type { InboundDocumentContext } from "../../media-understanding/file-context.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { recordAcceptedSessionParticipantInput } from "../../sessions/session-participant-input-recording.js";
-import { setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
+import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
+import type { ChatAbortControllerEntry } from "../chat-abort.js";
 import type { ChatImageContent } from "../chat-attachments.js";
 import { broadcastChatError, broadcastChatFinal } from "./chat-broadcast.js";
 import { buildChatSendReplyInjectionText } from "./chat-send-reply-context.js";
@@ -46,7 +47,10 @@ export function createChatSendMessageInjectionStarter(params: {
     "cfg" | "entry" | "sessionKey" | "storePath" | "clientRunId"
   >;
   admittedSessionSettings?: Readonly<Pick<SessionEntry, "permissionMode" | "toolOverrides">>;
-  turn: ReturnType<typeof prepareChatSendUserTurn>;
+  turn: Pick<
+    ReturnType<typeof prepareChatSendUserTurn>,
+    "ctx" | "isInternalTextSlashCommandTurn" | "replyOptionImages" | "replyOptionMedia"
+  >;
   imageOrder: ReplyBackendQueueMessageOptions["imageOrder"];
   documentContext?: ({ status: "rendered" } & InboundDocumentContext) | { status: "failed" };
   userTurnTranscriptRecorder: NonNullable<
@@ -206,6 +210,9 @@ export async function settleChatSendPreAckMessageInjection(params: {
 /** Finish an accepted steer without entering reply dispatch, or return false for fallback. */
 export async function finalizeAcceptedChatSendMessageInjection(params: {
   attempt: ReplyMessageInjectionAttempt;
+  sessionBinding?: Readonly<
+    Pick<ChatAbortControllerEntry, "sessionKey" | "sessionId" | "agentId" | "lifecycleGeneration">
+  >;
   context: GatewayRequestContext;
   ctx: RuntimeMsgContext;
   persistUserTurnTranscriptBestEffort: () => Promise<void>;
@@ -307,6 +314,7 @@ export async function finalizeAcceptedChatSendMessageInjection(params: {
     setGatewayDedupeEntry({
       dedupe: context.dedupe,
       key: `chat:${clientRunId}`,
+      session: captureAgentJobSession(params.sessionBinding),
       entry: {
         ts: Date.now(),
         ok: !indeterminate,

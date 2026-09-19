@@ -73,11 +73,11 @@ function createDebugApplicationContext(
     subscribe: () => () => undefined,
     subscribeEventLog: () => () => undefined,
   } as unknown as ApplicationContext["gateway"];
-  const agentSelection = {
+  const settingsAgentSelection = {
     state: { selectedId: "main" },
     subscribe: () => () => undefined,
-  } as unknown as ApplicationContext["agentSelection"];
-  return { agentSelection, basePath: "", gateway } as ApplicationContext;
+  } as unknown as ApplicationContext["settingsAgentSelection"];
+  return { settingsAgentSelection, basePath: "", gateway } as ApplicationContext;
 }
 
 async function mountDebugPage(
@@ -381,11 +381,13 @@ describe("DebugPage", () => {
       const context = createDebugApplicationContext(request);
       const source = createApplicationGateway(context.gateway.snapshot);
       Object.assign(source.gateway, { eventLog: [], subscribeEventLog: () => () => undefined });
-      type SelectionListener = Parameters<ApplicationContext["agentSelection"]["subscribe"]>[0];
+      type SelectionListener = Parameters<
+        ApplicationContext["settingsAgentSelection"]["subscribe"]
+      >[0];
       const listeners = new Set<SelectionListener>();
       const selection = {
-        ...context.agentSelection,
-        state: { ...context.agentSelection.state },
+        ...context.settingsAgentSelection,
+        state: { ...context.settingsAgentSelection.state },
         subscribe: (listener: SelectionListener) => {
           listeners.add(listener);
           return () => {
@@ -394,7 +396,7 @@ describe("DebugPage", () => {
         },
       };
       const page = document.createElement("openclaw-debug-page") as TestDebugPage;
-      page.context = { ...context, gateway: source.gateway, agentSelection: selection };
+      page.context = { ...context, gateway: source.gateway, settingsAgentSelection: selection };
       document.body.append(page);
       try {
         await vi.advanceTimersByTimeAsync(0);
@@ -665,7 +667,10 @@ describe("DebugOverlay", () => {
 
       // One sample: tiles show current values, charts wait for a second point.
       expect(overlay.querySelectorAll(".gateway-vital")).toHaveLength(5);
-      expect(normalizedText(overlay.querySelector(".gateway-vital--cpu"))).toContain("loop 42%");
+      expect(normalizedText(overlay.querySelector(".gateway-vital--cpu"))).toContain("Host —");
+      expect(normalizedText(overlay.querySelector(".gateway-cpu-detail"))).toContain(
+        "Loop utilization 42%",
+      );
       expect(overlay.querySelector(".sparkline-tile__chart")).toBeNull();
       expect(normalizedText(overlay.querySelector(".debug-overlay__vitals-footer"))).toBe(
         "Uptime 1m",

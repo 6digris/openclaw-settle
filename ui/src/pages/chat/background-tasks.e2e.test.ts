@@ -1,6 +1,7 @@
 import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, it } from "vitest";
+import { projectAgentToolActivity } from "../../../../src/infra/agent-activity-events.js";
 import {
   focusChatSidePanel,
   openChatSidePanelType,
@@ -271,6 +272,7 @@ suite.define(() => {
       await page.waitForTimeout(500);
 
       await refresh.click();
+      await expect.poll(() => refresh.isEnabled()).toBe(true);
       await expect.poll(() => alert.count()).toBe(0);
       expect(await runningOrder()).toEqual(expectedRunning);
       expect(await finishedOrder()).toEqual(expectedFinished);
@@ -322,6 +324,18 @@ suite.define(() => {
                 {
                   match: { taskId: nativeSubagent.id, cursor: "task-earlier" },
                   response: {
+                    activity: ["task-check", "task-check-result"].map((messageId) => ({
+                      messageId,
+                      items: [
+                        projectAgentToolActivity({
+                          toolCallId: "routing-check",
+                          name: "exec",
+                          phase: "result",
+                          status: "completed",
+                          // The native task owns the outcome, not executed host arguments.
+                        }),
+                      ],
+                    })),
                     messages: [
                       {
                         role: "user",
@@ -494,7 +508,7 @@ suite.define(() => {
         });
         await toolRow.waitFor();
         const toolSummary = toolRow.locator("summary");
-        expect((await toolSummary.textContent())?.trim()).toBe("pnpm test routing");
+        expect((await toolSummary.textContent())?.trim()).toBe("Exec");
         const toolBody = toolRow.locator(".chat-task-feed__calls");
         expect(await toolBody.isVisible()).toBe(false);
         await toolSummary.click();
@@ -727,10 +741,8 @@ suite.define(() => {
           },
         });
 
-        await expect
-          .poll(() => firstRow.getAttribute("aria-label"))
-          .toContain("Cancelled — stopped before completion.");
-        await detailPanel.getByText("Failed").waitFor();
+        await expect.poll(() => firstRow.getAttribute("aria-label")).toContain("Cancelled");
+        await detailPanel.getByText("Cancelled").waitFor();
         expect(await firstRow.textContent()).not.toContain("Cross-checking requester ownership");
         expect(await activity.locator(".chat-diffstat").count()).toBe(0);
         expect(await detailPanel.locator(".chat-diffstat__add").textContent()).toBe("+14");
@@ -750,12 +762,12 @@ suite.define(() => {
         await detailPanel.waitFor({ state: "detached" });
 
         const states = [
-          ["queued", "Queued — waiting to start."],
-          ["running", "Running — working on this task."],
-          ["completed", "Completed — finished successfully."],
-          ["failed", "Failed — the task ended with an error."],
-          ["cancelled", "Cancelled — stopped before completion."],
-          ["timed_out", "Timed out — reached its time limit."],
+          ["queued", "Queued"],
+          ["running", "Running"],
+          ["completed", "Completed"],
+          ["failed", "Failed"],
+          ["cancelled", "Cancelled"],
+          ["timed_out", "Timed out"],
         ] as const;
         const claw = firstRow.locator(".chat-subagent-activity__claw > svg");
         const jaw = claw.locator(".claw-icon__jaw");
@@ -832,7 +844,7 @@ suite.define(() => {
         await page.keyboard.press("Tab");
         await firstRow.focus();
         await tooltip.waitFor({ state: "visible" });
-        expect(await tooltip.textContent()).toContain("Timed out — reached its time limit.");
+        expect(await tooltip.textContent()).toContain("Timed out");
         await page.keyboard.press("Escape");
       },
     );

@@ -107,6 +107,18 @@ describe("restart health supervision", () => {
     },
   );
 
+  it("does not infer launchd supervision for a directly spawned child", async () => {
+    const snapshot = await waitForGatewayHealthyRestart({
+      child: { pid: 4200, exitCode: 1, signalCode: null },
+      port: 18789,
+    });
+    expect(snapshot).toMatchObject({
+      healthy: false,
+      waitOutcome: "stopped-free",
+      elapsedMs: 12_500,
+    });
+  });
+
   it.each([
     { timeoutMs: 10_000, preparationMs: 0, expectedTimeout: 5000 },
     { timeoutMs: 2000, preparationMs: 0, expectedTimeout: 2000 },
