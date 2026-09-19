@@ -23,18 +23,20 @@ export function matchesLegacyDoctorCapture(
   parent: UpdateRunDriver,
   postCoreDriver?: UpdateRunDriver,
 ): boolean {
+  const verifying = run.steps.some(
+    (step) => step.step === "post-update verification" && step.status === "in_progress",
+  );
   return (
     (run.status === "running" &&
       ["2026.9.3", "2026.9.4"].includes(run.before.version ?? "") &&
       run.target.kind === "package" &&
       run.phase === "activating" &&
       run.origin.driver !== undefined &&
-      (sameUpdateRunDriver(run.origin.driver, parent) ||
+      ((sameUpdateRunDriver(run.origin.driver, parent) &&
+        (!isPostCoreConvergencePass(process.env) || verifying)) ||
         (postCoreDriver !== undefined &&
           sameUpdateRunDriver(run.origin.driver, postCoreDriver) &&
-          run.steps.some(
-            (step) => step.step === "post-update verification" && step.status === "in_progress",
-          )))) ||
+          verifying))) ||
     hasActiveUpdateDoctorStep(run)
   );
 }

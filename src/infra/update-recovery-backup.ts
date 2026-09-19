@@ -69,6 +69,7 @@ export async function createUpdateRecoveryBackup(
     const { getUpdateRun } = await import("./update-run-ledger.js");
     if (params.resumeFromDriver) {
       const { hasUpdateRecoveryForwardResolution } = await import("./update-recovery-forward.js");
+      const { readProcessParentPidSync } = await import("./restart-stale-pids.js");
       const unresolved = [];
       for (const capture of await listBackups()) {
         if (!(await hasUpdateRecoveryForwardResolution(capture.ref))) {
@@ -82,12 +83,26 @@ export async function createUpdateRecoveryBackup(
           params.assertOwned();
           const run = getUpdateRun(params.runId);
           const currentDriver = readUpdateRunDriver(driver.pid);
+          // A shipped migrated worker adopts the run before its second Doctor.
+          // Reuse B only through its live immediate predecessor, recorded both
+          // in the original capture and in the same run's adoption history.
+          const predecessor = run?.origin.previousDrivers?.find((owner) =>
+            existing.manifest.drivers.some((captured) => sameUpdateRunDriver(captured, owner)),
+          );
+          const currentPredecessor = predecessor
+            ? readUpdateRunDriver(readProcessParentPidSync(driver.pid) ?? 0)
+            : undefined;
+          const ownsCapturedDriver =
+            existing.manifest.drivers.some((owner) => sameUpdateRunDriver(owner, driver)) ||
+            (predecessor !== undefined &&
+              currentPredecessor !== undefined &&
+              sameUpdateRunDriver(currentPredecessor, predecessor));
           if (
             existing.manifest.runId !== params.runId ||
             existing.manifest.installRoot !== path.resolve(params.installRoot) ||
             existing.outcome.status !== "pending" ||
             existing.manifest.generation?.kind !== "baseline" ||
-            !existing.manifest.drivers.some((owner) => sameUpdateRunDriver(owner, driver)) ||
+            !ownsCapturedDriver ||
             inspectUpdateRunDriver(existing.manifest.creator) !== "dead" ||
             !currentDriver ||
             !sameUpdateRunDriver(currentDriver, driver) ||

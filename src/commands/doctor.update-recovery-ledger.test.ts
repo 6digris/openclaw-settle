@@ -220,6 +220,92 @@ describe("Doctor recovery ledger reconciliation", () => {
       });
     });
   });
+  it.each(["owned", "foreign ancestry"] as const)(
+    "reuses the first Doctor capture through an adopted migrated worker: %s",
+    async (ownership) => {
+      await withEnvAsync({ OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" }, async () => {
+        await withOpenClawTestState(
+          { layout: "state-only", scenario: "minimal" },
+          async (state) => {
+            const scope = await prepareState(state);
+            const original = updateRunDriver.readUpdateRunDriver(
+              readProcessParentPidSync(process.ppid) ?? 0,
+            );
+            const worker = updateRunDriver.readUpdateRunDriver(process.ppid);
+            if (!original || !worker) {
+              throw new Error("Missing migrated-worker ancestry");
+            }
+            const run = createUpdateRun({ trigger: "cli" }, { env: state.env });
+            recordUpdateRunPhase(run.runId, "activating", {
+              before: { version: "2026.9.3" },
+              target: { kind: "package" },
+              origin: { driver: original },
+            });
+            const ref = await createUpdateRecoveryBackup({
+              ...authority,
+              runId: run.runId,
+              installRoot: state.path("install"),
+              drivers: [original],
+            });
+            const baseline = await fs.readFile(ref.manifestPath);
+            await upsertSessionEntryCore(scope, { sessionId: "first-doctor-result", updatedAt: 2 });
+            recordUpdateRunRecoveryCapture(
+              run.runId,
+              { manifestSha256: ref.manifestSha256, doctorCompleted: true },
+              authority.assertOwned,
+            );
+            // The shipped migrated worker adopts the existing run before plugin
+            // convergence; its Doctor has no POST_CORE marker or explicit backup.
+            recordUpdateRunPhase(run.runId, "activating", {
+              origin: {
+                driver: worker,
+                previousDrivers: [
+                  ownership === "owned"
+                    ? original
+                    : { ...original, startIdentity: String(Number(original.startIdentity) + 1) },
+                ],
+              },
+            });
+            recordUpdateRunStep(run.runId, { step: "openclaw doctor", status: "completed" });
+            recordUpdateRunStep(run.runId, {
+              step: "post-update verification",
+              status: "in_progress",
+            });
+            vi.spyOn(packageRoot, "resolveOpenClawPackageRoot").mockResolvedValue(
+              state.path("install"),
+            );
+            const flow = vi.spyOn(doctorHealth, "runDoctorHealthFlow");
+            await withEnvAsync(
+              {
+                OPENCLAW_UPDATE_IN_PROGRESS: "1",
+                OPENCLAW_UPDATE_RUN_ID: run.runId,
+                OPENCLAW_UPDATE_POST_CORE: undefined,
+                OPENCLAW_UPDATE_POST_CORE_CONVERGENCE: "1",
+              },
+              async () => {
+                const command = doctorCommand(output(), { repair: true, nonInteractive: true });
+                if (ownership === "owned") {
+                  await expect(command).resolves.toBeUndefined();
+                  expect(flow).toHaveBeenCalledOnce();
+                } else {
+                  await expect(command).rejects.toThrow(
+                    /cannot continue|another protected mutation/,
+                  );
+                  expect(flow).not.toHaveBeenCalled();
+                }
+              },
+            );
+            expect(await fs.readFile(ref.manifestPath)).toEqual(baseline);
+            expect(loadSessionEntryReadOnly(scope)?.sessionId).toBe("first-doctor-result");
+            expect((await inspectUpdateRecoveryBackups()).map((capture) => capture.ref)).toEqual([
+              ref,
+            ]);
+            expect(getUpdateRun(run.runId)?.origin.updateRecoveryCapture?.restored).not.toBe(true);
+          },
+        );
+      });
+    },
+  );
   it("settles a completed 9.2 capture under the next updater's executor without restoring newer sessions", async () => {
     await withOpenClawTestState({ layout: "state-only", scenario: "minimal" }, async (state) => {
       await prepareState(state);

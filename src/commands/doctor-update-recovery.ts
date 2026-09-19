@@ -576,7 +576,12 @@ export async function prepareDoctorUpdateRecovery(options: DoctorOptions = {}): 
       runId: run.runId,
       installRoot: root,
       drivers,
-      ...(postCoreDriver ? { resumeFromDriver: postCoreDriver } : {}),
+      ...(isPostCoreConvergencePass(process.env) &&
+      run.steps.some(
+        (step) => step.step === "post-update verification" && step.status === "in_progress",
+      )
+        ? { resumeFromDriver: postCoreDriver ?? parent }
+        : {}),
       assertOwned: () => assertDoctorRecoveryCurrent(scope),
     });
   }

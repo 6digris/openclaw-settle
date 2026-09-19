@@ -435,6 +435,39 @@ describe("update Doctor state recovery", () => {
     },
   );
 
+  it("refuses adopted-worker capture if verification settles during admission", async () => {
+    const parent = readUpdateRunDriver(process.ppid);
+    assert(parent, "The migrated-worker fixture requires an observable parent");
+    vi.stubEnv("OPENCLAW_UPDATE_POST_CORE", undefined);
+    vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_CONVERGENCE", "1");
+    vi.stubEnv("OPENCLAW_UPDATE_RUN_ID", runId);
+    updateRunLedger.recordUpdateRunStep(runId, { step: "openclaw doctor", status: "completed" });
+    updateRunLedger.recordUpdateRunPhase(runId, "activating", {
+      before: { version: "2026.9.3" },
+      target: { kind: "package" },
+      origin: { driver: parent },
+    });
+    updateRunLedger.recordUpdateRunStep(runId, {
+      step: "post-update verification",
+      status: "in_progress",
+    });
+    mocks.activeRuns.mockImplementation(async () =>
+      updateRunLedger.listUpdateRuns({ active: true }),
+    );
+    mocks.create.mockImplementation(async ({ assertOwned }: { assertOwned: () => void }) => {
+      updateRunLedger.recordUpdateRunStep(runId, {
+        step: "post-update verification",
+        status: "completed",
+      });
+      assertOwned();
+      return ref;
+    });
+    await expect(doctorCommand(runtime, { repair: true, nonInteractive: true })).rejects.toThrow(
+      /admitted update run/,
+    );
+    expect(mocks.flow).not.toHaveBeenCalled();
+    expect(mocks.restore).not.toHaveBeenCalled();
+  });
   it("keeps an identity-bearing rehearsal invocation on strict driver admission", async () => {
     await legacyRehearsal("2026.9.3");
     vi.stubEnv("OPENCLAW_UPDATE_RUN_ID", runId);
