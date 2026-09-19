@@ -47,6 +47,12 @@ on:
         required: false
         default: false
         type: boolean
+      windows_git_installer_case:
+        description: "Installer proof cases: all, or only missing released-driver continuity"
+        required: false
+        default: all
+        type: choice
+        options: [all, published-driver]
       run_windows_launcher_integration:
         description: "Build the exact target SHA and require the real Windows Git launcher cell"
         required: false
@@ -1129,14 +1135,16 @@ jobs:
         env:
           EXPECTED_HEAD: ${{ inputs.target_ref }}
           PROOF_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          PROOF_CASE: ${{ inputs.windows_git_installer_case }}
           RUN_WINDOWS_CI: ${{ inputs.run_windows_ci }}
           RUN_PORTABLE: ${{ inputs.run_portable_node_recovery }}
           RUN_WINGET: ${{ inputs.run_winget_acceptance }}
         run: |
           if ($env:RUN_WINDOWS_CI -ne 'true' -or $env:RUN_PORTABLE -eq 'true' -or $env:RUN_WINGET -eq 'true') { throw 'Full Git proof requires the isolated launcher plus Windows-CI selection.' }
-          & ./scripts/ci/prove-windows-git-install.ps1 -CandidateRoot $env:GITHUB_WORKSPACE -ExpectedHead $env:EXPECTED_HEAD -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'full-git-install-evidence')
+          & ./scripts/ci/prove-windows-git-install.ps1 -CandidateRoot $env:GITHUB_WORKSPACE -ExpectedHead $env:EXPECTED_HEAD -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'full-git-install-evidence') -ProofCase $env:PROOF_CASE
           $result = Get-Content (Join-Path $env:RUNNER_TEMP 'full-git-install-evidence/result.json') -Raw | ConvertFrom-Json
-          if ($result.result -cne 'passed' -or $result.sourceSha -cne $env:EXPECTED_HEAD -or $result.cases.Count -ne 4 -or $result.cleanup -cne 'restored-and-removed') { throw 'Full installer acceptance did not execute all four required cases.' }
+          $expectedCases = if ($env:PROOF_CASE -eq 'all') { 4 } elseif ($env:PROOF_CASE -eq 'published-driver') { 2 } else { throw 'Invalid installer proof selection.' }
+          if ($result.result -cne 'passed' -or $result.sourceSha -cne $env:EXPECTED_HEAD -or $result.selection -cne $env:PROOF_CASE -or $result.cases.Count -ne $expectedCases -or $result.cleanup -cne 'restored-and-removed') { throw 'Installer acceptance did not execute every selected case.' }
       - name: Upload full installer evidence including failures
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

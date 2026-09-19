@@ -301,6 +301,11 @@ describe("check-workflows", () => {
       default: false,
       type: "boolean",
     });
+    expect(workflow.on.workflow_dispatch.inputs.windows_git_installer_case).toMatchObject({
+      default: "all",
+      type: "choice",
+      options: ["all", "published-driver"],
+    });
     const installer = workflow.jobs["native-git-installer"]!;
     expect(installer.if).toBe(
       "${{ inputs.run_windows_launcher_integration || inputs.run_windows_git_installer_only }}",

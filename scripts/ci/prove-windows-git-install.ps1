@@ -3,7 +3,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$CandidateRoot,
     [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedHead,
-    [Parameter(Mandatory = $true)][string]$EvidenceRoot
+    [Parameter(Mandatory = $true)][string]$EvidenceRoot,
+    [ValidateSet('all', 'published-driver')][string]$ProofCase = 'all'
 )
 $ErrorActionPreference = 'Stop'
 if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows' -or $PSVersionTable.PSVersion.Major -lt 7) {
@@ -29,7 +30,7 @@ $proof = [ordered]@{
     result = 'failed'; sourceSha = $head; workflowSha = $env:PROOF_WORKFLOW_SHA
     installerSha256 = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
     runId = $env:GITHUB_RUN_ID; runAttempt = $env:GITHUB_RUN_ATTEMPT
-    baseline = 'openclaw@2026.9.5'; cases = @(); cleanup = 'pending'
+    baseline = 'openclaw@2026.9.5'; selection = $ProofCase; cases = @(); commands = @(); cleanup = 'pending'
 }
 function Invoke-ProofCommand {
     param([string]$Name, [string]$File, [string[]]$Arguments, [int]$Seconds = 1200, [switch]$ExpectFailure)
@@ -44,6 +45,7 @@ function Invoke-ProofCommand {
         $child.WaitForExit()
         if (($ExpectFailure -and $child.ExitCode -eq 0) -or (-not $ExpectFailure -and $child.ExitCode -ne 0)) { throw "$Name returned unexpected exit code $($child.ExitCode)." }
     } finally {
+        $script:proof.commands += @{ name = $Name; pid = $child.Id; exited = $child.HasExited; exitCode = if ($child.HasExited) { $child.ExitCode } else { $null } }
         if (-not $child.HasExited) { $child.Kill($true); $child.WaitForExit() }
         $child.Dispose()
     }
@@ -77,6 +79,30 @@ function Stop-ProofGateway {
         $script:gateway.Dispose(); $script:gateway = $null
     }
 }
+function Save-ProofUpdateLedger {
+    $state = Join-Path $root 'profile/.openclaw'
+    if (-not (Test-Path -LiteralPath $state -PathType Container)) { return }
+    $capture = Join-Path $root 'capture-update-ledger.mjs'
+    @'
+import fs from 'node:fs';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+const database = path.join(process.argv[2], 'state', 'openclaw.sqlite');
+const evidence = { database, exists: fs.existsSync(database), runs: [] };
+if (evidence.exists) {
+  const db = new DatabaseSync(database, { readOnly: true });
+  try {
+    db.exec('PRAGMA query_only=ON');
+    evidence.hasLedger = Boolean(db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='update_runs'").get());
+    if (evidence.hasLedger) {
+      evidence.runs = db.prepare('SELECT run_id, created_at_ms, updated_at_ms, phase, status, reason, steps_json, verification_json, finished_at_ms FROM update_runs ORDER BY created_at_ms DESC LIMIT 5').all();
+    }
+  } finally { db.close(); }
+}
+console.log(JSON.stringify(evidence, null, 2));
+'@ | Set-Content -LiteralPath $capture
+    Invoke-ProofCommand -Name 'failure-update-ledger' -File $node -Arguments @($capture, $state) -Seconds 30
+}
 $failure = $null
 try {
     $profile = Join-Path $root 'profile'; $prefix = Join-Path $root 'npm'; $temp = Join-Path $root 'temp'
@@ -89,30 +115,32 @@ try {
     $env:OPENCLAW_GIT_DIR = $CandidateRoot; $env:OPENCLAW_UPDATE_DEV_TARGET_REF = $ExpectedHead
     $bin = Join-Path $profile '.local/bin'; $wrapper = Join-Path $bin 'openclaw.cmd'
     $env:Path = "$bin;$prefix;$($saved['Path'])"
-    # This executes Main, actual pinned pnpm dependency installation/build, launcher publication and Doctor.
-    Invoke-ProofInstaller -Name 'fresh-git-main' -Options @('-InstallMethod', 'git', '-GitDir', $CandidateRoot, '-NoGitUpdate')
-    Assert-CandidateHead
-    if (-not (Test-Path -LiteralPath $wrapper)) { throw 'Fresh installer did not publish the Git launcher.' }
-    if ([IO.File]::ReadAllText($wrapper).IndexOf($CandidateRoot, [StringComparison]::OrdinalIgnoreCase) -lt 0) { throw 'Fresh launcher targets another checkout.' }
-    Invoke-ProofCommand -Name 'fresh-git-version' -File $engine -Arguments @('-NoProfile', '-Command', "& '$wrapper' --version") -Seconds 120
-    $working = [Convert]::ToBase64String([IO.File]::ReadAllBytes($wrapper))
-    $proof.cases += 'fresh Main/dependencies/build/Doctor/launcher passed'
-    # A separate deliberately failing source fixture exercises real dependency/bootstrap and build failure.
-    $fault = Join-Path $root 'failed-build'
-    New-Item -ItemType Directory -Path $fault | Out-Null
-    $pin = (Get-Content (Join-Path $CandidateRoot 'package.json') -Raw | ConvertFrom-Json).packageManager
-    @{ name = 'openclaw'; version = '0.0.0'; private = $true; packageManager = $pin; scripts = @{ 'ui:build' = 'node -e process.exit(0)'; build = 'node -e process.exit(42)' } } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $fault 'package.json')
-    & git -C $fault init --quiet
-    if ($LASTEXITCODE -ne 0) { throw 'Fault fixture git init failed.' }
-    & git -C $fault add package.json
-    if ($LASTEXITCODE -ne 0) { throw 'Fault fixture staging failed.' }
-    & git -C $fault -c user.name=InstallerProof -c user.email=installer@example.invalid -c commit.gpgsign=false commit --quiet -m 'Private build-failure fixture; never publish'
-    if ($LASTEXITCODE -ne 0) { throw 'Fault fixture commit failed.' }
-    Invoke-ProofInstaller -Name 'build-failure-main' -Options @('-InstallMethod', 'git', '-GitDir', $fault, '-NoGitUpdate') -ExpectFailure
-    if ((Get-Content (Join-Path $EvidenceRoot 'build-failure-main.stdout.log') -Raw) -notmatch 'pnpm build failed for the Git checkout') { throw 'Fault case failed before reaching the real build; it does not prove rollback.' }
-    if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($wrapper)) -cne $working) { throw 'Failed build changed the working launcher.' }
-    Invoke-ProofCommand -Name 'post-failure-version' -File $engine -Arguments @('-NoProfile', '-Command', "& '$wrapper' --version") -Seconds 120
-    $proof.cases += 'real failed-build Main preserved working launcher'
+    if ($ProofCase -eq 'all') {
+        # This executes Main, actual pinned pnpm dependency installation/build, launcher publication and Doctor.
+        Invoke-ProofInstaller -Name 'fresh-git-main' -Options @('-InstallMethod', 'git', '-GitDir', $CandidateRoot, '-NoGitUpdate')
+        Assert-CandidateHead
+        if (-not (Test-Path -LiteralPath $wrapper)) { throw 'Fresh installer did not publish the Git launcher.' }
+        if ([IO.File]::ReadAllText($wrapper).IndexOf($CandidateRoot, [StringComparison]::OrdinalIgnoreCase) -lt 0) { throw 'Fresh launcher targets another checkout.' }
+        Invoke-ProofCommand -Name 'fresh-git-version' -File $engine -Arguments @('-NoProfile', '-Command', "& '$wrapper' --version") -Seconds 120
+        $working = [Convert]::ToBase64String([IO.File]::ReadAllBytes($wrapper))
+        $proof.cases += 'fresh Main/dependencies/build/Doctor/launcher passed'
+        # A separate deliberately failing source fixture exercises real dependency/bootstrap and build failure.
+        $fault = Join-Path $root 'failed-build'
+        New-Item -ItemType Directory -Path $fault | Out-Null
+        $pin = (Get-Content (Join-Path $CandidateRoot 'package.json') -Raw | ConvertFrom-Json).packageManager
+        @{ name = 'openclaw'; version = '0.0.0'; private = $true; packageManager = $pin; scripts = @{ 'ui:build' = 'node -e process.exit(0)'; build = 'node -e process.exit(42)' } } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $fault 'package.json')
+        & git -C $fault init --quiet
+        if ($LASTEXITCODE -ne 0) { throw 'Fault fixture git init failed.' }
+        & git -C $fault add package.json
+        if ($LASTEXITCODE -ne 0) { throw 'Fault fixture staging failed.' }
+        & git -C $fault -c user.name=InstallerProof -c user.email=installer@example.invalid -c commit.gpgsign=false commit --quiet -m 'Private build-failure fixture; never publish'
+        if ($LASTEXITCODE -ne 0) { throw 'Fault fixture commit failed.' }
+        Invoke-ProofInstaller -Name 'build-failure-main' -Options @('-InstallMethod', 'git', '-GitDir', $fault, '-NoGitUpdate') -ExpectFailure
+        if ((Get-Content (Join-Path $EvidenceRoot 'build-failure-main.stdout.log') -Raw) -notmatch 'pnpm build failed for the Git checkout') { throw 'Fault case failed before reaching the real build; it does not prove rollback.' }
+        if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($wrapper)) -cne $working) { throw 'Failed build changed the working launcher.' }
+        Invoke-ProofCommand -Name 'post-failure-version' -File $engine -Arguments @('-NoProfile', '-Command', "& '$wrapper' --version") -Seconds 120
+        $proof.cases += 'real failed-build Main preserved working launcher'
+    }
     # Install the actual released driver, not a candidate CLI pretending to be the old version.
     Invoke-ProofInstaller -Name 'published-driver-install' -Options @('-InstallMethod', 'npm', '-Tag', '2026.9.5')
     $driver = Join-Path $prefix 'node_modules/openclaw/openclaw.mjs'
@@ -151,6 +179,11 @@ try {
 } catch { $failure = $_; $proof.error = $_.Exception.Message } finally {
     $cleanupErrors = @()
     try { Stop-ProofGateway } catch { $cleanupErrors += $_.Exception.Message }
+    # The child is joined and the Gateway is stopped before read-only diagnostic capture.
+    # Capture failure must never replace the original acceptance error or skip cleanup.
+    if ($failure) {
+        try { Save-ProofUpdateLedger } catch { $proof.updateLedgerCaptureError = $_.Exception.Message }
+    }
     try {
         [Environment]::SetEnvironmentVariable('Path', $userPath, 'User')
         if ([Environment]::GetEnvironmentVariable('Path', 'User') -cne $userPath) { throw 'User PATH restoration mismatch.' }
