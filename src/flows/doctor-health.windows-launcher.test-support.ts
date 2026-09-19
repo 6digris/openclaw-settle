@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+import * as windowsGitLauncher from "../infra/windows-git-launcher.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { mocks } from "./doctor-health.test-support.js";
 
@@ -36,7 +37,7 @@ export function registerDoctorWindowsLauncherTests(
     },
   );
 
-  it("propagates launcher repair failure before contributions and success output", async () => {
+  it("continues Doctor contributions after the real launcher adapter reports an I/O failure", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       mocks.packageRoot.mockReturnValue(state.path("source-checkout"));
       mocks.service.mockReturnValue({
@@ -45,14 +46,24 @@ export function registerDoctorWindowsLauncherTests(
         isLoaded: async () => false,
         isEnabled: async () => false,
       });
-      const failure = new Error("launcher replacement failed");
-      mocks.repairWindowsGitLauncher.mockRejectedValueOnce(failure);
+      const { repairWindowsGitLauncher } = await vi.importActual<
+        typeof import("../commands/doctor-install.js")
+      >("../commands/doctor-install.js");
+      const reconcile = vi
+        .spyOn(windowsGitLauncher, "reconcileWindowsGitLauncher")
+        .mockRejectedValueOnce(
+          Object.assign(new Error("launcher access denied"), { code: "EACCES" }),
+        );
+      mocks.repairWindowsGitLauncher.mockImplementationOnce(repairWindowsGitLauncher);
       const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
-      await expect(
-        runDoctorHealthFlow(runtime, { repair: true, nonInteractive: true }),
-      ).rejects.toBe(failure);
-      expect(mocks.runContributions).not.toHaveBeenCalled();
-      expect(mocks.outro).not.toHaveBeenCalledWith("Doctor complete.");
+      try {
+        await runDoctorHealthFlow(runtime, { repair: true, nonInteractive: true });
+        expect(reconcile).toHaveBeenCalledOnce();
+        expect(mocks.runContributions).toHaveBeenCalledOnce();
+        expect(mocks.outro).toHaveBeenCalledWith("Doctor complete.");
+      } finally {
+        reconcile.mockRestore();
+      }
     });
   });
 }

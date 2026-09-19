@@ -8,6 +8,7 @@ import { join, parse, resolve as resolvePath } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { isSupportedOpenClawNodeVersion } from "../../node-version.mjs";
 import { NODE_RELEASE_VERSION_CASES } from "../helpers/node-version-cases.js";
+import { registerRetainedGitLauncherTests } from "./install-ps1.retained-launcher.test-support.js";
 import { createScriptTestHarness } from "./test-helpers.js";
 
 const SCRIPT_PATH = "scripts/install.ps1";
@@ -2065,7 +2066,8 @@ try {
     writeFileSync(
       childPath,
       [
-        "param([string]$Entry, [string]$Verb, [string]$Leaf)",
+        "param([string]$Entry, [string]$Verb, [string]$Leaf, [string]$HelpFlag)",
+        "if ($HelpFlag -eq '--help') { Write-Output 'Usage: openclaw update install-git-launcher [options]'; $global:LASTEXITCODE = 0; return }",
         "if ($Entry -ne 'entry with spaces.js' -or $Verb -ne 'update' -or $Leaf -ne 'install-git-launcher') { throw 'argument routing changed' }",
         "if ($env:HOME -cne $global:OpenClawLauncherExpectedHome) { throw 'HOME changed' }",
         "Write-Output 'child diagnostic'",
@@ -2092,6 +2094,20 @@ try {
     const result = runPowerShell(["-NoLogo", "-NoProfile", "-File", scriptPath]);
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
   });
+
+  for (const engine of bootstrapShells.length > 0
+    ? bootstrapShells
+    : [powershell ?? "unavailable"]) {
+    registerRetainedGitLauncherTests({
+      source,
+      engine,
+      enabled: engine !== "unavailable",
+      createTempDir: (prefix) => harness.createTempDir(prefix),
+      extractFunctionBody,
+      quote: toPowerShellSingleQuotedLiteral,
+      runPowerShell: (args) => spawnSync(engine, args, { encoding: "utf8" }),
+    });
+  }
 
   // Opt-in native acceptance consumes a built, published candidate. This is not the
   // mocked pnpm/caller control above: no CLI, reconciler, or runtime identity mocks.
@@ -2268,6 +2284,10 @@ try {
         } finally { $ErrorActionPreference = $previousErrorAction }
         if ($missingExit -ne 1 -or $missing -notmatch 'validated Node.js runtime is missing') { throw 'missing runtime did not fail closed' }
     }
+    Copy-Item -LiteralPath $sourceNode -Destination $approvedNode
+    if (-not (Install-GitLauncher -NodePath $approvedNode -EntryPath $entryPath)) { throw 'reinstall did not recover the missing pinned runtime' }
+    $recoveredVersion = (& $wrapperPath --version | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $recoveredVersion -cne $version) { throw 'reinstalled launcher did not restore the real CLI' }
     if (Test-Path -LiteralPath $shadowMarker) { throw 'PATH shadow executed' }
     if ($env:HOME -cne $originalHome) { throw 'HOME changed' }
     if (@(Get-ChildItem -LiteralPath (Split-Path -Parent $wrapperPath) -Force).Count -ne 1) { throw 'atomic publication left temporary files' }

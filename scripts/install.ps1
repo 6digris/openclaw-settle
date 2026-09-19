@@ -1694,6 +1694,92 @@ function Install-GitLauncher {
         [string]$EntryPath
     )
 
+    function Publish-RetainedGitLauncher {
+        # Published checkouts selected with -NoGitUpdate (or a dirty tree) cannot
+        # acquire this PR's hidden command. Keep this compatibility bridge until
+        # those supported retained releases all provide install-git-launcher.
+        if (-not (Test-Path -LiteralPath $EntryPath -PathType Leaf) -or -not (Check-Node -NodePath $NodePath)) { return $false }
+        $runtime = [IO.Path]::GetFullPath($script:ValidatedNodePath)
+        $entry = [IO.Path]::GetFullPath($EntryPath)
+        foreach ($value in @($runtime, $entry)) {
+            if ($value.IndexOfAny([char[]]@([char]0, [char]10, [char]13, [char]34)) -ge 0) { throw 'Git launcher paths cannot contain NUL, quotes, CR, or LF.' }
+        }
+        $previous = $null
+        if (Test-Path -LiteralPath $wrapper) {
+            if (-not (Test-PreviousGitWrapper -Path $wrapper -EntryPath $entry)) { return $false }
+            $previous = [Convert]::ToBase64String([IO.File]::ReadAllBytes($wrapper))
+        }
+        $runtime = $runtime.Replace('%', '%%')
+        $entry = $entry.Replace('%', '%%')
+        # Use the same recognized body as the current CLI. An explicit UTF-8
+        # preamble keeps non-ASCII paths valid without depending on the old build.
+        $contents = @(
+            '@chcp 65001 >nul',
+            '@rem openclaw-launcher-encoding=utf-8',
+            '@echo off',
+            'rem OpenClaw Git launcher',
+            'setlocal DisableDelayedExpansion',
+            "if exist `"$runtime`" goto openclaw_runtime_ready",
+            'echo [!] OpenClaw''s validated Node.js runtime is missing. 1>&2',
+            'echo [i] Re-run the OpenClaw installer to repair this Git installation. 1>&2',
+            'exit /b 1',
+            ':openclaw_runtime_ready',
+            "`"$runtime`" `"$entry`" %*",
+            ''
+        ) -join "`r`n"
+        $directory = Split-Path -Parent $wrapper
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+        $temporary = Join-Path $directory ('.openclaw-launcher-' + [guid]::NewGuid().ToString('N') + '.tmp')
+        $claimed = $null
+        try {
+            $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            try {
+                $bytes = [Text.UTF8Encoding]::new($false).GetBytes($contents)
+                $stream.Write($bytes, 0, $bytes.Length)
+                $stream.Flush($true)
+            } finally { $stream.Dispose() }
+            if ($null -ne $previous) {
+                # Claim the old file without overwriting anything. Validate the
+                # claimed object, not a path another publisher can replace between
+                # inspection and commit. The public path may briefly be absent.
+                $claimPath = Join-Path $directory ('.openclaw-launcher-recovery-' + [guid]::NewGuid().ToString('N'))
+                [IO.File]::Move($wrapper, $claimPath)
+                $claimed = $claimPath
+                if (-not (Test-PreviousGitWrapper -Path $claimed -EntryPath $EntryPath) -or [Convert]::ToBase64String([IO.File]::ReadAllBytes($claimed)) -cne $previous) { throw 'Git launcher changed before publication.' }
+            }
+            # Never overwrite a publisher that appeared after inspection/claim.
+            [IO.File]::Move($temporary, $wrapper)
+            if ($claimed) { Remove-Item -LiteralPath $claimed -Force; $claimed = $null }
+            return $true
+        } finally {
+            if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+            if ($claimed) {
+                try { [IO.File]::Move($claimed, $wrapper) } catch {
+                    throw "Git launcher publication failed; recovery retained at $claimed. The current launcher was not overwritten. $($_.Exception.Message)"
+                }
+            }
+        }
+    }
+
+    # Help is non-mutating on released CLIs. Only a recognized missing-command
+    # contract enables compatibility; arbitrary CLI failures remain fatal.
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $helpOutput = @(& $NodePath $EntryPath update install-git-launcher --help 2>&1)
+        $helpExit = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $previousErrorAction }
+    $helpText = ($helpOutput | ForEach-Object { $_.ToString() }) -join "`n"
+    $hasLauncherCommand = $helpExit -eq 0 -and $helpText -match '(?m)^Usage:\s+openclaw update install-git-launcher(?:\s|\[|$)'
+    $retainedCheckout = -not $hasLauncherCommand -and (
+        ($helpExit -eq 0 -and $helpText -match '(?m)^Usage:\s+openclaw update(?:\s|\[|$)') -or
+        ($helpExit -eq 1 -and $helpText -match '(?m)^error: unknown command ''install-git-launcher''\s*$')
+    )
+    if (-not $hasLauncherCommand -and -not $retainedCheckout) {
+        $helpOutput | Out-Host
+        return $false
+    }
+
     $wrapper = Join-Path (Join-Path $env:USERPROFILE ".local\bin") "openclaw.cmd"
     $backup = $null
     try {
@@ -1718,10 +1804,14 @@ function Install-GitLauncher {
                 }
             }
         }
-        # The CLI owns atomic publication and recognizes only this checkout's launcher.
+        # Current CLIs own publication; retained releases use the bounded compatibility bridge.
         # USERPROFILE selects the same bin directory in the reconciler; leave HOME alone.
-        & $NodePath $EntryPath update install-git-launcher | Out-Host
-        $installed = ($LASTEXITCODE -eq 0)
+        if ($retainedCheckout) {
+            $installed = Publish-RetainedGitLauncher
+        } else {
+            & $NodePath $EntryPath update install-git-launcher | Out-Host
+            $installed = ($LASTEXITCODE -eq 0)
+        }
         if ($installed) {
             Complete-NpmShimBackup -Backup $backup
             $backup = $null

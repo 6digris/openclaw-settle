@@ -4,17 +4,40 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveNodeRuntimeInfo } from "../daemon/runtime-paths.js";
+import { runExec } from "../process/exec.js";
 import { withTestDir } from "../test-helpers/temp-dir.js";
 import { reconcileWindowsGitLauncher } from "./windows-git-launcher.js";
 import { decodeWindowsLauncherScript } from "./windows-launcher-encoding.js";
 
 vi.mock("../process/exec.js", () => ({ runExec: vi.fn() }));
 
-const resolveNodeRuntimeInfo = vi.hoisted(() => vi.fn());
+const runRuntimeProbe = vi.mocked(runExec);
 
-vi.mock("./node-runtime-info.js", () => ({
-  resolveNodeRuntimeInfo,
-}));
+function runtimeProbeOutput(overrides: Record<string, unknown> = {}) {
+  return {
+    stdout: JSON.stringify({
+      nodeVersion: "24.16.0",
+      sqliteVersion: "3.51.3",
+      sqliteSelectionError: null,
+      nodeSharedSqlite: false,
+      sqliteProbe: { available: true, version: "3.51.3", text: true, blob: true, json: true },
+      ...overrides,
+    }),
+    stderr: "",
+  };
+}
+
+function useRealRuntimeProbe() {
+  const exec = promisify(execFile);
+  runRuntimeProbe.mockImplementation((file, args, options) =>
+    exec(file, args, {
+      encoding: "utf8",
+      timeout: typeof options === "number" ? options : options?.timeoutMs,
+      env: typeof options === "object" ? options.baseEnv : undefined,
+    }),
+  );
+}
 
 async function createLauncherFixture(root: string) {
   const nodePath = path.join(root, "runtime", "node.exe");
@@ -30,13 +53,8 @@ async function createLauncherFixture(root: string) {
 
 describe("reconcileWindowsGitLauncher", () => {
   beforeEach(() => {
-    resolveNodeRuntimeInfo.mockReset();
-    resolveNodeRuntimeInfo.mockResolvedValue({
-      nodeVersion: "24.16.0",
-      sqliteVersion: "3.51.3",
-      nodeSharedSqlite: false,
-      supported: true,
-    });
+    runRuntimeProbe.mockReset();
+    runRuntimeProbe.mockResolvedValue(runtimeProbeOutput());
   });
 
   it("preserves quoted CMD metacharacters and escapes expansion", async () => {
@@ -163,12 +181,12 @@ describe("reconcileWindowsGitLauncher", () => {
         await fs.readFile(fixture.launcherPath),
       ]);
       await fs.writeFile(fixture.launcherPath, mismatched);
-      resolveNodeRuntimeInfo.mockClear();
+      runRuntimeProbe.mockClear();
       await expect(reconcileWindowsGitLauncher(params)).resolves.toEqual({
         status: "skipped",
         reason: "foreign",
       });
-      expect(resolveNodeRuntimeInfo).not.toHaveBeenCalled();
+      expect(runRuntimeProbe).not.toHaveBeenCalled();
       expect(await fs.readFile(fixture.launcherPath)).toEqual(mismatched);
     });
   });
@@ -179,17 +197,55 @@ describe("reconcileWindowsGitLauncher", () => {
       const params = { root, repair: true, create: true, platform: "win32" as const, ...fixture };
       await reconcileWindowsGitLauncher(params);
       const original = await fs.readFile(fixture.launcherPath);
-      resolveNodeRuntimeInfo.mockResolvedValue({
-        nodeVersion: "24.14.0",
-        sqliteVersion: "3.51.2",
-        nodeSharedSqlite: false,
-        supported: false,
-      });
+      runRuntimeProbe.mockResolvedValue(runtimeProbeOutput({ nodeVersion: "24.14.0" }));
       await expect(reconcileWindowsGitLauncher(params)).resolves.toEqual({
         status: "needs-reinstall",
         launcherPath: fixture.launcherPath,
       });
       expect(await fs.readFile(fixture.launcherPath)).toEqual(original);
+    });
+  });
+
+  it("refuses capability-qualified backports and failed probes without changing the launcher", async () => {
+    await withTestDir({ prefix: "openclaw-windows-git-launcher-" }, async (root) => {
+      const fixture = await createLauncherFixture(root);
+      const params = { root, repair: true, create: true, platform: "win32" as const, ...fixture };
+      await reconcileWindowsGitLauncher(params);
+      const original = await fs.readFile(fixture.launcherPath);
+      runRuntimeProbe.mockResolvedValue(runtimeProbeOutput({ nodeVersion: "24.15.0" }));
+      await expect(reconcileWindowsGitLauncher(params)).resolves.toEqual({
+        status: "needs-reinstall",
+        launcherPath: fixture.launcherPath,
+      });
+      runRuntimeProbe.mockRejectedValue(new Error("probe unavailable"));
+      await expect(reconcileWindowsGitLauncher(params)).resolves.toEqual({
+        status: "needs-reinstall",
+        launcherPath: fixture.launcherPath,
+      });
+      expect(await fs.readFile(fixture.launcherPath)).toEqual(original);
+    });
+  });
+
+  it("probes launcher runtimes without inheriting preloads or unrelated credentials", async () => {
+    await withTestDir({ prefix: "openclaw-windows-git-launcher-" }, async (root) => {
+      const fixture = await createLauncherFixture(root);
+      await reconcileWindowsGitLauncher({
+        root,
+        repair: true,
+        create: true,
+        platform: "win32",
+        ...fixture,
+        env: {
+          PATH: "runtime-bin",
+          NODE_OPTIONS: "--require hostile.cjs",
+          SYNTHETIC_SECRET: "fixture",
+        },
+      });
+      expect(runRuntimeProbe).toHaveBeenCalledWith(fixture.nodePath, expect.any(Array), {
+        baseEnv: { PATH: "runtime-bin" },
+        logOutput: false,
+        timeoutMs: 5000,
+      });
     });
   });
 
@@ -241,12 +297,7 @@ describe("reconcileWindowsGitLauncher", () => {
       const fixture = await createLauncherFixture(root);
       const legacy = `@echo off\r\nnode "${fixture.entryPath}" %*\r\n`;
       await fs.writeFile(fixture.launcherPath, legacy, "utf8");
-      resolveNodeRuntimeInfo.mockResolvedValue({
-        nodeVersion: "24.14.0",
-        sqliteVersion: "3.51.2",
-        nodeSharedSqlite: false,
-        supported: false,
-      });
+      runRuntimeProbe.mockResolvedValue(runtimeProbeOutput({ nodeVersion: "24.14.0" }));
 
       await expect(
         reconcileWindowsGitLauncher({
@@ -353,14 +404,9 @@ describe("reconcileWindowsGitLauncher", () => {
 
 describe("Windows launcher runtime validation", () => {
   async function probeRuntime(overrides: Record<string, unknown> = {}) {
-    const { resolveNodeRuntimeInfo: probe } =
-      await vi.importActual<typeof import("./node-runtime-info.js")>("./node-runtime-info.js");
-    return probe("C:\\validated\\node.exe", async () => ({
-      stdout: JSON.stringify({
-        nodeVersion: "24.16.0",
-        sqliteVersion: "3.51.3",
-        nodeSharedSqlite: false,
-        sqliteCapabilities: {
+    runRuntimeProbe.mockResolvedValue(
+      runtimeProbeOutput({
+        sqliteProbe: {
           available: true,
           version: "3.51.3",
           text: true,
@@ -369,12 +415,12 @@ describe("Windows launcher runtime validation", () => {
           ...overrides,
         },
       }),
-      stderr: "",
-    }));
+    );
+    return resolveNodeRuntimeInfo("C:\\validated\\node.exe");
   }
 
   it("accepts a supported runtime with safe SQLite round trips", async () => {
-    await expect(probeRuntime()).resolves.toMatchObject({ supported: true });
+    await expect(probeRuntime()).resolves.toMatchObject({ status: "supported" });
   });
 
   it.each([
@@ -385,29 +431,27 @@ describe("Windows launcher runtime validation", () => {
     { error: "SQLite round trip failed" },
     { text: "true" },
   ])("refuses unsafe SQLite capabilities despite a safe version: %j", async (capabilities) => {
-    await expect(probeRuntime(capabilities)).resolves.toMatchObject({ supported: false });
+    expect((await probeRuntime(capabilities)).status).not.toBe("supported");
   });
 
   it.each(["not-json", "null", '{"nodeVersion":"24.16.0","sqliteVersion":"3.51.3"}'])(
     "refuses incomplete runtime evidence: %s",
     async (stdout) => {
-      const { resolveNodeRuntimeInfo: probe } =
-        await vi.importActual<typeof import("./node-runtime-info.js")>("./node-runtime-info.js");
-      await expect(
-        probe("C:\\validated\\node.exe", async () => ({ stdout, stderr: "" })),
-      ).resolves.toMatchObject({ supported: false });
+      runRuntimeProbe.mockResolvedValue({ stdout, stderr: "" });
+      await expect(resolveNodeRuntimeInfo("C:\\validated\\node.exe")).resolves.toMatchObject({
+        status: "probe-failed",
+      });
     },
   );
 });
 
 it("probes the running Node executable with the canonical SQLite checks", async () => {
-  const { resolveNodeRuntimeInfo: probe } =
-    await vi.importActual<typeof import("./node-runtime-info.js")>("./node-runtime-info.js");
-  const exec = promisify(execFile);
-  const result = await probe(process.execPath, (file, args, options) =>
-    exec(file, [...args], { encoding: options.encoding, timeout: options.timeoutMs }),
-  );
-  expect(result).toMatchObject({ nodeVersion: process.versions.node, supported: true });
+  useRealRuntimeProbe();
+  const result = await resolveNodeRuntimeInfo(process.execPath);
+  expect(result).toMatchObject({ version: process.versions.node, status: "supported" });
+  if (result.status === "probe-failed") {
+    throw result.error;
+  }
   expect(result.sqliteVersion).toMatch(/^\d+\.\d+\.\d+$/);
 });
 
@@ -424,13 +468,7 @@ it.runIf(process.platform === "win32").each(["cmd", "powershell"])(
       );
       await fs.writeFile(launcherPath, `@echo off\r\nnode "${fixture.entryPath}" %*\r\n`);
       const exec = promisify(execFile);
-      const { resolveNodeRuntimeInfo: probe } =
-        await vi.importActual<typeof import("./node-runtime-info.js")>("./node-runtime-info.js");
-      resolveNodeRuntimeInfo.mockImplementation((file: string) =>
-        probe(file, (node, args, options) =>
-          exec(node, [...args], { encoding: options.encoding, timeout: options.timeoutMs }),
-        ),
-      );
+      useRealRuntimeProbe();
       await expect(
         reconcileWindowsGitLauncher({
           root,

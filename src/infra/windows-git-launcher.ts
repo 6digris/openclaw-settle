@@ -2,9 +2,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { isSupportedOpenClawNodeVersion } from "../../node-version.mjs";
+import { resolveNodeRuntimeInfo } from "../daemon/runtime-paths.js";
 import { hasErrnoCode } from "./errno.js";
 import { resolveRequiredOsHomeDir } from "./home-dir.js";
-import { resolveNodeRuntimeInfo } from "./node-runtime-info.js";
 import { replaceFileAtomic } from "./replace-file.js";
 import { resolveStableNodePath } from "./stable-node-path.js";
 import { resolveWindowsOemCodePageForEncoding } from "./windows-encoding.js";
@@ -148,8 +149,8 @@ export async function reconcileWindowsGitLauncher(params: {
 
   // A legacy PATH launcher can start Doctor through an arbitrary shadow Node.
   // Never turn that process into durable launcher authority without reproving it.
-  const runtime = await resolveNodeRuntimeInfo(nodePath);
-  if (!runtime.supported) {
+  const runtime = await resolveNodeRuntimeInfo(nodePath, env);
+  if (runtime.status !== "supported" || !isSupportedOpenClawNodeVersion(runtime.version)) {
     return { status: "needs-reinstall", launcherPath };
   }
   if (current !== null && current !== desired && !params.repair) {

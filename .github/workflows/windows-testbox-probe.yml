@@ -52,6 +52,11 @@ on:
         required: false
         default: false
         type: boolean
+      run_portable_node_recovery:
+        description: "Prove real portable Node recovery on disposable Windows VMs (both engines)"
+        required: false
+        default: false
+        type: boolean
       installed_startup_package:
         description: "Optional Package Acceptance binding, or {baseline, candidate} bindings for a matched comparison"
         required: false
@@ -76,7 +81,7 @@ env:
 
 jobs:
   probe:
-    if: ${{ !inputs.run_winget_acceptance }}
+    if: ${{ !inputs.run_winget_acceptance && !inputs.run_portable_node_recovery }}
     name: Windows probe
     runs-on: ${{ inputs.runner_label }}
     timeout-minutes: 75
@@ -555,7 +560,7 @@ jobs:
           TMP: ${{ runner.temp }}\openclaw-launcher-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           $ErrorActionPreference = "Stop"
-          New-Item -ItemType Directory -Path $env:TEMP | Out-Null
+          New-Item -ItemType Directory -Path $env:TEMP -Force | Out-Null
           node scripts/run-vitest.mjs run test/scripts/install-ps1.test.ts -t 'installs and repairs a launcher through the real hidden CLI' --reporter=default --reporter=json --outputFile=.artifacts/windows-launcher/vitest.json 2>&1 | Tee-Object -FilePath .artifacts/windows-launcher/test.log
           if ($LASTEXITCODE -ne 0) { throw "Real launcher integration failed." }
           $report = Get-Content -LiteralPath .artifacts/windows-launcher/vitest.json -Raw | ConvertFrom-Json
@@ -980,5 +985,90 @@ jobs:
         with:
           name: winget-${{ matrix.scenario }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/winget-proof
+          if-no-files-found: error
+          retention-days: 7
+
+  portable-node-recovery:
+    name: Portable Node recovery (${{ matrix.engine }})
+    if: ${{ inputs.run_portable_node_recovery }}
+    runs-on: windows-2025
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [powershell, pwsh]
+    steps:
+      - name: Validate portable recovery selection
+        shell: pwsh
+        env:
+          TARGET_REF: ${{ inputs.target_ref }}
+          RUN_WINDOWS_CI: ${{ inputs.run_windows_ci }}
+          RUN_LAUNCHER: ${{ inputs.run_windows_launcher_integration }}
+          RUN_WINGET: ${{ inputs.run_winget_acceptance }}
+          STARTUP_PACKAGE: ${{ inputs.installed_startup_package }}
+          CPU_DIAGNOSTIC: ${{ inputs.installed_startup_cpu_diagnostic }}
+        run: |
+          if ($env:TARGET_REF -cnotmatch '^[0-9a-f]{40}$') { throw "Portable proof requires an exact published candidate." }
+          if ($env:RUN_WINDOWS_CI -eq 'true' -or $env:RUN_LAUNCHER -eq 'true' -or $env:RUN_WINGET -eq 'true' -or $env:STARTUP_PACKAGE -ne '' -or $env:CPU_DIAGNOSTIC -eq 'true') { throw "Portable recovery must run separately from the other acceptance jobs." }
+      - name: Checkout immutable proof tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: tooling
+          persist-credentials: false
+          submodules: false
+      - name: Checkout exact installer candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.target_ref }}
+          path: candidate
+          persist-credentials: false
+          submodules: false
+      - name: Bind immutable tooling provenance
+        shell: pwsh
+        env:
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          TARGET_SHA: ${{ inputs.target_ref }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tooling = (git -C tooling rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $tooling -cne $env:WORKFLOW_SHA) { throw 'Tooling differs from published workflow.' }
+          $harness = 'scripts/ci/prove-portable-node-recovery.ps1'
+          $expected = (git -C tooling rev-parse "HEAD:$harness").Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Missing committed harness.' }
+          $actual = (git -C tooling hash-object -- $harness).Trim()
+          if ($LASTEXITCODE -ne 0 -or $expected -cne $actual) { throw 'Harness differs from published workflow.' }
+          New-Item -ItemType Directory -Force -Path .artifacts | Out-Null
+          @{ workflowSha = $tooling; targetSha = $env:TARGET_SHA; harnessSha256 = (Get-FileHash "tooling/$harness" -Algorithm SHA256).Hash.ToLowerInvariant(); runId = $env:GITHUB_RUN_ID; runAttempt = $env:GITHUB_RUN_ATTEMPT; runnerOS = $env:RUNNER_OS; runnerEnvironment = $env:RUNNER_ENVIRONMENT; imageVersion = $env:ImageVersion } | ConvertTo-Json | Set-Content .artifacts/portable-node-provenance.json
+      - name: Prove real portable recovery and owned cleanup (PowerShell 5.1)
+        if: ${{ matrix.engine == 'powershell' }}
+        shell: powershell
+        env:
+          EXPECTED_HEAD: ${{ inputs.target_ref }}
+          EXPECTED_ENGINE: ${{ matrix.engine }}
+        run: |
+          & ./tooling/scripts/ci/prove-portable-node-recovery.ps1 `
+            -CandidateRoot (Join-Path $env:GITHUB_WORKSPACE 'candidate') `
+            -ExpectedHead $env:EXPECTED_HEAD -ExpectedEngine $env:EXPECTED_ENGINE `
+            -EvidencePath (Join-Path $env:GITHUB_WORKSPACE '.artifacts/portable-node-recovery.json')
+      - name: Prove real portable recovery and owned cleanup (PowerShell 7)
+        if: ${{ matrix.engine == 'pwsh' }}
+        shell: pwsh
+        env:
+          EXPECTED_HEAD: ${{ inputs.target_ref }}
+          EXPECTED_ENGINE: ${{ matrix.engine }}
+        run: |
+          & ./tooling/scripts/ci/prove-portable-node-recovery.ps1 `
+            -CandidateRoot (Join-Path $env:GITHUB_WORKSPACE 'candidate') `
+            -ExpectedHead $env:EXPECTED_HEAD -ExpectedEngine $env:EXPECTED_ENGINE `
+            -EvidencePath (Join-Path $env:GITHUB_WORKSPACE '.artifacts/portable-node-recovery.json')
+      - name: Upload portable recovery evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: portable-node-recovery-${{ matrix.engine }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .artifacts/portable-node-recovery.json
+            .artifacts/portable-node-provenance.json
           if-no-files-found: error
           retention-days: 7

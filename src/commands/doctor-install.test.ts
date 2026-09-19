@@ -314,10 +314,22 @@ describe("Windows launcher repair boundaries", () => {
     expect(note).not.toHaveBeenCalled();
   });
 
-  it("propagates a failed repair without reporting success", async () => {
-    const failure = new Error("launcher replacement failed");
-    reconcileWindowsGitLauncher.mockRejectedValue(failure);
-    await expect(repairWindowsGitLauncher("C:\\openclaw", true)).rejects.toBe(failure);
-    expect(note).not.toHaveBeenCalled();
-  });
+  it.each(["EACCES", "EPERM", "EBUSY"])(
+    "reports %s launcher failures without aborting Doctor or claiming repair success",
+    async (code) => {
+      reconcileWindowsGitLauncher.mockRejectedValue(
+        Object.assign(new Error("launcher replacement failed"), { code }),
+      );
+      await expect(repairWindowsGitLauncher("C:\\openclaw", true)).resolves.toBeUndefined();
+      expect(note).toHaveBeenCalledExactlyOnceWith(
+        expect.stringContaining("launcher replacement failed"),
+        "Install",
+      );
+      expect(note).toHaveBeenCalledWith(
+        expect.stringContaining("Other Doctor checks will continue"),
+        "Install",
+      );
+      expect(note).not.toHaveBeenCalledWith(expect.stringContaining("Updated"), "Install");
+    },
+  );
 });
