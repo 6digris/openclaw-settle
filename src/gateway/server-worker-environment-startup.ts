@@ -57,7 +57,6 @@ export type GatewayWorkerEnvironmentStartupState = {
   records: WorkerEnvironmentRecord[];
   store: WorkerEnvironmentStore;
   placementStore: WorkerSessionPlacementStore;
-  hasNonlocalPlacementRecords: boolean;
 };
 
 export type GatewayWorkerEnvironmentRuntime = {
@@ -116,8 +115,6 @@ export async function loadGatewayWorkerEnvironmentStartupState(): Promise<Gatewa
     records,
     store,
     placementStore,
-    // Non-local placements must revive the worker service even without configured profiles.
-    hasNonlocalPlacementRecords: placementStore.listForReconcile().length > 0,
   };
 }
 
@@ -204,7 +201,7 @@ export async function createGatewayWorkerEnvironmentRuntime(params: {
       },
     }));
     const bundle = await producer.prepare();
-    await producer.prune(listRetainedBundleHashes());
+    await producer.prune(listRetainedBundleHashes);
     if (install === "bundle") {
       return bundle;
     }
