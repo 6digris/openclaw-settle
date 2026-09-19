@@ -31,7 +31,8 @@ function formatSetupResult(value: unknown, action: string): string[] | undefined
     value.action !== action ||
     !isRecord(value.target) ||
     value.target.kind !== "local-host" ||
-    value.target.profile !== "chrome" ||
+    typeof value.target.profile !== "string" ||
+    !/^[a-z0-9][a-z0-9-]{0,63}$/.test(value.target.profile) ||
     !isRecord(value.connection) ||
     !isRecord(value.installation) ||
     typeof value.phase !== "string" ||
@@ -56,7 +57,7 @@ function formatSetupResult(value: unknown, action: string): string[] | undefined
     return undefined;
   }
   return [
-    "browser setup: target=TUI process host (not the Gateway), profile=chrome",
+    "browser setup: target=TUI process host (not the Gateway), profile=" + value.target.profile,
     "browser setup: action=" +
       action +
       " phase=" +
@@ -99,8 +100,6 @@ export async function runTuiBrowserSetup(params: {
     "--action",
     action,
     "--json",
-    "--browser-profile",
-    "chrome",
     "--wait-ms",
     "1000",
   ]);

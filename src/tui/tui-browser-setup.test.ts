@@ -6,10 +6,10 @@ import {
 import { createEditorSubmitHandler } from "./tui-submit.js";
 
 describe("/browser-setup local process dispatch", () => {
-  function setupResponse(action = "inspect") {
+  function setupResponse(action = "inspect", profile = "chrome") {
     return {
       action,
-      target: { kind: "local-host", profile: "chrome", hostname: "private-host", relayPort: 18792 },
+      target: { kind: "local-host", profile, hostname: "private-host", relayPort: 18792 },
       phase: "needs_browser_action",
       reason: "secret-in-unexpected-reason",
       installation: {
@@ -25,12 +25,17 @@ describe("/browser-setup local process dispatch", () => {
     };
   }
 
-  it.each([false, true])(
-    "uses fixed host-local argv with local=%s, even when disconnected",
-    async (local) => {
+  it.each([
+    { local: false, profile: "chrome" },
+    { local: true, profile: "chrome" },
+    { local: false, profile: "work" },
+    { local: true, profile: "work" },
+  ])(
+    "uses selector-free host-local argv with local=$local and profile=$profile, even when disconnected",
+    async ({ local, profile }) => {
       const runJson = vi.fn().mockImplementation(async (args: string[]) => ({
         ok: true,
-        value: setupResponse(args[4]),
+        value: setupResponse(args[4], profile),
       }));
       const localCli = { runJson, cancel: vi.fn(() => false), shutdown: vi.fn(async () => {}) };
       const h = createTuiCommandHandlersHarness({ opts: { local }, isConnected: false, localCli });
@@ -44,8 +49,6 @@ describe("/browser-setup local process dispatch", () => {
           "--action",
           action || "inspect",
           "--json",
-          "--browser-profile",
-          "chrome",
           "--wait-ms",
           "1000",
         ]);
@@ -53,7 +56,7 @@ describe("/browser-setup local process dispatch", () => {
       expect(h.sendChat).not.toHaveBeenCalled();
       expect(h.openOverlay).not.toHaveBeenCalled();
       expect(h.addSystem).toHaveBeenCalledWith(
-        expect.stringContaining("target=TUI process host (not the Gateway)"),
+        expect.stringContaining(`target=TUI process host (not the Gateway), profile=${profile}`),
       );
       expect(h.addSystem).toHaveBeenCalledWith(
         expect.stringContaining("Approve the extension in Chrome"),
@@ -107,6 +110,10 @@ describe("/browser-setup local process dispatch", () => {
     { ok: false, reason: "execution_failed" },
     { ok: true, value: { ...setupResponse(), phase: "secret-in-phase" } },
     { ok: true, value: { ...setupResponse(), target: { kind: "remote", profile: "chrome" } } },
+    { ok: true, value: setupResponse("inspect", "") },
+    { ok: true, value: setupResponse("inspect", "work/private") },
+    { ok: true, value: setupResponse("inspect", "x".repeat(65)) },
+    { ok: true, value: setupResponse("inspect", "work\nsecret-in-profile") },
   ])("reports bounded failures without exposing response content", async (result) => {
     const h = createTuiCommandHandlersHarness({
       localCli: {
