@@ -19,6 +19,7 @@ import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 const sessionKey = "agent:main:dashboard:legacy-project-worktree";
+const otherSessionKey = "agent:main:dashboard:legacy-project-sentinel";
 const original = {
   shared: { project: [{ id: "project" }], worktrees: [{ id: "worktree" }] },
   agent: {
@@ -35,7 +36,12 @@ const original = {
           worktree: { id: "worktree", repoRoot: "/fixture/project" },
         }),
       },
-      { session_key: "other", current_session_id: "sentinel", updated_at: 20, entry_json: "{}" },
+      {
+        session_key: otherSessionKey,
+        current_session_id: "sentinel",
+        updated_at: 20,
+        entry_json: "{}",
+      },
     ],
     transcript: [{ session_id: "target", seq: 1, event_json: "original bytes", created_at: 10 }],
   },
@@ -45,7 +51,11 @@ function migrated() {
   const row = result.agent.sessions[0]!;
   const entry = JSON.parse(row.entry_json);
   entry.worktree.canonicalWorkspaceDir = "/fixture/project";
+  entry.displayName = "Preserve this imported history.";
   row.entry_json = JSON.stringify(entry);
+  result.agent.sessions[1]!.entry_json = JSON.stringify({
+    displayName: "Preserve this imported history.",
+  });
   return result;
 }
 
@@ -320,7 +330,7 @@ ${scenario}
     ]);
   });
 
-  it("preserves the imported shape until Doctor adds only the canonical workspace", () => {
+  it("preserves the imported shape until the expected workspace and title repairs", () => {
     expect(() =>
       assertProjectWorktreeStartupPreservation(original, original, undefined),
     ).not.toThrow();
@@ -333,6 +343,14 @@ ${scenario}
     expect(() =>
       assertProjectWorktreeStartupPreservation(original, original, "/fixture/project"),
     ).toThrow();
+  });
+
+  it("rejects title repair before the expected repair stages", () => {
+    const result = structuredClone(original);
+    result.agent.sessions[1]!.entry_json = JSON.stringify({
+      displayName: "Preserve this imported history.",
+    });
+    expect(() => assertProjectWorktreeStartupPreservation(result, original, undefined)).toThrow();
   });
 
   it("rejects startup rewriting the imported session JSON without changing its fields", () => {
@@ -352,6 +370,10 @@ ${scenario}
     "unrelated",
     "missing",
     "wrong-workspace",
+    "wrong-title",
+    "missing-title",
+    "unrelated-entry-field",
+    "unexpected-row",
   ])("rejects a changed %s instead of accepting readiness as migration proof", (change) => {
     const result = migrated();
     if (change === "activity") {
@@ -371,6 +393,25 @@ ${scenario}
     }
     if (change === "missing") {
       result.agent.sessions.pop();
+    }
+    if (change === "wrong-title" || change === "missing-title") {
+      const row = result.agent.sessions[1]!;
+      const entry = JSON.parse(row.entry_json);
+      if (change === "wrong-title") {
+        entry.displayName = "A different title";
+      } else {
+        delete entry.displayName;
+      }
+      row.entry_json = JSON.stringify(entry);
+    }
+    if (change === "unrelated-entry-field") {
+      const row = result.agent.sessions[0]!;
+      const entry = JSON.parse(row.entry_json);
+      entry.label = "Unexpected label";
+      row.entry_json = JSON.stringify(entry);
+    }
+    if (change === "unexpected-row") {
+      result.agent.sessions[1]!.session_key = "agent:main:unexpected";
     }
     if (change === "wrong-workspace") {
       const entry = JSON.parse(result.agent.sessions[0]!.entry_json);

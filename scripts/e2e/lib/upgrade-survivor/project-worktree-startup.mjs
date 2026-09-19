@@ -570,15 +570,21 @@ export function assertProjectWorktreeStartupPreservation(actual, original, expec
   for (const row of actual.agent.sessions) {
     const before = original.agent.sessions.find((s) => s.session_key === row.session_key);
     assert(before, `Unexpected session row: ${row.session_key}`);
-    if (row.session_key !== KEY || expectedWorkspace === undefined) {
+    if (expectedWorkspace === undefined || ![KEY, OTHER_KEY].includes(row.session_key)) {
       assert.deepEqual(row, before);
       continue;
     }
     const expected = JSON.parse(before.entry_json);
-    expected.worktree.canonicalWorkspaceDir = expectedWorkspace;
-    assert.deepEqual(JSON.parse(row.entry_json), expected);
-    assert.equal(row.updated_at, before.updated_at);
-    assert.equal(row.current_session_id, before.current_session_id);
+    if (row.session_key === KEY) {
+      expected.worktree.canonicalWorkspaceDir = expectedWorkspace;
+    }
+    if (expected.displayName === undefined) {
+      expected.displayName = "Preserve this imported history.";
+    }
+    assert.deepEqual(
+      { ...row, entry_json: JSON.parse(row.entry_json) },
+      { ...before, entry_json: expected },
+    );
   }
 }
 
