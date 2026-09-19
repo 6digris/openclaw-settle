@@ -67,20 +67,21 @@ Prefer repairing that workflow's token path. Point `latest`, `beta`, or
 `extended-stable` only at the operator-approved already-published version, then
 verify cache-bypassed registry readback.
 
-For core `extended-stable` repair or rollback, use `mode=set_extended_stable`
-with an exact public final release tag after
+To promote an already-published core version to `extended-stable`, use
+`mode=promote_extended_stable` with an exact public final release tag after
 [openclaw/releases#27](https://github.com/openclaw/releases/pull/27) is merged
 and available on the release repository's `main`:
 
 ```bash
 gh workflow run openclaw-npm-dist-tags.yml \
   --repo openclaw/releases --ref main \
-  -f mode=set_extended_stable -f tag=v2026.6.35
+  -f mode=promote_extended_stable -f tag=vYYYY.M.PATCH
 ```
 
-Replace the example tag with the approved target. Older monthly lines and
-historical final/correction versions are valid rollback targets; new-publication
-eligibility does not apply. This mode writes only core `openclaw`'s
+Replace `vYYYY.M.PATCH` with the approved final release tag. Promotion can
+select a newer version or roll back to an older one, including historical
+final/correction versions; new-publication eligibility does not apply. This mode
+writes only core `openclaw`'s
 `extended-stable` selector, leaving `latest`, `beta`, plugins, other prepared-core
 packages, Docker, Git tags, and GitHub Releases untouched. It neither republishes
 nor changes installed clients. Do not use publish resume to roll back a rejected
@@ -89,7 +90,7 @@ release. Coordinate separately with any active publisher before retagging.
 Wait for successful readback and retain the run's previous/target summary. An
 already-correct selector is a no-op; readback retries never repeat the write.
 If a write is unconfirmed or readback fails, inspect the live registry before
-retrying. Docker alias rollback remains a separate approval-gated
+retrying. Docker channel promotion remains a separate approval-gated
 `docker-channel-promote.yml` dispatch from `openclaw/openclaw` main with an
 existing extended-stable image tag; its channel is derived from that version.
 

@@ -187,20 +187,21 @@ tarball digest, and validation evidence before invoking `Docker Release`. It
 does not run the shared GitHub Release finalizer; use the core-resume path when
 the draft release also needs evidence attachment or publication.
 
-For a root npm selector repair or an operator-approved rollback to an
-already-published version, use **OpenClaw NPM Dist-Tag Operations** in
-`openclaw/releases`, not the publish or resume path. The `set_extended_stable`
+To promote an already-published core version to `extended-stable`, use
+**OpenClaw NPM Dist-Tag Operations** in
+`openclaw/releases`, not the publish or resume path. The `promote_extended_stable`
 mode requires [openclaw/releases#27](https://github.com/openclaw/releases/pull/27)
 to be merged and available on that repository's `main`:
 
 ```bash
 gh workflow run openclaw-npm-dist-tags.yml \
   --repo openclaw/releases --ref main \
-  -f mode=set_extended_stable \
-  -f tag=v2026.6.35
+  -f mode=promote_extended_stable \
+  -f tag=vYYYY.M.PATCH
 ```
 
-Replace `v2026.6.35` with the exact approved final release tag. The action checks
+Replace `vYYYY.M.PATCH` with the exact approved final release tag.
+Promotion can select a newer version or roll back to an older one. The action checks
 that the public Git tag and exact npm version exist, permits older monthly lines
 and historical final/correction versions, and changes only core `openclaw`'s
 `extended-stable` selector. It uses the release repository's `NPM_TOKEN`; no local
@@ -234,8 +235,8 @@ For alias repair, run approval-gated `Docker Channel Promotion` from current
 `main` with the tag. It repeats digest, attestation, and platform checks, allows
 an explicit rollback, and never rebuilds images. npm retagging does not invoke
 this action; if Docker aliases must also move, dispatch it separately with an
-existing extended-stable image tag (for example `v2026.6.35`) and verify all three
-aliases on both registries. Docker derives the channel from the target version,
+existing extended-stable image tag and verify all three aliases on both
+registries. Docker derives the channel from the target version,
 so a historical regular-stable tag is not an extended-stable Docker rollback.
 
 Slack, Discord, and Codex are the initial documented support surfaces, not a

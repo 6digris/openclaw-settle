@@ -69,11 +69,12 @@ on pinned current `main` as the exact command and validation contract.
 8. From a clean current-`main` checkout, run
    `node --import tsx scripts/openclaw-npm-postpublish-verify.ts YYYY.M.P`.
    Verify signatures, provenance, inventories, exact versions, and selectors.
-   For root selector repair or an operator-approved rollback to an existing
-   version, use `set_extended_stable` in the `openclaw/releases` dist-tag workflow
+   To promote an already-published core version to `extended-stable`, use
+   `promote_extended_stable` in the `openclaw/releases` dist-tag workflow
    from that repository's `main`, after openclaw/releases#27 is merged. Follow
    [registry selector recovery](publication-recovery.md#registry-selectors),
-   not the publication/resume path. Repair other selectors separately with
+   not the publication/resume path. The same action can select an older version
+   for rollback. Repair other selectors separately with
    approved credential-isolated tooling. Never republish a version.
 9. Require `Docker Release` to verify default, slim, browser, and architecture
    images in GHCR and Docker Hub, including attestations and platform versions.
