@@ -6,6 +6,17 @@ export type CodexClientWorkspaceReferenceState = {
   workspaceReferences: Map<string, { digest?: string; needsReintroduction: boolean }>;
 };
 
+/** A compaction replaces the observation, so an older pending acceptance cannot clear it. */
+export function invalidateCodexClientWorkspaceReferences(
+  runtime: CodexClientWorkspaceReferenceState,
+  threadId: string,
+): void {
+  const previous = runtime.workspaceReferences.get(threadId);
+  if (previous) {
+    runtime.workspaceReferences.set(threadId, { ...previous, needsReintroduction: true });
+  }
+}
+
 /** Accepted input must not clear a compaction observed during turn/start. */
 export function prepareCodexClientWorkspaceReferences(
   runtime: CodexClientWorkspaceReferenceState | undefined,

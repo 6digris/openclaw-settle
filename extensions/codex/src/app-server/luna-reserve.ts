@@ -1,9 +1,9 @@
 /** Account-bound Reserve transitions for an admitted, OpenClaw-owned pending turn. */
 import { isDeepStrictEqual } from "node:util";
-import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { z } from "zod";
 import { readCodexAppServerAuthHandoff } from "./client-runtime.js";
-import type { CodexAppServerClient } from "./client.js";
+import { isCodexAppServerOverloadError, type CodexAppServerClient } from "./client.js";
 import { listAllCodexAppServerModels } from "./models.js";
 import {
   isJsonObject,
@@ -11,13 +11,13 @@ import {
   type JsonObject,
   type JsonValue,
 } from "./protocol.js";
+import { readRecentCodexRateLimits, rememberCodexRateLimitsRead } from "./rate-limit-cache.js";
 import { CodexAppServerRpcError } from "./rpc-error.js";
 import type {
   CodexAppServerBindingIdentity,
   CodexAppServerBindingStore,
   CodexAppServerThreadBinding,
 } from "./session-binding.js";
-import { withAbortableTimeout } from "./timeout.js";
 
 const RESERVE_MODEL = "gpt-reserve";
 const slug = z
@@ -79,7 +79,12 @@ function settingsForModel(
   };
 }
 
-/** Returns only after the native task accepts settings; the caller still owns the unsent input. */
+/** Prepared selection is not acceptance. turn/start owns atomic settings/input admission. */
+type PreparedReserveTurn = {
+  settings?: TurnSettings;
+  assertCurrent: () => void;
+  accepted?: () => Promise<void>;
+};
 export async function prepareCodexLunaReserveTurn(options: {
   client: CodexAppServerClient;
   bindingStore: CodexAppServerBindingStore;
@@ -89,13 +94,18 @@ export async function prepareCodexLunaReserveTurn(options: {
   assertCurrent: () => void;
   signal: AbortSignal;
   timeoutMs: number;
-}): Promise<TurnSettings | undefined> {
+}): Promise<PreparedReserveTurn | undefined> {
   const { client, bindingStore, identity, binding, normal, signal, timeoutMs } = options;
   // Native/adopted sessions have another model owner. API-key clients have no ChatGPT handoff.
-  const account = readCodexAppServerAuthHandoff(client);
   const normalModel = normal.model;
   if (binding.preserveNativeModel || binding.connectionScope === "supervision" || !normalModel) {
     return undefined;
+  }
+  const account = readCodexAppServerAuthHandoff(client);
+  if (account === "revoked") {
+    throw new Error(
+      "Codex ChatGPT authority was revoked. Sign in again; the pending turn was not sent.",
+    );
   }
   if (!account) {
     if (binding.reserveReturn || normal.model === RESERVE_MODEL) {
@@ -120,9 +130,7 @@ export async function prepareCodexLunaReserveTurn(options: {
         current.model !== expectedModel ||
         !isDeepStrictEqual(current.reserveReturn, expectedReturn)
       ) {
-        throw new Error(
-          "Codex account or thread ownership changed during Reserve selection. The pending turn was not sent.",
-        );
+        throw new Error("Codex account or thread ownership changed during Reserve submission.");
       }
     };
     const persist = async (reserveReturn: ReserveReturn | undefined, model = expectedModel) => {
@@ -138,9 +146,7 @@ export async function prepareCodexLunaReserveTurn(options: {
           assertCurrent,
         ))
       ) {
-        throw new Error(
-          "Codex Reserve state changed before it could be saved. The pending turn was not sent.",
-        );
+        throw new Error("Codex Reserve state changed before its transition could be recorded.");
       }
       expectedReturn = reserveReturn;
       expectedModel = model;
@@ -148,6 +154,13 @@ export async function prepareCodexLunaReserveTurn(options: {
       binding.model = model;
       assertCurrent();
     };
+    const selected = (settings: TurnSettings, reserveReturn: ReserveReturn | undefined) => ({
+      settings,
+      assertCurrent,
+      // Leave recovery intact until native input/settings admission succeeds.
+      accepted: () => persist(reserveReturn, settings.model ?? expectedModel),
+    });
+    const ordinary = { assertCurrent };
     const request = async <T>(method: string, params?: unknown): Promise<T> => {
       assertCurrent();
       const result = await client.request<T>(method, params, { timeoutMs, signal, assertCurrent });
@@ -172,13 +185,7 @@ export async function prepareCodexLunaReserveTurn(options: {
     if (explicitChange) {
       // A new explicit model replaces the old return target, never the new preference.
       const settings = settingsForModel(normal, normalModel, normalEffort, normalTier);
-      await applyNativeSettings(client, binding.threadId, settings, {
-        assertCurrent,
-        signal,
-        timeoutMs,
-      });
-      await persist(undefined, normalModel);
-      return settings;
+      return selected(settings, undefined);
     }
     if (
       expectedReturn &&
@@ -189,6 +196,9 @@ export async function prepareCodexLunaReserveTurn(options: {
         "The native model changed during Reserve recovery. Select that model explicitly in OpenClaw or start a new conversation; the pending turn was not sent.",
       );
     }
+    // Cache is a refusal signal only; even an old known offer forbids a fail-open read.
+    const previousUsage = readRecentCodexRateLimits(client, { maxAgeMs: -1 });
+    const knownOffer = isJsonObject(previousUsage) && previousUsage.rateLimitUpsell != null;
     let usage: JsonValue;
     try {
       usage = await request<JsonValue>("account/rateLimits/read", {
@@ -196,6 +206,15 @@ export async function prepareCodexLunaReserveTurn(options: {
         excludeResetCreditDetails: true,
       });
     } catch (error) {
+      assertCurrent();
+      // -32001 is the existing typed pre-enqueue transient rejection contract.
+      // Auth/internal/transport/timeouts have ambiguous causes and remain refusals.
+      if (!expectedReturn && !knownOffer && isCodexAppServerOverloadError(error)) {
+        embeddedAgentLog.warn(
+          "Codex usage read was temporarily overloaded; continuing the selected ordinary model without Reserve.",
+        );
+        return ordinary;
+      }
       if (
         !(error instanceof CodexAppServerRpcError) ||
         (error.code !== -32600 && error.code !== -32602)
@@ -210,15 +229,16 @@ export async function prepareCodexLunaReserveTurn(options: {
           { cause: error },
         );
       }
-      return undefined;
+      return ordinary;
     }
+    rememberCodexRateLimitsRead(client, usage);
     if (!isJsonObject(usage) || usage.accountId !== account.chatgptAccountId) {
       if (expectedReturn) {
         throw new Error(
           "Codex did not confirm the Reserve account. The pending turn was not sent.",
         );
       }
-      return undefined;
+      return ordinary;
     }
     const parsed = reserveBanner.safeParse(usage.rateLimitUpsell);
     const offered =
@@ -226,7 +246,7 @@ export async function prepareCodexLunaReserveTurn(options: {
       (!parsed.data.blocked_model_slug || parsed.data.blocked_model_slug === normalModel);
     const recovered = ordinaryUsageRecovered(usage);
     if (!offered && !expectedReturn) {
-      return undefined;
+      return ordinary;
     }
     if (expectedReturn && !offered && !recovered) {
       // Unknown/other banners and missing permission cannot silently restore a paid ordinary route.
@@ -277,56 +297,6 @@ export async function prepareCodexLunaReserveTurn(options: {
         serviceTier: normalTier,
       });
     }
-    await applyNativeSettings(client, binding.threadId, settings, {
-      assertCurrent,
-      signal,
-      timeoutMs,
-    });
-    await persist(recovering ? undefined : expectedReturn, targetModel);
-    return settings;
+    return selected(settings, recovering ? undefined : expectedReturn);
   });
-}
-
-async function applyNativeSettings(
-  client: CodexAppServerClient,
-  threadId: string,
-  settings: TurnSettings,
-  options: { assertCurrent: () => void; signal: AbortSignal; timeoutMs: number },
-): Promise<void> {
-  const observed = createDeferred<void>();
-  const detach = client.addNotificationHandler((notification) => {
-    if (
-      notification.method !== "thread/settings/updated" ||
-      !isJsonObject(notification.params) ||
-      notification.params.threadId !== threadId ||
-      !isJsonObject(notification.params.threadSettings)
-    ) {
-      return;
-    }
-    const actual = notification.params.threadSettings;
-    if (
-      actual.model === settings.model &&
-      actual.effort === settings.effort &&
-      actual.serviceTier === settings.serviceTier &&
-      (!settings.collaborationMode ||
-        isDeepStrictEqual(actual.collaborationMode, settings.collaborationMode))
-    ) {
-      observed.resolve();
-    }
-  });
-  try {
-    options.assertCurrent();
-    await client.request("thread/settings/update", { threadId, ...settings }, options);
-    options.assertCurrent();
-    // The RPC response acknowledges queueing, not application. Observe the accepted tuple.
-    await withAbortableTimeout({
-      promise: observed.promise,
-      signal: options.signal,
-      timeoutMs: options.timeoutMs,
-      timeoutMessage: "Codex did not confirm Reserve task settings. The pending turn was not sent.",
-    });
-    options.assertCurrent();
-  } finally {
-    detach();
-  }
 }

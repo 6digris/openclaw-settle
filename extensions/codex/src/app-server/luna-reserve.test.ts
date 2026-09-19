@@ -41,7 +41,6 @@ async function fixture(
     usage?: unknown;
     binding?: Partial<CodexAppServerThreadBinding>;
     account?: string | null;
-    settingsAccepted?: boolean;
     readHook?: () => void;
     readError?: number;
   } = {},
@@ -91,14 +90,6 @@ async function fixture(
             nextCursor: null,
           },
         });
-      } else if (request.method === "thread/settings/update") {
-        send({ id: request.id, result: {} });
-        if (options.settingsAccepted !== false && isJsonObject(request.params)) {
-          send({
-            method: "thread/settings/updated",
-            params: { threadId: "thread-a", threadSettings: request.params },
-          });
-        }
       }
     },
   });
@@ -149,28 +140,27 @@ async function fixture(
         normal,
         assertCurrent: () => undefined,
         signal: new AbortController().signal,
-        timeoutMs: 30,
+        timeoutMs: 2_000,
       }),
   };
 }
 
 describe("active-owner Luna Reserve transitions (mocked backend)", () => {
-  it("records return target and waits for accepted settings without sending input", async () => {
+  it("persists return intent before input and records the model only after acceptance", async () => {
     const f = await fixture();
-    await expect(f.run()).resolves.toMatchObject({
+    const prepared = await f.run();
+    expect(prepared?.settings).toMatchObject({
       model: "gpt-reserve",
       effort: "medium",
       serviceTier: null,
     });
+    expect(f.store.read(f.identity)?.model).toBe("gpt-5.6-luna");
+    await prepared?.accepted?.();
     expect(f.store.read(f.identity)).toMatchObject({
       model: "gpt-reserve",
       reserveReturn: returnTarget,
     });
-    expect(f.requests.map((r) => r.method)).toEqual([
-      "account/rateLimits/read",
-      "model/list",
-      "thread/settings/update",
-    ]);
+    expect(f.requests.map((r) => r.method)).toEqual(["account/rateLimits/read", "model/list"]);
     expect(f.requests[0]?.params).toEqual({
       supportsLunaReserve: true,
       excludeResetCreditDetails: true,
@@ -191,36 +181,43 @@ describe("active-owner Luna Reserve transitions (mocked backend)", () => {
         rateLimits: { primary: { usedPercent: 100 } },
       },
     });
-    await expect(f.run()).resolves.toBeUndefined();
+    expect((await f.run())?.settings).toBeUndefined();
     expect(f.requests).toHaveLength(1);
+  });
+  it("honors the native account-level Reserve offer without inventing a Luna-only restriction", async () => {
+    // Codex 0.154.0 backend_banners.rs treats absent blocked_model_slug as account-wide;
+    // its luna_reserve_recovery_tests.rs explicitly switches from gpt-5.4.
+    const { blocked_model_slug: _blockedModel, ...accountOffer } = offer;
+    const f = await fixture({
+      usage: {
+        accountId: "account-a",
+        rateLimitUpsell: accountOffer,
+        ordinaryUsageAllowed: false,
+        rateLimits: {},
+      },
+    });
+    f.normal.model = "gpt-5.4";
+    expect((await f.run())?.settings).toMatchObject({ model: "gpt-reserve" });
+    expect(f.store.read(f.identity)?.reserveReturn?.model).toBe("gpt-5.4");
   });
   it("does not advertise capability for API-key or unowned clients", async () => {
     const f = await fixture({ account: null });
-    await expect(f.run()).resolves.toBeUndefined();
+    expect((await f.run())?.settings).toBeUndefined();
     expect(f.requests).toEqual([]);
   });
   it("does not take model ownership from an adopted native thread", async () => {
     const f = await fixture({ binding: { preserveNativeModel: true } });
-    await expect(f.run()).resolves.toBeUndefined();
+    expect((await f.run())?.settings).toBeUndefined();
     expect(f.requests).toEqual([]);
   });
   it("rejects mismatched backend identity without entering Reserve", async () => {
     const f = await fixture({ usage: { accountId: "other", rateLimitUpsell: offer } });
-    await expect(f.run()).resolves.toBeUndefined();
+    expect((await f.run())?.settings).toBeUndefined();
     expect(f.binding.reserveReturn).toBeUndefined();
-  });
-  it("retains input and saved return target when settings are only queued", async () => {
-    const f = await fixture({ settingsAccepted: false });
-    await expect(f.run()).rejects.toThrow("did not confirm Reserve task settings");
-    expect(f.store.read(f.identity)).toMatchObject({
-      model: "gpt-5.6-luna",
-      reserveReturn: returnTarget,
-    });
-    expect(f.requests.some((r) => r.method === "turn/start")).toBe(false);
   });
   it.each([-32600, -32602])("uses only old-server compatibility errors %s", async (code) => {
     const f = await fixture({ readError: code });
-    await expect(f.run()).resolves.toBeUndefined();
+    expect((await f.run())?.settings).toBeUndefined();
     expect(f.requests.map((r) => r.params)).toEqual([
       { supportsLunaReserve: true, excludeResetCreditDetails: true },
       undefined,
@@ -254,7 +251,10 @@ describe("active-owner Luna Reserve transitions (mocked backend)", () => {
           rateLimits: { credits: { hasCredits: true } },
         },
       });
-      await expect(f.run()).resolves.toMatchObject({ model: "gpt-5.6-luna", serviceTier: null });
+      const prepared = await f.run();
+      expect(prepared?.settings).toMatchObject({ model: "gpt-5.6-luna", serviceTier: null });
+      expect(f.store.read(f.identity)?.reserveReturn).toEqual(returnTarget);
+      await prepared?.accepted?.();
       expect(f.store.read(f.identity)?.reserveReturn).toBeUndefined();
     },
   );
@@ -281,7 +281,9 @@ describe("active-owner Luna Reserve transitions (mocked backend)", () => {
   it("keeps an explicit new ordinary choice and discards only its own return target", async () => {
     const f = await fixture({ binding: { model: "gpt-reserve", reserveReturn: returnTarget } });
     f.normal.model = "explicit-model";
-    await expect(f.run()).resolves.toMatchObject({ model: "explicit-model" });
+    const prepared = await f.run();
+    expect(prepared?.settings).toMatchObject({ model: "explicit-model" });
+    await prepared?.accepted?.();
     expect(f.store.read(f.identity)?.reserveReturn).toBeUndefined();
   });
   it("cannot force the hidden route through an explicit model choice", async () => {

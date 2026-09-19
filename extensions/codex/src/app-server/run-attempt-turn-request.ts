@@ -173,7 +173,17 @@ export async function prepareCodexAttemptTurnRequest(
         (tool) => tool.name === "session_status",
       ),
     });
-    const reserveSettings = isIncognitoSessionKey(runtimeParams.sessionKey)
+    const turnThread = resourceState.thread;
+    const assertTurnCurrent = () => {
+      runAbortController.signal.throwIfAborted();
+      params.hostCapabilities.assertActive();
+      connection.assertCurrent();
+      if (resourceState.thread !== turnThread) {
+        throw new Error("Codex pending thread ownership changed");
+      }
+      turnThread.liveThreadOwnership?.assertCurrent();
+    };
+    const reserveTurn = isIncognitoSessionKey(runtimeParams.sessionKey)
       ? undefined
       : await prepareCodexLunaReserveTurn({
           client: resourceState.client,
@@ -183,19 +193,16 @@ export async function prepareCodexAttemptTurnRequest(
           normal: turnStartParams,
           signal: runAbortController.signal,
           timeoutMs: params.timeoutMs,
-          assertCurrent: () => {
-            params.hostCapabilities.assertActive();
-            connection.assertCurrent();
-            resourceState.thread.liveThreadOwnership?.assertCurrent();
-          },
+          assertCurrent: assertTurnCurrent,
         });
+    const reserveSettings = reserveTurn?.settings;
     if (reserveSettings) {
       Object.assign(turnStartParams, reserveSettings);
-      resourceState.acceptedReserveModel = reserveSettings.model ?? undefined;
-      if (reserveSettings.model) {
-        codexModelCallDiagnostics.setAcceptedModel(reserveSettings.model);
-      }
     }
+    const assertSubmissionCurrent = () => {
+      assertTurnCurrent();
+      reserveTurn?.assertCurrent();
+    };
     if (inferenceRoute) {
       prompt.setParentLocalEgress();
       resourceState.releaseInferenceContext?.();
@@ -280,11 +287,17 @@ export async function prepareCodexAttemptTurnRequest(
         await resourceState.client.request("turn/start", turnStartParams, {
           timeoutMs: params.timeoutMs,
           signal: runAbortController.signal,
-          assertCurrent: connection.assertCurrent,
+          assertCurrent: assertSubmissionCurrent,
         }),
       );
       acceptedTurnId = startedTurn.turn.id;
-      connection.assertCurrent();
+      assertSubmissionCurrent();
+      await reserveTurn?.accepted?.();
+      assertSubmissionCurrent();
+      if (reserveSettings?.model) {
+        resourceState.acceptedReserveModel = reserveSettings.model;
+        codexModelCallDiagnostics.setAcceptedModel(reserveSettings.model);
+      }
       // Fitting may drop or truncate references; only acknowledge the complete block.
       if (referencesRetained) {
         references.accepted();

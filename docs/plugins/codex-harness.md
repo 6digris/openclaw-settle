@@ -563,19 +563,29 @@ capacity. Turning Fast off changes the requested service tier, not the model rou
 
 For persistent OpenClaw-owned Codex threads with a live ChatGPT auth handoff,
 the pending-turn owner requests a fresh backend Reserve offer. It saves the
-account-bound ordinary model and settings before requesting the separate route,
-and waits for native task-settings acceptance before sending input. Passive
+account-bound ordinary model and settings before requesting the separate route.
+Native `turn/start` admits the complete model/settings tuple and pending input
+together; OpenClaw records acceptance only after that request succeeds. It does
+not require a separate settings notification, which Codex omits for no-op updates. Passive
 account/status readers never advertise this capability. Do not force the hidden
 Reserve model or treat an unused counter as authorization. Account and client
-eligibility remain backend decisions.
+eligibility remain backend decisions. A valid account-wide Reserve banner may
+omit a blocked-model slug; as in Codex, it can authorize fallback from another
+ordinary model. When a slug is present, it must match the selected model.
 
 Recovery requires the same account and a full backend read confirming ordinary
 usage or usable credits, with no conflicting banner, spend-control blocker, or
 rate-limit reason. Unknown permission does not authorize recovery. Fast preferences
 and explicit ordinary model choices remain host-owned; an account change or
-ambiguous native settings response holds the unsent turn rather than silently
-restoring an ordinary route. A pending Reserve return target is retained across
-resume and prevents automatic thread replacement.
+ambiguous usage response holds the unsent turn rather than silently restoring an
+ordinary route. The live account, run, and thread guards remain attached to every
+submission retry. A narrowly classified temporary usage-read overload preserves
+ordinary inference with a warning only if no saved Reserve state or known offer
+exists; authentication and unclassified failures still stop the turn. Revocation
+of a prior ChatGPT handoff stops the pending turn even before Reserve selection;
+it does not reclassify the client as API-key traffic. A successful current handoff
+restores authority. A pending Reserve return target is retained across resume and
+prevents automatic thread replacement.
 
 Native/adopted supervision threads and their forks retain native model ownership;
 OpenClaw does not take over their Reserve lifecycle. Canonical forks copy the

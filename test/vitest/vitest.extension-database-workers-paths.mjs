@@ -65,6 +65,8 @@ export const databaseWorkerExtensionTestFiles = [
   "extensions/codex/src/app-server/attempt-startup-retry.test.ts",
   "extensions/codex/src/app-server/settled-turn-finalizer.native.test.ts",
   "extensions/codex/src/app-server/thread-lifecycle.native.test.ts",
+  "extensions/codex/src/app-server/luna-reserve.native.test.ts",
+  "extensions/codex/src/app-server/run-attempt.luna-reserve.test.ts",
   "extensions/codex/src/app-server/transport-process-registration.test.ts",
   "extensions/codex/src/app-server/transport-process-registration.procfs.test.ts",
   "extensions/codex/src/app-server/transport-startup.test.ts",
