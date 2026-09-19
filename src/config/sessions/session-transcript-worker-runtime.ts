@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { ensureSqliteLibrarySelected } from "../../infra/bun-sqlite-library.js";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
+import type { SessionCostUsageCacheReadResult } from "../../infra/session-cost-usage-cache-read.js";
 import { WorkerTaskError, WorkerTaskPool } from "../../infra/worker-task-pool.js";
 import type { SensitiveTextRedactionSnapshot } from "../../logging/redact.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
@@ -35,6 +36,7 @@ import type {
   SessionTranscriptHistoryWorkerInput,
   SessionRowPresenceWorkerInput,
   SessionMembersWorkerInput,
+  SessionUsageCacheWorkerInput,
   SessionModelContextWorkerInput,
   SessionTranscriptWorkerReply,
 } from "./session-transcript.worker.js";
@@ -56,8 +58,13 @@ const sessionEntries = new WorkerTaskPool<
 >({ workerUrl, maxWorkers: 1, sharedCompute: true });
 
 const historyPages = new WorkerTaskPool<
-  SessionTranscriptHistoryWorkerInput | SessionRowPresenceWorkerInput | SessionMembersWorkerInput,
-  SessionTranscriptWorkerReply<"history-page" | "session-row-presence" | "session-members">
+  | SessionTranscriptHistoryWorkerInput
+  | SessionRowPresenceWorkerInput
+  | SessionMembersWorkerInput
+  | SessionUsageCacheWorkerInput,
+  SessionTranscriptWorkerReply<
+    "history-page" | "session-row-presence" | "session-members" | "usage-cache"
+  >
 >({
   workerUrl,
   maxWorkers: 1,
@@ -81,7 +88,8 @@ function unwrapReply<
     | "history-page"
     | "branch-summaries"
     | "session-row-presence"
-    | "session-members",
+    | "session-members"
+    | "usage-cache",
 >(reply: SessionTranscriptWorkerReply<Kind>) {
   if (reply.ok) {
     return reply.value;
@@ -161,6 +169,9 @@ export type SessionHistoryWorkerDatabase = {
   readMembers: (
     input: Omit<SessionMembersWorkerInput, "kind" | "database">,
   ) => Promise<SessionMember[]>;
+  readUsageCache: (
+    input: Omit<SessionUsageCacheWorkerInput, "kind" | "database">,
+  ) => Promise<SessionCostUsageCacheReadResult>;
 };
 
 /** Capture the exact metadata owner before initial-writer admission can wait. */
@@ -320,9 +331,16 @@ export async function withSessionHistoryWorkerDatabase<T>(
       prepare: () =>
         | Omit<SessionTranscriptHistoryWorkerInput, "database">
         | Omit<SessionRowPresenceWorkerInput, "database">
-        | Omit<SessionMembersWorkerInput, "database">,
+        | Omit<SessionMembersWorkerInput, "database">
+        | Omit<SessionUsageCacheWorkerInput, "database">,
       inputBytes: number,
-      receive: (value: SessionHistoryWorkerResult | boolean | SessionMember[]) => TResult,
+      receive: (
+        value:
+          | SessionHistoryWorkerResult
+          | boolean
+          | SessionMember[]
+          | SessionCostUsageCacheReadResult,
+      ) => TResult,
     ): Promise<TResult> => {
       assertCurrent();
       let sequence = 0;
@@ -339,7 +357,9 @@ export async function withSessionHistoryWorkerDatabase<T>(
           { inputBytes, timeoutMs: 60_000 },
         );
         const value = receive(
-          unwrapReply<"history-page" | "session-row-presence" | "session-members">(reply),
+          unwrapReply<"history-page" | "session-row-presence" | "session-members" | "usage-cache">(
+            reply,
+          ),
         );
         if (reply.ok && reply.closedHistoryDatabase) {
           const closed = historyDatabases.get(JSON.stringify(reply.closedHistoryDatabase));
@@ -366,11 +386,33 @@ export async function withSessionHistoryWorkerDatabase<T>(
       assertCurrent,
       run: async (prepare, inputBytes) =>
         await runRequest(prepare, inputBytes, (value) => {
-          if (typeof value === "boolean" || Array.isArray(value)) {
+          if (
+            typeof value === "boolean" ||
+            Array.isArray(value) ||
+            value.kind === "usage-rollups" ||
+            value.kind === "usage-refresh-lock"
+          ) {
             throw new Error("Session history worker returned metadata instead of history");
           }
           return value;
         }),
+      readUsageCache: async (input) =>
+        await runRequest(
+          () => ({ kind: "usage-cache", ...input }),
+          JSON.stringify(input).length * 2,
+          (value) => {
+            if (
+              typeof value === "boolean" ||
+              Array.isArray(value) ||
+              (value.kind !== "usage-rollups" && value.kind !== "usage-refresh-lock")
+            ) {
+              throw new Error(
+                "Session history worker returned another result instead of usage cache",
+              );
+            }
+            return value;
+          },
+        ),
       readMembers: async (input) =>
         await runRequest(
           () => ({ kind: "session-members", ...input }),

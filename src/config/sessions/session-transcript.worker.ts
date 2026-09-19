@@ -4,6 +4,10 @@ import type {
   readSessionEntryResetRecallCutoff,
 } from "../../../packages/memory-host-sdk/src/host/session-files.js";
 import type { PreparedSessionHistoryReadTarget } from "../../gateway/session-history-read.types.js";
+import type {
+  SessionCostUsageCacheRead,
+  SessionCostUsageCacheReadResult,
+} from "../../infra/session-cost-usage-cache-read.js";
 import { serveWorkerTasks } from "../../infra/worker-task-pool.js";
 import type { SensitiveTextRedactionSnapshot } from "../../logging/redact.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
@@ -74,6 +78,13 @@ export type SessionMembersWorkerInput = {
   env: NodeJS.ProcessEnv;
 };
 
+export type SessionUsageCacheWorkerInput = {
+  kind: "usage-cache";
+  database: { agentId: string; path: string };
+  request: SessionCostUsageCacheRead;
+  env: NodeJS.ProcessEnv;
+};
+
 export type SessionBranchSummaryWorkerInput = {
   kind: "branch-summaries";
   request: SessionBranchSummaryReadRequest;
@@ -84,6 +95,7 @@ type SessionTranscriptWorkerValues = {
   "history-page": SessionHistoryWorkerResult;
   "session-row-presence": boolean;
   "session-members": SessionMember[];
+  "usage-cache": SessionCostUsageCacheReadResult;
   "model-context": ReturnType<typeof readSessionTranscriptModelContext>;
   "session-entry": {
     entry: SessionFileEntry | null;
@@ -162,8 +174,19 @@ serveWorkerTasks(
       | SessionTranscriptHistoryWorkerInput
       | SessionRowPresenceWorkerInput
       | SessionMembersWorkerInput
+      | SessionUsageCacheWorkerInput
       | SessionBranchSummaryWorkerInput;
     try {
+      if (request.kind === "usage-cache") {
+        const { readSessionCostUsageCache } =
+          await import("../../infra/session-cost-usage-cache-read.js");
+        return {
+          ok: true,
+          ...(await withHistoryDatabase(request.database, () =>
+            readSessionCostUsageCache({ ...request.database, env: request.env }, request.request),
+          )),
+        };
+      }
       if (request.kind === "branch-summaries") {
         const { readSessionBranchSummariesInWorker } =
           await import("./session-accessor.sqlite-branches.js");

@@ -73,7 +73,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   mocks.release.mockResolvedValue(undefined);
   mocks.acquire.mockResolvedValue({ acquired: true, release: mocks.release });
-  mocks.readRows.mockReturnValue([]);
+  mocks.readRows.mockResolvedValue([]);
   mocks.listFiles.mockResolvedValue([]);
   mocks.prune.mockResolvedValue(undefined);
 });

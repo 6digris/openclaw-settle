@@ -575,7 +575,7 @@ describe("session cost usage", () => {
           expect.objectContaining({ cost: 0.018, role: "assistant", tokens: 18 }),
         ]),
       );
-      const sqliteRows = readSessionCostUsageRollupRows("main").filter((row) =>
+      const sqliteRows = (await readSessionCostUsageRollupRows("main")).filter((row) =>
         row.key.startsWith(`sqlite:main:${sessionId}:`),
       );
       expect(sqliteRows).toHaveLength(1);
@@ -623,7 +623,7 @@ describe("session cost usage", () => {
       expect(repeat.totals.totalTokens).toBe(8);
       expect(repeat.cacheStatus?.status).toBe("fresh");
       expect(
-        readSessionCostUsageRollupRows("main").some((row) =>
+        (await readSessionCostUsageRollupRows("main")).some((row) =>
           row.key.startsWith(`sqlite:main:${sessionId}:`),
         ),
       ).toBe(true);
@@ -747,7 +747,7 @@ describe("session cost usage", () => {
           sessionFiles: [sessionFile],
         });
 
-        const row = readSessionCostUsageRollupRows("main").find(
+        const row = (await readSessionCostUsageRollupRows("main")).find(
           (candidate) => candidate.key === sessionFile,
         );
         expect(Buffer.byteLength(row?.valueJson ?? "")).toBeLessThan(32 * 1024);
@@ -1035,7 +1035,7 @@ describe("session cost usage", () => {
       expect(ranged.summaries[0]?.totalTokens).toBe(20);
       expect(ranged.summaries[0]?.modelUsage?.map((entry) => entry.model)).toEqual(["gpt-5.5"]);
 
-      const cachedEntry = readSessionCostUsageRollupRows("main").find(
+      const cachedEntry = (await readSessionCostUsageRollupRows("main")).find(
         (row) => row.key === sessionFile,
       );
       const cachedRollup = cachedEntry
@@ -1130,7 +1130,7 @@ describe("session cost usage", () => {
 
       const writeLegacyRollup = async () => {
         const currentRow = requireValue(
-          readSessionCostUsageRollupRows("main").find((row) => row.key === sessionFile),
+          (await readSessionCostUsageRollupRows("main")).find((row) => row.key === sessionFile),
           "expected current usage rollup",
         );
         const currentRollup = JSON.parse(currentRow.valueJson) as {
@@ -1193,7 +1193,7 @@ describe("session cost usage", () => {
       }
 
       const appendedRow = requireValue(
-        readSessionCostUsageRollupRows("main").find((row) => row.key === sessionFile),
+        (await readSessionCostUsageRollupRows("main")).find((row) => row.key === sessionFile),
         "expected appended usage rollup",
       );
       const appendedRollup = JSON.parse(appendedRow.valueJson) as {
@@ -1267,7 +1267,7 @@ describe("session cost usage", () => {
       );
 
       const initialRow = requireValue(
-        readSessionCostUsageRollupRows("main").find((row) => row.key === sessionFile),
+        (await readSessionCostUsageRollupRows("main")).find((row) => row.key === sessionFile),
         "expected initial rollup",
       );
       const initialEntry = JSON.parse(initialRow.valueJson) as {
@@ -1301,7 +1301,7 @@ describe("session cost usage", () => {
         35,
       );
       const partialRow = requireValue(
-        readSessionCostUsageRollupRows("main").find((row) => row.key === sessionFile),
+        (await readSessionCostUsageRollupRows("main")).find((row) => row.key === sessionFile),
         "expected partial-line rollup",
       );
       const partialEntry = JSON.parse(partialRow.valueJson) as {
@@ -1321,7 +1321,7 @@ describe("session cost usage", () => {
       const rebuilt = await loadSessionCostSummary({ sessionFile, agentId: "main" });
       expect(rebuilt?.totalTokens).toBe(11);
       const rebuiltRow = requireValue(
-        readSessionCostUsageRollupRows("main").find((row) => row.key === sessionFile),
+        (await readSessionCostUsageRollupRows("main")).find((row) => row.key === sessionFile),
         "expected rebuilt rollup",
       );
       const rebuiltEntry = JSON.parse(rebuiltRow.valueJson) as { parsedRecords: number };
@@ -1694,7 +1694,7 @@ describe("session cost usage", () => {
 
     await withStateDir(root, async () => {
       await loadCostUsageSummary({ agentId: "main" });
-      const rowsBefore = readSessionCostUsageRollupRows("main");
+      const rowsBefore = await readSessionCostUsageRollupRows("main");
       const accessError = Object.assign(new Error("permission denied"), { code: "EACCES" });
       const readdirSpy = vi.spyOn(nodeFs.promises, "readdir").mockRejectedValueOnce(accessError);
       try {
@@ -1704,7 +1704,7 @@ describe("session cost usage", () => {
       } finally {
         readdirSpy.mockRestore();
       }
-      expect(readSessionCostUsageRollupRows("main")).toEqual(rowsBefore);
+      expect(await readSessionCostUsageRollupRows("main")).toEqual(rowsBefore);
     });
   });
 
@@ -2147,7 +2147,7 @@ describe("session cost usage", () => {
     await withStateDir(root, async () => {
       const first = await loadSessionCostSummary({ agentId: "main", sessionFile });
       expect(first?.latency).toBeUndefined();
-      expect(readSessionCostUsageRollupRows("main")[0]?.valueJson).not.toContain('"min":null');
+      expect((await readSessionCostUsageRollupRows())[0]?.valueJson).not.toContain('"min":null');
 
       await fs.appendFile(
         sessionFile,

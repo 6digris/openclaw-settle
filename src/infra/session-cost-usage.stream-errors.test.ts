@@ -76,7 +76,7 @@ describe("session cost usage stream errors", () => {
         agentId: "main",
         refreshMode: "sync-when-empty",
       });
-      const rollupsBefore = readSessionCostUsageRollupRows();
+      const rollupsBefore = await readSessionCostUsageRollupRows();
 
       const appendedEntry = `${usageEntry("2026-07-06T12:01:00.000Z", 20)}\n`;
       await fs.appendFile(sessionFile, appendedEntry, "utf-8");
@@ -107,7 +107,7 @@ describe("session cost usage stream errors", () => {
         { interval: 5, timeout: 1_000 },
       );
 
-      expect(readSessionCostUsageRollupRows()).toEqual(rollupsBefore);
+      expect(await readSessionCostUsageRollupRows()).toEqual(rollupsBefore);
       expect(summary.totals.totalTokens).toBe(10);
       expect(summary.cacheStatus?.pendingFiles).toBe(1);
     });

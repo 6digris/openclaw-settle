@@ -5,6 +5,7 @@ import { trackSqliteStatementExecutions } from "../../test/helpers/sqlite-statem
 import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
 import {
   closeOpenClawAgentDatabasesForTest,
+  closeOpenClawAgentDatabasesAsync,
   openOpenClawAgentDatabase,
   resolveOpenClawAgentSqlitePath,
 } from "../state/openclaw-agent-db.js";
@@ -32,9 +33,9 @@ function countRegisteredAgentDatabases(): number {
   return row.count;
 }
 
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
-  closeOpenClawAgentDatabasesForTest();
+  await closeOpenClawAgentDatabasesAsync();
   closeOpenClawStateDatabaseForTest();
   cleanupTempDirs(tempDirs);
 });
@@ -53,11 +54,14 @@ describe("session cost usage SQLite cache", () => {
           updatedAt: 1,
         });
       }
-      expect(readSessionCostUsageRollupRows(agentId, undefined, ["selected.jsonl"])).toEqual([
+      const selection = ["selected.jsonl"];
+      const reading = readSessionCostUsageRollupRows(agentId, undefined, selection);
+      selection[0] = "unrelated.jsonl";
+      expect(await reading).toEqual([
         { key: "selected.jsonl", updatedAt: 1, valueJson: '{"session":"selected.jsonl"}' },
       ]);
-      expect(readSessionCostUsageRollupRows(agentId, undefined, [])).toEqual([]);
-      expect(readSessionCostUsageRollupRows(agentId)).toHaveLength(2);
+      expect(await readSessionCostUsageRollupRows(agentId, undefined, [])).toEqual([]);
+      expect(await readSessionCostUsageRollupRows(agentId)).toHaveLength(2);
     });
   });
 
@@ -112,7 +116,7 @@ describe("session cost usage SQLite cache", () => {
     await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
       const databasePath = resolveOpenClawAgentSqlitePath({ agentId: "worker-1" });
 
-      expect(readSessionCostUsageRollupRows("worker-1", databasePath)).toEqual([]);
+      expect(await readSessionCostUsageRollupRows("worker-1", databasePath)).toEqual([]);
       expect(await isSessionCostUsageRefreshRunning("worker-1", databasePath)).toBe(false);
       expect(fs.existsSync(databasePath)).toBe(false);
       expect(fs.existsSync(path.join(stateDir, "state", "openclaw.sqlite"))).toBe(false);
@@ -132,7 +136,7 @@ describe("session cost usage SQLite cache", () => {
       stateDatabase.db.prepare("DELETE FROM agent_databases").run();
       expect(countRegisteredAgentDatabases()).toBe(0);
 
-      expect(readSessionCostUsageRollupRows(agentId, databasePath)).toEqual([]);
+      expect(await readSessionCostUsageRollupRows(agentId, databasePath)).toEqual([]);
       expect(await isSessionCostUsageRefreshRunning(agentId, databasePath)).toBe(false);
       expect(countRegisteredAgentDatabases()).toBe(0);
 
@@ -172,7 +176,7 @@ describe("session cost usage SQLite cache", () => {
             updatedAt: 1,
           }),
         ).toBe(true);
-        const rows = readSessionCostUsageRollupRows(agentId);
+        const rows = await readSessionCostUsageRollupRows(agentId);
 
         const refreshed = writeSessionCostUsageRollup({
           agentId,
@@ -184,7 +188,7 @@ describe("session cost usage SQLite cache", () => {
         await deleteSessionCostUsageRollupsExcept({ agentId, liveKeys: new Set(), rows });
         expect(await refreshed).toBe(true);
 
-        expect(readSessionCostUsageRollupRows(agentId)).toEqual([
+        expect(await readSessionCostUsageRollupRows(agentId)).toEqual([
           { key: rollupId, updatedAt: 2, valueJson: refreshedValue },
         ]);
       });
@@ -210,7 +214,7 @@ describe("session cost usage SQLite cache", () => {
       }
       insert.run(scope, "live\0雪", '{ "totalTokens": 100 }', 100);
       insert.run("other", "stale-0", '{"totalTokens":0}', 1);
-      const rows = readSessionCostUsageRollupRows(agentId);
+      const rows = await readSessionCostUsageRollupRows(agentId);
       db.prepare("UPDATE cache_entries SET value_json = ? WHERE scope = ? AND key = ?").run(
         '{"totalTokens":18}',
         scope,
@@ -259,7 +263,7 @@ describe("session cost usage SQLite cache", () => {
       insert.run("session-cost-usage", "cache", "{}", 1);
       insert.run("session-cost-usage-rollup-v1", "retired", "{}", 1);
       insert.run("session-cost-usage", "refresh-lock", "{}", 1);
-      const rows = readSessionCostUsageRollupRows(agentId);
+      const rows = await readSessionCostUsageRollupRows(agentId);
       const before = db.prepare("SELECT * FROM cache_entries ORDER BY scope, key").all();
       db.exec(`CREATE TEMP TRIGGER refuse_late_rollup_prune BEFORE DELETE ON cache_entries
         WHEN OLD.scope = 'session-cost-usage-rollup-v2' AND OLD.key = 'stale-080'
@@ -301,7 +305,7 @@ describe("session cost usage SQLite cache", () => {
       insert.run("session-cost-usage", "refresh-lock", "{}", 1);
       insert.run("other", "keep", "{}", 1);
 
-      const rows = readSessionCostUsageRollupRows(agentId);
+      const rows = await readSessionCostUsageRollupRows(agentId);
       expect(rows).toEqual([{ key: "current.jsonl", updatedAt: 2, valueJson: '{"version":2}' }]);
 
       await deleteSessionCostUsageRollupsExcept({

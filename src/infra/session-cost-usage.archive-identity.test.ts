@@ -269,7 +269,7 @@ describe("usage archive identity", () => {
         expect(
           await loadCostUsageSummaryFromCache({ ...params, requestRefresh: false }),
         ).toMatchObject({ totals: { totalTokens: 46 }, cacheStatus: { status: "fresh" } });
-        expect(readSessionCostUsageRollupRows("main")).toHaveLength(1);
+        expect(await readSessionCostUsageRollupRows("main")).toHaveLength(1);
       } finally {
         await work.drain();
       }
@@ -370,7 +370,7 @@ describe("usage archive identity", () => {
       }),
     ).toMatchObject({ totals: { totalTokens: 36 } });
     expect(readSessionColdTranscript(database.db, scope.sessionId)).toBeUndefined();
-    const rollups = readSessionCostUsageRollupRows("main");
+    const rollups = await readSessionCostUsageRollupRows("main");
     const missingScope = {
       ...scope,
       sessionKey: "agent:main:missing-usage",
@@ -403,7 +403,7 @@ describe("usage archive identity", () => {
     await expect(
       loadSessionLogs({ agentId: "main", sessionFile: missingFile.filePath }),
     ).rejects.toThrow(/missing|unreadable/);
-    expect(readSessionCostUsageRollupRows("main")).toEqual(rollups);
+    expect(await readSessionCostUsageRollupRows("main")).toEqual(rollups);
     expect(readSessionColdTranscript(database.db, missingScope.sessionId)).toBeDefined();
   });
 
@@ -447,7 +447,7 @@ describe("usage archive identity", () => {
           expect(resolved.filePath === sessionFile).toBe(encoding === "plain");
 
           const cacheLookup = { agentId, config, sessions: [{ sessionId, sessionFile }] };
-          expect(readSessionCostUsageRollupRows(agentId)).toEqual([]);
+          expect(await readSessionCostUsageRollupRows(agentId)).toEqual([]);
           expect(await loadSessionCostSummariesFromCache(cacheLookup)).toMatchObject({
             summaries: [null],
             cacheStatus: { status: "refreshing", cachedFiles: 0, pendingFiles: 1 },
@@ -475,10 +475,10 @@ describe("usage archive identity", () => {
             sessionId,
             points: [expect.objectContaining({ totalTokens: 17, cumulativeTokens: 17 })],
           });
-          const firstRows = readSessionCostUsageRollupRows(agentId);
+          const firstRows = await readSessionCostUsageRollupRows(agentId);
           expect(firstRows.map((row) => row.key)).toEqual([resolved.filePath]);
           expect(await loadSessionCostSummary(lookup)).toEqual(summary);
-          expect(readSessionCostUsageRollupRows(agentId)).toEqual(firstRows);
+          expect(await readSessionCostUsageRollupRows(agentId)).toEqual(firstRows);
           expect(await cachedTotal(agentId)).toMatchObject({
             totals: { totalTokens: 17 },
             cacheStatus: { status: "fresh" },
@@ -591,7 +591,7 @@ describe("usage archive identity", () => {
       await resolveUsageCostTranscriptFile(sessionFile),
       "original archive",
     );
-    const originalRows = readSessionCostUsageRollupRows("main");
+    const originalRows = await readSessionCostUsageRollupRows("main");
     expect(originalRows.map((row) => row.key)).toEqual([original.filePath]);
 
     manager.appendMessage(assistant(29));
@@ -612,10 +612,10 @@ describe("usage archive identity", () => {
       totals: { totalTokens: 46 },
       cacheStatus: { status: "fresh" },
     });
-    const rows = readSessionCostUsageRollupRows("main");
+    const rows = await readSessionCostUsageRollupRows("main");
     expect(rows.map((row) => row.key)).toEqual([replacement.filePath]);
     const fingerprint = await resolveUsageCostPricingFingerprint(config, state.agentDir());
-    const rollups = readUsageCostRollups("main", fingerprint);
+    const rollups = await readUsageCostRollups("main", fingerprint);
     expect(rollups.get(replacement.filePath)?.entry.checkpoint).toMatchObject({
       kind: "jsonl",
       parsedOffset: Buffer.byteLength(serialize(manager)),
@@ -630,20 +630,20 @@ describe("usage archive identity", () => {
     });
     expect(await loadSessionLogs(lookup)).toHaveLength(3);
     expect(await loadSessionCostSummary(lookup)).toMatchObject({ totalTokens: 46 });
-    expect(readSessionCostUsageRollupRows("main")).toEqual(rows);
+    expect(await readSessionCostUsageRollupRows("main")).toEqual(rows);
   });
 
   it("preserves rollups when a compressed source becomes unreadable", async () => {
     const manager = transcript();
     const sessionFile = await writeArchive({ state, manager, encoding: "zstd" });
     await loadSessionCostSummary({ agentId: "main", sessionFile, config });
-    const rows = readSessionCostUsageRollupRows("main");
+    const rows = await readSessionCostUsageRollupRows("main");
     expect(rows).toHaveLength(1);
     await fs.writeFile(sessionFile, "not a zstd frame");
 
     await expect(resolveUsageCostTranscriptFile(sessionFile)).resolves.toBeUndefined();
     await expect(discoverAllSessions({ agentId: "main" })).rejects.toThrow();
     await expect(refreshCostUsageCacheForAgent({ agentId: "main", config })).rejects.toThrow();
-    expect(readSessionCostUsageRollupRows("main")).toEqual(rows);
+    expect(await readSessionCostUsageRollupRows("main")).toEqual(rows);
   });
 });

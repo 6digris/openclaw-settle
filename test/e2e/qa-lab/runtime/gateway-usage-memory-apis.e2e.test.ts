@@ -194,7 +194,7 @@ describe("gateway usage and memory APIs", () => {
         const { databasePath } = await seedCompletedUsageSession(state);
         const databaseStats = await fs.stat(databasePath);
         expect(databaseStats.isFile()).toBe(true);
-        const rollupRows = readSessionCostUsageRollupRows("main", databasePath);
+        const rollupRows = await readSessionCostUsageRollupRows("main", databasePath);
         expect(rollupRows).toHaveLength(1);
         expect(parseSqliteSessionFileMarker(rollupRows[0]?.key)).toEqual({
           agentId: "main",

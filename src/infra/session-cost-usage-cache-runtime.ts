@@ -78,7 +78,7 @@ export async function loadCostUsageSummary(params: {
     storePath,
   });
   const pricingFingerprint = await resolveUsageCostPricingFingerprint(params.config, agentDir);
-  const rollups = readUsageCostRollups(params.agentId, pricingFingerprint, databasePath);
+  const rollups = await readUsageCostRollups(params.agentId, pricingFingerprint, databasePath);
   const files = await listUsageCountedTranscriptStats(params.agentId, { storePath });
   return buildCostUsageSummaryFromRollups({
     rollups,
@@ -106,7 +106,7 @@ export async function loadCostUsageSummaryFromCache(params: {
   const databasePath = resolveUsageCostCacheDatabasePath(params.agentId);
   const storePath = resolveSessionStorePathForScope(params, params.config);
   const pricingFingerprint = await resolveUsageCostPricingFingerprint(params.config, agentDir);
-  let rollups = readUsageCostRollups(params.agentId, pricingFingerprint, databasePath);
+  let rollups = await readUsageCostRollups(params.agentId, pricingFingerprint, databasePath);
   let files = await listUsageCountedTranscriptStats(params.agentId, { storePath });
   const staleFiles = getUsageCostStaleRollupFiles({ rollups, files });
   if (params.requestRefresh !== false && staleFiles.length > 0) {
@@ -119,7 +119,7 @@ export async function loadCostUsageSummaryFromCache(params: {
         storePath,
         startMs: params.startMs,
       });
-      rollups = readUsageCostRollups(params.agentId, pricingFingerprint, databasePath);
+      rollups = await readUsageCostRollups(params.agentId, pricingFingerprint, databasePath);
       files = await listUsageCountedTranscriptStats(params.agentId, { storePath });
       if (result === "refreshed" && getUsageCostStaleRollupFiles({ rollups, files }).length > 0) {
         requestCostUsageCacheRefresh({ config: params.config, agentId: params.agentId, storePath });
@@ -157,7 +157,7 @@ export async function loadSessionCostSummariesFromCache(params: {
   const files = await resolveUsageCostTranscriptFiles(
     params.sessions.map((session) => session.sessionFile),
   );
-  const rollups = readUsageCostRollups(params.agentId, pricingFingerprint, databasePath, {
+  const rollups = await readUsageCostRollups(params.agentId, pricingFingerprint, databasePath, {
     filePaths: files.flatMap((file) => (file ? [file.filePath] : [])),
   });
   const staleFiles = new Set<string>();

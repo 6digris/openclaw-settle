@@ -137,9 +137,11 @@ export async function loadSessionCostSummary(params: {
     return null;
   }
   const pricingFingerprint = await resolveUsageCostPricingFingerprint(params.config, agentDir);
-  const stored = readUsageCostRollups(params.agentId, pricingFingerprint, databasePath, {
-    filePaths: [currentFile.filePath],
-  }).get(currentFile.filePath);
+  const stored = (
+    await readUsageCostRollups(params.agentId, pricingFingerprint, databasePath, {
+      filePaths: [currentFile.filePath],
+    })
+  ).get(currentFile.filePath);
   if (!stored || !isUsageCostRollupFresh({ stored, file: currentFile })) {
     return null;
   }
