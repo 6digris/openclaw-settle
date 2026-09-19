@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { expressionBuilder, type SelectQueryBuilder } from "kysely";
+import type { UserProfile as UserProfileListItem } from "../../packages/gateway-protocol/src/schema/users.js";
 import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import {
   openOpenClawStateDatabase,
@@ -8,16 +9,29 @@ import {
 import {
   ensureUserProfilesSchema,
   hasEnsuredUserProfileRoleSchema,
-  type UserProfilesDatabase,
   UserProfileNotFoundError,
 } from "./user-profiles-schema.js";
 import {
   USER_PROFILE_AVATAR_MIME_TYPES,
   type UserProfileAvatarMime,
 } from "./user-profiles-tailscale-avatar.js";
+import type { UserProfilesDatabase } from "./user-profiles.types.js";
 
 export type UserProfileRow = UserProfilesDatabase["user_profiles"];
 export type UserProfileMetadataRow = Omit<UserProfileRow, "avatar">;
+export type UserProfile = Omit<UserProfileListItem, "emails" | "githubIdentity" | "hasAvatar">;
+
+export function toUserProfile(row: Omit<UserProfileMetadataRow, "avatar_sha256">): UserProfile {
+  return {
+    id: row.id,
+    displayName: row.display_name,
+    avatarMime: normalizeUserProfileAvatarMime(row.avatar_mime),
+    mergedInto: row.merged_into,
+    ...(row.role ? { role: row.role } : {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
 
 // Selection metadata is immutable and carries no database handle or profile state.
 export const userProfileAvatarPresence = expressionBuilder<UserProfilesDatabase, "user_profiles">()(
@@ -56,7 +70,7 @@ export function selectResolvedUserProfile<T extends Pick<UserProfileRow, "merged
   );
 }
 
-function selectResolvedUserProfileById(
+export function selectResolvedUserProfileById(
   db: DatabaseSync,
   profileId: string,
 ): UserProfileRow | undefined {

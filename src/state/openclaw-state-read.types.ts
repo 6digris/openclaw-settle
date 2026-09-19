@@ -6,6 +6,7 @@ import type { AsyncWorkScope } from "../shared/async-work-scope.js";
 import type { ConfigMachineState } from "./openclaw-state-db.generated.js";
 import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
 import type { OpenClawStateWorkerErrorPayload } from "./openclaw-state-worker-error.js";
+import type { ProfileDisplayRow } from "./user-profiles.types.js";
 
 export type OpenClawStateReadLocation = {
   context: OpenClawStateWorkerContext;
@@ -20,6 +21,7 @@ export type OpenClawStateReadAuthority = {
 };
 
 export type OpenClawStateReadCommand =
+  | { type: "userProfiles.avatar.reconcile"; profileId: string }
   | { type: "fleet.list" }
   | { type: "fleet.get"; tenantId: string }
   | { type: "nodeHost.config" };
@@ -32,6 +34,12 @@ export type OpenClawStateReadRequest = {
   command: OpenClawStateReadCommand | { type: "admit" };
 };
 export type OpenClawStateReadReply =
+  | {
+      ok: true;
+      type: "userProfiles.avatar.reconcile";
+      sourceAdmitted: true;
+      profile: ProfileDisplayRow | undefined;
+    }
   | { ok: true; type: "admit" }
   | { ok: true; type: "fleet.list"; sourceAdmitted: true; cells: FleetCellRecord[] }
   | { ok: true; type: "fleet.get"; sourceAdmitted: true; cell: FleetCellRecord | undefined }
