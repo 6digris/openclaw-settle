@@ -7,10 +7,17 @@ import {
   createOpenClawAgentDatabaseClaim,
   type OpenClawAgentDatabaseClaim,
 } from "./openclaw-agent-db-identity.js";
+import { withCommittedOpenClawAgentDatabaseReadOnly } from "./openclaw-agent-db-readonly-companion.js";
 import {
   openOpenClawAgentDatabaseReadOnly,
+  readOpenClawAgentDatabaseReadOnly,
+  type OpenClawAgentDatabaseReadOnlyResult,
   type OpenClawAgentReadOnlyDatabase,
 } from "./openclaw-agent-db-readonly-open.js";
+import {
+  withScopedOpenClawAgentDatabaseReadOnly,
+  type OpenClawAgentDatabaseReadOnlyBehavior,
+} from "./openclaw-agent-db-readonly-scope.js";
 import {
   assertCanonicalAgentPersistenceVersion,
   assertSupportedAgentSchemaVersion,
@@ -30,15 +37,6 @@ export {
   type OpenClawAgentReadOnlyDatabaseHandle,
   type OpenClawAgentDatabaseReadOnlyOpenResult,
 } from "./openclaw-agent-db-readonly-open.js";
-
-type OpenClawAgentDatabaseReadOnlyResult<T> =
-  | { found: true; value: T }
-  | { found: false; reason: "database-missing" | "schema-missing" | "table-missing" };
-
-type OpenClawAgentDatabaseReadOnlyBehavior = {
-  throwOnMissingTable?: boolean;
-  allowExtension?: boolean;
-};
 
 /**
  * Look up a process-held handle without adopting writer-side failures.
@@ -106,37 +104,24 @@ export function withOpenClawAgentDatabaseReadOnly<T>(
   const processOpened = behavior.allowExtension
     ? undefined
     : findOpenAgentDatabase({ ...options, agentId });
+  if (processOpened?.db.isTransaction) {
+    return withCommittedOpenClawAgentDatabaseReadOnly(
+      processOpened,
+      operation,
+      { ...options, agentId },
+      behavior,
+    );
+  }
   const reusable = processOpened && !processOpened.db.isTransaction ? processOpened : undefined;
-  const fresh = reusable
-    ? undefined
-    : openOpenClawAgentDatabaseReadOnly({ ...options, agentId }, behavior);
-  if (fresh && !fresh.found) {
-    return fresh;
+  if (!reusable) {
+    return withScopedOpenClawAgentDatabaseReadOnly(
+      operation,
+      { ...options, agentId, path: pathname },
+      behavior,
+    );
   }
-  const database = reusable ?? fresh!.database;
-  const { db } = database;
-  try {
-    if (reusable) {
-      // Share only this admission's fresh value; a later read must check again.
-      const userVersion = assertSupportedAgentSchemaVersion(db, pathname);
-      assertCanonicalAgentPersistenceVersion(db, pathname, userVersion);
-    }
-    try {
-      return { found: true, value: operation(database) };
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        (error as NodeJS.ErrnoException).code === "ERR_SQLITE_ERROR" &&
-        /\bno such table:/iu.test(error.message) &&
-        !behavior.throwOnMissingTable
-      ) {
-        return { found: false, reason: "table-missing" };
-      }
-      throw error;
-    }
-  } finally {
-    if (fresh?.found) {
-      fresh.database.close();
-    }
-  }
+  // Share only this admission's fresh value; a later read must check again.
+  const userVersion = assertSupportedAgentSchemaVersion(reusable.db, pathname);
+  assertCanonicalAgentPersistenceVersion(reusable.db, pathname, userVersion);
+  return readOpenClawAgentDatabaseReadOnly(reusable, operation, behavior);
 }

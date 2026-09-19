@@ -10,6 +10,7 @@ import {
 import {
   defineFinalizableLivePreviewAdapter,
   deliverWithFinalizableLivePreviewAdapter,
+  isChannelProgressDraftWorkToolName,
 } from "openclaw/plugin-sdk/channel-outbound";
 import { toErrorObject } from "openclaw/plugin-sdk/error-runtime";
 import { resolveMarkdownTableMode } from "openclaw/plugin-sdk/markdown-table-runtime";
@@ -340,7 +341,7 @@ async function dispatchSlackMessageWithSetup(
           draftStream && !draftPreviewCommitted.value && !delivery.observedFinalReplyDelivery
             ? {
                 flush: draftStream.flush,
-                clear: draftStream.clear,
+                clear: () => draftStream.clear({ preserveHumanReplies: true }),
                 discardPending: draftStream.discardPending,
                 seal: draftStream.seal,
                 id: () => {
@@ -562,6 +563,14 @@ async function dispatchSlackMessageWithSetup(
           if (payload.phase === "start") {
             progress.progressWorkCounter.noteToolCall(payload.name);
           }
+          // Work still opens the delayed preview gate, but must not accumulate
+          // file statistics or replace the preamble with intermediate failures.
+          // Approvals and terminal replies retain their separate delivery paths.
+          if (progress.preambleOnlyProgress) {
+            return isChannelProgressDraftWorkToolName(payload.name)
+              ? await progress.progressDraft.noteActivity()
+              : false;
+          }
           return await progress.progressDraft.pushToolEvent(payload);
         },
         onItemEvent: async (payload) => {
@@ -591,29 +600,38 @@ async function dispatchSlackMessageWithSetup(
                 payload.progressText,
                 {
                   itemId: payload.itemId,
+                  ...(progress.preambleOnlyProgress
+                    ? { complete: payload.phase !== "start" && payload.phase !== "update" }
+                    : {}),
                 },
               );
               return accepted || headlineVisible;
             }
             return headlineVisible;
           }
-          return await progress.progressDraft.pushItemEvent(payload);
+          return progress.preambleOnlyProgress
+            ? await progress.progressDraft.noteActivity()
+            : await progress.progressDraft.pushItemEvent(payload);
         },
         onPlanUpdate: async (payload) => {
           if (payload.phase !== "update") {
             return false;
           }
-          return await progress.pushPlanProgress(payload.steps, payload.explanation);
+          return await progress.pushPlanProgress(
+            payload.steps,
+            payload.explanation,
+            payload.explanationFormat,
+          );
         },
-        onApprovalEvent: async (payload) => {
-          return await progress.progressDraft.pushApprovalEvent(payload);
-        },
-        onCommandOutput: async (payload) => {
-          return await progress.progressDraft.pushCommandOutputEvent(payload);
-        },
-        onPatchSummary: async (payload) => {
-          return await progress.progressDraft.pushPatchEvent(payload);
-        },
+        onApprovalEvent: (payload) => progress.progressDraft.pushApprovalEvent(payload),
+        onCommandOutput: async (payload) =>
+          progress.preambleOnlyProgress
+            ? await progress.progressDraft.noteActivity()
+            : await progress.progressDraft.pushCommandOutputEvent(payload),
+        onPatchSummary: async (payload) =>
+          progress.preambleOnlyProgress
+            ? await progress.progressDraft.noteActivity()
+            : await progress.progressDraft.pushPatchEvent(payload),
       },
     });
     if (turnResult.dispatched) {
@@ -657,6 +675,16 @@ async function dispatchSlackMessageWithSetup(
   const anyReplyDelivered = hasVisibleInboundReplyDispatch(settledDispatchResult, {
     observedReplyDelivery: delivery.observedReplyDelivery,
   });
+
+  if (
+    !progress.isProgressMode &&
+    anyReplyDelivered &&
+    !delivery.observedFinalReplyDelivery &&
+    !dispatchError &&
+    !agentRunFailed
+  ) {
+    await draftStream?.clear({ preserveHumanReplies: true });
+  }
 
   if (
     progress.isProgressMode &&
