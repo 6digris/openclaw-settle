@@ -8,7 +8,7 @@ final class ChromeExtensionSetup {
     nonisolated static func arguments(action: ChromeExtensionSetupAction) -> [String] {
         [
             "browser", "extension", "setup", "--action", action.rawValue,
-            "--json", "--browser-profile", "chrome", "--wait-ms", "1000",
+            "--json", "--wait-ms", "1000",
         ]
     }
 
@@ -106,8 +106,10 @@ final class ChromeExtensionSetup {
 
     static func readResult(_ stdout: String, action: ChromeExtensionSetupAction) throws -> Result {
         let result = try JSONDecoder().decode(Result.self, from: Data(stdout.utf8))
+        let profile = result.target.profile
         guard result.action == action, result.target.kind == "local-host", result.target.platform == "darwin",
-              result.target.profile == "chrome", (1...65535).contains(result.target.relayPort),
+              profile.range(of: "\\A[a-z0-9][a-z0-9-]{0,63}\\z", options: .regularExpression) != nil,
+              (1...65535).contains(result.target.relayPort),
               !result.target.hostname.isEmpty, result.target.hostname.count <= 255,
               result.installation.discoveredProfiles >= 0,
               result.reason.range(of: "^[a-z][a-z0-9_]{0,79}$", options: .regularExpression) != nil,

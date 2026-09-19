@@ -92,10 +92,61 @@ describe("Apps local Chrome setup", () => {
       "https://docs.openclaw.ai/tools/chrome-extension",
     ]);
   });
+  it.each([
+    { label: "legacy", actions: undefined },
+    { label: "none", actions: [] },
+    { label: "inspect only", actions: ["inspect"] },
+    { label: "install and verify", actions: ["install", "verify"] },
+  ] as const)(
+    "offers only advertised Mac actions or the released legacy install: $label", async ({ actions }) => {
+      const snapshot = createNativeDeviceSettingsSnapshot();
+      if (actions === undefined) { delete snapshot.browser!.chromeSetupActions; }
+      else { snapshot.browser!.chromeSetupActions = [...actions]; }
+      const post = vi.fn(async (message: { type: string; action?: string }) => {
+        if (message.type === "install-chrome-extension") {
+          return { nativeHostRegistered: true, installRequested: true, discoveredProfiles: 0 };
+        }
+        if (message.type === "chrome-extension-setup") {
+          return result({ action: message.action as "install" | "inspect" | "verify" });
+        }
+        return snapshot;
+      });
+      Object.assign(window, { __OPENCLAW_NATIVE_DEVICE_SETTINGS__: snapshot });
+      Object.defineProperty(window, "webkit", { configurable: true, value: {
+        messageHandlers: { openclawDeviceSettings: { postMessage: post } },
+      } });
+      const capability = createNativeDeviceSettingsCapability()!;
+      try {
+        const { setup } = await mount(capability);
+        const expected: readonly string[] = actions ?? ["install"];
+        const labels = { install: "Set up Chrome on this device", inspect: "Refresh setup status", verify: "Verify connection" };
+        expect([...setup.querySelectorAll("button")].map((button) => button.textContent?.trim())).toEqual(
+          ["install", "inspect", "verify"].filter((action) => expected.includes(action)).map((action) => labels[action as keyof typeof labels]),
+        );
+        if (actions === undefined) {
+          click(setup, labels.install);
+          await vi.waitFor(() => expect(setup.textContent).toContain("Connection has not been verified on this device."));
+          expect(post).toHaveBeenCalledWith({ type: "install-chrome-extension" });
+          expect(post.mock.calls.some(([message]) => message.type === "chrome-extension-setup")).toBe(false);
+          expect(setup.textContent).not.toContain("Extension connected on this device.");
+        } else {
+          for (const action of actions) {
+            click(setup, labels[action]);
+            await setup.updateComplete;
+            await vi.waitFor(() => expect(setup.querySelector<HTMLButtonElement>("button")!.disabled).toBe(false));
+            expect(post).toHaveBeenCalledWith({ type: "chrome-extension-setup", action });
+          }
+          expect(post.mock.calls.some(([message]) => message.type === "install-chrome-extension")).toBe(false);
+        }
+      } finally { capability.dispose(); }
+    },
+  );
   it("uses the existing Mac device-settings context without a desktop handler", async () => {
     const snapshot = createNativeDeviceSettingsSnapshot();
     const post = vi.fn(async (message: { type: string; action?: string }) =>
-      message.type === "chrome-extension-setup" ? result({ action: "inspect" }) : snapshot,
+      message.type === "chrome-extension-setup"
+        ? result({ action: "inspect", target: { ...result().target, profile: "work", relayPort: 19444 } })
+        : snapshot,
     );
     Object.assign(window, { __OPENCLAW_NATIVE_DEVICE_SETTINGS__: snapshot });
     Object.defineProperty(window, "webkit", {
@@ -108,6 +159,8 @@ describe("Apps local Chrome setup", () => {
       expect(post.mock.calls.filter(([m]) => m.type === "chrome-extension-setup")).toEqual([]);
       click(setup, "Refresh setup status");
       await vi.waitFor(() => expect(setup.textContent).toContain("Example Mac"));
+      expect(setup.textContent).toContain("work");
+      expect(setup.textContent).toContain("19444");
       expect(post).toHaveBeenCalledWith({ type: "chrome-extension-setup", action: "inspect" });
     } finally {
       capability.dispose();
@@ -174,7 +227,7 @@ describe("Apps local Chrome setup", () => {
         kind: "local-host",
         platform: "linux",
         hostname: "Example",
-        profile: "other",
+        profile: "invalid/profile",
         relayPort: 18792,
       },
     },

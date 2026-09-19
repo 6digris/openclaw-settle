@@ -248,22 +248,12 @@ class DevicePage extends OpenClawLightDomElement {
                 >
                 ${renderLearnMoreLink("https://docs.openclaw.ai/tools/chrome-extension")}
               </div>
-              ${
-                this.legacyExtensionResult &&
-                !this.extensionSetupRunning &&
-                !this.extensionSetupFailed
-                  ? html`<p role="status">
-                        ${t(this.legacyExtensionResult.nativeHostRegistered ? "configPage.deviceSettings.chromeExtensionPhases.waiting_for_connection" : "configPage.deviceSettings.chromeExtensionFailed")}
-                      </p>
-                      <p>
-                        ${t(this.legacyExtensionResult.installRequested || this.legacyExtensionResult.discoveredProfiles > 0 ? "configPage.deviceSettings.chromeExtensionNextActions.open_chrome" : "configPage.deviceSettings.chromeExtensionNextActions.install_from_store")}
-                      </p>`
-                  : renderChromeSetupStatus({
-                      result: this.extensionSetupResult,
-                      running: this.extensionSetupRunning,
-                      failed: this.extensionSetupFailed,
-                    })
-              }
+              ${renderChromeSetupStatus({
+                result: this.extensionSetupResult,
+                legacyResult: this.legacyExtensionResult,
+                running: this.extensionSetupRunning,
+                failed: this.extensionSetupFailed,
+              })}
             </div>
           `,
         }),

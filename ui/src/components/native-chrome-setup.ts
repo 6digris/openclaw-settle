@@ -8,6 +8,7 @@ import {
   type NativeChromeExtensionSetupAction,
   type NativeChromeExtensionSetupResult,
 } from "../app/native-chrome-setup.ts";
+import type { LegacyChromeInstallResult } from "../app/native-device-settings.ts";
 import { t } from "../i18n/index.ts";
 import { OpenClawLightDomElement } from "../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../lit/subscriptions-controller.ts";
@@ -20,6 +21,7 @@ class NativeChromeSetup extends OpenClawLightDomElement {
   @state() private running = false;
   @state() private failed = false;
   @state() private result: NativeChromeExtensionSetupResult | null = null;
+  @state() private legacyResult: LegacyChromeInstallResult | null = null;
   private desktopCapability: NativeChromeSetupCapability | null = null;
   private generation = 0;
   private readonly subscriptions = new SubscriptionsController(this)
@@ -43,20 +45,35 @@ class NativeChromeSetup extends OpenClawLightDomElement {
     this.subscriptions.clear();
     super.disconnectedCallback();
   }
+  private get macCapability() {
+    const mac = this.context?.nativeDeviceSettings;
+    return mac?.snapshot?.device.platform === "macos" ? mac : null;
+  }
   private get capability() {
     // The Mac app's existing context owns its device-settings transport.
-    const mac = this.context?.nativeDeviceSettings;
-    return mac?.snapshot?.device.platform === "macos" ? mac : this.desktopCapability;
+    return this.macCapability ?? this.desktopCapability;
+  }
+  private get actions(): readonly NativeChromeExtensionSetupAction[] {
+    const mac = this.macCapability;
+    if (!mac) {
+      return this.desktopCapability ? ["install", "inspect", "verify"] : [];
+    }
+    const browser = mac.snapshot?.browser;
+    if (!browser) {
+      return [];
+    }
+    return browser.chromeSetupActions ?? (mac.installChromeExtension ? ["install"] : []);
   }
   private reset() {
     this.generation += 1;
     this.running = false;
     this.failed = false;
     this.result = null;
+    this.legacyResult = null;
   }
   private async setup(action: NativeChromeExtensionSetupAction) {
     const capability = this.capability;
-    if (!this.isConnected || !capability || this.running) {
+    if (!this.isConnected || !capability || this.running || !this.actions.includes(action)) {
       return;
     }
     const generation = ++this.generation;
@@ -65,10 +82,22 @@ class NativeChromeSetup extends OpenClawLightDomElement {
     this.running = true;
     this.failed = false;
     this.result = null;
+    this.legacyResult = null;
     try {
-      const result = await capability.setupChromeExtension(action);
-      if (isCurrent()) {
-        this.result = result;
+      const mac = this.macCapability;
+      if (mac && mac.snapshot?.browser?.chromeSetupActions === undefined) {
+        if (action !== "install" || !mac.installChromeExtension) {
+          return;
+        }
+        const result = await mac.installChromeExtension();
+        if (isCurrent() && this.actions.includes(action)) {
+          this.legacyResult = result;
+        }
+      } else {
+        const result = await capability.setupChromeExtension(action);
+        if (isCurrent() && this.actions.includes(action)) {
+          this.result = result;
+        }
       }
     } catch {
       if (isCurrent()) {
@@ -94,20 +123,22 @@ class NativeChromeSetup extends OpenClawLightDomElement {
               ["inspect", "chromeExtensionRefresh"],
               ["verify", "chromeExtensionVerify"],
             ] as const
-          ).map(
-            ([action, label]) => html`
-              <button
-                type="button"
-                class="btn"
-                ?disabled=${this.running}
-                @click=${() => this.setup(action)}
-              >
-                ${t(`configPage.deviceSettings.${label}`)}
-              </button>
-            `,
-          )}
+          )
+            .filter(([action]) => this.actions.includes(action))
+            .map(
+              ([action, label]) => html`
+                <button
+                  type="button"
+                  class="btn"
+                  ?disabled=${this.running}
+                  @click=${() => this.setup(action)}
+                >
+                  ${t(`configPage.deviceSettings.${label}`)}
+                </button>
+              `,
+            )}
         </div>
-        ${renderChromeSetupStatus({ result: this.result, running: this.running, failed: this.failed })}
+        ${renderChromeSetupStatus({ result: this.result, legacyResult: this.legacyResult, running: this.running, failed: this.failed })}
       </div>
     `;
   }

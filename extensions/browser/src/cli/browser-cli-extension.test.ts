@@ -1,7 +1,10 @@
+import fs from "node:fs/promises";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCliRuntimeCapture } from "../../test-support.js";
+import { chromeProductRoots } from "../browser/extension-install-layout.js";
 import type { installChromeExtensionBootstrap } from "../browser/extension-install.js";
+import { useExtensionInstallFixture } from "../browser/extension-install.test-support.js";
 import { relayKeyIdFromHex } from "../browser/extension-relay/auth-v2-crypto.js";
 import * as cliCoreApiModule from "./core-api.js";
 
@@ -47,6 +50,7 @@ vi.mock("../browser/extension-install.js", async (importOriginal) => ({
 }));
 
 const { defaultRuntime: runtime, resetRuntimeCapture } = createCliRuntimeCapture();
+const installFixture = useExtensionInstallFixture();
 
 function createExtensionStatus() {
   return {
@@ -110,6 +114,62 @@ describe("browser extension pairing Gateway URL", () => {
     expect(JSON.stringify(jsonSpy.mock.calls)).not.toContain(relayMocks.relayKey);
     expect(relayMocks.ensureExtensionRelayToken).not.toHaveBeenCalled();
   });
+
+  it.each(["linux", "darwin"] as const)(
+    "preserves saved work selection through desktop startup argv on %s",
+    async (platform) => {
+      const value = await installFixture(platform);
+      const real = await vi.importActual<typeof import("../browser/extension-install.js")>(
+        "../browser/extension-install.js",
+      );
+      const root = chromeProductRoots(value.deps)[0]!;
+      await fs.mkdir(root.userDataDir, { recursive: true, mode: 0o700 });
+      let now = 0;
+      const deps = {
+        ...value.deps,
+        now: () => now,
+        sleep: async (ms: number) => {
+          now += ms;
+        },
+      };
+      const local = { bundledDir: value.bundledDir, pluginRoot: value.pluginRoot, deps };
+      await real.installChromeExtensionBootstrap({
+        ...local,
+        browserProfile: "work",
+        waitMs: 1000,
+      });
+      installMocks.browserExtensionStatus.mockImplementation((params) =>
+        real.browserExtensionStatus({ ...params, ...local }),
+      );
+      installMocks.installChromeExtensionBootstrap.mockImplementation((params) =>
+        real.installChromeExtensionBootstrap({ ...params, ...local }),
+      );
+      vi.spyOn(cliCoreApiModule, "getRuntimeConfig").mockReturnValue({
+        browser: { profiles: { work: { driver: "extension", cdpPort: 19444 } } },
+      });
+      const jsonSpy = vi
+        .spyOn(cliCoreApiModule.defaultRuntime, "writeJson")
+        .mockImplementation(runtime.writeJson);
+      const { registerBrowserExtensionCommands } = await import("./browser-cli-extension.js");
+      const program = new Command();
+      registerBrowserExtensionCommands(program.command("browser"), () => ({}));
+      // The Mac and Tauri argument-owner tests pin this same selector-free startup command.
+      await program.parseAsync(
+        ["browser", "extension", "setup", "--action", "install", "--json", "--wait-ms", "1000"],
+        { from: "user" },
+      );
+      expect(jsonSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          target: expect.objectContaining({ profile: "work", relayPort: 19444 }),
+        }),
+      );
+      const observed = await real.browserExtensionStatus(local);
+      expect(observed.registrations.find((entry) => entry.product === root.product)).toMatchObject({
+        state: "owned",
+        browserProfile: "work",
+      });
+    },
+  );
 
   it("prints the Store CTA only after native pre-registration is ready", async () => {
     installMocks.installChromeExtensionBootstrap.mockImplementation(

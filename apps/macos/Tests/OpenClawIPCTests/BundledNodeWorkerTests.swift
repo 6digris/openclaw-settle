@@ -128,7 +128,7 @@ struct BundledNodeWorkerTests {
         #expect(setup.command[0].hasPrefix(relocated.path + "/"))
         #expect(Array(setup.command.dropFirst(2)) == [
             "--profile", "browser-fixture", "browser", "extension", "setup", "--action", "install",
-            "--json", "--browser-profile", "chrome", "--wait-ms", "1000",
+            "--json", "--wait-ms", "1000",
         ])
         #expect(setup.currentDirectoryURL == worker.currentDirectoryURL)
         #expect(setup.environment == worker.environment)

@@ -167,7 +167,7 @@ pub fn parse_request(message: Value) -> Result<Action, String> {
     Ok(action)
 }
 
-fn arguments(action: Action) -> [&'static str; 10] {
+fn arguments(action: Action) -> [&'static str; 8] {
     [
         "browser",
         "extension",
@@ -179,8 +179,6 @@ fn arguments(action: Action) -> [&'static str; 10] {
             Action::Verify => "verify",
         },
         "--json",
-        "--browser-profile",
-        "chrome",
         "--wait-ms",
         "1000",
     ]
@@ -235,8 +233,6 @@ mod tests {
                     "--action",
                     name,
                     "--json",
-                    "--browser-profile",
-                    "chrome",
                     "--wait-ms",
                     "1000"
                 ]

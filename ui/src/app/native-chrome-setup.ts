@@ -10,7 +10,7 @@ export const nativeChromeExtensionSetupResultSchema = z.object({
     kind: z.literal("local-host"),
     platform: z.enum(["darwin", "linux", "win32"]),
     hostname: z.string().min(1).max(255),
-    profile: z.literal("chrome"),
+    profile: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
     relayPort: z.number().int().min(1).max(65535),
   }),
   phase: z.enum([

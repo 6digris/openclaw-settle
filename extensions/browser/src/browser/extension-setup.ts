@@ -100,9 +100,23 @@ export async function observeBrowserExtensionSetup(
 export async function runBrowserExtensionSetup(
   options: SetupOptions,
 ): Promise<BrowserExtensionSetupResult> {
-  // Capture the exact host profile before any install effect. Never use Gateway auto-routing.
+  options.signal?.throwIfAborted();
+  // Omission is not a request to replace an owned launcher selection. Native
+  // adapters have no profile picker; resolve their saved local selection before effects.
+  const observed =
+    options.profile === undefined
+      ? await observeBrowserExtensionSetup({ ...options, action: "inspect" })
+      : undefined;
+  const savedProfiles = new Set(
+    observed?.registrations
+      .filter((entry) => entry.state === "owned")
+      .map((entry) => entry.browserProfile ?? "chrome"),
+  );
+  if (savedProfiles.size > 1) {
+    throw new Error("Chrome setup requires an explicit profile when owned registrations disagree");
+  }
   const resolved = resolveBrowserConfig(options.cfg.browser, options.cfg);
-  const profileName = options.profile ?? "chrome";
+  const profileName = options.profile ?? savedProfiles.values().next().value ?? "chrome";
   const profile = resolveProfile(resolved, profileName);
   if (!profile || profile.driver !== "extension") {
     throw new Error("Chrome setup requires an existing extension browser profile");
@@ -111,7 +125,10 @@ export async function runBrowserExtensionSetup(
     profile.cdpPort ??
     resolved.extensionRelayPorts[profileName] ??
     resolved.extensionRelayDefaultPort;
-  const status = await observeBrowserExtensionSetup({ ...options, profile: profileName });
+  const status =
+    options.action !== "install" && observed
+      ? observed
+      : await observeBrowserExtensionSetup({ ...options, profile: profileName });
   options.signal?.throwIfAborted();
   const healthyProducts = new Set(
     status.registrations

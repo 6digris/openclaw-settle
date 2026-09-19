@@ -203,8 +203,16 @@ struct ChromeExtensionSetupTests {
         #expect(result.action == action)
         #expect(ChromeExtensionSetup.arguments(action: action) == [
             "browser", "extension", "setup", "--action", action.rawValue,
-            "--json", "--browser-profile", "chrome", "--wait-ms", "1000",
+            "--json", "--wait-ms", "1000",
         ])
+    }
+
+    @Test func `canonical saved browser profile crosses the native result boundary`() throws {
+        let result = try ChromeExtensionSetup.readResult(
+            Self.pending.replacingOccurrences(of: "\"profile\":\"chrome\"", with: "\"profile\":\"work\""),
+            action: .install)
+        #expect(result.target.profile == "work")
+        #expect(!ChromeExtensionSetup.arguments(action: .install).contains("--browser-profile"))
     }
 
     @Test func `released bridge receives exactly its three canonical installation fields`() throws {
@@ -227,6 +235,7 @@ struct ChromeExtensionSetupTests {
 
     @Test(arguments: [
         ("local-host", "remote-host"), ("darwin", "linux"), ("18792", "0"),
+        ("\"profile\":\"chrome\"", "\"profile\":\"invalid/profile\""),
         ("needs_browser_action", "unknown"), ("chrome_approval_required", "raw private diagnostic"),
     ])
     func `rejects invalid host targets and controller states`(_ replacement: (String, String)) {
