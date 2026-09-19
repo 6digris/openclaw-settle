@@ -11,9 +11,11 @@ import {
 import { waitForCommittedComposerDraft } from "./settle.test-support.ts";
 
 const suite = createControlUiE2eSuite({ name: "composer mention chips" });
+const firstProfileId = "00000001-1111-4111-8111-000000000101";
+const secondProfileId = "00000002-1111-4111-8111-000000000102";
 const users = [
-  { profileId: "00000001-1111-4111-8111-000000000101", displayName: "Avery Finch", online: true },
-  { profileId: "00000002-1111-4111-8111-000000000102", displayName: "Avery Finch", online: false },
+  { profileId: firstProfileId, displayName: "Avery Finch", online: true },
+  { profileId: secondProfileId, displayName: "Avery Finch", online: false },
 ];
 const scenario = {
   models: [{ id: "demo-model", name: "Demo Model", provider: "demo" }],
@@ -102,7 +104,7 @@ suite.define(() => {
         );
         expect(submitted.params).toMatchObject({
           message: "@X today @Avery Finch please review",
-          mentions: [{ profileId: users[0].profileId, start: 9, end: 21 }],
+          mentions: [{ profileId: firstProfileId, start: 9, end: 21 }],
         });
       });
     },
@@ -161,7 +163,7 @@ suite.define(() => {
         const request = await gateway.waitForRequest("chat.send");
         expect(request.params).toMatchObject({
           message: "🦞 @Avery Finch please review",
-          mentions: [{ profileId: users[1].profileId, start: 3, end: 15 }],
+          mentions: [{ profileId: secondProfileId, start: 3, end: 15 }],
         });
         await expect.poll(() => composerValue(editor)).toBe("");
       });
