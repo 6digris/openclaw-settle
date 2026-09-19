@@ -53,6 +53,10 @@ export class ChatTranscriptController implements ReactiveController {
     return render(this.sessionVirtualizer);
   }
 
+  notifyViewportResize(): void {
+    this.callbacks.onViewportResize?.();
+  }
+
   get isProgrammaticScroll(): boolean {
     return this.sessionVirtualizer?.isProgrammaticScroll ?? false;
   }

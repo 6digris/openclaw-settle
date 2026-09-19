@@ -347,6 +347,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
       class="agent-chat__composer-shell ${
         compoundQuestionComposer ? "agent-chat__composer-shell--question-composer" : ""
       }"
+      ${ref(state.composerShellRef ?? undefined)}
     >
       <div class="agent-chat__composer-overlay">
         ${props.anchoredNotices ?? nothing} ${composerAlerts} ${fallbackStatus}

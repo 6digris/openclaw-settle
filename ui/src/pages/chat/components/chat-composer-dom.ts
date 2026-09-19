@@ -38,6 +38,66 @@ const composerPopoverAnchorObservers = new WeakMap<
   ComposerPopoverAnchorObserverState
 >();
 
+type ComposerShellObserverState = {
+  observer: ResizeObserver | null;
+  conversation: HTMLElement | null;
+};
+const composerShellObservers = new WeakMap<HTMLElement, ComposerShellObserverState>();
+
+export function disconnectComposerShellObserver(el: HTMLElement) {
+  const state = composerShellObservers.get(el);
+  composerShellObservers.delete(el);
+  state?.observer?.disconnect();
+  state?.conversation?.style.removeProperty("--chat-transcript-composer-underlap");
+}
+
+export function replaceComposerShell(
+  previous: HTMLElement | null,
+  element: Element | undefined,
+  onResize: () => void,
+): HTMLElement | null {
+  const next = element instanceof HTMLElement ? element : null;
+  if (previous && previous !== next) {
+    disconnectComposerShellObserver(previous);
+  }
+  if (!next || composerShellObservers.has(next)) {
+    return next;
+  }
+  const state: ComposerShellObserverState = { observer: null, conversation: null };
+  const update = () => {
+    if (!next.isConnected || composerShellObservers.get(next) !== state) {
+      return;
+    }
+    const conversation = next.closest<HTMLElement>(".chat-main__conversation");
+    const { width, height } = next.getBoundingClientRect();
+    // Hidden panes keep their inset; a visible empty shell must clear it.
+    if (!conversation || !width) {
+      return;
+    }
+    const value = `${height}px`;
+    if (conversation.style.getPropertyValue("--chat-transcript-composer-underlap") === value) {
+      return;
+    }
+    state.conversation = conversation;
+    conversation.style.setProperty("--chat-transcript-composer-underlap", value);
+    const input = next.querySelector<HTMLElement>(".agent-chat__input");
+    if (input) {
+      updateComposerPopoverAnchor(input);
+    }
+    // Full overlap keeps the scrollport's outer height constant. Padding-only
+    // changes still belong to the transcript's reader/end-follow policy.
+    onResize();
+  };
+  composerShellObservers.set(next, state);
+  if (typeof ResizeObserver === "function") {
+    state.observer = new ResizeObserver(update);
+    state.observer.observe(next);
+  }
+  // Lit invokes a stable ref before inserting its new subtree.
+  queueMicrotask(update);
+  return next;
+}
+
 const COMPOSER_POPOVER_GAP_PX = 6;
 // max-height constrains the menu's scrollable box before its border/padding;
 // include that chrome so the outer panel retains a viewport gutter.

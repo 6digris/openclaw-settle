@@ -278,6 +278,7 @@ export function renderChat(props: ChatProps) {
       pendingInputs?.page.items ?? [],
     ).queue,
     anchoredNotices: renderChatComposerNotices(props),
+    onLayoutResize: () => props.transcript.notifyViewportResize(),
     onRequestUpdate: requestUpdate,
     onToggleRealtimeTalk: props.suggestionComposer ? undefined : props.onToggleRealtimeTalk,
     onOpenImage: openImmediateImage,

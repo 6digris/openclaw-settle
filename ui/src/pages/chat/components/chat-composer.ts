@@ -28,6 +28,7 @@ import {
   paneDomId,
   preserveComposerFocusOnPrimaryAction,
   replaceComposerPopoverAnchor,
+  replaceComposerShell,
   scheduleTextareaHeightAdjustment,
 } from "./chat-composer-dom.ts";
 import { createGoalComposerController } from "./chat-composer-goal-mode.ts";
@@ -93,6 +94,12 @@ export function renderChatComposer(props: ChatComposerProps) {
   state.composerDraftScopeKey = draftKey;
   const visibleDraft =
     state.composingDraft?.key === draftKey ? state.composingDraft.value : props.draft;
+  state.composerLayoutResize = props.onLayoutResize;
+  state.composerShellRef ??= (element?: Element) => {
+    state.composerShell = replaceComposerShell(state.composerShell, element, () =>
+      state.composerLayoutResize?.(),
+    );
+  };
   state.composerInputRef ??= (element?: Element) => {
     state.composerInput = replaceComposerPopoverAnchor(state.composerInput, element);
   };

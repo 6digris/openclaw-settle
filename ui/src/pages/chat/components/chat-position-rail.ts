@@ -46,6 +46,7 @@ class ChatPositionRailDirective extends AsyncDirective {
   private readonly markerElements = new Map<string, HTMLElement>();
   private transcriptElement: HTMLElement | undefined;
   private intersectionObserver: IntersectionObserver | undefined;
+  private observedUnderlap: number | undefined;
   private mutationObserver: MutationObserver | undefined;
   private readonly observedMessages = new Map<
     Element,
@@ -55,7 +56,9 @@ class ChatPositionRailDirective extends AsyncDirective {
   private targetsChanged = true;
   private followActive = false;
   private layoutVisible = false;
-  private readerViewport: (ChatSessionScrollPosition & { height: number }) | undefined;
+  private readerViewport:
+    | (ChatSessionScrollPosition & { height: number; underlap: number })
+    | undefined;
   private resizeScrollTarget: { offset: number; atEnd: boolean } | undefined;
   private followingResize = false;
   private readonly stopScrollInput = {
@@ -94,7 +97,11 @@ class ChatPositionRailDirective extends AsyncDirective {
     this.intersectionObserver?.disconnect();
     this.mutationObserver?.disconnect();
     this.intersectionObserver = undefined;
+    this.observedUnderlap = undefined;
     this.mutationObserver = undefined;
+    if (this.transcriptElement) {
+      this.resizeObserver?.unobserve(this.transcriptElement);
+    }
     this.transcriptElement = undefined;
     this.readerViewport = undefined;
     this.resizeScrollTarget = undefined;
@@ -118,27 +125,7 @@ class ChatPositionRailDirective extends AsyncDirective {
     if (root !== this.transcriptElement) {
       this.disconnectVisibility();
       this.transcriptElement = root;
-      // The composer covers this part of the scrollport; it is not visible text.
-      const underlap =
-        Number.parseFloat(
-          getComputedStyle(root).getPropertyValue("--chat-transcript-composer-underlap"),
-        ) || 0;
-      // Publish the first visible pixel after an initially zero-area edge touch.
-      this.intersectionObserver = new IntersectionObserver(
-        (entries, observer) => {
-          if (observer !== this.intersectionObserver) {
-            return;
-          }
-          for (const entry of entries) {
-            const message = this.observedMessages.get(entry.target);
-            if (message) {
-              message.visible = entry.isIntersecting && entry.intersectionRatio > 0;
-            }
-          }
-          this.syncVisibleMarks();
-        },
-        { root, rootMargin: `0px 0px -${underlap}px 0px`, threshold: [0, Number.EPSILON, 1] },
-      );
+      this.resizeObserver?.observe(root);
       // Virtualization replaces message nodes without replacing the rail.
       // Streaming descendants keep the same observed bubble targets.
       const isPositionTarget = (element: Element) =>
@@ -181,6 +168,34 @@ class ChatPositionRailDirective extends AsyncDirective {
       });
       this.targetsChanged = true;
     }
+    // Rebuild only the visibility adapter when the composer covers more text.
+    const underlap =
+      Number.parseFloat(
+        getComputedStyle(root).getPropertyValue("--chat-transcript-composer-underlap"),
+      ) || 0;
+    if (underlap !== this.observedUnderlap) {
+      this.intersectionObserver?.disconnect();
+      this.observedUnderlap = underlap;
+      // Publish the first visible pixel after an initially zero-area edge touch.
+      this.intersectionObserver = new IntersectionObserver(
+        (entries, observer) => {
+          if (observer !== this.intersectionObserver) {
+            return;
+          }
+          for (const entry of entries) {
+            const message = this.observedMessages.get(entry.target);
+            if (message) {
+              message.visible = entry.isIntersecting && entry.intersectionRatio > 0;
+            }
+          }
+          this.syncVisibleMarks();
+        },
+        { root, rootMargin: `0px 0px -${underlap}px 0px`, threshold: [0, Number.EPSILON, 1] },
+      );
+      for (const element of this.observedMessages.keys()) {
+        this.intersectionObserver.observe(element);
+      }
+    }
     if (!this.targetsChanged) {
       return;
     }
@@ -216,10 +231,14 @@ class ChatPositionRailDirective extends AsyncDirective {
     if (root) {
       const viewport = {
         height: root.clientHeight,
+        underlap: this.observedUnderlap ?? 0,
         ...captureChatSessionScrollPosition(root),
       };
       const previous = this.readerViewport;
-      if (previous && viewport.height !== previous.height) {
+      if (
+        previous &&
+        (viewport.height !== previous.height || viewport.underlap !== previous.underlap)
+      ) {
         // The transcript can publish intersections before its resize scroll compensation.
         // Neither update is a request to navigate the rail.
         this.followingResize = true;

@@ -3,6 +3,7 @@ import type { ChatRunUiStatus } from "../run-lifecycle.ts";
 import {
   adjustTextareaHeight,
   disconnectComposerPopoverAnchorObserver,
+  disconnectComposerShellObserver,
 } from "./chat-composer-dom.ts";
 import { ComposerEmojiMenu } from "./chat-composer-emoji.ts";
 import { clearGoalElapsedTimers } from "./chat-composer-goal.ts";
@@ -28,6 +29,9 @@ function createChatComposerState(): ChatComposerState {
     gatewayQuestionCollapsed: false,
     questionTakeoverActive: false,
     restoreComposerFocus: false,
+    composerShell: null,
+    composerShellRef: null,
+    composerLayoutResize: undefined,
     composerInput: null,
     composerTextarea: null,
     microphonePicker: null,
@@ -156,6 +160,9 @@ function disposeChatComposerState(state: ChatComposerState) {
   state.composerDraftScopeKey = null;
   state.dictation?.dispose();
   state.microphonePicker?.dispose();
+  if (state.composerShell) {
+    disconnectComposerShellObserver(state.composerShell);
+  }
   if (state.composerInput) {
     disconnectComposerPopoverAnchorObserver(state.composerInput);
   }

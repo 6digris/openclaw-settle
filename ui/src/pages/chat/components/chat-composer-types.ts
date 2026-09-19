@@ -72,6 +72,7 @@ export type ChatComposerDisabledBanner = ChatComposerDisabledBannerContent &
   ({ kind: "above-composer" } | { kind: "composer-replacement" });
 
 export type ChatComposerProps = ChatAttachmentControlsProps & {
+  onLayoutResize?: () => void;
   paneId: string;
   sessionKey: string;
   currentAgentId: string;
@@ -211,6 +212,9 @@ export type ChatComposerState = SkillMenuState &
     gatewayQuestionCollapsed: boolean;
     questionTakeoverActive: boolean;
     restoreComposerFocus: boolean;
+    composerShell: HTMLElement | null;
+    composerLayoutResize: (() => void) | undefined;
+    composerShellRef: ((element?: Element) => void) | null;
     composerInput: HTMLElement | null;
     composerTextarea: HTMLTextAreaElement | null;
     microphonePicker: ComposerMicrophonePicker | null;
