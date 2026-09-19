@@ -22,9 +22,16 @@ import {
 export function registerSharedStateWorkerAdmissionTests(
   createContext: () => OpenClawStateWorkerContext,
 ): void {
-  it.each([undefined, false])(
-    "borrows an already-held parent lifecycle owner for nested native admission (explicit=%s)",
-    async (requireStateLifecycle) => {
+  it.each(
+    [undefined, false].flatMap((requireStateLifecycle) =>
+      (["before", "at-dispatch"] as const).map((parentTiming) => ({
+        requireStateLifecycle,
+        parentTiming,
+      })),
+    ),
+  )(
+    "borrows a parent lifecycle owner for nested native admission (explicit=$requireStateLifecycle, parent=$parentTiming)",
+    async ({ requireStateLifecycle, parentTiming }) => {
       const captured = createContext();
       const record: NativeHookRelayBridgeRecord = {
         relayId: "synthetic-admission-relay",
@@ -34,9 +41,21 @@ export function registerSharedStateWorkerAdmissionTests(
         token: "synthetic-test-token",
         expiresAtMs: 20000,
       };
-      const parent = withStateDatabaseCoordinatorRuntimeDirectory(captured.coordinatorRuntime, () =>
-        acquireStateDatabaseCoordinator({ databasePath: captured.admission.databasePath }),
-      );
+      const acquireParent = () =>
+        withStateDatabaseCoordinatorRuntimeDirectory(captured.coordinatorRuntime, () =>
+          acquireStateDatabaseCoordinator({ databasePath: captured.admission.databasePath }),
+        );
+      let parent = parentTiming === "before" ? acquireParent() : undefined;
+      const nativePost = vi.spyOn(Worker.prototype, "postMessage");
+      nativePost.mockRestore();
+      const posts = vi
+        .spyOn(Worker.prototype, "postMessage")
+        .mockImplementation(function (this: Worker, request, transferList) {
+          if (parentTiming === "at-dispatch" && request.type === "execute" && !parent) {
+            parent = acquireParent();
+          }
+          return nativePost.call(this, request, transferList);
+        });
       let grants = 0;
       try {
         await runOpenClawStateWorkerOperation(
@@ -49,6 +68,10 @@ export function registerSharedStateWorkerAdmissionTests(
               nativeLocations: [captured.admission.databasePath],
               admission: createSqliteWorkerOperationAdmission((request, grant) => {
                 expect(request.stage).toBe("transaction");
+                if (parentTiming === "at-dispatch") {
+                  expect(parent).toBeDefined();
+                  parent?.release();
+                }
                 // The worker already holds its write transaction and awaits this grant.
                 // An independent native acquisition must borrow the same physical owner.
                 const nested = withStateDatabaseCoordinatorRuntimeDirectory(
@@ -68,7 +91,8 @@ export function registerSharedStateWorkerAdmissionTests(
           },
         );
       } finally {
-        parent.release();
+        posts.mockRestore();
+        parent?.release();
       }
       expect(grants).toBe(1);
       expect(

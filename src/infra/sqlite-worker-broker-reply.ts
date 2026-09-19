@@ -12,6 +12,7 @@ import { retainSqliteWriteAdmissionService } from "./sqlite-transaction.js";
 import {
   prepareSqliteWorkerLifecycle,
   releaseSqliteWorkerLifecycle,
+  tryPrepareSqliteWorkerLifecycleDelegate,
 } from "./sqlite-worker-broker-admission.js";
 import type { Actor, Job, Slot } from "./sqlite-worker-broker.types.js";
 import {
@@ -123,6 +124,8 @@ function postSqliteWorkerJob(
     const preparation = createSqliteWorkerLifecyclePreparation({
       assertCurrent: assertDispatchable,
       signal: job.cancelPreparation.signal,
+      delegate: () =>
+        tryPrepareSqliteWorkerLifecycleDelegate(job, actor, context.coordinatorRuntime),
       admit: () => prepareSqliteWorkerOperationAdmission(job, actor),
       dispatch: dispatched,
       receiveResult(reply, pumping) {

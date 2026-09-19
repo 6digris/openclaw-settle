@@ -18,6 +18,7 @@ import {
   tryCreateGatewaySchemaFenceDelegate,
   tryCreateStateLifecycleDelegate,
   withStateDatabaseCoordinatorRuntimeDirectory,
+  type StateDatabaseCoordinatorRuntime,
 } from "./state-database-coordinator.js";
 
 export function validateSqliteWorkerDatabaseLocator(databasePath: string): void {
@@ -255,6 +256,28 @@ function prepareSqliteWorkerActorContext(actor: Actor | undefined, job: Job): vo
   }
 }
 
+export function tryPrepareSqliteWorkerLifecycleDelegate(
+  job: Job,
+  actor: Actor,
+  runtime: StateDatabaseCoordinatorRuntime,
+) {
+  if (job.stateLifecycle) {
+    throw new Error("SQLite worker lifecycle custody already delegated to its job");
+  }
+  return withStateDatabaseCoordinatorRuntimeDirectory(runtime, () => {
+    const delegate = tryCreateStateLifecycleDelegate({
+      databasePath: actor.databasePath,
+      actorId: `${actor.id}:${job.request.id}`,
+    });
+    if (!delegate) {
+      return undefined;
+    }
+    // Record custody before allocating or transferring its port can fail.
+    job.stateLifecycle = { actor, delegate };
+    return delegate.port;
+  });
+}
+
 export function prepareSqliteWorkerLifecycle(
   job: Job,
   actor: Actor | undefined,
@@ -287,10 +310,7 @@ export function prepareSqliteWorkerLifecycle(
         job.maintenanceSchemaFence = { actor, delegate: schemaFence };
         job.request.maintenanceSchemaFence = schemaFence.port;
       }
-      const delegate = tryCreateStateLifecycleDelegate({
-        databasePath: actor.databasePath,
-        actorId: `${actor.id}:${job.request.id}`,
-      });
+      const delegate = tryPrepareSqliteWorkerLifecycleDelegate(job, actor, runtime);
       if (!delegate && job.requireStateLifecycle) {
         job.request.workerStateLifecycle = {
           deadlineNs:
@@ -298,8 +318,7 @@ export function prepareSqliteWorkerLifecycle(
         };
       }
       if (delegate) {
-        job.stateLifecycle = { actor, delegate };
-        job.request.stateLifecycle = delegate.port;
+        job.request.stateLifecycle = delegate;
       }
     };
     prepare();

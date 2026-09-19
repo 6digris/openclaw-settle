@@ -27,6 +27,9 @@ The plugin KV API already has asynchronous methods over its SQLite owner.
 Shared-state operations that request host transaction or commit admission acquire
 fresh lifecycle coordinator custody on their executing SQLite worker. A live
 parent-owned maintenance or native lease still delegates its existing custody.
+Preparation rechecks that live parent ownership before each native acquisition
+attempt, including a parent that acquired custody after the job was posted. The
+same job retains that delegated lease through native settlement and cleanup.
 The waiting job keeps its FIFO position and capacity reservation. Native attempts
 use zero busy timeout and asynchronous backoff within the original captured lock
 budget; only acquisition retries. The host rechecks current authority during

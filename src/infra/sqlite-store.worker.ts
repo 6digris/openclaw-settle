@@ -203,6 +203,7 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
         lifecycleReply = { actor: request.actor, port: preparation.port };
         const prepared = await acquireSqliteWorkerLifecycle({
           port: preparation.port,
+          actorId: `${request.actor}:${request.id}`,
           databasePath,
           deadlineNs: preparation.deadlineNs,
           runtime: context.coordinatorRuntime,
@@ -210,7 +211,11 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
             retire = true;
           },
         });
-        coordinator = prepared.coordinator;
+        if (prepared.custody.kind === "native") {
+          coordinator = prepared.custody.coordinator;
+        } else {
+          lifecycle = { actor: request.actor, delegate: prepared.custody.delegate };
+        }
         if (prepared.admission) {
           operationAdmission = { actor: request.actor, port: prepared.admission };
         }
