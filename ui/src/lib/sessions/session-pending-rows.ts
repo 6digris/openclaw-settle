@@ -40,7 +40,6 @@ export type SessionPatchRowFact = {
   readCutoff?: number;
   fields:
     | { category: GatewaySessionRow["category"] }
-    | { toolOverrides: GatewaySessionRow["toolOverrides"] }
     | SessionPinFields
     | { pinned: true }
     | SessionReadFields

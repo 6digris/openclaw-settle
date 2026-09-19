@@ -1,6 +1,5 @@
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { HumanMentionInput } from "../../lib/chat/human-mentions.ts";
-import type { ChatComposerPlusMenuView } from "../chat/components/chat-composer-capability.types.ts";
 import {
   adjustTextareaHeight,
   disconnectTextareaOverflowObserver,
@@ -9,6 +8,7 @@ import {
 } from "../chat/components/chat-composer-dom.ts";
 import { ComposerEmojiMenu } from "../chat/components/chat-composer-emoji.ts";
 import { HumanMentionMenu } from "../chat/components/chat-composer-mention-menu.ts";
+import type { ChatComposerPlusMenuView } from "../chat/components/chat-composer-plus-menu.ts";
 import {
   createSkillMenuState,
   resetSkillMenuState,

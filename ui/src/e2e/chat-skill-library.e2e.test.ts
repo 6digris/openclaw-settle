@@ -57,20 +57,16 @@ function projection(
 }
 async function openSkills(page: Page) {
   const pane = page.locator('openclaw-chat-pane[aria-hidden="false"]');
-  if (!(await pane.locator("openclaw-session-skills").isVisible())) {
-    const rootMenu = pane.locator("wa-dropdown.agent-chat__attach-menu");
-    if (!(await rootMenu.evaluate((node) => (node as HTMLElement & { open: boolean }).open))) {
-      await pane.getByRole("button", { name: "Add attachment", exact: true }).click();
-    }
-    await pane.locator('[value="open-skills"]').click();
-  }
-  const menu = pane.locator("openclaw-session-skills wa-dropdown");
+  const menu = pane.locator("wa-dropdown.agent-chat__capability-menu");
   if (!(await menu.evaluate((node) => (node as HTMLElement & { open: boolean }).open))) {
-    await pane.getByRole("button", { name: "Skill library", exact: true }).click();
+    await pane.getByRole("button", { name: "Add attachment", exact: true }).click();
   }
-  const back = menu.getByRole("menuitem", { name: "Back", exact: true });
-  if (await back.isVisible()) {
-    await back.click();
+  if ((await menu.getAttribute("data-view"))?.startsWith("library:")) {
+    await menu.getByRole("menuitem", { name: "Back", exact: true }).click();
+  }
+  const root = menu.getByRole("menuitem", { name: "Skills", exact: true });
+  if (await root.isVisible()) {
+    await root.click();
   }
   await menu.getByText("Selected for this session", { exact: true }).waitFor();
   return menu;
@@ -174,6 +170,7 @@ suite.define(() => {
       const listWidth = await menuPanel.evaluate((node) => node.getBoundingClientRect().width);
       // Native navigation keeps Web Awesome's active item aligned with browser focus.
       await page.keyboard.press("Home");
+      await page.keyboard.press("ArrowDown");
       await expect.poll(() => aliceItem.evaluate((node) => node.matches(":focus"))).toBe(true);
       await page.keyboard.press("Enter");
       const readAction = menu.getByRole("menuitem", {
@@ -186,10 +183,11 @@ suite.define(() => {
       await expect.poll(() => back.evaluate((node) => node.matches(":focus"))).toBe(true);
       await page.keyboard.press("Enter");
       await menu.getByText("Selected for this session", { exact: true }).waitFor();
-      // Returning from the pin actions focuses the first library item.
-      await expect.poll(() => aliceItem.evaluate((node) => node.matches(":focus"))).toBe(true);
+      // The new view renders before its frame-bound focus handoff finishes.
+      await expect.poll(() => back.evaluate((node) => node.matches(":focus"))).toBe(true);
       expect(await gateway.getRequests("skills.library.activate")).toHaveLength(0);
       await page.keyboard.press("Home");
+      await page.keyboard.press("ArrowDown");
       await expect.poll(() => aliceItem.evaluate((node) => node.matches(":focus"))).toBe(true);
       await page.keyboard.press("Enter");
       await readAction.waitFor({ state: "visible" });
@@ -232,21 +230,13 @@ suite.define(() => {
       expect(await page.getByLabel("SKILL.md", { exact: true }).inputValue()).toBe(alice.content);
       expect(await page.getByRole("button", { name: "Save skill", exact: true }).count()).toBe(0);
       expect(await page.getByLabel("Retained revision", { exact: true }).count()).toBe(0);
-      const panel = page.locator(".skill-reader-dialog:not(.session-skills)");
+      const panel = page.locator(".skill-reader-dialog");
       expect(await panel.evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
       expect(await gateway.getRequests("skills.library.activate")).toHaveLength(0);
-      await page.keyboard.press("Escape");
-      await expect.poll(() => panel.count()).toBe(0);
-      await expect.poll(() => page.locator(".session-skills").isVisible()).toBe(true);
-      await expect
-        .poll(() =>
-          page.locator(".session-skills").evaluate((node) => node.contains(document.activeElement)),
-        )
-        .toBe(true);
+      await page.getByRole("button", { name: "Close", exact: true }).click();
 
-      await page.keyboard.press("Escape");
-      await page.getByRole("button", { name: "Add attachment", exact: true }).click();
-      menu = page.locator("wa-dropdown.agent-chat__attach-menu");
+      menu = await openSkills(page);
+      await menu.getByRole("menuitem", { name: "Back", exact: true }).click();
       await menu.getByRole("menuitem", { name: /^Connectors/u }).click();
       await menu.getByRole("menuitem", { name: "Add MCP server…", exact: true }).waitFor();
       expect(await menu.getByText("Selected for this session", { exact: true }).count()).toBe(0);
@@ -343,9 +333,6 @@ suite.define(() => {
 
       await gateway.setMethodResponse("skills.library.list", projection([], bobSessionKey));
       await navigateToControlUiSession(page, bobSessionKey);
-      await expect
-        .poll(() => page.getByRole("dialog", { name: "Skills", exact: true }).count())
-        .toBe(0);
       menu = await openSkills(page);
       await menu.getByText("No managed skills selected.", { exact: true }).waitFor();
       expect((await gateway.getRequests("skills.library.list")).at(-1)?.params).toEqual({

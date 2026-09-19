@@ -274,7 +274,6 @@ export function createSessionMutations(host: SessionMutationsHost) {
       patchParams.pinned !== undefined ||
       patchParams.unread === false ||
       patchParams.archived !== undefined ||
-      Object.hasOwn(patchParams, "toolOverrides") ||
       patchParams.boardPresentation !== undefined
         ? resolvePendingConversation(patchSnapshot, normalizedKey, options.agentId)
         : null;
@@ -511,10 +510,14 @@ export function createSessionMutations(host: SessionMutationsHost) {
       // turn a failed refresh into an apparent rollback of the committed patch.
       let refreshOutcome: SessionRefreshOutcome = { status: "refreshed" };
       if (!options.deferListRefresh) {
-        refreshOutcome = await host.reconcileMutation(
-          options.agentId,
-          permissionProjection?.isCurrent,
-        );
+        if (Object.hasOwn(patchParams, "permissionMode")) {
+          refreshOutcome = await host.reconcileMutation(
+            options.agentId,
+            permissionProjection?.isCurrent,
+          );
+        } else {
+          await host.reconcileMutation(options.agentId);
+        }
         if (!host.connection.isCurrent(scope)) {
           settleOptimisticPatch(false);
           return (await reconcileConfirmedPreviousConnection(scope, options.agentId))
@@ -527,7 +530,7 @@ export function createSessionMutations(host: SessionMutationsHost) {
         }
       }
       settleOptimisticPatch(true);
-      return refreshOutcome.status === "failed" && result
+      return refreshOutcome.status === "failed"
         ? { ...result, listRefreshError: refreshOutcome.error }
         : result;
     } catch (error) {

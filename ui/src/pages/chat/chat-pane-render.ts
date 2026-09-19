@@ -524,7 +524,9 @@ export class ChatPane extends ChatPaneLayoutRender {
             selectedSession,
             currentAgentId,
             composerState.capabilityMenuView.startsWith("tools:"),
-            composerState.capabilityMenuOpen && composerState.capabilityMenuView === "skills",
+            composerState.capabilityMenuOpen &&
+              (composerState.capabilityMenuView === "skills" ||
+                composerState.capabilityMenuView.startsWith("library:")),
           ),
       swarm: readTarget ? { ...readTarget, sessions: this.swarmHydrator?.rows ?? [] } : undefined,
       sessionHost: {

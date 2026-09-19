@@ -4,7 +4,7 @@ import type { SkillStatusEntry } from "../../api/types.ts";
 import type { SessionToolOverrides } from "../../lib/sessions/patch.ts";
 import { readOwnEntry } from "../../lib/sessions/tool-overrides.ts";
 import { loadSkillStatusReport } from "../../lib/skills/status-report.ts";
-import type { ChatComposerMenuSkill } from "./components/chat-composer-capability.types.ts";
+import type { ChatComposerMenuSkill } from "./components/chat-composer-plus-menu.ts";
 
 export function composerWebSearchBaseEnabled(config: Record<string, unknown> | null): boolean {
   return asRecord(asRecord(asRecord(config?.tools)?.web)?.search)?.enabled !== false;
@@ -17,7 +17,6 @@ function toComposerSkill(skill: SkillStatusEntry): ChatComposerMenuSkill {
   return {
     key: skill.skillKey,
     name: skill.name,
-    description: skill.description,
     enabled: baseEnabled && !missingDeps && !blocked,
     baseEnabled,
     ...(missingDeps ? { missingDeps: true } : {}),

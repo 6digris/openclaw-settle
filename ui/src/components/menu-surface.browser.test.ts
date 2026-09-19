@@ -307,7 +307,6 @@ describe.skipIf(!hasPopoverApi)("platform menu hover", () => {
           capabilityMenu: {
             basePath: "",
             skills: [],
-            scopeKey: "menu-surface",
             skillsLoading: false,
             skillsError: false,
             mcpServers: [],

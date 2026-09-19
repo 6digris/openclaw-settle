@@ -10,9 +10,6 @@ export function projectSessionPatchRowFields(
 ): SessionPatchRowFact["fields"][] {
   const { entry } = result;
   const fields: SessionPatchRowFact["fields"][] = [];
-  if (Object.hasOwn(patch, "toolOverrides")) {
-    fields.push({ toolOverrides: entry.toolOverrides });
-  }
   if (Object.hasOwn(patch, "model") && result.resolved) {
     fields.push({
       ...result.resolved,

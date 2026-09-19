@@ -401,18 +401,6 @@ export abstract class ChatPaneRetainedPresentation extends ChatPaneBoard {
       return;
     }
     this.minutePoll.stop();
-    // Retained panes keep their DOM; session-scoped native dialogs must not
-    // outlive the presentation or restore focus into a hidden composer.
-    const composer = getChatComposerState(this.presentationId);
-    composer.capabilityMenuOpen = false;
-    composer.capabilityMenuView = "root";
-    this.composerCapabilities.closeSkillReader();
-    for (const dialog of this.querySelectorAll("openclaw-modal-dialog")) {
-      if (dialog.querySelector(".skill-reader-dialog")) {
-        dialog.setReturnFocusTarget(null);
-        dialog.hide();
-      }
-    }
     if (this.state) {
       retireChatBranchRequests(this.state);
       // Unwatch can cancel an admitted refresh before sync; a later presentation
