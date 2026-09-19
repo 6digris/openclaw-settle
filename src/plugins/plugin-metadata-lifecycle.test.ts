@@ -1,5 +1,11 @@
 import { expect, it, vi } from "vitest";
 import {
+  closeOpenClawAgentDatabasesForTest,
+  openOpenClawAgentDatabase,
+  resolveIncognitoOpenClawAgentSqlitePath,
+} from "../state/openclaw-agent-db.js";
+import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import {
   getCurrentPluginMetadataSnapshotState,
   setCurrentPluginMetadataSnapshotState,
 } from "./current-plugin-metadata-state.js";
@@ -46,6 +52,33 @@ it("keeps boot metadata and process memos until the final Gateway releases them"
   } finally {
     releaseSecond();
     releaseFirst();
+  }
+});
+
+it("keeps durable and incognito agent databases until the final Gateway releases them", async () => {
+  const state = await createOpenClawTestState({ label: "gateway-agent-databases" });
+  const releaseFirst = retainGatewayPluginMetadata();
+  const releaseSecond = retainGatewayPluginMetadata();
+  try {
+    const options = { agentId: "main", env: state.env };
+    const durable = openOpenClawAgentDatabase(options);
+    const incognito = openOpenClawAgentDatabase({
+      ...options,
+      path: resolveIncognitoOpenClawAgentSqlitePath(options),
+    });
+
+    releaseFirst(closeOpenClawAgentDatabasesForTest);
+    expect(durable.db.isOpen).toBe(true);
+    expect(incognito.db.isOpen).toBe(true);
+
+    releaseSecond(closeOpenClawAgentDatabasesForTest);
+    expect(durable.db.isOpen).toBe(false);
+    expect(incognito.db.isOpen).toBe(false);
+  } finally {
+    releaseSecond(closeOpenClawAgentDatabasesForTest);
+    releaseFirst(closeOpenClawAgentDatabasesForTest);
+    closeOpenClawAgentDatabasesForTest();
+    await state.cleanup();
   }
 });
 

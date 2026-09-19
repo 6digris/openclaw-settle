@@ -45,7 +45,7 @@ type GatewayLogger = ReturnType<typeof createSubsystemLogger>;
 
 export async function prepareGatewayLifecycle(params: {
   runtime: GatewayRuntimePreparation;
-  releasePluginMetadata: () => void;
+  releasePluginMetadata: (onFinalOwner?: () => void) => void;
   port: number;
   log: GatewayLogger;
   logCron: GatewayLogger;
@@ -497,6 +497,7 @@ export async function prepareGatewayLifecycle(params: {
         bonjourStop: kernel.swapBonjourStop(null),
         tailscaleCleanup: runtimeState.tailscaleCleanup,
         clearSecretsRuntimeSnapshot: clearSecretsRuntimeSnapshotState,
+        releasePluginMetadata: params.releasePluginMetadata,
         channelIds,
         stopChannel,
         pluginServices: runtimeState.pluginServices,

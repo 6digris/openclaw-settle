@@ -34,6 +34,7 @@ type HookPackageManifest = {
   name?: string;
   version?: string;
   dependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
 } & Partial<Record<typeof MANIFEST_KEY, { extensions?: string[]; hooks?: string[] }>>;
 
 export type InstallHooksResult =
@@ -526,6 +527,7 @@ async function installHookPackageFromDir(
     copyErrorPrefix: "failed to copy hook pack",
     depsLogMessage: "Installing hook pack dependencies…",
     manifestDependencies: manifest.dependencies,
+    manifestOptionalDependencies: manifest.optionalDependencies,
     afterInstall: async (installedDir) => {
       const dependencyPolicyFailure = await runHookInstalledDependencyPolicy({
         hookPackId,

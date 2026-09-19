@@ -101,6 +101,9 @@ export async function executeMutableUpdate(params: {
           jsonMode: Boolean(params.opts.json),
           timeoutMs: params.updateStepTimeoutMs,
           phase,
+          onStopped: (state) => {
+            preManagedServiceStop = state;
+          },
         });
         if (preManagedServiceStop.windowsTaskAutoStartRecovery) {
           params.recoveryState.windowsTaskAutoStartRecovery =
@@ -122,6 +125,7 @@ export async function executeMutableUpdate(params: {
         throw err;
       }
       params.stop();
+      await recoverStoppedService();
       defaultRuntime.error(`Failed to stop managed gateway service before update: ${String(err)}`);
       defaultRuntime.exit(1);
       throw new UpdateCommandAbort();

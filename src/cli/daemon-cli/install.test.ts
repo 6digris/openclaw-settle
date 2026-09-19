@@ -65,6 +65,8 @@ const buildGatewayInstallPlanMock = vi.hoisted(() => vi.fn(createInstallPlanFixt
 const parsePortMock = vi.hoisted(() => vi.fn(() => null));
 const isGatewayDaemonRuntimeMock = vi.hoisted(() => vi.fn(() => true));
 const installDaemonServiceAndEmitMock = vi.hoisted(() => vi.fn(async (_params?: unknown) => {}));
+const resolveNodeRuntimeInfoMock = vi.hoisted(() => vi.fn());
+const resolvePreferredNodePathMock = vi.hoisted(() => vi.fn());
 
 const actionState = vi.hoisted(() => ({
   warnings: [] as string[],
@@ -147,6 +149,11 @@ vi.mock("../../commands/daemon-install-helpers.js", () => ({
 vi.mock("../../daemon/program-args.js", () => ({
   OPENCLAW_WRAPPER_ENV_KEY: "OPENCLAW_WRAPPER",
   resolveOpenClawWrapperPath: async (value: string | undefined) => value?.trim() || undefined,
+}));
+
+vi.mock("../../daemon/runtime-paths.js", () => ({
+  resolveNodeRuntimeInfo: resolveNodeRuntimeInfoMock,
+  resolvePreferredNodePath: resolvePreferredNodePathMock,
 }));
 
 vi.mock("./shared.js", () => ({
@@ -267,6 +274,8 @@ describe("runDaemonInstall", () => {
     parsePortMock.mockReset();
     isGatewayDaemonRuntimeMock.mockReset();
     installDaemonServiceAndEmitMock.mockReset();
+    resolveNodeRuntimeInfoMock.mockReset();
+    resolvePreferredNodePathMock.mockReset();
     service.isLoaded.mockReset();
     service.stage.mockReset();
     service.install.mockReset();
@@ -300,6 +309,13 @@ describe("runDaemonInstall", () => {
     parsePortMock.mockReturnValue(null);
     isGatewayDaemonRuntimeMock.mockReturnValue(true);
     installDaemonServiceAndEmitMock.mockResolvedValue(undefined);
+    resolveNodeRuntimeInfoMock.mockResolvedValue({
+      status: "supported",
+      version: "24.15.0",
+      sqliteVersion: "3.51.3",
+      nodeSharedSqlite: false,
+    });
+    resolvePreferredNodePathMock.mockResolvedValue("/supported/node");
     service.isLoaded.mockResolvedValue(false);
     service.stage.mockResolvedValue(undefined);
     service.install.mockResolvedValue(undefined);
@@ -756,6 +772,31 @@ describe("runDaemonInstall", () => {
 
     expect(installDaemonServiceAndEmitMock).not.toHaveBeenCalled();
     expectLastEmittedResult("already-installed");
+  });
+
+  it("replaces an unsupported Node recorded in the managed service", async () => {
+    service.isLoaded.mockResolvedValue(true);
+    service.readCommand.mockResolvedValue({
+      programArguments: ["/obsolete/node", "openclaw.mjs", "gateway", "run"],
+      environment: {},
+    } as never);
+    resolveNodeRuntimeInfoMock.mockResolvedValue({
+      status: "unsupported",
+      version: "22.19.0",
+      sqliteVersion: "3.50.0",
+      nodeSharedSqlite: false,
+    });
+    resolvePreferredNodePathMock.mockResolvedValue("/supported/node");
+
+    await runDaemonInstall({ json: true });
+
+    expect(buildGatewayInstallPlanMock).toHaveBeenCalledWith(
+      expect.objectContaining({ runtimePath: "/supported/node" }),
+    );
+    expect(actionState.warnings).toContain(
+      "Replacing unsupported Gateway service Node 22.19.0 (/obsolete/node) with /supported/node; refreshing the install.",
+    );
+    expect(actionState.emitted).toEqual([]);
   });
 
   it("reinstalls when the loaded service still embeds OPENCLAW_GATEWAY_TOKEN", async () => {

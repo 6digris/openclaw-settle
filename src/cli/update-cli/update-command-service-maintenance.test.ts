@@ -1,15 +1,21 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { stableStringify } from "@openclaw/normalization-core/stable-stringify";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { GatewayService } from "../../daemon/service.js";
+import { readGatewayServiceState, type GatewayService } from "../../daemon/service.js";
 import {
   createMockGatewayService,
   mockSystemAccountHome,
 } from "../../daemon/service.test-helpers.js";
+import { sha256Hex } from "../../infra/crypto-digest.js";
 import { makeTempWorkspace } from "../../test-helpers/workspace.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { mockProcessPlatform } from "../../test-utils/vitest-spies.js";
-import { maybeStopManagedServiceBeforeMutableUpdate } from "./update-command-service-maintenance.js";
+import {
+  maybeStopManagedServiceBeforeMutableUpdate,
+  type PreManagedServiceStop,
+  revalidateManagedGatewayServiceAfterUpdate,
+} from "./update-command-service-maintenance.js";
 
 const mocks = vi.hoisted(() => ({
   service: vi.fn<() => GatewayService>(),
@@ -164,3 +170,49 @@ it.each(nativeOfflineCases)(
     }
   },
 );
+
+it("preserves a shipped fingerprint when systemd reports known-empty overrides", async () => {
+  const home = await makeTempWorkspace("openclaw-update-fingerprint-");
+  try {
+    await withEnvAsync({ HOME: home }, async () => {
+      mockProcessPlatform("linux");
+      const root = await fs.realpath(process.cwd());
+      const command = {
+        programArguments: [process.execPath, path.join(root, "openclaw.mjs"), "gateway"],
+        environment: { HOME: home },
+      };
+      const before: PreManagedServiceStop = {
+        stopped: true,
+        inspected: true,
+        runtimeInspected: true,
+        running: true,
+        serviceEnv: { HOME: home },
+        serviceUpdateVerdict: {
+          kind: "owned",
+          root,
+          fingerprint: sha256Hex(stableStringify(command)),
+          refreshDefinition: false,
+        },
+      };
+      const service = createMockGatewayService({
+        readCommand: async () => ({
+          ...command,
+          managedDefinition: command,
+          managedOverrides: {},
+        }),
+        readRuntime: async () => ({ status: "stopped" }),
+        isLoaded: async () => true,
+      });
+      const state = await readGatewayServiceState(service, {
+        env: before.serviceEnv,
+        requireEffective: true,
+      });
+
+      await expect(
+        revalidateManagedGatewayServiceAfterUpdate({ state, root, preManagedServiceStop: before }),
+      ).resolves.toMatchObject({ kind: "owned", refreshDefinition: false });
+    });
+  } finally {
+    await fs.rm(home, { recursive: true, force: true });
+  }
+});

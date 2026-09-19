@@ -796,12 +796,16 @@ function getProfileWorkspaceMigrationPaths(root: string, profile = "work") {
   };
 }
 
-async function runProfileWorkspaceDoctorMigration(root: string, profile = "work") {
+async function runProfileWorkspaceDoctorMigration(
+  root: string,
+  profile = "work",
+  cfg: OpenClawConfig = {},
+) {
   const paths = getProfileWorkspaceMigrationPaths(root, profile);
   fs.mkdirSync(paths.stateDir, { recursive: true });
   const log = { info: vi.fn(), warn: vi.fn() };
   const result = await autoMigrateLegacyState({
-    cfg: {},
+    cfg,
     env: {
       HOME: root,
       OPENCLAW_HOME: root,
@@ -4279,6 +4283,27 @@ describe("doctor legacy state migrations", () => {
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(warning));
     expect(fs.readFileSync(path.join(paths.legacyDir, "legacy.txt"), "utf8")).toBe("legacy");
     expect(fs.readFileSync(path.join(paths.targetDir, "current.txt"), "utf8")).toBe("current");
+  });
+
+  it("preserves and reports an explicitly configured legacy profile workspace", async () => {
+    const root = makeDoctorStateDir();
+    const paths = getProfileWorkspaceMigrationPaths(root);
+    fs.mkdirSync(paths.legacyDir, { recursive: true });
+    fs.mkdirSync(paths.targetDir, { recursive: true });
+    fs.writeFileSync(path.join(paths.legacyDir, "marker.txt"), "configured", "utf8");
+    fs.writeFileSync(path.join(paths.targetDir, "other.txt"), "other", "utf8");
+
+    const { log, result } = await runProfileWorkspaceDoctorMigration(root, "work", {
+      agents: { defaults: { workspace: paths.legacyDir } },
+    });
+
+    const notice = `Profile workspace: keeping configured workspace at ${paths.legacyDir}; existing workspace at ${paths.targetDir} was left unchanged.`;
+    expect(result.changes.some((entry) => entry.startsWith("Profile workspace:"))).toBe(false);
+    expect(result.warnings).toEqual([]);
+    expect(result.notices).toContain(notice);
+    expect(log.info).toHaveBeenCalledWith(expect.stringContaining(notice));
+    expect(fs.readFileSync(path.join(paths.legacyDir, "marker.txt"), "utf8")).toBe("configured");
+    expect(fs.readFileSync(path.join(paths.targetDir, "other.txt"), "utf8")).toBe("other");
   });
 
   it("does nothing when the active profile has no legacy workspace", async () => {

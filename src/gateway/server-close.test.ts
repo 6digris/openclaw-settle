@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => ({
   getAcpSessionManager: vi.fn(() => ({})),
   fenceSessionSuspensionWritesForGatewayShutdown: vi.fn(),
   closePluginStateDatabase: vi.fn(async () => undefined),
+  closeOpenClawAgentDatabases: vi.fn(),
 }));
 const WEBSOCKET_CLOSE_GRACE_MS = 1_000;
 const WEBSOCKET_CLOSE_FORCE_CONTINUE_MS = 250;
@@ -114,6 +115,13 @@ vi.mock("../plugin-state/plugin-state-store.js", async () => ({
   closePluginStateDatabase: mocks.closePluginStateDatabase,
 }));
 
+vi.mock("../state/openclaw-agent-db.js", async () => ({
+  ...(await vi.importActual<typeof import("../state/openclaw-agent-db.js")>(
+    "../state/openclaw-agent-db.js",
+  )),
+  closeOpenClawAgentDatabases: mocks.closeOpenClawAgentDatabases,
+}));
+
 vi.mock("../logging/subsystem.js", () => ({
   createSubsystemLogger: vi.fn(() => ({
     debug: vi.fn(),
@@ -153,6 +161,7 @@ function createGatewayCloseTestDeps(
   return {
     bonjourStop: null,
     tailscaleCleanup: null,
+    releasePluginMetadata: (onFinalOwner) => onFinalOwner?.(),
     stopChannel: vi.fn(async () => undefined),
     pluginServices: null,
     disposeAllBundleLspRuntimes: mocks.disposeAllBundleLspRuntimes,
@@ -232,6 +241,7 @@ describe("createGatewayCloseHandler", () => {
     mocks.fenceSessionSuspensionWritesForGatewayShutdown.mockReset();
     mocks.closePluginStateDatabase.mockReset();
     mocks.closePluginStateDatabase.mockResolvedValue(undefined);
+    mocks.closeOpenClawAgentDatabases.mockReset();
   });
 
   afterEach(() => {
@@ -278,6 +288,17 @@ describe("createGatewayCloseHandler", () => {
     expect(deps.heartbeatRunner.stop).toHaveBeenCalledTimes(1);
     expect(deps.stopMediaCleanup).toHaveBeenCalledTimes(1);
     expect(deps.chatRunState.clear).toHaveBeenCalledTimes(1);
+    expect(mocks.closeOpenClawAgentDatabases).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves agent databases open when a sibling Gateway retains process ownership", async () => {
+    const releasePluginMetadata = vi.fn();
+    const close = createGatewayCloseHandler(createGatewayCloseTestDeps({ releasePluginMetadata }));
+
+    await close({ reason: "test" });
+
+    expect(releasePluginMetadata).toHaveBeenCalledWith(mocks.closeOpenClawAgentDatabases);
+    expect(mocks.closeOpenClawAgentDatabases).not.toHaveBeenCalled();
   });
 
   it("waits for in-flight media cleanup before shutdown completes", async () => {

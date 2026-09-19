@@ -125,7 +125,12 @@ async function inspectManagedGatewayServiceBeforeUpdate(params: {
   ) {
     return unavailable();
   }
-  const serialized = stableStringify(command);
+  // Stable updaters through 2026.9.4 omit known-empty systemd override metadata.
+  // Keep their fingerprint while retaining the complete current snapshot.
+  const { managedDefinition: _managedDefinition, managedOverrides, ...effectiveCommand } = command;
+  const serialized = stableStringify(
+    managedOverrides && Object.keys(managedOverrides).length === 0 ? effectiveCommand : command,
+  );
   if (Buffer.byteLength(serialized) > 4 * 1024 * 1024) {
     return unavailable();
   }
@@ -399,6 +404,7 @@ export async function maybeStopManagedServiceBeforeMutableUpdate(params: {
   jsonMode: boolean;
   phase?: "inspect" | "prepare";
   expectedService?: Pick<PreManagedServiceStop, "serviceEnv" | "serviceUpdateVerdict">;
+  onStopped?: (state: PreManagedServiceStop) => void;
   timeoutMs?: number;
 }): Promise<PreManagedServiceStop> {
   const uninspected = { stopped: false, inspected: false, runtimeInspected: false, running: false };
@@ -556,6 +562,8 @@ export async function maybeStopManagedServiceBeforeMutableUpdate(params: {
     await service.stop({
       env: currentState.env,
       stdout: serviceControlStdoutForMode(params.jsonMode),
+      // Native stop can unload the service before post-stop validation fails.
+      onMutation: () => params.onStopped?.({ ...inspected, stopped: true }),
     });
     if (windowsTaskAutoStartRecovery) {
       await abortWindowsTaskUpdateIfInterrupted(windowsTaskAutoStartRecovery);

@@ -1231,7 +1231,7 @@ export async function autoMigrateLegacyState(params: {
   }
   const profileWorkspace =
     params.doctorOnlyStateMigrations === true
-      ? migrateLegacyProfileWorkspace({ env, homedir })
+      ? migrateLegacyProfileWorkspace({ config: params.cfg, env, homedir })
       : { changes: [], warnings: [] };
   const pluginDoctorConfig = params.pluginDoctorConfig ?? params.cfg;
   const configMachineState = migrateLegacyConfigMachineState({
@@ -1403,6 +1403,7 @@ export async function autoMigrateLegacyState(params: {
     ];
     const notices = mergeNotices([
       stateDirResult,
+      profileWorkspace,
       detected,
       ...alwaysRunSources,
       deviceAuth,
@@ -1440,6 +1441,7 @@ export async function autoMigrateLegacyState(params: {
   ];
   const notices = mergeNotices([
     stateDirResult,
+    profileWorkspace,
     detected,
     ...migrations.sharedNoticeSources,
     deviceAuth,

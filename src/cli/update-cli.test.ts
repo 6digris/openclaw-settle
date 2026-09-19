@@ -501,7 +501,8 @@ vi.mock("./daemon-cli.js", () => ({
   runDaemonInstall: mockedRunDaemonInstall,
   runDaemonRestart: vi.fn(),
 }));
-vi.mock("./daemon-cli/install.runtime.js", () => ({
+vi.mock("./daemon-cli/install.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./daemon-cli/install.js")>()),
   runDaemonInstall: mockedRunDaemonInstall,
 }));
 
@@ -6013,6 +6014,28 @@ describe("update-cli", () => {
     expect(requireValue(stopOrder, "service stop order")).toBeLessThan(
       requireValue(resumeOrder, "Scheduled Task resume order"),
     );
+  });
+
+  it("restarts the managed gateway when stop mutates the service before failing", async () => {
+    const tempDir = tempDirs.make("openclaw-update-partial-stop-failure-");
+    const { nodeModules } = await setupInstalledPackageRoot(tempDir);
+    mockRunningManagedGateway();
+    mockFileBackedPathExists();
+    mockNpmGlobalRoot(nodeModules);
+    serviceReadRuntime
+      .mockResolvedValueOnce({ status: "running", pid: gatewayFixturePid, state: "running" })
+      .mockResolvedValueOnce({ status: "stopped", pid: null, state: "stopped" });
+    serviceStop.mockImplementationOnce(async (args: unknown) => {
+      (args as { onMutation?: () => void }).onMutation?.();
+      throw new Error("stop validation failed");
+    });
+
+    await updateCommand({ yes: true });
+
+    expect(serviceStop).toHaveBeenCalledOnce();
+    expect(freshRestartCalls()).toHaveLength(1);
+    expect(packageInstallCommandCall()).toBeUndefined();
+    expect(defaultRuntime.exit).toHaveBeenCalledWith(1);
   });
 
   it("preserves both the update and Scheduled Task recovery failures", async () => {

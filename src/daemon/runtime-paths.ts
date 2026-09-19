@@ -218,6 +218,14 @@ export function resolveBunRuntimeInfo(
   return resolveRuntimeInfo(bunPath, "bun", execFileImpl);
 }
 
+/** Probes a recorded Node executable against the managed daemon runtime contract. */
+export function resolveNodeRuntimeInfo(
+  nodePath: string,
+  execFileImpl: ExecFileAsync = execFileAsync,
+) {
+  return resolveRuntimeInfo(nodePath, "node", execFileImpl);
+}
+
 async function isVersionManagedRealNodePath(
   nodePath: string,
   platform: NodeJS.Platform,

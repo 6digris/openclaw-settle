@@ -14,6 +14,7 @@ import {
   resolveSkillManifestMetadata,
 } from "../loading/frontmatter.js";
 import { loadSkillsFromDirSafe, readSkillFrontmatterSafe } from "../loading/local-loader.js";
+import { closeSkillsWatchers } from "../runtime/refresh.js";
 import { runCommandWithTimeoutMock } from "../test-support/install-test-mocks.js";
 import type { SkillEntry, SkillInstallSpec } from "../types.js";
 import { installSkill } from "./install.js";
@@ -117,7 +118,12 @@ async function withWorkspaceCase(
     process.env.OPENCLAW_STATE_DIR = stateDir;
     await run({ workspaceDir, stateDir });
   } finally {
-    envSnapshot.restore();
+    try {
+      // Close real skills.status watchers before retiring their workspace and state roots.
+      await closeSkillsWatchers();
+    } finally {
+      envSnapshot.restore();
+    }
   }
 }
 

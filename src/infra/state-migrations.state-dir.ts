@@ -4,7 +4,10 @@ import path from "node:path";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { resolveProfileStateDir } from "../cli/profile-utils.js";
 import { resolveLegacyStateDirs, resolveNewStateDir, resolveStateDir } from "../config/paths.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { resolveIdentityPathViaExistingAncestorSync } from "./boundary-path.js";
+import { resolveUserPath } from "./home-dir.js";
 import { isWithinDir } from "./path-safety.js";
 import {
   migrateLegacyInstalledPluginIndex,
@@ -43,10 +46,39 @@ function lstatIfPresent(filePath: string): fs.Stats | null {
   }
 }
 
-export function migrateLegacyProfileWorkspace(params: {
+function resolveProfileWorkspaceIdentity(workspace: string): string {
+  return resolveIdentityPathViaExistingAncestorSync(workspace);
+}
+
+function resolveConfiguredProfileWorkspace(params: {
+  config?: OpenClawConfig;
+  source: string;
+  target: string;
   env?: NodeJS.ProcessEnv;
   homedir?: () => string;
-}): { changes: string[]; warnings: string[] } {
+}): string | undefined {
+  const agents = params.config?.agents;
+  const workspaces = new Set(
+    [
+      agents?.defaults?.workspace,
+      ...Object.values(agents?.entries ?? {}).map((entry) => entry.workspace),
+      ...(agents?.list ?? []).map((entry) => entry.workspace),
+    ].flatMap((workspace) =>
+      workspace?.trim()
+        ? [resolveProfileWorkspaceIdentity(resolveUserPath(workspace, params.env, params.homedir))]
+        : [],
+    ),
+  );
+  return [params.source, params.target].find((workspace) =>
+    workspaces.has(resolveProfileWorkspaceIdentity(workspace)),
+  );
+}
+
+export function migrateLegacyProfileWorkspace(params: {
+  config?: OpenClawConfig;
+  env?: NodeJS.ProcessEnv;
+  homedir?: () => string;
+}): { changes: string[]; warnings: string[]; notices?: string[] } {
   const env = params.env ?? process.env;
   const homedir = params.homedir ?? os.homedir;
   const profile = env.OPENCLAW_PROFILE?.trim();
@@ -63,6 +95,25 @@ export function migrateLegacyProfileWorkspace(params: {
     const legacyStat = lstatIfPresent(legacyDir);
     if (!legacyStat) {
       return { changes: [], warnings: [] };
+    }
+    const configured = resolveConfiguredProfileWorkspace({
+      ...params,
+      source: legacyDir,
+      target: targetDir,
+    });
+    if (configured) {
+      const other = configured === legacyDir ? targetDir : legacyDir;
+      return {
+        changes: [],
+        warnings: [],
+        ...(lstatIfPresent(other)
+          ? {
+              notices: [
+                `Profile workspace: keeping configured workspace at ${configured}; existing workspace at ${other} was left unchanged.`,
+              ],
+            }
+          : {}),
+      };
     }
     if (!legacyStat.isDirectory() && !legacyStat.isSymbolicLink()) {
       return {

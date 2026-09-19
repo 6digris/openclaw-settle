@@ -1,5 +1,6 @@
 // Gateway service installer: writes config defaults, resolves credentials, and installs service definitions.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { SUPPORTED_NODE_VERSIONS } from "../../../node-version.mjs";
 import { resolveNodeStartupTlsEnvironment } from "../../bootstrap/node-startup-env.js";
 import { buildGatewayInstallPlan } from "../../commands/daemon-install-helpers.js";
 import {
@@ -15,6 +16,8 @@ import { resolveGatewayPort } from "../../config/paths.js";
 import type { GatewayBindMode } from "../../config/types.gateway.js";
 import type { OpenClawConfig } from "../../config/types.js";
 import { OPENCLAW_WRAPPER_ENV_KEY, resolveOpenClawWrapperPath } from "../../daemon/program-args.js";
+import { isNodeRuntime } from "../../daemon/runtime-binary.js";
+import { resolveNodeRuntimeInfo, resolvePreferredNodePath } from "../../daemon/runtime-paths.js";
 import { readEmbeddedGatewayToken } from "../../daemon/service-audit.js";
 import { mergeGatewayServiceEnv } from "../../daemon/service-env-merge.js";
 import {
@@ -288,8 +291,25 @@ export async function runDaemonInstall(opts: DaemonInstallOptions) {
     return;
   }
   let autoRefreshMessage: string | undefined;
+  let runtimePath: string | undefined;
+  const recordedNode = existingManagedCommand?.programArguments[0];
+  if (runtimeRaw === "node" && !wrapperPath && recordedNode && isNodeRuntime(recordedNode)) {
+    const recordedRuntime = await resolveNodeRuntimeInfo(recordedNode);
+    if (recordedRuntime.status === "unsupported") {
+      runtimePath = await resolvePreferredNodePath({ env: installEnv, runtime: "node" }).catch(
+        () => undefined,
+      );
+      if (!runtimePath) {
+        fail(
+          `No supported Node runtime is available. Install Node ${SUPPORTED_NODE_VERSIONS}, then rerun openclaw gateway install.`,
+        );
+        return;
+      }
+      autoRefreshMessage = `Replacing unsupported Gateway service Node ${recordedRuntime.version} (${recordedNode}) with ${runtimePath}; refreshing the install.`;
+    }
+  }
   if (loaded && !opts.force) {
-    autoRefreshMessage = await getGatewayServiceAutoRefreshMessage({
+    autoRefreshMessage ??= await getGatewayServiceAutoRefreshMessage({
       currentCommand: existingServiceCommand,
       env: process.env,
       installEnv,
@@ -304,8 +324,10 @@ export async function runDaemonInstall(opts: DaemonInstallOptions) {
       if (!(await assertWritable())) {
         return;
       }
-      warn(autoRefreshMessage);
     }
+  }
+  if (autoRefreshMessage) {
+    warn(autoRefreshMessage);
   }
 
   if (configSnapshot.valid && cfg.gateway?.mode === undefined) {
@@ -364,6 +386,7 @@ export async function runDaemonInstall(opts: DaemonInstallOptions) {
       env: installEnv,
       port,
       runtime: runtimeRaw,
+      runtimePath,
       wrapperPath,
       existingCommand: existingServiceCommand,
       existingEnvironment: existingServiceEnv,

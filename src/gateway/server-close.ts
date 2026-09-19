@@ -18,6 +18,7 @@ import { closePluginStateDatabase } from "../plugin-state/plugin-state-store.js"
 import { clearActivePluginRegistry } from "../plugins/runtime.js";
 import type { PluginServicesHandle } from "../plugins/services.js";
 import { drainGlobalSingletonLifecycleState } from "../shared/global-singleton.js";
+import { closeOpenClawAgentDatabases } from "../state/openclaw-agent-db.js";
 import {
   abortChatRunById,
   type ChatAbortControllerEntry,
@@ -670,6 +671,7 @@ export function createGatewayCloseHandler(
     bonjourStop: (() => Promise<void>) | null;
     tailscaleCleanup: (() => Promise<void>) | null;
     clearSecretsRuntimeSnapshot?: (() => void) | null;
+    releasePluginMetadata: (onFinalOwner?: () => void) => void;
     channelIds?: readonly ChannelId[];
     stopChannel: (name: ChannelId, accountId?: string) => Promise<void>;
     pluginServices: PluginServicesHandle | null;
@@ -1057,6 +1059,9 @@ export function createGatewayCloseHandler(
       try {
         // Plugin cleanup may still read ambient slots. A failed owner drain must
         // stop restart so the next lifecycle cannot reuse incomplete shutdown.
+        // The final Gateway owns process-wide agent handles. A sibling close must not
+        // discard its durable or in-memory databases before the shared state drain.
+        params.releasePluginMetadata(closeOpenClawAgentDatabases);
         await drainGlobalSingletonLifecycleState(restartExpectedMs === null ? "close" : "restart");
       } finally {
         try {

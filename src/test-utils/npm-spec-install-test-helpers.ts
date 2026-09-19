@@ -90,7 +90,7 @@ type NpmViewMetadata = {
 };
 
 // Keep spawn doubles shaped like the real process helper so install tests stay narrow.
-function createSuccessfulSpawnResult(stdout = ""): SpawnResult {
+export function createSuccessfulSpawnResult(stdout = ""): SpawnResult {
   return {
     code: 0,
     stdout,
