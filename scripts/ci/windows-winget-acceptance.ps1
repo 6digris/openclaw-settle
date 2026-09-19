@@ -204,7 +204,7 @@ try {
     # Native local-manifest installation enforces the pinned InstallerSha256,
     # instead of resolving the setup artifact from today's mutable catalog.
     # Candidate install/repair below still use their unmodified public source.
-    if ($Scenario -notin @('unsupported-node','non-msi')) {
+    if ($Scenario -eq 'healthy') {
         Assert-Proof ((Invoke-Native $winget @('settings','--enable','LocalManifestFiles') 'enable-local-manifests') -eq 0) 'Native local-manifest setup unavailable.'
         $localManifestsEnabled = $true
     }
@@ -263,7 +263,30 @@ try {
             $portableOwned = $true
             $arguments = @('install') + $selection + @('--accept-package-agreements','--silent','--location',(Join-Path $WorkRoot 'portable'))
         } else { $ownedProduct = $proof.manifest.productCode }
-        Assert-Proof ((Invoke-Native $winget $arguments 'setup-node') -eq 0) 'Exact native package setup failed.'
+        if ($Scenario -in @('stale-msi','failed-repair')) {
+            # Winget deletes its downloaded MSI after install. Native repair then
+            # fails with 1706/1603 when missing files need that source (run35471472032).
+            # Establish a genuinely repairable product with the vendor installer;
+            # Windows Installer writes all registration and source metadata itself.
+            # Keep the exact media until native uninstall, then owned-staging removes it.
+            $msiPath = Join-Path $WorkRoot 'node-v24.19.0-x64.msi'
+            $msiSha256 = 'F0F66C2A80C08A30A5AB5179EE9EA9E45F9B46289436A8CC87FF833B852DB351'
+            Invoke-WebRequest 'https://nodejs.org/dist/v24.19.0/node-v24.19.0-x64.msi' -OutFile $msiPath
+            Assert-Proof ((Get-FileHash -LiteralPath $msiPath -Algorithm SHA256).Hash -ceq $msiSha256) 'Vendor MSI differs from pinned manifest.'
+            Assert-Proof ((Get-AuthenticodeSignature -LiteralPath $msiPath).Status -eq 'Valid') 'Vendor MSI signature is invalid.'
+            $msiExe = "$env:WINDIR\System32\msiexec.exe"
+            $msiLog = Join-Path $ProofRoot 'setup-retained-msi.log'
+            $msiArguments = @('/i',('"{0}"' -f $msiPath),'/qn','/norestart','/l*v',('"{0}"' -f $msiLog))
+            $process = Start-Process -FilePath $msiExe -ArgumentList $msiArguments -Wait -PassThru
+            $setupExit = $process.ExitCode
+            $proof.commands += @{ name='setup-retained-msi'; executable=$msiExe; arguments=$msiArguments; exit=$setupExit; processId=$process.Id; waited=$true }
+            $process.Dispose()
+            Assert-Proof ($setupExit -in @(0,3010)) 'Native retained-source MSI setup failed.'
+            $proof.msiSetup = @{ method='vendor-msiexec'; source=$msiPath; sha256=$msiSha256; scope='Repairable missing executable with original source available; not missing-media recovery' }
+            Assert-Proof ((Invoke-Native $winget @('list','--id','OpenJS.NodeJS.LTS','--exact','--source','winget','--scope','machine','--accept-source-agreements','--disable-interactivity') 'msi-catalog-correlation') -eq 0) 'Vendor MSI is not correlated to the public Winget source.'
+        } else {
+            Assert-Proof ((Invoke-Native $winget $arguments 'setup-node') -eq 0) 'Exact native package setup failed.'
+        }
         Refresh-ProcessPath
         Add-InstalledNodeToProcessPath | Out-Null
         $proof.registration = @(Get-NodeRegistration)
@@ -274,7 +297,21 @@ try {
             $registration = $proof.portableRegistration
             Assert-Proof ($registration.WinGetPackageIdentifier -ceq 'OpenJS.NodeJS.LTS' -and $registration.WinGetSourceIdentifier -ceq $portableSourceIdentifier -and $registration.WinGetInstallerType -ceq 'portable' -and $registration.WindowsInstaller -ne 1 -and $registration.DisplayVersion -ceq $proof.manifest.version) 'Real portable registration does not match the pinned public package.'
             # Verify public-source discovery in addition to the exact native registry identity.
-            Assert-Proof ((Invoke-Native $winget @('list','--id','OpenJS.NodeJS.LTS','--exact','--source','winget','--scope','user','--accept-source-agreements','--disable-interactivity') 'portable-catalog-correlation') -eq 0) 'Portable registration is not correlated to the public source.'
+            $correlationExit = Invoke-Native $winget @('list','--id','OpenJS.NodeJS.LTS','--exact','--source','winget','--scope','user','--accept-source-agreements','--disable-interactivity','--verbose-logs') 'portable-catalog-correlation'
+            if ($correlationExit -ne 0) {
+                # Read-only diagnostics distinguish source correlation from scope
+                # filtering and malformed native ARP values. No fallback is acceptance.
+                $proof.portableRegistrationValues = @()
+                $key = Get-Item -LiteralPath $portableRegistryPath
+                try {
+                    foreach ($name in $key.GetValueNames()) {
+                        $proof.portableRegistrationValues += @{ name=$name; kind=$key.GetValueKind($name).ToString(); value=$key.GetValue($name) }
+                    }
+                } finally { $key.Dispose() }
+                Invoke-Native $winget @('list','--id','OpenJS.NodeJS.LTS','--exact','--source','winget','--accept-source-agreements','--disable-interactivity','--verbose-logs') 'portable-correlation-without-scope' | Out-Null
+                Invoke-Native $winget @('list','--name','Node.js (LTS)','--exact','--source','winget','--scope','user','--accept-source-agreements','--disable-interactivity','--verbose-logs') 'portable-correlation-by-name' | Out-Null
+            }
+            Assert-Proof ($correlationExit -eq 0) 'Portable registration is not correlated to the public source.'
             $executables = @(Get-ChildItem (Join-Path $WorkRoot 'portable') -Filter node.exe -Recurse -File)
             Assert-Proof ($executables.Count -eq 1) 'Portable install location is ambiguous.'
             $runtime = $executables[0].FullName
@@ -300,7 +337,10 @@ try {
         $global:WingetProofMainReached = $false
         $script:InstallExitCode = 0
         $gate = [scriptblock]::Create($prefix + "`n`$global:WingetProofMainReached = `$true")
-        if ($Scenario -in @('stale-msi','failed-repair')) { Enable-MsiRepairDiagnostics }
+        if ($Scenario -in @('stale-msi','failed-repair')) {
+            Assert-Proof ((Get-FileHash -LiteralPath $msiPath -Algorithm SHA256).Hash -ceq $msiSha256) 'Retained MSI source changed before repair.'
+            Enable-MsiRepairDiagnostics
+        }
         & $gate
         $proof.mainReached = $global:WingetProofMainReached
         $proof.registrationAfterGate = @(Get-NodeRegistration)
@@ -364,7 +404,7 @@ try {
             if ($portableOwned -and (Test-Path -LiteralPath $portableRegistryPath)) {
                 # Target the product code written by the supported catalog install;
                 # do not fall back to another package/source or rewrite metadata.
-                $code = Invoke-Native $winget @('uninstall','--product-code',$portableProductCode,'--exact','--scope','user','--silent','--disable-interactivity') 'cleanup-owned-portable'
+                $code = Invoke-Native $winget @('uninstall','--product-code',$portableProductCode,'--exact','--source','winget','--scope','user','--silent','--accept-source-agreements','--disable-interactivity','--verbose-logs') 'cleanup-owned-portable'
                 Assert-Proof ($code -eq 0) 'Portable native cleanup failed.'
                 Assert-Proof (-not (Test-Path -LiteralPath $portableRegistryPath)) 'Portable registration remains.'
             }
