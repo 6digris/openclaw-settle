@@ -786,4 +786,3 @@ export async function installSkillDependencies(
       : installResult;
   return normalizedResult;
 }
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
