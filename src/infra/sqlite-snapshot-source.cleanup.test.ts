@@ -9,6 +9,7 @@ import {
 } from "../process/exec-result.js";
 import { collectNestedErrorCandidates } from "./error-graph-internal.js";
 import { removeTempDirectoryAsync } from "./sqlite-readonly-location-cleanup.js";
+import type { SqliteReadOnlyWorkerOptions } from "./sqlite-readonly-worker-protocol.js";
 import * as worker from "./sqlite-readonly-worker.js";
 import { prepareSqliteReadOnlyLocation } from "./sqlite-snapshot-source.js";
 
@@ -31,8 +32,11 @@ it.each([true, false])(
     let allocated: string | undefined;
     const run = vi
       .spyOn(worker, "runSqliteReadOnlyWorker")
-      .mockImplementationOnce(async (_pathname, options) => {
-        allocated = options?.stagingRoot;
+      .mockImplementationOnce(async (_pathname, options: SqliteReadOnlyWorkerOptions) => {
+        if (options.mode !== "async") {
+          throw new Error("Expected an asynchronous snapshot worker");
+        }
+        allocated = options.stagingRoot;
         if (!allocated) {
           throw new Error("Expected worker-owned snapshot staging");
         }

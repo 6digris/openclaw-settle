@@ -51,7 +51,13 @@ describe("worker plugin state", () => {
           throw new Error("Expected the shared-state worker");
         }
         const observation = await store.observe("workspace");
-        let held: ReturnType<typeof acquireStateDatabaseCoordinator> | undefined;
+        // Acquire before admission so the broker can delegate this live custody.
+        // Taking a new host lock only at dispatch would block worker-side acquisition.
+        const held = acquireStateDatabaseCoordinator({
+          databasePath: resolveOpenClawStateSqlitePath(state.env),
+          busyTimeoutMs: 0,
+        });
+        let dispatched = false;
         const nativePost = worker.postMessage.bind(worker);
         const dispatch = vi
           .spyOn(worker, "postMessage")
@@ -62,12 +68,9 @@ describe("worker plugin state", () => {
               request.input instanceof Uint8Array &&
               asOptionalRecord(deserialize(request.input))?.type === "pluginState." + operation
             ) {
-              // A sibling native owner starts after broker preparation but before
-              // dispatch. Its live custody must be shared with this worker command.
-              held = acquireStateDatabaseCoordinator({
-                databasePath: resolveOpenClawStateSqlitePath(state.env),
-                busyTimeoutMs: 0,
-              });
+              dispatched = true;
+              expect(request.stateLifecycle).toBeDefined();
+              expect(request.workerStateLifecycle).toBeUndefined();
             }
             return nativePost(message, transferList);
           });
@@ -82,10 +85,10 @@ describe("worker plugin state", () => {
               }),
             ).resolves.toEqual({ status: "applied" });
           }
-          expect(held).toBeDefined();
+          expect(dispatched).toBe(true);
         } finally {
           dispatch.mockRestore();
-          held?.release();
+          held.release();
         }
         expect(await store.lookup("workspace")).toBe(operation === "observe" ? "owner" : undefined);
       });
