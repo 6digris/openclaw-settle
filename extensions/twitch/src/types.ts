@@ -5,19 +5,6 @@
  * from OpenClaw core.
  */
 
-import type {
-  ChannelAccountSnapshot,
-  ChannelLogSink,
-  ChannelMessageActionAdapter,
-  ChannelMessageActionContext,
-  ChannelOutboundAdapter,
-  ChannelOutboundContext,
-  ChannelPlugin,
-  ChannelResolveKind,
-  ChannelResolveResult,
-  OutboundDeliveryResult,
-} from "../runtime-api.js";
-
 // ============================================================================
 // Twitch-Specific Types
 // ============================================================================
@@ -94,11 +81,10 @@ export type {
   ChannelAccountSnapshot,
   ChannelLogSink,
   ChannelMessageActionAdapter,
-  ChannelMessageActionContext,
   ChannelOutboundAdapter,
   ChannelResolveKind,
   ChannelResolveResult,
   ChannelPlugin,
   ChannelOutboundContext,
   OutboundDeliveryResult,
-};
+} from "../runtime-api.js";

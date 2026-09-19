@@ -1,10 +1,14 @@
 // Windows Git launcher tests cover rendering, installer creation, and Doctor migration ownership.
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { withTestDir } from "../test-helpers/temp-dir.js";
 import { reconcileWindowsGitLauncher } from "./windows-git-launcher.js";
 import { decodeWindowsLauncherScript } from "./windows-launcher-encoding.js";
+
+vi.mock("../process/exec.js", () => ({ runExec: vi.fn() }));
 
 const resolveNodeRuntimeInfo = vi.hoisted(() => vi.fn());
 
@@ -28,7 +32,7 @@ describe("reconcileWindowsGitLauncher", () => {
   beforeEach(() => {
     resolveNodeRuntimeInfo.mockReset();
     resolveNodeRuntimeInfo.mockResolvedValue({
-      nodeVersion: "24.15.0",
+      nodeVersion: "24.16.0",
       sqliteVersion: "3.51.3",
       nodeSharedSqlite: false,
       supported: true,
@@ -144,6 +148,62 @@ describe("reconcileWindowsGitLauncher", () => {
           nodePath: replacementNodePath,
         }),
       ).resolves.toEqual({ status: "unchanged", launcherPath: fixture.launcherPath });
+    });
+  });
+
+  it("refuses mismatched launcher code pages before runtime validation", async () => {
+    await withTestDir({ prefix: "openclaw-windows-git-launcher-" }, async (root) => {
+      const fixture = await createLauncherFixture(root);
+      const params = { root, repair: true, create: true, platform: "win32" as const, ...fixture };
+      await reconcileWindowsGitLauncher(params);
+      // Corrupt only the encoding declaration around a production-generated body.
+      // The real Windows fixture separately proves non-ASCII launcher execution.
+      const mismatched = Buffer.concat([
+        Buffer.from("@chcp 437 >nul\r\n@rem openclaw-launcher-encoding=utf-8\r\n"),
+        await fs.readFile(fixture.launcherPath),
+      ]);
+      await fs.writeFile(fixture.launcherPath, mismatched);
+      resolveNodeRuntimeInfo.mockClear();
+      await expect(reconcileWindowsGitLauncher(params)).resolves.toEqual({
+        status: "skipped",
+        reason: "foreign",
+      });
+      expect(resolveNodeRuntimeInfo).not.toHaveBeenCalled();
+      expect(await fs.readFile(fixture.launcherPath)).toEqual(mismatched);
+    });
+  });
+
+  it("revalidates an unchanged launcher after an in-place runtime downgrade", async () => {
+    await withTestDir({ prefix: "openclaw-windows-git-launcher-" }, async (root) => {
+      const fixture = await createLauncherFixture(root);
+      const params = { root, repair: true, create: true, platform: "win32" as const, ...fixture };
+      await reconcileWindowsGitLauncher(params);
+      const original = await fs.readFile(fixture.launcherPath);
+      resolveNodeRuntimeInfo.mockResolvedValue({
+        nodeVersion: "24.14.0",
+        sqliteVersion: "3.51.2",
+        nodeSharedSqlite: false,
+        supported: false,
+      });
+      await expect(reconcileWindowsGitLauncher(params)).resolves.toEqual({
+        status: "needs-reinstall",
+        launcherPath: fixture.launcherPath,
+      });
+      expect(await fs.readFile(fixture.launcherPath)).toEqual(original);
+    });
+  });
+
+  it("does not accept an unchanged launcher with a missing entrypoint", async () => {
+    await withTestDir({ prefix: "openclaw-windows-git-launcher-" }, async (root) => {
+      const fixture = await createLauncherFixture(root);
+      const params = { root, repair: true, create: true, platform: "win32" as const, ...fixture };
+      await reconcileWindowsGitLauncher(params);
+      const original = await fs.readFile(fixture.launcherPath);
+      await fs.unlink(fixture.entryPath);
+      await expect(reconcileWindowsGitLauncher(params)).rejects.toThrow(
+        "OpenClaw build entrypoint not found",
+      );
+      expect(await fs.readFile(fixture.launcherPath)).toEqual(original);
     });
   });
 
@@ -290,3 +350,135 @@ describe("reconcileWindowsGitLauncher", () => {
     ).resolves.toEqual({ status: "skipped", reason: "not-windows" });
   });
 });
+
+describe("Windows launcher runtime validation", () => {
+  async function probeRuntime(overrides: Record<string, unknown> = {}) {
+    const { resolveNodeRuntimeInfo: probe } =
+      await vi.importActual<typeof import("./node-runtime-info.js")>("./node-runtime-info.js");
+    return probe("C:\\validated\\node.exe", async () => ({
+      stdout: JSON.stringify({
+        nodeVersion: "24.16.0",
+        sqliteVersion: "3.51.3",
+        nodeSharedSqlite: false,
+        sqliteCapabilities: {
+          available: true,
+          version: "3.51.3",
+          text: true,
+          blob: true,
+          json: true,
+          ...overrides,
+        },
+      }),
+      stderr: "",
+    }));
+  }
+
+  it("accepts a supported runtime with safe SQLite round trips", async () => {
+    await expect(probeRuntime()).resolves.toMatchObject({ supported: true });
+  });
+
+  it.each([
+    { available: false },
+    { text: false },
+    { blob: false },
+    { json: false },
+    { error: "SQLite round trip failed" },
+    { text: "true" },
+  ])("refuses unsafe SQLite capabilities despite a safe version: %j", async (capabilities) => {
+    await expect(probeRuntime(capabilities)).resolves.toMatchObject({ supported: false });
+  });
+
+  it.each(["not-json", "null", '{"nodeVersion":"24.16.0","sqliteVersion":"3.51.3"}'])(
+    "refuses incomplete runtime evidence: %s",
+    async (stdout) => {
+      const { resolveNodeRuntimeInfo: probe } =
+        await vi.importActual<typeof import("./node-runtime-info.js")>("./node-runtime-info.js");
+      await expect(
+        probe("C:\\validated\\node.exe", async () => ({ stdout, stderr: "" })),
+      ).resolves.toMatchObject({ supported: false });
+    },
+  );
+});
+
+it("probes the running Node executable with the canonical SQLite checks", async () => {
+  const { resolveNodeRuntimeInfo: probe } =
+    await vi.importActual<typeof import("./node-runtime-info.js")>("./node-runtime-info.js");
+  const exec = promisify(execFile);
+  const result = await probe(process.execPath, (file, args, options) =>
+    exec(file, [...args], { encoding: options.encoding, timeout: options.timeoutMs }),
+  );
+  expect(result).toMatchObject({ nodeVersion: process.versions.node, supported: true });
+  expect(result.sqliteVersion).toMatch(/^\d+\.\d+\.\d+$/);
+});
+
+it.runIf(process.platform === "win32").each(["cmd", "powershell"])(
+  "keeps migrated update and Doctor launchers pinned through %s and fails closed",
+  async (shell) => {
+    await withTestDir({ prefix: "openclaw-windows-git-launcher-" }, async (root) => {
+      const fixture = await createLauncherFixture(path.join(root, "paths ^ & (approved)! %USER%"));
+      const launcherPath = path.join(root, "openclaw.cmd");
+      await fs.copyFile(process.execPath, fixture.nodePath);
+      await fs.writeFile(
+        fixture.entryPath,
+        "process.stdout.write(JSON.stringify({ execPath: process.execPath, args: process.argv.slice(2) }));",
+      );
+      await fs.writeFile(launcherPath, `@echo off\r\nnode "${fixture.entryPath}" %*\r\n`);
+      const exec = promisify(execFile);
+      const { resolveNodeRuntimeInfo: probe } =
+        await vi.importActual<typeof import("./node-runtime-info.js")>("./node-runtime-info.js");
+      resolveNodeRuntimeInfo.mockImplementation((file: string) =>
+        probe(file, (node, args, options) =>
+          exec(node, [...args], { encoding: options.encoding, timeout: options.timeoutMs }),
+        ),
+      );
+      await expect(
+        reconcileWindowsGitLauncher({
+          root,
+          repair: true,
+          ...fixture,
+          launcherPath,
+        }),
+      ).resolves.toEqual({ status: "updated", launcherPath });
+      const shadow = path.join(root, "shadow");
+      const marker = path.join(root, "shadow-used.txt");
+      await fs.mkdir(shadow);
+      await fs.writeFile(
+        path.join(shadow, "node.cmd"),
+        `@echo off\r\necho shadow>"${marker}"\r\nexit /b 99\r\n`,
+      );
+      const system32 = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32");
+      const env = {
+        ...process.env,
+        PATH: shadow,
+        OPENCLAW_TEST_LAUNCHER: launcherPath,
+      };
+      const invoke = (command: string) =>
+        shell === "cmd"
+          ? exec(
+              path.join(system32, "cmd.exe"),
+              ["/d", "/v:on", "/s", "/c", `""${launcherPath}" ${command}"`],
+              { env, encoding: "utf8" },
+            )
+          : exec(
+              path.join(system32, "WindowsPowerShell", "v1.0", "powershell.exe"),
+              [
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                `& $env:OPENCLAW_TEST_LAUNCHER ${command}; exit $LASTEXITCODE`,
+              ],
+              { env, encoding: "utf8" },
+            );
+      for (const command of ["update", "doctor"]) {
+        const { stdout } = await invoke(command);
+        expect(JSON.parse(stdout)).toEqual({ execPath: fixture.nodePath, args: [command] });
+      }
+      await fs.unlink(fixture.nodePath);
+      await expect(invoke("update")).rejects.toMatchObject({
+        code: 1,
+        stderr: expect.stringContaining("Re-run the OpenClaw installer"),
+      });
+      await expect(fs.stat(marker)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  },
+);

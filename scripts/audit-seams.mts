@@ -53,7 +53,7 @@ const testRoot = path.join(repoRoot, "test");
 const workspacePackagePaths = ["ui/package.json"];
 const MAX_SCAN_BYTES = 2 * 1024 * 1024;
 const compareStrings = (left: string, right: string) => left.localeCompare(right);
-export const HELP_TEXT = `Usage: node --import tsx scripts/audit-seams.mts [--help]
+const HELP_TEXT = `Usage: node --import tsx scripts/audit-seams.mts [--help]
 
 Audit repo seam inventory and emit JSON to stdout.
 
@@ -827,7 +827,7 @@ export function describeSeamKinds(relativePath: string, source: string) {
   }
   if (
     isReplyDeliveryPath &&
-    /blockStreamingEnabled|directlySentBlockKeys|resolveSendableOutboundReplyParts/.test(source) &&
+    /blockStreamingEnabled|directBlockDeliveries|resolveSendableOutboundReplyParts/.test(source) &&
     /\bmediaUrl\b|\bmediaUrls\b/.test(source)
   ) {
     seamKinds.push("streaming-media-handoff");

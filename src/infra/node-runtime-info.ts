@@ -1,7 +1,7 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import { nodeRuntimeFailure, SQLITE_CAPABILITY_PROBE } from "../../node-sqlite.mjs";
 import { isSupportedOpenClawNodeVersion } from "../../node-version.mjs";
 import { runExec } from "../process/exec.js";
-import { isSqliteWalResetSafeVersion } from "./sqlite-runtime-version.js";
 
 export type NodeRuntimeExec = (
   file: string,
@@ -15,19 +15,10 @@ const execNodeRuntime: NodeRuntimeExec = async (file, args, options) =>
   await runExec(file, [...args], { logOutput: false, timeoutMs: options.timeoutMs });
 
 const NODE_RUNTIME_PROBE = String.raw`
-let sqliteVersion = null;
-try {
-  const { DatabaseSync } = require("node:sqlite");
-  const db = new DatabaseSync(":memory:");
-  try {
-    sqliteVersion = db.prepare("SELECT sqlite_version() AS version").get()?.version ?? null;
-  } finally {
-    db.close();
-  }
-} catch {}
+const sqliteCapabilities = ${SQLITE_CAPABILITY_PROBE};
 const variables = (process.config && process.config.variables) || {};
 const nodeSharedSqlite = variables.node_shared_sqlite === true || variables.node_shared_sqlite === "true";
-process.stdout.write(JSON.stringify({ nodeVersion: process.versions.node, sqliteVersion, nodeSharedSqlite }));
+process.stdout.write(JSON.stringify({ nodeVersion: process.versions.node, sqliteVersion: sqliteCapabilities.version, sqliteCapabilities, nodeSharedSqlite }));
 `;
 
 type NodeRuntimeInfo = {
@@ -52,14 +43,21 @@ export async function resolveNodeRuntimeInfo(
     const sqliteVersion = typeof parsed?.sqliteVersion === "string" ? parsed.sqliteVersion : null;
     const nodeSharedSqlite =
       parsed?.nodeSharedSqlite === true || parsed?.nodeSharedSqlite === "true";
+    const capabilities = asOptionalRecord(parsed?.sqliteCapabilities);
     return {
       nodeVersion,
       sqliteVersion,
       nodeSharedSqlite,
       supported:
         isSupportedOpenClawNodeVersion(nodeVersion) &&
-        sqliteVersion !== null &&
-        isSqliteWalResetSafeVersion(sqliteVersion),
+        nodeRuntimeFailure(nodeVersion, {
+          available: capabilities?.available === true,
+          version: sqliteVersion,
+          text: capabilities?.text === true,
+          blob: capabilities?.blob === true,
+          json: capabilities?.json === true,
+          error: typeof capabilities?.error === "string" ? capabilities.error : undefined,
+        }) === null,
     };
   } catch {
     return { nodeVersion: null, sqliteVersion: null, nodeSharedSqlite: false, supported: false };

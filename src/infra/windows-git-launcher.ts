@@ -2,11 +2,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { hasErrnoCode } from "./errors.js";
+import { hasErrnoCode } from "./errno.js";
 import { resolveRequiredOsHomeDir } from "./home-dir.js";
 import { resolveNodeRuntimeInfo } from "./node-runtime-info.js";
 import { replaceFileAtomic } from "./replace-file.js";
 import { resolveStableNodePath } from "./stable-node-path.js";
+import { resolveWindowsOemCodePageForEncoding } from "./windows-encoding.js";
 import {
   decodeWindowsLauncherScript,
   encodeWindowsLauncherScript,
@@ -73,6 +74,21 @@ function isManagedLauncherForEntry(content: string, entryPath: string): boolean 
   );
 }
 
+// The shared decoder consumes the marker; cmd.exe consumes the preamble. Both
+// must name the same encoding before decoded text can establish launcher ownership.
+function hasConsistentLauncherCodePage(buffer: Buffer): boolean {
+  const [firstLine, secondLine] = buffer.toString("latin1").split("\n", 2);
+  const preamble = /^@chcp (\d+) >nul\s*$/u.exec(firstLine ?? "");
+  if (!preamble) {
+    return true;
+  }
+  const marker = /^@rem openclaw-launcher-encoding=(\S+)\s*$/u.exec(secondLine ?? "");
+  return (
+    marker?.[1] !== undefined &&
+    resolveWindowsOemCodePageForEncoding(marker[1]) === Number(preamble[1])
+  );
+}
+
 async function assertFile(filePath: string, label: string): Promise<void> {
   const stat = await fs.stat(filePath).catch(() => null);
   if (!stat?.isFile()) {
@@ -110,23 +126,23 @@ export async function reconcileWindowsGitLauncher(params: {
       "openclaw.cmd",
     );
   const desired = renderWindowsGitLauncher({ nodePath, entryPath });
-  const current = await fs
-    .readFile(launcherPath)
-    .then((buffer) => decodeWindowsLauncherScript({ buffer }))
-    .catch((error: unknown) => {
-      if (hasErrnoCode(error, "ENOENT")) {
-        return null;
-      }
-      throw error;
-    });
+  const currentBuffer = await fs.readFile(launcherPath).catch((error: unknown) => {
+    if (hasErrnoCode(error, "ENOENT")) {
+      return null;
+    }
+    throw error;
+  });
+  if (currentBuffer !== null && !hasConsistentLauncherCodePage(currentBuffer)) {
+    return { status: "skipped", reason: "foreign" };
+  }
+  const current =
+    currentBuffer === null ? null : decodeWindowsLauncherScript({ buffer: currentBuffer });
 
   if (current === null) {
     if (!params.create) {
       return { status: "skipped", reason: "missing" };
     }
-  } else if (current === desired) {
-    return { status: "unchanged", launcherPath };
-  } else if (!isManagedLauncherForEntry(current, entryPath)) {
+  } else if (current !== desired && !isManagedLauncherForEntry(current, entryPath)) {
     return { status: "skipped", reason: "foreign" };
   }
 
@@ -136,7 +152,7 @@ export async function reconcileWindowsGitLauncher(params: {
   if (!runtime.supported) {
     return { status: "needs-reinstall", launcherPath };
   }
-  if (current !== null && !params.repair) {
+  if (current !== null && current !== desired && !params.repair) {
     return { status: "needs-repair", launcherPath };
   }
 
@@ -144,6 +160,10 @@ export async function reconcileWindowsGitLauncher(params: {
     assertFile(nodePath, "Validated Node.js runtime"),
     assertFile(entryPath, "OpenClaw build entrypoint"),
   ]);
+  // Matching launcher bytes do not prove the runtime or entrypoint still exists.
+  if (current === desired) {
+    return { status: "unchanged", launcherPath };
+  }
   await replaceFileAtomic({
     filePath: launcherPath,
     content: encodeWindowsLauncherScript({ format: "cmd", content: desired }),

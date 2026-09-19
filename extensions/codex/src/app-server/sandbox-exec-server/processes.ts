@@ -2,14 +2,18 @@
  * Manages subprocess lifecycle, streaming output buffers, stdin writes, and
  * termination for Codex sandbox exec-server process RPCs.
  */
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { coerceErrorMessage } from "openclaw/plugin-sdk/error-runtime";
-import { sanitizeEnvVars } from "openclaw/plugin-sdk/sandbox";
-import type { WebSocket } from "ws";
+import {
+  buildRemoteCommand,
+  prepareSandboxProcessCleanup,
+  sanitizeEnvVars,
+} from "openclaw/plugin-sdk/sandbox";
 import type { JsonObject, JsonValue } from "../protocol.js";
+import { resolveFsSandboxPolicy } from "./fs-policy.js";
 import { requireObject, requireString, requireStringArray } from "./json-rpc.js";
 import { resolveExecServerPath } from "./path-uri.js";
+import { spawnSandboxChild } from "./sandbox-child.js";
 import type { ManagedProcess, OpenClawExecServer, ProcessChunk } from "./types.js";
 
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -20,7 +24,7 @@ const CLOSED_PROCESS_EVICTION_MS = 60_000;
 export async function startProcess(
   execServer: OpenClawExecServer,
   processes: Map<string, ManagedProcess>,
-  socket: WebSocket,
+  notify: ManagedProcess["emitNotification"],
   params: JsonValue | undefined,
 ): Promise<JsonObject> {
   const record = requireObject(params, "process/start params");
@@ -31,6 +35,7 @@ export async function startProcess(
   const argv = requireStringArray(record.argv, "argv");
   const cwd = resolveExecServerPath(requireString(record.cwd, "cwd"), "process cwd");
   rejectUnsupportedArg0(record.arg0);
+  assertSupportedProcessSandbox(execServer, record);
   const env = readProcessEnv(record);
   const tty = record.tty === true;
   const pipeStdin = record.pipeStdin === true;
@@ -45,15 +50,10 @@ export async function startProcess(
     failure: null,
     tty,
     pipeStdin,
-    abortController: new AbortController(),
+    terminationRequested: false,
     child: null,
-    finalized: false,
     waiters: [],
-    emitNotification: (method, notificationParams) => {
-      if (socket.readyState === 1) {
-        socket.send(JSON.stringify({ jsonrpc: "2.0", method, params: notificationParams }));
-      }
-    },
+    emitNotification: notify,
     evictProcess: () => {
       if (managed.evictionTimer) {
         return;
@@ -67,18 +67,61 @@ export async function startProcess(
     },
   };
   processes.set(processId, managed);
+  const startPromise = runProcess(execServer, managed, { argv, cwd, env });
+  managed.startPromise = startPromise;
   try {
-    await runProcess(execServer, managed, { argv, cwd, env });
+    await startPromise;
   } catch (error) {
-    processes.delete(processId);
     managed.failure = coerceErrorMessage(error);
+    await managed.child?.terminate().catch((cleanupError: unknown) => {
+      embeddedAgentLog.warn("codex sandbox failed-start cleanup failed", {
+        processId,
+        error: coerceErrorMessage(cleanupError),
+      });
+    });
+    processes.delete(processId);
     managed.exitCode = null;
     managed.exited = true;
     managed.closed = true;
     notifyProcessWaiters(managed);
     throw error;
+  } finally {
+    if (managed.startPromise === startPromise) {
+      managed.startPromise = undefined;
+    }
   }
-  return { processId };
+  return { processId, sandboxType: "none" };
+}
+
+function assertSupportedProcessSandbox(execServer: OpenClawExecServer, record: JsonObject): void {
+  if (record.networkProxy !== undefined && record.networkProxy !== null) {
+    throw new Error("Codex sandbox exec-server network proxy launch is not supported.");
+  }
+  if (
+    record.enforceManagedNetwork === true ||
+    (record.managedNetwork !== undefined && record.managedNetwork !== null)
+  ) {
+    throw new Error(
+      "Codex managed network restrictions cannot be enforced by the sandbox backend.",
+    );
+  }
+  // Docker/SSH owns the outer sandbox; it cannot impose narrower Codex process-local policy.
+  if (resolveFsSandboxPolicy(execServer, record)?.unrestricted === false) {
+    throw new Error(
+      "Codex process filesystem sandbox restrictions cannot be enforced by the backend.",
+    );
+  }
+  if (record.sandbox === undefined || record.sandbox === null) {
+    return;
+  }
+  const sandbox = requireObject(record.sandbox, "process sandbox context");
+  const permissions = requireObject(sandbox.permissions, "process sandbox permissions");
+  if (permissions.network !== "restricted") {
+    return;
+  }
+  if (!execServer.networkIsolated) {
+    throw new Error("Codex network restrictions cannot be enforced by the sandbox backend.");
+  }
 }
 
 async function runProcess(
@@ -86,51 +129,58 @@ async function runProcess(
   managed: ManagedProcess,
   params: { argv: string[]; cwd: string; env: Record<string, string> },
 ): Promise<void> {
-  const backend = execServer.sandbox.backend;
-  if (!backend) {
-    throw new Error("OpenClaw sandbox backend is unavailable.");
-  }
+  const backend = execServer.backend;
   throwIfProcessStartCancelled(managed);
+  const remoteExec = prepareSandboxProcessCleanup(backend, params.env);
   const execSpec = await backend.buildExecSpec({
-    command: shellCommandFromArgv(params.argv),
+    // Preserve the process identity and signal status of the requested argv.
+    command: `exec ${buildRemoteCommand(params.argv)}`,
     workdir: params.cwd,
-    env: params.env,
-    // This bridge currently owns only pipe-backed child processes. Asking the
-    // backend for a PTY can produce commands such as `docker exec -t`, which
-    // require this process itself to own a real TTY.
-    usePty: false,
+    env: remoteExec.env,
+    usePty: managed.tty,
   });
-  managed.finalizeToken = execSpec.finalizeToken;
-  managed.finalizeExec = backend.finalizeExec;
-  let child: ChildProcessWithoutNullStreams;
-  try {
-    if (managed.abortController.signal.aborted) {
-      throw new Error("process start cancelled");
-    }
-    const [command, ...args] = execSpec.argv;
-    if (!command) {
-      throw new Error("OpenClaw sandbox exec spec did not provide a command.");
-    }
-    child = spawn(command, args, {
-      env: execSpec.env,
-      stdio: ["pipe", "pipe", "pipe"],
+  if (managed.terminationRequested) {
+    await backend.finalizeExec?.({
+      status: "failed",
+      exitCode: null,
+      timedOut: false,
+      token: execSpec.finalizeToken,
     });
-  } catch (error) {
-    managed.failure = coerceErrorMessage(error);
-    await finalizeProcess(managed).catch((finalizeError: unknown) => {
-      embeddedAgentLog.warn("codex sandbox exec-server finalize after start failure failed", {
-        processId: managed.processId,
-        error: coerceErrorMessage(finalizeError),
-      });
-    });
-    throw error;
+    throw new Error("process start cancelled");
   }
-  managed.child = child;
-  const abortListener = () => child.kill("SIGTERM");
-  managed.abortController.signal.addEventListener("abort", abortListener, { once: true });
-  child.stdout.on("data", (chunk: Buffer) =>
-    appendProcessChunk(managed, managed.tty ? "pty" : "stdout", chunk),
-  );
+  const owner = await spawnSandboxChild({
+    argv: execSpec.argv,
+    env: execSpec.env,
+    cwd: execSpec.cwd,
+    usePty: managed.tty,
+    assertCurrent: () => {
+      execSpec.assertCurrent?.();
+      throwIfProcessStartCancelled(managed);
+    },
+    finalizeExec: backend.finalizeExec,
+    finalizeToken: execSpec.finalizeToken,
+    finalizeStatus: () => (managed.failure ? "failed" : "completed"),
+    onFinalizeError: (error) => {
+      const message = coerceErrorMessage(error);
+      managed.failure ??= message;
+      embeddedAgentLog.warn("codex sandbox exec-server finalize failed", {
+        processId: managed.processId,
+        error: message,
+      });
+    },
+    owners: execServer.children,
+    terminateRemote: remoteExec.terminate,
+    interruptRemote: remoteExec.interrupt,
+  });
+  managed.child = owner;
+  void owner.exited.then(({ exitCode }) => emitProcessExited(managed, exitCode));
+  void owner.closed.then(({ exitCode }) => emitProcessClosed(managed, exitCode));
+  if ("pty" in owner) {
+    owner.pty.onData((chunk) => appendProcessChunk(managed, "pty", Buffer.from(chunk)));
+    return;
+  }
+  const child = owner.process;
+  child.stdout.on("data", (chunk: Buffer) => appendProcessChunk(managed, "stdout", chunk));
   child.stderr.on("data", (chunk: Buffer) => appendProcessChunk(managed, "stderr", chunk));
   child.once("error", (error) => {
     // Node can report an abort or transport error before the child exits. The
@@ -138,17 +188,18 @@ async function runProcess(
     managed.failure ??= error.message;
     notifyProcessWaiters(managed);
   });
-  child.once("close", (code) => {
-    managed.abortController.signal.removeEventListener("abort", abortListener);
-    emitProcessClosed(managed, code ?? 1);
+  child.stdin.on("error", (error: Error) => {
+    managed.failure ??= error.message;
+    notifyProcessWaiters(managed);
   });
+  owner.assertCurrent();
   if (!managed.tty && !managed.pipeStdin) {
     child.stdin.end();
   }
 }
 
 function throwIfProcessStartCancelled(managed: ManagedProcess): void {
-  if (managed.abortController.signal.aborted) {
+  if (managed.terminationRequested) {
     throw new Error("process start cancelled");
   }
 }
@@ -187,7 +238,7 @@ function appendProcessChunk(
   notifyProcessWaiters(managed);
 }
 
-function emitProcessClosed(managed: ManagedProcess, exitCode: number | null): void {
+function emitProcessExited(managed: ManagedProcess, exitCode: number | null): void {
   if (!managed.exited) {
     const exitSeq = managed.nextSeq;
     managed.nextSeq += 1;
@@ -198,9 +249,15 @@ function emitProcessClosed(managed: ManagedProcess, exitCode: number | null): vo
         processId: managed.processId,
         seq: exitSeq,
         exitCode,
+        sandboxDenied: false,
       });
     }
   }
+  notifyProcessWaiters(managed);
+}
+
+function emitProcessClosed(managed: ManagedProcess, exitCode: number | null): void {
+  emitProcessExited(managed, exitCode);
   if (!managed.closed) {
     const closeSeq = managed.nextSeq;
     managed.nextSeq += 1;
@@ -210,32 +267,10 @@ function emitProcessClosed(managed: ManagedProcess, exitCode: number | null): vo
       seq: closeSeq,
     });
   }
-  void finalizeProcess(managed).catch((error: unknown) => {
-    const message = coerceErrorMessage(error);
-    managed.failure ??= message;
-    embeddedAgentLog.warn("codex sandbox exec-server finalize failed", {
-      processId: managed.processId,
-      error: message,
-    });
-  });
   // Closed processes stay briefly readable so clients that observe close before
   // their final poll can still drain exit/output state.
   managed.evictProcess();
   notifyProcessWaiters(managed);
-}
-
-async function finalizeProcess(managed: ManagedProcess): Promise<void> {
-  if (managed.finalized) {
-    return;
-  }
-  managed.finalized = true;
-  managed.child?.stdin.destroy();
-  await managed.finalizeExec?.({
-    status: managed.failure ? "failed" : "completed",
-    exitCode: managed.exitCode,
-    timedOut: false,
-    token: managed.finalizeToken,
-  });
 }
 
 function limitProcessChunks(chunks: ProcessChunk[], maxBytes: number | undefined): ProcessChunk[] {
@@ -268,7 +303,7 @@ export async function readProcess(
   const managed = requireProcess(processes, processId);
   const afterSeq = typeof record.afterSeq === "number" ? record.afterSeq : 0;
   const waitMs = typeof record.waitMs === "number" && record.waitMs > 0 ? record.waitMs : 0;
-  if (!managed.exited && !hasChunksAtOrAfter(managed, afterSeq) && waitMs > 0) {
+  if (!managed.closed && managed.nextSeq - 1 <= afterSeq && waitMs > 0) {
     await waitForProcessUpdate(managed, waitMs);
   }
   const chunks = limitProcessChunks(
@@ -298,18 +333,44 @@ export function writeProcess(
     return { status: "unknownProcess" };
   }
   const chunk = Buffer.from(requireString(record.chunk, "chunk"), "base64");
-  if ((!managed.tty && !managed.pipeStdin) || managed.closed || !managed.child?.stdin.writable) {
+  if ((!managed.tty && !managed.pipeStdin) || managed.closed || !managed.child) {
     return { status: "stdinClosed" };
   }
-  managed.child.stdin.write(chunk);
+  if ("pty" in managed.child) {
+    managed.child.assertCurrent();
+    managed.child.pty.write(chunk);
+  } else {
+    if (!managed.child.process.stdin.writable) {
+      return { status: "stdinClosed" };
+    }
+    managed.child.assertCurrent();
+    managed.child.process.stdin.write(chunk);
+  }
   return { status: "accepted" };
 }
 
-/** Requests process termination and reports whether it was running at call time. */
-export function terminateProcess(
+export async function signalProcess(
   processes: Map<string, ManagedProcess>,
   params: JsonValue | undefined,
-): JsonObject {
+): Promise<JsonObject> {
+  const record = requireObject(params, "process/signal params");
+  const processId = requireString(record.processId, "processId");
+  if (record.signal !== "interrupt") {
+    throw new Error("process/signal only supports interrupt");
+  }
+  const managed = processes.get(processId);
+  if (managed && !managed.exited) {
+    await managed.startPromise;
+    await managed.child?.interrupt();
+  }
+  return {};
+}
+
+/** Requests process termination and reports whether it was running at call time. */
+export async function terminateProcess(
+  processes: Map<string, ManagedProcess>,
+  params: JsonValue | undefined,
+): Promise<JsonObject> {
   const record = requireObject(params, "process/terminate params");
   const processId = requireString(record.processId, "processId");
   const managed = processes.get(processId);
@@ -317,9 +378,11 @@ export function terminateProcess(
     return { running: false };
   }
   const running = !managed.exited;
-  managed.abortController.abort();
-  managed.child?.kill("SIGTERM");
-  if (running && !managed.child) {
+  managed.terminationRequested = true;
+  await managed.startPromise?.catch(() => undefined);
+  if (managed.child) {
+    await managed.child.terminate();
+  } else if (running && !managed.closed) {
     emitProcessClosed(managed, null);
   }
   return { running };
@@ -343,18 +406,6 @@ function notifyProcessWaiters(managed: ManagedProcess): void {
   for (const waiter of waiters) {
     waiter();
   }
-}
-
-function hasChunksAtOrAfter(managed: ManagedProcess, afterSeq: number): boolean {
-  return managed.chunks.some((chunk) => chunk.seq > afterSeq);
-}
-
-function shellCommandFromArgv(argv: string[]): string {
-  return argv.map(shellEscape).join(" ");
-}
-
-function shellEscape(value: string): string {
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 function requireProcess(processes: Map<string, ManagedProcess>, processId: string): ManagedProcess {

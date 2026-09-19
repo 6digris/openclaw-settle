@@ -1,19 +1,21 @@
 import type { cleanupBrowserSessionsForLifecycleEnd } from "../../../browser-lifecycle-cleanup.js";
 import { runWithoutOwnedSessionTranscriptWrites } from "../../../config/sessions/transcript-write-context.js";
 import {
+  isSystemEventStoreCurrent,
+  recordSystemEventStoreReplaced,
+} from "../../../infra/system-event-ownership.js";
+import {
   isGatewayRestartDraining,
   runWithGatewayIndependentRootWorkAdmission,
+  runWithGatewayIndependentRootWorkContinuation,
 } from "../../../process/gateway-work-admission.js";
 import { defaultRuntime } from "../../../runtime.js";
 import { emitSessionLifecycleEvent } from "../../../sessions/session-lifecycle-events.js";
 import { recordSubagentTerminalState } from "../../../sessions/session-state-events.js";
 import { retireSessionMcpRuntimeForSessionKey } from "../../agent-bundle-mcp-tools.js";
+import { blockSubagentCompletionDelivery } from "../completion/subagent-completion-admission.store.js";
 import { releaseSwarmRun } from "../swarm/swarm-scheduler.js";
-import {
-  ensureCompletionState,
-  ensureDeliveryState,
-  getDeliveryLastError,
-} from "./subagent-delivery-state.js";
+import { getDeliveryLastError, isDeliverySuspended } from "./subagent-delivery-state.js";
 import {
   SUBAGENT_ENDED_REASON_KILLED,
   type SubagentLifecycleEndedReason,
@@ -27,25 +29,28 @@ import {
 } from "./subagent-registry-helpers.js";
 import type {
   SubagentLifecycleCommonContext,
+  SubagentLifecycleAnnounceCleanupContext,
   SubagentLifecycleCompletionContext,
   SubagentLifecycleCleanupContext,
   SubagentLifecycleWakeContext,
+  SubagentLifecycleOptions,
 } from "./subagent-registry-lifecycle-context.js";
 import {
   buildSafeLifecycleErrorMeta,
-  markPendingFinalDelivery,
   maskLifecycleIdentifier,
-  safeMarkRequiredCompletionDeliveryBlocked,
-  safeSetSubagentTaskDeliveryStatus,
 } from "./subagent-registry-lifecycle-delivery.js";
-import {
-  markRequesterSettleWakePending,
-  scheduleRequesterSettleWake,
-} from "./subagent-registry-lifecycle-wake.js";
+import { scheduleRequesterSettleWake } from "./subagent-registry-lifecycle-wake.js";
 import type { SubagentCompletionRequest, SubagentRunRecord } from "./subagent-registry.types.js";
 
 const MAX_DETACHED_CLEANUP_RETRIES = 3;
 type BrowserCleanup = typeof cleanupBrowserSessionsForLifecycleEnd;
+
+function runWithSubagentCleanupWorkAdmission<T>(run: () => Promise<T>): Promise<T> {
+  // Restart remains one-way; only suspension preserves an admitted cleanup owner.
+  return isGatewayRestartDraining()
+    ? runWithGatewayIndependentRootWorkAdmission(run, "subagents:lifecycle-cleanup")
+    : runWithGatewayIndependentRootWorkContinuation(run, "subagents:lifecycle-cleanup");
+}
 
 export function scheduleResumeSubagentRun(
   context: SubagentLifecycleCleanupContext,
@@ -72,7 +77,7 @@ export function scheduleResumeSubagentRun(
       }
       params.resumedRuns.delete(runId);
       params.resumeSubagentRun(runId);
-    }).catch((err: unknown) => {
+    }, "subagents:resume").catch((err: unknown) => {
       defaultRuntime.log(`[warn] subagent cleanup resume failed (${runId}): ${String(err)}`);
       const current = params.runs.get(runId);
       if (
@@ -110,7 +115,7 @@ export function runDetachedCleanupAttempt(
   // Completion outlives the spawning attempt; inherited lock owners would
   // reject requester transcript writes after that attempt is disposed.
   runWithoutOwnedSessionTranscriptWrites(() => {
-    void runWithGatewayIndependentRootWorkAdmission(async () => {
+    void runWithSubagentCleanupWorkAdmission(async () => {
       try {
         await args.run();
         context.clearCleanupFailureCount(args.entry);
@@ -164,48 +169,88 @@ export function suspendPendingFinalDelivery(
     entry: SubagentRunRecord;
     reason: "expiry" | "permanent_failure";
     error?: string;
+    storeReplaced?: true;
   },
 ): void {
   const params = context.options;
-  const previousEntry = structuredClone(args.entry);
-  markPendingFinalDelivery({
-    entry: args.entry,
-    error: args.error ?? getDeliveryLastError(args.entry) ?? args.reason,
+  const committed = blockSubagentCompletionDelivery({
+    subagent: args.entry,
+    taskId: params.resolveSubagentTask(args.entry).task?.taskId ?? "",
+    reason: args.error ?? getDeliveryLastError(args.entry) ?? args.reason,
+    suspendedReason: args.reason,
+    lastDropReason: args.entry.delivery?.lastDropReason,
+    storeReplaced: args.storeReplaced,
   });
-  const now = Date.now();
-  const delivery = ensureDeliveryState(args.entry);
-  delivery.status = "suspended";
-  delivery.suspendedAt ??= now;
-  delivery.suspendedReason = args.reason;
-  args.entry.cleanupHandled = false;
-  args.entry.wakeOnDescendantSettle = undefined;
-  const completion = ensureCompletionState(args.entry);
-  completion.fallbackResultText = undefined;
-  completion.fallbackCapturedAt = undefined;
-  params.resumedRuns.delete(args.runId);
-  safeSetSubagentTaskDeliveryStatus(params, {
-    entry: args.entry,
-    deliveryStatus: "failed",
-    deliveryError: getDeliveryLastError(args.entry) ?? args.reason,
-  });
-  safeMarkRequiredCompletionDeliveryBlocked(params, {
-    entry: args.entry,
-    reason: getDeliveryLastError(args.entry) ?? args.reason,
-  });
-  logAnnounceGiveUp(args.entry, args.reason);
-  markRequesterSettleWakePending(args.entry);
-  try {
-    params.persistOrThrow(args.runId);
-  } catch (error) {
-    for (const key of Object.keys(args.entry)) {
-      Reflect.deleteProperty(args.entry, key);
-    }
-    Object.assign(args.entry, previousEntry);
-    throw error;
+  if (!committed) {
+    throw new Error(`subagent completion owner changed before suspension: ${args.runId}`);
   }
-  // Suspension is terminal for automatic retries, so it settles this child
-  // for requester-drain purposes even though cleanup stays incomplete.
+  params.resumedRuns.delete(args.runId);
+  logAnnounceGiveUp(args.entry, args.reason);
+  // Suspension settles this child for requester drain while cleanup stays incomplete.
   scheduleRequesterSettleWake(context, args.runId, args.entry);
+}
+
+export function isSubagentCompletionDeliveryAllowed(
+  context: SubagentLifecycleAnnounceCleanupContext,
+  entry: SubagentRunRecord,
+  cleanupGeneration: number,
+  committedDelivery: SubagentRunRecord["delivery"],
+): boolean {
+  const { runId, requesterSessionKey, requesterStorePath, requesterAgentId } = entry;
+  const allowed =
+    entry.suppressCompletionDelivery !== true &&
+    !isDeliverySuspended(entry) &&
+    (entry.delivery?.status !== "delivered" || entry.delivery === committedDelivery) &&
+    context.isCleanupAttemptCurrent(runId, entry, cleanupGeneration);
+  if (
+    !allowed ||
+    isSystemEventStoreCurrent(requesterSessionKey, requesterStorePath, requesterAgentId)
+  ) {
+    return allowed;
+  }
+  if (entry.delivery?.status !== "delivered") {
+    suspendPendingFinalDelivery(context, {
+      runId,
+      entry,
+      reason: "permanent_failure",
+      error: "store replaced",
+      storeReplaced: true,
+    });
+  }
+  return false;
+}
+
+export function suspendReplacedStoreNotifications(options: SubagentLifecycleOptions): void {
+  for (const entry of options.runs.values()) {
+    const { delivery, requesterSessionKey, requesterStorePath, requesterAgentId } = entry;
+    if (
+      !delivery ||
+      !["pending", "in_progress"].includes(delivery.status) ||
+      delivery.deliveredAt !== undefined ||
+      delivery.announcedAt !== undefined ||
+      entry.execution.status !== "terminal" ||
+      entry.expectsCompletionMessage !== true ||
+      isSystemEventStoreCurrent(requesterSessionKey, requesterStorePath, requesterAgentId)
+    ) {
+      continue;
+    }
+    if (
+      !blockSubagentCompletionDelivery({
+        subagent: entry,
+        taskId: options.resolveSubagentTask(entry).task?.taskId ?? "",
+        reason: "store replaced",
+        suspendedReason: "permanent_failure",
+        storeReplaced: true,
+      })
+    ) {
+      options.warn("subagent notification store retirement has no current task owner", {
+        runId: entry.runId,
+      });
+      continue;
+    }
+    options.resumedRuns.delete(entry.runId);
+    recordSystemEventStoreReplaced();
+  }
 }
 
 export function beginSubagentCleanup(
@@ -251,7 +296,7 @@ export function retireSupersededCleanupInBackground(
 ): void {
   // Delivery callbacks are synchronous and may arrive after their announce
   // attempt returns. Give the async retirement tail its own snapshot blocker.
-  void runWithGatewayIndependentRootWorkAdmission(async () => {
+  void runWithSubagentCleanupWorkAdmission(async () => {
     await retireSupersededCleanupIfNeeded(context, runId, entry, generation);
   }).catch((error: unknown) => {
     defaultRuntime.log(
@@ -422,10 +467,7 @@ export async function completeTerminalEffects(
     !suppressSessionEffects &&
     params.shouldEmitEndedHookForRun({ entry, reason: completionReason });
   const shouldDeferEndedHook =
-    shouldEmitEndedHook &&
-    completeParams.triggerCleanup &&
-    entry.expectsCompletionMessage === true &&
-    !suppressedForSteerRestart;
+    shouldEmitEndedHook && completeParams.triggerCleanup && entry.expectsCompletionMessage === true;
   if (!shouldDeferEndedHook && shouldEmitEndedHook) {
     await params.emitSubagentEndedHookForRun({
       entry,
@@ -506,6 +548,12 @@ async function completeTerminalCleanup(
     return true;
   };
   if (!completeParams.triggerCleanup || suppressedForSteerRestart) {
+    return;
+  }
+  if (entry.resumptionNotice) {
+    // The recovered run may finish before its resumption notice is delivered.
+    // Restart recovery retries that debt for a bounded terminal window, then
+    // clears it and re-enters cleanup so completion cannot remain wedged.
     return;
   }
   refreshSessionEffectsSuppression();

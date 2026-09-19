@@ -14,9 +14,13 @@ import {
   tryGetLegacyDefaultAgentId,
 } from "../config/legacy.default-agent-owner.js";
 import { materializeLegacyDefaultAgentRoles } from "../config/legacy.default-agent-roles.js";
-import { isNixMode } from "../config/paths.js";
+import { isNixMode, resolveIsConfigReadOnly } from "../config/paths.js";
 import { applyPluginAutoEnable } from "../config/plugin-auto-enable.js";
 import { isPluginPackagingRuntimeOutputInvalidConfigSnapshot } from "../config/recovery-policy.js";
+import {
+  copyConfigResolutionFacts,
+  copyConfigResolutionFactsExcept,
+} from "../config/resolution-facts.js";
 import type { GatewayAuthConfig, GatewayTailscaleConfig } from "../config/types.gateway.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
@@ -24,8 +28,9 @@ import {
   GATEWAY_AUTH_SURFACE_PATHS,
   evaluateGatewayAuthSurfaceStates,
 } from "../secrets/runtime-gateway-auth-surfaces.js";
-import { resolveGatewayAuth } from "./auth.js";
+import { resolveGatewayAuthForConfig } from "./auth-resolve.js";
 import { assertGatewayAuthNotKnownWeak } from "./known-weak-gateway-secrets.js";
+import { mergeActivationSectionsIntoRuntimeConfig } from "./plugin-activation-runtime-config.js";
 import { mergeGatewayAuthConfig, mergeGatewayTailscaleConfig } from "./startup-auth.js";
 
 export type GatewayStartupLog = {
@@ -42,7 +47,6 @@ export type GatewayStartupConfigMeasure = <T>(
 
 export type GatewayStartupConfigSnapshotLoadResult = {
   snapshot: ConfigFileSnapshot;
-  wroteConfig: boolean;
   pluginMetadataSnapshot?: PluginMetadataSnapshot;
 };
 
@@ -73,6 +77,7 @@ function withRuntimeConfig(
   snapshot: ConfigFileSnapshot,
   runtimeConfig: OpenClawConfig,
 ): ConfigFileSnapshot {
+  copyConfigResolutionFacts(snapshot.sourceConfig, runtimeConfig);
   return {
     ...snapshot,
     runtimeConfig,
@@ -95,11 +100,12 @@ export async function loadGatewayStartupConfigSnapshot(params: {
     ));
   const configSnapshot = snapshotRead.snapshot;
   const pluginMetadataSnapshot = snapshotRead.pluginMetadataSnapshot;
-  const wroteConfig = false;
-  if (configSnapshot.legacyIssues.length > 0 && isNixMode) {
+  if (configSnapshot.legacyIssues.length > 0 && resolveIsConfigReadOnly()) {
     throw createInvalidConfigError(
       configSnapshot.path,
-      "Legacy config entries detected while running in Nix mode. Update your Nix config to the latest schema and restart.",
+      isNixMode
+        ? "Legacy config entries detected while running in Nix mode. Update your Nix config to the latest schema and restart."
+        : "Legacy config entries detected in read-only config. Update your external config source to the latest schema and restart.",
       { recovery: "manual" },
     );
   }
@@ -122,7 +128,6 @@ export async function loadGatewayStartupConfigSnapshot(params: {
   if (autoEnable.changes.length === 0) {
     return {
       snapshot: configSnapshot,
-      wroteConfig,
       ...(pluginMetadataSnapshot ? { pluginMetadataSnapshot } : {}),
     };
   }
@@ -130,14 +135,17 @@ export async function loadGatewayStartupConfigSnapshot(params: {
   params.log.info(
     `gateway: auto-enabled plugins for this runtime without writing config:\n${autoEnable.changes.map((entry) => `- ${entry}`).join("\n")}`,
   );
+  const autoEnabledRuntimeConfig = mergeActivationSectionsIntoRuntimeConfig({
+    runtimeConfig: configSnapshot.runtimeConfig,
+    activationConfig: autoEnable.config,
+  });
   const legacyDefaultAgentId = tryGetLegacyDefaultAgentId(configSnapshot.sourceConfig);
   const runtimeConfig = legacyDefaultAgentId
-    ? materializeLegacyDefaultAgentRoles(autoEnable.config, legacyDefaultAgentId).config
-    : autoEnable.config;
+    ? materializeLegacyDefaultAgentRoles(autoEnabledRuntimeConfig, legacyDefaultAgentId).config
+    : autoEnabledRuntimeConfig;
   retainLegacyDefaultAgentId(runtimeConfig, legacyDefaultAgentId);
   return {
     snapshot: withRuntimeConfig(configSnapshot, runtimeConfig),
-    wroteConfig,
     ...(pluginMetadataSnapshot ? { pluginMetadataSnapshot } : {}),
   };
 }
@@ -156,11 +164,13 @@ export function hasActiveGatewayAuthSecretRef(config: OpenClawConfig): boolean {
 
 export function assertRuntimeGatewayAuthNotKnownWeak(config: OpenClawConfig): void {
   assertGatewayAuthNotKnownWeak(
-    resolveGatewayAuth({
-      authConfig: config.gateway?.auth,
+    resolveGatewayAuthForConfig({
+      config,
       env: process.env,
       tailscaleMode: config.gateway?.tailscale?.mode ?? "off",
     }),
+    config.gateway?.auth?.token,
+    config.gateway?.auth?.password,
   );
 }
 
@@ -203,12 +213,21 @@ export function applyGatewayAuthOverridesForStartupPreflight(
   if (!overrides.auth && !overrides.tailscale) {
     return config;
   }
-  return {
+  const next = {
     ...config,
     gateway: {
       ...config.gateway,
-      auth: mergeGatewayAuthConfig(config.gateway?.auth, overrides.auth),
-      tailscale: mergeGatewayTailscaleConfig(config.gateway?.tailscale, overrides.tailscale),
+      ...(overrides.auth
+        ? { auth: mergeGatewayAuthConfig(config.gateway?.auth, overrides.auth) }
+        : {}),
+      ...(overrides.tailscale
+        ? { tailscale: mergeGatewayTailscaleConfig(config.gateway?.tailscale, overrides.tailscale) }
+        : {}),
     },
   };
+  copyConfigResolutionFactsExcept(config, next, [
+    ...(overrides.auth?.token !== undefined ? ["gateway.auth.token"] : []),
+    ...(overrides.auth?.password !== undefined ? ["gateway.auth.password"] : []),
+  ]);
+  return next;
 }

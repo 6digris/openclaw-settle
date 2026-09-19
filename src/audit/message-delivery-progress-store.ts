@@ -8,7 +8,6 @@ import {
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
 import { normalizeSqliteNumber } from "../infra/sqlite-number.js";
-import { withExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
 import { ensureColumn, tableExists } from "../state/openclaw-state-db-schema-helpers.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
@@ -240,14 +239,24 @@ function countProgressRows(db: DatabaseSync): number {
   return normalizeSqliteNumber(row?.count ?? null) ?? 0;
 }
 
+function deleteExpiredProgressRows(db: DatabaseSync, now: number, limit: number) {
+  const kysely = progressDb(db);
+  const expiredSequences = kysely
+    .selectFrom("outbound_message_progress")
+    .select("sequence")
+    .where("occurred_at", "<", now - OUTBOUND_MESSAGE_PROGRESS_RETENTION_MS)
+    .orderBy("occurred_at", "asc")
+    .orderBy("sequence", "asc")
+    .limit(limit);
+  return executeSqliteQuerySync(
+    db,
+    kysely.deleteFrom("outbound_message_progress").where("sequence", "in", expiredSequences),
+  );
+}
+
 function pruneProgressAfterInsert(db: DatabaseSync, now: number): void {
   const kysely = progressDb(db);
-  const expired = executeSqliteQuerySync(
-    db,
-    kysely
-      .deleteFrom("outbound_message_progress")
-      .where("occurred_at", "<", now - OUTBOUND_MESSAGE_PROGRESS_RETENTION_MS),
-  );
+  const expired = deleteExpiredProgressRows(db, now, OUTBOUND_MESSAGE_PROGRESS_PRUNE_BATCH_ROWS);
   const cachedCount = progressRowCounts.get(db);
   let rowCount =
     cachedCount === undefined
@@ -326,150 +335,140 @@ export function recordOutboundMessageProgress(
   }
 }
 
-export function countOutboundMessageProgressForRun(params: {
-  runId: string;
-  contextId?: string;
-  executionId?: string;
-  now?: number;
-  database?: OpenClawStateDatabaseOptions;
-}): number {
-  return (
-    withExistingOpenClawStateDatabaseReadOnly(({ db }) => {
-      const exact = selectMessageExecutionBinding(params);
-      if (
-        !tableExists(db, "outbound_message_progress") ||
-        (exact && !hasMessageExecutionBindingColumns(db, "outbound_message_progress"))
-      ) {
-        return 0;
-      }
-      let query = progressDb(db)
-        .selectFrom("outbound_message_progress")
-        .select((expression) => expression.fn.countAll<number>().as("count"))
-        .where("run_id", "=", params.runId)
-        .where(
-          "occurred_at",
-          ">=",
-          (params.now ?? Date.now()) - OUTBOUND_MESSAGE_PROGRESS_RETENTION_MS,
-        );
-      if (exact) {
-        query = query
-          .where("context_id", "=", exact.contextId)
-          .where("execution_id", "=", exact.executionId);
-      }
-      const row = executeSqliteQueryTakeFirstSync(db, query);
-      return normalizeSqliteNumber(row?.count ?? null) ?? 0;
-    }, params.database) ?? 0
-  );
+export function countOutboundMessageProgressForRunInDatabase(
+  db: DatabaseSync,
+  params: {
+    runId: string;
+    contextId?: string;
+    executionId?: string;
+    now?: number;
+  },
+): number {
+  const exact = selectMessageExecutionBinding(params);
+  if (
+    !tableExists(db, "outbound_message_progress") ||
+    (exact && !hasMessageExecutionBindingColumns(db, "outbound_message_progress"))
+  ) {
+    return 0;
+  }
+  let query = progressDb(db)
+    .selectFrom("outbound_message_progress")
+    .select((expression) => expression.fn.countAll<number>().as("count"))
+    .where("run_id", "=", params.runId)
+    .where(
+      "occurred_at",
+      ">=",
+      (params.now ?? Date.now()) - OUTBOUND_MESSAGE_PROGRESS_RETENTION_MS,
+    );
+  if (exact) {
+    query = query
+      .where("context_id", "=", exact.contextId)
+      .where("execution_id", "=", exact.executionId);
+  }
+  const row = executeSqliteQueryTakeFirstSync(db, query);
+  return normalizeSqliteNumber(row?.count ?? null) ?? 0;
 }
 
-export function readOutboundMessageProgressForRun(params: {
-  runId: string;
-  contextId?: string;
-  executionId?: string;
-  action: OutboundMessageProgressInput["action"];
-  after?: { occurredAt: number; sequence: number };
-  limit: number;
-  now?: number;
-  database?: OpenClawStateDatabaseOptions;
-}): OutboundMessageAuditEventRecord[] {
-  return (
-    withExistingOpenClawStateDatabaseReadOnly(({ db }) => {
-      const exact = selectMessageExecutionBinding(params);
-      if (
-        !tableExists(db, "outbound_message_progress") ||
-        (exact && !hasMessageExecutionBindingColumns(db, "outbound_message_progress"))
-      ) {
-        return [];
-      }
-      let query = progressDb(db)
-        .selectFrom("outbound_message_progress")
-        .selectAll()
-        .where("run_id", "=", params.runId)
-        .where("action", "=", params.action)
-        .where(
-          "occurred_at",
-          ">=",
-          (params.now ?? Date.now()) - OUTBOUND_MESSAGE_PROGRESS_RETENTION_MS,
-        );
-      if (exact) {
-        query = query
-          .where("context_id", "=", exact.contextId)
-          .where("execution_id", "=", exact.executionId);
-      }
-      const after = params.after;
-      if (after) {
-        query = query.where((expression) =>
-          expression.or([
-            expression("occurred_at", ">", after.occurredAt),
-            expression.and([
-              expression("occurred_at", "=", after.occurredAt),
-              expression("sequence", ">", after.sequence),
-            ]),
-          ]),
-        );
-      }
-      return executeSqliteQuerySync(
-        db,
-        query.orderBy("occurred_at", "asc").orderBy("sequence", "asc").limit(params.limit),
-      ).rows.map(rowToProgressEvent);
-    }, params.database) ?? []
-  );
+export function readOutboundMessageProgressForRunInDatabase(
+  db: DatabaseSync,
+  params: {
+    runId: string;
+    contextId?: string;
+    executionId?: string;
+    action: OutboundMessageProgressInput["action"];
+    after?: { occurredAt: number; sequence: number };
+    limit: number;
+    now?: number;
+  },
+): OutboundMessageAuditEventRecord[] {
+  const exact = selectMessageExecutionBinding(params);
+  if (
+    !tableExists(db, "outbound_message_progress") ||
+    (exact && !hasMessageExecutionBindingColumns(db, "outbound_message_progress"))
+  ) {
+    return [];
+  }
+  let query = progressDb(db)
+    .selectFrom("outbound_message_progress")
+    .selectAll()
+    .where("run_id", "=", params.runId)
+    .where("action", "=", params.action)
+    .where(
+      "occurred_at",
+      ">=",
+      (params.now ?? Date.now()) - OUTBOUND_MESSAGE_PROGRESS_RETENTION_MS,
+    );
+  if (exact) {
+    query = query
+      .where("context_id", "=", exact.contextId)
+      .where("execution_id", "=", exact.executionId);
+  }
+  const after = params.after;
+  if (after) {
+    query = query.where((expression) =>
+      expression.or([
+        expression("occurred_at", ">", after.occurredAt),
+        expression.and([
+          expression("occurred_at", "=", after.occurredAt),
+          expression("sequence", ">", after.sequence),
+        ]),
+      ]),
+    );
+  }
+  return executeSqliteQuerySync(
+    db,
+    query.orderBy("occurred_at", "asc").orderBy("sequence", "asc").limit(params.limit),
+  ).rows.map(rowToProgressEvent);
 }
 
-export function hasOutboundMessageProgressCursor(params: {
-  runId: string;
-  contextId?: string;
-  executionId?: string;
-  occurredAt: number;
-  sequence: number;
-  action: OutboundMessageProgressInput["action"];
-  database?: OpenClawStateDatabaseOptions;
-}): boolean {
-  return (
-    withExistingOpenClawStateDatabaseReadOnly(({ db }) => {
-      const exact = selectMessageExecutionBinding(params);
-      if (
-        !tableExists(db, "outbound_message_progress") ||
-        (exact && !hasMessageExecutionBindingColumns(db, "outbound_message_progress"))
-      ) {
-        return false;
-      }
-      let query = progressDb(db)
-        .selectFrom("outbound_message_progress")
-        .select("sequence")
-        .where("sequence", "=", params.sequence)
-        .where("run_id", "=", params.runId)
-        .where("occurred_at", "=", params.occurredAt)
-        .where("action", "=", params.action);
-      if (exact) {
-        query = query
-          .where("context_id", "=", exact.contextId)
-          .where("execution_id", "=", exact.executionId);
-      }
-      return Boolean(executeSqliteQueryTakeFirstSync(db, query));
-    }, params.database) ?? false
-  );
+export function hasOutboundMessageProgressCursorInDatabase(
+  db: DatabaseSync,
+  params: {
+    runId: string;
+    contextId?: string;
+    executionId?: string;
+    occurredAt: number;
+    sequence: number;
+    action: OutboundMessageProgressInput["action"];
+  },
+): boolean {
+  const exact = selectMessageExecutionBinding(params);
+  if (
+    !tableExists(db, "outbound_message_progress") ||
+    (exact && !hasMessageExecutionBindingColumns(db, "outbound_message_progress"))
+  ) {
+    return false;
+  }
+  let query = progressDb(db)
+    .selectFrom("outbound_message_progress")
+    .select("sequence")
+    .where("sequence", "=", params.sequence)
+    .where("run_id", "=", params.runId)
+    .where("occurred_at", "=", params.occurredAt)
+    .where("action", "=", params.action);
+  if (exact) {
+    query = query
+      .where("context_id", "=", exact.contextId)
+      .where("execution_id", "=", exact.executionId);
+  }
+  return Boolean(executeSqliteQueryTakeFirstSync(db, query));
 }
 
 /** Prune existing progress without creating its lazy table. */
 export function pruneExpiredOutboundMessageProgress(
   params: { now?: number; database?: OpenClawStateDatabaseOptions } = {},
-): void {
+): number {
   const database = openOpenClawStateDatabase(params.database);
   if (!tableExists(database.db, "outbound_message_progress")) {
-    return;
+    return 0;
   }
-  runOpenClawStateWriteTransaction(({ db }) => {
-    executeSqliteQuerySync(
+  return runOpenClawStateWriteTransaction(({ db }) => {
+    const deleted = deleteExpiredProgressRows(
       db,
-      progressDb(db)
-        .deleteFrom("outbound_message_progress")
-        .where(
-          "occurred_at",
-          "<",
-          (params.now ?? Date.now()) - OUTBOUND_MESSAGE_PROGRESS_RETENTION_MS,
-        ),
+      params.now ?? Date.now(),
+      OUTBOUND_MESSAGE_PROGRESS_PRUNE_BATCH_ROWS,
     );
     progressRowCounts.delete(db);
+    return Number(deleted.numAffectedRows ?? 0n);
   }, params.database);
 }

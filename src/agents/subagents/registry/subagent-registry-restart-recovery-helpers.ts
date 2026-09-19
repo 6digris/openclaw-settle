@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { loadSessionEntry } from "../../../config/sessions/session-accessor.js";
+import type { InternalSessionEntry } from "../../../config/sessions/types.js";
 import * as agentEvents from "../../../infra/agent-events.js";
 import { formatSystemTurnPrompt } from "../../../sessions/system-turn-prompt.js";
 import { truncateUtf16Safe } from "../../../utils.js";
@@ -28,13 +29,48 @@ export function isRestartRecoveryLifecycleCurrent(
   );
 }
 
+export function isRetiredSubagentExecution(entry: SubagentRunRecord): boolean {
+  return (
+    (entry.execution.status === "running" || entry.execution.status === "interrupted") &&
+    typeof entry.execution.lifecycleGeneration === "string" &&
+    !agentEvents.isAgentEventLifecycleGenerationCurrent(entry.execution.lifecycleGeneration)
+  );
+}
+
+export function isRetiredSubagentSessionOwner(
+  entry: SubagentRunRecord,
+  session: InternalSessionEntry | undefined,
+): session is InternalSessionEntry {
+  return (
+    session?.status === "running" &&
+    isRetiredSubagentExecution(entry) &&
+    ownsSubagentSessionExecution(entry, session)
+  );
+}
+
+export function ownsSubagentSessionExecution(
+  entry: SubagentRunRecord,
+  session: InternalSessionEntry,
+): boolean {
+  return (
+    session.lifecycleRunId === entry.runId ||
+    // Internal recovery preserves the visible lifecycle; its accepted marker binds the successor.
+    (entry.execution.transcriptTarget !== undefined &&
+      entry.taskRunId !== undefined &&
+      session.lifecycleRunId ===
+        (session.subagentRecovery?.sessionLifecycleRunId ?? entry.taskRunId) &&
+      session.subagentRecovery?.lastRunId === entry.runId)
+  );
+}
+
 export function buildRestartRecoveryResumeMessage(task: string, lastHumanMessage?: string): string {
-  const original = task.length > 2_000 ? `${truncateUtf16Safe(task, 2_000)}...` : task;
+  const boundContext = (text: string) =>
+    text.length > 2_000 ? `${truncateUtf16Safe(text, 2_000)}...` : text;
   return formatSystemTurnPrompt(
     `Your previous turn was interrupted by a gateway restart. ` +
-      `Your original task was:\n\n${original}\n\n` +
+      `Your original task was:\n\n${boundContext(task)}\n\n` +
       (lastHumanMessage
-        ? `The last message from the user before the interruption was:\n\n${lastHumanMessage}\n\n`
+        ? `The last message from the user before the interruption was:\n\n${boundContext(lastHumanMessage)}\n\n`
         : "") +
       `Please continue where you left off.`,
   );
@@ -53,6 +89,7 @@ export function assertRestartRecoverySnapshotCurrent(params: {
   isOwnerCurrent: () => boolean;
   sessionId: string;
   sessionLifecycleRevision?: string;
+  sessionLifecycleRunId?: string;
   storePath: string;
   updatedAt: number;
 }): void {
@@ -66,6 +103,7 @@ export function assertRestartRecoverySnapshotCurrent(params: {
     current?.sessionId !== params.sessionId ||
     (params.sessionLifecycleRevision !== undefined &&
       current.lifecycleRevision !== params.sessionLifecycleRevision) ||
+    current.lifecycleRunId !== params.sessionLifecycleRunId ||
     current.updatedAt !== params.updatedAt ||
     current.abortedLastRun !== true
   ) {

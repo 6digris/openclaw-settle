@@ -1,6 +1,7 @@
 // Channels status command-flow tests cover gateway calls, config fallback, and timeout validation.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GatewaySecretRefUnavailableError } from "../gateway/credentials.js";
+import { GatewayTransportError } from "../gateway/transport-error.js";
 import { DEFAULT_ACCOUNT_ID } from "../routing/session-key.js";
 import { channelsStatusCommand } from "./channels/status.js";
 import { createCapturingTestRuntime } from "./test-runtime-config-helpers.js";
@@ -76,48 +77,6 @@ vi.mock("../plugins/official-external-plugin-repair-hints.js", () => ({
   },
 }));
 
-vi.mock("./channels/shared.js", () => ({
-  formatChannelAccountLabel: ({
-    channel,
-    accountId,
-  }: {
-    channel: string;
-    accountId: string;
-    name?: string;
-  }) => `${channel} ${accountId}`,
-  appendEnabledConfiguredLinkedBits: (bits: string[], account: Record<string, unknown>) => {
-    if (typeof account.enabled === "boolean") {
-      bits.push(account.enabled ? "enabled" : "disabled");
-    }
-    if (account.configured === true) {
-      bits.push("configured");
-      if (Object.values(account).includes("configured_unavailable")) {
-        bits.push("secret unavailable in this command path");
-      }
-    }
-  },
-  appendModeBit: (bits: string[], account: Record<string, unknown>) => {
-    if (typeof account.mode === "string" && account.mode.length > 0) {
-      bits.push(`mode:${account.mode}`);
-    }
-  },
-  appendTokenSourceBits: (bits: string[], account: Record<string, unknown>) => {
-    if (account.tokenSource === "config") {
-      const unavailable = account.tokenStatus === "configured_unavailable" ? " (unavailable)" : "";
-      bits.push(`token:config${unavailable}`);
-    }
-  },
-  appendBaseUrlBit: (bits: string[], account: Record<string, unknown>) => {
-    if (typeof account.baseUrl === "string" && account.baseUrl) {
-      bits.push(`url:${account.baseUrl}`);
-    }
-  },
-  buildChannelAccountLine: (channel: string, account: Record<string, unknown>, bits: string[]) => {
-    const accountId = typeof account.accountId === "string" ? account.accountId : "default";
-    return `- ${channel} ${accountId}: ${bits.join(", ")}`;
-  },
-}));
-
 vi.mock("../channels/plugins/index.js", () => ({
   listChannelPlugins: () => mocks.listChannelPlugins(),
   getChannelPlugin: (channel: string) =>
@@ -128,15 +87,6 @@ vi.mock("../channels/plugins/index.js", () => ({
 
 vi.mock("../channels/plugins/read-only.js", () => ({
   listReadOnlyChannelPluginsForConfig: () => mocks.listChannelPlugins(),
-}));
-
-vi.mock("../channels/account-snapshot-fields.js", () => ({
-  hasConfiguredUnavailableCredentialStatus: (account: Record<string, unknown>) =>
-    Object.values(account).includes("configured_unavailable"),
-  hasResolvedCredentialValue: (account: Record<string, unknown>) =>
-    ["token", "botToken", "appToken", "signingSecret"].some(
-      (key) => typeof account[key] === "string" && account[key].length > 0,
-    ),
 }));
 
 vi.mock("../channels/plugins/status.js", () => ({
@@ -214,6 +164,18 @@ function createTokenOnlyPlugin() {
   };
 }
 
+function createGatewayTransportError(message = "Gateway not reachable (ECONNREFUSED).") {
+  return new GatewayTransportError({
+    kind: "closed",
+    message,
+    connectionDetails: {
+      url: "ws://127.0.0.1:18997",
+      urlSource: "local loopback",
+      message: "Gateway target: ws://127.0.0.1:18997",
+    },
+  });
+}
+
 describe("channelsStatusCommand SecretRef fallback flow", () => {
   beforeEach(() => {
     mocks.callGateway.mockReset();
@@ -270,7 +232,7 @@ describe("channelsStatusCommand SecretRef fallback flow", () => {
   });
 
   it("keeps read-only fallback output when SecretRefs are unresolved", async () => {
-    mocks.callGateway.mockRejectedValue(new Error("gateway closed"));
+    mocks.callGateway.mockRejectedValue(createGatewayTransportError());
     mocks.requireValidConfig.mockResolvedValue({ secretResolved: false, channels: {} });
     mocks.resolveCommandConfigWithSecrets.mockResolvedValue({
       resolvedConfig: { secretResolved: false, channels: {} },
@@ -284,6 +246,7 @@ describe("channelsStatusCommand SecretRef fallback flow", () => {
     await channelsStatusCommand({ probe: false }, runtime as never);
 
     expect(errors.join("\n")).toContain("Gateway not reachable");
+    expect(errors.join("\n")).not.toContain("Gateway auth unavailable");
     expect(mocks.resolveCommandConfigWithSecrets).toHaveBeenCalledOnce();
     const configResolutionRequest = mocks.resolveCommandConfigWithSecrets.mock.calls[0]?.[0];
     expect(configResolutionRequest?.commandName).toBe("channels status");
@@ -294,6 +257,8 @@ describe("channelsStatusCommand SecretRef fallback flow", () => {
       ),
     ).toBe(true);
     const joined = logs.join("\n");
+    expect(joined).toContain("Gateway not reachable; showing config-only status.");
+    expect(joined).not.toContain("Gateway auth unavailable; showing config-only status.");
     expect(joined).toContain("configured, secret unavailable in this command path");
     expect(joined).toContain("token:config (unavailable)");
   });
@@ -319,6 +284,41 @@ describe("channelsStatusCommand SecretRef fallback flow", () => {
     expect(joined).toContain("Gateway auth unavailable; showing config-only status.");
     expect(joined).not.toContain("Gateway not reachable; showing config-only status.");
     expect(joined).toContain("configured, secret unavailable in this command path");
+
+    const { runtime: jsonRuntime, logs: jsonLogs } = createCapturingTestRuntime();
+    await channelsStatusCommand({ json: true, probe: false }, jsonRuntime as never);
+    expect(JSON.parse(jsonLogs.at(-1) ?? "{}").gatewayAuthUnavailable).toBe(true);
+  });
+
+  it("renders missing gateway credentials canonically before config-only status", async () => {
+    const error = Object.assign(
+      new Error(
+        [
+          "gateway channels.status requires credentials before opening a websocket",
+          "Fix: configure gateway.auth token/password, pair this device, or pass --token/--password.",
+          "Config: /tmp/openclaw.json",
+        ].join("\n"),
+      ),
+      {
+        name: "GatewayCredentialsRequiredError",
+        method: "channels.status",
+        configPath: "/tmp/openclaw.json",
+      },
+    );
+    mocks.callGateway.mockRejectedValue(error);
+    mocks.requireValidConfig.mockResolvedValue({ channels: {} });
+    mocks.resolveCommandConfigWithSecrets.mockResolvedValue({
+      resolvedConfig: { channels: {} },
+      effectiveConfig: { channels: {} },
+      diagnostics: [],
+    });
+    const { runtime, logs, errors } = createCapturingTestRuntime();
+
+    await channelsStatusCommand({ probe: false }, runtime as never);
+
+    expect(errors).toEqual([error.message]);
+    expect(errors.join("\n")).not.toContain("Gateway not reachable:");
+    expect(logs.join("\n")).toContain("Gateway auth unavailable; showing config-only status.");
   });
 
   it("prefers resolved snapshots when command-local SecretRef resolution succeeds", async () => {
@@ -403,7 +403,7 @@ describe("channelsStatusCommand SecretRef fallback flow", () => {
 
   it("keeps JSON fallback structured without rendering config-only text", async () => {
     mocks.callGateway.mockRejectedValue(
-      new Error(
+      createGatewayTransportError(
         [
           "gateway timeout after 3000ms",
           "Gateway target: wss://user:pass@gateway.example.com/socket?token=secret-token&keep=visible",

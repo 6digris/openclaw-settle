@@ -5,7 +5,9 @@ import {
   implicitMentionKindWhen,
   resolveInboundMentionDecision,
 } from "openclaw/plugin-sdk/channel-mention-gating";
+import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import type {
+  OpenAsyncKeyedStoreOptions,
   OpenBlobStoreOptions,
   OpenKeyedStoreOptions,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
@@ -17,7 +19,6 @@ import {
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import { afterAll, vi } from "vitest";
-import type { PluginRuntime } from "./runtime-api.js";
 import { setMatrixRuntime } from "./runtime.js";
 
 const defaultStateDir = fs.realpathSync(
@@ -82,7 +83,9 @@ export function installMatrixTestRuntime(options: MatrixTestRuntimeOptions = {})
     _env,
     _homeDir,
   ) => stateDir;
-  const resolvePluginStateEnv = (storeOptions: OpenKeyedStoreOptions): NodeJS.ProcessEnv => ({
+  const resolvePluginStateEnv = (
+    storeOptions: Pick<OpenKeyedStoreOptions, "env">,
+  ): NodeJS.ProcessEnv => ({
     ...(storeOptions.env ?? process.env),
     OPENCLAW_STATE_DIR:
       storeOptions.env?.OPENCLAW_STATE_DIR?.trim() || defaultStateDirResolver(storeOptions.env),
@@ -115,11 +118,11 @@ export function installMatrixTestRuntime(options: MatrixTestRuntimeOptions = {})
           ...process.env,
           OPENCLAW_STATE_DIR: defaultStateDirResolver(process.env),
         })) as PluginRuntime["state"]["openBlobStore"],
-      openKeyedStore: (<T>(storeOptions: OpenKeyedStoreOptions) =>
+      openKeyedStore: <T>(storeOptions: OpenAsyncKeyedStoreOptions) =>
         createPluginStateKeyedStoreForTests<T>("matrix", {
           ...storeOptions,
           env: resolvePluginStateEnv(storeOptions),
-        })) as PluginRuntime["state"]["openKeyedStore"],
+        }),
       openSyncKeyedStore: (<T>(storeOptions: OpenKeyedStoreOptions) =>
         createPluginStateSyncKeyedStoreForTests<T>("matrix", {
           ...storeOptions,

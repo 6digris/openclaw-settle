@@ -8,6 +8,11 @@ export type NodeHostBrowserProxyConfig = {
 };
 
 export type NodeHostConfig = {
+  /** Automatic updates for long-running packaged headless node hosts. */
+  autoUpdate?: {
+    /** Check hourly and activate only while idle (default: true). */
+    enabled?: boolean;
+  };
   /** Sensitive native agent execution exposed by the headless node host. */
   agentRuns?: {
     claude?: {
@@ -19,6 +24,12 @@ export type NodeHostConfig = {
   workerRuns?: {
     /** Allow this paired node to host worker sessions (default: false). */
     enabled?: boolean;
+    /** Integer worker slots (default: one per available CPU core). */
+    capacity?: number;
+    /** Worker process boundary: direct host execution or a container (default: none). */
+    isolation?: "none" | "container";
+    /** Optional Node 24.16+ or 26.1+ container image override for isolated worker sessions. */
+    containerImage?: string;
   };
   /** Browser proxy settings for node hosts. */
   browserProxy?: NodeHostBrowserProxyConfig;

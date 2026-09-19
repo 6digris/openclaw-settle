@@ -5,12 +5,13 @@ import { runRegisteredCli } from "../test-utils/command-runner.js";
 import { registerUpdateCli } from "./update-cli.js";
 
 const mocks = vi.hoisted(() => ({
+  updateCleanupCommand: vi.fn(async (_opts: unknown) => {}),
   updateCommand: vi.fn(async (_opts: unknown) => {}),
   updateFinalizeCommand: vi.fn(async (_opts: unknown) => {}),
   updateStatusCommand: vi.fn(async (_opts: unknown) => {}),
   updateWizardCommand: vi.fn(async (_opts: unknown) => {}),
   reconcileWindowsGitLauncher: vi.fn(async (_opts: unknown) => ({
-    status: "created" as const,
+    status: "created",
     launcherPath: "C:\\Users\\alice\\.local\\bin\\openclaw.cmd",
   })),
   defaultRuntime: {
@@ -32,8 +33,17 @@ const {
 
 vi.mock("./update-cli/update-command.js", () => ({
   updateCommand: (opts: unknown) => mocks.updateCommand(opts),
+}));
+
+vi.mock("./update-cli/update-command-finalize.js", () => ({
   updateFinalizeCommand: (opts: unknown) => mocks.updateFinalizeCommand(opts),
 }));
+
+vi.mock("./update-cli/update-repair-command.js", () => ({
+  updateRepairCommand: (opts: unknown) => mocks.updateFinalizeCommand(opts),
+}));
+
+vi.mock("./update-cli/cleanup.js", () => ({ updateCleanupCommand: mocks.updateCleanupCommand }));
 
 vi.mock("./update-cli/status.js", () => ({
   updateStatusCommand: (opts: unknown) => mocks.updateStatusCommand(opts),
@@ -52,16 +62,19 @@ vi.mock("../infra/windows-git-launcher.js", () => ({
   reconcileWindowsGitLauncher: (opts: unknown) => mocks.reconcileWindowsGitLauncher(opts),
 }));
 
-vi.mock("../runtime.js", () => ({
-  defaultRuntime: mocks.defaultRuntime,
-}));
+vi.mock("../runtime.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../runtime.js")>();
+  return {
+    ...actual,
+    defaultRuntime: mocks.defaultRuntime,
+  };
+});
 
 function firstCallOptions(mock: { mock: { calls: unknown[][] } }) {
   return mock.mock.calls[0]?.[0];
 }
 
 type UpdateFinalizeCommandOptions = {
-  acknowledgeClawHubRisk?: boolean;
   channel?: string;
   json?: boolean;
   timeout?: string;
@@ -70,32 +83,166 @@ type UpdateFinalizeCommandOptions = {
 };
 
 describe("update cli option collisions", () => {
-  beforeEach(() => {
-    updateCommand.mockClear();
-    updateFinalizeCommand.mockClear();
-    updateStatusCommand.mockClear();
-    updateWizardCommand.mockClear();
-    mocks.reconcileWindowsGitLauncher.mockClear();
-    defaultRuntime.log.mockClear();
-    defaultRuntime.error.mockClear();
-    defaultRuntime.writeStdout.mockClear();
-    defaultRuntime.writeJson.mockClear();
-    defaultRuntime.exit.mockClear();
-  });
-
-  it("installs the Git launcher through its hidden owner command", async () => {
+  it("routes the hidden Git launcher command to its canonical owner", async () => {
     await runRegisteredCli({
-      register: registerUpdateCli as (program: Command) => void,
+      register: registerUpdateCli,
       argv: ["update", "install-git-launcher"],
     });
-
-    expect(mocks.reconcileWindowsGitLauncher).toHaveBeenCalledWith({
+    expect(mocks.reconcileWindowsGitLauncher).toHaveBeenCalledExactlyOnceWith({
       root: "C:\\Users\\alice\\openclaw",
       repair: true,
       create: true,
     });
     expect(defaultRuntime.error).not.toHaveBeenCalled();
     expect(defaultRuntime.exit).not.toHaveBeenCalled();
+    const program = new Command();
+    registerUpdateCli(program);
+    expect(
+      program.commands.find((command) => command.name() === "update")?.helpInformation(),
+    ).not.toContain("install-git-launcher");
+  });
+
+  it.each(["--dry-run", "--reapply-local-overrides"])(
+    "rejects %s before installing a Git launcher",
+    async (flag) => {
+      await runRegisteredCli({
+        register: registerUpdateCli,
+        argv: ["update", flag, "install-git-launcher"],
+      });
+      expect(mocks.reconcileWindowsGitLauncher).not.toHaveBeenCalled();
+      expect(defaultRuntime.exit).toHaveBeenCalledWith(1);
+    },
+  );
+
+  it.each([
+    { status: "needs-reinstall", diagnostic: "current Node runtime is not supported" },
+    { status: "skipped", reason: "foreign", diagnostic: "unrecognized Windows Git launcher" },
+    { status: "skipped", reason: "missing", diagnostic: "unrecognized Windows Git launcher" },
+    { status: "skipped", reason: "not-windows", diagnostic: "only available on Windows" },
+  ])(
+    "refuses launcher reconciliation result $status $reason",
+    async ({ diagnostic, ...result }) => {
+      mocks.reconcileWindowsGitLauncher.mockResolvedValueOnce({
+        ...result,
+        launcherPath: "C:\\Users\\alice\\.local\\bin\\openclaw.cmd",
+      });
+      await runRegisteredCli({
+        register: registerUpdateCli,
+        argv: ["update", "install-git-launcher"],
+      });
+      expect(defaultRuntime.error).toHaveBeenCalledWith(expect.stringContaining(diagnostic));
+      expect(defaultRuntime.exit).toHaveBeenCalledWith(1);
+    },
+  );
+
+  it.each(
+    Array.from({ length: 8 }, (_value, mask) => {
+      const flags = ["--dry-run", "--json", "--yes"];
+      return [
+        "update",
+        ...flags.filter((_, index) => mask & (1 << index)),
+        "cleanup",
+        ...flags.filter((_, index) => !(mask & (1 << index))),
+      ];
+    }),
+  )("supports cleanup options in either position: %j", async (...argv) => {
+    await runRegisteredCli({ register: registerUpdateCli, argv });
+    expect(mocks.updateCleanupCommand).toHaveBeenCalledWith({
+      dryRun: true,
+      json: true,
+      yes: true,
+    });
+    expect(updateCommand).not.toHaveBeenCalled();
+  });
+  it.each([
+    ...["--channel", "--tag", "--timeout"].flatMap((flag) =>
+      ["beta", "", "--", "--no-restart"].flatMap((value) => [[flag, value], [`${flag}=${value}`]]),
+    ),
+    ["--no-restart"],
+    ["--accept-capabilities"],
+    ["--reapply-local-overrides"],
+  ])("rejects unrelated inherited cleanup option %s", async (...flags) => {
+    await runRegisteredCli({ register: registerUpdateCli, argv: ["update", ...flags, "cleanup"] });
+    expect(mocks.updateCleanupCommand).not.toHaveBeenCalled();
+    expect(defaultRuntime.error).toHaveBeenCalledWith(expect.stringContaining("is not supported"));
+    expect(defaultRuntime.exit).toHaveBeenCalledWith(1);
+    expect(updateCommand).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "--channel",
+    "--tag",
+    "--timeout",
+    "--no-restart",
+    "--accept-capabilities",
+    "--version",
+    "--reapply-local-overrides",
+  ])("rejects update-only or version option %s after cleanup", async (flag) => {
+    const program = new Command().exitOverride().configureOutput({ writeErr: () => {} });
+    registerUpdateCli(program);
+    await expect(
+      program.parseAsync(["update", "cleanup", flag], { from: "user" }),
+    ).rejects.toMatchObject({
+      code: "commander.unknownOption",
+      exitCode: 1,
+    });
+    expect(mocks.updateCleanupCommand).not.toHaveBeenCalled();
+    expect(updateCommand).not.toHaveBeenCalled();
+  });
+
+  it("dispatches explicit replay consent to the update owner", async () => {
+    await runRegisteredCli({
+      register: registerUpdateCli,
+      argv: ["update", "--reapply-local-overrides"],
+    });
+    expect(updateCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ reapplyLocalOverrides: true }),
+    );
+  });
+
+  it.each(["status", "wizard", "repair", "finalize"])(
+    "rejects replay consent on the %s leaf",
+    async (leaf) => {
+      await runRegisteredCli({
+        register: registerUpdateCli,
+        argv: ["update", "--reapply-local-overrides", leaf],
+      });
+      expect(defaultRuntime.error).toHaveBeenCalledWith(
+        expect.stringContaining("--reapply-local-overrides is not supported"),
+      );
+      expect(updateCommand).not.toHaveBeenCalled();
+      expect(updateFinalizeCommand).not.toHaveBeenCalled();
+      expect(updateWizardCommand).not.toHaveBeenCalled();
+      expect(updateStatusCommand).not.toHaveBeenCalled();
+    },
+  );
+
+  it("dispatches cleanup after the parent option delimiter", async () => {
+    await runRegisteredCli({ register: registerUpdateCli, argv: ["update", "--", "cleanup"] });
+    expect(mocks.updateCleanupCommand).toHaveBeenCalledWith({
+      dryRun: false,
+      json: false,
+      yes: false,
+    });
+    expect(updateCommand).not.toHaveBeenCalled();
+  });
+
+  beforeEach(() => {
+    mocks.reconcileWindowsGitLauncher.mockReset();
+    mocks.reconcileWindowsGitLauncher.mockResolvedValue({
+      status: "created",
+      launcherPath: "C:\\Users\\alice\\.local\\bin\\openclaw.cmd",
+    });
+    mocks.updateCleanupCommand.mockClear();
+    updateCommand.mockClear();
+    updateFinalizeCommand.mockClear();
+    updateStatusCommand.mockClear();
+    updateWizardCommand.mockClear();
+    defaultRuntime.log.mockClear();
+    defaultRuntime.error.mockClear();
+    defaultRuntime.writeStdout.mockClear();
+    defaultRuntime.writeJson.mockClear();
+    defaultRuntime.exit.mockClear();
   });
 
   it.each([
@@ -111,15 +258,7 @@ describe("update cli option collisions", () => {
     },
     {
       name: "forwards parent-captured options to hidden `update finalize`",
-      argv: [
-        "update",
-        "--acknowledge-clawhub-risk",
-        "finalize",
-        "--json",
-        "--timeout",
-        "17",
-        "--no-restart",
-      ],
+      argv: ["update", "finalize", "--json", "--timeout", "17", "--no-restart"],
       assert: () => {
         expect(updateFinalizeCommand).toHaveBeenCalledTimes(1);
         const opts = firstCallOptions(updateFinalizeCommand) as
@@ -128,7 +267,6 @@ describe("update cli option collisions", () => {
         expect(opts?.json).toBe(true);
         expect(opts?.timeout).toBe("17");
         expect(opts?.restart).toBe(false);
-        expect(opts?.acknowledgeClawHubRisk).toBe(true);
       },
     },
     {
@@ -191,6 +329,7 @@ describe("update cli option collisions", () => {
     { name: "repair", handler: updateFinalizeCommand },
     { name: "finalize", handler: updateFinalizeCommand },
     { name: "wizard", handler: updateWizardCommand },
+    { name: "status", handler: updateStatusCommand },
   ])("rejects parent --dry-run before running update $name", async ({ name, handler }) => {
     await runRegisteredCli({
       register: registerUpdateCli as (program: Command) => void,
@@ -268,22 +407,11 @@ describe("update cli option collisions", () => {
     async (name) => {
       await runRegisteredCli({
         register: registerUpdateCli as (program: Command) => void,
-        argv: [
-          "update",
-          "--json",
-          "--timeout",
-          "31",
-          "--acknowledge-clawhub-risk",
-          "--channel",
-          "beta",
-          "--yes",
-          name,
-        ],
+        argv: ["update", "--json", "--timeout", "31", "--channel", "beta", "--yes", name],
       });
 
       expect(updateFinalizeCommand).toHaveBeenCalledOnce();
       expect(firstCallOptions(updateFinalizeCommand)).toMatchObject({
-        acknowledgeClawHubRisk: true,
         channel: "beta",
         json: true,
         restart: false,

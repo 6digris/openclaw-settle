@@ -1,4 +1,3 @@
-// Qa Lab plugin module implements suite runtime gateway behavior.
 import { setTimeout as sleep } from "node:timers/promises";
 import { formatErrorMessage, toErrorObject } from "openclaw/plugin-sdk/error-runtime";
 import { readProviderJsonResponse } from "openclaw/plugin-sdk/provider-http";
@@ -119,6 +118,8 @@ async function waitForConfigRestartSettle(
 }
 
 function formatGatewayPrimaryErrorText(error: unknown) {
+  // The persistent QA client flattens low-level closes and appends child logs,
+  // so the public one-shot gateway guards cannot recover a typed close here.
   const text = formatErrorMessage(error);
   const gatewayLogsIndex = text.indexOf("\nGateway logs:");
   return (gatewayLogsIndex >= 0 ? text.slice(0, gatewayLogsIndex) : text).trim();

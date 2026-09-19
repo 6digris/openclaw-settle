@@ -30,8 +30,13 @@ import {
   parseProfile,
   resolveDockerE2ePlan,
 } from "./lib/docker-e2e-plan.mts";
-import type { DockerE2eLane } from "./lib/docker-e2e-scenarios.mts";
-import { sleep } from "./lib/sleep.mjs";
+import { liveDockerScriptCommand, type DockerE2eLane } from "./lib/docker-e2e-scenarios.mts";
+import {
+  hasUnjoinedWork,
+  inspectManagedProcessGroup,
+  terminateManagedChild,
+  waitForManagedProcessGroupExit,
+} from "./lib/managed-child-process.mts";
 import {
   createPrepublishPluginRegistryArtifact,
   inspectNpmPackageTarball,
@@ -40,10 +45,10 @@ import {
 
 const SCRIPT_ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ROOT_DIR = path.resolve(process.env.OPENCLAW_DOCKER_E2E_REPO_ROOT || SCRIPT_ROOT_DIR);
-const LIVE_DOCKER_DEFAULT_HARNESS_DIR =
-  path.basename(SCRIPT_ROOT_DIR) === ".release-harness" && ROOT_DIR !== SCRIPT_ROOT_DIR
-    ? ".release-harness"
-    : ".";
+const HARNESS_ROOT_DIR = path.resolve(
+  ROOT_DIR,
+  process.env.OPENCLAW_DOCKER_E2E_TRUSTED_HARNESS_DIR || SCRIPT_ROOT_DIR,
+);
 const DEFAULT_FAILURE_TAIL_LINES = 80;
 const DEFAULT_LANE_TIMEOUT_MS = 120 * 60 * 1000;
 const DEFAULT_LANE_START_STAGGER_MS = 2_000;
@@ -54,7 +59,9 @@ export const SHELL_CAPTURE_MAX_CHARS = 1024 * 1024;
 export const LOG_TAIL_MAX_BYTES = 1024 * 1024;
 const SHELL_TIMEOUT_KILL_GRACE_MS = 10_000;
 const SHELL_POST_FORCE_KILL_WAIT_MS = 1_000;
-const SHELL_PROCESS_GROUP_EXIT_POLL_MS = 25;
+// Private QA subprocess contract. Ordinary lane/CLI failures remain 1; 130/143
+// acknowledge joined signal cleanup. Only failed owner cleanup uses 2.
+const CLEANUP_FAILURE_EXIT_CODE = 2;
 const MAX_TIMER_TIMEOUT_MS = 2_147_000_000;
 const DEFAULT_TIMINGS_FILE = path.join(ROOT_DIR, ".artifacts/docker-tests/lane-timings.json");
 const DEFAULT_GITHUB_WORKFLOW = "openclaw-live-and-e2e-checks-reusable.yml";
@@ -81,11 +88,19 @@ type SchedulerLane = Pick<DockerE2eLane, "name"> &
 
 type TimingStore = Awaited<ReturnType<typeof loadTimingStore>>;
 
-type ShellCommandResult = Omit<ReturnType<typeof shellCommandSkippedForShutdown>, "signal"> & {
-  signal: NodeJS.Signals | null;
+type ShellCommandResult = Omit<
+  ReturnType<typeof shellCommandSkippedForShutdown>,
+  "signal" | "cancelled"
+> & {
+  cancelled?: true;
+  signal: ChildProcess["signalCode"];
 };
-type ShellCaptureResult = Omit<ReturnType<typeof shellCaptureSkippedForShutdown>, "signal"> & {
-  signal: NodeJS.Signals | null;
+type ShellCaptureResult = Omit<
+  ReturnType<typeof shellCaptureSkippedForShutdown>,
+  "signal" | "cancelled"
+> & {
+  cancelled?: true;
+  signal: ChildProcess["signalCode"];
 };
 
 type ShellCommandOptions = {
@@ -433,7 +448,7 @@ export function validateDockerCandidateEnvironment(
   if (!strictCandidate || !plan.needs.package) {
     baseEnv.OPENCLAW_CURRENT_PACKAGE_TGZ &&= path.resolve(baseEnv.OPENCLAW_CURRENT_PACKAGE_TGZ);
     const registryDir = baseEnv.OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR;
-    if (!plan.needs.prepublishPluginRegistry || !registryDir) {
+    if (!registryDir) {
       delete baseEnv.OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR;
       return;
     }
@@ -550,6 +565,8 @@ export function buildLaneRerunCommand(name: string, baseEnv: NodeJS.ProcessEnv) 
     ["OPENCLAW_DOCKER_E2E_IMAGE", image || DEFAULT_E2E_FUNCTIONAL_IMAGE],
     ["OPENCLAW_DOCKER_E2E_BARE_IMAGE", baseEnv.OPENCLAW_DOCKER_E2E_BARE_IMAGE],
     ["OPENCLAW_DOCKER_E2E_FUNCTIONAL_IMAGE", baseEnv.OPENCLAW_DOCKER_E2E_FUNCTIONAL_IMAGE],
+    ["OPENCLAW_DOCKER_E2E_REPO_ROOT", baseEnv.OPENCLAW_DOCKER_E2E_REPO_ROOT],
+    ["OPENCLAW_DOCKER_E2E_TRUSTED_HARNESS_DIR", baseEnv.OPENCLAW_DOCKER_E2E_TRUSTED_HARNESS_DIR],
     ...CANDIDATE_ENV_KEYS.map((key) => [key, baseEnv[key]] as const),
     ...REGISTRY_ENV_KEYS.map((key) => [key, baseEnv[key]] as const),
     ["OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC", baseEnv.OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC],
@@ -559,16 +576,33 @@ export function buildLaneRerunCommand(name: string, baseEnv: NodeJS.ProcessEnv) 
   if (baseEnv.OPENCLAW_DOCKER_ALL_PNPM_COMMAND) {
     env.push(["OPENCLAW_DOCKER_ALL_PNPM_COMMAND", baseEnv.OPENCLAW_DOCKER_ALL_PNPM_COMMAND]);
   }
-  return `${env
+  const envPrefix = env
     .filter(
       (entry): entry is readonly [string, string] => entry[1] !== undefined && entry[1] !== "",
     )
     .map(([key, value]) => `${key}=${shellQuote(value)}`)
-    .join(" ")} pnpm test:docker:all`;
+    .join(" ");
+  return prepareHarnessCommand("pnpm test:docker:all", baseEnv, envPrefix);
 }
 
-function liveDockerHarnessScriptCommand(script: string) {
-  return `bash -c 'harness="\${OPENCLAW_DOCKER_E2E_TRUSTED_HARNESS_DIR:-${LIVE_DOCKER_DEFAULT_HARNESS_DIR}}"; OPENCLAW_LIVE_DOCKER_REPO_ROOT="\${OPENCLAW_DOCKER_E2E_REPO_ROOT:-$PWD}" bash "$harness/scripts/${script}"'`;
+function prepareHarnessCommand(command: string, env: NodeJS.ProcessEnv, envPrefix = "") {
+  if (!/(^|\s)pnpm(?=\s)/.test(command)) {
+    return command;
+  }
+  const pinnedPnpm = env.OPENCLAW_DOCKER_ALL_PNPM_COMMAND?.trim();
+  const executable = pinnedPnpm?.includes("/") ? path.resolve(ROOT_DIR, pinnedPnpm) : pinnedPnpm;
+  const invocation = command.replace(
+    /(^|\s)pnpm(?=\s)/g,
+    (_, prefix: string) => `${prefix}${executable ? shellQuote(executable) : "pnpm"}`,
+  );
+  // Quoted environment values may themselves contain " pnpm ". Substitute only
+  // the catalog invocation, then add the already-quoted rerun assignments.
+  const prepared = envPrefix ? `${envPrefix} ${invocation}` : invocation;
+  // Corepack selects the package-manager pin before pnpm parses --dir. Enter
+  // the harness first; candidate paths have already been prepared as absolute.
+  return HARNESS_ROOT_DIR === ROOT_DIR
+    ? prepared
+    : `(cd ${shellQuote(HARNESS_ROOT_DIR)} && ${prepared})`;
 }
 
 async function loadTimingStore(file: string, enabled: boolean) {
@@ -738,9 +772,10 @@ function cleanupSmokeResult(
   logFile: string,
   command: string,
   startedAtMs: number,
-  result: Pick<ShellCommandResult, "noOutputTimedOut" | "status" | "timedOut">,
+  result: Pick<ShellCommandResult, "cancelled" | "noOutputTimedOut" | "status" | "timedOut">,
 ) {
   return {
+    ...(result.cancelled ? { cancelled: true as const } : {}),
     command,
     attempts: [laneAttempt(1, startedAtMs, result)],
     elapsedSeconds: phaseElapsedSeconds(startedAtMs),
@@ -818,7 +853,7 @@ export function resolveDockerPreflightPlatform(arch: NodeJS.Architecture = proce
 
 export function dockerPreflightSmokeCommand(arch: NodeJS.Architecture = process.arch) {
   const platform = resolveDockerPreflightPlatform(arch);
-  return `docker run --rm --platform ${shellQuote(platform)} alpine:3.20 true`;
+  return `docker run --rm --platform ${shellQuote(platform)} alpine:3.24 true`;
 }
 
 export function runShellCommand({
@@ -833,7 +868,7 @@ export function runShellCommand({
   if (activeChildrenShutdownPromise) {
     return activeChildrenShutdownPromise.then(() => shellCommandSkippedForShutdown());
   }
-  return new Promise<ShellCommandResult>((resolve) => {
+  return new Promise<ShellCommandResult>((resolve, reject) => {
     const resolvedTimeoutMs = resolveOptionalTimerTimeoutMs(timeoutMs);
     const resolvedNoOutputTimeoutMs = resolveOptionalTimerTimeoutMs(noOutputTimeoutMs);
     const resolvedTimeoutKillGraceMs = resolveDockerSchedulerTimeoutMs(
@@ -850,14 +885,20 @@ export function runShellCommand({
     activeChildren.set(child, resolvedTimeoutKillGraceMs);
     let timedOut = false;
     let noOutputTimedOut = false;
+    let cancelled: boolean | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     let killAt: number | undefined;
     const stream = logFile ? fs.createWriteStream(logFile, { flags: "a" }) : undefined;
     let noOutputTimer: ReturnType<typeof setTimeout> | undefined;
+    // Exit can precede stdio/group drain; later signals cannot rewrite its origin.
+    child.once("exit", () => {
+      cancelled ??= Boolean(activeChildrenShutdownPromise);
+    });
     const terminateForTimeout = (message: string, options: { noOutput?: boolean } = {}) => {
       if (timedOut) {
         return;
       }
+      cancelled ??= Boolean(activeChildrenShutdownPromise);
       timedOut = true;
       noOutputTimedOut = options.noOutput === true;
       if (stream) {
@@ -909,18 +950,18 @@ export function runShellCommand({
     }
 
     child.on("close", (status, signal) => {
+      cancelled ??= Boolean(activeChildrenShutdownPromise);
       if (timeoutTimer) {
         clearTimeout(timeoutTimer);
       }
       if (noOutputTimer) {
         clearTimeout(noOutputTimer);
       }
-      const finish = () => {
+      const finish = (error?: unknown) => {
         if (killTimer) {
           clearTimeout(killTimer);
         }
         killAt = undefined;
-        activeChildren.delete(child);
         const exitCode = typeof status === "number" ? status : signal ? 128 : 1;
         if (stream) {
           stream.write(
@@ -930,16 +971,29 @@ export function runShellCommand({
           );
           stream.end();
         }
-        resolve({ signal, status: exitCode, timedOut, noOutputTimedOut });
+        if (error !== undefined) {
+          reject(
+            error instanceof Error
+              ? error
+              : new Error("Docker lane cleanup failed", { cause: error }),
+          );
+          return;
+        }
+        activeChildren.delete(child);
+        resolve({
+          signal,
+          status: exitCode,
+          timedOut,
+          noOutputTimedOut,
+          ...(cancelled ? { cancelled: true as const } : {}),
+        });
       };
-      if (timedOut) {
-        void finishTimedOutShellProcessTree(child, killAt, resolvedTimeoutKillGraceMs).then(
-          finish,
-          finish,
-        );
-        return;
-      }
-      finish();
+      void finishShellProcessTree(
+        child,
+        killAt,
+        resolvedTimeoutKillGraceMs,
+        timedOut ? undefined : "SIGTERM",
+      ).then(() => finish(), finish);
     });
   });
 }
@@ -966,7 +1020,7 @@ export function runShellCaptureCommand({
   if (activeChildrenShutdownPromise) {
     return activeChildrenShutdownPromise.then(() => shellCaptureSkippedForShutdown(label));
   }
-  return new Promise<ShellCaptureResult>((resolve) => {
+  return new Promise<ShellCaptureResult>((resolve, reject) => {
     const resolvedTimeoutMs = resolveOptionalTimerTimeoutMs(timeoutMs);
     const resolvedTimeoutKillGraceMs = resolveDockerSchedulerTimeoutMs(
       timeoutKillGraceMs,
@@ -984,11 +1038,17 @@ export function runShellCaptureCommand({
     let stdoutTruncated = false;
     let stderrTruncated = false;
     let timedOut = false;
+    let cancelled: boolean | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     let killAt: number | undefined;
+    // Preserve terminal order even while a descendant still holds captured stdio.
+    child.once("exit", () => {
+      cancelled ??= Boolean(activeChildrenShutdownPromise);
+    });
     const timeoutTimer =
       resolvedTimeoutMs !== undefined
         ? setTimeout(() => {
+            cancelled ??= Boolean(activeChildrenShutdownPromise);
             timedOut = true;
             terminateChild(child, "SIGTERM");
             killAt = Date.now() + resolvedTimeoutKillGraceMs;
@@ -1011,14 +1071,23 @@ export function runShellCaptureCommand({
       stderrTruncated ||= next.truncated;
     });
     child.on("close", (status, signal) => {
+      cancelled ??= Boolean(activeChildrenShutdownPromise);
       if (timeoutTimer) {
         clearTimeout(timeoutTimer);
       }
-      const finish = () => {
+      const finish = (error?: unknown) => {
         if (killTimer) {
           clearTimeout(killTimer);
         }
         killAt = undefined;
+        if (error !== undefined) {
+          reject(
+            error instanceof Error
+              ? error
+              : new Error("Docker lane cleanup failed", { cause: error }),
+          );
+          return;
+        }
         activeChildren.delete(child);
         const exitCode = typeof status === "number" ? status : signal ? 128 : 1;
         resolve({
@@ -1030,16 +1099,15 @@ export function runShellCaptureCommand({
           stdout,
           stdoutTruncated,
           timedOut,
+          ...(cancelled ? { cancelled: true as const } : {}),
         });
       };
-      if (timedOut) {
-        void finishTimedOutShellProcessTree(child, killAt, resolvedTimeoutKillGraceMs).then(
-          finish,
-          finish,
-        );
-        return;
-      }
-      finish();
+      void finishShellProcessTree(
+        child,
+        killAt,
+        resolvedTimeoutKillGraceMs,
+        timedOut ? undefined : "SIGTERM",
+      ).then(() => finish(), finish);
     });
   });
 }
@@ -1047,6 +1115,7 @@ export function runShellCaptureCommand({
 async function runForeground(label: string, command: string, env: NodeJS.ProcessEnv) {
   console.log(`==> ${label}`);
   const result = await runShellCommand({ command, env, label });
+  throwIfSchedulerStopping(result);
   if (result.status !== 0) {
     throw new Error(`${label} failed with status ${result.status}`);
   }
@@ -1057,7 +1126,7 @@ export async function runCleanupSmokePhase(
   logDir: string,
   phases: Array<Record<string, unknown>>,
 ) {
-  const command = "pnpm test:docker:cleanup";
+  const command = prepareHarnessCommand("pnpm test:docker:cleanup", baseEnv);
   const logFile = path.join(logDir, `${CLEANUP_SMOKE_NAME}.log`);
   const startedAtMs = Date.now();
   let failure: LaneResult | undefined;
@@ -1114,17 +1183,29 @@ async function runForegroundGroup(entries: ForegroundEntry[], env: NodeJS.Proces
         await runForeground(label, command, entryEnv);
       }
     } catch (error) {
+      if (hasUnjoinedWork(error) && failures.length === 0) {
+        throw error;
+      }
+      if (error === schedulerShutdownError && failures.length === 0) {
+        throw error;
+      }
       failures.push({ entry, error });
+      if (hasUnjoinedWork(error) || activeChildrenShutdownPromise) {
+        break;
+      }
     }
   }
   if (failures.length > 0) {
-    throw new Error(
+    const primary = failures.find(({ error }) => hasUnjoinedWork(error)) ?? failures[0]!;
+    throw new AggregateError(
+      failures.map(({ error }) => error),
       failures
         .map(
           ({ entry, error }) =>
             `${entry.label}: ${error instanceof Error ? error.message : String(error)}`,
         )
         .join("\n"),
+      { cause: primary.error },
     );
   }
 }
@@ -1144,6 +1225,7 @@ async function runDockerPreflight(
     label: "docker-version",
     timeoutMs: 20_000,
   });
+  throwIfSchedulerStopping(version);
   if (version.status !== 0) {
     throw new Error(
       `Docker preflight failed: docker version status=${version.status}\n${version.stderr}${version.stdout}`,
@@ -1159,6 +1241,7 @@ async function runDockerPreflight(
       label: "docker-stale-list",
       timeoutMs: 20_000,
     });
+    throwIfSchedulerStopping();
     if (stale.status === 0) {
       const names = dockerPreflightContainerNames(stale.stdout);
       if (names.length > 0) {
@@ -1169,6 +1252,7 @@ async function runDockerPreflight(
           label: "docker-stale-cleanup",
           timeoutMs: 90_000,
         });
+        throwIfSchedulerStopping(cleanup);
         if (cleanup.status !== 0) {
           throw new Error(`Docker preflight cleanup failed with status ${cleanup.status}`);
         }
@@ -1183,6 +1267,7 @@ async function runDockerPreflight(
     label: "docker-run-smoke",
     timeoutMs: options.runTimeoutMs,
   });
+  throwIfSchedulerStopping(run);
   const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
   if (run.status !== 0) {
     throw new Error(
@@ -1208,7 +1293,7 @@ async function prepareOpenClawPackage(baseEnv: NodeJS.ProcessEnv, logDir: string
   const packageTgz = path.join(packDir, "openclaw-current.tgz");
   await runForeground(
     "Prepare OpenClaw package once",
-    `node ${shellQuote(path.join(ROOT_DIR, "scripts/package-openclaw-for-docker.mjs"))} --source-dir ${shellQuote(ROOT_DIR)} --allow-unreleased-changelog --output-dir ${shellQuote(packDir)} --output-name openclaw-current.tgz`,
+    `node ${shellQuote(path.join(HARNESS_ROOT_DIR, "scripts/package-openclaw-for-docker.mjs"))} --source-dir ${shellQuote(ROOT_DIR)} --allow-unreleased-changelog --output-dir ${shellQuote(packDir)} --output-name openclaw-current.tgz`,
     baseEnv,
   );
   await fs.promises.access(packageTgz);
@@ -1303,10 +1388,12 @@ function laneEnv(
   const cacheName = cacheKey || name;
   const env: DockerLaneEnv = {
     ...baseEnv,
-    OPENCLAW_DOCKER_CACHE_HOME_DIR:
+    OPENCLAW_DOCKER_CACHE_HOME_DIR: path.resolve(
       process.env.OPENCLAW_DOCKER_CACHE_HOME_DIR ?? path.join(logDir, `${cacheName}-cache`),
-    OPENCLAW_DOCKER_CLI_TOOLS_DIR:
+    ),
+    OPENCLAW_DOCKER_CLI_TOOLS_DIR: path.resolve(
       process.env.OPENCLAW_DOCKER_CLI_TOOLS_DIR ?? path.join(logDir, `${cacheName}-cli-tools`),
+    ),
   };
   env.OPENCLAW_DOCKER_ALL_LANE_NAME = name;
   const image = e2eImageForLane(poolLane, baseEnv);
@@ -1330,10 +1417,7 @@ async function runLane(
   const noOutputTimeoutMs = lane.noOutputTimeoutMs;
   const logFile = path.join(logDir, `${name}.log`);
   const env = laneEnv(lane, baseEnv, logDir, lane.cacheKey);
-  const pnpmCommand = env.OPENCLAW_DOCKER_ALL_PNPM_COMMAND?.trim();
-  const command = pnpmCommand
-    ? lane.command.replace(/(^|\s)pnpm(?=\s)/g, `$1${shellQuote(pnpmCommand)}`)
-    : lane.command;
+  const command = prepareHarnessCommand(lane.command, env);
   await mkdir(env.OPENCLAW_DOCKER_CLI_TOOLS_DIR, { recursive: true });
   await mkdir(env.OPENCLAW_DOCKER_CACHE_HOME_DIR, { recursive: true });
   await fs.promises.writeFile(
@@ -1346,6 +1430,8 @@ async function runLane(
       `==> [${name}] retries: ${lane.retries ?? 0}`,
       `==> [${name}] e2e image kind: ${lane.e2eImageKind ?? "none"}`,
       `==> [${name}] e2e image: ${env.OPENCLAW_DOCKER_E2E_IMAGE ?? ""}`,
+      `==> [${name}] trusted harness: ${HARNESS_ROOT_DIR}`,
+      `==> [${name}] candidate source: ${ROOT_DIR}`,
       "",
     ].join("\n"),
   );
@@ -1370,12 +1456,11 @@ async function runLane(
       noOutputTimeoutMs,
     });
     attempts.push(laneAttempt(attempt, attemptStartedAt, result));
-    if (result.status === 0 || attempt >= maxAttempts) {
+    if (activeChildrenShutdownPromise || result.status === 0 || attempt >= maxAttempts) {
       break;
     }
-    const retryable =
-      result.timedOut || (await laneLogMatchesRetryPattern(logFile, lane.retryPatterns));
-    if (!retryable) {
+    // An exhausted lane deadline alone does not diagnose a transient failure.
+    if (!(await laneLogMatchesRetryPattern(logFile, lane.retryPatterns))) {
       break;
     }
   }
@@ -1391,6 +1476,7 @@ async function runLane(
   return {
     command,
     attempts,
+    ...(result.cancelled ? { cancelled: true as const } : {}),
     finishedAt: new Date().toISOString(),
     image: env.OPENCLAW_DOCKER_E2E_IMAGE,
     imageKind: lane.e2eImageKind,
@@ -1411,11 +1497,11 @@ async function runLanePool(
   logDir: string,
   parallelism: number,
   options: LanePoolOptions,
+  { failures, results }: { failures: LaneResult[]; results: LaneResult[] },
 ) {
-  const failures: LaneResult[] = [];
-  const results: LaneResult[] = [];
   const pending = [...poolLanes];
-  const running = new Map<symbol, Promise<{ id: symbol; result: LaneResult }>>();
+  const running = new Map<symbol, Promise<symbol>>();
+  let firstError: { error: unknown } | undefined;
   const active = {
     count: 0,
     resources: new Map<string, number>(),
@@ -1423,7 +1509,6 @@ async function runLanePool(
   } satisfies SchedulerActiveState;
   const activeLanes = new Map<string, number>();
   let lastLaneStartAt = 0;
-  let laneStartQueue: Promise<void> = Promise.resolve();
   const statusTimer =
     options.statusIntervalMs > 0
       ? setInterval(() => {
@@ -1446,18 +1531,20 @@ async function runLanePool(
     if (options.startStaggerMs <= 0) {
       return;
     }
-    const previous = laneStartQueue;
-    let releaseNext = () => {};
-    laneStartQueue = new Promise<void>((resolve) => {
-      releaseNext = resolve;
-    });
-    await previous;
     const waitMs = Math.max(0, lastLaneStartAt + options.startStaggerMs - Date.now());
     if (waitMs > 0) {
-      await sleep(waitMs);
+      // Admission is serial. Its sole timer must not outlive a stopped pool.
+      await new Promise<void>((resolve) => {
+        const finish = () => {
+          clearTimeout(timer);
+          cancelLaneStartWait = undefined;
+          resolve();
+        };
+        const timer = setTimeout(finish, waitMs);
+        cancelLaneStartWait = finish;
+      });
     }
     lastLaneStartAt = Date.now();
-    releaseNext();
   }
 
   function canStartLane(candidate: DockerE2eLane) {
@@ -1489,23 +1576,52 @@ async function runLanePool(
 
   async function startLane(poolLane: DockerE2eLane) {
     await waitForLaneStartSlot();
+    if (firstError) {
+      throw firstError.error;
+    }
+    if (activeChildrenShutdownPromise || (options.failFast && failures.length > 0)) {
+      return;
+    }
     reserve(poolLane);
     activeLanes.set(poolLane.name, Date.now());
     const id = Symbol(poolLane.name);
     const promise = runLane(poolLane, baseEnv, logDir, options.timeoutMs)
-      .then((result) => ({ id, result }))
+      .then((result) => {
+        // Main retains every completed row, even when a sibling rejects before
+        // Promise.race consumes it or the pool is draining after that rejection.
+        results.push(result);
+        if (result.status !== 0) {
+          failures.push(result);
+          schedulerFailed ||= !result.cancelled;
+          if (options.failFast) {
+            cancelLaneStartWait?.();
+          }
+        }
+        return id;
+      })
       .finally(() => {
         activeLanes.delete(poolLane.name);
         release(poolLane);
       });
+    // A rejection can arrive while another lane is still waiting in the stagger.
+    // Close admission immediately, but keep the rejected task in the join set.
+    void promise.catch((error: unknown) => {
+      firstError ??= { error };
+      void (activeChildrenShutdownPromise ?? shutdownActiveChildren("SIGTERM", 1)).catch(
+        () => undefined,
+      );
+    });
     running.set(id, promise);
   }
 
   try {
     while (pending.length > 0 || running.size > 0) {
       let started = false;
-      if (!options.failFast || failures.length === 0) {
+      if (!activeChildrenShutdownPromise && (!options.failFast || failures.length === 0)) {
         for (let index = 0; index < pending.length;) {
+          if (activeChildrenShutdownPromise || (options.failFast && failures.length > 0)) {
+            break;
+          }
           const candidate = pending[index];
           if (!candidate) {
             break;
@@ -1524,6 +1640,9 @@ async function runLanePool(
         continue;
       }
       if (running.size === 0) {
+        if (activeChildrenShutdownPromise) {
+          break;
+        }
         const blocked = pending.map(laneSummary).join(", ");
         throw new Error(
           `No Docker lanes fit scheduler limits (${describeDockerSchedulerLimits(
@@ -1533,31 +1652,27 @@ async function runLanePool(
         );
       }
 
-      const { id, result } = await Promise.race(running.values());
+      const id = await Promise.race(running.values());
       running.delete(id);
-      results.push(result);
-      if (result.status !== 0) {
-        failures.push(result);
-      }
       if (options.failFast && failures.length > 0) {
-        const remainingResults = await Promise.all(running.values());
+        await Promise.all(running.values());
         running.clear();
-        for (const remaining of remainingResults) {
-          results.push(remaining.result);
-          if (remaining.result.status !== 0) {
-            failures.push(remaining.result);
-          }
-        }
         break;
       }
     }
+  } catch (error) {
+    const primaryError = firstError ? firstError.error : error;
+    await (activeChildrenShutdownPromise ?? shutdownActiveChildren("SIGTERM", 1)).catch(
+      () => undefined,
+    );
+    await Promise.allSettled(running.values());
+    throw primaryError;
   } finally {
+    cancelLaneStartWait?.();
     if (statusTimer) {
       clearInterval(statusTimer);
     }
   }
-
-  return { failures, results };
 }
 
 export async function tailFile(file: string, lines: number, maxBytes = LOG_TAIL_MAX_BYTES) {
@@ -1600,10 +1715,24 @@ async function printFailureSummary(failures: LaneResult[], tailLines: number) {
 }
 
 const activeChildren = new Map<ChildProcess, number>();
-let activeChildrenShutdownPromise: Promise<unknown> | undefined;
+const childCleanups = new WeakMap<ChildProcess, Promise<void>>();
+const cleanupFailures: unknown[] = [];
+let activeChildrenShutdownPromise: Promise<number> | undefined;
+let shutdownChildren: ChildProcess[] = [];
+let cancelLaneStartWait: (() => void) | undefined;
+// A later signal may join cleanup, but cannot replace an observed ordinary failure.
+let schedulerFailed = false;
+const schedulerShutdownError = new Error("Docker scheduler interrupted");
+
+function throwIfSchedulerStopping(result?: Pick<ShellCommandResult, "status" | "cancelled">) {
+  if (activeChildrenShutdownPromise && (!result || result.cancelled || result.status === 0)) {
+    throw schedulerShutdownError;
+  }
+}
 
 function shellCommandSkippedForShutdown(signal: ShutdownSignal | null = null) {
   return {
+    cancelled: true as const,
     noOutputTimedOut: false,
     signal,
     status: 143,
@@ -1613,6 +1742,7 @@ function shellCommandSkippedForShutdown(signal: ShutdownSignal | null = null) {
 
 function shellCaptureSkippedForShutdown(label: string, signal: ShutdownSignal | null = null) {
   return {
+    cancelled: true as const,
     label,
     signal,
     status: 143,
@@ -1624,81 +1754,119 @@ function shellCaptureSkippedForShutdown(label: string, signal: ShutdownSignal | 
   };
 }
 
+const shellProcessGroupOptions = {
+  errorPolicy: "alive-on-eperm",
+  // Windows has no POSIX group probe; still require the owned leader to exit.
+  inspectLeaderWhenNoGroup: true,
+} as const;
+
 function shellProcessGroupAlive(child: ChildProcess) {
-  if (process.platform === "win32" || !child.pid) {
-    return false;
-  }
-  try {
-    process.kill(-child.pid, 0);
-    return true;
-  } catch (error) {
-    return error instanceof Error && "code" in error && error.code === "EPERM";
-  }
+  return inspectManagedProcessGroup(child, shellProcessGroupOptions) !== "dead";
 }
 
-async function waitForShellProcessGroupExit(child: ChildProcess, timeoutMs: number) {
-  const deadlineAt = Date.now() + timeoutMs;
-  while (Date.now() < deadlineAt) {
-    if (!shellProcessGroupAlive(child)) {
-      return true;
-    }
-    await new Promise((resolvePoll) => {
-      setTimeout(resolvePoll, SHELL_PROCESS_GROUP_EXIT_POLL_MS);
-    });
-  }
-  return !shellProcessGroupAlive(child);
+function waitForShellProcessGroupExit(child: ChildProcess, timeoutMs: number) {
+  return waitForManagedProcessGroupExit(child, timeoutMs, shellProcessGroupOptions);
 }
 
-async function finishTimedOutShellProcessTree(
+function finishShellProcessTree(
   child: ChildProcess,
   killAt: number | undefined,
   timeoutKillGraceMs: number,
+  initialSignal?: ShutdownSignal,
 ) {
-  if (!shellProcessGroupAlive(child)) {
-    return;
+  const existing = childCleanups.get(child);
+  if (existing) {
+    return existing;
   }
-  const graceRemainingMs =
-    killAt === undefined ? timeoutKillGraceMs : Math.max(0, killAt - Date.now());
-  if (graceRemainingMs > 0) {
-    await waitForShellProcessGroupExit(child, graceRemainingMs);
-  }
-  if (shellProcessGroupAlive(child)) {
-    terminateChild(child, "SIGKILL");
-  }
-  await waitForShellProcessGroupExit(child, SHELL_POST_FORCE_KILL_WAIT_MS);
+  // Leader close is not group completion. Command return and scheduler signals
+  // join the same retained cleanup, including descendants that ignore stdio.
+  const cleanup = (async () => {
+    if (!shellProcessGroupAlive(child)) {
+      return;
+    }
+    if (initialSignal) {
+      terminateChild(child, initialSignal);
+    }
+    const graceRemainingMs =
+      killAt === undefined ? timeoutKillGraceMs : Math.max(0, killAt - Date.now());
+    if (graceRemainingMs > 0) {
+      await waitForShellProcessGroupExit(child, graceRemainingMs);
+    }
+    if (shellProcessGroupAlive(child)) {
+      terminateChild(child, "SIGKILL");
+    }
+    await waitForShellProcessGroupExit(child, SHELL_POST_FORCE_KILL_WAIT_MS);
+    const state = inspectManagedProcessGroup(child, shellProcessGroupOptions);
+    if (state !== "dead") {
+      throw Object.assign(new Error(`Docker lane process group did not stop: ${child.pid}`), {
+        code: "EPROCESSGROUP_CLEANUP_FAILED",
+        processGroupId: child.pid,
+        processTreeState: state,
+      });
+    }
+  })().catch((error: unknown) => {
+    throw recordShellCleanupFailure(error, child);
+  });
+  childCleanups.set(child, cleanup);
+  return cleanup;
+}
+
+function recordShellCleanupFailure(error: unknown, child: ChildProcess) {
+  const failure = hasUnjoinedWork(error)
+    ? error
+    : Object.assign(new Error("Docker lane cleanup could not be verified", { cause: error }), {
+        code: "EPROCESSGROUP_CLEANUP_FAILED",
+        processGroupId: child.pid,
+        processTreeState: "indeterminate",
+      });
+  cleanupFailures.push(failure);
+  return failure;
 }
 
 function terminateChild(child: ChildProcess, signal: ShutdownSignal) {
-  if (process.platform !== "win32" && child.pid) {
-    try {
-      process.kill(-child.pid, signal);
-      return;
-    } catch {
-      // Fall back to killing the direct child below.
-    }
-  }
-  child.kill(signal);
+  terminateManagedChild(child, signal, {
+    onChildSignalError(error) {
+      throw error;
+    },
+    useWindowsTaskkill: false,
+  });
 }
 
-function terminateActiveChildren(signal: ShutdownSignal) {
-  for (const child of activeChildren.keys()) {
-    terminateChild(child, signal);
-  }
-}
-
-async function shutdownActiveChildren(signal: ShutdownSignal, exitCode: number) {
+function shutdownActiveChildren(signal: ShutdownSignal, exitCode: number) {
+  cancelLaneStartWait?.();
   if (activeChildrenShutdownPromise) {
-    terminateActiveChildren("SIGKILL");
+    // Standalone second-signal escalation targets captured, still-owned groups.
+    // Only positively joined commands have been released from activeChildren.
+    for (const child of shutdownChildren) {
+      if (!activeChildren.has(child)) {
+        continue;
+      }
+      try {
+        terminateChild(child, "SIGKILL");
+      } catch (error) {
+        recordShellCleanupFailure(error, child);
+      }
+    }
     return activeChildrenShutdownPromise;
   }
   const children = [...activeChildren.entries()];
-  terminateActiveChildren(signal);
-  activeChildrenShutdownPromise = Promise.all(
-    children.map(([child, timeoutKillGraceMs]) =>
-      finishTimedOutShellProcessTree(child, Date.now() + timeoutKillGraceMs, timeoutKillGraceMs),
+  shutdownChildren = children.map(([child]) => child);
+  activeChildrenShutdownPromise = Promise.allSettled(
+    children.map(([child, grace]) =>
+      finishShellProcessTree(child, Date.now() + grace, grace, signal),
     ),
-  ).finally(() => {
-    process.exit(exitCode);
+  ).then(() => {
+    if (cleanupFailures.length > 0) {
+      throw new AggregateError(cleanupFailures, "Docker process cleanup failed");
+    }
+    // 130/143 acknowledge joined signal cleanup, never merely receipt of a signal.
+    const result = schedulerFailed ? 1 : exitCode;
+    process.exitCode = result;
+    return result;
+  });
+  void activeChildrenShutdownPromise.catch((error: unknown) => {
+    console.error(error);
+    process.exitCode = CLEANUP_FAILURE_EXIT_CODE;
   });
   return activeChildrenShutdownPromise;
 }
@@ -1792,6 +1960,9 @@ async function main() {
   );
 
   const baseEnv = commandEnv({
+    OPENCLAW_DOCKER_E2E_REPO_ROOT: ROOT_DIR,
+    OPENCLAW_DOCKER_E2E_TRUSTED_HARNESS_DIR: HARNESS_ROOT_DIR,
+    OPENCLAW_LIVE_DOCKER_REPO_ROOT: ROOT_DIR,
     OPENCLAW_DOCKER_E2E_BARE_IMAGE:
       process.env.OPENCLAW_DOCKER_E2E_BARE_IMAGE ||
       process.env.OPENCLAW_DOCKER_E2E_IMAGE ||
@@ -1825,7 +1996,6 @@ async function main() {
       upgradeSurvivorScenarios: process.env.OPENCLAW_UPGRADE_SURVIVOR_SCENARIOS,
       upgradeSurvivorTargetRoot: process.env.OPENCLAW_UPGRADE_SURVIVOR_TARGET_ROOT,
       allowFrozenTargetScenarioOmissions,
-      candidatePackageRoot: ROOT_DIR,
     });
   if (omittedUnsupportedLaneNames.length > 0 && !allowFrozenTargetScenarioOmissions) {
     throw new Error(
@@ -1922,8 +2092,8 @@ async function main() {
   }
   validateDockerCandidateEnvironment(baseEnv, plan);
 
-  // Planning can report unsupported scenarios, but execution cannot pass when
-  // frozen-target omissions leave no selected lane to run.
+  // An authorized frozen target can prove that a selected scenario did not exist yet.
+  // Preserve that explicit non-outcome instead of fabricating a failed execution.
   if (scheduledLanes.length === 0) {
     await writeSummary({
       chunk: releaseChunk || undefined,
@@ -1934,11 +2104,10 @@ async function main() {
       profile,
       selectedLanes: selectedLaneNames.length > 0 ? selectedLaneNames : undefined,
       startedAt: runStartedAt,
-      status: "failed",
+      status: "passed",
     });
-    throw new Error(
-      `resolved zero runnable Docker lanes; frozen target does not support: ${omittedUnsupportedLaneNames.join(", ")}`,
-    );
+    console.log("==> Docker test suite passed: no selected lane is supported by the frozen target");
+    return;
   }
 
   await runPhase(
@@ -1978,7 +2147,7 @@ async function main() {
     const buildEntries: ForegroundEntry[] = [];
     if (scheduledLanes.some((poolLane) => poolLane.needsLiveImage)) {
       buildEntries.push({
-        command: liveDockerHarnessScriptCommand("test-live-build-docker.sh"),
+        command: liveDockerScriptCommand("test-live-build-docker.sh", "", { skipBuild: false }),
         label: "shared live-test image once",
         phaseDetails: { imageKind: "live" },
         phases,
@@ -1986,7 +2155,7 @@ async function main() {
     }
     if (lanesNeedE2eImageKind(scheduledLanes, "bare")) {
       buildEntries.push({
-        command: "pnpm test:docker:e2e-build",
+        command: prepareHarnessCommand("pnpm test:docker:e2e-build", baseEnv),
         env: {
           OPENCLAW_DOCKER_E2E_IMAGE: baseEnv.OPENCLAW_DOCKER_E2E_BARE_IMAGE,
           OPENCLAW_DOCKER_E2E_TARGET: "bare",
@@ -1998,7 +2167,7 @@ async function main() {
     }
     if (lanesNeedE2eImageKind(scheduledLanes, "functional")) {
       buildEntries.push({
-        command: "pnpm test:docker:e2e-build",
+        command: prepareHarnessCommand("pnpm test:docker:e2e-build", baseEnv),
         env: {
           OPENCLAW_DOCKER_E2E_IMAGE: baseEnv.OPENCLAW_DOCKER_E2E_FUNCTIONAL_IMAGE,
           OPENCLAW_DOCKER_E2E_TARGET: "functional",
@@ -2024,14 +2193,10 @@ async function main() {
     statusIntervalMs,
     timeoutMs: laneTimeoutMs,
   } satisfies LanePoolOptions;
-  const mainResult = await runPhase(phases, "main-lane-pool", { lanes: orderedLanes.length }, () =>
-    runLanePool(orderedLanes, baseEnv, logDir, parallelism, options),
-  );
-  const failures = [...mainResult.failures];
-  const allResults = [...mainResult.results];
-  await writeTimingStore(timingStore, mainResult.results);
-  if (failFast && failures.length > 0) {
-    await writeSummary({
+  const failures: LaneResult[] = [];
+  const allResults: LaneResult[] = [];
+  const writeLaneSummary = (status: "failed" | "passed") =>
+    writeSummary({
       chunk: releaseChunk || undefined,
       failures,
       image: baseEnv.OPENCLAW_DOCKER_E2E_IMAGE,
@@ -2045,103 +2210,111 @@ async function main() {
       profile,
       selectedLanes: selectedLaneNames.length > 0 ? selectedLaneNames : undefined,
       startedAt: runStartedAt,
-      status: "failed",
+      status,
     });
+  async function runPool(
+    poolLanes: DockerE2eLane[],
+    poolParallelism: number,
+    poolOptions: LanePoolOptions,
+  ) {
+    const firstResult = allResults.length;
+    try {
+      await runPhase(
+        phases,
+        `${poolOptions.poolLabel}-lane-pool`,
+        { lanes: poolLanes.length },
+        () =>
+          runLanePool(poolLanes, baseEnv, logDir, poolParallelism, poolOptions, {
+            failures,
+            results: allResults,
+          }),
+      );
+    } catch (error) {
+      // A fatal lane has no result row. Preserve the completed prefix and drain
+      // results as raw failed-run evidence without acknowledging successful cleanup.
+      const errors = [error];
+      try {
+        await writeLaneSummary("failed");
+      } catch (publicationError) {
+        errors.push(publicationError);
+      }
+      if (errors.length > 1) {
+        throw new AggregateError(
+          errors,
+          "Docker lane pool failed and its partial summary could not be published",
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+    await writeTimingStore(timingStore, allResults.slice(firstResult));
+  }
+  await runPool(orderedLanes, parallelism, options);
+  if (activeChildrenShutdownPromise || (failFast && failures.length > 0)) {
+    await writeLaneSummary("failed");
     await printFailureSummary(failures, tailLines);
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
   if (orderedTailLanes.length > 0) {
     console.log("==> Running provider-sensitive Docker tail lanes");
-    const tailResult = await runPhase(
-      phases,
-      "tail-lane-pool",
-      { lanes: orderedTailLanes.length },
-      () =>
-        runLanePool(orderedTailLanes, baseEnv, logDir, tailParallelism, {
-          ...options,
-          ...tailSchedulerOptions,
-          poolLabel: "tail",
-        }),
-    );
-    failures.push(...tailResult.failures);
-    allResults.push(...tailResult.results);
-    await writeTimingStore(timingStore, tailResult.results);
+    await runPool(orderedTailLanes, tailParallelism, {
+      ...options,
+      ...tailSchedulerOptions,
+      poolLabel: "tail",
+    });
   } else {
     console.log("==> Provider-sensitive Docker tail lanes: none");
   }
-  if (failures.length > 0) {
-    await writeSummary({
-      chunk: releaseChunk || undefined,
-      failures,
-      image: baseEnv.OPENCLAW_DOCKER_E2E_IMAGE,
-      images: {
-        bare: baseEnv.OPENCLAW_DOCKER_E2E_BARE_IMAGE,
-        functional: baseEnv.OPENCLAW_DOCKER_E2E_FUNCTIONAL_IMAGE,
-      },
-      lanes: allResults,
-      omittedUnsupportedLanes,
-      phases,
-      profile,
-      selectedLanes: selectedLaneNames.length > 0 ? selectedLaneNames : undefined,
-      startedAt: runStartedAt,
-      status: "failed",
-    });
+  if (activeChildrenShutdownPromise || failures.length > 0) {
+    await writeLaneSummary("failed");
     await printFailureSummary(failures, tailLines);
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
   if (profile === DEFAULT_PROFILE && selectedLaneNames.length === 0) {
     const cleanupFailure = await runCleanupSmokePhase(baseEnv, logDir, phases);
     if (cleanupFailure) {
       failures.push(cleanupFailure);
+      schedulerFailed ||= !cleanupFailure.cancelled;
     }
   } else {
     console.log("==> Cleanup smoke after parallel lanes: skipped for selected/release lanes");
   }
   await writeTimingStore(timingStore, allResults);
-  if (failures.length > 0) {
-    await writeSummary({
-      chunk: releaseChunk || undefined,
-      failures,
-      image: baseEnv.OPENCLAW_DOCKER_E2E_IMAGE,
-      images: {
-        bare: baseEnv.OPENCLAW_DOCKER_E2E_BARE_IMAGE,
-        functional: baseEnv.OPENCLAW_DOCKER_E2E_FUNCTIONAL_IMAGE,
-      },
-      lanes: allResults,
-      omittedUnsupportedLanes,
-      phases,
-      profile,
-      selectedLanes: selectedLaneNames.length > 0 ? selectedLaneNames : undefined,
-      startedAt: runStartedAt,
-      status: "failed",
-    });
+  if (activeChildrenShutdownPromise || failures.length > 0) {
+    await writeLaneSummary("failed");
     await printFailureSummary(failures, tailLines);
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
-  await writeSummary({
-    chunk: releaseChunk || undefined,
-    failures,
-    image: baseEnv.OPENCLAW_DOCKER_E2E_IMAGE,
-    images: {
-      bare: baseEnv.OPENCLAW_DOCKER_E2E_BARE_IMAGE,
-      functional: baseEnv.OPENCLAW_DOCKER_E2E_FUNCTIONAL_IMAGE,
-    },
-    lanes: allResults,
-    omittedUnsupportedLanes,
-    phases,
-    profile,
-    selectedLanes: selectedLaneNames.length > 0 ? selectedLaneNames : undefined,
-    startedAt: runStartedAt,
-    status: "passed",
-  });
+  await writeLaneSummary("passed");
   console.log("==> Docker test suite passed");
 }
 
 if (IS_MAIN) {
-  await main().catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
-  });
+  try {
+    await main();
+  } catch (error) {
+    schedulerFailed ||= error !== schedulerShutdownError;
+    if (hasUnjoinedWork(error) && !cleanupFailures.includes(error)) {
+      cleanupFailures.push(error);
+    }
+    if (error !== schedulerShutdownError) {
+      console.error(error instanceof Error ? error.message : String(error));
+    }
+  } finally {
+    // Main may finish as soon as a lane leader exits. Retain the scheduler until
+    // its separately detached lane groups have actually stopped.
+    const shutdownExitCode = await activeChildrenShutdownPromise?.catch(() => 1);
+    // Successful cleanup cannot erase an unrelated publication/preparation failure.
+    process.exitCode =
+      cleanupFailures.length > 0
+        ? CLEANUP_FAILURE_EXIT_CODE
+        : schedulerFailed
+          ? 1
+          : (shutdownExitCode ?? process.exitCode);
+  }
 }

@@ -1,4 +1,3 @@
-// Slack plugin module implements messages behavior.
 import type { AllMiddlewareArgs, SlackEventMiddlewareArgs } from "@slack/bolt";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import {
@@ -280,12 +279,11 @@ export function registerSlackMessageEvents(params: {
 
       const subtypeHandler = resolveSlackMessageSubtypeHandler(message);
       if (subtypeHandler) {
-        const channelId = subtypeHandler.resolveChannelId(message);
         const ingressContext = await authorizeAndResolveSlackSystemEventContext({
           ctx,
           senderId: subtypeHandler.resolveSenderId(message),
-          channelId,
-          channelType: subtypeHandler.resolveChannelType(message),
+          channelId: message.channel,
+          threadTs: subtypeHandler.resolveThreadTs(message),
           eventKind: subtypeHandler.eventKind,
           eventScope,
         });

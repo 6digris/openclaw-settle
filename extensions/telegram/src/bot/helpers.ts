@@ -29,6 +29,8 @@ import {
 } from "../bot-access.js";
 import { normalizeTelegramReplyToMessageId } from "../outbound-params.js";
 import { resolveTelegramPreviewStreamMode } from "../preview-streaming.js";
+import type { TelegramThreadSpec } from "../thread-spec.js";
+import { buildTelegramConversationId } from "../topic-conversation.js";
 import {
   buildSenderLabel,
   buildSenderName,
@@ -52,6 +54,7 @@ export type {
   TelegramMediaKind,
   TelegramTextEntity,
 } from "./body-helpers.js";
+export type { TelegramThreadSpec } from "../thread-spec.js";
 export {
   buildSenderLabel,
   buildSenderName,
@@ -68,10 +71,6 @@ export const TELEGRAM_GENERAL_TOPIC_ID = 1;
 const TELEGRAM_FORUM_FLAG_CACHE_MAX_CHATS = 1024;
 const TELEGRAM_FORUM_FLAG_CACHE_TTL_MS = 10 * 60_000;
 const telegramForumFlagByChatId = new Map<string, { expiresAtMs: number; isForum: boolean }>();
-
-export function resetTelegramForumFlagCacheForTest(): void {
-  telegramForumFlagByChatId.clear();
-}
 
 function cacheTelegramForumFlag(chatId: string | number, isForum: boolean, nowMs = Date.now()) {
   const cacheKey = String(chatId);
@@ -97,15 +96,25 @@ function cacheTelegramForumFlag(chatId: string | number, isForum: boolean, nowMs
   });
 }
 
+export function getCachedTelegramForumFlag(
+  chatId: string | number,
+  nowMs?: number,
+): boolean | undefined {
+  const cacheKey = String(chatId);
+  const cached = telegramForumFlagByChatId.get(cacheKey);
+  if (!cached) {
+    return undefined;
+  }
+  const effectiveNow = nowMs ?? Date.now();
+  if (cached.expiresAtMs <= effectiveNow) {
+    return undefined;
+  }
+  return cached.isForum;
+}
+
 function hadUnsafeTelegramText(raw: unknown, sanitized: string): boolean {
   return typeof raw === "string" && raw.trim().length > 0 && sanitized.trim().length === 0;
 }
-
-export type TelegramThreadSpec = {
-  id?: number;
-  /** dm is the historical bot-private topic scope. */
-  scope: "direct-messages" | "dm" | "forum" | "none";
-};
 
 type TelegramThreadParams = {
   direct_messages_topic_id?: number;
@@ -501,13 +510,12 @@ export function buildTelegramRoutingTarget(
 ): string {
   const base = `telegram:${chatId}`;
   const threadParams = buildTelegramThreadParams(thread);
-  if (typeof threadParams?.direct_messages_topic_id === "number") {
+  if (threadParams?.direct_messages_topic_id != null) {
     return `${base}:direct-topic:${threadParams.direct_messages_topic_id}`;
   }
-  if (typeof threadParams?.message_thread_id !== "number") {
-    return base;
-  }
-  return `${base}:topic:${threadParams.message_thread_id}`;
+  return threadParams?.message_thread_id != null
+    ? `${base}:topic:${threadParams.message_thread_id}`
+    : base;
 }
 
 /**
@@ -541,12 +549,19 @@ export function resolveTelegramStreamMode(telegramCfg?: {
   return resolveTelegramPreviewStreamMode(telegramCfg);
 }
 
-export function buildTelegramGroupPeerId(chatId: number | string, messageThreadId?: number) {
-  return messageThreadId != null ? `${chatId}:topic:${messageThreadId}` : String(chatId);
+export function buildTelegramGroupPeerId(
+  chatId: number | string,
+  thread?: number | TelegramThreadSpec,
+) {
+  const threadSpec = typeof thread === "number" ? { id: thread, scope: "forum" as const } : thread;
+  return buildTelegramConversationId({ chatId, thread: threadSpec ?? { scope: "none" } });
 }
 
-export function buildTelegramGroupFrom(chatId: number | string, messageThreadId?: number) {
-  return `telegram:group:${buildTelegramGroupPeerId(chatId, messageThreadId)}`;
+export function buildTelegramGroupFrom(
+  chatId: number | string,
+  thread?: number | TelegramThreadSpec,
+) {
+  return `telegram:group:${buildTelegramGroupPeerId(chatId, thread)}`;
 }
 
 export function isTelegramCommandsAllowFromConfigured(cfg: OpenClawConfig): boolean {
@@ -563,9 +578,10 @@ export function resolveTelegramCommandAuthorization(params: {
   accountId: string;
   chatId: number;
   isGroup: boolean;
-  resolvedThreadId?: number;
+  threadSpec: TelegramThreadSpec;
   senderId?: string;
   senderUsername?: string;
+  commandAuthorized?: boolean;
 }): CommandAuthorization {
   return resolveCommandAuthorization({
     ctx: {
@@ -575,13 +591,13 @@ export function resolveTelegramCommandAuthorization(params: {
       AccountId: params.accountId,
       ChatType: params.isGroup ? "group" : "direct",
       From: params.isGroup
-        ? buildTelegramGroupFrom(params.chatId, params.resolvedThreadId)
+        ? buildTelegramGroupFrom(params.chatId, params.threadSpec)
         : `telegram:${params.chatId}`,
       SenderId: params.senderId || undefined,
       SenderUsername: params.senderUsername || undefined,
     },
     cfg: params.cfg,
-    commandAuthorized: false,
+    commandAuthorized: params.commandAuthorized ?? false,
   });
 }
 
@@ -651,6 +667,11 @@ export function describeReplyTarget(msg: Message): TelegramReplyTarget | null {
   }
 
   const replyLike = reply ?? externalReply;
+  const externalOrigin = reply ? undefined : msg.external_reply?.origin;
+  const senderMessage =
+    replyLike && externalOrigin?.type === "user"
+      ? { ...replyLike, from: externalOrigin.sender_user }
+      : replyLike;
   const replyMedia = resolveTelegramPrimaryMedia(replyLike);
   const rawReplyText =
     replyLike && typeof replyLike.text === "string"
@@ -678,7 +699,7 @@ export function describeReplyTarget(msg: Message): TelegramReplyTarget | null {
   if (!body && !replyMedia && !filteredQuoteText && !filteredReplyText) {
     return null;
   }
-  const sender = replyLike ? buildSenderName(replyLike) : undefined;
+  const sender = senderMessage ? buildSenderName(senderMessage) : undefined;
   const senderLabel = sender ?? "unknown sender";
   const source = reply ? "reply_to_message" : "external_reply";
   const quotePosition =
@@ -694,8 +715,8 @@ export function describeReplyTarget(msg: Message): TelegramReplyTarget | null {
   return {
     id: replyLike?.message_id ? String(replyLike.message_id) : undefined,
     sender: senderLabel,
-    senderId: replyLike?.from?.id != null ? String(replyLike.from.id) : undefined,
-    senderUsername: replyLike?.from?.username ?? undefined,
+    senderId: senderMessage?.from?.id != null ? String(senderMessage.from.id) : undefined,
+    senderUsername: senderMessage?.from?.username ?? undefined,
     body: body || undefined,
     mediaType: replyMedia?.kind,
     kind,

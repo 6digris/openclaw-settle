@@ -4,7 +4,10 @@ import type {
   TurnAdoptionLifecycle,
 } from "../../auto-reply/get-reply-options.types.js";
 import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
-import type { DispatchFromConfigResult } from "../../auto-reply/reply/dispatch-from-config.types.js";
+import type {
+  DispatchFromConfigResult,
+  DispatchReplyFromConfig,
+} from "../../auto-reply/reply/dispatch-from-config.types.js";
 import type { GetReplyFromConfig } from "../../auto-reply/reply/get-reply.types.js";
 import type { HistoryEntry, HistoryMediaEntry } from "../../auto-reply/reply/history.types.js";
 import type { DispatchReplyWithBufferedBlockDispatcher } from "../../auto-reply/reply/provider-dispatcher.types.js";
@@ -29,9 +32,9 @@ import type { MediaFact } from "../../media/media-facts.js";
 import type { PluginCommandReplyOptions } from "../../plugins/plugin-command-dispatch-contract.js";
 import type { InboundEventKind } from "../inbound-event/kind.js";
 import type { CreateChannelReplyPipelineParams } from "../message/reply-pipeline.js";
-import type { MessageReceipt } from "../message/types.js";
 import type { InboundLastRouteUpdate, RecordInboundSession } from "../session.types.js";
 import type { ChannelBotLoopProtectionFacts } from "./bot-loop-protection.js";
+import type { ChannelDeliveryOutcome } from "./delivery-outcome.js";
 
 export type { SupplementalContextFacts } from "../../auto-reply/templating.js";
 
@@ -80,6 +83,7 @@ export type ConversationFacts = {
   parentId?: string;
   threadId?: string;
   nativeChannelId?: string;
+  avatar?: string;
   routePeer?: {
     kind: "direct" | "group" | "channel";
     id: string;
@@ -160,10 +164,11 @@ export type ChannelDeliveryInfo = ReplyDispatchRuntimeInfo;
 
 type ChannelCoreManagedDeliveryInfo = Omit<
   ChannelDeliveryInfo,
-  "bindPendingFinalDelivery" | "onPlatformSendDispatch"
+  "assertPlatformSendAuthorized" | "bindPendingFinalDelivery" | "onPlatformSendDispatch"
 >;
 
 type ChannelProviderOwnedDeliveryInfo = ChannelDeliveryInfo & {
+  assertPlatformSendAuthorized: () => void;
   onPlatformSendDispatch: () => Promise<void>;
 };
 
@@ -175,16 +180,6 @@ export type ChannelDeliveryIntent = {
 };
 
 /** Provider-accepted outcome for one logical channel reply payload. */
-export type ChannelDeliveryOutcome = {
-  messageIds?: string[];
-  receipt?: MessageReceipt;
-  threadId?: string;
-  replyToId?: string;
-  visibleReplySent?: boolean;
-  /** Final provider-visible text used for this logical payload's terminal observation. */
-  content?: string;
-};
-
 /** Result returned after delivering one channel reply payload. */
 export type ChannelDeliveryResult = ChannelDeliveryOutcome & {
   deliveryIntent?: ChannelDeliveryIntent;
@@ -197,6 +192,8 @@ export type ChannelDeliveryResult = ChannelDeliveryOutcome & {
   /** Same-payload native settlement; resolved fields override this result before observation. */
   finalization?: Promise<ChannelDeliveryOutcome>;
 };
+
+export type { ChannelDeliveryOutcome } from "./delivery-outcome.js";
 
 /** Durable outbound delivery options available to channel turn delivery adapters. */
 type ChannelTurnDurableDeliveryOptions = Pick<
@@ -327,6 +324,8 @@ export type AssembledChannelTurn = {
   toolsAllow?: string[];
   replyOptions?: ChannelTurnReplyOptions;
   replyResolver?: GetReplyFromConfig;
+  /** Instance-bound reply dispatcher supplied by the owning plugin runtime. */
+  dispatchReplyFromConfig?: DispatchReplyFromConfig;
   sessionInitRetry?: {
     delaysMs: readonly number[];
     signal?: AbortSignal;

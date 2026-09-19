@@ -1,4 +1,3 @@
-// Discord plugin module implements native command dispatch behavior.
 import type { ChatCommandDefinition, CommandArgs } from "openclaw/plugin-sdk/command-auth-native";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { PluginCommandCatalogDecision } from "openclaw/plugin-sdk/plugin-command-runtime";
@@ -9,6 +8,8 @@ import type {
   CommandInteraction,
   StringSelectMenuInteraction,
 } from "../internal/discord.js";
+import type { DiscordLivePolicyReader } from "./live-policy.js";
+import type { DiscordDispatchReplyFromConfig } from "./native-command.types.js";
 import type { ThreadBindingManager } from "./thread-bindings.js";
 
 type DiscordConfig = NonNullable<OpenClawConfig["channels"]>["discord"];
@@ -19,6 +20,7 @@ type DispatchDiscordCommandInteractionParams = {
   command: ChatCommandDefinition;
   commandArgs?: CommandArgs;
   cfg: OpenClawConfig;
+  readPolicy?: DiscordLivePolicyReader;
   discordConfig: DiscordConfig;
   accountId: string;
   sessionPrefix: string;
@@ -26,6 +28,7 @@ type DispatchDiscordCommandInteractionParams = {
   threadBindings: ThreadBindingManager;
   responseEphemeral?: boolean;
   suppressReplies?: boolean;
+  dispatchReplyFromConfig?: DiscordDispatchReplyFromConfig;
   pluginCommandDispatch: PluginCommandCatalogDecision;
 };
 

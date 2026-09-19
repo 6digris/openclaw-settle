@@ -1,11 +1,16 @@
-import { afterEach, describe, expect, it } from "vitest";
+import fs from "node:fs";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
+import { claimOpenClawStateOwnership } from "../state/openclaw-state-ownership-operations.js";
+import { OpenClawStateExternalOwnershipError } from "../state/openclaw-state-ownership.js";
 import { NodeWorkerLaunchStore } from "./node-worker-launch-store.js";
+import { recordNodeWorkerLineageSettled } from "./node-worker-lineage-completion.js";
 import { requireNodeWorkerProcessIdentity } from "./node-worker-process-identity.js";
+import { projectNodeWorkerSupervisorReceipt } from "./node-worker-supervisor-contract.js";
 import { createNodeWorkerSupervisor } from "./node-worker-supervisor.js";
 import { writeNodeWorkerFixture } from "./node-worker-supervisor.test-support.js";
 
@@ -83,18 +88,50 @@ function launchIds(database: ReturnType<typeof openOpenClawStateDatabase>["db"])
 }
 
 describe("node worker launch store pruning", () => {
-  it("lazily ensures the terminal expiry index for existing databases", () => {
-    const { database, env } = fixture();
+  it("lazily repairs released journals without rewriting old receipts or advancing the schema", () => {
+    const { database, env, store } = fixture();
+    insertLaunch({ database, launchId: "released-worker", state: "running" });
+    const releasedReceipt = store.get("released-worker");
+    const versionBefore = database.prepare("PRAGMA user_version").get();
     expect(hasTerminalExpiryIndex(database)).toBe(true);
     database.exec("DROP INDEX idx_node_worker_launches_terminal_completed");
     expect(hasTerminalExpiryIndex(database)).toBe(false);
     closeOpenClawStateDatabaseForTest();
 
     const reopenedStore = new NodeWorkerLaunchStore({ env });
-    reopenedStore.get("schema-probe");
+    expect(reopenedStore.get("released-worker")).toEqual(releasedReceipt);
     const reopened = openOpenClawStateDatabase({ env }).db;
 
     expect(hasTerminalExpiryIndex(reopened)).toBe(true);
+    expect(reopened.prepare("PRAGMA user_version").get()).toEqual(versionBefore);
+    expect(
+      reopened
+        .prepare("SELECT name FROM sqlite_schema WHERE name = ?")
+        .get("node_worker_launch_cleanup"),
+    ).toBeUndefined();
+    const launchSql = reopened
+      .prepare("SELECT sql FROM sqlite_schema WHERE name = ?")
+      .get("node_worker_launches")?.sql;
+    const { planHash, supervisor } = claimLaunch(reopenedStore, "current-worker");
+    reopenedStore.markRunning({
+      launchId: "current-worker",
+      planHash,
+      supervisor,
+      worker: supervisor,
+      cleanupMode: "process-group",
+      nowMs: NOW_MS,
+    });
+    expect(reopenedStore.get("released-worker")).toEqual(releasedReceipt);
+    expect(
+      reopened.prepare("SELECT sql FROM sqlite_schema WHERE name = ?").get("node_worker_launches")
+        ?.sql,
+    ).toBe(launchSql);
+    expect(reopened.prepare("PRAGMA user_version").get()).toEqual(versionBefore);
+    insertLaunch({ database: reopened, launchId: "older-writer", state: "running" });
+    expect(reopenedStore.get("older-writer")).toMatchObject({
+      workerCleanupMode: null,
+      workerLineageSettled: false,
+    });
   });
 
   it("uses the terminal expiry index for the ordered pruning query", () => {
@@ -128,7 +165,34 @@ describe("node worker launch store pruning", () => {
       completedAtMs: NOW_MS - 1_000,
     });
     insertLaunch({ database, launchId: "pending", state: "pending" });
-    insertLaunch({ database, launchId: "running", state: "running" });
+    insertLaunch({ database, launchId: "running", state: "pending" });
+    const supervisor = requireNodeWorkerProcessIdentity(process.pid);
+    const container = {
+      engine: "docker",
+      containerId: "a".repeat(64),
+      engineTarget: "b".repeat(64),
+    } as const;
+    store.markRunning({
+      launchId: "running",
+      planHash: "a".repeat(64),
+      supervisor,
+      worker: supervisor,
+      cleanupMode: null,
+      container,
+      nowMs: NOW_MS,
+    });
+    const insertContainer = database.prepare(
+      "INSERT INTO node_worker_launch_containers (launch_id, container_json) VALUES (?, ?)",
+    );
+    for (const launchId of ["old-completed", "old-failed", "old-cancelled", "recent-completed"]) {
+      insertContainer.run(launchId, JSON.stringify(container));
+    }
+    const containerLaunchIds = () =>
+      (
+        database
+          .prepare("SELECT launch_id FROM node_worker_launch_containers ORDER BY launch_id")
+          .all() as Array<{ launch_id: string }>
+      ).map((row) => row.launch_id);
 
     expect(store.pruneExpiredTerminal({ nowMs: NOW_MS, limit: 2 })).toBe(2);
     expect(launchIds(database)).toEqual([
@@ -137,9 +201,11 @@ describe("node worker launch store pruning", () => {
       "recent-completed",
       "running",
     ]);
+    expect(containerLaunchIds()).toEqual(["old-cancelled", "recent-completed", "running"]);
 
     expect(store.pruneExpiredTerminal({ nowMs: NOW_MS, limit: 2 })).toBe(1);
     expect(launchIds(database)).toEqual(["pending", "recent-completed", "running"]);
+    expect(containerLaunchIds()).toEqual(["recent-completed", "running"]);
   });
 
   it("prunes expired terminal receipts after restart reconciliation", async () => {
@@ -195,5 +261,281 @@ describe("node worker launch store pruning", () => {
       ),
     ).toMatchObject({ action: "replay", receipt: { state: "completed" } });
     expect(launchIds(database)).toEqual(["replayed-launch"]);
+  });
+});
+
+function claimLaunch(store: NodeWorkerLaunchStore, launchId: string) {
+  const supervisor = requireNodeWorkerProcessIdentity(process.pid);
+  const planHash = "a".repeat(64);
+  const result = store.claim(
+    {
+      launchId,
+      planHash,
+      gatewayNamespace: "gateway-1",
+      environmentId: "environment-1",
+      sessionId: "session-1",
+      ownerEpoch: 3,
+      placementGeneration: 4,
+      runId: "run-1",
+    },
+    supervisor,
+    2,
+    NOW_MS,
+  );
+  expect(result.action).toBe("start");
+  return { planHash, supervisor };
+}
+
+describe("node worker launch store container identity", () => {
+  function hasContainerIdentityTable(database: ReturnType<typeof fixture>["database"]): boolean {
+    return Boolean(
+      database
+        .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?")
+        .get("node_worker_launch_containers"),
+    );
+  }
+
+  it("keeps the container companion table absent for existing bare-worker journals", () => {
+    const { database, env, store } = fixture();
+    expect(hasContainerIdentityTable(database)).toBe(false);
+    const { planHash, supervisor } = claimLaunch(store, "bare-launch");
+
+    const receipt = store.markRunning({
+      launchId: "bare-launch",
+      planHash,
+      supervisor,
+      worker: supervisor,
+      cleanupMode: "process-group",
+      nowMs: NOW_MS,
+    });
+
+    expect(hasContainerIdentityTable(database)).toBe(false);
+    expect(Object.hasOwn(receipt, "container")).toBe(false);
+    expect(store.get("bare-launch")).toEqual(receipt);
+    closeOpenClawStateDatabaseForTest();
+
+    expect(new NodeWorkerLaunchStore({ env }).get("bare-launch")).toEqual(receipt);
+    expect(hasContainerIdentityTable(openOpenClawStateDatabase({ env }).db)).toBe(false);
+  });
+
+  it("lazily persists container identity across reopen without advancing the schema", () => {
+    const { database, env, store } = fixture();
+    expect(hasContainerIdentityTable(database)).toBe(false);
+    const initialSchemaVersion = database.prepare("PRAGMA user_version").get();
+    const { planHash, supervisor } = claimLaunch(store, "container-launch");
+    const container = {
+      engine: "docker",
+      containerId: "a".repeat(64),
+      engineTarget: "b".repeat(64),
+    } as const;
+
+    const receipt = store.markRunning({
+      launchId: "container-launch",
+      planHash,
+      supervisor,
+      worker: supervisor,
+      cleanupMode: null,
+      container,
+      nowMs: NOW_MS,
+    });
+
+    expect(receipt.container).toEqual(container);
+    expect(hasContainerIdentityTable(database)).toBe(true);
+    expect(database.prepare("PRAGMA user_version").get()).toEqual(initialSchemaVersion);
+    closeOpenClawStateDatabaseForTest();
+
+    expect(new NodeWorkerLaunchStore({ env }).get("container-launch")).toEqual(receipt);
+  });
+
+  it.each([
+    ["missing container id", JSON.stringify({ engine: "docker", engineTarget: "b".repeat(64) })],
+    ["missing engine target", JSON.stringify({ engine: "docker", containerId: "a".repeat(64) })],
+    [
+      "unknown engine",
+      JSON.stringify({
+        engine: "runc",
+        containerId: "a".repeat(64),
+        engineTarget: "b".repeat(64),
+      }),
+    ],
+    [
+      "ambiguous container id prefix",
+      JSON.stringify({
+        engine: "docker",
+        containerId: "a".repeat(12),
+        engineTarget: "b".repeat(64),
+      }),
+    ],
+    [
+      "invalid container id",
+      JSON.stringify({
+        engine: "docker",
+        containerId: "container-123",
+        engineTarget: "b".repeat(64),
+      }),
+    ],
+    [
+      "invalid engine target",
+      JSON.stringify({
+        engine: "docker",
+        containerId: "a".repeat(64),
+        engineTarget: "b".repeat(12),
+      }),
+    ],
+    [
+      "unexpected identity field",
+      JSON.stringify({
+        engine: "docker",
+        containerId: "a".repeat(64),
+        engineTarget: "b".repeat(64),
+        extra: true,
+      }),
+    ],
+  ])("fails closed when a persisted container identity has %s", (_reason, malformed) => {
+    const { database, store } = fixture();
+    const { planHash, supervisor } = claimLaunch(store, "corrupt-container-launch");
+    store.markRunning({
+      launchId: "corrupt-container-launch",
+      planHash,
+      supervisor,
+      worker: supervisor,
+      cleanupMode: null,
+      container: { engine: "docker", containerId: "a".repeat(64), engineTarget: "b".repeat(64) },
+      nowMs: NOW_MS,
+    });
+    database
+      .prepare("UPDATE node_worker_launch_containers SET container_json = ? WHERE launch_id = ?")
+      .run(malformed, "corrupt-container-launch");
+
+    expect(() => store.listNonterminal()).toThrow(
+      /node worker container (identity|id|engine target)/u,
+    );
+  });
+});
+
+describe("node worker cleanup journal", () => {
+  function runningAnchor() {
+    const { database, env, store } = fixture();
+    const launchId = "anchor-launch";
+    const { planHash, supervisor } = claimLaunch(store, launchId);
+    const binding = store.cleanupBinding({ launchId, planHash, supervisor });
+    const receipt = store.markRunning({
+      launchId,
+      planHash,
+      supervisor,
+      worker: supervisor,
+      cleanupMode: "owned-anchor",
+      nowMs: NOW_MS,
+    });
+    return { database, env, store, binding, receipt };
+  }
+
+  it("does not broaden a cleanup binding when ambient external mode changes", () => {
+    const { database, env, binding } = runningAnchor();
+    claimOpenClawStateOwnership("node-recovery-test", {
+      env: { ...env, OPENCLAW_SUPERVISOR_MODE: "external" },
+    });
+    vi.stubEnv("OPENCLAW_SUPERVISOR_MODE", "external");
+    try {
+      expect(() => recordNodeWorkerLineageSettled(binding)).toThrow(
+        OpenClawStateExternalOwnershipError,
+      );
+      expect(
+        database
+          .prepare("SELECT lineage_settled FROM node_worker_launch_cleanup WHERE launch_id = ?")
+          .get(binding.launchId),
+      ).toEqual({ lineage_settled: null });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("does not recreate a removed journal when an anchor reports completion", () => {
+    const { binding } = runningAnchor();
+    closeOpenClawStateDatabaseForTest();
+    fs.unlinkSync(binding.databasePath);
+    let failure: unknown;
+
+    try {
+      recordNodeWorkerLineageSettled(binding);
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(fs.existsSync(binding.databasePath)).toBe(false);
+    expect(failure).toMatchObject({ code: "ENOENT" });
+  });
+
+  it("persists positive lineage completion on the exact database without releasing its slot or changing the wire receipt", () => {
+    const { env, store, binding, receipt } = runningAnchor();
+    expect(binding.databasePath).toBe(openOpenClawStateDatabase({ env }).path);
+    expect(receipt.workerCleanupMode).toBe("owned-anchor");
+    expect(receipt.workerLineageSettled).toBe(false);
+    expect(recordNodeWorkerLineageSettled(binding)).toBe(true);
+    expect(recordNodeWorkerLineageSettled(binding)).toBe(true);
+    expect(store.nonterminalCount()).toBe(1);
+    closeOpenClawStateDatabaseForTest();
+
+    const settled = new NodeWorkerLaunchStore({ env }).get(binding.launchId);
+    expect(settled).toEqual({ ...receipt, workerLineageSettled: true });
+    expect(projectNodeWorkerSupervisorReceipt(settled!)).toEqual(
+      projectNodeWorkerSupervisorReceipt(receipt),
+    );
+  });
+
+  it.each([
+    ["changed plan", "node_worker_launches", "plan_hash = ?", "b".repeat(64)],
+    [
+      "changed supervisor",
+      "node_worker_launches",
+      "supervisor_start_time = supervisor_start_time + ?",
+      1,
+    ],
+    ["changed worker PID", "node_worker_launches", "worker_pid = ?", 2_147_483_646],
+    ["reused worker PID", "node_worker_launches", "worker_start_time = worker_start_time + ?", 1],
+    ["legacy mode", "node_worker_launch_cleanup", "cleanup_mode = ?", "process-group"],
+  ] as const)("refuses lineage completion with %s", (_reason, table, assignment, value) => {
+    const { database, store, binding } = runningAnchor();
+    database
+      .prepare(`UPDATE ${table} SET ${assignment} WHERE launch_id = ?`)
+      .run(value, binding.launchId);
+    expect(recordNodeWorkerLineageSettled(binding)).toBe(false);
+    expect(store.get(binding.launchId)?.workerLineageSettled).toBe(false);
+    expect(store.nonterminalCount()).toBe(1);
+  });
+
+  it("keeps missing cleanup ownership unknown and prunes facts only with their launch", () => {
+    const { database, store, binding, receipt } = runningAnchor();
+    insertLaunch({ database, launchId: "released-running", state: "running" });
+    const legacy = store.get("released-running")!;
+    expect(recordNodeWorkerLineageSettled(store.cleanupBinding(legacy))).toBe(false);
+    expect(recordNodeWorkerLineageSettled(binding)).toBe(true);
+    store.finish({
+      ...binding,
+      worker: receipt.worker,
+      state: "interrupted",
+      errorText: "worker stopped",
+      nowMs: NOW_MS,
+    });
+    expect(store.pruneExpiredTerminal({ nowMs: NOW_MS + DAY_MS - 1 })).toBe(0);
+    expect(store.get(binding.launchId)?.workerLineageSettled).toBe(true);
+    expect(store.pruneExpiredTerminal({ nowMs: NOW_MS + DAY_MS })).toBe(1);
+    expect(
+      database.prepare("SELECT count(*) AS count FROM node_worker_launch_cleanup").get(),
+    ).toEqual({ count: 0 });
+    expect(store.nonterminalCount()).toBe(1);
+  });
+
+  it("refuses a completion write after the launch has become terminal", () => {
+    const { store, binding, receipt } = runningAnchor();
+    store.finish({
+      ...binding,
+      worker: receipt.worker,
+      state: "interrupted",
+      errorText: "worker stopped",
+    });
+    expect(recordNodeWorkerLineageSettled(binding)).toBe(false);
+    expect(store.get(binding.launchId)?.workerLineageSettled).toBe(false);
+    expect(() => store.cleanupBinding(binding)).toThrow("no longer owns its launch");
   });
 });

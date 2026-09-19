@@ -1,9 +1,7 @@
 /** Transactional LaunchAgent installation, staging, rollback, and removal. */
-import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { resolveLegacyGatewayLaunchAgentLabels } from "./constants.js";
-import { isCurrentProcessLaunchdServiceLabel } from "./launchd-current-service.js";
+import { isCurrentProcessInsideLaunchdService } from "./launchd-current-service.js";
 import {
   execLaunchctl,
   formatLaunchctlResultDetail,
@@ -18,29 +16,30 @@ import {
 import {
   LAUNCH_AGENT_ENV_FILE_MODE,
   LAUNCH_AGENT_ENV_WRAPPER_MODE,
-  LAUNCH_AGENT_PLIST_MODE,
+  type LaunchAgentFileSnapshot,
   publishLaunchAgentPlist,
   readExistingLaunchAgentPlist,
   resolveLaunchAgentEnvFilePath,
   resolveLaunchAgentEnvWrapperPath,
   resolveLaunchAgentPlistPath,
-  resolveLaunchAgentPlistPathForLabel,
   writeLaunchAgentPlist,
 } from "./launchd-service-files.js";
 import { assertNoSystemLaunchDaemonOwnership } from "./launchd-system.js";
 import { formatLine, normalizeWindowsPathSeparators, writeFormattedLines } from "./output.js";
 import { resolveDaemonHomeDir } from "./paths.js";
+import { publishServiceFile } from "./service-stage.js";
 import type {
   GatewayServiceEnv,
   GatewayServiceInstallArgs,
   GatewayServiceManageArgs,
 } from "./service-types.js";
+import { assertGatewayServiceUpdateCurrent } from "./service-update-authority.js";
 
 export async function uninstallLaunchAgent({
   env,
   stdout,
 }: GatewayServiceManageArgs): Promise<void> {
-  assertExternalLaunchAgentMutation(env, "uninstall");
+  await assertExternalLaunchAgentMutation(env, "uninstall");
   const domain = resolveLaunchAgentGuiDomain();
   const label = resolveLaunchAgentLabel(env);
   const plistPath = resolveLaunchAgentPlistPath(env);
@@ -91,26 +90,27 @@ function createLaunchAgentRemovalError(error: unknown): Error {
     `LaunchAgent removal failed${code ? ` (${code})` : ""}. Check permissions and retry.`,
   );
 }
-function currentGatewayLaunchAgentLabel(
+async function currentGatewayLaunchAgentLabel(
   targetEnv: Record<string, string | undefined>,
-): string | undefined {
+): Promise<string | undefined> {
   const configuredCurrentLabel = process.env.OPENCLAW_LAUNCHD_LABEL?.trim();
   const candidates = new Set([
     resolveLaunchAgentLabel(targetEnv),
     ...(configuredCurrentLabel ? [assertValidLaunchAgentLabel(configuredCurrentLabel)] : []),
   ]);
-  return [...candidates].find((label) =>
-    isCurrentProcessLaunchdServiceLabel(label, process.env, {
-      allowConfiguredLabelFallback: false,
-    }),
-  );
+  for (const label of candidates) {
+    if (await isCurrentProcessInsideLaunchdService(label, process.env)) {
+      return label;
+    }
+  }
+  return undefined;
 }
 
-function assertExternalLaunchAgentMutation(
+async function assertExternalLaunchAgentMutation(
   env: Record<string, string | undefined>,
   action: "install" | "uninstall",
-): void {
-  const currentLabel = currentGatewayLaunchAgentLabel(env);
+): Promise<void> {
+  const currentLabel = await currentGatewayLaunchAgentLabel(env);
   if (!currentLabel) {
     return;
   }
@@ -136,16 +136,11 @@ export async function stageLaunchAgent({
 }
 
 type LaunchAgentInstallSnapshot = {
-  plistContents: Buffer | null;
+  plist: LaunchAgentFileSnapshot | null;
   envFileContents: Buffer | null;
   wrapperContents: Buffer | null;
-  legacy: Array<{
-    label: string;
-    plistPath: string;
-    contents: Buffer | null;
-    loaded: boolean;
-  }>;
   loaded: boolean;
+  definitionTransaction?: GatewayServiceInstallArgs["definitionTransaction"];
 };
 
 async function snapshotLaunchAgentLoadedState(
@@ -175,6 +170,7 @@ async function restoreLaunchAgentOwnedFile(params: {
   mode: number;
 }): Promise<void> {
   if (params.contents === null) {
+    assertGatewayServiceUpdateCurrent();
     await fs.unlink(params.path).catch((error: unknown) => {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
@@ -182,17 +178,11 @@ async function restoreLaunchAgentOwnedFile(params: {
     });
     return;
   }
-  const temporaryPath = `${params.path}.openclaw-${randomUUID()}.rollback`;
-  try {
-    await fs.writeFile(temporaryPath, params.contents.toString("utf8"), {
-      flag: "wx",
-      mode: params.mode,
-    });
-    await fs.rename(temporaryPath, params.path);
-    await fs.chmod(params.path, params.mode).catch(() => undefined);
-  } finally {
-    await fs.unlink(temporaryPath).catch(() => undefined);
-  }
+  await publishServiceFile({
+    filePath: params.path,
+    contents: params.contents,
+    mode: params.mode,
+  });
 }
 
 async function restoreLaunchAgentInstallArtifacts(params: {
@@ -201,36 +191,42 @@ async function restoreLaunchAgentInstallArtifacts(params: {
   plistPath: string;
   snapshot: LaunchAgentInstallSnapshot;
 }): Promise<void> {
-  await restoreLaunchAgentOwnedFile({
-    path: resolveLaunchAgentEnvFilePath(params.env, params.label),
-    contents: params.snapshot.envFileContents,
-    mode: LAUNCH_AGENT_ENV_FILE_MODE,
-  });
-  await restoreLaunchAgentOwnedFile({
-    path: resolveLaunchAgentEnvWrapperPath(params.env, params.label),
-    contents: params.snapshot.wrapperContents,
-    mode: LAUNCH_AGENT_ENV_WRAPPER_MODE,
-  });
-  for (const legacy of params.snapshot.legacy) {
-    await restoreLaunchAgentOwnedFile({
-      path: legacy.plistPath,
-      contents: legacy.contents,
-      mode: LAUNCH_AGENT_PLIST_MODE,
+  await assertNoSystemLaunchDaemonOwnership(params.label);
+  const ancillary = [
+    {
+      path: resolveLaunchAgentEnvFilePath(params.env, params.label),
+      contents: params.snapshot.envFileContents,
+      mode: LAUNCH_AGENT_ENV_FILE_MODE,
+    },
+    {
+      path: resolveLaunchAgentEnvWrapperPath(params.env, params.label),
+      contents: params.snapshot.wrapperContents,
+      mode: LAUNCH_AGENT_ENV_WRAPPER_MODE,
+    },
+  ];
+  const restoreAncillary = async (present: boolean) => {
+    for (const file of ancillary.filter((entry) => (entry.contents !== null) === present)) {
+      await restoreLaunchAgentOwnedFile(file);
+    }
+  };
+  await restoreAncillary(true);
+  if (params.snapshot.plist !== null) {
+    await publishLaunchAgentPlist({
+      label: params.label,
+      plistPath: params.plistPath,
+      contents: params.snapshot.plist.contents,
+      mode: params.snapshot.plist.mode,
     });
   }
-  if (params.snapshot.plistContents === null) {
+  if (params.snapshot.plist === null) {
+    assertGatewayServiceUpdateCurrent();
     await fs.unlink(params.plistPath).catch((error: unknown) => {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
       }
     });
-    return;
   }
-  await publishLaunchAgentPlist({
-    label: params.label,
-    plistPath: params.plistPath,
-    contents: params.snapshot.plistContents.toString("utf8"),
-  });
+  await restoreAncillary(false);
 }
 
 async function restoreLaunchAgentInstall(params: {
@@ -261,23 +257,11 @@ async function restoreLaunchAgentInstall(params: {
     plistPath: params.plistPath,
     snapshot: params.snapshot,
   });
-  if (params.snapshot.loaded && params.snapshot.plistContents !== null) {
+  if (params.snapshot.loaded && params.snapshot.plist !== null) {
     await bootstrapLaunchAgentOrThrow({
       domain: params.domain,
       serviceTarget,
       plistPath: params.plistPath,
-      actionHint: "openclaw gateway start",
-      retryPendingTeardown: true,
-    });
-  }
-  for (const legacy of params.snapshot.legacy) {
-    if (!legacy.loaded || legacy.contents === null) {
-      continue;
-    }
-    await bootstrapLaunchAgentOrThrow({
-      domain: params.domain,
-      serviceTarget: `${params.domain}/${legacy.label}`,
-      plistPath: legacy.plistPath,
       actionHint: "openclaw gateway start",
       retryPendingTeardown: true,
     });
@@ -309,11 +293,6 @@ async function activateLaunchAgent(params: {
     // Recheck immediately before activation so a system daemon installed after
     // the plist write cannot race us into two KeepAlive managers.
     await assertNoSystemLaunchDaemonOwnership(label);
-    for (const legacy of params.snapshot.legacy) {
-      if (legacy.loaded) {
-        await deactivateLaunchAgentDefinition(domain, legacy.plistPath);
-      }
-    }
     // Plist-form bootout reports EIO for a valid definition that was never loaded.
     // The pre-publication snapshot is the authoritative cutover fact.
     if (params.snapshot.loaded) {
@@ -327,14 +306,10 @@ async function activateLaunchAgent(params: {
       actionHint: "openclaw gateway install --force",
       retryPendingTeardown: true,
     });
-    for (const legacy of params.snapshot.legacy) {
-      await fs.unlink(legacy.plistPath).catch((error: unknown) => {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-          throw error;
-        }
-      });
-    }
   } catch (error) {
+    if (params.snapshot.definitionTransaction) {
+      throw error;
+    }
     try {
       await restoreLaunchAgentInstall({
         domain,
@@ -356,41 +331,36 @@ async function activateLaunchAgent(params: {
 export async function installLaunchAgent(
   args: GatewayServiceInstallArgs,
 ): Promise<{ plistPath: string }> {
-  assertExternalLaunchAgentMutation(args.env, "install");
+  if (args.beforeLoad) {
+    throw new Error("Deferred native service load is not supported on this platform.");
+  }
+  await assertExternalLaunchAgentMutation(args.env, "install");
   const targetPlistPath = resolveLaunchAgentPlistPath(args.env);
-  const previousContents = await readExistingLaunchAgentPlist(targetPlistPath);
+  const previous = await readExistingLaunchAgentPlist(targetPlistPath);
   const label = resolveLaunchAgentLabel(args.env);
   const domain = resolveLaunchAgentGuiDomain();
   // Plist, generated environment files, and launchd registration form one cutover.
   // Capture every prior owner before publication so any later failure can restore it.
-  const legacy = await Promise.all(
-    resolveLegacyGatewayLaunchAgentLabels(args.env.OPENCLAW_PROFILE).map(async (legacyLabel) => {
-      const plistPath = resolveLaunchAgentPlistPathForLabel(args.env, legacyLabel);
-      const contents = await readExistingLaunchAgentPlist(plistPath);
-      return {
-        label: legacyLabel,
-        plistPath,
-        contents,
-        loaded: await snapshotLaunchAgentLoadedState(contents, `${domain}/${legacyLabel}`),
-      };
-    }),
-  );
   const snapshot: LaunchAgentInstallSnapshot = {
-    plistContents: previousContents,
-    envFileContents: await readExistingLaunchAgentPlist(
-      resolveLaunchAgentEnvFilePath(args.env, label),
-    ),
-    wrapperContents: await readExistingLaunchAgentPlist(
-      resolveLaunchAgentEnvWrapperPath(args.env, label),
-    ),
-    legacy,
-    loaded: await snapshotLaunchAgentLoadedState(previousContents, `${domain}/${label}`),
+    definitionTransaction: args.definitionTransaction,
+    plist: previous,
+    envFileContents:
+      (await readExistingLaunchAgentPlist(resolveLaunchAgentEnvFilePath(args.env, label)))
+        ?.contents ?? null,
+    wrapperContents:
+      (await readExistingLaunchAgentPlist(resolveLaunchAgentEnvWrapperPath(args.env, label)))
+        ?.contents ?? null,
+    loaded: await snapshotLaunchAgentLoadedState(previous?.contents ?? null, `${domain}/${label}`),
   };
   let plistPath: string;
   let stdoutPath: string;
   try {
     ({ plistPath, stdoutPath } = await writeLaunchAgentPlist(args));
   } catch (error) {
+    // The receipt owner restores the native reference before retiring generated inputs.
+    if (args.definitionTransaction) {
+      throw error;
+    }
     try {
       await restoreLaunchAgentInstallArtifacts({
         env: args.env,

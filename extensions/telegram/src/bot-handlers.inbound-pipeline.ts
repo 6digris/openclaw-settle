@@ -107,13 +107,15 @@ function createTelegramInboundHandlers(
           id: post.sender_chat.id,
           is_bot: true as const,
           first_name: post.sender_chat.title || "Channel",
-          username: post.sender_chat.username,
+          ...(post.sender_chat.username !== undefined
+            ? { username: post.sender_chat.username }
+            : {}),
         }
       : {
           id: chatId,
           is_bot: true as const,
           first_name: post.chat.title || "Channel",
-          username: post.chat.username,
+          ...(post.chat.username !== undefined ? { username: post.chat.username } : {}),
         };
     return {
       ...post,
@@ -195,19 +197,17 @@ function createTelegramInboundHandlers(
       const {
         dmPolicy,
         resolvedThreadId,
-        dmThreadId,
         storeAllowFrom,
         groupConfig,
         topicConfig,
         effectiveGroupAllow,
+        threadSpec,
       } = gate.context;
 
       const sessionState = resolveTelegramSessionState({
         chatId: event.chatId,
         isGroup: event.isGroup,
-        isForum: event.isForum,
-        messageThreadId: event.messageThreadId,
-        resolvedThreadId,
+        threadSpec,
         botHasTopicsEnabled: resolveTelegramBotHasTopicsEnabled(event.ctx.me),
         senderId: event.senderId,
         runtimeCfg: gate.context.cfg,
@@ -236,8 +236,7 @@ function createTelegramInboundHandlers(
         chatId: event.chatId,
         isGroup: event.isGroup,
         isForum: event.isForum,
-        resolvedThreadId,
-        dmThreadId,
+        threadSpec,
         dmPolicy,
         storeAllowFrom,
         senderId: event.senderId,
@@ -400,12 +399,8 @@ export function createTelegramInboundPipeline({
   message: TelegramMessagePipeline;
   authorization: TelegramHandlerAuthorization;
 }): TelegramInboundPipeline {
-  const handlers = createTelegramInboundHandlers(
-    params,
-    message,
-    authorization,
-    createTelegramInboundProcessing({ params, message }),
-  );
+  const processing = createTelegramInboundProcessing({ params, message });
+  const handlers = createTelegramInboundHandlers(params, message, authorization, processing);
   return {
     handle: async (ctx) => {
       if (ctx.message) {
@@ -430,7 +425,7 @@ export function registerTelegramInboundHandlers({
   pipeline,
 }: {
   bot: RegisterTelegramHandlerParams["bot"];
-  pipeline: TelegramInboundPipeline;
+  pipeline: Pick<TelegramInboundPipeline, "handle">;
 }): void {
   bot.on("message", pipeline.handle);
   bot.on("edited_message", pipeline.handle);

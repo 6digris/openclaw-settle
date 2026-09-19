@@ -4,8 +4,10 @@ import { state } from "lit/decorators.js";
 import { titleForRoute } from "../../app-navigation.ts";
 import { applicationContext, type ApplicationContext } from "../../app/context.ts";
 import {
-  renderDocsLink,
+  renderLearnMoreLink,
+  renderSettingsDefaultDescription,
   renderSettingsPage,
+  renderSettingsPageHeader,
   renderSettingsRow,
   renderSettingsSection,
   renderSettingsToggleRow,
@@ -122,27 +124,23 @@ class LabsPage extends OpenClawLightDomElement {
     const featureState = resolveLabFeatureState(config, feature);
     const resetPatch =
       enabled === featureState.defaultEnabled ? labFeatureResetPatch(config, feature) : null;
-    void this.updateFeature(
-      feature,
-      enabled,
-      resetPatch ?? labFeatureMergePatch(config, feature, enabled),
-    );
+    void this.updateFeature(feature, enabled, resetPatch ?? labFeatureMergePatch(feature, enabled));
   }
 
   private renderFeature(feature: LabFeature) {
     const title = feature.title();
     const featureState = resolveLabFeatureState(this.editableConfig(), feature);
     const canToggle = this.canToggle();
-    const defaultDescription = t(
-      featureState.overridden ? "configForm.defaultValue" : "configForm.usingDefault",
-      { value: featureState.defaultEnabled ? t("common.enabled") : t("common.disabled") },
+    const defaultDescription = renderSettingsDefaultDescription(
+      featureState.defaultEnabled ? t("common.enabled") : t("common.disabled"),
+      featureState.overridden,
     );
     const description = html`
       ${feature.description()}
       <a href=${feature.docsUrl} target=${EXTERNAL_LINK_TARGET} rel=${buildExternalLinkRel()}
         >${t("labsPage.documentation")}</a
       >${feature.restartHint ? html` <span>${feature.restartHint()}</span>` : nothing}
-      <span>${defaultDescription}</span>
+      ${defaultDescription}
     `;
     return renderSettingsToggleRow({
       title,
@@ -171,20 +169,13 @@ class LabsPage extends OpenClawLightDomElement {
         },
         rows,
       ),
-      {
-        intro: html`${t("labsPage.intro")}
-        ${renderDocsLink(
-          "https://docs.openclaw.ai/concepts/experimental-features",
-          t("common.learnMore"),
-        )}`,
-      },
     );
     return html`
-      <section class="content-header">
-        <div>
-          <div class="page-title">${titleForRoute("labs")}</div>
-        </div>
-      </section>
+      ${renderSettingsPageHeader({
+        title: titleForRoute("labs"),
+        subtitle: html`${t("labsPage.intro")}
+        ${renderLearnMoreLink("https://docs.openclaw.ai/concepts/experimental-features")}`,
+      })}
       ${renderSettingsWorkspace(body)}
     `;
   }

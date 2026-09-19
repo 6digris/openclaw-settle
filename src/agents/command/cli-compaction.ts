@@ -1,4 +1,7 @@
-import type { SessionTranscriptRuntimeTarget } from "../../config/sessions/session-accessor.js";
+import {
+  loadSessionEntryReadOnly,
+  type SessionTranscriptRuntimeTarget,
+} from "../../config/sessions/session-accessor.js";
 /**
  * CLI turn compaction lifecycle.
  *
@@ -14,7 +17,8 @@ import { resolveContextEngine as resolveContextEngineImpl } from "../../context-
 import { buildContextEngineRuntimeSettings } from "../../context-engine/runtime-settings.js";
 import type { ContextEngine } from "../../context-engine/types.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
-import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
+import { withPluginRuntimeGenerationScope } from "../../plugins/runtime/generation-scope.js";
+import { AsyncWorkScope, captureAsyncWorkTracker } from "../../shared/async-work-scope.js";
 import type { SkillSnapshot } from "../../skills/types.js";
 import { createPreparedEmbeddedAgentSettingsManager as createPreparedEmbeddedAgentSettingsManagerImpl } from "../agent-project-settings.js";
 import { OPENCLAW_AGENT_RUNTIME_ID, normalizeOptionalAgentRuntimeId } from "../agent-runtime-id.js";
@@ -23,17 +27,21 @@ import {
   resolveEffectiveCompactionMode,
 } from "../agent-settings.js";
 import { resolveCliBackendConfig as resolveCliBackendConfigImpl } from "../cli-backends.js";
+import { clearCliSessionInStore as clearCliSessionInStoreImpl } from "../cli-session-store.js";
 import {
   isBenignCompactionSkipReason,
   isBenignCompactionSkipResult,
 } from "../embedded-agent-runner/compact-reasons.js";
+import type { QueuedCompactionHostOptions } from "../embedded-agent-runner/compact.queued-execution.js";
 import { buildEmbeddedCompactionRuntimeContext } from "../embedded-agent-runner/compaction-runtime-context.js";
 import {
   compactContextEngineWithSafetyTimeout,
-  compactWithSafetyTimeout,
   resolveCompactionTimeoutMs,
 } from "../embedded-agent-runner/compaction-safety-timeout.js";
-import { resolveContextEngineCompactionSuccessor } from "../embedded-agent-runner/compaction-successor.js";
+import {
+  acceptCompactionSuccessor,
+  type AcceptedCompactionSuccessor,
+} from "../embedded-agent-runner/compaction-successor.js";
 import { runContextEngineMaintenance as runContextEngineMaintenanceImpl } from "../embedded-agent-runner/context-engine-maintenance.js";
 import { shouldPreemptivelyCompactBeforePrompt as shouldPreemptivelyCompactBeforePromptImpl } from "../embedded-agent-runner/run/preemptive-compaction.js";
 import { resolveLiveToolResultMaxChars as resolveLiveToolResultMaxCharsImpl } from "../embedded-agent-runner/tool-result-truncation.js";
@@ -41,10 +49,11 @@ import type { EmbeddedAgentCompactResult } from "../embedded-agent-runner/types.
 import { isRecoverableNativeHarnessBindingFailure } from "../harness/compaction-recovery.js";
 import { maybeCompactAgentHarnessSession as maybeCompactAgentHarnessSessionImpl } from "../harness/compaction.js";
 import { ensureSelectedAgentHarnessPlugin as ensureSelectedAgentHarnessPluginImpl } from "../harness/runtime-plugin.js";
-import { loadAgentRuntimePluginRegistryHandle } from "../runtime-plugins.js";
+import { acquireAgentRunPreparedModelRuntime } from "../prepared-model-runtime.js";
+import type { PreparedModelRuntimePluginGeneration } from "../prepared-model-runtime.types.js";
 import { SessionManager } from "../sessions/session-manager.js";
 import {
-  clearCliSessionInStore as clearCliSessionInStoreImpl,
+  normalizeSessionTokenCount,
   recordCliCompactionInStore as recordCliCompactionInStoreImpl,
 } from "./session-store.js";
 
@@ -80,7 +89,7 @@ type CliCompactionDeps = {
   shouldPreemptivelyCompactBeforePrompt: typeof shouldPreemptivelyCompactBeforePromptImpl;
   resolveLiveToolResultMaxChars: typeof resolveLiveToolResultMaxCharsImpl;
   runContextEngineMaintenance: typeof runContextEngineMaintenanceImpl;
-  loadAgentRuntimePluginRegistryHandle: typeof loadAgentRuntimePluginRegistryHandle;
+  acquirePreparedModelRuntime: typeof acquireAgentRunPreparedModelRuntime;
   ensureSelectedAgentHarnessPlugin: typeof ensureSelectedAgentHarnessPluginImpl;
   maybeCompactAgentHarnessSession: typeof maybeCompactAgentHarnessSessionImpl;
   clearCliSessionInStore: typeof clearCliSessionInStoreImpl;
@@ -98,27 +107,29 @@ type NativeHarnessCliCompactionOutcome = {
 type CliTranscriptCompactionOutcome = {
   compacted: boolean;
   failureReason?: string;
-  successorSessionFile?: string;
-  successorSessionId?: string;
+  accepted?: AcceptedCompactionSuccessor;
   tokensAfter?: number;
 };
-type CliCompactionRuntimeContextParams = {
+type CliCompactionContext = {
+  cfg: OpenClawConfig;
   sessionKey: string;
-  messageChannel?: string;
-  agentAccountId?: string;
-  authProfileId?: string;
   workspaceDir: string;
   cwd?: string;
   agentDir: string;
-  cfg: OpenClawConfig;
-  skillsSnapshot?: SkillSnapshot;
-  senderIsOwner?: boolean;
   provider: string;
   model: string;
-  harnessRuntime?: string;
-  modelSelectionLocked?: boolean;
+  skillsSnapshot?: SkillSnapshot;
+  messageChannel?: string;
+  agentAccountId?: string;
+  senderIsOwner?: boolean;
   thinkLevel?: Parameters<typeof buildEmbeddedCompactionRuntimeContext>[0]["thinkLevel"];
   extraSystemPrompt?: string;
+};
+
+type CliCompactionRuntimeContextParams = CliCompactionContext & {
+  authProfileId?: string;
+  harnessRuntime?: string;
+  modelSelectionLocked?: boolean;
   currentTokenCount: number;
   contextTokenBudget: number;
   trigger: string;
@@ -126,7 +137,7 @@ type CliCompactionRuntimeContextParams = {
 
 const log = createSubsystemLogger("agents/cli-compaction");
 
-const cliCompactionDeps: CliCompactionDeps = {
+const defaultCliCompactionDeps: CliCompactionDeps = {
   openSessionManager: (target) => SessionManager.open(target),
   ensureContextEnginesInitialized: ensureContextEnginesInitializedImpl,
   resolveContextEngine: resolveContextEngineImpl,
@@ -135,13 +146,15 @@ const cliCompactionDeps: CliCompactionDeps = {
   shouldPreemptivelyCompactBeforePrompt: shouldPreemptivelyCompactBeforePromptImpl,
   resolveLiveToolResultMaxChars: resolveLiveToolResultMaxCharsImpl,
   runContextEngineMaintenance: runContextEngineMaintenanceImpl,
-  loadAgentRuntimePluginRegistryHandle,
+  acquirePreparedModelRuntime: acquireAgentRunPreparedModelRuntime,
   ensureSelectedAgentHarnessPlugin: ensureSelectedAgentHarnessPluginImpl,
   maybeCompactAgentHarnessSession: maybeCompactAgentHarnessSessionImpl,
   clearCliSessionInStore: clearCliSessionInStoreImpl,
   resolveCliBackendConfig: resolveCliBackendConfigImpl,
   recordCliCompactionInStore: recordCliCompactionInStoreImpl,
 };
+
+const cliCompactionDeps = { ...defaultCliCompactionDeps };
 
 /** Overrides CLI compaction dependencies for focused tests. */
 export function setCliCompactionTestDeps(overrides: Partial<typeof cliCompactionDeps>): void {
@@ -150,33 +163,11 @@ export function setCliCompactionTestDeps(overrides: Partial<typeof cliCompaction
 
 /** Restores production CLI compaction dependencies after tests. */
 export function resetCliCompactionTestDeps(): void {
-  Object.assign(cliCompactionDeps, {
-    openSessionManager: (target: SessionTranscriptRuntimeTarget) => SessionManager.open(target),
-    ensureContextEnginesInitialized: ensureContextEnginesInitializedImpl,
-    resolveContextEngine: resolveContextEngineImpl,
-    createPreparedEmbeddedAgentSettingsManager: createPreparedEmbeddedAgentSettingsManagerImpl,
-    applyAgentAutoCompactionGuard: applyAgentAutoCompactionGuardImpl,
-    shouldPreemptivelyCompactBeforePrompt: shouldPreemptivelyCompactBeforePromptImpl,
-    resolveLiveToolResultMaxChars: resolveLiveToolResultMaxCharsImpl,
-    runContextEngineMaintenance: runContextEngineMaintenanceImpl,
-    loadAgentRuntimePluginRegistryHandle,
-    ensureSelectedAgentHarnessPlugin: ensureSelectedAgentHarnessPluginImpl,
-    maybeCompactAgentHarnessSession: maybeCompactAgentHarnessSessionImpl,
-    clearCliSessionInStore: clearCliSessionInStoreImpl,
-    resolveCliBackendConfig: resolveCliBackendConfigImpl,
-    recordCliCompactionInStore: recordCliCompactionInStoreImpl,
-  });
-}
-
-function resolvePositiveInteger(value: number | undefined): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    return undefined;
-  }
-  return Math.floor(value);
+  Object.assign(cliCompactionDeps, defaultCliCompactionDeps);
 }
 
 function resolveSessionTokenSnapshot(sessionEntry: SessionEntry | undefined): number | undefined {
-  return resolvePositiveInteger(resolveFreshSessionTotalTokens(sessionEntry));
+  return normalizeSessionTokenCount(resolveFreshSessionTotalTokens(sessionEntry));
 }
 
 function isNativeHarnessCompactionSession(
@@ -243,54 +234,27 @@ function buildCliCompactionRuntimeContext(params: CliCompactionRuntimeContextPar
   };
 }
 
-async function compactCliTranscript(params: {
-  agentId: string;
-  contextEngine: ContextEngine;
-  sessionId: string;
-  sessionKey: string;
-  sessionFile: string;
-  sessionManager: SessionManagerLike;
-  storePath: string;
-  cfg: OpenClawConfig;
-  workspaceDir: string;
-  cwd?: string;
-  agentDir: string;
-  provider: string;
-  model: string;
-  harnessRuntime?: string;
-  modelSelectionLocked?: boolean;
-  contextTokenBudget: number;
-  currentTokenCount: number;
-  skillsSnapshot?: SkillSnapshot;
-  messageChannel?: string;
-  agentAccountId?: string;
-  authProfileId?: string;
-  senderIsOwner?: boolean;
-  thinkLevel?: Parameters<typeof buildEmbeddedCompactionRuntimeContext>[0]["thinkLevel"];
-  extraSystemPrompt?: string;
-  bestEffortMaintenance?: boolean;
-}): Promise<CliTranscriptCompactionOutcome> {
-  const runtimeContext = buildCliCompactionRuntimeContext({
-    sessionKey: params.sessionKey,
-    messageChannel: params.messageChannel,
-    agentAccountId: params.agentAccountId,
-    authProfileId: params.authProfileId,
-    workspaceDir: params.workspaceDir,
-    cwd: params.cwd,
-    agentDir: params.agentDir,
-    cfg: params.cfg,
-    skillsSnapshot: params.skillsSnapshot,
-    senderIsOwner: params.senderIsOwner,
-    provider: params.provider,
-    model: params.model,
-    harnessRuntime: params.harnessRuntime,
-    modelSelectionLocked: params.modelSelectionLocked,
-    thinkLevel: params.thinkLevel,
-    extraSystemPrompt: params.extraSystemPrompt,
-    currentTokenCount: params.currentTokenCount,
-    contextTokenBudget: params.contextTokenBudget,
-    trigger: "cli_budget",
-  });
+async function compactCliTranscript(
+  params: CliCompactionContext & {
+    agentId: string;
+    contextEngine: ContextEngine;
+    sessionId: string;
+    sessionFile: string;
+    sessionManager: SessionManagerLike;
+    storePath: string;
+    harnessRuntime?: string;
+    modelSelectionLocked?: boolean;
+    contextTokenBudget: number;
+    currentTokenCount: number;
+    authProfileId?: string;
+    bestEffortMaintenance?: boolean;
+    expectedEntry: Parameters<typeof acceptCompactionSuccessor>[0]["expectedEntry"];
+    assertActive: () => void;
+    abortSignal?: AbortSignal;
+    onCommitted?: QueuedCompactionHostOptions["onCommitted"];
+  },
+): Promise<CliTranscriptCompactionOutcome> {
+  const runtimeContext = buildCliCompactionRuntimeContext({ ...params, trigger: "cli_budget" });
   const runtimeSettings = buildContextEngineRuntimeSettings({
     contextEngineHost: buildGenericCliContextEngineHostSupport({
       backendId: params.provider,
@@ -305,6 +269,7 @@ async function compactCliTranscript(params: {
   });
 
   let compactResult: Awaited<ReturnType<typeof params.contextEngine.compact>>;
+  params.assertActive();
   try {
     compactResult = await compactContextEngineWithSafetyTimeout(
       params.contextEngine,
@@ -324,6 +289,7 @@ async function compactCliTranscript(params: {
         runtimeSettings,
       },
       resolveCompactionTimeoutMs(params.cfg),
+      params.abortSignal,
     );
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
@@ -358,8 +324,10 @@ async function compactCliTranscript(params: {
   }
 
   const result = compactResult.result;
-  const hasSuccessor = Boolean(result?.sessionTarget || result?.sessionId || result?.sessionFile);
-  const successor = await resolveContextEngineCompactionSuccessor({
+  const successor = await acceptCompactionSuccessor({
+    expectedEntry: params.expectedEntry,
+    assertActive: params.assertActive,
+    onCommitted: params.onCommitted,
     config: params.cfg,
     currentSessionFile: params.sessionFile,
     currentTarget: {
@@ -370,20 +338,32 @@ async function compactCliTranscript(params: {
     },
     result: compactResult,
   });
+  const outcome: CliTranscriptCompactionOutcome = {
+    compacted: true,
+    accepted: successor,
+    ...(result?.tokensAfter !== undefined ? { tokensAfter: result.tokensAfter } : {}),
+  };
   try {
+    params.assertActive();
     await cliCompactionDeps.runContextEngineMaintenance({
       contextEngine: params.contextEngine,
       sessionId: successor.sessionId,
       sessionKey: params.sessionKey,
       sessionFile: successor.sessionFile,
-      sessionTarget: hasSuccessor ? successor.sessionTarget : undefined,
+      sessionTarget: successor.sessionTarget,
       reason: "compaction",
-      sessionManager: params.sessionManager,
+      ...(successor.previousSessionId ? {} : { sessionManager: params.sessionManager }),
       runtimeContext,
       runtimeSettings,
       config: params.cfg,
+      assertActive: params.assertActive,
     });
   } catch (error) {
+    try {
+      params.assertActive();
+    } catch {
+      return outcome;
+    }
     if (!params.bestEffortMaintenance) {
       throw error;
     }
@@ -391,56 +371,48 @@ async function compactCliTranscript(params: {
       `CLI transcript compaction maintenance failed after fallback for ${params.provider}/${params.model}: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  return {
-    compacted: true,
-    ...(hasSuccessor
-      ? { successorSessionFile: successor.sessionFile, successorSessionId: successor.sessionId }
-      : {}),
-    ...(result?.tokensAfter !== undefined ? { tokensAfter: result.tokensAfter } : {}),
-  };
+  return outcome;
 }
 
-async function compactNativeHarnessCliTranscript(params: {
-  cfg: OpenClawConfig;
-  sessionId: string;
-  sessionKey: string;
-  sessionFile: string;
-  sessionEntry: SessionEntry;
-  workspaceDir: string;
-  cwd?: string;
-  agentDir: string;
-  provider: string;
-  model: string;
-  contextTokenBudget: number;
-  currentTokenCount: number;
-  contextEngine?: ContextEngine;
-  skillsSnapshot?: SkillSnapshot;
-  messageChannel?: string;
-  agentAccountId?: string;
-  senderIsOwner?: boolean;
-  thinkLevel?: Parameters<typeof buildEmbeddedCompactionRuntimeContext>[0]["thinkLevel"];
-  extraSystemPrompt?: string;
-}): Promise<NativeHarnessCliCompactionOutcome> {
+async function compactNativeHarnessCliTranscript(
+  params: CliCompactionContext & {
+    sessionId: string;
+    sessionFile: string;
+    sessionEntry: SessionEntry;
+    contextTokenBudget: number;
+    currentTokenCount: number;
+    contextEngine?: ContextEngine;
+    pluginGeneration?: PreparedModelRuntimePluginGeneration;
+    abortSignal?: AbortSignal;
+    assertActive: () => void;
+  },
+): Promise<NativeHarnessCliCompactionOutcome> {
   let result: EmbeddedAgentCompactResult | undefined;
   try {
     const sessionAgentId = readAgentIdFromSessionKey(params.sessionKey);
     const nativeHarnessId = params.sessionEntry.agentHarnessId?.trim();
     const modelSelectionLocked = params.sessionEntry.modelSelectionLocked === true;
     const authProfileId = params.sessionEntry.authProfileOverride?.trim() || undefined;
-    const pluginRegistry = cliCompactionDeps.loadAgentRuntimePluginRegistryHandle({
-      config: params.cfg,
-      workspaceDir: params.workspaceDir,
-      allowGatewaySubagentBinding: true,
-      selections: [
-        {
-          provider: params.provider,
-          modelId: params.model,
-          ...(sessionAgentId ? { agentId: sessionAgentId } : {}),
-          ...(nativeHarnessId ? { runtime: nativeHarnessId } : {}),
-        },
-      ],
-    });
-    result = await withPluginRuntimeRegistryScope(pluginRegistry, async () => {
+    await using preparedRuntimeLease = await cliCompactionDeps.acquirePreparedModelRuntime(
+      {
+        config: params.cfg,
+        ...(sessionAgentId ? { agentId: sessionAgentId } : {}),
+        agentDir: params.agentDir,
+        workspaceDir: params.workspaceDir,
+        allowGatewaySubagentBinding: true,
+        runtimePluginSelections: [
+          {
+            provider: params.provider,
+            modelId: params.model,
+            ...(sessionAgentId ? { agentId: sessionAgentId } : {}),
+            ...(nativeHarnessId ? { runtime: nativeHarnessId } : {}),
+          },
+        ],
+      },
+      params.pluginGeneration ? { pluginGeneration: params.pluginGeneration } : {},
+    );
+    const preparedModelRuntime = preparedRuntimeLease.snapshot;
+    result = await withPluginRuntimeGenerationScope(preparedModelRuntime, async () => {
       await cliCompactionDeps.ensureSelectedAgentHarnessPlugin({
         provider: params.provider,
         modelId: params.model,
@@ -449,63 +421,49 @@ async function compactNativeHarnessCliTranscript(params: {
         workspaceDir: params.workspaceDir,
         ...(sessionAgentId ? { agentId: sessionAgentId } : {}),
         ...(nativeHarnessId ? { agentHarnessRuntimeOverride: nativeHarnessId } : {}),
-        pluginRegistry,
+        pluginRegistry: preparedModelRuntime.pluginRegistry,
       });
-      return await compactWithSafetyTimeout(
-        (abortSignal) =>
-          cliCompactionDeps.maybeCompactAgentHarnessSession({
-            sessionId: params.sessionId,
-            sessionKey: params.sessionKey,
-            sessionFile: params.sessionFile,
-            workspaceDir: params.workspaceDir,
-            cwd: params.cwd,
-            agentDir: params.agentDir,
-            config: params.cfg,
-            skillsSnapshot: params.skillsSnapshot,
-            provider: params.provider,
-            model: params.model,
-            authProfileId,
-            contextTokenBudget: params.contextTokenBudget,
-            currentTokenCount: params.currentTokenCount,
-            trigger: "budget",
-            force: true,
-            messageChannel: params.messageChannel,
-            agentAccountId: params.agentAccountId,
-            senderIsOwner: params.senderIsOwner,
-            thinkLevel: params.thinkLevel,
-            extraSystemPrompt: params.extraSystemPrompt,
-            modelSelectionLocked,
-            allowGatewaySubagentBinding: true,
-            ...(params.contextEngine
-              ? {
-                  contextEngine: params.contextEngine,
-                  contextEngineRuntimeContext: buildCliCompactionRuntimeContext({
-                    sessionKey: params.sessionKey,
-                    messageChannel: params.messageChannel,
-                    agentAccountId: params.agentAccountId,
-                    authProfileId,
-                    workspaceDir: params.workspaceDir,
-                    cwd: params.cwd,
-                    agentDir: params.agentDir,
-                    cfg: params.cfg,
-                    skillsSnapshot: params.skillsSnapshot,
-                    senderIsOwner: params.senderIsOwner,
-                    provider: params.provider,
-                    model: params.model,
-                    harnessRuntime: nativeHarnessId,
-                    modelSelectionLocked,
-                    thinkLevel: params.thinkLevel,
-                    extraSystemPrompt: params.extraSystemPrompt,
-                    currentTokenCount: params.currentTokenCount,
-                    contextTokenBudget: params.contextTokenBudget,
-                    trigger: "cli_native_budget",
-                  }),
-                }
-              : {}),
-            ...(nativeHarnessId ? { agentHarnessId: nativeHarnessId } : {}),
-            ...(abortSignal ? { abortSignal } : {}),
-          }),
-        resolveCompactionTimeoutMs(params.cfg),
+      params.assertActive();
+      return await cliCompactionDeps.maybeCompactAgentHarnessSession(
+        {
+          sessionId: params.sessionId,
+          sessionKey: params.sessionKey,
+          sessionFile: params.sessionFile,
+          workspaceDir: params.workspaceDir,
+          cwd: params.cwd,
+          agentDir: params.agentDir,
+          config: params.cfg,
+          skillsSnapshot: params.skillsSnapshot,
+          provider: params.provider,
+          model: params.model,
+          authProfileId,
+          contextTokenBudget: params.contextTokenBudget,
+          currentTokenCount: params.currentTokenCount,
+          trigger: "budget",
+          force: true,
+          messageChannel: params.messageChannel,
+          agentAccountId: params.agentAccountId,
+          senderIsOwner: params.senderIsOwner,
+          thinkLevel: params.thinkLevel,
+          extraSystemPrompt: params.extraSystemPrompt,
+          modelSelectionLocked,
+          allowGatewaySubagentBinding: true,
+          ...(params.contextEngine
+            ? {
+                contextEngine: params.contextEngine,
+                contextEngineRuntimeContext: buildCliCompactionRuntimeContext({
+                  ...params,
+                  authProfileId,
+                  harnessRuntime: nativeHarnessId,
+                  modelSelectionLocked,
+                  trigger: "cli_native_budget",
+                }),
+              }
+            : {}),
+          ...(nativeHarnessId ? { agentHarnessId: nativeHarnessId } : {}),
+          abortSignal: params.abortSignal,
+        },
+        { preparedModelRuntime },
       );
     });
   } catch (error) {
@@ -557,36 +515,51 @@ async function compactNativeHarnessCliTranscript(params: {
 }
 
 /** Runs pre-turn compaction for a CLI session and returns the updated session entry. */
-export async function runCliTurnCompactionLifecycle(params: {
-  cfg: OpenClawConfig;
-  sessionId: string;
-  sessionKey: string;
-  sessionEntry: SessionEntry | undefined;
-  sessionStore?: Record<string, SessionEntry>;
-  storePath?: string;
-  sessionAgentId: string;
-  workspaceDir: string;
-  cwd?: string;
-  agentDir: string;
-  provider: string;
-  model: string;
-  skillsSnapshot?: SkillSnapshot;
-  messageChannel?: string;
-  agentAccountId?: string;
-  senderIsOwner?: boolean;
-  thinkLevel?: Parameters<typeof buildEmbeddedCompactionRuntimeContext>[0]["thinkLevel"];
-  extraSystemPrompt?: string;
-}): Promise<SessionEntry | undefined> {
-  const contextTokenBudget = resolvePositiveInteger(params.sessionEntry?.contextTokens);
-  if (!params.storePath || !contextTokenBudget) {
+export async function runCliTurnCompactionLifecycle(
+  params: CliCompactionContext & {
+    sessionId: string;
+    sessionEntry: SessionEntry | undefined;
+    sessionStore?: Record<string, SessionEntry>;
+    storePath?: string;
+    sessionAgentId: string;
+    pluginGeneration?: PreparedModelRuntimePluginGeneration;
+    abortSignal?: AbortSignal;
+  },
+  host: QueuedCompactionHostOptions = {},
+): Promise<SessionEntry | undefined> {
+  const storePath = params.storePath;
+  const contextTokenBudget = normalizeSessionTokenCount(params.sessionEntry?.contextTokens);
+  if (!storePath || !contextTokenBudget) {
     return params.sessionEntry;
   }
 
+  const capturedEntry = loadSessionEntryReadOnly({
+    agentId: params.sessionAgentId,
+    sessionKey: params.sessionKey,
+    storePath,
+    readConsistency: "latest",
+  });
+  const expectedEntry = {
+    sessionId: params.sessionId,
+    lifecycleRevision: capturedEntry?.lifecycleRevision,
+    activeWriterRunId: capturedEntry?.activeWriterRunId,
+  };
+  const assertActive = () => {
+    params.abortSignal?.throwIfAborted();
+    host.assertActive?.();
+  };
+  assertActive();
+  const onCommitted = (accepted: AcceptedCompactionSuccessor) => {
+    if (params.sessionStore) {
+      params.sessionStore[params.sessionKey] = accepted.entry;
+    }
+    host.onCommitted?.(accepted);
+  };
   const sessionManager = cliCompactionDeps.openSessionManager({
     agentId: params.sessionAgentId,
     sessionId: params.sessionId,
     sessionKey: params.sessionKey,
-    storePath: params.storePath,
+    storePath,
   });
   const sessionFile = params.sessionKey;
   const settingsManager = await cliCompactionDeps.createPreparedEmbeddedAgentSettingsManager({
@@ -657,120 +630,138 @@ export async function runCliTurnCompactionLifecycle(params: {
     });
   };
 
-  if (isNativeHarnessCompactionSession(params.sessionEntry, params.provider)) {
-    cliCompactionDeps.ensureContextEnginesInitialized();
-    resolvedContextEngine = await cliCompactionDeps.resolveContextEngine(params.cfg);
-    await applyAutoCompactionGuard(resolvedContextEngine);
-    const nativeOutcome = await compactNativeHarnessCliTranscript({
-      cfg: params.cfg,
-      sessionId: params.sessionId,
-      sessionKey: params.sessionKey,
-      sessionFile,
-      sessionEntry: params.sessionEntry,
-      workspaceDir: params.workspaceDir,
-      cwd: params.cwd,
-      agentDir: params.agentDir,
-      provider: params.provider,
-      model: params.model,
-      contextTokenBudget,
-      currentTokenCount,
-      contextEngine: resolvedContextEngine,
-      skillsSnapshot: params.skillsSnapshot,
-      messageChannel: params.messageChannel,
-      agentAccountId: params.agentAccountId,
-      senderIsOwner: params.senderIsOwner,
-      thinkLevel: params.thinkLevel,
-      extraSystemPrompt: params.extraSystemPrompt,
-    });
-    if (nativeOutcome.compacted) {
-      compactionKind = "native-harness";
-      nativeCompactionResult = nativeOutcome.result;
-      useContextEngineCompaction = false;
-    } else if (nativeOutcome.fallbackToContextEngine) {
-      // Unlocked sessions may repair or replace a stale native compaction path.
-      nativeFallbackToContextEngine = true;
-      nativeFallbackNeedsBindingClear = nativeOutcome.clearCliSessionBinding === true;
-    } else if (nativeOutcome.failureReason) {
-      throw new Error(
-        `CLI native harness compaction failed for ${params.provider}/${params.model}: ${nativeOutcome.failureReason}`,
-      );
-    } else {
-      useContextEngineCompaction = false;
-    }
-  }
+  const work = new AsyncWorkScope();
+  const trackCleanup = captureAsyncWorkTracker();
+  let result: SessionEntry | undefined;
+  let failure: { error: unknown } | undefined;
+  try {
+    result = await work.run(async () => {
+      if (isNativeHarnessCompactionSession(params.sessionEntry, params.provider)) {
+        cliCompactionDeps.ensureContextEnginesInitialized();
+        resolvedContextEngine = await cliCompactionDeps.resolveContextEngine(params.cfg);
+        await applyAutoCompactionGuard(resolvedContextEngine);
+        const nativeOutcome = await compactNativeHarnessCliTranscript({
+          ...params,
+          sessionFile,
+          sessionEntry: params.sessionEntry,
+          contextTokenBudget,
+          currentTokenCount,
+          contextEngine: resolvedContextEngine,
+          assertActive,
+        });
+        if (nativeOutcome.compacted) {
+          compactionKind = "native-harness";
+          nativeCompactionResult = nativeOutcome.result;
+          useContextEngineCompaction = false;
+        } else if (nativeOutcome.fallbackToContextEngine) {
+          // Unlocked sessions may repair or replace a stale native compaction path.
+          nativeFallbackToContextEngine = true;
+          nativeFallbackNeedsBindingClear = nativeOutcome.clearCliSessionBinding === true;
+        } else if (nativeOutcome.failureReason) {
+          throw new Error(
+            `CLI native harness compaction failed for ${params.provider}/${params.model}: ${nativeOutcome.failureReason}`,
+          );
+        } else {
+          useContextEngineCompaction = false;
+        }
+      }
 
-  if (useContextEngineCompaction) {
-    if (!resolvedContextEngine) {
-      cliCompactionDeps.ensureContextEnginesInitialized();
-      resolvedContextEngine = await cliCompactionDeps.resolveContextEngine(params.cfg);
-    }
-    const contextEngine = resolvedContextEngine;
-    await applyAutoCompactionGuard(contextEngine);
+      if (useContextEngineCompaction) {
+        assertActive();
+        if (!resolvedContextEngine) {
+          cliCompactionDeps.ensureContextEnginesInitialized();
+          resolvedContextEngine = await cliCompactionDeps.resolveContextEngine(params.cfg);
+        }
+        const contextEngine = resolvedContextEngine;
+        await applyAutoCompactionGuard(contextEngine);
 
-    const contextOutcome = await compactCliTranscript({
-      agentId: params.sessionAgentId,
-      contextEngine,
-      sessionId: params.sessionId,
-      sessionKey: params.sessionKey,
-      sessionFile,
-      sessionManager,
-      storePath: params.storePath,
-      cfg: params.cfg,
-      workspaceDir: params.workspaceDir,
-      cwd: params.cwd,
-      agentDir: params.agentDir,
-      provider: params.provider,
-      model: params.model,
-      harnessRuntime: params.sessionEntry?.agentHarnessId,
-      modelSelectionLocked: params.sessionEntry?.modelSelectionLocked,
-      contextTokenBudget,
-      currentTokenCount,
-      skillsSnapshot: params.skillsSnapshot,
-      messageChannel: params.messageChannel,
-      agentAccountId: params.agentAccountId,
-      authProfileId,
-      senderIsOwner: params.senderIsOwner,
-      thinkLevel: params.thinkLevel,
-      extraSystemPrompt: params.extraSystemPrompt,
-      bestEffortMaintenance: nativeFallbackToContextEngine,
-    });
-    contextCompactionOutcome = contextOutcome;
-    compactionKind = contextOutcome.compacted ? "context-engine" : undefined;
-    if (!compactionKind && contextOutcome.failureReason) {
-      throw new Error(
-        `CLI transcript compaction failed for ${params.provider}/${params.model}: ${contextOutcome.failureReason}`,
-      );
-    }
-  }
+        const contextOutcome = await compactCliTranscript({
+          ...params,
+          agentId: params.sessionAgentId,
+          contextEngine,
+          sessionFile,
+          sessionManager,
+          storePath,
+          harnessRuntime: params.sessionEntry?.agentHarnessId,
+          modelSelectionLocked: params.sessionEntry?.modelSelectionLocked,
+          contextTokenBudget,
+          currentTokenCount,
+          authProfileId,
+          bestEffortMaintenance: nativeFallbackToContextEngine,
+          expectedEntry,
+          assertActive,
+          onCommitted,
+        });
+        contextCompactionOutcome = contextOutcome;
+        compactionKind = contextOutcome.compacted ? "context-engine" : undefined;
+        if (!compactionKind && contextOutcome.failureReason) {
+          throw new Error(
+            `CLI transcript compaction failed for ${params.provider}/${params.model}: ${contextOutcome.failureReason}`,
+          );
+        }
+      }
 
-  if (nativeFallbackNeedsBindingClear && !compactionKind && params.sessionStore) {
-    return (
-      (await cliCompactionDeps.clearCliSessionInStore({
-        provider: params.provider,
+      if (nativeFallbackNeedsBindingClear && !compactionKind && params.sessionStore) {
+        assertActive();
+        return (
+          (await cliCompactionDeps.clearCliSessionInStore({
+            provider: params.provider,
+            sessionKey: params.sessionKey,
+            sessionStore: params.sessionStore,
+            storePath,
+            expectedSessionId: params.sessionId,
+            assertCommitAllowed: assertActive,
+          })) ?? params.sessionEntry
+        );
+      }
+
+      if (!compactionKind || !params.sessionStore) {
+        return params.sessionEntry;
+      }
+
+      const recorded = await cliCompactionDeps.recordCliCompactionInStore({
+        compactionKind,
         sessionKey: params.sessionKey,
         sessionStore: params.sessionStore,
-        storePath: params.storePath,
-        expectedSessionId: params.sessionId,
-      })) ?? params.sessionEntry
-    );
+        storePath,
+        tokensAfter:
+          nativeCompactionResult?.result?.tokensAfter ?? contextCompactionOutcome?.tokensAfter,
+        expectedSession: contextCompactionOutcome?.accepted?.entry ?? expectedEntry,
+      });
+      if (!recorded) {
+        throw new Error("Session changed before CLI compaction could be recorded");
+      }
+      return recorded;
+    });
+  } catch (error) {
+    failure = { error };
   }
-
-  if (!compactionKind || !params.sessionStore) {
-    return params.sessionEntry;
+  const cleanup = async () => {
+    try {
+      await AsyncWorkScope.runWhenAllIdle(
+        () => [work],
+        () => resolvedContextEngine?.dispose?.(),
+      );
+    } finally {
+      await work.run(() => work.drain());
+    }
+  };
+  if (work.hasPendingWork) {
+    // A timeout can return before raw compaction settles. Its owner retains
+    // the engine until that work finishes without extending the watchdog.
+    void trackCleanup(cleanup).catch((error: unknown) => {
+      log.warn(`CLI compaction engine cleanup failed: ${String(error)}`);
+    });
+  } else {
+    try {
+      await cleanup();
+    } catch (error) {
+      failure ??= { error };
+    }
   }
-
-  return (
-    (await cliCompactionDeps.recordCliCompactionInStore({
-      compactionKind,
-      sessionKey: params.sessionKey,
-      sessionStore: params.sessionStore,
-      storePath: params.storePath,
-      tokensAfter:
-        nativeCompactionResult?.result?.tokensAfter ?? contextCompactionOutcome?.tokensAfter,
-      newSessionId:
-        nativeCompactionResult?.result?.sessionId ?? contextCompactionOutcome?.successorSessionId,
-      expectedSessionId: params.sessionId,
-    })) ?? params.sessionEntry
-  );
+  if (failure) {
+    throw failure.error;
+  }
+  return result;
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

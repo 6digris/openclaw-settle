@@ -5,6 +5,7 @@ import {
   errorShape,
   type AuditActivityEventV1,
   type AuditEvent,
+  type AuditRunInspectResult,
   validateAuditActivityListParams,
   validateAuditListParams,
   validateAuditRunInspectParams,
@@ -22,11 +23,35 @@ import {
   isExecutionDecisionCursor,
 } from "../../audit/execution-decision-receipts.js";
 import { inspectExecutionIdentityRun } from "../../audit/execution-identity-context.js";
+import type { InternalAuditRunInspectResult } from "../../audit/execution-identity-inspection.types.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
 const DEFAULT_AUDIT_LIST_LIMIT = 100;
 const MAX_AUDIT_LIST_LIMIT = 500;
+
+function serializeAuditRunInspectResult(
+  inspected: InternalAuditRunInspectResult,
+): AuditRunInspectResult {
+  const result: AuditRunInspectResult = {
+    schemaVersion: inspected.schemaVersion,
+    run: inspected.run,
+    identity: inspected.identity,
+    decisionDisplays: inspected.decisionDisplays,
+    coverage: inspected.coverage,
+  };
+  if (inspected.nextDecisionCursor !== undefined) {
+    result.nextDecisionCursor = inspected.nextDecisionCursor;
+  }
+  if (inspected.nextExecutionCursor !== undefined) {
+    result.nextExecutionCursor = inspected.nextExecutionCursor;
+  }
+  return result;
+}
+
+function isOwnerDecisionCursor(value: string): boolean {
+  return parsePositiveAuditCursor(value) === null && isExecutionDecisionCursor(value);
+}
 
 /** Preserve the shipped audit.list result shape for run/tool-only clients. */
 function mapLegacyAuditEvent(
@@ -77,7 +102,7 @@ function invalidRangeOrCursor(params: { cursor?: string; after?: number; before?
 }
 
 export const auditHandlers: GatewayRequestHandlers = {
-  "audit.list": ({ params, respond }) => {
+  "audit.list": async ({ params, respond }) => {
     if (!assertValidParams(params, validateAuditListParams, "audit.list", respond)) {
       return;
     }
@@ -93,7 +118,7 @@ export const auditHandlers: GatewayRequestHandlers = {
     const agentId = normalizeOptionalString(params.agentId);
     const sessionKey = normalizeOptionalString(params.sessionKey);
     const runId = normalizeOptionalString(params.runId);
-    const page = listAuditEvents({
+    const page = await listAuditEvents({
       limit: Math.min(params.limit ?? DEFAULT_AUDIT_LIST_LIMIT, MAX_AUDIT_LIST_LIMIT),
       ...(parsed.cursor !== undefined ? { cursor: parsed.cursor } : {}),
       filters: {
@@ -116,7 +141,7 @@ export const auditHandlers: GatewayRequestHandlers = {
       ...(page.nextCursor !== undefined ? { nextCursor: String(page.nextCursor) } : {}),
     });
   },
-  "audit.activity.list": ({ params, respond }) => {
+  "audit.activity.list": async ({ params, respond }) => {
     if (
       !assertValidParams(params, validateAuditActivityListParams, "audit.activity.list", respond)
     ) {
@@ -147,7 +172,7 @@ export const auditHandlers: GatewayRequestHandlers = {
     const agentId = normalizeOptionalString(params.agentId);
     const sessionKey = normalizeOptionalString(params.sessionKey);
     const runId = normalizeOptionalString(params.runId);
-    const page = listAuditEvents({
+    const page = await listAuditEvents({
       limit: Math.min(params.limit ?? DEFAULT_AUDIT_LIST_LIMIT, MAX_AUDIT_LIST_LIMIT),
       ...(parsed.cursor !== undefined ? { cursor: parsed.cursor } : {}),
       filters: {
@@ -168,7 +193,7 @@ export const auditHandlers: GatewayRequestHandlers = {
       ...(page.nextCursor !== undefined ? { nextCursor: String(page.nextCursor) } : {}),
     });
   },
-  "audit.run.inspect": ({ params, respond }) => {
+  "audit.run.inspect": async ({ params, respond }) => {
     if (!assertValidParams(params, validateAuditRunInspectParams, "audit.run.inspect", respond)) {
       return;
     }
@@ -177,9 +202,7 @@ export const auditHandlers: GatewayRequestHandlers = {
       typeof params.runId !== "string" ||
       (params.executionCursor === decisionCursor &&
         decisionCursor !== undefined &&
-        (decisionCursor.startsWith("a:") ||
-          decisionCursor.startsWith("m:") ||
-          decisionCursor.startsWith("g:")))
+        isOwnerDecisionCursor(decisionCursor))
         ? undefined
         : parsePositiveAuditCursor(params.executionCursor);
     if (
@@ -196,17 +219,19 @@ export const auditHandlers: GatewayRequestHandlers = {
     try {
       respond(
         true,
-        inspectExecutionIdentityRun({
-          ...(typeof params.runId === "string"
-            ? {
-                runId: params.runId,
-                ...(executionOffset !== undefined ? { executionOffset } : {}),
-                executionLimit: params.executionLimit ?? 50,
-              }
-            : { executionId: params.executionId! }),
-          ...(decisionCursor !== undefined ? { decisionCursor } : {}),
-          decisionLimit: params.decisionLimit ?? 50,
-        }),
+        serializeAuditRunInspectResult(
+          await inspectExecutionIdentityRun({
+            ...(typeof params.runId === "string"
+              ? {
+                  runId: params.runId,
+                  ...(executionOffset !== undefined ? { executionOffset } : {}),
+                  executionLimit: params.executionLimit ?? 50,
+                }
+              : { executionId: params.executionId! }),
+            ...(decisionCursor !== undefined ? { decisionCursor } : {}),
+            decisionLimit: params.decisionLimit ?? 50,
+          }),
+        ),
       );
     } catch (error) {
       if (error instanceof ExecutionDecisionCursorError) {

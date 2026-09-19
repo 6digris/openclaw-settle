@@ -1,6 +1,7 @@
 /** Summarizes installed service command paths and OpenClaw package layout. */
 import fs from "node:fs/promises";
 import path from "node:path";
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { pathExists } from "../infra/fs-safe.js";
 import { readPackageName, readPackageVersion } from "../infra/package-json.js";
 import type { GatewayServiceCommandConfig } from "./service-types.js";
@@ -47,18 +48,34 @@ function resolveSystemdScopeFromServicePath(
   return "user";
 }
 
-function resolveGatewayServiceEntrypoint(command: GatewayServiceCommandConfig): string | undefined {
-  const gatewayIndex = command.programArguments.indexOf("gateway");
-  if (gatewayIndex <= 0) {
+export function resolveServiceEntrypointIndex(
+  programArguments: readonly string[],
+): number | undefined {
+  // Managed commands put the entrypoint immediately before the subcommand.
+  // A subcommand name following a native option is its value, not this boundary.
+  const commandIndex = programArguments.findIndex(
+    (arg, index, args) =>
+      index > 0 &&
+      !args[index - 1]?.startsWith("-") &&
+      (arg === "gateway" || (arg === "node" && args[index + 1] === "run")),
+  );
+  return commandIndex > 0 ? commandIndex - 1 : undefined;
+}
+
+export function resolveServiceEntrypoint(command: GatewayServiceCommandConfig): string | undefined {
+  const entrypointIndex = resolveServiceEntrypointIndex(command.programArguments);
+  if (entrypointIndex === undefined) {
     return undefined;
   }
-  const entrypoint = command.programArguments[gatewayIndex - 1];
+  const entrypoint = command.programArguments[entrypointIndex];
   if (!entrypoint) {
     return undefined;
   }
   if (path.isAbsolute(entrypoint) || path.win32.isAbsolute(entrypoint)) {
     return entrypoint;
   }
+  // Service managers resolve relative commands against their configured
+  // working directory; without an absolute base, ownership is ambiguous.
   const workingDirectory = command.workingDirectory?.trim();
   if (!workingDirectory) {
     return undefined;
@@ -72,6 +89,8 @@ function resolveGatewayServiceEntrypoint(command: GatewayServiceCommandConfig): 
   return undefined;
 }
 
+function tryRealpath(value: string): Promise<string>;
+function tryRealpath(value: string | undefined): Promise<string | undefined>;
 async function tryRealpath(value: string | undefined): Promise<string | undefined> {
   if (!value) {
     return undefined;
@@ -125,9 +144,7 @@ export async function summarizeGatewayServiceLayout(
     return undefined;
   }
   const sourcePath = command.sourcePath?.trim() || undefined;
-  // Service managers resolve relative commands against their configured
-  // working directory; without an absolute base, ownership is ambiguous.
-  const entrypoint = resolveGatewayServiceEntrypoint(command);
+  const entrypoint = resolveServiceEntrypoint(command);
   const [sourcePathReal, entrypointReal] = await Promise.all([
     tryRealpath(sourcePath),
     tryRealpath(entrypoint),
@@ -153,4 +170,72 @@ export async function summarizeGatewayServiceLayout(
     ...(packageVersion ? { packageVersion } : {}),
     ...(entrypointSourceCheckout !== undefined ? { entrypointSourceCheckout } : {}),
   };
+}
+
+/** Compare an already inspected launcher with one installation; no service discovery or effects. */
+export async function gatewayServiceCommandMatchesRoot(
+  root: string | undefined,
+  command: GatewayServiceCommandConfig | null,
+): Promise<boolean | null> {
+  const expectedRoot = normalizeOptionalString(root);
+  if (!expectedRoot) {
+    return null;
+  }
+  const layout = await summarizeGatewayServiceLayout(command);
+  const serviceRoot = layout?.packageRoot;
+  const serviceEntrypoint = layout?.entrypoint;
+  if (
+    !serviceRoot ||
+    !serviceEntrypoint ||
+    (!path.isAbsolute(serviceEntrypoint) && !path.win32.isAbsolute(serviceEntrypoint))
+  ) {
+    return null;
+  }
+  const [expectedRootReal, serviceRootReal] = await Promise.all([
+    tryRealpath(expectedRoot),
+    tryRealpath(serviceRoot),
+  ]);
+  if (expectedRootReal === serviceRootReal) {
+    return true;
+  }
+  // Paired read-only release mounts have different paths but the same directory
+  // identity. Copies of another release must remain foreign.
+  const [expected, actual] = await Promise.all(
+    [expectedRootReal, serviceRootReal].map((directory) => fs.stat(directory).catch(() => null)),
+  );
+  if (expected && actual && expected.dev === actual.dev && expected.ino === actual.ino) {
+    return true;
+  }
+  const managed = command?.managedDefinition;
+  if (!managed || (await gatewayServiceCommandMatchesRoot(expectedRoot, managed)) !== true) {
+    return false;
+  }
+  const namespace = path.dirname(expectedRootReal);
+  const managedLayout = await summarizeGatewayServiceLayout(managed);
+  const stableEntry = path.join(
+    namespace,
+    "current",
+    "dist",
+    path.basename(managedLayout?.entrypoint ?? ""),
+  );
+  if (serviceEntrypoint !== stableEntry) {
+    return false;
+  }
+  // Deployment-owned current points into this installation's releases, either
+  // by symlink or by a paired bind mount. Unrelated namespaces remain foreign.
+  const releases = path.join(namespace, "releases");
+  if (serviceRootReal.startsWith(`${releases}${path.sep}`)) {
+    return true;
+  }
+  try {
+    for await (const entry of await fs.opendir(releases)) {
+      const candidate = await fs.lstat(path.join(releases, entry.name));
+      if (actual && candidate.dev === actual.dev && candidate.ino === actual.ino) {
+        return true;
+      }
+    }
+  } catch {
+    // Without directory identity proof, the override cannot authorize lifecycle actions.
+  }
+  return false;
 }
