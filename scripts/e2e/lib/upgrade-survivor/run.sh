@@ -9,6 +9,7 @@ set -Eeuo pipefail
 exec 3>&1
 
 source scripts/lib/openclaw-e2e-instance.sh
+source scripts/e2e/lib/upgrade-survivor/gateway-start.sh
 source scripts/e2e/lib/prepublish-plugin-registry.sh
 source scripts/e2e/lib/upgrade-survivor/plugin-dependency-fixtures.sh
 source scripts/e2e/lib/upgrade-survivor/backup-rollback.sh
@@ -109,6 +110,7 @@ FAILURE_PHASE=""
 FAILURE_MESSAGE=""
 FAILURE_SIGNAL=""
 gateway_pid=""
+gateway_ownership=""
 plugin_registry_pid=""
 missing_plugin_registry_pid=""
 clawhub_fixture_pid=""
@@ -424,8 +426,13 @@ stop_gateway() {
   if [ -s "$SYSTEMCTL_SHIM_PID_FILE" ]; then
     systemctl --user stop openclaw-gateway.service >/dev/null 2>&1 || true
   fi
-  openclaw_e2e_terminate_gateways "${gateway_pid:-}"
+  if [ "${gateway_ownership:-}" = process-group ] && [ -n "${gateway_pid:-}" ]; then
+    upgrade_survivor_stop_owned_process_group "$gateway_pid" "$((SECONDS + 35))" || return "$?"
+  else
+    openclaw_e2e_terminate_gateways "${gateway_pid:-}"
+  fi
   gateway_pid=""
+  gateway_ownership=""
   if [ -s "$SYSTEMCTL_SHIM_PID_FILE" ]; then
     local shim_pid
     shim_pid="$(cat "$SYSTEMCTL_SHIM_PID_FILE" 2>/dev/null || true)"
@@ -1927,14 +1934,17 @@ start_gateway() {
   budget="$(openclaw_e2e_read_positive_int_env OPENCLAW_UPGRADE_SURVIVOR_START_BUDGET_SECONDS 90)" || return "$?"
   local start_epoch
   local ready_epoch
+  local absolute_deadline=$((SECONDS + budget))
   start_epoch="$(node -e "process.stdout.write(String(Date.now()))")" || return "$?"
-  env -u OPENCLAW_GATEWAY_TOKEN -u OPENCLAW_GATEWAY_PASSWORD openclaw gateway --port "$port" --bind loopback --allow-unconfigured >"$GATEWAY_LOG" 2>&1 &
-  gateway_pid="$!"
   local readiness_mode="strict"
   if [ "${SCENARIO:-}" = "watchos-direct-node" ]; then
     readiness_mode="legacy-ready-log-ok"
   fi
-  openclaw_e2e_wait_gateway_ready "$gateway_pid" "$GATEWAY_LOG" 360 "$port" "$readiness_mode" || return "$?"
+  upgrade_survivor_start_gateway_with_convergence_retry \
+    gateway_pid "$GATEWAY_LOG" 360 "$port" "$readiness_mode" "$absolute_deadline" \
+    gateway_ownership -- \
+    env -u OPENCLAW_GATEWAY_TOKEN -u OPENCLAW_GATEWAY_PASSWORD \
+    openclaw gateway --port "$port" --bind loopback --allow-unconfigured || return "$?"
   ready_epoch="$(node -e "process.stdout.write(String(Date.now()))")" || return "$?"
   start_seconds=$(((ready_epoch - start_epoch + 999) / 1000))
   if [ "$start_seconds" -gt "$budget" ]; then

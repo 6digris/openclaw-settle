@@ -478,53 +478,8 @@ jobs:
           TRUSTED_MAIN_REF="${trusted_main_ref}" \
             MANIFEST_FILE="$manifest" \
             node "$VALIDATOR_FILE" < "$RUN_JSON_FILE"
-          workflow_name="$(jq -r '.workflowName // ""' "$manifest")"
-          target_sha="$(jq -r '.targetSha // ""' "$manifest")"
-          release_profile="$(jq -r '.releaseProfile // ""' "$manifest")"
-          rerun_group="$(jq -r '.rerunGroup // ""' "$manifest")"
-          run_release_soak="$(jq -r '.runReleaseSoak // ""' "$manifest")"
-          performance_blocking="$(jq -r '.controls.performanceBlocking // false' "$manifest")"
-          if [[ "$workflow_name" != "Full Release Validation" ]]; then
-            echo "Full release validation manifest workflow mismatch: $workflow_name" >&2
-            exit 1
-          fi
-          if [[ "$target_sha" != "$EXPECTED_SHA" ]]; then
-            echo "Full release validation target SHA mismatch: expected $EXPECTED_SHA, got $target_sha" >&2
-            exit 1
-          fi
-          if [[ "$EXPECTED_RELEASE_PROFILE" != "from-validation" && "$release_profile" != "$EXPECTED_RELEASE_PROFILE" ]]; then
-            echo "Full release validation profile mismatch: expected $EXPECTED_RELEASE_PROFILE, got $release_profile" >&2
-            exit 1
-          fi
-          if [[ "$rerun_group" != "all" ]]; then
-            echo "Full release validation must run rerun_group=all before npm publish; got $rerun_group" >&2
-            exit 1
-          fi
-          if [[ "$performance_blocking" != "true" && -n "${STABLE_SOAK_WAIVER//[[:space:]]/}" ]]; then
-            if ! jq -e '.childRuns.productPerformance.conclusion == "success"' "$manifest" >/dev/null; then
-              echo "Waiving blocking product performance requires a successful product performance child run." >&2
-              exit 1
-            fi
-            echo "::warning::Blocking product performance waived by operator stable soak waiver; advisory performance child passed."
-            echo "stable_soak_waiver=$(jq -cn --arg reason "$STABLE_SOAK_WAIVER" '$reason')" >> "$GITHUB_OUTPUT"
-          elif [[ "$release_profile" != "beta" && "$performance_blocking" != "true" ]]; then
-            echo "Full release validation manifest does not record blocking product performance evidence." >&2
-            exit 1
-          fi
-          if [[ "$RELEASE_TAG" != *"-alpha."* && "$RELEASE_TAG" != *"-beta."* && "$run_release_soak" != "true" ]]; then
-            if [[ -z "${STABLE_SOAK_WAIVER//[[:space:]]/}" ]]; then
-              echo "Stable releases require Full Release Validation with runReleaseSoak=true." >&2
-              exit 1
-            fi
-            waiver_warning="${STABLE_SOAK_WAIVER//%/%25}"
-            waiver_warning="${waiver_warning//$'\r'/%0D}"
-            waiver_warning="${waiver_warning//$'\n'/%0A}"
-            echo "::warning::Stable soak waived by operator: ${waiver_warning}"
-            echo "stable_soak_waiver=$(jq -cn --arg reason "$STABLE_SOAK_WAIVER" '$reason')" >> "$GITHUB_OUTPUT"
-            printf '%s\n' "- Stable soak waived by operator: ${STABLE_SOAK_WAIVER}" >> "$GITHUB_STEP_SUMMARY"
-          fi
-          echo "release_profile=$release_profile" >> "$GITHUB_OUTPUT"
-          echo "coverage_policy=$(jq -r '.validationInputs.coveragePolicy // ""' "$manifest")" >> "$GITHUB_OUTPUT"
+          node "${GITHUB_WORKSPACE}/.release-validation-tooling/scripts/lib/release-publish-gates.mts" \
+            --consumer publisher --manifest "$manifest"
           node --input-type=module <<'NODE'
           import { appendFileSync, readFileSync } from 'node:fs';
           import { preparedDockerEvidenceFromFullRelease } from './.release-validation-tooling/scripts/docker-release-artifacts.mjs';
@@ -1211,6 +1166,8 @@ jobs:
     needs: [resolve_release_target]
     outputs:
       source_sha: ${{ needs.resolve_release_target.outputs.sha }}
+      clawhub_run_id: ${{ steps.children.outputs.plugin_clawhub_run_id }}
+      clawhub_bootstrap_run_id: ${{ steps.children.outputs.plugin_clawhub_bootstrap_run_id }}
     if: ${{ !inputs.publish_docker_only }}
     env:
       STABLE_SOAK_WAIVER: ${{ fromJSON(needs.resolve_release_target.outputs.stable_soak_waiver || '""') }}
@@ -1646,6 +1603,7 @@ jobs:
           fi
 
           npm_args=(-f publish_scope="${PLUGIN_PUBLISH_SCOPE}" -f ref="${TARGET_SHA}" -f release_publish_run_id="${GITHUB_RUN_ID}" -f release_publish_run_attempt="${GITHUB_RUN_ATTEMPT}" -f release_publish_branch="${PARENT_WORKFLOW_BRANCH}" -f release_publish_full_ref="${PARENT_WORKFLOW_FULL_REF}")
+          npm_args+=(-f defer_registry_verification="${PUBLISH_OPENCLAW_NPM}")
           if [[ -n "${PREPARED_PLUGINS}" ]]; then
             npm_args+=(-f prepared_artifact="$(jq -cer '.npm' <<< "$PREPARED_PLUGINS")")
           fi
@@ -1752,11 +1710,7 @@ jobs:
           verify_release_tag_target
           if ! wait_for_run plugin-npm-release.yml "${plugin_npm_run_id}" "${PARENT_WORKFLOW_SHA}"; then
             echo "Plugin npm publish failed; cancelling dispatched ClawHub child workflows." >&2
-            for child_run_id in "${CHILD_PLUGIN_CLAWHUB_RUN_ID}" "${CHILD_PLUGIN_CLAWHUB_BOOTSTRAP_RUN_ID}"; do
-              if [[ -n "${child_run_id}" ]]; then
-                gh run cancel --repo "$GITHUB_REPOSITORY" "${child_run_id}" >/dev/null 2>&1 || true
-              fi
-            done
+            cleanup_clawhub_children || true
             exit 1
           fi
           echo "plugin_npm_completed=true" >> "$GITHUB_OUTPUT"
@@ -1865,6 +1819,7 @@ jobs:
           CHILD_OPENCLAW_NPM_ALREADY_PUBLISHED: ${{ steps.children.outputs.openclaw_npm_already_published }}
           CHILD_OPENCLAW_NPM_EXPECTED_WORKFLOW_REF: ${{ steps.children.outputs.openclaw_npm_expected_workflow_ref }}
           CHILD_OPENCLAW_NPM_EXPECTED_WORKFLOW_SHA: ${{ steps.children.outputs.openclaw_npm_expected_workflow_sha }}
+          CHILD_OPENCLAW_NPM_RUN_ATTEMPT: ${{ steps.children.outputs.openclaw_npm_resume_run_attempt }}
           CHILD_OPENCLAW_NPM_RUN_ID: ${{ steps.core_start.outputs.openclaw_npm_run_id || steps.children.outputs.openclaw_npm_resume_run_id }}
           CORE_START_OUTCOME: ${{ steps.core_start.outcome }}
           CLAWHUB_AUTHORIZATION_OUTCOME: ${{ steps.clawhub_authorization.outcome }}
@@ -1879,6 +1834,7 @@ jobs:
           openclaw_npm_already_published="${CHILD_OPENCLAW_NPM_ALREADY_PUBLISHED}"
           openclaw_npm_expected_workflow_ref="${CHILD_OPENCLAW_NPM_EXPECTED_WORKFLOW_REF}"
           openclaw_npm_expected_workflow_sha="${CHILD_OPENCLAW_NPM_EXPECTED_WORKFLOW_SHA}"
+          openclaw_npm_run_attempt="${CHILD_OPENCLAW_NPM_RUN_ATTEMPT}"
           openclaw_npm_run_id="${CHILD_OPENCLAW_NPM_RUN_ID}"
           plugin_clawhub_bootstrap_completed="false"
           resolve_clawhub_release_plan
@@ -1907,12 +1863,8 @@ jobs:
           approve_clawhub=true
           if [[ "${failed}" != "0" ]]; then
             approve_clawhub=false
-            for child_run_id in "${plugin_clawhub_run_id}" "${plugin_clawhub_bootstrap_run_id}"; do
-              if [[ -n "${child_run_id}" ]]; then
-                gh run cancel --repo "$GITHUB_REPOSITORY" "${child_run_id}" >/dev/null 2>&1 || true
-                clawhub_failed=1
-              fi
-            done
+            cleanup_clawhub_children || true
+            clawhub_failed=1
           fi
           if [[ "${WAIT_FOR_CLAWHUB}" == "true" ]]; then
             if [[ -n "${plugin_clawhub_run_id}" ]]; then
@@ -2030,6 +1982,17 @@ jobs:
           name: openclaw-release-postpublish-evidence-${{ inputs.tag }}
           path: ${{ runner.temp }}/openclaw-release-postpublish-evidence/release-postpublish-evidence.json
           if-no-files-found: error
+
+      - name: Clean up ClawHub children after failure
+        if: ${{ failure() || cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ -f "${GITHUB_WORKSPACE}/.release-harness/scripts/lib/release-publish-children.sh" ]]; then
+            source "${GITHUB_WORKSPACE}/.release-harness/scripts/lib/release-publish-children.sh"
+            cleanup_clawhub_children
+          fi
 
   verify_core_npm_registry:
     name: Verify already-published core npm package
@@ -2368,3 +2331,31 @@ jobs:
           name: windows-release-dispatch-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/windows-dispatch.json
           if-no-files-found: warn
+
+  cleanup_clawhub:
+    name: Clean up ClawHub children after parent failure
+    needs:
+      [publish, publish_android, publish_vcr, dispatch_linux_mirror, publish_linux, publish_windows]
+    if: ${{ failure() || cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Checkout trusted cleanup tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: scripts/lib
+          persist-credentials: false
+
+      - name: Cancel unfinished ClawHub children
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PARENT_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          CHILD_PLUGIN_CLAWHUB_RUN_ID: ${{ needs.publish.outputs.clawhub_run_id }}
+          CHILD_PLUGIN_CLAWHUB_BOOTSTRAP_RUN_ID: ${{ needs.publish.outputs.clawhub_bootstrap_run_id }}
+        run: |
+          source scripts/lib/release-publish-children.sh
+          cleanup_clawhub_children

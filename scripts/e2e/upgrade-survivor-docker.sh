@@ -461,6 +461,8 @@ if [ "${OPENCLAW_UPGRADE_SURVIVOR_PUBLISHED_BASELINE:-0}" = "1" ]; then
     -v "$ARTIFACT_DIR:/tmp/openclaw-upgrade-survivor-artifacts" \
     -v "$HARNESS_ROOT_DIR/scripts/e2e/lib/clawhub-fixture-server.cjs:/tmp/openclaw-clawhub-fixture-server.cjs:ro" \
     -v "$HARNESS_ROOT_DIR/scripts/e2e/lib/upgrade-survivor/config-parking.mjs:/tmp/openclaw-config-parking.mjs:ro" \
+    -v "$HARNESS_ROOT_DIR/scripts/lib/openclaw-e2e-instance.sh:/app/scripts/lib/openclaw-e2e-instance.sh:ro" \
+    -v "$HARNESS_ROOT_DIR/scripts/e2e/lib/upgrade-survivor/gateway-start.sh:/app/scripts/e2e/lib/upgrade-survivor/gateway-start.sh:ro" \
     -v "$HARNESS_ROOT_DIR/scripts:/tmp/openclaw-release-harness/scripts:ro" \
     -v "$UPGRADE_RUNNER:/tmp/openclaw-upgrade-survivor-run.sh:ro" \
     ${UPGRADE_SCENARIO_ARGS[@]+"${UPGRADE_SCENARIO_ARGS[@]}"} \
@@ -517,6 +519,8 @@ docker_e2e_run_with_harness \
   -v "$ARTIFACT_DIR:/tmp/openclaw-upgrade-survivor-artifacts" \
   -v "$HARNESS_ROOT_DIR/scripts/e2e/lib/clawhub-fixture-server.cjs:/tmp/openclaw-clawhub-fixture-server.cjs:ro" \
   -v "$HARNESS_ROOT_DIR/scripts/e2e/lib/upgrade-survivor/config-parking.mjs:/tmp/openclaw-config-parking.mjs:ro" \
+    -v "$HARNESS_ROOT_DIR/scripts/lib/openclaw-e2e-instance.sh:/app/scripts/lib/openclaw-e2e-instance.sh:ro" \
+    -v "$HARNESS_ROOT_DIR/scripts/e2e/lib/upgrade-survivor/gateway-start.sh:/app/scripts/e2e/lib/upgrade-survivor/gateway-start.sh:ro" \
   -v "$HARNESS_ROOT_DIR/scripts:/tmp/openclaw-release-harness/scripts:ro" \
   ${UPGRADE_SCENARIO_ARGS[@]+"${UPGRADE_SCENARIO_ARGS[@]}"} \
   ${DOCKER_E2E_PACKAGE_ARGS[@]+"${DOCKER_E2E_PACKAGE_ARGS[@]}"} \
@@ -524,6 +528,7 @@ docker_e2e_run_with_harness \
   "$IMAGE_NAME" \
  timeout --kill-after=30s "$DOCKER_RUN_TIMEOUT" bash -lc 'set -euo pipefail
  source scripts/lib/openclaw-e2e-instance.sh
+source scripts/e2e/lib/upgrade-survivor/gateway-start.sh
  source scripts/e2e/lib/prepublish-plugin-registry.sh
 
 export npm_config_loglevel=error
@@ -584,15 +589,21 @@ plugin_registry_pid=""
 clawhub_fixture_pid=""
 run_completed="0"
 cleanup() {
+  local cleanup_status=0
   if [ -s "$SYSTEMCTL_SHIM_PID_FILE" ]; then
     systemctl --user stop openclaw-gateway.service >/dev/null 2>&1 || true
   fi
-  openclaw_e2e_terminate_gateways "${gateway_pid:-}"
+  if [ "${gateway_ownership:-}" = process-group ] && [ -n "${gateway_pid:-}" ]; then
+    upgrade_survivor_stop_owned_process_group "$gateway_pid" "$((SECONDS + 35))" || cleanup_status=$?
+  else
+    openclaw_e2e_terminate_gateways "${gateway_pid:-}"
+  fi
   if [ -s "$SYSTEMCTL_SHIM_PID_FILE" ]; then
     openclaw_e2e_terminate_gateways "$(cat "$SYSTEMCTL_SHIM_PID_FILE" 2>/dev/null || true)"
   fi
   openclaw_e2e_stop_process "${plugin_registry_pid:-}"
   openclaw_e2e_stop_process "${clawhub_fixture_pid:-}"
+  return "$cleanup_status"
 }
 CURRENT_PHASE="setup"
 on_exit() {
@@ -858,9 +869,10 @@ else
   echo "Starting gateway from upgraded state..."
   CURRENT_PHASE="start-gateway"
   start_epoch="$(node -e "process.stdout.write(String(Date.now()))")"
-  openclaw gateway --port "$PORT" --bind loopback --allow-unconfigured >"$GATEWAY_LOG" 2>&1 &
-  gateway_pid="$!"
-  openclaw_e2e_wait_gateway_ready "$gateway_pid" "$GATEWAY_LOG" 360 "$PORT"
+  absolute_deadline=$((SECONDS + START_BUDGET))
+  upgrade_survivor_start_gateway_with_convergence_retry \
+    gateway_pid "$GATEWAY_LOG" 360 "$PORT" strict "$absolute_deadline" gateway_ownership -- \
+    openclaw gateway --port "$PORT" --bind loopback --allow-unconfigured
   ready_epoch="$(node -e "process.stdout.write(String(Date.now()))")"
   start_seconds=$(((ready_epoch - start_epoch + 999) / 1000))
   if [ "$start_seconds" -gt "$START_BUDGET" ]; then

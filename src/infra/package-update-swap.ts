@@ -135,6 +135,7 @@ export async function swapStagedPackageInstall(
     `.openclaw.package-backup-${process.pid}-${Date.now()}`,
   );
   let hadPackage = false;
+  let baselineCompleted = false;
   let replayLocalOverrides: (() => Promise<void>) | undefined;
   let previousVersion: string | null = null;
   let previousDistFiles: string[] | undefined;
@@ -357,6 +358,7 @@ export async function swapStagedPackageInstall(
   };
   try {
     await (native ? readBaseline() : baseline.observe("baseline", readBaseline));
+    baselineCompleted = true;
     // The optional tree scan must not consume the launcher backup's deadline.
     const launcherReader = createPackageIntegrityReader(params.timeoutMs);
     await launcherReader.observe("baseline", () =>
@@ -718,7 +720,16 @@ export async function swapStagedPackageInstall(
         ? error
         : new PackageUpdateActivationError(error);
     }
-    const errors = [formatErrorMessage(error), ...(retained ? [] : await restoreSwap())];
+    // No retained baseline means no package mutation was admitted. Do not run
+    // compensation or report a changed backup that was never captured.
+    const errors = [
+      formatErrorMessage(error),
+      ...(baselineCompleted
+        ? retained
+          ? []
+          : await restoreSwap()
+        : ["Package baseline is unavailable; no package activation was attempted."]),
+    ];
     return {
       status: "failed",
       activePackageRoot,

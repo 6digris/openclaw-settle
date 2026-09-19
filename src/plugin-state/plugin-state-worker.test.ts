@@ -35,7 +35,7 @@ afterEach(async () => {
 
 describe("worker plugin state", () => {
   it.each(["observe", "compareDelete"] as const)(
-    "shares lifecycle custody with an overlapping host owner during %s",
+    "delegates lifecycle custody acquired before admission during %s",
     async (operation) => {
       await withOpenClawTestState({ label: "plugin-state-lock-custody" }, async (state) => {
         const store = createPluginStateKeyedStore<string>("memory-core", {
@@ -89,6 +89,88 @@ describe("worker plugin state", () => {
         } finally {
           dispatch.mockRestore();
           held.release();
+        }
+        expect(await store.lookup("workspace")).toBe(operation === "observe" ? "owner" : undefined);
+      });
+    },
+  );
+
+  it.each(["observe", "compareDelete"] as const)(
+    "waits for an overlapping host owner before worker lifecycle acquisition during %s",
+    async (operation) => {
+      await withOpenClawTestState({ label: "plugin-state-lock-custody" }, async (state) => {
+        const assertActive = vi.fn();
+        const store = createPluginStateKeyedStore<string>(
+          "memory-core",
+          {
+            namespace: "lock-custody",
+            retention: "retained",
+            env: state.env,
+          },
+          assertActive,
+        );
+        const messages = vi.spyOn(Worker.prototype, "postMessage");
+        await store.register("workspace", "owner");
+        const worker = messages.mock.contexts[0];
+        messages.mockRestore();
+        if (!(worker instanceof Worker)) {
+          throw new Error("Expected the shared-state worker");
+        }
+        const observation = await store.observe("workspace");
+        let held: ReturnType<typeof acquireStateDatabaseCoordinator> | undefined;
+        const nativePost = worker.postMessage.bind(worker);
+        const dispatch = vi
+          .spyOn(worker, "postMessage")
+          .mockImplementation((message, transferList) => {
+            const request = asOptionalRecord(message);
+            if (
+              request?.type === "execute" &&
+              request.input instanceof Uint8Array &&
+              asOptionalRecord(deserialize(request.input))?.type === "pluginState." + operation
+            ) {
+              // This owner arrives too late to be delegated. Fresh worker acquisition
+              // must wait for its release while the host keeps servicing authority checks.
+              held = acquireStateDatabaseCoordinator({
+                databasePath: resolveOpenClawStateSqlitePath(state.env),
+                busyTimeoutMs: 0,
+              });
+              assertActive.mockClear();
+            }
+            return nativePost(message, transferList);
+          });
+        let completed = false;
+        const pending = (
+          operation === "observe"
+            ? store.observe("workspace")
+            : store.compareAndApply("workspace", observation.comparison, {
+                operation: "delete",
+                action: "delete",
+              })
+        ).then(
+          (value) => {
+            completed = true;
+            return { ok: true, value } as const;
+          },
+          (error: unknown) => {
+            completed = true;
+            return { ok: false, error } as const;
+          },
+        );
+        try {
+          await vi.waitFor(() => expect(held).toBeDefined());
+          await vi.waitFor(() => expect(assertActive.mock.calls.length).toBeGreaterThan(4));
+          expect(completed).toBe(false);
+          held?.release();
+          held = undefined;
+          if (operation === "observe") {
+            await expect(pending).resolves.toMatchObject({ ok: true, value: { value: "owner" } });
+          } else {
+            await expect(pending).resolves.toEqual({ ok: true, value: { status: "applied" } });
+          }
+        } finally {
+          dispatch.mockRestore();
+          held?.release();
+          await pending;
         }
         expect(await store.lookup("workspace")).toBe(operation === "observe" ? "owner" : undefined);
       });
