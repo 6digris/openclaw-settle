@@ -38,7 +38,8 @@ Watch background behavior. See [Watch setup and limits](/platforms/ios#standalon
 - Tap the composer microphone for on-device dictation. Long-press it to record
   a voice-note attachment. Start continuous Talk from the Talk waveform.
 - Talk opens a dedicated conversation page with the existing animated mascot.
-  Its speaking mouth follows audio playback, not text generation. Tapping Talk
+  Its speaking mouth follows audio playback, not text generation. The closed
+  mouth remains visible between replies and with reduced motion enabled. Tapping Talk
   during a call returns to that page without starting another call. **Go to chat**
   opens the call's original agent/session; Android Back changes only the view.
   **End** closes audio and is separate from the chat agent's **Stop** action.

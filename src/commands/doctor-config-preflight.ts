@@ -44,6 +44,7 @@ import {
   noteStateMigrationResult,
   prepareDoctorMigrationPlugins,
 } from "./doctor-config-preflight-startup.js";
+import { withDoctorConfigPreflightWorkerScope } from "./doctor-config-preflight-worker-scope.js";
 import * as cronMigration from "./doctor-config-preflight.cron.js";
 import { maybeRepairPluginOpenClawHostLinks } from "./doctor-plugin-host-links.js";
 import { throwStartupMigrationGuardRejected } from "./doctor-startup-migration-refusal.js";
@@ -78,18 +79,9 @@ const loadCronRepair = createLazyRuntimeModule(() => import("./doctor/cron/legac
 export async function runDoctorConfigPreflight(
   options: DoctorConfigPreflightOptions = {},
 ): Promise<DoctorConfigPreflightResult> {
-  const run = () => runDoctorConfigPreflightOperation(options);
-  // Reuse child imports for this state operation; every read still acquires fresh admission.
-  // The scope joins its child after the preflight releases its migration lease and heartbeat.
-  if (
-    options.migrateState !== false &&
-    (options.requireStartupMigrationCheckpoint === true ||
-      options.doctorOnlyStateMigrations === true)
-  ) {
-    const { withSqliteReadOnlyWorkerScope } = await import("../infra/sqlite-readonly-worker.js");
-    return await withSqliteReadOnlyWorkerScope(run);
-  }
-  return await run();
+  return await withDoctorConfigPreflightWorkerScope(options, () =>
+    runDoctorConfigPreflightOperation(options),
+  );
 }
 
 async function runDoctorConfigPreflightOperation(
@@ -200,7 +192,7 @@ async function runDoctorConfigPreflightOperation(
             ? error
             : new Error("OpenClaw startup migration lease heartbeat failed.");
       }
-    }, 60_000);
+    }, migrationCheckpoint.STARTUP_MIGRATION_HEARTBEAT_INTERVAL_MS);
     startupMigrationHeartbeat.unref?.();
     // Another process may have completed the same work between our pre-lease read and acquisition.
     // Refresh every checkpoint input under the lease so only work still missing from state runs.
@@ -443,6 +435,7 @@ async function runDoctorConfigPreflightOperation(
         snapshotRead: { ...configSnapshotRead, snapshot },
         readRefreshedSnapshot: () => readConfigSnapshotForPreflight(false),
         beforeStateMigrations: options.beforeStateMigrations,
+        onWarnings: (warnings) => startupMigrationWarnings.push(...warnings),
         onDeferredPlugins: (pending, inspection) =>
           pluginMigrations.converged(
             pending,
@@ -569,6 +562,9 @@ async function runDoctorConfigPreflightOperation(
                 log: migrationLog,
                 recoverCorruptTargetStore: options.recoverCorruptTargetStore,
                 doctorOnlyStateMigrations: options.doctorOnlyStateMigrations,
+                ...(options.agentDatabaseMigrationDiscovery
+                  ? { agentDatabaseMigrationDiscovery: options.agentDatabaseMigrationDiscovery }
+                  : {}),
                 beforeWorkspaceStateMigration: options.beforeWorkspaceStateMigration,
                 onStepReceipt: (receipt) => stateMigrationStepReceipts.push(receipt),
                 ...(gatewayStartupCheckpointRequired

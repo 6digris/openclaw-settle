@@ -164,6 +164,8 @@ result; use **Copy result** in the Control UI or `openclaw tasks show <lookup>`.
 
 Agent run completion is authoritative for active task records. A successful detached run finalizes as `succeeded`, ordinary run errors finalize as `failed`, timeouts finalize as `timed_out`, and cancel/abort outcomes finalize as `cancelled`. Once a task is terminal, later lifecycle signals do not downgrade it - an operator-cancelled or already-`failed`/`timed_out`/`lost` task stays that way even if a success signal arrives afterwards.
 
+Distinct ACP executions receive separate task and flow IDs even when they share a request ID. Repeated status mirrors of the same execution keep its original task ID. A run-ID lookup selects the latest execution within that ACP session; an exact task-ID lookup still returns the older task and its terminal result. Cancelling one execution does not cancel a queued successor with the same request ID.
+
 `lost` is runtime-aware:
 
 - ACP tasks: only a live in-process ACP turn in the Gateway proves the run is alive; persisted session metadata alone does not. Offline CLI audit stays conservative and never reclaims ACP tasks.
@@ -383,7 +385,11 @@ Task records and delivery state persist in the shared OpenClaw SQLite state data
 
 Set `OPENCLAW_STATE_DIR` to move the whole state root (default `~/.openclaw`) elsewhere; the shared database path moves with it.
 
-The registry loads into memory on first use and persists every write back to SQLite, so records survive gateway restarts. WAL growth stays bounded through SQLite's default autocheckpoint threshold plus periodic `PASSIVE` checkpoints. After a checkpoint completes, the next commit resets the WAL and applies a 64 MiB `journal_size_limit` ceiling, so a reader cannot leave the file parked at a pathological high-water mark until restart. Shutdown and explicit maintenance checkpoints use `TRUNCATE` so normal closes reclaim WAL space without making the background sweeper wait on active readers.
+The registry loads into memory on first use and persists every write back to SQLite, so records survive gateway restarts.
+
+After refreshing an invalidated registry projection, agent events with no matching task skip task-store mutation admission. Streaming activity stays in a transient in-memory overlay, with display updates coalesced to once per second and yielded-subagent progress to 15-second batches. Activity-only durable liveness updates occur at most once per minute; lifecycle transitions, errors, and tool-start counters still persist immediately through the same registry owner. Transient activity is not restored after a restart.
+
+WAL growth stays bounded through SQLite's default autocheckpoint threshold plus periodic `PASSIVE` checkpoints. After a checkpoint completes, the next commit resets the WAL and applies a 64 MiB `journal_size_limit` ceiling, so a reader cannot leave the file parked at a pathological high-water mark until restart. Shutdown and explicit maintenance checkpoints use `TRUNCATE` so normal closes reclaim WAL space without making the background sweeper wait on active readers.
 
 The shared database replaced the `tasks/runs.sqlite` and `flows/registry.sqlite` sidecar stores in `v2026.5.30-beta.1`, stable from `v2026.6.1`. If either sidecar is still present under the state root, `openclaw doctor` imports its rows into the shared database. Installs from `v2026.6.1` onward never create these files.
 

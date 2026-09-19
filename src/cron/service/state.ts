@@ -165,7 +165,7 @@ export type CronServiceDeps = {
     sessionKey?: string;
     agentId?: string;
   }) => DeliveryContext | undefined;
-  /** Runs timer and startup work inside the owning Gateway's detached scope. */
+  /** Binds the Gateway for complete scheduled operations, including admission and settlement. */
   runSchedulerOwned?: <T>(run: () => Promise<T>) => Promise<T>;
   requestHeartbeat: (opts: HeartbeatWakeRequest) => void;
   /** Waits for the terminal result of a cron-owned coalesced heartbeat wake. */
@@ -463,7 +463,8 @@ export type CronAddOptions = {
 export type CronUpdateInput = CronJobPatch;
 /** Authenticated caller provenance used only when a tool policy is explicitly adopted. */
 export type CronUpdateOptions = {
-  scheduledToolPolicy?: CronScheduledToolPolicy;
+  /** Null forbids policy adoption; undefined retains in-process operator defaults. */
+  scheduledToolPolicy?: CronScheduledToolPolicy | null;
   toolsAllowProvenance?: CronToolsAllowProvenance;
   /** Restrict-only exec pin from the signed creator-turn identity. */
   toolsAllowExecTarget?: CronToolsAllowExecTarget;

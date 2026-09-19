@@ -5,7 +5,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import * as sqlite from "../infra/node-sqlite.js";
 import { tryInspectSqliteReadOnlyInProcess } from "../infra/sqlite-readonly-inspection.js";
-import { inspectAgentDatabaseSchemaInWorker } from "./openclaw-agent-schema-inspection-worker.js";
+import { acquireStateDatabaseHandleExclusion } from "../infra/state-database-coordinator.js";
+import { createAgentSchemaInspectionWorker } from "./openclaw-agent-schema-inspection-worker.js";
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -13,25 +14,51 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-it("joins the schema reader before returning canceled ownership", async () => {
-  const pathname = path.join(tempDirs.make("agent-schema-cancellation-"), "source.sqlite");
-  fs.writeFileSync(pathname, "");
-  const controller = new AbortController();
-  const reason = new Error("preflight ownership stopped");
-  const operation = inspectAgentDatabaseSchemaInWorker(
-    { pathname, supportedVersion: 1 },
-    controller.signal,
-  );
-  const child = vi.mocked(fork).mock.results.at(-1)?.value;
-  expect(child?.pid).toBeGreaterThan(0);
-  let closed = false;
-  child.once("close", () => {
-    closed = true;
-  });
-  const rejected = expect(operation).rejects.toBe(reason);
-  controller.abort(reason);
-  await rejected;
-  expect(closed).toBe(true);
+it.each(["before launch", "during read"])(
+  "settles canceled ownership %s after joining its schema reader",
+  async (phase) => {
+    const pathname = path.join(tempDirs.make("agent-schema-cancellation-"), "source.sqlite");
+    fs.writeFileSync(pathname, "");
+    const controller = new AbortController();
+    const reason = new Error("preflight ownership stopped");
+    vi.mocked(fork).mockClear();
+    if (phase === "before launch") {
+      controller.abort(reason);
+    }
+    await using reader = createAgentSchemaInspectionWorker();
+    const operation = reader.inspect({ pathname, supportedVersion: 1 }, controller.signal);
+    if (phase === "before launch") {
+      await expect(operation).rejects.toBe(reason);
+      expect(fork).not.toHaveBeenCalled();
+      return;
+    }
+    const child = vi.mocked(fork).mock.results.at(-1)?.value;
+    expect(child?.pid).toBeGreaterThan(0);
+    let closed = false;
+    child.once("close", () => {
+      closed = true;
+    });
+    const rejected = expect(operation).rejects.toBe(reason);
+    controller.abort(reason);
+    await rejected;
+    expect(closed).toBe(true);
+  },
+);
+
+it("reuses a process while rereading changed data and releasing each source lease", async () => {
+  const pathname = path.join(tempDirs.make("agent-schema-reuse-"), "source.sqlite");
+  vi.mocked(fork).mockClear();
+  await using reader = createAgentSchemaInspectionWorker();
+  for (const version of [1, 2]) {
+    const writer = sqlite.openNodeSqliteDatabase(pathname);
+    writer.exec(`PRAGMA user_version=${version};`);
+    writer.close();
+    await expect(reader.inspect({ pathname, supportedVersion: 2 })).resolves.toMatchObject({
+      version,
+    });
+    acquireStateDatabaseHandleExclusion({ databasePath: pathname, busyTimeoutMs: 0 }).release();
+  }
+  expect(fork).toHaveBeenCalledOnce();
 });
 
 it("preserves a busy source failure without requesting another snapshot attempt", () => {

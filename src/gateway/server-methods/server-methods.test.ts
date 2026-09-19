@@ -1180,12 +1180,15 @@ describe("projectChatDisplayMessages", () => {
   const safeFailureContent = [
     { type: "text", text: "The agent run failed before producing a reply." },
   ];
+  const networkFailureText = "LLM request failed: network connection error.";
+  const networkFailureContent = (reply?: string, type = "text") => [
+    { type, text: [networkFailureText, reply].filter(Boolean).join("\n\n") },
+  ];
   const privateError = "private upstream at secret.internal.example failed";
   const displayErrorCases: Array<{
     name: string;
     message: Record<string, unknown>;
     content: Array<Record<string, unknown>>;
-    visibleText?: string;
   }> = [
     {
       name: "projects empty assistant error turns as a generic safe failure",
@@ -1193,9 +1196,9 @@ describe("projectChatDisplayMessages", () => {
       content: safeFailureContent,
     },
     {
-      name: "projects empty text-block assistant errors as a generic safe failure",
+      name: "projects empty text-block assistant errors as a safe network failure",
       message: { content: [{ type: "text", text: "" }], errorMessage: "Connection error." },
-      content: safeFailureContent,
+      content: networkFailureContent(),
     },
     {
       name: "projects provider refusals before classifying their explanation text",
@@ -1223,15 +1226,15 @@ describe("projectChatDisplayMessages", () => {
         content: [{ type: "output_text", text: "A partial reply before the run failed." }],
         errorMessage: "Connection error.",
       },
-      content: [{ type: "output_text", text: "A partial reply before the run failed." }],
+      content: networkFailureContent("A partial reply before the run failed.", "output_text"),
     },
     {
-      name: "projects thinking-only assistant errors as a generic safe failure",
+      name: "projects thinking-only assistant errors as a safe network failure",
       message: {
         content: [{ type: "thinking", thinking: "private upstream details" }],
         errorMessage: "Connection error.",
       },
-      content: safeFailureContent,
+      content: networkFailureContent(),
     },
     {
       name: "preserves a safe failure for a synthetic sentinel followed only by private thinking",
@@ -1261,24 +1264,23 @@ describe("projectChatDisplayMessages", () => {
       content: safeFailureContent,
     },
     {
-      name: "projects commentary-phase assistant errors as a visible generic safe failure",
+      name: "projects commentary-phase assistant errors as a visible safe network failure",
       message: {
         phase: "commentary",
         content: [],
         text: "private upstream details",
         errorMessage: "Connection error.",
       },
-      content: safeFailureContent,
+      content: networkFailureContent(),
     },
     {
-      name: "leaves legacy top-level assistant error text unchanged",
+      name: "preserves legacy top-level assistant text with safe network failure details",
       message: {
         content: [],
         text: "A real reply before the run failed.",
         errorMessage: "Connection error.",
       },
-      content: [],
-      visibleText: "A real reply before the run failed.",
+      content: networkFailureContent("A real reply before the run failed."),
     },
     {
       name: "preserves partial error replies without hidden reasoning or diagnostics",
@@ -1366,7 +1368,7 @@ describe("projectChatDisplayMessages", () => {
     },
   ];
 
-  it.each(displayErrorCases)("$name", ({ message, content, visibleText }) => {
+  it.each(displayErrorCases)("$name", ({ message, content }) => {
     const result = projectChatDisplayMessages([
       { role: "assistant", stopReason: "error", timestamp: 1, ...message },
     ]);
@@ -1376,7 +1378,6 @@ describe("projectChatDisplayMessages", () => {
         content,
         stopReason: "error",
         timestamp: 1,
-        ...(visibleText === undefined ? {} : { text: visibleText }),
       },
     ]);
     expect(JSON.stringify(result)).not.toContain("secret.internal.example");
@@ -1454,7 +1455,7 @@ describe("projectChatDisplayMessages", () => {
     ["output_text", "NO_REPLY"],
     ["input_text", ""],
     ["input_text", "NO_REPLY"],
-  ])("projects hidden %s assistant errors %j as a generic safe failure", (type, text) => {
+  ])("projects hidden %s assistant errors %j as a safe network failure", (type, text) => {
     const result = projectChatDisplayMessages([
       {
         role: "assistant",
@@ -1465,9 +1466,7 @@ describe("projectChatDisplayMessages", () => {
       },
     ]);
 
-    expect(result[0]?.content).toEqual([
-      { type: "text", text: "The agent run failed before producing a reply." },
-    ]);
+    expect(result[0]?.content).toEqual(networkFailureContent());
   });
 
   it.each(["NO_REPLY", STREAM_ERROR_FALLBACK_TEXT])(
@@ -4553,14 +4552,17 @@ describe("gateway healthHandlers.status scope handling", () => {
     vi.mocked(statusModule.getStatusSummary).mockClear();
   });
 
-  async function runHealthStatus(scopes: string[]) {
+  async function runHealthStatus(
+    scopes: string[],
+    params: { includeChannelSummary?: boolean } = {},
+  ) {
     const respond = vi.fn();
 
     await expectDefined(healthHandlers.status, "healthHandlers.status test invariant").call(
       healthHandlers,
       {
         req: {} as never,
-        params: {} as never,
+        params,
         respond: respond as never,
         context: {} as never,
         client: { connect: { role: "operator", scopes } } as never,
@@ -4582,29 +4584,21 @@ describe("gateway healthHandlers.status scope handling", () => {
       expect(vi.mocked(statusModule.getStatusSummary)).toHaveBeenCalledWith({
         includeSensitive,
         includeChannelSummary: true,
+        includeCliProjection: false,
       });
       expect(respond).toHaveBeenCalledWith(true, expect.objectContaining({ ok: true }), undefined);
     },
   );
 
   it("can skip channel summary work for liveness-only status requests", async () => {
-    const respond = vi.fn();
-
-    await expectDefined(healthHandlers.status, "healthHandlers.status test invariant").call(
-      healthHandlers,
-      {
-        req: {} as never,
-        params: { includeChannelSummary: false },
-        respond: respond as never,
-        context: {} as never,
-        client: { connect: { role: "operator", scopes: ["operator.read"] } } as never,
-        isWebchatConnect: () => false,
-      },
-    );
+    const respond = await runHealthStatus(["operator.read"], {
+      includeChannelSummary: false,
+    });
 
     expect(vi.mocked(statusModule.getStatusSummary)).toHaveBeenCalledWith({
       includeSensitive: false,
       includeChannelSummary: false,
+      includeCliProjection: false,
     });
     expect(respond).toHaveBeenCalledWith(true, expect.objectContaining({ ok: true }), undefined);
   });

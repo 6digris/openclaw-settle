@@ -5,6 +5,7 @@ import {
   buildControlPlaneUpdateRestartHealthPendingResult,
   resolveManagedServiceUpdateFailureExitCode,
 } from "../../infra/update-control-plane-sentinel.js";
+import { collectUpdateDoctorFailureFacts } from "../../infra/update-doctor-result.js";
 import { normalizeControlPlaneUpdateResult } from "../../infra/update-restart-sentinel-payload.js";
 import { recordUpdateRunStep } from "../../infra/update-run-ledger.js";
 import { isUpdateGatewayReadinessPending } from "../../infra/update-run-step.js";
@@ -35,7 +36,10 @@ import { rollbackFailedUpdate } from "./update-command-rollback.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
 import { UpdateServiceLoadBoundaryError } from "./update-command-service-load.js";
 import { createWindowsTaskAutoStartGuard } from "./update-command-service-maintenance.js";
-import { GatewayServiceUpdateOwnershipError } from "./update-command-service-plan.js";
+import {
+  collectServiceInspectionFailureFacts,
+  GatewayServiceUpdateOwnershipError,
+} from "./update-command-service-plan.js";
 import {
   recordFailedUpdateGatewayState,
   maybeRestartService,
@@ -69,6 +73,18 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
   assertCurrent();
   await assertUpdateCommandPackageFinalization(params);
   assertCurrent();
+  const serviceVerdict = params.preManagedServiceStop?.serviceUpdateVerdict;
+  if (serviceVerdict?.kind === "unavailable") {
+    params.result.steps.push({
+      name: "managed-service",
+      command: "openclaw gateway status --deep",
+      cwd: params.root,
+      durationMs: 0,
+      exitCode: 0,
+      advisory: { kind: "recoverable-maintenance", message: serviceVerdict.message },
+      failureFacts: collectServiceInspectionFailureFacts(serviceVerdict),
+    });
+  }
   const shouldRestart =
     params.shouldRestart &&
     (!params.coreAlreadyCurrent || params.preManagedServiceStop?.running === true);
@@ -690,6 +706,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
       throw error;
     }
     const message = formatErrorMessage(error);
+    const failureFacts = collectUpdateDoctorFailureFacts(error);
     defaultRuntime.error(`Post-update verification failed: ${message}`);
     const reported = await reportResult({
       ...params.result,
@@ -704,6 +721,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
           durationMs: Math.max(0, Date.now() - params.startedAt),
           exitCode: 1,
           stderrTail: message,
+          ...(failureFacts.length ? { failureFacts } : {}),
         },
       ],
     });

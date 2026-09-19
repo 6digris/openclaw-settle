@@ -19,6 +19,8 @@ import ai.openclaw.app.node.CameraCaptureManager
 import ai.openclaw.app.node.InvokeDispatcher
 import ai.openclaw.app.ui.ShellScreen
 import ai.openclaw.app.ui.design.ClawDesignTheme
+import ai.openclaw.app.ui.design.mascotMouthPixels
+import ai.openclaw.app.ui.design.saveMascotFrame
 import ai.openclaw.app.voice.TalkAgentActivity
 import ai.openclaw.app.voice.TalkAudioPlaying
 import ai.openclaw.app.voice.TalkModeManager
@@ -120,6 +122,7 @@ import kotlin.coroutines.CoroutineContext
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class ChatCallLifecycleTest {
   private val composeRule = createComposeRule()
+  private var captureMotion = false
   private var viewportHeight by mutableStateOf(800.dp)
   private var fixtureFontScale by mutableStateOf(1f)
 
@@ -201,6 +204,81 @@ class ChatCallLifecycleTest {
     }
     selectChat(FIRST_CHAT)
     composeRule.runOnIdle { model.requestHomeDestination(HomeDestination.Chat) }
+  }
+
+  @Test
+  fun mouthCallPageFollowsActualPlaybackPauseThinkingAndMute() {
+    installSpeechRecognitionServiceFixture()
+    gateway.nativeTalk = true
+    val refresh = photoScope.async { talkManager().refreshConfig() }
+    awaitUiState { refresh.isCompleted }
+    val speechResponse = CompletableDeferred<() -> Unit>()
+    gateway.deferTalkSpeak = { speechResponse.complete(it) }
+    val played = CompletableDeferred<Unit>()
+    val finish = CompletableDeferred<Unit>()
+    ReflectionHelpers.setField(
+      talkManager(),
+      "talkAudioPlayer",
+      object : TalkAudioPlaying {
+        override suspend fun play(audio: TalkSpeakAudio) {
+          played.complete(Unit)
+          finish.await()
+        }
+
+        override fun stop() {
+          if (played.isCompleted) finish.complete(Unit)
+        }
+      },
+    )
+    captureMotion = true
+    composeRule.mainClock.autoAdvance = false
+    Settings.Global.putFloat(app.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f)
+    app.contentResolver.notifyChange(Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE), null)
+    composeRule.mainClock.advanceTimeByFrame()
+    composeRule.onNodeWithContentDescription("Start Talk").performClick()
+    awaitListening(expectChatCall = true)
+    val frames = mutableListOf<Pair<String, Int>>()
+
+    fun capture(name: String) {
+      composeRule.mainClock.advanceTimeBy(96)
+      val image = composeRule.onNodeWithTag("conversation-mascot").captureToImage().asAndroidBitmap()
+      image.saveMascotFrame("call-mouth-$name")
+      frames += name to image.mascotMouthPixels()
+      captureTalkProof("call-screen-$name")
+    }
+    capture("00-listening")
+    val recognizer = shadowOf(checkNotNull(ShadowSpeechRecognizer.getLatestSpeechRecognizer()))
+    val result = Bundle().apply { putStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf("A spoken question")) }
+    composeRule.runOnIdle {
+      recognizer.triggerOnResults(result)
+      ShadowSystemClock.advanceBy(Duration.ofMillis(1200))
+    }
+    awaitUiState { speechResponse.isCompleted && model.talkCallPresentation.value.thinking && !model.talkCallPresentation.value.speaking }
+    capture("00-thinking-before-playout")
+    runBlocking { speechResponse.await().invoke() }
+    awaitUiState { played.isCompleted && model.talkCallPresentation.value.speaking }
+    repeat(4) { capture("01-speaking-$it") }
+    composeRule.runOnIdle { finish.complete(Unit) }
+    awaitUiState { !model.talkCallPresentation.value.speaking && model.talkModeListening.value }
+    capture("02-paused-listening")
+    gateway.sendEvent("agent", """{"runId":"mouth-observed-work","sessionKey":"$FIRST_CHAT","agentId":"scout","seq":1,"stream":"lifecycle","data":{"phase":"start"}}""")
+    awaitUiState { model.talkCallPresentation.value.activity == TalkAgentActivity.Thinking }
+    capture("03-thinking")
+    composeRule.onNodeWithContentDescription("Speaker audio").performClick()
+    awaitUiState { !model.speakerEnabled.value }
+    assertFalse(model.talkCallPresentation.value.speaking)
+    capture("04-muted")
+    assertTrue("The actual call mouth must remain present after closure: $frames", frames.all { it.second > 0 })
+    assertTrue(
+      "Actual audible playback changes rendered mouth pixels",
+      frames
+        .filter { "speaking" in it.first }
+        .map { it.second }
+        .distinct()
+        .size > 1,
+    )
+    composeRule.onNodeWithText("End").performClick()
+    awaitStopped()
   }
 
   @Test
@@ -1683,7 +1761,10 @@ class ChatCallLifecycleTest {
 
   private fun awaitUiState(condition: () -> Boolean) {
     // Android Main backs ViewModel/permission work; Compose clock advancement alone does not drain it.
-    composeRule.waitUntil(TIMEOUT_MS) { composeRule.runOnIdle(condition) }
+    composeRule.waitUntil(TIMEOUT_MS) {
+      if (captureMotion) composeRule.mainClock.advanceTimeByFrame()
+      composeRule.runOnIdle(condition)
+    }
   }
 
   private fun awaitCreate(count: Int = 1): PendingTalkOwnershipCreate {

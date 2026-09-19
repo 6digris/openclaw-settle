@@ -49,6 +49,8 @@ internal class ChatRealtimeTalkGatewayFixture : AutoCloseable {
 
   @Volatile var deferTalkConfig: (((() -> Unit)) -> Unit)? = null
 
+  @Volatile var deferTalkSpeak: (((() -> Unit)) -> Unit)? = null
+
   @Volatile var nativeAssistantReply = "Synthetic native spoken reply"
   private val history = java.util.concurrent.ConcurrentHashMap<String, String>()
 
@@ -179,7 +181,8 @@ internal class ChatRealtimeTalkGatewayFixture : AutoCloseable {
           }
 
           "talk.speak" -> {
-            respond("""{"audioBase64":"AQIDBA==","provider":"synthetic","outputFormat":"pcm_24000"}""")
+            val reply = { respond("""{"audioBase64":"AQIDBA==","provider":"synthetic","outputFormat":"pcm_24000"}""") }
+            deferTalkSpeak?.invoke(reply) ?: reply()
           }
 
           "talk.client.toolCall" -> {

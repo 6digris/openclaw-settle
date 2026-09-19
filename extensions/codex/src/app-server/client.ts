@@ -3,24 +3,25 @@
  * routing, notification fanout, server request handlers, and version checks.
  */
 import { randomUUID } from "node:crypto";
-import { createInterface, type Interface as ReadlineInterface } from "node:readline";
-import { embeddedAgentLog, OPENCLAW_VERSION } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { coerceErrorMessage, toStringifiedError } from "openclaw/plugin-sdk/error-runtime";
-import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import { addSafeTimeoutDelayGraceMs } from "openclaw/plugin-sdk/number-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { sliceUtf16Safe, truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { parse as parseSemver } from "semver";
+import type { CodexCatalogPreviewCache } from "../session-catalog-native-projection.js";
+import {
+  closeCodexCatalogClientSource,
+  codexCatalogSourceForClient,
+} from "../session-catalog-source.js";
+import { buildCodexAppServerInitializeParams } from "./client-initialize.js";
+import { CodexAppServerMessageDecoder } from "./client-message-decoder.js";
+import { dispatchCodexAppServerResponse } from "./client-response.js";
 import type { CodexAppServerStartOptions } from "./config-contracts.js";
 import { resolveCodexAppServerRuntimeOptions } from "./config-runtime.js";
-import { resolveDynamicToolServerRequestTimeoutMs } from "./dynamic-tool-execution.js";
-import { createCodexElicitationResponse } from "./elicitation-response.js";
-import { readCodexDynamicToolCallParams } from "./protocol-validators.js";
 import {
   type CodexAppServerRequestMethod,
   type CodexAppServerRequestParams,
   type CodexAppServerRequestResult,
-  type CodexInitializeParams,
   type CodexInitializeResponse,
   isJsonObject,
   isRpcResponse,
@@ -32,7 +33,8 @@ import {
 } from "./protocol.js";
 import { createCodexRequestAttempt, type CodexRequestAttempt } from "./request-attempt.js";
 import type { CodexRequestWaiterFinished } from "./request-observation.js";
-import { CodexAppServerRpcError } from "./rpc-error.js";
+import { CODEX_APP_SERVER_OVERLOADED_ERROR_CODE, CodexAppServerRpcError } from "./rpc-error.js";
+import { CodexServerRequests, type CodexServerRequestHandler } from "./server-requests.js";
 import { createStdioTransport } from "./transport-stdio.js";
 import { createWebSocketTransport } from "./transport-websocket.js";
 import {
@@ -45,10 +47,7 @@ import {
 import { CODEX_APP_SERVER_VERSION, MIN_SUPPORTED_CODEX_APP_SERVER_VERSION } from "./version.js";
 
 const CODEX_APP_SERVER_PARSE_LOG_MAX = 500;
-const CODEX_APP_SERVER_PARSE_BUFFER_MAX = 8 * 1024 * 1024;
-const CODEX_APP_SERVER_PARSE_BUFFER_MAX_LINES = 1_000;
 const CODEX_APP_SERVER_STDERR_TAIL_MAX = 2_000;
-const CODEX_APP_SERVER_OVERLOADED_ERROR_CODE = -32_001;
 const CODEX_APP_SERVER_OVERLOAD_MAX_RETRIES = 3;
 const CODEX_APP_SERVER_OVERLOAD_RETRY_BASE_MS = 50;
 const CODEX_APP_SERVER_PENDING_STARTUP_WARNINGS_MAX = 32;
@@ -56,16 +55,13 @@ const CODEX_APP_SERVER_CLIENT_INSTANCE_IDS = new WeakMap<object, string>();
 const UNPAIRED_SURROGATE_RE =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 
-export type CodexCatalogListRequestKey = {
-  scope: object;
-  key: string;
-};
-
 type RequestOptions = {
   timeoutMs?: number;
   signal?: AbortSignal;
   assertCurrent?: () => void;
-  catalogListKey?: CodexCatalogListRequestKey;
+  catalogPreview?: true;
+  catalogPreviewCache?: CodexCatalogPreviewCache;
+  catalogRows?: number;
   attemptWaiterFinished?: CodexRequestWaiterFinished;
 };
 
@@ -197,12 +193,6 @@ export function isCodexAppServerConnectionClosedError(error: unknown): boolean {
   );
 }
 
-type CodexServerRequestHandler = (
-  request: Required<Pick<RpcRequest, "id" | "method">> & { params?: JsonValue },
-  signal?: AbortSignal,
-  setExecutionTimeoutMs?: (timeoutMs: number) => void,
-) => Promise<JsonValue | undefined> | JsonValue | undefined;
-
 /** Notification handler registered on a Codex app-server client. */
 type CodexServerNotificationHandler = (
   notification: CodexServerNotification,
@@ -221,10 +211,15 @@ export type CodexAppServerRuntimeIdentity = {
 export class CodexAppServerClient {
   private readonly instanceId = randomUUID();
   private readonly child: CodexAppServerTransport;
-  private readonly lines: ReadlineInterface;
+  private readonly closeMessageReader: () => void;
   private readonly pending = new Map<number | string, CodexRequestAttempt>();
-  private readonly catalogListRequests = new WeakMap<object, Map<string, CodexRequestAttempt>>();
-  private readonly requestHandlers = new Set<CodexServerRequestHandler>();
+  private readonly catalogResponses = new WeakMap<
+    CodexRequestAttempt,
+    { preview?: CodexCatalogPreviewCache; remainingRows?: number }
+  >();
+  private readonly serverRequests = new CodexServerRequests((response) =>
+    this.writeMessage(response),
+  );
   private readonly notificationHandlers = new Set<CodexServerNotificationHandler>();
   private readonly pendingStartupWarnings: CodexServerNotification[] = [];
   private readonly closeHandlers = new Set<(client: CodexAppServerClient) => void>();
@@ -249,19 +244,12 @@ export class CodexAppServerClient {
   private stderrTail = "";
   private readonly privateTransportSecrets = new Set<string>();
   private privateStderrPending = "";
-  private pendingParse:
-    | {
-        text: string;
-        lineCount: number;
-        firstError: unknown;
-      }
-    | undefined;
 
   private constructor(child: CodexAppServerTransport) {
     this.child = child;
-    this.lines = createInterface({ input: child.stdout });
-    this.lines.on("line", (line) => this.handleLine(line));
-    this.lines.on("error", (error) => this.closeWithError(toStringifiedError(error)));
+    this.closeMessageReader = new CodexAppServerMessageDecoder(
+      logCodexAppServerParseFailure,
+    ).listen(child.stdout, (message) => this.handleParsedMessage(message));
     child.stdout.on("error", (error) => this.closeWithError(toStringifiedError(error)));
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
@@ -346,23 +334,7 @@ export class CodexAppServerClient {
     }
     // The handshake identifies the exact app-server process we will keep using,
     // which matters when callers override the binary or app-server args.
-    const response = await this.request("initialize", {
-      clientInfo: {
-        name: "openclaw",
-        title: "OpenClaw",
-        version: OPENCLAW_VERSION,
-      },
-      capabilities: {
-        experimentalApi: true,
-        extensions: {
-          "openai/standard-form-input": {},
-          "openai/form": {},
-          "io.modelcontextprotocol/ui": {
-            mimeTypes: ["text/html;profile=mcp-app"],
-          },
-        },
-      },
-    } satisfies CodexInitializeParams);
+    const response = await this.request("initialize", buildCodexAppServerInitializeParams());
     this.serverVersion = assertSupportedCodexAppServerVersion(response);
     this.runtimeIdentity = buildCodexAppServerRuntimeIdentity(response, this.serverVersion);
     this.notify("initialized");
@@ -436,9 +408,6 @@ export class CodexAppServerClient {
     optionsInput?: RequestOptions,
   ): Promise<T> {
     const options = optionsInput ?? {};
-    if (options.catalogListKey && method !== "thread/list") {
-      return Promise.reject(new TypeError("Catalog request sharing only supports thread/list"));
-    }
     if (this.closed) {
       return Promise.reject(this.closeError ?? new Error("codex app-server client is closed"));
     }
@@ -683,29 +652,6 @@ export class CodexAppServerClient {
         ),
       );
     }
-    let sharedRequests: Map<string, CodexRequestAttempt> | undefined;
-    let sharedKey: string | undefined;
-    const sharing = options.catalogListKey;
-    if (sharing) {
-      try {
-        options.assertCurrent?.();
-      } catch (error) {
-        return Promise.reject(toStringifiedError(error));
-      }
-      sharedKey = JSON.stringify([sharing.key, params]);
-      sharedRequests = this.catalogListRequests.get(sharing.scope);
-      const existing = sharedRequests?.get(sharedKey);
-      if (existing) {
-        return existing.wait<T>(
-          { ...options, disposition: "joined", overloadAttemptOrdinal },
-          deadline,
-        );
-      }
-      if (!sharedRequests) {
-        sharedRequests = new Map();
-        this.catalogListRequests.set(sharing.scope, sharedRequests);
-      }
-    }
     const id = this.nextId++;
     if (
       method === "account/login/start" ||
@@ -718,7 +664,7 @@ export class CodexAppServerClient {
     const message: RpcRequest = { id, method, params: params as JsonValue | undefined };
     const attempt = createCodexRequestAttempt({
       method,
-      retainWritten: sharing !== undefined || onResponse !== undefined,
+      retainWritten: onResponse !== undefined,
       ...(method === "thread/list"
         ? { diagnosticIdentity: { clientInstanceId: this.instanceId, rpcId: id } }
         : {}),
@@ -732,9 +678,6 @@ export class CodexAppServerClient {
         if (this.pending.get(id) === attempt) {
           this.pending.delete(id);
         }
-        if (sharedKey !== undefined && sharedRequests?.get(sharedKey) === attempt) {
-          sharedRequests.delete(sharedKey);
-        }
       },
       cancellationError: (reason, written, cause) =>
         new CodexAppServerLocalRequestCancellationError(method, reason, written, cause),
@@ -747,15 +690,17 @@ export class CodexAppServerClient {
           : error,
     });
     this.pending.set(id, attempt);
-    if (sharedKey !== undefined) {
-      sharedRequests?.set(sharedKey, attempt);
+    if (options.catalogPreview && method === "thread/list") {
+      this.catalogResponses.set(attempt, {
+        preview: options.catalogPreviewCache,
+        remainingRows: options.catalogRows,
+      });
     }
-    // Stateful ownership assertions remain pre-write checks. A native response
-    // can arrive after authority changed; only catalog waiters revalidate here.
+    // Stateful ownership assertions remain pre-write checks.
     const result = attempt.wait<T>(
       {
         ...options,
-        assertCurrent: sharing ? options.assertCurrent : undefined,
+        assertCurrent: undefined,
         disposition: "new",
         overloadAttemptOrdinal,
       },
@@ -765,11 +710,7 @@ export class CodexAppServerClient {
       return result;
     }
     try {
-      // The sharing lookup already checked its current caller before serializing the key.
-      // Ordinary requests retain the same pre-write guard and dispatcher.
-      if (!sharing) {
-        options.assertCurrent?.();
-      }
+      options.assertCurrent?.();
       if (attempt.pending) {
         this.writeMessage(
           message,
@@ -793,8 +734,8 @@ export class CodexAppServerClient {
 
   /** Registers a handler for app-server requests sent back to OpenClaw. */
   addRequestHandler(handler: CodexServerRequestHandler): () => void {
-    this.requestHandlers.add(handler);
-    return () => this.requestHandlers.delete(handler);
+    this.serverRequests.handlers.add(handler);
+    return () => this.serverRequests.handlers.delete(handler);
   }
 
   /** Registers a notification handler and returns its disposer. */
@@ -933,60 +874,8 @@ export class CodexAppServerClient {
     return held ? text.slice(0, -held) : text;
   }
 
-  private handleLine(line: string): void {
-    // Live RPC values remain exact; the canonical presentation boundary redacts diagnostics.
-    const rawLine = line.endsWith("\r") ? line.slice(0, -1) : line;
-    if (this.pendingParse) {
-      this.handlePendingParseLine(rawLine);
-      return;
-    }
-    const trimmed = rawLine.trim();
-    if (!trimmed) {
-      return;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed);
-    } catch (error) {
-      if (shouldBufferCodexAppServerParseFailure(trimmed, error)) {
-        this.pendingParse = { text: trimmed, lineCount: 1, firstError: error };
-        return;
-      }
-      logCodexAppServerParseFailure(trimmed, error, 1);
-      return;
-    }
-    this.handleParsedMessage(parsed);
-  }
-
-  private handlePendingParseLine(line: string): void {
-    const pending = this.pendingParse;
-    if (!pending) {
-      return;
-    }
-    const candidate = `${pending.text}\\n${line}`;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(candidate);
-    } catch (error) {
-      const lineCount = pending.lineCount + 1;
-      if (
-        shouldBufferCodexAppServerParseFailure(candidate.trim(), error) &&
-        candidate.length <= CODEX_APP_SERVER_PARSE_BUFFER_MAX &&
-        lineCount <= CODEX_APP_SERVER_PARSE_BUFFER_MAX_LINES
-      ) {
-        this.pendingParse = { text: candidate, lineCount, firstError: pending.firstError };
-        return;
-      }
-      this.pendingParse = undefined;
-      logCodexAppServerParseFailure(candidate, error, lineCount);
-      return;
-    }
-    this.pendingParse = undefined;
-    this.handleParsedMessage(parsed);
-  }
-
   private handleParsedMessage(parsed: unknown): void {
-    if (!parsed || typeof parsed !== "object") {
+    if (this.closed || !parsed || typeof parsed !== "object") {
       return;
     }
     const message = parsed as RpcMessage;
@@ -998,7 +887,7 @@ export class CodexAppServerClient {
       return;
     }
     if ("id" in message && message.id !== undefined) {
-      void this.handleServerRequest({
+      void this.serverRequests.handle({
         id: message.id,
         method: message.method,
         params: message.params,
@@ -1012,131 +901,20 @@ export class CodexAppServerClient {
   }
 
   private handleResponse(response: RpcResponse): void {
-    const pending = this.pending.get(response.id);
-    if (!pending) {
-      return;
-    }
-    this.pending.delete(response.id);
-    if (response.error) {
-      const error = new CodexAppServerRpcError(response.error, pending.method);
-      pending.reject(error, isCodexAppServerOverloadError(error));
-      return;
-    }
-    if (
-      pending.method === "thread/backgroundTerminals/list" &&
-      isJsonObject(response.result) &&
-      Array.isArray(response.result.data) &&
-      response.result.data.length > 0
-    ) {
-      this.nativeExecutionObserved = true;
-    }
-    pending.resolve(response.result);
-  }
-
-  private async handleServerRequest(
-    request: Required<Pick<RpcRequest, "id" | "method">> & { params?: JsonValue },
-  ): Promise<void> {
-    try {
-      const result = await this.runServerRequestHandlers(request);
-      if (result !== undefined) {
-        this.writeMessage({ id: request.id, result });
-        return;
-      }
-      this.writeMessage({ id: request.id, result: defaultServerRequestResponse(request) });
-    } catch (error) {
-      const message = coerceErrorMessage(error);
-      embeddedAgentLog.warn("codex app-server server request handler failed", {
-        id: request.id,
-        method: request.method,
-        error,
-      });
-      this.writeMessage({
-        id: request.id,
-        error: {
-          code: -32603,
-          message,
-        },
-      });
-    }
-  }
-
-  private async runServerRequestHandlers(
-    request: Required<Pick<RpcRequest, "id" | "method">> & { params?: JsonValue },
-  ): Promise<JsonValue | undefined> {
-    const controller = new AbortController();
-    if (request.method !== "item/tool/call") {
-      return await this.runServerRequestHandlersWithoutTimeout(request, controller.signal);
-    }
-    let timeoutMs = resolveDynamicToolServerRequestTimeoutMs(
-      readCodexDynamicToolCallParams(request.params),
-    );
-    const deadline = createDeferred<JsonValue>();
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    let settled = false;
-    let executionTimeoutResolved = false;
-    const armTimeout = () => {
-      clearTimeout(timeout);
-      timeout = setTimeout(() => {
-        embeddedAgentLog.warn("codex app-server server request timed out", {
-          id: request.id,
-          method: request.method,
-          timeoutMs,
-        });
-        controller.abort(new Error("codex app-server server request timed out"));
-        deadline.resolve(timeoutServerRequestResponse(timeoutMs));
-      }, timeoutMs);
-      timeout.unref?.();
-    };
-    const setExecutionTimeoutMs = (executionTimeoutMs: number) => {
-      if (
-        settled ||
-        controller.signal.aborted ||
-        executionTimeoutResolved ||
-        !Number.isFinite(executionTimeoutMs) ||
-        executionTimeoutMs <= 0
-      ) {
-        return;
-      }
-      // The admitted owner sets one execution budget; later progress cannot reset it.
-      executionTimeoutResolved = true;
-      timeoutMs = addSafeTimeoutDelayGraceMs(executionTimeoutMs, 30_000);
-      armTimeout();
-    };
-    armTimeout();
-    try {
-      return await Promise.race([
-        this.runServerRequestHandlersWithoutTimeout(
-          request,
-          controller.signal,
-          setExecutionTimeoutMs,
-        ),
-        deadline.promise,
-      ]);
-    } finally {
-      settled = true;
-      clearTimeout(timeout);
-    }
-  }
-
-  private async runServerRequestHandlersWithoutTimeout(
-    request: Required<Pick<RpcRequest, "id" | "method">> & { params?: JsonValue },
-    signal: AbortSignal,
-    setExecutionTimeoutMs?: (timeoutMs: number) => void,
-  ): Promise<JsonValue | undefined> {
-    for (const handler of this.requestHandlers) {
-      if (signal.aborted) {
-        return undefined;
-      }
-      const result = await handler(request, signal, setExecutionTimeoutMs);
-      if (result !== undefined) {
-        return result;
-      }
-    }
-    return undefined;
+    this.nativeExecutionObserved =
+      dispatchCodexAppServerResponse(
+        response,
+        this.pending,
+        this.catalogResponses,
+        codexCatalogSourceForClient(this),
+      ) || this.nativeExecutionObserved;
   }
 
   private handleNotification(notification: CodexServerNotification): void {
     const params = notification.params;
+    if (notification.method === "serverRequest/resolved") {
+      this.serverRequests.resolve(params);
+    }
     if (
       notification.method === "item/commandExecution/outputDelta" ||
       notification.method === "item/commandExecution/terminalInteraction" ||
@@ -1182,8 +960,10 @@ export class CodexAppServerClient {
       return false;
     }
     this.closed = true;
+    closeCodexCatalogClientSource(this);
     this.closeError = error;
-    this.lines.close();
+    this.closeMessageReader();
+    this.serverRequests.close(error);
     this.rejectPendingRequests(error);
     return true;
   }
@@ -1204,60 +984,12 @@ export class CodexAppServerClient {
   }
 }
 
-function defaultServerRequestResponse(
-  request: Required<Pick<RpcRequest, "id" | "method">> & { params?: JsonValue },
-): JsonValue {
-  if (request.method === "item/tool/call") {
-    return {
-      contentItems: [
-        {
-          type: "inputText",
-          text: "OpenClaw did not register a handler for this app-server tool call.",
-        },
-      ],
-      success: false,
-    };
-  }
-  if (
-    request.method === "item/commandExecution/requestApproval" ||
-    request.method === "item/fileChange/requestApproval"
-  ) {
-    return { decision: "decline" };
-  }
-  if (request.method === "item/permissions/requestApproval") {
-    return { permissions: {}, scope: "turn" };
-  }
-  if (request.method === "item/tool/requestUserInput") {
-    return {
-      answers: {},
-    };
-  }
-  if (request.method === "mcpServer/elicitation/request") {
-    return createCodexElicitationResponse("decline", null, {
-      message: "OpenClaw has no interactive handler for this elicitation.",
-    });
-  }
-  return {};
-}
-
 function stringifyCodexAppServerMessage(message: RpcRequest | RpcResponse): string {
   return (
     JSON.stringify(message, (_key, value) =>
       typeof value === "string" ? value.replace(UNPAIRED_SURROGATE_RE, "") : value,
     ) ?? "null"
   );
-}
-
-function timeoutServerRequestResponse(timeoutMs: number): JsonValue {
-  return {
-    contentItems: [
-      {
-        type: "inputText",
-        text: `OpenClaw dynamic tool call timed out after ${timeoutMs}ms before sending a response to Codex.`,
-      },
-    ],
-    success: false,
-  };
 }
 
 /** Raised when the initialize handshake detects an unsupported app-server version. */
@@ -1358,19 +1090,6 @@ function buildCodexAppServerExitError(code: unknown, signal: unknown, stderrTail
     `codex app-server exited: code=${formatExitValue(code)} signal=${formatExitValue(
       signal,
     )}${suffix}`,
-  );
-}
-
-// Codex has emitted JSON with raw newlines inside string values, which breaks
-// line framing. Buffer the fragments and re-join with an escaped newline so
-// the message parses; bounded by CODEX_APP_SERVER_PARSE_BUFFER_MAX*.
-function shouldBufferCodexAppServerParseFailure(value: string, error: unknown): boolean {
-  if (!value.startsWith("{") && !value.startsWith("[")) {
-    return false;
-  }
-  const message = coerceErrorMessage(error);
-  return (
-    message.includes("Unterminated string") || message.includes("Unexpected end of JSON input")
   );
 }
 

@@ -12,6 +12,10 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveSnakeCaseParamKey } from "../../param-key.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
+import {
+  mergeAcceptedSessionSpawnsForRun,
+  normalizeAcceptedSessionSpawnResult,
+} from "../accepted-session-spawn.js";
 import { captureAgentToolSourceExecutionGuard } from "../agent-tool-source-execution-guard.js";
 import {
   findAcpUnsupportedInheritedToolAllow,
@@ -105,6 +109,11 @@ function recordAcceptedSessionSpawn(
   result: Record<string, unknown>,
   context: "fork" | "isolated" | undefined,
 ): void {
+  const instance = getGatewayToolCallerIdentity()?.operationalRunInstance;
+  const accepted = normalizeAcceptedSessionSpawnResult({ details: result });
+  if (instance && accepted) {
+    mergeAcceptedSessionSpawnsForRun(instance, [accepted]);
+  }
   const childSessionKey =
     typeof result.childSessionKey === "string" ? result.childSessionKey.trim() : "";
   const targetAgentId = childSessionKey
@@ -382,11 +391,11 @@ export function createSessionsSpawnTool(
     parameters,
     execute: async (_toolCallId, args, signal) =>
       withToolEffectBoundary(async (onSpawnEffectsStart) => {
-        const assertSourceActive = captureAgentToolSourceExecutionGuard(
+        const executionSignal =
           signal && opts?.signal
             ? AbortSignal.any([signal, opts.signal])
-            : (signal ?? opts?.signal),
-        );
+            : (signal ?? opts?.signal);
+        const assertSourceActive = captureAgentToolSourceExecutionGuard(executionSignal);
         const params = args as Record<PropertyKey, unknown>;
         if (opts?.swarmCollector && params.collect !== true) {
           throw new ToolInputError(
@@ -499,7 +508,12 @@ export function createSessionsSpawnTool(
             runTimeoutSeconds,
             sandbox,
             expectsCompletionMessage,
-            options: { ...opts, onSpawnEffectsStart },
+            options: {
+              ...opts,
+              onSpawnEffectsStart,
+              assertActive,
+              signal: executionSignal,
+            },
           });
         const visibleResult = opts?.expectedParentSessionId
           ? await runWithScopedSessionAccess({

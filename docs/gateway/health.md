@@ -32,9 +32,21 @@ Per-agent session counts and recent activity include only that agent's sessions,
 even when agents share a SQLite session store. Status counts each physical store
 once in its aggregate. The top-level health session summary represents the
 default agent, or the first configured agent when there is no default; it is not
-a fleet total.
+a fleet total. A running Gateway serves clean health and status session summaries
+from its resident session-row projection. Store hydration and exact dirty-row
+refreshes retain the existing read-only SQLite fallback.
 
 ## Deep diagnostics
+
+`openclaw health --json` reports `modelRuntime.degraded: true` when a large
+fleet's model preparation exceeds the startup budget. `pendingAgents` names the
+agents still preparing and `stage` identifies the current acquisition phase.
+The Gateway remains running and completed agents remain usable. Background
+preparation clears the degraded status when all runtimes are ready.
+
+Health and status collection groups fast session-store reads into short work
+slices, keeping busy background preparation from delaying every individual read.
+Slow reads finish their transaction before yielding to other Gateway work.
 
 - Creds on disk: `ls -l ~/.openclaw/credentials/whatsapp/<accountId>/creds.json` (mtime should be recent).
 - Session store: `ls -l ~/.openclaw/agents/<agentId>/agent/openclaw-agent.sqlite`. Count and recent recipients are surfaced via `status`.
@@ -73,6 +85,24 @@ The Gateway exposes three unauthenticated `GET`/`HEAD` probe pairs:
 `/startupz` returns `503` with `status: "starting"` while startup sidecars are pending, `503` with `status: "draining"` during drain, and `200` with `status: "started"` otherwise. Use it for Kubernetes, Fly, Render, and similar traffic admission. A broken Telegram or other channel account can make `/readyz` return `503` without taking a healthy Control UI out of service through `/startupz`.
 
 Remote unauthenticated startup responses contain only `ok` and `status`. Local-direct and authenticated callers also receive `version`, `uptimeMs`, and `pendingReason` while startup is pending. Readiness details follow the same local-or-authenticated gate because they can name failing subsystems.
+
+### Plugin replacement recovery
+
+During plugin replacement or recovery, `/readyz` returns `503`. Detailed responses
+include `failing: ["plugin-reload"]` and a `pluginReload` object with the affected
+`pluginIds`, the current `phase` (`reloading`, `recovering`, or `failed`), and any
+recovery `deadlineAtMs` and actionable `reason`. These owner-reported facts bypass
+the channel readiness cache, so a failed replacement cannot appear as only a
+generic channel outage or stale healthy result.
+
+The health monitor does not spend channel restart attempts while replacement
+holds channel admission paused. After successful rollback, the previous plugin
+configuration restarts its channels and ordinary readiness checks resume. If
+automatic recovery reaches its deadline, `phase: "failed"` retains the failure
+reason and next action. Admission pauses are released, allowing the monitor to
+restart callable channels; a plugin whose admitted work or cleanup still owns
+resources requires the reported repair or retry before it can restart. See
+[Config hot reload](/gateway/configuration/hot-reload) for the recovery contract.
 
 ### CPU pressure and event-loop delay
 

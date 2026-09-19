@@ -7,8 +7,8 @@ import { isOpenClawDeliveryMirrorAssistantMessage } from "../shared/transcript-o
 import {
   extractAssistantTextForSilentCheck,
   hasAssistantDisplayableNonTextContent,
-  isProjectedSessionsSendForwardedMessage,
-  isSessionsSendInterSessionUserMessage,
+  isProjectedForwardedMessage,
+  isForwardedUserMessage,
 } from "./chat-display-projection.helpers.js";
 import { displayTextForDuplicateCheck } from "./chat-display-projection.history.js";
 import { isSuppressedControlReplyText } from "./control-reply-text.js";
@@ -393,10 +393,7 @@ export function createMessageToolVisibleReplyProjection() {
           continue;
         }
 
-        if (
-          (record.role === "user" && isSessionsSendInterSessionUserMessage(record)) ||
-          isProjectedSessionsSendForwardedMessage(record)
-        ) {
+        if (isForwardedUserMessage(record) || isProjectedForwardedMessage(record)) {
           next.push(message);
           continue;
         }
@@ -410,19 +407,13 @@ export function createMessageToolVisibleReplyProjection() {
         const flushAfterCurrentMessage: PendingMessageToolVisibleReply[] = [];
         const deliveryMirrorText = readMessageToolDeliveryMirrorText(record);
         const deliveryMirrorCallId = readMessageToolDeliveryMirrorCallId(record);
-        const exactDeliveryMirrorPending = deliveryMirrorCallId
+        const deliveryMirrorCandidates = deliveryMirrorCallId
           ? pending.filter((item) => item.toolCallId === deliveryMirrorCallId)
-          : [];
-        const textMatchingDeliveryMirrorPending = deliveryMirrorText
-          ? pending.filter((item) => item.text.trim() === deliveryMirrorText)
-          : [];
-        const matchingDeliveryMirrorPending = deliveryMirrorCallId
-          ? exactDeliveryMirrorPending.length === 1
-            ? exactDeliveryMirrorPending
-            : []
-          : textMatchingDeliveryMirrorPending.length === 1
-            ? textMatchingDeliveryMirrorPending
+          : deliveryMirrorText
+            ? pending.filter((item) => item.text.trim() === deliveryMirrorText)
             : [];
+        const matchingDeliveryMirrorPending =
+          deliveryMirrorCandidates.length === 1 ? deliveryMirrorCandidates : [];
         const duplicateDeliveryMirror = matchingDeliveryMirrorPending.some(
           (item) => item.succeeded,
         );

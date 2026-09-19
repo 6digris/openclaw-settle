@@ -247,7 +247,8 @@ private fun DrawScope.drawMouth(pose: MascotPose) {
       drawPath(grin, EyeDark)
     }
 
-    kotlin.math.abs(pose.mouthCurve) > 0.05 -> {
+    // Zero curvature is a closed mouth, not an absent facial feature.
+    else -> {
       val curve =
         Path().apply {
           moveTo(52.5f, 49f)

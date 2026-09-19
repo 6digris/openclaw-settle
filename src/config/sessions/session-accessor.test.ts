@@ -47,7 +47,6 @@ import {
   applySessionEntryLifecycleMutation,
   assignSessionOwner,
   commitReplySessionInitialization,
-  countSessionEntryRowsReadOnly,
   createSessionEntryWithTranscript,
   deleteSessionEntryLifecycle,
   findTranscriptEvent,
@@ -90,7 +89,7 @@ import {
   iterateSessionEntryKeys,
 } from "./session-accessor.sqlite-entry-store.js";
 import { loadExactSessionEntry, replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
-import { importSqliteSessionRows } from "./session-accessor.sqlite-import.js";
+import { importSqliteSessionRows } from "./session-accessor.sqlite-import.test-support.js";
 import { recordSessionParticipant } from "./session-accessor.sqlite-participants.js";
 import { applySessionEntryCanonicalReplacements } from "./session-accessor.sqlite-replacement-projection.js";
 import {
@@ -382,24 +381,6 @@ describe("session accessor seam", () => {
 
     expect(readSessionEntryCount(database)).toBe(1);
     expect([...iterateSessionEntryKeys(database)]).toEqual(["agent:main:logical-entry"]);
-    expect(countSessionEntryRowsReadOnly({ agentId: "main", storePath })).toBe(2);
-  });
-
-  it("counts rows on a cold handle without parsing invalid entry JSON", async () => {
-    await replaceSessionEntry(
-      { sessionKey: "agent:main:cold-count", storePath },
-      { sessionId: "cold-count-session", updatedAt: 10 },
-    );
-    const databasePath = expectDefined(
-      resolveSqliteTargetFromSessionStorePath(storePath, { agentId: "main" }).path,
-      "cold count database path",
-    );
-    closeOpenClawAgentDatabasesForTest();
-    const database = new DatabaseSync(databasePath);
-    database.prepare("UPDATE session_nodes SET entry_valid = 0").run();
-    database.close();
-
-    expect(countSessionEntryRowsReadOnly({ agentId: "main", storePath })).toBe(1);
   });
 
   it("does not project retired createdBy input into canonical creator fields", async () => {
