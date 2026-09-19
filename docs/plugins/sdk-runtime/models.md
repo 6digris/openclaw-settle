@@ -186,15 +186,17 @@ host.
 
 ## Managed provider auth login flow
 
-Use `openclaw/plugin-sdk/provider-auth-managed-login-runtime` when a native host already owns the login UI and must reconnect one existing managed OAuth profile. The runtime export includes `MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY`; callers should compare it before starting user-visible work so older hosts fail before side effects.
+Use `openclaw/plugin-sdk/provider-auth-managed-login-runtime` when a native host already owns the login UI and must reconnect one existing managed OAuth profile. The runtime export includes `MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY`; callers should compare it before starting user-visible work so older hosts fail before side effects. This capability value is supported-version metadata only, not an authentication token or authorization proof; the native caller still owns profile custody, current-owner checks, and lifecycle authorization.
 
 Managed login is intentionally narrower than interactive `models auth login`. The caller must pass an explicit provider, method, agent, profile ID, config, isolated env, and managed state directory. The flow requests exactly one OAuth profile for that provider, persists it into the managed state directory, and returns only metadata such as provider, method, auth-refresh outcome, default model, profile ID, provider, and credential mode. It does not return token material, apply provider config patches, update defaults, promote profile order, auto-enable plugins, or run model-access completion prompts.
+
+The supplied config does not cause an ambient config read, and configured `agentDir` overrides do not redirect managed credential storage outside `stateDir`. Without an explicit `refreshAfterLogin` callback, the flow does not contact a Gateway and returns the unconfirmed `gateway-unreachable` refresh outcome. The caller starts or refreshes its own Gateway after the profile commit.
 
 ```typescript
 import {
   MANAGED_MODELS_AUTH_LOGIN_ACCOUNT_MISMATCH_CODE,
   MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY,
-  runModelsAuthLoginFlow,
+  runManagedModelsAuthLoginFlow,
   type ModelsAuthLoginManagedOptions,
 } from "openclaw/plugin-sdk/provider-auth-managed-login-runtime";
 
@@ -214,7 +216,7 @@ const managed: ModelsAuthLoginManagedOptions = {
   },
 };
 
-await runModelsAuthLoginFlow({
+await runManagedModelsAuthLoginFlow({
   provider,
   method,
   agent,

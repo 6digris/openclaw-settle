@@ -126,26 +126,8 @@ import {
 } from "./sqlite.js";
 import { loadPersistedAuthProfileState } from "./state.js";
 import { prepareAuthProfileStoreMutation } from "./store-mutation.js";
-import type {
-  AuthProfileCredentialSource,
-  AuthProfileStore,
-  RuntimeAuthProfileStore,
-} from "./types.js";
-
-function withCredentialSources(
-  store: AuthProfileStore,
-  databasePath: string,
-): RuntimeAuthProfileStore {
-  return {
-    ...store,
-    runtimeCredentialSources: Object.fromEntries(
-      Object.entries(store.profiles).map(([profileId, credential]) => [
-        profileId,
-        { databasePath, provider: credential.provider },
-      ]),
-    ),
-  };
-}
+import { resolvePersistedLoadOptions, withCredentialSources } from "./store-read-helpers.js";
+import type { AuthProfileCredentialSource, AuthProfileStore } from "./types.js";
 
 type SaveAuthProfileStoreOptions = {
   filterExternalAuthProfiles?: boolean;
@@ -288,17 +270,6 @@ const testing = {
 if (process.env.VITEST || process.env.NODE_ENV === "test") {
   (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.authProfileStoreTestApi")] =
     testing;
-}
-
-function resolvePersistedLoadOptions(
-  options: Pick<LoadAuthProfileStoreOptions, "allowKeychainPrompt" | "database"> | undefined,
-): { allowKeychainPrompt?: boolean; database?: AuthProfileDatabase } {
-  return {
-    ...(options?.allowKeychainPrompt !== undefined
-      ? { allowKeychainPrompt: options.allowKeychainPrompt }
-      : {}),
-    ...(options?.database ? { database: options.database } : {}),
-  };
 }
 
 function loadPersistedAuthProfileStores(

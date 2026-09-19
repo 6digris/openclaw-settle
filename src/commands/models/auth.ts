@@ -1,26 +1,8 @@
 /** Commands for adding, pasting, and logging into provider model auth profiles. */
-import {
-  cancel,
-  confirm as clackConfirm,
-  isCancel,
-  password as clackPassword,
-  select as clackSelect,
-  text as clackText,
-} from "@clack/prompts";
-import { readByteStreamWithLimit } from "@openclaw/media-core/read-byte-stream-with-limit";
 import { expectDefined } from "@openclaw/normalization-core";
-import { resolveExpiresAtMsFromDurationMs } from "@openclaw/normalization-core/number-coercion";
-import {
-  normalizeOptionalString,
-  normalizeStringifiedOptionalString,
-} from "@openclaw/normalization-core/string-coerce";
-import { styleSelectParams } from "../../../packages/terminal-core/src/prompt-select-styled-params.js";
-import { stylePromptMessage } from "../../../packages/terminal-core/src/prompt-style.js";
-import { resolveAgentDir, resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
-import {
-  findPersistedAuthProfileCredential,
-  removeProviderAuthProfilesWithLock,
-} from "../../agents/auth-profiles.js";
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
+import { removeProviderAuthProfilesWithLock } from "../../agents/auth-profiles.js";
 import {
   promoteAuthProfileInOrder,
   upsertAuthProfileWithLockOrThrow,
@@ -61,12 +43,12 @@ import type {
   ProviderPlugin,
 } from "../../plugins/types.js";
 import type { RuntimeEnv } from "../../runtime.js";
+import { MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY } from "../../shared/provider-auth-managed-login-contract.js";
 import {
   ProviderAuthConfigApplyError,
   ProviderCredentialsSavedError,
 } from "../../shared/provider-auth-result.js";
 import { isRecord } from "../../utils.js";
-import { normalizeSecretInput } from "../../utils/normalize-secret-input.js";
 import { createClackPrompter } from "../../wizard/clack-prompter.js";
 import type { WizardPrompter } from "../../wizard/prompts.js";
 import { validateAnthropicSetupToken } from "../auth-token.js";
@@ -74,6 +56,12 @@ import { repairCodexRuntimePluginInstallForModelSelection } from "../codex-runti
 import { repairCopilotRuntimePluginInstallForModelSelection } from "../copilot-runtime-plugin-install.js";
 import { saveModelProviderApiKey } from "./auth-api-key.js";
 import { tryImportProviderCredential } from "./auth-credential-import.js";
+import {
+  createManagedAuthBeforeWrite,
+  resolveLoginProfiles,
+  runManagedModelsAuthLoginFlowCore as runManagedModelsAuthLoginFlowCoreImpl,
+  type ResolvedModelsAuthLoginManagedOptions,
+} from "./auth-managed-login.js";
 import {
   looksLikeOpenAIApiKey,
   normalizeManualAuthProvider,
@@ -87,84 +75,19 @@ import {
   withoutProviderModelPolicy,
   type PreparedProviderModelAccess,
 } from "./auth-model-policy.js";
+import {
+  confirmModelAuthPrompt,
+  readPastedSecret,
+  resolveManualTokenExpiryMs,
+  selectModelAuthPrompt,
+  textModelAuthPrompt,
+} from "./auth-prompt-input.js";
 import { refreshRunningGatewayAuthState, type ModelAuthRefreshOutcome } from "./auth-refresh.js";
 import {
   loadValidConfigSnapshotOrThrow,
   resolveModelsTargetAgent,
   updateConfig,
 } from "./shared.js";
-
-function resolveManualTokenExpiryMs(expiresIn: string | undefined): number | undefined {
-  const normalizedExpiresIn = normalizeStringifiedOptionalString(expiresIn);
-  if (!normalizedExpiresIn) {
-    return undefined;
-  }
-  const durationMs = parseDurationMs(normalizedExpiresIn, { defaultUnit: "d" });
-  const expires = resolveExpiresAtMsFromDurationMs(durationMs);
-  if (expires === undefined) {
-    throw new Error("Invalid expiry duration: resulting token expiry is outside Date range.");
-  }
-  return expires;
-}
-
-function guardCancel<T>(value: T | symbol): T {
-  if (typeof value === "symbol" || isCancel(value)) {
-    cancel("Cancelled.");
-    process.exit(0);
-  }
-  return value;
-}
-
-const confirm = async (params: Parameters<typeof clackConfirm>[0]) =>
-  guardCancel(
-    await clackConfirm({
-      ...params,
-      message: stylePromptMessage(params.message),
-    }),
-  );
-const text = async (params: Parameters<typeof clackText>[0]) =>
-  guardCancel(
-    await clackText({
-      ...params,
-      message: stylePromptMessage(params.message),
-    }),
-  );
-const password = async (params: Parameters<typeof clackPassword>[0]) =>
-  guardCancel(
-    await clackPassword({
-      ...params,
-      message: stylePromptMessage(params.message),
-    }),
-  );
-const select = async <T>(params: Parameters<typeof clackSelect<T>>[0]) =>
-  guardCancel(await clackSelect(styleSelectParams(params)));
-
-const MODELS_AUTH_STDIN_MAX_BYTES = 1024 * 1024;
-
-async function readPipedStdin(): Promise<string> {
-  const bytes = await readByteStreamWithLimit(process.stdin, {
-    maxBytes: MODELS_AUTH_STDIN_MAX_BYTES,
-    onOverflow: ({ maxBytes }) => new Error(`Piped auth input exceeds ${maxBytes} bytes.`),
-  });
-  return bytes.toString("utf8");
-}
-
-async function readPastedSecret(params: {
-  message: string;
-  masked: boolean;
-  validate?: (value: string | undefined) => string | undefined;
-}): Promise<string> {
-  const promptParams = { message: params.message, validate: params.validate };
-  const input = process.stdin.isTTY
-    ? await (params.masked ? password(promptParams) : text(promptParams))
-    : await readPipedStdin();
-  const normalized = normalizeSecretInput(input);
-  const validationMessage = params.validate?.(normalized);
-  if (validationMessage) {
-    throw new Error(validationMessage);
-  }
-  return normalized;
-}
 
 function isOpenAIProvider(provider: string): boolean {
   return normalizeManualAuthProvider(provider) === "openai";
@@ -253,9 +176,10 @@ async function resolveModelsAuthContext(params?: {
   requestedProvider?: string;
   rawAgentId?: string | null;
   config?: OpenClawConfig;
+  configSnapshot?: ConfigFileSnapshot;
   ownerPluginId?: string;
 }): Promise<ResolvedModelsAuthContext> {
-  const configSnapshot = await loadValidConfigSnapshotOrThrow();
+  const configSnapshot = params?.configSnapshot ?? (await loadValidConfigSnapshotOrThrow());
   const config = params?.config ?? configSnapshot.runtimeConfig;
   const { agentId, agentDir } = await resolveModelsAuthAgent(params?.rawAgentId, config);
   const workspaceDir =
@@ -401,8 +325,12 @@ async function refreshProviderAuthAfterLogin(
     "refreshAfterLogin" | "runtime" | "signal" | "assertCurrent"
   > & {
     agentId: string;
+    skipGatewayRefresh?: boolean;
   },
 ): Promise<ModelAuthRefreshOutcome> {
+  if (params.skipGatewayRefresh) {
+    return "gateway-unreachable";
+  }
   if (!params.refreshAfterLogin) {
     return refreshRunningGatewayAuthState(params.agentId, "login", params.runtime);
   }
@@ -431,6 +359,7 @@ async function persistProviderAuthResult(params: {
   assertCurrent?: () => void;
   signal?: AbortSignal;
   refreshAfterLogin?: ModelsAuthLoginFlowOptions["refreshAfterLogin"];
+  skipGatewayRefresh?: boolean;
   managed?: ResolvedModelsAuthLoginManagedOptions;
 }): Promise<{ profiles: ProviderAuthResult["profiles"]; authRefresh: ModelAuthRefreshOutcome }> {
   const defaultModel = params.result.defaultModel
@@ -472,18 +401,12 @@ async function persistProviderAuthResult(params: {
       const persisted = await persistProviderAuthProfilesAfterLogin({
         profiles: [candidate],
         beforeWrite: managed
-          ? (current, profileId) => {
-              params.assertCurrent?.();
-              if (profileId !== candidate.profileId) {
-                return;
-              }
-              assertManagedSamePersonalAccount({
-                method: managed.method,
-                incoming: candidate.credential,
-                current,
-                requireCurrent: managed.existingCredential !== undefined,
-              });
-            }
+          ? createManagedAuthBeforeWrite({
+              assertCurrent: params.assertCurrent,
+              expectedProfileId: candidate.profileId,
+              incoming: candidate.credential,
+              managed,
+            })
           : params.assertCurrent,
         config: params.config,
         env: params.env,
@@ -644,6 +567,7 @@ async function runProviderAuthMethod(params: {
   browserAuthorization?: ProviderAuthContext["oauth"]["authorize"];
   beforePersistentEffect?: () => void | Promise<void>;
   refreshAfterLogin?: ModelsAuthLoginFlowOptions["refreshAfterLogin"];
+  skipGatewayRefresh?: boolean;
   onModelAccessRequested?: (request: PreparedProviderModelAccess) => void;
   managed?: ResolvedModelsAuthLoginManagedOptions;
 }): Promise<{
@@ -719,6 +643,7 @@ async function runProviderAuthMethod(params: {
     env: params.env ?? process.env,
     beforePersistentEffect: params.managed?.beforePersist ?? params.beforePersistentEffect,
     refreshAfterLogin: params.refreshAfterLogin,
+    skipGatewayRefresh: params.skipGatewayRefresh,
     ...(params.managed ? { managed: params.managed } : {}),
   });
   if (!params.managed && persistedProfiles.length > 0) {
@@ -770,7 +695,7 @@ export async function modelsAuthSetupTokenCommand(
   }
 
   if (!opts.yes) {
-    const proceed = await confirm({
+    const proceed = await confirmModelAuthPrompt({
       message: `Continue with ${provider.label} token auth?`,
       initialValue: true,
     });
@@ -927,7 +852,7 @@ export async function modelsAuthAddCommand(opts: { agent?: string }, runtime: Ru
     });
   const tokenProviders = listProvidersWithTokenMethods(providers);
 
-  const provider = await select({
+  const provider = await selectModelAuthPrompt({
     message: "Token provider",
     options: [
       ...tokenProviders.map((providerPlugin) => ({
@@ -942,7 +867,7 @@ export async function modelsAuthAddCommand(opts: { agent?: string }, runtime: Ru
   const providerId =
     provider === "custom"
       ? normalizeProviderId(
-          await text({
+          await textModelAuthPrompt({
             message: "Provider id",
             validate: (value) => (value?.trim() ? undefined : "Required"),
           }),
@@ -955,7 +880,7 @@ export async function modelsAuthAddCommand(opts: { agent?: string }, runtime: Ru
     const tokenMethods = listTokenAuthMethods(providerPlugin);
     const methodId =
       tokenMethods.length > 0
-        ? await select({
+        ? await selectModelAuthPrompt({
             message: "Token method",
             options: [
               ...tokenMethods.map((method) => ({
@@ -992,20 +917,20 @@ export async function modelsAuthAddCommand(opts: { agent?: string }, runtime: Ru
 
   const profileIdDefault = resolveDefaultTokenProfileId(providerId);
   const profileId = (
-    await text({
+    await textModelAuthPrompt({
       message: "Profile id",
       initialValue: profileIdDefault,
       validate: (value) => (value?.trim() ? undefined : "Required"),
     })
   ).trim();
 
-  const wantsExpiry = await confirm({
+  const wantsExpiry = await confirmModelAuthPrompt({
     message: "Does this token expire?",
     initialValue: false,
   });
   const expiresIn = wantsExpiry
     ? (
-        await text({
+        await textModelAuthPrompt({
           message: "Expires in (duration)",
           initialValue: "365d",
           validate: (value) => {
@@ -1042,8 +967,10 @@ type LoginOptions = {
   force?: boolean;
 };
 
-export const MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY = "openclaw.models.auth.managed.v1";
-export const MANAGED_MODELS_AUTH_LOGIN_ACCOUNT_MISMATCH_CODE = "account_mismatch";
+export {
+  MANAGED_MODELS_AUTH_LOGIN_ACCOUNT_MISMATCH_CODE,
+  MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY,
+} from "../../shared/provider-auth-managed-login-contract.js";
 
 export type ModelsAuthLoginManagedOptions = {
   capability: typeof MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY;
@@ -1052,42 +979,6 @@ export type ModelsAuthLoginManagedOptions = {
   beforePersist: () => Promise<void>;
   assertCurrent: () => void;
 };
-
-type ResolvedModelsAuthLoginManagedOptions = ModelsAuthLoginManagedOptions & {
-  method: ProviderAuthMethod;
-  existingCredential?: AuthProfileCredential;
-};
-
-function createManagedAuthLoginError(code: string, message: string): Error & { code: string } {
-  const error = new Error(message) as Error & { code: string };
-  error.name = "ManagedModelsAuthLoginError";
-  error.code = code;
-  return error;
-}
-
-function assertManagedSamePersonalAccount(params: {
-  method: ProviderAuthMethod;
-  incoming: AuthProfileCredential;
-  current: AuthProfileCredential | undefined;
-  requireCurrent?: boolean;
-}) {
-  if (!params.current) {
-    if (params.requireCurrent) {
-      throw createManagedAuthLoginError(
-        MANAGED_MODELS_AUTH_LOGIN_ACCOUNT_MISMATCH_CODE,
-        "Managed auth login target profile changed before credentials could be saved.",
-      );
-    }
-    return;
-  }
-  if (params.method.matchesPersonalAccount?.(params.incoming, params.current)) {
-    return;
-  }
-  throw createManagedAuthLoginError(
-    MANAGED_MODELS_AUTH_LOGIN_ACCOUNT_MISMATCH_CODE,
-    "Managed auth login returned credentials for a different account.",
-  );
-}
 
 export type ModelsAuthLoginFlowResult = {
   providerId: string;
@@ -1139,53 +1030,6 @@ function credentialMode(credential: AuthProfileCredential): "api_key" | "oauth" 
   return "oauth";
 }
 
-/** Applies an optional profile-id override to a single returned login profile. */
-function resolveLoginProfiles(params: {
-  result: ProviderAuthResult;
-  requestedProfileId?: string;
-  managedProvider?: string;
-  managedMethod?: ProviderAuthMethod;
-  managedExistingCredential?: AuthProfileCredential;
-}): ProviderAuthResult["profiles"] {
-  const requestedProfileId = params.requestedProfileId?.trim();
-  if (params.managedMethod) {
-    if (!requestedProfileId) {
-      throw new Error("Managed auth login requires an explicit profileId.");
-    }
-    if (params.result.profiles.length !== 1) {
-      throw new Error("Managed auth login requires exactly one returned auth profile.");
-    }
-    const profile = expectDefined(params.result.profiles[0], "auth profile");
-    if (profile.credential.type !== "oauth") {
-      throw new Error("Managed auth login requires an OAuth auth profile.");
-    }
-    const incomingProvider = resolveProviderIdForAuth(profile.credential.provider);
-    const expectedProvider = resolveProviderIdForAuth(params.managedProvider ?? "");
-    if (incomingProvider !== expectedProvider) {
-      throw new Error("Managed auth login returned an auth profile for another provider.");
-    }
-    assertManagedSamePersonalAccount({
-      method: params.managedMethod,
-      incoming: profile.credential,
-      current: params.managedExistingCredential,
-    });
-    return [{ ...profile, profileId: requestedProfileId }];
-  }
-
-  if (!requestedProfileId) {
-    return params.result.profiles;
-  }
-
-  if (params.result.profiles.length !== 1) {
-    throw new Error(
-      "--profile-id requires exactly one returned auth profile from the selected auth method.",
-    );
-  }
-
-  const [profile] = params.result.profiles;
-  return [{ ...expectDefined(profile, "auth profile"), profileId: requestedProfileId }];
-}
-
 function maybeLogOpenAICodexNativeSearchTip(runtime: RuntimeEnv, providerId: string) {
   if (providerId !== "openai") {
     return;
@@ -1199,7 +1043,16 @@ export async function runModelsAuthLoginFlowCore(
   opts: ModelsAuthLoginFlowOptions,
 ): Promise<ModelsAuthLoginFlowResult> {
   if (opts.managed) {
-    return await runManagedModelsAuthLoginFlowCore({ ...opts, managed: opts.managed });
+    return await runManagedModelsAuthLoginFlowCoreImpl(
+      { ...opts, managed: opts.managed },
+      {
+        credentialMode,
+        listProvidersWithAuthMethods,
+        resolveContext: resolveModelsAuthContext,
+        resolveRequestedLoginProviderOrThrow,
+        runProviderAuthMethod,
+      },
+    );
   }
   return runModelsAuthLoginFlow(opts, true);
 }
@@ -1416,102 +1269,6 @@ async function runModelsAuthLoginFlow(
     onModelAccessRequested: opts.onModelAccessRequested,
   });
   maybeLogOpenAICodexNativeSearchTip(opts.runtime, selectedProvider.id);
-  return {
-    providerId: selectedProvider.id,
-    methodId: chosenMethod.id,
-    authRefresh,
-    ...(result.defaultModel ? { defaultModel: result.defaultModel } : {}),
-    profiles: profiles.map((profile) => ({
-      profileId: profile.profileId,
-      provider: profile.credential.provider,
-      mode: credentialMode(profile.credential),
-    })),
-  };
-}
-
-async function runManagedModelsAuthLoginFlowCore(
-  opts: ModelsAuthLoginFlowOptions & { managed: ModelsAuthLoginManagedOptions },
-): Promise<ModelsAuthLoginFlowResult> {
-  const rawProvider = normalizeOptionalString(opts.provider);
-  const rawMethod = normalizeOptionalString(opts.method);
-  const rawAgent = normalizeOptionalString(opts.agent);
-  const rawProfileId = normalizeOptionalString(opts.managed.profileId);
-  const rawStateDir = normalizeOptionalString(opts.managed.stateDir);
-  if (!rawProvider || !rawMethod || !rawAgent || !rawProfileId) {
-    throw new Error("Managed auth login requires explicit provider, method, agent, and profileId.");
-  }
-  if (opts.managed.capability !== MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY) {
-    throw new Error("Managed auth login requires the supported managed login capability marker.");
-  }
-  if (opts.force) {
-    throw new Error("Managed auth login does not support force cleanup.");
-  }
-  if (opts.setDefault) {
-    throw new Error("Managed auth login does not support default-model updates.");
-  }
-  if (!opts.config) {
-    throw new Error("Managed auth login requires an explicit config.");
-  }
-  if (!opts.env) {
-    throw new Error("Managed auth login requires an explicit isolated env.");
-  }
-  if (!rawStateDir) {
-    throw new Error("Managed auth login requires an explicit stateDir.");
-  }
-
-  const requestedProviderId = normalizeManualAuthProvider(rawProvider);
-  const context = await resolveModelsAuthContext({
-    requestedProvider: requestedProviderId,
-    rawAgentId: rawAgent,
-    config: opts.config,
-  });
-  const authProviders = listProvidersWithAuthMethods(context.providers);
-  const selectedProvider = resolveRequestedLoginProviderOrThrow(authProviders, requestedProviderId);
-  if (!selectedProvider) {
-    throw new Error(`Managed auth login could not resolve provider "${requestedProviderId}".`);
-  }
-  const chosenMethod = pickAuthMethod(selectedProvider, rawMethod);
-  if (!chosenMethod) {
-    throw new Error(
-      `Managed auth login could not resolve method "${rawMethod}" for provider "${selectedProvider.id}".`,
-    );
-  }
-  const managedEnv = { ...opts.env, OPENCLAW_STATE_DIR: rawStateDir };
-  const managedAgentDir = resolveAgentDir(context.config, context.agentId, managedEnv);
-  const existingCredential = findPersistedAuthProfileCredential({
-    agentDir: managedAgentDir,
-    profileId: rawProfileId,
-    stateDir: rawStateDir,
-  });
-  const managed: ResolvedModelsAuthLoginManagedOptions = {
-    ...opts.managed,
-    method: chosenMethod,
-    profileId: rawProfileId,
-    stateDir: rawStateDir,
-    ...(existingCredential ? { existingCredential } : {}),
-  };
-
-  const { result, profiles, authRefresh } = await runProviderAuthMethod({
-    config: context.config,
-    configSnapshot: context.configSnapshot,
-    agentId: context.agentId,
-    agentDir: managedAgentDir,
-    workspaceDir: context.workspaceDir,
-    provider: selectedProvider,
-    method: chosenMethod,
-    runtime: opts.runtime,
-    prompter: opts.prompter,
-    profileId: rawProfileId,
-    assertCurrent: opts.managed.assertCurrent,
-    env: managedEnv,
-    isRemote: opts.isRemote,
-    signal: opts.signal,
-    openUrl: opts.openUrl,
-    browserAuthorization: opts.browserAuthorization,
-    refreshAfterLogin: opts.refreshAfterLogin,
-    managed,
-  });
-
   return {
     providerId: selectedProvider.id,
     methodId: chosenMethod.id,

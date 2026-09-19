@@ -58,6 +58,8 @@ describe("managed provider auth login", () => {
       const profileId = `${provider}:managed`;
       const nativeStateDir = state.path("native-state");
       const nativeAgentDir = path.join(nativeStateDir, "agents", "main", "agent");
+      const configuredStateDir = state.path("configured-state");
+      const configuredAgentDir = path.join(configuredStateDir, "agents", "main", "agent");
       const ambientCredential = {
         type: "oauth" as const,
         provider,
@@ -70,6 +72,12 @@ describe("managed provider auth login", () => {
         ...ambientCredential,
         access: "native-original-access-token",
         refresh: "native-original-refresh-token",
+      };
+      const configuredAgentCredential = {
+        ...ambientCredential,
+        access: "configured-agent-access-token",
+        refresh: "configured-agent-refresh-token",
+        userId: "user-configured-agent",
       };
       const interveningNativeCredential = {
         ...ambientCredential,
@@ -119,7 +127,11 @@ describe("managed provider auth login", () => {
         };`,
       );
       const config: OpenClawConfig = {
-        agents: { list: [{ id: "main", workspace: state.workspaceDir }] },
+        agents: {
+          entries: {
+            main: { agentDir: configuredAgentDir, workspace: state.workspaceDir },
+          },
+        },
         plugins: { allow: [provider], entries: { [provider]: { enabled: true } } },
       };
       await state.writeConfig(config);
@@ -132,6 +144,12 @@ describe("managed provider auth login", () => {
         agentDir: nativeAgentDir,
         stateDir: nativeStateDir,
         profiles: [{ profileId, credential: originalNativeCredential }],
+        allowOAuthGenerationReplacement: true,
+      });
+      await persistAuthProfileBatch({
+        agentDir: configuredAgentDir,
+        stateDir: configuredStateDir,
+        profiles: [{ profileId, credential: configuredAgentCredential }],
         allowOAuthGenerationReplacement: true,
       });
 
@@ -168,6 +186,13 @@ describe("managed provider auth login", () => {
           stateDir: nativeStateDir,
         }),
       ).toEqual(interveningNativeCredential);
+      expect(
+        findPersistedAuthProfileCredential({
+          agentDir: configuredAgentDir,
+          profileId,
+          stateDir: configuredStateDir,
+        }),
+      ).toEqual(configuredAgentCredential);
       expect(
         findPersistedAuthProfileCredential({
           agentDir: state.agentDir(),

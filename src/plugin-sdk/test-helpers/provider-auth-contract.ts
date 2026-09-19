@@ -81,6 +81,7 @@ function buildOpenAICodexOAuthResult(params: {
   refresh: string;
   expires: number;
   email?: string;
+  userId?: string;
   defaultModel: string;
 }) {
   return {
@@ -94,6 +95,7 @@ function buildOpenAICodexOAuthResult(params: {
           refresh: params.refresh,
           expires: params.expires,
           ...(params.email ? { email: params.email } : {}),
+          ...(params.userId ? { userId: params.userId } : {}),
         },
       },
     ],
@@ -153,7 +155,11 @@ export function describeOpenAICodexProviderAuthContract(
   describe("openai provider ChatGPT auth contract", () => {
     installSharedAuthProfileStoreHooks(state);
 
-    async function expectStableFallbackProfile(params: { access: string; profileId: string }) {
+    async function expectStableFallbackProfile(params: {
+      access: string;
+      profileId: string;
+      userId?: string;
+    }) {
       const { default: openAIPlugin } = await load();
       const provider = requireProvider(await registerProviders(openAIPlugin), "openai");
       loginOpenAICodexOAuthMock.mockResolvedValueOnce({
@@ -168,6 +174,7 @@ export function describeOpenAICodexProviderAuthContract(
           access: params.access,
           refresh: "refresh-token",
           expires: 1_700_000_000_000,
+          userId: params.userId,
           defaultModel: expectedCodexDefaultModel,
         }),
       );
@@ -238,6 +245,7 @@ export function describeOpenAICodexProviderAuthContract(
       await expectStableFallbackProfile({
         access,
         profileId: `openai:id-${expectedStableId}`,
+        userId: "user-123__acct-456",
       });
     });
 
