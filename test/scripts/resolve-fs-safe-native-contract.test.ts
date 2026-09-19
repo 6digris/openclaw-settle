@@ -81,7 +81,7 @@ describe("resolve-fs-safe-native-contract", () => {
     const { root, ref } = commitSource(
       "0.5.6",
       'import { configureFsSafeNative } from "@openclaw/fs-safe/config";\nconfigureFsSafeNative({ mode: "off" });\n',
-      "extended-stable/2026.8.33",
+      undefined,
       "2026.8.33",
     );
     expect(resolveContract(root, ref)).toBe("bundled");

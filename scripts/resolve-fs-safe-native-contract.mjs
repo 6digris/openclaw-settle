@@ -47,13 +47,7 @@ export function resolveFsSafeNativeContract({
 }) {
   assert.ok(isSha(selectedSha), "ref must be a full lowercase commit SHA");
   assert.ok(isSha(workflowSha), "workflow SHA must be a full lowercase commit SHA");
-  if (
-    !allowFrozenSource ||
-    selectedSha === workflowSha ||
-    !containingBranches().some((branch) =>
-      /^origin\/extended-stable\/\d{4}\.(?:[1-9]|1[0-2])\.33$/u.test(branch),
-    )
-  ) {
+  if (!allowFrozenSource || selectedSha === workflowSha) {
     return "required";
   }
   const packageSource = readSource("package.json");
@@ -64,10 +58,14 @@ export function resolveFsSafeNativeContract({
   const fsSafeVersion = packageJson.dependencies?.["@openclaw/fs-safe"];
   const contractKey = `${packageJson.version ?? ""}:${fsSafeVersion ?? ""}`;
   const bundledNative = LEGACY_BUNDLED_NATIVE_CONTRACTS.has(contractKey);
+  const canonicalFrozen = containingBranches().some((branch) =>
+    /^origin\/extended-stable\/\d{4}\.(?:[1-9]|1[0-2])\.33$/u.test(branch),
+  );
   if (
     !bundledNative &&
-    !LEGACY_PYTHON_ONLY_CONTRACTS.has(`*:${fsSafeVersion ?? ""}`) &&
-    !LEGACY_PYTHON_ONLY_CONTRACTS.has(contractKey)
+    (!canonicalFrozen ||
+      (!LEGACY_PYTHON_ONLY_CONTRACTS.has(`*:${fsSafeVersion ?? ""}`) &&
+        !LEGACY_PYTHON_ONLY_CONTRACTS.has(contractKey)))
   ) {
     return "required";
   }
