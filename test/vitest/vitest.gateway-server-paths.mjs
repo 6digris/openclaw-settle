@@ -1,5 +1,8 @@
 // Plugin integration tests retain Gateway runtime setup outside core source.
-export const gatewayPluginTestFiles = ["test/plugins/codex-model-catalog.gateway.test.ts"];
+export const gatewayPluginTestFiles = [
+  "test/plugins/codex-model-catalog.gateway.test.ts",
+  "test/plugins/crabbox-allocation-authority.gateway.test.ts",
+];
 
 // This curated cohort retains serial forks and the extended database-worker watchdog,
 // even though ordinary Gateway methods also use forks.
@@ -135,6 +138,7 @@ export const gatewayServerIsolatedTestFiles = [
   "src/gateway/server.cli-watchdog.test.ts",
   "src/gateway/server.codex-failure-recovery.test.ts",
   "src/gateway/server.incomplete-stream.test.ts",
+  "src/gateway/server.encrypted-tool-continuation.test.ts",
   "src/gateway/server.placement-abandonment.lifecycle.test.ts",
   "src/gateway/server.placement-abandonment.test.ts",
   "src/gateway/server.sessions.compaction-read-errors.test.ts",
