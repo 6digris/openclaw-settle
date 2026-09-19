@@ -6,8 +6,8 @@ import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import {
   adoptUpdateCampaignMock,
   cancelManagedServiceUpdateHandoffMock,
-  initializeGatewayUpdateStatusMock,
   invokeUpdateRun,
+  resolveStartupInstallStatusMock,
   scheduleGatewaySigusr1RestartMock,
   sentinelState,
   startManagedServiceUpdateHandoffMock,
@@ -26,9 +26,9 @@ describe("update.run unexpected-error diagnostics", () => {
       );
       const root = "/tmp/openclaw-source";
       if (source === "discovery") {
-        initializeGatewayUpdateStatusMock.mockRejectedValueOnce(error);
+        resolveStartupInstallStatusMock.mockRejectedValueOnce(error);
       } else {
-        initializeGatewayUpdateStatusMock.mockResolvedValueOnce({
+        resolveStartupInstallStatusMock.mockResolvedValueOnce({
           root,
           status: {
             root,

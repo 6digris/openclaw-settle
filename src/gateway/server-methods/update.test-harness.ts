@@ -27,8 +27,8 @@ export const resolveUpdateInstallSurfaceMock =
   vi.fn<
     typeof import("../../infra/update-runner-install-surface.js").resolveUpdateInstallSurface
   >();
-export const initializeGatewayUpdateStatusMock =
-  vi.fn<typeof import("../../infra/update-startup.js").initializeGatewayUpdateStatus>();
+export const resolveStartupInstallStatusMock =
+  vi.fn<typeof import("../../infra/update-install-status.js").resolveStartupInstallStatus>();
 const getLatestUpdateRestartSentinelMock = vi.fn<() => RestartSentinelPayload | null>(() => null);
 const refreshLatestUpdateRestartSentinelMock = vi.fn<() => Promise<RestartSentinelPayload | null>>(
   async () => null,
@@ -312,8 +312,11 @@ vi.mock("../../infra/update-status-state.js", () => ({
   getUpdateSchedule: getUpdateScheduleMock,
 }));
 
+vi.mock("../../infra/update-install-status.js", () => ({
+  resolveStartupInstallStatus: resolveStartupInstallStatusMock,
+}));
+
 vi.mock("../../infra/update-startup.js", () => ({
-  initializeGatewayUpdateStatus: initializeGatewayUpdateStatusMock,
   refreshGatewayUpdateStatus: refreshGatewayUpdateStatusMock,
 }));
 
@@ -429,8 +432,8 @@ beforeEach(() => {
         ? { kind: "package-root", mode: "unknown", root, packageRoot: root }
         : { kind: "missing", mode: "unknown" },
   );
-  initializeGatewayUpdateStatusMock.mockReset();
-  initializeGatewayUpdateStatusMock.mockResolvedValue({
+  resolveStartupInstallStatusMock.mockReset();
+  resolveStartupInstallStatusMock.mockResolvedValue({
     root: "/tmp/openclaw",
     status: { root: "/tmp/openclaw", installKind: "git", packageManager: "pnpm" },
     installReceipt: null,
@@ -518,7 +521,7 @@ export async function captureUpdateRunPayload(
 }
 
 export function mockGlobalInstallSurface() {
-  initializeGatewayUpdateStatusMock.mockResolvedValueOnce({
+  resolveStartupInstallStatusMock.mockResolvedValueOnce({
     root: "/tmp/openclaw-global",
     status: { root: "/tmp/openclaw-global", installKind: "package", packageManager: "npm" },
     installReceipt: null,
@@ -532,7 +535,7 @@ export function mockGlobalInstallSurface() {
 }
 
 export function mockGitInstallSurface(root: string) {
-  initializeGatewayUpdateStatusMock.mockResolvedValueOnce({
+  resolveStartupInstallStatusMock.mockResolvedValueOnce({
     root,
     status: { root, installKind: "git", packageManager: "pnpm" },
     installReceipt: null,

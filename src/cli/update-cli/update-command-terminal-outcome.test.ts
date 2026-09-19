@@ -16,10 +16,6 @@ import {
 } from "../../infra/package-update-swap.test-support.js";
 import { readRestartSentinel } from "../../infra/restart-sentinel.js";
 import * as temporaryRoot from "../../infra/tmp-openclaw-dir.js";
-import {
-  CONTROL_PLANE_UPDATE_SENTINEL_META_ENV,
-  UPDATE_RUN_ID_ENV,
-} from "../../infra/update-control-plane-sentinel.js";
 import { createManagedHandoffLeaseStore } from "../../infra/update-managed-service-handoff-lease.js";
 import { prepareNativePackageStage } from "../../infra/update-native-package-stage.js";
 import { createUpdateRun, finishUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
@@ -38,7 +34,7 @@ import {
   UpdateCommandFailure,
   UpdateCommandPendingRecoveryFailure,
 } from "./update-command-result.js";
-import { admitUpdateCommandRun, completeUpdateCommandRun } from "./update-command-run.js";
+import { completeUpdateCommandRun } from "./update-command-run.js";
 import { withUpdateCommandTerminalResult } from "./update-command-terminal.js";
 import { withUpdateFailureTriage } from "./update-command-triage.js";
 
@@ -727,15 +723,13 @@ it("keeps foreground success pending until the replacement Gateway observes the 
   const backupManifest = path.join(swap.transaction.backupRoot, "package.json");
   const backupBytes = await fs.readFile(backupManifest);
   const complete = vi.spyOn(swap.transaction, "complete");
-  const created = createUpdateRun({ trigger: "api" });
-  const meta = { runId: created.runId, completionOwner: "gateway-restart" as const };
-  const metaPath = path.join(base, "sentinel-meta.json");
-  await fs.writeFile(metaPath, JSON.stringify({ version: 1, meta }));
-  vi.stubEnv(UPDATE_RUN_ID_ENV, created.runId);
-  vi.stubEnv(CONTROL_PLANE_UPDATE_SENTINEL_META_ENV, metaPath);
-  const run = await admitUpdateCommandRun({ opts: { json: true }, root });
-  expect(run.completionOwner).toBe("gateway-restart");
-  run.gatewayRestartRequired = true;
+  const run: NonNullable<UpdateCommandOptions["run"]> = {
+    runId: createUpdateRun({ trigger: "api" }, { env: process.env }).runId,
+    env: { ...process.env },
+    completionOwner: "gateway-restart",
+    gatewayRestartRequired: true,
+  };
+  const meta = { runId: run.runId, completionOwner: "gateway-restart" as const };
   await withUpdateCommandTerminalResult(async (registerRun) => {
     registerRun(run);
     await withUpdateCommandExecutor(run.runId, async (executor) => {

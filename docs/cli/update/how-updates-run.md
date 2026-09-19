@@ -405,6 +405,11 @@ databases, and listener. A foreground Gateway launches a fresh process only afte
 the updater settles; it does not reopen its old module graph after replacement.
 Managed services restart through their existing service manager.
 
+Each requested update checks the current local installation and Git upstream
+before accepting its target. After a pinned Git update leaves the checkout
+detached, a verified update receipt preserves the upstream for that same checkout
+and revision. Startup status discovery does not freeze later update requests.
+
 A foreground replacement can still be starting when the initial readiness
 observation ends. OpenClaw leaves that process running and reports readiness as
 unverified. Use `openclaw gateway status --deep` to check its progress.

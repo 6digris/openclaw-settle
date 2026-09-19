@@ -1,18 +1,21 @@
 import { UpdatePreMutationError } from "../../cli/update-cli/shared.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { currentUpdateCheckLifecycle } from "../../infra/update-check-lifecycle.js";
 import { createUpdateErrorFact } from "../../infra/update-failure-facts.js";
 import {
   createFreeBsdPkgOwnershipInspection,
   FreeBsdPkgOwnershipError,
 } from "../../infra/update-freebsd-pkg-ownership.js";
+import { resolveStartupInstallStatus } from "../../infra/update-install-status.js";
 import { getUpdateRun, recordUpdateRunStep } from "../../infra/update-run-ledger.js";
 import { summarizeUpdateStepFailure, type UpdateRunRecord } from "../../infra/update-run-record.js";
 import { resolveUpdateInstallSurface } from "../../infra/update-runner-install-surface.js";
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
-import { initializeGatewayUpdateStatus } from "../../infra/update-startup.js";
 
 export async function resolveGatewayUpdateAdmission(timeoutMs?: number) {
-  const { root, status } = await initializeGatewayUpdateStatus();
+  const { root, status } = await currentUpdateCheckLifecycle().run((signal) =>
+    resolveStartupInstallStatus(false, signal),
+  );
   // Status discovery is read-only; admit ownership before campaign adoption
   // or a managed handoff can select and launch an updater.
   await createFreeBsdPkgOwnershipInspection(timeoutMs).assertUnowned(root);

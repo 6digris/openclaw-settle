@@ -46,8 +46,8 @@ const resolveUpdateInstallSurfaceMock =
   vi.fn<
     typeof import("../../infra/update-runner-install-surface.js").resolveUpdateInstallSurface
   >();
-const initializeGatewayUpdateStatusMock =
-  vi.fn<typeof import("../../infra/update-startup.js").initializeGatewayUpdateStatus>();
+const resolveStartupInstallStatusMock =
+  vi.fn<typeof import("../../infra/update-install-status.js").resolveStartupInstallStatus>();
 const detectRespawnSupervisorMock = vi.fn<() => RespawnSupervisor | null>();
 const startManagedServiceUpdateHandoffMock = vi.fn<
   typeof import("../../infra/update-managed-service-handoff.js").startManagedServiceUpdateHandoff
@@ -167,8 +167,8 @@ vi.mock("../../infra/update-status-state.js", () => ({
   getUpdateSchedule: () => updateSchedule,
 }));
 
-vi.mock("../../infra/update-startup.js", () => ({
-  initializeGatewayUpdateStatus: initializeGatewayUpdateStatusMock,
+vi.mock("../../infra/update-install-status.js", () => ({
+  resolveStartupInstallStatus: resolveStartupInstallStatusMock,
 }));
 
 vi.mock("../../version.js", () => ({
@@ -219,8 +219,8 @@ beforeEach(() => {
     root: "/tmp/openclaw",
     packageRoot: "/tmp/openclaw",
   });
-  initializeGatewayUpdateStatusMock.mockReset();
-  initializeGatewayUpdateStatusMock.mockResolvedValue({
+  resolveStartupInstallStatusMock.mockReset();
+  resolveStartupInstallStatusMock.mockResolvedValue({
     root: "/tmp/openclaw",
     status: { root: "/tmp/openclaw", installKind: "git", packageManager: "pnpm" },
     installReceipt: null,
@@ -270,7 +270,7 @@ function setDevCampaignSchedule(upstreamSha = "frozen-upstream-sha"): void {
 
 function mockGitInstallStatus(upstreamSha: string, upstreamRef = "origin/main"): void {
   const root = "/tmp/openclaw";
-  initializeGatewayUpdateStatusMock.mockResolvedValueOnce({
+  resolveStartupInstallStatusMock.mockResolvedValueOnce({
     root,
     status: {
       root,
@@ -295,7 +295,7 @@ function mockGitInstallStatus(upstreamSha: string, upstreamRef = "origin/main"):
 
 function mockPackageInstallSurface(kind: "global" | "package-root"): void {
   const root = "/tmp/openclaw";
-  initializeGatewayUpdateStatusMock.mockResolvedValueOnce({
+  resolveStartupInstallStatusMock.mockResolvedValueOnce({
     root,
     status: { root, installKind: "package", packageManager: "npm" },
     installReceipt: null,
@@ -401,7 +401,7 @@ describe("update.run campaign ownership", () => {
 
   it("uses the prepared Git checkout instead of process artifacts", async () => {
     adoptCampaignMock.mockReturnValueOnce({ status: "absent" });
-    initializeGatewayUpdateStatusMock.mockResolvedValueOnce({
+    resolveStartupInstallStatusMock.mockResolvedValueOnce({
       root: "/tmp/openclaw-source",
       status: {
         root: "/tmp/openclaw-source",
@@ -433,7 +433,7 @@ describe("update.run campaign ownership", () => {
 
   it("rejects a missing prepared root without scanning the process working directory", async () => {
     adoptCampaignMock.mockReturnValueOnce({ status: "absent" });
-    initializeGatewayUpdateStatusMock.mockResolvedValueOnce({
+    resolveStartupInstallStatusMock.mockResolvedValueOnce({
       root: null,
       status: { root: null, installKind: "unknown", packageManager: "unknown" },
       installReceipt: null,

@@ -10,9 +10,9 @@ import type { GatewayRequestContext } from "./types.js";
 import {
   adoptUpdateCampaignMock,
   detectRespawnSupervisorMock,
-  initializeGatewayUpdateStatusMock,
   mockGlobalInstallSurface,
   readGatewayOwnerLeaseMock,
+  resolveStartupInstallStatusMock,
   scheduleGatewaySigusr1RestartMock,
   sendGatewayLifecycleNoticeMock,
   sentinelState,
@@ -245,7 +245,7 @@ describe("update.run current owner authority", () => {
     "refuses before acknowledgement after discovery revokes ownership (managed=%s)",
     async (managed) => {
       detectRespawnSupervisorMock.mockReturnValue(managed ? "launchd" : null);
-      initializeGatewayUpdateStatusMock.mockImplementationOnce(async () => {
+      resolveStartupInstallStatusMock.mockImplementationOnce(async () => {
         config = { commands: { ownerAllowFrom: ["replacement"] } };
         return {
           root: "/tmp/openclaw",
