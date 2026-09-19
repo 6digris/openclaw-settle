@@ -527,7 +527,7 @@ export function createSessionMutations(host: SessionMutationsHost) {
         }
       }
       settleOptimisticPatch(true);
-      return refreshOutcome.status === "failed"
+      return refreshOutcome.status === "failed" && result
         ? { ...result, listRefreshError: refreshOutcome.error }
         : result;
     } catch (error) {

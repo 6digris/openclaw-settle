@@ -11,11 +11,13 @@ const HEALTH = "__OPENCLAW_NATIVE_GATEWAY_HEALTH__";
 const EVENT = "openclaw:native-gateway-health-changed";
 const cleanups: (() => void)[] = [];
 
-afterEach(() => {
+afterEach(async () => {
   cleanups
     .splice(0)
     .toReversed()
     .forEach((cleanup) => cleanup());
+  // Connection changes start lazy snapshot/cache cleanup; drain it before jsdom retires.
+  await vi.dynamicImportSettled();
   Reflect.deleteProperty(window, HEALTH);
   localStorage.clear();
   sessionStorage.clear();
