@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { DatabaseSync, StatementSync } from "node:sqlite";
+import { expectDefined } from "@openclaw/normalization-core";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   clearOpenClawDatabaseQuarantine,
   recordOpenClawDatabaseQuarantine,
@@ -24,11 +25,12 @@ import {
 afterEach(() => resetPluginBlobStoreForTests());
 
 function createStore(env: NodeJS.ProcessEnv) {
-  return createPluginBlobStoreForTests<{ version: number }>(
+  const store = createPluginBlobStoreForTests<{ version: number }>(
     "diffs",
     { namespace: "readonly", maxEntries: 3, maxBytesPerEntry: 16, maxBytesPerNamespace: 32 },
     env,
   );
+  return { ...store, lookupInfo: expectDefined(store.lookupInfo, "metadata-only blob lookup") };
 }
 
 describe("plugin blob read-only access", () => {
@@ -38,6 +40,11 @@ describe("plugin blob read-only access", () => {
       const databasePath = resolveOpenClawStateSqlitePath(state.env);
 
       await expect(store.lookup("missing")).resolves.toBeUndefined();
+      await expect(store.lookupInfo("missing")).resolves.toBeUndefined();
+      await expect(store.lookupInfo(" ")).rejects.toMatchObject({
+        code: "PLUGIN_BLOB_INVALID_INPUT",
+        operation: "lookup",
+      });
       await expect(store.entries()).resolves.toEqual([]);
       expect(existsSync(path.dirname(databasePath))).toBe(false);
       expect(isOpenClawStateDatabaseOpen(databasePath)).toBe(false);
@@ -56,6 +63,32 @@ describe("plugin blob read-only access", () => {
       entry!.bytes[0] = 9;
       await expect(store.lookup("saved")).resolves.toMatchObject({ bytes: new Uint8Array([1, 2]) });
       await expect(store.entries()).resolves.toMatchObject([{ key: "saved", sizeBytes: 2 }]);
+      let fetchedBytes = 0;
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- Invoke with the original native receiver.
+      const get = StatementSync.prototype.get;
+      const reads = vi.spyOn(StatementSync.prototype, "get").mockImplementation(function (
+        this: StatementSync,
+        ...args
+      ) {
+        const row = get.apply(this, args);
+        for (const value of Object.values(row ?? {})) {
+          if (value instanceof Uint8Array) {
+            fetchedBytes += value.byteLength;
+          }
+        }
+        return row;
+      });
+      try {
+        await expect(store.lookupInfo("saved")).resolves.toEqual({
+          key: "saved",
+          metadata: { version: 1 },
+          sizeBytes: 2,
+          createdAt: entry?.createdAt,
+        });
+        expect(fetchedBytes).toBe(0);
+      } finally {
+        reads.mockRestore();
+      }
       expect(isOpenClawStateDatabaseOpen(databasePath)).toBe(false);
     });
   });
@@ -70,6 +103,9 @@ describe("plugin blob read-only access", () => {
         db.exec("BEGIN IMMEDIATE; DELETE FROM plugin_blob_entries;");
         try {
           await expect(store.lookup("saved")).resolves.toMatchObject({ metadata: { version: 1 } });
+          await expect(store.lookupInfo("saved")).resolves.toMatchObject({
+            metadata: { version: 1 },
+          });
           await expect(store.entries()).resolves.toMatchObject([{ key: "saved" }]);
         } finally {
           db.exec("ROLLBACK");
@@ -102,6 +138,7 @@ describe("plugin blob read-only access", () => {
         const store = createStore(state.env);
 
         await expect(store.lookup("missing")).resolves.toBeUndefined();
+        await expect(store.lookupInfo("missing")).resolves.toBeUndefined();
         await expect(store.entries()).resolves.toEqual([]);
         expect(readFileSync(databasePath)).toEqual(before);
         expect(isOpenClawStateDatabaseOpen(databasePath)).toBe(false);
@@ -118,12 +155,12 @@ describe("plugin blob read-only access", () => {
       closeOpenClawStateDatabaseByPath(databasePath);
       const before = readFileSync(databasePath);
 
-      for (const operation of ["lookup", "entries"] as const) {
+      for (const operation of ["lookup", "lookupInfo", "entries"] as const) {
         await expect(
-          operation === "lookup" ? store.lookup("saved") : store.entries(),
+          operation === "entries" ? store.entries() : store[operation]("saved"),
         ).rejects.toMatchObject({
           code: "PLUGIN_BLOB_READ_FAILED",
-          operation,
+          operation: operation === "lookupInfo" ? "lookup" : operation,
           path: databasePath,
         });
       }
@@ -143,12 +180,12 @@ describe("plugin blob read-only access", () => {
         if (temperature === "cold") {
           closeOpenClawStateDatabaseByPath(databasePath);
         }
-        for (const operation of ["lookup", "entries"] as const) {
+        for (const operation of ["lookup", "lookupInfo", "entries"] as const) {
           await expect(
-            operation === "lookup" ? store.lookup("saved") : store.entries(),
+            operation === "entries" ? store.entries() : store[operation]("saved"),
           ).rejects.toMatchObject({
             code: "PLUGIN_BLOB_OPEN_FAILED",
-            operation,
+            operation: operation === "lookupInfo" ? "lookup" : operation,
             path: databasePath,
           });
         }
@@ -170,6 +207,10 @@ describe("plugin blob read-only access", () => {
             code: "PLUGIN_BLOB_OPEN_FAILED",
           });
           await expect(store.entries()).rejects.toMatchObject({ code: "PLUGIN_BLOB_OPEN_FAILED" });
+          await expect(store.lookupInfo("saved")).rejects.toMatchObject({
+            code: "PLUGIN_BLOB_OPEN_FAILED",
+            operation: "lookup",
+          });
         } finally {
           clearOpenClawStateDatabaseOpenFailure(databasePath);
         }
@@ -186,6 +227,10 @@ describe("plugin blob read-only access", () => {
             code: "PLUGIN_BLOB_OPEN_FAILED",
           });
           await expect(store.entries()).rejects.toMatchObject({ code: "PLUGIN_BLOB_OPEN_FAILED" });
+          await expect(store.lookupInfo("saved")).rejects.toMatchObject({
+            code: "PLUGIN_BLOB_OPEN_FAILED",
+            operation: "lookup",
+          });
         } finally {
           clearOpenClawStateDatabaseOpenFailure(databasePath);
           expect(clearOpenClawDatabaseQuarantine(databasePath, { env: state.env })).toBe(true);

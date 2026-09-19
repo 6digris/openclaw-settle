@@ -25,6 +25,8 @@ export type PluginBlobStore<TMetadata> = {
     opts?: { ttlMs?: number },
   ): Promise<boolean>;
   lookup(key: string): Promise<PluginBlobEntry<TMetadata> | undefined>;
+  /** Metadata-only lookup. Older hosts may only provide lookup. */
+  lookupInfo?(key: string): Promise<PluginBlobEntryInfo<TMetadata> | undefined>;
   entries(): Promise<PluginBlobEntryInfo<TMetadata>[]>;
   delete(key: string): Promise<boolean>;
   deleteExpiredKey(key: string): Promise<PluginBlobEntryInfo<TMetadata> | undefined>;

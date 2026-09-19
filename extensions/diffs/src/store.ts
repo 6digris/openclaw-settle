@@ -5,7 +5,6 @@ import path from "node:path";
 import { gunzip, gzip } from "node:zlib";
 import { MAX_DATE_TIMESTAMP_MS, timestampMsToIsoString } from "openclaw/plugin-sdk/number-runtime";
 import type {
-  PluginBlobEntry,
   PluginBlobEntryInfo,
   PluginBlobStore,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
@@ -165,7 +164,7 @@ export class DiffArtifactStore {
       try {
         await fs.mkdir(this.rootDir, { recursive: true });
         await fs.mkdir(artifactDir);
-        const entry = await this.blobStore.lookup(id);
+        const entry = await this.lookupInfo(id);
         if (!entry || !isRenderedFileMetadata(entry.metadata)) {
           throw new Error(`Diff file artifact expired before materialization: ${id}`);
         }
@@ -191,7 +190,7 @@ export class DiffArtifactStore {
 
   async completeFileArtifact(id: string): Promise<void> {
     try {
-      const entry = await this.blobStore.lookup(id);
+      const entry = await this.lookupInfo(id);
       if (!entry || !isRenderedFileMetadata(entry.metadata)) {
         await fs.rm(this.artifactDir(id), { recursive: true, force: true }).catch(() => {});
         throw new Error(`Diff file artifact expired during rendering: ${id}`);
@@ -236,7 +235,7 @@ export class DiffArtifactStore {
           if (
             stats &&
             now - stats.mtimeMs > SWEEP_FALLBACK_AGE_MS &&
-            !(await this.blobStore.lookup(entry.name))
+            !(await this.lookupInfo(entry.name))
           ) {
             await fs.rm(artifactDir, { recursive: true, force: true }).catch(() => {});
           }
@@ -244,17 +243,24 @@ export class DiffArtifactStore {
     );
   }
 
+  private lookupInfo(
+    key: string,
+  ): Promise<PluginBlobEntryInfo<DiffArtifactBlobMetadata> | undefined> {
+    // The supported 2026.9.4 plugin API predates metadata-only blob reads.
+    return this.blobStore.lookupInfo ? this.blobStore.lookupInfo(key) : this.blobStore.lookup(key);
+  }
+
   private async registerUnique(
     bytes: Uint8Array,
     metadata: DiffArtifactBlobMetadata,
     ttlMs: number,
-  ): Promise<PluginBlobEntry<DiffArtifactBlobMetadata>> {
+  ): Promise<PluginBlobEntryInfo<DiffArtifactBlobMetadata>> {
     for (let attempt = 0; attempt < ARTIFACT_ID_ATTEMPTS; attempt += 1) {
       const id = crypto.randomBytes(10).toString("hex");
       if (!(await this.registerIfAbsentWithCleanup(id, bytes, metadata, ttlMs))) {
         continue;
       }
-      const entry = await this.blobStore.lookup(id);
+      const entry = await this.lookupInfo(id);
       if (entry) {
         return entry;
       }
@@ -289,7 +295,7 @@ export class DiffArtifactStore {
     }
     // A current row wins over the expired snapshot. This prevents cleanup from
     // deleting a materialization if an id was replaced after the TTL transaction.
-    if (await this.blobStore.lookup(entry.key)) {
+    if (await this.lookupInfo(entry.key)) {
       return;
     }
     await fs.rm(this.artifactDir(entry.key), { recursive: true, force: true }).catch(() => {});
@@ -325,7 +331,7 @@ export class DiffArtifactStore {
 }
 
 function viewerEntryToMeta(
-  entry: PluginBlobEntry<DiffArtifactBlobMetadata>,
+  entry: PluginBlobEntryInfo<DiffArtifactBlobMetadata>,
   token: string,
 ): DiffArtifactMeta {
   if (!isViewerMetadata(entry.metadata)) {

@@ -178,21 +178,18 @@ function decodeBlobInfo<TMetadata>(
   };
 }
 
-function selectLiveBlob(
+function liveBlobInfoQuery(
   db: DatabaseSync,
   params: { pluginId: string; namespace: string; key: string; now: number },
 ) {
-  return executeSqliteQueryTakeFirstSync(
-    db,
-    kysely(db)
-      .selectFrom("plugin_blob_entries")
-      .select(["entry_key", "metadata_json", "blob", "created_at", "expires_at"])
-      .select((eb) => eb.fn<number | bigint>("length", ["blob"]).as("size_bytes"))
-      .where("plugin_id", "=", params.pluginId)
-      .where("namespace", "=", params.namespace)
-      .where("entry_key", "=", params.key)
-      .where((eb) => eb.or([eb("expires_at", "is", null), eb("expires_at", ">", params.now)])),
-  );
+  return kysely(db)
+    .selectFrom("plugin_blob_entries")
+    .select(["entry_key", "metadata_json", "created_at", "expires_at"])
+    .select((eb) => eb.fn<number | bigint>("length", ["blob"]).as("size_bytes"))
+    .where("plugin_id", "=", params.pluginId)
+    .where("namespace", "=", params.namespace)
+    .where("entry_key", "=", params.key)
+    .where((eb) => eb.or([eb("expires_at", "is", null), eb("expires_at", ">", params.now)]));
 }
 
 function blobKeyExists(
@@ -550,13 +547,35 @@ export function pluginBlobLookup<TMetadata>(params: {
   return readDatabase(
     "lookup",
     (db) => {
-      const row = selectLiveBlob(db, { ...params, now: Date.now() });
+      const row = executeSqliteQueryTakeFirstSync(
+        db,
+        liveBlobInfoQuery(db, { ...params, now: Date.now() }).select("blob"),
+      );
       return row
         ? {
             ...decodeBlobInfo<TMetadata>(row, "lookup", params.env),
             bytes: row.blob,
           }
         : undefined;
+    },
+    params.env,
+  );
+}
+
+export function pluginBlobLookupInfo<TMetadata>(params: {
+  pluginId: string;
+  namespace: string;
+  key: string;
+  env?: NodeJS.ProcessEnv;
+}): PluginBlobEntryInfo<TMetadata> | undefined {
+  return readDatabase(
+    "lookup",
+    (db) => {
+      const row = executeSqliteQueryTakeFirstSync(
+        db,
+        liveBlobInfoQuery(db, { ...params, now: Date.now() }),
+      );
+      return row ? decodeBlobInfo<TMetadata>(row, "lookup", params.env) : undefined;
     },
     params.env,
   );

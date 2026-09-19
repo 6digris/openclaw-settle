@@ -479,7 +479,13 @@ export function createMemoryWikiCompiledCacheStore(
       const durableIdentity = await loadDurableIdentity();
       if (durableIdentity.compiledCachePublicationId) {
         try {
-          await store.lookup(publicationKey(ownerId, durableIdentity.compiledCachePublicationId));
+          const key = publicationKey(ownerId, durableIdentity.compiledCachePublicationId);
+          // The supported 2026.9.4 plugin API predates metadata-only blob reads.
+          if (store.lookupInfo) {
+            await store.lookupInfo(key);
+          } else {
+            await store.lookup(key);
+          }
         } catch (error) {
           options.onReadError?.(error);
           throw error;

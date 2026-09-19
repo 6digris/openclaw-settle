@@ -10,6 +10,7 @@ import {
   pluginBlobDeleteExpired,
   pluginBlobEntries,
   pluginBlobLookup,
+  pluginBlobLookupInfo,
   pluginBlobRegister,
   pluginBlobRegisterIfAbsent,
 } from "./plugin-blob-store.sqlite.js";
@@ -223,6 +224,14 @@ function createPluginBlobStoreInternal<TMetadata>(
     },
     async lookup(key) {
       return pluginBlobLookup<TMetadata>({
+        pluginId,
+        namespace,
+        key: validateKey(key, "lookup"),
+        ...(env ? { env } : {}),
+      });
+    },
+    async lookupInfo(key) {
+      return pluginBlobLookupInfo<TMetadata>({
         pluginId,
         namespace,
         key: validateKey(key, "lookup"),

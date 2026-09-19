@@ -36,43 +36,67 @@ describe("DiffArtifactStore", () => {
     await cleanupRootDir();
   });
 
-  it("stores compressed viewer bytes and retrieves them with one authorized lookup", async () => {
-    const lookup = vi.spyOn(blobStore, "lookup");
-    const artifact = await store.createArtifact({
-      html: "<html>demo é 🦀</html>",
-      title: "Demo",
-      inputKind: "before_after",
-      fileCount: 1,
-      context: {
+  it.each([true, false])(
+    "stores and authorizes a viewer with metadata capability %s",
+    async (metadataOnly) => {
+      if (!metadataOnly) {
+        delete blobStore.lookupInfo;
+      }
+      const lookup = vi.spyOn(blobStore, "lookup");
+      const artifact = await store.createArtifact({
+        html: "<html>demo é 🦀</html>",
+        title: "Demo",
+        inputKind: "before_after",
+        fileCount: 1,
+        context: {
+          agentId: "main",
+          sessionId: "session-123",
+          messageChannel: "discord",
+          agentAccountId: "default",
+        },
+      });
+      expect(lookup).toHaveBeenCalledTimes(metadataOnly ? 0 : 1);
+      const stored = await blobStore.lookup(artifact.id);
+      expect(stored?.metadata).toMatchObject({
+        version: 1,
+        kind: "viewer",
+        encoding: "gzip",
+        decodedBytes: Buffer.byteLength("<html>demo é 🦀</html>"),
+      });
+      expect(JSON.stringify(stored?.metadata)).not.toContain(artifact.token);
+      await expect(fs.stat(rootDir)).rejects.toMatchObject({ code: "ENOENT" });
+
+      lookup.mockClear();
+      const loaded = await store.readAuthorizedViewer(artifact.id, artifact.token);
+      expect(loaded?.artifact.id).toBe(artifact.id);
+      expect(loaded?.artifact.context).toEqual({
         agentId: "main",
         sessionId: "session-123",
         messageChannel: "discord",
         agentAccountId: "default",
-      },
-    });
-    const stored = await blobStore.lookup(artifact.id);
-    expect(stored?.metadata).toMatchObject({
-      version: 1,
-      kind: "viewer",
-      encoding: "gzip",
-      decodedBytes: Buffer.byteLength("<html>demo é 🦀</html>"),
-    });
-    expect(JSON.stringify(stored?.metadata)).not.toContain(artifact.token);
-    await expect(fs.stat(rootDir)).rejects.toMatchObject({ code: "ENOENT" });
+      });
+      expect(Buffer.from(loaded!.html).toString("utf8")).toBe("<html>demo é 🦀</html>");
+      expect(lookup).toHaveBeenCalledTimes(1);
+      await expect(store.readAuthorizedViewer(artifact.id, "0".repeat(48))).resolves.toBeNull();
+      await expect(store.readAuthorizedViewer(artifact.id, "short")).resolves.toBeNull();
+    },
+  );
 
-    lookup.mockClear();
-    const loaded = await store.readAuthorizedViewer(artifact.id, artifact.token);
-    expect(loaded?.artifact.id).toBe(artifact.id);
-    expect(loaded?.artifact.context).toEqual({
-      agentId: "main",
-      sessionId: "session-123",
-      messageChannel: "discord",
-      agentAccountId: "default",
-    });
-    expect(Buffer.from(loaded!.html).toString("utf8")).toBe("<html>demo é 🦀</html>");
-    expect(lookup).toHaveBeenCalledTimes(1);
-    await expect(store.readAuthorizedViewer(artifact.id, "0".repeat(48))).resolves.toBeNull();
-    await expect(store.readAuthorizedViewer(artifact.id, "short")).resolves.toBeNull();
+  it("propagates metadata read failures without retrying a payload read", async () => {
+    const failure = new Error("metadata read failed");
+    blobStore.lookupInfo = async () => {
+      throw failure;
+    };
+    const lookup = vi.spyOn(blobStore, "lookup");
+    await expect(
+      store.createArtifact({
+        html: "<html>demo</html>",
+        title: "Demo",
+        inputKind: "patch",
+        fileCount: 1,
+      }),
+    ).rejects.toBe(failure);
+    expect(lookup).not.toHaveBeenCalled();
   });
 
   it("caps artifact expiry instead of throwing near the Date boundary", async () => {
@@ -282,7 +306,7 @@ describe("DiffArtifactStore", () => {
         });
       }
     }
-    const lookup = vi.spyOn(blobStore, "lookup");
+    const lookup = vi.spyOn(blobStore, "lookupInfo");
     try {
       await store.cleanupExpired();
 

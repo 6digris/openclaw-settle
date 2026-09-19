@@ -1,5 +1,6 @@
 // Plugin blob store tests cover persistence, quotas, expiry, and copied bytes.
 import { runInNewContext } from "node:vm";
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -33,7 +34,8 @@ function options(
 
 function createPluginBlobStore<TMetadata>(pluginId: string, testOptions: TestBlobStoreOptions) {
   const { env, ...storeOptions } = testOptions;
-  return createPluginBlobStoreForTests<TMetadata>(pluginId, storeOptions, env);
+  const store = createPluginBlobStoreForTests<TMetadata>(pluginId, storeOptions, env);
+  return { ...store, lookupInfo: expectDefined(store.lookupInfo, "metadata-only blob lookup") };
 }
 
 describe("plugin blob store", () => {
@@ -60,6 +62,7 @@ describe("plugin blob store", () => {
       const entries = await store.entries();
       expect(entries).toHaveLength(1);
       expect(entries[0]).toMatchObject({ key: "viewer", metadata: expectedMetadata });
+      await expect(store.lookupInfo("viewer")).resolves.toEqual(entries[0]);
       resetPluginBlobStoreForTests();
       const reopened = createPluginBlobStore("diffs", options(state.env));
       await expect(reopened.lookup("viewer")).resolves.toMatchObject({
@@ -67,6 +70,7 @@ describe("plugin blob store", () => {
         bytes: new Uint8Array([1, 2, 3]),
       });
       expect("bytes" in entries[0]!).toBe(false);
+      await expect(reopened.lookupInfo("viewer")).resolves.toEqual(entries[0]);
     });
   });
 
@@ -166,6 +170,15 @@ describe("plugin blob store", () => {
     await withOpenClawTestState({ label: "plugin-blob-expiry" }, async (state) => {
       const store = createPluginBlobStore<{ order: number }>("diffs", options(state.env));
       await store.register("one", new Uint8Array([1]), { order: 1 }, { ttlMs: 10 });
+      await expect(store.lookupInfo("one")).resolves.toEqual({
+        key: "one",
+        metadata: { order: 1 },
+        sizeBytes: 1,
+        createdAt: 2_000,
+        expiresAt: 2_010,
+      });
+      vi.setSystemTime(2_010);
+      await expect(store.lookupInfo("one")).resolves.toBeUndefined();
       vi.setSystemTime(2_011);
       await store.register("two", new Uint8Array([2]), { order: 2 }, { ttlMs: 10 });
       await expect(store.deleteExpiredKey("one")).resolves.toEqual({
@@ -349,6 +362,8 @@ describe("plugin blob store", () => {
 
       await expect(otherPlugin.lookup("same")).resolves.toBeUndefined();
       await expect(otherNamespace.lookup("same")).resolves.toBeUndefined();
+      await expect(otherPlugin.lookupInfo("same")).resolves.toBeUndefined();
+      await expect(otherNamespace.lookupInfo("same")).resolves.toBeUndefined();
       resetPluginBlobStoreForTests();
 
       const reopened = createPluginBlobStore<{ owner: string }>("diffs", options(state.env));
@@ -473,6 +488,14 @@ describe("plugin blob store", () => {
           (plugin_id, namespace, entry_key, metadata_json, blob, created_at, expires_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
       ).run("diffs", "artifacts", "corrupt", "{", Buffer.from([7]), 1, null);
+      await expect(store.lookupInfo("stable")).resolves.toMatchObject({
+        metadata: { ok: true },
+        sizeBytes: 2,
+      });
+      await expect(store.lookupInfo("corrupt")).rejects.toMatchObject({
+        code: "PLUGIN_BLOB_CORRUPT",
+        operation: "lookup",
+      });
       await expect(store.lookup("corrupt")).rejects.toMatchObject({
         code: "PLUGIN_BLOB_CORRUPT",
         operation: "lookup",
@@ -483,6 +506,25 @@ describe("plugin blob store", () => {
       });
     });
   });
+
+  it.each(["created_at", "expires_at"] as const)(
+    "preserves native integer errors in %s metadata",
+    async (column) => {
+      await withOpenClawTestState({ label: "plugin-blob-integer" }, async (state) => {
+        const store = createPluginBlobStore("diffs", options(state.env));
+        await store.register("unsafe", new Uint8Array([1]), { ok: true });
+        const { db } = openOpenClawStateDatabase({ env: state.env });
+        db.exec(`UPDATE plugin_blob_entries SET ${column} = 9007199254740992`);
+        for (const operation of ["lookup", "lookupInfo"] as const) {
+          await expect(store[operation]("unsafe")).rejects.toMatchObject({
+            code: "PLUGIN_BLOB_READ_FAILED",
+            operation: "lookup",
+            cause: expect.any(RangeError),
+          });
+        }
+      });
+    },
+  );
 
   it("preserves expired rows when owner metadata is corrupt", async () => {
     vi.useFakeTimers();
@@ -498,6 +540,8 @@ describe("plugin blob store", () => {
       ).run("diffs", "artifacts", "corrupt", "{", Buffer.from([7]), 5_000, 5_010);
 
       vi.setSystemTime(5_011);
+      await expect(store.lookupInfo("valid")).resolves.toBeUndefined();
+      await expect(store.lookupInfo("corrupt")).resolves.toBeUndefined();
       await expect(store.deleteExpired()).rejects.toMatchObject({
         code: "PLUGIN_BLOB_CORRUPT",
         operation: "sweep",

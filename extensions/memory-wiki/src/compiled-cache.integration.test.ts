@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
+import { expectDefined } from "@openclaw/normalization-core";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { OpenBlobStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
@@ -261,51 +262,72 @@ describe("Memory Wiki compiled cache lifecycle", () => {
     },
   );
 
-  it("round-trips compile through async preparation and claim query after restart", async () => {
-    const { rootDir, config } = await createPersistentVault({
-      initialize: true,
-      config: { context: { includeCompiledDigestPrompt: true } },
-    });
-    await fs.writeFile(
-      path.join(rootDir, "entities", "alpha.md"),
-      renderWikiMarkdown({
-        frontmatter: {
-          pageType: "entity",
-          id: "entity.alpha",
-          title: "Alpha",
-          claims: [
-            {
-              id: "claim.alpha.db",
-              text: "Alpha uses PostgreSQL for production writes.",
-              status: "supported",
-              confidence: 0.91,
-              evidence: [{ sourceId: "source.alpha", lines: "1-2" }],
-            },
-          ],
-        },
-        body: "# Alpha\n\nDatabase notes.\n",
-      }),
-      "utf8",
-    );
+  it.each([true, false])(
+    "round-trips compile and restart with metadata capability %s",
+    async (metadataOnly) => {
+      const { rootDir, config } = await createPersistentVault({
+        initialize: true,
+        config: { context: { includeCompiledDigestPrompt: true } },
+      });
+      await fs.writeFile(
+        path.join(rootDir, "entities", "alpha.md"),
+        renderWikiMarkdown({
+          frontmatter: {
+            pageType: "entity",
+            id: "entity.alpha",
+            title: "Alpha",
+            claims: [
+              {
+                id: "claim.alpha.db",
+                text: "Alpha uses PostgreSQL for production writes.",
+                status: "supported",
+                confidence: 0.91,
+                evidence: [{ sourceId: "source.alpha", lines: "1-2" }],
+              },
+            ],
+          },
+          body: "# Alpha\n\nDatabase notes.\n",
+        }),
+        "utf8",
+      );
 
-    await compileMemoryWikiVault(config);
+      await compileMemoryWikiVault(config);
 
-    await expect(preparePrompt(config)).resolves.toContain(
-      "Alpha uses PostgreSQL for production writes.",
-    );
-    await expect(getMemoryWikiPage({ config, lookup: "claim.alpha.db" })).resolves.toMatchObject({
-      path: "entities/alpha.md",
-      title: "Alpha",
-    });
+      await expect(preparePrompt(config)).resolves.toContain(
+        "Alpha uses PostgreSQL for production writes.",
+      );
+      await expect(getMemoryWikiPage({ config, lookup: "claim.alpha.db" })).resolves.toMatchObject({
+        path: "entities/alpha.md",
+        title: "Alpha",
+      });
+      const compiled = await loadMemoryWikiCompiledCache(config);
 
-    configureMemoryWikiCompiledCacheStore(undefined);
-    configureMemoryWikiCompiledCacheStore(createCacheStore());
-    await activateVault(config);
+      configureMemoryWikiCompiledCacheStore(undefined);
+      let payloadReads = 0;
+      const reader = createMemoryWikiCompiledCacheStore(<T>(options: OpenBlobStoreOptions) => {
+        const blobStore = createPluginBlobStoreForTests<T>("memory-wiki", options, blobStoreEnv);
+        if (!metadataOnly) {
+          delete blobStore.lookupInfo;
+        }
+        return {
+          ...blobStore,
+          async lookup(key) {
+            payloadReads += 1;
+            return await blobStore.lookup(key);
+          },
+        };
+      });
+      configureMemoryWikiCompiledCacheStore(reader);
+      await activateVault(config);
+      expect(payloadReads).toBe(metadataOnly ? 0 : 1);
 
-    await expect(preparePrompt(config)).resolves.toContain(
-      "Alpha uses PostgreSQL for production writes.",
-    );
-  });
+      await expect(preparePrompt(config)).resolves.toContain(
+        "Alpha uses PostgreSQL for production writes.",
+      );
+      await expect(loadMemoryWikiCompiledCache(config)).resolves.toEqual(compiled);
+      expect(payloadReads).toBe(metadataOnly ? 1 : 2);
+    },
+  );
 
   it("bounds dashboard projections below the compiled-cache entry limit", () => {
     const oversized = "x".repeat(10_000);
@@ -481,8 +503,11 @@ describe("Memory Wiki compiled cache lifecycle", () => {
         const blobStore = createPluginBlobStoreForTests<T>("memory-wiki", options, blobStoreEnv);
         return {
           ...blobStore,
-          async lookup(key) {
-            const entry = await blobStore.lookup(key);
+          async lookupInfo(key) {
+            const entry = await expectDefined(
+              blobStore.lookupInfo,
+              "metadata-only blob lookup",
+            ).call(blobStore, key);
             if (publishDuringLookup) {
               publishDuringLookup = false;
               await appendMemoryWikiLog(config.vault.path, {
@@ -753,12 +778,15 @@ describe("Memory Wiki compiled cache lifecycle", () => {
         const blobStore = createPluginBlobStoreForTests<T>("memory-wiki", options, blobStoreEnv);
         return {
           ...blobStore,
-          async lookup(key) {
+          async lookupInfo(key) {
             if (failNextRead) {
               failNextRead = false;
               throw new Error("transient reconciliation failure");
             }
-            return await blobStore.lookup(key);
+            return await expectDefined(blobStore.lookupInfo, "metadata-only blob lookup").call(
+              blobStore,
+              key,
+            );
           },
         };
       },
