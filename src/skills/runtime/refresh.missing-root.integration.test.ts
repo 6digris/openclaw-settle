@@ -202,6 +202,26 @@ it("refreshes skills created beneath an initially missing project skills root", 
 });
 
 describe("shared missing skill ancestors", () => {
+  // BEGIN TASK PATH DIAGNOSTIC
+  type DiagnosticRawEvent = { event: string; path?: string; watchedPath?: string };
+  type DiagnosticWatcherPath = {
+    row: string;
+    root: string;
+    rawCount: number;
+    firstRaw?: DiagnosticRawEvent;
+    lastRaw?: DiagnosticRawEvent;
+    readdirCalls: number;
+    readdirAdmitted: number;
+    readdirSuppressed: number;
+    firstReaddir?: string;
+    lastReaddir?: string;
+  };
+  const diagnosticWatcherPaths: Array<{
+    watcher: ReturnType<typeof chokidar.watch>;
+    record: DiagnosticWatcherPath;
+  }> = [];
+  let diagnosticWatcherOverflow = 0;
+  // END TASK PATH DIAGNOSTIC
   // BEGIN TASK MINIMAL DIAGNOSTIC
   let diagnosticSnapshot: (() => void) | undefined;
   // END TASK MINIMAL DIAGNOSTIC
@@ -278,6 +298,13 @@ describe("shared missing skill ancestors", () => {
             atMs: diagnosticNow(),
             phase: diagnosticPhase,
             settles: diagnosticSettles,
+            // BEGIN TASK PATH DIAGNOSTIC
+            watcherPaths: diagnosticWatcherPaths.map(({ watcher, record }) => ({
+              ...record,
+              closed: watcher.closed,
+            })),
+            watcherOverflow: diagnosticWatcherOverflow,
+            // END TASK PATH DIAGNOSTIC
             pending: diagnosticPending(),
           })}\n`,
         );
@@ -310,6 +337,48 @@ describe("shared missing skill ancestors", () => {
       const watcherErrors: unknown[] = [];
       const watch = vi.spyOn(chokidar, "watch").mockImplementation((...args) => {
         const watcher = originalWatch(...args);
+        // BEGIN TASK PATH DIAGNOSTIC
+        if (diagnosticWatcherPaths.length < 64) {
+          const record: DiagnosticWatcherPath = {
+            row: ancestor,
+            root: String(args[0]),
+            rawCount: 0,
+            readdirCalls: 0,
+            readdirAdmitted: 0,
+            readdirSuppressed: 0,
+          };
+          diagnosticWatcherPaths.push({ watcher, record });
+          watcher.on("raw", (event, rawPath, details) => {
+            const sample: DiagnosticRawEvent = record.lastRaw ?? { event };
+            sample.event = event;
+            sample.path = typeof rawPath === "string" ? rawPath : undefined;
+            sample.watchedPath =
+              details && typeof details === "object" && typeof details.watchedPath === "string"
+                ? details.watchedPath
+                : undefined;
+            record.rawCount += 1;
+            record.firstRaw ??= { ...sample };
+            record.lastRaw = sample;
+          });
+          const originalThrottle = watcher._throttle;
+          watcher._throttle = function (action, throttlePath, timeout) {
+            const throttle = originalThrottle.call(this, action, throttlePath, timeout);
+            if (action === "readdir") {
+              record.readdirCalls += 1;
+              record.firstReaddir ??= throttlePath;
+              record.lastReaddir = throttlePath;
+              if (throttle) {
+                record.readdirAdmitted += 1;
+              } else {
+                record.readdirSuppressed += 1;
+              }
+            }
+            return throttle;
+          };
+        } else {
+          diagnosticWatcherOverflow += 1;
+        }
+        // END TASK PATH DIAGNOSTIC
         const observation = { watcher, ready: false };
         observed.push(observation);
         // Attach before returning: promotion can create more watchers during ready.
