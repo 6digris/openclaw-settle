@@ -1072,3 +1072,34 @@ jobs:
             .artifacts/portable-node-provenance.json
           if-no-files-found: error
           retention-days: 7
+
+  native-git-installer:
+    name: Full Windows Git installer and published-driver proof
+    if: ${{ inputs.run_windows_launcher_integration }}
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - *windows_checkout
+      - *windows_defender
+      - *windows_node
+      - name: Prove full installer and published-driver continuity
+        shell: pwsh
+        env:
+          EXPECTED_HEAD: ${{ inputs.target_ref }}
+          PROOF_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          RUN_WINDOWS_CI: ${{ inputs.run_windows_ci }}
+          RUN_PORTABLE: ${{ inputs.run_portable_node_recovery }}
+          RUN_WINGET: ${{ inputs.run_winget_acceptance }}
+        run: |
+          if ($env:RUN_WINDOWS_CI -ne 'true' -or $env:RUN_PORTABLE -eq 'true' -or $env:RUN_WINGET -eq 'true') { throw 'Full Git proof requires the isolated launcher plus Windows-CI selection.' }
+          & ./scripts/ci/prove-windows-git-install.ps1 -CandidateRoot $env:GITHUB_WORKSPACE -ExpectedHead $env:EXPECTED_HEAD -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'full-git-install-evidence')
+          $result = Get-Content (Join-Path $env:RUNNER_TEMP 'full-git-install-evidence/result.json') -Raw | ConvertFrom-Json
+          if ($result.result -cne 'passed' -or $result.sourceSha -cne $env:EXPECTED_HEAD -or $result.cases.Count -ne 4 -or $result.cleanup -cne 'restored-and-removed') { throw 'Full installer acceptance did not execute all four required cases.' }
+      - name: Upload full installer evidence including failures
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: full-windows-git-installer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/full-git-install-evidence
+          if-no-files-found: error
+          retention-days: 7
