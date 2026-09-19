@@ -122,7 +122,16 @@ try {
         Repair-WinGetPackageManager -AllUsers
     }
     $winget = (Get-Command winget -CommandType Application -ErrorAction Stop).Source
-    $proof.winget = @{ path=$winget; version=(& $winget --version | Out-String).Trim(); sha256=(Get-FileHash $winget -Algorithm SHA256).Hash }
+    $wingetVersion = @(& $winget --version)
+    Assert-Proof ($LASTEXITCODE -eq 0) 'Winget alias failed to execute.'
+    # The WindowsApps command is an App Execution Alias, not a readable PE file.
+    # Keep invoking that command; fingerprint its current user's registered package.
+    $packages = @(Get-AppxPackage -Name Microsoft.DesktopAppInstaller)
+    Assert-Proof ($packages.Count -eq 1) 'Expected one registered DesktopAppInstaller package.'
+    $wingetPayload = Join-Path $packages[0].InstallLocation 'winget.exe'
+    $payloadVersion = @(& $wingetPayload --version)
+    Assert-Proof ($LASTEXITCODE -eq 0 -and ($payloadVersion -join "`n") -ceq ($wingetVersion -join "`n")) 'Registered Winget payload version differs from command.'
+    $proof.winget = @{ path=$winget; version=($wingetVersion -join "`n").Trim(); packageFullName=$packages[0].PackageFullName; payloadPath=$wingetPayload; payloadSha256=(Get-FileHash -LiteralPath $wingetPayload -Algorithm SHA256).Hash; hashScope='Registered package payload; native commands retain command-resolution path' }
     Assert-Proof ((Invoke-Native $winget @('source','update','--name','winget','--disable-interactivity') 'source-update') -eq 0) 'Winget catalog refresh failed.'
     # Immutable upstream artifact contract; a moved catalog must fail stale-HRESULT
     # reproduction, not silently count a normal upgrade as repair acceptance.
