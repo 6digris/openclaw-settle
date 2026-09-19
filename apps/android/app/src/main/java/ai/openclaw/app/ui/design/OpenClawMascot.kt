@@ -80,7 +80,7 @@ fun OpenClawMascot(
   var pose by remember { mutableStateOf(staticPose(mood)) }
   var animatorTimeSeconds by remember { mutableStateOf(0.0) }
 
-  LaunchedEffect(animationsEnabled, mood, tint, speaking) {
+  LaunchedEffect(animationsEnabled, mood, tint) {
     if (!animationsEnabled) {
       pose = staticPose(effectiveMascotMood(mood = mood, tinted = tint != null))
       return@LaunchedEffect

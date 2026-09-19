@@ -4745,12 +4745,12 @@ internal fun AttachmentStrip(
         if (attachment.mimeType.startsWith("image/")) {
           Column(modifier = Modifier.width(minOf(160.dp, availableWidth)), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             ChatBase64Image(base64 = attachment.base64, mimeType = attachment.mimeType, source = Base64ImageSource.Composer)
-            AttachmentChip(attachment = attachment, maxWidth = availableWidth, onRemove = { onRemoveAttachment(attachment.id) }, modifier = Modifier.fillMaxWidth())
+            AttachmentChip(attachment = attachment, onRemove = { onRemoveAttachment(attachment.id) }, modifier = Modifier.fillMaxWidth())
           }
         } else {
           // The scroller measures children with infinite width. Restore the actual
           // viewport bound before allocating filename space; short chips still wrap.
-          AttachmentChip(attachment = attachment, maxWidth = availableWidth, onRemove = { onRemoveAttachment(attachment.id) }, modifier = Modifier.widthIn(max = availableWidth))
+          AttachmentChip(attachment = attachment, onRemove = { onRemoveAttachment(attachment.id) }, modifier = Modifier.widthIn(max = availableWidth))
         }
       }
     }
@@ -4760,7 +4760,6 @@ internal fun AttachmentStrip(
 @Composable
 private fun AttachmentChip(
   attachment: PendingAttachment,
-  maxWidth: Dp,
   onRemove: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -4769,7 +4768,7 @@ private fun AttachmentChip(
       attachment.videoThumbnailBase64?.let(::decodeBase64Bitmap)
     }
   Surface(
-    modifier = modifier.widthIn(max = maxWidth),
+    modifier = modifier,
     shape = RoundedCornerShape(ClawTheme.radii.pill),
     color = ClawTheme.colors.surfaceRaised,
     contentColor = ClawTheme.colors.text,

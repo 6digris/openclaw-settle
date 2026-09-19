@@ -1186,7 +1186,7 @@ class MainViewModel private constructor(
     viewModelScope.launch {
       try {
         val accepted =
-          sendChatForOwnerAwaitAcceptance(
+          ensureRuntime().sendChatForOwnerAwaitAcceptance(
             owner = pending.owner,
             message = prompt,
             thinking = thinking,
@@ -1217,10 +1217,6 @@ class MainViewModel private constructor(
         }
       }
     }
-  }
-
-  fun setTalkModeEnabled(enabled: Boolean) {
-    ensureRuntime().setTalkModeEnabled(enabled)
   }
 
   internal fun captureChatTalkStart(): TalkModeManager.ChatStart? {
@@ -2174,23 +2170,6 @@ class MainViewModel private constructor(
 
   suspend fun getBackgroundTask(taskId: String): BackgroundTask = ensureRuntime().getBackgroundTask(taskId)
 
-  internal suspend fun sendChatForOwnerAwaitAcceptance(
-    owner: ChatComposerOwner,
-    message: String,
-    thinking: String,
-    attachments: List<OutgoingAttachment>,
-    idempotencyKey: String,
-    canAdmit: () -> Boolean = { true },
-  ): Boolean =
-    ensureRuntime().sendChatForOwnerAwaitAcceptance(
-      owner = owner,
-      message = message,
-      thinking = thinking,
-      attachments = attachments,
-      idempotencyKey = idempotencyKey,
-      canAdmit = canAdmit,
-    )
-
   /** Admission outlives the composing Activity; accepted payloads clear by owner and snapshot. */
   internal fun beginChatComposerSend(
     owner: ChatComposerOwner,
@@ -2206,7 +2185,7 @@ class MainViewModel private constructor(
       var accepted: Boolean? = null
       try {
         accepted =
-          sendChatForOwnerAwaitAcceptance(
+          ensureRuntime().sendChatForOwnerAwaitAcceptance(
             owner = request.owner,
             message = request.message,
             thinking = thinking,

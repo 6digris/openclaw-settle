@@ -658,6 +658,18 @@ class ChatCallLifecycleTest {
     composeRule.onNodeWithText("End").assertIsDisplayed().performClick()
     awaitStopped()
     composeRule.onNodeWithContentDescription("Go to chat").assertIsDisplayed().performClick()
+    val sentText =
+      gateway.requests
+        .single { it.method == "chat.send" }
+        .params
+        .getValue("message")
+        .jsonPrimitive.content
+    composeRule.runOnIdle { model.refreshChat() }
+    awaitUiState { model.chatMessages.value.any { message -> message.role == "user" && message.content.any { it.text == sentText } } }
+    composeRule.onNodeWithText("Native spoken question", substring = true).assertIsDisplayed()
+    captureTalkProof("talk-prefix-normal-chat")
+    assertEquals("Only the recognized utterance belongs in the user message", "Native spoken question", sentText)
+    assertEquals(1, gateway.requests.count { it.method == "chat.send" })
     composeRule.onNodeWithContentDescription("Start Talk").performClick()
     awaitListening(expectChatCall = true)
     assertTrue(model.chatTalkCall.value?.start !== first)
@@ -918,7 +930,7 @@ class ChatCallLifecycleTest {
 
   @Test
   fun genericTalkDoesNotAcquireTheChatBackgroundException() {
-    composeRule.runOnIdle { model.setTalkModeEnabled(true) }
+    composeRule.runOnIdle { runtime.setTalkModeEnabled(true) }
     awaitCreate().complete()
     awaitListening()
     composeRule.onNodeWithTag("chat-conversation-page").assertDoesNotExist()
@@ -1329,7 +1341,7 @@ class ChatCallLifecycleTest {
 
   @Test
   fun oldGenericEndCannotStopANewChatCall() {
-    composeRule.runOnIdle { model.setTalkModeEnabled(true) }
+    composeRule.runOnIdle { runtime.setTalkModeEnabled(true) }
     awaitCreate().complete()
     awaitListening()
     composeRule.onNodeWithContentDescription("Return to conversation").performClick()

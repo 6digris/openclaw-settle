@@ -65,6 +65,12 @@ Watch background behavior. See [Watch setup and limits](/platforms/ios#standalon
   or interrupted observation is recorded as incomplete rather than guessed as idle;
   its technical explanation appears under **Details**, not beside the avatar.
   Observation alone does not create another spoken reply or chat turn.
+- Native Talk and push-to-talk send the recognized utterance as the user message,
+  without adding fixed Talk or ElevenLabs instructions. The active agent controls
+  response style; Android no longer forces a concise spoken tone on each turn.
+  Replies still use configured speech synthesis, permitted local TTS fallback,
+  and optional voice directives in the assistant response. Existing chat history
+  is not rewritten.
 - Dictation, voice-note recording, and Talk are mutually exclusive microphone
   paths; starting one stops or blocks the others.
 - Realtime Talk prefers a connected Bluetooth Classic or BLE headset

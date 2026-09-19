@@ -17,7 +17,6 @@ internal fun MascotPose.withSpeechMouth(
     this
   } else {
     copy(
-      mouthOpen = 0.2 + 0.6 * abs(sin(timeSeconds * 12.0)),
       mouthRound = 0.15 + 0.35 * abs(sin(timeSeconds * 8.0)),
     )
   }

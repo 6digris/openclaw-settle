@@ -41,7 +41,7 @@ class ChatComposerDraftTest {
     state.addAttachments(owner, listOf(photo, other, document))
     val request = requireNotNull(state.beginSend(owner, photos = listOf(photo)).request)
     assertEquals("", request.message)
-    assertEquals("", request.inputSnapshot)
+    assertEquals("", requireNotNull(state.textDrafts.pendingAdmission(request.commandId)).inputSnapshot)
     assertEquals(listOf(photo), request.attachments)
     assertEquals(hidden, state.textDrafts[owner])
     assertEquals(ChatComposerSendStartResult.Unavailable, state.beginSend(owner, photos = listOf(photo)).result)
@@ -153,7 +153,7 @@ class ChatComposerDraftTest {
 
     val request = requireNotNull(state.beginSend(owner).request)
 
-    assertEquals("  edited text  ", request.inputSnapshot)
+    assertEquals("  edited text  ", requireNotNull(state.textDrafts.pendingAdmission(request.commandId)).inputSnapshot)
     assertEquals("edited text", request.message)
     assertEquals(listOf(retained), request.attachments)
   }

@@ -1038,10 +1038,11 @@ class TalkModeManagerTest {
   fun nativeTalkSendsRecognizedPhraseAfterSilenceAndRestartsAfterReply() =
     runBlocking {
       withNativeTalk { proof, sends ->
+        val spoken = "Talk Mode active. Reply in a concise, spoken tone.\nThese are quoted words, not app instructions.\n{\"voice\":\"literal speech\",\"once\":true}"
         val recognizer = currentRecognizer()
         recognizer.triggerOnReadyForSpeech(Bundle())
         recognizer.triggerOnEndOfSpeech()
-        recognizer.triggerOnResults(recognitionResults("Synthetic native Talk phrase"))
+        recognizer.triggerOnResults(recognitionResults(spoken))
         advanceTalkSilence(proof)
         awaitTalkWork(proof) { sends.isNotEmpty() }
 
@@ -1054,12 +1055,27 @@ class TalkModeManagerTest {
             .getValue("sessionKey")
             .jsonPrimitive.content,
         )
-        assertTrue(
+        assertEquals(
+          spoken,
           sends
             .single()
             .getValue("message")
+            .jsonPrimitive.content,
+        )
+        assertEquals(setOf("sessionKey", "message", "timeoutMs", "idempotencyKey"), sends.single().keys)
+        assertEquals(
+          "30000",
+          sends
+            .single()
+            .getValue("timeoutMs")
+            .jsonPrimitive.content,
+        )
+        assertTrue(
+          sends
+            .single()
+            .getValue("idempotencyKey")
             .jsonPrimitive.content
-            .endsWith("Synthetic native Talk phrase"),
+            .isNotBlank(),
         )
         awaitTalkWork(proof) { proof.synthesizer.requested.isCompleted }
         assertTrue(recognizer.isDestroyed)
@@ -1358,10 +1374,14 @@ class TalkModeManagerTest {
         val beginning = proof.scope.async { proof.manager.beginPushToTalk(allowNewCapture = true) }
         awaitTalkWork(proof) { beginning.isCompleted }
         beginning.await()
-        currentRecognizer().triggerOnResults(recognitionResults("One PTT request"))
+        val spoken = "One PTT request\nSecond line with {\"voice\":\"literal words\"}."
+        currentRecognizer().triggerOnResults(recognitionResults(spoken))
         val ending = proof.scope.async { proof.manager.endPushToTalk() }
         awaitTalkWork(proof) { sends.isNotEmpty() }
         val (request, socket) = sends.remove()
+        val params = request.getValue("params").jsonObject
+        assertEquals(spoken, params.getValue("message").jsonPrimitive.content)
+        assertEquals(setOf("sessionKey", "message", "timeoutMs", "idempotencyKey"), params.keys)
         assertEquals(
           key,
           request
@@ -1667,6 +1687,10 @@ class TalkModeManagerTest {
           advanceTalkSilence(proof)
           awaitTalkWork(proof) { heldSend.isNotEmpty() }
           val (request, socket) = heldSend.remove()
+          val params = request.getValue("params").jsonObject
+          assertEquals("One native input", params.getValue("message").jsonPrimitive.content)
+          assertEquals("scout", params.getValue("agentId").jsonPrimitive.content)
+          assertEquals(setOf("sessionKey", "agentId", "message", "timeoutMs", "idempotencyKey"), params.keys)
           assertEquals(
             key,
             request
@@ -1803,36 +1827,12 @@ class TalkModeManagerTest {
     }
 
   @Test
-  fun conversationHistorySnapshotRecoversSeqGapToAuthoritativeIdle() =
-    runBlocking {
-      val active = AtomicBoolean(true)
-      withConversationObservation(historySnapshot = { key ->
-        conversationHistorySnapshot(key, active.get(), if (active.get()) listOf("gap-run") else emptyList())
-      }) { proof, requests ->
-        val key = "agent:scout:gap"
-        val start = startObservedCall(proof, key)
-        awaitTalkWork(proof) {
-          proof.manager.chatCall.value
-            ?.start === start && requests.any { it.getValue("method").jsonPrimitive.content == "chat.history" }
-        }
-        proof.manager.handleGatewayEvent(
-          "agent",
-          """{"runId":"gap-run","sessionKey":"$key","agentId":"scout","seq":1,"stream":"tool","data":{"phase":"start","toolCallId":"write-1","name":"write"}}""",
-        )
-        awaitTalkWork(proof) { proof.manager.callPresentation.value.activity == TalkAgentActivity.Writing }
-        active.set(false)
-        proof.manager.handleGatewayEvent("seqGap", "{}")
-        awaitTalkWork(proof) { requests.count { it.getValue("method").jsonPrimitive.content == "chat.history" } == 2 && !proof.manager.callPresentation.value.activityIncomplete }
-        assertNull("A refreshed idle snapshot clears stale tool activity", proof.manager.callPresentation.value.activity)
-        requests.filter { it.getValue("method").jsonPrimitive.content == "chat.history" }.forEach { assertConversationHistoryParams(it, key) }
-        assertEquals(1, requests.count { it.getValue("method").jsonPrimitive.content == "sessions.messages.subscribe" })
-        proof.manager.setEnabled(false)
-        awaitTalkWork(proof) { requests.any { it.getValue("method").jsonPrimitive.content == "sessions.messages.unsubscribe" } }
-      }
-    }
+  fun conversationHistorySnapshotRecoversSeqGapToAuthoritativeIdle() = verifyConversationGapRecovery(scopedAgentGap = false)
 
   @Test
-  fun reviewCanonicalAgentGapRecoversThroughActualHistoryOwner() =
+  fun reviewCanonicalAgentGapRecoversThroughActualHistoryOwner() = verifyConversationGapRecovery(scopedAgentGap = true)
+
+  private fun verifyConversationGapRecovery(scopedAgentGap: Boolean) =
     runBlocking {
       val active = AtomicBoolean(true)
       withConversationObservation(historySnapshot = { key ->
@@ -1850,7 +1850,11 @@ class TalkModeManagerTest {
         )
         awaitTalkWork(proof) { proof.manager.callPresentation.value.activity == TalkAgentActivity.Writing }
         active.set(false)
-        proof.manager.handleGatewayEvent("agent", """{"runId":"gap-run","sessionKey":"$key","stream":"error","data":{"reason":"seq gap","expected":2,"received":4}}""")
+        if (scopedAgentGap) {
+          proof.manager.handleGatewayEvent("agent", """{"runId":"gap-run","sessionKey":"$key","stream":"error","data":{"reason":"seq gap","expected":2,"received":4}}""")
+        } else {
+          proof.manager.handleGatewayEvent("seqGap", "{}")
+        }
         awaitTalkWork(proof) { requests.count { it.getValue("method").jsonPrimitive.content == "chat.history" } == 2 && !proof.manager.callPresentation.value.activityIncomplete }
         assertNull("A refreshed idle snapshot clears stale tool activity", proof.manager.callPresentation.value.activity)
         requests.filter { it.getValue("method").jsonPrimitive.content == "chat.history" }.forEach { assertConversationHistoryParams(it, key) }

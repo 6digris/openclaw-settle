@@ -160,7 +160,8 @@ internal class ChatRealtimeTalkGatewayFixture : AutoCloseable {
             if (nativeTalk) {
               val key = params.getValue("sessionKey").jsonPrimitive.content
               val spoken = JsonPrimitive(nativeAssistantReply).toString()
-              history[key] = """[{"role":"assistant","content":[{"type":"thinking","text":"Private reasoning must not become speech"},{"type":"image","text":"Attachment metadata must not become speech"},{"type":"text","text":$spoken}]}]"""
+              val input = params.getValue("message").toString()
+              history[key] = """[{"role":"user","content":[{"type":"text","text":$input}]},{"role":"assistant","content":[{"type":"thinking","text":"Private reasoning must not become speech"},{"type":"image","text":"Attachment metadata must not become speech"},{"type":"text","text":$spoken}]}]"""
               respond("""{"runId":"native-caption-turn","status":"ok"}""")
             } else {
               webSocket.send(

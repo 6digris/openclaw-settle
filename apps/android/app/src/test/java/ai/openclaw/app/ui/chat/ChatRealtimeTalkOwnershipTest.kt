@@ -22,6 +22,7 @@ import androidx.activity.result.contract.ActivityResultContract
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.core.app.ActivityOptionsCompat
 import androidx.lifecycle.SavedStateHandle
@@ -273,7 +274,7 @@ class ChatRealtimeTalkOwnershipTest {
     startTalk()
     awaitCreate()
     val pending = gateway.creates.single()
-    composeRule.runOnIdle { model.setTalkModeEnabled(false) }
+    composeRule.onNodeWithText("End").performClick()
     pending.complete()
     composeRule.waitUntil(TIMEOUT_MS) { closeRequests().isNotEmpty() }
     assertEquals(pending.request.connection, closeRequests().single().connection)

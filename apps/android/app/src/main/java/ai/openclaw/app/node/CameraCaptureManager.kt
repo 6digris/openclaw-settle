@@ -127,6 +127,7 @@ class CameraCaptureManager(
   )
 
   @Volatile private var lifecycleOwner: LifecycleOwner? = null
+
   private companion object {
     // ProcessCameraProvider is process-wide, including during runtime replacement.
     val captureMutex = Mutex()
@@ -180,6 +181,7 @@ class CameraCaptureManager(
           checkAccess()
           val owner = lifecycleOwner ?: throw IllegalStateException("UNAVAILABLE: camera not ready")
           val captureJob = currentCoroutineContext().job
+
           fun ensureCurrent() {
             captureJob.ensureActive()
             checkAccess()
@@ -188,12 +190,13 @@ class CameraCaptureManager(
               "NODE_BACKGROUND_UNAVAILABLE: command requires foreground"
             }
           }
-          val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP || event == Lifecycle.Event.ON_DESTROY) {
-              foregroundLost = true
-              captureJob.cancel(CancellationException("Camera Activity left the foreground"))
+          val observer =
+            LifecycleEventObserver { _, event ->
+              if (event == Lifecycle.Event.ON_STOP || event == Lifecycle.Event.ON_DESTROY) {
+                foregroundLost = true
+                captureJob.cancel(CancellationException("Camera Activity left the foreground"))
+              }
             }
-          }
           try {
             ensureCurrent()
             owner.lifecycle.addObserver(observer)
@@ -217,7 +220,10 @@ class CameraCaptureManager(
   }
 
   /** Captures one still image and returns a gateway-sized JPEG payload. */
-  suspend fun snap(paramsJson: String?, isCurrent: () -> Boolean = { true }): Payload =
+  suspend fun snap(
+    paramsJson: String?,
+    isCurrent: () -> Boolean = { true },
+  ): Payload =
     withCapture(isCurrent = isCurrent) { owner, ensureCurrent ->
       val params = parseJsonParamsObject(paramsJson)
       val facing = resolveCameraFacing(parseFacing(params), defaultFacing())

@@ -2985,15 +2985,14 @@ class TalkModeManager internal constructor(
     try {
       ensureConfigLoaded()
       currentCoroutineContext().ensureActive()
-      val prompt = buildPrompt(transcript)
       if (!isConnected()) {
         setStatus(nativeText("Gateway not connected"))
         Log.w(tag, "finalize: gateway not connected")
         return
       }
       val startedAt = System.currentTimeMillis().toDouble() / 1000.0
-      Log.d(tag, "chat.send start sessionKey=$sessionKey chars=${prompt.length}")
-      val ack = sendChat(prompt, sessionKey, target)
+      Log.d(tag, "chat.send start sessionKey=$sessionKey chars=${transcript.length}")
+      val ack = sendChat(transcript, sessionKey, target)
       val runId = ack.runId ?: throw IllegalStateException("chat.send returned no run id")
       activityRunId = runId
       Log.d(tag, "chat.send ok runId=$runId status=${ack.status}")
@@ -3191,14 +3190,6 @@ class TalkModeManager internal constructor(
       finishingPttJob = null
       true
     }
-
-  private fun buildPrompt(transcript: String): String =
-    listOf(
-      "Talk Mode active. Reply in a concise, spoken tone.",
-      "You may optionally prefix the response with JSON (first line) to set ElevenLabs voice (id or alias), e.g. {\"voice\":\"<id>\",\"once\":true}.",
-      "",
-      transcript,
-    ).joinToString("\n")
 
   private class NativeChatCapacityException : IllegalStateException("Too many pending Talk requests. End the call and try again.")
 
