@@ -20,49 +20,12 @@ import {
   readClawHubSkillOriginStrict,
   readClawHubSkillsLockfile,
   readClawHubSkillsLockfileStatusSync,
-  type ClawHubSkillDownloadedArtifactLock,
-  type ClawHubSkillFileLock,
   type ClawHubSkillsLockfileStatusRead,
 } from "./clawhub-store.js";
+import type { ClawHubSkillStatusLink, LocalSkillCardStatus } from "./workspace-types.js";
 
 const LOCAL_SKILL_CARD_FILENAME = "skill-card.md";
 const LOCAL_SKILL_CARD_MAX_BYTES = 256 * 1024;
-
-export type ClawHubSkillStatusLink =
-  | {
-      status: "linked";
-      valid: true;
-      registry: string;
-      slug: string;
-      ownerHandle?: string;
-      requestedReference?: string;
-      trustState?: ClawHubSkillsShTrustState;
-      installedVersion: string;
-      installedAt: number;
-      originPath: string;
-      lockPath: string;
-      sourceUrl?: string;
-      artifact?: ClawHubSkillDownloadedArtifactLock;
-      skillFile?: ClawHubSkillFileLock;
-      fileTreeSha256?: string;
-    }
-  | {
-      status: "invalid";
-      valid: false;
-      reason: string;
-      registry?: string;
-      slug?: string;
-      installedVersion?: string;
-      installedAt?: number;
-      originPath?: string;
-      lockPath?: string;
-    };
-
-export type LocalSkillCardStatus = {
-  present: true;
-  path: string;
-  sizeBytes: number;
-};
 
 type LocalSkillCardRead = LocalSkillCardStatus & { content?: string };
 type ClawHubSkillVerificationSelector = "installed-version" | "version" | "tag" | "latest";

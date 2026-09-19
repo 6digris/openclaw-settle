@@ -1,7 +1,6 @@
 import fsSync from "node:fs";
 import path from "node:path";
 import { normalizeOptionalString as normalizeOptionalStringValue } from "@openclaw/normalization-core/string-coerce";
-import type { ClawHubDownloadResult } from "../../infra/clawhub-artifacts.js";
 import {
   CLAWHUB_SKILLS_SH_REF_PREFIX,
   CLAWHUB_SKILLS_SH_TRUST_STATE,
@@ -19,6 +18,15 @@ import {
 } from "../../infra/json-files.js";
 import { replaceFileAtomicSync } from "../../infra/replace-file.js";
 import { normalizeTrackedSkillSlug, validateRequestedSkillSlug } from "./archive-install.js";
+import type {
+  ClawHubSkillDownloadedArtifactLock,
+  ClawHubSkillFileLock,
+} from "./workspace-types.js";
+
+export type {
+  ClawHubSkillDownloadedArtifactLock,
+  ClawHubSkillFileLock,
+} from "./workspace-types.js";
 
 export { normalizeOptionalStringValue };
 
@@ -27,17 +35,6 @@ const LEGACY_DOT_DIR = ".clawdhub";
 const CLAWHUB_OWNER_HANDLE_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,38}[a-z0-9])?$/;
 const GITHUB_OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
 const GITHUB_REPO_PATTERN = /^[A-Za-z0-9._-]{1,100}$/;
-
-export type ClawHubSkillDownloadedArtifactLock = {
-  kind: ClawHubDownloadResult["artifact"];
-  sha256: string;
-  integrity: string;
-};
-
-export type ClawHubSkillFileLock = {
-  path: string;
-  sha256: string;
-};
 
 export type ClawHubSkillVerificationLock = {
   schema: ClawHubSkillVerificationResponse["schema"];
