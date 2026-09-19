@@ -180,7 +180,8 @@ export class ChatPaneSessionPanelToggleController {
     ])
       .then(async () => {
         this.options.requestUpdate();
-        await owner.updateComplete;
+        // requestUpdate schedules a new commit; the captured owner holds the previous promise.
+        await this.options.current()?.updateComplete;
         if (!isCurrent()) {
           return;
         }
