@@ -38,6 +38,51 @@ const { executionParams, inspectOrStopService, mocks, schemaContext, successfulU
   await import("./update-command-execution.test-support.js");
 
 describe("mutable update execution", () => {
+  it.each(
+    (["package", "git"] as const).flatMap((kind) =>
+      [undefined, 30_000].map((timeoutMs) => ({ kind, timeoutMs })),
+    ),
+  )(
+    "preserves aggregate work intent at $kind activation ($timeoutMs)",
+    async ({ kind, timeoutMs }) => {
+      const budgets = await import("../../infra/update-finalization-budget.js");
+      const budget = vi
+        .spyOn(budgets, "resolveUpdateFinalizationTimeoutMs")
+        .mockResolvedValue(180_000);
+      mocks.runPackageUpdate.mockImplementation(async ({ beforeActivate }) => {
+        await beforeActivate();
+        return successfulUpdate;
+      });
+      mocks.runGitUpdate.mockImplementation(
+        async (
+          params: Parameters<typeof import("./update-command-git.js").updateGitInstall>[0],
+        ) => {
+          if (!params.inspectGitTarget || !params.beforeGitMutation) {
+            throw new Error("Expected both real Git admission callbacks");
+          }
+          const target = { schemaVersions: { state: 15, agent: 19 } };
+          await params.inspectGitTarget(target);
+          await params.beforeGitMutation(target);
+          return { ...successfulUpdate, mode: "git" };
+        },
+      );
+
+      const execution = await executeMutableUpdate({
+        ...executionParams(kind),
+        timeoutMs,
+        updateStepTimeoutMs: timeoutMs ?? 30 * 60_000,
+      });
+
+      expect(execution?.result.status).toBe("ok");
+      expect(execution?.mutationStarted).toBe(true);
+      expect(mocks.prepareMutableUpdate).toHaveBeenCalledTimes(kind === "package" ? 2 : 3);
+      expect(mocks.prepareMutableUpdate.mock.calls.at(-1)?.[1]).toBe(
+        timeoutMs === undefined ? undefined : 180_000,
+      );
+      expect(budget).toHaveBeenCalledTimes(timeoutMs === undefined ? 0 : 1);
+    },
+  );
+
   it.each(["package", "git"] as const)(
     "continues the %s update with the recorded readiness warning instead of inference repair",
     async (kind) => {
@@ -882,7 +927,7 @@ describe("mutable update execution", () => {
     },
   );
 
-  it("keeps Git candidate selection online and delegates its later activation", async () => {
+  it("keeps Git selection online and reserves service rewrites for finalization", async () => {
     const events: string[] = [];
     mocks.maybeStopService.mockImplementation(async ({ phase }) => {
       if (phase === "prepare") {
@@ -901,14 +946,25 @@ describe("mutable update execution", () => {
         const target = { schemaVersions: { state: 15, agent: 19 } };
         await params.inspectGitTarget(target);
         events.push("git");
+        expect(mocks.serviceStopped).toBe(false);
+        expect(await params.beforeGitMutation(target)).toEqual({
+          allowGatewayServiceRepair: false,
+          allowGatewayActivation: false,
+        });
         return { ...successfulUpdate, mode: "git" };
       },
     );
 
     const execution = await executeMutableUpdate(executionParams("git"));
 
-    expect(events).toEqual(["mutable-prepare", "git"]);
-    expect(mocks.serviceStopped).toBe(false);
+    expect(events).toEqual([
+      "mutable-prepare",
+      "git",
+      "mutable-prepare",
+      "mutable-prepare",
+      "stop",
+    ]);
+    expect(mocks.serviceStopped).toBe(true);
     expect(execution?.result.mode).toBe("git");
     expect(mocks.runPackageUpdate).not.toHaveBeenCalled();
   });
