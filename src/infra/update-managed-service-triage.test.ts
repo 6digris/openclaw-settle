@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { getFileLockProcessStartTime, isPidAlive } from "../shared/pid-alive.js";
 import { resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
 import { triageTestRuntimeEntrypoints } from "./triage-runtime.test-support.js";
+import { writeGatewayCutoverFixtureModule } from "./update-managed-service-handoff.test-support.js";
 import { createTriageBoundary } from "./update-managed-service-triage.test-support.js";
 
 const boundaries: Awaited<ReturnType<typeof createTriageBoundary>>[] = [];
@@ -144,7 +145,7 @@ describe("managed triage attachment cutover (synthetic native boundary)", () => 
         const daemon = path.join(root, "dist/cli/daemon-cli.js");
         await fs.mkdir(path.dirname(daemon), { recursive: true });
         const authority = resolveRuntimeWorkerUrl(triageTestRuntimeEntrypoints.requester).href;
-        await fs.writeFile(
+        await writeGatewayCutoverFixtureModule(
           daemon,
           `
 export { createManagedUpdateRequesterAuthority } from ${JSON.stringify(authority)};

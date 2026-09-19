@@ -16,6 +16,11 @@ import type { MigratedUpdateFinalizationInput } from "./update-command-migrated-
 import { continueMigratedUpdateInFreshProcess } from "./update-command-migrated.js";
 import { maybeStopManagedServiceBeforeMutableUpdate } from "./update-command-service-maintenance.js";
 
+vi.mock("../daemon-cli/update-cutover.js", async () => ({
+  prepareGatewayUpdateCutover: (await import("./update-command-transport.test-support.js"))
+    .prepareGatewayCutoverFixture,
+}));
+
 const mocks = vi.hoisted(() => ({
   service: vi.fn<() => GatewayService>(),
   enabled: true,
@@ -86,7 +91,7 @@ it.each([
             programArguments,
             environment: { HOME: home },
           }),
-          readRuntime: async () => ({ status: "running" }),
+          readRuntime: async () => ({ status: "running", pid: 424242 }),
           isLoaded: async () => true,
         }),
       );
@@ -97,7 +102,7 @@ it.each([
         jsonMode: true,
       });
       const recovery = stopped.windowsTaskAutoStartRecovery;
-      expect(recovery).toBeDefined();
+      expect(recovery, stopped.blockMessage).toBeDefined();
       if (outcome === "changed protected task" && stopped.serviceUpdateVerdict?.kind === "owned") {
         stopped.serviceUpdateVerdict.refreshDefinition = false;
       }

@@ -5,6 +5,7 @@ import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js
 import { resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
 import { triageTestRuntimeEntrypoints } from "./triage-runtime.test-support.js";
 import { UPDATE_RUN_ID_ENV } from "./update-control-plane-sentinel.js";
+import { writeGatewayCutoverFixtureModule } from "./update-managed-service-handoff.test-support.js";
 import { createTriageBoundary } from "./update-managed-service-triage.test-support.js";
 import { createUpdateRun, getUpdateRun } from "./update-run-ledger.js";
 
@@ -59,7 +60,10 @@ itUnix.each([
           triageTestRuntimeEntrypoints.updateRunLedger,
         ).href;
         const recoveryModulePath = path.join(root, "ledger.mjs");
-        await fs.writeFile(recoveryModulePath, `export * from ${JSON.stringify(ledgerUrl)};`);
+        await writeGatewayCutoverFixtureModule(
+          recoveryModulePath,
+          `export * from ${JSON.stringify(ledgerUrl)};`,
+        );
         const paramsPath = path.join(root, "handoff.json");
         const params = JSON.parse(await fs.readFile(paramsPath, "utf8"));
         await fs.writeFile(

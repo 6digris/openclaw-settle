@@ -21,7 +21,10 @@ import {
   getNodeSqliteKysely,
 } from "./kysely-sync.js";
 import { readRestartSentinelRowSync } from "./restart-sentinel-store.js";
-import { signalMockManagedUpdateHandoffReady } from "./update-managed-service-handoff.test-support.js";
+import {
+  writeGatewayCutoverFixtureModule,
+  signalMockManagedUpdateHandoffReady,
+} from "./update-managed-service-handoff.test-support.js";
 
 const testNodeExecPath = resolveTestNodeExecPath();
 
@@ -264,6 +267,9 @@ async function runOwnershipHelper(params: {
     string,
     unknown
   >;
+  helperParams.recoveryModulePath = await writeGatewayCutoverFixtureModule(
+    path.join(tmpDir, "serving-cutover.mjs"),
+  );
   await params.prepareStateDatabase?.(env);
   if (params.sentinel !== undefined) {
     writeRestartSentinelRow(env, params.sentinel);

@@ -14,6 +14,12 @@ const startup = vi.hoisted(() => ({
   runDoctorHealthFlow: vi.fn(),
 }));
 
+// This fixture exercises early preflight routing, not capture ownership.
+vi.mock("../commands/doctor-update-recovery.js", async (original) => ({
+  ...(await original<typeof import("../commands/doctor-update-recovery.js")>()),
+  prepareDoctorUpdateRecovery: vi.fn(async () => undefined),
+}));
+
 vi.mock("../commands/doctor-database-preflight.js", () => ({
   prepareDoctorDatabasePreflight: startup.prepareDoctorDatabasePreflight,
 }));
@@ -166,7 +172,7 @@ describe("runCli environment and passive startup", () => {
       }
     }
 
-    expect(startup.prepareDoctorDatabasePreflight).toHaveBeenCalledExactlyOnceWith();
+    expect(startup.prepareDoctorDatabasePreflight).toHaveBeenCalledExactlyOnceWith(undefined);
     expect(startup.prepareDoctorDatabasePreflight).toHaveBeenCalledBefore(startup.startProxy);
     expect(startup.runDoctorHealthFlow).toHaveBeenCalledExactlyOnceWith(
       expect.any(Object),

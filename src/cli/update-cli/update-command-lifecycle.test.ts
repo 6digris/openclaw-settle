@@ -94,18 +94,27 @@ vi.mock("./update-command-writer-custody.js", async (importOriginal) => {
       assertCurrent: () => void,
       operation: () => Promise<T>,
       inherited?: Parameters<typeof actual.withUpdateWriterCustody>[2],
-    ) =>
-      actual.withUpdateWriterCustody(
-        assertCurrent,
+    ) => {
+      let fixtureSettled = false;
+      return actual.withUpdateWriterCustody(
+        () => {
+          if (!fixtureSettled) {
+            assertCurrent();
+          }
+        },
         async () => {
           const inOwner = AsyncLocalStorage.snapshot();
-          // These fixtures model cleanup with promises, not surviving native children.
-          // Keep the real retained pins until assertions finish, then release exact custody.
-          mocks.custodyCleanup.push(() => inOwner(actual.releaseUpdateWriterCustody));
+          // These fixtures have no surviving native children. Only teardown retires
+          // their synthetic executor; the real owner still checks and drains its pins.
+          mocks.custodyCleanup.push(() => {
+            fixtureSettled = true;
+            return inOwner(actual.settleUpdateWriterCustodyForActivation);
+          });
           return operation();
         },
         inherited,
-      ),
+      );
+    },
   };
 });
 

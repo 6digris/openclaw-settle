@@ -255,7 +255,7 @@ export function captureUpdateWriterCustody(): UpdateWriterCustodyGrant | undefin
 }
 
 /** Call only after migration/plugin children settle, before native successor activation. */
-export async function releaseUpdateWriterCustody(): Promise<void> {
+async function releaseUpdateWriterCustody(): Promise<void> {
   const owner = current.getStore();
   if (!owner || owner.released) {
     return;

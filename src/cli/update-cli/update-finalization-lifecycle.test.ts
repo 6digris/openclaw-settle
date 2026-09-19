@@ -204,35 +204,47 @@ it("reports the retained capture and recovery command on an explicit finalizatio
     manifestPath,
     manifestSha256: "a".repeat(64),
   };
-  const shutdown = new Error("fixture process exit");
-  const exit = vi.spyOn(defaultRuntime, "exit").mockImplementation(() => {
-    throw shutdown;
-  });
+  const exit = vi.spyOn(defaultRuntime, "exit").mockImplementation(() => undefined as never);
+  const json = vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => {});
   const write = vi.mocked(writeSync).mockClear();
   const work = createDeferredCore();
-  const running = withCliProcessScope(() => lifecycle.run("doctor", () => work.promise));
+  const entered = createDeferredCore<AbortSignal>();
+  const running = withCliProcessScope(() =>
+    lifecycle.run("doctor", (scope) => {
+      entered.resolve(scope.signal);
+      return work.promise;
+    }),
+  );
+  const settled = expect(running).rejects.toMatchObject({
+    result: { reason: "finalization-timeout" },
+  });
+  const signal = await entered.promise;
   try {
-    await expect(vi.advanceTimersByTimeAsync(1_000)).rejects.toBe(shutdown);
-    expect(stopChildren).toHaveBeenCalledOnce();
-    expect(exit).toHaveBeenCalledWith(1);
-    const json = write.mock.calls.find(([fd]) => fd === 1)?.[1];
-    expect(typeof json).toBe("string");
-    expect(JSON.parse(String(json))).toMatchObject({
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(signal.aborted).toBe(true);
+    // Cancellation retains ownership until work settles; the caller publishes
+    // the terminal failure only after recovery, not from the timer callback.
+    expect(exit).not.toHaveBeenCalled();
+    expect(json).not.toHaveBeenCalled();
+  } finally {
+    work.resolve();
+    await settled;
+  }
+  lifecycle.complete(1);
+  expect(json).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({
       status: "failed",
       stuckPhase: "doctor",
       recovery: { manifestPath, command: "npx openclaw@latest doctor --fix" },
-    });
-    const stderr = write.mock.calls
-      .filter(([fd]) => fd === 2)
-      .map(([, chunk]) => chunk)
-      .join("");
-    expect(stderr).toContain(manifestPath);
-    expect(stderr).toContain("npx openclaw@latest doctor --fix");
-    expect(listUpdateRuns()[0]).toMatchObject({ status: "failed" });
-  } finally {
-    work.resolve();
-    await running;
-  }
+    }),
+  );
+  const stderr = write.mock.calls
+    .filter(([fd]) => fd === 2)
+    .map(([, chunk]) => chunk)
+    .join("");
+  expect(stderr).toContain(manifestPath);
+  expect(stderr).toContain("npx openclaw@latest doctor --fix");
+  expect(listUpdateRuns()[0]).toMatchObject({ status: "failed" });
 });
 
 it("sizes finalization state without blocking the parent on database metadata", async () => {

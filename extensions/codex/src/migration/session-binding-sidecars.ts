@@ -25,7 +25,7 @@ import {
   CODEX_APP_SERVER_BINDING_NAMESPACE,
 } from "../app-server/session-binding-meta.js";
 import { readLegacySessionIndex } from "./session-binding-legacy-index.js";
-import { readDirectoryEntries, isSafeLegacySessionId } from "./session-binding-sidecar-paths.js";
+import { readDirectoryEntries } from "./session-binding-sidecar-paths.js";
 
 const LEGACY_BINDING_SUFFIX = ".codex-app-server.json";
 const CODEX_AGENT_HARNESS_ID = "codex";

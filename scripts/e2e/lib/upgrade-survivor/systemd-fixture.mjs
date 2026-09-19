@@ -182,30 +182,35 @@ function runtimePaths() {
 
 function nativeRuntime() {
   const paths = runtimePaths();
-  let pid;
-  let generation = 0;
-  try {
-    const raw = fs.readFileSync(paths.pidFile, "utf8").trim();
-    if (!/^[1-9][0-9]*$/.test(raw)) {
-      fail();
+  const isLive = (pid) => {
+    if (!Number.isSafeInteger(pid) || pid <= 1 || pid > 0xffffffff) {
+      return false;
     }
-    pid = Number(raw);
-    if (!Number.isSafeInteger(pid) || pid > 0xffffffff) {
-      fail();
-    }
-    process.kill(pid, 0);
-    generation = Math.trunc(fs.statSync(paths.pidFile).mtimeMs * 1000);
-    if (process.platform === "linux") {
-      const state = fs.readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").at(-1);
-      if (state.startsWith("Z ")) {
-        pid = 0;
+    try {
+      process.kill(pid, 0);
+      if (process.platform === "linux") {
+        const state = fs.readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").at(-1);
+        if (state.startsWith("Z ")) {
+          return false;
+        }
       }
-    }
-  } catch (error) {
-    if (!["ENOENT", "ESRCH"].includes(error.code)) {
+      return true;
+    } catch (error) {
+      if (["ENOENT", "ESRCH"].includes(error.code)) {
+        return false;
+      }
       throw error;
     }
-    pid = 0;
+  };
+  let managerPid = 0;
+  let generation = 0;
+  try {
+    managerPid = Number(fs.readFileSync(paths.pidFile, "utf8").trim());
+    generation = Math.trunc(fs.statSync(paths.pidFile).mtimeMs * 1000);
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
   }
   const readOptional = (file) => {
     try {
@@ -219,6 +224,10 @@ function nativeRuntime() {
   };
   const last = readOptional(`${paths.daemonLog}.exit.json`)?.last;
   const counts = readOptional(`${paths.daemonLog}.runtime.json`);
+  // The supervisor owns lifecycle control, but MainPID belongs to its service.
+  // Old observations cannot identify a replacement supervisor's child.
+  const pid =
+    isLive(managerPid) && counts?.managerPid === managerPid && isLive(counts.pid) ? counts.pid : 0;
   const successful = !last || last.code === 0;
   return {
     pid,
@@ -416,6 +425,10 @@ function recordCaller(file, parentPid, action) {
 
 function run() {
   const [operation, ...args] = process.argv.slice(2);
+  if (operation === "main-pid" && !args.length) {
+    console.log(nativeRuntime().pid);
+    return;
+  }
   if (operation === "record-caller" && args.length === 3) {
     recordCaller(...args);
     return;

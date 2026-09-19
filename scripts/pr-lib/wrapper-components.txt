@@ -446,6 +446,7 @@ src/config/version.ts
 src/config/web-search-legacy-provider-keys.ts
 src/config/write-capture.ts
 src/config/write-lock.ts
+src/config/write-transfer.ts
 src/config/zod-schema.agent-defaults-base.ts
 src/config/zod-schema.agent-defaults.ts
 src/config/zod-schema.agent-entry-base.ts
@@ -707,6 +708,8 @@ src/infra/startup-migration-checkpoint.ts
 src/infra/state-database-coordinator-delegate.ts
 src/infra/state-database-coordinator-errors.ts
 src/infra/state-database-coordinator-paths.ts
+src/infra/state-database-coordinator-runtime.ts
+src/infra/state-database-coordinator-transfer.ts
 src/infra/state-database-coordinator.ts
 src/infra/state-lease-process-owner.ts
 src/infra/state-migrations.cron-run-logs.ts
@@ -739,6 +742,7 @@ src/infra/windows-install-roots.ts
 src/infra/windows-port-pids.ts
 src/infra/windows-private-directory.ts
 src/infra/windows-process-start.ts
+src/infra/worker-cpu.ts
 src/infra/worker-task-capacity.ts
 src/infra/worker-task-native-sections.ts
 src/infra/worker-task-pool.ts

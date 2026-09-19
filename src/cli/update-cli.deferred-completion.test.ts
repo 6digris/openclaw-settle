@@ -198,10 +198,12 @@ describe("update-cli child-owned deferred completion", () => {
       if (mode === "finalize" && !valid) {
         // Capture starts from valid state; this case rejects the target after Doctor.
         vi.mocked(readConfigFileSnapshot).mockResolvedValue(configSnapshot(config));
-        vi.mocked(runUtf8CommandWithTimeout).mockImplementationOnce(async (argv) => {
-          expect(argv[2]).toBe("doctor");
-          vi.mocked(readConfigFileSnapshot).mockResolvedValue(configSnapshot(config, { valid }));
-          return doctorProcessResult();
+        const transport = vi.mocked(runUtf8CommandWithTimeout).getMockImplementation()!;
+        vi.mocked(runUtf8CommandWithTimeout).mockImplementation(async (argv, options) => {
+          if (argv[2] === "doctor" || argv[2] === "--doctor") {
+            vi.mocked(readConfigFileSnapshot).mockResolvedValue(configSnapshot(config, { valid }));
+          }
+          return transport(argv, options);
         });
       }
 

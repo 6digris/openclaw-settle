@@ -218,7 +218,7 @@ async function runCommandWithOutputEncoding(
 
   const { child, invocation } = spawnCommandWithInvocation(argv, {
     buffer: false,
-    ipc: Boolean(options.onChildMessage),
+    ...(options.onChildMessage ? { ipc: true } : {}),
     cancelSignal: cancelController.signal,
     inheritScopeCancellation: false,
     cwd,

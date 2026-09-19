@@ -7,15 +7,18 @@ import type { ConfigFileSnapshot, OpenClawConfig } from "../../config/types.open
 import type { RestartSentinelPayload } from "../../infra/restart-sentinel.js";
 import type { RespawnSupervisor } from "../../infra/supervisor-markers.js";
 import type { UpdateChannel } from "../../infra/update-channels.js";
+import { writeGatewayCutoverFixtureModule } from "../../infra/update-managed-service-handoff.test-support.js";
 import { getUpdateRun } from "../../infra/update-run-ledger.js";
 import { createTempHomeEnv, type TempHomeEnv } from "../../test-utils/temp-home.js";
 let ledgerHome: TempHomeEnv | undefined;
 beforeEach(async () => {
+  vi.stubEnv("OPENCLAW_PROFILE", undefined);
   ledgerHome = await createTempHomeEnv("openclaw-update-rpc-");
 });
 afterEach(async () => {
   await ledgerHome?.restore();
   ledgerHome = undefined;
+  vi.unstubAllEnvs();
 });
 
 export const sentinelState: {
@@ -84,6 +87,8 @@ export async function withTransferredUpdateHandoff(
   run: (activate: () => Promise<void>) => Promise<void>,
 ) {
   await fs.mkdir(root, { recursive: true });
+  await fs.writeFile(path.join(root, "package.json"), '{"type":"module"}');
+  await writeGatewayCutoverFixtureModule(path.join(root, "dist", "cli", "daemon-cli.js"));
   const activatePath = path.join(root, "activate");
   const updatedPath = path.join(root, "updated");
   const updaterPath = path.join(root, "updater.cjs");

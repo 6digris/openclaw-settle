@@ -61,7 +61,7 @@ if (role === "handoff-candidate") {
       });
     }
   } catch (error) {
-    if (!(error instanceof Error) || error.name !== "CommandProcessScopeUnsettledError") {
+    if (!(error instanceof Error) || error.name !== "CommandProcessCleanupError") {
       throw error;
     }
     settlement = error.name;
@@ -112,7 +112,7 @@ if (role === "handoff-candidate") {
       await launcher;
     });
   } catch (error) {
-    if (!(error instanceof Error) || error.name !== "CommandProcessScopeUnsettledError") {
+    if (!(error instanceof Error) || error.name !== "CommandProcessCleanupError") {
       throw error;
     }
     settlement = error.name;

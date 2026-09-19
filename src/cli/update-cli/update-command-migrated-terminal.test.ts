@@ -103,6 +103,7 @@ async function scenario(kind: Scenario) {
   const run: NonNullable<FinishUpdateParams["opts"]["run"]> = {
     runId: createUpdateRun({ trigger: "cli" }, { env: process.env }).runId,
     env: { ...process.env },
+    activationTimeoutMs: 30_000,
   };
   const events: string[] = [];
   const output: unknown[] = [];

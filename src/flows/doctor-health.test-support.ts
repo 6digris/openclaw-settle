@@ -103,6 +103,14 @@ vi.mock("../daemon/schtasks-runtime.js", async (importOriginal) => ({
   readWindowsStartupFallbackRuntimeForUpdate: mocks.startupFallbackRuntime,
 }));
 
+// This manager is synthetic; use the shared RPC effect fixture while retaining
+// the real maintenance executor, native ownership checks and restoration path.
+vi.mock("../cli/daemon-cli/update-cutover.js", async () => ({
+  prepareGatewayUpdateCutover: (
+    await import("../cli/update-cli/update-command-transport.test-support.js")
+  ).prepareGatewayCutoverFixture,
+}));
+
 vi.mock("../cli/update-cli/update-command-service-maintenance.js", async (importOriginal) => {
   const actual =
     await importOriginal<

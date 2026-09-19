@@ -7,6 +7,7 @@ import {
   createMockGatewayService,
   mockSystemAccountHome,
 } from "../../daemon/service.test-helpers.js";
+import * as updateGlobal from "../../infra/update-global.js";
 import {
   resolveCommandProcessSignal,
   retainCommandProcessCleanup,
@@ -35,16 +36,20 @@ it.each(["forced", "uncertain"] as const)(
   "settles npm destination inspection before publishing refusal (%s)",
   async (cleanupResult) => {
     vi.mocked(packageDestination.inspectNpmGlobalDestination).mockRestore();
+    vi.mocked(updateGlobal.resolveGlobalInstallTarget).mockRestore();
     const cleanup = createDeferredCore<"forced" | "uncertain">();
     const joining = createDeferredCore();
     const writes = vi.spyOn(packageUpdate, "runPackageInstallUpdate");
     vi.spyOn(processExec, "runCommandWithTimeout").mockImplementation(async (argv) => {
-      expect(argv).toContain("prefix");
+      if (argv.includes("--version")) {
+        return createCommandResult({ stdout: "11.10.0\n" });
+      }
+      expect(argv).toContain("root");
       retainCommandProcessCleanup(cleanup.promise);
       resolveCommandProcessSignal()?.addEventListener("abort", () => joining.resolve(), {
         once: true,
       });
-      throw new Error("npm prefix probe cancelled");
+      throw new Error("npm root probe cancelled");
     });
     const launcher = path.join(fixture.root, "openclaw.mjs");
     await fs.writeFile(launcher, "// original deployment\n");
@@ -114,6 +119,7 @@ it.each([
   "rechecks %s prefix ownership through the retained launcher after a runtime switch",
   async (destination) => {
     vi.mocked(packageDestination.inspectNpmGlobalDestination).mockRestore();
+    vi.mocked(updateGlobal.resolveGlobalInstallTarget).mockRestore();
     const inspection = vi.spyOn(packageDestination, "inspectNpmGlobalDestination");
     vi.stubEnv("OPENCLAW_PROFILE", undefined);
     const base = path.dirname(fixture.root);
@@ -245,13 +251,15 @@ it.each([
     // The operator has selected the new runtime; only now can npm resolve its destination.
     vi.spyOn(processExec, "runCommandWithTimeout").mockImplementation(async (argv) =>
       createCommandResult({
-        code: destination === "probe-failure" && argv.includes("prefix") ? 1 : 0,
+        code: destination === "probe-failure" && argv.includes("root") ? 1 : 0,
         stdout:
-          argv.includes("prefix") && destination !== "probe-empty"
+          argv.includes("root") && destination !== "probe-empty"
             ? destination === "probe-relative"
               ? "relative/prefix\n"
-              : `${selected}\n`
-            : "",
+              : `${path.dirname(newRoot)}\n`
+            : argv.includes("--version")
+              ? "11.10.0\n"
+              : "",
       }),
     );
     const writes = vi.spyOn(packageUpdate, "runPackageInstallUpdate");

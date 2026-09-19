@@ -1,3 +1,6 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createUpdateCommandBackup } from "../cli/update-cli/update-command-backup-lifecycle.js";
@@ -36,9 +39,13 @@ import {
   withDoctorUpdateRecovery,
 } from "./doctor-update-recovery.js";
 
-// Only check registration is substituted. Both caller adapters and the scoped
-// producer, maintenance, capture, executor and session mutation owners are real.
-const registered = vi.hoisted(() => ({ checks: [] as DoctorHealthCheck[] }));
+// Check registration and installation discovery select task-local fixtures. Both
+// caller adapters, maintenance, capture, executor and session mutation owners stay real.
+const registered = vi.hoisted(() => ({ checks: [] as DoctorHealthCheck[], root: "" }));
+vi.mock("../infra/openclaw-root.js", async (original) => ({
+  ...(await original<typeof import("../infra/openclaw-root.js")>()),
+  resolveOpenClawPackageRoot: async () => registered.root,
+}));
 vi.mock("../flows/doctor-core-checks.js", () => ({ CORE_HEALTH_CHECKS: registered.checks }));
 vi.mock("../flows/bundled-health-checks.js", () => ({ registerBundledHealthChecks() {} }));
 
@@ -61,6 +68,8 @@ async function withPreparedDoctor(
     release: () => Promise<void>;
     guard: () => void;
     context: DoctorHealthFlowContext;
+    observe: <T>(operation: () => T) => T;
+    runInExecutor: <T>(operation: () => T) => T;
   }) => Promise<void>,
 ) {
   await withOpenClawTestState(
@@ -79,6 +88,14 @@ async function withPreparedDoctor(
         gateway: { mode: "local" as const },
       };
       await state.writeConfig(cfg);
+      const root = state.path("installation");
+      registered.root = root;
+      await fs.mkdir(path.join(root, "dist"), { recursive: true });
+      await fs.writeFile(
+        path.join(root, "package.json"),
+        JSON.stringify({ name: "openclaw", version: "2026.9.4", type: "module" }),
+      );
+      await fs.writeFile(path.join(root, "dist", "index.js"), "export {};\n");
       const observed: NonNullable<Awaited<ReturnType<typeof beginMaintenance>>>[] = [];
       vi.spyOn(maintenanceModule, "beginDoctorMaintenance").mockImplementation(async (params) => {
         const owner = await beginMaintenance(params);
@@ -87,15 +104,18 @@ async function withPreparedDoctor(
         }
         return owner;
       });
+      const observe = AsyncLocalStorage.snapshot();
       const record = createUpdateRun({ trigger: "cli" });
       try {
         await withUpdateCommandExecutor(record.runId, async (executor) => {
-          const fence = await executor.enter(process.cwd());
+          const fence = await executor.enter(root);
           const ref = await createUpdateCommandBackup({
             opts: { run: { runId: record.runId, env: state.env, executorFence: fence } },
-            root: process.cwd(),
+            root,
             env: state.env,
           });
+          // A replacement interval retains executor custody, not the old interval.
+          const runInExecutor = AsyncLocalStorage.snapshot();
           const updating = process.env.OPENCLAW_UPDATE_IN_PROGRESS;
           process.env.OPENCLAW_UPDATE_IN_PROGRESS = "1";
           try {
@@ -122,13 +142,22 @@ async function withPreparedDoctor(
                 configPath: state.configPath,
                 env: state.env,
               };
-              await run({
-                release: async () => {
-                  await owner.release();
-                },
-                guard,
-                context,
+              // Admit resources in the real interval, but keep the fixture's
+              // revocation orchestrator outside the interval's pending set: it
+              // explicitly releases that same owner while the leaf is suspended.
+              let operation: Promise<void> | undefined;
+              owner.run(() => {
+                operation = run({
+                  release: async () => {
+                    await owner.release();
+                  },
+                  guard,
+                  context,
+                  observe,
+                  runInExecutor,
+                });
               });
+              await operation;
             });
           } finally {
             if (updating === undefined) {
@@ -179,25 +208,31 @@ describe("Doctor original invocation authority", () => {
       let settlementFailure: unknown;
       let laterHealthy = false;
       let sibling = false;
-      const result = withPreparedDoctor(async ({ release, guard, context }) => {
+      const result = withPreparedDoctor(async ({ release, guard, context, runInExecutor }) => {
         let detects = 0;
         const revoke = async () => {
           await release();
           first = caught(guard);
-          const later = await beginMaintenance({ root: null, options: { repair: true }, runtime });
-          try {
-            if (!later) {
-              throw new Error("missing later real maintenance");
+          await runInExecutor(async () => {
+            const later = await beginMaintenance({
+              root: null,
+              options: { repair: true },
+              runtime,
+            });
+            try {
+              if (!later) {
+                throw new Error("missing later real maintenance");
+              }
+              later.assertCurrent();
+              laterHealthy = true;
+              repeated = caught(guard);
+              // The leaf catches the first refusal and rejects with another value.
+              // Neither that error nor the healthy later owner may replace it.
+              throw new Error("ordinary leaf rejection after authority refusal");
+            } finally {
+              await later?.release();
             }
-            later.assertCurrent();
-            laterHealthy = true;
-            repeated = caught(guard);
-            // The leaf catches the first refusal and rejects with another value.
-            // Neither that error nor the healthy later owner may replace it.
-            throw new Error("ordinary leaf rejection after authority refusal");
-          } finally {
-            await later?.release();
-          }
+          });
         };
         const run = runDoctorHealthRepairs(
           { mode: "fix", runtime, cfg: context.cfg },
@@ -242,7 +277,10 @@ describe("Doctor original invocation authority", () => {
         settlementFailure = error;
       }
       // Assert outside recovery: its primary refusal must not mask an assertion.
-      expect(first).toBeInstanceOf(Error);
+      expect(
+        first,
+        `dispatcher=${String(dispatcherFailure)}; settlement=${String(settlementFailure)}`,
+      ).toBeInstanceOf(Error);
       expect(repeated).toBe(first);
       expect(dispatcherFailure).toBe(first);
       expect(settlementFailure).toBe(first);
@@ -394,7 +432,7 @@ describe("Doctor original invocation authority", () => {
       let laterAdmitted = false;
       const confirmationError = new Error("confirmation rejected");
       try {
-        await withPreparedDoctor(async ({ release, guard, context }) => {
+        await withPreparedDoctor(async ({ release, guard, context, observe }) => {
           const scope = { agentId: "main", sessionKey: "agent:main:wedged-main", env: context.env };
           const entry: InternalSessionEntry = {
             sessionId: "wedged",
@@ -418,7 +456,7 @@ describe("Doctor original invocation authority", () => {
           // An independent read-only connection observes committed writes even if
           // later compensated, without adding triggers to the canonical schema.
           const audit = new DatabaseSync(databasePath, { readOnly: true });
-          const versionBefore = audit.prepare("PRAGMA data_version").get()?.data_version;
+          let versionBefore = audit.prepare("PRAGMA data_version").get()?.data_version;
           try {
             changes = [];
             try {
@@ -432,6 +470,9 @@ describe("Doctor original invocation authority", () => {
                   confirmRepair: async () => {
                     if (revoke) {
                       await release();
+                      // Closing owned resources can commit maintenance metadata.
+                      // Measure the leaf's writes after that permitted settlement.
+                      versionBefore = audit.prepare("PRAGMA data_version").get()?.data_version;
                       first = caught(guard);
                     }
                     if (reject) {
@@ -468,11 +509,13 @@ describe("Doctor original invocation authority", () => {
                           sessionKey: "agent:later:late-after-refusal",
                           env: context.env,
                         };
-                        await upsertSessionEntryCore(target, {
-                          sessionId: "late-write",
-                          updatedAt: 2,
+                        await owner.run(async () => {
+                          await upsertSessionEntryCore(target, {
+                            sessionId: "late-write",
+                            updatedAt: 2,
+                          });
+                          later = loadSessionEntryReadOnly(target);
                         });
-                        later = loadSessionEntryReadOnly(target);
                       } finally {
                         await owner?.release();
                       }
@@ -485,7 +528,13 @@ describe("Doctor original invocation authority", () => {
             } catch (error) {
               leafFailure = error;
             }
-            after = loadSessionEntryReadOnly(scope) as InternalSessionEntry;
+            // Only a revoked scope needs an independent observation. A live
+            // owner's cached handle must remain owned until its normal drain.
+            after = (
+              revoke
+                ? observe(() => loadSessionEntryReadOnly(scope))
+                : loadSessionEntryReadOnly(scope)
+            ) as InternalSessionEntry;
             writesObserved =
               audit.prepare("PRAGMA data_version").get()?.data_version !== versionBefore;
           } finally {
@@ -615,11 +664,13 @@ describe("Doctor original invocation authority", () => {
                       sessionKey: "agent:later:boundary",
                       env: context.env,
                     };
-                    await upsertSessionEntryCore(target, {
-                      sessionId: "boundary-later",
-                      updatedAt: 3,
+                    await owner.run(async () => {
+                      await upsertSessionEntryCore(target, {
+                        sessionId: "boundary-later",
+                        updatedAt: 3,
+                      });
+                      laterRow = loadSessionEntryReadOnly(target);
                     });
-                    laterRow = loadSessionEntryReadOnly(target);
                   } finally {
                     await owner?.release();
                   }

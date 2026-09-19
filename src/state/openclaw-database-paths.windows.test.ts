@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { retainCliProcessJobUntilExit, withCliProcessScope } from "../cli/runtime-cleanup-scope.js";
 import { noteDoctorAgentDatabasePathHealth } from "../commands/doctor-agent-database-paths.js";
 import { compactDoctorSessionSqliteTarget } from "../commands/doctor-session-sqlite-compact.js";
 import { runDoctorStateSqliteCompact } from "../commands/doctor-state-sqlite-compact.js";
@@ -93,6 +94,9 @@ describe("OpenClaw database paths on Windows", () => {
   it.runIf(process.platform === "win32")(
     "repairs aliases before a native update baseline and preserves active update inventories",
     async () => {
+      // Match the executable updater's real native owner. Borrowed programs do
+      // not prove descendant settlement from a direct child exit alone.
+      await withCliProcessScope(retainCliProcessJobUntilExit);
       const env = { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-native-doctor-alias-") };
       const agent = openOpenClawAgentDatabase({ agentId: "main", env });
       const state = openOpenClawStateDatabase({ env });

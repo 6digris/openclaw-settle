@@ -48,6 +48,7 @@ vi.mock("../daemon/systemd-scope.js", async (importOriginal) => ({
 }));
 
 beforeEach(async () => {
+  vi.stubEnv("OPENCLAW_PROFILE", undefined);
   // Competing helpers share this fixture's coordinator, never the operator's database.
   const tmpDirOwner = await import("./tmp-openclaw-dir.js");
   vi.spyOn(tmpDirOwner, "resolvePreferredOpenClawTmpDir").mockReturnValue(
@@ -75,6 +76,7 @@ afterEach(async () => {
     cleanup();
   }
   cleanupTempDirs(tempDirs);
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
   vi.resetModules();
 });

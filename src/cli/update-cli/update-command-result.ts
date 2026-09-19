@@ -92,7 +92,7 @@ export function resolveCompletedUpdateResult(
   });
 }
 
-export function createUpdateCommandFailureResult(
+function createUpdateCommandFailureResult(
   params: Pick<UpdateRunResult, "mode" | "root" | "recovery" | "durationMs"> & {
     failure: { cause: unknown; detail?: string };
     admission?: true;

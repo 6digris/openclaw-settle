@@ -34,7 +34,7 @@ import {
   createOpenClawTestState,
   withOpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
-import { VERSION, resolveRuntimeServiceBuildId } from "../version.js";
+import { resolveRuntimeServiceBuildId } from "../version.js";
 import { doctorRecoveryRuntimeEntrypoints } from "./doctor-config-runtime.test-support.js";
 import { doctorCommand } from "./doctor.js";
 
@@ -219,14 +219,12 @@ describe("retained forward recovery through real owners", () => {
           throw new ExitError(code);
         },
       };
-      const doctorStartedAt = Date.now();
       let doctorFailure: unknown;
       try {
         await doctorCommand(runtime, { repair: true, nonInteractive: true });
       } catch (error) {
         doctorFailure = error;
       }
-      const doctorFinishedAt = Date.now();
       const next = createUpdateRun({ trigger: "cli" }, { env: state.env });
       let nextFailure: unknown;
       let nextCapture: UpdateRecoveryBackupRef | undefined;
@@ -251,22 +249,10 @@ describe("retained forward recovery through real owners", () => {
       expect(await sealedFiles(produced.ref)).toEqual(sealed);
       const beforeConfig = JSON.parse(config);
       const afterConfig = JSON.parse(await fs.readFile(state.configPath, "utf8"));
-      // Full Doctor writes its own provenance; every operator setting must survive.
-      expect(afterConfig).toEqual({
-        ...beforeConfig,
-        meta: { ...beforeConfig.meta, lastTouchedVersion: VERSION },
-        wizard: {
-          lastRunAt: expect.any(String),
-          lastRunVersion: VERSION,
-          ...(process.env.GIT_COMMIT?.trim() || process.env.GIT_SHA?.trim()
-            ? { lastRunCommit: process.env.GIT_COMMIT?.trim() || process.env.GIT_SHA?.trim() }
-            : {}),
-          lastRunCommand: "doctor",
-          lastRunMode: "local",
-        },
-      });
-      expect(Date.parse(afterConfig.wizard.lastRunAt)).toBeGreaterThanOrEqual(doctorStartedAt);
-      expect(Date.parse(afterConfig.wizard.lastRunAt)).toBeLessThanOrEqual(doctorFinishedAt);
+      // A no-op Doctor does not rewrite valid operator config for provenance.
+      // The real flow must still complete, preserve state and permit capture.
+      expect(doctorFailure, "compatible forward Doctor repair must complete").toBeUndefined();
+      expect(afterConfig).toEqual(beforeConfig);
       expect(afterConfig.messages.responsePrefix).toBe("acknowledged config edit");
       const scope = { agentId: "main", env: state.env };
       expect(loadSessionEntryReadOnly({ ...scope, sessionKey: "agent:main:f1-edited" })).toEqual(

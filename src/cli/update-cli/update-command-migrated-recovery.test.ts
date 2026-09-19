@@ -115,6 +115,7 @@ function fixture(): FinishUpdateParams {
       json: true,
       run: {
         runId: "recovery-run",
+        activationTimeoutMs: 30_000,
         env: { OPENCLAW_STATE_DIR: root },
         executorFence: {
           assertCurrent() {

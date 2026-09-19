@@ -1013,18 +1013,6 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         pretestBuildMode: undefined,
         predictedSeconds: 200,
       },
-      {
-        groups: [
-          {
-            configs: ["test/vitest/vitest.cli.config.ts"],
-            includePatterns: undefined,
-            pretestBuildMode: "runtime",
-          },
-        ],
-        planConcurrency: 1,
-        pretestBuildMode: "runtime",
-        predictedSeconds: 177,
-      },
     ]);
     const agentChatStripes = fallback
       .flatMap((shard) => shard.groups)
@@ -1277,12 +1265,16 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         planConcurrency: 1,
         runner: "blacksmith-16vcpu-ubuntu-2404",
       });
-      // The measured CLI plus its required runtime build is oversized and must
-      // stay alone, without lending the non-build bin budget to another group.
+      // Plain CLI has no runtime-build consumer and can share only a complete
+      // non-build bin that stays within the combined budget.
       expect(cliJobs[0]!.predictedSeconds).toBeGreaterThan(150);
-      expect(cliJobs[0]!.pretestBuildMode).toBe("runtime");
-      expect(cliJobs[0]!.groups).toHaveLength(1);
-      expect(cliJobs[0]!.groups[0]!.includePatterns).toBeUndefined();
+      expect(cliJobs[0]!.predictedSeconds).toBeLessThanOrEqual(250);
+      expect(cliJobs[0]!.pretestBuildMode).toBeUndefined();
+      expect(isCombinedUnbuiltCliJob(cliJobs[0]!)).toBe(true);
+      expect(cliJobs[0]!.groups.every((group) => !group.pretestBuildMode)).toBe(true);
+      expect(
+        cliJobs[0]!.groups.find((group) => group.shard_name === "agentic-cli")!.includePatterns,
+      ).toBeUndefined();
       const processGroups = plan.flatMap((job) =>
         job.groups.filter((group) =>
           group.configs.includes("test/vitest/vitest.cli-process.config.ts"),
@@ -3515,7 +3507,6 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       checkName: "checks-node-agentic-cli",
       shardName: "agentic-cli",
       configs: ["test/vitest/vitest.cli.config.ts"],
-      pretestBuildMode: "runtime",
       requiresDist: false,
       runner: DEFAULT_NODE_TEST_RUNNER,
     });

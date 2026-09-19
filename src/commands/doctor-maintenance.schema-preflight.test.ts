@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -42,14 +43,22 @@ it("closes its owned stores without closing an independent caller's stores", asy
     }
     try {
       const owned = maintenance.run(() => openOpenClawStateDatabase({ env: state.env }));
+      const escaped = maintenance.run(() => AsyncLocalStorage.snapshot());
       await maintenance.closeStores();
       expect(owned.db.isOpen).toBe(false);
       const independent = openOpenClawStateDatabase({ env: state.env });
       await maintenance.closeStores();
       expect(independent.db.isOpen).toBe(true);
-      expect(() => maintenance.run(() => openOpenClawStateDatabase({ env: state.env }))).toThrow(
+      expect(() => escaped(() => openOpenClawStateDatabase({ env: state.env }))).toThrow(
         "Database maintenance resource scope is closed",
       );
+      const renewed = maintenance.run(() => openOpenClawStateDatabase({ env: state.env }));
+      expect(renewed.db.isOpen).toBe(true);
+      await maintenance.closeStores();
+      // Reusing an independent caller's cached handle does not transfer its ownership.
+      expect(renewed.db).toBe(independent.db);
+      expect(renewed.db.isOpen).toBe(true);
+      expect(independent.db.isOpen).toBe(true);
       maintenance.assertCurrent();
     } finally {
       await maintenance.release();

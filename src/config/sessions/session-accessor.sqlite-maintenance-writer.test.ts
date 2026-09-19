@@ -8,6 +8,7 @@ import {
   isSessionLifecycleMutationActive,
   runExclusiveSessionLifecycleMutation,
 } from "../../sessions/session-lifecycle-admission.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
@@ -24,6 +25,7 @@ import {
 } from "./session-accessor.js";
 import { readSessionStateDeleteSnapshot } from "./session-accessor.sqlite-delete-snapshot.js";
 import { deleteSessionEntryRows } from "./session-accessor.sqlite-entry-store.js";
+import * as sessionMaintenance from "./session-accessor.sqlite-maintenance.js";
 import {
   applySessionEntryMaintenance,
   refreshSqliteSessionPlannerStatisticsBestEffort,
@@ -344,6 +346,18 @@ it("does not hold channel recording behind automatic session maintenance", async
     await materializationReleased;
   };
 
+  const maintenancePasses = [createDeferredCore(), createDeferredCore()];
+  const pendingPasses = [...maintenancePasses];
+  const finalize =
+    sessionMaintenance.finalizeSessionEntryMaintenancePlansAfterWriterReleaseBestEffort;
+  vi.spyOn(
+    sessionMaintenance,
+    "finalizeSessionEntryMaintenancePlansAfterWriterReleaseBestEffort",
+  ).mockImplementation(async (...args) => {
+    const result = await finalize(...args);
+    pendingPasses.shift()?.resolve();
+    return result;
+  });
   const entryWrite = recordInboundSession({
     storePath,
     sessionKey: "agent:main:discord:direct:maintenance-ingress",
@@ -402,12 +416,13 @@ it("does not hold channel recording behind automatic session maintenance", async
   await entryWrite;
 
   expect(firstCompleted).toBe("entry-write");
-  await vi.waitFor(() => {
-    expect(loadSessionEntry({ sessionKey: staleSessionKey, storePath })).toBeUndefined();
-    if (firstCompleted === "entry-write") {
-      expect(loadSessionEntry({ sessionKey: laterStaleSessionKey, storePath })).toBeUndefined();
-    }
-  });
+  // Join both real deferred maintenance generations, not a one-second cold-worker race.
+  await maintenancePasses[0]!.promise;
+  if (firstCompleted === "entry-write") {
+    await maintenancePasses[1]!.promise;
+    expect(loadSessionEntry({ sessionKey: laterStaleSessionKey, storePath })).toBeUndefined();
+  }
+  expect(loadSessionEntry({ sessionKey: staleSessionKey, storePath })).toBeUndefined();
 });
 
 it.each([

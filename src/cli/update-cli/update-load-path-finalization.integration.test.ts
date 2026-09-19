@@ -30,10 +30,7 @@ vi.mock("./shared.js", async (importOriginal) => ({
   resolveUpdateRoot: async () => controls.root,
   tryWriteCompletionCache: async () => "skipped",
 }));
-// Native maintenance and the fresh Doctor process have their own process proofs.
-vi.mock("../../commands/doctor-maintenance.js", () => ({
-  beginDoctorMaintenance: async () => undefined,
-}));
+// Capture uses real task-local maintenance; only the fresh Doctor effect is doubled.
 vi.mock("./update-command-fresh-doctor.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./update-command-fresh-doctor.js")>()),
   runUpdateFinalizationDoctorInFreshProcess: async () => {},
@@ -48,7 +45,8 @@ afterEach(() => vi.restoreAllMocks());
 it.each(["finalize", "repair", "resume", "resume-unowned", "resume-write-failure"])(
   "completes %s with an operator-managed warning and preserves earlier failure evidence",
   async (command) => {
-    await withOpenClawTestState({ label: `load-path-${command}` }, async (state) => {
+    const env = { OPENCLAW_SERVICE_REPAIR_POLICY: "external" };
+    await withOpenClawTestState({ label: `load-path-${command}`, env }, async (state) => {
       controls.root = state.root;
       await fs.writeFile(
         state.path("package.json"),

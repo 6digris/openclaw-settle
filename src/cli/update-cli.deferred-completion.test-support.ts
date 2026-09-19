@@ -7,7 +7,11 @@ import type { ConfigFileSnapshot, OpenClawConfig } from "../config/types.opencla
 import { withEnvAsync } from "../test-utils/env.js";
 import type { TempHomeEnv } from "../test-utils/temp-home.js";
 import { createCliRuntimeCapture, getMockCallOutput } from "./test-runtime-capture.js";
-import { doctorProcessResult } from "./update-cli/update-command-doctor-process.test-support.js";
+import {
+  doctorProcessResult,
+  runDelegatedDoctorFixture,
+} from "./update-cli/update-command-doctor-process.test-support.js";
+import { createUpdateUtf8CommandTransportFixture } from "./update-cli/update-command-transport.test-support.js";
 
 export const readPackageVersion = vi.fn();
 export const syncPluginsForUpdateChannel = vi.fn();
@@ -508,12 +512,25 @@ export function installDeferredCompletionFixture() {
     const entrypoint = path.join(installRoot, "dist", "index.js");
     pathExists.mockImplementation(async (candidate: string) => candidate === entrypoint);
     vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValue(entrypoint);
-    vi.mocked(runUtf8CommandWithTimeout).mockImplementation(async (argv) => {
-      if (argv[0] !== process.execPath || argv[2] !== "doctor") {
-        throw new Error(`Unexpected settled completion process: ${argv.join(" ")}`);
-      }
-      return doctorProcessResult();
-    });
+    vi.mocked(runUtf8CommandWithTimeout).mockImplementation(
+      await createUpdateUtf8CommandTransportFixture(
+        { hostCwd: process.cwd(), hostEnv: { ...process.env } },
+        async (argv, options) => {
+          if (argv[2] === "--doctor") {
+            return runDelegatedDoctorFixture(argv, options, {
+              run: async () => doctorProcessResult(),
+              hostCwd: process.cwd(),
+              hostEnv: { ...process.env },
+              npmPrefix: installRoot,
+            });
+          }
+          if (argv[0] !== process.execPath || argv[2] !== "doctor") {
+            throw new Error(`Unexpected settled completion process: ${argv.join(" ")}`);
+          }
+          return doctorProcessResult();
+        },
+      ),
+    );
     const nativeExec =
       await vi.importActual<typeof import("../process/exec.js")>("../process/exec.js");
     // Preserve real read-only ACL inspection for capture; completion effects stay mocked.

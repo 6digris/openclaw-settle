@@ -30,9 +30,9 @@ const runtimeConsumers = [
     "src/cli/update-cli/update-command-backup-lifecycle.test.ts",
   ].map((file) => ({
     file,
-    configs: ["test/vitest/vitest.cli.config.ts"],
+    configs: ["test/vitest/vitest.cli-process.config.ts"],
     mode: "runtime" as const,
-    dir: "src/cli",
+    dir: "",
   })),
   ...[
     "src/commands/doctor.update-retained-forward-recovery.test.ts",

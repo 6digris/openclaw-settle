@@ -525,7 +525,7 @@ raise SystemExit(code if code >= 0 else 128 - code)
       await waitForStarts(1);
       expect(await readLoadedSystemdServiceRuntime(env)).toMatchObject({
         status: "running",
-        pid: Number(readFileSync(paths.pid, "utf8").trim()),
+        pid: records()[0]!.pid,
         systemd: { managerUid: process.getuid?.() },
       });
       expect.soft(systemctl("is-active", "openclaw-gateway.service").status).toBe(0);
@@ -548,8 +548,16 @@ raise SystemExit(code if code >= 0 else 128 - code)
       const previousPid = readFileSync(paths.pid, "utf8").trim();
       expect(await readSystemdServiceRuntime(env)).toMatchObject({
         status: "running",
-        pid: Number(previousPid),
+        pid: records()[0]!.pid,
       });
+      expect(records()[0]!.pid).not.toBe(Number(previousPid));
+      expect(
+        systemctl(
+          "show",
+          "openclaw-gateway.service",
+          "--property=Id,ActiveState,SubState,Result,NRestarts,StartLimitBurst,MainPID,ExecMainStatus,ExecMainCode,KillMode,TasksCurrent,MemoryCurrent",
+        ).stdout,
+      ).toContain(`MainPID=${records()[0]!.pid}`);
       const previousLines = readFileSync(paths.log, "utf8").trim().split("\n").length;
       const assertion = () =>
         shell('assert_update_restart_service_replaced "$1" "$2"', [
@@ -603,6 +611,8 @@ raise SystemExit(code if code >= 0 else 128 - code)
       const { home, env, unit, paths } = fixture(custom);
       writeFileSync(unit, buildSystemdUnit({ programArguments: ["/usr/bin/fixture", "gateway"] }));
       writeFileSync(paths.pid, `${process.pid}\n`);
+      const runtimeFile = `${paths.daemonLog}.runtime.json`;
+      writeFileSync(runtimeFile, JSON.stringify({ managerPid: process.pid, pid: process.pid }));
       writeFileSync(`${paths.daemonLog}.exit.json`, JSON.stringify({ last: { code: 78 } }));
       const driftedEnv = {
         ...env,
@@ -630,6 +640,11 @@ raise SystemExit(code if code >= 0 else 128 - code)
       });
       expect(readFileSync(paths.log, "utf8")).toContain("--user show openclaw-gateway.service");
       expect(existsSync(driftedEnv.OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_LOG)).toBe(false);
+      // Neither a missing runtime nor another manager's observation may impersonate MainPID.
+      rmSync(runtimeFile);
+      expect(await readSystemdServiceRuntime(driftedEnv)).toMatchObject({ status: "stopped" });
+      writeFileSync(runtimeFile, JSON.stringify({ managerPid: process.pid + 1, pid: process.pid }));
+      expect(await readSystemdServiceRuntime(driftedEnv)).toMatchObject({ status: "stopped" });
       // This is an observation-only PID fixture; never send stop to the test worker.
       rmSync(paths.pid);
     },

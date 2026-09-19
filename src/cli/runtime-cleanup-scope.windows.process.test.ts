@@ -52,8 +52,7 @@ describe.runIf(process.platform === "win32")("Windows executable process ownersh
         }
         expect(result).toMatchObject({
           launcherExited: true,
-          settlement:
-            descendants || ownership !== "cli" ? "CommandProcessScopeUnsettledError" : "settled",
+          settlement: descendants || ownership !== "cli" ? "CommandProcessCleanupError" : "settled",
           ...(inherited ? { inheritedJob: true } : {}),
         });
         expect(isPidAlive(parent.pid!)).toBe(true);
@@ -92,7 +91,7 @@ describe.runIf(process.platform === "win32")("Windows executable process ownersh
         descendantPid = result.descendantPid;
         fallbackPid = result.fallbackPid;
         expect(result.settlement).toBe(
-          mode === "retire" ? "settled" : "CommandProcessScopeUnsettledError",
+          mode === "retire" ? "settled" : "CommandProcessCleanupError",
         );
         if (mode === "busy") {
           expect(fallbackPid).toBeUndefined();

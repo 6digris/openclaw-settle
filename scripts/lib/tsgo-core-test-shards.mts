@@ -79,6 +79,11 @@ export const TSGO_CORE_TEST_SHARDS = [
     group: "src",
     config: "test/tsconfig/tsconfig.core.test.commands-doctor.json",
   },
+  {
+    name: "cli-update",
+    group: "src",
+    config: "test/tsconfig/tsconfig.core.test.cli-update.json",
+  },
 ] as const;
 
 export const TSGO_CORE_GRAPHS = [

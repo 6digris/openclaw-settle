@@ -25,6 +25,7 @@ import {
 import { resolveManagedUpdateLeaseDatabasePath } from "./update-managed-service-handoff-lease.js";
 import { stageManagedHandoffRuntime } from "./update-managed-service-handoff-runtime.js";
 import { startManagedServiceUpdateHandoff } from "./update-managed-service-handoff.js";
+import { writeGatewayCutoverFixtureModule } from "./update-managed-service-handoff.test-support.js";
 
 const testNodeExecPath = resolveTestNodeExecPath();
 
@@ -307,6 +308,9 @@ process.stdout.write(JSON.stringify({status:'error',reason:'original failure'})+
   }
   const env = startup?.env ?? childEnv;
   const handoffTimeoutMs = 30_000;
+  const recoveryModulePath = await writeGatewayCutoverFixtureModule(
+    path.join(root, "serving-cutover.mjs"),
+  );
   await fs.writeFile(
     paramsFile,
     JSON.stringify({
@@ -323,6 +327,7 @@ process.stdout.write(JSON.stringify({status:'error',reason:'original failure'})+
       parentExitTimeoutMs: handoffTimeoutMs,
       parentExitDeadlineAt: Date.now() + handoffTimeoutMs,
       recoveryTimeoutMs: handoffTimeoutMs,
+      recoveryModulePath,
       cwd: root,
       commandArgv,
       commandLabel: "synthetic",

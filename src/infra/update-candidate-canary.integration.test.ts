@@ -6,11 +6,14 @@ import os from "node:os";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { validateUpdateCandidateCanary } from "./update-candidate-canary.js";
 import {
   prepareUpdateCandidateRehearsal,
   type UpdateCandidateRehearsal,
 } from "./update-candidate-rehearsal.js";
+import { readUpdateRunDriver } from "./update-run-driver.js";
+import { createUpdateRun, finishUpdateRun } from "./update-run-ledger.js";
 
 vi.mock("node:child_process", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:child_process")>();
@@ -24,6 +27,19 @@ it(
     const stateDir = await fs.realpath(
       await fs.mkdtemp(path.join(os.tmpdir(), "canary-boundary-")),
     );
+    const sourceEnv = { PATH: process.env.PATH, OPENCLAW_STATE_DIR: stateDir };
+    // The copied ledger must identify the real parent, as the shipped driver does.
+    const run = createUpdateRun(
+      {
+        trigger: "cli",
+        before: { version: "2026.9.4" },
+        target: { kind: "package" },
+        origin: { driver: readUpdateRunDriver(process.pid) },
+      },
+      { env: sourceEnv },
+    );
+    closeOpenClawStateDatabaseForTest();
+    const sourceEntries = await fs.readdir(stateDir);
     const spawned = vi.mocked(childProcess.spawn);
     spawned.mockClear();
     const occupied = createServer();
@@ -36,6 +52,8 @@ it(
         throw new Error("Expected an occupied TCP listener");
       }
       const config: OpenClawConfig = {
+        agents: { ownership: "explicit", entries: { main: {} } },
+        plugins: { enabled: false },
         gateway: { mode: "local" },
         mcp: { apps: { enabled: true, sandboxPort: address.port } },
       };
@@ -43,7 +61,7 @@ it(
         candidateRoot: process.cwd(),
         stateDir,
         config,
-        env: { PATH: process.env.PATH },
+        env: sourceEnv,
       });
       // Published updaters retain this setting and only supply --update-canary.
       const copied: OpenClawConfig = JSON.parse(await fs.readFile(rehearsal.configPath, "utf8"));
@@ -53,7 +71,7 @@ it(
         stateDir,
         config,
         rehearsal,
-        env: { PATH: process.env.PATH },
+        env: sourceEnv,
         timeoutMs: 300_000,
       });
       expect(result, result.logTail.join("\n")).toMatchObject({ status: "ok", phase: "readiness" });
@@ -63,7 +81,7 @@ it(
       expect(phases[1]).toContain("readyz: ready");
       expect(occupied.listening).toBe(true);
       await rehearsal.cleanup();
-      expect(await fs.readdir(stateDir)).toEqual([]);
+      expect(await fs.readdir(stateDir)).toEqual(sourceEntries);
       const callIndex = spawned.mock.calls.findIndex(
         ([, args]) => Array.isArray(args) && args.includes("--update-canary"),
       );
@@ -84,6 +102,12 @@ it(
         });
       }
       spawned.mockClear();
+      finishUpdateRun(
+        run.runId,
+        { status: "skipped", reason: "fixture completed without package activation" },
+        { env: sourceEnv },
+      );
+      closeOpenClawStateDatabaseForTest();
       await fs.rm(stateDir, { recursive: true, force: true });
     }
   },

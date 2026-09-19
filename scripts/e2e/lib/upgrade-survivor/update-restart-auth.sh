@@ -118,7 +118,7 @@ start_gateway() {
   local exec_start
   exec_start="$(node "$manager_script" command)"
   rm -f "$pid_file" "$supervisor_script"
-  rm -f "${daemon_log}.exit.json"
+  rm -f "${daemon_log}.exit.json" "${daemon_log}.runtime.json"
   cat >"$supervisor_script" <<'SUPERVISOR'
 import fs from "node:fs";
 import { spawn } from "node:child_process";
@@ -247,6 +247,7 @@ const start = () => {
   });
   activeGroupPid = child.pid;
   fs.writeFileSync(`${daemonLog}.runtime.json`, JSON.stringify({
+    managerPid: process.pid, pid: child.pid ?? 0,
     restarts: totalStarts - 1, entered: Math.trunc(performance.now() * 1000),
   }));
   const childGroupPid = activeGroupPid;
@@ -254,6 +255,9 @@ const start = () => {
     fs.writeSync(output, `[systemctl-shim] gateway spawn failed: ${String(error)}\n`);
   });
   child.once("close", (code, signal) => {
+    fs.writeFileSync(`${daemonLog}.runtime.json`, JSON.stringify({
+      managerPid: process.pid, pid: 0, restarts: totalStarts - 1,
+    }));
     const observed = { code, signal, at: new Date().toISOString() };
     firstExit ??= observed;
     try {
@@ -379,8 +383,9 @@ case "$command" in
       load_state="$(node "$manager_script" load-state)"
       printf 'Id=%s\nLoadState=%s\n' "$unit_name" "$load_state"
     fi
-    if is_running; then
-      printf 'ActiveState=active\nSubState=running\nMainPID=%s\n' "$(cat "$pid_file")"
+    service_pid="$(node "$manager_script" main-pid)"
+    if [ "$service_pid" -gt 0 ]; then
+      printf 'ActiveState=active\nSubState=running\nMainPID=%s\n' "$service_pid"
     else
       printf 'ActiveState=inactive\nSubState=dead\nMainPID=0\n'
     fi
