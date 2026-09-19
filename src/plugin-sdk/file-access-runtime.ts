@@ -30,6 +30,7 @@ export {
 } from "../infra/fs-safe-advanced.js";
 export { readFileWindowFully } from "../infra/file-read.js";
 export { inspectPathPermissions } from "../infra/permissions.js";
+export { openRootFile } from "../infra/boundary-file-read.js";
 export {
   ensureDurableDirectory,
   syncDirectory,
