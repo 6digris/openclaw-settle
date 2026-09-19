@@ -405,6 +405,10 @@ databases, and listener. A foreground Gateway launches a fresh process only afte
 the updater settles; it does not reopen its old module graph after replacement.
 Managed services restart through their existing service manager.
 
+With `OPENCLAW_NO_RESPAWN` enabled, a foreground Gateway refuses `update.run`
+before starting the updater. Stop the Gateway, run `openclaw update`, and start
+it again, or relaunch it without `OPENCLAW_NO_RESPAWN` to allow control-plane updates.
+
 Each requested update checks the current local installation and Git upstream
 before accepting its target. After a pinned Git update leaves the checkout
 detached, a verified update receipt preserves the upstream for that same checkout

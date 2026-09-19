@@ -9,12 +9,14 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { AgentSelectionRequiredError } from "../../agents/agent-scope-config.js";
 import { isConfiguredCommandOwner } from "../../auto-reply/command-auth.js";
+import { UpdatePreMutationError } from "../../cli/update-cli/shared.js";
 import { formatCommandOwnerHint } from "../../commands/doctor-command-owner.js";
 import { isRestartEnabled } from "../../config/commands.flags.js";
 import { resolveConfigPath } from "../../config/paths.js";
 import { extractDeliveryInfo } from "../../config/sessions.js";
 import { resolveGatewayInstallEntrypoint } from "../../daemon/gateway-entrypoint.js";
 import { resolvePathViaExistingAncestorSync } from "../../infra/boundary-path.js";
+import { isTruthyEnvValue } from "../../infra/env.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { readGatewayOwnerLease } from "../../infra/gateway-owner-lease.js";
 import {
@@ -375,6 +377,13 @@ export const updateHandlers: GatewayRequestHandlers = {
               configPath: resolvePathViaExistingAncestorSync(resolveConfigPath()),
             }
           : undefined;
+      const assertForegroundRespawnEnabled = () => {
+        if (foregroundOrigin && isTruthyEnvValue(process.env.OPENCLAW_NO_RESPAWN)) {
+          outcomeMessage =
+            "This foreground Gateway cannot restart because OPENCLAW_NO_RESPAWN is enabled. Stop the Gateway, run openclaw update, then start it again. To allow updates from the Gateway, relaunch it without OPENCLAW_NO_RESPAWN.";
+          throw new UpdatePreMutationError("restart-unavailable", outcomeMessage);
+        }
+      };
       const supervisor = foregroundOrigin ? null : detectedSupervisor;
       const handoffChannel =
         installSurface.kind === "git"
@@ -435,6 +444,7 @@ export const updateHandlers: GatewayRequestHandlers = {
             sentinelMeta.foregroundOrigin = foregroundOrigin;
           }
           // Await delivery under root RPC admission before the helper can park this process.
+          assertForegroundRespawnEnabled();
           if (!(await acknowledgeUpdate(beforeVersion))) {
             return;
           }
@@ -446,6 +456,7 @@ export const updateHandlers: GatewayRequestHandlers = {
             }
             return;
           }
+          assertForegroundRespawnEnabled();
           const started = await startManagedServiceUpdateHandoff({
             runId,
             beforePark: async () => {
@@ -466,6 +477,7 @@ export const updateHandlers: GatewayRequestHandlers = {
                   ) {
                     throw new Error("Foreground update authority changed before parking.");
                   }
+                  assertForegroundRespawnEnabled();
                 }
                 return current;
               };

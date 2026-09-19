@@ -80,6 +80,8 @@ describe("foreground update through the prepared managed helper", () => {
       "pending-sibling-signal",
       "admission-busy",
       "finalize-admission-busy",
+      "notice-refused",
+      "notice-refused-after-timeout",
     ] as const)("joins actual parent, runner IPC, owner, locks and port: %s", async (mode) => {
     const root = await fs.realpath(tempDirs.make("foreground-handoff-"));
     const coordinator = path.join(root, "coordinator");
@@ -274,6 +276,11 @@ describe("foreground update through the prepared managed helper", () => {
           if (line === "before-park") {
             notices++;
             void (async () => {
+              if (mode === "notice-refused-after-timeout") {
+                while (!fs.readFileSync(${JSON.stringify(prepared.logPath)}, "utf8").includes("pre-park notice timed out after 10 seconds"))
+                  await new Promise(resolve => setTimeout(resolve, 10));
+                assert(server.listening && !fs.existsSync(activationPath));
+              }
               await new Promise(resolve => server.close(resolve));
               if (mode !== "retained-lock") await lock.release();
               if (mode === "retargeted-config") {
@@ -284,7 +291,7 @@ describe("foreground update through the prepared managed helper", () => {
                 blocker = net.createServer(); blocker.listen(port, "127.0.0.1"); await once(blocker, "listening");
               }
               // One pipe write deliberately exercises notice acknowledgement and closure together.
-              helper.stdin.write("noticed\\nclosed\\n");
+              helper.stdin.write((mode.startsWith("notice-refused") ? "notice-failed" : "noticed") + "\\nclosed\\n");
             })().catch(error => { console.error(error); helper.stdin.write("notice-failed\\n"); });
           }
           }

@@ -716,7 +716,7 @@ function recordServiceStop() {
 }
 
 function assertGatewayParkOwner() {
-  if (updateCancelled || !ownsManagedUpdateLease() ||
+  if (updateCancelled || (params.foregroundOrigin && activationRejected) || !ownsManagedUpdateLease() ||
     !parentIdentityCurrent()) {
     throw new Error("managed update activation no longer owns the serving gateway");
   }
@@ -1530,7 +1530,10 @@ let automaticRequested = false;
         const command = input.slice(0, newline);
         input = input.slice(newline + 1);
         if (transferred && (command === "noticed" || command === "notice-failed")) {
-          if (command === "notice-failed") appendLog("pre-park notice failed");
+          if (command === "notice-failed") {
+            appendLog("pre-park notice failed");
+            if (params.foregroundOrigin) activationRejected ??= "managed-service-handoff-helper-failed";
+          }
           finishBeforeParkNotice?.();
         } else if (transferred && params.foregroundOrigin && command === "closed") {
           if (!foregroundParkFlight || !parentIdentityCurrent() || !ownsManagedUpdateLease())
