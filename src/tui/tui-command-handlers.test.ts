@@ -13,7 +13,7 @@ import type {
   RefreshAgentsMock,
 } from "./tui-command-handlers-test-support.js";
 import {
-  createHarness,
+  createTuiCommandHandlersHarness,
   expectSendChatFields,
   firstMockArg,
   flushAsyncSelect,
@@ -34,7 +34,7 @@ describe("tui command handlers", () => {
     "reopens /question locally without sending a chat turn (local=%s)",
     async (local) => {
       const reopenQuestion = vi.fn();
-      const { handleCommand, sendChat, addPendingUser } = createHarness({
+      const { handleCommand, sendChat, addPendingUser } = createTuiCommandHandlersHarness({
         opts: { local },
         reopenQuestion,
       });
@@ -49,7 +49,7 @@ describe("tui command handlers", () => {
     const refreshAgents = vi
       .fn()
       .mockResolvedValue({ ok: false, error: "gateway unavailable" }) as RefreshAgentsMock;
-    const { handleCommand, openOverlay, requestRender } = createHarness({
+    const { handleCommand, openOverlay, requestRender } = createTuiCommandHandlersHarness({
       refreshAgents,
       agents: [{ id: "cached", name: "Cached Agent" }],
     });
@@ -65,7 +65,7 @@ describe("tui command handlers", () => {
     const refreshAgents = vi
       .fn()
       .mockResolvedValue({ ok: true, value: undefined }) as RefreshAgentsMock;
-    const { handleCommand, openOverlay } = createHarness({
+    const { handleCommand, openOverlay } = createTuiCommandHandlersHarness({
       refreshAgents,
       agentDefaultId: "team-lead",
       agents: [
@@ -96,7 +96,7 @@ describe("tui command handlers", () => {
         .fn()
         .mockReturnValueOnce(olderModels.promise)
         .mockResolvedValueOnce([{ provider: "openai", id: "current-model" }]);
-      const harness = createHarness({
+      const harness = createTuiCommandHandlersHarness({
         listModels,
         listSessions: vi
           .fn()
@@ -126,7 +126,7 @@ describe("tui command handlers", () => {
   it("retires an unfinished agent refresh before opening a newer session picker", async () => {
     const pendingRefresh = createDeferred<Result<void, string>>();
     const refreshAgents = vi.fn(() => pendingRefresh.promise) as RefreshAgentsMock;
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       refreshAgents,
       listSessions: vi
         .fn()
@@ -146,7 +146,7 @@ describe("tui command handlers", () => {
   });
 
   it("closes the exact current picker before opening its replacement", async () => {
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       listSessions: vi
         .fn()
         .mockResolvedValue({ sessions: [{ key: "agent:main:current", updatedAt: 1 }] }),
@@ -168,7 +168,7 @@ describe("tui command handlers", () => {
     async ({ command, value }) => {
       const pending = createDeferred();
       const action = vi.fn(() => pending.promise);
-      const harness = createHarness({
+      const harness = createTuiCommandHandlersHarness({
         listModels: vi.fn().mockResolvedValue([{ provider: "fixture", id: "model" }]),
         listSessions: vi.fn().mockResolvedValue({ sessions: [{ key: "agent:main:other" }] }),
         agents: [{ id: "main" }, { id: "other" }],
@@ -237,7 +237,7 @@ describe("tui command handlers", () => {
   ])(
     "retires an open $name picker after its selected session incarnation is replaced",
     async ({ command, value, initialSession, replacementSession, sameAgent }) => {
-      const harness = createHarness({
+      const harness = createTuiCommandHandlersHarness({
         currentAgentId: "research",
         currentSessionKey: initialSession,
         currentSessionId: "private-session",
@@ -275,7 +275,7 @@ describe("tui command handlers", () => {
   ])(
     "accepts an intentional $name picker selection for its current owner",
     async ({ command, value, session }) => {
-      const harness = createHarness({
+      const harness = createTuiCommandHandlersHarness({
         currentAgentId: "research",
         currentSessionKey: "agent:research:incident",
         agents: [{ id: "research" }, { id: "ops" }],
@@ -299,7 +299,7 @@ describe("tui command handlers", () => {
 
   it("does not reveal a previous session's delayed picker failure in its replacement", async () => {
     const selection = createDeferred();
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       currentSessionId: "private-session",
       sessionGeneration: 2,
       listSessions: vi
@@ -330,7 +330,7 @@ describe("tui command handlers", () => {
         },
       ],
     });
-    const { openSessionSelector } = createHarness({ listSessions });
+    const { openSessionSelector } = createTuiCommandHandlersHarness({ listSessions });
 
     await openSessionSelector();
 
@@ -355,7 +355,7 @@ describe("tui command handlers", () => {
     const sendChat = vi.fn(() => sendPromise);
     const setActivityStatus = vi.fn();
 
-    const { handleCommand, requestRender } = createHarness({
+    const { handleCommand, requestRender } = createTuiCommandHandlersHarness({
       sendChat,
       setActivityStatus,
     });
@@ -374,7 +374,8 @@ describe("tui command handlers", () => {
   });
 
   it("forwards unknown slash commands to the gateway", async () => {
-    const { handleCommand, sendChat, addPendingUser, addSystem, requestRender } = createHarness();
+    const { handleCommand, sendChat, addPendingUser, addSystem, requestRender } =
+      createTuiCommandHandlersHarness();
 
     await handleCommand("/unregistered-command");
 
@@ -388,7 +389,7 @@ describe("tui command handlers", () => {
   });
 
   it("scopes an explicit timeout override to one message", async () => {
-    const { handleCommand, sendMessage, sendChat, state } = createHarness();
+    const { handleCommand, sendMessage, sendChat, state } = createTuiCommandHandlersHarness();
 
     await sendMessage("automatic hatch", 300_000);
     state.pendingSubmit = null;
@@ -407,7 +408,7 @@ describe("tui command handlers", () => {
   it("projects the canonical pending user before chat.send is acknowledged", async () => {
     const deferred = createDeferred<{ runId: string }>();
     const sendChat = vi.fn(() => deferred.promise);
-    const harness = createHarness({ sendChat });
+    const harness = createTuiCommandHandlersHarness({ sendChat });
 
     const sending = harness.handleCommand("hello");
     const provisionalRunId = (firstMockArg(sendChat, "sendChat") as { runId: string }).runId;
@@ -434,7 +435,7 @@ describe("tui command handlers", () => {
 
   it("re-keys the optimistic pending row to the gateway-accepted runId in place", async () => {
     const sendChat = vi.fn().mockResolvedValue({ runId: "r-accepted" });
-    const harness = createHarness({ sendChat });
+    const harness = createTuiCommandHandlersHarness({ sendChat });
 
     await harness.handleCommand("hello");
 
@@ -464,7 +465,7 @@ describe("tui command handlers", () => {
   it("retires only the provisional viewport when a persisted turn arrives before its ACK", async () => {
     const deferred = createDeferred<{ runId: string }>();
     const sendChat = vi.fn(() => deferred.promise);
-    const harness = createHarness({ sendChat });
+    const harness = createTuiCommandHandlersHarness({ sendChat });
     const sending = harness.handleCommand("hello");
     const provisionalRunId = (firstMockArg(sendChat, "sendChat") as { runId: string }).runId;
     const acceptedMessage = {
@@ -507,7 +508,7 @@ describe("tui command handlers", () => {
   it("does not re-arm the submit draft when the accepted run already emitted events", async () => {
     const sendChat = vi.fn().mockResolvedValue({ runId: "r-accepted" });
     const isRunObserved = vi.fn((runId: string) => runId === "r-accepted");
-    const harness = createHarness({ sendChat, isRunObserved });
+    const harness = createTuiCommandHandlersHarness({ sendChat, isRunObserved });
 
     await harness.handleCommand("hello");
 
@@ -522,7 +523,10 @@ describe("tui command handlers", () => {
     const consumeCompletedRunForPendingSend = vi
       .fn()
       .mockReturnValue(true) as ConsumeCompletedRunMock;
-    const harness = createHarness({ sendChat, consumeCompletedRunForPendingSend });
+    const harness = createTuiCommandHandlersHarness({
+      sendChat,
+      consumeCompletedRunForPendingSend,
+    });
 
     await harness.handleCommand("hello");
 
@@ -532,7 +536,7 @@ describe("tui command handlers", () => {
   });
 
   it("passes the current backing session id when sending to the gateway", async () => {
-    const { handleCommand, sendChat } = createHarness({
+    const { handleCommand, sendChat } = createTuiCommandHandlersHarness({
       currentSessionId: "session-before-relaunch",
     });
 
@@ -548,9 +552,10 @@ describe("tui command handlers", () => {
   it.each(["/status", "/compact", "/commands", "/context", "/context detail"])(
     "keeps unsupported shared command %s out of local model prompts",
     async (command) => {
-      const { handleCommand, sendChat, addPendingUser, addSystem } = createHarness({
-        opts: { local: true },
-      });
+      const { handleCommand, sendChat, addPendingUser, addSystem } =
+        createTuiCommandHandlersHarness({
+          opts: { local: true },
+        });
 
       await handleCommand(command);
 
@@ -563,19 +568,19 @@ describe("tui command handlers", () => {
   );
 
   it("preserves local side prompts and unknown slash text", async () => {
-    const emptySide = createHarness({ opts: { local: true } });
+    const emptySide = createTuiCommandHandlersHarness({ opts: { local: true } });
     await emptySide.handleCommand("/side");
     expect(emptySide.sendChat).not.toHaveBeenCalled();
     expect(emptySide.addSystem).toHaveBeenCalledWith("Usage: /btw <side question>");
 
-    const side = createHarness({ opts: { local: true } });
+    const side = createTuiCommandHandlersHarness({ opts: { local: true } });
     await side.handleCommand("/side check this");
     expectSendChatFields(side.sendChat, {
       sessionKey: "agent:main:main",
       message: "/side check this",
     });
 
-    const unknown = createHarness({ opts: { local: true } });
+    const unknown = createTuiCommandHandlersHarness({ opts: { local: true } });
     await unknown.handleCommand("/not-a-real-command");
     expectSendChatFields(unknown.sendChat, {
       sessionKey: "agent:main:main",
@@ -588,7 +593,7 @@ describe("tui command handlers", () => {
       .fn()
       .mockResolvedValue({ text: "Goal started: ship", continuationPrompt: "ship" });
     const { handleCommand, sendChat, addSystem, refreshSessionInfo, addPendingUser } =
-      createHarness({
+      createTuiCommandHandlersHarness({
         opts: { local: true },
         runGoalCommand,
       });
@@ -615,7 +620,7 @@ describe("tui command handlers", () => {
     { name: "a rejected old goal", replace: false, fails: true },
   ])("keeps a delayed local goal from leaking into $name", async ({ replace, fails }) => {
     const deferred = createDeferred<{ text: string; continuationPrompt?: string }>();
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       opts: { local: true },
       currentAgentId: "research",
       currentSessionKey: "agent:research:private",
@@ -650,7 +655,7 @@ describe("tui command handlers", () => {
 
   it("does not send an old goal continuation after its session changes during refresh", async () => {
     const refresh = createDeferred();
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       opts: { local: true },
       currentAgentId: "research",
       currentSessionKey: "agent:research:private",
@@ -678,7 +683,7 @@ describe("tui command handlers", () => {
     const slashRunGoalCommand = vi
       .fn()
       .mockResolvedValue({ text: "Goal started", continuationPrompt: slashPrompt });
-    const slashHarness = createHarness({
+    const slashHarness = createTuiCommandHandlersHarness({
       opts: { local: true },
       runGoalCommand: slashRunGoalCommand,
     });
@@ -694,7 +699,7 @@ describe("tui command handlers", () => {
     const bangRunGoalCommand = vi
       .fn()
       .mockResolvedValue({ text: "Goal started", continuationPrompt: bangPrompt });
-    const bangHarness = createHarness({
+    const bangHarness = createTuiCommandHandlersHarness({
       opts: { local: true },
       runGoalCommand: bangRunGoalCommand,
     });
@@ -709,7 +714,7 @@ describe("tui command handlers", () => {
 
   it("keeps local goal status as a control command", async () => {
     const runGoalCommand = vi.fn().mockResolvedValue({ text: "Goal: ship" });
-    const { handleCommand, sendChat, addSystem } = createHarness({
+    const { handleCommand, sendChat, addSystem } = createTuiCommandHandlersHarness({
       opts: { local: true },
       runGoalCommand,
     });
@@ -725,7 +730,7 @@ describe("tui command handlers", () => {
     const runGoalCommand = vi
       .fn()
       .mockResolvedValue({ text: "Goal resumed: ship", continuationPrompt: prompt });
-    const { handleCommand, sendChat, addPendingUser } = createHarness({
+    const { handleCommand, sendChat, addPendingUser } = createTuiCommandHandlersHarness({
       opts: { local: true },
       runGoalCommand,
     });
@@ -741,7 +746,7 @@ describe("tui command handlers", () => {
 
   it("passes the selected agent for local global goal commands", async () => {
     const runGoalCommand = vi.fn().mockResolvedValue({ text: "Goal started: ship" });
-    const { handleCommand } = createHarness({
+    const { handleCommand } = createTuiCommandHandlersHarness({
       opts: { local: true },
       currentAgentId: "work",
       currentSessionKey: "global",
@@ -758,7 +763,7 @@ describe("tui command handlers", () => {
   });
 
   it("passes the selected agent when sending global chat", async () => {
-    const { handleCommand, sendChat } = createHarness({
+    const { handleCommand, sendChat } = createTuiCommandHandlersHarness({
       currentAgentId: "work",
       currentSessionKey: "global",
     });
@@ -773,7 +778,7 @@ describe("tui command handlers", () => {
   });
 
   it("forwards goal commands to the gateway outside local mode", async () => {
-    const { handleCommand, sendChat, runGoalCommand } = createHarness();
+    const { handleCommand, sendChat, runGoalCommand } = createTuiCommandHandlersHarness();
 
     await handleCommand("/goal status");
 
@@ -785,7 +790,7 @@ describe("tui command handlers", () => {
   });
 
   it("opens a context mode selector for /context without sending immediately", async () => {
-    const { handleCommand, sendChat, openOverlay } = createHarness();
+    const { handleCommand, sendChat, openOverlay } = createTuiCommandHandlersHarness();
 
     await handleCommand("/context");
 
@@ -794,7 +799,8 @@ describe("tui command handlers", () => {
   });
 
   it("sends the selected context mode through the gateway command path", async () => {
-    const { handleCommand, sendChat, openOverlay, closeOverlay, overlayHandle } = createHarness();
+    const { handleCommand, sendChat, openOverlay, closeOverlay, overlayHandle } =
+      createTuiCommandHandlersHarness();
 
     await handleCommand("/context");
     const selector = firstMockArg(openOverlay, "openOverlay") as SelectableOverlay;
@@ -813,10 +819,11 @@ describe("tui command handlers", () => {
     const setSession = vi
       .fn()
       .mockRejectedValue(new Error("gateway unavailable")) as SetSessionMock;
-    const { handleCommand, openOverlay, closeOverlay, overlayHandle, addSystem } = createHarness({
-      setSession,
-      agents: [{ id: "work" }],
-    });
+    const { handleCommand, openOverlay, closeOverlay, overlayHandle, addSystem } =
+      createTuiCommandHandlersHarness({
+        setSession,
+        agents: [{ id: "work" }],
+      });
 
     await handleCommand("/agent");
     const selector = firstMockArg(openOverlay, "openOverlay") as SelectableOverlay;
@@ -832,7 +839,7 @@ describe("tui command handlers", () => {
   });
 
   it("forwards /context list directly", async () => {
-    const { handleCommand, sendChat, openOverlay } = createHarness();
+    const { handleCommand, sendChat, openOverlay } = createTuiCommandHandlersHarness();
 
     await handleCommand("/context list");
 
@@ -844,7 +851,7 @@ describe("tui command handlers", () => {
   });
 
   it("forwards /context help directly", async () => {
-    const { handleCommand, sendChat, openOverlay } = createHarness();
+    const { handleCommand, sendChat, openOverlay } = createTuiCommandHandlersHarness();
 
     await handleCommand("/context help");
 
@@ -856,7 +863,8 @@ describe("tui command handlers", () => {
   });
 
   it("forwards /status to the shared gateway command path", async () => {
-    const { handleCommand, sendChat, addPendingUser, addSystem } = createHarness();
+    const { handleCommand, sendChat, addPendingUser, addSystem } =
+      createTuiCommandHandlersHarness();
 
     await handleCommand("/status");
 
@@ -869,13 +877,14 @@ describe("tui command handlers", () => {
   });
 
   it.each(["/gateway-status", "/gwstatus"])("keeps gateway diagnostics on %s", async (command) => {
-    const { handleCommand, getGatewayStatus, addSystem, addUser, sendChat } = createHarness({
-      getGatewayStatus: vi.fn().mockResolvedValue({
-        runtimeVersion: "1.2.3",
-        channelSummary: ["Telegram: not configured"],
-        sessions: { count: 2, defaults: { model: "gpt-5.4", contextTokens: 200000 } },
-      }),
-    });
+    const { handleCommand, getGatewayStatus, addSystem, addUser, sendChat } =
+      createTuiCommandHandlersHarness({
+        getGatewayStatus: vi.fn().mockResolvedValue({
+          runtimeVersion: "1.2.3",
+          channelSummary: ["Telegram: not configured"],
+          sessions: { count: 2, defaults: { model: "gpt-5.4", contextTokens: 200000 } },
+        }),
+      });
 
     await handleCommand(command);
 
@@ -890,7 +899,7 @@ describe("tui command handlers", () => {
   });
 
   it("returns to OpenClaw with an optional request", async () => {
-    const { handleCommand, addSystem, requestExit, sendChat } = createHarness();
+    const { handleCommand, addSystem, requestExit, sendChat } = createTuiCommandHandlersHarness();
 
     await handleCommand("/openclaw restart gateway");
 
@@ -903,7 +912,8 @@ describe("tui command handlers", () => {
   });
 
   it("handles /exit without sending through the gateway", async () => {
-    const { handleCommand, requestExit, sendChat, addUser, addSystem } = createHarness();
+    const { handleCommand, requestExit, sendChat, addUser, addSystem } =
+      createTuiCommandHandlersHarness();
 
     await handleCommand("/exit");
 
@@ -914,7 +924,7 @@ describe("tui command handlers", () => {
   });
 
   it("leaves a OpenClaw breadcrumb after switching agents", async () => {
-    const { handleCommand, addSystem, setSession, state } = createHarness();
+    const { handleCommand, addSystem, setSession, state } = createTuiCommandHandlersHarness();
 
     await handleCommand("/agent Work");
 
@@ -931,7 +941,7 @@ describe("tui command handlers", () => {
         harness.state.currentAgentId = agentId;
       }
     }) as SetSessionMock;
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       currentAgentId: "research",
       currentSessionKey: "global",
       setSession,
@@ -946,7 +956,7 @@ describe("tui command handlers", () => {
   });
 
   it("marks the generated runId as local before gateway events arrive", async () => {
-    const { handleCommand, sendChat, noteLocalRunId, state } = createHarness();
+    const { handleCommand, sendChat, noteLocalRunId, state } = createTuiCommandHandlersHarness();
 
     await handleCommand("/context detail");
 
@@ -960,7 +970,7 @@ describe("tui command handlers", () => {
     const sendChat = vi.fn().mockImplementation(async (opts: { runId: string }) => ({
       runId: opts.runId,
     }));
-    const { handleCommand, state } = createHarness({ sendChat });
+    const { handleCommand, state } = createTuiCommandHandlersHarness({ sendChat });
 
     await handleCommand("hello");
 
@@ -973,7 +983,7 @@ describe("tui command handlers", () => {
 
   it("does not reintroduce the pending runId when an early event already consumed it", async () => {
     const sendChat = vi.fn();
-    const { handleCommand, state } = createHarness({ sendChat });
+    const { handleCommand, state } = createTuiCommandHandlersHarness({ sendChat });
     sendChat.mockImplementation(async (opts: { runId: string }) => {
       state.pendingSubmit = null;
       return { runId: opts.runId };
@@ -986,7 +996,8 @@ describe("tui command handlers", () => {
 
   it("tracks the backend-accepted runId when it differs from the generated runId", async () => {
     const sendChat = vi.fn().mockResolvedValue({ runId: "run-accepted" });
-    const { handleCommand, state, noteLocalRunId, forgetLocalRunId } = createHarness({ sendChat });
+    const { handleCommand, state, noteLocalRunId, forgetLocalRunId } =
+      createTuiCommandHandlersHarness({ sendChat });
 
     await handleCommand("hello");
 
@@ -998,7 +1009,7 @@ describe("tui command handlers", () => {
 
   it("cleans a delayed ACK without mutating the newly selected viewport", async () => {
     const deferred = createDeferred<{ runId: string; status: string }>();
-    const harness = createHarness({ sendChat: vi.fn(() => deferred.promise) });
+    const harness = createTuiCommandHandlersHarness({ sendChat: vi.fn(() => deferred.promise) });
     const sending = harness.handleCommand("old session prompt");
     const provisionalRunId = (firstMockArg(harness.sendChat, "sendChat") as { runId: string })
       .runId;
@@ -1041,7 +1052,7 @@ describe("tui command handlers", () => {
 
   it("ignores a delayed ACK after the selected session is replaced in place", async () => {
     const deferred = createDeferred<{ runId: string; status: string }>();
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       currentSessionId: "session-old",
       sendChat: vi.fn(() => deferred.promise),
     });
@@ -1066,7 +1077,7 @@ describe("tui command handlers", () => {
 
   it("allows a first send to bind a previously unknown session incarnation", async () => {
     const deferred = createDeferred<{ runId: string }>();
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       currentSessionId: null,
       sendChat: vi.fn(() => deferred.promise),
     });
@@ -1084,7 +1095,7 @@ describe("tui command handlers", () => {
 
   it("rejects a delayed ACK when an unknown session is replaced before binding", async () => {
     const deferred = createDeferred<{ runId: string }>();
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       currentSessionId: null,
       sessionGeneration: 0,
       sendChat: vi.fn(() => deferred.promise),
@@ -1108,7 +1119,7 @@ describe("tui command handlers", () => {
 
   it("accepts a delayed ACK after returning to the exact original session incarnation", async () => {
     const deferred = createDeferred<{ runId: string }>();
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       currentSessionKey: "agent:main:a",
       currentSessionId: "session-a",
       sessionGeneration: 3,
@@ -1131,7 +1142,7 @@ describe("tui command handlers", () => {
 
   it("cleans a delayed send rejection without reporting it in a new session", async () => {
     const deferred = createDeferred<never>();
-    const harness = createHarness({ sendChat: vi.fn(() => deferred.promise) });
+    const harness = createTuiCommandHandlersHarness({ sendChat: vi.fn(() => deferred.promise) });
     const sending = harness.handleCommand("old session prompt");
     const provisionalRunId = (firstMockArg(harness.sendChat, "sendChat") as { runId: string })
       .runId;
@@ -1167,10 +1178,11 @@ describe("tui command handlers", () => {
     const loadHistory = vi.fn().mockImplementation(async () => {
       historyReload.clearSystemMessages?.();
     }) as LoadHistoryMock;
-    const { handleCommand, state, dropPendingUser, addSystem, setActivityStatus } = createHarness({
-      sendChat,
-      loadHistory,
-    });
+    const { handleCommand, state, dropPendingUser, addSystem, setActivityStatus } =
+      createTuiCommandHandlersHarness({
+        sendChat,
+        loadHistory,
+      });
     historyReload.clearSystemMessages = () => addSystem.mockClear();
 
     await handleCommand("hello");
@@ -1192,10 +1204,11 @@ describe("tui command handlers", () => {
       status: "error",
     }));
     const loadHistory = vi.fn().mockResolvedValue(undefined) as LoadHistoryMock;
-    const { handleCommand, state, dropPendingUser, addSystem, setActivityStatus } = createHarness({
-      sendChat,
-      loadHistory,
-    });
+    const { handleCommand, state, dropPendingUser, addSystem, setActivityStatus } =
+      createTuiCommandHandlersHarness({
+        sendChat,
+        loadHistory,
+      });
 
     await handleCommand("hello");
 
@@ -1214,7 +1227,7 @@ describe("tui command handlers", () => {
     "ignores a terminal %s ACK after its history reload switches sessions",
     async (status) => {
       const history = createDeferred();
-      const harness = createHarness({
+      const harness = createTuiCommandHandlersHarness({
         currentAgentId: "research",
         currentSessionKey: "agent:research:private",
         currentSessionId: "private-session",
@@ -1251,7 +1264,7 @@ describe("tui command handlers", () => {
       runId: "accepted-failed-run",
       status: "error",
     });
-    const harness = createHarness({ sendChat });
+    const harness = createTuiCommandHandlersHarness({ sendChat });
 
     await harness.handleCommand("hello");
 
@@ -1268,10 +1281,11 @@ describe("tui command handlers", () => {
       status: "ok",
     }));
     const loadHistory = vi.fn().mockResolvedValue(undefined) as LoadHistoryMock;
-    const { handleCommand, state, dropPendingUser, setActivityStatus } = createHarness({
-      sendChat,
-      loadHistory,
-    });
+    const { handleCommand, state, dropPendingUser, setActivityStatus } =
+      createTuiCommandHandlersHarness({
+        sendChat,
+        loadHistory,
+      });
 
     await handleCommand("hello");
 
@@ -1298,7 +1312,7 @@ describe("tui command handlers", () => {
         forgetLocalBtwRunId,
         addSystem,
         state,
-      } = createHarness({
+      } = createTuiCommandHandlersHarness({
         sendChat,
         activeChatRunId: "run-main",
       });
@@ -1329,7 +1343,7 @@ describe("tui command handlers", () => {
       forgetLocalBtwRunId,
       addSystem,
       state,
-    } = createHarness({
+    } = createTuiCommandHandlersHarness({
       sendChat,
       activeChatRunId: "run-main",
     });
@@ -1356,7 +1370,7 @@ describe("tui command handlers", () => {
       forgetLocalBtwRunId,
       addSystem,
       state,
-    } = createHarness({
+    } = createTuiCommandHandlersHarness({
       sendChat,
       activeChatRunId: "run-main",
     });
@@ -1377,7 +1391,7 @@ describe("tui command handlers", () => {
     const consumeCompletedRunForPendingSend = vi.fn((runId: string) => runId === "run-accepted");
     const flushPendingHistoryRefreshIfIdle = vi.fn();
     const { handleCommand, state, noteLocalRunId, forgetLocalRunId, setActivityStatus } =
-      createHarness({
+      createTuiCommandHandlersHarness({
         sendChat,
         consumeCompletedRunForPendingSend,
         flushPendingHistoryRefreshIfIdle,
@@ -1401,7 +1415,7 @@ describe("tui command handlers", () => {
       sendChat: sendChatMock,
       dropPendingUser,
       state,
-    } = createHarness({
+    } = createTuiCommandHandlersHarness({
       sendChat,
     });
 
@@ -1427,7 +1441,7 @@ describe("tui command handlers", () => {
       { sessionKey: "agent:main:main", agentId: "main" },
       [peerMessage],
     );
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       sendChat: vi.fn().mockRejectedValue(new Error("local send failed")),
       sessionProjection,
     });
@@ -1444,7 +1458,7 @@ describe("tui command handlers", () => {
   it("sends /btw without hijacking the active main run", async () => {
     const setActivityStatus = vi.fn();
     const { handleCommand, sendChat, addUser, noteLocalRunId, noteLocalBtwRunId, state } =
-      createHarness({
+      createTuiCommandHandlersHarness({
         activeChatRunId: "run-main",
         setActivityStatus,
       });
@@ -1463,7 +1477,7 @@ describe("tui command handlers", () => {
 
   it("sends /side without hijacking the active main run", async () => {
     const { handleCommand, sendChat, addUser, noteLocalRunId, noteLocalBtwRunId, state } =
-      createHarness({
+      createTuiCommandHandlersHarness({
         activeChatRunId: "run-main",
       });
 
@@ -1490,7 +1504,7 @@ describe("tui command handlers", () => {
       key: "agent:main:main",
       entry: { sessionId: "reset-session" },
     };
-    const { handleCommand, resetSession } = createHarness({
+    const { handleCommand, resetSession } = createTuiCommandHandlersHarness({
       loadHistory,
       setSession: setSessionMock,
       createSession: createSessionMock,
@@ -1536,7 +1550,7 @@ describe("tui command handlers", () => {
     { name: "a rejected old session", replace: false, fails: true },
   ])("does not let delayed /new hijack $name", async ({ replace, fails }) => {
     const deferred = createDeferred<{ ok: true; key: string }>();
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       currentAgentId: "research",
       currentSessionKey: "agent:research:private",
       currentSessionId: "research-session",
@@ -1576,7 +1590,7 @@ describe("tui command handlers", () => {
   ])("$name after /new changes the selected session", async ({ fails, switches }) => {
     const adoption = createDeferred();
     const createdKey = "agent:research:private-child";
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       currentAgentId: "research",
       currentSessionKey: "agent:research:private",
       currentSessionId: "research-session",
@@ -1623,7 +1637,7 @@ describe("tui command handlers", () => {
       return true;
     });
     const refreshSessionInfo = vi.fn().mockResolvedValue(undefined);
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       applySessionMutationResult,
       refreshSessionInfo,
       resetSession: vi.fn().mockResolvedValue(resetResult),
@@ -1658,7 +1672,7 @@ describe("tui command handlers", () => {
     },
   ])("$name", async ({ currentSessionKey, currentAgentId, currentSessionId, expectedParent }) => {
     const createSession = vi.fn().mockResolvedValue({ ok: true, key: "agent:work:tui-next" });
-    const { handleCommand } = createHarness({
+    const { handleCommand } = createTuiCommandHandlersHarness({
       createSession,
       currentSessionKey,
       currentAgentId,
@@ -1705,7 +1719,10 @@ describe("tui command handlers", () => {
     },
   ])("blocks /new while the current session lifecycle is unfinished", async (runState) => {
     const createSession = vi.fn();
-    const { handleCommand, addSystem } = createHarness({ createSession, ...runState });
+    const { handleCommand, addSystem } = createTuiCommandHandlersHarness({
+      createSession,
+      ...runState,
+    });
 
     await handleCommand("/new");
 
@@ -1744,7 +1761,10 @@ describe("tui command handlers", () => {
     },
   ])("blocks /reset while the current session lifecycle is unfinished", async (runState) => {
     const resetSession = vi.fn();
-    const { handleCommand, addSystem } = createHarness({ resetSession, ...runState });
+    const { handleCommand, addSystem } = createTuiCommandHandlersHarness({
+      resetSession,
+      ...runState,
+    });
 
     await handleCommand("/reset");
 
@@ -1761,7 +1781,7 @@ describe("tui command handlers", () => {
         }),
     );
     const { handleCommand, sendMessage, resolveMessageAdmission, sendChat, addSystem } =
-      createHarness({ createSession });
+      createTuiCommandHandlersHarness({ createSession });
 
     const creating = handleCommand("/new");
     await Promise.resolve();
@@ -1793,7 +1813,7 @@ describe("tui command handlers", () => {
     const resetSession = vi.fn(() => deferred.promise);
     const applySessionMutationResult = vi.fn().mockReturnValue(true);
     const { handleCommand, sendMessage, resolveMessageAdmission, sendChat, addSystem } =
-      createHarness({
+      createTuiCommandHandlersHarness({
         resetSession,
         applySessionMutationResult,
       });
@@ -1838,7 +1858,7 @@ describe("tui command handlers", () => {
         const createSession = vi.fn(() => transitionResult.promise);
         const resetSession = vi.fn(() => transitionResult.promise);
         const applySessionMutationResult = vi.fn().mockReturnValue(true);
-        const harness = createHarness({
+        const harness = createTuiCommandHandlersHarness({
           createSession,
           resetSession,
           applySessionMutationResult,
@@ -1905,7 +1925,7 @@ describe("tui command handlers", () => {
   it("reloads history after /reset when the backend does not return a session entry", async () => {
     const loadHistory = vi.fn().mockResolvedValue(undefined);
     const applySessionMutationResult = vi.fn().mockReturnValue(false);
-    const { handleCommand } = createHarness({
+    const { handleCommand } = createTuiCommandHandlersHarness({
       loadHistory,
       applySessionMutationResult,
       resetSession: vi.fn().mockResolvedValue({ ok: true }),
@@ -1943,7 +1963,7 @@ describe("tui command handlers", () => {
       });
       return true;
     });
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       resetSession: vi.fn().mockResolvedValue(resetResult),
       applySessionMutationResult,
       sessionProjection,
@@ -1970,7 +1990,7 @@ describe("tui command handlers", () => {
       { sessionKey: "agent:main:main", agentId: "main" },
       [message],
     );
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       resetSession: vi.fn().mockRejectedValue(new Error("reset unavailable")),
       sessionProjection,
     });
@@ -1983,7 +2003,7 @@ describe("tui command handlers", () => {
   });
 
   it("scopes /reset for the selected global agent", async () => {
-    const { handleCommand, resetSession } = createHarness({
+    const { handleCommand, resetSession } = createTuiCommandHandlersHarness({
       currentSessionKey: "global",
       currentAgentId: "work",
     });
@@ -1995,7 +2015,7 @@ describe("tui command handlers", () => {
 
   it("scopes selected global session patches to the selected agent", async () => {
     const patchSession = vi.fn().mockResolvedValue({ fastMode: true });
-    const { handleCommand } = createHarness({
+    const { handleCommand } = createTuiCommandHandlersHarness({
       currentSessionKey: "global",
       currentAgentId: "work",
       patchSession,
@@ -2029,7 +2049,7 @@ describe("tui command handlers", () => {
       key: string;
       entry: Record<string, unknown>;
     }>();
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       currentSessionKey: "agent:main:first",
       sessionInfo: { responseUsage: "tokens", effectiveResponseUsage: "tokens" },
       patchSession: vi.fn(() => deferred.promise),
@@ -2083,7 +2103,7 @@ describe("tui command handlers", () => {
           entry: { model: "private-sensitive-model" },
         });
       });
-      const harness = createHarness({
+      const harness = createTuiCommandHandlersHarness({
         currentAgentId: "research",
         currentSessionKey: "agent:research:private",
         currentSessionId: "private-session",
@@ -2112,7 +2132,7 @@ describe("tui command handlers", () => {
     ["/usage reset", "refresh"],
   ])("hides a stale %s failure after its post-patch %s rejects", async (command, hook) => {
     const followup = createDeferred();
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       currentAgentId: "research",
       currentSessionKey: "agent:research:private",
       currentSessionId: "private-session",
@@ -2144,7 +2164,7 @@ describe("tui command handlers", () => {
         key: string;
         entry: Record<string, unknown>;
       }>();
-      const harness = createHarness({
+      const harness = createTuiCommandHandlersHarness({
         currentSessionKey: "global",
         currentAgentId: "main",
         sessionInfo: { responseUsage: "tokens", effectiveResponseUsage: "tokens" },
@@ -2185,7 +2205,7 @@ describe("tui command handlers", () => {
       key: string;
       entry: Record<string, unknown>;
     }>();
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       currentSessionId: "session-before-reset",
       sessionGeneration: 4,
       sessionInfo: { responseUsage: "tokens", effectiveResponseUsage: "tokens" },
@@ -2223,7 +2243,7 @@ describe("tui command handlers", () => {
       key: string;
       entry: Record<string, unknown>;
     }>();
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       currentSessionKey: "main",
       patchSession: vi.fn(() => deferred.promise),
     });
@@ -2246,7 +2266,7 @@ describe("tui command handlers", () => {
 
   it("ignores a rejected model patch after switching sessions", async () => {
     const deferred = createDeferred<never>();
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       currentSessionKey: "agent:main:first",
       patchSession: vi.fn(() => deferred.promise),
     });
@@ -2275,7 +2295,7 @@ describe("tui command handlers", () => {
       key: string;
       entry: { sessionId: string };
     }>();
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       currentSessionKey: initialKey,
       currentAgentId: "main",
       currentSessionId: "first-session",
@@ -2315,7 +2335,7 @@ describe("tui command handlers", () => {
 
   it("ignores a rejected global reset after switching agents", async () => {
     const deferred = createDeferred<never>();
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       currentSessionKey: "global",
       currentAgentId: "main",
       resetSession: vi.fn(() => deferred.promise),
@@ -2340,7 +2360,7 @@ describe("tui command handlers", () => {
     ["thinkingLevel", "/think inherit", "gateway", false],
     ["fastMode", "/fast reset", "embedded", true],
   ])("clears the %s session override for %s in %s mode", async (field, command, _mode, local) => {
-    const { handleCommand, patchSession, refreshSessionInfo } = createHarness({
+    const { handleCommand, patchSession, refreshSessionInfo } = createTuiCommandHandlersHarness({
       opts: { local },
     });
 
@@ -2354,7 +2374,7 @@ describe("tui command handlers", () => {
   });
 
   it("does not treat non-default model names as session reset aliases", async () => {
-    const { handleCommand, patchSession } = createHarness();
+    const { handleCommand, patchSession } = createTuiCommandHandlersHarness();
 
     await handleCommand("/model reset");
 
@@ -2367,7 +2387,7 @@ describe("tui command handlers", () => {
   it.each(["", "invalid"])(
     "rejects unsupported elevated mode %j without patching",
     async (mode) => {
-      const { handleCommand, patchSession, addSystem } = createHarness();
+      const { handleCommand, patchSession, addSystem } = createTuiCommandHandlersHarness();
 
       await handleCommand(`/elevated ${mode}`);
 
@@ -2377,7 +2397,7 @@ describe("tui command handlers", () => {
   );
 
   it("uses the effective runtime for the no-arg /think usage", async () => {
-    const codex = createHarness({
+    const codex = createTuiCommandHandlersHarness({
       sessionInfo: {
         modelProvider: "openai",
         model: "gpt-5.6-luna",
@@ -2387,7 +2407,7 @@ describe("tui command handlers", () => {
     await codex.handleCommand("/think");
     expect(codex.addSystem).toHaveBeenCalledWith(expect.not.stringContaining("ultra"));
 
-    const openclaw = createHarness({
+    const openclaw = createTuiCommandHandlersHarness({
       sessionInfo: {
         modelProvider: "openai",
         model: "gpt-5.6-luna",
@@ -2399,7 +2419,7 @@ describe("tui command handlers", () => {
   });
 
   it("uses the active session's supported thinking levels in help and command usage", async () => {
-    const { handleCommand, addSystem } = createHarness({
+    const { handleCommand, addSystem } = createTuiCommandHandlersHarness({
       sessionInfo: {
         modelProvider: "minimax",
         model: "MiniMax-M3",
@@ -2454,7 +2474,7 @@ describe("tui command handlers", () => {
   ])(
     "resolves %s to its canonical thinking level",
     async (_name, local, levels, input, expected) => {
-      const { handleCommand, patchSession, addSystem } = createHarness({
+      const { handleCommand, patchSession, addSystem } = createTuiCommandHandlersHarness({
         opts: { local },
         sessionInfo: { thinkingLevels: levels },
       });
@@ -2472,7 +2492,7 @@ describe("tui command handlers", () => {
   it.each([undefined, []])(
     "resolves thinking labels from the provider policy when session levels are %j",
     async (thinkingLevels) => {
-      const { handleCommand, patchSession } = createHarness({
+      const { handleCommand, patchSession } = createTuiCommandHandlersHarness({
         sessionInfo: {
           modelProvider: "opencode-go",
           model: "minimax-m3",
@@ -2493,7 +2513,7 @@ describe("tui command handlers", () => {
     { command: "verbose", usage: "usage: /verbose <on|off|full>" },
     { command: "reasoning", usage: "usage: /reasoning <on|off|stream>" },
   ])("shows the complete canonical no-argument /$command usage", async ({ command, usage }) => {
-    const { handleCommand, addSystem, patchSession } = createHarness();
+    const { handleCommand, addSystem, patchSession } = createTuiCommandHandlersHarness();
 
     await handleCommand(`/${command}`);
 
@@ -2507,7 +2527,7 @@ describe("tui command handlers", () => {
     const applySessionInfoFromPatch = vi.fn();
     const loadHistory = vi.fn().mockResolvedValue(undefined);
     const refreshSessionInfo = vi.fn().mockResolvedValue(undefined);
-    const { handleCommand, clearTools } = createHarness({
+    const { handleCommand, clearTools } = createTuiCommandHandlersHarness({
       patchSession,
       applySessionInfoFromPatch,
       loadHistory,
@@ -2529,7 +2549,7 @@ describe("tui command handlers", () => {
   it("reloads history for /verbose on so prior tool output becomes visible", async () => {
     const loadHistory = vi.fn().mockResolvedValue(undefined);
     const refreshSessionInfo = vi.fn().mockResolvedValue(undefined);
-    const { handleCommand, clearTools } = createHarness({
+    const { handleCommand, clearTools } = createTuiCommandHandlersHarness({
       loadHistory,
       refreshSessionInfo,
     });
@@ -2547,7 +2567,7 @@ describe("tui command handlers", () => {
     const applySessionInfoFromPatch = vi.fn();
     const loadHistory = vi.fn().mockResolvedValue(undefined);
     const refreshSessionInfo = vi.fn().mockResolvedValue(undefined);
-    const { handleCommand, clearTools } = createHarness({
+    const { handleCommand, clearTools } = createTuiCommandHandlersHarness({
       patchSession,
       applySessionInfoFromPatch,
       loadHistory,
@@ -2569,7 +2589,7 @@ describe("tui command handlers", () => {
   it("refreshes session info for /trace without reloading history", async () => {
     const loadHistory = vi.fn().mockResolvedValue(undefined);
     const refreshSessionInfo = vi.fn().mockResolvedValue(undefined);
-    const { handleCommand } = createHarness({
+    const { handleCommand } = createTuiCommandHandlersHarness({
       loadHistory,
       refreshSessionInfo,
     });
@@ -2582,7 +2602,7 @@ describe("tui command handlers", () => {
 
   it("reports send failures and marks activity status as error", async () => {
     const setActivityStatus = vi.fn();
-    const { handleCommand, addSystem, state } = createHarness({
+    const { handleCommand, addSystem, state } = createTuiCommandHandlersHarness({
       sendChat: vi.fn().mockRejectedValue(new Error("gateway down")),
       setActivityStatus,
     });
@@ -2597,7 +2617,7 @@ describe("tui command handlers", () => {
   it("redacts secrets and preserves nested causes in displayed send failures", async () => {
     const secret = "sk-abcdefghijklmnopqrstuv";
     const cause = new Error(`\u001b[31mAuthorization: Bearer ${secret}\u001b[0m`);
-    const { handleCommand, addSystem } = createHarness({
+    const { handleCommand, addSystem } = createTuiCommandHandlersHarness({
       sendChat: vi.fn().mockRejectedValue(new Error("gateway down", { cause })),
     });
 
@@ -2614,7 +2634,7 @@ describe("tui command handlers", () => {
     const createSession = vi.fn().mockRejectedValue(new Error("\u001b[31mboom\u001b[0m"));
     const resetSession = vi.fn().mockRejectedValue(new Error("\u001b[31mboom\u001b[0m"));
     const expectedSessionInfo = { inputTokens: 120, outputTokens: 30, totalTokens: 150 };
-    const { handleCommand, addSystem, state } = createHarness({
+    const { handleCommand, addSystem, state } = createTuiCommandHandlersHarness({
       createSession,
       resetSession,
       sessionInfo: { ...expectedSessionInfo },
@@ -2629,9 +2649,10 @@ describe("tui command handlers", () => {
   });
 
   it("reports disconnected status and skips gateway send when offline", async () => {
-    const { handleCommand, sendChat, addUser, addSystem, setActivityStatus } = createHarness({
-      isConnected: false,
-    });
+    const { handleCommand, sendChat, addUser, addSystem, setActivityStatus } =
+      createTuiCommandHandlersHarness({
+        isConnected: false,
+      });
 
     await handleCommand("/context detail");
 
@@ -2650,7 +2671,7 @@ describe("tui command handlers", () => {
       reserveAssistantSlot,
       requestRender,
       state,
-    } = createHarness({
+    } = createTuiCommandHandlersHarness({
       opts: { local: true },
       activeChatRunId: "run-active",
       activityStatus: "streaming",
@@ -2680,7 +2701,7 @@ describe("tui command handlers", () => {
   });
 
   it("forwards gateway slash prompts while a run is active", async () => {
-    const { handleCommand, sendChat, addPendingUser, addSystem } = createHarness({
+    const { handleCommand, sendChat, addPendingUser, addSystem } = createTuiCommandHandlersHarness({
       activeChatRunId: "run-active",
       activityStatus: "streaming",
     });
@@ -2696,7 +2717,7 @@ describe("tui command handlers", () => {
 
   it("routes slash stop to the abort path instead of queueing a chat send", async () => {
     const abortActive = vi.fn().mockResolvedValue(undefined);
-    const { handleCommand, sendChat, addUser } = createHarness({
+    const { handleCommand, sendChat, addUser } = createTuiCommandHandlersHarness({
       activeChatRunId: "run-active",
       activityStatus: "streaming",
       abortActive,
@@ -2711,7 +2732,9 @@ describe("tui command handlers", () => {
 
   it("routes slash stop to session abort when there is no tracked run", async () => {
     const abortActive = vi.fn().mockResolvedValue(undefined);
-    const { handleCommand, sendChat, addPendingUser } = createHarness({ abortActive });
+    const { handleCommand, sendChat, addPendingUser } = createTuiCommandHandlersHarness({
+      abortActive,
+    });
 
     await handleCommand("/stop");
 
@@ -2722,7 +2745,9 @@ describe("tui command handlers", () => {
 
   it("sends broad stop-like text as a normal prompt when idle", async () => {
     const abortActive = vi.fn().mockResolvedValue(undefined);
-    const { handleCommand, sendChat, addPendingUser } = createHarness({ abortActive });
+    const { handleCommand, sendChat, addPendingUser } = createTuiCommandHandlersHarness({
+      abortActive,
+    });
 
     await handleCommand("do not do that");
 
@@ -2732,7 +2757,7 @@ describe("tui command handlers", () => {
   });
 
   it("rejects normal sends while a queued submit is pending registration", async () => {
-    const { handleCommand, sendChat, addUser, addSystem } = createHarness({
+    const { handleCommand, sendChat, addUser, addSystem } = createTuiCommandHandlersHarness({
       activeChatRunId: "run-active",
       pendingSubmit: {
         phase: "accepted",
@@ -2753,7 +2778,7 @@ describe("tui command handlers", () => {
   });
 
   it("allows local sends to queue while the current run is finishing", async () => {
-    const { handleCommand, sendChat, addPendingUser, addSystem } = createHarness({
+    const { handleCommand, sendChat, addPendingUser, addSystem } = createTuiCommandHandlersHarness({
       opts: { local: true },
       activeChatRunId: "run-active",
       activityStatus: "finishing context",
@@ -2769,7 +2794,7 @@ describe("tui command handlers", () => {
   });
 
   it("forwards gateway sends while the current run is finishing", async () => {
-    const { handleCommand, sendChat, addPendingUser, addSystem } = createHarness({
+    const { handleCommand, sendChat, addPendingUser, addSystem } = createTuiCommandHandlersHarness({
       activeChatRunId: "run-active",
       activityStatus: "finishing context",
     });
@@ -2784,7 +2809,7 @@ describe("tui command handlers", () => {
   });
 
   it("forwards gateway sends while a run is active so Gateway owns queue policy", async () => {
-    const { handleCommand, sendChat, addPendingUser, addSystem } = createHarness({
+    const { handleCommand, sendChat, addPendingUser, addSystem } = createTuiCommandHandlersHarness({
       activeChatRunId: "run-active",
       activityStatus: "streaming",
     });
@@ -2799,7 +2824,7 @@ describe("tui command handlers", () => {
   });
 
   it("blocks sends while optimistic user message admission is pending", async () => {
-    const { handleCommand, sendChat, addSystem } = createHarness({
+    const { handleCommand, sendChat, addSystem } = createTuiCommandHandlersHarness({
       activeChatRunId: "run-active",
       pendingSubmit: {
         phase: "sending",
@@ -2820,7 +2845,7 @@ describe("tui command handlers", () => {
 
   it("preserves activeChatRunId when a queued followup send fails", async () => {
     const sendChat = vi.fn().mockRejectedValue(new Error("network error"));
-    const { handleCommand, addSystem, state } = createHarness({
+    const { handleCommand, addSystem, state } = createTuiCommandHandlersHarness({
       sendChat,
       activeChatRunId: "run-active",
       activityStatus: "streaming",
@@ -2842,7 +2867,7 @@ describe("tui command handlers", () => {
           rejectSend = reject;
         }),
     );
-    const { handleCommand, state } = createHarness({
+    const { handleCommand, state } = createTuiCommandHandlersHarness({
       sendChat,
       activeChatRunId: "run-active",
       activityStatus: "streaming",
@@ -2859,7 +2884,7 @@ describe("tui command handlers", () => {
 
   it("clears activeChatRunId when a non-queued send fails", async () => {
     const sendChat = vi.fn().mockRejectedValue(new Error("network error"));
-    const { handleCommand, state } = createHarness({
+    const { handleCommand, state } = createTuiCommandHandlersHarness({
       sendChat,
     });
 
@@ -2875,7 +2900,7 @@ describe("tui command handlers", () => {
       signal: null,
       commandArgv: '["codex","login"]',
     });
-    const { handleCommand, addSystem, setActivityStatus } = createHarness({
+    const { handleCommand, addSystem, setActivityStatus } = createTuiCommandHandlersHarness({
       opts: { local: true },
       refreshSessionInfo,
       runAuthFlow,
@@ -2898,7 +2923,7 @@ describe("tui command handlers", () => {
       signal: null,
       commandArgv: '["codex","login"]',
     });
-    const { handleCommand, addSystem, setActivityStatus } = createHarness({
+    const { handleCommand, addSystem, setActivityStatus } = createTuiCommandHandlersHarness({
       opts: { local: true },
       runAuthFlow,
     });
@@ -2912,7 +2937,7 @@ describe("tui command handlers", () => {
   });
 
   it("rejects /auth in non-local mode", async () => {
-    const { handleCommand, addSystem } = createHarness();
+    const { handleCommand, addSystem } = createTuiCommandHandlersHarness();
 
     await handleCommand("/auth");
 
@@ -2925,7 +2950,7 @@ describe("tui command handlers", () => {
       signal: null,
       commandArgv: '["codex","login"]',
     });
-    const { handleCommand, addSystem } = createHarness({
+    const { handleCommand, addSystem } = createTuiCommandHandlersHarness({
       opts: { local: true },
       pendingSubmit: {
         phase: "sending",
@@ -2942,7 +2967,7 @@ describe("tui command handlers", () => {
   });
 
   it("rejects invalid /activation values before patching the session", async () => {
-    const { handleCommand, patchSession, addSystem } = createHarness();
+    const { handleCommand, patchSession, addSystem } = createTuiCommandHandlersHarness();
 
     await handleCommand("/activation sometimes");
 
@@ -2954,7 +2979,7 @@ describe("tui command handlers", () => {
     const refreshSessionInfo = vi.fn().mockResolvedValue(undefined);
     const applySessionInfoFromPatch = vi.fn();
     const patchSession = vi.fn().mockResolvedValue({ groupActivation: "always" });
-    const { handleCommand, addSystem } = createHarness({
+    const { handleCommand, addSystem } = createTuiCommandHandlersHarness({
       patchSession,
       refreshSessionInfo,
       applySessionInfoFromPatch,
@@ -2980,7 +3005,7 @@ describe("tui command handlers", () => {
       patchSession: patch,
       addSystem,
       state,
-    } = createHarness({
+    } = createTuiCommandHandlersHarness({
       patchSession,
       refreshSessionInfo,
       applySessionInfoFromPatch,
@@ -3009,7 +3034,7 @@ describe("tui command handlers", () => {
   ])(
     "keeps unavailable model availability %s visible without applying it",
     async (reason, guidance) => {
-      const harness = createHarness({
+      const harness = createTuiCommandHandlersHarness({
         listModels: vi.fn().mockResolvedValue([
           {
             provider: "fixture",
@@ -3043,7 +3068,7 @@ describe("tui command handlers", () => {
   it.each([true, undefined])(
     "applies model availability %s without changing its reference",
     async (available) => {
-      const harness = createHarness({
+      const harness = createTuiCommandHandlersHarness({
         listModels: vi
           .fn()
           .mockResolvedValue([
@@ -3074,7 +3099,7 @@ describe("tui command handlers", () => {
     const patchSession = vi.fn().mockResolvedValue({ model: "openrouter/auto" });
     const refreshSessionInfo = vi.fn().mockResolvedValue(undefined);
     const applySessionInfoFromPatch = vi.fn();
-    const { handleCommand, openOverlay, closeOverlay } = createHarness({
+    const { handleCommand, openOverlay, closeOverlay } = createTuiCommandHandlersHarness({
       listModels,
       patchSession,
       refreshSessionInfo,
@@ -3109,7 +3134,11 @@ describe("tui command handlers", () => {
   ])("forwards %s through the server directive path (local: %s)", async (command, local) => {
     const sendChat = vi.fn().mockResolvedValue({ status: "ok" });
     const patchSession = vi.fn();
-    const { handleCommand } = createHarness({ sendChat, patchSession, opts: { local } });
+    const { handleCommand } = createTuiCommandHandlersHarness({
+      sendChat,
+      patchSession,
+      opts: { local },
+    });
 
     await handleCommand(command);
 
@@ -3134,7 +3163,7 @@ describe("tui command handlers", () => {
     });
     const refreshSessionInfo = vi.fn().mockResolvedValue(undefined);
     const applySessionInfoFromPatch = vi.fn();
-    const { handleCommand, addSystem } = createHarness({
+    const { handleCommand, addSystem } = createTuiCommandHandlersHarness({
       patchSession,
       refreshSessionInfo,
       applySessionInfoFromPatch,
@@ -3156,7 +3185,7 @@ describe("tui command handlers", () => {
       entry: {},
       // No `resolved` field
     });
-    const { handleCommand, addSystem } = createHarness({ patchSession });
+    const { handleCommand, addSystem } = createTuiCommandHandlersHarness({ patchSession });
 
     await handleCommand("/model openai/gpt-5.5");
 
@@ -3174,7 +3203,7 @@ describe("tui command handlers", () => {
       entry: {},
       resolved: { modelProvider: "nvidia", model: "moonshotai/kimi-k2.5" },
     });
-    const { handleCommand, addSystem } = createHarness({ patchSession });
+    const { handleCommand, addSystem } = createTuiCommandHandlersHarness({ patchSession });
 
     await handleCommand("/model nvidia/moonshotai/kimi-k2.5");
 
@@ -3193,9 +3222,10 @@ describe("tui command handlers", () => {
       },
     );
     const listModels = vi.fn(() => listModelsPromise);
-    const { handleCommand, addPendingSystem, openOverlay, requestRender } = createHarness({
-      listModels,
-    });
+    const { handleCommand, addPendingSystem, openOverlay, requestRender } =
+      createTuiCommandHandlersHarness({
+        listModels,
+      });
 
     const pending = handleCommand("/models");
     await Promise.resolve();
@@ -3230,7 +3260,7 @@ describe("tui command handlers", () => {
       terminalNotice: "model list failed: fixture backend unavailable",
     },
   ])("removes temporary model feedback after $name", async ({ listModels, terminalNotice }) => {
-    const harness = createHarness({ listModels });
+    const harness = createTuiCommandHandlersHarness({ listModels });
 
     await harness.handleCommand("/models");
 
@@ -3245,7 +3275,7 @@ describe("tui command handlers", () => {
   it("does not let an older model request remove the newer request's notice", async () => {
     const olderModels = createDeferred<Array<{ provider: string; id: string }>>();
     const newerModels = createDeferred<Array<{ provider: string; id: string }>>();
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       listModels: vi
         .fn()
         .mockReturnValueOnce(olderModels.promise)
@@ -3279,7 +3309,7 @@ describe("tui command handlers", () => {
 
   it("does not open a stale model selector after switching sessions", async () => {
     const deferred = createDeferred<Array<{ provider: string; id: string; name?: string }>>();
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       currentSessionKey: "agent:main:first",
       listModels: vi.fn(() => deferred.promise),
     });
@@ -3299,7 +3329,7 @@ describe("tui command handlers", () => {
     "does not open a stale %s selector after the same session key is reset",
     async (picker) => {
       const deferred = createDeferred<unknown>();
-      const harness = createHarness({
+      const harness = createTuiCommandHandlersHarness({
         currentSessionKey: "agent:main:main",
         currentSessionId: "private-session",
         sessionGeneration: 2,
@@ -3334,7 +3364,7 @@ describe("tui command handlers", () => {
       key: string;
       entry: Record<string, unknown>;
     }>();
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       currentSessionKey: initialKey,
       currentAgentId: "main",
       listModels: vi.fn().mockResolvedValue([{ provider: "openai", id: "gpt-5.6-luna" }]),
@@ -3372,7 +3402,7 @@ describe("tui command handlers", () => {
     const deferred = createDeferred<{
       sessions: Array<{ key: string; updatedAt: number }>;
     }>();
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       currentAgentId: "main",
       listSessions: vi.fn(() => deferred.promise),
     });
@@ -3400,7 +3430,7 @@ describe("tui command handlers", () => {
         updatedAt: Date.now(),
       },
     });
-    const { handleCommand, addSystem, state } = createHarness({ patchSession });
+    const { handleCommand, addSystem, state } = createTuiCommandHandlersHarness({ patchSession });
     const sessionInfo = state.sessionInfo as {
       responseUsage?: string;
       effectiveResponseUsage?: string;
@@ -3420,7 +3450,7 @@ describe("tui command handlers", () => {
 
   it("forwards /usage cost to the Gateway without patching the usage footer", async () => {
     const { handleCommand, sendChat, patchSession, addSystem, runUsageCostCommand } =
-      createHarness();
+      createTuiCommandHandlersHarness();
 
     await handleCommand("/usage cost");
 
@@ -3439,7 +3469,7 @@ describe("tui command handlers", () => {
   ])(
     "runs /usage cost locally for $sessionKey without submitting a model turn",
     async (selection) => {
-      const harness = createHarness({
+      const harness = createTuiCommandHandlersHarness({
         opts: { local: true },
         currentSessionKey: selection.sessionKey,
         currentAgentId: selection.agentId,
@@ -3456,7 +3486,10 @@ describe("tui command handlers", () => {
   );
 
   it("keeps an unavailable local usage-cost operation out of model prompts", async () => {
-    const harness = createHarness({ opts: { local: true }, runUsageCostCommand: null });
+    const harness = createTuiCommandHandlersHarness({
+      opts: { local: true },
+      runUsageCostCommand: null,
+    });
 
     await harness.handleCommand("/usage cost");
 
@@ -3476,7 +3509,7 @@ describe("tui command handlers", () => {
   ])("suppresses a stale usage-cost %s", async (_name, sessionKey, agentId, fails, replace) => {
     const deferred = createDeferred<{ text: string }>();
     const runUsageCostCommand = vi.fn(() => deferred.promise);
-    const harness = createHarness({
+    const harness = createTuiCommandHandlersHarness({
       opts: { local: true },
       currentSessionKey: sessionKey,
       currentAgentId: agentId,
@@ -3507,7 +3540,7 @@ describe("tui command handlers", () => {
 
   it("shows current-session usage-cost failures without invoking the model", async () => {
     const runUsageCostCommand = vi.fn().mockRejectedValue(new Error("session costs unavailable"));
-    const harness = createHarness({ opts: { local: true }, runUsageCostCommand });
+    const harness = createTuiCommandHandlersHarness({ opts: { local: true }, runUsageCostCommand });
 
     await harness.handleCommand("/usage cost");
 
@@ -3521,7 +3554,7 @@ describe("tui command handlers", () => {
     const patchSession = vi.fn().mockResolvedValue({
       entry: { sessionId: "sess-toggle", updatedAt: Date.now(), responseUsage: "full" },
     });
-    const { handleCommand, addSystem, state } = createHarness({ patchSession });
+    const { handleCommand, addSystem, state } = createTuiCommandHandlersHarness({ patchSession });
     // No raw responseUsage on session, but effective (from config default) is "tokens".
     const sessionInfo = state.sessionInfo as {
       responseUsage?: string;
@@ -3537,7 +3570,7 @@ describe("tui command handlers", () => {
   });
 
   it("allows /queue directives to reach gateway during an active run in steer mode", async () => {
-    const { handleCommand, sendChat, addPendingUser, addSystem } = createHarness({
+    const { handleCommand, sendChat, addPendingUser, addSystem } = createTuiCommandHandlersHarness({
       activeChatRunId: "run-active",
       activityStatus: "streaming",
     });
@@ -3553,7 +3586,7 @@ describe("tui command handlers", () => {
   });
 
   it("allows bare /queue to reach gateway during an active run", async () => {
-    const { handleCommand, sendChat, addSystem } = createHarness({
+    const { handleCommand, sendChat, addSystem } = createTuiCommandHandlersHarness({
       activeChatRunId: "run-active",
       activityStatus: "streaming",
     });
@@ -3568,7 +3601,7 @@ describe("tui command handlers", () => {
   });
 
   it("allows colon-form /queue directives during an active run", async () => {
-    const { handleCommand, sendChat } = createHarness({
+    const { handleCommand, sendChat } = createTuiCommandHandlersHarness({
       activeChatRunId: "run-active",
       activityStatus: "streaming",
     });
@@ -3579,7 +3612,7 @@ describe("tui command handlers", () => {
   });
 
   it("routes /queue directives through the local backend", async () => {
-    const { handleCommand, sendChat, addSystem } = createHarness({
+    const { handleCommand, sendChat, addSystem } = createTuiCommandHandlersHarness({
       opts: { local: true },
       activeChatRunId: "run-active",
       activityStatus: "streaming",
@@ -3592,7 +3625,7 @@ describe("tui command handlers", () => {
   });
 
   it("blocks /queue while optimistic user message is pending", async () => {
-    const { handleCommand, sendChat, addSystem } = createHarness({
+    const { handleCommand, sendChat, addSystem } = createTuiCommandHandlersHarness({
       activeChatRunId: "run-active",
       pendingSubmit: {
         phase: "sending",

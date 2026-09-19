@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { createHarness, flushAsyncSelect } from "./tui-command-handlers-test-support.js";
+import {
+  createTuiCommandHandlersHarness,
+  flushAsyncSelect,
+} from "./tui-command-handlers-test-support.js";
 import { createEditorSubmitHandler } from "./tui-submit.js";
 
 describe("/browser-setup local process dispatch", () => {
@@ -30,7 +33,7 @@ describe("/browser-setup local process dispatch", () => {
         value: setupResponse(args[4]),
       }));
       const localCli = { runJson, cancel: vi.fn(() => false), shutdown: vi.fn(async () => {}) };
-      const h = createHarness({ opts: { local }, isConnected: false, localCli });
+      const h = createTuiCommandHandlersHarness({ opts: { local }, isConnected: false, localCli });
       expect(runJson).not.toHaveBeenCalled();
       for (const action of ["", "install", "verify"]) {
         await h.handleCommand("/browser-setup " + action);
@@ -62,7 +65,7 @@ describe("/browser-setup local process dispatch", () => {
   it("rejects extra arguments without history, model forwarding, or local execution", async () => {
     const runJson = vi.fn();
     const localCli = { runJson, cancel: vi.fn(() => false), shutdown: vi.fn(async () => {}) };
-    const h = createHarness({ localCli });
+    const h = createTuiCommandHandlersHarness({ localCli });
     const editor = { getExpandedText: () => "", setText: vi.fn(), addToHistory: vi.fn() };
     const submit = createEditorSubmitHandler({
       editor,
@@ -91,7 +94,7 @@ describe("/browser-setup local process dispatch", () => {
     "%s cancels local setup as well as the active chat",
     async (command) => {
       const cancel = vi.fn(() => true);
-      const h = createHarness({
+      const h = createTuiCommandHandlersHarness({
         localCli: { runJson: vi.fn(), cancel, shutdown: vi.fn(async () => {}) },
       });
       await h.handleCommand(command);
@@ -105,7 +108,7 @@ describe("/browser-setup local process dispatch", () => {
     { ok: true, value: { ...setupResponse(), phase: "secret-in-phase" } },
     { ok: true, value: { ...setupResponse(), target: { kind: "remote", profile: "chrome" } } },
   ])("reports bounded failures without exposing response content", async (result) => {
-    const h = createHarness({
+    const h = createTuiCommandHandlersHarness({
       localCli: {
         runJson: vi.fn().mockResolvedValue(result),
         cancel: vi.fn(() => false),

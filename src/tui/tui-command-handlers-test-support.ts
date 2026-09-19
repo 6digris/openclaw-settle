@@ -76,7 +76,7 @@ export function firstMockArg(mock: MockWithCalls, label: string) {
   return call[0];
 }
 
-export function createHarness(params?: {
+export function createTuiCommandHandlersHarness(params?: {
   sendChat?: ReturnType<typeof vi.fn>;
   getGatewayStatus?: ReturnType<typeof vi.fn>;
   listSessions?: ReturnType<typeof vi.fn>;
