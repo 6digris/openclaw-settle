@@ -200,8 +200,9 @@ gh workflow run openclaw-npm-dist-tags.yml \
   -f tag=vYYYY.M.PATCH
 ```
 
-Replace `vYYYY.M.PATCH` with the exact approved final release tag.
-Promotion can select a newer version or roll back to an older one. The action checks
+Replace `vYYYY.M.PATCH` with the exact approved final extended-stable release tag
+(patch `33` or higher). Regular stable/beta promotion and sync reject patch `33`
+or higher, including the scheduled beta floor. Promotion can select a newer version or roll back to an older one. The action checks
 that the public Git tag and exact npm version exist, permits older monthly lines
 and historical final/correction versions, and changes only core `openclaw`'s
 `extended-stable` selector. It uses the release repository's `NPM_TOKEN`; no local

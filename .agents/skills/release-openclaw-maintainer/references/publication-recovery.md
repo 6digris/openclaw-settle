@@ -78,9 +78,12 @@ gh workflow run openclaw-npm-dist-tags.yml \
   -f mode=promote_extended_stable -f tag=vYYYY.M.PATCH
 ```
 
-Replace `vYYYY.M.PATCH` with the approved final release tag. Promotion can
+Replace `vYYYY.M.PATCH` with the approved final extended-stable release tag
+(patch `33` or higher). Regular stable/beta promotion and sync reject patch `33`
+or higher, including the scheduled beta floor. Promotion can
 select a newer version or roll back to an older one, including historical
-final/correction versions; new-publication eligibility does not apply. This mode
+extended-stable final/correction versions; new-publication eligibility does not
+apply, but the channel/patch boundary still does. This mode
 writes only core `openclaw`'s
 `extended-stable` selector, leaving `latest`, `beta`, plugins, other prepared-core
 packages, Docker, Git tags, and GitHub Releases untouched. It neither republishes
