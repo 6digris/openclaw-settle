@@ -228,9 +228,22 @@ Run `docker compose` from the repo root. If you enabled `OPENCLAW_EXTRA_MOUNTS` 
 ### Upgrading container images
 
 When you replace the OpenClaw image but keep the same mounted state/config, the
-new Gateway runs startup-safe upgrade migrations and plugin convergence before
+new Gateway runs Doctor's upgrade migrations under exclusive maintenance ownership and plugin convergence before
 readiness. Routine image upgrades should not require a separate
 `openclaw doctor --fix` pass.
+
+This includes agent database schema upgrades, shared-state audit migrations, and
+legacy workspace setup imports. Before advancing database schemas, startup saves
+verified SQLite copies beside the originals as
+`<database>.pre-startup-migration-<id>.bak`. The shared database and affected agent
+databases use the same backup ID. Config backups and retired workspace-file
+archives follow the normal Doctor repair rules. Keep these files with your
+pre-upgrade backup; a rollback must restore the matching state as well as the old
+image. See [rollback](/install/updating#rollback).
+
+Readiness remains false while the default or system agent database is refused,
+and the readiness response includes the admission reason. A refused optional
+agent remains isolated while healthy agents can serve requests.
 
 Missing or drifted canonical SQLite indexes are rebuilt by the schema migration
 owner before session startup completes. Repair warnings identify the agent,

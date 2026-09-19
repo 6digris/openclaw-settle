@@ -125,7 +125,7 @@ it.each([
   { outcome: "superseded", agentId: "worker" },
   { outcome: "shutdown-preparation", agentId: "worker" },
 ] as const)(
-  "serves healthy agents while $agentId follows its $outcome lifecycle",
+  "applies startup admission while $agentId follows its $outcome lifecycle",
   async ({ outcome, agentId }) => {
     const nativeBroker = process.platform === "linux" && !process.versions.bun;
     const brokerExpected =
@@ -196,6 +196,7 @@ it.each([
       unregisterOpenClawAgentDatabase({ agentId, path: agentPath, env });
       closeOpenClawStateDatabaseForTest();
     }
+    const agentBytes = fs.readFileSync(agentPath);
     const paused = outcome !== "corrupt" && outcome !== "physical-corrupt" && outcome !== "fast";
     const pause = paused
       ? pauseIntegrityInspections({
@@ -287,7 +288,7 @@ it.each([
         expect(() => process.kill(pid, 0)).toThrow();
         return;
       }
-      server = await withAgentDatabaseStartupAdmission(async () => {
+      const startup = withAgentDatabaseStartupAdmission(async () => {
         await assertOpenClawDatabasesReady({ env, operation: "gateway-startup", config: cfg });
         // Other Unix hosts exercise the broker context without pretending their OS is Linux.
         if (brokerExpected && !nativeBroker) {
@@ -301,12 +302,34 @@ it.each([
         return spawnBroker.runWithSpawnBroker(suppliedBroker, () =>
           startTestGatewayServer(port, { bind: "loopback", auth: { mode: "none" } }),
         );
+      }).then((started) => {
+        server = started;
+        return started;
       });
+      if (agentId === "main" && (outcome === "corrupt" || outcome === "physical-corrupt")) {
+        await expect(startup).rejects.toMatchObject({
+          name: "AgentDatabaseAdmissionError",
+          refusal: { agentId, code: "agent-database-inspection-failed", paths: [agentPath] },
+        });
+        expect(fs.readFileSync(agentPath)).toEqual(agentBytes);
+        await expect(fetch(`http://127.0.0.1:${port}/readyz`)).rejects.toThrow();
+        return;
+      }
+      server = await startup;
       await server.startupSettled;
       if (brokerExpected) {
         expect(brokerPid).toBeTypeOf("number");
       }
       expect((await fetch(`http://127.0.0.1:${port}/healthz`)).status).toBe(200);
+      const readiness = await fetch(`http://127.0.0.1:${port}/readyz`);
+      expect(readiness.status).toBe(agentId === "main" && paused ? 503 : 200);
+      if (agentId === "main" && paused) {
+        await expect(readiness.json()).resolves.toMatchObject({
+          ready: false,
+          failing: ["agent-database:main"],
+          agentDatabases: [readAgentDatabaseAdmissionRefusal(agentId, { env })],
+        });
+      }
       expect(readAgentDatabaseAdmissionRefusal(healthyAgentId, { env })).toBeUndefined();
       if (paused) {
         expect(readAgentDatabaseAdmissionRefusal(agentId, { env })).toMatchObject({
@@ -396,6 +419,7 @@ it.each([
         expect(snapshot?.degradedOwners?.some((owner) => owner.paths.includes(agentPath))).toBe(
           false,
         );
+        expect((await fetch(`http://127.0.0.1:${port}/readyz`)).status).toBe(200);
       } else if (outcome === "corrupt" || outcome === "physical-corrupt") {
         expect(readAgentDatabaseAdmissionRefusal(agentId, { env })).toMatchObject({
           code: "agent-database-inspection-failed",
@@ -462,6 +486,7 @@ it("recovers queued agents after both inspection slots expire without refusing a
     });
     await server.startupSettled;
     expect((await fetch(`http://127.0.0.1:${port}/healthz`)).status).toBe(200);
+    expect((await fetch(`http://127.0.0.1:${port}/readyz`)).status).toBe(503);
     await vi.waitFor(() => {
       for (const marker of pause.enteredPaths.slice(0, 2)) {
         expect(fs.existsSync(marker)).toBe(true);
@@ -490,6 +515,7 @@ it("recovers queued agents after both inspection slots expire without refusing a
     expect(readAgentDatabaseAdmissionRefusal("a", { env })).toMatchObject({
       code: "agent-database-inspection-pending",
     });
+    expect((await fetch(`http://127.0.0.1:${port}/readyz`)).status).toBe(200);
     fs.writeFileSync(pause.releasePaths[0]!, "resume a");
     await vi.waitFor(
       () => expect(readAgentDatabaseAdmissionRefusal("a", { env })).toBeUndefined(),

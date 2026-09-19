@@ -34,6 +34,7 @@ import { createGatewayKernel } from "./server-kernel.js";
 import type { GatewayClient } from "./server-methods/types.js";
 import { createSyntheticPluginRuntimeClient } from "./server-plugin-runtime-client.js";
 import type { GatewayHostLifecycle, GatewayServer } from "./server-public.js";
+import { expectCoreAgentDatabaseReadiness } from "./server-startup-readiness.test-support.js";
 
 describe("createGatewayKernel", () => {
   it("does not start recovered channels after close prelude begins", async () => {
@@ -551,6 +552,7 @@ describe("createGatewayKernel", () => {
           controlUi: { enabled: false },
           port,
         },
+        agents: { entries: { main: { default: true }, worker: {} } },
       });
       state.applyEnv();
       kernel = await openKernel();
@@ -588,7 +590,7 @@ describe("createGatewayKernel", () => {
       kernel.kernel.unlockStartupMethods();
       kernel.kernel.markSidecarsReady();
 
-      expect(getReadiness()).toMatchObject({ ready: true, failing: [] });
+      expectCoreAgentDatabaseReadiness(getReadiness, state);
       await expect(
         dispatchGatewayRequestInProcess("chat.send", chatParams, dispatchOptions),
       ).resolves.toEqual({ runId, status: "ok" });

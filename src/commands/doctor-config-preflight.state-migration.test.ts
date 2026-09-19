@@ -30,6 +30,11 @@ const maybeRepairPluginOpenClawHostLinks = getMaybeRepairPluginOpenClawHostLinks
 const {
   autoMigrateLegacyStateDir,
   autoMigrateLegacyState,
+  prepareLegacyStateDatabaseSchema,
+  prepareDoctorDatabasePreflight,
+  beginDoctorMaintenance,
+  doctorMaintenanceRelease,
+  noteSessionTranscriptHealth,
   autoMigrateLegacyPluginDoctorState,
   autoMigrateLegacyTaskStateSidecars,
   repairLegacyCronStoreWithoutPrompt,
@@ -349,6 +354,7 @@ describe("runDoctorConfigPreflight state migration", () => {
       log: undefined,
       recoverCorruptTargetStore: undefined,
       doctorOnlyStateMigrations: undefined,
+      beforeWorkspaceStateMigration: undefined,
       onStepReceipt: expect.any(Function),
     });
     expect(result.stateMigrationStepReceipts).toEqual([receipt]);
@@ -401,23 +407,69 @@ describe("runDoctorConfigPreflight state migration", () => {
     startupEnv: () => acquireStartupMigrationLeaseWithWait.mock.calls[0]?.[0]?.env,
   });
 
-  it("repairs managed host links before plugin state migration", async () => {
+  it("orders startup schema, host-link, state, and session repairs inside Doctor maintenance", async () => {
     readMigrationCheckpointStatus.mockReturnValue("stale");
     const migrationOrder: string[] = [];
+    const beginMaintenance = beginDoctorMaintenance.getMockImplementation()!;
+    beginDoctorMaintenance.mockImplementationOnce(async (params) => {
+      const maintenance = (await beginMaintenance(params))!;
+      const run = maintenance.run.bind(maintenance);
+      maintenance.run = (operation) => {
+        migrationOrder.push("maintenance");
+        return run(operation);
+      };
+      return maintenance;
+    });
+    const prepareSchema = prepareLegacyStateDatabaseSchema.getMockImplementation()!;
+    prepareLegacyStateDatabaseSchema.mockImplementationOnce(async (env) => {
+      migrationOrder.push("schema");
+      expect(startupMigrationLeaseRelease).not.toHaveBeenCalled();
+      expect(doctorMaintenanceRelease).not.toHaveBeenCalled();
+      return prepareSchema(env);
+    });
     maybeRepairPluginOpenClawHostLinks.mockImplementationOnce(async ({ env, prompter }) => {
       migrationOrder.push("host-links");
       expect(env).not.toBe(process.env);
       expect(prompter).toEqual({ shouldRepair: true });
       return true;
     });
-    autoMigrateLegacyState.mockImplementationOnce(async () => {
+    autoMigrateLegacyState.mockImplementationOnce(async (params) => {
       migrationOrder.push("state");
+      expect(params).toMatchObject({ doctorOnlyStateMigrations: true });
       return { migrated: true, skipped: false, changes: [], warnings: [] };
+    });
+    noteSessionTranscriptHealth.mockImplementationOnce(async (params) => {
+      migrationOrder.push("sessions");
+      expect(params).toMatchObject({
+        shouldRepair: true,
+        postSessionPluginMigrationPlanBound: true,
+      });
+      return undefined;
+    });
+    recordSuccessfulStartupMigrations.mockImplementationOnce(() => {
+      migrationOrder.push("checkpoint");
+      expect(doctorMaintenanceRelease).not.toHaveBeenCalled();
     });
 
     await runDoctorConfigPreflight(startupCheckpointOptions);
 
-    expect(migrationOrder).toEqual(["host-links", "state"]);
+    expect(beginDoctorMaintenance).toHaveBeenCalledWith({
+      options: { repair: true, nonInteractive: true },
+      root: null,
+      runtime: expect.any(Object),
+    });
+    expect(prepareDoctorDatabasePreflight).toHaveBeenCalledWith({
+      cfg: { gateway: { mode: "local", port: 19091 } },
+    });
+    expect(migrationOrder).toEqual([
+      "maintenance",
+      "schema",
+      "host-links",
+      "state",
+      "sessions",
+      "checkpoint",
+    ]);
+    expect(doctorMaintenanceRelease).toHaveBeenCalledOnce();
   });
 
   it.each(["stale", "state-current"] as const)(
@@ -494,7 +546,15 @@ describe("runDoctorConfigPreflight state migration", () => {
             return true;
           },
         }),
-      ).rejects.toBe(leaseError);
+      ).rejects.toMatchObject({
+        code: 78,
+        message: leaseError.message,
+        cause: {
+          code: "gateway.maintenance_required",
+          kind: "state-migrations",
+          cause: leaseError,
+        },
+      });
 
       expect(maybeRepairPluginOpenClawHostLinks).not.toHaveBeenCalled();
       expect(repairLegacyCronStoreWithoutPrompt).not.toHaveBeenCalled();
@@ -824,6 +884,7 @@ describe("runDoctorConfigPreflight state migration", () => {
       config: { gateway: { mode: "local", port: 19091 } },
       env: process.env,
       log: expect.any(Object),
+      doctorOnlyStateMigrations: true,
     });
   });
 
