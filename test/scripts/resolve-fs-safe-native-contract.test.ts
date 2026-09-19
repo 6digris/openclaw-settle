@@ -77,6 +77,16 @@ describe("resolve-fs-safe-native-contract", () => {
     expect(resolveContract(root, ref)).toBe("not-applicable");
   });
 
+  it("reports the exact 2026.8.33 bundled-native 0.5.6 contract", () => {
+    const { root, ref } = commitSource(
+      "0.5.6",
+      'import { configureFsSafeNative } from "@openclaw/fs-safe/config";\nconfigureFsSafeNative({ mode: "off" });\n',
+      "extended-stable/2026.8.33",
+      "2026.8.33",
+    );
+    expect(resolveContract(root, ref)).toBe("bundled");
+  });
+
   it("keeps the current native consumer contract strict", () => {
     const { root, ref } = commitSource(
       "0.8.1",

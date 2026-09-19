@@ -43,6 +43,7 @@ const requireFromPackage = createRequire(path.join(packageRoot, "package.json"))
 // and the manifest beside that resolved entry declares platform packages.
 const fsSafeEntryPath = requireFromPackage.resolve("@openclaw/fs-safe");
 const fsSafeManifestPath = path.resolve(fsSafeEntryPath, "..", "..", "package.json");
+const fsSafeRoot = fs.realpathSync(path.dirname(fsSafeManifestPath));
 const fsSafeManifest = JSON.parse(await fsPromises.readFile(fsSafeManifestPath, "utf8"));
 const requireFromFsSafe = createRequire(fsSafeManifestPath);
 const platformPackageNames = Object.keys(fsSafeManifest.optionalDependencies ?? {}).filter((name) =>
@@ -74,20 +75,30 @@ try {
     file.endsWith("fs-safe-native.node"),
   );
   if (mode === "require") {
-    assert.ok(
-      installedPlatformPackages.length > 0,
-      "expected at least one fs-safe platform package",
-    );
     assert.equal(
       loadedNativeModules.length,
       1,
       "expected exactly one loaded fs-safe native binding",
     );
-    const loadedNativeRoot = fs.realpathSync(path.dirname(loadedNativeModules[0]));
-    assert.ok(
-      installedPlatformPackages.some(({ root }) => root === loadedNativeRoot),
-      "loaded fs-safe native binding did not come from an installed platform package",
-    );
+    if (fsSafeNativeContract === "bundled") {
+      assert.equal(installedPlatformPackages.length, 0, "bundled contract has platform packages");
+      const bundledRoot = fs.realpathSync(path.join(fsSafeRoot, "dist", "native"));
+      const bundledRelative = path.relative(bundledRoot, fs.realpathSync(loadedNativeModules[0]));
+      assert.ok(
+        bundledRelative && !bundledRelative.startsWith("..") && !path.isAbsolute(bundledRelative),
+        "loaded fs-safe native binding did not come from the bundled native tree",
+      );
+    } else {
+      assert.ok(
+        installedPlatformPackages.length > 0,
+        "expected at least one fs-safe platform package",
+      );
+      const loadedNativeRoot = fs.realpathSync(path.dirname(loadedNativeModules[0]));
+      assert.ok(
+        installedPlatformPackages.some(({ root }) => root === loadedNativeRoot),
+        "loaded fs-safe native binding did not come from an installed platform package",
+      );
+    }
   } else {
     assert.equal(
       installedPlatformPackages.length,
