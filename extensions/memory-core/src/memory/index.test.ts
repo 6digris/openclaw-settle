@@ -1562,7 +1562,7 @@ describe("memory index", () => {
 
   it("drains retained queued targets through the next idle sync call", async () => {
     const markers = {
-      blocker: "BLOCKER LOCKED SYNC 729",
+      blocker: "BLOCKER FAILED SYNC 729",
       retained: "RETAINED RETRY TARGET 729",
       trigger: "IDLE TRIGGER TARGET 729",
     };
@@ -1573,8 +1573,10 @@ describe("memory index", () => {
         sources: ["sessions"],
         sessionMemory: true,
       }),
+      "cli",
     );
-    let lock: DatabaseSync | null = null;
+    const publicationFailure = "forced targeted session publication failure";
+    let failureDb: DatabaseSync | null = null;
     try {
       await manager.sync({ reason: "test-baseline", force: true });
       for (const [sessionId, marker] of Object.entries(markers)) {
@@ -1592,12 +1594,19 @@ describe("memory index", () => {
       }
 
       const dbPath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
-      lock = new DatabaseSync(dbPath);
-      lock.exec("PRAGMA busy_timeout = 0");
-      lock.exec("BEGIN EXCLUSIVE");
+      failureDb = new DatabaseSync(dbPath);
+      // Fail the real index write without blocking unrelated database or lease work.
+      failureDb.exec(`
+        CREATE TRIGGER fail_targeted_session_publication
+        BEFORE INSERT ON memory_index_chunks
+        WHEN NEW.source = 'sessions'
+        BEGIN
+          SELECT RAISE(FAIL, '${publicationFailure}');
+        END;
+      `);
 
       const active = manager.sync({
-        reason: "test-locked-owner",
+        reason: "test-failing-owner",
         sessions: [
           {
             agentId: "main",
@@ -1617,37 +1626,15 @@ describe("memory index", () => {
         ],
       });
       const failures = await Promise.allSettled([active, failedQueued]);
-      lock.exec("ROLLBACK");
-      lock.close();
-      lock = null;
-      const describeSqliteFailure = (failure: unknown): string => {
-        const details = [String(failure)];
-        if (failure && typeof failure === "object") {
-          const record = failure as Record<string, unknown>;
-          for (const key of ["message", "code"] as const) {
-            if (typeof record[key] === "string") {
-              details.push(record[key]);
-            }
-          }
-          if (record.cause && typeof record.cause === "object") {
-            const cause = record.cause as Record<string, unknown>;
-            for (const key of ["message", "code"] as const) {
-              if (typeof cause[key] === "string") {
-                details.push(cause[key]);
-              }
-            }
-          }
-        }
-        return details.join(" ");
-      };
+      failureDb.exec("DROP TRIGGER fail_targeted_session_publication");
+      failureDb.close();
+      failureDb = null;
       for (const result of failures) {
         expect(result.status).toBe("rejected");
         if (result.status !== "rejected") {
-          throw new Error("expected SQLite-locked sync to reject");
+          throw new Error("expected session publication to reject");
         }
-        expect(describeSqliteFailure(result.reason)).toMatch(
-          /SQLITE_(?:BUSY|LOCKED)|database is (?:busy|locked)/i,
-        );
+        expect(result.reason).toHaveProperty("message", publicationFailure);
       }
 
       const ftsMatchCount = (marker: string): number => {
@@ -1703,11 +1690,11 @@ describe("memory index", () => {
       expect(recoveryState.queuedSessions.size).toBe(0);
       expect(recoveryProgress).toHaveBeenCalled();
     } finally {
-      if (lock) {
+      if (failureDb) {
         try {
-          lock.exec("ROLLBACK");
+          failureDb.exec("DROP TRIGGER IF EXISTS fail_targeted_session_publication");
         } finally {
-          lock.close();
+          failureDb.close();
         }
       }
       await manager.close?.();
