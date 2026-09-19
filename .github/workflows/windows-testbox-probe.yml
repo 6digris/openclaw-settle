@@ -42,6 +42,11 @@ on:
         required: false
         default: false
         type: boolean
+      run_windows_git_installer_only:
+        description: "Run only full Windows Git installer and published-driver proof"
+        required: false
+        default: false
+        type: boolean
       run_windows_launcher_integration:
         description: "Build the exact target SHA and require the real Windows Git launcher cell"
         required: false
@@ -81,7 +86,7 @@ env:
 
 jobs:
   probe:
-    if: ${{ !inputs.run_winget_acceptance && !inputs.run_portable_node_recovery }}
+    if: ${{ !inputs.run_windows_git_installer_only && !inputs.run_winget_acceptance && !inputs.run_portable_node_recovery }}
     name: Windows probe
     runs-on: ${{ inputs.runner_label }}
     timeout-minutes: 75
@@ -682,7 +687,7 @@ jobs:
   # Native session qualification must not depend on headless CI or WSL results.
   native-schtasks:
     name: Native Scheduled Task proof
-    if: ${{ inputs.run_windows_ci }}
+    if: ${{ !inputs.run_windows_git_installer_only && inputs.run_windows_ci }}
     runs-on: windows-2025
     timeout-minutes: 75
     steps:
@@ -941,7 +946,7 @@ jobs:
 
   winget-acceptance:
     name: Native Winget acceptance (${{ matrix.scenario }})
-    if: ${{ inputs.run_winget_acceptance }}
+    if: ${{ !inputs.run_windows_git_installer_only && inputs.run_winget_acceptance }}
     runs-on: windows-2025
     timeout-minutes: 35
     strategy:
@@ -1027,7 +1032,7 @@ jobs:
 
   portable-node-recovery:
     name: Portable Node recovery (${{ matrix.engine }})
-    if: ${{ inputs.run_portable_node_recovery }}
+    if: ${{ !inputs.run_windows_git_installer_only && inputs.run_portable_node_recovery }}
     runs-on: windows-2025
     timeout-minutes: 20
     strategy:
@@ -1112,7 +1117,7 @@ jobs:
 
   native-git-installer:
     name: Full Windows Git installer and published-driver proof
-    if: ${{ inputs.run_windows_launcher_integration }}
+    if: ${{ inputs.run_windows_launcher_integration || inputs.run_windows_git_installer_only }}
     runs-on: windows-2025
     timeout-minutes: 90
     steps:
