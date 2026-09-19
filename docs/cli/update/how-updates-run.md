@@ -29,7 +29,7 @@ aligned:
 
 If the resolved registry package version equals the installed version without changing
 the selected channel or installation method, or the Git target SHA equals
-`HEAD`, plugin convergence still runs; if plugins remain unchanged, the run finishes `skipped` with reason `already-current`. A same-version
+`HEAD`, plugin convergence still runs; if plugins and runtime artifacts remain unchanged, the run finishes `skipped` with reason `already-current`. Runtime maintenance can therefore succeed without changing the Git revision. A same-version
 explicit `--channel` or installation-method change finishes successfully.
 Changed plugins restart a running managed Gateway unless `--no-restart` is set; retained exact pins produce the same advisories as a core update without requiring a restart.
 
@@ -397,14 +397,23 @@ the CLI update to a detached helper before activation. A foreground
 Gateway keeps update hints but leaves installation and activation to the
 operator: stop it, run `openclaw update`, then launch it again.
 
-Control-plane `update.run` package-manager updates and supervised git-checkout updates use
-the same managed-service handoff instead of replacing the package tree or
-rebuilding `dist/` inside the live Gateway process: the Gateway starts a
-detached helper, which runs `openclaw update --yes --json` from outside the
-Gateway process tree. The Gateway exits only after update validation succeeds
-and activation begins. If the handoff is unavailable,
-`update.run` returns a structured response with the safe shell command to run
-manually.
+Control-plane `update.run` uses the same detached CLI update owner for
+package-manager and Git installations, including a verified foreground Gateway.
+The Gateway stays available during validation. Before replacing its installed
+code, the updater asks that exact Gateway to drain work and close its services,
+databases, and listener. A foreground Gateway launches a fresh process only after
+the updater settles; it does not reopen its old module graph after replacement.
+Managed services restart through their existing service manager.
+
+A foreground replacement can still be starting when the initial readiness
+observation ends. OpenClaw leaves that process running and reports readiness as
+unverified. Use `openclaw gateway status --deep` to check its progress.
+Successful updates remain pending until the replacement verifies startup.
+
+Stopping a foreground Gateway during an update waits for active update work to
+finish, then leaves the Gateway stopped. A replacement already starting is also
+stopped. Pending startup verification runs on the next Gateway start.
+The previous package backup remains available while that verification is pending.
 
 Stored extended-stable selections receive read-only startup and 24-hour update
 hints when `update.checkOnStart` is enabled. These checks never apply an update,

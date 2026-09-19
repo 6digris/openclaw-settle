@@ -23,13 +23,7 @@ export type ManagedServiceBoundaryOptions = ManagedServiceManagerBoundaryOptions
   cancelDuringValidation?: boolean;
   cancelAtActivation?: "requester" | "inspection";
   runnerFallback?: boolean;
-  nativePreparation?:
-    | "complete"
-    | "refuse-stop"
-    | "timeout-stop"
-    | "fail-preparation"
-    | "fail-persistence-ack"
-    | "fail-commit-ack";
+  selectedDriver?: "2026.9.3";
   revokeWhileValidating?: boolean;
   replaceLedgerWriter?: boolean;
   finalizationWorkMs?: number;

@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { extractErrorCode } from "@openclaw/normalization-core/error-coercion";
-import { classifyUpdateOutcome } from "../shared/update-outcome.js";
 import { VERSION } from "../version.js";
 import {
   EXTERNAL_SUPERVISOR_UPDATE_REQUIRED_REASON,
@@ -11,13 +10,15 @@ import { detectRespawnSupervisor } from "./supervisor-markers.js";
 import type { TrackedDevUpdateTarget } from "./update-dev-target.js";
 import {
   buildManagedServiceHandoffUnavailableMessage,
-  cancelManagedServiceUpdateHandoff,
   formatManagedServiceUpdateCommand,
+} from "./update-managed-service-handoff-command.js";
+import {
+  cancelManagedServiceUpdateHandoff,
   startManagedServiceUpdateHandoff,
   transferManagedServiceUpdateHandoff,
 } from "./update-managed-service-handoff.js";
 import { finishUpdateRun } from "./update-run-ledger.js";
-import type { UpdateRunResult } from "./update-runner.js";
+import type { UpdateRunResult } from "./update-runner-types.js";
 
 export type AutoUpdateRunResult =
   | { status: "handoff"; command?: string; logPath?: string }
@@ -81,31 +82,6 @@ export async function runAutoUpdateCommand(
 
   try {
     params.signal?.throwIfAborted();
-    if (params.devTarget) {
-      const { runGatewayUpdatePreflight } = await import("./update-runner.js");
-      params.signal?.throwIfAborted();
-      const result = await runGatewayUpdatePreflight(
-        params.root,
-        params.timeoutMs,
-        params.devTarget,
-        params.signal,
-      );
-      params.signal?.throwIfAborted();
-      if (result) {
-        if (classifyUpdateOutcome(result) === "noop") {
-          return {
-            status: "skipped",
-            result,
-            message: "Automatic update skipped: the selected version is already current.",
-          };
-        }
-        return {
-          status: "failed",
-          result,
-          message: `Automatic update preflight failed. Run \`${command}\` from a shell to inspect and retry.`,
-        };
-      }
-    }
     if (!params.root?.trim()) {
       throw new Error("managed auto-update install root is unavailable");
     }

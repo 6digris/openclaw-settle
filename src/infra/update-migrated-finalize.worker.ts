@@ -52,6 +52,7 @@ async function finalizeMigratedUpdate(): Promise<void> {
       JSON.stringify({
         executorDelegation: "pid-start-v1",
         doctorConfigWrites: "pid-start-v1",
+        gatewayRestartCompletion: true,
         state: OPENCLAW_STATE_SCHEMA_VERSION,
         agent: OPENCLAW_AGENT_SCHEMA_VERSION,
       }),
@@ -151,13 +152,21 @@ async function finalizeMigratedUpdate(): Promise<void> {
     );
   }, input.params.opts);
   const terminal = getUpdateRun(finalized.run.runId, { env: finalized.run.env });
-  if (!terminal || terminal.status === "running") {
+  const gatewayRestartPending =
+    finalized.run.completionOwner === "gateway-restart" &&
+    finalized.run.gatewayRestartRequired === true &&
+    finalized.result.status === "ok" &&
+    terminal?.status === "running" &&
+    terminal.phase === "restarting";
+  if (!terminal || (terminal.status === "running" && !gatewayRestartPending)) {
     throw new Error("Update finalization left the update run nonterminal.");
   }
   const response: MigratedUpdateFinalizationResult = {
     result: finalized.result,
     exitCode: finalized.exitCode,
-    terminalRunId: terminal.runId,
+    ...(gatewayRestartPending
+      ? { restartRunId: terminal.runId }
+      : { terminalRunId: terminal.runId }),
     executorDelegation: "pid-start-v1",
     automaticTriage: finalized.automaticTriage,
   };
