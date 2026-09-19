@@ -151,16 +151,20 @@ try {
     $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0); $listener.Start(); $port = $listener.LocalEndpoint.Port; $listener.Stop()
     @{ gateway = @{ mode = 'local'; bind = 'loopback'; port = $port; auth = @{ mode = 'token'; token = [guid]::NewGuid().ToString('N') } }; plugins = @{ allow = @() } } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $env:OPENCLAW_CONFIG_PATH
     Start-ProofGateway -Entry $driver -Name 'published-gateway'
+    $proof.baselineGateway = @{ pid = $gateway.Id; healthyBeforeMaintenance = $true }
+    # This Gateway is harness-owned, not a managed service. Stop and join it before
+    # update/Doctor acquire exclusive lifecycle ownership; --no-restart does not
+    # authorize concurrent repairs while an unmanaged Gateway owns the state.
+    Stop-ProofGateway
+    $proof.baselineGateway.stoppedBeforeUpdate = $true
     Invoke-ProofCommand -Name 'published-driver-update' -File $node -Arguments @($driver, 'update', '--channel', 'dev', '--yes', '--json', '--no-restart', '--timeout', '1200')
     Assert-CandidateHead
-    if ($gateway.HasExited -or (Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$port/healthz" -TimeoutSec 5).StatusCode -ne 200) { throw 'Published Gateway continuity was lost during no-restart update.' }
-    $proof.cases += 'published2026.9.5 driver to exact candidate; running Gateway stayed healthy'
-    Stop-ProofGateway
+    $proof.cases += 'published2026.9.5 driver to exact candidate after owned Gateway stopped'
     $entry = Join-Path $CandidateRoot 'dist/entry.js'
-    Start-ProofGateway -Entry $entry -Name 'candidate-gateway'
     Invoke-ProofCommand -Name 'candidate-doctor' -File $node -Arguments @($entry, 'doctor', '--fix', '--non-interactive') -Seconds 300
+    Start-ProofGateway -Entry $entry -Name 'candidate-gateway'
     Invoke-ProofCommand -Name 'candidate-gateway-health' -File $node -Arguments @($entry, 'gateway', 'health', '--json') -Seconds 120
-    if ($gateway.HasExited) { throw 'Doctor stopped the unmanaged candidate Gateway.' }
+    if ($gateway.HasExited) { throw 'Candidate Gateway exited after Doctor maintenance.' }
     # npm-to-Git uses the updater's npm exposure owner, not the retired installer wrapper.
     $updatedShim = Join-Path $prefix 'openclaw.cmd'
     if (-not (Test-Path -LiteralPath $updatedShim)) { throw 'Upgrade lost the installed command.' }
