@@ -213,7 +213,7 @@ export function registerBrowserExtensionCommands(
         },
         () => {
           defaultRuntime.error(
-            "Chrome setup could not finish. Check the action, local profile, and native host installation.",
+            "Chrome setup could not finish. Check the action, local profile, and native host installation. If automatic Windows selection is unverified, repair the intended existing profile with --browser-profile <name> --action install.",
           );
           defaultRuntime.exit(1);
         },

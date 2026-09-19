@@ -124,14 +124,28 @@ export type WindowsHostProjection = {
     extensionIds: string[];
     state: WindowsManagementResponse["registration"];
     issue?: string;
+    browserProfile?: string;
   }>;
   storeInstallRequests: ChromeStoreInstallRequest[];
   issues: string[];
 };
+// Invocation-local facts stay off the serialized status surface. The controller
+// consumes the C# observation, not diagnostic strings or inferred ownership.
+const managementObservations = new WeakMap<
+  object,
+  {
+    response: WindowsManagementResponse | null;
+    browserProfile?: string;
+  }
+>();
+export function windowsManagementObservation(registrations: object) {
+  return managementObservations.get(registrations);
+}
 function projection(
   response: WindowsManagementResponse | null,
   origins: string[],
   issue?: string,
+  browserProfile?: string,
 ): WindowsHostProjection {
   const nativeIssue =
     issue ??
@@ -144,7 +158,7 @@ function projection(
     )
       ? "Windows management reported " + (response?.code ?? "an unknown outcome")
       : undefined);
-  return {
+  const result: WindowsHostProjection = {
     registrations: products.map(([product, browser]) => ({
       product,
       browser,
@@ -152,6 +166,7 @@ function projection(
       state: response?.registration ?? null,
       extensionIds: response?.installation ? origins.map((o) => o.slice(19, -1)) : [],
       issue: nativeIssue,
+      browserProfile,
     })),
     storeInstallRequests: [
       {
@@ -172,6 +187,8 @@ function projection(
         ? ["Windows management reported " + response.code]
         : [],
   };
+  managementObservations.set(result.registrations, { response, browserProfile });
+  return result;
 }
 async function operate(params: {
   action: WindowsManagementRequest["action"];
@@ -182,9 +199,10 @@ async function operate(params: {
   browserProfile?: string;
   deps: ExtensionInstallDeps;
   signal?: AbortSignal;
-}): Promise<{ response: WindowsManagementResponse; origins: string[] }> {
+}): Promise<{ response: WindowsManagementResponse; origins: string[]; browserProfile?: string }> {
   let started = false;
   try {
+    params.signal?.throwIfAborted();
     const deps = params.deps;
     const context = await selectedContext(
       deps,
@@ -222,6 +240,8 @@ async function operate(params: {
         signal: params.signal,
       },
     );
+    params.signal?.throwIfAborted();
+    let browserProfile: string | undefined;
     if (response.installation) {
       const owned = await readWindowsNativeGeneration(
         response.installation.manifestPath,
@@ -236,8 +256,10 @@ async function operate(params: {
       ) {
         throw new WindowsManagementTransportError(true);
       }
+      browserProfile = owned.binding.nativeWindows.browserProfile;
     }
-    return { response, origins };
+    params.signal?.throwIfAborted();
+    return { response, origins, browserProfile };
   } catch (error) {
     if (error instanceof WindowsManagementTransportError) {
       throw error;
@@ -255,12 +277,12 @@ export async function installWindowsNativeHost(params: {
   signal?: AbortSignal;
 }): Promise<WindowsHostProjection> {
   // No discovery retry or mode fallback after a started mutation, even for an older helper.
-  const { response, origins } = await operate({
+  const { response, origins, browserProfile } = await operate({
     ...params,
     action: "install",
     store: params.requestStoreInstall === true ? "request" : "preserve",
   });
-  return projection(response, origins);
+  return projection(response, origins, undefined, browserProfile);
 }
 export async function inspectWindowsNativeHosts(
   params: {
@@ -273,13 +295,13 @@ export async function inspectWindowsNativeHosts(
   } = {},
 ): Promise<WindowsHostProjection> {
   try {
-    const { response, origins } = await operate({
+    const { response, origins, browserProfile } = await operate({
       ...params,
       deps: params.deps ?? {},
       action: "inspect",
       store: "preserve",
     });
-    return projection(response, origins);
+    return projection(response, origins, undefined, browserProfile);
   } catch {
     return projection(
       null,

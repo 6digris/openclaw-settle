@@ -6,6 +6,7 @@ import {
   installChromeExtensionBootstrap,
   type BrowserExtensionStatus,
 } from "./extension-install.js";
+import { isValidProfileName } from "./profiles.js";
 
 type BrowserExtensionSetupAction = "inspect" | "install" | "verify";
 export type BrowserExtensionSetupResult = {
@@ -96,17 +97,142 @@ export async function observeBrowserExtensionSetup(
       });
 }
 
+async function resolveWindowsSetupSelection(
+  options: SetupOptions,
+  initial: BrowserExtensionStatus,
+  resolved: ReturnType<typeof resolveBrowserConfig>,
+): Promise<{ observed: BrowserExtensionStatus; profile: string }> {
+  const { windowsManagementObservation } = await import("./extension-windows-host.js");
+  const blocked = () =>
+    new Error(
+      "Windows saved profile is unverified. Repair the intended existing profile with an explicit --browser-profile; no automatic change was made.",
+    );
+  const inspect = async (profile: string) => {
+    options.signal?.throwIfAborted();
+    const status = await observeBrowserExtensionSetup({ ...options, action: "inspect", profile });
+    options.signal?.throwIfAborted();
+    return status;
+  };
+  function classify(status: BrowserExtensionStatus) {
+    if (status.platform !== "win32") {
+      return "blocked";
+    }
+    const fact = windowsManagementObservation(status.registrations);
+    const response = fact?.response;
+    if (!response || (response.store !== "missing" && response.store !== "requested")) {
+      return "blocked";
+    }
+    if (
+      response.ok &&
+      response.registration === "owned" &&
+      response.mode === "native-windows-cli" &&
+      response.installation &&
+      fact.browserProfile
+    ) {
+      return "matching";
+    }
+    if (
+      response.ok &&
+      response.registration === "missing" &&
+      response.mode === null &&
+      !response.installation &&
+      response.store === "missing"
+    ) {
+      return "missing";
+    }
+    if (
+      !response.ok &&
+      response.code === "context_conflict" &&
+      response.registration === "owned" &&
+      response.mode === "native-windows-cli" &&
+      !response.installation
+    ) {
+      return "conflict";
+    }
+    return "blocked";
+  }
+  let observed = initial;
+  let kind = classify(observed);
+  if (kind === "conflict") {
+    for (const name of Object.keys(resolved.profiles)) {
+      options.signal?.throwIfAborted();
+      if (
+        name === "chrome" ||
+        !isValidProfileName(name) ||
+        resolveProfile(resolved, name)?.driver !== "extension"
+      ) {
+        continue;
+      }
+      observed = await inspect(name);
+      kind = classify(observed);
+      if (kind === "matching") {
+        break;
+      }
+      // A disappearance, drift, foreign mode or unknown observation is not another candidate.
+      if (kind !== "conflict") {
+        throw blocked();
+      }
+    }
+  }
+  if (kind !== "matching" && kind !== "missing") {
+    throw blocked();
+  }
+  const selected = windowsManagementObservation(observed.registrations);
+  const profile = kind === "missing" ? "chrome" : selected?.browserProfile;
+  if (
+    !profile ||
+    !isValidProfileName(profile) ||
+    resolveProfile(resolved, profile)?.driver !== "extension"
+  ) {
+    throw blocked();
+  }
+  // Reobserve the same selection before relay access or the single mutation.
+  // The C# owner still revalidates under its mutation lock; never retry a mutation.
+  const confirmed = await inspect(profile);
+  const confirmation = windowsManagementObservation(confirmed.registrations);
+  if (
+    classify(confirmed) !== kind ||
+    (kind === "matching" &&
+      (confirmation?.browserProfile !== profile ||
+        confirmation.response?.installation?.generation !==
+          selected?.response?.installation?.generation))
+  ) {
+    throw blocked();
+  }
+  return { observed: confirmed, profile };
+}
+
 /** Native bootstrap, not the UI, transfers the host-local key to the origin-locked extension. */
 export async function runBrowserExtensionSetup(
-  options: SetupOptions,
+  input: SetupOptions,
 ): Promise<BrowserExtensionSetupResult> {
+  let options = input;
   options.signal?.throwIfAborted();
+  // Share the existing 60-second management budget across discovery and the
+  // selected operation, rather than granting every candidate another minute.
+  // POSIX never consumes this signal and retains its existing behavior.
+  const windowsBudget = AbortSignal.timeout(60_000);
+  const windowsSignal = options.signal
+    ? AbortSignal.any([options.signal, windowsBudget])
+    : windowsBudget;
+  if (process.platform === "win32") {
+    options = { ...options, signal: windowsSignal };
+  }
+  const resolved = resolveBrowserConfig(options.cfg.browser, options.cfg);
   // Omission is not a request to replace an owned launcher selection. Native
   // adapters have no profile picker; resolve their saved local selection before effects.
-  const observed =
+  let observed =
     options.profile === undefined
       ? await observeBrowserExtensionSetup({ ...options, action: "inspect" })
       : undefined;
+  let windowsProfile: string | undefined;
+  if (observed?.platform === "win32") {
+    options = { ...options, signal: windowsSignal };
+    options.signal?.throwIfAborted();
+    const selection = await resolveWindowsSetupSelection(options, observed, resolved);
+    observed = selection.observed;
+    windowsProfile = selection.profile;
+  }
   const savedProfiles = new Set(
     observed?.registrations
       .filter((entry) => entry.state === "owned")
@@ -115,8 +241,8 @@ export async function runBrowserExtensionSetup(
   if (savedProfiles.size > 1) {
     throw new Error("Chrome setup requires an explicit profile when owned registrations disagree");
   }
-  const resolved = resolveBrowserConfig(options.cfg.browser, options.cfg);
-  const profileName = options.profile ?? savedProfiles.values().next().value ?? "chrome";
+  const profileName =
+    options.profile ?? windowsProfile ?? savedProfiles.values().next().value ?? "chrome";
   const profile = resolveProfile(resolved, profileName);
   if (!profile || profile.driver !== "extension") {
     throw new Error("Chrome setup requires an existing extension browser profile");
@@ -189,7 +315,9 @@ export async function runBrowserExtensionSetup(
           : "install_from_store",
     });
   }
-  return options.action === "verify" ? verifyBrowserExtensionSetup(result, options.signal) : result;
+  return options.action === "verify" && (status.platform !== "win32" || result.phase !== "blocked")
+    ? verifyBrowserExtensionSetup(result, options.signal)
+    : result;
 }
 
 async function verifyBrowserExtensionSetup(

@@ -175,6 +175,22 @@ bootstrap. Existing pairings and an explicit automatic-setup opt-out remain inta
 `verify` authenticates the exact local profile relay with the existing per-host
 key. It does not create a key, start another relay, or fetch a remote Gateway key.
 
+On Windows, omitted profile selection uses bounded, serial read-only inspection of
+already-configured extension profiles. Only a current matching C# registration
+descriptor, independently validated against its binding and requested context,
+can select a saved profile. Setup confirms that observation before proceeding;
+the C# owner revalidates the single installation operation. Unknown, conflicting,
+changed, or unavailable evidence never silently selects `chrome`. A genuinely
+missing registration can use the existing fresh-install default.
+
+If the saved profile is no longer configured, or the Node/CLI paths or approved
+extension origins have changed, the Windows contract may return no matching
+descriptor. Automatic selection then stops without an installation attempt.
+Review the intended existing profile and repair explicitly, for example
+`openclaw browser extension setup --action install --browser-profile work`. This
+is not automatic runtime-upgrade recovery: a different state, configuration,
+profile, or Companion mode remains a context conflict rather than a takeover.
+
 The JSON result contains `action`, a `target` with `kind: "local-host"`, platform,
 hostname, profile and relay port, plus `phase`, `reason`, `installation`,
 `connection`, and `nextAction`. Valid pending or blocked results exit successfully;
