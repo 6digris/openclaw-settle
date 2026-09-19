@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, beforeEach, expect, vi } from "vitest";
+import { validateUpdateRunResult } from "../../../packages/gateway-protocol/src/index.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../../config/types.openclaw.js";
 import type { RestartSentinelPayload } from "../../infra/restart-sentinel.js";
 import type { RespawnSupervisor } from "../../infra/supervisor-markers.js";
@@ -342,9 +343,12 @@ vi.mock("../../infra/gateway-owner-lease.js", async (original) => ({
 vi.mock("../../../packages/gateway-protocol/src/index.js", async () => {
   const { ErrorCodes, errorShape } =
     await import("../../../packages/gateway-protocol/src/schema/error-codes.js");
+  const { validateUpdateRunResult: validateResult } =
+    await import("../../../packages/gateway-protocol/src/validator-registry.js");
   return {
     ErrorCodes,
     errorShape,
+    validateUpdateRunResult: validateResult,
     validateUpdateRunsGetParams: () => true,
     validateUpdateRunsListParams: () => true,
     validateUpdateStatusParams: () => true,
@@ -506,6 +510,11 @@ export async function captureUpdateRunPayload(
     },
     runtimeConfig,
   );
+  if (payload !== undefined) {
+    expect(validateUpdateRunResult(payload), JSON.stringify(validateUpdateRunResult.errors)).toBe(
+      true,
+    );
+  }
   if (
     payload?.result?.status &&
     payload.result.status !== "ok" &&
