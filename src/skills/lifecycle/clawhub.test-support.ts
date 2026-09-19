@@ -336,7 +336,6 @@ export {
   installPackageDirMock,
   evaluateSkillInstallPolicyMock,
   pathExistsMock,
-  digestClawHubSkillTreeMock,
   markClawPackageIndependentlyOwnedMock,
   tempDirs,
   expectInstallPackageSourceDir,

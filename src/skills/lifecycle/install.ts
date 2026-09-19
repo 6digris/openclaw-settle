@@ -705,7 +705,7 @@ export async function installSkill(params: SkillInstallRequest): Promise<SkillIn
 }
 
 /** Runs only the approved recipe on the host that owns the Harness tools directory. */
-export async function installSkillDependencies(
+async function installSkillDependencies(
   params: Parameters<WorkspaceSkillLifecycle["installSkillDependencies"]>[0],
 ): Promise<SkillInstallResult> {
   const { skillKey, spec, preferences: prefs } = params;

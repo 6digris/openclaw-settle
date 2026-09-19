@@ -198,7 +198,7 @@ export async function installExtractedSkillRoot(
 }
 
 /** Native file replacement on the workspace host; policy and hook dispatch stay with the caller. */
-export async function applyExtractedSkillRoot(
+async function applyExtractedSkillRoot(
   params: Parameters<WorkspaceSkillLifecycle["applyExtractedSkillRoot"]>[0],
 ): Promise<SkillRootApplyResult> {
   try {

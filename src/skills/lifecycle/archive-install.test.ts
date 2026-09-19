@@ -13,7 +13,6 @@ import { createMockPluginRegistry } from "../../plugins/hooks.test-fixtures.js";
 import { createTrackedTempDirs } from "../../test-utils/tracked-temp-dirs.js";
 import {
   CLAWHUB_SKILL_ARCHIVE_ROOT_MARKERS,
-  applyExtractedSkillRoot,
   installExtractedSkillRoot,
   resolveWorkspaceSkillInstallDir,
 } from "./archive-install.js";
@@ -299,55 +298,6 @@ describe("skill archive install", () => {
       );
     },
   );
-
-  it("restores a skill when backup validation blocks replacement", async () => {
-    const root = await tempDirs.make("openclaw-skill-archive-install-");
-    const workspaceDir = path.join(root, "workspace");
-    const extractedRoot = path.join(root, "extracted");
-    await fs.mkdir(extractedRoot, { recursive: true });
-    await fs.writeFile(path.join(extractedRoot, "SKILL.md"), skillFileContent("Staged Update"));
-    const targetDir = resolveWorkspaceSkillInstallDir(workspaceDir, "staged-update");
-    await fs.mkdir(targetDir, { recursive: true });
-    await fs.writeFile(path.join(targetDir, "SKILL.md"), skillFileContent("Installed Skill"));
-    const skillsDir = path.dirname(targetDir);
-    const expectedClawHubState = {
-      slug: "staged-update",
-      skillFilePath: "SKILL.md",
-      skillFileSha256: sha256Hex(await fs.readFile(path.join(targetDir, "SKILL.md"))),
-      fileTreeSha256: await digestClawHubSkillTree(targetDir),
-    };
-
-    const result = await applyExtractedSkillRoot({
-      workspaceDir,
-      slug: "staged-update",
-      extractedRoot,
-      mode: "update",
-      rootMarkers: CLAWHUB_SKILL_ARCHIVE_ROOT_MARKERS,
-      expectedClawHubState,
-      beforeInstall: async () => {
-        await fs.writeFile(path.join(targetDir, "notes.md"), "edited before backup", "utf8");
-        return undefined;
-      },
-    });
-
-    expect(result).toMatchObject({
-      ok: false,
-      error:
-        'Skill "staged-update" changed during update. Updating replaces the installed skill directory.',
-      replacementBlocked:
-        'Skill "staged-update" changed during update. Updating replaces the installed skill directory.',
-      failureKind: "invalid-request",
-    });
-    await expect(fs.readFile(path.join(targetDir, "notes.md"), "utf8")).resolves.toBe(
-      "edited before backup",
-    );
-    await expect(fs.readFile(path.join(targetDir, "SKILL.md"), "utf8")).resolves.toContain(
-      "Installed Skill",
-    );
-    await expect(
-      fs.readdir(path.join(skillsDir, ".openclaw-install-backups")),
-    ).resolves.toHaveLength(0);
-  });
 
   it.each([
     {
