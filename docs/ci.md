@@ -17,6 +17,8 @@ Docs-only `main` pushes skip CI. Docker seed and QA Smoke use the same owner-pat
 
 Core-test-only PRs use targeted type checks only when every selected test exists in the checkout. Deleting a core test keeps the full type-check plan, including the existing core stripes on GitHub and hybrid profiles.
 
+Gateway worker-environment tests have a [dedicated core type graph](/ci/runners#runner-backend-modes) within the existing CI stripes, preserving the 700-root headroom guard and 720-root hard cap.
+
 Core lint includes `src/**/*.test-support.cjs` in type-aware checks through the bounded `src/tsconfig.json` discovery project. Other source files retain the root TypeScript project; unrelated JavaScript files are not added to this test-support project.
 
 Android native resource preparation uses the Mermaid renderer's filtered dependency install, including optional build tooling. Pnpm retains root dependencies but omits unrelated plugin packages; Gradle still builds the assets and runs the selected native tests and lint. Historical targets keep their compatibility path.

@@ -41,18 +41,22 @@ describe("tsgo core test shards", () => {
         .map((file) => path.relative(process.cwd(), file).replaceAll(path.sep, "/"));
     };
 
+    const canonicalRoots = roots("test/tsconfig/tsconfig.core.test.json");
     const shards = TSGO_CORE_TEST_SHARDS.map((shard) => ({
       name: shard.name,
       roots: roots(shard.config),
     }));
     expect(
       findTsgoCoreTestShardViolations({
-        canonicalRoots: roots("test/tsconfig/tsconfig.core.test.json"),
+        canonicalRoots,
         // Rebalance before the runner's 720-root cap blocks unrelated test-only PRs.
         maxRoots: 700,
         shards,
       }),
     ).toEqual([]);
+    expect(shards.find((shard) => shard.name === "gateway-worker-environments")?.roots).toEqual(
+      canonicalRoots.filter((file) => file.startsWith("src/gateway/worker-environments/")),
+    );
     for (const [file, owner] of [
       ["src/commands/doctor-session-worktree-workspace.test.ts", "commands-doctor"],
       ["src/commands/doctor/repair-sequencing.test.ts", "commands-doctor"],
