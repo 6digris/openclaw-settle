@@ -1,3 +1,4 @@
+# Demo only: verify dependency-review notices on a fresh maintainer PR. Do not merge.
 packages:
   - .
   - ui
