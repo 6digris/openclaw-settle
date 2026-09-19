@@ -10,26 +10,32 @@ import {
   SqliteSnapshotCleanupError,
 } from "./sqlite-readonly-location-cleanup.js";
 import {
-  createSqliteSnapshotStagingDirectory,
   prepareSqliteReadOnlyLocationInProcess,
   prepareSqliteReadOnlyLocationSyncInProcess,
 } from "./sqlite-readonly-location.js";
-import type { PreparedSqliteReadOnlyLocation } from "./sqlite-readonly-location.types.js";
+import type {
+  AsyncPreparedSqliteReadOnlyLocation,
+  PreparedSqliteReadOnlyLocation,
+} from "./sqlite-readonly-location.types.js";
 import {
   resolveSqliteInspectionSignal,
   runSqliteReadOnlyWorker,
   runSqliteReadOnlyWorkerSync,
 } from "./sqlite-readonly-worker.js";
 import { prepareSingleFlightSqliteSnapshot } from "./sqlite-snapshot-single-flight.js";
-import { createSqliteSnapshotStagingDirectorySync } from "./sqlite-snapshot-staging.js";
+import {
+  createSqliteSnapshotStagingDirectory,
+  createSqliteSnapshotStagingDirectorySync,
+} from "./sqlite-snapshot-staging.js";
 import {
   assertSqliteSourceReadAllowed,
   withSqliteSourceHandleAsync,
 } from "./sqlite-source-handle.js";
 import {
+  assertStateDatabaseSourceReadContext,
   hasStateDatabaseSourceExclusion,
-  prepareStateDatabaseMutationSnapshot,
   prepareStateDatabaseCanonicalMutation,
+  prepareStateDatabaseMutationSnapshot,
 } from "./state-database-coordinator.js";
 // Keep source lifetime pinned while the snapshot owner consumes live or private bytes.
 
@@ -76,41 +82,8 @@ export async function prepareSqliteReadOnlyLocation(
         return await owned;
       }
     }
-    // A stopped worker may never publish its random snapshot path. Allocate its
-    // private parent first so cancellation can join the child and remove all copies.
-    const produceSnapshot = async (flightSignal?: AbortSignal) => {
-      const stagingRoot = await createSqliteSnapshotStagingDirectory(
-        options.stagingRoot,
-        false,
-        flightSignal,
-      );
-      try {
-        const location = await runSqliteReadOnlyWorker(pathname, {
-          mode: options.preserveSourceArtifacts ? "sync" : "async",
-          signal: flightSignal,
-          stagingRoot,
-        });
-        return adoptPreparedLocation(location, stagingRoot, options.signal !== undefined);
-      } catch (error) {
-        if (!(await removeTempDirectoryAsync(stagingRoot))) {
-          throw new Error(
-            `${coerceErrorMessage(error)}; SQLite snapshot cleanup failed: ${stagingRoot}`,
-            { cause: error },
-          );
-        }
-        throw error;
-      }
-    };
-    // Caller-owned recovery staging must not be shared with unrelated consumers.
-    if (options.stagingRoot) {
-      return await produceSnapshot(signal);
-    }
-    return await prepareSingleFlightSqliteSnapshot(
-      pathname,
-      `${options.preserveSourceArtifacts ? "worker-sync" : "worker-async"}:${options.signal ? "strict" : "best-effort"}`,
-      produceSnapshot,
-      signal,
-    );
+    // The worker path preserves cleanup failures ahead of cancellation.
+    return prepareWorkerSnapshot(pathname, options, signal, false);
   } catch (error) {
     // Cancellation cannot erase evidence that a snapshot child may still write.
     if (hasCommandProcessCleanupError(error)) {
@@ -119,6 +92,94 @@ export async function prepareSqliteReadOnlyLocation(
     signal?.throwIfAborted();
     throw error;
   }
+}
+
+/** Fixed worker readers hold their own token until their private native reader closes. */
+export function prepareSqliteReadOnlyLocationAsync(
+  pathname: string,
+  options: { preserveSourceArtifacts?: boolean; signal?: AbortSignal } = {},
+): Promise<AsyncPreparedSqliteReadOnlyLocation> {
+  if (
+    prepareStateDatabaseCanonicalMutation(pathname) ||
+    hasStateDatabaseSourceExclusion(pathname)
+  ) {
+    throw new Error("SQLite source requires its existing snapshot owner");
+  }
+  return prepareWorkerSnapshot(
+    pathname,
+    options,
+    resolveSqliteInspectionSignal(options.signal),
+    true,
+  );
+}
+
+function prepareWorkerSnapshot(
+  pathname: string,
+  options: { preserveSourceArtifacts?: boolean; signal?: AbortSignal; stagingRoot?: string },
+  signal: AbortSignal | undefined,
+  asynchronousCleanup: boolean,
+): Promise<PreparedSqliteReadOnlyLocation> {
+  signal?.throwIfAborted();
+  if (asynchronousCleanup) {
+    assertStateDatabaseSourceReadContext(pathname);
+  }
+  const produceSnapshot = async (
+    flightSignal?: AbortSignal,
+    recordCleanupFailure?: (error: unknown) => void,
+  ): Promise<PreparedSqliteReadOnlyLocation> => {
+    let stagingRoot: string | undefined;
+    try {
+      flightSignal?.throwIfAborted();
+      stagingRoot = await createSqliteSnapshotStagingDirectory(
+        options.stagingRoot,
+        false,
+        flightSignal,
+        asynchronousCleanup,
+      );
+      flightSignal?.throwIfAborted();
+      const location = await runSqliteReadOnlyWorker(pathname, {
+        mode: options.preserveSourceArtifacts ? "sync" : "async",
+        signal: flightSignal,
+        stagingRoot,
+      });
+      flightSignal?.throwIfAborted();
+      return adoptPreparedLocation(location, stagingRoot, options.signal !== undefined);
+    } catch (error) {
+      // An unsettled worker may still write here. Preserve its custody failure
+      // ahead of caller cancellation and leave the owned staging for recovery.
+      if (hasCommandProcessCleanupError(error)) {
+        recordCleanupFailure?.(error);
+        throw error;
+      }
+      if (stagingRoot && !(await removeTempDirectoryAsync(stagingRoot))) {
+        const failure = new SqliteSnapshotCleanupError(
+          `${coerceErrorMessage(error)}; SQLite snapshot cleanup failed: ${stagingRoot}`,
+          { cause: error },
+        );
+        recordCleanupFailure?.(failure);
+        throw failure;
+      }
+      if (
+        error instanceof SqliteSnapshotCleanupError ||
+        (asynchronousCleanup && error instanceof AggregateError)
+      ) {
+        recordCleanupFailure?.(error);
+        throw error;
+      }
+      flightSignal?.throwIfAborted();
+      throw error;
+    }
+  };
+  // Caller-owned recovery staging must not be shared with unrelated consumers.
+  if (options.stagingRoot) {
+    return produceSnapshot(signal);
+  }
+  return prepareSingleFlightSqliteSnapshot(
+    pathname,
+    `${options.preserveSourceArtifacts ? "worker-sync" : "worker-async"}:${options.signal ? "strict" : "best-effort"}:${asynchronousCleanup ? "async-token" : "sync-token"}`,
+    produceSnapshot,
+    signal,
+  );
 }
 
 export function prepareSqliteReadOnlyLocationSync(
