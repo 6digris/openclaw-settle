@@ -15,11 +15,14 @@ $originalPaths = @{}
 $breakpoints = @()
 $ownedProduct = $null
 $portableOwned = $false
+$portableRegistryPath = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\OpenJS.NodeJS.LTS__DefaultSource'
 $localManifestsEnabled = $false
 $setupStarted = $false
 $transcriptStarted = $false
 $blockerHandle = $null
 $runtime = $null
+$msiLoggingState = $null
+$msiLoggingRestoreFailed = $false
 $started = Get-Date
 $global:WingetProofTrace = [ordered]@{ install=@(); repair=@(); checkCount=0 }
 function Assert-Proof([bool]$Condition, [string]$Message) {
@@ -54,6 +57,55 @@ function Remove-OwnedMsi([string]$Product, [string]$Label) {
     $process.Dispose()
     Assert-Proof ($code -in @(0,1605,3010)) "MSI uninstall failed: $code."
     Assert-Proof (@(Get-NodeRegistration | Where-Object PSChildName -eq $Product).Count -eq 0) 'MSI registration survived uninstall.'
+}
+function Enable-MsiRepairDiagnostics {
+    # Supported Windows Installer logging policy, scoped to this disposable VM.
+    # It does not change ProductCode/source registration, repair arguments or results.
+    $keyPath = 'SOFTWARE\Policies\Microsoft\Windows\Installer'
+    $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($keyPath,$true)
+    $created = $null -eq $key
+    if ($created) { $key = [Microsoft.Win32.Registry]::LocalMachine.CreateSubKey($keyPath) }
+    try {
+        $present = $key.GetValueNames() -contains 'Logging'
+        $script:msiLoggingState = @{ path=$keyPath; created=$created; present=$present; value=$null; kind=$null }
+        if ($present) {
+            $script:msiLoggingState.value = $key.GetValue('Logging',$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            $script:msiLoggingState.kind = $key.GetValueKind('Logging')
+        }
+        $proof.msiDiagnostics = @{ policy='voicewarmupx'; enabledAt=(Get-Date).ToString('o'); logs=@(); restoration='pending' }
+        $key.SetValue('Logging','voicewarmupx',[Microsoft.Win32.RegistryValueKind]::String)
+    } finally { $key.Dispose() }
+}
+function Save-MsiRepairDiagnostics {
+    $destination = Join-Path $ProofRoot 'msi-repair-diagnostics'
+    New-Item -ItemType Directory -Path $destination -Force | Out-Null
+    $roots = @($env:TEMP,(Join-Path $env:WINDIR 'Temp')) | Sort-Object -Unique
+    $index = 0
+    foreach ($root in $roots) {
+        $index++
+        foreach ($log in @(Get-ChildItem -LiteralPath $root -Filter 'MSI*.log' -File | Where-Object { $_.LastWriteTime -ge $started })) {
+            $name = "$index-$($log.Name)"
+            Copy-Item -LiteralPath $log.FullName -Destination (Join-Path $destination $name)
+            $proof.msiDiagnostics.logs += @{ source=$log.FullName; file=$name; sha256=(Get-FileHash (Join-Path $destination $name)).Hash }
+        }
+    }
+    Assert-Proof ($proof.msiDiagnostics.logs.Count -gt 0) 'Windows Installer produced no diagnostic log for this native repair.'
+}
+function Restore-MsiRepairDiagnostics {
+    $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($msiLoggingState.path,$true)
+    Assert-Proof ($null -ne $key) 'Task MSI logging policy key disappeared.'
+    try {
+        if ($msiLoggingState.present) {
+            $key.SetValue('Logging',$msiLoggingState.value,$msiLoggingState.kind)
+            Assert-Proof (($key.GetValueKind('Logging') -eq $msiLoggingState.kind) -and ((ConvertTo-Json -Compress -InputObject $key.GetValue('Logging',$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)) -ceq (ConvertTo-Json -Compress -InputObject $msiLoggingState.value))) 'MSI logging policy restoration differs.'
+        } else {
+            $key.DeleteValue('Logging',$false)
+            Assert-Proof (-not ($key.GetValueNames() -contains 'Logging')) 'Task MSI logging policy survived cleanup.'
+        }
+        $empty = $key.ValueCount -eq 0 -and $key.SubKeyCount -eq 0
+    } finally { $key.Dispose() }
+    if ($msiLoggingState.created -and $empty) { [Microsoft.Win32.Registry]::LocalMachine.DeleteSubKey($msiLoggingState.path,$false) }
+    $proof.msiDiagnostics.restoration = 'verified'
 }
 function Get-RuntimeFacts([string]$Path, [string]$Name) {
     $js = @'
@@ -193,6 +245,7 @@ try {
         $scope = if ($Scenario -eq 'non-msi') { 'user' } else { 'machine' }
         $arguments = @('install','--manifest',$manifestDirectory,'--architecture','x64','--installer-type',$type,'--scope',$scope,'--accept-package-agreements','--accept-source-agreements','--disable-interactivity','--silent')
         if ($Scenario -eq 'non-msi') {
+            Assert-Proof (-not (Test-Path -LiteralPath $portableRegistryPath)) 'Preexisting local-manifest portable registration is not task-owned.'
             $portableOwned = $true
             $arguments += @('--location',(Join-Path $WorkRoot 'portable'))
         } else { $ownedProduct = $proof.manifest.productCode }
@@ -202,6 +255,11 @@ try {
         $proof.registration = @(Get-NodeRegistration)
         if ($Scenario -eq 'non-msi') {
             Assert-Proof (@($proof.registration | Where-Object WindowsInstaller -eq 1).Count -eq 0) 'Portable control unexpectedly has MSI registration.'
+            Assert-Proof (Test-Path -LiteralPath $portableRegistryPath) 'Native local-manifest portable registration is absent.'
+            $proof.portableRegistration = Get-ItemProperty -LiteralPath $portableRegistryPath | Select-Object PSPath, PSChildName, DisplayName, DisplayVersion, InstallLocation, UninstallString, WinGetPackageIdentifier, WinGetSourceIdentifier
+            # Read both native identities; never fabricate public-source correlation.
+            [void](Invoke-Native $winget @('list','--product-code','OpenJS.NodeJS.LTS__DefaultSource','--exact','--accept-source-agreements','--disable-interactivity') 'portable-local-identity')
+            [void](Invoke-Native $winget @('list','--id','OpenJS.NodeJS.LTS','--exact','--source','winget','--accept-source-agreements','--disable-interactivity') 'portable-catalog-correlation')
             $executables = @(Get-ChildItem (Join-Path $WorkRoot 'portable') -Filter node.exe -Recurse -File)
             Assert-Proof ($executables.Count -eq 1) 'Portable install location is ambiguous.'
             $runtime = $executables[0].FullName
@@ -227,8 +285,10 @@ try {
         $global:WingetProofMainReached = $false
         $script:InstallExitCode = 0
         $gate = [scriptblock]::Create($prefix + "`n`$global:WingetProofMainReached = `$true")
+        if ($Scenario -in @('stale-msi','failed-repair')) { Enable-MsiRepairDiagnostics }
         & $gate
         $proof.mainReached = $global:WingetProofMainReached
+        $proof.registrationAfterGate = @(Get-NodeRegistration)
         $proof.installExit = $script:InstallExitCode
         $proof.trace = $global:WingetProofTrace
         if ($Scenario -eq 'healthy') {
@@ -252,27 +312,67 @@ try {
     $proof.failures += $_.Exception.Message
     $proof.result = 'failed-or-unqualified'
 } finally {
+    # Capture repair logs before teardown emits unrelated MSI events. Always restore
+    # the exact preexisting diagnostic policy even if capture or native repair fails.
+    if ($msiLoggingState) {
+        try { Save-MsiRepairDiagnostics } catch {
+            $proof.failures += "MSI diagnostic collection: $($_.Exception.Message)"
+            $proof.result = 'failed-or-unqualified'
+        }
+        try { Restore-MsiRepairDiagnostics } catch {
+            $msiLoggingRestoreFailed = $true
+            $proof.failures += "MSI diagnostic policy cleanup: $($_.Exception.Message)"
+            $proof.result = 'failed-or-unqualified'
+        }
+    }
     if ($breakpoints.Count) { $breakpoints | Remove-PSBreakpoint }
     if ($blockerHandle) { $blockerHandle.Dispose() }
-    try {
-        if ($runtime -and (Test-Path -LiteralPath $runtime -PathType Container) -and $Scenario -eq 'failed-repair') { Remove-Item -LiteralPath $runtime -Recurse -Force }
-        if ($ownedProduct) { Remove-OwnedMsi $ownedProduct 'cleanup-owned-msi' }
-        if ($portableOwned) {
-            $code = Invoke-Native $winget @('uninstall','--id','OpenJS.NodeJS.LTS','--exact','--source','winget','--scope','user','--silent','--disable-interactivity') 'cleanup-owned-portable'
-            Assert-Proof ($code -eq 0) 'Portable native cleanup failed.'
-            Assert-Proof (@(Get-NodeRegistration).Count -eq 0) 'Portable registration remains.'
+    # Independent cleanup steps: a failed native uninstall must not skip policy
+    # restoration or other task-owned removals. Never turn failure into acceptance.
+    $cleanupFailed = $false
+    $cleanupSteps = @(
+        @{ name='filesystem-blocker'; action={
+            if ($runtime -and (Test-Path -LiteralPath $runtime -PathType Container) -and $Scenario -eq 'failed-repair') { Remove-Item -LiteralPath $runtime -Recurse -Force }
+        } },
+        @{ name='owned-msi'; action={
+            if ($ownedProduct) { Remove-OwnedMsi $ownedProduct 'cleanup-owned-msi' }
+            if ($portableOwned) {
+                # The observed public-source fallback installed the same pinned MSI.
+                # Remove only that exact product; preserve unexpected identities.
+                foreach ($entry in @(Get-NodeRegistration | Where-Object WindowsInstaller -eq 1)) {
+                    Assert-Proof ($entry.PSChildName -eq $proof.manifest.productCode -and $entry.DisplayVersion -eq $proof.manifest.version) 'Unexpected MSI after portable control; cannot claim owned teardown.'
+                    Remove-OwnedMsi $entry.PSChildName 'cleanup-portable-fallback-msi'
+                }
+            }
+        } },
+        @{ name='owned-portable'; action={
+            if ($portableOwned -and (Test-Path -LiteralPath $portableRegistryPath)) {
+                # Local-manifest installs have a native _DefaultSource product code,
+                # not public winget-source identity. Target their real registration.
+                $code = Invoke-Native $winget @('uninstall','--product-code','OpenJS.NodeJS.LTS__DefaultSource','--exact','--scope','user','--silent','--disable-interactivity') 'cleanup-owned-portable'
+                Assert-Proof ($code -eq 0) 'Portable native cleanup failed.'
+                Assert-Proof (-not (Test-Path -LiteralPath $portableRegistryPath)) 'Portable registration remains.'
+            }
+        } },
+        @{ name='local-manifest-setting'; action={
+            if ($localManifestsEnabled) {
+                Assert-Proof ((Invoke-Native $winget @('settings','--disable','LocalManifestFiles') 'disable-local-manifests') -eq 0) 'Could not disable task-enabled local manifests.'
+            }
+        } },
+        @{ name='owned-staging'; action={
+            if ($portableOwned) { Assert-Proof (-not (Test-Path -LiteralPath $portableRegistryPath)) 'Retain staging for failed portable unregister; host teardown remains required.' }
+            if ($setupStarted -and (Test-Path -LiteralPath $WorkRoot)) { Remove-Item -LiteralPath $WorkRoot -Recurse -Force }
+            Assert-Proof (-not (Test-Path -LiteralPath $WorkRoot)) 'Task-owned staging survived cleanup.'
+        } }
+    )
+    foreach ($step in $cleanupSteps) {
+        try { & $step.action } catch {
+            $cleanupFailed = $true
+            $proof.failures += "$($step.name): $($_.Exception.Message)"
+            $proof.result = 'failed-or-unqualified'
         }
-        if ($localManifestsEnabled) {
-            Assert-Proof ((Invoke-Native $winget @('settings','--disable','LocalManifestFiles') 'disable-local-manifests') -eq 0) 'Could not disable task-enabled local manifests.'
-        }
-        if ($setupStarted -and (Test-Path -LiteralPath $WorkRoot)) { Remove-Item -LiteralPath $WorkRoot -Recurse -Force }
-        Assert-Proof (-not (Test-Path -LiteralPath $WorkRoot)) 'Task-owned staging survived cleanup.'
-        $proof.cleanup = 'verified'
-    } catch {
-        $proof.cleanup = 'failed'
-        $proof.failures += $_.Exception.Message
-        $proof.result = 'failed-or-unqualified'
     }
+    $proof.cleanup = if ($cleanupFailed) { 'failed' } else { 'verified' }
     foreach ($scope in $originalPaths.Keys) { [Environment]::SetEnvironmentVariable('Path',$originalPaths[$scope],$scope) }
     if ($transcriptStarted) { Stop-Transcript | Out-Null }
     # Keep only this fresh VM's diagnostic logs for native command/HRESULT audit.
@@ -283,6 +383,7 @@ try {
             Get-ChildItem $root -File | Where-Object { $_.LastWriteTime -ge $started } | Copy-Item -Destination (Join-Path $ProofRoot 'winget-logs')
         }
     }
+    if ($msiLoggingRestoreFailed) { $proof.cleanup = 'failed'; $proof.result = 'failed-or-unqualified' }
     $proof.trace = $global:WingetProofTrace
     $proof | ConvertTo-Json -Depth 12 | Set-Content (Join-Path $ProofRoot 'result.json')
 }
