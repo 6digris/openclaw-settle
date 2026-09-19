@@ -50,6 +50,7 @@ import { REPLY_RUN_STILL_SHUTTING_DOWN_TEXT } from "./get-reply-run-queue.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
 import { resolveActiveRunQueueAction } from "./queue-policy.js";
 import { enqueueFollowupRun, scheduleFollowupDrain } from "./queue.js";
+import { captureQueuedReplyPresentation } from "./queued-reply-presentation.js";
 import { REPLY_ADMISSION_TICKET } from "./reply-admission-ticket.js";
 import { createReplyMediaContext } from "./reply-media-paths.js";
 import * as replyRunState from "./reply-operation-run-state.js";
@@ -65,6 +66,7 @@ import {
   isDuplicateRestartRecoverySource,
   retireTerminalRestartRecoverySourceClaim,
 } from "./restart-recovery-claim.js";
+import { isRoutableChannel } from "./route-reply.js";
 import { resolveRoutedDeliveryThreadId } from "./routed-delivery-thread.js";
 import { readChannelSourceTurnId } from "./source-turn-id.js";
 import { createTypingSignaler } from "./typing-mode.js";
@@ -103,6 +105,14 @@ export async function runReplyAgent(
     replyThreadingOverride,
     replyOperation: providedReplyOperation,
   } = params;
+  if (isRoutableChannel(followupRun.originatingChannel) && followupRun.originatingTo) {
+    followupRun.presentation ??= captureQueuedReplyPresentation({
+      opts,
+      typing,
+      typingMode,
+      toolProgressDetail,
+    });
+  }
   const resolveGatewayContext = providedReplyOperation
     ? getGatewayContextResolver(providedReplyOperation)
     : (readChannelContextGatewayContextResolver(sessionCtx) ??

@@ -51,7 +51,12 @@ import {
   retireFollowupRunCancellation,
 } from "./lifecycle.js";
 import { clearFollowupQueue, FOLLOWUP_QUEUES, trimSummaryElisionsToCap } from "./state.js";
-import { isFollowupRunAborted, isFollowupRunDeferredError, type FollowupRun } from "./types.js";
+import {
+  isFollowupRunAborted,
+  isFollowupRunDeferredError,
+  type FollowupRun,
+  type FollowupRuntimeMetadata,
+} from "./types.js";
 
 type InternalFollowupRun = FollowupRun & {
   /** Keep admission state out of the public plugin-facing FollowupRun contract. */
@@ -553,23 +558,6 @@ function collectQueuedPromptMedia(
   };
 }
 
-type FollowupRuntimeMetadata = Pick<
-  FollowupRun,
-  | "currentInboundEventKind"
-  | "currentInboundAudio"
-  | "currentInboundContext"
-  | "explicitSkillSelections"
-  | "channelAdmissionEvidence"
-  | "toolsAllow"
-  | "disableTools"
-  | "abortSignal"
-  | "queueAbortSignal"
-  | "deliveryCorrelations"
-  | "turnAdoptionLifecycle"
-  | "replyOperationRunStates"
-  | "queuedFollowupReplyDisposition"
->;
-
 function hasCurrentTurnRuntimeMetadata(item: FollowupRun): boolean {
   return (
     item.currentInboundEventKind === "room_event" ||
@@ -859,6 +847,7 @@ function collectRuntimeMetadata(
     turnAdoptionLifecycle: items.length === 1 ? items[0]?.turnAdoptionLifecycle : undefined,
     replyOperationRunStates: items.flatMap((item) => item.replyOperationRunStates ?? []),
     queuedFollowupReplyDisposition: items.at(-1)?.queuedFollowupReplyDisposition,
+    presentation: items.at(-1)?.presentation,
   };
 }
 
@@ -1239,6 +1228,7 @@ export function createOverflowSummaryRetrySource(source: FollowupRun): FollowupR
     turnAdoptionLifecycle: source.turnAdoptionLifecycle,
     replyOperationRunStates: source.replyOperationRunStates,
     queuedFollowupReplyDisposition: source.queuedFollowupReplyDisposition,
+    presentation: source.presentation,
     ...(source.currentInboundEventKind === "room_event"
       ? { currentInboundEventKind: "room_event" }
       : {}),
@@ -1308,6 +1298,7 @@ async function runSyntheticOverflowSummary(params: {
     toolsAllow: runtimeMetadata.toolsAllow,
     disableTools: runtimeMetadata.disableTools,
     queuedFollowupReplyDisposition: runtimeMetadata.queuedFollowupReplyDisposition,
+    presentation: runtimeMetadata.presentation,
     replyOperationRunStates: runtimeMetadata.replyOperationRunStates,
     ...(params.onAdmitted
       ? {
