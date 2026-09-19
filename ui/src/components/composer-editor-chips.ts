@@ -66,7 +66,9 @@ class ChipWidget extends WidgetType {
   }
   override destroy(dom: HTMLElement) {
     // CodeMirror removes DOM directly; disconnect Lit directives retaining avatar resources.
-    if (this.chip.icon) render(nothing, dom.querySelector(".composer-chip__icon")!);
+    if (this.chip.icon) {
+      render(nothing, dom.querySelector(".composer-chip__icon")!);
+    }
   }
 }
 

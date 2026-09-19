@@ -493,8 +493,8 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
               <div class="agent-chat__composer-input-row">
                 <div class="agent-chat__composer-combobox">
                   <openclaw-composer-editor
-                    .resolveChips=${(value: string, context: ComposerChipContext) => [
-                      ...resolveComposerSkillChips(value, context),
+                    .resolveChips=${(value: string, chipContext: ComposerChipContext) => [
+                      ...resolveComposerSkillChips(value, chipContext),
                       ...resolveComposerMentionChips(
                         value,
                         props.getDraft?.() ?? props.draft,
