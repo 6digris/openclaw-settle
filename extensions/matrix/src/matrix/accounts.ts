@@ -110,6 +110,7 @@ export async function resolveConfiguredMatrixBotUserIds(params: {
   cfg: CoreConfig;
   accountId?: string | null;
   env?: NodeJS.ProcessEnv;
+  abortSignal?: AbortSignal;
 }): Promise<Set<string>> {
   const env = { ...(params.env ?? process.env) };
   const currentAccountId = normalizeAccountId(params.accountId);
@@ -123,6 +124,9 @@ export async function resolveConfiguredMatrixBotUserIds(params: {
     .map((accountId) => prepareMatrixAccount({ cfg: params.cfg, accountId, env }));
   const ids = new Set<string>();
   for (const prepared of accounts) {
+    if (params.abortSignal?.aborted) {
+      break;
+    }
     const stored = await loadMatrixCredentialsAsync(env, prepared.account.accountId);
     if (!isMatrixAccountConfigured(prepared, stored)) {
       continue;

@@ -189,6 +189,7 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
   const configuredBotUserIds = await resolveConfiguredMatrixBotUserIds({
     cfg,
     accountId: effectiveAccountId,
+    abortSignal: opts.abortSignal,
   });
   if (opts.abortSignal?.aborted) {
     return;

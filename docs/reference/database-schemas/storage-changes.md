@@ -24,6 +24,20 @@ and publishes the result. Avoid exposing a generic SQL callback to application
 code or adding an asynchronous wrapper around an existing asynchronous facade.
 The plugin KV API already has asynchronous methods over its SQLite owner.
 
+Shared-state operations that request host transaction or commit admission retain
+lifecycle coordinator custody before worker dispatch. Native host writers can
+then borrow that same owner while servicing the worker's grants, avoiding a
+coordinator wait that blocks the grant handler. A foreign coordinator owner is
+waited out asynchronously before dispatch, within the existing SQLite lock budget.
+Grant services reuse the physical worker owner's admitted path aliases, so native
+handles opened through symlinked directories reach the same service without new
+filesystem lookups.
+The waiting job retains its FIFO position and capacity reservation; cancellation
+or worker exit wakes the wait without replaying a dispatched write. Source
+authority and persisted transaction checks remain unchanged. Coordinator acquisition
+and release still perform control SQL on the host; this does not complete the migration of native
+state writers. Database schemas, retention, and update behavior are unchanged.
+
 Managed outgoing image metadata lookups and cleanup inventories read through the
 shared-state worker, retaining their writable, creating database-open behavior.
 Typed columns, ordering, cleanup claims, and original-media references are unchanged.
@@ -253,6 +267,18 @@ an approved minimum host version guarantees both methods. Available worker failu
 never fall back. Modern domain validation errors surface
 directly, while older hosts retain their native callback error wrapping.
 
+Gateway client device-token reads, writes, and clearing run in the shared-state
+worker, including origin-bound tokens. Callers capture the state environment,
+input, and admission before waiting. The token owner keeps its existing codecs,
+comparison fences, and transactions. Read-only clients retain artifact-preserving
+reads and never create missing state. Reconnect waits for accepted persistence,
+and client shutdown drains it before returning; supplied cancellation and owner
+guards are checked again at worker admission. Device identity creation and the
+compound pairing recovery transaction retain their existing owners. Host admission
+still uses the synchronous lifecycle coordinator; token-data SQL runs in the worker.
+One-shot calls initialize that actor during request preparation, before starting
+the RPC timeout, without reading or caching token facts.
+
 ClickClack discussion generation reservations and pending-open recovery records
 use the shared-state worker. Generation mutations compare the current row and
 serialize through settlement; an old finalizer cannot clear a replacement
@@ -295,6 +321,34 @@ reads and cache installation share one ordered owner; native writes and transact
 commits fence delayed snapshots, including changes that return to the same value.
 Flow publication follows the same read-phase rule. A failed refresh leaves its scope
 dirty for the existing refresh owner without replaying the settled mutation.
+
+Default Gateway task persistence awaits initial creation in the shared-state worker
+before activating its run. Synchronous duplicate selection keeps process insertion
+order; worker selection uses persisted creation time and task ID. Automatic one-task
+flow creation, linking, and compensation remain separate best-effort stages after
+the task commit; compensation preserves a flow that changed or acquired another
+task reference.
+
+Modern creation captures its database target and selected plugin registry activation
+and registration before waiting. Transaction admission rechecks that owner and the
+original Gateway run. Confirmed task results survive later owner retirement. If
+activation fails, exact receipt cleanup uses the original database owner and refuses
+a task adopted by another run. Successful immediate flow publication precedes task
+observation. A failed projection read or known pre-dispatch cancellation overload
+retains required flow follow-up on the existing retry schedule and budget.
+An unadmitted worker-capacity refusal leaves cold registry preparation retryable;
+it does not become a permanent restore failure.
+Task observation waits for each acknowledged row's required flow effects.
+Acknowledged task mutations are never replayed.
+
+An externally registered legacy runtime preserves synchronous creation before
+Gateway setup and synchronous run-scoped terminal finalization, including command
+failure before execution starts. This operation retains the original live registration;
+retirement or replacement stops it with a warning. Its shipped run-scoped semantics
+do not become an exact-task cleanup guarantee. Worker failures never switch to a
+legacy creator. Coordinator SQL remains on the host. Other detached lifecycle
+callers retain their synchronous paths until their complete admission and settlement
+owners migrate.
 
 Routine status reads stream task audit metadata through the same shared worker
 and return fixed-size history aggregates plus candidates for live reconciliation.
@@ -782,6 +836,14 @@ keeps PID liveness checks on the host, then compares each complete candidate wit
 the authoritative row in the worker transaction before deletion. Reads retain
 existing-only admission, and all stages of a prune use the captured database
 context. The cold hook CLI retains its separate read-only locator worker.
+
+Browser board-change and deleted-session events discover retained dashboard tabs
+and Stop intents through the shared-state worker. Discovery reads the existing
+`browser.session-tabs` namespace without creating missing state. Browser service
+shutdown joins accepted board-event discovery and reconciliation; replaced
+runtimes discard late discovery results. Registration's alias bootstrap, tab
+mutations, and the final synchronous ownership check before closing a browser
+target retain their existing owners.
 
 ### Preserve the data and concurrency contracts
 

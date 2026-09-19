@@ -47,6 +47,10 @@ import {
 import { detectGatewayAuthHealth } from "./doctor-gateway-auth.js";
 import { hasActiveGatewayExecCredential } from "./doctor-gateway-exec-credential.js";
 import { removedWorkspacesStateCheck } from "./doctor-removed-workspaces-state-check.js";
+import {
+  collectRuntimeToolSchemaFindingsWithRuntime,
+  createRuntimeToolSchemaCheck,
+} from "./doctor-tool-schema-check.js";
 import { resolveDoctorWorkspaceSuggestionScopes } from "./doctor-workspace-suggestion-scopes.js";
 import { copyHealthCheck } from "./health-check-adapter.js";
 import type { DoctorHealthCheck } from "./health-check-runner-types.js";
@@ -129,21 +133,6 @@ async function collectWorkspaceSuggestionNotesWithRuntime(
     notes.push(MEMORY_SYSTEM_PROMPT);
   }
   return notes;
-}
-
-async function collectRuntimeToolSchemaFindingsWithRuntime(
-  ctx: HealthCheckContext,
-): Promise<readonly HealthFinding[]> {
-  const runtime = await loadDoctorCoreChecksRuntimeModule();
-  const runWithPluginMetadataSnapshot = (
-    ctx as HealthCheckContext & {
-      runWithPluginMetadataSnapshot?: PluginMetadataSnapshotScopeRunner;
-    }
-  ).runWithPluginMetadataSnapshot;
-  return runtime.collectRuntimeToolSchemaFindings(ctx.cfg, {
-    env: ctx.env,
-    ...(runWithPluginMetadataSnapshot ? { runWithPluginMetadataSnapshot } : {}),
-  });
 }
 
 async function collectProviderCatalogProjectionFindingsWithRuntime(
@@ -592,18 +581,6 @@ const bootstrapSizeCheck: HealthCheck = {
     return findings;
   },
 };
-
-function createRuntimeToolSchemaCheck(deps: CoreHealthCheckDeps): HealthCheck {
-  return {
-    id: "core/doctor/runtime-tool-schemas",
-    kind: "core",
-    description: "Active agent tool schemas project into model/runtime-compatible tool inputs.",
-    source: "doctor",
-    async detect(ctx) {
-      return deps.collectRuntimeToolSchemaFindings(ctx);
-    },
-  };
-}
 
 function createProviderCatalogProjectionCheck(deps: CoreHealthCheckDeps): HealthCheck {
   return {

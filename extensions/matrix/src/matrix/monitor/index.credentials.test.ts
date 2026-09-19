@@ -28,6 +28,7 @@ beforeAll(async () => {
 });
 
 describe("Matrix monitor credential discovery", () => {
+  let cfg: CoreConfig;
   const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
     afterEach(async () => {
       vi.restoreAllMocks();
@@ -47,7 +48,7 @@ describe("Matrix monitor credential discovery", () => {
     Object.assign(harness.client, { getUserId: async () => "@bot:example.org" });
     const stateDir = tempDirs.make("matrix-monitor-credentials-");
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
-    const cfg: CoreConfig = {
+    cfg = {
       channels: {
         matrix: {
           homeserver: "https://matrix.example.org",
@@ -162,15 +163,25 @@ describe("Matrix monitor credential discovery", () => {
     },
   );
   it("joins admitted credential discovery after abort without starting a client", async () => {
+    const accounts = cfg.channels?.matrix?.accounts;
+    if (!accounts) {
+      throw new Error("missing synthetic Matrix accounts");
+    }
+    accounts.secondary = {
+      homeserver: "https://matrix.example.org",
+      accessToken: "synthetic-secondary-token",
+    };
     const observed = createDeferred<void>();
     const release = createDeferred<void>();
     const read = credentials.loadMatrixCredentialsAsync;
-    vi.spyOn(credentials, "loadMatrixCredentialsAsync").mockImplementation(async (...args) => {
-      const stored = await read(...args);
-      observed.resolve();
-      await release.promise;
-      return stored;
-    });
+    const lookup = vi
+      .spyOn(credentials, "loadMatrixCredentialsAsync")
+      .mockImplementation(async (...args) => {
+        const stored = await read(...args);
+        observed.resolve();
+        await release.promise;
+        return stored;
+      });
     const controller = new AbortController();
     const monitoring = monitorMatrixProvider({ abortSignal: controller.signal });
     let settled = false;
@@ -189,6 +200,7 @@ describe("Matrix monitor credential discovery", () => {
       controller.abort();
       await monitoring;
     }
+    expect(lookup.mock.calls.map(([, accountId]) => accountId)).toEqual(["ops"]);
     expect(harness.acquireSharedMatrixClient).not.toHaveBeenCalled();
     expect(harness.registerMatrixMonitorEvents).not.toHaveBeenCalled();
     expect(harness.resolveSharedMatrixClient).not.toHaveBeenCalled();
