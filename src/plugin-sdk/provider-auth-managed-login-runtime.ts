@@ -8,18 +8,19 @@ import { createLazyRuntimeMethodBinder, createLazyRuntimeModule } from "../share
 export const MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY = "openclaw.models.auth.managed.v1";
 export const MANAGED_MODELS_AUTH_LOGIN_ACCOUNT_MISMATCH_CODE = "account_mismatch";
 
-export type {
-  ModelsAuthLoginFlowOptions,
-  ModelsAuthLoginFlowResult,
-  ModelsAuthLoginManagedOptions,
+export type ModelsAuthManagedLoginFlowOptions = Omit<ModelsAuthLoginFlowOptions, "managed"> & {
+  managed: ModelsAuthLoginManagedOptions;
 };
+export type { ModelsAuthLoginFlowResult, ModelsAuthLoginManagedOptions };
 
 type RunModelsAuthLoginFlow = (
-  opts: ModelsAuthLoginFlowOptions,
+  opts: ModelsAuthManagedLoginFlowOptions,
 ) => Promise<ModelsAuthLoginFlowResult>;
 
 type ProviderAuthManagedLoginRuntime = {
-  runModelsAuthLoginFlowCore: RunModelsAuthLoginFlow;
+  runModelsAuthLoginFlowCore: (
+    opts: ModelsAuthLoginFlowOptions,
+  ) => Promise<ModelsAuthLoginFlowResult>;
 };
 
 const loadProviderAuthManagedLoginRuntime = createLazyRuntimeModule(
@@ -28,7 +29,14 @@ const loadProviderAuthManagedLoginRuntime = createLazyRuntimeModule(
 const bindProviderAuthManagedLoginRuntime = createLazyRuntimeMethodBinder(
   loadProviderAuthManagedLoginRuntime,
 );
-
-export const runModelsAuthLoginFlow: RunModelsAuthLoginFlow = bindProviderAuthManagedLoginRuntime(
+const runModelsAuthLoginFlowCore = bindProviderAuthManagedLoginRuntime(
   (runtime) => runtime.runModelsAuthLoginFlowCore,
 );
+
+export const runModelsAuthLoginFlow: RunModelsAuthLoginFlow = async (opts) => {
+  const managed = (opts as Partial<ModelsAuthManagedLoginFlowOptions>).managed;
+  if (!managed || managed.capability !== MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY) {
+    throw new Error("Managed auth login requires the supported managed login capability marker.");
+  }
+  return await runModelsAuthLoginFlowCore(opts);
+};

@@ -307,13 +307,13 @@ async function stageProviderAuthProfilesForPersistence(params: {
   config: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
   stateDir?: string;
-  beforeWrite?: () => void;
+  beforeWrite?: PersistProviderAuthProfileBatchParams["beforeWrite"];
 }): Promise<ProviderAuthProtectedProfilesReceipt> {
   const env = resolvePersistenceEnv(params);
   const locks = await acquireProviderAuthLocks(params.profiles, env);
   let prepared: ReturnType<typeof materializeProviderAuthProfiles>;
   try {
-    params.beforeWrite?.();
+    params.beforeWrite?.(undefined);
     prepared = materializeProviderAuthProfiles({
       profiles: params.profiles,
       config: params.config,

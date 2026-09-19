@@ -34,18 +34,20 @@ function accountSubject(credential: {
   accountId?: string;
   userId?: string;
 }): { accountId: string; userId: string } | undefined {
-  const storedAccountId = normalizeOptionalString(credential.accountId);
-  const storedUserId = normalizeOptionalString(credential.userId);
-  if (storedAccountId && storedUserId) {
-    return { accountId: storedAccountId, userId: storedUserId };
-  }
   const claims = asNonArrayRecord(
     decodeOpenAICodexJwtPayload(credential.access ?? "")?.["https://api.openai.com/auth"],
   );
   const accountId = normalizeOptionalString(claims.chatgpt_account_id);
   const userId =
     normalizeOptionalString(claims.chatgpt_user_id) ?? normalizeOptionalString(claims.user_id);
-  return accountId && userId ? { accountId, userId } : undefined;
+  if (accountId && userId) {
+    return { accountId, userId };
+  }
+  const storedAccountId = normalizeOptionalString(credential.accountId);
+  const storedUserId = normalizeOptionalString(credential.userId);
+  return storedAccountId && storedUserId
+    ? { accountId: storedAccountId, userId: storedUserId }
+    : undefined;
 }
 
 const matchesPersonalAccount: NonNullable<

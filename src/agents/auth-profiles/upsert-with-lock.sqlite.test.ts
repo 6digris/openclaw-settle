@@ -663,7 +663,8 @@ describe("auth profile batch persistence", () => {
         persistAuthProfileBatch({
           agentDir,
           profiles: [{ profileId, credential: apiKey("sk-fresh") }],
-          assertCurrent: () => {
+          beforeWrite: (current) => {
+            expect(current).toEqual(apiKey("sk-stale"));
             throw new Error("owner changed");
           },
         }),

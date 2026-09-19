@@ -743,6 +743,36 @@ describe("OpenAI model-account credential ownership", () => {
     }
   });
 
+  it("uses usable token claims before stale stored OpenAI user metadata", () => {
+    const credential: OAuthCredential = {
+      type: "oauth",
+      provider: "openai",
+      access: fakeJwt({
+        "https://api.openai.com/auth": {
+          chatgpt_account_id: "workspace-1",
+          chatgpt_user_id: "user-1",
+        },
+      }),
+      refresh: "synthetic-refresh",
+      expires: 1,
+      accountId: "workspace-stale",
+      userId: "user-stale",
+    };
+    const existing: OAuthCredential = {
+      ...credential,
+      access: fakeJwt({
+        "https://api.openai.com/auth": {
+          chatgpt_account_id: "workspace-2",
+          chatgpt_user_id: "user-2",
+        },
+      }),
+    };
+    for (const methodId of ["oauth", "device-code"]) {
+      const method = buildOpenAIProvider().auth.find((entry) => entry.id === methodId);
+      expect(method?.matchesPersonalAccount?.(credential, existing)).toBe(false);
+    }
+  });
+
   it("matches stored OpenAI user metadata when token claims are unavailable", () => {
     const credential: OAuthCredential = {
       type: "oauth",

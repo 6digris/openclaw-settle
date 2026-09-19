@@ -10,6 +10,8 @@ import {
   loadAuthProfileStoreWithoutExternalProfiles,
   saveAuthProfileStore,
 } from "../agents/auth-profiles/store-runtime.js";
+import { findPersistedAuthProfileCredential } from "../agents/auth-profiles/store.js";
+import { persistAuthProfileBatch } from "../agents/auth-profiles/upsert-with-lock.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { summarizeMigrationItems } from "../plugin-sdk/migration.js";
 import * as migrationRuntime from "../plugins/migration-provider-runtime.js";
@@ -126,11 +128,12 @@ describe("managed provider auth login", () => {
         state.agentDir(),
         { filterExternalAuthProfiles: false, syncExternalCli: false },
       );
-      saveAuthProfileStore(
-        { version: 1, profiles: { [profileId]: originalNativeCredential } },
-        nativeAgentDir,
-        { filterExternalAuthProfiles: false, syncExternalCli: false },
-      );
+      await persistAuthProfileBatch({
+        agentDir: nativeAgentDir,
+        stateDir: nativeStateDir,
+        profiles: [{ profileId, credential: originalNativeCredential }],
+        allowOAuthGenerationReplacement: true,
+      });
 
       await expect(
         runModelsAuthLoginFlowCore({
@@ -146,23 +149,32 @@ describe("managed provider auth login", () => {
             profileId,
             stateDir: nativeStateDir,
             beforePersist: async () => {
-              saveAuthProfileStore(
-                { version: 1, profiles: { [profileId]: interveningNativeCredential } },
-                nativeAgentDir,
-                { filterExternalAuthProfiles: false, syncExternalCli: false },
-              );
+              await persistAuthProfileBatch({
+                agentDir: nativeAgentDir,
+                stateDir: nativeStateDir,
+                profiles: [{ profileId, credential: interveningNativeCredential }],
+                allowOAuthGenerationReplacement: true,
+              });
             },
             assertCurrent: () => {},
           },
         }),
       ).rejects.toMatchObject({ code: MANAGED_MODELS_AUTH_LOGIN_ACCOUNT_MISMATCH_CODE });
 
-      expect(loadPersistedAuthProfileStore(nativeAgentDir)?.profiles[profileId]).toEqual(
-        interveningNativeCredential,
-      );
-      expect(loadPersistedAuthProfileStore(state.agentDir())?.profiles[profileId]).toEqual(
-        ambientCredential,
-      );
+      expect(
+        findPersistedAuthProfileCredential({
+          agentDir: nativeAgentDir,
+          profileId,
+          stateDir: nativeStateDir,
+        }),
+      ).toEqual(interveningNativeCredential);
+      expect(
+        findPersistedAuthProfileCredential({
+          agentDir: state.agentDir(),
+          profileId,
+          stateDir: state.stateDir,
+        }),
+      ).toEqual(ambientCredential);
     } finally {
       getPluginLoaderCacheState().clear();
       resetPluginRuntimeStateForTest();

@@ -472,16 +472,16 @@ async function persistProviderAuthResult(params: {
       const persisted = await persistProviderAuthProfilesAfterLogin({
         profiles: [candidate],
         beforeWrite: managed
-          ? () => {
+          ? (current, profileId) => {
               params.assertCurrent?.();
+              if (profileId !== candidate.profileId) {
+                return;
+              }
               assertManagedSamePersonalAccount({
                 method: managed.method,
                 incoming: candidate.credential,
-                current: findPersistedAuthProfileCredential({
-                  agentDir: params.agentDir,
-                  profileId: candidate.profileId,
-                  stateDir: managed.stateDir,
-                }),
+                current,
+                requireCurrent: managed.existingCredential !== undefined,
               });
             }
           : params.assertCurrent,
@@ -1069,8 +1069,15 @@ function assertManagedSamePersonalAccount(params: {
   method: ProviderAuthMethod;
   incoming: AuthProfileCredential;
   current: AuthProfileCredential | undefined;
+  requireCurrent?: boolean;
 }) {
   if (!params.current) {
+    if (params.requireCurrent) {
+      throw createManagedAuthLoginError(
+        MANAGED_MODELS_AUTH_LOGIN_ACCOUNT_MISMATCH_CODE,
+        "Managed auth login target profile changed before credentials could be saved.",
+      );
+    }
     return;
   }
   if (params.method.matchesPersonalAccount?.(params.incoming, params.current)) {

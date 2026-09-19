@@ -27,7 +27,7 @@ type ResolvePluginProvidersCall = {
 
 type PersistProviderAuthCall = {
   agentDir?: string;
-  beforeWrite?: () => void;
+  beforeWrite?: (current?: unknown, profileId?: string) => void;
   env?: NodeJS.ProcessEnv;
   stateDir?: string;
   profiles?: Array<{
@@ -617,7 +617,6 @@ describe("modelsAuthLoginCommand", () => {
     expect(mocks.persistProviderAuthProfilesAfterLogin).not.toHaveBeenCalled();
     expect(mocks.promoteAuthProfileInOrder).not.toHaveBeenCalled();
     expect(mocks.updateConfig).not.toHaveBeenCalled();
-    expect(mocks.completeProviderModelAccess).not.toHaveBeenCalled();
     expect(mocks.callGateway).not.toHaveBeenCalled();
   });
 
@@ -1143,7 +1142,6 @@ describe("modelsAuthLoginCommand", () => {
     expect(mocks.persistProviderAuthProfilesAfterLogin).not.toHaveBeenCalled();
     expect(mocks.promoteAuthProfileInOrder).not.toHaveBeenCalled();
     expect(mocks.updateConfig).not.toHaveBeenCalled();
-    expect(mocks.completeProviderModelAccess).not.toHaveBeenCalled();
   });
 
   it("runs explicit managed login without config, order, default, or force side effects", async () => {
@@ -1187,11 +1185,14 @@ describe("modelsAuthLoginCommand", () => {
     expect(runProviderAuth).toHaveBeenCalledWith(
       expect.objectContaining({
         agentDir: managedAgentDir,
-        assertCurrent,
+        assertCurrent: expect.any(Function),
         env: managedEnv,
         workspaceDir: "/tmp/openclaw/workspace",
       }),
     );
+    const providerCall = readMockCallArg(runProviderAuth) as AuthRunCall;
+    providerCall.assertCurrent?.();
+    expect(assertCurrent).toHaveBeenCalled();
     expect(mocks.findPersistedAuthProfileCredential).toHaveBeenCalledWith({
       agentDir: managedAgentDir,
       profileId: "openai:managed",
@@ -1217,7 +1218,6 @@ describe("modelsAuthLoginCommand", () => {
     );
     expect(mocks.promoteAuthProfileInOrder).not.toHaveBeenCalled();
     expect(mocks.updateConfig).not.toHaveBeenCalled();
-    expect(mocks.completeProviderModelAccess).not.toHaveBeenCalled();
     expect(mocks.removeProviderAuthProfilesWithLock).not.toHaveBeenCalled();
   });
 
