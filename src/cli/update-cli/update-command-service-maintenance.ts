@@ -13,6 +13,7 @@ import {
 } from "../../daemon/service-types.js";
 import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
 import { resolveSystemdServiceName } from "../../daemon/systemd-service-files.js";
+import { prepareManagedServiceUpdateHandoffActivation } from "../../infra/update-managed-service-activation.js";
 import { isCurrentManagedServiceUpdateHandoffProcess } from "../../infra/update-managed-service-handoff.js";
 import { getUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
@@ -532,7 +533,18 @@ async function stopManagedServiceBeforeMutableUpdate(
       ...(windowsTaskAutoStartRecovery ? { windowsTaskAutoStartRecovery } : {}),
     };
   }
-  const blockMessage = await resolveAncestryBlock(serviceState);
+  // The helper owns supervisor teardown; the caller retains the lifecycle lock.
+  // Scheduled Task autostart keeps its existing native recovery owner.
+  const activateHandoff =
+    updateRun?.executorFence && process.platform !== "win32"
+      ? await prepareManagedServiceUpdateHandoffActivation({
+          root: params.root,
+          runId: updateRun.runId,
+          assertCurrent,
+        })
+      : undefined;
+  assertCurrent();
+  const blockMessage = activateHandoff ? undefined : await resolveAncestryBlock(serviceState);
   if (blockMessage) {
     return { ...inspected, blockMessage };
   }
@@ -561,7 +573,9 @@ async function stopManagedServiceBeforeMutableUpdate(
     });
     assertGatewayServiceAdmissionUnchanged(inspected, currentVerdict);
     assertCurrent();
-    const currentBlockMessage = await resolveAncestryBlock(currentState);
+    const currentBlockMessage = activateHandoff
+      ? undefined
+      : await resolveAncestryBlock(currentState);
     if (currentBlockMessage) {
       throw new UpdatePreMutationError("managed-service-preflight", currentBlockMessage);
     }
@@ -571,13 +585,18 @@ async function stopManagedServiceBeforeMutableUpdate(
         env: params.updateRun.env,
       });
     }
-    await service.stop({
-      env: currentState.env,
-      stdout: params.jsonMode ? JSON_MODE_SERVICE_STDOUT : process.stdout,
-      assertCurrent,
-      // Native stop may unload the service before a later port check fails.
-      onMutation: () => params.onStopped?.({ ...inspected, stopped: true, stoppedAtMs }),
-    });
+    const onStopped = () => params.onStopped?.({ ...inspected, stopped: true, stoppedAtMs });
+    if (activateHandoff) {
+      await activateHandoff(onStopped);
+    } else {
+      await service.stop({
+        env: currentState.env,
+        stdout: params.jsonMode ? JSON_MODE_SERVICE_STDOUT : process.stdout,
+        assertCurrent,
+        // Native stop may unload the service before a later port check fails.
+        onMutation: onStopped,
+      });
+    }
     assertCurrent();
     if (windowsTaskAutoStartRecovery) {
       await abortWindowsTaskUpdateIfInterrupted(windowsTaskAutoStartRecovery);

@@ -40,6 +40,10 @@ import {
 import { applyDevUpdateTargetEnv, type DevUpdateTarget } from "./update-dev-target.js";
 import { resolvePnpmGlobalInstallOwner, verifyPackageUpdateRecovery } from "./update-global.js";
 import { resolveUpdateInstallRoot } from "./update-install-root.js";
+import {
+  HANDOFF_COMMAND_RUNNER_SCRIPT,
+  HANDOFF_EXEC_RUNNER_SCRIPT,
+} from "./update-managed-service-command.js";
 import { MANAGED_SERVICE_UPDATE_HANDOFF_TEMP_PREFIX } from "./update-managed-service-handoff-cleanup.js";
 import {
   assertManagedUpdateLeaseDatabaseIdentity,
@@ -80,29 +84,6 @@ function unrefHandoffPipe(pipe: HandoffChild["stdin"] | HandoffChild["stdout"]):
     pipe.unref();
   }
 }
-// The private admission pipe must not change the installed CLI's stdin lifetime.
-const HANDOFF_COMMAND_RUNNER_SCRIPT = String.raw`
-const gateFs = process.getBuiltinModule("fs");
-const gate = Buffer.alloc(2);
-try {
-  if (gateFs.readSync(4, gate) !== 2 || gate.toString() !== "go")
-    throw new Error("Managed handoff admission was refused");
-} finally { gateFs.closeSync(4); }
-`;
-
-const HANDOFF_EXEC_RUNNER_SCRIPT = String.raw`
-${HANDOFF_COMMAND_RUNNER_SCRIPT}
-const { spawn } = require("node:child_process");
-const argv = JSON.parse(process.argv[1]);
-if (process.platform !== "win32" && typeof process.execve === "function")
-  process.execve(argv[0], argv, process.env);
-const child = spawn(argv[0], argv.slice(1), { env: process.env, stdio: "inherit" });
-child.once("error", () => { process.exitCode = 1; });
-child.once("exit", (code, signal) => {
-  process.exitCode = typeof code === "number" ? code : signal ? 1 : 0;
-});
-`;
-
 const HANDOFF_SCRIPT = String.raw`
 const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
@@ -1197,7 +1178,7 @@ async function runOwnedUpdateCommand(phase, commandArgv, timeoutMs, cwd = params
     );
     let nativeReady = false;
     let nativeBusy = false;
-    const rejectActivation = (error) => {
+    const rejectActivation = async (error) => {
       if (!activationAcknowledged) activationRejected = error?.code === "owner_required" ? "owner_required" : "managed-service-handoff-helper-failed";
       appendLog("managed update activation failed: " + String(error));
       if (durableNative) {
@@ -1205,6 +1186,9 @@ async function runOwnedUpdateCommand(phase, commandArgv, timeoutMs, cwd = params
         if (!nativeBusy) child.stdin.write("native-settled\n");
         return;
       }
+      // Keep the updater (and its lifecycle lock) alive until every dispatched
+      // stop has settled, including revoked ownership and malformed control.
+      if (pendingServiceStop) await pendingServiceStop.catch(() => {});
       child.stdin.end("cancelled\n");
       if (child.exitCode === null && child.signalCode === null) killOwnedCommand(child);
     };
@@ -1247,8 +1231,9 @@ async function runOwnedUpdateCommand(phase, commandArgv, timeoutMs, cwd = params
               } finally {
                 // Parent-exit checks can fail while the native stop job is still
                 // alive. Neither failure nor cancellation acknowledges that job.
-                if (durableNative) await pendingServiceStop;
-                nativeBusy = false;
+                appendLog("joining managed update native stop");
+                try { await pendingServiceStop; }
+                finally { nativeBusy = false; }
               }
               if (nativeCancellation || !ownsManagedUpdateLease()) throw new Error("managed update activation ownership lost");
               if (marker === "suppress\n") child.stdin.write("suppressed\n");

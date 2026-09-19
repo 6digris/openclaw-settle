@@ -1,3 +1,4 @@
+import type { ManagedActivationScenario } from "./update-managed-service-activation-child.test-support.js";
 import type {
   ManagedServiceManagerBoundaryOptions,
   ManagedServiceManagerBoundaryResult,
@@ -13,6 +14,7 @@ export type ManagedRepairBoundary = {
 };
 
 export type ManagedServiceBoundaryOptions = ManagedServiceManagerBoundaryOptions & {
+  maintenanceActivation?: ManagedActivationScenario;
   trigger?: "cli" | "api";
   origin?: UpdateRunRecord["origin"];
   controlDisconnect?: "transferred" | "unarmed" | "dead-parent";

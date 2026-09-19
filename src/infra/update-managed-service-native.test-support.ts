@@ -101,6 +101,9 @@ export function createManagedServiceActivationScript(params: {
 
 export async function readNativeState(statePath: string): Promise<Record<string, unknown>> {
   return {
+    ...(JSON.parse(
+      await fs.readFile(statePath + ".retirement", "utf8").catch(() => "{}"),
+    ) as Record<string, unknown>),
     ...(JSON.parse(await fs.readFile(statePath, "utf8").catch(() => "{}")) as Record<
       string,
       unknown

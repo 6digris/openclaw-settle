@@ -1,3 +1,4 @@
+import type { ChildProcess } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +11,14 @@ import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { resolveTestNodeExecPath } from "../test-utils/node-process.js";
 import { writeRestartSentinel } from "./restart-sentinel.js";
+import {
+  createManagedMaintenanceActivationScript,
+  managedActivationExpectation,
+} from "./update-managed-service-activation-child.test-support.js";
+import {
+  createManagedActivationAncestor,
+  observeManagedActivationHelper,
+} from "./update-managed-service-activation-process.test-support.js";
 import type { ManagedServiceBoundaryOptions } from "./update-managed-service-handoff-boundary-contract.test-support.js";
 import {
   awaitEmulatedRecoveryHandoffExit,
@@ -85,7 +94,8 @@ export function createManagedServiceManagerBoundary({
     const updaterPidPath = path.join(root, "updater-pid");
     const commandTimingsPath = path.join(root, "manager-command-timings.jsonl");
     const recoveryModulePath = path.join(root, "recovery-health.mjs");
-    const stateDatabasePath = resolveOpenClawStateSqlitePath({ OPENCLAW_STATE_DIR: root });
+    const stateDir = options?.maintenanceActivation ? path.join(root, ".openclaw") : root;
+    const stateDatabasePath = resolveOpenClawStateSqlitePath({ OPENCLAW_STATE_DIR: stateDir });
     const consumeNotification = `const db = new (require("node:sqlite").DatabaseSync)(${JSON.stringify(stateDatabasePath)}); const cleared = db.prepare("DELETE FROM gateway_restart_sentinel WHERE sentinel_key = 'current'").run(); db.close(); if (cleared.changes !== 1) throw new Error("expected one published notification before recovery consumed it"); ${managedServiceStateUpdateScript(statePath, "state.consumedNotifications = Number(cleared.changes)")};`;
     if (options?.updaterNotification) {
       openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: root } });
@@ -124,8 +134,11 @@ export function createManagedServiceManagerBoundary({
       await fs.mkdir(invocationCwd);
       await fs.writeFile(path.join(invocationCwd, "update-input.txt"), "selected target");
     }
+    const activationAncestor = options?.maintenanceActivation
+      ? await createManagedActivationAncestor(root, spawn)
+      : undefined;
     const { parent, parentClosed, parentPid, parentStartIdentity } =
-      createManagedServiceBoundaryParent(spawn);
+      activationAncestor ?? createManagedServiceBoundaryParent(spawn);
     await fs.writeFile(
       path.join(root, kind === "systemd" ? "systemctl" : "launchctl"),
       createManagedServiceManagerFixtureScript({
@@ -143,8 +156,8 @@ export function createManagedServiceManagerBoundary({
       ...(kind === "launchd" ? LAUNCHD_GATEWAY_IDENTITY_ENV : {}),
       // Source descendants run from the durable helper cwd, outside this checkout.
       TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"),
-      OPENCLAW_STATE_DIR: root,
-      OPENCLAW_CONFIG_PATH: path.join(root, "openclaw.json"),
+      OPENCLAW_STATE_DIR: stateDir,
+      OPENCLAW_CONFIG_PATH: path.join(stateDir, "openclaw.json"),
       PATH: `${root}${path.delimiter}${process.env.PATH ?? ""}`,
     };
     const run = options?.ledger
@@ -168,7 +181,7 @@ export function createManagedServiceManagerBoundary({
       ledger: Boolean(run),
       options,
     });
-    let helper: import("node:child_process").ChildProcess | undefined;
+    let helper: ChildProcess | undefined;
     let helperCompletion: Promise<number | null> | undefined;
     let helperLogPath: string | undefined;
     const cleanup = createManagedServiceBoundaryCleanup(() => [helper, parent]);
@@ -265,23 +278,35 @@ export function createManagedServiceManagerBoundary({
       }
       if (options?.controlDisconnect === "transferred") {
         const continuation =
-          options.repair && run
-            ? await managedRepairUpdaterScript({
+          options.maintenanceActivation && run
+            ? createManagedMaintenanceActivationScript({
+                kind,
                 root,
                 runId: run.runId,
+                gatewayPid: parentPid,
+                coordinatorDir: path.dirname(String(generated.updateLeaseDatabasePath)),
+                statePath,
                 sourceRuntimeImport,
-                phase: options.repair.phase,
+                updaterScript,
+                scenario: options.maintenanceActivation,
               })
-            : options.validationResult
-              ? `process.stdout.write(JSON.stringify({root:${JSON.stringify(root)},status:${JSON.stringify(options.validationResult === "failed" ? "error" : "skipped")},mode:"npm",reason:${JSON.stringify(options.validationResult === "failed" ? "candidate-validation-failed" : "already-current")}}));`
-              : createManagedServiceActivationScript({
-                  ...options,
-                  installRoot: root,
-                  runId: run?.runId,
+            : options.repair && run
+              ? await managedRepairUpdaterScript({
+                  root,
+                  runId: run.runId,
                   sourceRuntimeImport,
-                  statePath,
-                  updaterScript,
-                });
+                  phase: options.repair.phase,
+                })
+              : options.validationResult
+                ? `process.stdout.write(JSON.stringify({root:${JSON.stringify(root)},status:${JSON.stringify(options.validationResult === "failed" ? "error" : "skipped")},mode:"npm",reason:${JSON.stringify(options.validationResult === "failed" ? "candidate-validation-failed" : "already-current")}}));`
+                : createManagedServiceActivationScript({
+                    ...options,
+                    installRoot: root,
+                    runId: run?.runId,
+                    sourceRuntimeImport,
+                    statePath,
+                    updaterScript,
+                  });
         updaterScript = `
         const validationFs = require("node:fs");
         const validationStartedAt = Date.now();
@@ -391,27 +416,20 @@ export function createManagedServiceManagerBoundary({
         );
         helperEnv = { ...helperEnv, NODE_OPTIONS: `--require ${preloadPath}` };
       }
-      const runningHelper = spawn(resolveTestNodeExecPath(), [scriptPath, paramsPath], {
-        env: helperEnv,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      helper = runningHelper;
-      let stdout = "";
-      runningHelper.stdout?.on("data", (chunk) => {
-        stdout += chunk.toString();
-      });
-      let stderr = "";
-      runningHelper.stderr?.on("data", (chunk) => {
-        stderr += chunk.toString();
-      });
-      let helperCompleted = false;
-      const completion = new Promise<number | null>((resolve, reject) => {
-        runningHelper.once("error", reject);
-        runningHelper.once("close", (code) => {
-          helperCompleted = true;
-          resolve(code);
+      let runningHelper:
+        | ChildProcess
+        | Awaited<ReturnType<NonNullable<typeof activationAncestor>["connect"]>>;
+      if (activationAncestor) {
+        runningHelper = await activationAncestor.connect(scriptPath, paramsPath, helperEnv);
+      } else {
+        runningHelper = spawn(resolveTestNodeExecPath(), [scriptPath, paramsPath], {
+          env: helperEnv,
+          stdio: ["pipe", "pipe", "pipe"],
         });
-      });
+        helper = runningHelper;
+      }
+      const observation = observeManagedActivationHelper(runningHelper);
+      const { completion } = observation;
       helperCompletion = completion;
       await waitForHandoffResponse(runningHelper.stdout, "OPENCLAW_UPDATE_HANDOFF_READY");
 
@@ -458,6 +476,8 @@ export function createManagedServiceManagerBoundary({
             });
           }
           // A real updater child is now validating, but the service has received no stop.
+          await expect(pathExists(updaterPath)).resolves.toBe(false);
+          expect((await readNativeState(statePath)).directStop).toBeUndefined();
           expect(parent).toMatchObject({ exitCode: null, signalCode: null });
           await expect(pathExists(commandsPath)).resolves.toBe(false);
           if (options.cancelDuringValidation) {
@@ -474,12 +494,15 @@ export function createManagedServiceManagerBoundary({
             const notice = options.beforeParkNotice
               ? waitForHandoffResponse(runningHelper.stdout, "before-park")
               : undefined;
+            if (options.maintenanceActivation) {
+              await fs.writeFile(statePath, JSON.stringify({ validationGateReleased: true }));
+            }
             await fs.writeFile(validationReleasePath, "activate");
             if (options.repair) {
               await Promise.race([
                 options.repair.inferencePending,
                 completion.then(() => {
-                  throw new Error(`Repair updater exited before inference: ${stderr}`);
+                  throw new Error(`Repair updater exited before inference: ${observation.stderr}`);
                 }),
               ]);
               await releaseManagedRepairInference(options.repair, root, env.OPENCLAW_CONFIG_PATH);
@@ -509,7 +532,7 @@ export function createManagedServiceManagerBoundary({
               await fs.writeFile(activationReleasePath, "continue");
               await vi.waitFor(
                 async () => {
-                  expect(helperCompleted || (await pathExists(mutationPath))).toBe(true);
+                  expect(observation.completed || (await pathExists(mutationPath))).toBe(true);
                 },
                 { timeout: 5_000 },
               );
@@ -518,34 +541,45 @@ export function createManagedServiceManagerBoundary({
             }
           }
         }
-        const activated =
-          options.controlDisconnect === "transferred" &&
-          !options.validationResult &&
-          !options.cancelDuringValidation &&
-          !options.cancelAtActivation &&
-          !options.revokeWhileValidating &&
-          options.nativePreparation !== "refuse-stop" &&
-          options.nativePreparation !== "fail-preparation" &&
-          options.nativePreparation !== "fail-persistence-ack" &&
-          options.nativePreparation !== "fail-commit-ack";
+        const { activated, updated } = managedActivationExpectation(options);
         if (activated) {
           await vi.waitFor(
             async () => {
-              expect(JSON.parse(await fs.readFile(statePath, "utf8"))).toMatchObject({
-                parked: true,
-              });
+              const state = JSON.parse(await fs.readFile(statePath, "utf8").catch(() => "{}"));
+              if (observation.completed && state.parked !== true) {
+                throw new Error(
+                  `Updater failed before park: ${state.maintenanceError ?? observation.stderr}`,
+                );
+              }
+              expect(state).toMatchObject({ parked: true });
             },
             // The spawn fallback imports the actual activation API before requesting the stop.
             { timeout: 30_000 },
           );
+          if (options.maintenanceActivation === "revoked-during-stop") {
+            const db = new DatabaseSync(String(generated.updateLeaseDatabasePath));
+            try {
+              expect(
+                db.prepare("DELETE FROM managed_update_handoffs WHERE install_root = ?").run(root)
+                  .changes,
+              ).toBe(1);
+            } finally {
+              db.close();
+            }
+            await vi.waitFor(async () => {
+              expect(await fs.readFile(String(generated.logPath), "utf8")).toContain(
+                "joining managed update native stop",
+              );
+            });
+            await fs.writeFile(statePath + ".native-timeout", "release native stop");
+          }
           parent.stdin?.end();
         }
         const code = await completion;
         const helperLog = await fs.readFile(String(generated.logPath), "utf8").catch(() => "");
         if (!options.repair) {
-          expect(code, `${stderr}\n${helperLog}`).toBe(options.helperExitCode ?? 0);
+          expect(code, `${observation.stderr}\n${helperLog}`).toBe(options.helperExitCode ?? 0);
         }
-        const updated = activated && options.nativePreparation !== "timeout-stop";
         await expect(pathExists(updaterPath)).resolves.toBe(updated);
       } else if (options?.parentExitTimeoutMs !== undefined) {
         const timeout = options.parentExitTimeoutMs + (options.launchdTeardown ? 8_000 : 3_000);
@@ -561,20 +595,20 @@ export function createManagedServiceManagerBoundary({
                 );
               }),
             ]),
-            stderr,
+            observation.stderr,
           ).toBe(0);
         } finally {
           clearTimeout(timer);
         }
         expect(parent).toMatchObject({ exitCode: null, signalCode: null });
         await expect(pathExists(commandsPath)).resolves.toBe(false);
-        expect(stdout).not.toContain("committed\n");
+        expect(observation.stdout).not.toContain("committed\n");
         await expect(pathExists(updaterPath)).resolves.toBe(false);
       } else if (options?.launchdFault === "wrong-parent" || options?.overdueCommit) {
         const cancelled = waitForHandoffResponse(runningHelper.stdout, "cancelled");
         runningHelper.stdin?.write("park\n");
         await cancelled;
-        expect(await completion, stderr).toBe(0);
+        expect(await completion, observation.stderr).toBe(0);
         expect(parent).toMatchObject({ exitCode: null, signalCode: null });
         await expect(pathExists(updaterPath)).resolves.toBe(false);
       } else {
@@ -587,9 +621,9 @@ export function createManagedServiceManagerBoundary({
           const restoring = waitForHandoffResponse(runningHelper.stdout, "restore-after-exit");
           runningHelper.stdin?.write("cancel\n");
           await restoring;
-          expect(stdout).not.toContain("committed\n");
+          expect(observation.stdout).not.toContain("committed\n");
           parent.stdin?.end();
-          expect(await completion, stderr).toBe(0);
+          expect(await completion, observation.stderr).toBe(0);
           await expect(pathExists(updaterPath)).resolves.toBe(false);
         } else {
           const committed = waitForHandoffResponse(runningHelper.stdout, "committed");
@@ -599,7 +633,7 @@ export function createManagedServiceManagerBoundary({
           const code = await completion;
           const helperLog = await fs.readFile(String(generated.logPath), "utf8").catch(() => "");
           expect
-            .soft(code, `${stderr}\n${helperLog}`)
+            .soft(code, `${observation.stderr}\n${helperLog}`)
             .toBe(
               options?.helperExitCode ??
                 (options?.systemdHandoffFailure ? 1 : (options?.updaterExitCode ?? 7)),
@@ -652,6 +686,7 @@ export function createManagedServiceManagerBoundary({
         : "";
       throw new Error(`${String(error)}\n${helperLog.slice(-8192)}`, { cause: error });
     } finally {
+      await activationAncestor?.cleanup(cleanup);
       parent.stdin?.end();
       if (options?.cancelAtActivation) {
         await fs.writeFile(activationReleasePath, "continue");
