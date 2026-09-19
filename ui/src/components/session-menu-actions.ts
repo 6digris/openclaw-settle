@@ -1,7 +1,10 @@
+import { ContextConsumer } from "@lit/context";
 import { html, nothing, type ReactiveControllerHost, type TemplateResult } from "lit";
 import { normalizeSessionIconValue } from "../../../packages/gateway-protocol/src/session-agent-status.js";
+import { applicationContext } from "../app/context.ts";
 import { t } from "../i18n/index.ts";
 import { EDITOR_IDS, type EditorId } from "../lib/editor-links.ts";
+import { SubscriptionsController } from "../lit/subscriptions-controller.ts";
 import { icons } from "./icons.ts";
 import { menuShortcutHint } from "./menu-shortcuts.ts";
 import { handleAppearanceGridKeydown, renderAppearancePicker } from "./session-icon-picker.ts";
@@ -23,6 +26,8 @@ export type SessionMenuData = {
   pinned: boolean;
   unread: boolean;
   archived: boolean;
+  hiddenFromInvolvingMe?: boolean;
+  archiving?: boolean;
   category: string | null;
   icon: string | null;
   color: string | null;
@@ -42,6 +47,7 @@ export type SessionManagementAction =
   | { kind: "reset-appearance" }
   | { kind: "toggle-pin" }
   | { kind: "toggle-unread" }
+  | { kind: "toggle-involving-me" }
   | { kind: "rename" }
   | { kind: "set-icon"; icon: string | null }
   | { kind: "set-color"; color: string | null }
@@ -90,6 +96,7 @@ type SessionMenuActionsState = {
 
 /** Canonical single-session actions shared by sidebar and chat-header menus. */
 export class SessionMenuActions {
+  private readonly context;
   private readonly ownerMenu: SessionOwnerMenu;
   private iconPickerMode: "grid" | "custom" = "grid";
   private customIconValue = "";
@@ -100,7 +107,19 @@ export class SessionMenuActions {
     private readonly onAction: (action: SessionManagementAction) => void,
     private readonly onClose: () => void,
   ) {
+    this.context = new ContextConsumer(host, { context: applicationContext, subscribe: true });
+    new SubscriptionsController(host).watch(
+      () => this.context.value?.gateway,
+      (gateway, notify) => gateway.subscribe(notify),
+    );
     this.ownerMenu = new SessionOwnerMenu(host);
+  }
+
+  private get involvementAvailable(): boolean {
+    return (
+      this.context.value?.gateway.snapshot.hello?.policy?.hasMultipleSessionSharingIdentities ===
+      true
+    );
   }
 
   readonly loadOwners = () => {
@@ -141,6 +160,13 @@ export class SessionMenuActions {
         return batch || !session.sessionId;
       case "toggle-pin":
         return batch || session.pinnable === false || session.isChild === true || session.archived;
+      case "toggle-involving-me":
+        return (
+          !this.involvementAvailable ||
+          batch ||
+          session.hiddenFromInvolvingMe === undefined ||
+          !session.sessionId
+        );
       case "rename":
       case "set-icon":
       case "set-color":
@@ -152,7 +178,7 @@ export class SessionMenuActions {
       case "new-group":
         return session.isChild === true;
       case "toggle-archived":
-        return !batch && !session.archived && !state.archiveAllowed;
+        return session.archiving === true || (!batch && !session.archived && !state.archiveAllowed);
       case "delete":
         return !state.deleteAllowed;
       case "toggle-unread":
@@ -194,6 +220,7 @@ export class SessionMenuActions {
       value === "reset-appearance" ||
       value === "toggle-pin" ||
       value === "toggle-unread" ||
+      value === "toggle-involving-me" ||
       value === "rename" ||
       value === "fork" ||
       value === "new-group" ||
@@ -377,16 +404,31 @@ export class SessionMenuActions {
         session.unread ? icons.eye : icons.circle,
         { shortcut: "u" },
       )}
+      ${
+        this.involvementAvailable && !batch && session.hiddenFromInvolvingMe !== undefined
+          ? this.renderItem(
+              "toggle-involving-me",
+              t(
+                session.hiddenFromInvolvingMe
+                  ? "sessionsView.showInInvolvingMe"
+                  : "sessionsView.hideFromInvolvingMe",
+              ),
+              session.hiddenFromInvolvingMe ? icons.eye : icons.eyeOff,
+            )
+          : nothing
+      }
       ${this.renderItem(
         "toggle-archived",
         t(
-          batch
-            ? session.archived
-              ? "sessionsView.restoreSessionCount"
-              : "sessionsView.archiveSessionCount"
-            : session.archived
-              ? "sessionsView.restoreSession"
-              : "sessionsView.archiveSession",
+          session.archiving
+            ? "sessionsView.archiving"
+            : batch
+              ? session.archived
+                ? "sessionsView.restoreSessionCount"
+                : "sessionsView.archiveSessionCount"
+              : session.archived
+                ? "sessionsView.restoreSession"
+                : "sessionsView.archiveSession",
           { count },
         ),
         session.archived ? icons.archiveRestore : icons.archive,

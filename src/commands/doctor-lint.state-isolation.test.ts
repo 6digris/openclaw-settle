@@ -7,6 +7,7 @@ import {
   noteCommittedSharedAuthStoreOwnership,
   resolveSharedAuthStorePath,
 } from "../agents/auth-profiles/path-resolve.js";
+import { acquireAuthProfileReadDatabase } from "../agents/auth-profiles/sqlite-read-pool.js";
 import {
   closeAuthProfileReadPool,
   inspectPersistedAuthProfileStoreRaw,
@@ -25,10 +26,15 @@ import { appendSkillProposalEvent } from "../skills/workshop/store-sqlite-event.
 import { importLegacySkillProposal } from "../skills/workshop/store.js";
 import { writeConfigMachineState } from "../state/config-machine-state-write.js";
 import { readConfigMachineState } from "../state/config-machine-state.js";
-import { closeOpenClawAgentDatabaseByPath } from "../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseByPath } from "../state/openclaw-state-db-cache.js";
+import {
+  captureOpenClawStateDatabaseReadAdmission,
+  closeOpenClawStateDatabaseByPathAsync,
+  registerOpenClawStateDatabaseAsyncResource,
+} from "../state/openclaw-state-db-cache.js";
+import { openOpenClawStateReadConnection } from "../state/openclaw-state-db-read-connection.js";
 import { withExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
 import {
+  closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
@@ -42,7 +48,7 @@ import { createTestRuntime } from "./test-runtime-config-helpers.js";
 const mocks = vi.hoisted(() => ({
   resolveDoctorContributionHealthChecks: vi.fn(),
   pairingReadState: vi.fn(),
-  sqliteOpen: vi.fn(),
+  sqliteOpen: vi.fn<(filename: string, readOnly: boolean, database: DatabaseSync) => void>(),
 }));
 
 vi.mock("../flows/doctor-health-contributions.js", () => ({
@@ -63,8 +69,9 @@ vi.mock("../infra/node-sqlite.js", async (importOriginal) => {
   return {
     ...actual,
     openNodeSqliteDatabase(...args: Parameters<typeof actual.openNodeSqliteDatabase>) {
-      mocks.sqliteOpen(args[0], args[1]?.readOnly === true);
-      return actual.openNodeSqliteDatabase(...args);
+      const database = actual.openNodeSqliteDatabase(...args);
+      mocks.sqliteOpen(args[0], args[1]?.readOnly === true, database);
+      return database;
     },
   };
 });
@@ -85,7 +92,8 @@ describe("doctor lint state isolation", () => {
     mocks.sqliteOpen.mockClear();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
     restoreEnv(originalEnv);
   });
@@ -119,7 +127,7 @@ describe("doctor lint state isolation", () => {
           importLegacySkillProposal({ record, ownerAgentId: owner, store: { env: state.env } });
         }
         const databasePath = resolveOpenClawStateSqlitePath(state.env);
-        closeOpenClawStateDatabaseByPath(databasePath);
+        await closeOpenClawStateDatabaseByPathAsync(databasePath);
         const before = snapshotDoctorLintSqliteFamily(databasePath);
         const filesBefore = fs
           .readdirSync(state.stateDir, { recursive: true, encoding: "utf8" })
@@ -233,7 +241,7 @@ describe("doctor lint state isolation", () => {
             },
           );
           const databasePath = resolveOpenClawStateSqlitePath(state.env);
-          closeOpenClawStateDatabaseByPath(databasePath);
+          await closeOpenClawStateDatabaseByPathAsync(databasePath);
           const before = snapshotDoctorLintSqliteFamily(databasePath);
           const backupBefore = fs.readFileSync(backup, "utf8");
           await selectWorkshopCheckWithUnavailableSource(databasePath);
@@ -300,7 +308,7 @@ describe("doctor lint state isolation", () => {
         );
         const sourcePath = await state.writeText("identity/device-auth.json", "legacy-file-marker");
         const databasePath = resolveOpenClawStateSqlitePath(state.env);
-        closeOpenClawStateDatabaseByPath(databasePath);
+        await closeOpenClawStateDatabaseByPathAsync(databasePath);
         const before = snapshotDoctorLintSqliteFamily(databasePath);
         const actual = await vi.importActual<
           typeof import("../flows/doctor-health-contributions.js")
@@ -385,7 +393,7 @@ describe("doctor lint state isolation", () => {
             }
             expect(
               mocks.sqliteOpen.mock.calls.every(
-                ([file, readOnly]) => file !== databasePath || readOnly === true,
+                ([file, readOnly]) => file !== databasePath || readOnly,
               ),
             ).toBe(true);
           }
@@ -507,11 +515,208 @@ describe("doctor lint state isolation", () => {
         } finally {
           stdout.mockRestore();
           closeAuthProfileReadPool({ kind: "root", rootPath: state.root });
-          closeOpenClawAgentDatabaseByPath(path.join(customDir, "openclaw-agent.sqlite"));
         }
       });
     },
   );
+
+  it.each([
+    "normal",
+    "update",
+    "reader-close",
+    "writer-close",
+    "detector",
+    "cleanup",
+    "cleanup-detector",
+  ])("retires only private runtime-schema handles before snapshot removal (%s)", async (mode) => {
+    const nativeWindows = process.platform === "win32";
+    const env = { OPENCLAW_UPDATE_IN_PROGRESS: mode === "normal" ? undefined : "1" };
+    await withOpenClawTestState({ prefix: "doctor-retirement-", env }, async (state) => {
+      await state.writeConfig({ memory: { search: { enabled: false } } });
+      const source = openOpenClawStateDatabase();
+      const before = snapshotDoctorLintSqliteFamily(source.path);
+      const sourceConfigPath = process.env.OPENCLAW_CONFIG_PATH;
+      const openAuthReader = (filename: string) => {
+        // Minimal native SQLite fixture for the actual pooled auth reader lifecycle.
+        const database = new DatabaseSync(filename);
+        database.exec("CREATE TABLE fixture AS SELECT 'unchanged' AS value");
+        database.close();
+        const reader = acquireAuthProfileReadDatabase(filename);
+        if (reader.status !== "readable") {
+          throw new Error("auth reader fixture is not readable");
+        }
+        return reader.db;
+      };
+      const callerPath = state.path("caller-auth.sqlite");
+      const callerReader = openAuthReader(callerPath);
+      const callerBefore = fs.readFileSync(callerPath);
+      let privateWriter: ReturnType<typeof openOpenClawStateDatabase> | undefined;
+      let privateReader: ReturnType<typeof openOpenClawStateReadConnection> | undefined;
+      let privateAuth: DatabaseSync | undefined;
+      let nativeCleanupBlocker: DatabaseSync | undefined;
+      let nativeCleanupBlockerPath: string | undefined;
+      let nativeOpenHandleRefused = false;
+      const nativeRemovalErrors: unknown[] = [];
+      let unregister: (() => void) | undefined;
+      let removedSnapshot = false;
+      let denyWriter = mode === "writer-close";
+      const cleanupFailure = mode.startsWith("cleanup");
+      const detectorFailure = mode.endsWith("detector");
+      const retirementFailure = mode.endsWith("close");
+      const checkId = "core/doctor/runtime-tool-schemas";
+      const closeError = `synthetic ${mode} retirement failure`;
+      mocks.resolveDoctorContributionHealthChecks.mockResolvedValue([
+        {
+          id: checkId,
+          kind: "core",
+          description: "inspects private runtime state",
+          async detect() {
+            writeConfigMachineState("doctorLint.synthetic.privateWrite", true);
+            const writer = openOpenClawStateDatabase();
+            const reader = openOpenClawStateReadConnection(writer.path, writer.path);
+            const admission = captureOpenClawStateDatabaseReadAdmission(writer.path);
+            privateWriter = writer;
+            privateReader = reader;
+            const privateStateDir = path.dirname(writer.path);
+            const privateAuthPath = path.join(privateStateDir, "private-auth.sqlite");
+            privateAuth = openAuthReader(privateAuthPath);
+            if (nativeWindows) {
+              // Call the real filesystem while the real pooled SQLite reader is open.
+              // A runner that permits deletion must fail this gate, never skip it.
+              await expect(remove(privateAuthPath, { force: true })).rejects.toMatchObject({
+                code: expect.stringMatching(/^(EPERM|EBUSY|EACCES)$/),
+              });
+              expect(privateAuth.prepare("SELECT value FROM fixture").get()).toEqual({
+                value: "unchanged",
+              });
+              nativeOpenHandleRefused = true;
+              if (cleanupFailure) {
+                // Deliberately unowned by Doctor: real Windows cleanup denial after
+                // Doctor has retired all its own readers and writers.
+                nativeCleanupBlockerPath = path.join(privateStateDir, "held-cleanup.sqlite");
+                nativeCleanupBlocker = new DatabaseSync(nativeCleanupBlockerPath);
+                nativeCleanupBlocker.exec("CREATE TABLE fixture AS SELECT 1 AS value");
+              }
+            }
+            // Reader/writer retirement failures remain explicit synthetic injections.
+            if (mode === "reader-close") {
+              vi.spyOn(privateAuth, "close").mockImplementationOnce(() => {
+                throw new Error(closeError);
+              });
+            }
+            unregister = registerOpenClawStateDatabaseAsyncResource({
+              async close(identity) {
+                if (identity !== undefined && identity.key !== admission.identity.key) {
+                  return;
+                }
+                if (denyWriter) {
+                  denyWriter = false;
+                  throw new Error(closeError);
+                }
+                await Promise.resolve();
+                reader.close();
+              },
+            });
+            if (detectorFailure) {
+              throw new Error("synthetic authoritative detector failure");
+            }
+            return [];
+          },
+        },
+      ]);
+      const remove = fs.promises.rm;
+      const removal = vi.spyOn(fs.promises, "rm").mockImplementation(async (target, options) => {
+        const prefix = `${String(target)}${path.sep}`;
+        if (!nativeWindows) {
+          // POSIX permits unlinking open files; only non-Windows uses the simulator.
+          const openHandle = mocks.sqliteOpen.mock.calls.some(
+            ([file, , db]) => file.startsWith(prefix) && db.isOpen,
+          );
+          if (openHandle || cleanupFailure) {
+            const message = openHandle ? "Open native SQLite handle" : "Synthetic removal failure";
+            throw Object.assign(new Error(message), { code: "EPERM" });
+          }
+        }
+        try {
+          await remove(target, options);
+        } catch (error) {
+          if (nativeWindows) {
+            nativeRemovalErrors.push(error);
+          }
+          throw error;
+        }
+        removedSnapshot ||= Boolean(privateWriter?.path.startsWith(prefix));
+      });
+      const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+      try {
+        const exitCode = await runDoctorLintCli(runtime, { json: true, onlyIds: [checkId] });
+        expect(exitCode).toBe(retirementFailure || detectorFailure ? 1 : 0);
+        const report = JSON.parse(String(stdout.mock.calls.at(-1)?.[0]));
+        expect(report.schemaVersion).toBe(1);
+        expect(report.ok).toBe(!retirementFailure && !detectorFailure);
+        const failureMessage = retirementFailure
+          ? expect.stringContaining(closeError)
+          : "health check threw: synthetic authoritative detector failure";
+        expect(report.findings).toEqual(
+          retirementFailure || detectorFailure
+            ? [expect.objectContaining({ checkId, severity: "error", message: failureMessage })]
+            : [],
+        );
+        if (retirementFailure) {
+          expect(removal).not.toHaveBeenCalled();
+        }
+        if (nativeWindows) {
+          expect(nativeOpenHandleRefused).toBe(true);
+          expect(nativeRemovalErrors).toMatchObject(
+            cleanupFailure ? [{ code: expect.stringMatching(/^(EPERM|EBUSY|EACCES)$/) }] : [],
+          );
+          if (cleanupFailure) {
+            expect(nativeCleanupBlocker?.isOpen).toBe(true);
+            expect(fs.existsSync(nativeCleanupBlockerPath!)).toBe(true);
+          }
+        }
+        expect(report.warnings ?? []).toMatchObject(
+          cleanupFailure
+            ? [{ requirement: "temporary-snapshot-cleanup", severity: "warning" }]
+            : [],
+        );
+        expect(privateAuth?.isOpen).toBe(mode === "reader-close");
+        if (!retirementFailure) {
+          expect(privateWriter?.db.isOpen).toBe(false);
+          expect(privateReader?.database.db.isOpen).toBe(false);
+        }
+        expect(privateWriter).toBeDefined();
+        // Recursive removal can partially succeed before a genuine Windows denial.
+        const snapshotRoot = path.dirname(path.dirname(privateWriter!.path));
+        expect(fs.existsSync(snapshotRoot)).toBe(retirementFailure || cleanupFailure);
+        if (!nativeWindows || !cleanupFailure) {
+          expect(fs.existsSync(privateWriter!.path)).toBe(retirementFailure || cleanupFailure);
+        }
+        expect(removedSnapshot).toBe(!retirementFailure && !cleanupFailure);
+        expect([source.db.isOpen, callerReader.isOpen]).toEqual([true, true]);
+        const callerRow = callerReader.prepare("SELECT value FROM fixture").get();
+        expect(callerRow).toEqual({ value: "unchanged" });
+        expect(fs.readFileSync(callerPath)).toEqual(callerBefore);
+        expect(snapshotDoctorLintSqliteFamily(source.path)).toEqual(before);
+        expect(readConfigMachineState("doctorLint.synthetic.privateWrite")).toBeUndefined();
+        expect(process.env.OPENCLAW_STATE_DIR).toBe(state.stateDir);
+        expect(process.env.OPENCLAW_CONFIG_PATH).toBe(sourceConfigPath);
+      } finally {
+        vi.restoreAllMocks();
+        mocks.sqliteOpen.mockReset();
+        nativeCleanupBlocker?.close();
+        privateReader?.close();
+        if (privateWriter) {
+          const rootPath = path.dirname(privateWriter.path);
+          closeAuthProfileReadPool({ kind: "root", rootPath });
+          await closeOpenClawStateDatabaseByPathAsync(privateWriter.path);
+          await remove(path.dirname(rootPath), { recursive: true, force: true });
+        }
+        unregister?.();
+        closeAuthProfileReadPool({ kind: "root", rootPath: state.root });
+      }
+    });
+  });
 
   it.each([
     {
@@ -790,9 +995,9 @@ describe("doctor lint state isolation", () => {
       expires_in: 3600,
     });
     const databasePath = resolveOpenClawStateSqlitePath(process.env);
-    closeOpenClawStateDatabaseByPath(databasePath);
-    const lock = process.platform === "win32" ? undefined : new DatabaseSync(databasePath);
-    lock?.exec("BEGIN IMMEDIATE");
+    await closeOpenClawStateDatabaseByPathAsync(databasePath);
+    const lock = new DatabaseSync(databasePath);
+    lock.exec("BEGIN IMMEDIATE");
     const before = snapshotDoctorLintSqliteFamily(databasePath);
     mocks.resolveDoctorContributionHealthChecks.mockResolvedValue([
       {
@@ -827,9 +1032,9 @@ describe("doctor lint state isolation", () => {
       expect(snapshotDoctorLintSqliteFamily(databasePath)).toEqual(before);
     } finally {
       stdout.mockRestore();
-      lock?.exec("ROLLBACK");
-      lock?.close();
-      closeOpenClawStateDatabaseByPath(databasePath);
+      lock.exec("ROLLBACK");
+      lock.close();
+      await closeOpenClawStateDatabaseByPathAsync(databasePath);
       fs.rmSync(rootDir, { recursive: true, force: true });
     }
   });
@@ -864,19 +1069,11 @@ async function selectWorkshopCheckWithUnavailableSource(databasePath: string) {
 }
 
 function restoreEnv(values: typeof originalEnv): void {
-  if (values.HOME === undefined) {
-    delete process.env.HOME;
-  } else {
-    process.env.HOME = values.HOME;
-  }
-  if (values.OPENCLAW_CONFIG_PATH === undefined) {
-    delete process.env.OPENCLAW_CONFIG_PATH;
-  } else {
-    process.env.OPENCLAW_CONFIG_PATH = values.OPENCLAW_CONFIG_PATH;
-  }
-  if (values.OPENCLAW_STATE_DIR === undefined) {
-    delete process.env.OPENCLAW_STATE_DIR;
-  } else {
-    process.env.OPENCLAW_STATE_DIR = values.OPENCLAW_STATE_DIR;
+  for (const key of ["HOME", "OPENCLAW_CONFIG_PATH", "OPENCLAW_STATE_DIR"] as const) {
+    if (values[key] === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = values[key];
+    }
   }
 }
