@@ -234,7 +234,7 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
 
   it("keeps an inline frame after its canonical source gains dimensions and becomes available", async () => {
     const container = mount(500);
-    const ready = createDeferred<void>();
+    const ready = createDeferred();
     const requestUpdate = () => {};
     subscribers.push(requestUpdate);
     vi.stubGlobal(
