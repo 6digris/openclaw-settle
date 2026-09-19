@@ -384,7 +384,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +4: approved workspace access exports; later stack exports belong to their consumers.
       // +6: passive link-reader descriptor, metadata, document, preview, and request types.
       // +6: narrow managed provider-auth login runtime facade.
-      4501,
+      // +1: shared workspace bootstrap file policy.
+      // +2: typed workspace unavailability and its structural classifier.
+      4504,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -528,7 +530,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
       // +3: approved workspace access callables; later stack exports belong to their consumers.
       // +1: narrow managed provider-auth login runtime facade runner.
-      2653,
+      // +1: shared workspace bootstrap file policy.
+      // +1: workspace unavailability classifier.
+      2655,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
