@@ -1,8 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { deserialize, serialize } from "node:v8";
-import { Worker } from "node:worker_threads";
-import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import { serialize } from "node:v8";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   observeHostDataSql,
@@ -10,7 +8,11 @@ import {
 } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { SQLITE_WORKER_MAX_RESULT_BYTES } from "../infra/sqlite-worker-contract.js";
-import { acquireStateDatabaseCoordinator } from "../infra/state-database-coordinator.js";
+import * as sqliteWorkerLifecycle from "../infra/sqlite-worker-lifecycle-preparation.js";
+import {
+  acquireStateDatabaseCoordinator,
+  StateDatabaseCoordinatorContentionError,
+} from "../infra/state-database-coordinator.js";
 import {
   appendMemoryHostEvent,
   readMemoryHostEventRecords,
@@ -34,44 +36,51 @@ afterEach(async () => {
 });
 
 describe("worker plugin state", () => {
-  it.each(["observe", "compareDelete"] as const)(
-    "shares lifecycle custody with an overlapping host owner during %s",
-    async (operation) => {
+  it.each([
+    { operation: "observe", firstOwner: "host" },
+    { operation: "compareDelete", firstOwner: "host" },
+    { operation: "observe", firstOwner: "worker" },
+    { operation: "compareDelete", firstOwner: "worker" },
+  ] as const)(
+    "coordinates $operation when $firstOwner acquires lifecycle first",
+    async ({ operation, firstOwner }) => {
       await withOpenClawTestState({ label: "plugin-state-lock-custody" }, async (state) => {
         const store = createPluginStateKeyedStore<string>("memory-core", {
           namespace: "lock-custody",
           maxEntries: 10,
           env: state.env,
         });
-        const messages = vi.spyOn(Worker.prototype, "postMessage");
         await store.register("workspace", "owner");
-        const worker = messages.mock.contexts[0];
-        messages.mockRestore();
-        if (!(worker instanceof Worker)) {
-          throw new Error("Expected the shared-state worker");
-        }
         const observation = await store.observe("workspace");
-        let held: ReturnType<typeof acquireStateDatabaseCoordinator> | undefined;
-        const nativePost = worker.postMessage.bind(worker);
-        const dispatch = vi
-          .spyOn(worker, "postMessage")
-          .mockImplementation((message, transferList) => {
-            const request = asOptionalRecord(message);
-            if (
-              request?.type === "execute" &&
-              request.input instanceof Uint8Array &&
-              asOptionalRecord(deserialize(request.input))?.type === "pluginState." + operation
-            ) {
-              // A sibling native owner starts after broker preparation but before
-              // dispatch. Its live custody must be shared with this worker command.
-              held = acquireStateDatabaseCoordinator({
-                databasePath: resolveOpenClawStateSqlitePath(state.env),
-                busyTimeoutMs: 0,
-              });
-            }
-            return nativePost(message, transferList);
+        const acquireHostOwner = () =>
+          acquireStateDatabaseCoordinator({
+            databasePath: resolveOpenClawStateSqlitePath(state.env),
+            busyTimeoutMs: 0,
           });
+        let held: ReturnType<typeof acquireStateDatabaseCoordinator> | undefined;
+        let admitted = false;
+        const prepare = sqliteWorkerLifecycle.createSqliteWorkerLifecyclePreparation;
+        const preparation = vi
+          .spyOn(sqliteWorkerLifecycle, "createSqliteWorkerLifecyclePreparation")
+          .mockImplementation((params) =>
+            prepare({
+              ...params,
+              dispatch() {
+                // The worker has acquired custody, but its native command is not
+                // admitted yet. A competing host must not steal that custody.
+                expect(() => {
+                  const competing = acquireHostOwner();
+                  competing.release();
+                }).toThrow(StateDatabaseCoordinatorContentionError);
+                admitted = true;
+                params.dispatch();
+              },
+            }),
+          );
         try {
+          if (firstOwner === "host") {
+            held = acquireHostOwner();
+          }
           if (operation === "observe") {
             await expect(store.observe("workspace")).resolves.toMatchObject({ value: "owner" });
           } else {
@@ -82,9 +91,9 @@ describe("worker plugin state", () => {
               }),
             ).resolves.toEqual({ status: "applied" });
           }
-          expect(held).toBeDefined();
+          expect(admitted).toBe(firstOwner === "worker");
         } finally {
-          dispatch.mockRestore();
+          preparation.mockRestore();
           held?.release();
         }
         expect(await store.lookup("workspace")).toBe(operation === "observe" ? "owner" : undefined);
