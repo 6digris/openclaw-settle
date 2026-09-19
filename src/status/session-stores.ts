@@ -20,7 +20,7 @@ export type StatusSessionStores = Awaited<
 function summarizeProjectionRows(
   projection: SessionRowProjection,
   storePath: string,
-  agentIds: readonly string[],
+  agentIds: ReadonlySet<string>,
   recentLimit: number,
 ): SessionStoreSummary {
   const rows = projection
@@ -37,13 +37,23 @@ function summarizeProjectionRows(
       entry,
     })),
   });
+  const rowsByAgent = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const agentId = row.agentId;
+    if (!agentIds.has(agentId)) {
+      continue;
+    }
+    const agentRows = rowsByAgent.get(agentId);
+    if (agentRows) {
+      agentRows.push(row);
+    } else {
+      rowsByAgent.set(agentId, [row]);
+    }
+  }
   return {
     ...summarize(rows),
     byAgent: new Map(
-      agentIds.map((agentId) => [
-        agentId,
-        summarize(rows.filter((row) => row.agentId === agentId)),
-      ]),
+      Array.from(rowsByAgent, ([agentId, agentRows]) => [agentId, summarize(agentRows)]),
     ),
   };
 }
@@ -59,6 +69,7 @@ export function createStatusSessionStoreReader(
   } = {},
 ) {
   const readSummary = options.readSummary ?? readSessionStoreSummaryReadOnly;
+  const residentAgentIds = new Set(agentIds);
   const stores = new Map<string, SessionStoreSummary>();
   let projectionReady: Promise<void> | undefined;
   const ensureProjectionReady = async () => {
@@ -86,7 +97,7 @@ export function createStatusSessionStoreReader(
         try {
           await ensureProjectionReady();
           store = options.projection
-            ? summarizeProjectionRows(options.projection, path, agentIds, recentLimit)
+            ? summarizeProjectionRows(options.projection, path, residentAgentIds, recentLimit)
             : readSummary(
                 { ...(agentId ? { agentId } : {}), storePath },
                 { agentIds, recentLimit },
