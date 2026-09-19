@@ -71,6 +71,46 @@ async function fixture(runId = "native-observer-run") {
 }
 
 describe("native before-tool owner observation", () => {
+  it("retains delegated tool restrictions without treating an owner match as authority", async () => {
+    const f = await fixture();
+    const outer = vi.fn((name: string) => {
+      if (name === "exec") {
+        throw new Error("outer exec denied");
+      }
+    });
+    const inner = vi.fn((name: string) => {
+      if (name === "process") {
+        throw new Error("inner process denied");
+      }
+    });
+    await withGatewayToolCallerIdentity(f.identity, () =>
+      withGatewayToolCallerIdentity(
+        { agentId: "wrapper", sessionKey: "wrapper", assertToolAllowed: outer },
+        () =>
+          withGatewayToolCallerIdentity(
+            { agentId: "wrapper", sessionKey: "wrapper", assertToolAllowed: inner },
+            () => {
+              expect(observeGatewayToolCallerOwner(f.context)).toBe("match");
+              expect(outer).not.toHaveBeenCalled();
+              expect(inner).not.toHaveBeenCalled();
+              const assertToolAllowed = getGatewayToolCallerIdentity()?.assertToolAllowed;
+              if (!assertToolAllowed) {
+                throw new Error("missing composed tool policy");
+              }
+              expect(() => assertToolAllowed("exec")).toThrow("outer exec denied");
+              expect(() => assertToolAllowed("process")).toThrow("inner process denied");
+              expect(() => assertToolAllowed("read")).not.toThrow();
+              const calls = [outer.mock.calls.length, inner.mock.calls.length];
+              expect(observeGatewayToolCallerOwner(f.context)).toBe("match");
+              expect([outer.mock.calls.length, inner.mock.calls.length]).toEqual(calls);
+              f.admission.close();
+              expect(observeGatewayToolCallerOwner(f.context)).toBe("unobserved");
+            },
+          ),
+      ),
+    );
+  });
+
   it("preserves composed Cron fences without turning observation into authority", async () => {
     const f = await fixture();
     const sourceCheck = vi.fn(() => true);

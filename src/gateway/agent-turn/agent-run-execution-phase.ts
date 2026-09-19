@@ -51,6 +51,7 @@ import {
   yieldAfterAgentAcceptedAck,
   type RestoredCronContinuation,
 } from "./agent-handler-helpers.js";
+import { captureAgentJobSession } from "./agent-job.js";
 import {
   resolveAgentRestartRecoveryContext,
   resolveAgentRestartRecoveryExecutionIdentityAdmission,
@@ -115,6 +116,12 @@ export async function startAgentRunExecution(params: {
   ) => Promise<boolean>;
 }): Promise<void> {
   const { prepared } = params;
+  const jobSessionBinding = prepared.activeRunAbort.entry ?? {
+    sessionKey: params.resolvedSessionKey,
+    sessionId: params.resolvedSessionId,
+    agentId: params.activeSessionAgentId,
+    lifecycleGeneration: params.lifecycleGeneration,
+  };
   let unpersistedOffloadedRefs = prepared.unpersistedOffloadedRefs;
   const releaseGatewayRootContinuation = retainGatewayRootWorkAdmissionContinuation() ?? undefined;
   try {
@@ -207,6 +214,7 @@ export async function startAgentRunExecution(params: {
         setGatewayDedupeEntries({
           dedupe: params.context.dedupe,
           keys: params.agentDedupeKeys,
+          session: captureAgentJobSession(jobSessionBinding),
           entry: { ts: Date.now(), ok: false, payload, error },
         });
         params.io.emitFinal([false, payload, error], { runId: params.runId, error: renderedErr });
@@ -232,6 +240,7 @@ export async function startAgentRunExecution(params: {
         setAbortedAgentDedupeEntries({
           dedupe: params.context.dedupe,
           keys: params.agentDedupeKeys,
+          session: captureAgentJobSession(jobSessionBinding),
           agentId: params.activeSessionAgentId,
           runId: params.runId,
           stopReason,
@@ -406,6 +415,7 @@ export async function startAgentRunExecution(params: {
           withAgentRunDispatchExecutionIdentity(
             {
               assertCurrent: assertDispatchCurrent,
+              admittedRunEntry: abortEntry,
               commandRuntimeContext: {
                 config: prepared.replyDispatchRuntime.config,
                 pluginGeneration: prepared.replyDispatchRuntime.pluginGeneration,

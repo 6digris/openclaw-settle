@@ -9,7 +9,7 @@ import {
   prepareSqliteWorkerLifecycle,
   releaseSqliteWorkerLifecycle,
 } from "./sqlite-worker-broker-admission.js";
-import type { Job, Slot } from "./sqlite-worker-broker.types.js";
+import type { Actor, Job, Slot } from "./sqlite-worker-broker.types.js";
 import {
   SQLITE_WORKER_MAX_MESSAGE_BYTES,
   retainSqliteWorkerErrorCode,
@@ -67,18 +67,18 @@ export function dispatchSqliteWorkerJob(
       );
     }
   };
-  const dispatch = () => {
-    try {
-      assertDispatchable();
-      postSqliteWorkerJob(slot.worker, job, assertDispatchable);
-      job.detach();
-    } catch (error) {
-      reject(error);
-    }
-  };
   try {
     assertDispatchable();
     const actor = [...slot.actors].find((candidate) => candidate.id === job.request.actor);
+    const dispatch = () => {
+      try {
+        assertDispatchable();
+        postSqliteWorkerJob(slot.worker, job, assertDispatchable, actor);
+        job.detach();
+      } catch (error) {
+        reject(error);
+      }
+    };
     const preparation = prepareSqliteWorkerLifecycle(
       job,
       actor,
@@ -96,15 +96,23 @@ export function dispatchSqliteWorkerJob(
   }
 }
 
-function postSqliteWorkerJob(worker: Worker, job: Job, assertDispatchable: () => void): void {
+function postSqliteWorkerJob(
+  worker: Worker,
+  job: Job,
+  assertDispatchable: () => void,
+  actor: Actor | undefined,
+): void {
   if (job.createAdmission) {
     const settlement = createDeferredCore<SqliteWorkerOperationSettlement>();
     job.settleNative = settlement.resolve;
     const retained = job.createAdmission({ settled: settlement.promise });
     job.operationAdmission = {
       admission: retained.admission,
-      releaseService: retainSqliteWriteAdmissionService(retained.nativeLocations, () =>
-        retained.admission.service(),
+      // SQLite reports canonical paths; retain the physical owner's already-admitted
+      // aliases so a native writer can service this grant without filesystem discovery.
+      releaseService: retainSqliteWriteAdmissionService(
+        [...retained.nativeLocations, ...(actor?.pathReferences.keys() ?? [])],
+        () => retained.admission.service(),
       ),
     };
     job.request.operationAdmission = retained.admission.port;
