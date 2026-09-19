@@ -1,8 +1,16 @@
+.agent-chat__composer-shell {
+  --chat-composer-glass-blur: 16px;
+  --chat-composer-glass-opacity: 0.92;
+  --chat-composer-glass-saturate: 1.05;
+  --chat-composer-glass-brightness: 1.1;
+}
+
 /* Keep the existing opaque surfaces when backdrop filtering is unavailable. */
-@supports (backdrop-filter: blur(6px)) or (-webkit-backdrop-filter: blur(6px)) {
+@supports (backdrop-filter: blur(16px)) or (-webkit-backdrop-filter: blur(16px)) {
   :root
     .agent-chat__composer-shell
     :is(
+      .agent-chat__input,
       .session-progress-card--composer,
       .agent-chat__goal-float .agent-chat__goal,
       .chat-queue,
@@ -17,15 +25,29 @@
     --composer-overlay-muted: color-mix(in srgb, var(--text-strong) 45%, var(--muted));
     --composer-overlay-surface: color-mix(
       in srgb,
-      var(--composer-overlay-base, var(--composer-attached-surface)) 84%,
+      var(--composer-overlay-base, var(--composer-attached-surface))
+        calc(var(--chat-composer-glass-opacity) * 100%),
       transparent
     );
 
     background-color: var(--composer-overlay-surface);
-    -webkit-backdrop-filter: blur(6px);
-    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(var(--chat-composer-glass-blur))
+      saturate(var(--chat-composer-glass-saturate))
+      brightness(var(--chat-composer-glass-brightness));
+    backdrop-filter: blur(var(--chat-composer-glass-blur))
+      saturate(var(--chat-composer-glass-saturate))
+      brightness(var(--chat-composer-glass-brightness));
   }
 
+  .agent-chat__composer-shell > .agent-chat__input {
+    --chat-composer-secondary: color-mix(
+      in srgb,
+      var(--text-strong) 70%,
+      var(--chat-composer-surface)
+    );
+  }
+
+  .agent-chat__composer-shell > .agent-chat__input,
   .agent-chat__composer-overlay,
   .agent-chat__question-dock {
     --composer-overlay-base: var(--chat-composer-surface);
