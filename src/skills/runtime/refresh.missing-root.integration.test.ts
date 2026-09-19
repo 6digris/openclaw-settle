@@ -202,18 +202,87 @@ it("refreshes skills created beneath an initially missing project skills root", 
 });
 
 describe("shared missing skill ancestors", () => {
+  // BEGIN TASK MINIMAL DIAGNOSTIC
+  let diagnosticSnapshot: (() => void) | undefined;
+  // END TASK MINIMAL DIAGNOSTIC
   const roots = useAutoCleanupTempDirTracker((cleanup) =>
     afterEach(async () => {
+      // BEGIN TASK MINIMAL DIAGNOSTIC
+      diagnosticSnapshot?.();
+      // END TASK MINIMAL DIAGNOSTIC
       const { closeSkillsWatchers } = await import("./refresh.js");
       await closeSkillsWatchers(true);
       vi.restoreAllMocks();
       cleanup();
+      // BEGIN TASK MINIMAL DIAGNOSTIC
+      diagnosticSnapshot = undefined;
+      // END TASK MINIMAL DIAGNOSTIC
     }),
   );
 
   it.each(["higher", "intermediate"] as const)(
     "preserves settled root discovery after moving its %s ancestor and retains sibling subscriptions",
     async (ancestor) => {
+      // BEGIN TASK MINIMAL DIAGNOSTIC
+      const diagnosticStart = performance.now();
+      const diagnosticNow = () => Math.round(performance.now() - diagnosticStart);
+      let diagnosticPhase = "fs:root-realpath";
+      let diagnosticSerial = 0;
+      type DiagnosticTimer = {
+        id: number;
+        delay: number | undefined;
+        callback: string;
+        createdAtMs: number;
+      };
+      const diagnosticTimers = new Map<Parameters<typeof clearTimeout>[0], DiagnosticTimer>();
+      const diagnosticTimerState = (timer: Parameters<typeof clearTimeout>[0]) => {
+        const ownValue = (key: string): unknown => {
+          if (timer === null || typeof timer !== "object") return undefined;
+          const descriptor = Object.getOwnPropertyDescriptor(timer, key);
+          return descriptor && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined;
+        };
+        const onTimeout = ownValue("_onTimeout");
+        return {
+          ...diagnosticTimers.get(timer),
+          destroyed: ownValue("_destroyed"),
+          idleTimeout: ownValue("_idleTimeout"),
+          onTimeoutPresent: onTimeout !== undefined && onTimeout !== null,
+        };
+      };
+      type DiagnosticDrain = {
+        startedAtMs: number;
+        timerCount: number;
+        timers: ReturnType<typeof diagnosticTimerState>[];
+        finishedAtMs?: number;
+        pendingAfter?: number;
+      };
+      type DiagnosticSettle = {
+        phase: string;
+        startedAtMs: number;
+        iterations: number;
+        wait: string;
+        firstDrain?: DiagnosticDrain;
+        latestDrain?: DiagnosticDrain;
+        finishedAtMs?: number;
+        pendingAfter?: number;
+      };
+      const diagnosticSettles: DiagnosticSettle[] = [];
+      let diagnosticPending = () => ({
+        count: 0,
+        timers: [] as ReturnType<typeof diagnosticTimerState>[],
+      });
+      diagnosticSnapshot = () => {
+        process.stderr.write(
+          `[skills-ancestor-minimal] ${JSON.stringify({
+            row: ancestor,
+            atMs: diagnosticNow(),
+            phase: diagnosticPhase,
+            settles: diagnosticSettles,
+            pending: diagnosticPending(),
+          })}\n`,
+        );
+      };
+      // END TASK MINIMAL DIAGNOSTIC
       const root = await fs.realpath(roots.make("skills-shared-ancestor-"));
       const source = (name: string) => {
         const sourceRoot = path.join(root, name, "nested", "skills");
@@ -226,8 +295,14 @@ describe("shared missing skill ancestors", () => {
       const first = source("left");
       const second = source("right");
       for (const current of [first, second]) {
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = `fs:workspace-mkdir:${current === first ? "first" : "second"}`;
+        // END TASK MINIMAL DIAGNOSTIC
         await fs.mkdir(path.join(current.workspaceDir, "skills"), { recursive: true });
       }
+      // BEGIN TASK MINIMAL DIAGNOSTIC
+      diagnosticPhase = "imports";
+      // END TASK MINIMAL DIAGNOSTIC
       const { ensureSkillsWatcher, registerSkillsChangeListener } = await import("./refresh.js");
       const { loadWorkspaceSkills } = await import("../loading/workspace-skill-loader.js");
       const originalWatch = chokidar.watch;
@@ -250,9 +325,18 @@ describe("shared missing skill ancestors", () => {
         Parameters<typeof clearTimeout>[0],
         { settled: Promise<void>; finish: () => void }
       >();
+      // BEGIN TASK MINIMAL DIAGNOSTIC
+      diagnosticPending = () => ({
+        count: pendingTimers.size,
+        timers: Array.from(pendingTimers.keys()).slice(0, 32).map(diagnosticTimerState),
+      });
+      // END TASK MINIMAL DIAGNOSTIC
       vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, delay, ...args) => {
         const { promise: settled, resolve: finish } = createDeferredCore();
         const timer = originalSetTimeout(() => {
+          // BEGIN TASK MINIMAL DIAGNOSTIC
+          diagnosticTimers.delete(timer);
+          // END TASK MINIMAL DIAGNOSTIC
           pendingTimers.delete(timer);
           try {
             callback.apply(timer, args);
@@ -261,15 +345,39 @@ describe("shared missing skill ancestors", () => {
           }
         }, delay);
         pendingTimers.set(timer, { settled, finish });
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticTimers.set(timer, {
+          id: ++diagnosticSerial,
+          delay,
+          callback: callback.name || "anonymous",
+          createdAtMs: diagnosticNow(),
+        });
+        // END TASK MINIMAL DIAGNOSTIC
         return timer;
       });
       vi.spyOn(globalThis, "clearTimeout").mockImplementation((timer) => {
         originalClearTimeout(timer);
         pendingTimers.get(timer)?.finish();
         pendingTimers.delete(timer);
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticTimers.delete(timer);
+        // END TASK MINIMAL DIAGNOSTIC
       });
       const settleWatchers = async () => {
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        const diagnosticSettle: DiagnosticSettle = {
+          phase: diagnosticPhase,
+          startedAtMs: diagnosticNow(),
+          iterations: 0,
+          wait: "ready",
+        };
+        diagnosticSettles.push(diagnosticSettle);
+        // END TASK MINIMAL DIAGNOSTIC
         for (;;) {
+          // BEGIN TASK MINIMAL DIAGNOSTIC
+          diagnosticSettle.iterations += 1;
+          diagnosticSettle.wait = "ready";
+          // END TASK MINIMAL DIAGNOSTIC
           await vi.waitFor(() => {
             expect(watcherErrors).toEqual([]);
             expect(observed.every(({ watcher, ready }) => ready || watcher.closed)).toBe(true);
@@ -277,7 +385,22 @@ describe("shared missing skill ancestors", () => {
           const generationCount = observed.length;
           // Drain actual debounce/stability work, including timers chained by its
           // continuations. Keep native time and watchers; do not sleep past a guess.
+          // BEGIN TASK MINIMAL DIAGNOSTIC
+          diagnosticSettle.wait = "timers";
+          const diagnosticDrain: DiagnosticDrain = {
+            startedAtMs: diagnosticNow(),
+            timerCount: pendingTimers.size,
+            timers: Array.from(pendingTimers.keys()).slice(0, 32).map(diagnosticTimerState),
+          };
+          diagnosticSettle.firstDrain ??= diagnosticDrain;
+          diagnosticSettle.latestDrain = diagnosticDrain;
+          // END TASK MINIMAL DIAGNOSTIC
           await Promise.all(Array.from(pendingTimers.values(), ({ settled }) => settled));
+          // BEGIN TASK MINIMAL DIAGNOSTIC
+          diagnosticDrain.finishedAtMs = diagnosticNow();
+          diagnosticDrain.pendingAfter = pendingTimers.size;
+          diagnosticSettle.wait = "immediate";
+          // END TASK MINIMAL DIAGNOSTIC
           await new Promise<void>((resolve) => {
             setImmediate(resolve);
           });
@@ -287,13 +410,24 @@ describe("shared missing skill ancestors", () => {
             observed.length === generationCount &&
             observed.every(({ watcher, ready }) => ready || watcher.closed)
           ) {
+            // BEGIN TASK MINIMAL DIAGNOSTIC
+            diagnosticSettle.wait = "";
+            diagnosticSettle.finishedAtMs = diagnosticNow();
+            diagnosticSettle.pendingAfter = pendingTimers.size;
+            // END TASK MINIMAL DIAGNOSTIC
             return;
           }
         }
       };
       for (const current of [first, second]) {
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = `ensure:${current === first ? "first" : "second"}`;
+        // END TASK MINIMAL DIAGNOSTIC
         ensureSkillsWatcher(current);
       }
+      // BEGIN TASK MINIMAL DIAGNOSTIC
+      diagnosticPhase = "settle:initial";
+      // END TASK MINIMAL DIAGNOSTIC
       await settleWatchers();
       expect(
         watch.mock.calls.filter(([watched]) => watched === root.replaceAll("\\", "/")),
@@ -312,19 +446,37 @@ describe("shared missing skill ancestors", () => {
         }).map((entry) => entry.skill.name);
       const writeSkill = async (current: typeof first, name: string) => {
         const directory = path.join(current.sourceRoot, name);
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = `fs:skill-mkdir:${name}`;
+        // END TASK MINIMAL DIAGNOSTIC
         await fs.mkdir(directory, { recursive: true });
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = `fs:skill-write:${name}`;
+        // END TASK MINIMAL DIAGNOSTIC
         await fs.writeFile(
           path.join(directory, "SKILL.md"),
           `---\nname: ${name}\ndescription: Shared ancestor proof\n---\n`,
         );
       };
       try {
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = "read:first-empty";
+        // END TASK MINIMAL DIAGNOSTIC
         expect(read(first)).toEqual([]);
         expect(read(second)).toEqual([]);
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = "fs:unrelated-write";
+        // END TASK MINIMAL DIAGNOSTIC
         await fs.writeFile(path.join(root, "unrelated.sqlite-wal"), "unrelated");
         await writeSkill(first, "first-proof");
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = "poll:first-proof";
+        // END TASK MINIMAL DIAGNOSTIC
         await expect.poll(() => read(first), { timeout: 3_000 }).toContain("first-proof");
         expect(changes).not.toContain(second.workspaceDir);
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = "poll:promoted-watch";
+        // END TASK MINIMAL DIAGNOSTIC
         await vi.waitFor(() => {
           expect(
             watch.mock.calls.some(
@@ -335,6 +487,9 @@ describe("shared missing skill ancestors", () => {
             ),
           ).toBe(true);
         });
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = "settle:promoted";
+        // END TASK MINIMAL DIAGNOSTIC
         await settleWatchers();
         // Prime after promoted root/companion scans and queued refreshes settle:
         // late initial reconciliation must not mask a missed ancestor move.
@@ -343,32 +498,83 @@ describe("shared missing skill ancestors", () => {
           ancestor === "higher" ? path.join(root, "left") : path.join(root, "left", "nested");
         if (process.platform === "win32") {
           // Windows cannot rename an ancestor with live descendant directory watches.
+          // BEGIN TASK MINIMAL DIAGNOSTIC
+          diagnosticPhase = "fs:remove-ancestor";
+          // END TASK MINIMAL DIAGNOSTIC
           await fs.rm(movedAncestor, { recursive: true });
         } else {
+          // BEGIN TASK MINIMAL DIAGNOSTIC
+          diagnosticPhase = "fs:rename-ancestor";
+          // END TASK MINIMAL DIAGNOSTIC
           await fs.rename(movedAncestor, `${movedAncestor}-away`);
         }
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = "poll:removed-first";
+        // END TASK MINIMAL DIAGNOSTIC
         await expect.poll(() => read(first), { timeout: 3_000 }).toEqual([]);
         await writeSkill(first, "returned-proof");
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = "poll:returned-first";
+        // END TASK MINIMAL DIAGNOSTIC
         await expect.poll(() => read(first), { timeout: 3_000 }).toEqual(["returned-proof"]);
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = "settle:returned";
+        // END TASK MINIMAL DIAGNOSTIC
         await settleWatchers();
         expect(read(first)).toEqual(["returned-proof"]);
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = "unsubscribe:first";
+        // END TASK MINIMAL DIAGNOSTIC
         // Retiring one logical workspace must not retire the shared missing-root observer.
         ensureSkillsWatcher({
           workspaceDir: first.workspaceDir,
           config: { skills: { load: { watch: false } } },
         });
         await writeSkill(second, "remaining-proof");
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = "poll:remaining-right";
+        // END TASK MINIMAL DIAGNOSTIC
         await expect.poll(() => read(second), { timeout: 3_000 }).toContain("remaining-proof");
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = "remaining:rename-setup";
+        // END TASK MINIMAL DIAGNOSTIC
         const skillFile = path.join(second.sourceRoot, "remaining-proof", "SKILL.md");
         const renamedSkillFile = path.join(second.sourceRoot, "remaining-proof", "SKILL.saved");
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = "fs:rename-skill-away";
+        // END TASK MINIMAL DIAGNOSTIC
         await fs.rename(skillFile, renamedSkillFile);
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = "poll:skill-removed";
+        // END TASK MINIMAL DIAGNOSTIC
         await expect.poll(() => read(second), { timeout: 3_000 }).toEqual([]);
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = "fs:rename-skill-back";
+        // END TASK MINIMAL DIAGNOSTIC
         await fs.rename(renamedSkillFile, skillFile);
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = "poll:skill-restored";
+        // END TASK MINIMAL DIAGNOSTIC
         await expect.poll(() => read(second), { timeout: 3_000 }).toContain("remaining-proof");
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = "fs:remove-right";
+        // END TASK MINIMAL DIAGNOSTIC
         await fs.rm(path.join(root, "right"), { recursive: true });
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = "poll:removed-right";
+        // END TASK MINIMAL DIAGNOSTIC
         await expect.poll(() => read(second), { timeout: 3_000 }).toEqual([]);
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = "recreate:right";
+        // END TASK MINIMAL DIAGNOSTIC
         await writeSkill(second, "recreated-proof");
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = "poll:recreated-right";
+        // END TASK MINIMAL DIAGNOSTIC
         await expect.poll(() => read(second), { timeout: 3_000 }).toContain("recreated-proof");
+        // BEGIN TASK MINIMAL DIAGNOSTIC
+        diagnosticPhase = "row:complete";
+        // END TASK MINIMAL DIAGNOSTIC
       } finally {
         unregister();
       }
