@@ -149,7 +149,7 @@ jobs:
             $packages = [ordered]@{ baseline = $selection.baseline; candidate = $selection.candidate }
           }
           $evidence = Join-Path $env:GITHUB_WORKSPACE ".artifacts/windows-installed-startup"
-          New-Item -ItemType Directory -Path $evidence | Out-Null
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
           foreach ($arm in $packages.Keys) {
             $binding = $packages[$arm]
             foreach ($field in @("runId", "runAttempt", "artifactId")) {
@@ -490,6 +490,35 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Diagnose literal batch path dispatch
+        if: ${{ inputs.run_windows_launcher_integration }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP ('batch-path-control-' + [guid]::NewGuid().ToString('N'))
+          $literal = Join-Path $root 'profile %OPENCLAW_SHELL_PATH_CONTROL%'
+          $saved = $env:OPENCLAW_SHELL_PATH_CONTROL
+          New-Item -ItemType Directory -Path $literal -Force | Out-Null
+          $batch = Join-Path $literal 'control.cmd'
+          [IO.File]::WriteAllText($batch, "@echo off`r`necho plain-batch-started`r`n", [Text.Encoding]::ASCII)
+          $env:OPENCLAW_SHELL_PATH_CONTROL = 'expanded-away'
+          Push-Location -LiteralPath $literal
+          try {
+            $ErrorActionPreference = 'Continue'
+            $direct = (& $batch 2>&1 | Out-String).Trim()
+            $directExit = $LASTEXITCODE
+            $relative = (& $env:ComSpec /d /v:off /c 'control.cmd' 2>&1 | Out-String).Trim()
+            $relativeExit = $LASTEXITCODE
+            $ErrorActionPreference = 'Stop'
+            New-Item -ItemType Directory -Path (Join-Path $env:GITHUB_WORKSPACE '.artifacts/windows-launcher') -Force | Out-Null
+            @{ scope = 'plain batch before OpenClaw runs'; directExit = $directExit; directOutput = $direct; relativeExit = $relativeExit; relativeOutput = $relative; literalVariableInPath = $true } | ConvertTo-Json | Set-Content (Join-Path $env:GITHUB_WORKSPACE '.artifacts/windows-launcher/shell-path-control.json')
+            if ($relativeExit -ne 0 -or $relative -cne 'plain-batch-started') { throw 'Relative plain-batch control failed.' }
+          } finally {
+            Pop-Location
+            if ($null -eq $saved) { Remove-Item Env:OPENCLAW_SHELL_PATH_CONTROL -ErrorAction SilentlyContinue } else { $env:OPENCLAW_SHELL_PATH_CONTROL = $saved }
+            Remove-Item -LiteralPath $root -Recurse -Force
+          }
+
       - name: Build exact Windows launcher source
         id: launcher_build
         if: ${{ inputs.run_windows_launcher_integration }}
@@ -502,7 +531,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $evidence = Join-Path $env:GITHUB_WORKSPACE ".artifacts/windows-launcher"
-          New-Item -ItemType Directory -Path $evidence | Out-Null
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
           $head = (git rev-parse HEAD).Trim()
           if ($LASTEXITCODE -ne 0 -or $head -cne $env:EXPECTED_HEAD) { throw "Launcher source identity changed." }
           $status = @(git status --porcelain=v1 --untracked-files=all)
@@ -561,6 +590,10 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Path $env:TEMP -Force | Out-Null
+          node scripts/run-vitest.mjs run src/infra/windows-git-launcher.concurrent.test.ts --reporter=default --reporter=json --outputFile=.artifacts/windows-launcher/concurrency.json 2>&1 | Tee-Object -FilePath .artifacts/windows-launcher/concurrency.log
+          if ($LASTEXITCODE -ne 0) { throw "Launcher ownership concurrency regression failed." }
+          $concurrency = Get-Content -LiteralPath .artifacts/windows-launcher/concurrency.json -Raw | ConvertFrom-Json
+          if ($concurrency.success -ne $true -or $concurrency.numPassedTests -ne 6 -or $concurrency.numPendingTests -ne 0 -or $concurrency.numFailedTests -ne 0) { throw "Expected six non-skipped launcher publication regressions." }
           node scripts/run-vitest.mjs run test/scripts/install-ps1.test.ts -t 'installs and repairs a launcher through the real hidden CLI' --reporter=default --reporter=json --outputFile=.artifacts/windows-launcher/vitest.json 2>&1 | Tee-Object -FilePath .artifacts/windows-launcher/test.log
           if ($LASTEXITCODE -ne 0) { throw "Real launcher integration failed." }
           $report = Get-Content -LiteralPath .artifacts/windows-launcher/vitest.json -Raw | ConvertFrom-Json
@@ -932,8 +965,12 @@ jobs:
           if ($env:TARGET_REF -cne 'a32b79e73b358fbcd068bbf86ef8032333d8d7c8') { throw 'Requires the reviewed PR112055 head.' }
           if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Requires a fresh disposable hosted VM.' }
           if ($env:RUN_CI -eq 'true' -or $env:RUN_LAUNCHER -eq 'true' -or $env:STARTUP -ne '' -or $env:CPU_DIAGNOSTIC -eq 'true') { throw 'Winget qualification is a separate run.' }
-          $disk = Get-PSDrive -Name C
-          if ($disk.Free -lt 8GB) { throw 'Native setup needs 8 GiB free for checkout, bootstrap, MSI/ZIP and logs.' }
+          $destinations = @($env:GITHUB_WORKSPACE,$env:RUNNER_TEMP,$env:ProgramFiles,$env:TEMP)
+          $driveNames = @($destinations | ForEach-Object { (Split-Path -Path $_ -Qualifier).TrimEnd(':') } | Sort-Object -Unique)
+          foreach ($driveName in $driveNames) {
+            $disk = Get-PSDrive -Name $driveName
+            if ($disk.Free -lt 8GB) { throw "Native setup needs 8 GiB free on destination drive $driveName for checkout, bootstrap, MSI/ZIP and logs." }
+          }
       - name: Checkout reviewed acceptance harness
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -4,9 +4,9 @@ import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { isSupportedOpenClawNodeVersion } from "../../node-version.mjs";
 import { resolveNodeRuntimeInfo } from "../daemon/runtime-paths.js";
+import { syncDirectoryBestEffort } from "./directory-durability.js";
 import { hasErrnoCode } from "./errno.js";
 import { resolveRequiredOsHomeDir } from "./home-dir.js";
-import { replaceFileAtomic } from "./replace-file.js";
 import { resolveStableNodePath } from "./stable-node-path.js";
 import { resolveWindowsOemCodePageForEncoding } from "./windows-encoding.js";
 import {
@@ -97,6 +97,91 @@ async function assertFile(filePath: string, label: string): Promise<void> {
   }
 }
 
+async function restoreClaimedLauncher(recovery: string, launcherPath: string, next: string) {
+  try {
+    await fs.link(recovery, launcherPath);
+  } catch (error) {
+    // A restoration error must take precedence: the user needs the recovery path.
+    await fs.unlink(next).catch(() => undefined);
+    throw new Error(
+      `Launcher changed during publication; original retained for recovery at ${recovery}`,
+      { cause: error },
+    );
+  }
+}
+
+/** Claim and inspect the actual destination, then publish without replacing another owner. */
+async function publishOwnedLauncher(
+  launcherPath: string,
+  expected: Buffer | null,
+  content: Buffer,
+): Promise<boolean> {
+  const directory = path.dirname(launcherPath);
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  const staging = await fs.mkdtemp(path.join(directory, ".openclaw-launcher-"));
+  const next = path.join(staging, "next.cmd");
+  const recovery = path.join(staging, "original.cmd");
+  let claimed = false;
+  let published = false;
+  try {
+    const file = await fs.open(next, "wx", 0o700);
+    try {
+      await file.writeFile(content);
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    // Probe the required filesystem capability before moving a working launcher.
+    const linkProbe = path.join(staging, "link-probe.cmd");
+    await fs.link(next, linkProbe);
+    await fs.unlink(linkProbe);
+    if (expected !== null) {
+      try {
+        // The private recovery name is unique. This introduces a brief absent-path
+        // window, but no rename ever overwrites the public launcher.
+        await fs.rename(launcherPath, recovery);
+      } catch (error) {
+        if (hasErrnoCode(error, "ENOENT")) {
+          return false;
+        }
+        throw error;
+      }
+      claimed = true;
+      await syncDirectoryBestEffort(staging);
+      await syncDirectoryBestEffort(directory);
+      if (!(await fs.lstat(recovery)).isFile()) {
+        throw new Error(`Launcher owner changed; inspect recovery at ${recovery}`);
+      }
+      if (!(await fs.readFile(recovery)).equals(expected)) {
+        return false;
+      }
+    }
+    try {
+      // Hard-link publication is atomic and fails if *any* destination exists.
+      // Both files are on the same volume; unsupported filesystems fail closed.
+      await fs.link(next, launcherPath);
+    } catch (error) {
+      if (hasErrnoCode(error, "EEXIST")) {
+        return false;
+      }
+      throw error;
+    }
+    published = true;
+    // Preserve the previous publisher's best-effort directory durability before
+    // removing recovery. Windows/filesystems without directory fsync remain best-effort.
+    await syncDirectoryBestEffort(directory);
+    return true;
+  } finally {
+    if (claimed && !published) {
+      // Do not remove the claimed bytes or replace a concurrent winner.
+      await restoreClaimedLauncher(recovery, launcherPath, next);
+      await syncDirectoryBestEffort(directory);
+    }
+    await fs.rm(staging, { recursive: true });
+    await syncDirectoryBestEffort(directory);
+  }
+}
+
 /** Creates a Git launcher or migrates an existing installer-owned launcher. */
 export async function reconcileWindowsGitLauncher(params: {
   root: string;
@@ -165,15 +250,13 @@ export async function reconcileWindowsGitLauncher(params: {
   if (current === desired) {
     return { status: "unchanged", launcherPath };
   }
-  await replaceFileAtomic({
-    filePath: launcherPath,
-    content: encodeWindowsLauncherScript({ format: "cmd", content: desired }),
-    mode: 0o700,
-    dirMode: 0o700,
-    copyFallbackOnPermissionError: true,
-    syncTempFile: true,
-    syncParentDir: true,
-    tempPrefix: "openclaw.cmd",
-  });
+  const published = await publishOwnedLauncher(
+    launcherPath,
+    currentBuffer,
+    encodeWindowsLauncherScript({ format: "cmd", content: desired }),
+  );
+  if (!published) {
+    return { status: "skipped", reason: "foreign" };
+  }
   return { status: current === null ? "created" : "updated", launcherPath };
 }

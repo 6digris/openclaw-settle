@@ -2170,7 +2170,10 @@ $ErrorActionPreference = 'Stop'
 # Record nonzero native diagnostics; the exit code, not PowerShell's stderr adapter,
 # is the oracle for refusal and missing-runtime controls on both PS5.1 and PS7.
 $PSNativeCommandUseErrorActionPreference = $false
-$fixtureProfile = Join-Path $testRoot 'profile ^caret^ %OPENCLAW_TEST_PERCENT% !bang!'
+# The outer PowerShell-to-CMD dispatch expands %VARIABLE% in a batch filename
+# before that batch starts. The workflow records a plain-batch control for that
+# shell boundary; keep literal percent coverage in the runtime path rendered below.
+$fixtureProfile = Join-Path $testRoot 'profile ^caret^ !bang!'
 # Force the production encoder's marked OEM branch using a character representable
 # on this actual Windows locale, without changing the machine's console settings.
 $oemPage = [int](Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage' -Name OEMCP).OEMCP

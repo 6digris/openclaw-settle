@@ -43,7 +43,15 @@ function Get-NodeRegistration {
 }
 function Remove-OwnedMsi([string]$Product, [string]$Label) {
     Assert-Proof ($Product -match '^\{[0-9A-Fa-f-]{36}\}$') 'Invalid MSI ProductCode.'
-    $code = Invoke-Native "$env:WINDIR\System32\msiexec.exe" @('/x',$Product,'/qn','/norestart','/l*v',(Join-Path $ProofRoot "$Label-msi.log")) $Label
+    # msiexec is a GUI executable: direct invocation can return before MSI exits.
+    # Wait for the real process tree and read its exit code, never stale LASTEXITCODE.
+    $exe = "$env:WINDIR\System32\msiexec.exe"
+    $log = Join-Path $ProofRoot "$Label-msi.log"
+    $arguments = @('/x',$Product,'/qn','/norestart','/l*v',('"{0}"' -f $log))
+    $process = Start-Process -FilePath $exe -ArgumentList $arguments -Wait -PassThru
+    $code = $process.ExitCode
+    $proof.commands += @{ name=$Label; executable=$exe; arguments=$arguments; exit=$code; processId=$process.Id; waited=$true }
+    $process.Dispose()
     Assert-Proof ($code -in @(0,1605,3010)) "MSI uninstall failed: $code."
     Assert-Proof (@(Get-NodeRegistration | Where-Object PSChildName -eq $Product).Count -eq 0) 'MSI registration survived uninstall.'
 }
@@ -76,7 +84,14 @@ try {
     Assert-Proof $admin 'Effective administrator token is required for real MSI lifecycle.'
     # Headless execution is recorded, not relabeled as a console. Native commands
     # below must actually complete; any interactive-only requirement remains a gap.
-    Assert-Proof ((Get-PSDrive C).Free -ge 8GB) 'Insufficient measured capacity for native setup.'
+    $proof.host.storage = @()
+    $destinations = @($CandidateRoot,$ProofRoot,$WorkRoot,$env:ProgramFiles,$env:TEMP)
+    $driveNames = @($destinations | ForEach-Object { (Split-Path -Path $_ -Qualifier).TrimEnd(':') } | Sort-Object -Unique)
+    foreach ($driveName in $driveNames) {
+        $disk = Get-PSDrive -Name $driveName
+        $proof.host.storage += @{ drive=$driveName; root=$disk.Root; freeBytes=$disk.Free }
+        Assert-Proof ($disk.Free -ge 8GB) "Insufficient measured capacity on destination drive $driveName."
+    }
     $resolvedHead = (& git -C $CandidateRoot rev-parse HEAD).Trim()
     Assert-Proof ($LASTEXITCODE -eq 0 -and $resolvedHead -ceq $ExpectedHead) 'Candidate checkout mismatch.'
     $installer = Join-Path $CandidateRoot 'scripts/install.ps1'
