@@ -43,7 +43,6 @@ import type {
   ProviderPlugin,
 } from "../../plugins/types.js";
 import type { RuntimeEnv } from "../../runtime.js";
-import { MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY } from "../../shared/provider-auth-managed-login-contract.js";
 import {
   ProviderAuthConfigApplyError,
   ProviderCredentialsSavedError,
@@ -56,6 +55,11 @@ import { repairCodexRuntimePluginInstallForModelSelection } from "../codex-runti
 import { repairCopilotRuntimePluginInstallForModelSelection } from "../copilot-runtime-plugin-install.js";
 import { saveModelProviderApiKey } from "./auth-api-key.js";
 import { tryImportProviderCredential } from "./auth-credential-import.js";
+import type {
+  LoginOptions,
+  ModelsAuthLoginFlowOptions,
+  ModelsAuthLoginFlowResult,
+} from "./auth-login-flow-types.js";
 import {
   createManagedAuthBeforeWrite,
   resolveLoginProfiles,
@@ -951,66 +955,15 @@ export async function modelsAuthAddCommand(opts: { agent?: string }, runtime: Ru
   );
 }
 
-type LoginOptions = {
-  provider?: string;
-  method?: string;
-  profileId?: string;
-  setDefault?: boolean;
-  yes?: boolean;
-  agent?: string;
-  /**
-   * When true, remove any existing auth profiles for the resolved provider
-   * before invoking the auth flow. This is the escape hatch for stuck
-   * cached OAuth profiles where the standard `auth login` short-circuits
-   * because credentials already exist on disk.
-   */
-  force?: boolean;
-};
-
 export {
   MANAGED_MODELS_AUTH_LOGIN_ACCOUNT_MISMATCH_CODE,
   MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY,
 } from "../../shared/provider-auth-managed-login-contract.js";
-
-export type ModelsAuthLoginManagedOptions = {
-  capability: typeof MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY;
-  profileId: string;
-  stateDir: string;
-  beforePersist: () => Promise<void>;
-  assertCurrent: () => void;
-};
-
-export type ModelsAuthLoginFlowResult = {
-  providerId: string;
-  methodId: string;
-  authRefresh: ModelAuthRefreshOutcome;
-  defaultModel?: string;
-  imported?: boolean;
-  profiles: Array<{
-    profileId: string;
-    provider: string;
-    mode: "api_key" | "oauth" | "token";
-  }>;
-};
-
-export type ModelsAuthLoginFlowOptions = LoginOptions & {
-  ownerPluginId?: string;
-  credentialOnly?: boolean;
-  assertCurrent?: () => void;
-  config?: OpenClawConfig;
-  runtime: RuntimeEnv;
-  prompter: WizardPrompter;
-  onModelAccessRequested?: (request: PreparedProviderModelAccess) => void;
-  env?: NodeJS.ProcessEnv;
-  isRemote?: boolean;
-  signal?: AbortSignal;
-  openUrl?: (url: string) => Promise<void>;
-  browserAuthorization?: ProviderAuthContext["oauth"]["authorize"];
-  beforePersistentEffect?: () => void | Promise<void>;
-  /** Publish a hosted login through its current Gateway instead of a separate CLI connection. */
-  refreshAfterLogin?: (agentId: string) => Promise<void>;
-  managed?: ModelsAuthLoginManagedOptions;
-};
+export type {
+  ModelsAuthLoginFlowOptions,
+  ModelsAuthLoginFlowResult,
+  ModelsAuthLoginManagedOptions,
+} from "./auth-login-flow-types.js";
 
 /** Resolves a requested login provider or throws with available provider details. */
 export function resolveRequestedLoginProviderOrThrow(

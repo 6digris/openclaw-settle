@@ -20,14 +20,14 @@ import {
   MANAGED_MODELS_AUTH_LOGIN_FLOW_CAPABILITY,
 } from "../../shared/provider-auth-managed-login-contract.js";
 import type { WizardPrompter } from "../../wizard/prompts.js";
-import { normalizeManualAuthProvider } from "./auth-manual-input.js";
-import type { PreparedProviderModelAccess } from "./auth-model-policy.js";
-import type { ModelAuthRefreshOutcome } from "./auth-refresh.js";
 import type {
   ModelsAuthLoginFlowOptions,
   ModelsAuthLoginFlowResult,
   ModelsAuthLoginManagedOptions,
-} from "./auth.js";
+} from "./auth-login-flow-types.js";
+import { normalizeManualAuthProvider } from "./auth-manual-input.js";
+import type { PreparedProviderModelAccess } from "./auth-model-policy.js";
+import type { ModelAuthRefreshOutcome } from "./auth-refresh.js";
 
 type ResolvedModelsAuthContext = {
   config: OpenClawConfig;
@@ -90,9 +90,8 @@ type ManagedLoginDeps = {
 };
 
 function createManagedAuthLoginError(code: string, message: string): Error & { code: string } {
-  const error = new Error(message) as Error & { code: string };
+  const error = Object.assign(new Error(message), { code });
   error.name = "ManagedModelsAuthLoginError";
-  error.code = code;
   return error;
 }
 
@@ -191,7 +190,9 @@ function createSuppliedConfigSnapshot(config: OpenClawConfig): ConfigFileSnapsho
     exists: false,
     raw: null,
     parsed: sourceConfig,
+    // SAFETY: managed login builds a synthetic snapshot from an already-normalized runtime config.
     sourceConfig: sourceConfig as ConfigFileSnapshot["sourceConfig"],
+    // SAFETY: managed login has no authored file state; source and resolved share the same snapshot.
     resolved: sourceConfig as ConfigFileSnapshot["resolved"],
     valid: true,
     runtimeConfig: config,
