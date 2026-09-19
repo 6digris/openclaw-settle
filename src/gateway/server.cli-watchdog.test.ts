@@ -2,10 +2,12 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it, vi } from "vitest";
 import { testing } from "../agents/cli-backends.test-support.js";
 import { cliBackendLog } from "../agents/cli-runner/log.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { onAgentEventForRun } from "../infra/agent-events.js";
 import type {
   CliBackendExecuteContext,
   CliBackendPrepareExecutionContext,
@@ -13,6 +15,7 @@ import type {
 import { resolveRuntimeCliBackends } from "../plugins/cli-backends.runtime.js";
 import { setTestEnvValue } from "../test-utils/env.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import * as agentJobs from "./agent-turn/agent-job.js";
 import * as gatewayFixture from "./test-helpers.e2e.js";
 
 const FREEZE_CONTROLLER = String.raw`const { execFileSync } = require("node:child_process");
@@ -158,6 +161,26 @@ describe.skipIf(process.platform === "win32")(
 
 async function runWatchdogCase(testCase: WatchdogCase, signal: AbortSignal) {
   const realNow = Date.now;
+  const traceStart = performance.now();
+  const trace: { stage: string; elapsedMs: number; facts: Record<string, unknown> }[] = [];
+  const observers: (() => void)[] = [];
+  let observing = true;
+  let exitWaitId = 0;
+  const record = (stage: string, facts: Record<string, unknown> = {}) => {
+    if (observing && testCase.behavior === "cancel" && trace.length < 64) {
+      trace.push({ stage, elapsedMs: performance.now() - traceStart, facts });
+    }
+  };
+  const outcomeFacts = (value: unknown) => {
+    const data = asOptionalRecord(value);
+    return {
+      status: ["started", "running", "pending", "ok", "error", "timeout", "cancelled"].find(
+        (status) => status === data?.status,
+      ),
+      endedAt: typeof data?.endedAt === "number" ? data.endedAt : undefined,
+      hasError: data?.error !== undefined,
+    };
+  };
   let frozenNow: number | undefined;
   let orderedOutputAt: number | undefined;
   let restoreClock: (() => void) | undefined;
@@ -300,6 +323,70 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       resolveRuntimeCliBackends: () =>
         backends.map((backend) =>
           Object.assign({}, backend, {
+            ...(testCase.behavior === "cancel"
+              ? {
+                  prepareExecution: async (context: CliBackendPrepareExecutionContext) => {
+                    const prepared = await backend.prepareExecution?.(context);
+                    if (!prepared?.execute) {
+                      throw new Error(
+                        "Registered CLI backend must provide its execution transport.",
+                      );
+                    }
+                    const execute = prepared.execute;
+                    return {
+                      ...prepared,
+                      execute(execution: CliBackendExecuteContext) {
+                        record("execute");
+                        const onAbort = () => record("execution-abort");
+                        execution.abortSignal?.addEventListener("abort", onAbort, { once: true });
+                        observers.push(() =>
+                          execution.abortSignal?.removeEventListener("abort", onAbort),
+                        );
+                        const capability = execution.liveSession;
+                        record("live-session", { available: capability !== undefined });
+                        return execute(
+                          capability
+                            ? {
+                                ...execution,
+                                liveSession: {
+                                  ...capability,
+                                  register(handle) {
+                                    capability.register(handle);
+                                    record("transport-registered");
+                                    const close = handle.close.bind(handle);
+                                    const closing = vi
+                                      .spyOn(handle, "close")
+                                      .mockImplementation((reason, error) => {
+                                        record("transport-close", { reason });
+                                        return close(reason, error);
+                                      });
+                                    const waitForExit = handle.waitForExit.bind(handle);
+                                    const exit = vi
+                                      .spyOn(handle, "waitForExit")
+                                      .mockImplementation(() => {
+                                        const callId = ++exitWaitId;
+                                        record("transport-exit-wait", { callId });
+                                        const pending = waitForExit();
+                                        void pending.then(
+                                          () => record("transport-exited", { callId }),
+                                          () => record("transport-exit-rejected", { callId }),
+                                        );
+                                        return pending;
+                                      });
+                                    observers.push(
+                                      () => closing.mockRestore(),
+                                      () => exit.mockRestore(),
+                                    );
+                                  },
+                                },
+                              }
+                            : execution,
+                        );
+                      },
+                    };
+                  },
+                }
+              : {}),
             ...(testCase.behavior === "ordered"
               ? {
                   prepareExecution: async (context: CliBackendPrepareExecutionContext) => {
@@ -362,6 +449,51 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       idempotencyKey: randomUUID(),
     });
     expect(accepted.status).toBe("started");
+    if (testCase.behavior === "cancel") {
+      record("accepted");
+      observers.push(
+        onAgentEventForRun(accepted.runId, (event) => {
+          if (event.stream === "lifecycle") {
+            record("lifecycle", {
+              phase: ["start", "end", "error"].find((phase) => phase === event.data.phase),
+              aborted: event.data.aborted === true,
+              ...outcomeFacts(event.data),
+            });
+          }
+        }),
+      );
+      const setDedupe = agentJobs.setGatewayDedupeEntry;
+      const dedupe = vi.spyOn(agentJobs, "setGatewayDedupeEntry").mockImplementation((params) => {
+        const result = setDedupe(params);
+        if (params.key === `chat:${accepted.runId}` || params.key === `agent:${accepted.runId}`) {
+          const stored = params.dedupe.get(params.key);
+          record("dedupe", {
+            source: params.key.startsWith("chat:") ? "chat" : "agent",
+            ok: stored?.ok,
+            attempted: outcomeFacts(params.entry.payload),
+            ...outcomeFacts(stored?.payload),
+          });
+        }
+        return result;
+      });
+      const waitForJob = agentJobs.waitForAgentJob;
+      const waiting = vi.spyOn(agentJobs, "waitForAgentJob").mockImplementation((params) => {
+        const pending = waitForJob(params);
+        if (params.runId === accepted.runId) {
+          record("job-wait", { source: params.source, timeoutMs: params.timeoutMs });
+          void pending.then(
+            (result) =>
+              record("job-observed", { snapshot: result !== null, ...outcomeFacts(result) }),
+            () => record("job-wait-rejected"),
+          );
+        }
+        return pending;
+      });
+      observers.push(
+        () => dedupe.mockRestore(),
+        () => waiting.mockRestore(),
+      );
+    }
     await expect
       .poll(
         async () =>
@@ -378,10 +510,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     );
     expect(ready.turns).toBe(testCase.resume ? 2 : 1);
     if (testCase.behavior === "cancel") {
+      record("abort-request");
       const cancelled = await gateway.client.request("chat.abort", {
         sessionKey,
         runId: accepted.runId,
       });
+      record("abort-acknowledged", { aborted: asOptionalRecord(cancelled)?.aborted === true });
       expect(cancelled).toMatchObject({ aborted: true, runIds: [accepted.runId] });
     } else if (testCase.behavior === "ordered") {
       await expect.poll(() => observedCredit, { timeout: 5_000 }).toBe(true);
@@ -433,6 +567,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       },
       { timeoutMs: 55_000 },
     );
+    record("wait-response", outcomeFacts(completed));
     const history = await gateway.client.request("chat.history", { sessionKey });
     await fs.writeFile(
       path.join(proof, "gateway-result.json"),
@@ -474,6 +609,13 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       );
     }
   } finally {
+    observing = false;
+    for (const restore of observers.toReversed()) {
+      restore();
+    }
+    if (testCase.behavior === "cancel") {
+      console.info("CLI cancellation stages:", JSON.stringify(trace));
+    }
     restoreClock?.();
     log.mockRestore();
     try {
