@@ -119,4 +119,10 @@ describe("live model priorities", () => {
       id: "kimi-k2.7-code",
     });
   });
+
+  it("uses the OpenCode Go default before discovered provider fallbacks", () => {
+    const refs = listPrioritizedHighSignalLiveModelRefs();
+    expect(refs).toContainEqual({ provider: "opencode-go", id: "kimi-k2.6" });
+    expect(refs).not.toContainEqual({ provider: "opencode-go", id: "glm-5" });
+  });
 });

@@ -54,6 +54,11 @@ describe("live test provider drift", () => {
         "400 Error from provider (Console Go): Upstream request failed: Model is unavailable.",
       ),
     ).toBe(true);
+    expect(
+      isLiveProviderUnavailableDrift(
+        "403 The latest version of this model is only available hosted in China and requires explicit opt in",
+      ),
+    ).toBe(true);
   });
 
   it("returns explicit skip labels only for enabled drift classes", () => {

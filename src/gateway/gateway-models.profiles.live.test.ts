@@ -4582,7 +4582,7 @@ async function runGatewayModelSuite(params: GatewayModelSuiteParams) {
     const nonceB = `tool-read-beta-${createToolProbeNonce()}`;
     // Keep probe values out of the path: weak tool callers may echo the filename
     // instead of reading the file, turning nonceA into a false duplicate answer.
-    const toolProbePath = path.join(workspaceDir, ".openclaw-live-tool-probe.txt");
+    const toolProbePath = path.join(workspaceDir, "openclaw-live-tool-read.txt");
     cleanupToolProbePath = toolProbePath;
     await fs.writeFile(toolProbePath, `testMarkerA=${nonceA}\ntestMarkerB=${nonceB}\n`);
 
@@ -4876,12 +4876,12 @@ async function runGatewayModelSuite(params: GatewayModelSuiteParams) {
                     idempotencyKey: `idem-${runIdTool}-tool-${toolReadAttempt + 1}`,
                     modelKey,
                     message: strictReply
-                      ? "OpenClaw live tool probe (local, safe): " +
-                        `use the tool named \`read\` (or \`Read\`) with JSON arguments {"path":"${toolProbePath}"}. ` +
-                        "Then reply with exactly the two test marker values from that file, separated by one space. No extra text."
-                      : "OpenClaw live tool probe (local, safe): " +
-                        `use the tool named \`read\` (or \`Read\`) with JSON arguments {"path":"${toolProbePath}"}. ` +
-                        "Then reply with the two test marker values you read (include both).",
+                      ? "Verify the two expected values in the local project fixture " +
+                        `"${toolProbePath}". Use the \`read\` (or \`Read\`) tool with JSON arguments {"path":"${toolProbePath}"}; ` +
+                        "Reply with exactly the two values from the file, separated by one space. No extra text."
+                      : "As part of this local project verification task, inspect the fixture " +
+                        `"${toolProbePath}" with the \`read\` (or \`Read\`) tool using JSON arguments {"path":"${toolProbePath}"}. ` +
+                        "Then reply with both expected values from the file.",
                     thinkingLevel,
                     context: `${progressLabel}: tool-read`,
                   });

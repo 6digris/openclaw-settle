@@ -31,7 +31,7 @@ const HIGH_SIGNAL_LIVE_MODEL_PRIORITY = [
   "openai/gpt-5.6",
   "openrouter/openai/gpt-5.2-chat",
   "openrouter/minimax/minimax-m2.7",
-  "opencode-go/glm-5",
+  "opencode-go/kimi-k2.6",
   "openrouter/ai21/jamba-large-1.7",
   "xai/grok-4.3",
   "zai/glm-5.1",
