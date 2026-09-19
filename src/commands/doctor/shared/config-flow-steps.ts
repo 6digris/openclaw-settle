@@ -159,10 +159,70 @@ export function prepareDoctorConfigReferenceSource(
   };
 }
 
+/** A moved template must still have its original read-time value after migration. */
+function retainValuePreservingMigrationRefs(
+  template: unknown,
+  migratedResolved: unknown,
+  source: DoctorConfigReferenceSource,
+): unknown {
+  const values = new Map<string, unknown>();
+  const ambiguous = new Set<string>();
+  const collect = (authored: unknown, resolved: unknown): void => {
+    if (typeof authored === "string" && /\$\{[A-Z_][A-Z0-9_]*\}/.test(authored)) {
+      if (values.has(authored) && !isDeepStrictEqual(values.get(authored), resolved)) {
+        ambiguous.add(authored);
+      }
+      values.set(authored, resolved);
+    } else if (authored && typeof authored === "object") {
+      for (const [key, value] of Object.entries(authored)) {
+        collect(
+          value,
+          resolved && typeof resolved === "object"
+            ? (resolved as Record<string, unknown>)[key]
+            : undefined,
+        );
+      }
+    }
+  };
+  collect(source.authored, source.resolved);
+  const retain = (authored: unknown, resolved: unknown): unknown => {
+    if (typeof authored === "string" && /\$\{[A-Z_][A-Z0-9_]*\}/.test(authored)) {
+      // Exact template text identifies its read-time substitution, including escapes
+      // and composite strings. Never infer an environment from a resolved substring.
+      return values.has(authored) &&
+        !ambiguous.has(authored) &&
+        isDeepStrictEqual(values.get(authored), resolved)
+        ? authored
+        : undefined;
+    }
+    if (Array.isArray(authored)) {
+      return authored.map((value, index) =>
+        retain(value, Array.isArray(resolved) ? resolved[index] : undefined),
+      );
+    }
+    if (authored && typeof authored === "object") {
+      return Object.fromEntries(
+        Object.entries(authored).map(([key, value]) => [
+          key,
+          retain(
+            value,
+            resolved && typeof resolved === "object"
+              ? (resolved as Record<string, unknown>)[key]
+              : undefined,
+          ),
+        ]),
+      );
+    }
+    return authored;
+  };
+  return retain(template, migratedResolved);
+}
+
 /** Restore unchanged and moved references without substituting a later environment. */
 export function restoreDoctorConfigEnvRefs(
   candidate: OpenClawConfig,
   source: DoctorConfigReferenceSource | undefined,
+  explicitSetPaths?: readonly (readonly string[])[],
 ): OpenClawConfig {
   if (!source) {
     return candidate;
@@ -176,7 +236,12 @@ export function restoreDoctorConfigEnvRefs(
     rootAuthoredConfig: source.resolved,
     sourceConfigBeforeMigrations: source.resolved,
   });
-  const unchanged = restoreEnvVarRefsFromResolved(candidate, canonicalAuthored, canonicalResolved);
+  const unchanged = restoreEnvVarRefsFromResolved(
+    candidate,
+    canonicalAuthored,
+    canonicalResolved,
+    explicitSetPaths,
+  );
   const context = { authoredRaw: source.parsed, resolvedRaw: source.resolved };
   const migratedAuthored = applyLegacyDoctorMigrations(canonicalAuthored, context);
   const migratedResolved = applyLegacyDoctorMigrations(canonicalResolved, context);
@@ -190,7 +255,12 @@ export function restoreDoctorConfigEnvRefs(
     canonicalResolved,
     migratedResolved.next ?? canonicalResolved,
   );
-  const restored = restoreEnvVarRefsFromResolved(unchanged, referenceTemplate, resolvedTemplate);
+  const restored = restoreEnvVarRefsFromResolved(
+    unchanged,
+    retainValuePreservingMigrationRefs(referenceTemplate, resolvedTemplate, source),
+    resolvedTemplate,
+    explicitSetPaths,
+  );
   // SAFETY: Restoring string leaves preserves the candidate's config structure.
   return restored as OpenClawConfig;
 }

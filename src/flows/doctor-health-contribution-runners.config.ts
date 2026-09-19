@@ -84,7 +84,11 @@ export async function runWriteConfigHealth(
         });
       }
       const { path, hash } = confirmedConfigSource;
-      const nextConfig = restoreDoctorConfigEnvRefs(ctx.cfg, ctx.configResult.referenceSource);
+      const nextConfig = restoreDoctorConfigEnvRefs(
+        ctx.cfg,
+        ctx.configResult.referenceSource,
+        ctx.configResult.explicitSetPaths,
+      );
       const authority = getUpdateDoctorConfigWriteAuthority(ctx.configPath);
       const includeSnapshot = authority
         ? await readConfigFileSnapshot({ skipPluginValidation: updateDoctorRun, observe: false })
