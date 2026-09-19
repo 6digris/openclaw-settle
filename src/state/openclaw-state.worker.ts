@@ -1,5 +1,7 @@
 import { SHARED_AUTH_STORE_STATE_KEY } from "../agents/auth-profiles/path-resolve.js";
-import { inspectAuthProfileJsonCellReadOnly } from "../agents/auth-profiles/sqlite.js";
+import { readAuthProfileRows } from "../agents/auth-profiles/sqlite-json.js";
+import { isMissingDatabasePath } from "../agents/auth-profiles/sqlite-read-pool.js";
+import type { AuthProfileRowRead } from "../agents/auth-profiles/types.js";
 import {
   readNativeHookRelayBridgeSnapshotFromDatabase,
   listNativeHookRelayBridgeSnapshotsInDatabase,
@@ -7,6 +9,7 @@ import {
 import { executeNativeHookRelayMutation } from "../agents/harness/native-hook-relay-store.worker.js";
 import { readClawInstallSchemaVersionRows } from "../claws/provenance-runtime-read.kernel.js";
 import { readSqliteDatabaseBloat } from "../commands/doctor-db-bloat.read.js";
+import { readWorkshopMigrationRecordsInDatabase } from "../commands/doctor-skill-workshop-read.kernel.js";
 import {
   patchConfigHealthEntryInDatabase,
   readConfigHealthSnapshotInDatabase,
@@ -29,7 +32,7 @@ import {
 } from "../gateway/managed-image-record-store.kernel.js";
 import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
 import { countFailedDeliveryQueueEntriesInDatabase } from "../infra/delivery-queue-sqlite.kernel.js";
-import { readDeviceAuthTokensFromDatabase } from "../infra/device-auth-store.kernel.js";
+import * as deviceAuth from "../infra/device-auth-store.kernel.js";
 import { executePromotionCommand } from "../infra/promotions-feed.worker.js";
 import {
   readApnsRegistrationFromDatabase,
@@ -43,8 +46,10 @@ import {
   readStableSqliteFileGeneration,
   sameSqliteFileGeneration,
 } from "../infra/sqlite-file-generation.js";
+import { assertNoActiveSqliteReaders } from "../infra/sqlite-reader-lifecycle.js";
 import { assertTransactionUsable } from "../infra/sqlite-transaction.js";
 import type { SqliteWorkerBackend } from "../infra/sqlite-worker-contract.js";
+import { requestSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
 import { getSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import {
   countRecentTelemetrySessionsInDatabase,
@@ -181,11 +186,27 @@ function createSharedStateWorkerBackend(
           if (command.type === "authProfiles.personal") {
             return readUserModelAuthProfile(command.input.profileId, options);
           }
-          const target = { kind: "shared-state" as const, ...options };
-          return {
-            store: inspectAuthProfileJsonCellReadOnly(target, "store"),
-            state: inspectAuthProfileJsonCellReadOnly(target, "state"),
+          const missing: AuthProfileRowRead = {
+            store: { status: "missing", reason: "database" },
+            state: { status: "missing", reason: "database" },
+            cacheable: false,
           };
+          try {
+            return (
+              withExistingOpenClawStateDatabaseReadOnly(
+                ({ db }) => readAuthProfileRows(db, context.databasePath, "shared-state"),
+                options,
+              ) ?? missing
+            );
+          } catch {
+            return isMissingDatabasePath(context.databasePath)
+              ? missing
+              : {
+                  store: { status: "unreadable" as const },
+                  state: { status: "unreadable" as const },
+                  cacheable: false,
+                };
+          }
         };
         return command.input.artifactPreserving ? withArtifactPreservingStateReads(read) : read();
       }
@@ -259,6 +280,12 @@ function createSharedStateWorkerBackend(
           open,
         );
       }
+      if (command.type === "doctor.workshopMigrationRecords.read") {
+        return withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
+          ({ db }) => readWorkshopMigrationRecordsInDatabase(db, command.input.includeEvents),
+          { path: context.databasePath, env: getSqliteWorkerStateContext().environment },
+        );
+      }
       if (command.type === "modelCatalog.remote.read") {
         const read = () =>
           readRemoteModelCatalog({
@@ -308,6 +335,18 @@ function createSharedStateWorkerBackend(
           readStableSqliteFileGeneration(context.databasePath),
         );
       }
+      if (command.type === "database.inspectIdle") {
+        // Idle maintenance must never materialize a connection for an artifact-preserving reader.
+        if (
+          !nativeDatabase?.db.isOpen ||
+          openClawStateDatabaseCache.getCachedOpenClawStateDatabase(nativeDatabase.path) !==
+            nativeDatabase
+        ) {
+          return "retire";
+        }
+        assertOpenClawStateDatabaseOwner(nativeDatabase.db, { pathname: nativeDatabase.path });
+        return nativeDatabase.walMaintenance.inspectIdle?.() ?? "retire";
+      }
       if (command.type === "userPreferences.read" || command.type === "userPreferences.write") {
         return executeUserPreferenceCommand(command, {
           database: open(),
@@ -337,9 +376,21 @@ function createSharedStateWorkerBackend(
           }) ?? { state: {}, basis: {} }
         );
       }
+      if (command.type === "deviceAuth.read" || command.type === "deviceAuth.readOrigin") {
+        const read = (db: OpenClawStateDatabase["db"]) =>
+          command.type === "deviceAuth.read"
+            ? deviceAuth.readDeviceAuthTokenObservationFromDatabase(db, command.input)
+            : deviceAuth.readOriginDeviceTokenObservationFromDatabase(db, command.input);
+        return command.input.readOnly
+          ? (withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(({ db }) => read(db), {
+              path: context.databasePath,
+              env: getSqliteWorkerStateContext().environment,
+            }) ?? { entry: null, expectedToken: null })
+          : read(open().db);
+      }
       const database = open();
       if (command.type === "deviceAuth.list") {
-        return readDeviceAuthTokensFromDatabase(database.db, command.input);
+        return deviceAuth.readDeviceAuthTokensFromDatabase(database.db, command.input);
       }
       switch (command.type) {
         case "transcripts.sessionEntries":
@@ -351,6 +402,7 @@ function createSharedStateWorkerBackend(
         case "transcripts.libraryEntry":
         case "transcripts.recentStopped":
         case "transcripts.summaryRevision":
+        case "transcripts.summarySnapshot":
         case "transcripts.utterances":
         case "transcripts.summary": {
           ensureMeetingTranscriptsSchema({
@@ -431,6 +483,26 @@ function createSharedStateWorkerBackend(
         path: context.databasePath,
         env: getSqliteWorkerStateContext().environment,
       };
+      if (
+        command.type === "deviceAuth.store" ||
+        command.type === "deviceAuth.storeOrigin" ||
+        command.type === "deviceAuth.clear" ||
+        command.type === "deviceAuth.clearOrigin"
+      ) {
+        return runOpenClawStateWriteTransaction(({ db }) => {
+          requestSqliteWorkerOperationAdmission({ stage: "transaction", facts: undefined });
+          const result =
+            command.type === "deviceAuth.store"
+              ? deviceAuth.storeDeviceAuthTokenInDatabase(db, command.input)
+              : command.type === "deviceAuth.storeOrigin"
+                ? deviceAuth.storeOriginDeviceTokenInDatabase(db, command.input)
+                : command.type === "deviceAuth.clear"
+                  ? deviceAuth.clearDeviceAuthTokenFromDatabase(db, command.input)
+                  : deviceAuth.clearOriginDeviceTokenInDatabase(db, command.input);
+          requestSqliteWorkerOperationAdmission({ stage: "commit", facts: undefined });
+          return result;
+        }, writeOptions);
+      }
       if (
         command.type === "fleet.cell.reserve" ||
         command.type === "fleet.cell.updateImage" ||
@@ -598,6 +670,9 @@ function createSharedStateWorkerBackend(
         assertTransactionUsable(nativeDatabase.db);
         if (nativeDatabase.db.isOpen && nativeDatabase.db.isTransaction) {
           throw new Error("Shared-state worker retained an unsettled transaction");
+        }
+        if (nativeDatabase.db.isOpen) {
+          assertNoActiveSqliteReaders(nativeDatabase.db, "Shared-state worker");
         }
       }
     },

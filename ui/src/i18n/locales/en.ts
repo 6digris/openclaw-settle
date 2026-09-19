@@ -966,8 +966,14 @@ export const en: TranslationMap & {
     cloudProfileRuntimeUnsupported:
       "The {runtime} runtime cannot use this cloud worker. Choose a compatible cloud worker or run locally.",
     deviceRuntimeUnsupported: "This runtime does not support paired devices",
-    placementStartFailed: "The session was created, but runner startup failed: {error}",
+    placementStartFailed: "The session was created, but startup needs attention: {error}",
+    placementStillStarting:
+      "Worker setup is still in progress. Retry to check the existing worker; your message has not been sent.",
+    placementCompletionUnconfirmed:
+      "Could not confirm whether worker setup finished. Retry to check again; your message has not been sent.",
     placementReloadBlocked: "Recovery needs a reload. Unsaved starts will be lost.",
+    placementCancelled:
+      "Session setup was interrupted and the temporary session was cleaned up. Your prompt is kept here.",
     discardUnsavedAndReload: "Discard unsaved starts and reload",
     yourDevices: "Your devices",
     autoDeviceSub: "Least-busy device",
@@ -1048,6 +1054,8 @@ export const en: TranslationMap & {
     owners: "Owners",
     allOwners: "All owners",
     involvingMe: "Involving me",
+    hideFromInvolvingMe: "Hide from Involving me",
+    showInInvolvingMe: "Show in Involving me",
     specificOwner: "Specific owner",
     specificOwnerAvailable: "Specific owner: {count} available",
     specificOwnerSelected: "Specific owner: {name}",
@@ -3224,6 +3232,9 @@ export const en: TranslationMap & {
     actionsUnavailable: "Actions are unavailable while the Gateway reconnects.",
     settingsChangesUnavailable:
       "Changes to settings are disabled while the Gateway is reconnecting.",
+    sessionMoveRefreshFailed: "The session move was saved, but refreshing the list failed: {error}",
+    sessionMoveUncertain:
+      "The session move could not be confirmed. Refresh and check its group before retrying. {error}",
     sessionOperationCompletedPreviousConnection:
       "The session operation completed on the previous connection. Check the current session list before continuing.",
     sessionOperationCompletedPreviousConnectionWithRefreshError:
@@ -3397,6 +3408,11 @@ export const en: TranslationMap & {
     noResults: "No results",
     searchingSessions: "Searching sessions…",
     searchingCommands: "Searching commands…",
+    clearSearch: "Clear search",
+    escapeKey: "esc",
+    searchNotices: "Search notices ({count})",
+    filterLabel: "Filter search results",
+    filters: { all: "All", sessions: "Sessions", messages: "Messages" },
     searchFailed: "Chat search failed — check the gateway logs and retry",
     modelSearchFailed: "Model search unavailable. Change your search to retry.",
     searchPartial: "Transcript search unavailable — showing chat titles and metadata",
@@ -3405,6 +3421,7 @@ export const en: TranslationMap & {
       search: "Search",
       navigation: "Navigation",
       skills: "Skills",
+      messages: "In messages",
     },
     items: {
       apps: "Apps",
@@ -3573,7 +3590,7 @@ export const en: TranslationMap & {
     },
     mentions: {
       menu: "Mention a person",
-      empty: "No eligible people found.",
+      empty: "No people found",
       truncated: "Keep typing to find more people.",
       online: "Online",
       offline: "Offline",
@@ -3885,6 +3902,8 @@ export const en: TranslationMap & {
       next: "Next suggested task",
       starting: "Starting…",
       dismiss: "Dismiss {title}",
+      started: "Task started",
+      startUnconfirmed: "Couldn't confirm the task started. Retry checks the same task.",
       adminRequired: "Administrator access is required to start suggested tasks.",
     },
     pullRequests: {
@@ -4271,6 +4290,9 @@ export const en: TranslationMap & {
       disconnected: "Not connected. Try again after reconnecting.",
     },
     imageLightbox: {
+      previous: "Previous image",
+      next: "Next image",
+      position: "{current} / {total}",
       label: "Image preview: {title}",
       open: "Open image {title}",
       openOriginal: "Open in new tab",
@@ -4426,6 +4448,9 @@ export const en: TranslationMap & {
       expandPanel: "Expand {panel}",
       restore: "Restore split",
       useViewAsDefault: "Use current view as default",
+      currentViewIsDefault: "This is the default view",
+      defaultViewDescription:
+        "Used when anyone opens this dashboard. Personal layout choices still apply.",
       savingDefault: "Saving default…",
       defaultSaved: "Dashboard default saved for future opens.",
       defaultSaveFailed:
@@ -4454,6 +4479,8 @@ export const en: TranslationMap & {
       tasksEmpty: "Follow active and recently completed background tasks.",
       desktop: "Desktop",
       desktopEmpty: "Connect to an available remote desktop.",
+      portal: "Portal",
+      portalEmpty: "Preview a web application running for this task.",
       discussion: "Discussion",
       discussionEmpty: "Open the shared discussion for this session.",
       dashboard: "Dashboard",
@@ -4526,6 +4553,8 @@ export const en: TranslationMap & {
       browserAnnotationUndoUnavailable:
         "Undo is unavailable because the browser annotation limit has been reached.",
       preparingAttachments: "Preparing attachments…",
+      preparingAttachmentCount: "Preparing {count} attachment",
+      preparingAttachmentsCount: "Preparing {count} attachments",
       removeAttachment: "Remove attachment",
       removeNamedAttachment: "Remove {name}",
       removeBrowserAnnotation: "Remove browser annotation: {name}",
@@ -4678,6 +4707,7 @@ export const en: TranslationMap & {
       readFailed: "Could not attach: {names}{more}",
       tooLarge: "Too large to send: {names}{more}",
       showInTextField: "Show in text field",
+      pastedText: "Pasted text",
       outsideAllowedFolders: "Outside allowed folders",
       unavailable: "Unavailable",
       failureDeliveryFailed: "Delivery failed. Try sending this file again.",
