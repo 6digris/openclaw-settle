@@ -15,7 +15,7 @@ import type { ExecApprovalDecision, ExecApprovalRequest } from "../../app/exec-a
 import type { ApplicationGateway } from "../../app/gateway.ts";
 import { renderExecApprovalCard } from "../../components/exec-approval-card.ts";
 import { icons } from "../../components/icons.ts";
-import type { ImageLightboxItem } from "../../components/image-lightbox.ts";
+import type { ImageLightboxItem } from "../../components/image-lightbox.types.ts";
 import { t } from "../../i18n/index.ts";
 import {
   KEYBOARD_SHORTCUT_COMBOS,
@@ -217,10 +217,11 @@ export function renderChat(props: ChatProps) {
             ? (selection, anchorRect) => {
                 const focusComposer = () =>
                   props.transcript.scrollElement
-                    ?.closest(".card.chat")
+                    ?.closest(".chat")
                     ?.querySelector<HTMLElement>(".agent-chat__composer-combobox > textarea")
                     ?.focus({ preventScroll: true });
                 showChatAnnotationEditor({
+                  paneId: props.paneId,
                   anchorRect,
                   sourceRange: props.transcript.scrollElement
                     ? resolveChatCommentAnchor(props.transcript.scrollElement, selection)?.range
@@ -258,7 +259,7 @@ export function renderChat(props: ChatProps) {
         // Portaled menus can outlive a render; resolve focus from the current session owner.
         onFocusComposer: () =>
           props.transcript.scrollElement
-            ?.closest(".card.chat")
+            ?.closest(".chat")
             ?.querySelector<HTMLElement>(
               "openclaw-plugin-view[data-plugin-composer], .agent-chat__composer-combobox > textarea",
             )
@@ -365,7 +366,7 @@ export function renderChat(props: ChatProps) {
 
   return html`
     <section
-      class="card chat"
+      class="chat"
       style=${styleMap(
         props.chatMessageMaxWidth
           ? {
@@ -411,6 +412,7 @@ export function renderChat(props: ChatProps) {
         props.suggestionComposer
           ? nothing
           : html`<openclaw-chat-comment-controller
+              .paneId=${props.paneId}
               .props=${{ ...props, disabled: !canCompose }}
               .sessionKey=${props.sessionKey}
               .presented=${props.presented ?? true}

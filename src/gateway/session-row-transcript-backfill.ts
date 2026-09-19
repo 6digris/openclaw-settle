@@ -3,24 +3,26 @@ import {
   readSessionTranscriptBoundedMessageTailPage,
 } from "../config/sessions/session-accessor.js";
 import { SessionTranscriptColdError } from "../config/sessions/session-cold-storage-state.js";
+import { SessionTranscriptStorageUnavailableError } from "../config/sessions/session-transcript-projection-error.js";
+import type { SessionEntry } from "../config/sessions/types.js";
 import { readSessionFallbackModel } from "../status/session-fallback-model.js";
-import { backfillSessionTitle } from "./dashboard-session-title-backfill.js";
 import { projectSessionDisplayMessage } from "./session-display-projection.js";
 import { sqliteMessageEventWithSeq } from "./session-transcript-entry-message.js";
 
-/** Optional transcript fields run after foreground projection work, never during materialization. */
-export async function backfillSessionRowTranscriptFields(
-  params: Parameters<typeof backfillSessionTitle>[0] & {
-    model?: Pick<
-      Parameters<typeof readSessionFallbackModel>[0],
-      "selectedProvider" | "selectedModel" | "config"
-    >;
-  },
-): Promise<{ lastMessagePreview?: string; fallbackModel?: { provider: string; model: string } }> {
-  if (params.shouldCommit?.() === false) {
-    return {};
-  }
-  await backfillSessionTitle(params);
+/** Read-only transcript fields run after foreground projection work, never during materialization. */
+export async function backfillSessionRowTranscriptFields(params: {
+  agentId: string;
+  storeAgentId?: string;
+  storePath: string;
+  sessionKey: string;
+  sessionId: string;
+  sessionEntry: SessionEntry;
+  shouldCommit?: () => boolean;
+  model?: Pick<
+    Parameters<typeof readSessionFallbackModel>[0],
+    "selectedProvider" | "selectedModel" | "config"
+  >;
+}): Promise<{ lastMessagePreview?: string; fallbackModel?: { provider: string; model: string } }> {
   if (params.shouldCommit?.() === false) {
     return {};
   }
@@ -40,6 +42,7 @@ export async function backfillSessionRowTranscriptFields(
       maxMessages: 20,
       maxBytes: 64 * 1024,
       offset: 0,
+      readOnly: true,
     });
     // Older text cannot stand in for an oversized message skipped at the newest edge.
     const events = tail.newestContiguousEventCount
@@ -61,6 +64,7 @@ export async function backfillSessionRowTranscriptFields(
   } catch (error) {
     if (
       isSessionTranscriptProjectionUnavailableError(error) ||
+      error instanceof SessionTranscriptStorageUnavailableError ||
       error instanceof SessionTranscriptColdError
     ) {
       return {};

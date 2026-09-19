@@ -25,12 +25,16 @@ export type RequestBody = SqliteWorkerRequest extends infer Request
   : never;
 type DispatchState = { dispatched: boolean; openNotEntered?: boolean };
 export type Job = {
+  requireStateLifecycle?: boolean;
   maintenanceScope?: OpenClawDatabaseMaintenanceScope;
   maintenanceSchemaFence?: { actor: Actor; delegate: StateLifecycleDelegate };
+  gatewaySchemaFence?: { actor: Actor; delegate: StateLifecycleDelegate };
   createAdmission?: SqliteWorkerAdmissionFactory;
   operationAdmission?: { admission: SqliteWorkerOperationAdmission; releaseService(): void };
   settleNative?: (settlement: SqliteWorkerOperationSettlement) => void;
   nativeDispatched?: boolean;
+  preparation?: Promise<void>;
+  cancelPreparation?: AbortController;
   stateLifecycle?: { actor: Actor; delegate: StateLifecycleDelegate };
   assertCurrent?: () => void;
   inputTransfer?: {
@@ -80,6 +84,7 @@ export type Actor = {
   pendingStateLifecycles: Set<StateLifecycleDelegate>;
 };
 export type OperationScope = {
+  requireStateLifecycle?: boolean;
   createAdmission?: SqliteWorkerAdmissionFactory;
   assertCurrent?: (commandType: PropertyKey) => void;
   active: boolean;

@@ -13,6 +13,7 @@ import {
   clearAgentRunContext,
   registerAgentRunContext,
 } from "../../infra/agent-run-registry.js";
+import { sessionChanges } from "../../sessions/session-row-changes.js";
 import type { ChatAbortControllerEntry } from "../chat-abort.js";
 import { readGatewayAccessRevision } from "../gateway-access-revision.js";
 import {
@@ -154,6 +155,34 @@ afterEach(async () => {
 });
 
 describe("sessions.changed coalescing", () => {
+  it("publishes catalog-only changes without invalidating session projections or access", async () => {
+    const context = createContext();
+    const changed = vi.fn();
+    const unsubscribe = sessionChanges.subscribe(changed);
+    onTestFinished(unsubscribe);
+    const initialAccessRevision = readGatewayAccessRevision();
+
+    await emitAndSettleLeading(context, { reason: "groups" }, { catalogOnly: true });
+
+    expect(changed).not.toHaveBeenCalled();
+    expect(mocks.invalidate).not.toHaveBeenCalled();
+    expect(context.mentionInbox?.invalidate).not.toHaveBeenCalled();
+    expect(readGatewayAccessRevision()).toBe(initialAccessRevision);
+    expect(context.broadcastToConnIds).toHaveBeenCalledWith(
+      "sessions.changed",
+      expect.objectContaining({ reason: "groups" }),
+      expect.any(Set),
+      expect.any(Object),
+    );
+
+    // Rename/delete use the same public reason but can change member rows.
+    await emitAndSettleLeading(context, { reason: "groups" });
+    expect(changed).toHaveBeenCalledWith({ all: true, scope: "sessions" });
+    expect(mocks.invalidate).toHaveBeenCalledOnce();
+    expect(context.mentionInbox?.invalidate).toHaveBeenCalledOnce();
+    expect(readGatewayAccessRevision()).toBe(initialAccessRevision + 1);
+  });
+
   it("publishes the latest placement through coalesced unrelated mutations and clears it explicitly", async () => {
     const context = createContext();
     const sessionKey = "agent:main:cloud";
@@ -358,7 +387,11 @@ describe("sessions.changed coalescing", () => {
 
     await emitAndSettleLeading(context, { reason: "create", sessionKey: "agent:main:chat" });
     mocks.rowLabel = "latest";
-    await emitAndSettleLeading(context, { reason: "update", sessionKey: "agent:main:chat" });
+    await emitAndSettleLeading(context, {
+      reason: "patch",
+      sessionKey: "agent:main:chat",
+      catalogChanged: true,
+    });
     await emitAndSettleLeading(context, { reason: "send", sessionKey: "agent:main:chat" });
 
     expect(context.broadcastToConnIds).toHaveBeenCalledOnce();
@@ -370,9 +403,14 @@ describe("sessions.changed coalescing", () => {
     expect(vi.mocked(context.broadcastToConnIds).mock.calls[1]?.[1]).toMatchObject({
       label: "latest",
       reason: "send",
+      catalogChanged: true,
     });
     expect(readGatewayAccessRevision()).toBe(initialAccessRevision + 3);
     expect(mocks.invalidate).toHaveBeenCalledTimes(3);
+    await emitAndSettleLeading(context, { reason: "patch", sessionKey: "agent:main:chat" });
+    expect(vi.mocked(context.broadcastToConnIds).mock.calls.at(-1)?.[1]).not.toHaveProperty(
+      "catalogChanged",
+    );
   });
 
   it.each([true, false])(

@@ -8,7 +8,7 @@ import {
   deleteTaskRecordById,
   listTaskRecordsUnsorted,
   markTaskTerminalById,
-} from "../tasks/runtime-internal.js";
+} from "../tasks/task-registry.js";
 import { configureTaskRegistryRuntime } from "../tasks/task-registry.store.js";
 import { resetTaskRegistryForTests } from "../tasks/task-runtime.test-helpers.js";
 import { createInMemoryTaskRegistryStore } from "../test-utils/task-registry-store.js";
@@ -320,7 +320,10 @@ describe("tasks.list Gateway performance", () => {
         await new Promise<void>((resolve) => {
           setImmediate(resolve);
         });
-        expect(taskChurnRevision).toBeGreaterThanOrEqual(3);
+        expect(
+          taskChurnRevision,
+          JSON.stringify([unstableRegistry, accessWork.mock.calls.length]),
+        ).toBeGreaterThanOrEqual(3);
         expect(unstableRegistry).toMatchObject({
           ok: false,
           error: {

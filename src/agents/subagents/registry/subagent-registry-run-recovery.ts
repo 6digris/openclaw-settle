@@ -13,6 +13,7 @@ import {
   bindGatewayContextResolver,
   getGatewayContextResolver,
 } from "../../../plugins/runtime/gateway-request-scope.js";
+import { runWithGatewayDetachedWorkContinuation } from "../../../process/gateway-work-admission.js";
 import { prepareCanonicalTaskActivation } from "../../../tasks/task-backing-authority-write.js";
 import { createSubagentTaskBackingDetail } from "../../../tasks/task-backing-authority.js";
 import { removeInternalSessionEffectsSession } from "../../internal-session-effects.js";
@@ -294,7 +295,9 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
       return (
         session?.sessionId === acceptedReceipt.sessionId &&
         (acceptedReceipt.sessionLifecycleRevision === undefined ||
-          session.lifecycleRevision === acceptedReceipt.sessionLifecycleRevision)
+          session.lifecycleRevision === acceptedReceipt.sessionLifecycleRevision) &&
+        (acceptedReceipt.sessionLifecycleRunId === undefined ||
+          session.lifecycleRunId === acceptedReceipt.sessionLifecycleRunId)
       );
     };
     try {
@@ -354,7 +357,19 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
         source.execution.transcriptTarget &&
         source.execution.transcriptTarget !== replaceParams.transcriptTarget
       ) {
-        void removeInternalSessionEffectsSession(source.execution.transcriptTarget);
+        const retiredTarget = source.execution.transcriptTarget;
+        // The committed replacement owns cleanup beyond its caller's lifetime,
+        // including when restart closes admission before this tail settles.
+        void runWithGatewayDetachedWorkContinuation(
+          () => removeInternalSessionEffectsSession(retiredTarget),
+          "subagents:replacement-cleanup",
+        ).catch((error: unknown) => {
+          log.warn("failed to remove replaced subagent internal session effects", {
+            previousRunId,
+            nextRunId,
+            error,
+          });
+        });
       }
     }
     this.options.ensureListener();
@@ -372,6 +387,7 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
     sessionId: string;
     sessionMarker: string;
     sessionLifecycleRevision?: string;
+    sessionLifecycleRunId?: string;
     idempotencyKey: string;
   }): string | undefined => {
     const runId = reserveParams.runId.trim();
@@ -394,7 +410,10 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
     }
     const existing = entry.execution.restartRecovery;
     if (existing?.sessionMarker === sessionMarker && existing.idempotencyKey.trim().length > 0) {
-      return existing.idempotencyKey;
+      return existing.sessionLifecycleRunId === undefined ||
+        existing.sessionLifecycleRunId === reserveParams.sessionLifecycleRunId
+        ? existing.idempotencyKey
+        : undefined;
     }
     const previousLease = existing;
     const previousCollectorLaunch = {
@@ -405,6 +424,7 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
       sessionId,
       sessionMarker,
       sessionLifecycleRevision: reserveParams.sessionLifecycleRevision,
+      sessionLifecycleRunId: reserveParams.sessionLifecycleRunId,
       idempotencyKey,
       phase: "reserved",
     };
@@ -670,6 +690,7 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
       sessionId: receipt.sessionId,
       sessionMarker: receipt.sessionMarker,
       sessionLifecycleRevision: receipt.sessionLifecycleRevision,
+      sessionLifecycleRunId: receipt.sessionLifecycleRunId,
       idempotencyKey: receipt.idempotencyKey,
       phase: "reserved" as const,
     };

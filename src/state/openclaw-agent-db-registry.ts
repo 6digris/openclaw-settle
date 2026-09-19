@@ -19,7 +19,10 @@ import {
 import type { OpenClawStateDatabase } from "./openclaw-state-db-contract.js";
 import type { DB as OpenClawStateKyselyDatabase } from "./openclaw-state-db.generated.js";
 import { runOpenClawStateWriteTransaction } from "./openclaw-state-db.js";
-import { resolveOpenClawAgentDatabaseStoredPath } from "./openclaw-state-db.paths.js";
+import {
+  resolveOpenClawAgentDatabaseStoredPath,
+  resolveOpenClawRegisteredAgentDatabasePath,
+} from "./openclaw-state-db.paths.js";
 
 export {
   inspectOpenClawRegisteredAgentDatabases,
@@ -312,7 +315,7 @@ function areMissingSuffixAliases(params: {
     path.join(params.parentRealPath, params.left).length,
     path.join(params.parentRealPath, params.right).length,
   );
-  try {
+  const observe = (): boolean | undefined => {
     let probeParent = params.parentRealPath;
     for (let index = 0; index < leftSegments.length; index += 1) {
       const leftSegment = leftSegments[index]!;
@@ -335,7 +338,6 @@ function areMissingSuffixAliases(params: {
         let caseProbePairs = createAsciiCaseProbePairs(componentProbeNameLength, forbiddenNames);
         if (!areAsciiCaseVariants(normalizedLeft, normalizedRight)) {
           if (!shouldProbeUnicodeCaseVariants(normalizedLeft, normalizedRight)) {
-            missingSuffixAliasCache.set(cacheKey, false);
             return false;
           }
           const privateParent = createNeutralProbeDirectory({
@@ -345,7 +347,7 @@ function areMissingSuffixAliases(params: {
             nameLength: componentProbeNameLength,
           });
           if (!privateParent) {
-            return true;
+            return undefined;
           }
           caseProbeParent = privateParent;
           caseProbePairs = [[leftSegment, rightSegment]];
@@ -356,10 +358,9 @@ function areMissingSuffixAliases(params: {
           createdPaths,
         });
         if (!caseProbe) {
-          return true;
+          return undefined;
         }
         if (!caseProbe.aliases) {
-          missingSuffixAliasCache.set(cacheKey, false);
           return false;
         }
         nextProbeParent = caseProbe.path;
@@ -379,7 +380,7 @@ function areMissingSuffixAliases(params: {
             nameLength: componentProbeNameLength,
           });
           if (!privateParent) {
-            return true;
+            return undefined;
           }
           normalizationProbeParent = privateParent;
           normalizationPairs = [[leftSegment, rightSegment]];
@@ -390,10 +391,9 @@ function areMissingSuffixAliases(params: {
           createdPaths,
         });
         if (!normalizationProbe) {
-          return true;
+          return undefined;
         }
         if (!normalizationProbe.aliases) {
-          missingSuffixAliasCache.set(cacheKey, false);
           return false;
         }
         nextProbeParent ??= normalizationProbe.path;
@@ -406,22 +406,33 @@ function areMissingSuffixAliases(params: {
           nameLength: componentProbeNameLength,
         });
         if (!nextProbeParent) {
-          return true;
+          return undefined;
         }
         probeParent = nextProbeParent;
       }
     }
-    missingSuffixAliasCache.set(cacheKey, true);
     return true;
-  } catch {
-    // Unprobeable case/normalization candidates are ambiguous. Treat them as
-    // colliding so registry uniqueness fails closed instead of admitting two owners.
-    return true;
-  } finally {
-    for (const created of createdPaths.toReversed()) {
-      removeOwnedProbePath(created);
-    }
+  };
+  let aliases: boolean | undefined;
+  let cause: unknown;
+  try {
+    aliases = observe();
+  } catch (error) {
+    cause = error;
   }
+  let cleaned = true;
+  for (const created of createdPaths.toReversed()) {
+    cleaned = removeOwnedProbePath(created) && cleaned;
+  }
+  if (aliases === undefined || !cleaned) {
+    throw new Error(
+      `Cannot determine whether database paths alias under ${JSON.stringify(params.parentRealPath)}: ${JSON.stringify(params.left)} and ${JSON.stringify(params.right)}. Check directory access and retry.`,
+      { cause },
+    );
+  }
+  // A comparison becomes reusable only after every owned probe was removed.
+  missingSuffixAliasCache.set(cacheKey, aliases);
+  return aliases;
 }
 
 function anchorDatabasePathWithoutNormalizing(pathname: string): string {
@@ -664,14 +675,17 @@ export function unregisterOpenClawAgentDatabases(params: {
     env: params.env,
     ...(params.database ? { database: params.database, path: params.database.path } : {}),
   };
-  runOpenClawStateWriteTransaction((database) => {
+  const removedPaths = runOpenClawStateWriteTransaction((database) => {
     const db = getNodeSqliteKysely<OpenClawAgentRegistryDatabase>(database.db);
-    executeSqliteQuerySync(
+    const removed = executeSqliteQuerySync(
       database.db,
-      db.deleteFrom("agent_databases").where("agent_id", "=", params.agentId),
+      db.deleteFrom("agent_databases").where("agent_id", "=", params.agentId).returning("path"),
     );
     invalidateRegisteredAgentDatabasesMemo(options);
     sessionChanges.emit({ all: true, scope: "stores" }, database.db);
+    return removed.rows.map((row) =>
+      resolveOpenClawRegisteredAgentDatabasePath(database.path, row.path),
+    );
   }, options);
-  invalidateOpenClawAgentDatabaseValidationsForAgent(params.agentId);
+  invalidateOpenClawAgentDatabaseValidationsForAgent(params.agentId, removedPaths);
 }

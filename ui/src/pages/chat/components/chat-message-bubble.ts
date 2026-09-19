@@ -5,7 +5,7 @@ import { ref } from "lit/directives/ref.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { CHAT_PENDING_INPUT_MESSAGE_PREFIX } from "../../../../../packages/gateway-protocol/src/schema/chat-history-constants.js";
 import { icons } from "../../../components/icons.ts";
-import type { ImageLightboxItem } from "../../../components/image-lightbox.ts";
+import type { ImageLightboxItem } from "../../../components/image-lightbox.types.ts";
 import type { MarkdownRenderOptions } from "../../../components/markdown-render-options.ts";
 import { toSanitizedMarkdownHtml } from "../../../components/markdown.ts";
 import { t } from "../../../i18n/index.ts";
@@ -17,6 +17,7 @@ import type {
   ToolCard,
 } from "../../../lib/chat/chat-types.ts";
 import { resolveMessageDisplayMarkdown } from "../../../lib/chat/message-display.ts";
+import "../../../components/person-reference.ts";
 import { extractThinkingCached } from "../../../lib/chat/message-extract.ts";
 import {
   isStandaloneToolMessageForDisplay,
@@ -267,7 +268,7 @@ export function renderGroupedMessage(
     avatar?: TemplateResult | typeof nothing;
     entryId?: string;
     /** Freshly submitted user turn: play the one-shot composer entry animation. */
-    entryAnimated?: boolean;
+    entryRef?: (element?: Element) => void;
     resolveReplyPreview?: (replyToId: string) => ReplyPreview | undefined;
     onResolveReply?: (replyToId: string) => void;
     onOpenReply?: (replyToId: string) => void;
@@ -276,7 +277,7 @@ export function renderGroupedMessage(
   onOpenSidebar?: (content: SidebarContent) => void,
 ) {
   const disclosure = opts.assistantMessageDisclosure;
-  const { message, normalizedMessage, displayMarkdown } =
+  const { message, normalizedMessage, displayMarkdown, humanMentions } =
     disclosure?.expanded && disclosure.message
       ? prepareChatMessageRender(disclosure.message)
       : preparation;
@@ -318,6 +319,7 @@ export function renderGroupedMessage(
       (item) => item.attachment.kind === "document" && !isSentCommentAttachment(item),
     );
   const imageRenderOptions = {
+    galleryImages: images,
     sessionKey: opts.sessionKey,
     agentId: opts.agentId,
     policyKey: opts.mediaPolicyKey,
@@ -351,6 +353,7 @@ export function renderGroupedMessage(
     codeBlockInteraction: role === "assistant" ? "interactive" : "static",
     fileLinks: true,
     githubRepo: role === "assistant" ? (opts.githubRepo ?? null) : null,
+    humanMentions: markdown === displayMarkdown ? humanMentions : undefined,
     interactiveImages: opts.onOpenImage !== undefined,
     sessionLinks: true,
     tableInteractions: "enabled",
@@ -366,7 +369,6 @@ export function renderGroupedMessage(
     hasUserFiles ? "chat-bubble--with-files" : "",
     isToolShell ? "chat-bubble--tool-shell" : "",
     opts.isStreaming ? "streaming" : "",
-    opts.entryAnimated ? "chat-bubble--user-turn-enter" : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -621,6 +623,7 @@ export function renderGroupedMessage(
   return html`
     <div
       class="${bubbleClasses}"
+      ${opts.entryRef ? ref(opts.entryRef) : nothing}
       data-message-id=${messageKey}
       data-entry-id=${opts.entryId || nothing}
       data-message-text=${actionText || nothing}

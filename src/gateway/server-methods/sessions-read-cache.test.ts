@@ -17,7 +17,11 @@ import {
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../../config/sessions/session-sqlite-target.js";
-import { waitForSessionTranscriptIndexReconcile } from "../../config/sessions/session-transcript-reconcile.js";
+import {
+  isSessionTranscriptIndexReconcileRunning,
+  reconcileSessionTranscriptIndexes,
+  waitForSessionTranscriptIndexReconcile,
+} from "../../config/sessions/session-transcript-reconcile.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resetAgentEventsForTest } from "../../infra/agent-events.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
@@ -152,8 +156,8 @@ describe("resident sessions.list", () => {
         "agent:work:active",
       ]);
       await initializeSessionReadContext(context);
-      await enriched;
       await listSessions({ client, context, request: { archived: "all", limit: 100 } });
+      await enriched;
       const statements = vi.spyOn(DatabaseSync.prototype, "prepare");
       const results = await Promise.all(
         Array.from({ length: 16 }, () =>
@@ -448,7 +452,7 @@ describe("resident sessions.list", () => {
     });
   });
 
-  it("refreshes degraded title facts after transcript reconciliation", async () => {
+  it("refreshes reconciled previews without repairing legacy titles", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const config = await seedSessions();
       const sessionKey = "agent:main:active";
@@ -463,10 +467,13 @@ describe("resident sessions.list", () => {
           touchSessionEntry: false,
         },
       );
+      await waitForSessionTranscriptIndexReconcile({ agentId: "main", env: state.env });
       const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
       database.db
         .prepare("UPDATE session_transcript_index_state SET needs_rebuild = 1 WHERE session_id = ?")
         .run(sessionId);
+      const storedEntry = loadSessionEntry({ agentId: "main", sessionKey });
+      expect(storedEntry?.displayName).toBeUndefined();
       const context = requestContext(config);
       const client = identifiedClient("owner@example.com");
       const request = {
@@ -477,12 +484,23 @@ describe("resident sessions.list", () => {
         limit: 100,
       };
 
+      const backfilled = observeSessionRowBackfill([sessionKey]);
       const degraded = await listSessions({ client, context, request });
       const degradedRow = degraded.sessions.find((session) => session.key === sessionKey);
-      expect(degradedRow?.derivedTitle).not.toBe("Active prompt");
+      expect(degradedRow?.derivedTitle).toBeUndefined();
       expect(degradedRow?.lastMessagePreview).toBeUndefined();
 
-      await waitForSessionTranscriptIndexReconcile({ agentId: "main", env: state.env });
+      await backfilled;
+      const reconcileTarget = { agentId: database.agentId, path: database.path, env: state.env };
+      expect(isSessionTranscriptIndexReconcileRunning(reconcileTarget)).toBe(false);
+      expect(
+        database.db
+          .prepare("SELECT needs_rebuild FROM session_transcript_index_state WHERE session_id = ?")
+          .get(sessionId),
+      ).toMatchObject({ needs_rebuild: 1 });
+      await expect(reconcileSessionTranscriptIndexes(reconcileTarget)).resolves.toEqual({
+        reconciledSessions: 1,
+      });
       await vi.waitFor(async () =>
         expect(
           (await listSessions({ client, context, request })).sessions.find(
@@ -492,11 +510,12 @@ describe("resident sessions.list", () => {
       );
       const healed = await listSessions({ client, context, request });
       expect(healed.sessions.find((session) => session.key === sessionKey)).toMatchObject({
-        derivedTitle: "Active prompt",
+        derivedTitle: undefined,
         lastMessagePreview: "active reply",
       });
 
       expect((await listSessions({ client, context, request })).sessions).toEqual(healed.sessions);
+      expect(loadSessionEntry({ agentId: "main", sessionKey })).toEqual(storedEntry);
     });
   });
 

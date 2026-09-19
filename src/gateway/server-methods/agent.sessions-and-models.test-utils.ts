@@ -32,6 +32,7 @@ import { bindParentSubagentResume } from "../session-subagent-resume.js";
 import { registerPluginSubagentRunFromGateway } from "./agent-task-tracking.js";
 import { spyDetachedCreateRunningTaskRun } from "./agent-task-tracking.test-helpers.js";
 import { registerAgentTaskCancellationTests } from "./agent.task-cancellation.test-utils.js";
+import { registerSuccessfulAgentTaskSettlementCase } from "./agent.task-settlement.test-utils.js";
 import {
   applyGatewaySubagentRegistryTestDeps,
   getAgentTestMocks,
@@ -185,33 +186,7 @@ describe("gateway agent handler", () => {
     expect(callArgs).not.toHaveProperty("bashElevated");
   });
 
-  it("terminalizes successful async gateway agent runs in the shared task registry", async () => {
-    await withTestDir({ prefix: "openclaw-gateway-agent-task-" }, async (root) => {
-      useTestStateDir(root);
-      resetAgentTaskRegistryForTests();
-      primeMainAgentRun();
-      const commandCallCount = mocks.agentCommand.mock.calls.length;
-
-      await invokeAgent(
-        {
-          message: "background cli task",
-          sessionKey: "agent:main:main",
-          idempotencyKey: "task-registry-agent-run",
-        },
-        { reqId: "task-registry-agent-run" },
-      );
-      await waitForAgentCommandCallAfter(commandCallCount);
-
-      await waitForAssertion(() => {
-        expectRecordFields(findTaskByRunId("task-registry-agent-run"), {
-          runtime: "cli",
-          childSessionKey: "agent:main:main",
-          status: "succeeded",
-          terminalSummary: "completed",
-        });
-      });
-    });
-  });
+  registerSuccessfulAgentTaskSettlementCase();
 
   it.each([
     { identity: "ASCII", runId: "plugin-subagent-task-run" },
@@ -2091,11 +2066,7 @@ describe("gateway agent handler", () => {
 
   it("does not let --agent force the agent main session when --session-id is provided", async () => {
     mocks.resolveExplicitAgentSessionKey.mockReturnValue("agent:main:main");
-    mockMainSessionEntry({ sessionId: "resume-whatsapp-session" });
-    mocks.agentCommand.mockResolvedValue({
-      payloads: [{ text: "ok" }],
-      meta: { durationMs: 100 },
-    });
+    primeMainAgentRun({ sessionId: "resume-whatsapp-session" });
 
     await invokeAgent(
       {
@@ -2119,11 +2090,7 @@ describe("gateway agent handler", () => {
 
   it("treats whitespace sessionId as absent before resolving the agent session key", async () => {
     mocks.resolveExplicitAgentSessionKey.mockReturnValue("agent:main:main");
-    mockMainSessionEntry({ sessionId: "existing-session-id" });
-    mocks.agentCommand.mockResolvedValue({
-      payloads: [{ text: "ok" }],
-      meta: { durationMs: 100 },
-    });
+    primeMainAgentRun();
 
     await invokeAgent(
       {

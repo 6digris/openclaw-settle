@@ -9,6 +9,7 @@ import { LEGACY_IMPLICIT_AGENT_ID, normalizeAgentId } from "../routing/session-k
 import { SESSIONS_LIST_OWNER_LIMIT } from "../shared/session-list-limits.js";
 import { runSynchronousWork, type SynchronousWork } from "../shared/synchronous-work.js";
 import { gatewayClientSessionCreator } from "./server-methods/gateway-client-identity.js";
+import { createVisibleActiveSessionRunProjector } from "./server-methods/session-active-runs.js";
 import { resolveGatewayModelSelectionPolicy } from "./server-methods/session-model-selection-policy.js";
 import type { GatewayClient, GatewayRequestContext } from "./server-methods/types.js";
 import { readPreparedGatewayModelCatalogMetadata } from "./server-model-catalog-view.js";
@@ -20,6 +21,7 @@ import {
 } from "./session-list-filters.js";
 import { sortAndLimitSessionEntries, type SessionEntryPair } from "./session-list-order.js";
 import { prepareProjectedSessionPresentation } from "./session-row-presentation.js";
+import type { Query as SessionRowQuery } from "./session-row-projection-record.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
 import type { SessionListRowContext } from "./session-utils-contracts.js";
 import { getSessionDefaults } from "./session-utils-model.js";
@@ -161,7 +163,10 @@ const sentinel = (key: string) => key === "global" || key === "unknown";
 export function prepareSessionRowSelection(
   projection: SessionRowProjection,
   opts: SessionsListParams,
-  prepared?: { now: number; rowContext: SessionListRowContext },
+  prepared?: Pick<SessionRowQuery, "key" | "sessionIdOrKey"> & {
+    now?: number;
+    rowContext?: SessionListRowContext;
+  },
 ) {
   const { cfg, modelCatalog, scope, rowContext: residentContext } = projection.state;
   const selectedScope = scope(opts);
@@ -171,7 +176,12 @@ export function prepareSessionRowSelection(
     subagentRuns: residentContext.subagentRuns.atTime(now),
   };
   const rows = projection
-    .selectEntries({ agentId: selectedScope.agentId, sortBy: opts.sortBy })
+    .selectEntries({
+      agentId: selectedScope.agentId,
+      key: prepared?.key,
+      sessionIdOrKey: prepared?.sessionIdOrKey,
+      sortBy: null,
+    })
     .filter(
       (row) =>
         selectedScope.paths.has(row.storeTarget.storePath) &&
@@ -186,25 +196,30 @@ export function prepareSessionRowSelection(
   const winners = new Map<string, RecordRow>();
   const keyFor = (row: RecordRow) =>
     sentinel(row.key) && opts.activeOnly ? JSON.stringify([row.key, row.agentId]) : row.key;
-  for (const row of rows.toSorted(
-    (a, b) =>
-      selectedScope.paths.get(a.storeTarget.storePath)! -
-      selectedScope.paths.get(b.storeTarget.storePath)!,
-  )) {
+  for (const row of rows) {
     const key = keyFor(row);
-    if (winners.has(key) && !sentinel(row.key)) {
+    const previous = winners.get(key);
+    if (previous && !sentinel(row.key)) {
       throw canonicalSessionKeyMigrationRequiredError(
         `duplicate rows resolve to canonical session key ${row.key}`,
       );
     }
-    if (!winners.has(key)) {
+    // Equal precedence retains the first resident row, as a stable sort would.
+    if (
+      !previous ||
+      selectedScope.paths.get(row.storeTarget.storePath)! <
+        selectedScope.paths.get(previous.storeTarget.storePath)!
+    ) {
       winners.set(key, row);
     }
   }
-  const entries: SessionEntryPair[] = rows.flatMap((row) => {
+  const entries: SessionEntryPair[] = [];
+  for (const row of rows) {
     const key = keyFor(row);
-    return winners.get(key) === row ? [[key, row.entry]] : [];
-  });
+    if (winners.get(key) === row) {
+      entries.push([key, row.entry]);
+    }
+  }
   return {
     cfg,
     opts,
@@ -215,13 +230,23 @@ export function prepareSessionRowSelection(
     configuredAgentIds: new Set(listAgentIds(cfg)),
     userProfileIdentityById: rowContext.userProfileIdentityById,
     getRowContext: () => rowContext,
-    getTarget: (key: string): (RecordRow & { storeKey?: string }) | undefined => {
+    getTarget: (
+      key: string,
+    ):
+      | (RecordRow & {
+          storeKey?: string;
+          getModelFacts?: () => ReturnType<SessionRowProjection["modelFacts"]>;
+        })
+      | undefined => {
       const winner = winners.get(key);
-      const row =
-        winner && opts.search
-          ? projection.describe({ ...winner, storePath: winner.storeTarget.storePath })
-          : winner;
-      return row && key !== row.key ? { ...row, storeKey: row.key } : row;
+      if (!winner || (!opts.search && key === winner.key)) {
+        return winner;
+      }
+      return {
+        ...winner,
+        ...(key !== winner.key ? { storeKey: winner.key } : {}),
+        getModelFacts: () => projection.modelFacts(winner),
+      };
     },
   };
 }
@@ -249,7 +274,7 @@ export async function listProjectedSessions(params: {
   const { projection, opts, context, client, diagnostics } = params;
   const dirtyRowCount = projection.dirtyRowCount;
   const materializedBefore = projection.materializedCount;
-  diagnostics?.mark("modelCatalog");
+  diagnostics?.mark("materialize");
   const waitStarted = performance.now();
   let yieldCount = 0;
   do {
@@ -262,7 +287,17 @@ export async function listProjectedSessions(params: {
   let syncCpu = diagnostics?.startSyncCpu();
   try {
     diagnostics?.mark("storeLoad");
-    const presentation = prepareProjectedSessionPresentation(projection, client, now, context);
+    const presentation = prepareProjectedSessionPresentation(
+      projection,
+      client,
+      now,
+      context
+        ? createVisibleActiveSessionRunProjector(
+            context,
+            projection.state.rowContext.projectedAgentRuns,
+          )
+        : undefined,
+    );
     const prepared = prepareSessionRowSelection(projection, opts, {
       now,
       rowContext: presentation.rowContext,
@@ -291,7 +326,7 @@ export async function listProjectedSessions(params: {
             );
             return (
               visible &&
-              (opts.hasBoard === undefined || row?.facts?.hasBoard === opts.hasBoard) &&
+              (opts.hasBoard === undefined || row?.hasBoard === opts.hasBoard) &&
               (!opts.activeOnly || Boolean(row && active(row.key, entry, row.agentId)?.active))
             );
           },
@@ -306,6 +341,7 @@ export async function listProjectedSessions(params: {
     cpuPhase = "rowThreadCpuMs";
     syncCpu = diagnostics?.startSyncCpu();
     let materializedRowCount = 0;
+    projection.setArchivePageSize(selection.entries.length);
     const sessions = selection.entries.flatMap(([key], index) => {
       const target = getTarget(key);
       const record =
