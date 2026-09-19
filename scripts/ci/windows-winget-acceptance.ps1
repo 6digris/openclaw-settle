@@ -443,3 +443,7 @@ try {
     $proof | ConvertTo-Json -Depth 12 | Set-Content (Join-Path $ProofRoot 'result.json')
 }
 if ($proof.result -ne 'passed' -or $proof.cleanup -ne 'verified') { throw 'Native acceptance incomplete; inspect result.json and actual Winget/MSI logs.' }
+# The workflow pwsh footer propagates LASTEXITCODE. Expected negative native
+# outcomes are already asserted and recorded; only a fully passed, cleaned
+# harness may return success to its caller.
+exit 0
