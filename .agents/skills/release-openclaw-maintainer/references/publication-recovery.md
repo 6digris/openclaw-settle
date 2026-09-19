@@ -79,10 +79,12 @@ gh workflow run openclaw-npm-dist-tags.yml \
 ```
 
 Replace `vYYYY.M.PATCH` with the approved final extended-stable release tag
-(patch `33` or higher). Regular stable/beta promotion and sync reject patch `33`
+(patch `33` or higher, without a suffix). Extended-stable fixes increment the
+patch (`33`, `34`, `35`, and so on), never a correction suffix. Regular stable/beta
+promotion and sync reject patch `33`
 or higher, including the scheduled beta floor. Promotion can
 select a newer version or roll back to an older one, including historical
-extended-stable final/correction versions; new-publication eligibility does not
+unsuffixed extended-stable final versions; new-publication eligibility does not
 apply, but the channel/patch boundary still does. This mode
 writes only core `openclaw`'s
 `extended-stable` selector, leaving `latest`, `beta`, plugins, other prepared-core

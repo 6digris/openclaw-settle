@@ -74,7 +74,8 @@ on pinned current `main` as the exact command and validation contract.
    from that repository's `main`, after openclaw/releases#27 is merged. Follow
    [registry selector recovery](publication-recovery.md#registry-selectors),
    not the publication/resume path. The target must be a final extended-stable
-   version with patch `33` or higher; stable/beta promotion and sync reject that
+   version with patch `33` or higher and no suffix; fixes increment the patch.
+   Stable/beta promotion and sync reject that
    patch range. The same action can select an older extended-stable version
    for rollback. Repair other selectors separately with
    approved credential-isolated tooling. Never republish a version.

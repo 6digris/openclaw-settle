@@ -201,10 +201,12 @@ gh workflow run openclaw-npm-dist-tags.yml \
 ```
 
 Replace `vYYYY.M.PATCH` with the exact approved final extended-stable release tag
-(patch `33` or higher). Regular stable/beta promotion and sync reject patch `33`
+(patch `33` or higher, without a suffix). Extended-stable fixes increment the
+patch (`33`, `34`, `35`, and so on), never a correction suffix. Regular stable/beta
+promotion and sync reject patch `33`
 or higher, including the scheduled beta floor. Promotion can select a newer version or roll back to an older one. The action checks
 that the public Git tag and exact npm version exist, permits older monthly lines
-and historical final/correction versions, and changes only core `openclaw`'s
+and historical unsuffixed final versions, and changes only core `openclaw`'s
 `extended-stable` selector. It uses the release repository's `NPM_TOKEN`; no local
 npm login or source-repository publish credentials are needed. It does not write
 `latest`, `beta`, plugin or other prepared-core selectors, Docker aliases, Git
