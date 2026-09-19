@@ -1,0 +1,16 @@
+{
+  "commit": "0c8e7edc2f68daec8fbdeed6f90d7b52b6bafc24",
+  "agentSchema": 21,
+  "operations": {
+    "open": [
+      "node-sqlite-BKd19HyD.mjs",
+      "openNodeSqliteDatabase",
+      "9aa5c7618e46efb53e6bc76a9014f4050ef7adf9ca7d07d2942b68197b3454b8"
+    ],
+    "prepare": [
+      "sqlite-snapshot-source-Dxx2TOw1.mjs",
+      "prepareSqliteReadOnlyLocationSync",
+      "1c12828bea83e6f580cd88d970b6432e6e1c1b767aa09f97f32ed8fc7d8b18d9"
+    ]
+  }
+}
