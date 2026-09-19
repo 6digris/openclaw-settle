@@ -961,6 +961,9 @@ enum class GatewayMethod(
   EnvironmentsSessionCreate("environments.session.create"),
   EnvironmentsSessionDestroy("environments.session.destroy"),
   EnvironmentsSessionExec("environments.session.exec"),
+  SessionsSetInvolvement("sessions.setInvolvement"),
+  TranscriptsSummarize("transcripts.summarize"),
+  ControlUiLinkPreview("controlUi.linkPreview"),
 }
 
 enum class GatewayEvent(

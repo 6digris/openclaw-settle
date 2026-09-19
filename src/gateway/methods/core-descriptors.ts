@@ -695,4 +695,7 @@ export const CORE_GATEWAY_METHOD_SPECS = [
     { controlPlaneWrite: true },
   ],
   ["environments.session.exec", "environments", "operator.admin", "2026.9"],
+  ["sessions.setInvolvement", "sessions-mutations", "operator.read", "2026.9"],
+  ["transcripts.summarize", "transcripts", "operator.write", "2026.9"],
+  ["controlUi.linkPreview", "control-ui", "operator.read", "2026.9"],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];

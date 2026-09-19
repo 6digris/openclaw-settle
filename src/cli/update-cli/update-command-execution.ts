@@ -666,7 +666,6 @@ export async function executeMutableUpdate(
             ? createBeforeGitMutation({
                 updateRun: opts.run,
                 roots: gitMutationRoots ?? [params.root],
-                shouldRestart: params.shouldRestart,
                 stopManagedService: beforeActivate,
                 getPreManagedServiceStop: () => preManagedServiceStop,
                 checkTargetSchemas: recheckSchemas,
@@ -674,7 +673,6 @@ export async function executeMutableUpdate(
                   params.prepareMutableUpdate(
                     ownedManagedUpdateContext?.env ?? admission?.managedEnv,
                   ),
-                switchToGit: params.switchToGit,
               })
             : undefined,
         allowGatewayServiceRepair: false,

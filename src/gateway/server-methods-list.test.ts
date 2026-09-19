@@ -225,6 +225,9 @@ describe("listGatewayMethods", () => {
       "desktop.release",
       "mcp.authLogin",
       ...sessionEnvironmentMethods.map(([method]) => method),
+      "sessions.setInvolvement",
+      "transcripts.summarize",
+      "controlUi.linkPreview",
     ];
     expect(listGatewayMethods().slice(-expectedSuffix.length)).toEqual(expectedSuffix);
     const methods = listGatewayMethods();
@@ -270,6 +273,9 @@ describe("listGatewayMethods", () => {
       "desktop.release",
       "mcp.authLogin",
       ...sessionEnvironmentMethods.map(([method]) => method),
+      "sessions.setInvolvement",
+      "transcripts.summarize",
+      "controlUi.linkPreview",
     ]);
   });
 
@@ -444,6 +450,9 @@ describe("listGatewayMethods", () => {
       "desktop.release",
       "mcp.authLogin",
       ...sessionEnvironmentMethods.map(([method]) => method),
+      "sessions.setInvolvement",
+      "transcripts.summarize",
+      "controlUi.linkPreview",
     ];
     expect(coreMethods.slice(-expectedCoreSuffix.length)).toEqual(expectedCoreSuffix);
     expect(methods.indexOf("approval.get")).toBeGreaterThan(methods.indexOf("tts.speak"));
@@ -484,6 +493,7 @@ describe("listGatewayMethods", () => {
     expect(methods.indexOf("sessions.move")).toBe(methods.indexOf("portal.close") + 1);
     expect(methods.indexOf("sessions.assignOwner")).toBe(methods.indexOf("sessions.move") + 1);
     expect(methods.indexOf("progressCard.get")).toBe(methods.indexOf("sessions.assignOwner") + 1);
+    expect(methods).toContain("sessions.setInvolvement");
     expect(methods.indexOf("progressCard.put")).toBe(methods.indexOf("progressCard.get") + 1);
     expect(methods.indexOf("session.members.listEvidence")).toBe(
       methods.indexOf("diagnostics.lanes") + 1,

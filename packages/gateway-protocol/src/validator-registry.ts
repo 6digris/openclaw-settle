@@ -324,6 +324,7 @@ export const validateSessionsPluginPatchParams = compile(S.SessionsPluginPatchPa
 export const validateSessionsResetParams = compile(S.SessionsResetParamsSchema);
 export const validateSessionsDeleteParams = compile(S.SessionsDeleteParamsSchema);
 export const validateSessionsAssignOwnerParams = compile(S.SessionsAssignOwnerParamsSchema);
+export const validateSessionsSetInvolvementParams = compile(S.SessionsSetInvolvementParamsSchema);
 export const validateSessionsGroupsListParams = compile(S.SessionsGroupsListParamsSchema);
 export const validateSessionsGroupsListResult = compile(S.SessionsGroupsListResultSchema);
 export const validateSessionsGroupsDefaultsParams = compile(S.SessionsGroupsDefaultsParamsSchema);
@@ -582,6 +583,7 @@ export const validateWebLoginStartParams = compile(S.WebLoginStartParamsSchema);
 export const validateWebLoginWaitParams = compile(S.WebLoginWaitParamsSchema);
 
 export const validateTranscriptsListParams = compile(S.TranscriptsListParamsSchema);
+export const validateTranscriptsSummarizeParams = compile(S.TranscriptsSummarizeParamsSchema);
 export const validateTranscriptsGetParams = compile(S.TranscriptsGetParamsSchema);
 export const validateTranscriptsExportParams = compile(S.TranscriptsExportParamsSchema);
 export const validateTranscriptsStatusParams = compile(S.TranscriptsStatusParamsSchema);
