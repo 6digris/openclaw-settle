@@ -2936,7 +2936,6 @@ src/infra/restart-sentinel-store.ts	10
 src/infra/restart-sentinel.ts	1
 src/infra/restart-stale-pids.ts	3
 src/infra/retry-policy.ts	3
-src/infra/session-cost-usage-aggregation.ts	3
 src/infra/session-cost-usage-cache.sqlite.ts	1
 src/infra/session-cost-usage-collection.ts	3
 src/infra/session-cost-usage-pricing.ts	6
@@ -3413,7 +3412,6 @@ src/state/openclaw-state-db-delivery-queue-backfill.ts	1
 src/state/openclaw-state-db-legacy-backfills.ts	5
 src/state/openclaw-state-db-maintenance.ts	3
 src/state/openclaw-state-db-operator-approval-migration.ts	1
-src/state/openclaw-state-db-readonly.ts	1
 src/state/openclaw-state-db-schema-additive.ts	1
 src/state/openclaw-state-db-schema-helpers.ts	3
 src/state/openclaw-state-db-schema-repair.ts	2
