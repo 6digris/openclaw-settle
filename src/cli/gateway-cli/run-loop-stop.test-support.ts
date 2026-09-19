@@ -2,8 +2,11 @@ import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { withTimeout } from "../../infra/fs-safe.js";
 import type { GatewayRestartSnapshot } from "../daemon-cli/restart-health.js";
-import type { UpdateRespawnFixtures } from "./run-loop-update-respawn.test-support.js";
-import { createActiveWorkSnapshot, createUpdateRespawnChild } from "./run-loop.test-support.js";
+import {
+  createActiveWorkSnapshot,
+  createUpdateRespawnChild,
+  type UpdateRespawnFixtures,
+} from "./run-loop.test-support.js";
 
 export function registerForegroundUpdateStopTests({
   waitForGatewayActiveWork,
