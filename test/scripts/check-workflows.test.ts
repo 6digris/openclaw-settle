@@ -293,23 +293,41 @@ describe("check-workflows", () => {
       "blacksmith-16vcpu-windows-2025",
     );
     expect(native).not.toBe(probe);
-    expect(native.if).toBe("${{ inputs.run_windows_ci }}");
+    expect(native.if).toBe(
+      "${{ !inputs.run_windows_git_installer_only && inputs.run_windows_ci }}",
+    );
     expect(native["runs-on"]).toBe("windows-2025");
+    expect(workflow.on.workflow_dispatch.inputs.run_windows_git_installer_only).toMatchObject({
+      default: false,
+      type: "boolean",
+    });
+    const installer = workflow.jobs["native-git-installer"]!;
+    expect(installer.if).toBe(
+      "${{ inputs.run_windows_launcher_integration || inputs.run_windows_git_installer_only }}",
+    );
+    expect(installer["runs-on"]).toBe("windows-2025");
+    for (const entry of [installer, ...installer.steps]) {
+      expect(entry["continue-on-error"]).toBeUndefined();
+    }
     // Supplier proofs own separate opt-in runners; the default and launcher paths still run both proofs.
     expect(workflow.on.workflow_dispatch.inputs.run_winget_acceptance).toMatchObject({
       default: false,
       type: "boolean",
     });
     expect(probe.if).toBe(
-      "${{ !inputs.run_winget_acceptance && !inputs.run_portable_node_recovery }}",
+      "${{ !inputs.run_windows_git_installer_only && !inputs.run_winget_acceptance && !inputs.run_portable_node_recovery }}",
     );
-    expect(workflow.jobs["winget-acceptance"]?.if).toBe("${{ inputs.run_winget_acceptance }}");
+    expect(workflow.jobs["winget-acceptance"]?.if).toBe(
+      "${{ !inputs.run_windows_git_installer_only && inputs.run_winget_acceptance }}",
+    );
     expect(workflow.on.workflow_dispatch.inputs.run_portable_node_recovery).toMatchObject({
       default: false,
       type: "boolean",
     });
     const portable = workflow.jobs["portable-node-recovery"]!;
-    expect(portable.if).toBe("${{ inputs.run_portable_node_recovery }}");
+    expect(portable.if).toBe(
+      "${{ !inputs.run_windows_git_installer_only && inputs.run_portable_node_recovery }}",
+    );
     expect(portable["runs-on"]).toBe("windows-2025");
     expect(
       portable.steps.find((step) => step.name === "Checkout immutable proof tooling")?.with?.ref,
@@ -346,7 +364,7 @@ describe("check-workflows", () => {
     });
     const preflight = native.steps[1]!;
     expect(preflight.name).toBe("Preflight native Scheduled Task session");
-    expect(preflight.if).toBe(native.if);
+    expect(preflight.if).toBe("${{ inputs.run_windows_ci }}");
     expect(preflight.run).toContain(
       'if (-not [Environment]::UserInteractive) {\n  throw "Native Scheduled Task proof requires an interactive Windows runner session."\n}',
     );
@@ -447,7 +465,7 @@ describe("check-workflows", () => {
       (step) => step.name === "Remove retained native Scheduled Task evidence",
     )!;
     expect(proof["timeout-minutes"]).toBe(5);
-    expect(proof.if).toBe(native.if);
+    expect(proof.if).toBe("${{ inputs.run_windows_ci }}");
     expect(proof.env).toMatchObject({
       EXPECTED_HEAD: "${{ inputs.target_ref }}",
       CI_WINDOWS_SCHTASKS_ROOT:
