@@ -408,18 +408,21 @@ it("refuses a foreground helper that loses its admitted ownership", async () => 
 });
 
 it.each([
-  { capable: true, migrating: true },
-  { capable: false, migrating: false },
-  { capable: false, migrating: true },
+  { capable: true, migrating: true, omittedTimeout: false },
+  { capable: false, migrating: false, omittedTimeout: false },
+  { capable: false, migrating: true, omittedTimeout: false },
+  { capable: true, migrating: true, omittedTimeout: true },
 ])(
-  "parks foreground activation after candidate admission (capable=$capable, migrating=$migrating)",
-  async ({ capable, migrating }) => {
+  "parks foreground activation after candidate admission (capable=$capable, migrating=$migrating, omittedTimeout=$omittedTimeout)",
+  async ({ capable, migrating, omittedTimeout }) => {
     const root = dirs.make("foreground-candidate-");
     vi.stubEnv("OPENCLAW_STATE_DIR", root);
     vi.stubEnv("OPENCLAW_CONFIG_PATH", path.join(root, "openclaw.json"));
     const env = { ...process.env };
     const params = executionParams("package");
     params.root = root;
+    params.timeoutMs = omittedTimeout ? undefined : 30_000;
+    params.opts.timeout = omittedTimeout ? undefined : "30";
     params.opts.run = {
       runId: createUpdateRun({ trigger: "api" }, { env }).runId,
       env,
@@ -445,7 +448,9 @@ it.each([
     vi.spyOn(candidateState, "readUpdateStateSchemaVersions").mockResolvedValue([
       { path: path.join(root, "state", "openclaw.sqlite"), userVersion: migrating ? 14 : 15 },
     ]);
-    vi.spyOn(finalizationBudget, "resolveUpdateFinalizationTimeoutMs").mockResolvedValue(1_000);
+    const budget = vi
+      .spyOn(finalizationBudget, "resolveUpdateFinalizationTimeoutMs")
+      .mockResolvedValue(1_000);
     mocks.validateCanary.mockResolvedValue({
       status: "ok",
       phase: "readiness",
@@ -460,10 +465,8 @@ it.each([
       events.push("park");
       run.gatewayRestartRequired = true;
     });
-    mocks.prepareMutableUpdate.mockImplementation(async (_env, timeout) => {
-      if (timeout !== undefined) {
-        events.push("activation preparation");
-      }
+    mocks.prepareMutableUpdate.mockImplementation(async () => {
+      events.push("prepare");
     });
     mocks.runPackageUpdate.mockImplementation(async ({ validateCandidate, beforeActivate }) => {
       await validateCandidate(root);
@@ -477,10 +480,15 @@ it.each([
         status: "error",
         reason: "target-native-unsupported",
       });
-      expect(events).toEqual([]);
+      expect(events).toEqual(["prepare"]);
+      expect(budget).not.toHaveBeenCalled();
     } else {
       expect(result?.result.status).toBe("ok");
-      expect(events).toEqual(["park", "activation preparation", "publish"]);
+      expect(events).toEqual(["prepare", "park", "prepare", "publish"]);
+      expect(mocks.prepareMutableUpdate.mock.lastCall?.[1]).toBe(
+        omittedTimeout ? undefined : 1_000,
+      );
+      expect(budget).toHaveBeenCalledTimes(omittedTimeout ? 0 : 1);
       expect(params.opts.run.gatewayRestartRequired).toBe(true);
     }
     expect(mocks.captureManagedContext).not.toHaveBeenCalled();

@@ -9,6 +9,7 @@ import { createDeferredCore } from "../shared/deferred.js";
 const fixture = vi.hoisted(() => ({
   close: vi.fn<() => Promise<void>>(),
   budget: vi.fn(),
+  activation: vi.fn(),
   finish: vi.fn(),
   terminal: vi.fn(),
   writeFile: vi.fn(),
@@ -28,7 +29,11 @@ vi.mock("../cli/update-cli/update-command-executor.js", () => ({
     _runId: string,
     _root: string,
     run: (fence: { assertCurrent: () => void }) => Promise<unknown>,
-  ) => run({ assertCurrent: vi.fn() }),
+    options?: { activationTimeoutMs: number },
+  ) => {
+    fixture.activation(options);
+    return run({ assertCurrent: vi.fn() });
+  },
   withUpdateCommandExecutor: async (
     _runId: string,
     run: (executor: { enter: () => Promise<typeof fixture.fence> }) => Promise<unknown>,
@@ -281,3 +286,152 @@ it.each([false, true])(
     );
   },
 );
+
+it.each([
+  {
+    name: "supported omission",
+    version: 1,
+    operator: null,
+    owner: "parent",
+    serialized: "1800",
+    expected: undefined,
+  },
+  {
+    name: "supported omission with foreground restart pending",
+    version: 1,
+    operator: null,
+    owner: "parent",
+    serialized: "1800",
+    restartPending: true,
+    expected: undefined,
+  },
+  {
+    name: "explicit deadline",
+    version: 1,
+    operator: "1800",
+    owner: "parent",
+    serialized: "1800",
+    expected: 10_800_000,
+  },
+  {
+    name: "unknown version",
+    version: 2,
+    operator: null,
+    owner: "parent",
+    serialized: "1800",
+    expected: 10_800_000,
+  },
+  {
+    name: "mismatched serialization",
+    version: 1,
+    operator: null,
+    owner: "parent",
+    serialized: "900",
+    expected: 10_800_000,
+  },
+  {
+    name: "malformed operator",
+    version: 1,
+    operator: false,
+    owner: "parent",
+    serialized: "1800",
+    expected: 10_800_000,
+  },
+  {
+    name: "wrong completion owner",
+    version: 1,
+    operator: null,
+    owner: "child",
+    serialized: "1800",
+    expected: 10_800_000,
+  },
+  { name: "legacy producer", expected: 10_800_000 },
+  {
+    name: "inherited explicit allowance",
+    version: 1,
+    operator: null,
+    owner: "parent",
+    serialized: "1800",
+    inherited: 12_345,
+    expected: 12_345,
+  },
+])("preserves aggregate deadline intent for $name", async (row) => {
+  const input = {
+    executor: {},
+    completionOwner: row.owner,
+    timeout:
+      row.version === undefined
+        ? undefined
+        : {
+            version: row.version,
+            serialized: row.serialized,
+            operator: row.operator,
+          },
+    bufferedSteps: [],
+    resultPath: "/synthetic/result.json",
+    params: {
+      root: "/synthetic",
+      opts: {
+        json: true,
+        timeout: row.version === undefined ? undefined : "1800",
+        run: {
+          runId: "synthetic-run",
+          env: {},
+          activationTimeoutMs: row.inherited,
+          ...(row.restartPending
+            ? { completionOwner: "gateway-restart", gatewayRestartRequired: true }
+            : {}),
+        },
+      },
+      updateStepTimeoutMs: 1_800_000,
+      rollbackBlockedReason: "state-migrated-no-rollback",
+      preUpdatePluginInstallRecords: {},
+      result: { ...result, runId: "synthetic-run" },
+    },
+  };
+  const settled = createDeferredCore();
+  fixture.close.mockImplementation(async () => settled.resolve());
+  fixture.budget.mockResolvedValue(10_800_000);
+  fixture.finish.mockResolvedValue(input.params.result);
+  fixture.terminal.mockReturnValue({
+    runId: "synthetic-run",
+    status: row.restartPending ? "running" : "succeeded",
+    ...(row.restartPending ? { phase: "restarting" } : {}),
+  });
+  process.argv = [process.execPath, "update-migrated-finalize.worker.js"];
+  vi.spyOn(process.stdin, Symbol.asyncIterator).mockImplementation(async function* () {
+    yield JSON.stringify(input);
+    return undefined;
+  });
+
+  await import("./update-migrated-finalize.worker.js");
+  await settled.promise;
+
+  expect(process.exitCode).toBe(originalExitCode);
+  expect(fixture.activation).toHaveBeenCalledExactlyOnceWith(
+    row.expected === undefined ? undefined : { activationTimeoutMs: row.expected },
+  );
+  expect(fixture.budget).toHaveBeenCalledTimes(
+    row.expected === undefined || row.inherited !== undefined ? 0 : 1,
+  );
+  expect(fixture.finish).toHaveBeenCalledOnce();
+  expect(fixture.writeFile).toHaveBeenCalledOnce();
+  if (row.restartPending) {
+    expect(fixture.finish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        opts: expect.objectContaining({ timeout: undefined }),
+      }),
+      { candidateRuntime: true },
+    );
+    expect(fixture.writeFile).toHaveBeenCalledWith(
+      input.resultPath,
+      JSON.stringify({
+        result: input.params.result,
+        exitCode: 0,
+        restartRunId: "synthetic-run",
+        executorDelegation: "pid-start-v1",
+      }),
+      { mode: 0o600 },
+    );
+  }
+});
