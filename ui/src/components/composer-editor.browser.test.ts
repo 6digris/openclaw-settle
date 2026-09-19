@@ -1,6 +1,8 @@
 import { EditorView } from "@codemirror/view";
+import { html } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ComposerEditor, type ComposerChip } from "./composer-editor.ts";
+import { icons } from "./icons.ts";
 
 afterEach(() => {
   document.body.replaceChildren();
@@ -538,6 +540,60 @@ describe.runIf("__vitest_browser__" in globalThis)("composer inline editor", () 
     ).toBeLessThanOrEqual(element.getBoundingClientRect().right);
     expect(label.scrollWidth).toBeGreaterThan(label.clientWidth);
     expect(element.value).toBe("$weather");
+  });
+
+  it.each([390, 1280])("aligns photo, initials and skill chips at %ipx", async (width) => {
+    const { page } = await import("vitest/browser");
+    await page.viewport(width, 900);
+    const photo = document.createElement("canvas");
+    photo.width = photo.height = 16;
+    const context = photo.getContext("2d")!;
+    context.fillStyle = "steelblue";
+    context.fillRect(0, 0, 16, 16);
+    const element = editor("@avery @blair $score");
+    element.style.cssText = "font: 16px / 24px sans-serif; --accent: rgb(10, 80, 160)";
+    element.resolveChips = () => [
+      {
+        kind: "mention",
+        start: 0,
+        end: 6,
+        label: "Avery",
+        avatarUrl: photo.toDataURL(),
+      },
+      {
+        kind: "mention",
+        start: 7,
+        end: 13,
+        label: "Blair",
+        icon: html`<span
+          style="display: inline-flex; align-items: center; justify-content: center; width: 100%; height: 100%; font: bold 8px / 1 sans-serif"
+          >BR</span
+        >`,
+      },
+      { kind: "skill", start: 14, end: 20, label: "Score", icon: icons.pencilSparkles },
+    ];
+    await expect
+      .poll(
+        () =>
+          element.shadowRoot!.querySelector<HTMLImageElement>(".composer-chip__icon img")!
+            .naturalWidth,
+      )
+      .toBeGreaterThan(0);
+    const chips = [...element.shadowRoot!.querySelectorAll<HTMLElement>(".composer-chip")];
+    expect(chips).toHaveLength(3);
+    const first = chips[0]!.getBoundingClientRect();
+    const firstLabel = chips[0]!.querySelector("bdi")!.getBoundingClientRect();
+    for (const chip of chips) {
+      const rect = chip.getBoundingClientRect();
+      const label = chip.querySelector("bdi")!.getBoundingClientRect();
+      const icon = chip.querySelector(".composer-chip__icon")!.getBoundingClientRect();
+      expect(Math.abs(rect.top - first.top)).toBeLessThanOrEqual(0.5);
+      expect(Math.abs(label.top - firstLabel.top)).toBeLessThanOrEqual(0.5);
+      expect(Math.abs(rect.height - first.height)).toBeLessThanOrEqual(0.5);
+      expect(
+        Math.abs(icon.top + icon.height / 2 - (rect.top + rect.height / 2)),
+      ).toBeLessThanOrEqual(0.5);
+    }
   });
 
   it("preserves browser writing-assistance defaults", () => {
