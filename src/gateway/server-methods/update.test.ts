@@ -566,11 +566,12 @@ describe("update.run restart scheduling", () => {
         step: "requested",
         status: "failed",
         failureFacts: [
-          {
-            check: "managed-service-handoff-failed",
-            code: "managed-service-handoff-failed",
+          expect.objectContaining({
+            check: "managed-service",
+            code: "Error",
+            errorName: "Error",
             message: "state database unavailable",
-          },
+          }),
         ],
       }),
     );

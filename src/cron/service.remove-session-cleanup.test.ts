@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import {
@@ -334,8 +335,19 @@ describe("CronService.remove session cleanup", () => {
       { agentId: "main", storePath: sessionStorePath, sessionKey },
       { sessionId: "late-session", updatedAt: Date.now() },
     );
+    const cleanup = createDeferred<unknown>();
+    const deleteSession = expectDefined(
+      gatewayTestState.callGateway.getMockImplementation(),
+      "Gateway session deletion handler",
+    );
+    gatewayTestState.callGateway.mockImplementationOnce((...args) => {
+      const pending = deleteSession(...args);
+      cleanup.resolve(pending);
+      return pending;
+    });
     clearCronJobActive(job.id, marker);
 
+    await cleanup.promise;
     await vi.waitFor(() => {
       expect(hasPendingCronSessionCleanupForAgent("main")).toBe(false);
       expect(loadExactSessionEntry({ storePath: sessionStorePath, sessionKey })).toBeUndefined();

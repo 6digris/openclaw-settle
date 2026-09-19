@@ -36,6 +36,10 @@ it.each(["git", "global"] as const)(
       reason: "restart-unavailable",
       origin: { nextAction: expect.stringContaining("openclaw update") },
     });
+    expect(run?.steps.map(({ step, status }) => ({ step, status }))).toEqual([
+      { step: "requested", status: "failed" },
+      { step: "installation-inspection", status: "completed" },
+    ]);
     expect(sendGatewayLifecycleNoticeMock).not.toHaveBeenCalled();
     expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
     expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();

@@ -539,7 +539,7 @@ extensions/imessage/src/monitor/catchup-bridge.ts	1
 extensions/imessage/src/monitor/catchup.ts	2
 extensions/imessage/src/monitor/conversation-repair.ts	1
 extensions/imessage/src/monitor/inbound-processing.ts	2
-extensions/imessage/src/monitor/monitor-provider.ts	2
+extensions/imessage/src/monitor/monitor-provider.ts	1
 extensions/imessage/src/probe.ts	1
 extensions/imessage/src/remote-host.ts	1
 extensions/imessage/src/send.ts	2
@@ -3517,7 +3517,7 @@ src/worker/node-workspace-protocol.ts	1
 src/worker/worker-command.runtime.ts	1
 src/worker/worker-connection-admission.ts	2
 src/worker/worker-connection-frames.ts	4
-src/worker/worker-process.ts	2
+src/worker/worker-process.ts	1
 src/worker/worker-session-tools.ts	4
 src/worker/workspace-rsync-receiver.ts	1
 ui/src/api/gateway.ts	1

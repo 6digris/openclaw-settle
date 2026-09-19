@@ -449,7 +449,7 @@ export function createManagedServiceManagerBoundary({
       });
       await expect(pathExists(commandsPath)).resolves.toBe(false);
       if (options?.controlDisconnect) {
-        options.beforeDisconnect?.(run, env);
+        await options.beforeDisconnect?.(run, env);
         if (options.controlDisconnect === "transferred") {
           const transferred = waitForHandoffResponse(runningHelper.stdout, "transferred");
           runningHelper.stdin?.write("transfer\n");

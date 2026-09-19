@@ -81,11 +81,12 @@ describe("update.run handoff refusal diagnostics", () => {
         "update run",
       );
       const failureFacts = [
-        {
-          check: "managed-service-handoff-failed",
-          code: "managed-service-handoff-failed",
+        expect.objectContaining({
+          check: "managed-service",
+          code: "Error",
+          errorName: "Error",
           message,
-        },
+        }),
       ];
       const report = await prepareUpdateFailureReport({
         attemptId: run.runId,
@@ -99,12 +100,8 @@ describe("update.run handoff refusal diagnostics", () => {
         },
       });
       if (failure === "sentinel-write") {
-        expect
-          .soft(report.body)
-          .toContain(
-            "Failing check managed-service-handoff-failed (managed-service-handoff-failed): [redacted-diagnostic]",
-          );
-        expect.soft(report.body).not.toContain(message);
+        expect.soft(report.body).toContain("Failing check managed-service (Error)");
+        expect.soft(report.body).toContain(message);
       } else {
         expect.soft(report.body).toContain(`Failed phase requested: ${message}`);
       }
@@ -193,7 +190,14 @@ describe("update.run handoff refusal diagnostics", () => {
       const failureFacts =
         error instanceof UpdatePreMutationError
           ? error.failureFacts
-          : [{ check: reason, code: reason, message }];
+          : [
+              expect.objectContaining({
+                check: "managed-service",
+                code: "Error",
+                errorName: "Error",
+                message,
+              }),
+            ];
       expect(run.steps).toContainEqual(
         expect.objectContaining({
           step: "requested",

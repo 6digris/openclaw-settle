@@ -176,6 +176,7 @@ export const updateHandlers: GatewayRequestHandlers = {
       ...(params.target ? { target: { kind: "git", sha: params.target.upstreamSha } } : {}),
     });
     const runId = run.runId;
+    const warn = (message: string) => context?.logGateway?.warn(message);
     recordUpdateRunVerification(runId, {
       runningVersion: VERSION,
       serviceRunning: true,
@@ -255,7 +256,7 @@ export const updateHandlers: GatewayRequestHandlers = {
     };
     try {
       const configChannel = normalizeUpdateChannel(config.update?.channel);
-      const { status, installSurface } = await resolveGatewayUpdateAdmission(timeoutMs);
+      const { status, installSurface } = await resolveGatewayUpdateAdmission(runId, timeoutMs);
       const installRoot = installSurface.root;
       result.mode = installSurface.mode;
       result.root = installRoot;
@@ -385,6 +386,11 @@ export const updateHandlers: GatewayRequestHandlers = {
         }
       };
       const supervisor = foregroundOrigin ? null : detectedSupervisor;
+      if (supervisor) {
+        recordUpdateRunPhase(runId, "requested", {
+          target: { installationMethod: "managed-service" },
+        });
+      }
       const handoffChannel =
         installSurface.kind === "git"
           ? undefined
@@ -570,6 +576,7 @@ export const updateHandlers: GatewayRequestHandlers = {
             runId,
             err,
             refusedUpdate("error", "managed-service-handoff-failed"),
+            warn,
           );
         }
       }
@@ -578,7 +585,15 @@ export const updateHandlers: GatewayRequestHandlers = {
         outcomeMessage = error.message;
       }
       context?.logGateway?.warn(`update.run failed error=${formatErrorMessage(error)}`);
-      result = createUnexpectedUpdateFailureResult(run, result, error);
+      let recorded = run;
+      try {
+        recorded = getUpdateRun(runId) ?? run;
+      } catch {
+        context?.logGateway?.warn(
+          "Update history could not be read; preserving the original update failure with captured admission facts.",
+        );
+      }
+      result = createUnexpectedUpdateFailureResult(recorded, result, error, warn);
     }
 
     let outcomeRun = recordUpdateRunPhase(runId, "requested", {
@@ -634,7 +649,7 @@ export const updateHandlers: GatewayRequestHandlers = {
       } catch (error) {
         try {
           // Cancellation settles the helper's ledger; persist its cause first.
-          result = recordHandoffFailure(runId, error, result);
+          result = recordHandoffFailure(runId, error, result, warn);
         } finally {
           await cancelManagedServiceUpdateHandoff(managedHandoffOwner);
         }

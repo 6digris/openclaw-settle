@@ -17,6 +17,7 @@ import {
   createManagedServiceManagerBoundary,
   pathExists,
 } from "./update-managed-service-handoff-boundary.test-support.js";
+import { registerManagedCampaignFailureTests } from "./update-managed-service-handoff-campaign.test-support.js";
 import {
   cleanupStaleManagedServiceUpdateHandoffs,
   MANAGED_SERVICE_UPDATE_HANDOFF_TEMP_PREFIX,
@@ -538,6 +539,8 @@ describe("managed service update handoff", () => {
     });
     expect(sentinel).toMatchObject({ payload: { status: "error", stats: { reason } } });
   });
+
+  registerManagedCampaignFailureTests(runManagedServiceManagerBoundary, itUnix);
 
   itUnix("cancels a validating updater without stopping the serving generation", async () => {
     const { commands, parentSignal, log } = await runManagedServiceManagerBoundary("systemd", {
