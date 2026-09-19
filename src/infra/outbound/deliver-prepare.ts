@@ -190,7 +190,6 @@ export async function prepareOutboundPayloadBatch(
         hookRunner,
         enabled: hasMessageSendingHooks,
         payload: replyPayload,
-        payloadSummary: buildPayloadSummary(replyPayload),
         to: params.to,
         channel: params.channel,
         accountId: params.accountId,

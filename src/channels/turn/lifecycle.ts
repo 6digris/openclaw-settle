@@ -23,7 +23,6 @@ import {
   createMessageSentEmitter,
   type MessageSentEvent,
 } from "../../infra/outbound/message-sent-hook.js";
-import { summarizeOutboundPayloadForTransport } from "../../infra/outbound/payloads.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { resolveMessageReceiptPrimaryId } from "../message/receipt.js";
 import { createChannelReplyPipeline } from "../message/reply-pipeline.js";
@@ -341,7 +340,6 @@ async function applyRoutedDirectMessageSending(params: {
     hookRunner,
     enabled: hookRunner?.hasHooks("message_sending") ?? false,
     payload: params.payload,
-    payloadSummary: summarizeOutboundPayloadForTransport(params.payload),
     to: resolveInboundReplyHookTarget(params.turn.ctxPayload, hookCtx),
     channel: params.turn.channel,
     accountId: params.turn.accountId,

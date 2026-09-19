@@ -27,10 +27,7 @@ import {
   type OutboundPayloadDeliverySuppressionReason,
 } from "./deliver-types.js";
 import type { QueuedReplyPayloadSendingHook } from "./delivery-queue-storage.js";
-import {
-  summarizeOutboundPayloadForTransport,
-  type NormalizedOutboundPayload,
-} from "./payloads.js";
+import { summarizeOutboundPayloadForTransport } from "./payloads.js";
 
 export type ReplyPayloadSuppressedObserver = (
   payload: ReplyPayload,
@@ -118,7 +115,6 @@ export function buildProjectedInboundMessageSendingBeforeDeliver(
       hookRunner,
       enabled: hookRunner?.hasHooks("message_sending") ?? false,
       payload,
-      payloadSummary: summarizeOutboundPayloadForTransport(payload),
       to: replyTarget,
       channel: hookCtx.channelId,
       accountId: hookCtx.accountId,
@@ -137,7 +133,6 @@ export async function applyMessageSendingHook(params: {
   hookRunner: ReturnType<typeof getGlobalHookRunner>;
   enabled: boolean;
   payload: ReplyPayload;
-  payloadSummary: NormalizedOutboundPayload;
   to: string;
   channel: string;
   accountId?: string;
@@ -150,28 +145,27 @@ export async function applyMessageSendingHook(params: {
   hookMetadata?: Record<string, unknown>;
   contentRewritten: boolean;
   payload: ReplyPayload;
-  payloadSummary: NormalizedOutboundPayload;
 }> {
   if (!params.enabled) {
     return {
       cancelled: false,
       contentRewritten: false,
       payload: params.payload,
-      payloadSummary: params.payloadSummary,
     };
   }
+  const payloadSummary = summarizeOutboundPayloadForTransport(params.payload);
   try {
     const group = getGroupThreadDispatchContext();
     const sendingResult = await params.hookRunner!.runMessageSending(
       {
         to: params.to,
-        content: params.payloadSummary.hookContent ?? params.payloadSummary.text,
+        content: payloadSummary.hookContent ?? payloadSummary.text,
         replyToId: params.replyToId ?? undefined,
         threadId: params.threadId ?? undefined,
         metadata: {
           channel: params.channel,
           accountId: params.accountId,
-          mediaUrls: params.payloadSummary.mediaUrls,
+          mediaUrls: payloadSummary.mediaUrls,
         },
       },
       {
@@ -189,7 +183,6 @@ export async function applyMessageSendingHook(params: {
         ...(sendingResult.metadata ? { hookMetadata: sendingResult.metadata } : {}),
         contentRewritten: false,
         payload: params.payload,
-        payloadSummary: params.payloadSummary,
       };
     }
     if (sendingResult?.content == null) {
@@ -197,10 +190,9 @@ export async function applyMessageSendingHook(params: {
         cancelled: false,
         contentRewritten: false,
         payload: params.payload,
-        payloadSummary: params.payloadSummary,
       };
     }
-    if (params.payloadSummary.hookContent && !params.payloadSummary.text) {
+    if (payloadSummary.hookContent && !payloadSummary.text) {
       const spokenText = sendingResult.content;
       return {
         cancelled: false,
@@ -209,10 +201,6 @@ export async function applyMessageSendingHook(params: {
           ...params.payload,
           spokenText,
         }),
-        payloadSummary: {
-          ...params.payloadSummary,
-          hookContent: spokenText,
-        },
       };
     }
     const payload = copyReplyPayloadMetadata(params.payload, {
@@ -223,10 +211,6 @@ export async function applyMessageSendingHook(params: {
       cancelled: false,
       contentRewritten: true,
       payload,
-      payloadSummary: {
-        ...params.payloadSummary,
-        text: sendingResult.content,
-      },
     };
   } catch {
     // Don't block delivery on hook failure.
@@ -234,7 +218,6 @@ export async function applyMessageSendingHook(params: {
       cancelled: false,
       contentRewritten: false,
       payload: params.payload,
-      payloadSummary: params.payloadSummary,
     };
   }
 }
