@@ -358,7 +358,7 @@ cat "$root/result.json"
             let expected = json!({
                 "action": name,
                 "target": {"kind": "local-host", "platform": "fixture", "hostname": "fixture",
-                    "profile": "chrome", "relayPort": 18792},
+                    "profile": "work", "relayPort": 18792},
                 "phase": phase, "reason": "fixture",
                 "installation": {"nativeHostRegistered": false, "installRequested": false,
                     "discoveredProfiles": [], "awaitingApproval": false,
@@ -371,7 +371,7 @@ cat "$root/result.json"
         assert_eq!(
             fs::read_to_string(fixture.0.join("calls")).unwrap(),
             ["inspect", "install", "verify"]
-                .map(|action| format!("browser extension setup --action {action} --json --browser-profile chrome --wait-ms 1000\n"))
+                .map(|action| format!("browser extension setup --action {action} --json --wait-ms 1000\n"))
                 .concat()
         );
         fs::write(fixture.0.join("fail"), "").unwrap();
