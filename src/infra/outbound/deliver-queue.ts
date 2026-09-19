@@ -65,6 +65,7 @@ export async function runOutboundDelivery(
 ): Promise<OutboundDeliveryResult[]> {
   return await runOutboundDeliveryInternal({
     ...params,
+    conversationDeliveryTarget: undefined,
     deliveryQueueStateContext: undefined,
   });
 }
@@ -74,6 +75,7 @@ export async function runOutboundDeliveryInternal(
   stateContext?: DeliveryQueueStateContext,
 ): Promise<OutboundDeliveryResult[]> {
   const context =
+    initialInput.conversationDeliveryTarget ??
     stateContext ??
     captureDeliveryQueueStateContext(
       initialInput.deliveryQueueId ? initialInput.deliveryQueueStateDir : undefined,
@@ -197,7 +199,7 @@ async function deliverWithProducerLease(
           lease,
         );
       } finally {
-        lease.stop();
+        await lease.stop();
       }
     },
     { unbound: questionBinding === "unbound" },
@@ -291,7 +293,7 @@ async function runOutboundDeliveryWithQueue(
       (await prepareOutboundPayloadBatch(params, {
         onBeforeFirstModifier: stablePreparationOwner?.beforeFirstModifier,
       }));
-    stablePreparationOwner?.markPrepared();
+    await stablePreparationOwner?.markPrepared();
   } catch (error) {
     emitPreQueueFailure();
     // Preparation aborts the whole batch, so hooks get one failure per
@@ -413,6 +415,7 @@ async function runOutboundDeliveryWithQueue(
         queued?.created ? "prepared" : undefined,
         params.deliveryQueueStateDir,
         params.deliveryQueueStateContext,
+        params.conversationDeliveryTarget,
       );
       if (completion.state !== "queued") {
         await queueOwner.ack({ suppressCompletionReceipt: true });

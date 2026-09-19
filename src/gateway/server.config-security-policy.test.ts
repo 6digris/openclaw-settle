@@ -10,7 +10,7 @@ import { invalidateConfigGetResponseCache } from "./config-get-response.js";
 import { startGatewayServerCore as startGatewayServer } from "./server-start.js";
 import { connectGatewayClient, disconnectGatewayClient } from "./test-helpers.e2e.js";
 
-describe("config security policy", () => {
+describe("config security policy before persistence", () => {
   let state: Awaited<ReturnType<typeof createOpenClawTestState>>;
   let server: Awaited<ReturnType<typeof startGatewayServer>> | undefined;
   let client: Awaited<ReturnType<typeof connectGatewayClient>> | undefined;
