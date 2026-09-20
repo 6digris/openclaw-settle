@@ -1,5 +1,6 @@
 import { reloadSharedAuthStoreOwnership } from "../agents/auth-profiles/path-resolve.js";
 import { prepareModelRuntimeSnapshot } from "../agents/prepared-model-runtime.js";
+import { preparedModelRuntimeConfigsMatch } from "../agents/prepared-model-runtime.owner.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { refreshActiveProviderAuthRuntimeSnapshot } from "../secrets/runtime.js";
 import {
@@ -16,11 +17,22 @@ export async function refreshModelAuthStateAfterMutation(
   reloadSharedAuthStoreOwnership();
   clearModelAuthStatusUsageCache();
   await refreshActiveProviderAuthRuntimeSnapshot();
-  const config = getRuntimeConfig();
-  const scope = resolveModelAuthAgentScope(config, agentId);
-  if (!scope.ok) {
-    throw new Error(modelAuthAgentScopeError(scope).message);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const config = getRuntimeConfig();
+    const scope = resolveModelAuthAgentScope(config, agentId);
+    if (!scope.ok) {
+      throw new Error(modelAuthAgentScopeError(scope).message);
+    }
+    // A credential mutation can also commit config references. If hot reload replaces the
+    // runtime config while this generation is preparing, join the replacement before returning.
+    const prepared = await prepareModelRuntimeSnapshot({
+      config,
+      agentId,
+      agentDir: scope.agentDir,
+    });
+    if (preparedModelRuntimeConfigsMatch(prepared.config, getRuntimeConfig())) {
+      return;
+    }
   }
-  // Persistence and secrets activation publish actual auth changes; join that generation.
-  await prepareModelRuntimeSnapshot({ config, agentId, agentDir: scope.agentDir });
+  throw new Error("Gateway config kept changing while refreshing model authentication");
 }

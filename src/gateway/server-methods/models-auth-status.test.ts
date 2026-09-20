@@ -58,7 +58,9 @@ const mocks = vi.hoisted(() => ({
     profiles: {},
   })),
   refreshActiveProviderAuthRuntimeSnapshot: vi.fn(async () => false),
-  prepareModelRuntimeSnapshot: vi.fn(async () => {}),
+  prepareModelRuntimeSnapshot: vi.fn(async (input: { config: OpenClawConfig }) => ({
+    config: input.config,
+  })),
   loadDeferredCatalog: vi.fn(),
   readPreparedCatalog: vi.fn(),
   buildAuthHealthSummary: vi.fn<BuildAuthHealthSummary>((): AuthHealthSummary => ({
@@ -348,7 +350,7 @@ function resetAuthStatusMocks(): void {
   });
   mocks.loadProviderUsageSummary.mockResolvedValue(emptyUsageSummary());
   mocks.refreshActiveProviderAuthRuntimeSnapshot.mockResolvedValue(false);
-  mocks.prepareModelRuntimeSnapshot.mockResolvedValue();
+  mocks.prepareModelRuntimeSnapshot.mockImplementation(async ({ config }) => ({ config }));
 }
 
 function firstDeferredAuthScope() {
@@ -2285,9 +2287,9 @@ describe("models.authOrderSet", () => {
   it("publishes the durable order before acknowledging it", async () => {
     let finishPublication: (() => void) | undefined;
     mocks.prepareModelRuntimeSnapshot.mockImplementationOnce(
-      () =>
-        new Promise<void>((resolve) => {
-          finishPublication = resolve;
+      ({ config }) =>
+        new Promise<{ config: OpenClawConfig }>((resolve) => {
+          finishPublication = () => resolve({ config });
         }),
     );
     const opts = createOrderOptions({
