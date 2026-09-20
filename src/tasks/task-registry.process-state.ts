@@ -16,8 +16,8 @@ import {
   isEquivalentTaskRecord,
   listTasksFromIndex,
 } from "./task-registry-records.js";
-import type { TaskRegistryStore } from "./task-registry.store.js";
 import type {
+  TaskExecutionRestoreStore,
   TaskRegistryMutationScope,
   TaskRegistryObserverEvent,
 } from "./task-registry.store.types.js";
@@ -145,7 +145,7 @@ type TaskRegistryProcessState = {
     readTail?: Promise<void>;
     preparation?: {
       context: OpenClawStateWorkerContext;
-      store: TaskRegistryStore;
+      matchesStore: (candidate: TaskExecutionRestoreStore) => boolean;
       epoch: number;
       promise: Promise<number | undefined>;
     };

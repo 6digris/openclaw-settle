@@ -26,6 +26,7 @@ import {
   startTaskRegistryListener,
   withPendingTaskRegistryEvents,
 } from "./task-registry-listener-state.js";
+import { createTaskRegistryProjectionPreparation } from "./task-registry-projection-preparation.js";
 import { listTasksFromIndex, normalizeTaskTimestamps } from "./task-registry-records.js";
 import { createAsyncRegistryRestore, createSyncRegistryReader } from "./task-registry-restore.js";
 import type { TaskRegistryRestoreResult } from "./task-registry-restore.worker.js";
@@ -391,15 +392,6 @@ export function assertTaskRegistryOwnerCurrent(
   }
 }
 
-function canShareTaskRegistryPreparation(context: OpenClawStateWorkerContext): boolean {
-  // Maintenance and schema inspection retain their own captured custody.
-  return (
-    context.maintenanceScope === undefined &&
-    context.existingSchemaPath === undefined &&
-    context.runInCapturedSchemaScope === undefined
-  );
-}
-
 function installTaskRegistryProjectionBatch(
   context: OpenClawStateWorkerContext,
   store: TaskRegistryStore,
@@ -418,77 +410,11 @@ function installTaskRegistryProjectionBatch(
   return projection.epoch;
 }
 
-export async function prepareTaskRegistryProjectionAsync(
-  context: OpenClawStateWorkerContext,
-  store: TaskRegistryStore,
-  maxAttempts = Number.POSITIVE_INFINITY,
-): Promise<boolean> {
-  assertTaskRegistryOwnerCurrent(context, store);
-  await ensureTaskRegistryReadyAsync(context);
-  assertTaskRegistryOwnerCurrent(context, store);
-  let attempts = 0;
-  while (projection.mutationDepth === 0 && (projection.dirty || dirtyScopes.size > 0)) {
-    if (attempts++ >= maxAttempts) {
-      return false;
-    }
-    const epoch = projection.epoch;
-    const scopes = projection.dirty ? [undefined] : [...dirtyScopes];
-    if (!canShareTaskRegistryPreparation(context)) {
-      const snapshots = await loadTaskRegistryMutationSnapshots(context, store, scopes);
-      if (installTaskRegistryProjectionBatch(context, store, epoch, snapshots) !== undefined) {
-        return true;
-      }
-      continue;
-    }
-    let prepared: Promise<number | undefined>;
-    let pending = projection.preparation;
-    if (pending) {
-      const previous = pending.context;
-      if (
-        pending.store !== store ||
-        pending.epoch !== epoch ||
-        previous.admission.identity.key !== context.admission.identity.key ||
-        previous.admission.databasePath !== context.admission.databasePath ||
-        previous.environment.OPENCLAW_STATE_DIR !== context.environment.OPENCLAW_STATE_DIR ||
-        previous.environment.OPENCLAW_SUPERVISOR_MODE !==
-          context.environment.OPENCLAW_SUPERVISOR_MODE ||
-        previous.coordinatorRuntime.directory !== context.coordinatorRuntime.directory ||
-        previous.coordinatorRuntime.keepAlive !== context.coordinatorRuntime.keepAlive
-      ) {
-        pending = undefined;
-      } else {
-        try {
-          assertTaskRegistryOwnerCurrent(previous, store);
-        } catch {
-          pending = undefined;
-        }
-      }
-    }
-    if (pending) {
-      prepared = pending.promise;
-    } else {
-      const promise = Promise.resolve().then(async () => {
-        try {
-          assertTaskRegistryOwnerCurrent(context, store);
-          const snapshots = await loadTaskRegistryMutationSnapshots(context, store, scopes);
-          return installTaskRegistryProjectionBatch(context, store, epoch, snapshots);
-        } finally {
-          if (projection.preparation?.promise === promise) {
-            projection.preparation = undefined;
-          }
-        }
-      });
-      projection.preparation = { context, store, epoch, promise };
-      prepared = promise;
-    }
-    const installedEpoch = await prepared;
-    assertTaskRegistryOwnerCurrent(context, store);
-    if (installedEpoch !== undefined && installedEpoch === projection.epoch) {
-      return true;
-    }
-  }
-  return true;
-}
+export const prepareTaskRegistryProjectionAsync = createTaskRegistryProjectionPreparation({
+  assertCurrent: assertTaskRegistryOwnerCurrent,
+  ensureReady: ensureTaskRegistryReadyAsync,
+  installBatch: installTaskRegistryProjectionBatch,
+});
 
 function failTaskRegistryRestore(
   error: unknown,
