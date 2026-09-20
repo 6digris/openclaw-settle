@@ -31,7 +31,10 @@ import {
 } from "../state/openclaw-agent-pending-inputs-schema.js";
 import { setAbortedAgentDedupeEntries } from "./agent-turn/agent-dedupe.js";
 import * as agentJobs from "./agent-turn/agent-job.js";
-import { waitForChatAbortControllerRemoval } from "./chat-abort-lifecycle-internal.js";
+import {
+  waitForChatAbortControllerRemoval,
+  waitForChatAbortTerminalPersistence,
+} from "./chat-abort-lifecycle-internal.js";
 import { abortChatRunById } from "./chat-abort.js";
 import { dispatchGatewayMethodInProcess } from "./server-plugin-in-process-dispatch.js";
 import { startGatewayServerHarness, type GatewayServerHarness } from "./server.e2e-ws-harness.js";
@@ -712,6 +715,8 @@ describe("private subagent completion processing receipts", () => {
         expect(kernel.gatewayRequestContext.chatAbortControllers.get(runId)).toBe(active);
         expect(completions()).toEqual([]);
         if (kind === "abandoned") {
+          // Settle the abort projection before advancing only the producer's grace.
+          await waitForChatAbortTerminalPersistence(active);
           await vi.advanceTimersByTimeAsync(60_000);
           expect(kernel.gatewayRequestContext.chatAbortControllers.has(runId)).toBe(false);
           expect(JSON.parse(String(completions()[0]?.outcome_json))).toMatchObject({
