@@ -283,8 +283,20 @@ $ErrorActionPreference = 'Stop'
 Import-Module $ModulePath -Force
 $dependencies = @(Get-ChildItem -LiteralPath (Join-Path $DependencyRoot 'x64') -File | Where-Object { $_.Extension -in @('.appx','.msix') } | ForEach-Object FullName)
 if ($dependencies.Count -eq 0) { throw 'Official x64 dependency payloads absent.' }
-Add-AppxPackage -Path $Payload -DependencyPath $dependencies -ForceUpdateFromAnyVersion -ForceApplicationShutdown -ErrorAction Stop
-Repair-WinGetPackageManager -Version 1.29.290 -AllUsers -ErrorAction Stop
+try {
+    Add-AppxPackage -Path $Payload -DependencyPath $dependencies -ForceUpdateFromAnyVersion -ForceApplicationShutdown -ErrorAction Stop
+    Repair-WinGetPackageManager -Version 1.29.290 -AllUsers -ErrorAction Stop
+} catch {
+    $originalFailure = $_
+    Write-Output 'APPX_DEPLOYMENT_FAILURE_DIAGNOSTICS_BEGIN'
+    try {
+        Get-AppPackageLog -All -ErrorAction Stop | Select-Object -Last 100 | Format-List * | Out-String -Width 300 | Write-Output
+        Get-AppxPackage -AllUsers -Name Microsoft.DesktopAppInstaller | Select-Object Name,PackageFullName,Version,Architecture,InstallLocation,Status | ConvertTo-Json -Depth 4 | Write-Output
+        Get-AppxProvisionedPackage -Online | Where-Object DisplayName -eq Microsoft.DesktopAppInstaller | Select-Object DisplayName,PackageName,Version,Architecture | ConvertTo-Json -Depth 4 | Write-Output
+    } catch { Write-Output ('Deployment diagnostic capture failed: ' + $_.Exception.Message) }
+    Write-Output 'APPX_DEPLOYMENT_FAILURE_DIAGNOSTICS_END'
+    throw $originalFailure
+}
 '@ | Set-Content $bootstrapScript
     Assert-Proof ((Invoke-Native (Join-Path $PSHOME 'pwsh.exe') @('-NoProfile','-NonInteractive','-File',$bootstrapScript,'-ModulePath',(Join-Path $moduleRoot 'Microsoft.WinGet.Client.psd1'),'-Payload',$applicationPath,'-DependencyRoot',$dependencyRoot) 'winget-fixed-bootstrap') -eq 0) 'Fixed-version WinGet repair failed; no image-version fallback.'
     $winget = (Get-Command winget -CommandType Application -ErrorAction Stop).Source
