@@ -4,9 +4,58 @@ import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { SessionCapability } from "../../lib/sessions/index.ts";
+import { chatHistoryRequests } from "./chat-history-state.ts";
 import { createTestChatPane, nativeHistoryMessage } from "./chat-pane-history.test-support.ts";
 
 describe("chat pane reply-source history navigation", () => {
+  it("waits for route history and reveals the exact linked message once per navigation", async () => {
+    const request = vi.fn();
+    const client = { request } as unknown as GatewayBrowserClient;
+    const { pane, state } = createTestChatPane({ client, sessions: {} as SessionCapability });
+    state.currentSessionId = "current-session";
+    pane.presented = true;
+    pane.routeMessageId = "source-message";
+    pane.routeMessageLocation = {
+      pathname: "/chat/main",
+      search: "?messageId=source-message",
+      hash: "",
+    };
+    state.chatLoading = true;
+    const open = vi.spyOn(pane, "openReplyMessage").mockImplementation(() => {});
+    pane.synchronizeRouteMessage();
+    expect(open).not.toHaveBeenCalled();
+    state.chatLoading = false;
+    pane.synchronizeRouteMessage();
+    expect(open).not.toHaveBeenCalled();
+    chatHistoryRequests(state).acceptedHistory = {
+      phase: "committed",
+      sessions: state.sessions!,
+      client,
+      connectionEpoch: state.connectionEpoch,
+      sessionKey: state.sessionKey,
+      requestAgentId: undefined,
+      sessionInfo: {
+        key: state.sessionKey,
+        kind: "direct",
+        updatedAt: 1,
+        sessionId: state.currentSessionId,
+      },
+    };
+    pane.synchronizeRouteMessage();
+    pane.synchronizeRouteMessage();
+    expect(open).toHaveBeenCalledExactlyOnceWith("source-message");
+    // The router creates a fresh location for a deliberate same-URL navigation.
+    pane.routeMessageLocation = { ...pane.routeMessageLocation };
+    pane.synchronizeRouteMessage();
+    pane.synchronizeRouteMessage();
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(open).toHaveBeenLastCalledWith("source-message");
+    pane.routeMessageId = undefined;
+    pane.synchronizeRouteMessage();
+    pane.routeMessageId = "another-message";
+    pane.synchronizeRouteMessage();
+    expect(open).toHaveBeenLastCalledWith("another-message");
+  });
   it("resolves an unloaded reply preview through chat.message.get", async () => {
     const message = {
       role: "assistant",

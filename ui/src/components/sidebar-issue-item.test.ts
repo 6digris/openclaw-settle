@@ -69,7 +69,7 @@ describe("renderSidebarMentionItem", () => {
   const pathname = "/team/chat/writer/chat/12345678-90ab-cdef-1234-567890abcdef";
   const navigation = {
     pathname,
-    search: `?${SESSION_NAVIGATION_KEY_PARAM}=${encodeURIComponent(mention.sessionKey)}`,
+    search: `?messageId=message-1&${SESSION_NAVIGATION_KEY_PARAM}=${encodeURIComponent(mention.sessionKey)}`,
   };
 
   function renderMention(overrides: Partial<Parameters<typeof renderSidebarMentionItem>[0]> = {}) {
@@ -88,7 +88,7 @@ describe("renderSidebarMentionItem", () => {
   it("opens the linked session without dismissing the mention", () => {
     const { context, onClosePanel, onDismiss } = renderMention();
     const open = container.querySelector<HTMLAnchorElement>("a[data-issue-row-focus]")!;
-    expect(open.getAttribute("href")).toBe(pathname);
+    expect(open.getAttribute("href")).toBe(`${pathname}?messageId=message-1`);
 
     let nativeNavigationPreserved = false;
     open.addEventListener(
@@ -115,6 +115,18 @@ describe("renderSidebarMentionItem", () => {
     expect(onDismiss).toHaveBeenCalledOnce();
     expect(context.navigate).toHaveBeenCalledOnce();
     expect(onClosePanel).toHaveBeenCalledOnce();
+  });
+
+  it("renders an agent sender without a profile identity and links the committed message", () => {
+    const { senderProfileId: _profile, ...common } = mention;
+    const { context } = renderMention({
+      mention: { ...common, sender: { type: "agent", id: "writer" }, senderLabel: "Agent: Writer" },
+    });
+    expect(container.querySelector("openclaw-viewer-avatar")).toBeNull();
+    expect(container.querySelector(".identity-avatar--agent")).not.toBeNull();
+    expect(container.textContent).toContain("Agent: Writer");
+    container.querySelector<HTMLAnchorElement>("a[data-issue-row-focus]")!.click();
+    expect(context.navigate).toHaveBeenCalledWith("chat", navigation);
   });
 
   it("renders the message excerpt as text rather than HTML or Markdown", () => {

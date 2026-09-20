@@ -111,6 +111,11 @@ export class ChatPage extends OpenClawLightDomElement implements SessionSplitHos
   constructor() {
     super();
     new SubscriptionsController(this)
+      // Same-URL navigation retains loader data, but must reveal a mention again.
+      .watch(
+        () => (this.data?.messageId ? this.context?.router : undefined),
+        (router, notify) => router.subscribe(notify),
+      )
       .watch(
         () => this.context?.sessions,
         (sessions, notify) => sessions.subscribe(notify),

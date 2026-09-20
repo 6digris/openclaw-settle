@@ -83,6 +83,11 @@ export function renderChatPagePaneCell(options: ChatPagePaneRenderOptions) {
             options.data && areUiSessionKeysEquivalent(sessionKey, options.data.sessionKey)
               ? options.data
               : undefined;
+          // Match locations change on same-URL navigation; resolvedLocation deduplicates equal URLs.
+          const routeMessageLocation =
+            active && routeData?.messageId
+              ? options.context?.router.getState().matches[0]?.location
+              : undefined;
           const draft = active
             ? routeDraft(options.data, options.consumedDraftData, sessionKey)
             : undefined;
@@ -127,6 +132,8 @@ export function renderChatPagePaneCell(options: ChatPagePaneRenderOptions) {
               .visuallyPresented=${presented}
               .active=${active}
               .draft=${draft}
+              .routeMessageId=${active ? routeData?.messageId : undefined}
+              .routeMessageLocation=${routeMessageLocation}
               .focusComposer=${options.draftFocus.shouldFocusPane(
                 active,
                 draft,

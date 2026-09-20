@@ -968,6 +968,8 @@ enum class GatewayMethod(
   ThemesGet("themes.get"),
   ThemesSet("themes.set"),
   ThemesImport("themes.import"),
+  SessionsMentionable("sessions.mentionable"),
+  SessionsMention("sessions.mention"),
 }
 
 enum class GatewayEvent(

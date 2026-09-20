@@ -1,7 +1,9 @@
+import type { SessionManager } from "../../agents/sessions/session-manager.js";
 // Chat transcript injection appends gateway-authored assistant rows while
 // preserving agent-session parent links and transcript update notifications.
-import type { SessionManager } from "../../agents/sessions/session-manager.js";
+import { isHeartbeatAcknowledgementText } from "../../auto-reply/heartbeat.js";
 import { persistSessionTranscriptTurn } from "../../config/sessions/session-accessor.js";
+import type { SessionTranscriptTurnPersistOptions } from "../../config/sessions/session-accessor.types.js";
 import type { SessionLifecycleRevisionExpectation } from "../../config/sessions/session-transcript-turn-lifecycle.types.js";
 import { applyAssistantDeliveryDirectives } from "../../config/sessions/transcript-assistant-delivery.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -87,6 +89,13 @@ export async function appendInjectedAssistantMessageToTranscript(params: {
   contextFreeCommand?: true;
   now?: number;
   config?: OpenClawConfig;
+  beforeFreshMessageCommit?: () => void;
+  onMessageCommitted?: SessionTranscriptTurnPersistOptions["onMessageCommitted"];
+  agentMention?: {
+    senderAgentId: string;
+    recipientProfileIds: readonly string[];
+    requestHash: string;
+  };
 }): Promise<GatewayInjectedTranscriptAppendResult> {
   const now = params.now ?? Date.now();
   const usage = {
@@ -134,6 +143,7 @@ export async function appendInjectedAssistantMessageToTranscript(params: {
     api: "openai-responses",
     provider: "openclaw",
     model: "gateway-injected",
+    ...(params.agentMention ? { openclawAgentMention: params.agentMention } : {}),
     ...(params.idempotencyKey ? { idempotencyKey: params.idempotencyKey } : {}),
     ...(params.ttsSupplement ? { openclawTtsSupplement: params.ttsSupplement } : {}),
     ...(params.contextFreeCommand === true
@@ -151,6 +161,18 @@ export async function appendInjectedAssistantMessageToTranscript(params: {
   });
   if (rawDeliveryFacts && messageBody.openclawDelivery === undefined) {
     messageBody.openclawDelivery = rawDeliveryFacts;
+  }
+
+  // An explicit attention note must remain visible after normal delivery projection.
+  if (
+    params.agentMention &&
+    isHeartbeatAcknowledgementText(extractAssistantPhaseText(messageBody))
+  ) {
+    return {
+      ok: false,
+      error:
+        "An attention request requires a visible assistant note, not a silent reply or delivery directive.",
+    };
   }
 
   try {
@@ -173,9 +195,11 @@ export async function appendInjectedAssistantMessageToTranscript(params: {
         ...(params.abortMeta ? { runId: params.abortMeta.runId } : {}),
         touchSessionEntry: Boolean(params.storePath && params.sessionId && params.sessionKey),
         ...(params.config ? { config: params.config } : {}),
+        onMessageCommitted: params.onMessageCommitted,
         messages: [
           {
             message: messageBody,
+            beforeFreshMessageCommit: params.beforeFreshMessageCommit,
             idempotencyLookup: "scan-assistant",
             ...(params.abortMeta
               ? {

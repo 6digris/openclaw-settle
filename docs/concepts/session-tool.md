@@ -158,6 +158,19 @@ Use the shared `message` tool when you already have an explicit raw channel targ
 
 In Code Mode, the conversation tools reuse their exact Gateway output contracts. A single `exec` cell can list addresses, select a returned `conversationRef`, and call `conversations_send` or `conversations_turn`; normal tool policy and approvals still apply to the nested calls.
 
+<a id="requesting-a-persons-attention" />
+
+## Requesting a person’s attention
+
+Use the `sessions` tool’s explicit actions, not `@name` in assistant prose:
+
+1. `action: "mentionable"` with an optional `query` searches the current session’s eligible people. It returns verified `profileId` values and at most 100 results. Offline people are included.
+2. `action: "mention"` with `recipientProfileIds` (one to ten IDs from discovery) and `message` (up to 4,096 characters) saves an assistant note and records attention requests in those people’s existing Mentions Inbox.
+
+These actions require an active Gateway-hosted agent run and only target its current session. `sessionKey` may be omitted or `"current"`; another session is rejected. Incognito sessions are excluded. Recipients must already have access, which is checked again at commitment. This does not grant membership, change visibility or ownership, start another agent turn, or claim human authorship or contributor credit.
+
+The result includes the persisted `messageId` and `sessionKey` (and an exact `messageUrl` when a public Control UI origin is configured), plus `status: "recorded"` and the recorded recipient IDs, or `status: "skipped"` and a reason. Recording is not proof of push delivery or that anyone read the message. The note can remain saved when Inbox recording is unavailable. Replaying the same tool call does not create another note or alert. Dismissal, expiry, revocation, and notification preferences follow the existing [Mentions Inbox](/concepts/multi-user#mentions-inbox). No background scan or reminder service is started.
+
 ## Sending cross-session messages
 
 `sessions_send` runs another session on the same Gateway and optionally waits for the response. Its `sessionKey`, `label`, or `agentId` selects local model context, not an external destination. The resulting reply can still be announced through the established requester or target delivery context; that existing behavior is unchanged. For exact external delivery, use a conversation tool or `message` with an explicit channel and target.

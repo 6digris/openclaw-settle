@@ -24,6 +24,8 @@ const CORE_GATEWAY_HANDLER_MODULES = {
   board: () => import("./board.js").then((module) => module.boardHandlers),
   audit: () => import("./audit.js").then((module) => module.auditHandlers),
   users: () => import("./users.js").then((module) => module.usersHandlers),
+  "session-mentions": () =>
+    import("./session-mentions.js").then((module) => module.sessionMentionHandlers),
   "users-mentionable": () =>
     import("./users-mentionable.js").then((module) => module.usersMentionableHandlers),
   attach: () => import("./attach.js").then((module) => module.attachHandlers),

@@ -45,6 +45,7 @@ type ContextSessionNavigationTargetParams<TRouteId extends string> = {
   focusComposer?: boolean;
   dashboardExpanded?: boolean;
   navigationKey?: string;
+  messageId?: string;
 };
 
 type ExplicitSessionNavigationTargetParams = {
@@ -62,6 +63,7 @@ type ExplicitSessionNavigationTargetParams = {
   focusComposer?: boolean;
   dashboardExpanded?: boolean;
   navigationKey?: string;
+  messageId?: string;
 };
 
 type SessionNavigationTarget = {
@@ -173,15 +175,19 @@ export function sessionNavigationTarget<TRouteId extends string>(
   // clean guessed path and can land on the other face for an uncached session, exactly
   // as every open did before gateway resolution existed. The face is one click to
   // change and the change persists, so this is a smaller win, not a regression.
-  const navigationParams = new URLSearchParams(search ?? "");
+  const hrefParams = new URLSearchParams(search ?? "");
+  if (params.dashboardExpanded) {
+    hrefParams.set(SESSION_DASHBOARD_EXPANDED_PARAM, "expanded");
+  }
+  if (params.messageId) {
+    hrefParams.set("messageId", params.messageId);
+  }
+  const navigationParams = new URLSearchParams(hrefParams);
   if (params.preferenceDerivedFace && !row) {
     navigationParams.set(SESSION_FACE_PREFERENCE_PARAM, "1");
   }
   if (params.focusComposer) {
     navigationParams.set(SESSION_COMPOSER_FOCUS_PARAM, "1");
-  }
-  if (params.dashboardExpanded) {
-    navigationParams.set(SESSION_DASHBOARD_EXPANDED_PARAM, "expanded");
   }
   const navigationKey = params.navigationKey?.trim() || row?.key;
   if (navigationKey && SESSION_KEY_UUID_SUFFIX_RE.test(navigationKey)) {
@@ -193,10 +199,6 @@ export function sessionNavigationTarget<TRouteId extends string>(
   const options = serializedNavigation
     ? { pathname, search: `?${serializedNavigation}` }
     : { pathname };
-  const hrefParams = new URLSearchParams(search ?? "");
-  if (params.dashboardExpanded) {
-    hrefParams.set(SESSION_DASHBOARD_EXPANDED_PARAM, "expanded");
-  }
   const hrefSearch = hrefParams.toString();
   return { href: `${pathname}${hrefSearch ? `?${hrefSearch}` : ""}`, options };
 }

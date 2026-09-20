@@ -612,6 +612,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
 
   override updated(changedProperties: Map<PropertyKey, unknown> = new Map()) {
     this.syncQueuedEditRetention();
+    this.synchronizeRouteMessage();
     void chatAvatars.refreshSenderAgentAvatars(this.state);
     if (!this.chatRouteReadyReported && this.querySelector(CHAT_COMPOSER_TEXTAREA_SELECTOR)) {
       // The outer router commit is not a meaningful chat paint. Keep the

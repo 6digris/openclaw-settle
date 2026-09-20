@@ -23,6 +23,31 @@ import {
 } from "./route-resolution.test-support.ts";
 
 describe("gateway-backed session route resolution", () => {
+  it("preserves a committed message deep link through exact session resolution", async () => {
+    const resolved = row();
+    const { context } = contextFor({ ok: true, ...resolved, agentId: "main" });
+    const target = sessionNavigationTarget({
+      context,
+      face: "chat",
+      sessionKey: resolved.key,
+      exactKey: true,
+      messageId: "note /?&",
+    });
+    expect(new URL(target.href, "https://example.test").searchParams.get("messageId")).toBe(
+      "note /?&",
+    );
+    const loaded = await loadChatRoute(
+      context,
+      targetLocation(target),
+      "chat",
+      new AbortController().signal,
+    );
+    expect(loaded).toMatchObject({
+      kind: "session",
+      sessionKey: resolved.key,
+      messageId: "note /?&",
+    });
+  });
   it.each([false, true])(
     "opens qualified global navigation without selecting the home session (exactKey=%s)",
     async (exactKey) => {

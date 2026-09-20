@@ -21,6 +21,7 @@ const SESSION_TARGET_FIELDS_BY_METHOD = new Map<string, readonly SessionMutation
   ["send", ["sessionKey"]],
   ["session.discussion.open", ["sessionKey"]],
   ["sessions.abort", ["key"]],
+  ["sessions.mention", ["sessionKey"]],
   ["sessions.assignOwner", ["key"]],
   ["sessions.setInvolvement", ["key"]],
   ["sessions.companion.ask", ["sessionKey"]],

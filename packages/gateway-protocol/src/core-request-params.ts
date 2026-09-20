@@ -46,6 +46,8 @@ export type GatewayCoreRequestParams = {
   "conversations.turn": AgentSchema.ConversationTurnParams;
   "conversations.turn.cancel": AgentSchema.ConversationTurnCancelParams;
   "logs.tail": LogsTailParams;
+  "sessions.mentionable": HumanMentionsSchema.SessionsMentionableParams;
+  "sessions.mention": HumanMentionsSchema.SessionsMentionParams;
   "mentions.list": HumanMentionsSchema.MentionsListParams;
   "mentions.dismiss": HumanMentionsSchema.MentionsDismissParams;
   "portal.close": PortalCloseParams;

@@ -486,6 +486,25 @@ describe("event Web Push classification", () => {
   );
 
   describe("human mention delivery", () => {
+    it("uses the same mention preference and truthful agent label with an exact message link", async () => {
+      const subscription = boundSubscription("browser-device", "bob");
+      subscription.devicePreferences.detailLevel = "identified";
+      listBoundWebPushSubscriptionsMock.mockResolvedValue([subscription]);
+      createEventWebPushDelivery({ getRuntimeConfig: () => ({}) }).deliverMention(
+        humanMention({ senderLabel: "Agent: Research", messageId: "saved-note" }),
+      );
+      await vi.waitFor(() => expect(preparedWebPushSendMock).toHaveBeenCalledOnce());
+      expect(preparedWebPushSendMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            body: "Agent: Research mentioned you in Review.",
+            url: "chat/research/thread%2E1?messageId=saved-note",
+            renotify: false,
+          }),
+        }),
+      );
+    });
+
     beforeEach(() => {
       listBoundWebPushSubscriptionsMock.mockResolvedValue([
         boundSubscription("browser-device", "bob"),

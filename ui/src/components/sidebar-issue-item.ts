@@ -16,6 +16,7 @@ import { sessionNavigationTarget } from "../lib/sessions/route-navigation.ts";
 import { areUiSessionKeysEquivalent } from "../lib/sessions/session-key.ts";
 import { renderSidebarApprovalRow } from "./exec-approval-card.ts";
 import { icons } from "./icons.ts";
+import { renderAgentIdentityAvatar } from "./identity-avatar-view.ts";
 import type { SidebarAttentionItem } from "./sidebar-attention-entries.ts";
 import "./sidebar-update-card.ts";
 import "./viewer-facepile.ts";
@@ -57,13 +58,16 @@ export function renderSidebarMentionItem(params: {
   onClosePanel: () => void;
 }) {
   const { mention, context } = params;
-  const sender: PresenceViewer = {
-    id: mention.senderProfileId,
-    identity: { type: "profile", id: mention.senderProfileId },
-    name: mention.senderLabel,
-    avatarUrl: mention.senderAvatarUrl,
-    watchedSessions: [],
-  };
+  const sender: PresenceViewer | undefined =
+    "senderProfileId" in mention
+      ? {
+          id: mention.senderProfileId,
+          identity: { type: "profile", id: mention.senderProfileId },
+          name: mention.senderLabel,
+          avatarUrl: mention.senderAvatarUrl,
+          watchedSessions: [],
+        }
+      : undefined;
   const label = t("attention.mentions.from", { sender: mention.senderLabel });
   const target = sessionNavigationTarget({
     face: "chat",
@@ -72,6 +76,7 @@ export function renderSidebarMentionItem(params: {
     basePath: context.basePath,
     row: { key: mention.sessionKey, displayName: mention.sessionTitle },
     exactKey: true,
+    messageId: mention.messageId,
   });
   return html`<article
     class="sidebar-mention-row"
@@ -81,11 +86,17 @@ export function renderSidebarMentionItem(params: {
   >
     <div class="sidebar-issues-panel__summary sidebar-mention-row__summary">
       <span class="sidebar-mention-row__avatar" aria-hidden="true">
-        <openclaw-viewer-avatar
-          .user=${sender}
-          .markAsViewer=${false}
-          variant="footer"
-        ></openclaw-viewer-avatar>
+        ${
+          "sender" in mention
+            ? html`<span class="viewer-avatar viewer-avatar--footer"
+                >${renderAgentIdentityAvatar({ id: mention.sender.id, name: mention.senderLabel, avatar: mention.senderAvatarUrl })}</span
+              >`
+            : html`<openclaw-viewer-avatar
+                .user=${sender}
+                .markAsViewer=${false}
+                variant="footer"
+              ></openclaw-viewer-avatar>`
+        }
       </span>
       <div class="sidebar-issues-panel__content">
         <div class="sidebar-mention-row__header">

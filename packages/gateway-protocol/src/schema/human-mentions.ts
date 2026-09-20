@@ -47,9 +47,8 @@ export const UsersMentionableResultSchema = closedObject({
   truncated: Type.Boolean(),
 });
 
-export const MentionInboxItemSchema = closedObject({
+const MentionInboxItemProperties = {
   id: MentionReferenceSchema,
-  senderProfileId: MentionReferenceSchema,
   senderLabel: MentionLabelSchema,
   senderAvatarUrl: Type.Optional(MentionAvatarUrlSchema),
   sessionKey: MentionSessionKeySchema,
@@ -59,7 +58,33 @@ export const MentionInboxItemSchema = closedObject({
   createdAt: MentionTimestampSchema,
   expiresAt: MentionTimestampSchema,
   excerpt: Type.Optional(Type.String({ maxLength: 280 })),
+};
+
+export const AgentMentionSenderSchema = closedObject({
+  type: Type.Literal("agent"),
+  id: MentionReferenceSchema,
 });
+const { id: mentionIdSchema, ...MentionInboxDetailProperties } = MentionInboxItemProperties;
+const MentionInboxItemObjectSchema = closedObject({
+  id: mentionIdSchema,
+  senderProfileId: Type.Optional(MentionReferenceSchema),
+  ...MentionInboxDetailProperties,
+  sender: Type.Optional(AgentMentionSenderSchema),
+});
+
+// Keep the native generated object model while the union enforces exactly one truthful sender.
+// Existing human records retain their wire shape; agents never occupy a profile field.
+export const MentionInboxItemSchema = Type.Union(
+  [
+    closedObject({ ...MentionInboxItemProperties, senderProfileId: MentionReferenceSchema }),
+    closedObject({ ...MentionInboxItemProperties, sender: AgentMentionSenderSchema }),
+  ],
+  {
+    type: "object",
+    properties: MentionInboxItemObjectSchema.properties,
+    required: MentionInboxItemObjectSchema.required,
+  },
+);
 
 export const MentionsListParamsSchema = closedObject({});
 export const MentionsDismissParamsSchema = closedObject({
@@ -89,3 +114,56 @@ export type MentionsListParams = Static<typeof MentionsListParamsSchema>;
 export type MentionsDismissParams = Static<typeof MentionsDismissParamsSchema>;
 export type MentionsListResult = Static<typeof MentionsListResultSchema>;
 export type MentionsChangedEvent = Static<typeof MentionsChangedEventSchema>;
+
+export const SessionsMentionableParamsSchema = closedObject({
+  sessionKey: MentionSessionKeySchema,
+  agentId: MentionReferenceSchema,
+  query: Type.Optional(Type.String({ maxLength: 128 })),
+});
+export const SessionsMentionParamsSchema = closedObject({
+  sessionKey: MentionSessionKeySchema,
+  agentId: MentionReferenceSchema,
+  recipientProfileIds: Type.Array(MentionReferenceSchema, {
+    minItems: 1,
+    maxItems: MAX_HUMAN_MENTIONS,
+    uniqueItems: true,
+  }),
+  message: Type.String({ minLength: 1, maxLength: 4096 }),
+  idempotencyKey: MentionReferenceSchema,
+});
+const MentionRecordResultSchema = Type.Union([
+  closedObject({
+    status: Type.Literal("recorded"),
+    recipientProfileIds: Type.Array(MentionReferenceSchema, {
+      minItems: 1,
+      maxItems: MAX_HUMAN_MENTIONS,
+    }),
+  }),
+  closedObject({
+    status: Type.Literal("skipped"),
+    reason: Type.Union([
+      Type.Literal("unavailable"),
+      Type.Literal("invalid"),
+      Type.Literal("session_changed"),
+      Type.Literal("already_processed"),
+      Type.Literal("capacity"),
+      Type.Literal("no_eligible_recipients"),
+      Type.Literal("expired"),
+    ]),
+  }),
+]);
+export type MentionRecordResult = Static<typeof MentionRecordResultSchema>;
+const MentionSourceProperties = {
+  sessionKey: MentionSessionKeySchema,
+  agentId: MentionReferenceSchema,
+  messageId: MentionReferenceSchema,
+  messageUrl: Type.Optional(Type.String({ minLength: 1, maxLength: 2048 })),
+};
+export const SessionsMentionResultSchema = Type.Union([
+  closedObject({ ...MentionRecordResultSchema.anyOf[0].properties, ...MentionSourceProperties }),
+  closedObject({ ...MentionRecordResultSchema.anyOf[1].properties, ...MentionSourceProperties }),
+]);
+export type SessionsMentionResult = Static<typeof SessionsMentionResultSchema>;
+
+export type SessionsMentionableParams = Static<typeof SessionsMentionableParamsSchema>;
+export type SessionsMentionParams = Static<typeof SessionsMentionParamsSchema>;

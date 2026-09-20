@@ -47,6 +47,7 @@ import {
 /** Session self-service tool. */
 import { listSessionCloudProfiles } from "./sessions-cloud-profiles.js";
 import { resolveSessionToolContext } from "./sessions-helpers.js";
+import { sessionsMentionToolProperties, runSessionsMentionTool } from "./sessions-mentions.js";
 import { resolveSessionReference, shouldResolveSessionIdInput } from "./sessions-resolution.js";
 import {
   readSessionsToolPatch,
@@ -55,6 +56,8 @@ import {
 } from "./sessions-tool-patch.js";
 
 const ACTIONS = [
+  "mentionable",
+  "mention",
   "cloud_profiles",
   "patch",
   "reset",
@@ -93,6 +96,7 @@ function withBoundedSessionsResolved(
 const SessionsToolSchema = Type.Object(
   {
     action: stringEnum(ACTIONS, { description: "Action" }),
+    ...sessionsMentionToolProperties,
     profileId: Type.Optional({
       ...SessionMoveProfileTargetSchema.properties.profileId,
       description: "cloud_profiles: return OS and machine choices for this configured profile.",
@@ -348,9 +352,9 @@ export function createSessionsTool(opts: SessionsToolOptions = {}): AnyAgentTool
     label: "Sessions",
     name: "sessions",
     description:
-      "cloud_profiles lists configured cloud profiles; pass profileId for their OS and machine choices. Session settings, ownership, reset, delete, and custom sidebar groups: patch label/icon/group/status, pin, archive/restore, model/thinking override. patch with group files sessions into a group; targets applies the same patch to up to 100 visible sessions; group_list shows the catalog; group_set replaces the whole ordered catalog; group_rename/group_delete change one group everywhere. assign_owner hands responsibility to a human or agent; reset/delete visible sessions.",
+      "mentionable searches eligible people for the current session; mention explicitly requests their attention with a persisted assistant note using recipientProfileIds and message. Plain @names never notify. Results report Inbox recording or skipping, not push delivery or reading. These actions require a live Gateway-hosted run and cannot target another session. cloud_profiles lists configured cloud profiles; pass profileId for their OS and machine choices. Session settings, ownership, reset, delete, and custom sidebar groups: patch label/icon/group/status, pin, archive/restore, model/thinking override. patch with group files sessions into a group; targets applies the same patch to up to 100 visible sessions; group_list shows the catalog; group_set replaces the whole ordered catalog; group_rename/group_delete change one group everywhere. assign_owner hands responsibility to a human or agent; reset/delete visible sessions.",
     parameters: SessionsToolSchema,
-    execute: async (_toolCallId, rawArgs) => {
+    execute: async (toolCallId, rawArgs) => {
       const params = rawArgs as Record<string, unknown>;
       const action = readToolStringParam(params, "action", { required: true });
       if (
@@ -362,6 +366,9 @@ export function createSessionsTool(opts: SessionsToolOptions = {}): AnyAgentTool
         throw new ToolInputError(
           "targets is only valid for patch and cannot be combined with sessionKey or expectedSessionId",
         );
+      }
+      if (action === "mentionable" || action === "mention") {
+        return await runSessionsMentionTool(action, params, toolCallId, gatewayRequest);
       }
       if (action === "reset" || action === "delete") {
         const rawKey = readToolStringParam(params, "sessionKey", { required: true });

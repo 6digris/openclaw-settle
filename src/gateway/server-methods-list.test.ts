@@ -232,6 +232,8 @@ describe("listGatewayMethods", () => {
       "themes.get",
       "themes.set",
       "themes.import",
+      "sessions.mentionable",
+      "sessions.mention",
     ];
     expect(listGatewayMethods().slice(-expectedSuffix.length)).toEqual(expectedSuffix);
     const methods = listGatewayMethods();
@@ -284,6 +286,8 @@ describe("listGatewayMethods", () => {
       "themes.get",
       "themes.set",
       "themes.import",
+      "sessions.mentionable",
+      "sessions.mention",
     ]);
   });
 
@@ -465,6 +469,8 @@ describe("listGatewayMethods", () => {
       "themes.get",
       "themes.set",
       "themes.import",
+      "sessions.mentionable",
+      "sessions.mention",
     ];
     expect(coreMethods.slice(-expectedCoreSuffix.length)).toEqual(expectedCoreSuffix);
     expect(methods.indexOf("approval.get")).toBeGreaterThan(methods.indexOf("tts.speak"));

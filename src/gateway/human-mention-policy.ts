@@ -256,7 +256,127 @@ export function createHumanMentionPolicy(params: {
     });
   }
 
+  function selectMentionable(
+    target: MentionTarget,
+    queryInput?: string,
+    excludedProfileId?: string,
+  ): Result<UsersMentionableResult, ErrorShape> {
+    const cfg = params.getRuntimeConfig();
+    if (!directory) {
+      throw new Error("The mention directory has not been prepared.");
+    }
+    // Keystrokes reuse one bounded eligible roster; identity/session/role changes replace it.
+    const key = JSON.stringify([profileVersion, target, cfg.gateway?.roles]);
+    if (eligibleDirectory?.key !== key) {
+      const users = directory.profiles.flatMap(({ id, logins }) => {
+        const candidate = recipientProfile(id, target, cfg);
+        return candidate
+          ? [
+              {
+                profileId: candidate.profileId,
+                displayName: humanMentionDisplayLabel(candidate.label, candidate.profileId),
+                avatarUrl: candidate.avatarUrl,
+                logins,
+                online: false,
+              },
+            ]
+          : [];
+      });
+      eligibleDirectory = { key, users, truncated: directory.truncated };
+    }
+    const query = queryInput?.trim().toLocaleLowerCase() ?? "";
+    const users = eligibleDirectory.users.filter(
+      (candidate) =>
+        candidate.profileId !== excludedProfileId &&
+        (!query ||
+          candidate.displayName.toLocaleLowerCase().includes(query) ||
+          candidate.logins.some((login) => login.toLocaleLowerCase().includes(query))),
+    );
+    const names = new Map<string, number>();
+    for (const candidate of users) {
+      names.set(candidate.displayName, (names.get(candidate.displayName) ?? 0) + 1);
+    }
+    const online = new Set<string>();
+    for (const connected of params.getClients()) {
+      const id = connected.authenticatedUserProfile?.profileId;
+      if (id && !connected.internal?.syntheticClient) {
+        const current = readProfile(id);
+        if (current) {
+          online.add(current.profileId);
+        }
+      }
+    }
+    const projected = users.map((candidate) => ({
+      profileId: candidate.profileId,
+      displayName:
+        (names.get(candidate.displayName) ?? 0) > 1
+          ? `${truncateUtf16Safe(candidate.displayName, 244)} (${candidate.profileId.slice(0, 8)})`
+          : candidate.displayName,
+      avatarUrl: candidate.avatarUrl,
+      online: online.has(candidate.profileId),
+    }));
+    projected.sort(
+      (left, right) =>
+        Number(right.online) - Number(left.online) ||
+        left.displayName.localeCompare(right.displayName) ||
+        left.profileId.localeCompare(right.profileId),
+    );
+    return ok({
+      users: projected.slice(0, MAX_MENTIONABLE_USERS),
+      truncated: eligibleDirectory.truncated || projected.length > MAX_MENTIONABLE_USERS,
+    });
+  }
+
+  function agentTarget(input: { sessionKey: string; agentId: string }): MentionTarget | undefined {
+    const target = resolveSessionSharingTarget({ cfg: params.getRuntimeConfig(), ...input });
+    return target && target.entry.incognito !== true && !isIncognitoSessionKey(target.canonicalKey)
+      ? {
+          agentId: target.agentId,
+          sessionKey: target.canonicalKey,
+          entry: {
+            createdActor: target.entry.createdActor,
+            visibility: target.entry.visibility,
+            incognito: target.entry.incognito,
+          },
+        }
+      : undefined;
+  }
+
   return {
+    agentMentionable(input: {
+      sessionKey: string;
+      agentId: string;
+      query?: string;
+    }): Result<UsersMentionableResult, ErrorShape> {
+      const target = agentTarget(input);
+      return target
+        ? selectMentionable(target, input.query)
+        : err(errorShape(ErrorCodes.INVALID_REQUEST, "Session is unavailable for mentions."));
+    },
+    validateAgentRecipients(
+      input: { sessionKey: string; agentId: string },
+      profileIds: readonly string[],
+    ): Result<readonly string[], ErrorShape> {
+      const target = agentTarget(input);
+      const cfg = params.getRuntimeConfig();
+      const recipients = target
+        ? profileIds.map((id) => recipientProfile(id, target, cfg)?.profileId)
+        : [];
+      if (
+        !target ||
+        !profileIds.length ||
+        profileIds.length > MAX_HUMAN_MENTIONS ||
+        recipients.some((id) => !id)
+      ) {
+        return err(
+          errorShape(
+            ErrorCodes.INVALID_REQUEST,
+            "One or more mentioned people are unavailable. Select the recipients again.",
+          ),
+        );
+      }
+      return ok([...new Set(recipients.filter((id): id is string => Boolean(id)))]);
+    },
     identify,
     prepareDirectory,
     needsDirectoryPreparation,
@@ -281,69 +401,7 @@ export function createHumanMentionPolicy(params: {
         return context;
       }
       const { target, profile } = context.value;
-      if (!directory) {
-        throw new Error("The mention directory has not been prepared.");
-      }
-      // Keystrokes reuse one bounded eligible roster; identity/session/role changes replace it.
-      const key = JSON.stringify([profileVersion, target, cfg.gateway?.roles]);
-      if (eligibleDirectory?.key !== key) {
-        const users = directory.profiles.flatMap(({ id, logins }) => {
-          const candidate = recipientProfile(id, target, cfg);
-          return candidate
-            ? [
-                {
-                  profileId: candidate.profileId,
-                  displayName: humanMentionDisplayLabel(candidate.label, candidate.profileId),
-                  avatarUrl: candidate.avatarUrl,
-                  logins,
-                  online: false,
-                },
-              ]
-            : [];
-        });
-        eligibleDirectory = { key, users, truncated: directory.truncated };
-      }
-      const query = input.query?.trim().toLocaleLowerCase() ?? "";
-      const users = eligibleDirectory.users.filter(
-        (candidate) =>
-          candidate.profileId !== profile.profileId &&
-          (!query ||
-            candidate.displayName.toLocaleLowerCase().includes(query) ||
-            candidate.logins.some((login) => login.toLocaleLowerCase().includes(query))),
-      );
-      const names = new Map<string, number>();
-      for (const candidate of users) {
-        names.set(candidate.displayName, (names.get(candidate.displayName) ?? 0) + 1);
-      }
-      const online = new Set<string>();
-      for (const connected of params.getClients()) {
-        const id = connected.authenticatedUserProfile?.profileId;
-        if (id && !connected.internal?.syntheticClient) {
-          const current = readProfile(id);
-          if (current) {
-            online.add(current.profileId);
-          }
-        }
-      }
-      const projected = users.map((candidate) => ({
-        profileId: candidate.profileId,
-        displayName:
-          (names.get(candidate.displayName) ?? 0) > 1
-            ? `${truncateUtf16Safe(candidate.displayName, 244)} (${candidate.profileId.slice(0, 8)})`
-            : candidate.displayName,
-        avatarUrl: candidate.avatarUrl,
-        online: online.has(candidate.profileId),
-      }));
-      projected.sort(
-        (left, right) =>
-          Number(right.online) - Number(left.online) ||
-          left.displayName.localeCompare(right.displayName) ||
-          left.profileId.localeCompare(right.profileId),
-      );
-      return ok({
-        users: projected.slice(0, MAX_MENTIONABLE_USERS),
-        truncated: eligibleDirectory.truncated || projected.length > MAX_MENTIONABLE_USERS,
-      });
+      return selectMentionable(target, input.query, profile.profileId);
     },
     validateRecipients(
       client: GatewayClient | null,

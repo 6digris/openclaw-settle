@@ -191,6 +191,8 @@ describe("sessions tool", () => {
         action: {
           type: "string",
           enum: [
+            "mentionable",
+            "mention",
             "cloud_profiles",
             "patch",
             "reset",
@@ -223,7 +225,9 @@ describe("sessions tool", () => {
         archived: { type: "boolean", description: expect.stringContaining("without deleting") },
       },
     });
-    expect(tool.parameters).not.toHaveProperty("properties.message");
+    expect(tool.parameters).toHaveProperty("properties.message.maxLength", 4096);
+    expect(tool.parameters).toHaveProperty("properties.recipientProfileIds.maxItems", 10);
+    expect(tool.description).toContain("Plain @names never notify");
   });
 
   it("does not expose direct session creation outside controlled spawning", async () => {

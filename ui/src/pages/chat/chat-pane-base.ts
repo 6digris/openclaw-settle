@@ -1,4 +1,5 @@
 import { consume } from "@lit/context";
+import type { RouteLocation } from "@openclaw/uirouter";
 import { property, state as litState } from "lit/decorators.js";
 import type { ChatWorkContext } from "../../../../packages/gateway-protocol/src/chat-work-context.js";
 import type {
@@ -277,6 +278,8 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
   }
   @property({ attribute: false }) draft?: string;
   @property({ attribute: false }) focusComposer = false;
+  @property({ attribute: false }) routeMessageId?: string;
+  @property({ attribute: false }) routeMessageLocation?: RouteLocation;
   @property({ attribute: false }) dashboardExpanded = false;
   @property({ attribute: false }) routeFace: BoardFace = "chat";
   @property({ attribute: false }) onFaceChange?: (

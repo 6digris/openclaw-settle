@@ -17,6 +17,7 @@ export type ChatRouteData =
       agentId?: string;
       draft?: string;
       focusComposer?: boolean;
+      messageId?: string;
       dashboardExpanded?: boolean;
       face: BoardFace;
       shortId?: string;

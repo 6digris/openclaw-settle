@@ -3,6 +3,8 @@ import {
   validateChatSendParams,
   validateMentionsChangedEvent,
   validateMentionsDismissParams,
+  validateSessionsMentionParams,
+  validateSessionsMentionableParams,
   validateMentionsListParams,
   validateMentionsListResult,
   validateSessionsCreateParams,
@@ -127,5 +129,40 @@ describe("human mention protocol", () => {
     expect(validateMentionsChangedEvent(version)).toBe(true);
     expect(validateMentionsChangedEvent({ ...version, item })).toBe(false);
     expect(validateMentionsChangedEvent({ ...version, revision: -1 })).toBe(false);
+  });
+  it("keeps agent attribution typed and request parameters bounded without a sender override", () => {
+    const target = { sessionKey: "agent:main:discussion", agentId: "main" };
+    expect(validateSessionsMentionableParams({ ...target, query: "Bob" })).toBe(true);
+    expect(validateSessionsMentionableParams({ ...target, query: "x".repeat(129) })).toBe(false);
+    const request = {
+      ...target,
+      recipientProfileIds: ["profile-bob"],
+      message: "Review this.",
+      idempotencyKey: "call-1",
+    };
+    expect(validateSessionsMentionParams(request)).toBe(true);
+    for (const invalid of [
+      { ...request, senderProfileId: "profile-alice" },
+      { ...request, recipientProfileIds: [] },
+      { ...request, recipientProfileIds: ["bob", "bob"] },
+      { ...request, message: "x".repeat(4097) },
+    ]) {
+      expect(validateSessionsMentionParams(invalid)).toBe(false);
+    }
+    const item = {
+      ...target,
+      id: "mention-1",
+      sender: { type: "agent", id: "main" },
+      senderLabel: "Agent: Main",
+      sessionTitle: "Discussion",
+      messageId: "message-1",
+      createdAt: 1,
+      expiresAt: 2,
+    };
+    const version = { gatewayInstanceId: "gateway-1", revision: 0 };
+    expect(validateMentionsListResult({ ...version, items: [item] })).toBe(true);
+    expect(
+      validateMentionsListResult({ ...version, items: [{ ...item, senderProfileId: "human" }] }),
+    ).toBe(false);
   });
 });

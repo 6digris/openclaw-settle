@@ -1,3 +1,4 @@
+import type { RouteLocation } from "@openclaw/uirouter";
 import { onTestFinished, vi } from "vitest";
 /* Shared fixtures for chat pane history pagination suites. */
 import type { SessionCatalogTranscriptItem } from "../../../../packages/gateway-protocol/src/index.js";
@@ -52,6 +53,10 @@ export type TestChatPane = HTMLElement & {
   requestReplyMessage: (messageId: string) => void;
   readReplyMessage: (messageId: string) => unknown;
   openReplyMessage: (messageId: string) => void;
+  routeMessageId?: string;
+  routeMessageLocation?: RouteLocation;
+  presented: boolean;
+  synchronizeRouteMessage: () => void;
   currentReplyNavigationId: (sessionKey: string) => string | null;
   hasOlderMessages: () => boolean;
   loadingOlder: boolean;

@@ -48,9 +48,12 @@ import type { ChatRouteData, SessionRouteCandidate } from "./session-route-data.
 export type { ChatRouteData, SessionChatRouteData } from "./session-route-data.ts";
 
 function sessionRouteHints(location: RouteLocation) {
+  const search = new URLSearchParams(location.search);
+  const messageId = search.get("messageId")?.trim().slice(0, 256);
   return {
     ...draftRouteDataFromLocation(location),
-    ...(new URLSearchParams(location.search).get(SESSION_DASHBOARD_EXPANDED_PARAM) === "expanded"
+    ...(messageId ? { messageId } : {}),
+    ...(search.get(SESSION_DASHBOARD_EXPANDED_PARAM) === "expanded"
       ? { dashboardExpanded: true as const }
       : {}),
   };

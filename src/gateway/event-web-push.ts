@@ -51,6 +51,7 @@ export type HumanMentionWebPush = {
   recipientProfileId: string;
   sessionKey: string;
   agentId: string;
+  messageId?: string;
   senderLabel?: string;
   sessionTitle?: string;
   isCurrent: () => boolean;
@@ -194,9 +195,15 @@ export function createEventWebPushDelivery(params: {
           if (mention && !sessionPath) {
             return undefined;
           }
+          const messagePath =
+            sessionPath && mention?.messageId
+              ? sessionPath.slice(1) +
+                "?" +
+                new URLSearchParams({ messageId: mention.messageId }).toString()
+              : sessionPath?.slice(1);
           const path =
             notification.path ??
-            sessionPath?.slice(1) ??
+            messagePath ??
             (notification.category === "background-task-failed" ? "tasks" : "sessions");
           const url = resolveControlUiWebPushUrl(cfg, path);
           const targets = listCurrentWebPushTargets({

@@ -31,17 +31,32 @@ const messageSchema = z.object({
     excerpt: z.string().max(280).optional(),
   }),
 });
+const agentMessageSchema = messageSchema.extend({
+  content: messageSchema.shape.content.omit({ senderProfileId: true }).extend({
+    sender: z.object({ type: z.literal("agent"), id: reference }),
+  }),
+});
+const recipientsSchema = z
+  .array(z.tuple([reference, reference.nullable()]))
+  .max(MAX_HUMAN_MENTIONS);
 const sourceSchema = z.object({
   key: z.string().regex(/^[a-f0-9]{64}$/),
   sequence: timestamp,
   expiresAt: timestamp,
-  recipients: z.array(z.tuple([reference, reference.nullable()])).max(MAX_HUMAN_MENTIONS),
+  recipients: recipientsSchema,
   message: messageSchema.optional(),
+  // Old readers see an empty consumed source, never an agent posing as a person.
+  agentMention: z.object({ message: agentMessageSchema, recipients: recipientsSchema }).optional(),
 });
 
 export type MentionStoreHead = z.infer<typeof headSchema>;
-export type MentionStoreSource = z.infer<typeof sourceSchema>;
-export type MentionStoreMessage = z.infer<typeof messageSchema>;
+export type MentionStoreSource = Omit<z.infer<typeof sourceSchema>, "message" | "agentMention"> & {
+  message?: MentionStoreMessage;
+};
+export type MentionStoreMessage = {
+  sessionId: string;
+  content: z.infer<typeof messageSchema>["content"] | z.infer<typeof agentMessageSchema>["content"];
+};
 export type MentionStoreSnapshot = {
   head: MentionStoreHead;
   sources: MentionStoreSource[];
@@ -84,7 +99,19 @@ export function readMentionStoreSnapshot(
       if (row.value_json.length > 32_768) {
         throw new Error("Mention source exceeds its record budget");
       }
-      const source = sourceSchema.parse(JSON.parse(row.value_json));
+      const stored = sourceSchema.parse(JSON.parse(row.value_json));
+      if (stored.agentMention && (stored.message || stored.recipients.length > 0)) {
+        throw new Error("Ambiguous mention sender");
+      }
+      const source: MentionStoreSource = stored.agentMention
+        ? {
+            key: stored.key,
+            sequence: stored.sequence,
+            expiresAt: stored.expiresAt,
+            message: stored.agentMention.message,
+            recipients: stored.agentMention.recipients,
+          }
+        : stored;
       if (
         row.state_key !== `${SOURCE_PREFIX}${source.key}` ||
         source.sequence >= head.nextSequence ||
@@ -165,7 +192,17 @@ export function writeMentionStoreChanges(
       continue;
     }
     flushDeletes();
-    const valueJson = JSON.stringify(source);
+    const valueJson = JSON.stringify(
+      source.message && "sender" in source.message.content
+        ? {
+            key: source.key,
+            sequence: source.sequence,
+            expiresAt: source.expiresAt,
+            recipients: [],
+            agentMention: { message: source.message, recipients: source.recipients },
+          }
+        : source,
+    );
     executeSqliteQuerySync(
       database,
       db

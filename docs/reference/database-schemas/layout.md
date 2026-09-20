@@ -79,6 +79,16 @@ recipients, mention identifiers, expiry times, and dismissal bookkeeping;
 existing table and primary key, with no new tables, columns, indexes, or schema
 version change.
 
+Human source records retain their existing representation. Agent attention requests
+use an additive `agentMention` payload in the same source row, containing the
+typed agent sender, message, and recipient IDs. The legacy `recipients` envelope
+is empty and there is no legacy `message`: older readers see a consumed source
+with no visible alert, not a fabricated human identity or an unreadable Inbox.
+There is no duplicate record or dual write. Older writers may discard the unknown
+payload during maintenance; a downgrade therefore does not promise to retain
+agent alerts. Source consumption and original expiry remain authoritative, and
+reopening a newer build never scans transcripts or replays notifications.
+
 Retention remains seven days from creation, capped at 100 entries per profile,
 10,000 entries globally, and 10,000 source identities for duplicate suppression.
 Restarts preserve retained entries, dismissals, and their original expiry times.

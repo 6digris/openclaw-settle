@@ -525,6 +525,19 @@ public struct AgentIdentityResult: Codable, Sendable {
     }
 }
 
+public struct AgentMentionSender: Codable, Sendable {
+    public let type: String
+    public let id: String
+
+    public init(
+        type: String,
+        id: String)
+    {
+        self.type = type
+        self.id = id
+    }
+}
+
 public struct AgentParams: Codable, Sendable {
     public let message: String
     public let agentid: String?
@@ -8572,7 +8585,7 @@ public struct McpAuthLoginParams: Codable, Sendable {
 
 public struct MentionInboxItem: Codable, Sendable {
     public let id: String
-    public let senderprofileid: String
+    public let senderprofileid: String?
     public let senderlabel: String
     public let senderavatarurl: String?
     public let sessionkey: String
@@ -8582,10 +8595,11 @@ public struct MentionInboxItem: Codable, Sendable {
     public let createdat: Int
     public let expiresat: Int
     public let excerpt: String?
+    public let sender: AgentMentionSender?
 
     public init(
         id: String,
-        senderprofileid: String,
+        senderprofileid: String? = nil,
         senderlabel: String,
         senderavatarurl: String? = nil,
         sessionkey: String,
@@ -8594,7 +8608,8 @@ public struct MentionInboxItem: Codable, Sendable {
         messageid: String,
         createdat: Int,
         expiresat: Int,
-        excerpt: String? = nil)
+        excerpt: String? = nil,
+        sender: AgentMentionSender? = nil)
     {
         self.id = id
         self.senderprofileid = senderprofileid
@@ -8607,6 +8622,7 @@ public struct MentionInboxItem: Codable, Sendable {
         self.createdat = createdat
         self.expiresat = expiresat
         self.excerpt = excerpt
+        self.sender = sender
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -8621,6 +8637,7 @@ public struct MentionInboxItem: Codable, Sendable {
         case createdat = "createdAt"
         case expiresat = "expiresAt"
         case excerpt
+        case sender
     }
 }
 
@@ -17423,6 +17440,58 @@ public struct SessionsListParams: Codable, Sendable {
         case agentid = "agentId"
         case search
         case archived
+    }
+}
+
+public struct SessionsMentionParams: Codable, Sendable {
+    public let sessionkey: String
+    public let agentid: String
+    public let recipientprofileids: [String]
+    public let message: String
+    public let idempotencykey: String
+
+    public init(
+        sessionkey: String,
+        agentid: String,
+        recipientprofileids: [String],
+        message: String,
+        idempotencykey: String)
+    {
+        self.sessionkey = sessionkey
+        self.agentid = agentid
+        self.recipientprofileids = recipientprofileids
+        self.message = message
+        self.idempotencykey = idempotencykey
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionkey = "sessionKey"
+        case agentid = "agentId"
+        case recipientprofileids = "recipientProfileIds"
+        case message
+        case idempotencykey = "idempotencyKey"
+    }
+}
+
+public struct SessionsMentionableParams: Codable, Sendable {
+    public let sessionkey: String
+    public let agentid: String
+    public let query: String?
+
+    public init(
+        sessionkey: String,
+        agentid: String,
+        query: String? = nil)
+    {
+        self.sessionkey = sessionkey
+        self.agentid = agentid
+        self.query = query
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionkey = "sessionKey"
+        case agentid = "agentId"
+        case query
     }
 }
 
@@ -29804,6 +29873,185 @@ public enum SessionParticipantIdentity: Codable, Sendable {
         case .remote(let value): try value.encode(to: encoder)
         case .observation(let value): try value.encode(to: encoder)
         case .legacy(let value): try value.encode(to: encoder)
+        }
+    }
+}
+
+public struct SessionsMentionResultRecorded: Codable, Sendable {
+    public let status: String
+    public let recipientprofileids: [String]
+    public let sessionkey: String
+    public let agentid: String
+    public let messageid: String
+    public let messageurl: String?
+
+    public init(
+        recipientprofileids: [String],
+        sessionkey: String,
+        agentid: String,
+        messageid: String,
+        messageurl: String? = nil
+    )
+    {
+        self.status = "recorded"
+        self.recipientprofileids = recipientprofileids
+        self.sessionkey = sessionkey
+        self.agentid = agentid
+        self.messageid = messageid
+        self.messageurl = messageurl
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case status
+        case recipientprofileids = "recipientProfileIds"
+        case sessionkey = "sessionKey"
+        case agentid = "agentId"
+        case messageid = "messageId"
+        case messageurl = "messageUrl"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let rawContainer = try decoder.container(keyedBy: GatewayAnyCodingKey.self)
+        let unexpectedKeys = rawContainer.allKeys
+            .map(\.stringValue)
+            .filter { !Set(["status", "recipientProfileIds", "sessionKey", "agentId", "messageId", "messageUrl"]).contains($0) }
+        if !unexpectedKeys.isEmpty {
+            throw DecodingError.dataCorrupted(
+                .init(
+                    codingPath: rawContainer.codingPath,
+                    debugDescription: "Unexpected keys for SessionsMentionResultRecorded: \(unexpectedKeys.sorted().joined(separator: ", "))"
+                )
+            )
+        }
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedStatus = try container.decode(String.self, forKey: .status)
+        guard decodedStatus == "recorded" else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .status,
+                in: container,
+                debugDescription: "Expected status to equal recorded"
+            )
+        }
+        self.status = "recorded"
+        self.recipientprofileids = try container.decode([String].self, forKey: .recipientprofileids)
+        self.sessionkey = try container.decode(String.self, forKey: .sessionkey)
+        self.agentid = try container.decode(String.self, forKey: .agentid)
+        self.messageid = try container.decode(String.self, forKey: .messageid)
+        self.messageurl = try container.decodeIfPresent(String.self, forKey: .messageurl)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode("recorded", forKey: .status)
+        try container.encode(recipientprofileids, forKey: .recipientprofileids)
+        try container.encode(sessionkey, forKey: .sessionkey)
+        try container.encode(agentid, forKey: .agentid)
+        try container.encode(messageid, forKey: .messageid)
+        try container.encodeIfPresent(messageurl, forKey: .messageurl)
+    }
+}
+
+public struct SessionsMentionResultSkipped: Codable, Sendable {
+    public let status: String
+    public let reason: AnyCodable
+    public let sessionkey: String
+    public let agentid: String
+    public let messageid: String
+    public let messageurl: String?
+
+    public init(
+        reason: AnyCodable,
+        sessionkey: String,
+        agentid: String,
+        messageid: String,
+        messageurl: String? = nil
+    )
+    {
+        self.status = "skipped"
+        self.reason = reason
+        self.sessionkey = sessionkey
+        self.agentid = agentid
+        self.messageid = messageid
+        self.messageurl = messageurl
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case status
+        case reason
+        case sessionkey = "sessionKey"
+        case agentid = "agentId"
+        case messageid = "messageId"
+        case messageurl = "messageUrl"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let rawContainer = try decoder.container(keyedBy: GatewayAnyCodingKey.self)
+        let unexpectedKeys = rawContainer.allKeys
+            .map(\.stringValue)
+            .filter { !Set(["status", "reason", "sessionKey", "agentId", "messageId", "messageUrl"]).contains($0) }
+        if !unexpectedKeys.isEmpty {
+            throw DecodingError.dataCorrupted(
+                .init(
+                    codingPath: rawContainer.codingPath,
+                    debugDescription: "Unexpected keys for SessionsMentionResultSkipped: \(unexpectedKeys.sorted().joined(separator: ", "))"
+                )
+            )
+        }
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedStatus = try container.decode(String.self, forKey: .status)
+        guard decodedStatus == "skipped" else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .status,
+                in: container,
+                debugDescription: "Expected status to equal skipped"
+            )
+        }
+        self.status = "skipped"
+        self.reason = try container.decode(AnyCodable.self, forKey: .reason)
+        self.sessionkey = try container.decode(String.self, forKey: .sessionkey)
+        self.agentid = try container.decode(String.self, forKey: .agentid)
+        self.messageid = try container.decode(String.self, forKey: .messageid)
+        self.messageurl = try container.decodeIfPresent(String.self, forKey: .messageurl)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode("skipped", forKey: .status)
+        try container.encode(reason, forKey: .reason)
+        try container.encode(sessionkey, forKey: .sessionkey)
+        try container.encode(agentid, forKey: .agentid)
+        try container.encode(messageid, forKey: .messageid)
+        try container.encodeIfPresent(messageurl, forKey: .messageurl)
+    }
+}
+
+public enum SessionsMentionResult: Codable, Sendable {
+    case recorded(SessionsMentionResultRecorded)
+    case skipped(SessionsMentionResultSkipped)
+
+    private enum CodingKeys: String, CodingKey {
+        case discriminator = "status"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let discriminator = try container.decode(String.self, forKey: .discriminator)
+        switch discriminator {
+        case "recorded": self = try .recorded(SessionsMentionResultRecorded(from: decoder))
+        case "skipped": self = try .skipped(SessionsMentionResultSkipped(from: decoder))
+        default:
+            throw DecodingError.dataCorruptedError(
+                forKey: .discriminator,
+                in: container,
+                debugDescription: "Unknown SessionsMentionResult discriminator value"
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        switch self {
+        case .recorded(let value): try value.encode(to: encoder)
+        case .skipped(let value): try value.encode(to: encoder)
         }
     }
 }

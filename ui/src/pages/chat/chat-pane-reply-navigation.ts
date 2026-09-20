@@ -1,9 +1,11 @@
+import type { RouteLocation } from "@openclaw/uirouter";
 import type { ChatMessageGetResult } from "../../../../packages/gateway-protocol/src/index.js";
 import { t } from "../../i18n/index.ts";
 import { registerChatMessageMetadataEnglish } from "../../i18n/locales/en-chat-message-metadata.ts";
 import { parseCatalogSessionKey } from "../../lib/sessions/catalog-key.ts";
 import { scopedAgentParamsForSession } from "../../lib/sessions/index.ts";
 import { areUiSessionKeysEquivalent } from "../../lib/sessions/session-key.ts";
+import { getAcceptedChatHistorySession } from "./chat-history-state.ts";
 import { ChatPaneSession } from "./chat-pane-session.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { persistedMessageEntryId } from "./chat-thread.ts";
@@ -11,6 +13,34 @@ import { persistedMessageEntryId } from "./chat-thread.ts";
 registerChatMessageMetadataEnglish();
 
 export abstract class ChatPaneReplyNavigation extends ChatPaneSession {
+  private consumedRouteMessage:
+    | { state: ChatPageHost; messageId: string; location: RouteLocation | undefined }
+    | undefined;
+
+  protected synchronizeRouteMessage(): void {
+    const state = this.state;
+    const messageId = this.routeMessageId;
+    const location = this.routeMessageLocation;
+    if (!messageId) {
+      this.consumedRouteMessage = undefined;
+      return;
+    }
+    if (
+      !state ||
+      !state.connected ||
+      state.chatLoading ||
+      !getAcceptedChatHistorySession(state) ||
+      !this.presented ||
+      (this.consumedRouteMessage?.state === state &&
+        this.consumedRouteMessage.messageId === messageId &&
+        this.consumedRouteMessage.location === location)
+    ) {
+      return;
+    }
+    this.consumedRouteMessage = { state, messageId, location };
+    this.openReplyMessage(messageId);
+  }
+
   private activeReplyNavigation: symbol | null = null;
   private replyNavigationSessionKey: string | null = null;
   protected replyNavigationId: string | null = null;
