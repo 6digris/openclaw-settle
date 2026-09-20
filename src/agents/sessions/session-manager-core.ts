@@ -138,6 +138,7 @@ export class SessionManagerCore extends SessionEntryNavigation<SessionEntry> {
     const prepared = await hydration.read();
     signal?.throwIfAborted();
     assertOwned();
+    hydration.assertCurrent();
     this.assertTranscriptViewAvailable();
     const current = this.captureTranscriptView();
     if (

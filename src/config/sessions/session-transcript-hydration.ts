@@ -1,10 +1,12 @@
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { assertAgentDatabaseTerminalOpenAllowed } from "../../state/openclaw-agent-db-lifecycle.js";
+import { getOpenClawAgentDatabaseIfOpen } from "../../state/openclaw-agent-db.js";
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { readSessionTranscriptBoundedActiveContextCore } from "./session-accessor.sqlite-active-context.js";
 import { loadTranscriptReadSnapshotSync } from "./session-accessor.sqlite-read.js";
 import {
   prepareSqliteTranscriptReadScope,
+  resolveSqliteTranscriptReadScope,
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
 import type { SessionTranscriptRuntimeTarget } from "./session-accessor.types.js";
@@ -29,10 +31,21 @@ export function prepareSessionTranscriptHydration(
   const receipt = resolveSessionTranscriptReadFence(target);
   const admission = receipt ? { ...receipt } : undefined;
   signal?.throwIfAborted();
+  const incognitoOptions = isIncognitoSessionKey(target.sessionKey)
+    ? toDatabaseOptions(resolveSqliteTranscriptReadScope(target))
+    : undefined;
+  const incognitoOwner = incognitoOptions
+    ? getOpenClawAgentDatabaseIfOpen(incognitoOptions)
+    : undefined;
+  const assertCurrent = () => {
+    if (incognitoOptions && getOpenClawAgentDatabaseIfOpen(incognitoOptions) !== incognitoOwner) {
+      throw new Error("Session transcript incognito database owner is no longer current");
+    }
+  };
   const read = async (): Promise<PreparedSessionTranscriptHydration> => {
     signal?.throwIfAborted();
     // Incognito SQLite belongs to this process; never substitute another memory database.
-    if (isIncognitoSessionKey(target.sessionKey)) {
+    if (incognitoOptions) {
       return runWithSessionTranscriptReadFence(admission, () =>
         contextLimits
           ? {
@@ -70,5 +83,5 @@ export function prepareSessionTranscriptHydration(
       assertAgentDatabaseTerminalOpenAllowed(databasePath);
     }
   };
-  return { target, read };
+  return { target, read, assertCurrent };
 }

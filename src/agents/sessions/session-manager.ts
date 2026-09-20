@@ -205,6 +205,7 @@ export class SessionManager extends SessionManagerBranching {
     const prepared = await hydration.read();
     signal?.throwIfAborted();
     assertOwned();
+    hydration.assertCurrent();
     if (prepared.kind !== "full") {
       throw new Error("Expected a full transcript snapshot");
     }
@@ -291,6 +292,7 @@ export class SessionManager extends SessionManagerBranching {
     });
     signal?.throwIfAborted();
     assertOwned();
+    hydration.assertCurrent();
     if (prepared.kind !== "bounded") {
       throw new Error("Expected a bounded transcript snapshot");
     }
@@ -300,6 +302,7 @@ export class SessionManager extends SessionManagerBranching {
     }
     signal?.throwIfAborted();
     assertOwned();
+    hydration.assertCurrent();
     const entries = context.events;
     const header = findSessionTranscriptHeader(entries);
     return new SessionManager(cwd ?? header?.cwd ?? fallbackCwd, hydration.target, entries, {

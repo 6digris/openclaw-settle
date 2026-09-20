@@ -16,6 +16,7 @@ import { createDeferredCore } from "../../shared/deferred.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "../../state/openclaw-agent-db-resources.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
+  closeOpenClawAgentDatabases,
   openOpenClawAgentDatabase,
   listOpenIncognitoAgentDatabases,
   recordOpenClawAgentDatabaseOpenFailure,
@@ -242,6 +243,73 @@ it.each(["full", "bounded"])(
     });
   },
 );
+
+it.each(
+  ["full", "bounded", "retarget", "reload"].flatMap((entry) =>
+    ["close", "replace"].map((transition) => ({ entry, transition })),
+  ),
+)("rejects incognito $entry publication after owner $transition", async ({ entry, transition }) => {
+  await withOpenClawTestState({ label: "session-hydration-incognito-owner" }, async (state) => {
+    const target = {
+      agentId: "main",
+      sessionId: "private-owner",
+      sessionKey: "agent:main:dashboard:incognito-owner",
+      storePath: path.join(state.agentDir("main"), "openclaw-agent.sqlite"),
+    };
+    await upsertSessionEntryCore(target, {
+      sessionId: target.sessionId,
+      updatedAt: 1,
+      incognito: true,
+    });
+    const source = SessionManager.open(target);
+    source.appendMessage(makeUserMessage("discarded private history", 1));
+    const receiver = entry === "reload" ? source : SessionManager.inMemory();
+    const originalView = receiver.buildSessionContext();
+    const pending =
+      entry === "full"
+        ? SessionManager.openAsync(target)
+        : entry === "bounded"
+          ? SessionManager.openBoundedAsync(target, { maxBytes: 4096, maxEvents: 5 })
+          : entry === "retarget"
+            ? receiver.setSessionTargetAsync(target)
+            : receiver.reloadPersistedTranscriptAsync();
+    const rejected = expect(pending).rejects.toThrow(
+      "incognito database owner is no longer current",
+    );
+    closeOpenClawAgentDatabases(state.root);
+    if (transition === "replace") {
+      SessionManager.open(target).appendMessage(makeUserMessage("replacement private history", 2));
+    }
+    await rejected;
+    expect(receiver.buildSessionContext()).toEqual(originalView);
+    expect(fs.existsSync(target.storePath)).toBe(false);
+  });
+});
+
+it("rejects incognito bounded publication when its truncation callback closes the owner", async () => {
+  await withOpenClawTestState({ label: "session-hydration-incognito-callback" }, async (state) => {
+    const target = {
+      agentId: "main",
+      sessionId: "private-callback",
+      sessionKey: "agent:main:dashboard:incognito-callback",
+      storePath: path.join(state.agentDir("main"), "openclaw-agent.sqlite"),
+    };
+    await upsertSessionEntryCore(target, {
+      sessionId: target.sessionId,
+      updatedAt: 1,
+      incognito: true,
+    });
+    const source = SessionManager.open(target);
+    source.appendMessage(makeUserMessage("older private history", 1));
+    source.appendMessage(makeUserMessage("latest private history", 2));
+    const onTruncated = vi.fn(() => closeOpenClawAgentDatabases(state.root));
+    await expect(
+      SessionManager.openBoundedAsync(target, { maxBytes: 4096, maxEvents: 1, onTruncated }),
+    ).rejects.toThrow("incognito database owner is no longer current");
+    expect(onTruncated).toHaveBeenCalledOnce();
+    expect(fs.existsSync(target.storePath)).toBe(false);
+  });
+});
 
 it.each([
   { entry: "openAsync", environment: "process" },
