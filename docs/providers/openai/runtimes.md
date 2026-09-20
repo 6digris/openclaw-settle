@@ -99,7 +99,11 @@ Automatic runtime selection is unchanged.
 ```
 
 If `plugins.allow` is configured, include `agentsapi` alongside `openai`.
-The standalone plugin owns its native session bindings. Reset sessions created
+The standalone plugin keeps native session identifiers in plugin state. It uses
+the shared harness runtime for leases, generation admission, deletion rollback,
+cancellation, deadlines, and lifecycle events. Agents API protocol events,
+native completion receipts, and transcript projection remain plugin-owned.
+Reset sessions created
 by the earlier in-provider prototype once when switching to this package.
 
 A restricted API key needs Agents and Responses read/write plus Models read
