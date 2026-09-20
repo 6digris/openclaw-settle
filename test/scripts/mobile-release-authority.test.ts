@@ -3130,6 +3130,56 @@ esac
     expect(source).not.toMatch(/apps-signing|MATCH_PASSWORD|GOOGLE_PLAY|upload-and-record/iu);
   });
 
+  it.each(["complete", "missing", "truncated"] as const)(
+    "accepts only complete native task media archives: %s",
+    (mode) => {
+      const steps: Array<{ name?: string; run?: string }> = parse(
+        fs.readFileSync(".github/workflows/android-emulator-diagnostic.yml", "utf8"),
+      ).jobs.diagnose.steps;
+      const verify = steps.find((step) => step.name === "Verify complete task progress media")?.run;
+      if (!verify) {
+        throw new Error("Missing native task media verifier");
+      }
+      const cwd = tempRoots.make("openclaw-native-media-");
+      const archive = path.join(
+        cwd,
+        "apps/android/app/build/outputs/connected_android_test_additional_output/task-progress-failed.zip",
+      );
+      fs.mkdirSync(path.dirname(archive), { recursive: true });
+      const create = spawnSync(
+        "python3",
+        [
+          "-c",
+          [
+            "import sys, zipfile",
+            "stages = ['00-parent-session-picker', '01-yielded-editor', '02-yielded-checklist',",
+            "          '03-working-editor', '04-unknown-editor', '05-failed-editor',",
+            "          '06-failed-checklist', '07-terminal-editable']",
+            "with zipfile.ZipFile(sys.argv[1], 'w') as archive:",
+            "    for stage in stages:",
+            "        for suffix in ('.png', '.xml', '-gateway.json'):",
+            "            if sys.argv[2] == 'missing' and stage == '07-terminal-editable':",
+            "                continue",
+            "            archive.writestr(f'android-{stage}{suffix}', b'synthetic capture bytes')",
+          ].join("\n"),
+          archive,
+          mode,
+        ],
+        { encoding: "utf8", timeout: 5_000 },
+      );
+      expect(create.status, create.stderr).toBe(0);
+      if (mode === "truncated") {
+        fs.truncateSync(archive, Math.floor(fs.statSync(archive).size / 2));
+      }
+      const result = spawnSync("/bin/bash", ["-c", verify], {
+        cwd,
+        encoding: "utf8",
+        timeout: 5_000,
+      });
+      expect(result.status, `${result.stdout}${result.stderr}`).toBe(mode === "complete" ? 0 : 1);
+    },
+  );
+
   it("generates two-axis varied-color Android conversion smoke inputs", () => {
     const workflow = parse(
       fs.readFileSync(".github/workflows/android-emulator-diagnostic.yml", "utf8"),

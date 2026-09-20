@@ -19,10 +19,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.Closeable
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URI
 import java.util.Base64
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 /** Real onboarding, GatewaySession, controller, and UI; the Gateway never executes a command. */
 @RunWith(AndroidJUnit4::class)
@@ -49,12 +52,13 @@ class TaskProgressGatewayTest {
       }
     val context = instrumentation.targetContext
     val device = UiDevice.getInstance(instrumentation)
-    val proofDirectory =
+    val proofDirectory = File(context.filesDir, "task-progress-$terminal")
+    val proofArchive =
       File(
         requireNotNull(arguments.getString("additionalTestOutputDir")) {
           "Run this proof through Gradle additional test output collection"
         },
-        "task-progress-$terminal",
+        "task-progress-$terminal.zip",
       )
     check(proofDirectory.isDirectory || proofDirectory.mkdirs())
     val fixture = Fixture(controlUrl.trimEnd('/'))
@@ -71,91 +75,104 @@ class TaskProgressGatewayTest {
       Intent(context, MainActivity::class.java)
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
     var onboardingFinished = false
-    ActivityScenario.launch<MainActivity>(intent).use {
-      try {
-        // The caller clears only this proof emulator's debug app before launch. No screenshot-mode extras or preference seeding.
-        connectThroughOnboarding(device, setupCode)
-        onboardingFinished = true
-        requireObject(device, By.desc("Show Sidebar")).click()
-        requireObject(device, By.text("Pages")).click()
-        requireObject(device, By.text("Recent")).click()
-        capture(device, proofDirectory, "00-parent-session-picker", fixture)
-        requireObject(device, By.text("Synthetic parent")).click()
-        requireObject(device, By.desc("Add attachment"))
-        requireObject(device, By.text("Your research workspace is ready."))
-        val sessionReads = fixture.request("evidence").getJSONArray("requests")
-        val selectedHistory =
-          (0 until sessionReads.length())
-            .map(sessionReads::getJSONObject)
-            .last { it.getString("method") == "chat.history" }
-        assertEquals("Select the fixture parent, not the device Home", "agent:main:main", selectedHistory.optString("sessionKey"))
-        editComposer(device, "Show the synthetic worker progress.")
-        requireObject(device, By.desc("Send").enabled(true)).click()
-        requireObject(device, By.text("Parent yielded; synthetic worker continues."))
-        requireObject(device, By.text("Prepared worker commentary: reviewing synthetic notes."))
-        requireObject(device, By.text("Subagent working"))
-
-        val draft = "Keep this Android draft while the worker updates."
-        editComposer(device, draft)
-        assertDraft(device, draft)
-        capture(device, proofDirectory, "01-yielded-editor", fixture)
-        assertChecklist(device)
-        capture(device, proofDirectory, "02-yielded-checklist", fixture)
-        requireObject(device, By.desc("Collapse progress card")).click()
-        val yielded = fixture.request("evidence")
-        assertTrue("The synthetic parent must yield, not complete its child", yielded.getBoolean("parentYielded"))
-        assertEquals("yielded", yielded.getString("stage"))
-        assertWireBoundary(yielded)
-        val authoredCard = yielded.getJSONObject("card").toString()
-
-        fixture.request("advance", JSONObject().put("stage", "working"))
-        requireObject(device, By.text("printf synthetic-progress-check"))
-        requireObject(device, By.text("Subagent working"))
-        assertDraft(device, draft)
-        capture(device, proofDirectory, "03-working-editor", fixture)
-
-        fixture.request("advance", JSONObject().put("stage", "unknown"))
-        requireObject(device, By.text("printf synthetic-outcome-unavailable"))
-        requireObject(device, By.text("Subagent activity unavailable"))
-        assertFalse(device.hasObject(By.text("Subagent finished")))
-        assertFalse(device.hasObject(By.text("Subagent failed")))
-        assertDraft(device, draft)
-        capture(device, proofDirectory, "04-unknown-editor", fixture)
-        val unknownTask = fixture.request("evidence").getJSONObject("task")
-        assertEquals("running", unknownTask.getString("status"))
-        val unknownItems = unknownTask.getJSONObject("progress").getJSONArray("items")
-        assertFalse("An absent synthetic tool outcome is not success", unknownItems.getJSONObject(unknownItems.length() - 1).has("status"))
-
-        fixture.request("advance", JSONObject().put("stage", terminal))
-        requireObject(device, By.text("Synthetic worker $terminal; no command was executed."))
-        requireObject(device, By.text(if (terminal == "failed") "Subagent failed" else "Subagent finished"))
-        requireObject(device, By.text("Synthetic final: $terminal fixture result; no command was executed."))
-        assertDraft(device, draft)
-        capture(device, proofDirectory, "05-$terminal-editor", fixture)
-        assertChecklist(device)
-        assertDraft(device, draft)
-        capture(device, proofDirectory, "06-$terminal-checklist", fixture)
-        val finished = fixture.request("evidence")
-        assertEquals(terminal, finished.getString("stage"))
-        assertEquals("Worker terminal events must not rewrite the authored checklist", authoredCard, finished.getJSONObject("card").toString())
-
-        requireObject(device, By.desc("Collapse progress card")).click()
-        val editedDraft = "$draft Still editable."
-        editComposer(device, editedDraft)
-        assertDraft(device, editedDraft)
-        capture(device, proofDirectory, "07-terminal-editable", fixture)
-        val requests = fixture.request("evidence").getJSONArray("requests")
-        assertEquals("Editing the retained draft must not send a second prompt", 1, (0 until requests.length()).count { requests.getJSONObject(it).getString("method") == "chat.send" })
-      } catch (failure: Throwable) {
-        // Onboarding fields can contain setup credentials; retain UI diagnostics only after leaving those screens.
-        runCatching {
-          if (onboardingFinished) {
-            capture(device, proofDirectory, "failure", fixture)
-          } else {
-            File(proofDirectory, "failure-gateway.json").writeText(fixture.request("evidence").toString(2))
+    // AGP pulls additional outputs one file at a time. Export one closed, verifiable bundle.
+    val bundle =
+      Closeable {
+        ZipOutputStream(proofArchive.outputStream()).use { archive ->
+          for (file in checkNotNull(proofDirectory.listFiles()).sortedBy { it.name }) {
+            archive.putNextEntry(ZipEntry(file.name))
+            file.inputStream().use { it.copyTo(archive) }
+            archive.closeEntry()
           }
-        }.exceptionOrNull()?.let(failure::addSuppressed)
-        throw failure
+        }
+      }
+    bundle.use {
+      ActivityScenario.launch<MainActivity>(intent).use {
+        try {
+          // The caller clears only this proof emulator's debug app before launch. No screenshot-mode extras or preference seeding.
+          connectThroughOnboarding(device, setupCode)
+          onboardingFinished = true
+          requireObject(device, By.desc("Show Sidebar")).click()
+          requireObject(device, By.text("Pages")).click()
+          requireObject(device, By.text("Recent")).click()
+          capture(device, proofDirectory, "00-parent-session-picker", fixture)
+          requireObject(device, By.text("Synthetic parent")).click()
+          requireObject(device, By.desc("Add attachment"))
+          requireObject(device, By.text("Your research workspace is ready."))
+          val sessionReads = fixture.request("evidence").getJSONArray("requests")
+          val selectedHistory =
+            (0 until sessionReads.length())
+              .map(sessionReads::getJSONObject)
+              .last { it.getString("method") == "chat.history" }
+          assertEquals("Select the fixture parent, not the device Home", "agent:main:main", selectedHistory.optString("sessionKey"))
+          editComposer(device, "Show the synthetic worker progress.")
+          requireObject(device, By.desc("Send").enabled(true)).click()
+          requireObject(device, By.text("Parent yielded; synthetic worker continues."))
+          requireObject(device, By.text("Prepared worker commentary: reviewing synthetic notes."))
+          requireObject(device, By.text("Subagent working"))
+
+          val draft = "Keep this Android draft while the worker updates."
+          editComposer(device, draft)
+          assertDraft(device, draft)
+          capture(device, proofDirectory, "01-yielded-editor", fixture)
+          assertChecklist(device)
+          capture(device, proofDirectory, "02-yielded-checklist", fixture)
+          requireObject(device, By.desc("Collapse progress card")).click()
+          val yielded = fixture.request("evidence")
+          assertTrue("The synthetic parent must yield, not complete its child", yielded.getBoolean("parentYielded"))
+          assertEquals("yielded", yielded.getString("stage"))
+          assertWireBoundary(yielded)
+          val authoredCard = yielded.getJSONObject("card").toString()
+
+          fixture.request("advance", JSONObject().put("stage", "working"))
+          requireObject(device, By.text("printf synthetic-progress-check"))
+          requireObject(device, By.text("Subagent working"))
+          assertDraft(device, draft)
+          capture(device, proofDirectory, "03-working-editor", fixture)
+
+          fixture.request("advance", JSONObject().put("stage", "unknown"))
+          requireObject(device, By.text("printf synthetic-outcome-unavailable"))
+          requireObject(device, By.text("Subagent activity unavailable"))
+          assertFalse(device.hasObject(By.text("Subagent finished")))
+          assertFalse(device.hasObject(By.text("Subagent failed")))
+          assertDraft(device, draft)
+          capture(device, proofDirectory, "04-unknown-editor", fixture)
+          val unknownTask = fixture.request("evidence").getJSONObject("task")
+          assertEquals("running", unknownTask.getString("status"))
+          val unknownItems = unknownTask.getJSONObject("progress").getJSONArray("items")
+          assertFalse("An absent synthetic tool outcome is not success", unknownItems.getJSONObject(unknownItems.length() - 1).has("status"))
+
+          fixture.request("advance", JSONObject().put("stage", terminal))
+          requireObject(device, By.text("Synthetic worker $terminal; no command was executed."))
+          requireObject(device, By.text(if (terminal == "failed") "Subagent failed" else "Subagent finished"))
+          requireObject(device, By.text("Synthetic final: $terminal fixture result; no command was executed."))
+          assertDraft(device, draft)
+          capture(device, proofDirectory, "05-$terminal-editor", fixture)
+          assertChecklist(device)
+          assertDraft(device, draft)
+          capture(device, proofDirectory, "06-$terminal-checklist", fixture)
+          val finished = fixture.request("evidence")
+          assertEquals(terminal, finished.getString("stage"))
+          assertEquals("Worker terminal events must not rewrite the authored checklist", authoredCard, finished.getJSONObject("card").toString())
+
+          requireObject(device, By.desc("Collapse progress card")).click()
+          val editedDraft = "$draft Still editable."
+          editComposer(device, editedDraft)
+          assertDraft(device, editedDraft)
+          capture(device, proofDirectory, "07-terminal-editable", fixture)
+          val requests = fixture.request("evidence").getJSONArray("requests")
+          assertEquals("Editing the retained draft must not send a second prompt", 1, (0 until requests.length()).count { requests.getJSONObject(it).getString("method") == "chat.send" })
+        } catch (failure: Throwable) {
+          // Onboarding fields can contain setup credentials; retain UI diagnostics only after leaving those screens.
+          runCatching {
+            if (onboardingFinished) {
+              capture(device, proofDirectory, "failure", fixture)
+            } else {
+              File(proofDirectory, "failure-gateway.json").writeText(fixture.request("evidence").toString(2))
+            }
+          }.exceptionOrNull()?.let(failure::addSuppressed)
+          throw failure
+        }
       }
     }
   }

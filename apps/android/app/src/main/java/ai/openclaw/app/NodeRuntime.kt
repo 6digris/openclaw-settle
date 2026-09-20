@@ -2271,7 +2271,12 @@ class NodeRuntime private constructor(
         ChatController(
           scope = scope,
           json = json,
-          requestGateway = screenshotRequester,
+          requestGateway = { method, paramsJson ->
+            if (!synchronized(gatewayStatusLock) { operatorConnected }) {
+              throw GatewayRequestNotEnqueued("Gateway is disconnected")
+            }
+            screenshotRequester(method, paramsJson)
+          },
           commandOutbox = chatCommandOutbox,
           cacheScope = { ChatCacheScope(AndroidScreenshotFixture.gatewayId, connectionGeneration = 0L) },
           gatewayAdvertisesMethod = { method ->

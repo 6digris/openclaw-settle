@@ -293,6 +293,7 @@ jobs:
           verify_kvm_acceleration "$DIAGNOSTIC_DIR/emulator-kvm-check.txt"
 
       - name: Run phone emulator diagnostic
+        id: task-progress-native
         shell: bash
         env:
           TASK_PROGRESS_PROOF: ${{ inputs.task_progress_proof }}
@@ -765,6 +766,35 @@ jobs:
 
           fail_after_readiness_timeout \
             "Timed out waiting for Android emulator boot completion" "$serial"
+
+      - name: Verify complete task progress media
+        if: >-
+          !cancelled() && inputs.task_progress_proof &&
+          steps.task-progress-native.outcome == 'success'
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          root = Path("apps/android/app/build/outputs/connected_android_test_additional_output")
+          archives = list(root.rglob("task-progress-failed.zip"))
+          if len(archives) != 1:
+              raise RuntimeError(f"Expected one native proof archive, found {len(archives)}")
+          stages = [
+              "00-parent-session-picker", "01-yielded-editor", "02-yielded-checklist",
+              "03-working-editor", "04-unknown-editor", "05-failed-editor",
+              "06-failed-checklist", "07-terminal-editable",
+          ]
+          expected = {f"android-{stage}{suffix}" for stage in stages
+                      for suffix in (".png", ".xml", "-gateway.json")}
+          with ZipFile(archives[0]) as archive:
+              members = archive.infolist()
+              if len(members) != len(expected) or {entry.filename for entry in members} != expected:
+                  raise RuntimeError("Native proof archive is missing captures or contains unexpected entries")
+              if any(entry.file_size == 0 for entry in members) or archive.testzip() is not None:
+                  raise RuntimeError("Native proof archive contains empty or corrupt captures")
+          print("Verified all eight native capture stages and their image/hierarchy/Gateway evidence")
+          PY
 
       - name: Run task progress model regressions
         if: >-

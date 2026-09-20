@@ -23,6 +23,7 @@ import ai.openclaw.app.chat.questionsForSession
 import ai.openclaw.app.closeNodeRuntimeTestFixture
 import ai.openclaw.app.gateway.GatewayRegistryEntry
 import ai.openclaw.app.gateway.GatewayRegistryEntryKind
+import ai.openclaw.app.gateway.GatewayRequestNotEnqueued
 import ai.openclaw.app.gateway.GatewaySession
 import ai.openclaw.app.i18n.NativeStringResources
 import ai.openclaw.app.i18n.nativeString
@@ -128,6 +129,7 @@ import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.printToString
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.text.AnnotatedString
@@ -5353,6 +5355,25 @@ class ChatComposerLayoutTest {
         releaseHealth.complete(Unit)
         composeRule.runOnUiThread { controller.refresh() }
       }
+      if (!model.gatewayConnectionDisplay.value.isConnected) {
+        val disconnectedRead =
+          runBlocking {
+            runCatching { originalRequest(AndroidScreenshotFixture.gatewayId, "health", null) }
+          }
+        assertTrue("Disconnected fixture transport must reject fresh health reads: $disconnectedRead", disconnectedRead.exceptionOrNull() is GatewayRequestNotEnqueued)
+      }
+    } catch (failure: Throwable) {
+      runCatching {
+        println(
+          "CHAT_READINESS_FAILURE displayConnected=${model.gatewayConnectionDisplay.value.isConnected} " +
+            "runtimeConnected=${model.isConnected.value} health=${model.chatHealthOk.value} " +
+            "loading=${model.chatHistoryLoading.value} rows=${model.chatMessages.value.size} " +
+            "pending=${model.pendingRunCount.value} outbox=${model.chatOutboxItems.value.size} " +
+            "session=${model.chatSessionKey.value}",
+        )
+        println(composeRule.onNodeWithTag("chat-viewport", useUnmergedTree = true).printToString())
+      }.exceptionOrNull()?.let(failure::addSuppressed)
+      throw failure
     } finally {
       releaseHealth.complete(Unit)
       leaseField.set(controller, originalLease)
