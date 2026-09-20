@@ -37,7 +37,10 @@ import { mintSecretSentinel } from "../../secrets/sentinel.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.types.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  closeOpenClawStateDatabaseForTest,
+} from "../../state/openclaw-state-db.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -270,6 +273,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await closeOpenClawAgentDatabasesAsync();
+  await closeOpenClawStateDatabaseAsync();
   vi.unstubAllEnvs();
   clearRuntimeConfigSnapshot();
   closeOpenClawStateDatabaseForTest();
@@ -574,25 +578,33 @@ function registerTestCompactor(
   return compact;
 }
 
+async function createHeartbeatOutcomeFixture(prefix: string, summary: string) {
+  const root = trajectoryTempDirs.make(prefix);
+  vi.stubEnv("OPENCLAW_STATE_DIR", root);
+  const target = {
+    agentId: "main",
+    sessionId: "session-1",
+    sessionKey: "agent:main:main",
+    storePath: path.join(root, "agent.sqlite"),
+  };
+  await replaceSessionEntry(target, { sessionId: target.sessionId, updatedAt: 1 });
+  await persistHeartbeatOutcome({
+    ...target,
+    runSessionKey: "agent:main:main:heartbeat",
+    occurredAt: 1,
+    response: { outcome: "done", notify: false, summary },
+  });
+  return target;
+}
+
 describe("runAgentHarnessAttempt", () => {
   it.each(["openclaw", "codex"])(
     "carries silent heartbeat outcome into the %s host boundary exactly once per retry",
     async (harnessId) => {
-      const root = trajectoryTempDirs.make("harness-heartbeat-outcome-");
-      vi.stubEnv("OPENCLAW_STATE_DIR", root);
-      const target = {
-        agentId: "main",
-        sessionId: "session-1",
-        sessionKey: "agent:main:main",
-        storePath: path.join(root, "agent.sqlite"),
-      };
-      await replaceSessionEntry(target, { sessionId: target.sessionId, updatedAt: 1 });
-      await persistHeartbeatOutcome({
-        ...target,
-        runSessionKey: "agent:main:main:heartbeat",
-        occurredAt: 1,
-        response: { outcome: "done", notify: false, summary: "ISOLATED_OUTCOME_731" },
-      });
+      const target = await createHeartbeatOutcomeFixture(
+        "harness-heartbeat-outcome-",
+        "ISOLATED_OUTCOME_731",
+      );
       const runAttempt = vi.fn<AgentHarness["runAttempt"]>(async () =>
         createAttemptResult("native"),
       );
@@ -654,21 +666,10 @@ describe("runAgentHarnessAttempt", () => {
   it.each(["heartbeat", "cron", "detached", "aborted"] as const)(
     "does not consume silent heartbeat context for a %s host attempt",
     async (kind) => {
-      const root = trajectoryTempDirs.make("harness-heartbeat-control-");
-      vi.stubEnv("OPENCLAW_STATE_DIR", root);
-      const target = {
-        agentId: "main",
-        sessionId: "session-1",
-        sessionKey: "agent:main:main",
-        storePath: path.join(root, "agent.sqlite"),
-      };
-      await replaceSessionEntry(target, { sessionId: target.sessionId, updatedAt: 1 });
-      await persistHeartbeatOutcome({
-        ...target,
-        runSessionKey: "agent:main:main:heartbeat",
-        occurredAt: 1,
-        response: { outcome: "done", notify: false, summary: "Retained outcome" },
-      });
+      const target = await createHeartbeatOutcomeFixture(
+        "harness-heartbeat-control-",
+        "Retained outcome",
+      );
       const params = {
         ...createAttemptParams(),
         ...target,
