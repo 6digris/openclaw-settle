@@ -4,6 +4,8 @@ const OPERATOR_ADMIN_SCOPE = "operator.admin";
 const OPERATOR_READ_SCOPE = "operator.read";
 const OPERATOR_TALK_SCOPE = "operator.talk";
 const OPERATOR_WRITE_SCOPE = "operator.write";
+const OPERATOR_SESSION_READ_SCOPE = "operator.sessions.read";
+const OPERATOR_SESSION_WRITE_SCOPE = "operator.sessions.write";
 const OPERATOR_SCOPE_PREFIX = "operator.";
 
 function operatorScopeSatisfied(requestedScope: string, granted: Set<string>): boolean {
@@ -22,7 +24,40 @@ function operatorScopeSatisfied(requestedScope: string, granted: Set<string>): b
   if (requestedScope === OPERATOR_TALK_SCOPE) {
     return granted.has(OPERATOR_TALK_SCOPE) || granted.has(OPERATOR_WRITE_SCOPE);
   }
+  if (requestedScope === OPERATOR_SESSION_READ_SCOPE) {
+    return (
+      granted.has(OPERATOR_SESSION_READ_SCOPE) ||
+      granted.has(OPERATOR_SESSION_WRITE_SCOPE) ||
+      granted.has(OPERATOR_READ_SCOPE) ||
+      granted.has(OPERATOR_WRITE_SCOPE)
+    );
+  }
+  if (requestedScope === OPERATOR_SESSION_WRITE_SCOPE) {
+    return granted.has(OPERATOR_SESSION_WRITE_SCOPE) || granted.has(OPERATOR_WRITE_SCOPE);
+  }
   return granted.has(requestedScope);
+}
+
+/** Retains grants within a role ceiling, including explicitly selected narrower session access. */
+export function applyOperatorRoleScopeCeiling(
+  scopes: readonly string[],
+  allowedScopes: readonly string[],
+): string[] {
+  const granted = new Set(scopes);
+  const allowed = new Set(allowedScopes);
+  const result = scopes.filter((scope) => operatorScopeSatisfied(scope, allowed));
+  if (allowed.has(OPERATOR_SESSION_READ_SCOPE) || allowed.has(OPERATOR_SESSION_WRITE_SCOPE)) {
+    for (const scope of [OPERATOR_SESSION_WRITE_SCOPE, OPERATOR_SESSION_READ_SCOPE]) {
+      if (
+        operatorScopeSatisfied(scope, allowed) &&
+        operatorScopeSatisfied(scope, granted) &&
+        !operatorScopeSatisfied(scope, new Set(result))
+      ) {
+        result.push(scope);
+      }
+    }
+  }
+  return result;
 }
 
 /** Returns true when a role grant satisfies requested scopes, including operator implications. */

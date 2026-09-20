@@ -290,6 +290,35 @@ describe("resolveTrustedHttpOperatorScopes", () => {
       ).toEqual([]);
     },
   );
+
+  it.each([
+    { grant: "operator.write", expectedScopes: ["operator.sessions.write"] },
+    { grant: "operator.admin", expectedScopes: ["operator.sessions.write"] },
+    { grant: "operator.read", expectedScopes: ["operator.sessions.read"] },
+  ])("narrows a trusted $grant request to session work", ({ grant, expectedScopes }) => {
+    const req = createReq({
+      "x-openclaw-scopes": grant,
+      "x-openclaw-model": "openai/gpt-5.4",
+    });
+    const requestAuth = {
+      authMethod: "trusted-proxy" as const,
+      trustDeclaredOperatorScopes: true,
+      operatorRolePolicy: {
+        sessions: { others: "view" as const },
+        agents: ["guest"],
+        scopes: ["operator.sessions.write"] satisfies GatewayOperatorRoleDefinition["scopes"],
+        sandbox: "required" as const,
+      },
+    };
+
+    expect(resolveTrustedHttpOperatorScopes(req, requestAuth)).toEqual(expectedScopes);
+    expect(resolveOpenAiCompatibleHttpOperatorScopes(req, requestAuth)).toEqual(expectedScopes);
+    expect(resolveHttpSenderIsOwner(req, requestAuth)).toBe(false);
+    expect(authorizeOpenAiCompatibleHttpModelOverride(req, requestAuth)).toEqual({
+      allowed: false,
+      missingScope: "operator.admin",
+    });
+  });
 });
 
 describe("resolveHttpSenderIsOwner", () => {
