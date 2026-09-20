@@ -211,6 +211,81 @@ even when `telemetry.enabled` is `true`. `DO_NOT_TRACK` does not disable the
 daily update check: OpenClaw sends the update-only `GET` request without a
 body containing anonymous feature statistics.
 
+## Optional update outcomes
+
+Update-outcome reporting is a **separate opt-in, off by default**. Existing
+feature-statistics consent is not consent to this additional collection.
+To opt in, explicitly configure both settings:
+
+```json5
+{
+  telemetry: {
+    enabled: true,
+    updateResults: true,
+  },
+}
+```
+
+Set either setting to `false` to stop outcome reports. `openclaw telemetry on`
+only enables feature statistics; it does not enable update outcomes.
+`DO_NOT_TRACK`, `update.checkOnStart: false`, `OPENCLAW_NO_AUTO_UPDATE`,
+CI, and Nix mode also suppress outcomes. Unlike the existing daily-check test
+exception, a custom endpoint does **not** override CI suppression for outcomes.
+Consent is checked at new-run admission, terminal settlement, and immediately
+before network dispatch. Unreadable or invalid configuration fails closed.
+
+One schema-2 `update_result` POST can follow a settled success, failure, or rollback.
+It uses the same complete `OPENCLAW_TELEMETRY_ENDPOINT` URL (the Foundation endpoint
+by default), without falling back to another server. The daily GET and schema-1
+feature POST remain unchanged. The outcome request has a fixed
+`User-Agent: openclaw-update-result/1` and does not follow redirects.
+
+The closed payload contains public release-shaped from/target/resulting/running
+versions, fixed OS and architecture, install method and channel, a coarse duration
+bucket, post-check status, terminal failed stage, fixed error category/code, and
+rollback/recovery enums. Unknown values stay `unknown`. Arbitrary prereleases,
+build metadata, private refs, and Git SHAs are not transmitted. Resulting installed
+version and observed running version remain distinct; installation success does
+not establish readiness. Intermediate warnings and retries are not separate reports.
+No update trigger is claimed to prove manual versus automatic initiation.
+
+Outcomes contain no identifiers, exact client timestamps, geography, logs, paths,
+commands, configuration, plugin/provider/model inventory, exception text, or output
+streams. The companion receiver validates the closed schema and writes a separate
+outcome dataset, without the daily-check geography columns or public individual
+report access. **Deploy the compatible receiver before enabling this opt-in.**
+The legacy receiver does not recognize outcomes and can count these requests as
+ordinary version checks with its legacy geography processing. The companion receiver
+and its dedicated dataset must be deployed separately; this client change does
+not deploy or configure them.
+
+Delivery is **at-most-once best effort, not exactly once**. The existing shared
+SQLite machine-state owner retains one bounded local-only record: up to 16 eligible
+new-run IDs, the last 16 attempted IDs, and the last attempt time. No new database
+or schema version is needed. Only runs created while both opt-ins are active are
+eligible: there is no historic scan or pre-consent backfill. The terminal owner
+removes eligibility and claims at most one attempt per hour before dispatch;
+revoked, skipped, and rate-limited results are dropped. Clock rollback conservatively
+suppresses attempts. IDs and exact times never leave the host.
+
+There is no durable retry outbox, response/payload logging, or startup replay.
+A crash after claiming, process exit, timeout (three seconds), storage failure,
+or network failure can lose the report. Delivery is not awaited by update,
+recovery, or startup. Restoring an older state backup also restores its local
+suppression state, so deduplication is not a guarantee across independent restored
+copies. Aggregates count accepted reports, not unique installations or all attempts.
+The receiver's Analytics Engine retention is three months; infrastructure may
+process IP addresses transiently, but outcome rows do not store them or geography.
+Replacement endpoints have their own processing policy.
+
+An installed old updater cannot be retrofitted by candidate code. The first
+upgrade into this implementation has no admission receipt and is not reported;
+subsequent updates driven by this implementation can report even when the Gateway
+is unhealthy. A run killed before a settled terminal result can be missing, rather
+than guessed as failed. Interrupted completion can report when the existing owner
+independently verifies the installed and serving candidate. Abandonment diagnoses
+are not submitted because they can subsequently be repaired.
+
 ## Automated environments
 
 OpenClaw sends nothing when it detects an automated environment, meaning the

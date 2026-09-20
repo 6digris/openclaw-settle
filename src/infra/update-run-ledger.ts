@@ -19,6 +19,12 @@ import {
   getNodeSqliteKysely,
 } from "./kysely-sync.js";
 import { assertSqliteSchemaContains } from "./sqlite-schema-contract.js";
+import type { UpdateResultPayload } from "./update-result-payload.js";
+import {
+  admitUpdateResultTelemetry,
+  claimUpdateResultTelemetry,
+  sendUpdateResultTelemetry,
+} from "./update-result-telemetry.js";
 import {
   inspectUpdateRepairDriverAdmission,
   isStaleIdentitylessUpdateRun,
@@ -48,7 +54,6 @@ import {
   finishUpdateRunRecord,
   isAbandonedUpdateRun,
   isUnacknowledgedPackageOwnerRefusal,
-  type FinishUpdateRunResult,
   type UpdateRunRecord,
   type UpdateRunPhase,
   type UpdateRunStep,
@@ -72,6 +77,8 @@ export {
   listUpdateRuns,
   listUpdateRunsAsync,
 } from "./update-run-reader.js";
+
+export { finishUpdateRun, recordUpdateRunDiagnostic } from "./update-run-terminal.js";
 
 export { recordUpdateRunDiagnostics } from "./update-run-write.js";
 
@@ -165,6 +172,9 @@ export function createUpdateRun(
         db,
         getNodeSqliteKysely<LedgerDatabase>(db).insertInto("update_runs").values(admittedRow),
       );
+      if (!input.preview) {
+        admitUpdateResultTelemetry(db, admittedRow.run_id, options);
+      }
       return decodeRun(admittedRow);
     },
     options,
@@ -524,34 +534,6 @@ export function recordUpdateRunRepairContinuation(
   );
 }
 
-/** A terminal process diagnostic adds evidence without reopening the recorded outcome. */
-export function recordUpdateRunDiagnostic(
-  runId: string,
-  detail: string,
-  options: LedgerOptions = {},
-): UpdateRunRecord {
-  return mutateRun(
-    runId,
-    (record) => {
-      upsertStep(record, {
-        step: "finalize:exit",
-        status: "completed",
-        endedAtMs: Date.now(),
-        detail,
-      });
-    },
-    options,
-  );
-}
-
-export function finishUpdateRun(
-  runId: string,
-  result: FinishUpdateRunResult,
-  options: LedgerOptions = {},
-): UpdateRunRecord {
-  return mutateRun(runId, (record) => finishUpdateRunRecord(record, result), options);
-}
-
 /** Correct the shipped refusal classification only after its install target was satisfied. */
 export function reconcilePackageOwnerRefusal(
   expected: UpdateRunRecord,
@@ -659,6 +641,7 @@ export function finishInterruptedUpdateBeforeActivation(
     throw new Error("Interrupted update schema is unavailable.");
   }
   const recoverySchema = OPENCLAW_STATE_SCHEMA_SQL.slice(start, end + marker.length);
+  let payload: UpdateResultPayload | undefined;
   assertCurrent();
   runExistingOpenClawStateWriteTransaction(
     ({ db, path: pathname }) => {
@@ -687,6 +670,7 @@ export function finishInterruptedUpdateBeforeActivation(
           (record) => {
             if (isDeepStrictEqual(record, expected)) {
               finishUpdateRunRecord(record, { status: "failed", reason: "interrupted" });
+              payload = claimUpdateResultTelemetry(db, record, options);
             }
           },
           options,
@@ -697,6 +681,9 @@ export function finishInterruptedUpdateBeforeActivation(
     options,
     { schemaSql: schema, operationLabel: "update.interrupted" },
   );
+  if (payload) {
+    void sendUpdateResultTelemetry(payload, { env: options.env });
+  }
 }
 
 export function recordUpdateRunVerification(

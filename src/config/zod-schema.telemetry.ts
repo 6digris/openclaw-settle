@@ -9,6 +9,10 @@ const TelemetryConfigShape = {
     label: "Anonymous Feature Statistics",
     help: "Shares enabled channel and provider names, plugin count, and recent session count with the daily update check. Disabled by default and always disabled when DO_NOT_TRACK=1.",
   }),
+  updateResults: z.boolean().optional().register(configUiMetadata, {
+    label: "Anonymous Update Outcomes",
+    help: "Separately opts into best-effort terminal update reports with public versions and fixed outcome categories, without identifiers or logs. Requires anonymous feature statistics too. Disabled by default; existing consent does not enable this.",
+  }),
   consentedAt: z.string().datetime().optional().register(configUiMetadata, {
     label: "Feature Statistics Consent Timestamp",
     help: "ISO timestamp recording when the operator accepted or declined anonymous feature statistics. Prevents the setup wizard from asking again.",

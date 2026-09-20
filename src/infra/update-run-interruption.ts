@@ -3,6 +3,11 @@ import { z } from "zod";
 import { runExistingOpenClawStateWriteTransaction } from "../state/openclaw-state-db-existing-write.js";
 import { withExistingOpenClawStateDatabaseArtifactPreservingReadOnly } from "../state/openclaw-state-db-readonly.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import type { UpdateResultPayload } from "./update-result-payload.js";
+import {
+  claimUpdateResultTelemetry,
+  sendUpdateResultTelemetry,
+} from "./update-result-telemetry.js";
 import {
   inspectUpdateRepairDriverAdmission,
   recordedUpdateRunDrivers,
@@ -138,7 +143,8 @@ export async function reconcileInterruptedUpdateRuns(
   if (!verification) {
     return [];
   }
-  return runExistingOpenClawStateWriteTransaction(
+  let payload: UpdateResultPayload | undefined;
+  const reconciled = runExistingOpenClawStateWriteTransaction(
     ({ db }) => {
       input.signal?.throwIfAborted();
       const current = readLatestUpdateRun(db);
@@ -170,9 +176,15 @@ export async function reconcileInterruptedUpdateRuns(
         detail: `Updater exited before recording completion; installed and serving candidate build ${candidate.buildId} verified.`,
       });
       finishUpdateRunRecord(current, { status: "succeeded", after: candidate });
-      return [persistRun(db, current, options)];
+      const saved = persistRun(db, current, options);
+      payload = claimUpdateResultTelemetry(db, saved, options);
+      return [saved];
     },
     options,
     { schemaSql: updateRunLedgerSchema, operationLabel: "update.run" },
   );
+  if (payload) {
+    void sendUpdateResultTelemetry(payload, { env });
+  }
+  return reconciled;
 }
