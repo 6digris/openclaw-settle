@@ -12,6 +12,7 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
   prepareSqliteQuerySync,
+  sqliteStringSet,
 } from "../infra/kysely-sync.js";
 import { assertSqliteTableIntegrity } from "../infra/sqlite-integrity.js";
 import { coerceRequiredSqliteNumber, normalizeSqliteNumber } from "../infra/sqlite-number.js";
@@ -607,19 +608,21 @@ export function readTaskRegistryMutationSnapshotInDatabase(
 ): TaskRegistryStoreSnapshot {
   return runSqliteDeferredTransactionSync(db, () => {
     const kysely = getTaskRegistryKysely(db);
-    const selected = kysely
-      .selectFrom("task_runs")
-      .where((eb) =>
-        eb.or([
-          eb("task_id", "=", scope.taskId),
-          eb(eb.fn<string>("trim", [eb.ref("run_id")]), "=", scope.runId?.trim() || null),
-          eb(
-            eb.fn<string>("trim", [eb.ref("child_session_key")]),
-            "=",
-            scope.childSessionKey?.trim() || null,
-          ),
-        ]),
-      );
+    const runId = scope.runId?.trim();
+    const childSessionKey = scope.childSessionKey?.trim();
+    const selected = kysely.selectFrom("task_runs").where((eb) => {
+      // Null-bound trim predicates would force even a task-ID-only lookup to scan all rows.
+      const matches = [eb("task_id", "=", scope.taskId)];
+      if (runId) {
+        matches.push(eb(eb.fn<string>("trim", [eb.ref("run_id")]), "=", runId));
+      }
+      if (childSessionKey) {
+        matches.push(
+          eb(eb.fn<string>("trim", [eb.ref("child_session_key")]), "=", childSessionKey),
+        );
+      }
+      return eb.or(matches);
+    });
     const taskRows = executeSqliteQuerySync(
       db,
       selected.selectAll().orderBy("created_at", "asc").orderBy("task_id", "asc"),
@@ -629,7 +632,7 @@ export function readTaskRegistryMutationSnapshotInDatabase(
       kysely
         .selectFrom("task_delivery_state")
         .select(TASK_DELIVERY_STATE_SELECT_COLUMNS)
-        .where("task_id", "in", selected.select("task_id"))
+        .where("task_id", "in", sqliteStringSet(taskRows.map((row) => row.task_id)))
         .orderBy("task_id", "asc"),
     ).rows;
     return {

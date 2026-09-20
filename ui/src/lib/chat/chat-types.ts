@@ -1,5 +1,6 @@
 import type { HumanMention } from "@openclaw/gateway-protocol";
 import type { MediaKind } from "@openclaw/media-core/constants";
+import type { ChatWorkContext } from "../../../../packages/gateway-protocol/src/chat-work-context.js";
 /**
  * Chat message types for the UI layer.
  */
@@ -43,6 +44,7 @@ export type ChatAttachment = {
   dataUrl?: string;
   previewUrl?: string;
   mimeType: string;
+  origin?: "paste" | "file";
   fileName?: string;
   sizeBytes?: number;
   /** UI-local context that must remain coupled to its annotated screenshot. */
@@ -54,6 +56,7 @@ export type ChatAttachment = {
 export type DurableComposerDraftAttachment = {
   blob: Blob;
   mimeType: string;
+  origin?: "paste" | "file";
   fileName?: string;
   sizeBytes?: number;
   browserAnnotation?: BrowserAnnotationAttachment;
@@ -111,6 +114,8 @@ export type ToolApprovalReview = {
 
 export type ChatQueueItem = {
   id: string;
+  workContext?: ChatWorkContext;
+  workContextUnavailable?: true;
   text: string;
   mentions?: readonly HumanMention[];
   createdAt: number;
@@ -336,6 +341,7 @@ export type MessageContentItem =
         kind: Exclude<MediaKind, "sticker" | "unknown">;
         label: string;
         mimeType?: string;
+        origin?: "paste" | "file";
         isVoiceNote?: boolean;
         artifactId?: string;
         playback?: "native" | "transcode";
@@ -433,7 +439,7 @@ export type ToolCard = {
           originSessionKey?: string;
         };
       }
-    | (BrowserTabTarget & { kind: "browser-tab"; url?: string; title?: string });
+    | (BrowserTabTarget & { kind: "browser-tab"; url: string; title?: string });
 };
 
 export type ToolCardOutcome =

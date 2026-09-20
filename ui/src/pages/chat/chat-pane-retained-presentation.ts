@@ -27,7 +27,7 @@ import { ChatPaneBoard } from "./chat-pane-board.ts";
 import { consumePaneSessionHandoff, type PaneSessionHandoff } from "./chat-pane-shared.ts";
 import { retirePullRequestRefreshes } from "./chat-pull-request-refresh.ts";
 import { stopChatRealtimeTalk } from "./chat-realtime.ts";
-import { retryReconnectableQueuedChatSends } from "./chat-send-actions.ts";
+import { resumeStoredChatOutboxes } from "./chat-send-actions.ts";
 import { setChatError } from "./chat-send-queue-state.ts";
 import { refreshCurrentChatSessionList } from "./chat-session.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
@@ -140,6 +140,7 @@ export abstract class ChatPaneRetainedPresentation extends ChatPaneBoard {
     const state = this.state;
     if (
       !state ||
+      state.settings.chatShowTaskProgress === false ||
       !this.presented ||
       this.isCurrentSessionArchived(state) ||
       parseCatalogSessionKey(state.sessionKey)
@@ -194,12 +195,13 @@ export abstract class ChatPaneRetainedPresentation extends ChatPaneBoard {
       return undefined;
     }
     // Unlike secondary metadata, the progress card determines transcript geometry.
-    return this.resolveChatReadTarget();
+    // Consult preferences only after the pane and its history owner are ready.
+    return state.settings.chatShowTaskProgress === false ? undefined : this.resolveChatReadTarget();
   }
 
   protected get progressCardInitialLoading(): boolean {
     const state = this.state;
-    if (!state) {
+    if (!state || state.settings.chatShowTaskProgress === false) {
       return false;
     }
     if (this.progressPresentationSessionKey !== state.sessionKey) {
@@ -348,7 +350,7 @@ export abstract class ChatPaneRetainedPresentation extends ChatPaneBoard {
     }
     if (active && this.presented && this.state?.chatQueue.length) {
       void refreshCurrentChatSessionList(this.state).catch(() => undefined);
-      void retryReconnectableQueuedChatSends(this.state);
+      void resumeStoredChatOutboxes(this.state);
     }
     this.querySelector(".chat-transcript-announcement")?.setAttribute(
       "aria-live",
@@ -421,8 +423,6 @@ export abstract class ChatPaneRetainedPresentation extends ChatPaneBoard {
     if (state) {
       stopChatRealtimeTalk(state);
       invalidateImageLightbox(state);
-      // The detail slot's render guard cannot run once the content is wiped,
-      // so the transcript loader's timer/fetch loop must be stopped here.
       resetTaskDetail(state);
       state.sidebarContent = null;
       clearSessionWorkspacePreviews(state);

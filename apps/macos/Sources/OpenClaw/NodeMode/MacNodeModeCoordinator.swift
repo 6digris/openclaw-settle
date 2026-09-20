@@ -123,6 +123,7 @@ final class MacNodeModeCoordinator: NSObject {
     private let session: GatewayNodeSession
     private let channelStatus: MacNodeChannelStatusStore
     private let nodeHostWorker: (any MacNodeHostWorking)?
+    private var appActivityMonitor: Any?
     private let presenceReporter: MacNodePresenceReporter
     private let desktopAvailability: MacDesktopAvailabilityCoordinator
     private let workerHostingEnabled: @Sendable () async -> Bool
@@ -263,6 +264,13 @@ final class MacNodeModeCoordinator: NSObject {
 
     func start() {
         guard self.task == nil else { return }
+        self.appActivityMonitor = NSEvent.addLocalMonitorForEvents(matching: [
+            .keyDown, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown,
+            .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel,
+        ]) { [weak self] event in
+            self?.presenceReporter.recordAppActivity()
+            return event
+        }
         self.task = Task { [weak self] in
             await self?.run()
         }
@@ -310,6 +318,10 @@ final class MacNodeModeCoordinator: NSObject {
     }
 
     private func cancelCoordinatorTasks() {
+        if let appActivityMonitor = self.appActivityMonitor {
+            NSEvent.removeMonitor(appActivityMonitor)
+            self.appActivityMonitor = nil
+        }
         self.channelStatus.record(.idle)
         self.task?.cancel()
         self.task = nil
@@ -496,7 +508,6 @@ final class MacNodeModeCoordinator: NSObject {
             }
 
             let cameraEnabled = defaults.object(forKey: cameraEnabledKey) as? Bool ?? false
-            let browserControlEnabled = OpenClawConfigFile.browserControlEnabled()
             let codexThreadCatalogEnabled = MacNodeCodexThreadCatalog.shouldAdvertise()
             let claudeSessionCatalogEnabled = MacNodeClaudeSessionCatalog.shouldAdvertise()
 
@@ -520,7 +531,6 @@ final class MacNodeModeCoordinator: NSObject {
                     endpoint: endpoint,
                     endpointGeneration: endpointAttemptGeneration,
                     routeAuthorityGeneration: routeAuthorityGeneration,
-                    browserControlEnabled: browserControlEnabled,
                     cameraEnabled: cameraEnabled,
                     codexThreadCatalogEnabled: codexThreadCatalogEnabled,
                     claudeSessionCatalogEnabled: claudeSessionCatalogEnabled)
@@ -566,7 +576,6 @@ final class MacNodeModeCoordinator: NSObject {
         endpoint: GatewayConnection.EndpointSnapshot,
         endpointGeneration: UInt64,
         routeAuthorityGeneration: UInt64,
-        browserControlEnabled: Bool,
         cameraEnabled: Bool,
         codexThreadCatalogEnabled: Bool,
         claudeSessionCatalogEnabled: Bool) async throws -> ConnectionAttempt?
@@ -576,7 +585,6 @@ final class MacNodeModeCoordinator: NSObject {
         let (workerManifest, workerUnavailable) =
             try await self.resolveWorkerManifestForConnection(provider: provider)
         let nativeCaps = self.currentCaps(
-            browserControlEnabled: browserControlEnabled,
             cameraEnabled: cameraEnabled,
             computerControlProvider: provider,
             codexThreadCatalogEnabled: codexThreadCatalogEnabled,
@@ -942,7 +950,6 @@ final class MacNodeModeCoordinator: NSObject {
 
 extension MacNodeModeCoordinator {
     private func currentCaps(
-        browserControlEnabled: Bool,
         cameraEnabled: Bool,
         computerControlProvider: ComputerControlProvider,
         codexThreadCatalogEnabled: Bool,
@@ -951,7 +958,6 @@ extension MacNodeModeCoordinator {
         let rawLocationMode = AppDefaults.standard.string(forKey: locationModeKey) ?? "off"
         let computerControlEnabled = isComputerControlEnabled()
         return Self.resolvedCaps(
-            browserControlEnabled: browserControlEnabled,
             cameraEnabled: cameraEnabled,
             computerControlEnabled: computerControlEnabled,
             computerControlProvider: computerControlProvider,
@@ -1267,7 +1273,6 @@ extension MacNodeModeCoordinator {
     }
 
     nonisolated static func resolvedCaps(
-        browserControlEnabled: Bool,
         cameraEnabled: Bool,
         computerControlEnabled: Bool,
         computerControlProvider: ComputerControlProvider = .peekaboo,
@@ -1280,7 +1285,6 @@ extension MacNodeModeCoordinator {
             OpenClawCapability.canvas.rawValue,
             OpenClawCapability.screen.rawValue,
         ]
-        _ = browserControlEnabled
         if cameraEnabled { caps.append(OpenClawCapability.camera.rawValue) }
         // Advertised only when the operator has enabled Computer Control; the
         // command is dangerous and stays disarmed until allowlisted on the gateway.

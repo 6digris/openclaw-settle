@@ -223,8 +223,10 @@ describe("tsdown config", () => {
       expectDefined(handoffGraph, "managed handoff graph"),
       requireNativeHookRelayGraph(),
       requireStandaloneRuntimeGraph("infra/sqlite-readonly-location.worker"),
+      requireStandaloneRuntimeGraph("state/openclaw-state-read.worker"),
       requireStandaloneRuntimeGraph("agents/harness/native-hook-relay-client.worker"),
       requireStandaloneRuntimeGraph("process/spawn-broker/worker"),
+      requireStandaloneRuntimeGraph("state/openclaw-state-lease-heartbeat.worker"),
     ]);
 
     for (const config of configs) {
@@ -294,6 +296,11 @@ describe("tsdown config", () => {
       source: "src/infra/sqlite-readonly-location.worker.ts",
     },
     {
+      label: "shared-state reader",
+      entry: "state/openclaw-state-read.worker",
+      source: "src/state/openclaw-state-read.worker.ts",
+    },
+    {
       label: "native hook locator worker",
       entry: "agents/harness/native-hook-relay-client.worker",
       source: "src/agents/harness/native-hook-relay-client.worker.ts",
@@ -302,6 +309,11 @@ describe("tsdown config", () => {
       label: "spawn broker",
       entry: "process/spawn-broker/worker",
       source: "src/process/spawn-broker/worker.ts",
+    },
+    {
+      label: "state lease heartbeat",
+      entry: "state/openclaw-state-lease-heartbeat.worker",
+      source: "src/state/openclaw-state-lease-heartbeat.worker.ts",
     },
   ])("emits the $label once without sealing its package loaders", ({ entry, source }) => {
     const child = requireStandaloneRuntimeGraph(entry);

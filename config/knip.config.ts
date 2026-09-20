@@ -192,6 +192,8 @@ const repositoryScriptEntries = [
   "scripts/run-stylelint.mts!",
   // Path-spawned test roots are development entries; `!` would audit dev tools as production.
   "scripts/run-vitest-child.mts",
+  // The isolated Vitest adapter executes this entry by path inside its container.
+  "scripts/lib/vitest-isolated-entry.mts",
   "scripts/secrets/openclaw-bws-resolver.mjs!",
   "scripts/sync-labels.ts!",
   "scripts/test-built-bundled-channel-entry-smoke.mts!",
@@ -245,7 +247,11 @@ const rootEntries = [
   // OpenGrep rule tests read these as static source inputs; they are never executed.
   "security/opengrep/rules/ghsa-82g8-464f-2mv7/skill-env.js!",
   "security/opengrep/rules/ghsa-82g8-464f-2mv7/skill-env.ts!",
+  "security/opengrep/rules/ghsa-fv94-qvg8-xqpw/ssh-sandbox-upload.js!",
+  "security/opengrep/rules/ghsa-fv94-qvg8-xqpw/ssh-sandbox-upload.ts!",
   "openclaw.mjs!",
+  // update-command-node-runtime-resolution loads this package-root module by absolute URL.
+  "node-runtime-recovery.mjs!",
   "src/index.ts!",
   "src/entry.ts!",
   // Built as the official image's Docker HEALTHCHECK entrypoint.
@@ -269,12 +275,14 @@ const rootEntries = [
   "scripts/release-plan-producer-core.mts!",
   "scripts/release-plan-producer.mts!",
   "scripts/full-release-publication-observations.mts!",
+  "scripts/release-verify-publish.ts!",
   // Spawned by the agent concurrency benchmark; no static import edge exists.
   "scripts/bench-agent-concurrency-worker.ts!",
   // Spawned by the durable task registry churn benchmark in a fresh GC-enabled process.
   "scripts/bench-task-registry-sqlite-worker.ts!",
   "scripts/bench-sqlite-reliability.ts!",
   "scripts/bench-cron-session-reaper.ts!",
+  "scripts/bench-codex-catalog-pages.ts!",
   // docs/reference/test/performance.md invokes this standalone comparison harness.
   "scripts/bench-workspace-computation.ts!",
   // Docker/manual E2E executables and their nested assertion/probe entrypoints.

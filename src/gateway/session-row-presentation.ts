@@ -1,6 +1,11 @@
 import { isIncognitoSessionKey } from "../routing/session-key.js";
+import { gatewayClientSessionCreator } from "./server-methods/gateway-client-identity.js";
 import type { createVisibleActiveSessionRunProjector } from "./server-methods/session-active-runs.js";
 import type { GatewayClient } from "./server-methods/types.js";
+import {
+  projectSessionParticipant,
+  projectSessionProfileInvolvement,
+} from "./session-identity-projection.js";
 import { tryResolveSessionCompatibilityOwnerAgentId } from "./session-request-agent.js";
 import type { SessionRowReadView } from "./session-row-prepared-read.js";
 import type * as records from "./session-row-projection-record.js";
@@ -13,7 +18,7 @@ import { prepareProjectedSessionSharing } from "./session-sharing.js";
 import { projectGatewaySessionActiveRun } from "./session-utils-display.js";
 import type { GatewaySessionRow } from "./session-utils.types.js";
 
-type PresentationOptions = Omit<records.SnapshotOptions, "now" | "active">;
+type PresentationOptions = Omit<records.SnapshotOptions, "now" | "active" | "subagentRuns">;
 
 function toProjectedSessionSharingTarget(record: records.MaterializedRow): SessionSharingTarget {
   return {
@@ -59,8 +64,19 @@ export function prepareProjectedSessionPresentation(
         })
         ?.membership.has(identityId) ?? false,
   });
+  const profile = gatewayClientSessionCreator(client ?? null);
+  const profiles = rowContext.userProfileIdentityById;
+  const profileId = profile
+    ? projectSessionParticipant({ type: "profile", id: profile.id }, profiles).identity.id
+    : undefined;
   const viewer = (value: SessionSharingTarget) => ({
     visibility: resolveSessionVisibility(value.entry),
+    ...(profileId && !value.entry.incognito && !isIncognitoSessionKey(value.canonicalKey)
+      ? {
+          hiddenFromInvolvingMe:
+            projectSessionProfileInvolvement(value.entry, profileId, profiles)?.hidden ?? false,
+        }
+      : {}),
     sharingRole: sharing.roleForTarget(value),
     canEnsure:
       !authorizeIncognitoSessionTarget({
@@ -91,6 +107,7 @@ export function prepareProjectedSessionPresentation(
     const row = projection.present(record, {
       ...options,
       now,
+      subagentRuns,
       active: run?.active,
       excludedChildKeys,
     });

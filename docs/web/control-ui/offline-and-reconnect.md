@@ -107,6 +107,10 @@ its live session subscription, including approval updates.
 
 Once the Gateway confirms that a message is in the transcript, reconnecting retires its temporary browser copy even when the original message is outside the latest history page. Loading older history shows the saved message in its original position without adding a second copy.
 
+Retiring a delivered attachment does not discard the run's completion. If the browser misses
+that completion, a queue recovery read that confirms the same session and run have finished
+clears the stale running indicator and resumes queued input.
+
 Queued attachments use binary Blobs in the browser's IndexedDB; the outbox keeps only delivery
 metadata and payload references in session storage. Attachment bytes stay with the queued input;
 the captured queue metadata owns its destination, even when configured main-session defaults change. All attachments
@@ -149,6 +153,11 @@ undo or cancel work the Gateway already accepted. Later queued messages stay pau
 unconfirmed message is resolved or discarded, and the queue explains that blockage. Discarding the
 earlier message lets the next queued message proceed when the session is ready. Unconfirmed local
 commands keep their retry/discard queue controls.
+
+An ordinary message rejected by the Gateway stays in the conversation with a **Not sent**
+footer. Use **Retry** to try again or **Discard** to remove its pending browser copy.
+Discard stays effective after reloading the tab; it does not cancel Gateway work or
+remove messages already in the conversation history.
 
 If the Gateway reports that a `/steer` or `/redirect` message failed to start, the Control UI
 restores the submitted draft when the composer is still empty. It preserves newer text and

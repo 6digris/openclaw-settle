@@ -36,7 +36,7 @@ import {
 } from "./chat-pane-state.ts";
 import { markQueuedChatSendsWaitingForReconnect } from "./chat-queue-reconnect.ts";
 import { stopChatRealtimeTalk } from "./chat-realtime.ts";
-import { flushChatQueueForEvent, retryReconnectableQueuedChatSends } from "./chat-send-actions.ts";
+import { flushChatQueueForEvent, resumeStoredChatOutboxes } from "./chat-send-actions.ts";
 import { retireChatModelSelectionOwnership } from "./chat-session.ts";
 import {
   refreshChatModelAuthStatus,
@@ -47,6 +47,7 @@ import { requestChatPageUpdate } from "./chat-state-render.ts";
 import { resolveChatAgentId, selectedChatSessionRow } from "./chat-state-route.ts";
 import { releaseChatMediaResourceSubscriber } from "./components/chat-message-media.ts";
 import { retireSessionWorkspaceCheckout } from "./components/chat-session-workspace.ts";
+import { resetTaskDetail } from "./components/chat-task-detail-state.ts";
 import {
   reconcileChatRunAfterSessionStatePublication,
   reconcileChatRunLifecycle,
@@ -242,7 +243,7 @@ export abstract class ChatPaneContext extends ChatPaneLifecycle {
     const reconciledLocalCompletion = reconcileChatRunAfterSessionStatePublication(state);
     this.reconcileWaitingApprovalSnapshot();
     if (reconciledLocalCompletion) {
-      void retryReconnectableQueuedChatSends(state);
+      void resumeStoredChatOutboxes(state);
       return;
     }
     if (this.presented) {
@@ -358,9 +359,6 @@ export abstract class ChatPaneContext extends ChatPaneLifecycle {
       state.assistantIdentityRequestVersion += 1;
       retireChatMetadataRequests(state);
       this.taskSuggestionsRequestVersion += 1;
-      this.setTaskSuggestions([]);
-      this.taskSuggestionBusyIds.clear();
-      this.taskSuggestionOperations.clear();
       this.resetSessionSuggestions();
       this.clearTypingActors();
       this.sessionDiscussionStates.clear();
@@ -397,6 +395,7 @@ export abstract class ChatPaneContext extends ChatPaneLifecycle {
         isUiSelectedGlobalSessionKey(state, state.sessionKey))
     ) {
       retireChatModelSelectionOwnership(state);
+      resetTaskDetail(state);
       this.swarmHydrator?.dispose();
       this.swarmHydrator = null;
     }
@@ -410,6 +409,7 @@ export abstract class ChatPaneContext extends ChatPaneLifecycle {
     state.hello = snapshot.hello;
     state.selfUser = snapshot.selfUser ?? null;
     state.assistantAgentId = assistantAgentId;
+    this.reconcileTaskSuggestionConnection(sourceChanged);
     if (wasConnected && !state.connected) {
       // Only the connected->disconnected transition may reshape loading state;
       // repeated disconnected snapshots must stay no-ops for pane ownership.
@@ -590,7 +590,7 @@ export abstract class ChatPaneContext extends ChatPaneLifecycle {
     // Hello precedes recovery readiness. Wake parked outboxes on that publication;
     // the shared admission check still holds any recovered initial turn.
     if (resumeOutboxes && !catalogRouteKey) {
-      void retryReconnectableQueuedChatSends(state);
+      void resumeStoredChatOutboxes(state);
     }
     this.reconcileWaitingApprovalSnapshot();
     state.requestUpdate?.();

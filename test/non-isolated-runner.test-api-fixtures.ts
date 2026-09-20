@@ -3,6 +3,26 @@ import path from "node:path";
 export function testApiLifecycleFixtureFiles(repoRoot: string): Record<string, string> {
   const sourcePath = (name: string) => JSON.stringify(path.join(repoRoot, "src", name));
   const files: Record<string, string> = {};
+  for (const generation of ["producer", "observer"]) {
+    files[`05-${generation === "producer" ? "c" : "d"}-task-registry.test.ts`] = `
+import { expect, it } from "vitest";
+import { emitAgentEvent } from ${sourcePath("infra/agent-events.ts")};
+import { prepareTaskRegistryRead } from ${sourcePath("tasks/task-registry-read.ts")};
+import { configureInMemoryTaskStoresForTests, createTaskFixture } from ${sourcePath("tasks/task-registry.test-support.ts")};
+it("receives task events in the ${generation} file", async () => {
+  configureInMemoryTaskStoresForTests();
+  const runId = "runner-task-${generation}";
+  const task = createTaskFixture("cli", {
+    runId,
+    task: "Observe task events across file cleanup",
+    notifyPolicy: "silent",
+  });
+  emitAgentEvent({ runId, stream: "tool", data: { phase: "start", name: "read" } });
+  const read = await prepareTaskRegistryRead();
+  expect(read?.getTaskById(task.taskId)).toMatchObject({ toolUseCount: 1, lastToolName: "read" });
+});
+`;
+  }
   for (const [prefix, generation] of [
     ["09-d", "producer"],
     ["09-e", "observer"],
@@ -22,6 +42,9 @@ for (const key of [Symbol.for("fixture.foreignTestApi"), Symbol.for("openclaw.go
   expect(Reflect.get(globalThis, key)).toBe("foreign");
   Reflect.deleteProperty(globalThis, key);
 }
+const { redactRegisteredSecretValues: redactPriorValues } = await import(${sourcePath("logging/secret-redaction-registry.ts")});
+const priorError = "Agent harness-owned session identity is locked and cannot be replaced or shared.";
+expect(redactPriorValues(priorError, () => "***")).toBe(priorError);
 `
         : "";
     files[`${prefix}-test-api-${generation}.test.ts`] = `
@@ -46,8 +69,11 @@ expect(nativeCron.registerActiveCronTaskRun).toBe(native.register);
 const { resetDiagnosticRunActivityForTest, getDiagnosticSessionActivitySnapshot } = await import(${sourcePath("logging/diagnostic-run-activity.ts")});
 const { markDiagnosticToolStartedForTest } = await import(${sourcePath("logging/diagnostic-run-activity.test-support.ts")});
 const { resolveGlobalSingleton } = await import(${sourcePath("shared/global-singleton.ts")});
+const { registerSecretValueForRedaction, redactRegisteredSecretValues } = await import(${sourcePath("logging/secret-redaction-registry.ts")});
 describe("${generation} test API consumers", () => {
   async function verifyConsumers(message: string): Promise<void> {
+    registerSecretValueForRedaction("identity");
+    expect(redactRegisteredSecretValues("session identity is locked", () => "***")).toBe("session *** is locked");
     const blocked = createBeforeToolCallBlockedError(message);
     expect(blocked.message).toBe(message);
     expect(isBeforeToolCallBlockedError(blocked)).toBe(true);

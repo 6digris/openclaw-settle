@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { captureClawInstallSchemaVersionFacts } from "../claws/provenance-runtime-read.js";
 import {
   getConfigResolutionFacts,
   serializeConfigResolutionFacts,
@@ -81,7 +82,10 @@ type PreparedModelWorkerCommand =
     }>;
 
 export type PreparedModelWorkerRequest = PreparedModelWorkerCommand &
-  Readonly<{ syntheticAuth: PreparedSyntheticAuthFacts }>;
+  Readonly<{
+    syntheticAuth: PreparedSyntheticAuthFacts;
+    clawInstallSchemaVersions: ReturnType<typeof captureClawInstallSchemaVersionFacts>;
+  }>;
 
 export type PreparedModelWorkerResult =
   | Readonly<{
@@ -116,7 +120,6 @@ export type PreparedModelWorkerResult =
 // Cold source/plugin loading can take well over a minute. Three minutes preserves exact full-view
 // discovery while bounding a wedged provider; expiry rejects and never returns partial results.
 export const PREPARED_MODEL_CATALOG_WORKER_TIMEOUT_MS = 180_000;
-const PREPARED_MODEL_CATALOG_WORKER_GENERATION_POLL_MS = 25;
 
 const GATEWAY_CATALOG_WORKERS = 1;
 type CatalogPoolInput = PreparedModelWorkerRequest | PreparedModelCatalogWorkerTask;
@@ -412,6 +415,7 @@ type PreparedModelCatalogWorker = Readonly<{
 export function createPreparedModelCatalogWorker(
   params: Parameters<typeof createPreparedModelCatalogWorkerInput>[0] & {
     isCurrent: () => boolean;
+    retirementSignal: AbortSignal;
     pluginRegistry?: PluginRegistry;
   },
 ): PreparedModelCatalogWorker {
@@ -422,7 +426,7 @@ export function createPreparedModelCatalogWorker(
     new PreparedModelRuntimePublicationSupersededError(
       `prepared model runtime catalog generation was superseded for ${workerInput.input.agentDir}`,
     );
-  let generationPoll: NodeJS.Timeout | undefined;
+  let observingRetirement = false;
   let stoppedError: Error | undefined;
   let releaseProcessLifetime: (() => void) | undefined;
   let expectedFingerprint: string | undefined;
@@ -495,8 +499,7 @@ export function createPreparedModelCatalogWorker(
     });
   const stop = async (error: Error) => {
     stoppedError ??= error;
-    clearInterval(generationPoll);
-    generationPoll = undefined;
+    params.retirementSignal.removeEventListener("abort", retire);
     for (const controller of captures.keys()) {
       controller.abort(stoppedError);
     }
@@ -510,6 +513,14 @@ export function createPreparedModelCatalogWorker(
     sharedOwner?.borrowers.delete(borrower);
     releaseProcessLifetime?.();
     releaseProcessLifetime = undefined;
+  };
+  const retire = () => {
+    // Finish synchronous owner fencing and capture registration before aborting probes.
+    queueMicrotask(() => {
+      void stop(superseded()).catch((error: unknown) => {
+        process.emitWarning(`Prepared model catalog worker failed to retire: ${String(error)}`);
+      });
+    });
   };
   const borrower: CatalogPoolBorrower = {
     agentDir: workerInput.input.agentDir,
@@ -540,12 +551,13 @@ export function createPreparedModelCatalogWorker(
     try {
       assertCurrent();
       releaseProcessLifetime ??= registerPreparedModelRuntimeClose(stop);
-      generationPoll ??= setInterval(() => {
-        if (!params.isCurrent()) {
-          void stop(superseded());
+      if (!observingRetirement) {
+        observingRetirement = true;
+        params.retirementSignal.addEventListener("abort", retire, { once: true });
+        if (params.retirementSignal.aborted) {
+          retire();
         }
-      }, PREPARED_MODEL_CATALOG_WORKER_GENERATION_POLL_MS);
-      generationPoll.unref();
+      }
       const { input } = workerInput;
       // Worker reconstruction consumes startup auth facts even for a scoped catalog request.
       const providerScope = [...workerInput.providerIds, ...(command.providerIds ?? [])];
@@ -593,11 +605,15 @@ export function createPreparedModelCatalogWorker(
         () => {
           assertCurrent();
           task.onRecovery = onRecovery;
-          expectedFingerprint = fingerprintPreparedModelWorkerRequest(workerInput, value);
+          const workerRequest = {
+            ...value,
+            clawInstallSchemaVersions: captureClawInstallSchemaVersionFacts({ env: input.env }),
+          };
+          expectedFingerprint = fingerprintPreparedModelWorkerRequest(workerInput, workerRequest);
           if (shared) {
             shared.validate = validate;
           }
-          return shared ? { value: workerInput, request: value } : value;
+          return shared ? { value: workerInput, request: workerRequest } : workerRequest;
         },
         { timeoutMs: PREPARED_MODEL_CATALOG_WORKER_TIMEOUT_MS, signal: controller.signal },
       );

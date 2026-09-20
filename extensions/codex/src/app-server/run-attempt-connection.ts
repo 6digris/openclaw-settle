@@ -39,11 +39,11 @@ import { resolveCodexNativeHookRelayEvents } from "./native-hook-relay.js";
 import { isCodexAppServerProfilerEnabled } from "./profiler-flag.js";
 import { ensureCodexWorkspaceDirOnce } from "./run-attempt-lifecycle.js";
 import type { CodexRunAttemptInput } from "./run-attempt-types.js";
+import { scopeCodexRunBindingStore } from "./session-binding-scope.js";
 import {
   createCodexSessionGenerationSupersededError,
   resolveCodexSessionBinding,
   resolveCodexRunSessionBindingAuthority,
-  scopeCodexRunBindingStore,
   sessionBindingIdentity,
   type CodexAppServerBindingIdentity,
   type CodexAppServerThreadBinding,
@@ -432,7 +432,7 @@ export async function prepareCodexAttemptConnection({ params, options }: CodexRu
       bindingStore,
       identity: bindingIdentity,
       agentDir,
-      codexHome: appServer.start.env?.CODEX_HOME,
+      codexHome: appServer.start.codexHome ?? appServer.start.env?.CODEX_HOME,
       config: params.config,
       contextEngineActive: Boolean(activeContextEngine),
       expectedSessionRuntimeOwnership: params.expectedSessionRuntimeOwnership,

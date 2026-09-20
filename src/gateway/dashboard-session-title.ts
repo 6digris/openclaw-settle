@@ -7,7 +7,6 @@ import { resolveSessionModelRef } from "../agents/session-model-ref.js";
 import { resolveSessionRuntimeOverrideForProvider } from "../agents/session-runtime-compat.js";
 import { resolveUtilityModelRefForAgent } from "../agents/utility-model.js";
 import type { WorktreeSourceStage } from "../agents/worktrees/types.js";
-import { generateConversationLabelWithFallback } from "../auto-reply/reply/conversation-label-generator.js";
 import { stripInboundMetadata } from "../auto-reply/reply/strip-inbound-meta.js";
 import { loadSessionEntry, patchSessionEntryCore } from "../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../config/sessions/types.js";
@@ -40,8 +39,7 @@ type DashboardSessionTitleModelEntry = Pick<
 
 const DASHBOARD_SESSION_TITLE_MAX_CHARS = 60;
 const DASHBOARD_SESSION_TITLE_SOURCE_MAX_CHARS = 1_000;
-const WORKTREE_SESSION_TITLE_TIMEOUT_MS = 8_000;
-const WORKTREE_SESSION_TITLE_ATTEMPT_TIMEOUT_MS = 4_000;
+const WORKTREE_SESSION_TITLE_WAIT_MS = 30_000;
 const DASHBOARD_SESSION_TITLE_PROMPT =
   "Generate a concise session title (3-6 words, max 60 characters) from the user's first message. Use the same language as the message, in sentence case: capitalize only the first word and words that language always capitalizes. No emoji. Return only the title.";
 
@@ -158,7 +156,6 @@ async function generateDashboardSessionTitle(params: {
   entry?: DashboardSessionTitleModelEntry;
   userMessage: string;
   attachments?: readonly ChatAttachment[];
-  timeoutMs?: number;
   utilityOnly?: boolean;
   abortSignal?: AbortSignal;
   assertCurrent?: () => void;
@@ -193,6 +190,10 @@ async function generateDashboardSessionTitle(params: {
   });
   const boundedSource = truncateUtf16Safe(sourceText, DASHBOARD_SESSION_TITLE_SOURCE_MAX_CHARS);
   try {
+    const { generateConversationLabelWithFallback } =
+      await import("../auto-reply/reply/conversation-label-generator.js");
+    params.assertCurrent?.();
+    params.abortSignal?.throwIfAborted();
     const generated = await generateConversationLabelWithFallback({
       userMessage: boundedSource,
       prompt: DASHBOARD_SESSION_TITLE_PROMPT,
@@ -206,7 +207,6 @@ async function generateDashboardSessionTitle(params: {
       maxLength: DASHBOARD_SESSION_TITLE_MAX_CHARS,
       abortSignal: params.abortSignal,
       assertCurrent: params.assertCurrent,
-      ...(params.timeoutMs ? { timeoutMs: params.timeoutMs } : {}),
       ...(params.utilityOnly ? { utilityOnly: true } : {}),
     });
     if (generated) {
@@ -257,7 +257,7 @@ export async function generateWorktreeSessionTitle(
     onPersisted: () => void;
   },
 ): Promise<string | undefined> {
-  const request = maybeGenerateSessionTitle({ ...params, worktree: true }).then(async (attempt) => {
+  const request = maybeGenerateSessionTitle(params).then(async (attempt) => {
     if (attempt.kind === "in-flight") {
       await attempt.settled;
     } else if (attempt.kind === "persisted") {
@@ -265,7 +265,7 @@ export async function generateWorktreeSessionTitle(
     }
   });
   try {
-    await withTimeout(request, WORKTREE_SESSION_TITLE_TIMEOUT_MS, "worktree title generation");
+    await withTimeout(request, WORKTREE_SESSION_TITLE_WAIT_MS, "worktree title generation");
   } catch (error) {
     params.onError(error);
   }
@@ -306,9 +306,12 @@ export async function maybeGenerateDashboardSessionTitle(params: {
   ) {
     return false;
   }
-  // Dashboard sends never wait on a duplicate request: only the owning call
-  // may claim persistence (and emit sessions.changed), duplicates skip fast.
-  const attempt = await maybeGenerateSessionTitle({ ...params, userMessage: sourceText });
+  // Only the writer emits sessions.changed. A failed join can retry once under
+  // this caller's authority after the previous request has left the registry.
+  let attempt = await maybeGenerateSessionTitle({ ...params, userMessage: sourceText });
+  if (attempt.kind === "in-flight" && !(await attempt.settled.catch(() => false))) {
+    attempt = await maybeGenerateSessionTitle({ ...params, userMessage: sourceText });
+  }
   return attempt.kind === "persisted";
 }
 
@@ -321,7 +324,6 @@ export async function maybeGenerateSessionTitle(params: {
   storePath: string;
   currentUserMessage?: string;
   userMessage: string;
-  worktree?: boolean;
   commitGuard?: () => void;
   withSource?: WorktreeSourceStage;
 }): Promise<SessionTitleAttempt> {
@@ -366,13 +368,10 @@ export async function maybeGenerateSessionTitle(params: {
       agentId: params.agentId,
       entry: params.entry ?? entry,
       userMessage: sourceText,
-      ...(params.worktree ? { timeoutMs: WORKTREE_SESSION_TITLE_ATTEMPT_TIMEOUT_MS } : {}),
       ...(abortSignal ? { abortSignal } : {}),
     });
   const finish = async (generation: Promise<string | null>) => {
-    const displayName = await (params.worktree
-      ? withTimeout(generation, WORKTREE_SESSION_TITLE_TIMEOUT_MS, "worktree title generation")
-      : generation);
+    const displayName = await generation;
     if (!displayName) {
       return false;
     }
