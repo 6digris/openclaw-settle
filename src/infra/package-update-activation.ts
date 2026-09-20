@@ -47,7 +47,6 @@ import { assertManagedUpdateLeaseDatabaseIdentity } from "./update-managed-servi
 import { supportsPostCoreExecutor } from "./update-post-core-capability.js";
 import type { UpdateRecoveryFence } from "./update-run-recovery.js";
 
-export type { PackageActivationOptions } from "./package-update-swap-contract.js";
 export type PackageActivationStatus = {
   phase: PackageActivationPhase | "complete";
   operationId: string;

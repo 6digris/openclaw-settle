@@ -26,6 +26,7 @@ import {
   runPnpmPreflightProbe,
   validatePnpmIsolatedUpdate,
 } from "./package-update-manager-preflight.js";
+import type { PackageActivationOptions } from "./package-update-swap-contract.js";
 import {
   isBlockingPackageUpdateStep,
   PackageUpdateActivationError,
@@ -540,7 +541,7 @@ export async function runGlobalPackageUpdateSteps(params: {
   beforeActivate?: () => Promise<void>;
   assertCurrent?: () => void;
   onTransaction?: (transaction: PackageUpdateTransaction) => void;
-  activation?: import("./package-update-activation.js").PackageActivationOptions;
+  activation?: PackageActivationOptions;
   expectedGitCheckout?: GitRuntimeIdentity;
   activateGitRoot?: string;
   localOverrides?: { reapply: boolean; env?: NodeJS.ProcessEnv };

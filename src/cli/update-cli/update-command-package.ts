@@ -7,6 +7,7 @@ import {
   runGlobalPackageUpdateSteps,
   type PackageUpdateTransaction,
 } from "../../infra/package-update-steps.js";
+import type { PackageActivationOptions } from "../../infra/package-update-swap-contract.js";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
 import {
   formatUpdateDoctorConfigWriteRefusal,
@@ -321,7 +322,7 @@ export type PackageInstallUpdateParams = {
   onTransaction: (transaction: PackageUpdateTransaction) => void;
   onConfigSnapshot?: PackageDoctorOptions["onConfigSnapshot"];
   getDoctorContext?: PackageDoctorOptions["getDoctorContext"];
-  activation?: import("../../infra/package-update-activation.js").PackageActivationOptions;
+  activation?: PackageActivationOptions;
 };
 
 /** Retain one staged target while its runtime initializes a fresh profile. */
