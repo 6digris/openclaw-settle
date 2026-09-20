@@ -21,6 +21,7 @@ import { resolveCronJobsStorePathFromConfig, saveCronStore } from "../cron/store
 import { clearHealthChecksForTest } from "../flows/health-check-registry.js";
 import type { HealthCheckContext } from "../flows/health-checks.js";
 import { requestDevicePairing } from "../infra/device-pairing.js";
+import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { createSkillProposalEvent } from "../skills/workshop/plugin-hooks.js";
 import { appendSkillProposalEvent } from "../skills/workshop/store-sqlite-event.js";
 import { importLegacySkillProposal } from "../skills/workshop/store.js";
@@ -538,7 +539,7 @@ describe("doctor lint state isolation", () => {
       const sourceConfigPath = process.env.OPENCLAW_CONFIG_PATH;
       const openAuthReader = (filename: string) => {
         // Minimal native SQLite fixture for the actual pooled auth reader lifecycle.
-        const database = new DatabaseSync(filename);
+        const database = openNodeSqliteDatabase(filename);
         database.exec("CREATE TABLE fixture AS SELECT 'unchanged' AS value");
         database.close();
         const reader = acquireAuthProfileReadDatabase(filename);
@@ -594,7 +595,7 @@ describe("doctor lint state isolation", () => {
                 // Deliberately unowned by Doctor: real Windows cleanup denial after
                 // Doctor has retired all its own readers and writers.
                 nativeCleanupBlockerPath = path.join(privateStateDir, "held-cleanup.sqlite");
-                nativeCleanupBlocker = new DatabaseSync(nativeCleanupBlockerPath);
+                nativeCleanupBlocker = openNodeSqliteDatabase(nativeCleanupBlockerPath);
                 nativeCleanupBlocker.exec("CREATE TABLE fixture AS SELECT 1 AS value");
               }
             }
@@ -996,9 +997,11 @@ describe("doctor lint state isolation", () => {
     });
     const databasePath = resolveOpenClawStateSqlitePath(process.env);
     await closeOpenClawStateDatabaseByPathAsync(databasePath);
-    const lock = new DatabaseSync(databasePath);
-    lock.exec("BEGIN IMMEDIATE");
+    const lock = openNodeSqliteDatabase(databasePath);
+    // Windows byte-range locks block raw file reads while the transaction is held.
+    // Compare bytes outside that interval, but keep the caller locked through lint.
     const before = snapshotDoctorLintSqliteFamily(databasePath);
+    lock.exec("BEGIN IMMEDIATE");
     mocks.resolveDoctorContributionHealthChecks.mockResolvedValue([
       {
         id: "core/doctor/runtime-tool-schemas",
@@ -1029,10 +1032,15 @@ describe("doctor lint state isolation", () => {
         checksRun: 1,
         findings: [],
       });
+      expect(lock.isOpen).toBe(true);
+      expect(lock.isTransaction).toBe(true);
+      lock.exec("ROLLBACK");
       expect(snapshotDoctorLintSqliteFamily(databasePath)).toEqual(before);
     } finally {
       stdout.mockRestore();
-      lock.exec("ROLLBACK");
+      if (lock.isTransaction) {
+        lock.exec("ROLLBACK");
+      }
       lock.close();
       await closeOpenClawStateDatabaseByPathAsync(databasePath);
       fs.rmSync(rootDir, { recursive: true, force: true });
