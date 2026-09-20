@@ -132,7 +132,7 @@ console.log(JSON.stringify(out));
 }
 try {
     Assert-Proof ($env:RUNNER_ENVIRONMENT -eq 'github-hosted' -and $env:RUNNER_OS -eq 'Windows') 'Only a fresh disposable GitHub-hosted Windows VM is authorized.'
-    Assert-Proof ($ExpectedHead -ceq 'a32b79e73b358fbcd068bbf86ef8032333d8d7c8') 'Unexpected candidate.'
+    Assert-Proof ($ExpectedHead -ceq 'b8ce99722588cb034ae2ce314eb7aad0cf993554') 'Unexpected candidate.'
     Assert-Proof (-not (Test-Path -LiteralPath $WorkRoot)) 'Owned staging already exists.'
     $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     $proof.host = @{ administrator=$admin; interactive=[Environment]::UserInteractive; sessionId=(Get-Process -Id $PID).SessionId; image=$env:ImageVersion; powershell=$PSVersionTable.PSVersion.ToString(); freeBytes=(Get-PSDrive C).Free }
@@ -152,7 +152,7 @@ try {
     $installer = Join-Path $CandidateRoot 'scripts/install.ps1'
     $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
     $proof.installerSha256 = $hash
-    Assert-Proof ($hash -ceq '98f882491f615eb61b472c9d589aeb1c478da3afdb9dc740c9c9722dec2a5f7d') 'Installer bytes differ from reviewed candidate.'
+    Assert-Proof ($hash -ceq 'ff804defa8658a5a1ffdd2c1c5cc6a9b5ef992e87454e38aeb907fc511d15771') 'Installer bytes differ from reviewed candidate.'
     New-Item -ItemType Directory -Path $WorkRoot | Out-Null
     $setupStarted = $true
     Start-Transcript -Path (Join-Path $ProofRoot 'transcript.log') | Out-Null
@@ -213,10 +213,10 @@ try {
     # These read-only debugger observers preserve command resolution, arguments,
     # native HRESULTs and real Check-Node. They do not replace a function or return.
     $lines = Get-Content -LiteralPath $installer
-    $installLine = @((0..($lines.Count-1)) | Where-Object { $lines[$_] -match '^        \$wingetInstallExitCode = \$LASTEXITCODE$' })
+    $installLine = @((0..($lines.Count-1)) | Where-Object { $lines[$_] -match '^            \$wingetAttempt\.ExitCode = \$LASTEXITCODE$' })
     $repairLine = @((0..($lines.Count-1)) | Where-Object { $lines[$_] -match '^            \$wingetRepairExitCode = \$LASTEXITCODE$' })
     Assert-Proof ($installLine.Count -eq 1 -and $repairLine.Count -eq 1) 'Expected exact repair observation sites.'
-    $breakpoints += Set-PSBreakpoint -Script $installer -Line ($installLine[0]+4) -Action { $global:WingetProofTrace.install += $wingetInstallExitCode }
+    $breakpoints += Set-PSBreakpoint -Script $installer -Line ($installLine[0]+2) -Action { $global:WingetProofTrace.install += $wingetAttempt.ExitCode }
     $breakpoints += Set-PSBreakpoint -Script $installer -Line ($repairLine[0]+2) -Action { $global:WingetProofTrace.repair += $wingetRepairExitCode }
     $breakpoints += Set-PSBreakpoint -Command Check-Node -Action { $global:WingetProofTrace.checkCount++ }
     # Run the exact Main prefix including its final Node recheck. Stop before
