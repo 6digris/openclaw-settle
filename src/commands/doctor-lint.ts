@@ -457,7 +457,6 @@ async function withReadOnlyPluginStateSnapshot<T>(
     }
     try {
       // Retire only this snapshot's readers and writers; failed retirement retains files.
-      closeAuthProfileReadPool({ kind: "root", rootPath: privateStateDir });
       await closeOpenClawStateDatabaseByPathAsync(privateDatabasePath);
       if (!(await cleanup())) {
         const message = "Temporary doctor lint state snapshot cleanup did not complete.";
