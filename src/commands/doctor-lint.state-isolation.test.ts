@@ -20,6 +20,7 @@ import { resolveCronJobsStorePathFromConfig, saveCronStore } from "../cron/store
 import { clearHealthChecksForTest } from "../flows/health-check-registry.js";
 import type { HealthCheckContext } from "../flows/health-checks.js";
 import { requestDevicePairing } from "../infra/device-pairing.js";
+import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { createSkillProposalEvent } from "../skills/workshop/plugin-hooks.js";
 import { appendSkillProposalEvent } from "../skills/workshop/store-sqlite-event.js";
 import { importLegacySkillProposal } from "../skills/workshop/store.js";
@@ -897,7 +898,9 @@ describe("doctor lint state isolation", () => {
         async detect() {
           const privateDatabasePath = resolveOpenClawStateSqlitePath(process.env);
           expect(privateDatabasePath).not.toBe(databasePath);
-          const competingWriter = new DatabaseSync(privateDatabasePath);
+          // The private snapshot can exceed MAX_PATH on Windows. Use the same
+          // filesystem-location boundary as the inspected state owner.
+          const competingWriter = openNodeSqliteDatabase(privateDatabasePath);
           competingWriter.exec("BEGIN IMMEDIATE");
           const signal = AbortSignal.timeout(250);
           const releaseWriter = () => {

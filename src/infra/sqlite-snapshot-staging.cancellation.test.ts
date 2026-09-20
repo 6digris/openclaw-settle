@@ -225,18 +225,26 @@ it("keeps caller cancellation independent of idle reclamation", async () => {
     const reason = new DOMException(`${mode} caller stopped`, "AbortError");
     const reclamation = reclaimAbandonedSqliteSnapshotsAsync(f.cache);
     const entered = await f.entered;
-    const callerReady = createDeferredCore();
+    let cancellationStarted: number | undefined;
+    const cancelAdmittedRead = (read: Promise<unknown>) => {
+      // Abort in the same turn as admission. An async readiness handshake lets
+      // update metadata children launch and measures their required Windows
+      // process-tree grace instead of independence from idle reclamation.
+      cancellationStarted = performance.now();
+      controller.abort(reason);
+      return read;
+    };
     const operation = withSqliteReadOnlyWorkerScope(async () => {
       if (mode === "snapshot") {
-        callerReady.resolve();
-        await readSnapshot(f.source, controller.signal);
+        await cancelAdmittedRead(readSnapshot(f.source, controller.signal));
       } else if (mode === "update") {
-        callerReady.resolve();
-        await readUpdateStateSchemaVersions({
-          stateDir: path.dirname(f.source),
-          config: {},
-          signal: controller.signal,
-        });
+        await cancelAdmittedRead(
+          readUpdateStateSchemaVersions({
+            stateDir: path.dirname(f.source),
+            config: {},
+            signal: controller.signal,
+          }),
+        );
       } else {
         if (!owned) {
           throw new Error("Owned database fixture is unavailable");
@@ -248,8 +256,7 @@ it("keeps caller cancellation independent of idle reclamation", async () => {
           await owner.mutate(owner.assertCurrent, async () => {
             openOpenClawStateDatabase(owned.options);
             vi.stubEnv("XDG_CACHE_HOME", path.dirname(f.cache));
-            callerReady.resolve();
-            await readSnapshot(owned.options.path, controller.signal);
+            await cancelAdmittedRead(readSnapshot(owned.options.path, controller.signal));
           });
         } finally {
           owner.release();
@@ -260,18 +267,11 @@ it("keeps caller cancellation independent of idle reclamation", async () => {
       (error: unknown) => error,
     );
     try {
-      // Measure cancellation after admission/cold-open setup reaches the actual read.
-      // Setup does not accept this signal and must not consume its latency budget.
-      await Promise.race([
-        callerReady.promise,
-        operation.then(() => {
-          throw new Error("Caller finished before reaching the cancellation gate");
-        }),
-      ]);
-      const started = performance.now();
-      controller.abort(reason);
       const error = await operation;
-      const cancellationMs = performance.now() - started;
+      if (cancellationStarted === undefined) {
+        throw new Error("Caller finished before reaching the cancellation gate", { cause: error });
+      }
+      const cancellationMs = performance.now() - cancellationStarted;
       const workerWasRunning = !f.worker().settled;
       const directoryWasPresent = fs.existsSync(entered.file);
       f.release();
