@@ -277,6 +277,24 @@ describe("saved update failure resolution", () => {
     expect(latestRun.status).toBe("skipped");
   });
 
+  it("formats pending migration guidance using the validation environment", async () => {
+    vi.mocked(readDeferredPluginMigrations).mockReturnValue([
+      { pluginId: "fixture-plugin", reason: "Repair deferred.", command: "openclaw update repair" },
+    ]);
+    const result = await validateTriageUpdateResolution({
+      failure: failure(),
+      installRoot: "/fixture/openclaw",
+      env: { OPENCLAW_STATE_DIR: "/fixture/state", OPENCLAW_UPDATE_IN_PROGRESS: "1" },
+      signal: new AbortController().signal,
+      validateDoctor,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      summary: expect.stringContaining("Let the current update or repair finish."),
+    });
+    expect(validateDoctor).not.toHaveBeenCalled();
+  });
+
   it.each(["before verification", "during verification"])(
     "does not certify pending plugin migrations %s despite updater completion",
     async (when) => {
