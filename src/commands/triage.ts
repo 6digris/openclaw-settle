@@ -28,6 +28,7 @@ import {
 } from "../infra/installation-target-context.js";
 import { resolveOpenClawPackageRoot } from "../infra/openclaw-root.js";
 import { acceptTriageContinuation } from "../infra/triage-continuation.js";
+import { writeTriageUpdateFailure } from "../infra/update-failure-report-artifact.js";
 import type { UpdateRepairValidation } from "../infra/update-repair-protocol.js";
 import {
   redactSupportString,
@@ -49,7 +50,6 @@ import {
   readTriageUpdateFailure,
   readPendingTriageUpdateFailure,
   sanitizeTriageUpdateFailure,
-  writeTriageUpdateFailure,
   type TriageUpdateFailure,
 } from "./triage-update.js";
 
@@ -384,11 +384,16 @@ export async function triageCommand(
       runtime.log("No repair agent was started.");
     }
     if (!runEmbedded && !manualAgent) {
-      const installAgent =
-        options.agent === "cursor" ? "Cursor Agent (cursor-agent)" : options.agent;
+      const agentName = options.agent === "cursor" ? "Cursor Agent (cursor-agent)" : options.agent;
       runtime.log(
-        `Install ${installAgent ?? "Claude Code or Codex"} on PATH, then run triage again.`,
+        `No ${agentName ?? "supported coding-agent"} CLI executable was found on this process's PATH.`,
       );
+      runtime.log(
+        `If already installed, add its executable to this shell's PATH; otherwise install ${agentName ?? "a supported coding-agent"} CLI, then run triage again.`,
+      );
+      if (promptArtifact.ok) {
+        runtime.log("You can also open the saved debugging prompt in an agent you already use.");
+      }
     }
     const command = runEmbedded
       ? handoffCommands.embedded

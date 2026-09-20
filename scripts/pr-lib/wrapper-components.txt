@@ -79,6 +79,7 @@ packages/session-url-contract/package.json
 packages/session-url-contract/src/focus.ts
 packages/session-url-contract/src/grammar.ts
 packages/session-url-contract/src/index.ts
+packages/session-url-contract/src/session-key-normalization.ts
 packages/session-url-contract/src/session-key.ts
 packages/session-url-contract/src/share.ts
 packages/terminal-core/package.json
@@ -276,6 +277,7 @@ src/commands/doctor/shared/legacy-config-migrations.qqbot.ts
 src/commands/doctor/shared/legacy-config-migrations.queue.ts
 src/commands/doctor/shared/legacy-config-migrations.runtime.agents.ts
 src/commands/doctor/shared/legacy-config-migrations.runtime.cli-backends.ts
+src/commands/doctor/shared/legacy-config-migrations.runtime.code-mode.ts
 src/commands/doctor/shared/legacy-config-migrations.runtime.config-tranche.ts
 src/commands/doctor/shared/legacy-config-migrations.runtime.cron.ts
 src/commands/doctor/shared/legacy-config-migrations.runtime.diagnostics.ts
@@ -587,6 +589,8 @@ src/infra/fs-safe-advanced.ts
 src/infra/fs-safe-copy.worker.ts
 src/infra/fs-safe-defaults.ts
 src/infra/fs-safe.ts
+src/infra/gateway-owner-lease.ts
+src/infra/gateway-process-argv.ts
 src/infra/gateway-supervision.ts
 src/infra/git-commit.ts
 src/infra/git-exec.ts
@@ -645,6 +649,7 @@ src/infra/path-case.ts
 src/infra/path-guards.ts
 src/infra/path-safety.ts
 src/infra/plain-object.ts
+src/infra/ports-lsof.ts
 src/infra/ports-netstat.ts
 src/infra/private-mode.ts
 src/infra/private-temp-workspace.ts
@@ -652,6 +657,7 @@ src/infra/process-env.ts
 src/infra/prototype-keys.ts
 src/infra/regular-file.ts
 src/infra/replace-file.ts
+src/infra/restart-stale-pids.ts
 src/infra/runtime-process-entrypoints.ts
 src/infra/runtime-process-url.ts
 src/infra/runtime-worker-url.ts
@@ -661,6 +667,7 @@ src/infra/semver.ts
 src/infra/shell-env.ts
 src/infra/shell-inline-command.ts
 src/infra/shell-wrapper-resolution.ts
+src/infra/spawn-ps.ts
 src/infra/sqlite-audit-record-store.async.ts
 src/infra/sqlite-audit-record-store.ts
 src/infra/sqlite-audit-record.kernel.ts
@@ -671,6 +678,7 @@ src/infra/sqlite-error-diagnostics.ts
 src/infra/sqlite-existing-database.ts
 src/infra/sqlite-file-generation.ts
 src/infra/sqlite-files.ts
+src/infra/sqlite-handle-lifecycle.ts
 src/infra/sqlite-index-schema.ts
 src/infra/sqlite-integrity.ts
 src/infra/sqlite-live-snapshot.ts
@@ -742,9 +750,11 @@ src/infra/update-managed-service-handoff-boot.ts
 src/infra/update-managed-service-handoff-cleanup.ts
 src/infra/update-managed-service-handoff-database.ts
 src/infra/update-managed-service-handoff-lease.ts
+src/infra/update-managed-service-handoff-legacy-parent.ts
 src/infra/update-managed-service-handoff-process.ts
 src/infra/update-managed-service-handoff-retained-custody.ts
 src/infra/update-managed-service-handoff-schema.ts
+src/infra/update-managed-service-handoff-scope.ts
 src/infra/update-managed-service-handoff-source-inspection.ts
 src/infra/update-managed-service-handoff-store-repair.ts
 src/infra/update-preflight-details.ts
@@ -753,6 +763,7 @@ src/infra/update-run-limits.ts
 src/infra/update-run-schema.ts
 src/infra/update-run-timeouts.ts
 src/infra/update-snapshot-capacity-schema.ts
+src/infra/update-step-identity.ts
 src/infra/warning-filter.ts
 src/infra/windows-encoding.ts
 src/infra/windows-install-roots.ts
@@ -765,6 +776,7 @@ src/infra/worker-task-native-sections.ts
 src/infra/worker-task-pool-completion.ts
 src/infra/worker-task-pool-core.ts
 src/infra/worker-task-pool-owned.ts
+src/infra/worker-task-pool-resources.ts
 src/infra/worker-task-pool-retirement.ts
 src/infra/worker-task-pool.ts
 src/infra/worker-task-server.ts
@@ -1002,6 +1014,7 @@ src/plugins/runtime/generation-state.ts
 src/plugins/runtime/load-context-state.ts
 src/plugins/schema-validator.ts
 src/plugins/sdk-alias-normalization.ts
+src/plugins/sdk-alias-workspace.ts
 src/plugins/sdk-alias.ts
 src/plugins/setup-descriptors.ts
 src/plugins/setup-presentation-url.ts
@@ -1031,6 +1044,7 @@ src/process/spawn-broker/host.ts
 src/process/spawn-broker/ipc.ts
 src/process/spawn-broker/pipe.ts
 src/process/spawn-broker/protocol.ts
+src/process/spawn-utils.ts
 src/process/supervisor/cancellation-policy.ts
 src/process/supervisor/service-child-windows-job-native.ts
 src/process/windows-command.ts
@@ -1116,6 +1130,7 @@ src/state/openclaw-state-db-additive-columns.ts
 src/state/openclaw-state-db-async-lifecycle.ts
 src/state/openclaw-state-db-audit-migration.ts
 src/state/openclaw-state-db-borrow.ts
+src/state/openclaw-state-db-cache.idle.ts
 src/state/openclaw-state-db-cache.ts
 src/state/openclaw-state-db-contract.ts
 src/state/openclaw-state-db-delivery-queue-backfill.ts
@@ -1148,6 +1163,7 @@ src/state/openclaw-state-db-snapshot-owner.ts
 src/state/openclaw-state-db-startup-checkpoint.ts
 src/state/openclaw-state-db-table-retirements.ts
 src/state/openclaw-state-db-task-delivery-recovery.ts
+src/state/openclaw-state-db-task-identifiers.ts
 src/state/openclaw-state-db-write-coordination.ts
 src/state/openclaw-state-db.paths.ts
 src/state/openclaw-state-db.ts
@@ -1224,6 +1240,7 @@ test/vitest/vitest.package-contract-paths.mjs
 test/vitest/vitest.pattern-file.ts
 test/vitest/vitest.performance-config.ts
 test/vitest/vitest.plugin-sdk-paths.mjs
+test/vitest/vitest.startup-corpus-paths.mjs
 test/vitest/vitest.test-shards.mjs
 test/vitest/vitest.tooling-isolated-paths.mjs
 test/vitest/vitest.ui-isolated-paths.mjs

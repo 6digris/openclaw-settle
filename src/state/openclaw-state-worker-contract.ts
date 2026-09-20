@@ -12,9 +12,7 @@ import type {
   ConfigHealthSnapshot,
   ConfigHealthEntryBasis,
 } from "../config/io.health-state.types.js";
-import type { CronStoreWorkerOperations } from "../cron/store/load-worker.types.js";
-import type { CronRunRecoveryWorkerOperations } from "../cron/store/run-recovery.types.js";
-import type { CronStoreSaveWorkerOperations } from "../cron/store/save-worker.types.js";
+import type { CronStateWorkerOperations } from "../cron/store/dispatch.worker.js";
 import type { FleetRegistryWriteOperations } from "../fleet/registry.types.js";
 import type {
   RepositoryGitHubPublicationPendingQuery,
@@ -53,10 +51,14 @@ import type {
 import type { SessionUpstreamLink } from "../sessions/session-upstream-links.kernel.js";
 import type { DeviceAuthEntry } from "../shared/device-auth.js";
 import type { commitSkillUploadInDatabase } from "../skills/lifecycle/upload-store-commit.js";
+import type * as curator from "../skills/workshop/curator.kernel.js";
 import type { listStoredSkillProposalEventsInDatabase } from "../skills/workshop/store-sqlite-event.js";
 import type { SkillProposalEvent, SkillProposalRecord } from "../skills/workshop/types.js";
 import type { TaskRegistryWorkerOperations } from "../tasks/task-registry.worker-contract.js";
-import type { TranscriptReadOperations } from "../transcripts/store-worker-contract.js";
+import type {
+  TranscriptReadOperations,
+  TranscriptWriteOperations,
+} from "../transcripts/store-worker-contract.js";
 import type { AgentProvenance } from "./agent-provenance.types.js";
 import type { PreparedBackupRunRecord } from "./backup-run-records.kernel.js";
 import type { OnboardingRecommendationWriteOperations } from "./onboarding-recommendations.contract.js";
@@ -78,13 +80,12 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
   UserPreferenceWorkerOperations &
   OnboardingRecommendationWriteOperations &
   UserProfileWorkerOperations &
-  CronStoreWorkerOperations &
-  CronRunRecoveryWorkerOperations &
-  CronStoreSaveWorkerOperations &
+  CronStateWorkerOperations &
   FleetRegistryWriteOperations &
   SessionDeliveryWorkerOperations &
   DeliveryQueueWorkerOperations &
   TranscriptReadOperations &
+  TranscriptWriteOperations &
   TaskRegistryWorkerOperations & {
     "sandboxRegistry.insertIfMissing": { input: SandboxRegistryInsert; output: void };
     "githubRepository.personalPending": {
@@ -185,6 +186,11 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
       input: { project: ProjectRegistryIdentity; lease: OpenClawStateLeaseIdentity };
       output: ProjectRegistryRecord | undefined;
     };
+    "skills.curator.read": {
+      input: { skillFiles: readonly string[] };
+      output: ReturnType<typeof curator.readSkillCuratorStateInDatabase>;
+    };
+    "skills.usage.record": { input: curator.PreparedSkillUsage; output: void };
     "workshop.events.list": {
       input: Parameters<typeof listStoredSkillProposalEventsInDatabase>[1];
       output: ReturnType<typeof listStoredSkillProposalEventsInDatabase>;
@@ -215,11 +221,11 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
       output: { value_json: string } | undefined;
     };
     "plugins.deferredMigrations.read": {
-      input: undefined;
+      input: { artifactPreservingReadOnly: boolean };
       output: readonly DeferredPluginMigration[];
     };
     "claws.install-schema-versions": {
-      input: undefined;
+      input: { artifactPreservingReadOnly: boolean };
       output: ClawInstallSchemaVersionRow[] | undefined;
     };
     "config.health.read": { input: { artifactPreserving: boolean }; output: ConfigHealthSnapshot };

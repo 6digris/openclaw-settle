@@ -8,6 +8,7 @@ import type {
 } from "../../../api/types.ts";
 import type { QuestionPrompt } from "../../../app/question-prompt.ts";
 import type { ChatFollowUpMode, ChatSendShortcut } from "../../../app/settings.ts";
+import type { SessionProgressCardRefreshAction } from "../../../components/session-progress-card.ts";
 import type {
   ChatGoalAction,
   ChatGoalDraft,
@@ -96,12 +97,15 @@ export type ChatComposerProps = ChatAttachmentControlsProps & {
   progressCard?: ProgressCard | null;
   progressCardIdentity?: string;
   progressCardInitialLoading?: boolean;
+  progressCardRefresh?: SessionProgressCardRefreshAction;
+  gatewayScope?: object;
   runActive?: boolean;
   collapseTaskProgress?: boolean;
   readingHistory?: boolean;
   onProgressManipulate?: () => void;
   runId?: string | null;
   onDismissProgressCard?: (card: ProgressCard) => void;
+  /** The pane scopes Gateway questions to this conversation's agent and session. */
   gatewayQuestionPrompts?: readonly QuestionPrompt[];
   asyncQuestions?: AsyncQuestionPresentation;
   messages: unknown[];

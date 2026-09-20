@@ -122,6 +122,7 @@ export async function listGatewayEnvironments(
   context: GatewayRequestContext,
   workers = listWorkerEnvironments(context),
   runtimeId?: string,
+  includeDesktopSetup = false,
 ): Promise<EnvironmentSummary[]> {
   const devices = await listDevicePairing();
   const nodes = projectNodePairing(devices.paired);
@@ -157,10 +158,17 @@ export async function listGatewayEnvironments(
     ...runtimeState,
   });
   const config = context.getRuntimeConfig();
-  const gateway =
+  let gateway: EnvironmentSummary =
     config.desktop?.host?.enabled === true
       ? { ...GATEWAY_ENVIRONMENT, desktop: true }
       : GATEWAY_ENVIRONMENT;
+  if (includeDesktopSetup && config.desktop?.host?.enabled !== true) {
+    const { inspectHostDesktopSetup } = await import("../desktop/host-source.js");
+    gateway = {
+      ...gateway,
+      desktopSetup: await inspectHostDesktopSetup({ config: config.desktop?.host }),
+    };
+  }
   return [
     gateway,
     ...listKnownNodes(catalog).map((node) =>
@@ -196,9 +204,11 @@ async function listWorkerProfilesWithMachines(context: GatewayRequestContext) {
           context.workerEnvironmentService?.supportsExecutionMode(summary.id, mode) === true,
       );
       const executionMode = executionModes[0];
+      const providerDisplayId = context.workerEnvironmentService?.readProviderDisplayId(summary.id);
       const resolvedSummary = Object.assign(
         summary,
         executionMode ? { executionMode, executionModes } : {},
+        providerDisplayId ? { providerDisplayId } : {},
       );
       try {
         const [options, operatingSystems] = await Promise.all([
@@ -263,7 +273,12 @@ export const environmentsHandlers: GatewayRequestHandlers = {
       let environments: EnvironmentSummary[] = [];
       if (params.projection !== "profiles") {
         const workers = listWorkerEnvironments(context);
-        environments = await listGatewayEnvironments(context, workers, params.runtimeId);
+        environments = await listGatewayEnvironments(
+          context,
+          workers,
+          params.runtimeId,
+          params.includeDesktopSetup,
+        );
         const summarizedAtMs = Date.now();
         environments.push(
           ...workers.map((record) => summarizeWorkerEnvironment(record, summarizedAtMs)),

@@ -23,6 +23,10 @@ import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { claimAgentRunContext, clearAgentRunContext } from "../../infra/agent-run-registry.js";
 import { retainGatewayRootWorkAdmissionContinuation } from "../../process/gateway-work-admission.js";
 import {
+  isProgressCardRefreshInputProvenance,
+  progressCardRefreshRunProjection,
+} from "../../sessions/input-provenance.js";
+import {
   beginSessionWorkAdmission,
   interruptSessionWorkAdmissions,
   isCompetingSessionWorkAdmissionActive,
@@ -59,7 +63,7 @@ import {
 } from "./chat-send-pre-admission.js";
 import type { NormalizedChatSendRequest } from "./chat-send-request.js";
 import { captureAdmittedChatSendSessionSettings } from "./chat-send-session-settings.js";
-import { prepareGoalChatSendSession, type PreparedChatSendSession } from "./chat-send-session.js";
+import { prepareChatSendSessionEntry, type PreparedChatSendSession } from "./chat-send-session.js";
 import { createChatSendWorkAdmission } from "./chat-send-work-admission.js";
 import { normalizeOptionalChatText, normalizeUnknownChatText } from "./chat-text-normalization.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
@@ -341,7 +345,7 @@ export async function admitChatSend(params: {
     // Retain compaction lineage before attachment/context preparation can outlive this owner.
     expectedActiveReplyOperation = replyRunRegistry.get(activeRunScopeKey);
     if (request.goalOperation?.action === "start" && !latestEntry && !requestedSessionId) {
-      const prepared = prepareGoalChatSendSession({
+      const prepared = prepareChatSendSessionEntry({
         cfg: latestSession.cfg,
         client,
         agentId,
@@ -390,6 +394,9 @@ export async function admitChatSend(params: {
       isAbortable: (active) => isReplyRunAbortableForSignal(active.controller.signal),
       kind: "chat-send",
       turnKind,
+      ...(isProgressCardRefreshInputProvenance(request.systemInputProvenance)
+        ? { controlUiVisible: false, projectSessionActive: false }
+        : {}),
       lifecycleGeneration,
     });
   };
@@ -664,6 +671,7 @@ export async function admitChatSend(params: {
     sessionKey,
     sessionId: admittedSessionId,
     lifecycleGeneration,
+    ...progressCardRefreshRunProjection(request.systemInputProvenance),
   });
 
   return {
