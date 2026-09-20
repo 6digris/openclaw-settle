@@ -79,6 +79,8 @@ export function resolveManagedImageResource(
       return resource;
     }
     resource.retryAttempted = true;
+    // A render or explicit retry can claim this attempt before its timer runs.
+    clearChatMediaResourceRefresh(resource);
   }
   resource.value = undefined;
   if (!resource.pending) {

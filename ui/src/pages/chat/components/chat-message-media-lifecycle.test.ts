@@ -378,22 +378,32 @@ describe("chat media resource lifecycle", () => {
     expect(currentOpen).toHaveBeenCalledOnce();
   });
 
-  it("stops after one automatic retry for a permanently unavailable managed image", async () => {
-    const source = managedImageSource();
-    const fetchMock = vi.fn(async () => ({ ok: false }));
-    vi.stubGlobal("fetch", fetchMock);
+  it.each(["timer", "render before timer"])(
+    "stops after one automatic retry for a permanently unavailable managed image (%s)",
+    async (retryOwner) => {
+      const source = managedImageSource();
+      const fetchMock = vi.fn(async () => ({ ok: false }));
+      vi.stubGlobal("fetch", fetchMock);
 
-    const { container, rerender } = createManagedImagePane(source);
+      const { container, rerender } = createManagedImagePane(source);
 
-    rerender();
-    await vi.advanceTimersByTimeAsync(0);
-    await vi.advanceTimersByTimeAsync(5_000);
-    await vi.advanceTimersByTimeAsync(20_000);
+      rerender();
+      await vi.advanceTimersByTimeAsync(0);
+      if (retryOwner === "render before timer") {
+        // Rendering may observe the elapsed delay before the queued timer runs.
+        vi.setSystemTime(Date.now() + 5_000);
+        rerender();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+      }
+      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(20_000);
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(vi.getTimerCount()).toBe(0);
-    expect(container.querySelector(".chat-message-image")).toBeNull();
-  });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(container.querySelector(".chat-message-image")).toBeNull();
+    },
+  );
 
   it("preserves the bounded retry window when an image has no pane subscriber", async () => {
     const source = managedImageSource();
