@@ -42,7 +42,10 @@ import {
   createControlUiSessionFixtures,
   type ControlUiSessionFixture,
 } from "./control-ui-session-fixtures.ts";
-import { createControlUiSessionGroupFixtures } from "./control-ui-session-group-fixtures.ts";
+import {
+  createControlUiSessionGroupFixtures,
+  type ControlUiSessionGroupFixtureInput,
+} from "./control-ui-session-group-fixtures.ts";
 
 export {
   captureControlUiE2eFailureDiagnostics,
@@ -513,9 +516,9 @@ export type ControlUiMockGatewayScenario = {
   sessionScope?: AgentsListResult["scope"];
   mainSessionKey?: string;
   /** Initial gateway-owned custom group catalog (sessions.groups.*), in order. */
-  sessionGroups?: string[];
+  sessionGroups?: ControlUiSessionGroupFixtureInput["sessionGroups"];
   /** Optional New Session defaults keyed by custom group name. */
-  sessionGroupDefaults?: Record<string, { cwd?: string; worktree?: boolean }>;
+  sessionGroupDefaults?: ControlUiSessionGroupFixtureInput["sessionGroupDefaults"];
   terminalEnabled?: boolean;
   cliAgentsEnabled?: boolean;
   workspace?: string;

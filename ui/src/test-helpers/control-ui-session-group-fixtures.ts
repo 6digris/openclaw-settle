@@ -1,9 +1,12 @@
-import type { ControlUiMockGatewayScenario } from "./control-ui-e2e.ts";
+export type ControlUiSessionGroupFixtureInput = {
+  sessionGroups: string[];
+  sessionGroupDefaults: Record<string, { cwd?: string; worktree?: boolean }>;
+};
 
 // Serialized into the page alongside the other fixture owners. Pass runtime
 // dependencies explicitly so toString() never captures a module import.
 export function createControlUiSessionGroupFixtures(
-  scenario: Required<Pick<ControlUiMockGatewayScenario, "sessionGroups" | "sessionGroupDefaults">>,
+  scenario: ControlUiSessionGroupFixtureInput,
   isRecord: (value: unknown) => value is Record<string, unknown>,
 ) {
   // Gateway-owned custom group catalog (sessions.groups.*). Persisted in
