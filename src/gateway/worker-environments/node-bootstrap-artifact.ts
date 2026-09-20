@@ -51,6 +51,9 @@ const BOOTSTRAP_LAUNCHER_FILES = [
   "node-sqlite.mjs",
   "node-runtime-update.mjs",
   "node-runtime-recovery.mjs",
+  "cli-root-options.mjs",
+  "gateway-run-argv.mjs",
+  "gateway-shutdown-budget.mjs",
   "node-host-launcher.mjs",
 ];
 const READ_CONCURRENCY = 16;

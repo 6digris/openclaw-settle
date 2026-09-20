@@ -1,5 +1,7 @@
-import { SHARED_AUTH_STORE_STATE_KEY } from "../agents/auth-profiles/path-resolve.js";
-import { readAuthProfileRows } from "../agents/auth-profiles/sqlite-json.js";
+import {
+  readAuthProfileRows,
+  SHARED_AUTH_STORE_STATE_KEY,
+} from "../agents/auth-profiles/sqlite-json.js";
 import { isMissingDatabasePath } from "../agents/auth-profiles/sqlite-read-pool.js";
 import type { AuthProfileRowRead } from "../agents/auth-profiles/types.js";
 import {
@@ -36,10 +38,14 @@ import {
   listManagedImageOriginalMediaIdsInDatabase,
 } from "../gateway/managed-image-record-store.kernel.js";
 import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
-import { countFailedDeliveryQueueEntriesInDatabase } from "../infra/delivery-queue-sqlite.kernel.js";
+import {
+  countFailedDeliveryQueueEntriesInDatabase,
+  pruneExpiredDeliveryQueueTombstonesInDatabase,
+} from "../infra/delivery-queue-sqlite.kernel.js";
 import * as deviceAuth from "../infra/device-auth-store.kernel.js";
 import { executeDeliveryQueueAck } from "../infra/outbound/delivery-queue-ack.worker.js";
 import { executeDeliveryQueueEnqueue } from "../infra/outbound/delivery-queue-enqueue.worker.js";
+import { loadDeliveryQueueMediaRetentionSnapshotInDatabase } from "../infra/outbound/delivery-queue-media-staging.kernel.js";
 import { executePendingDeliveryFailure } from "../infra/outbound/delivery-queue-pending-failure.worker.js";
 import { executePromotionCommand } from "../infra/promotions-feed.worker.js";
 import {
@@ -449,6 +455,12 @@ export function executeSharedStateCommand(
   }
   if (command.type === "deliveryQueue.countFailed") {
     return countFailedDeliveryQueueEntriesInDatabase(database);
+  }
+  if (command.type === "deliveryQueue.pruneTombstones") {
+    return pruneExpiredDeliveryQueueTombstonesInDatabase(database);
+  }
+  if (command.type === "deliveryQueue.mediaRetentionSnapshot") {
+    return loadDeliveryQueueMediaRetentionSnapshotInDatabase(database, command.input);
   }
   if (
     command.type === "sessionDelivery.enqueue" ||

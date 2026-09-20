@@ -24,6 +24,7 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
+import { quoteCliArg } from "../quote-cli-arg.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import { executeMutableUpdate } from "./update-command-execution.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
@@ -143,10 +144,15 @@ beforeEach(async () => {
       JSON.stringify({ buildId: root === rootA ? "build-A" : "build-B" }),
     );
   }
-  await fs.copyFile(process.execPath, state.path("selected-B-node"));
-  // Shared Homebrew Node needs libnode beside the copied executable; static Node has none.
-  for await (const library of fs.glob(path.resolve(process.execPath, "../../lib/libnode*.dylib"))) {
-    await fs.copyFile(library, state.path(path.basename(library)), fs.constants.COPYFILE_FICLONE);
+  // The selected runner must execute with its original dynamic-library search paths.
+  if (process.platform === "win32") {
+    await fs.copyFile(process.execPath, state.path("selected-B-node"));
+  } else {
+    await fs.writeFile(
+      state.path("selected-B-node"),
+      `#!/bin/sh\nexec ${quoteCliArg(process.execPath)} "$@"\n`,
+      { mode: 0o755 },
+    );
   }
   const coordinator = state.path("coordinator");
   await fs.mkdir(coordinator);

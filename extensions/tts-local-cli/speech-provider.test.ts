@@ -9,6 +9,8 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+// Prepare the native process runtime before the subprocess deadline cases start.
+import "openclaw/plugin-sdk/process-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { SpeechProviderConfig, SpeechSynthesisRequest } from "openclaw/plugin-sdk/speech-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

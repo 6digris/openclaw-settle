@@ -13,7 +13,6 @@ import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
 import { getActivePluginRegistry } from "../plugins/runtime.js";
 import { captureEnv } from "../test-utils/env.js";
-import { getFreePort } from "../test-utils/ports.js";
 import {
   CHANNEL_BINDING_IDS,
   clearInstanceBindingProbeCoordinators,
@@ -34,6 +33,7 @@ import {
 } from "./server-plugins.lifecycle.test-support.js";
 import {
   connectWebchatClient,
+  getGatewayTestPort,
   installGatewayTestHooks,
   rpcReq,
   startTestGatewayServer,
@@ -182,7 +182,7 @@ describe("gateway plugin instance bindings", () => {
     async () => {
       const { coordinator } = await prepareInstanceBindingTest();
 
-      const first = await startTestGatewayServer(await getFreePort(), {
+      const first = await startTestGatewayServer(await getGatewayTestPort(), {
         auth: { mode: "none" },
         controlUiEnabled: false,
         sidecarStartup: "start",
@@ -193,7 +193,7 @@ describe("gateway plugin instance bindings", () => {
       expect(sharedMetadata).toBeDefined();
 
       await expect(
-        startTestGatewayServer(await getFreePort(), {
+        startTestGatewayServer(await getGatewayTestPort(), {
           bind: "loopback",
           host: "0.0.0.0",
           auth: { mode: "none" },
@@ -212,7 +212,7 @@ describe("gateway plugin instance bindings", () => {
         "first",
       );
 
-      const second = await startTestGatewayServer(await getFreePort(), {
+      const second = await startTestGatewayServer(await getGatewayTestPort(), {
         auth: { mode: "none" },
         controlUiEnabled: false,
         sidecarStartup: "start",
@@ -283,7 +283,7 @@ describe("gateway plugin instance bindings", () => {
 
       // Each activation registers its own plugin instances without changing shared config.
       coordinator.channelIds = firstIds;
-      const first = await startTestGatewayServer(await getFreePort(), {
+      const first = await startTestGatewayServer(await getGatewayTestPort(), {
         auth: { mode: "none" },
         controlUiEnabled: false,
         sidecarStartup: "start",
@@ -303,7 +303,7 @@ describe("gateway plugin instance bindings", () => {
       expect(firstProbes[0]).toEqual(firstProbes[1]);
 
       coordinator.channelIds = secondIds;
-      const second = await startTestGatewayServer(await getFreePort(), {
+      const second = await startTestGatewayServer(await getGatewayTestPort(), {
         auth: { mode: "none" },
         controlUiEnabled: false,
         sidecarStartup: "start",
@@ -417,7 +417,7 @@ describe("gateway plugin instance bindings", () => {
     { timeout: 600_000 },
     async () => {
       const { coordinator } = await prepareInstanceBindingTest();
-      const firstPort = await getFreePort();
+      const firstPort = await getGatewayTestPort();
       const firstStarted = createDeferred();
       const secondStarted = createDeferred();
       const startupSignals = new Map([[firstPort, firstStarted]]);
@@ -468,7 +468,7 @@ describe("gateway plugin instance bindings", () => {
         const firstRegistrationCount = coordinator.runtimes.length;
         expect(firstRegistrationCount).toBeGreaterThan(0);
 
-        const secondPort = await getFreePort();
+        const secondPort = await getGatewayTestPort();
         startupSignals.set(secondPort, secondStarted);
         const second = await startTestGatewayServer(secondPort, {
           auth: { mode: "none" },
@@ -564,7 +564,7 @@ describe("gateway plugin instance bindings", () => {
           };
         });
       try {
-        const server = await startTestGatewayServer(await getFreePort(), {
+        const server = await startTestGatewayServer(await getGatewayTestPort(), {
           auth: { mode: "none" },
           controlUiEnabled: false,
           sidecarStartup: "defer",
@@ -593,7 +593,7 @@ describe("gateway plugin instance bindings", () => {
     async () => {
       const { coordinator, bundledRoot } = await prepareInstanceBindingTest();
 
-      const port = await getFreePort();
+      const port = await getGatewayTestPort();
       const hotReloadRecovery = vi.fn(() => ({ status: "emitted" as const }));
       const server = await startTestGatewayServer(port, {
         auth: { mode: "none" },
@@ -703,7 +703,7 @@ describe("gateway plugin instance bindings", () => {
       channelEnv = captureEnv(["OPENCLAW_SKIP_CHANNELS", "OPENCLAW_SKIP_PROVIDERS"]);
       delete process.env.OPENCLAW_SKIP_CHANNELS;
       delete process.env.OPENCLAW_SKIP_PROVIDERS;
-      const port = await getFreePort();
+      const port = await getGatewayTestPort();
       const hotReloadRecovery = vi.fn(() => ({ status: "emitted" as const }));
       const server = await startTestGatewayServer(port, {
         auth: { mode: "none" },
@@ -912,7 +912,7 @@ describe("gateway plugin instance bindings", () => {
         markGatewaySigusr1RestartHandled();
         return { status: "emitted" as const };
       });
-      const port = await getFreePort();
+      const port = await getGatewayTestPort();
       const server = await startTestGatewayServer(port, {
         auth: { mode: "none" },
         controlUiEnabled: false,
