@@ -4,7 +4,12 @@ import { property, query, queryAll, state } from "lit/decorators.js";
 import { t } from "../i18n/index.ts";
 import { OpenClawLitElement } from "../lit/openclaw-element.ts";
 import { icons } from "./icons.ts";
-import { canSwipeLightboxVideo, ImageLightboxGalleryController } from "./image-lightbox-gallery.ts";
+import {
+  canSwipeLightboxVideo,
+  ImageLightboxGalleryController,
+  exitLightboxVideoFullscreen,
+  trapLightboxTabFocus,
+} from "./image-lightbox-gallery.ts";
 import { ImageLightboxOriginal } from "./image-lightbox-original.ts";
 import { imageLightboxStyles } from "./image-lightbox.styles.ts";
 import type { ImageLightboxGallery, ImageLightboxItem } from "./image-lightbox.types.ts";
@@ -197,7 +202,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
         class="mobile-edge-to-edge viewport-edge-to-edge"
         label=${dialogLabel}
         @modal-cancel=${this.emitClose}
-        @keydown=${this.handleKeydown}
+        @keydown=${{ handleEvent: this.handleKeydown, capture: true }}
       >
         <section class="lightbox">
           <header class="header">
@@ -248,12 +253,8 @@ class OpenClawImageLightbox extends OpenClawLitElement {
               this.mediaKind === "video"
                 ? html`<video
                     class="video"
-                    @loadeddata=${() => {
-                      this.videoStatus = "ready";
-                    }}
-                    @playing=${() => {
-                      this.videoStatus = "ready";
-                    }}
+                    @loadeddata=${this.handleVideoReady}
+                    @playing=${this.handleVideoReady}
                     @error=${() => {
                       this.videoStatus = "unavailable";
                     }}
@@ -356,6 +357,10 @@ class OpenClawImageLightbox extends OpenClawLitElement {
       </openclaw-modal-dialog>
     `;
   }
+
+  private handleVideoReady = () => {
+    this.videoStatus = "ready";
+  };
 
   private stopVideo() {
     this.disconnectVideo?.();
@@ -662,6 +667,9 @@ class OpenClawImageLightbox extends OpenClawLitElement {
   }
 
   private handleKeydown = (event: KeyboardEvent) => {
+    if (event.key === "Escape" && exitLightboxVideoFullscreen(this.video, event)) {
+      return;
+    }
     const nativePlayer = event.composedPath().some((target) => target instanceof HTMLVideoElement);
     if (
       this.hasGallery &&
@@ -691,28 +699,13 @@ class OpenClawImageLightbox extends OpenClawLitElement {
       this.resetZoom();
       return;
     }
-    if (event.key !== "Tab") {
-      return;
-    }
-    const actions = [...this.focusables].filter(
-      (action) => !(action instanceof HTMLButtonElement && action.disabled),
-    );
-    const first = actions[0];
-    const last = actions.at(-1);
-    if (!first || !last) {
-      return;
-    }
-    const source = event.composedPath()[0];
-    if (event.shiftKey && source === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && source === last) {
-      event.preventDefault();
-      first.focus();
-    }
+    trapLightboxTabFocus(event, this.focusables);
   };
 
-  private emitClose = () => {
+  private emitClose = (event?: Event) => {
+    if (event?.type === "modal-cancel" && exitLightboxVideoFullscreen(this.video, event)) {
+      return;
+    }
     this.stopVideo();
     this.dispatchEvent(
       new CustomEvent("image-lightbox-close", {

@@ -129,3 +129,46 @@ it("swipes the picture in both directions without capturing the native control s
   pointer(stage, "pointerup", 300, 200);
   await vi.waitFor(() => expect(media.src).toContain("/0.mp4"));
 });
+
+it.each(["keydown", "modal-cancel"])(
+  "exits native fullscreen before closing through %s",
+  async (type) => {
+    const { media, root } = await mount();
+    const descriptor = Object.getOwnPropertyDescriptor(document, "exitFullscreen");
+    const exitFullscreen = vi.fn(async () => {});
+    Object.defineProperty(document, "exitFullscreen", {
+      configurable: true,
+      value: exitFullscreen,
+    });
+    try {
+      const matches = media.matches.bind(media);
+      vi.spyOn(media, "matches").mockImplementation(
+        (selector) => selector === ":fullscreen" || matches(selector),
+      );
+      const close = vi.fn();
+      container.addEventListener("image-lightbox-close", close);
+      const event =
+        type === "keydown"
+          ? new KeyboardEvent(type, {
+              key: "Escape",
+              bubbles: true,
+              composed: true,
+              cancelable: true,
+            })
+          : new CustomEvent(type, { bubbles: true, composed: true, cancelable: true });
+      (type === "keydown" ? media : root.querySelector("openclaw-modal-dialog")!).dispatchEvent(
+        event,
+      );
+      expect(exitFullscreen).toHaveBeenCalledOnce();
+      expect(event.defaultPrevented).toBe(true);
+      expect(close).not.toHaveBeenCalled();
+      expect(container.querySelector("openclaw-image-lightbox")).not.toBeNull();
+    } finally {
+      if (descriptor) {
+        Object.defineProperty(document, "exitFullscreen", descriptor);
+      } else {
+        Reflect.deleteProperty(document, "exitFullscreen");
+      }
+    }
+  },
+);

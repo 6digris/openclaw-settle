@@ -171,3 +171,36 @@ export function canSwipeLightboxVideo(video: HTMLVideoElement | undefined, event
   const bounds = video.getBoundingClientRect();
   return event.clientY < bounds.bottom - Math.min(80, bounds.height / 2);
 }
+
+/** Native controls can send dialog cancellation instead of a DOM Escape key. */
+export function exitLightboxVideoFullscreen(video: HTMLVideoElement | undefined, event: Event) {
+  if (!video?.matches(":fullscreen")) {
+    return false;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  void video.ownerDocument.exitFullscreen().catch(() => undefined);
+  return true;
+}
+
+export function trapLightboxTabFocus(event: KeyboardEvent, focusables: NodeListOf<HTMLElement>) {
+  if (event.key !== "Tab") {
+    return;
+  }
+  const actions = [...focusables].filter(
+    (action) => !(action instanceof HTMLButtonElement && action.disabled),
+  );
+  const first = actions[0];
+  const last = actions.at(-1);
+  if (!first || !last) {
+    return;
+  }
+  const source = event.composedPath()[0];
+  if (event.shiftKey && source === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && source === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
