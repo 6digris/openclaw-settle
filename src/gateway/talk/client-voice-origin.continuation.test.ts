@@ -3,8 +3,18 @@ import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "../../config/runtime-snapshot.js";
+import {
+  closeOpenClawAgentDatabasesForTest,
+  openOpenClawAgentDatabase,
+  runOpenClawAgentWriteTransaction,
+} from "../../state/openclaw-agent-db.js";
+import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { checkClientVoiceToolConfirmationPolicy } from "../../talk/client-voice-confirmation.js";
 import { resetClientVoiceConfirmationStateForTest } from "../../talk/client-voice-confirmation.test-support.js";
+import {
+  readVoiceSessionRecord,
+  writeVoiceSessionRecordInTransaction,
+} from "../../talk/client-voice-session-store.js";
 import {
   closeClientVoiceSession,
   createOrResumeClientVoiceSession,
@@ -149,4 +159,78 @@ describe("consult-local app authority and ordinary Talk continuation", () => {
       expect(resolveClientVoiceRunBinding("old-record")?.originAuthority).toBeUndefined();
     });
   });
+  it.each(["legacy-effect", "policy-metadata"] as const)(
+    "reopens %s from SQLite without restoring grant authority",
+    async (mode) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        const config = {
+          talk: {
+            realtime: {
+              appLaunchPolicies: [
+                {
+                  id: "fixture",
+                  agentId: "main",
+                  originatingDeviceId: "widget",
+                  nodeId: app.node,
+                  appId: app.appId,
+                  appRevision: app.appRevision,
+                  expiresAtMs: Date.now() + 60_000,
+                },
+              ],
+            },
+          },
+        };
+        setRuntimeConfigSnapshot(config, config);
+        const scope = {
+          agentId: "main",
+          sessionKey: "agent:main:persisted",
+          origin: "client" as const,
+          transcriptCapable: true,
+        };
+        const voiceSessionId = createOrResumeClientVoiceSession(scope);
+        const record = readVoiceSessionRecord(scope.agentId, voiceSessionId);
+        if (!record) {
+          throw new Error("Missing persisted voice record");
+        }
+        const effect = {
+          runId: "historical",
+          toolCallId: "historical-launch",
+          toolName: "nodes",
+          startedAt: Date.now(),
+          status: "succeeded" as const,
+          ...(mode === "policy-metadata" ? { voicePolicyId: "fixture" } : {}),
+        };
+        const before = openOpenClawAgentDatabase({ agentId: scope.agentId });
+        const version = before.db.prepare("PRAGMA user_version").get();
+        runOpenClawAgentWriteTransaction(
+          (database) =>
+            writeVoiceSessionRecordInTransaction(database, { ...record, effects: [effect] }),
+          { agentId: scope.agentId },
+        );
+        clientVoiceSessionTesting.reset();
+        closeOpenClawAgentDatabasesForTest();
+        closeOpenClawStateDatabaseForTest();
+        const reopened = openOpenClawAgentDatabase({ agentId: scope.agentId });
+        expect(reopened).not.toBe(before);
+        expect(reopened.db.prepare("PRAGMA user_version").get()).toEqual(version);
+        expect(readVoiceSessionRecord(scope.agentId, voiceSessionId)?.effects).toEqual([effect]);
+        expect(createOrResumeClientVoiceSession({ ...scope, voiceSessionId })).toBe(voiceSessionId);
+        registerClientVoiceConsultRun({ ...scope, voiceSessionId, runId: "after-reopen" });
+        const binding = resolveClientVoiceRunBinding("after-reopen");
+        expect(binding?.originAuthority).toBeUndefined();
+        expect(
+          checkClientVoiceToolConfirmationPolicy({
+            ...scope,
+            voiceSessionId,
+            runId: "after-reopen",
+            toolName: "nodes",
+            toolCallId: "new-launch",
+            toolParams: app,
+            originAuthority: binding?.originAuthority,
+            isConfirmable: () => true,
+          }).allowed,
+        ).toBe(false);
+      });
+    },
+  );
 });

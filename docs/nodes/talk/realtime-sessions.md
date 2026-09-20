@@ -182,6 +182,27 @@ are saved configuration, not proof of active revocation until the Gateway applie
 them. Existing privileged filesystem access remains part of the installation's
 trust boundary.
 
+**Configuration and rollback compatibility:** The policy list is optional. Existing
+configs with the field absent, and configs with an empty list, create no reusable
+grants and retain ordinary Talk confirmation and continuation behavior. Loading
+them does not backfill a policy. This option needs no feature-specific Doctor
+transform: it does not rename or retire an existing config key.
+
+The policy-use identifier on a voice effect is optional diagnostic metadata in
+the existing version-1 voice record, not persisted execution authority. Existing
+records without it remain readable. Closing and reopening the database does not
+restore a device grant; each new consult needs fresh authenticated ingress. This
+feature adds no SQL table, column, schema-version bump, or retention change.
+
+Loading an older config is not a guarantee of downgrade compatibility. An older build
+whose strict realtime schema lacks `appLaunchPolicies` rejects that key, **even
+when its value is `[]`**. Before such a downgrade, use the compatible build to
+revoke policies, confirm active application, and drain in-flight launches; then remove the new key entirely
+or restore an appropriate pre-feature configuration backup. Keep any policy
+backup private and restore it only on a supporting build after revalidating its
+identities, revision, and expiry. This feature-local statement does not waive
+other database, updater, plugin, or rollback compatibility requirements.
+
 Model-originated config proposals cannot obtain these grants from Full Access
 alone: the system-agent owner requires explicit approval of the exact proposal.
 Delegation text, transcripts, and provider/plugin prompts never mint grants.

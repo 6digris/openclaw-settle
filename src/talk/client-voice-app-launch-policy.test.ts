@@ -1,6 +1,9 @@
+import fs from "node:fs/promises";
 import { describe, expect, it } from "vitest";
+import { readConfigFileSnapshot } from "../config/config.js";
 import { OpenClawSchema } from "../config/zod-schema.js";
 import { InstalledAppLaunchToolParamsSchema } from "../infra/installed-app-launch.js";
+import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
   resolveClientVoiceAppLaunchPolicy,
   type ClientVoiceAppLaunchPolicy,
@@ -25,6 +28,31 @@ const request = () => ({
 });
 
 describe("Talk installed-app confirmation scope", () => {
+  it.each(["absent", "empty", "configured"] as const)(
+    "loads %s policy config without dropping authored policies or rewriting input",
+    async (mode) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+        await state.writeConfig({
+          talk: {
+            realtime: {
+              provider: "openai",
+              mode: "realtime",
+              ...(mode === "absent" ? {} : { appLaunchPolicies: mode === "empty" ? [] : [policy] }),
+            },
+          },
+        });
+        const before = await fs.readFile(state.configPath, "utf8");
+        const snapshot = await readConfigFileSnapshot();
+        expect(snapshot.valid).toBe(true);
+        const policies = snapshot.config.talk?.realtime?.appLaunchPolicies;
+        expect(policies).toEqual(mode === "absent" ? undefined : mode === "empty" ? [] : [policy]);
+        expect(
+          resolveClientVoiceAppLaunchPolicy({ ...request(), policies: policies ?? [] }),
+        ).toEqual(mode === "configured" ? policy : undefined);
+        expect(await fs.readFile(state.configPath, "utf8")).toBe(before);
+      });
+    },
+  );
   it("allows repeated exact matching without consuming configuration", () => {
     expect(resolveClientVoiceAppLaunchPolicy(request())).toEqual(policy);
     expect(resolveClientVoiceAppLaunchPolicy(request())).toEqual(policy);
