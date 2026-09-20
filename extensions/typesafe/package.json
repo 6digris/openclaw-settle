@@ -1,6 +1,6 @@
 {
   "name": "@openclaw/typesafe",
-  "version": "2026.9.4",
+  "version": "2026.9.6",
   "private": true,
   "description": "OpenClaw TypeSafe typed decisions and optional evaluation tool",
   "type": "module",
