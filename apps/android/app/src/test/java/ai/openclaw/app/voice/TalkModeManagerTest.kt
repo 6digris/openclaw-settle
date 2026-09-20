@@ -18,6 +18,7 @@ import ai.openclaw.app.i18n.NativeText
 import ai.openclaw.app.i18n.nativeText
 import ai.openclaw.app.i18n.notifyNativeLocaleChanged
 import ai.openclaw.app.i18n.verbatimText
+import ai.openclaw.app.node.InvokeDispatcher
 import android.Manifest
 import android.content.ComponentName
 import android.content.IntentFilter
@@ -1097,6 +1098,104 @@ class TalkModeManagerTest {
   }
 
   @Test
+  fun standalonePttFinalAfterClosedCapturedCallAndReconnectDoesNotWaitForHistory() = assertPttAfterTerminalCapturedCall(failedStart = false)
+
+  @Test
+  fun standalonePttFinalAfterFailedCapturedStartAndReconnectDoesNotWaitForHistory() = assertPttAfterTerminalCapturedCall(failedStart = true)
+
+  private fun assertPttAfterTerminalCapturedCall(failedStart: Boolean) =
+    runBlocking {
+      installSpeechRecognitionService()
+      val app = RuntimeEnvironment.getApplication()
+      val prefs = SecurePrefs(app, app.getSharedPreferences("terminal-talk-${System.nanoTime()}", 0))
+      val runtime = NodeRuntime.forGatewayAuthReset(app, prefs)
+      val sends = ConcurrentLinkedQueue<Pair<JsonObject, WebSocket>>()
+      val historyReads = ConcurrentLinkedQueue<JsonObject>()
+      try {
+        withStartedTalk(
+          runtime = runtime,
+          responseForRequest = { frame, _ ->
+            if (frame.getValue("method").jsonPrimitive.content == "chat.history") {
+              historyReads.add(frame)
+              """{"messages":[]}"""
+            } else {
+              null
+            }
+          },
+          interceptRequest = { frame, socket ->
+            when {
+              frame.getValue("method").jsonPrimitive.content == "chat.send" -> {
+                sends.add(frame to socket)
+                true
+              }
+
+              failedStart && frame.getValue("method").jsonPrimitive.content == "talk.session.create" &&
+                frame["params"]
+                  ?.jsonObject
+                  ?.get("sessionKey")
+                  ?.jsonPrimitive
+                  ?.content == "agent:beta:ended-call" -> {
+                socket.send("""{"type":"res","id":${frame.getValue("id")},"ok":false,"error":{"code":"UNAVAILABLE","message":"Synthetic start failure"}}""")
+                true
+              }
+
+              else -> {
+                false
+              }
+            }
+          },
+        ) { proof ->
+          proof.manager.stopAllCapture()
+          proof.drainCancelledCapture()
+          val target =
+            TalkModeManager.ChatStart(
+              owner = ChatComposerOwner(proof.session.captureRequestLease()!!.endpointStableId, "beta", "agent:beta:ended-call"),
+              lease = proof.session.captureRequestLease()!!,
+              mainAlias = null,
+              captureEpoch = (readPrivateField(runtime, "voiceCaptureOwnershipEpoch") as AtomicLong).get(),
+              withCurrentSelection = { it() },
+            )
+          runtime.startChatTalk(target)
+          if (failedStart) {
+            awaitTalkWork(proof, "Terminal start failure") { !proof.manager.isEnabled.value && runtime.voiceCaptureMode.value == VoiceCaptureMode.Off }
+          } else {
+            awaitTalkWork(proof, "Captured call start") { proof.manager.isListening.value }
+            proof.manager.realtimeEvent("""{"relaySessionId":"playback-relay","type":"close","reason":"completed"}""")
+          }
+          assertEquals(VoiceCaptureMode.Off, runtime.voiceCaptureMode.value)
+          proof.drainCancelledCapture()
+          proof.session.reconnect()
+          awaitTalkWork(proof, "Same-endpoint reconnect") { !target.lease.isCurrent() && proof.session.captureRequestLease()?.isCurrent() == true }
+          assertTrue(runtime.isForeground.value)
+          assertEquals(VoiceCaptureMode.Off, runtime.voiceCaptureMode.value)
+          proof.manager.setMainSessionKey("agent:beta:standalone-ptt")
+          val dispatcher = readPrivateField(runtime, "invokeDispatcher") as InvokeDispatcher
+          val beginning = proof.scope.async { dispatcher.handleInvoke("talk.ptt.start", null) }
+          awaitTalkWork(proof, "Standalone PTT start") { beginning.isCompleted }
+          assertTrue(beginning.await().toString(), beginning.await().ok)
+          currentRecognizer().triggerOnResults(recognitionResults("Standalone question"))
+          val ending = proof.scope.async { dispatcher.handleInvoke("talk.ptt.stop", null) }
+          awaitTalkWork(proof, "Standalone PTT chat.send") { ending.isCompleted && sends.isNotEmpty() }
+          assertTrue(ending.await().ok)
+          val (frame, socket) = sends.remove()
+          val params = frame.getValue("params").jsonObject
+          assertEquals("agent:beta:standalone-ptt", params.getValue("sessionKey").jsonPrimitive.content)
+          val runId = params.getValue("idempotencyKey").jsonPrimitive.content
+          historyReads.clear()
+          val beforeFinal = proof.scheduler.currentTime
+          socket.send("""{"type":"res","id":${frame.getValue("id")},"ok":true,"payload":{"runId":"$runId","status":"started"}}""")
+          socket.send("""{"type":"event","event":"chat","payload":{"sessionKey":"agent:beta:standalone-ptt","runId":"$runId","state":"final","message":{"role":"assistant","content":"Immediate PTT answer"}}}""")
+          awaitTalkWork(proof, "Matching final synthesis") { proof.synthesizer.requested.isCompleted }
+          assertEquals(listOf("Immediate PTT answer"), proof.synthesizer.texts)
+          assertEquals("Matching final must not wait for the 45-second timeout", beforeFinal, proof.scheduler.currentTime)
+          assertTrue("Matching final must not need history fallback", historyReads.isEmpty())
+        }
+      } finally {
+        closeNodeRuntimeTestFixture(runtime)
+      }
+    }
+
+  @Test
   fun capturedNativeTalkKeepsSelectedChatWhenDefaultChanges() =
     runBlocking {
       withNativeTalk { proof, sends ->
@@ -1780,6 +1879,7 @@ class TalkModeManagerTest {
 
   private suspend fun awaitTalkWork(
     proof: RealtimePlaybackProof,
+    description: String = "Talk work",
     ready: () -> Boolean,
   ) {
     val deadline = System.nanoTime() + 5_000_000_000L
@@ -1788,7 +1888,7 @@ class TalkModeManagerTest {
       proof.scheduler.runCurrent()
       withContext(Dispatchers.Default) { delay(10) }
     }
-    check(ready()) { "Talk work did not complete while driving its test dispatcher and Android looper" }
+    check(ready()) { "$description did not complete while driving its test dispatcher and Android looper: ${proof.manager.statusText.value}" }
   }
 
   @Test
@@ -2947,19 +3047,21 @@ class TalkModeManagerTest {
         }
         proof.manager.stopAllCapture()
         proof.drainCancelledCapture()
-        proof.manager.setEnabled(true)
+        proof.manager.setEnabled(true, capturedStart(proof, "agent:beta:old-start"))
         val work = readPrivateField(proof.manager, "gatewayWorkJob") as Job
         awaitState { pending.isCompleted && work.children.count { it.isActive } == 1 }
         val oldStart = work.children.single { it.isActive }
         proof.manager.stopAllCapture()
         proof.drainCancelledCapture()
-        proof.manager.setEnabled(true)
+        val replacement = capturedStart(proof, "agent:beta:replacement")
+        proof.manager.setEnabled(true, replacement)
         awaitState { proof.manager.isListening.value }
         val (requestId, socket) = pending.await()
         socket.send("""{"type":"res","id":"$requestId","ok":false,"error":{"code":"UNAVAILABLE","message":"delayed start failure"}}""")
         awaitState { oldStart.isCompleted }
         assertTrue("An obsolete start error must not disable its replacement", proof.manager.isEnabled.value)
         assertTrue(proof.manager.isListening.value)
+        assertTrue("An obsolete start error must not retire the replacement owner", replacement.canStart())
       }
     }
 
@@ -3283,6 +3385,7 @@ class TalkModeManagerTest {
 
   private suspend fun withStartedTalk(
     sessionKey: String = "main",
+    runtime: NodeRuntime? = null,
     captureRelayStopNotification: () -> ((() -> Boolean) -> Unit) = { {} },
     responseForRequest: (JsonObject, WebSocket) -> String? = { _, _ -> null },
     interceptRequest: (JsonObject, WebSocket) -> Boolean = { _, _ -> false },
@@ -3307,7 +3410,7 @@ class TalkModeManagerTest {
     val connected = CompletableDeferred<Unit>()
     lateinit var manager: TalkModeManager
     val session =
-      GatewaySession(
+      (runtime?.let { readPrivateField(it, "operatorSession") } as? GatewaySession) ?: GatewaySession(
         scope = CoroutineScope(sessionJob + Dispatchers.Default),
         identityStore = testDeviceIdentityStore(app),
         deviceAuthStore = DeviceAuthStore(SecurePrefs(app, app.getSharedPreferences("talk-playback-${System.nanoTime()}", 0))),
@@ -3323,22 +3426,27 @@ class TalkModeManagerTest {
         context = app,
         scope = managerScope,
         session = session,
-        isConnected = { connected.isCompleted },
+        isConnected = { session.captureRequestLease()?.isCurrent() == true },
         talkSpeakClient = synthesizer,
         talkAudioPlayer = player,
         onBeforeSpeak = { callbackDepth += 1 },
         onAfterSpeak = { callbackDepth -= 1 },
         realtimeCaptureDispatcher = captureDispatcher,
         realtimePlaybackDispatcher = StandardTestDispatcher(scheduler),
-        captureRelayStopNotification = captureRelayStopNotification,
+        captureRelayStopNotification =
+          runtime?.let {
+            @Suppress("UNCHECKED_CAST")
+            (readPrivateField((readPrivateField(it, "talkMode\$delegate") as Lazy<*>).value!!, "captureRelayStopNotification") as () -> ((() -> Boolean) -> Unit))
+          } ?: captureRelayStopNotification,
       )
+    runtime?.let { setPrivateField(it, "talkMode\$delegate", lazyOf(manager)) }
     val writes = mutableListOf<Triple<AudioTrack, ByteArray, AudioFormat>>()
     val listener = ShadowAudioTrack.OnAudioDataWrittenListener { track, bytes, format -> writes += Triple(track, bytes, format) }
     val server = MockWebServer()
     Dispatchers.setMain(StandardTestDispatcher(scheduler))
     try {
       try {
-        server.enqueue(
+        val response =
           MockResponse().withWebSocketUpgrade(
             object : WebSocketListener() {
               override fun onOpen(
@@ -3366,8 +3474,11 @@ class TalkModeManagerTest {
                 webSocket.send("""{"type":"res","id":"$id","ok":true,"payload":$payload}""")
               }
             },
-          ),
-        )
+          )
+        server.dispatcher =
+          object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse = response.clone()
+          }
         server.start()
         session.connect(
           endpoint =
@@ -3391,7 +3502,11 @@ class TalkModeManagerTest {
               client = GatewayClientInfo("openclaw-android", "Android playback test", "1.0.0-test", "android", "ui", "playback-test", "android", "test"),
             ),
         )
-        withContext(Dispatchers.Default) { withTimeout(5_000) { connected.await() } }
+        withContext(Dispatchers.Default) {
+          withTimeout(5_000) {
+            while (session.captureRequestLease() == null) delay(10)
+          }
+        }
         manager.setMainSessionKey(sessionKey)
         manager.setEnabled(true)
         val deadline = System.nanoTime() + 5_000_000_000L
@@ -3902,14 +4017,33 @@ class TalkModeManagerTest {
   fun relayClosePreservesFinishingPushToTalkOwnership() =
     runTest {
       val manager = createManager(scope = this)
+      val target =
+        TalkModeManager.ChatStart(
+          owner = ChatComposerOwner("synthetic-gateway", "beta", "agent:beta:call"),
+          lease =
+            GatewaySession.RequestLease("synthetic-gateway") { _, _, _, enqueue ->
+              enqueue {}
+              "{}"
+            },
+          mainAlias = null,
+          withCurrentSelection = { it() },
+        )
+      assertTrue(target.admit())
+      setPrivateField(manager, "chatStart", target)
+      setMutableStateFlow(manager, "_isEnabled", true)
       manager.prepareRealtimeCapturePause("capture-1", lease = null)()
       installRealtimeSession(manager, "relay-1")
       setPrivateField(manager, "finishingPttCaptureId", "capture-1")
+      val finishing = Job()
+      setPrivateField(manager, "finishingPttJob", finishing)
 
       manager.realtimeEvent("""{"relaySessionId":"relay-1","type":"close","reason":"completed"}""")
 
       assertNull(readPrivateField(manager, "realtimeCapturePause"))
+      assertFalse("The ended call must no longer admit work", target.canStart())
       assertEquals("capture-1", manager.finishingPushToTalkCaptureId)
+      assertTrue("Ending the call must not cancel independent PTT work", finishing.isActive)
+      finishing.complete()
     }
 
   @Test

@@ -1576,6 +1576,8 @@ class TalkModeManager internal constructor(
     if (!_isEnabled.value) return null
     _isEnabled.value = false
     _isListening.value = false
+    chatStart?.retire()
+    chatStart = null
     val generation = startGeneration.get()
     val notify = relayStopNotification
     return { notify { synchronized(realtimeCapturePauseLock) { startGeneration.get() == generation && !_isEnabled.value } } }
