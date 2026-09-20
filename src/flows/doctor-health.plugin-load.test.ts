@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { doctorCommand } from "../commands/doctor.js";
+import { UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE } from "../infra/update-doctor-result.js";
 import { loadPluginRegistryHandle } from "../plugins/loader.js";
 import { disposePluginRegistryInstances } from "../plugins/runtime.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -18,18 +19,22 @@ it.each([
   { failure: "ENOSPC", update: "standalone" },
   { failure: "SyntaxError", update: "standalone" },
   { failure: "ENOSPC", update: "in-progress" },
+  { failure: "ENOSPC", update: "post-core" },
   { failure: "ENOSPC", update: "parent-only" },
 ])(
   "reports a plugin $failure during $update Doctor with its corresponding outcome",
   async ({ failure, update }) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       vi.stubEnv("OPENCLAW_DISABLE_BUNDLED_PLUGINS", "1");
-      vi.stubEnv("OPENCLAW_UPDATE_IN_PROGRESS", update === "in-progress" ? "1" : undefined);
+      vi.stubEnv(
+        "OPENCLAW_UPDATE_IN_PROGRESS",
+        update === "in-progress" || update === "post-core" ? "1" : undefined,
+      );
       vi.stubEnv(
         "OPENCLAW_UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE",
         update === "standalone" ? undefined : "1",
       );
-      vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_CONVERGENCE", undefined);
+      vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_CONVERGENCE", update === "post-core" ? "1" : undefined);
       const resultPath = state.path("doctor-result.json");
       vi.stubEnv(
         "OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH",
@@ -67,6 +72,7 @@ it.each([
           return write(target, ...args);
         });
       }
+      mocks.runContributions.mockClear();
       mocks.runContributions.mockImplementation(async () => {
         for (let attempt = 0; attempt < 2; attempt++) {
           const registry = loadPluginRegistryHandle({ config: cfg, cache: false });
@@ -82,6 +88,25 @@ it.each([
       });
       const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
       await doctorCommand(runtime, { nonInteractive: true });
+      if (update === "in-progress") {
+        // The shipped parent retains plugin inventory until its post-core owner.
+        // Its deferred Doctor must not execute the failing payload to diagnose it.
+        expect(failedWrite).toBe(false);
+        expect(mocks.runContributions).not.toHaveBeenCalled();
+        expect(runtime.error).not.toHaveBeenCalled();
+        expect(runtime.exit).toHaveBeenCalledExactlyOnceWith(
+          UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE,
+        );
+        expect(mocks.writeUpdatePostInstallDoctorResult).toHaveBeenCalledWith({
+          resultPath,
+          result: expect.objectContaining({
+            status: "advisory",
+            advisory: expect.objectContaining({ reason: "deferred-configured-plugin-repair" }),
+          }),
+        });
+        expect(mocks.outro).not.toHaveBeenCalledWith("Doctor complete.");
+        return;
+      }
       expect(failedWrite).toBe(failure === "ENOSPC");
       if (update === "standalone") {
         expect(runtime.exit).toHaveBeenCalledExactlyOnceWith(1);
