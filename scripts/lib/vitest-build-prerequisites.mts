@@ -213,6 +213,8 @@ const runtimeConsumers = [
   ...[
     "src/infra/update-candidate-canary.integration.test.ts",
     "src/infra/update-managed-service-handoff-lifecycle.test.ts",
+    "src/infra/update-managed-service-handoff-repair-validating.test.ts",
+    "src/infra/update-managed-service-handoff-repair-verifying.test.ts",
   ].map((file) => ({
     file,
     configs: ["test/vitest/vitest.infra.config.ts"],
