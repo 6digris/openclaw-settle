@@ -380,8 +380,10 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
       await vi.waitFor(() => expect(container.querySelectorAll("img")).toHaveLength(images.length));
       await Promise.all([...container.querySelectorAll("img")].map((image) => image.decode()));
       const frames = [...container.querySelectorAll<HTMLElement>(".chat-image-frame--managed")];
-      expect(frames[1]!.getBoundingClientRect().top).toBeGreaterThan(
-        frames[0]!.getBoundingClientRect().bottom,
+      const firstBounds = frames[0]!.getBoundingClientRect();
+      const secondBounds = frames[1]!.getBoundingClientRect();
+      expect(secondBounds.left > firstBounds.right || secondBounds.top > firstBounds.bottom).toBe(
+        true,
       );
       for (const [index, expectedWidth] of [160, 84, 160, 160, 160].entries()) {
         const element = frames[index]!;
@@ -569,14 +571,14 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
       expect(before).toHaveLength(count + available);
       const galleryStyle = getComputedStyle(gallery);
       const gap = Number.parseFloat(galleryStyle.rowGap);
-      const columns = role === "user" ? galleryStyle.gridTemplateColumns.split(" ").length : 1;
-      const rowHeights = Array.from({ length: Math.ceil(before.length / columns) }, (_, row) =>
-        Math.max(
-          ...before
-            .slice(row * columns, (row + 1) * columns)
-            .map((slot, offset) => (row * columns + offset < count ? fileHeight : slot.height)),
-        ),
-      );
+      // User grids and wrapping assistant rows reserve only the tallest card
+      // in each occupied row, never the unavailable image's preview height.
+      const heightsByRow = new Map<number, number>();
+      for (const [index, slot] of before.entries()) {
+        const height = index < count ? fileHeight : slot.height;
+        heightsByRow.set(slot.y, Math.max(heightsByRow.get(slot.y) ?? 0, height));
+      }
+      const rowHeights = [...heightsByRow.values()];
       const compactHeight =
         rowHeights.reduce((sum, height) => sum + height, 0) + gap * (rowHeights.length - 1);
       expect(gallery.getBoundingClientRect().height).toBeCloseTo(compactHeight, 1);

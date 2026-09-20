@@ -5,8 +5,8 @@ import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts"
 const suite = createControlUiE2eSuite({ name: "Control UI consecutive image rows" });
 
 suite.define(() => {
-  it.each([390, 1280])(
-    "keeps fifty images reachable in one row at %i px without moving text boundaries",
+  it.each([390, 1440])(
+    "wraps fifty images at %i px without shrinking normal previews or moving text boundaries",
     async (width) => {
       await suite.withPage(
         { viewport: { width, height: 900 }, reducedMotion: "reduce", serviceWorkers: "block" },
@@ -47,14 +47,22 @@ suite.define(() => {
             ],
           });
           await page.goto(suite.server.baseUrl + "chat");
-          const row = page.locator(".chat-image-carousel").first();
+          const row = page.locator(".chat-group.assistant .chat-message-images").first();
           await row.waitFor({ state: "visible" });
           const frames = row.locator(".chat-image-frame");
           expect(await frames.count()).toBe(50);
           const positions = await frames.evaluateAll((elements) =>
             elements.map((element) => element.getBoundingClientRect().top),
           );
-          expect(Math.max(...positions) - Math.min(...positions)).toBeLessThanOrEqual(1);
+          expect(new Set(positions).size).toBeGreaterThan(1);
+          if (width === 1440) {
+            expect(positions[0]).toBe(positions[1]);
+          } else {
+            expect(positions[1]).toBeGreaterThan(positions[0]!);
+          }
+          expect(
+            await row.evaluate((element) => element.scrollWidth - element.clientWidth),
+          ).toBeLessThanOrEqual(1);
           const overflow = () =>
             page.evaluate(
               () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
@@ -65,14 +73,8 @@ suite.define(() => {
           expect(await row.getByRole("img", { name: "Separate image", exact: true }).count()).toBe(
             0,
           );
-          const viewport = row.locator(".chat-image-carousel__viewport");
-          await viewport.focus();
-          await viewport.press("ArrowRight");
-          await expect.poll(() => row.getAttribute("data-scroll-left")).not.toBeNull();
           const last = row.getByRole("button", { name: "Open image Volume image 50", exact: true });
           await last.scrollIntoViewIfNeeded();
-          await expect.poll(() => row.getAttribute("data-scroll-right")).toBeNull();
-          expect(await row.getAttribute("data-scroll-left")).not.toBeNull();
           await last.click();
           const lightbox = page.locator("openclaw-image-lightbox");
           await lightbox.getByRole("dialog").waitFor({ state: "visible" });

@@ -4033,9 +4033,6 @@ export const en: TranslationMap & {
       expired: "Expired",
       disconnected: "Not connected. Try again after reconnecting.",
     },
-    imageGallery: {
-      label: "Image gallery",
-    },
     imageLightbox: {
       previous: "Previous image",
       next: "Next image",

@@ -48,8 +48,6 @@ import {
   projectMessageMedia,
   schedulePairingQrExpiryRefresh,
   type ArtifactDownloadResolver,
-  type ImageMessageGallery,
-  type ImageRenderOptions,
 } from "./chat-message-media.ts";
 import {
   detectJson,
@@ -158,7 +156,6 @@ export function renderGroupedMessage(
   opts: {
     isStreaming: boolean;
     isForwarded?: boolean;
-    imageGallery?: ImageMessageGallery;
     sessionKey?: string;
     presented?: boolean;
     transcriptVisible?: boolean;
@@ -234,7 +231,7 @@ export function renderGroupedMessage(
     orderedContent,
     supplementalImages,
     supplementalAttachments,
-  } = opts.imageGallery?.media ?? projectMessageMedia(message, normalizedMessage.content);
+  } = projectMessageMedia(message, normalizedMessage.content);
   schedulePairingQrExpiryRefresh(messageKey, nextPairingQrExpiresAt, opts.onRequestUpdate);
   const hasImages = images.length > 0;
   const videoPreviews =
@@ -252,9 +249,8 @@ export function renderGroupedMessage(
         !isSentCommentAttachment(item) &&
         !isSentPastedTextAttachment(item),
     );
-  const imageRenderOptions: ImageRenderOptions = {
-    layout: opts.imageGallery ? "inline" : normalizedRole === "assistant" ? "strip" : undefined,
-    galleryImages: opts.imageGallery?.images ?? images,
+  const imageRenderOptions = {
+    galleryImages: images,
     sessionKey: opts.sessionKey,
     agentId: opts.agentId,
     policyKey: opts.mediaPolicyKey,
@@ -362,7 +358,6 @@ export function renderGroupedMessage(
   const bodyMarkdown = standaloneToolPayload ? null : markdown;
   const renderInOrder =
     normalizedRole === "assistant" &&
-    !opts.imageGallery &&
     !asyncQuestions &&
     (!disclosure?.expanded || Boolean(disclosure.message)) &&
     orderedContent.some((item) => item.type !== "text" && item.type !== "boundary");

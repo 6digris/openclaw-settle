@@ -72,7 +72,7 @@ function mount(width: number, theme: string) {
 function blocks(container: HTMLElement) {
   return Array.from(
     container.querySelectorAll<HTMLElement>(
-      ".chat-text > p, .chat-image-carousel, .chat-image-frame:not(.chat-image-carousel *), .chat-assistant-attachment-card:not(.chat-image-carousel *)",
+      ".chat-text > p, .chat-message-images, .chat-assistant-attachment-card:not(.chat-message-images *)",
     ),
   );
 }

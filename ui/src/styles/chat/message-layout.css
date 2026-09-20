@@ -520,138 +520,20 @@
   transform: scale(1.02);
 }
 
-/* Assistant image runs scroll locally, without widening the transcript. The
-   wrapper also exists for one image, keeping decoded pixels on a streamed append. */
-.chat-bubble:has(.chat-image-carousel) {
-  width: 100%;
-}
-
-.chat-image-carousel {
-  position: relative;
-  width: 100%;
-  max-width: 100%;
-  min-width: 0;
-  container-type: inline-size;
-}
-
-.chat-image-carousel__viewport {
-  --chat-image-fade-left: 0px;
-  --chat-image-fade-right: 0px;
-  --chat-image-fade-size: min(56px, 10cqw);
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  scrollbar-width: thin;
-  scrollbar-color: var(--border-strong) transparent;
-  padding-bottom: 6px;
-  /* Eased alpha stops soften the transition into the fully visible image. */
-  mask-image: linear-gradient(
-    to right,
-    transparent calc(var(--chat-image-fade-left) * 0),
-    color-mix(in srgb, var(--text) 3.8%, transparent) calc(var(--chat-image-fade-left) * 0.125),
-    color-mix(in srgb, var(--text) 14.6%, transparent) calc(var(--chat-image-fade-left) * 0.25),
-    color-mix(in srgb, var(--text) 30.9%, transparent) calc(var(--chat-image-fade-left) * 0.375),
-    color-mix(in srgb, var(--text) 50%, transparent) calc(var(--chat-image-fade-left) * 0.5),
-    color-mix(in srgb, var(--text) 69.1%, transparent) calc(var(--chat-image-fade-left) * 0.625),
-    color-mix(in srgb, var(--text) 85.4%, transparent) calc(var(--chat-image-fade-left) * 0.75),
-    color-mix(in srgb, var(--text) 96.2%, transparent) calc(var(--chat-image-fade-left) * 0.875),
-    var(--text) calc(var(--chat-image-fade-left) * 1),
-    var(--text) calc(100% - var(--chat-image-fade-right) * 1),
-    color-mix(in srgb, var(--text) 96.2%, transparent)
-      calc(100% - var(--chat-image-fade-right) * 0.875),
-    color-mix(in srgb, var(--text) 85.4%, transparent)
-      calc(100% - var(--chat-image-fade-right) * 0.75),
-    color-mix(in srgb, var(--text) 69.1%, transparent)
-      calc(100% - var(--chat-image-fade-right) * 0.625),
-    color-mix(in srgb, var(--text) 50%, transparent) calc(100% - var(--chat-image-fade-right) * 0.5),
-    color-mix(in srgb, var(--text) 30.9%, transparent)
-      calc(100% - var(--chat-image-fade-right) * 0.375),
-    color-mix(in srgb, var(--text) 14.6%, transparent)
-      calc(100% - var(--chat-image-fade-right) * 0.25),
-    color-mix(in srgb, var(--text) 3.8%, transparent)
-      calc(100% - var(--chat-image-fade-right) * 0.125),
-    transparent calc(100% - var(--chat-image-fade-right) * 0)
-  );
-}
-
-.chat-image-carousel:not([data-scroll-left]):not([data-scroll-right])
-  > .chat-image-carousel__viewport {
-  mask-image: none;
-}
-
-.chat-image-carousel__viewport:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: -2px;
-  border-radius: var(--radius-xl);
-}
-
-.chat-image-carousel[data-scroll-left] > .chat-image-carousel__viewport {
-  --chat-image-fade-left: var(--chat-image-fade-size);
-}
-
-.chat-image-carousel[data-scroll-right] > .chat-image-carousel__viewport {
-  --chat-image-fade-right: var(--chat-image-fade-size);
-}
-
-.chat-image-carousel__track,
-.chat-message-images--inline {
-  display: flex;
+/* Adjacent assistant images keep their ordinary preview size and wrap when
+   another image cannot fit. Separate messages retain their own containers. */
+.chat-group.assistant .chat-message-images {
   flex-direction: row;
-  align-items: flex-start;
-  width: max-content;
-  min-width: 0;
-  gap: 8px;
+  flex-wrap: wrap;
+  column-gap: 8px;
 }
 
-.chat-image-carousel:not(.chat-image-carousel--gallery)
-  > .chat-image-carousel__viewport
-  > .chat-image-carousel__track {
-  width: 100%;
-}
-
-.chat-image-carousel__message {
+.chat-group.assistant .chat-message-images > .chat-image-frame {
   flex: none;
-  min-width: 0;
-  max-width: 100%;
 }
 
-.chat-image-carousel__message > .chat-bubble {
-  max-width: none;
-  padding-block: 0;
-}
-
-.chat-image-carousel:not(.chat-image-carousel--gallery) .chat-message-images--inline {
-  width: 100%;
-}
-
-.chat-image-carousel:not(.chat-image-carousel--gallery) .chat-image-frame {
-  max-width: min(100cqw, 400px);
-}
-
-.chat-image-carousel--gallery .chat-image-frame {
-  flex: none;
-  max-width: min(400px, calc(100cqw - 24px));
-  scroll-margin-inline: min(56px, 10cqw);
-}
-
-.chat-image-carousel--gallery .chat-image-frame--image:not(.chat-image-frame--compact) {
-  /* Preserve the source ratio instead of containing it in an unrelated tile. */
-  width: min(calc(min(220px, 60cqw) * var(--chat-image-natural-ratio)), 400px, calc(100cqw - 24px));
-  height: auto;
-  aspect-ratio: var(--chat-image-natural-ratio);
-}
-
-.chat-image-carousel--gallery .chat-image-frame--compact {
-  width: clamp(160px, var(--chat-image-width, 280px), 320px);
-}
-
-.chat-image-carousel--gallery .chat-image-frame:not(.chat-image-frame--image) .chat-message-image {
-  width: auto;
-  height: auto;
-  max-width: min(400px, calc(100cqw - 24px));
-  max-height: min(220px, 60cqw);
-}
-
-/* User media retains compact grids beside its prompt and upload state. */
+/* User media shares the text bubble's side. Multi-item turns use compact
+   gallery tiles. */
 .chat-group.user .chat-message-images {
   --chat-user-image-grid-size: min(128px, calc((100vw - 48px) / 3));
   display: grid;
@@ -743,8 +625,8 @@
   width: 100%;
 }
 
-.chat-group.assistant .chat-bubble:has(.chat-assistant-attachments),
-.chat-group.assistant .chat-text:has(.chat-assistant-attachments) {
+.chat-group.assistant .chat-bubble:has(.chat-assistant-attachments, .chat-message-images),
+.chat-group.assistant .chat-text:has(.chat-assistant-attachments, .chat-message-images) {
   width: 100%;
 }
 

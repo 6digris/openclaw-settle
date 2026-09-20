@@ -11,7 +11,6 @@ import {
 } from "../../../lib/open-external-url.ts";
 import { showToast } from "../../../lib/toast.ts";
 import { renderChatImageActions } from "./chat-image-actions.ts";
-import { renderImageStrip } from "./chat-image-strip.ts";
 import {
   isManagedOutgoingMediaSource,
   loadAssistantAttachmentAvailability,
@@ -303,7 +302,7 @@ class MessageImageResourceDirective extends AsyncDirective {
     // Unknown images use their intrinsic size; gallery tiles keep their own layout.
     return html`<span
       class="chat-image-frame ${sized || compact ? "chat-image-frame--image" : ""} ${this.managed && !compact ? "chat-image-frame--managed" : ""} ${compact ? "chat-image-frame--compact" : ""}"
-      style=${`--chat-image-width: ${width}px; --chat-image-min-width: ${MIN_CHAT_IMAGE_PREVIEW_WIDTH}px; --chat-image-natural-ratio: ${ratio ?? 1}; --chat-image-ratio: ${!compact && height ? `${width} / ${height}` : "auto"}`}
+      style=${`--chat-image-width: ${width}px; --chat-image-min-width: ${MIN_CHAT_IMAGE_PREVIEW_WIDTH}px; --chat-image-ratio: ${!compact && height ? `${width} / ${height}` : "auto"}`}
       aria-busy=${pending ? "true" : "false"}
       role=${pending ? "status" : nothing}
       aria-label=${pending ? t("common.loading") : nothing}
@@ -563,17 +562,7 @@ class MessageImagesDirective extends Directive {
     if (!mediaCount) {
       return nothing;
     }
-    const content = html`${repeat(
-      this.slots,
-      ({ key }) => key,
-      ({ image }) =>
-        html`${renderMessageImageResource(image, { ...opts, galleryImages: opts?.galleryImages ?? images })}`,
-    )}${previews}`;
-    if (opts?.layout === "strip") {
-      return renderImageStrip(content, images.length > 1);
-    }
     const layoutClasses = [
-      opts?.layout === "inline" ? "chat-message-images--inline" : "",
       "chat-message-images",
       mediaCount === 1 ? "chat-message-images--single" : "chat-message-images--gallery",
       mediaCount === 2 || mediaCount === 4 ? "chat-message-images--two-column" : "",
@@ -581,7 +570,15 @@ class MessageImagesDirective extends Directive {
     ]
       .filter(Boolean)
       .join(" ");
-    return html`<div class=${layoutClasses}>${content}</div>`;
+    return html`<div class=${layoutClasses}>
+      ${repeat(
+        this.slots,
+        ({ key }) => key,
+        ({ image }) =>
+          html`${renderMessageImageResource(image, { ...opts, galleryImages: opts?.galleryImages ?? images })}`,
+      )}
+      ${previews}
+    </div>`;
   }
 }
 

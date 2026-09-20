@@ -32,13 +32,7 @@ export type ArtifactDownloadResolver = (params: {
   artifactId: string;
 }) => Promise<{ url: string; expiresAt?: string } | null>;
 
-export type ImageMessageGallery = {
-  media: ReturnType<typeof projectMessageMedia>;
-  images: readonly ImageBlock[];
-};
-
 export type ImageRenderOptions = {
-  layout?: "strip" | "inline";
   galleryImages?: readonly ImageBlock[];
   sessionKey?: string;
   agentId?: string;

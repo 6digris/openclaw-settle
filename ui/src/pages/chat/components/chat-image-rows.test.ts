@@ -43,7 +43,7 @@ function drawTranscript(
 }
 
 function rows() {
-  return [...container.querySelectorAll(".chat-image-carousel")].map((row) =>
+  return [...container.querySelectorAll(".chat-message-images")].map((row) =>
     [...row.querySelectorAll("img")].map((img) => img.alt),
   );
 }
@@ -53,7 +53,7 @@ afterEach(() => {
   container.remove();
 });
 
-describe("consecutive image galleries", () => {
+describe("consecutive image sets", () => {
   it("groups only adjacent images and preserves Markdown and attachment positions", () => {
     drawMessage([
       text("1. Compare these"),
@@ -77,7 +77,7 @@ describe("consecutive image galleries", () => {
     expect(rows()).toEqual([["a", "b"], ["c"], ["d", "e"]]);
     expect(container.querySelectorAll("ol > li")).toHaveLength(2);
     expect(
-      container.querySelector("ol > li:first-child .chat-image-carousel")?.querySelectorAll("img"),
+      container.querySelector("ol > li:first-child .chat-message-images")?.querySelectorAll("img"),
     ).toHaveLength(2);
     expect(container.querySelector('a[href="https://example.com/proof"]')?.textContent).toBe(
       "Reference",
@@ -101,7 +101,7 @@ describe("consecutive image galleries", () => {
       { role: "assistant", content: "MEDIA:https://example.com/a.png" },
       { role: "assistant", content: "MEDIA:https://example.com/b.png" },
     ]);
-    expect(rows()).toEqual([["a.png", "b.png"]]);
+    expect(rows()).toEqual([["a.png"], ["b.png"]]);
   });
 
   it.each([
@@ -112,18 +112,8 @@ describe("consecutive image galleries", () => {
     expect(rows()).toEqual([["a"], ["b"]]);
   });
 
-  it("keeps tool-bearing messages outside assistant image galleries", () => {
-    drawMessage([
-      image("a"),
-      { type: "toolcall", id: "call-1", name: "read", arguments: {} },
-      image("b"),
-    ]);
-    expect(rows()).toEqual([]);
-    expect(container.querySelectorAll("img")).toHaveLength(2);
-  });
-
   it.each([renderMessageGroup, renderMessageGroupContent])(
-    "keeps source identity and lightbox order across consecutive image-only messages (%#)",
+    "keeps separately delivered images in their own messages and lightboxes (%#)",
     (renderGroup) => {
       const onOpenImage = vi.fn<(item: ImageLightboxItem) => void>();
       const messages = ["a", "b", "c"].map((name, index) => ({
@@ -135,7 +125,7 @@ describe("consecutive image galleries", () => {
       drawTranscript(messages.slice(0, 1), renderGroup, { onOpenImage });
       const firstImage = container.querySelector("img");
       drawTranscript(messages, renderGroup, { onOpenImage });
-      expect(rows()).toEqual([["a", "b", "c"]]);
+      expect(rows()).toEqual([["a"], ["b"], ["c"]]);
       expect(container.querySelector("img")).toBe(firstImage);
       expect(
         [...container.querySelectorAll<HTMLElement>(".chat-bubble")].map(
@@ -144,27 +134,10 @@ describe("consecutive image galleries", () => {
       ).toEqual(["a", "b", "c"]);
       container.querySelectorAll<HTMLButtonElement>(".chat-message-image-button")[1]!.click();
       expect(onOpenImage).toHaveBeenCalledOnce();
-      expect(onOpenImage.mock.calls[0]![0]).toMatchObject({ title: "b", gallery: { index: 1 } });
-      expect(onOpenImage.mock.calls[0]![0].gallery?.items).toHaveLength(3);
+      expect(onOpenImage.mock.calls[0]![0]).toMatchObject({ title: "b" });
+      expect(onOpenImage.mock.calls[0]![0].gallery).toBeUndefined();
     },
   );
-
-  it.each([
-    { role: "assistant", content: [text("Caption")] },
-    { role: "assistant", content: [image("mixed"), text("Caption")] },
-    { role: "toolResult", toolCallId: "call-1", toolName: "read", content: [text("Tool result")] },
-    { role: "user", content: [image("user")] },
-    { role: "assistant", content: [image("other-author")], senderLabel: "Different author" },
-    { role: "assistant", content: [image("thinking"), { type: "thinking", thinking: "Hidden" }] },
-  ])("keeps transcript boundaries for $role $content", (boundary) => {
-    drawTranscript([
-      { role: "assistant", content: [image("a")] },
-      boundary,
-      { role: "assistant", content: [image("b")] },
-    ]);
-    expect(rows().some((row) => row.includes("a") && row.includes("b"))).toBe(false);
-    expect(container.querySelectorAll('img[alt="a"], img[alt="b"]')).toHaveLength(2);
-  });
 
   it("retains user grids and never mixes their lightbox gallery with assistant images", () => {
     drawTranscript([
@@ -176,6 +149,9 @@ describe("consecutive image galleries", () => {
         .querySelector(".chat-group.user .chat-message-images--gallery")
         ?.querySelectorAll("img"),
     ).toHaveLength(2);
-    expect(rows()).toEqual([["assistant-a", "assistant-b"]]);
+    expect(rows()).toEqual([
+      ["user-a", "user-b"],
+      ["assistant-a", "assistant-b"],
+    ]);
   });
 });
