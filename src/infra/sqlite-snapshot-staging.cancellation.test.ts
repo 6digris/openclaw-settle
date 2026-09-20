@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { waitForSignalExitBarriers } from "../cli/signal-exit-barrier.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { acquireOpenClawStateDatabaseFileExclusion } from "../state/openclaw-state-db-cache.js";
 import {
   closeOpenClawStateDatabaseForTest,
@@ -222,7 +223,7 @@ it("keeps caller cancellation independent of idle reclamation", async () => {
     const reason = new DOMException(`${mode} caller stopped`, "AbortError");
     const reclamation = reclaimAbandonedSqliteSnapshotsAsync(f.cache);
     const entered = await f.entered;
-    const ownedSetupReady = owned ? Promise.withResolvers<void>() : undefined;
+    const ownedSetupReady = owned ? createDeferredCore() : undefined;
     const operation = withSqliteReadOnlyWorkerScope(async () => {
       if (mode === "snapshot") {
         await readSnapshot(f.source, controller.signal);
