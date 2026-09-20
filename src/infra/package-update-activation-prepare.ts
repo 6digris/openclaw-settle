@@ -50,7 +50,7 @@ function readPackageActivationRuntime(): Buffer {
   return fs.readFileSync(source);
 }
 
-export function packageActivationRecoveryCommand(
+function packageActivationRecoveryCommand(
   node: string,
   anchor: string,
   operationId: string,
