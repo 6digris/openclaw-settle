@@ -372,6 +372,7 @@ src/config/io.warnings.ts
 src/config/io.write-errors.ts
 src/config/io.write-prepare.ts
 src/config/io.write-safety.ts
+src/config/io.write-values.ts
 src/config/issue-format.ts
 src/config/json5-comments.ts
 src/config/legacy-codex-provider.ts
