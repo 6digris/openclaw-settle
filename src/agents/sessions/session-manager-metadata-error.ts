@@ -1,4 +1,4 @@
-import type { SessionTranscriptContextVersion } from "../../config/sessions/session-accessor.sqlite-transcript-state.js";
+import type { SessionTranscriptContextVersion } from "../../config/sessions/session-accessor.sqlite-contract.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { recordModelFallbackStop } from "../model-fallback-stop.js";
 import type { ModelChangeEntry, ThinkingLevelChangeEntry } from "./session-manager-types.js";

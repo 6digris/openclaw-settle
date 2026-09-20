@@ -8,8 +8,10 @@ import type {
 } from "../../agents/sessions/session-manager-types.js";
 import { trackAsyncWork } from "../../shared/async-work-scope.js";
 import { runWithCliHistoryWriter } from "./cli-history-boundary.js";
-import type { TranscriptAppendRefusal } from "./session-accessor.sqlite-contract.js";
-import type { SessionTranscriptContextVersion } from "./session-accessor.sqlite-transcript-state.js";
+import type {
+  SessionTranscriptContextVersion,
+  TranscriptAppendRefusal,
+} from "./session-accessor.sqlite-contract.js";
 import type { SessionTranscriptRuntimeTarget } from "./session-accessor.types.js";
 
 export type SessionMetadataChange =
