@@ -49,7 +49,7 @@ import {
 } from "./service-update-authority.js";
 import { WINDOWS_TASK_SUPERVISOR_FLAG } from "./windows-task-supervisor-contract.js";
 
-export const SCHEDULED_TASK_FALLBACK_POLL_MS = 250;
+const SCHEDULED_TASK_FALLBACK_POLL_MS = 250;
 export const SCHEDULED_TASK_FALLBACK_TIMEOUT_MS = 15_000;
 
 /** Read policy independently of runtime state; unavailable policy is not disabled. */
@@ -113,17 +113,25 @@ function createStartupEntryRemovalError(error: unknown): Error {
 
 export async function waitForScheduledTaskRunningEvidence(
   env: GatewayServiceEnv,
+  options?: { settleAfterRun?: boolean; assertCurrent?: () => void },
 ): Promise<boolean> {
   const deadline = Date.now() + SCHEDULED_TASK_FALLBACK_TIMEOUT_MS;
+  let previousRunningSignature: string | undefined;
   while (true) {
+    options?.assertCurrent?.();
     const probe = probeScheduledTaskState(resolveTaskName(env));
     // Only Scheduler supervision, not an old Startup process, proves takeover.
-    if (probe.status === "found" && probe.state === 4) {
+    const running = probe.status === "found" && probe.state === 4;
+    const signature = running ? (probe.lastRunTime ?? "running") : undefined;
+    if (running && !options?.settleAfterRun) {
       return true;
     }
     if (Date.now() >= deadline) {
-      return false;
+      // /Run is merely an accepted request. Observe its full startup window so
+      // transient Queued/Running followed by failure cannot become success.
+      return running && signature === previousRunningSignature;
     }
+    previousRunningSignature = signature;
     await sleep(SCHEDULED_TASK_FALLBACK_POLL_MS);
   }
 }

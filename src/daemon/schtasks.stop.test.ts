@@ -35,6 +35,23 @@ import {
   schtasksResponses,
 } from "./test-helpers/schtasks-fixtures.js";
 
+function mockSettledSchedulerSupervision() {
+  const processProbe = expectDefined(spawnSync.getMockImplementation(), "process fixture");
+  spawnSync.mockImplementation((command, args, options) => {
+    const encoded = args?.indexOf("-EncodedCommand") ?? -1;
+    if (
+      encoded >= 0 &&
+      Buffer.from(args?.[encoded + 1] ?? "", "base64")
+        .toString("utf16le")
+        .includes("Schedule.Service")
+    ) {
+      const stdout = JSON.stringify({ state: 4, lastRunResult: 267009 });
+      return { pid: 0, output: [null, stdout, ""], stdout, stderr: "", status: 0, signal: null };
+    }
+    return processProbe(command, args, options);
+  });
+}
+
 describe("Scheduled Task stop/restart cleanup", () => {
   it.each([
     { stdout: '"node.exe","4242","Console","1","1,024 K"', status: 0, result: "alive" },
@@ -486,7 +503,7 @@ describe("Scheduled Task stop/restart cleanup", () => {
         { ...SUCCESS_RESPONSE },
         { ...SUCCESS_RESPONSE },
       );
-      setTaskStateProbeResult(4);
+      mockSettledSchedulerSupervision();
       const write = vi.fn();
       const onMutation = vi.fn(() => {
         throw new Error("audit failed");
@@ -633,6 +650,7 @@ describe("Scheduled Task stop/restart cleanup", () => {
         const onMutation = vi.fn();
         pushSuccessfulSchtasksResponses(4);
         mockWindowsTaskkillSuccess();
+        mockSettledSchedulerSupervision();
         findVerifiedGatewayListenerPidsOnPortSync.mockReturnValue([5151]);
         inspectPortUsageMock
           .mockResolvedValueOnce(
@@ -696,6 +714,7 @@ describe("Scheduled Task stop/restart cleanup", () => {
   it("does not wait on or force-kill the gateway port when restarting a node Scheduled Task", async () => {
     await withPreparedGatewayTask(async ({ env, stdout }) => {
       pushSuccessfulSchtasksResponses(4);
+      mockSettledSchedulerSupervision();
       env.OPENCLAW_SERVICE_KIND = "node";
       env.OPENCLAW_WINDOWS_TASK_NAME = "OpenClaw Node";
       findVerifiedGatewayListenerPidsOnPortSync.mockReturnValue([5151]);
