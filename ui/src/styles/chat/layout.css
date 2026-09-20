@@ -648,10 +648,10 @@ openclaw-pending-session-create {
   content-visibility: auto;
 }
 
-/* Auto content visibility implies paint containment, which clips outlines at
-   row edges. Let the focused row paint its full keyboard focus indicator
-   without disabling offscreen layout skipping for the rest of the transcript. */
-.chat-virtual-row:focus-within {
+/* Auto content visibility clips row-edge focus rings. Keep hovered rows
+   uncontained too: restoring containment during native mouse focus can crash
+   Chromium before a context menu opens. Other rows retain layout skipping. */
+.chat-virtual-row:is(:hover, :focus-within) {
   content-visibility: visible;
 }
 
