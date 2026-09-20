@@ -110,7 +110,11 @@ const commands = [
   },
 ] as const;
 
-it.each(commands.flatMap((command) => [false, true].map((revoke) => ({ ...command, revoke }))))(
+it.each(
+  commands.flatMap((command) =>
+    [false, true].map((revoke) => Object.assign({}, command, { revoke })),
+  ),
+)(
   "preserves live owner authority through $command persistence (revoke=$revoke)",
   async ({ command, handler, persistedValue, expected, success, revocation, revoke }) => {
     await withAdminIngress(async ({ cfg, admins, context, state }) => {
@@ -125,8 +129,8 @@ it.each(commands.flatMap((command) => [false, true].map((revoke) => ({ ...comman
       });
       expect(params.command.senderIsOwner).toBe(true);
 
-      const preparing = createDeferredCore<void>();
-      const finishPreparation = createDeferredCore<void>();
+      const preparing = createDeferredCore();
+      const finishPreparation = createDeferredCore();
       setRuntimeConfigSnapshotRefreshHandler({
         preflight: async () => {
           preparing.resolve();
@@ -216,8 +220,8 @@ it("finishes accepted MCP removal and OAuth cleanup after the original admin is 
       await context(admin.identity.senderId),
       { workspaceDir: state.workspaceDir },
     );
-    const cleaningUp = createDeferredCore<void>();
-    const finishCleanup = createDeferredCore<void>();
+    const cleaningUp = createDeferredCore();
+    const finishCleanup = createDeferredCore();
     const clearMcpOAuthServer = mcpOAuth.clearMcpOAuthServer;
     const cleanup = vi
       .spyOn(mcpOAuth, "clearMcpOAuthServer")

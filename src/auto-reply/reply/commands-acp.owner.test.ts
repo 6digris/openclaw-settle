@@ -39,7 +39,7 @@ it.each(
       value: "auto-approve",
     },
     { action: "set-mode plan", effect: "mode=plan", option: "runtimeMode", value: "plan" },
-  ].flatMap((action) => principals.map((principal) => ({ ...action, ...principal }))),
+  ].flatMap((action) => principals.map((principal) => Object.assign({}, action, principal))),
 )(
   "fences the real /acp $action effect for $principal",
   async ({ action, effect, option, value, principal, senderId, transition }) => {
@@ -54,8 +54,8 @@ it.each(
       setRuntimeConfigSnapshot(cfg, cfg);
 
       const effectsPath = state.path("acp-command-effects.log");
-      const boundaryReached = createDeferredCore<void>();
-      const releaseBoundary = createDeferredCore<void>();
+      const boundaryReached = createDeferredCore();
+      const releaseBoundary = createDeferredCore();
       let commandStarted = false;
       const recordControl = async (entry: string) => {
         await appendFile(effectsPath, `${entry}\n`);
@@ -88,9 +88,9 @@ it.each(
               configOptionKeys: ["approval_policy"],
             };
           },
-          async setConfigOption({ key, value }) {
-            await recordControl(`${key}=${value}`);
-            return { configOptions: [{ id: key, currentValue: value }] };
+          async setConfigOption({ key, value: wireValue }) {
+            await recordControl(`${key}=${wireValue}`);
+            return { configOptions: [{ id: key, currentValue: wireValue }] };
           },
           async setMode({ mode }) {
             await recordControl(`mode=${mode}`);

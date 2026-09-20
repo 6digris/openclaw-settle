@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { withTempHome } from "../../config/home-env.test-harness.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../../config/types.plugins.js";
+import { formatErrorMessage } from "../../infra/errors.js";
 import { readPersistedInstalledPluginIndexInstallRecords } from "../../plugins/installed-plugin-index-records.js";
 import { writePersistedInstalledPluginIndex } from "../../plugins/installed-plugin-index-store-write.js";
 import { loadInstalledPluginIndex } from "../../plugins/installed-plugin-index.js";
@@ -152,7 +153,7 @@ describe("/plugins live owner authority", () => {
             entered.promise,
             command.then((outcome) => {
               throw new Error(
-                `Command settled before capability review: ${String(outcome.error ?? outcome.result?.reply?.text)}`,
+                `Command settled before capability review: ${formatErrorMessage(outcome.error ?? outcome.result?.reply?.text)}`,
               );
             }),
           ]);
@@ -183,7 +184,7 @@ describe("/plugins live owner authority", () => {
             acceptedSurfaceHash: expect.stringMatching(/^[a-f\d]{64}$/),
           });
         } else {
-          expect(String(outcome.error ?? outcome.result?.reply?.text)).toContain(
+          expect(formatErrorMessage(outcome.error ?? outcome.result?.reply?.text)).toContain(
             "owner authority revoked",
           );
           expect(fs.readFileSync(configPath, "utf8")).toBe(originalConfig);
