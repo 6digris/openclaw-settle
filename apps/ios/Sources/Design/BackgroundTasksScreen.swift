@@ -129,7 +129,7 @@ private struct MobileBackgroundTaskGetParams: Encodable {
     let taskId: String
 }
 
-private struct MobileBackgroundTaskEvent: Decodable {
+struct MobileBackgroundTaskEvent: Decodable {
     let action: String
     let task: MobileBackgroundTask?
     let taskId: String?
@@ -168,6 +168,32 @@ enum MobileBackgroundTaskList {
         }
     }
 
+    static func replay(
+        _ changes: [MobileBackgroundTaskEvent],
+        onto snapshot: [MobileBackgroundTask],
+        agentID: String) -> [MobileBackgroundTask]
+    {
+        var tasks = snapshot.filter { $0.agentId == nil || $0.agentId == agentID }
+        for change in changes {
+            switch change.action {
+            case "upserted":
+                guard let task = change.task else { continue }
+                if task.agentId == agentID ||
+                    (task.agentId == nil && tasks.contains(where: { $0.id == task.id }))
+                {
+                    tasks = self.merge(recent: [task], active: tasks)
+                } else {
+                    tasks.removeAll { $0.id == task.id }
+                }
+            case "deleted":
+                tasks.removeAll { $0.id == change.taskId }
+            default:
+                break
+            }
+        }
+        return tasks
+    }
+
     static func newest(_ task: MobileBackgroundTask, replacing current: MobileBackgroundTask) -> MobileBackgroundTask {
         if task.activityMilliseconds > current.activityMilliseconds { return task }
         if task.activityMilliseconds < current.activityMilliseconds { return current }
@@ -194,6 +220,7 @@ struct BackgroundTasksScreen: View {
     @State private var errorMessage: String?
     @State private var route: GatewayNodeSessionRoute?
     @State private var requestID: UInt64 = 0
+    @State private var pendingTaskChanges: [MobileBackgroundTaskEvent] = []
 
     private var observationID: String {
         "\(self.appModel.chatViewModelIdentityID)|\(self.appModel.operatorAuthorityGeneration)|\(self.agentID)"
@@ -326,6 +353,11 @@ struct BackgroundTasksScreen: View {
 
     @MainActor
     private func observeTasks() async {
+        self.requestID &+= 1
+        self.pendingTaskChanges = []
+        self.route = nil
+        self.loading = true
+        self.errorMessage = nil
         self.tasks = []
         let observationID = self.observationID
         let route = await self.appModel.operatorSession.currentRoute()
@@ -337,20 +369,18 @@ struct BackgroundTasksScreen: View {
         defer { subscription.cancel() }
         await self.loadTasks()
         for await event in subscription.events {
-            guard !Task.isCancelled, let route, observationID == self.observationID,
-                  await self.appModel.operatorSession.currentRoute() == route
+            guard let route, await self.appModel.operatorSession.currentRoute() == route,
+                  !Task.isCancelled, observationID == self.observationID
             else { return }
             guard let payload = event.payload,
                   let change = try? GatewayPayloadDecoding.decode(payload, as: MobileBackgroundTaskEvent.self)
             else { continue }
-            self.requestID &+= 1
-            self.loading = false
             switch change.action {
-            case "upserted":
-                guard let task = change.task, task.agentId == self.agentID else { continue }
-                self.tasks = MobileBackgroundTaskList.merge(recent: [task], active: self.tasks)
-            case "deleted":
-                self.tasks.removeAll { $0.id == change.taskId }
+            case "upserted", "deleted":
+                if self.loading {
+                    self.pendingTaskChanges.append(change)
+                }
+                self.tasks = MobileBackgroundTaskList.replay([change], onto: self.tasks, agentID: self.agentID)
             case "restored":
                 self.tasks = []
                 await self.loadTasks()
@@ -365,10 +395,18 @@ struct BackgroundTasksScreen: View {
         self.requestID &+= 1
         let requestID = self.requestID
         let observationID = self.observationID
+        let route = self.route
         self.loading = true
         self.errorMessage = nil
+        self.pendingTaskChanges = []
+        defer {
+            if observationID == self.observationID, requestID == self.requestID {
+                self.loading = false
+                self.pendingTaskChanges = []
+            }
+        }
         do {
-            guard let route = self.route else { throw CancellationError() }
+            guard let route else { throw CancellationError() }
             let tasks = try await MobileBackgroundTaskList.load { status, limit in
                 let params = MobileBackgroundTasksListParams(agentId: self.agentID, status: status, limit: limit)
                 let data = try await self.appModel.operatorSession.request(
@@ -378,13 +416,17 @@ struct BackgroundTasksScreen: View {
                     ifCurrentRoute: route)
                 return try JSONDecoder().decode(MobileBackgroundTasksEnvelope.self, from: data).tasks
             }
-            guard !Task.isCancelled, observationID == self.observationID, requestID == self.requestID else { return }
-            self.tasks = tasks.filter { $0.agentId == nil || $0.agentId == self.agentID }
+            guard await self.appModel.operatorSession.currentRoute() == route,
+                  !Task.isCancelled, observationID == self.observationID, requestID == self.requestID
+            else { return }
+            self.tasks = MobileBackgroundTaskList.replay(
+                self.pendingTaskChanges, onto: tasks, agentID: self.agentID)
         } catch {
-            guard !Task.isCancelled, observationID == self.observationID, requestID == self.requestID else { return }
+            guard await self.appModel.operatorSession.currentRoute() == route,
+                  !Task.isCancelled, observationID == self.observationID, requestID == self.requestID
+            else { return }
             self.errorMessage = error.localizedDescription
         }
-        self.loading = false
     }
 }
 

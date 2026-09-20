@@ -19,10 +19,11 @@ scenario:
       requiredProvider: mock-openai
       requiredModel: shared-progress-fixture-v1
     summary: >-
-      Opt-in only. Start the shared-progress-v1 loopback provider from the retained proof
-      assets. Pass --model mock-openai/shared-progress-fixture-v1; this synthetic model
-      keeps the scenario out of ordinary default lanes.
-      Set OPENCLAW_QA_SHARED_PROGRESS_ROOT, OPENCLAW_QA_SHARED_PROGRESS_RUN,
+      Opt-in only. Start scripts/e2e/lib/shared-progress/provider.mjs with MOCK_PORT and
+      MOCK_REQUEST_LOG. Pass --model mock-openai/shared-progress-fixture-v1; this synthetic
+      model keeps the scenario out of ordinary default lanes.
+      Set OPENCLAW_QA_SHARED_PROGRESS_ROOT to the absolute scripts/e2e/lib/shared-progress
+      directory, OPENCLAW_QA_SHARED_PROGRESS_RUN,
       and OPENCLAW_QA_SHARED_PROGRESS_PROVIDER_URL. The maintained Slack adapter owns
       the lease and Gateway lifecycle; no external model credentials are used.
 flow:

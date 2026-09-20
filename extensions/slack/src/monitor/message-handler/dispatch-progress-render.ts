@@ -50,7 +50,7 @@ export function buildSlackProgressSnapshotBlocks(params: {
   });
 }
 
-export function resolveStructuredProgressLines(
+function resolveStructuredProgressLines(
   lines: readonly ChannelProgressDraftCompositorLine[],
 ): ChannelProgressDraftLine[] {
   return lines.map((line) => {

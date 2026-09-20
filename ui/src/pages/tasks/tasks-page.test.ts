@@ -283,20 +283,30 @@ describe("TasksPage concurrent refresh events", () => {
     expect(refresh.page.tasks.every((task) => task.status === "completed")).toBe(true);
   });
 
-  it("does not resurrect a task deleted while its snapshot is in flight", async () => {
-    const initialTasks = [createTask("task-deleted"), createTask("task-retained")];
-    const refresh = await createDeferredTaskRefresh(initialTasks);
-    const pending = refresh.startRefresh();
+  it.each(["deleted", "scope-moved"] as const)(
+    "does not resurrect a task removed while its snapshot is in flight (%s)",
+    async (removal) => {
+      const initialTasks = [createTask("task-deleted"), createTask("task-retained")];
+      const refresh = await createDeferredTaskRefresh(initialTasks);
+      const pending = refresh.startRefresh();
 
-    refresh.source.emitTask({ action: "deleted", taskId: "task-deleted" });
-    expect(refresh.page.tasks.map((task) => task.id)).toEqual(["task-retained"]);
+      refresh.source.emitTask(
+        removal === "deleted"
+          ? { action: "deleted", taskId: "task-deleted" }
+          : {
+              action: "upserted",
+              task: createTask("task-deleted", "running", { agentId: "writer", updatedAt: 200 }),
+            },
+      );
+      expect(refresh.page.tasks.map((task) => task.id)).toEqual(["task-retained"]);
 
-    refresh.active.resolve({ tasks: initialTasks });
-    refresh.recent.resolve({ tasks: initialTasks });
-    await pending;
+      refresh.active.resolve({ tasks: initialTasks });
+      refresh.recent.resolve({ tasks: initialTasks });
+      await pending;
 
-    expect(refresh.page.tasks.map((task) => task.id)).toEqual(["task-retained"]);
-  });
+      expect(refresh.page.tasks.map((task) => task.id)).toEqual(["task-retained"]);
+    },
+  );
 
   it("retains a task created after its snapshot requests started", async () => {
     const initialTasks = [createTask("task-existing")];

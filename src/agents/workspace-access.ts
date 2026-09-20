@@ -4,12 +4,36 @@ import {
   extractErrorCode,
 } from "@openclaw/normalization-core/error-coercion";
 import type { MemoryWorkspaceFiles } from "../../packages/memory-host-sdk/src/host/workspace-files.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { readPersistedMediaFacts, type MediaFact } from "../media/media-facts.js";
+import type { UserTurnTranscriptRecorder } from "../sessions/user-turn-transcript.types.js";
+import type {
+  WorkspaceSkillSourceRequest,
+  WorkspaceSkillSources,
+} from "../skills/loading/workspace-skill-sources.types.js";
+import type { SkillResourceSourceReader } from "../skills/types.js";
 import type { SandboxFsBridge } from "./sandbox/fs-bridge.types.js";
+
+type WorkspaceAttachmentTurn = {
+  abortSignal?: AbortSignal;
+  config?: OpenClawConfig;
+  media?: MediaFact[];
+  timeoutMs: number;
+};
 
 /** Host-owned workspace files; callers keep their existing allowlists. */
 export type AgentWorkspaceAccess = {
   /** Native Memory file operations; indexing and session state remain on Gateway. */
   memoryFiles?: MemoryWorkspaceFiles;
+  /** Read native source tiers and execution-host facts without applying Gateway policy. */
+  loadSkills?: (request: WorkspaceSkillSourceRequest) => Promise<WorkspaceSkillSources>;
+  /** Keep a host subscription alive until aborted; notify without transferring file contents. */
+  watchSkills?: (
+    request: Pick<WorkspaceSkillSourceRequest, "sourcePlan" | "executionWorkspaceDir">,
+    onChange: (event: "change" | "unavailable") => void,
+    signal: AbortSignal,
+  ) => Promise<void>;
+  skillResources?: SkillResourceSourceReader;
   bridge: Pick<
     SandboxFsBridge,
     "readFile" | "readFileWithSource" | "readDirectory" | "writeFile" | "stat"
@@ -19,6 +43,11 @@ export type AgentWorkspaceAccess = {
     localRoots: readonly string[];
     readFile: (filePath: string, maxBytes: number) => Promise<Buffer>;
   };
+  /** Transfer admitted originals and return execution-only paths; leave recorded media unchanged. */
+  prepareTurnAttachments?: (
+    turn: WorkspaceAttachmentTurn,
+    assertCurrent: () => void,
+  ) => Promise<string | undefined>;
 };
 
 type WorkspaceBinding = { access?: AgentWorkspaceAccess; active: boolean };
@@ -221,6 +250,78 @@ export function registerAgentWorkspaceAccess(
       },
     });
   }
+  const prepareTurnAttachments = access.prepareTurnAttachments?.bind(access);
+  if (prepareTurnAttachments) {
+    boundAccess.prepareTurnAttachments = async (turn, assertRunCurrent) => {
+      const assertPreparationCurrent = () => {
+        assertCurrent();
+        turn.abortSignal?.throwIfAborted();
+        assertRunCurrent();
+      };
+      assertPreparationCurrent();
+      const note = await prepareTurnAttachments(turn, assertPreparationCurrent);
+      assertPreparationCurrent();
+      return note;
+    };
+  }
+  const loadSkills = access.loadSkills?.bind(access);
+  if (loadSkills) {
+    boundAccess.loadSkills = async (request) => {
+      assertCurrent();
+      let result: WorkspaceSkillSources;
+      try {
+        result = await loadSkills(request);
+      } catch (cause) {
+        throw new WorkspaceAccessUnavailableError("Remote workspace skill discovery failed", {
+          cause,
+        });
+      }
+      assertCurrent();
+      return result;
+    };
+  }
+  const watchSkills = access.watchSkills?.bind(access);
+  if (watchSkills) {
+    boundAccess.watchSkills = async (request, onChange, signal) => {
+      assertCurrent();
+      const active = AbortSignal.any([signal, lifetime.signal]);
+      active.throwIfAborted();
+      await watchSkills(
+        request,
+        (event) => {
+          if (!active.aborted && binding.active && bindings.get(key) === binding) {
+            onChange(event);
+          }
+        },
+        active,
+      );
+    };
+  }
+  const skillResources = access.skillResources;
+  if (skillResources) {
+    boundAccess.skillResources = Object.freeze({
+      async readInstructions(filePath, options) {
+        assertCurrent();
+        options.signal?.throwIfAborted();
+        const result = await skillResources.readInstructions(filePath, options);
+        assertCurrent();
+        options.signal?.throwIfAborted();
+        return result;
+      },
+      async resolveExplicitSkill(selection) {
+        assertCurrent();
+        const result = await skillResources.resolveExplicitSkill(selection);
+        assertCurrent();
+        return result;
+      },
+      async readSkillFiles(skill, options) {
+        assertCurrent();
+        const result = await skillResources.readSkillFiles(skill, options);
+        assertCurrent();
+        return result;
+      },
+    });
+  }
   binding.access = Object.freeze(boundAccess);
   bindings.set(key, binding);
   return () => {
@@ -271,4 +372,46 @@ export function captureAgentWorkspaceOutboundMedia(
       return await media.readFile(filePath, maxBytes);
     },
   };
+}
+
+/** Prepare execution-only paths while retaining canonical media and transcript facts. */
+export async function prepareAgentWorkspaceAttachments(params: {
+  workspaceDir: string;
+  turn: WorkspaceAttachmentTurn & { userTurnTranscriptRecorder?: UserTurnTranscriptRecorder };
+  assertCurrent: () => void;
+}): Promise<string | undefined> {
+  if (!params.turn.media?.length && !params.turn.userTurnTranscriptRecorder) {
+    return undefined;
+  }
+  const access = getAgentWorkspaceAccess(params.workspaceDir, "prepareTurnAttachments");
+  if (!access?.prepareTurnAttachments) {
+    return undefined;
+  }
+  const assertCurrent = () => {
+    params.turn.abortSignal?.throwIfAborted();
+    params.assertCurrent();
+    if (getAgentWorkspaceAccess(params.workspaceDir) !== access) {
+      throw new Error("Workspace access changed during attachment preparation");
+    }
+  };
+  assertCurrent();
+  const recorder = params.turn.userTurnTranscriptRecorder;
+  const message = (await recorder?.resolveMessage()) ?? recorder?.message;
+  assertCurrent();
+  // Deferred originals can differ from both the initial snapshot and runtime media.
+  const facts = (message ? readPersistedMediaFacts(message) : undefined) ?? params.turn.media ?? [];
+  if (!facts.some((fact) => fact.path?.trim() || fact.url?.trim())) {
+    return undefined;
+  }
+  const note = await access.prepareTurnAttachments(
+    {
+      config: params.turn.config,
+      media: facts,
+      timeoutMs: params.turn.timeoutMs,
+      abortSignal: params.turn.abortSignal,
+    },
+    assertCurrent,
+  );
+  assertCurrent();
+  return note;
 }

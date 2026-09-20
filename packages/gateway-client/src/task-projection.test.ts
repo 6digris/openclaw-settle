@@ -82,6 +82,7 @@ describe("shared task projection", () => {
     const projection = new TaskProjection();
     const old = task("child", {
       execution: { state: "running", lastActivityAt: 300 },
+      lastActivity: "Inspecting the predecessor execution",
       progress: progress(1),
     });
     const resumed = task("child", {
@@ -93,6 +94,7 @@ describe("shared task projection", () => {
     projection.applyEvent({ action: "upserted", task: old });
     expect(projection.tasks?.[0]?.progress).toEqual(resumed.progress);
     expect(projection.tasks?.[0]?.execution?.state).toBe("waiting");
+    expect(projection.tasks?.[0]).not.toHaveProperty("lastActivity");
     projection.invalidate();
     projection.applySnapshot(projection.beginSnapshot(), [
       task("child", { progress: { ...progress(0), runId: "restarted-host" } }),
@@ -103,12 +105,13 @@ describe("shared task projection", () => {
   it("does not inherit transient progress when a current snapshot omits it", () => {
     const projection = new TaskProjection();
     projection.applySnapshot(projection.beginSnapshot(), [
-      task("child", { progress: progress(3) }),
+      task("child", { progress: progress(3), lastActivity: "Inspecting" }),
     ]);
     projection.applySnapshot(projection.beginSnapshot(), [
       task("child", { execution: { state: "unknown" } }),
     ]);
     expect(projection.tasks?.[0]).not.toHaveProperty("progress");
+    expect(projection.tasks?.[0]).not.toHaveProperty("lastActivity");
     expect(projection.tasks?.[0]?.execution?.state).toBe("unknown");
   });
 
@@ -215,12 +218,69 @@ describe("task snapshot precedence", () => {
   });
 
   it("accepts authoritative equal-clock terminal corrections but not stale details", () => {
-    const completed = task("child", { status: "completed", terminalSummary: "Old result" });
+    const completed = task("child", {
+      status: "completed",
+      terminalSummary: "Old result",
+      prompt: "Authorized task input",
+      result: "Canonical completion output",
+    });
     const corrected = task("child", { status: "failed", terminalSummary: "Delivery failed" });
-    expect(newestTaskSnapshot(completed, corrected, "event").terminalSummary).toBe(
-      "Delivery failed",
-    );
+    expect(newestTaskSnapshot(completed, corrected, "event")).toEqual({
+      ...corrected,
+      prompt: completed.prompt,
+      result: completed.result,
+    });
     expect(newestTaskSnapshot(completed, corrected, "detail").terminalSummary).toBe("Old result");
+  });
+
+  it.each(["completed", "failed", "cancelled"] as const)(
+    "hydrates %s details without replacing terminal facts or reviving live activity",
+    (status) => {
+      const current = task("child", {
+        status,
+        terminalSummary: "Current terminal facts",
+        execution: { state: "finished" },
+      });
+      const detail = task("child", {
+        status,
+        terminalSummary: "Older terminal facts",
+        prompt: "Authorized task input",
+        result: "Canonical completion output",
+        execution: { state: "running", lastActivityAt: 200 },
+        lastActivity: "Still running",
+        progress: progress(1),
+      });
+      expect(newestTaskSnapshot(current, detail, "detail")).toEqual({
+        ...current,
+        prompt: detail.prompt,
+        result: detail.result,
+      });
+    },
+  );
+
+  it.each([
+    { runId: "replacement-task-run" },
+    { progress: { ...progress(2), runId: "replacement-execution" } },
+  ])("does not transfer detail fields across a known execution replacement: %j", (replacement) => {
+    const previous = task("child", {
+      status: "completed",
+      prompt: "Previous task input",
+      result: "Previous completion output",
+      progress: progress(1),
+    });
+    const current = task("child", { status: "completed", ...replacement });
+    expect(newestTaskSnapshot(current, previous, "detail")).toEqual(current);
+    expect(newestTaskSnapshot(previous, current, "event")).toEqual(current);
+  });
+
+  it("does not hydrate terminal details from an older durable snapshot", () => {
+    const current = task("child", { status: "failed", updatedAt: 200 });
+    const stale = task("child", {
+      status: "completed",
+      prompt: "Previous task input",
+      result: "Previous completion output",
+    });
+    expect(newestTaskSnapshot(current, stale, "detail")).toEqual(current);
   });
 
   it("keeps detail-only prompts while replacing live task facts", () => {

@@ -167,12 +167,63 @@ struct BackgroundTasksScreenTests {
         #expect(!snapshot.overlapped)
     }
 
-    private func task(id: String, status: String, updatedAt: Int) throws -> MobileBackgroundTask {
+    @Test func `snapshot replay retains quiet rows while applying only selected agent updates`() throws {
+        let quietActive = try self.task(id: "quiet-active", status: "running", updatedAt: 2000)
+        let quietFinished = try self.task(id: "quiet-finished", status: "completed", updatedAt: 1000)
+        let stale = try self.task(id: "changing", status: "running", updatedAt: 3000)
+        let completed = try self.task(id: "changing", status: "completed", updatedAt: 4000)
+        let unrelated = try self.task(id: "unrelated", status: "running", updatedAt: 5000, agentID: "agent-b")
+        let scopedWithoutAgent = try JSONDecoder().decode(MobileBackgroundTask.self, from: Data(#"""
+        {"id":"scoped-fallback","status":"running","updatedAt":1000}
+        """#.utf8))
+        let completedWithoutAgent = try JSONDecoder().decode(MobileBackgroundTask.self, from: Data(#"""
+        {"id":"scoped-fallback","status":"completed","updatedAt":6000}
+        """#.utf8))
+        let unknownWithoutAgent = try JSONDecoder().decode(MobileBackgroundTask.self, from: Data(#"""
+        {"id":"unknown-owner","status":"running","updatedAt":7000}
+        """#.utf8))
+
+        let tasks = MobileBackgroundTaskList.replay([
+            MobileBackgroundTaskEvent(action: "upserted", task: completed, taskId: nil),
+            MobileBackgroundTaskEvent(action: "upserted", task: unrelated, taskId: nil),
+            MobileBackgroundTaskEvent(action: "upserted", task: completedWithoutAgent, taskId: nil),
+            MobileBackgroundTaskEvent(action: "upserted", task: unknownWithoutAgent, taskId: nil),
+        ], onto: [stale, quietActive, quietFinished, scopedWithoutAgent], agentID: "agent-a")
+
+        #expect(tasks.map(\.id) == ["scoped-fallback", "changing", "quiet-active", "quiet-finished"])
+        #expect(tasks.filter(\.isActive).map(\.id) == ["quiet-active"])
+        #expect(tasks.filter { !$0.isActive }.map(\.id) == ["scoped-fallback", "changing", "quiet-finished"])
+    }
+
+    @Test func `snapshot replay cannot resurrect deleted or reassigned tasks`() throws {
+        let deleted = try self.task(id: "deleted", status: "running", updatedAt: 1000)
+        let moved = try self.task(id: "moved", status: "running", updatedAt: 2000)
+        let retained = try self.task(id: "retained", status: "completed", updatedAt: 3000)
+        let lastUpdate = try self.task(id: "deleted", status: "completed", updatedAt: 4000)
+        let reassigned = try self.task(id: "moved", status: "running", updatedAt: 5000, agentID: "agent-b")
+        let changes = [
+            MobileBackgroundTaskEvent(action: "upserted", task: lastUpdate, taskId: nil),
+            MobileBackgroundTaskEvent(action: "deleted", task: nil, taskId: "deleted"),
+            MobileBackgroundTaskEvent(action: "upserted", task: reassigned, taskId: nil),
+        ]
+
+        let liveTasks = MobileBackgroundTaskList.replay(changes, onto: [deleted, moved], agentID: "agent-a")
+        let refreshed = MobileBackgroundTaskList.replay(
+            changes, onto: [deleted, moved, retained], agentID: "agent-a")
+
+        #expect(liveTasks.isEmpty)
+        #expect(refreshed.map(\.id) == ["retained"])
+    }
+
+    private func task(
+        id: String, status: String, updatedAt: Int, agentID: String = "agent-a") throws -> MobileBackgroundTask
+    {
         let data = Data(#"""
         {
           "id":"\#(id)",
           "taskId":"\#(id)",
           "status":"\#(status)",
+          "agentId":"\#(agentID)",
           "runtime":"cli",
           "title":"\#(id)",
           "updatedAt":\#(updatedAt)

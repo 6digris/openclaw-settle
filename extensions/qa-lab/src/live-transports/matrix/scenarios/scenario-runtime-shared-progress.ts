@@ -3,6 +3,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
+  isSharedProgressTerminalText,
   prepareSharedProgressFixtureConfig,
   sharedProgressWorkersAreHolding,
 } from "../../shared/shared-progress-fixture.js";
@@ -215,19 +216,7 @@ export async function runMatrixSharedProgressScenario(
     }
     const card = revisions.filter((row) => row.messageId === cardId);
     const waiting = card.find((row) => row.text.includes(`SHARED_PROGRESS_WAIT run=${run}`));
-    const terminalStatuses =
-      profile === "cancel"
-        ? "cancelled"
-        : profile === "restart"
-          ? "succeeded|cancelled|failed|lost|timed_out"
-          : "succeeded";
-    const terminal = card.find((row) =>
-      ["Maple", "Cedar"].every((name) =>
-        new RegExp(`${name} \\((?:${terminalStatuses})\\)`, "u").test(
-          row.text.replace(/[*`]/gu, ""),
-        ),
-      ),
-    );
+    const terminal = card.find((row) => isSharedProgressTerminalText(row.text, profile));
     checks.push(
       {
         name: "original_card_creation_observed",
@@ -273,7 +262,8 @@ export async function runMatrixSharedProgressScenario(
         ok: card.some(
           (row) =>
             row.replacesEventId === cardId &&
-            (row.originServerTs ?? 0) > startedAt + Number(lifecycle[0]?.stoppedAtMs),
+            (row.originServerTs ?? 0) > startedAt + Number(lifecycle[0]?.stoppedAtMs) &&
+            isSharedProgressTerminalText(row.text, profile),
         ),
       });
     }

@@ -184,6 +184,49 @@ keeps execution serial and stops after the first failure.
 Use `openclaw qa matrix --concurrency <count>` to request fewer workers;
 values above the transport limit stay capped.
 
+### Shared progress lifecycle
+
+The opt-in `matrix-shared-progress-*` and `slack-shared-progress-*` scenarios
+run a parent command, two real workers, and a requester yield through the real
+channel adapter. A deterministic loopback provider chooses tools but accepts
+success only from actual command results. The profiles are `complete`, `cancel`,
+`restart`, and `second-turn`. Interrupted commands remain unknown unless a
+delivered result establishes their outcome.
+
+From the repository root, start a fresh provider for each run in one terminal:
+
+```bash
+mkdir -p .artifacts/qa-e2e/shared-progress-model
+MOCK_PORT=19952 \
+MOCK_REQUEST_LOG="$PWD/.artifacts/qa-e2e/shared-progress-model/requests.ndjson" \
+  node scripts/e2e/lib/shared-progress/provider.mjs
+```
+
+In another terminal, select the bundled fixture configuration and a unique run
+marker, then run the Matrix profile against its disposable homeserver:
+
+```bash
+export OPENCLAW_QA_SHARED_PROGRESS_ROOT="$PWD/scripts/e2e/lib/shared-progress"
+export OPENCLAW_QA_SHARED_PROGRESS_RUN="SP-matrix-complete-01"
+export OPENCLAW_QA_SHARED_PROGRESS_PROVIDER_URL="http://127.0.0.1:19952/"
+pnpm openclaw qa matrix --provider-mode mock-openai \
+  --model mock-openai/shared-progress-fixture-v1 \
+  --scenario matrix-shared-progress-complete --concurrency 1 \
+  --output-dir .artifacts/qa-e2e/shared-progress-matrix-complete-01
+```
+
+For Slack, first configure its [dedicated QA credentials](/concepts/qa-e2e-automation/slack-qa).
+Use `qa slack`, a `slack-shared-progress-*` scenario, a new marker and output
+directory, and the appropriate credential-source/role flags. The Slack command
+does not accept `--concurrency`. Both lanes need the fixture-only model above;
+ordinary default suites do not select these scenarios.
+
+Inspect `shared-progress-evidence.json`, the suite result, and the provider log.
+Slack combines accepted API writes with stored-message readback. Matrix records
+original event IDs separately from replacement-event IDs. Neither proves a
+native client's appearance. Stop the provider after the suite exits; the adapter
+owns Gateway, lease, and homeserver cleanup. Retain each run's evidence separately.
+
 ### Discord Mantis scenarios
 
 Discord also has Mantis-only opt-in scenarios for bug reproduction. Use

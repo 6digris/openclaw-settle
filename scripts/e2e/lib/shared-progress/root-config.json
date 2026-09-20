@@ -1,0 +1,59 @@
+{
+  "logging": {
+    "level": "debug"
+  },
+  "agents": {
+    "defaults": {
+      "utilityModel": "",
+      "heartbeat": {
+        "every": "0m"
+      },
+      "toolProgressDetail": "raw"
+    }
+  },
+  "plugins": {
+    "entries": {
+      "memory-core": {
+        "config": {
+          "dreaming": {
+            "enabled": false
+          }
+        }
+      }
+    }
+  },
+  "tools": {
+    "allow": [
+      "exec",
+      "sessions_spawn",
+      "sessions_yield",
+      "progress_card",
+      "subagents"
+    ],
+    "updatePlan": true,
+    "deny": [
+      "process"
+    ],
+    "codeMode": {
+      "enabled": false
+    },
+    "toolSearch": {
+      "enabled": false
+    },
+    "exec": {
+      "host": "gateway",
+      "mode": "full",
+      "timeoutSeconds": 120
+    },
+    "subagents": {
+      "tools": {
+        "allow": [
+          "exec"
+        ],
+        "deny": [
+          "process"
+        ]
+      }
+    }
+  }
+}

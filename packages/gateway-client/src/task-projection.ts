@@ -49,20 +49,34 @@ function retainTaskDisplayFacts(
   current: TaskSummary,
   incoming: TaskSummary,
 ): TaskSummary {
-  const prompt = incoming.prompt ?? current.prompt;
-  const sameExecution = !current.runId || !selected.runId || current.runId === selected.runId;
+  const other = selected === current ? incoming : current;
+  const sameExecution =
+    (!selected.runId || !other.runId || selected.runId === other.runId) &&
+    (!selected.progress || !other.progress || selected.progress.runId === other.progress.runId);
+  const prompt = selected.prompt ?? (sameExecution ? other.prompt : undefined);
+  const detailResult =
+    selected.result ??
+    (sameExecution && !isActiveTask(selected) && !isActiveTask(other) ? other.result : undefined);
+  const retainActivity =
+    sameExecution && (!current.progress || current.progress.runId === selected.progress?.runId);
   const lastActivity = isActiveTask(selected)
-    ? (selected.lastActivity ?? (sameExecution ? current.lastActivity : undefined))
+    ? (selected.lastActivity ?? (retainActivity ? current.lastActivity : undefined))
     : undefined;
   const diffStat = selected.diffStat ?? (sameExecution ? current.diffStat : undefined);
   if (
     prompt === selected.prompt &&
+    detailResult === selected.result &&
     lastActivity === selected.lastActivity &&
     diffStat === selected.diffStat
   ) {
     return selected;
   }
-  const result = { ...selected, ...(prompt ? { prompt } : {}), ...(diffStat ? { diffStat } : {}) };
+  const result = {
+    ...selected,
+    ...(prompt !== undefined ? { prompt } : {}),
+    ...(detailResult !== undefined ? { result: detailResult } : {}),
+    ...(diffStat ? { diffStat } : {}),
+  };
   if (lastActivity !== undefined) {
     result.lastActivity = lastActivity;
   } else {
@@ -95,7 +109,7 @@ export function newestTaskSnapshot(
     return select(currentActive ? incoming : current);
   }
   if (!currentActive) {
-    return provenance === "event" ? select(incoming) : current;
+    return select(provenance === "event" ? incoming : current);
   }
   if (current.status === "running" && incoming.status === "queued") {
     return select(current);

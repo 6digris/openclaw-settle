@@ -51,7 +51,12 @@ export async function prepareSharedProgressFixtureConfig(cfg: OpenClawConfig) {
         ...rootPatch.agents?.defaults,
         model: { primary: modelRef },
       },
-      list: cfg.agents?.list?.map((agent) => ({ ...agent, model: { primary: modelRef } })),
+      entries: Object.fromEntries(
+        Object.entries(cfg.agents?.entries ?? {}).map(([id, agent]) => [
+          id,
+          { ...agent, model: { primary: modelRef } },
+        ]),
+      ),
     },
     tools: rootPatch.tools,
     plugins: {
@@ -100,5 +105,21 @@ export async function sharedProgressWorkersAreHolding(endpoint: URL, run: string
     requests.some(
       (row) => row.run === run && row.stage === stage && row.call?.function?.name === tool,
     ),
+  );
+}
+
+export function isSharedProgressTerminalText(
+  text: string,
+  profile: "complete" | "cancel" | "restart" | "second-turn",
+): boolean {
+  const statuses =
+    profile === "cancel"
+      ? "cancelled"
+      : profile === "restart"
+        ? "succeeded|cancelled|failed|lost|timed_out"
+        : "succeeded";
+  const plain = text.replace(/[*`]/gu, "");
+  return ["Maple", "Cedar"].every((name) =>
+    new RegExp(`${name} \\((?:${statuses})\\)`, "u").test(plain),
   );
 }

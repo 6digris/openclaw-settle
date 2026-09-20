@@ -264,14 +264,14 @@ class TasksPage extends OpenClawLightDomElement {
             return;
           }
           const scopeId = this.context.agentSelection.state.scopeId;
-          const normalizedEvent = normalizeTaskEventPayload(event.payload);
+          let normalizedEvent = normalizeTaskEventPayload(event.payload);
           if (
             normalizedEvent?.action === "upserted" &&
             !taskMatchesAgentScope(normalizedEvent.task, scopeId)
           ) {
-            return;
+            normalizedEvent = { action: "deleted", taskId: normalizedEvent.task.id };
           }
-          const result = this.taskProjection.applyEvent(event.payload);
+          const result = this.taskProjection.applyEvent(normalizedEvent ?? event.payload);
           this.tasks = this.taskProjection.tasks ?? [];
           if (result.refetch) {
             void this.refreshTasks();

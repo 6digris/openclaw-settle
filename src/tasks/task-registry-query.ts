@@ -46,10 +46,7 @@ import {
   tasks,
 } from "./task-registry-state.js";
 import {
-  deleteOwnerKeyIndex,
-  deleteParentFlowIdIndex,
-  deleteRelatedSessionKeyIndex,
-  rebuildRunIdIndex,
+  removeTaskIndexes,
   recordTaskRegistryProjectionWrite,
   getTaskRegistryProcessState,
 } from "./task-registry.process-state.js";
@@ -496,8 +493,20 @@ export function listTaskStatesForFlowIds(
 }
 
 function findLatestTaskForRelatedSessionKey(sessionKey: string): TaskRecord | undefined {
-  const task = listTasksForRelatedSessionKey(sessionKey)[0];
-  return task ? cloneTaskRecord(task) : undefined;
+  ensureTaskRegistryReady();
+  const key = normalizeOptionalString(sessionKey);
+  if (!key) {
+    return undefined;
+  }
+  // Raw records stay inside this synchronous lookup; only the selected record is cloned.
+  const selected = [...(taskIdsByRelatedSessionKey.get(key) ?? [])]
+    .flatMap((taskId, insertionIndex) => {
+      const task = tasks.get(taskId);
+      return task ? [{ task, createdAt: task.createdAt, insertionIndex }] : [];
+    })
+    .toSorted(compareTasksNewestFirst)
+    .find(({ task }) => taskMatchesRelatedSession(task, key))?.task;
+  return selected ? cloneTaskRecord(selected) : undefined;
 }
 
 export function listTasksForRelatedSessionKey(
@@ -539,15 +548,15 @@ export function deleteTaskRecordById(taskId: string): boolean {
       if (!tryPersistTaskDelete(taskId)) {
         return false;
       }
-      deleteOwnerKeyIndex(taskId, current);
-      deleteParentFlowIdIndex(taskId, current);
-      deleteRelatedSessionKeyIndex(taskId, current);
+      const indexedCurrent = tasks.get(taskId);
+      if (indexedCurrent) {
+        removeTaskIndexes(indexedCurrent);
+      }
       clearTaskActivity(taskId);
       recordTaskRegistryProjectionWrite("task", taskId, true);
       tasks.delete(taskId);
       bumpTaskRegistryRevision();
       taskDeliveryStates.delete(taskId);
-      rebuildRunIdIndex();
       emitTaskRegistryObserverEvent(() => ({
         kind: "deleted",
         taskId: current.taskId,

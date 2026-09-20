@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
+  isSharedProgressTerminalText,
   prepareSharedProgressFixtureConfig,
   sharedProgressWorkersAreHolding,
 } from "../shared/shared-progress-fixture.js";
@@ -13,7 +14,7 @@ import {
 } from "./slack-live.observations.js";
 
 // Opt-in lifecycle proof: the maintained adapter still owns credentials, capture,
-// Gateway lifetime, and teardown. The external fixture owns only model decisions.
+// Gateway lifetime, and teardown. The fixture owns only model decisions.
 export async function runSlackSharedProgressScenario(
   environment: SlackQaScenarioEnvironment,
   profile: "complete" | "cancel" | "restart" | "second-turn",
@@ -162,6 +163,16 @@ export async function runSlackSharedProgressScenario(
     }
     const card = revisions.filter((row) => row.messageId === cardId);
     const waiting = card.find((row) => row.text.includes(`SHARED_PROGRESS_WAIT run=${run}`));
+    const terminal = card.find((row) => isSharedProgressTerminalText(row.text, profile));
+    const storedCard = stored.find(
+      (message) =>
+        message.ts &&
+        identities.get(message.ts) === cardId &&
+        isSutSlackMessage(message, environment.sutIdentity),
+    );
+    const storedCardText = storedCard
+      ? [storedCard.text ?? "", ...collectSlackBlockText(storedCard.blocks)].join("\n")
+      : "";
     checks.push(
       { name: "original_checklist_card", ok: Boolean(cardId) },
       {
@@ -180,6 +191,16 @@ export async function runSlackSharedProgressScenario(
         ),
       },
       { name: "card_still_stored", ok: storedIds.has(cardId) },
+      {
+        name: "terminal_workers_preserve_checklist",
+        ok: Boolean(terminal && steps.every((step) => terminal.text.includes(step))),
+      },
+      {
+        name: "stored_card_has_terminal_workers_and_checklist",
+        ok:
+          isSharedProgressTerminalText(storedCardText, profile) &&
+          steps.every((step) => storedCardText.includes(step)),
+      },
       { name: "separate_final_observed", ok: terminalAt !== undefined },
       {
         name: "sixty_second_observation_after_final",
@@ -201,7 +222,11 @@ export async function runSlackSharedProgressScenario(
     if (profile === "restart") {
       checks.push({
         name: "old_card_reconciles_after_old_gateway_stopped",
-        ok: card.some((row) => row.source === "accepted-slack-api-write-after-old-gateway-stopped"),
+        ok: card.some(
+          (row) =>
+            row.source === "accepted-slack-api-write-after-old-gateway-stopped" &&
+            isSharedProgressTerminalText(row.text, profile),
+        ),
       });
     }
     if (checks.some((check) => !check.ok)) {
