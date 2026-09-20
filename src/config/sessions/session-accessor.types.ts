@@ -811,6 +811,12 @@ export type SessionEntryCreateWithTranscriptPrepareResult<TError = string> =
   | { ok: true; entry: SessionEntry }
   | { ok: false; error: TError };
 
+/** Retained physical writer authority; valid only until the awaited continuation settles. */
+export type SessionEntryCommitContext = {
+  readonly env: NodeJS.ProcessEnv;
+  assertCurrent(): void;
+};
+
 export type SessionEntryCreateWithTranscriptOptions = {
   /** Protect the newly created row from maintenance during its initial write. */
   activeSessionKey?: string;
@@ -824,6 +830,11 @@ export type SessionEntryCreateWithTranscriptOptions = {
   withCommit?: <T>(run: (assertSourceCurrent: () => void) => Promise<T>) => Promise<T>;
   /** Non-throwing notification after the entry's outer COMMIT, before publication or cleanup. */
   onLifecycleCommitted?: (entry: SessionEntry) => void;
+  /**
+   * Awaited after COMMIT/publication, outside SQL but before releasing the physical writer.
+   * Recheck context before side effects; catch best-effort failures and join all native work.
+   */
+  afterCommitted?: (entry: SessionEntry, context: SessionEntryCommitContext) => Promise<void>;
 };
 
 export type SessionPatchProjectionSnapshot = { store: Readonly<Record<string, SessionEntry>> };

@@ -16,15 +16,30 @@ import {
   isCompetingSessionWorkAdmissionActive,
   runExclusiveSessionLifecycleMutation,
 } from "../../sessions/session-lifecycle-admission.js";
+import { createDeferredCore } from "../../shared/deferred.js";
+import { assertAgentDatabaseAdmitted } from "../../state/agent-database-admission.js";
 import { deletePersonalGitHubSessionReceipts } from "../../state/github-personal-publication-lifecycle.js";
+import {
+  agentDatabaseLifecycle,
+  retainAgentDatabase,
+} from "../../state/openclaw-agent-db-lifecycle.js";
+import { registerOpenClawAgentDatabaseAsyncResource } from "../../state/openclaw-agent-db-resources.js";
 import {
   deferOpenClawAgentPostCommitPublication,
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
   type OpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
+import { getOpenClawDatabaseMaintenanceScope } from "../../state/openclaw-state-db-async-lifecycle.js";
+import {
+  captureOpenClawStateDatabaseReadAdmission,
+  registerOpenClawStateDatabaseAsyncResource,
+} from "../../state/openclaw-state-db-cache.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
+import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { createSessionRepositoryWorkspaceStore } from "../../state/session-repository-workspaces.js";
+import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
+import { resolveStateDir } from "../paths.js";
 import { resolveSessionStorePathCore } from "./paths.js";
 import { readSessionEntryRow } from "./session-accessor.sqlite-entry-read.js";
 import {
@@ -34,7 +49,10 @@ import {
   type ResolvedSqliteReadScope,
 } from "./session-accessor.sqlite-scope.js";
 import type { SqliteSessionWriteOperation } from "./session-accessor.sqlite-write-operation.js";
-import type { SessionEntryCreateWithTranscriptOptions } from "./session-accessor.types.js";
+import type {
+  SessionEntryCommitContext,
+  SessionEntryCreateWithTranscriptOptions,
+} from "./session-accessor.types.js";
 import type { SessionEntry } from "./types.js";
 
 type DeletionEntry = { sessionKey: string; entry: SessionEntry };
@@ -60,6 +78,79 @@ export function hasPreparedNativeSessionDeletion(): boolean {
   );
 }
 
+/** Capture once at the admitted native writer, before COMMIT or continuation can yield. */
+export async function withSqliteSessionCommitContext<T>(
+  database: OpenClawAgentDatabase,
+  env: NodeJS.ProcessEnv | undefined,
+  run: (context: SessionEntryCommitContext) => T | Promise<T>,
+): Promise<T> {
+  if (database.db.isTransaction) {
+    throw new Error("Session entry commit continuation requires an outer SQLite commit");
+  }
+  const capturedEnv = cloneEnvWithPlatformSemantics(env ?? process.env);
+  capturedEnv.OPENCLAW_STATE_DIR = resolveStateDir(capturedEnv);
+  Object.freeze(capturedEnv);
+  const state = captureOpenClawStateDatabaseReadAdmission(
+    resolveOpenClawStateSqlitePath(capturedEnv),
+  );
+  const maintenance = getOpenClawDatabaseMaintenanceScope();
+  const completion = createDeferredCore();
+  let active = true;
+  const revoke = () => {
+    active = false;
+  };
+  const context: SessionEntryCommitContext = {
+    env: capturedEnv,
+    assertCurrent() {
+      // Consult the original native publication, never reopen the pathname or read SQL.
+      // Explicit close/replacement revokes this reference even when a successor has
+      // the same agent ID and durable session bytes.
+      if (
+        !active ||
+        !database.db.isOpen ||
+        agentDatabaseLifecycle.databases.get(database.path) !== database
+      ) {
+        throw new Error("Session entry commit owner is no longer current");
+      }
+      if (agentDatabaseLifecycle.failures.has(database.path)) {
+        throw agentDatabaseLifecycle.failures.get(database.path);
+      }
+      state.assertCurrent();
+      maintenance?.assertAdmission();
+      assertAgentDatabaseAdmitted(database.agentId, { env: capturedEnv });
+    },
+  };
+  context.assertCurrent();
+  const release = retainAgentDatabase(database.db);
+  let unregisterAgent: (() => void) | undefined;
+  let unregisterState: (() => void) | undefined;
+  try {
+    // Derived operation custody joins callback settlement before canonical close
+    // retires the native owner, including incognito and maintenance-owned handles.
+    unregisterAgent = registerOpenClawAgentDatabaseAsyncResource({
+      agentId: database.agentId,
+      path: database.path,
+      revoke,
+      close: () => completion.promise,
+    });
+    unregisterState = registerOpenClawStateDatabaseAsyncResource({
+      close: async (identity) => {
+        if (!identity || identity.key === state.identity.key) {
+          revoke();
+          await completion.promise;
+        }
+      },
+    });
+    return await run(context);
+  } finally {
+    revoke();
+    release();
+    completion.resolve();
+    unregisterAgent?.();
+    unregisterState?.();
+  }
+}
+
 type PreparedSessionWrite<T> = {
   deletedEntries: readonly DeletionEntry[];
   beforeCommit?: () => Promise<void>;
@@ -72,7 +163,7 @@ export async function runPreparedSqliteSessionWrite<T>(
   prepare: () => Promise<PreparedSessionWrite<T>>,
   operation: SqliteSessionWriteOperation,
   withCommit?: SessionEntryCreateWithTranscriptOptions["withCommit"],
-): Promise<{ deletedEntries: number; result: T }> {
+): Promise<{ deletedEntries: number; result: Awaited<T> }> {
   const prepared = await runExclusiveSqliteSessionWrite(
     scope,
     async () => {

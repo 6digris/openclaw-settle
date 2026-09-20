@@ -10,6 +10,7 @@ import type {
 import {
   runPreparedSqliteSessionWrite,
   runSqliteSessionDeletionTransaction as runOpenClawAgentWriteTransaction,
+  withSqliteSessionCommitContext,
 } from "./session-accessor.sqlite-deletion.js";
 import { sqliteSessionEntriesEqual } from "./session-accessor.sqlite-entry-equality.js";
 import { prepareExactSessionEntryRowReads } from "./session-accessor.sqlite-entry-read.js";
@@ -27,6 +28,7 @@ import {
   finalizeSessionEntryMaintenancePlansAfterWriterReleaseBestEffort,
 } from "./session-accessor.sqlite-maintenance.js";
 import {
+  captureLifecycleDatabaseScope,
   cloneSessionEntry,
   getSessionKysely,
   resolveSqliteScope,
@@ -34,7 +36,10 @@ import {
   toDatabaseOptions,
   withSqliteSessionDatabase,
 } from "./session-accessor.sqlite-scope.js";
-import type { SessionEntryReplacement } from "./session-accessor.types.js";
+import type {
+  SessionEntryCommitContext,
+  SessionEntryReplacement,
+} from "./session-accessor.types.js";
 import { assertCanonicalSqliteSessionKeysCurrent } from "./session-canonical-key.js";
 import type { SessionEntry } from "./types.js";
 
@@ -50,6 +55,7 @@ type ReplacementProjectionOptions = {
   assertCommitAllowed?: () => void;
   activeSessionKey?: string;
   agentId?: string;
+  env?: NodeJS.ProcessEnv;
   consumePendingReset?: boolean;
   requireWriteSuccess?: boolean;
   sessionKeys?: readonly string[];
@@ -60,6 +66,11 @@ type ReplacementProjectionOptions = {
 };
 
 type ReplacementProjectionParams<T, TReplacement> = ReplacementProjectionOptions & {
+  /**
+   * Awaited only for committed replacements, before the physical writer is released.
+   * Recheck context before side effects; catch best-effort failures and join all native work.
+   */
+  afterCommitted?: (result: T, context: SessionEntryCommitContext) => Promise<void>;
   update: (
     entries: SessionEntryReplacementSnapshot[],
   ) =>
@@ -99,11 +110,14 @@ async function applySqliteSessionEntryReplacementProjection<T, TReplacement>(
   params: ReplacementProjectionParams<T, TReplacement>,
   normalize: (replacements: Iterable<TReplacement> | undefined) => SqliteSessionEntryReplacement[],
 ): Promise<T> {
-  const resolved = resolveSqliteScope({
-    ...(params.agentId ? { agentId: params.agentId } : {}),
-    sessionKey: params.activeSessionKey ?? params.sessionKeys?.[0] ?? "",
-    storePath: params.storePath,
-  });
+  const resolved = captureLifecycleDatabaseScope(
+    resolveSqliteScope({
+      ...(params.agentId ? { agentId: params.agentId } : {}),
+      env: params.env,
+      sessionKey: params.activeSessionKey ?? params.sessionKeys?.[0] ?? "",
+      storePath: params.storePath,
+    }),
+  );
   const preparedWrite = await runPreparedSqliteSessionWrite(
     resolved,
     async () => {
@@ -237,88 +251,100 @@ async function applySqliteSessionEntryReplacementProjection<T, TReplacement>(
         return {
           deletedEntries: deletedOwners,
           commit: () =>
-            withSqliteSessionDatabase(toDatabaseOptions(resolved), () => {
-              const publish = runOpenClawAgentWriteTransaction(
-                (transactionDb) => {
-                  // Planning can await providers or hooks. Recheck uniqueness under the
-                  // write transaction so an external label claim cannot race this snapshot.
-                  if (
-                    params.includeLabelOwners !== undefined &&
-                    JSON.stringify(readLabelOwnerKeys(transactionDb.db)) !==
-                      JSON.stringify(labelOwnerKeys)
-                  ) {
-                    throw new Error("SQLite session label owners changed before replacement");
-                  }
-                  const transactionEntries = new Map<string, SessionEntry>();
-                  for (const sessionKey of validationKeys) {
-                    const transactionRow = readExactSessionEntryRow(transactionDb, sessionKey);
-                    const expectedRow = expectedRows.get(sessionKey);
+            withSqliteSessionDatabase(toDatabaseOptions(resolved), (commitDatabase) => {
+              const commit = () => {
+                const publish = runOpenClawAgentWriteTransaction(
+                  (transactionDb) => {
+                    // Planning can await providers or hooks. Recheck uniqueness under the
+                    // write transaction so an external label claim cannot race this snapshot.
                     if (
-                      transactionRow?.row.entry_json !== expectedRow?.row.entry_json ||
-                      !sqliteSessionEntriesEqual(transactionRow?.entry, expectedRow?.entry)
+                      params.includeLabelOwners !== undefined &&
+                      JSON.stringify(readLabelOwnerKeys(transactionDb.db)) !==
+                        JSON.stringify(labelOwnerKeys)
                     ) {
-                      throw new Error(
-                        `SQLite session entry changed before replacement for ${sessionKey}`,
+                      throw new Error("SQLite session label owners changed before replacement");
+                    }
+                    const transactionEntries = new Map<string, SessionEntry>();
+                    for (const sessionKey of validationKeys) {
+                      const transactionRow = readExactSessionEntryRow(transactionDb, sessionKey);
+                      const expectedRow = expectedRows.get(sessionKey);
+                      if (
+                        transactionRow?.row.entry_json !== expectedRow?.row.entry_json ||
+                        !sqliteSessionEntriesEqual(transactionRow?.entry, expectedRow?.entry)
+                      ) {
+                        throw new Error(
+                          `SQLite session entry changed before replacement for ${sessionKey}`,
+                        );
+                      }
+                      if (transactionRow) {
+                        transactionEntries.set(sessionKey, transactionRow.entry);
+                      }
+                    }
+                    params.assertCommitAllowed?.();
+                    for (const replacement of applicable) {
+                      const sourceEntries = [
+                        replacement.sessionKey,
+                        ...(replacement.previousSessionKeys ?? []),
+                      ].flatMap((sessionKey) => {
+                        const entry = transactionEntries.get(sessionKey);
+                        return entry ? [{ entry, sessionKey }] : [];
+                      });
+                      const selectedBefore = sourceEntries.toSorted(
+                        (left, right) => (right.entry.updatedAt ?? 0) - (left.entry.updatedAt ?? 0),
+                      )[0]?.entry;
+                      for (const { entry, sessionKey } of sourceEntries) {
+                        previous.set(sessionKey, entry);
+                      }
+                      writeSessionEntry(
+                        transactionDb,
+                        replacement.sessionKey,
+                        cloneSessionEntry(replacement.entry),
+                        {
+                          ...(params.consumePendingReset ? { consumePendingReset: true } : {}),
+                          previousEntry: selectedBefore ?? null,
+                          canonicalPreviousEntry:
+                            transactionEntries.get(replacement.sessionKey) ?? null,
+                        },
                       );
+                      deleteLegacySessionEntryRows(
+                        transactionDb,
+                        [...(replacement.previousSessionKeys ?? [])],
+                        replacement.sessionKey,
+                        {
+                          rehomeMembers: selectedBefore?.sessionId === replacement.entry.sessionId,
+                        },
+                      );
+                      current.set(replacement.sessionKey, replacement.entry);
                     }
-                    if (transactionRow) {
-                      transactionEntries.set(sessionKey, transactionRow.entry);
-                    }
-                  }
-                  params.assertCommitAllowed?.();
-                  for (const replacement of applicable) {
-                    const sourceEntries = [
-                      replacement.sessionKey,
-                      ...(replacement.previousSessionKeys ?? []),
-                    ].flatMap((sessionKey) => {
-                      const entry = transactionEntries.get(sessionKey);
-                      return entry ? [{ entry, sessionKey }] : [];
-                    });
-                    const selectedBefore = sourceEntries.toSorted(
-                      (left, right) => (right.entry.updatedAt ?? 0) - (left.entry.updatedAt ?? 0),
-                    )[0]?.entry;
-                    for (const { entry, sessionKey } of sourceEntries) {
-                      previous.set(sessionKey, entry);
-                    }
-                    writeSessionEntry(
-                      transactionDb,
-                      replacement.sessionKey,
-                      cloneSessionEntry(replacement.entry),
-                      {
-                        ...(params.consumePendingReset ? { consumePendingReset: true } : {}),
-                        previousEntry: selectedBefore ?? null,
-                        canonicalPreviousEntry:
-                          transactionEntries.get(replacement.sessionKey) ?? null,
-                      },
+                    maintenancePlans.push(
+                      applySessionEntryMaintenance(transactionDb, {
+                        activeSessionKey: params.activeSessionKey ?? "",
+                        archiveDirectory: resolveSqliteTranscriptArchiveDirectory(resolved),
+                        skipMaintenance: params.skipMaintenance ?? true,
+                        storePath: params.storePath,
+                      }),
                     );
-                    deleteLegacySessionEntryRows(
+                    return prepareSessionIdentityPublication(
                       transactionDb,
-                      [...(replacement.previousSessionKeys ?? [])],
-                      replacement.sessionKey,
-                      { rehomeMembers: selectedBefore?.sessionId === replacement.entry.sessionId },
+                      resolved.agentId,
+                      previous,
+                      current,
                     );
-                    current.set(replacement.sessionKey, replacement.entry);
-                  }
-                  maintenancePlans.push(
-                    applySessionEntryMaintenance(transactionDb, {
-                      activeSessionKey: params.activeSessionKey ?? "",
-                      archiveDirectory: resolveSqliteTranscriptArchiveDirectory(resolved),
-                      skipMaintenance: params.skipMaintenance ?? true,
-                      storePath: params.storePath,
-                    }),
-                  );
-                  return prepareSessionIdentityPublication(
-                    transactionDb,
-                    resolved.agentId,
-                    previous,
-                    current,
-                  );
-                },
-                toDatabaseOptions(resolved),
-                { operationLabel: "session.entry-replacements" },
-              );
-              publish();
-              return { maintenancePlans, result: operation.result };
+                  },
+                  toDatabaseOptions(resolved),
+                  { operationLabel: "session.entry-replacements" },
+                );
+                publish();
+                return { maintenancePlans, result: operation.result };
+              };
+              const afterCommitted = params.afterCommitted;
+              return afterCommitted
+                ? withSqliteSessionCommitContext(commitDatabase, resolved.env, async (context) => {
+                    const committed = commit();
+                    await afterCommitted(committed.result, context);
+                    return committed;
+                  })
+                : commit();
             }),
         };
       });

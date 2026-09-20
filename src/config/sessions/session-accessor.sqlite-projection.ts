@@ -10,10 +10,7 @@ import {
   openOpenClawAgentDatabase,
   type OpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
-import {
-  SessionEntryLifecycleUpsertConflictError,
-  type SessionArchivedTranscriptCleanupRule,
-} from "./session-accessor.lifecycle-types.js";
+import { SessionEntryLifecycleUpsertConflictError } from "./session-accessor.lifecycle-types.js";
 import {
   prunePublishedSessionArchivesByRetention,
   publishSessionStateArchives,
@@ -25,8 +22,6 @@ import type {
   SessionLifecycleArchivedTranscript,
   DeletedAgentSessionEntryPurgeParams,
   SessionEntryLifecycleMutationResult,
-  SessionEntryLifecycleRemoval,
-  SessionEntryLifecycleUpsert,
   SessionEntryReplacementSnapshot,
   SessionEntryReplacementUpdate,
   SessionEntryStatus,
@@ -34,6 +29,7 @@ import type {
 import {
   runPreparedSqliteSessionWrite,
   runSqliteSessionDeletionTransaction as runOpenClawAgentWriteTransaction,
+  withSqliteSessionCommitContext,
   withSqliteSessionDeletions,
 } from "./session-accessor.sqlite-deletion.js";
 import { sqliteSessionEntriesEqual } from "./session-accessor.sqlite-entry-equality.js";
@@ -70,9 +66,11 @@ import {
   applySessionEntryMaintenance,
   finalizeSessionEntryMaintenancePlansAfterWriterReleaseBestEffort,
 } from "./session-accessor.sqlite-maintenance.js";
+import type { SessionEntryLifecycleMutationParams } from "./session-accessor.sqlite-projection-types.js";
 import { applySessionEntryExactReplacements } from "./session-accessor.sqlite-replacement-projection.js";
 import { appendSessionResetBoundary } from "./session-accessor.sqlite-reset-boundary.js";
 import {
+  captureLifecycleDatabaseScope,
   cloneSessionEntry,
   resolveSqliteScope,
   resolveSqliteTranscriptArchiveDirectory,
@@ -80,9 +78,7 @@ import {
   toDatabaseOptions,
   withSqliteSessionDatabase,
 } from "./session-accessor.sqlite-scope.js";
-import type { SessionEntryCreateWithTranscriptOptions } from "./session-accessor.types.js";
 import { resolveMaintenanceConfig } from "./store-maintenance-runtime.js";
-import type { ResolvedSessionMaintenanceConfig } from "./store-maintenance.js";
 import type { SessionEntry } from "./types.js";
 
 type SessionArchiveRuntime = typeof import("../../gateway/session-archive.runtime.js");
@@ -251,37 +247,17 @@ function readProjectedRemovalEntry(
 }
 
 /** Applies exact lifecycle removals/upserts using SQLite session rows. */
-export async function applySessionEntryLifecycleMutation(params: {
-  agentId?: string;
-  env?: NodeJS.ProcessEnv;
-  storePath: string;
-  removals?: Iterable<SessionEntryLifecycleRemoval>;
-  upserts?: Iterable<SessionEntryLifecycleUpsert>;
-  activeSessionKey?: string;
-  maintenanceOverride?: Partial<ResolvedSessionMaintenanceConfig>;
-  skipMaintenance?: boolean;
-  cleanupArchivedTranscripts?: {
-    rules: SessionArchivedTranscriptCleanupRule[];
-    nowMs?: number;
-  };
-  captureArtifactCleanupError?: boolean;
-  /** Doctor-only bypass while exact malformed rows are removed in the same transaction. */
-  allowCanonicalRepair?: boolean;
-  /** Doctor-only synchronous state transfer that commits with the destination entry. */
-  afterUpsertsInTransaction?: (database: OpenClawAgentDatabase) => void;
-  /** Synchronous caller-authority guard checked immediately before lifecycle writes. */
-  beforeCommitInTransaction?: () => void;
-  /** Retain source authority around the final writer, after projection and native preparation. */
-  withCommit?: SessionEntryCreateWithTranscriptOptions["withCommit"];
-  /** Non-throwing notification after outer COMMIT, before lifecycle publication and owner cleanup. */
-  onLifecycleCommitted?: () => void;
-}): Promise<SessionEntryLifecycleMutationResult> {
-  const resolved = resolveSqliteScope({
-    ...(params.agentId ? { agentId: params.agentId } : {}),
-    env: params.env,
-    sessionKey: "",
-    storePath: params.storePath,
-  });
+export async function applySessionEntryLifecycleMutation(
+  params: SessionEntryLifecycleMutationParams,
+): Promise<SessionEntryLifecycleMutationResult> {
+  const resolved = captureLifecycleDatabaseScope(
+    resolveSqliteScope({
+      ...(params.agentId ? { agentId: params.agentId } : {}),
+      env: params.env,
+      sessionKey: "",
+      storePath: params.storePath,
+    }),
+  );
   const removals = [...(params.removals ?? [])];
   const upserts = [...(params.upserts ?? [])];
   let artifactCleanupError: unknown;
@@ -342,13 +318,22 @@ export async function applySessionEntryLifecycleMutation(params: {
             }
           : {}),
         commit: (assertSourceCurrent?: () => void) =>
-          withSqliteSessionDatabase(toDatabaseOptions(resolved), () =>
-            commitProjectedLifecycleMutation(
-              materializedRemovalPlans,
-              removalArchiveMaterializationFailed,
-              assertSourceCurrent,
-            ),
-          ),
+          withSqliteSessionDatabase(toDatabaseOptions(resolved), (database) => {
+            const commit = () =>
+              commitProjectedLifecycleMutation(
+                materializedRemovalPlans,
+                removalArchiveMaterializationFailed,
+                assertSourceCurrent,
+              );
+            const afterCommitted = params.afterCommitted;
+            return afterCommitted
+              ? withSqliteSessionCommitContext(database, resolved.env, async (context) => {
+                  const result = commit();
+                  await afterCommitted(context);
+                  return result;
+                })
+              : commit();
+          }),
       };
     },
     "session.lifecycle.mutate",

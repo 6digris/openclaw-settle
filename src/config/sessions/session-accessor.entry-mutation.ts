@@ -12,6 +12,7 @@ import { readSessionCreationSnapshot } from "./session-accessor.sqlite-creation-
 import "./session-accessor.sqlite-entry.js";
 import { forkSessionTranscriptFromParent } from "./session-accessor.sqlite-parent-session.js";
 import {
+  captureLifecycleDatabaseScope,
   resolveSqliteTranscriptScope,
   runExclusiveSqliteSessionWrite,
   toDatabaseOptions,
@@ -65,7 +66,11 @@ export async function createSessionEntryWithTranscript<TError = string>(
   const storePath = resolveAccessStorePath(scope);
   const agentId = scope.agentId ?? resolveAgentIdFromSessionKey(scope.sessionKey);
   // The incognito sentinel is scoped to env; its path alone cannot identify the memory store.
-  const storeScope = { agentId, env: scope.env, storePath };
+  const storeScope = {
+    agentId,
+    env: captureLifecycleDatabaseScope({ agentId, env: scope.env }).env,
+    storePath,
+  };
   const { normalizedKey, legacyKeys, ...context } = readSessionCreationSnapshot({
     ...storeScope,
     sessionKey: scope.sessionKey,
@@ -74,7 +79,7 @@ export async function createSessionEntryWithTranscript<TError = string>(
   if (!created.ok) {
     return { ok: false, error: created.error, phase: "entry" };
   }
-  const { cwd, commitGuard, withCommit, onLifecycleCommitted } = options;
+  const { cwd, commitGuard, withCommit, onLifecycleCommitted, afterCommitted } = options;
 
   const initializeTranscript = async (assertSourceCurrent?: () => void) => {
     try {
@@ -123,6 +128,9 @@ export async function createSessionEntryWithTranscript<TError = string>(
     ...(commitGuard ? { beforeCommitInTransaction: commitGuard } : {}),
     ...(withCommit ? { withCommit } : {}),
     ...(onLifecycleCommitted ? { onLifecycleCommitted: () => onLifecycleCommitted(entry) } : {}),
+    ...(afterCommitted
+      ? { afterCommitted: (commitContext) => afterCommitted(entry, commitContext) }
+      : {}),
   });
   return { ok: true, entry, sessionFile: normalizedKey };
 }
