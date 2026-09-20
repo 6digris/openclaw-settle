@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { encodeNodeTestGroups } from "../../scripts/lib/ci-node-test-groups-codec.mts";
+import { createSelectedNodeTestShardBundles } from "../../scripts/lib/ci-node-test-plan.mts";
 import { refitTestTimings, type CiTimingRun } from "../../scripts/lib/ci-test-timings-refit.mts";
+import * as timings from "../../scripts/lib/ci-test-timings.mts";
 import { createCompactSplitTimingGeneration } from "../../scripts/lib/vitest-shard-metadata.mts";
 
 const file = "test/scripts/measured.test.ts";
@@ -108,4 +110,26 @@ describe("PR tooling timing weights", () => {
       refitTestTimings([run(5, toolingLog(210)), run(6, toolingLog(220))], refitted).timings,
     ).toEqual(refitted);
   });
+  it.each(["blacksmith", "github"] as const)(
+    "retains the measured file cost as a floor in the %s planner",
+    (profile) => {
+      const target = "test/scripts/pr-merge-outcome.test.ts";
+      const spy = vi
+        .spyOn(timings, "readToolingFileTimings")
+        .mockImplementation((selected = "blacksmith") => ({
+          [target]: selected === "github" ? 500 : 300,
+        }));
+      try {
+        const jobs = createSelectedNodeTestShardBundles([target], { runnerBackend: profile });
+        const job = jobs.find((candidate) =>
+          candidate.groups.some((group) => group.includePatterns?.includes(target)),
+        );
+        expect(job?.groups.flatMap((group) => group.includePatterns)).toEqual([target]);
+        // Precise selection retains the complete parent's cold-start floor.
+        expect(job?.predictedSeconds).toBeGreaterThanOrEqual(profile === "github" ? 500 : 300);
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
 });

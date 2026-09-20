@@ -44,6 +44,7 @@ import { isRuntimePlacementIncludePatterns } from "./ci-test-timings-schema.mts"
 import {
   readCompactGroupTimings,
   readRuntimePlacementTimings,
+  readToolingFileTimings,
   resolveRuntimePlacementSeconds,
 } from "./ci-test-timings.mts";
 import { listTrackedTestFiles } from "./list-test-files.mts";
@@ -789,6 +790,11 @@ function applyCompactGroupWorkerPins(
 }
 
 function estimateDefaultCompactGroupSeconds(group: NodeTestShardGroup): number {
+  if (/^core-tooling-\d+$/u.test(group.shard_name) && group.includePatterns) {
+    // Numbered tooling parents change membership when file weights change.
+    // Their current files, not a former parent's aggregate, own admission.
+    return group.includePatterns.reduce((seconds, file) => seconds + toolingFileWeight(file), 0);
+  }
   const hint =
     readCompactGroupTimings("blacksmith")[compactGroupTimingKey(group)] ??
     COMPACT_GROUP_SECONDS_HINTS.get(group.shard_name);
@@ -796,9 +802,6 @@ function estimateDefaultCompactGroupSeconds(group: NodeTestShardGroup): number {
     return hint;
   }
   if (Array.isArray(group.includePatterns)) {
-    if (/^core-tooling-\d+$/u.test(group.shard_name)) {
-      return group.includePatterns.reduce((seconds, file) => seconds + toolingFileWeight(file), 0);
-    }
     return Math.max(3, Math.round(group.includePatterns.length * DEFAULT_SECONDS_PER_TEST_FILE));
   }
   return DEFAULT_WHOLE_GROUP_SECONDS;
@@ -838,6 +841,17 @@ function estimateCompactGroupSeconds(
   runnerBackend: string | undefined,
 ): number {
   const defaultSeconds = estimateDefaultCompactGroupSeconds(group);
+  if (/^core-tooling-\d+$/u.test(group.shard_name) && group.includePatterns) {
+    if (runnerBackend !== "github") {
+      return defaultSeconds;
+    }
+    const measured = readToolingFileTimings("github");
+    return group.includePatterns.reduce(
+      (seconds, file) =>
+        seconds + (measured[file] ?? toolingFileWeight(file) * COMPACT_GITHUB_GROUP_SECONDS_SCALE),
+      0,
+    );
+  }
   // Hybrid attempt 1 runs on Blacksmith. It keeps the expanded topology for
   // hosted retries, but its packing weights must describe the runner that
   // normally executes the plan.
@@ -1781,8 +1795,8 @@ function createUnitFastSplitShards(): NodeTestSplitShard[] {
   ];
 }
 
-// Run 33364935118 spent 2412s across the tooling files. Sixteen weighted
-// stripes retain all files and leave the three ~190s process fixtures alone.
+// Measured per-file costs balance sixteen stable parents; compact planning
+// repartitions their current inventory into budgeted children below.
 // Push compacts omit tooling; retained compact groups stay exclusive.
 function createToolingSplitShards(): NodeTestSplitShard[] {
   const files = listCompactToolingTestFiles();
@@ -2705,7 +2719,14 @@ function splitOversizedCompactGroup(
   );
   const isTooling = /^core-tooling-\d+$/u.test(group.shard_name);
   const packTooling = isTooling && runnerBackend === "github";
-  const weightForFile = isTooling ? toolingFileWeight : stripeFileWeight;
+  const hostedTooling =
+    isTooling && runnerBackend === "github" ? readToolingFileTimings("github") : undefined;
+  const weightForFile = isTooling
+    ? (file: string) =>
+        hostedTooling?.[file] === undefined
+          ? toolingFileWeight(file)
+          : hostedTooling[file]! / COMPACT_GITHUB_GROUP_SECONDS_SCALE
+    : stripeFileWeight;
   const totalWeight =
     includePatterns?.reduce((seconds, file) => seconds + weightForFile(file), 0) ?? 0;
   // A measured whole-config parent can lag newly cataloged files. Its old

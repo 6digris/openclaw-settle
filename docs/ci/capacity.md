@@ -282,7 +282,7 @@ costs. Native evidence with the same inventory must verify latency, actual
 resources and cleanup before claiming improvement.
 
 `config/ci-test-timings.json` records CI measurements for UI and Gateway E2E files,
-PR tooling files, and compact Node groups. UI and compact packers prefer active weights over their in-source cold-start
+PR tooling files, and compact Node groups. UI and compact packers prefer these weights over their in-source cold-start
 tables. UI E2E keys are repo-relative paths, including tests under `ui/src/pages/`,
 and every file estimate includes the measured fork, import, and setup overhead.
 Compact groups have separate Blacksmith and GitHub-hosted measurements, selected
@@ -314,6 +314,9 @@ independently, so they must read the same committed file from the checkout. They
 never download timing artifacts or consult restored timing caches. Missing or
 invalid timing files, or `OPENCLAW_CI_TEST_TIMINGS=0`, use the cold-start estimates
 for the entire file; stale keys cannot change the discovered test inventory.
+Covered tooling hints are retired when measurements take over. Without the
+timing file, those files use the two-second default; only still-unmeasured files
+retain their cold hints. Do not use disabled measurements as capacity evidence.
 
 With an authenticated `gh` CLI, run `pnpm ci:timings:refit` to regenerate the file.
 Each invocation freezes one UTC upper bound and a lower bound seven days earlier.
@@ -326,12 +329,9 @@ It also reads the newest five successful `ci.yml` `pull_request` runs for the
 PR-only numbered tooling family. These tests execute the PR merge-ref, not a
 canonical main revision; that provenance is appropriate for PR-only tooling.
 PR logs update only `toolingFileSeconds`, never main compact or release weights.
-Tooling measurements are collected ahead of planner activation: run `35506602947`
-exceeds the current hosted and hybrid row caps when applied. Keep activation
-separate until measured test improvements or approved capacity make every profile fit.
 The map keeps separate Blacksmith and GitHub measurements. Numbered tooling
 parents and their child timing keys change when files move, so per-file costs
-can survive repacking and serve local tooling scheduling after activation. Unmeasured files use
+survive repacking and also feed local tooling scheduling. Unmeasured files use
 the remaining cold hints or the positive two-second default.
 
 Only successful complete tooling invocations contribute. Native file summaries

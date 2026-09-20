@@ -333,8 +333,8 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
   execution and two-worker pins. This adds no jobs and does not promote hosted
   or hybrid tooling. The native two-CPU/8-GB tails require a larger-host timing
   comparison; capacity alone is not a measured speedup.
-- Numbered tooling measurements are collected in `toolingFileSeconds` ahead of
-  planner activation, which remains blocked on hosted/hybrid row capacity. The daily refit samples the
+- Numbered tooling weights come from `toolingFileSeconds` in the committed timing
+  file, with cold hints only for unmeasured files. The daily refit samples the
   newest five successful PR CI runs because main-push plans omit this family.
   Those measurements describe the PR merge-ref and update only tooling files;
   main compact and release sampling retain their existing provenance. Preserve

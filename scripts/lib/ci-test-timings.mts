@@ -53,6 +53,12 @@ export function readRepoE2eFileTimings(): Readonly<Record<string, number>> {
   return readTestTimings()?.repoE2eFileSeconds ?? emptyGroupTimings;
 }
 
+export function readToolingFileTimings(
+  profile: "blacksmith" | "github" = "blacksmith",
+): Readonly<Record<string, number>> {
+  return readTestTimings()?.toolingFileSeconds[profile] ?? emptyGroupTimings;
+}
+
 export function readRuntimePlacementTimings(
   profile: "blacksmith" | "github",
 ): readonly RuntimePlacementTiming[] {
