@@ -86,7 +86,8 @@ describe("worker deploy build plugin", () => {
           candidate !== config &&
           typeof candidate.entry === "object" &&
           !Array.isArray(candidate.entry) &&
-          Object.keys(candidate.entry).some((entry) => entry.startsWith("worker/")),
+          Object.keys(candidate.entry).length > 0 &&
+          Object.keys(candidate.entry).every((entry) => entry.startsWith("worker/")),
       )) {
         const { bundles } = await build({
           ...sibling,
