@@ -48,7 +48,8 @@ export function createClaudeCatalogWatchDriver(home: string) {
       return watcher;
     },
   );
-  let monotonicNow = performance.now();
+  // Whole milliseconds keep the exact arm step stable across floating-point boundaries.
+  let monotonicNow = Math.floor(performance.now());
   vi.spyOn(performance, "now").mockImplementation(() => monotonicNow);
   return {
     arm: () => {
