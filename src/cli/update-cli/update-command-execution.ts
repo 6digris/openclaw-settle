@@ -5,7 +5,6 @@ import { ScheduledTaskAutoStartRecoveryError } from "../../daemon/schtasks-updat
 import { tryReadJson } from "../../infra/json-files.js";
 import type { PackageUpdateTransaction } from "../../infra/package-update-steps.js";
 import { validateUpdateCandidateCanary } from "../../infra/update-candidate-canary.js";
-import type { UpdateCandidateRehearsal } from "../../infra/update-candidate-rehearsal.js";
 import type { UpdateStateSchemaVersion } from "../../infra/update-candidate-state.js";
 import {
   createUpdateDoctorConfigWarningStep,
@@ -64,7 +63,10 @@ import {
 } from "./update-command-package.js";
 import { verifyPreviousGatewayForUpdate } from "./update-command-readiness.js";
 import { assertUpdateCommandRecovery } from "./update-command-recovery.js";
-import { runUpdateCommandRepair } from "./update-command-repair.js";
+import {
+  runUpdateCommandRepair,
+  updateRepairValidationFromCanary,
+} from "./update-command-repair.js";
 import {
   resolveMutableUpdateFailure,
   type MutableUpdateExecutionResult,
@@ -360,11 +362,15 @@ export async function executeMutableUpdate(
     if (opts.run) {
       recordUpdateRunPhase(opts.run.runId, "validating", undefined, { env: opts.run.env });
     }
-    const validate = async (
-      signal?: AbortSignal,
-      rehearsal?: UpdateCandidateRehearsal,
-      assertCurrent?: () => void,
-    ) => {
+    const validate = async ({
+      signal,
+      rehearsal,
+      assertCurrent,
+      retainFailedRehearsal = false,
+    }: Pick<
+      Parameters<typeof validateUpdateCandidateCanary>[0],
+      "signal" | "rehearsal" | "assertCurrent" | "retainFailedRehearsal"
+    > = {}) => {
       signal?.throwIfAborted();
       try {
         if (params.updateInstallKind === "package") {
@@ -415,7 +421,7 @@ export async function executeMutableUpdate(
           nodeRunner: params.packageUpdateNodeRunner,
           signal,
         });
-        assertUpdateCommandRecovery(opts);
+        assertExecutionCurrent();
         if (!supported) {
           candidateFailureReason = "target-native-unsupported";
           throw new UpdatePreMutationError(
@@ -431,29 +437,36 @@ export async function executeMutableUpdate(
       const validation = await validateUpdateCandidateCanary({
         root,
         config: snapshot.config,
+        sourceConfigHash: snapshot.hash,
         stateDir: resolveStateDir(env),
         env,
         signal,
         rehearsal,
+        retainFailedRehearsal,
         assertCurrent,
         nodeRunner: params.packageUpdateNodeRunner,
         timeoutMs: params.timeoutMs,
         onStep: (step) => params.progress?.onStepComplete?.({ ...step, index: 0, total: 0 }),
       });
-      assertUpdateCommandRecovery(opts);
-      doctorConfigChanges.push(...(validation.doctorConfigChanges ?? []));
-      if (validation.status === "ok") {
-        validatedConfigSnapshot = snapshot;
-        candidateSchemaVersions = validation.candidateSchemaVersions;
-        gatewayRestartCompletion = validation.gatewayRestartCompletion === true;
-        doctorConfigWrites = validation.doctorConfigWrites === true;
-        observedGatewayStartupMs = validation.steps.find(
-          (step) => step.name === "Checking Gateway startup" && step.exitCode === 0,
-        )?.durationMs;
+      try {
+        assertExecutionCurrent();
+        doctorConfigChanges.push(...(validation.doctorConfigChanges ?? []));
+        if (validation.status === "ok") {
+          validatedConfigSnapshot = snapshot;
+          candidateSchemaVersions = validation.candidateSchemaVersions;
+          gatewayRestartCompletion = validation.gatewayRestartCompletion === true;
+          doctorConfigWrites = validation.doctorConfigWrites === true;
+          observedGatewayStartupMs = validation.steps.find(
+            (step) => step.name === "Checking Gateway startup" && step.exitCode === 0,
+          )?.durationMs;
+        }
+        return validation;
+      } catch (error) {
+        await validation.retainedRehearsal?.cleanup();
+        throw error;
       }
-      return validation;
     };
-    let validation = await validate();
+    let validation = await validate({ retainFailedRehearsal: true });
     if (validation.status === "error") {
       candidateFailureReason = validation.reason;
       const repair = await runUpdateCommandRepair({
@@ -462,27 +475,13 @@ export async function executeMutableUpdate(
         env,
         run: opts.run,
         phase: "validating",
+        mode,
+        validation,
         nodeRunner: params.packageUpdateNodeRunner,
-        result: {
-          status: "error",
-          mode,
-          root,
-          reason: validation.reason,
-          before: { version: await readPackageVersion(params.root) },
-          after: { version: await readPackageVersion(root) },
-          steps: validation.steps,
-          durationMs: validation.durationMs,
-        },
         validate: async (signal, assertCurrent, rehearsal) => {
-          const repairValidation = await validate(signal, rehearsal, assertCurrent);
-          return {
-            ok: repairValidation.status === "ok",
-            score: repairValidation.steps.filter((step) => step.exitCode === 0).length,
-            summary:
-              repairValidation.status === "ok"
-                ? "Update checks passed."
-                : repairValidation.logTail.join("\n"),
-          };
+          return updateRepairValidationFromCanary(
+            await validate({ signal, rehearsal, assertCurrent }),
+          );
         },
       });
       if (repair.status !== "repaired") {

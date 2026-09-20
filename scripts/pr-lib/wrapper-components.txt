@@ -136,6 +136,7 @@ scripts/lib/vitest-unhandled-errors.mts
 scripts/lib/vitest-worker-artifacts.mts
 scripts/lib/vitest-worker-declarations.mts
 scripts/lib/vitest-worker-run.mts
+scripts/lib/watch-pr-ci-rollup.mts
 scripts/lib/windows-taskkill.mjs
 scripts/pnpm-runner.mts
 scripts/pr-crabbox-gate-publisher.mjs
@@ -331,6 +332,7 @@ src/config/config-write-guard.ts
 src/config/config.ts
 src/config/defaults.ts
 src/config/deferred-plugin-migration-config.ts
+src/config/env-preserve-authored.ts
 src/config/env-preserve.ts
 src/config/env-substitution.ts
 src/config/env-vars.ts
