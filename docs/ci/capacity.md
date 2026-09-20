@@ -39,17 +39,17 @@ tokens. Existing backend expressions, runner classes, caches, worker limits,
 timeouts, repository variables, and main's two non-canceling parity slots remain
 unchanged.
 
-| Planning limit                                         | Standard    | Fast                                         |
-| ------------------------------------------------------ | ----------- | -------------------------------------------- |
-| Blacksmith serial compact budget, small / large        | 276s / 200s | 150s / 150s                                  |
-| GitHub / hybrid serial compact budget                  | 210s        | 150s                                         |
-| Eligible two-child compact aggregate budget            | 360s        | 240s                                         |
-| Hybrid runtime placement, including 100s build reserve | 440s        | 250s                                         |
-| Changed-plugin serial budget                           | 240s        | 150s                                         |
-| Compact descriptors, including dist                    | 90          | 120                                          |
-| Changed-plugin fallback rows                           | 50          | 70                                           |
-| Final Node rows, PR / push                             | 130 / 70    | 190 / 100                                    |
-| Node matrix concurrency                                | 96          | 190 outside the 32-class; 54 on the 32-class |
+| Planning limit                                         | Standard    | Fast                                        |
+| ------------------------------------------------------ | ----------- | ------------------------------------------- |
+| Blacksmith serial compact budget, small / large        | 276s / 200s | 150s / 150s                                 |
+| GitHub / hybrid serial compact budget                  | 210s        | 150s                                        |
+| Eligible two-child compact aggregate budget            | 360s        | 240s                                        |
+| Hybrid runtime placement, including 100s build reserve | 440s        | 250s                                        |
+| Changed-plugin serial budget                           | 240s        | 150s                                        |
+| Compact descriptors, including dist                    | 90          | 120                                         |
+| Changed-plugin fallback rows                           | 50          | 70                                          |
+| Final Node rows, PR / push                             | 130 / 70    | 190 / 100                                   |
+| Node matrix concurrency                                | 96          | 96 outside the 32-class; 54 on the 32-class |
 
 Fast Blacksmith planning reuses the existing file splitter and its complete
 inventory, process, prerequisite, and measured-floor contracts. The two-child
@@ -69,9 +69,13 @@ September 20 main sample peaked at 37 simultaneous 32-class jobs in
 matrix capped at 54 concurrent 32-class jobs, reserving one more for real-Gateway
 E2E: 55 is `floor(37 × 1.5)`. This bounds active jobs, not total rows: a plan can
 emit more 32-class rows and execute them in waves. The remaining fast Node matrix
-allows 190 concurrent rows. Both matrices use the same shard steps and routing,
+allows 96 concurrent rows. Both matrices use the same shard steps and routing,
 and both feed the required aggregate gate. Standard plans keep their single
-96-job matrix. Main's parity slots preserve admission of main runs, but do not
+96-job matrix. The standard-tier run 35535747348 observed a 185s median
+creation-to-start delay on the 4-class, including a 105s early-row delay. That
+run did not exercise fast, but its over-60s result conservatively reduced the
+proposed fast other-runner concurrency from 190 to 96. Fast can still admit up
+to 150 Node jobs across both matrices; native fast validation remains required. Main's parity slots preserve admission of main runs, but do not
 guarantee provider fairness against overlapping PRs.
 
 Count every row for registration budgeting regardless of concurrency. Retaining

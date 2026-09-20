@@ -70,7 +70,7 @@ six-run main sample's largest single-run overlap was 37 32-class jobs: 36 Node
 rows and real-Gateway E2E. Fast CI limits its separate 32-class Node matrix to
 54 active rows, reserving one more for real-Gateway E2E, for at most 55 per run
 (`floor(37 × 1.5)`). Total 32-class rows can exceed 54 and run in waves. Other fast
-Node rows use concurrency 190; standard CI retains concurrency 96. This changes
+Node rows use concurrency 96; standard CI retains concurrency 96. This changes
 neither runner classes nor per-job workers. Both matrices participate in the
 required aggregate gate. Main keeps its two parity slots, but provider fairness
 against overlapping PRs remains unproven. Measure assignment waits separately

@@ -4817,22 +4817,7 @@ NODE
       "github.event_name == 'pull_request'",
     );
     expect(workflow.jobs["checks-fast-core"].strategy["max-parallel"]).toBe(12);
-    for (const [test_tier, limit] of [
-      ["standard", 96],
-      ["fast", 190],
-    ] as const) {
-      expect(
-        evaluateWorkflowExpression(
-          workflow.jobs["checks-node-core-test-nondist-shard"].strategy["max-parallel"],
-          {
-            eventName: "pull_request",
-            runAttempt: 1,
-            repository: "openclaw/openclaw",
-            preflightOutputs: { test_tier },
-          },
-        ),
-      ).toBe(limit);
-    }
+    expect(workflow.jobs["checks-node-core-test-nondist-shard"].strategy["max-parallel"]).toBe(96);
     expect(
       workflow.jobs["checks-node-core-test-32-shard"].strategy["max-parallel"] + 1,
     ).toBeLessThanOrEqual(Math.floor(37 * 1.5));

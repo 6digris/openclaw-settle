@@ -42,7 +42,7 @@ jobs. Standard CI retains one Node matrix with 96 concurrent jobs and final
 caps of 70 push rows or 130 PR rows, including precise and plugin plans. Fast CI
 admits 100 push rows or 190 PR rows; its separate 32-class matrix admits at most
 54 active jobs, reserving one additional 32-class slot for real-Gateway E2E.
-Other fast Node rows use a matrix with concurrency 190. Both matrices retain the
+Other fast Node rows use a matrix with concurrency 96. Both matrices retain the
 same execution steps, runner routing, and required aggregate-gate coverage.
 Compact descriptors, including dist, are capped at 90 standard or 120 fast;
 plugin fallback is capped at 50 standard or 70 fast. Main retains two

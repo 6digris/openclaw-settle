@@ -3683,7 +3683,7 @@ jobs:
       fail-fast: false
       # Compact and PR manifest caps bound registrations; parallelism bounds
       # active jobs. Canonical main retains two non-canceling parity slots.
-      max-parallel: ${{ needs.preflight.outputs.test_tier == 'fast' && 190 || 96 }}
+      max-parallel: 96
       matrix: ${{ fromJson(needs.preflight.outputs.checks_node_core_nondist_matrix) }}
     steps:
       - *linux_node_checkout_step
@@ -3882,7 +3882,7 @@ jobs:
       contents: read
     env:
       CHECKOUT_GIT_COMMITS_JSON: ${{ toJson(matrix.git_commits) }}
-    name: ${{ matrix.check_name }}
+    name: ${{ matrix.check_name || 'checks-node-core-test-32-shard' }}
     needs: [preflight]
     if: needs.preflight.outputs.run_checks_node_core_32 == 'true'
     runs-on: *node_test_runner

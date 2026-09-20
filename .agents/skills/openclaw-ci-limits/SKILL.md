@@ -176,7 +176,7 @@ bounds, not live organization-wide capacity proof.
   reserved real-Gateway job. The 55-job bound is `floor(37 × 1.5)`, derived from
   the largest single-run overlap in the September 20 six-run main sample.
   No account-wide Linux ceiling is documented. Total 32-class rows may exceed
-  54; the bound applies to active jobs. Other fast Node rows use concurrency 190;
+  54; the bound applies to active jobs. Other fast Node rows use concurrency 96;
   standard retains one matrix at 96. Both matrices must share execution/routing
   and participate in the aggregate gate. Main retains two non-canceling parity
   slots; this does not guarantee global provider fairness.
