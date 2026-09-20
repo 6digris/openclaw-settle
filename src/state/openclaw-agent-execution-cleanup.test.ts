@@ -22,23 +22,21 @@ const edge = vi.hoisted(() => ({
 
 vi.mock("node:sqlite", () => ({ DatabaseSync: edge.forbidden }));
 vi.mock("node:worker_threads", () => ({ Worker: edge.forbidden }));
-vi.mock("../infra/runtime-worker-url.js", () => ({
-  resolveRuntimeWorkerUrl: () => new URL("file:///synthetic/shared-state.worker.js"),
-}));
 vi.mock("../infra/sqlite-worker-identity.js", () => ({
   readDatabasePathIdentity: async (canonicalPath: string) => ({
     key: "file:synthetic-state",
     canonicalPath,
   }),
 }));
-vi.mock("../infra/sqlite-worker-store.js", () => ({
-  openSharedStateSqliteWorkerStore: async (
-    options: { databasePath: string },
+// The shared owner survives module resets, so mock the operation this caller consumes.
+vi.mock("./openclaw-state-worker-store.js", () => ({
+  openOpenClawStateWorkerCleanupStore: async (
+    databasePath: string,
     context: SqliteWorkerStateContext,
+    assertOwned: () => void,
   ) => {
-    runWithSqliteWorkerStateContext(context, () =>
-      inspectRepairPolicy("open", options.databasePath),
-    );
+    assertOwned();
+    runWithSqliteWorkerStateContext(context, () => inspectRepairPolicy("open", databasePath));
     const store: SqliteWorkerStore<OpenClawStateWorkerCleanupOperations> = {
       async execute(command) {
         inspectRepairPolicy("cleanup", command.input.sharedStatePath);
@@ -47,6 +45,8 @@ vi.mock("../infra/sqlite-worker-store.js", () => ({
     };
     return store;
   },
+}));
+vi.mock("../infra/sqlite-worker-store.js", () => ({
   runSqliteWorkerStoreOperation: async (
     store: SqliteWorkerStore<OpenClawStateWorkerCleanupOperations>,
     operation: (scope: SqliteWorkerStore<OpenClawStateWorkerCleanupOperations>) => Promise<void>,

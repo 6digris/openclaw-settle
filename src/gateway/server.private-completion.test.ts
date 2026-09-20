@@ -31,11 +31,14 @@ import {
 } from "../state/openclaw-agent-pending-inputs-schema.js";
 import { setAbortedAgentDedupeEntries } from "./agent-turn/agent-dedupe.js";
 import * as agentJobs from "./agent-turn/agent-job.js";
-import { waitForChatAbortControllerRemoval } from "./chat-abort-lifecycle-internal.js";
+import {
+  waitForChatAbortControllerRemoval,
+  waitForChatAbortTerminalPersistence,
+} from "./chat-abort-lifecycle-internal.js";
 import { abortChatRunById } from "./chat-abort.js";
 import { dispatchGatewayMethodInProcess } from "./server-plugin-in-process-dispatch.js";
 import { startGatewayServerHarness, type GatewayServerHarness } from "./server.e2e-ws-harness.js";
-import { persistGatewaySessionLifecycleEvent } from "./session-lifecycle-state.js";
+import * as sessionLifecycleState from "./session-lifecycle-state.js";
 import { loadSessionEntry } from "./session-utils.js";
 import {
   agentCommandMock,
@@ -221,7 +224,7 @@ describe("private subagent completion processing receipts", () => {
         } catch (error) {
           // Exercise the real persisted lifecycle projection using the command's
           // error classification, not a mock that silently drops lifecycle errors.
-          await persistGatewaySessionLifecycleEvent({
+          await sessionLifecycleState.persistGatewaySessionLifecycleEvent({
             sessionKey,
             event: {
               runId,
@@ -692,6 +695,21 @@ describe("private subagent completion processing receipts", () => {
         "executing controller",
       );
       expect(active.executionStarted).toBe(true);
+      const terminalStarted = createDeferred();
+      const releaseTerminal = createDeferred();
+      const persistTerminal = sessionLifecycleState.persistGatewaySessionLifecycleEvent;
+      const terminalWrite =
+        kind === "abandoned"
+          ? vi
+              .spyOn(sessionLifecycleState, "persistGatewaySessionLifecycleEvent")
+              .mockImplementation(async (params) => {
+                if (params.event.runId === runId && params.event.data?.phase !== "start") {
+                  terminalStarted.resolve();
+                  await releaseTerminal.promise;
+                }
+                return await persistTerminal(params);
+              })
+          : undefined;
       active.expiresAtMs = Date.now() - 1;
       const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
       const { createGatewayMaintenanceStateForTest } =
@@ -712,6 +730,8 @@ describe("private subagent completion processing receipts", () => {
         expect(kernel.gatewayRequestContext.chatAbortControllers.get(runId)).toBe(active);
         expect(completions()).toEqual([]);
         if (kind === "abandoned") {
+          await terminalStarted.promise;
+          expect(active.projectSessionTerminalPersistence).toBeDefined();
           await vi.advanceTimersByTimeAsync(60_000);
           expect(kernel.gatewayRequestContext.chatAbortControllers.has(runId)).toBe(false);
           expect(JSON.parse(String(completions()[0]?.outcome_json))).toMatchObject({
@@ -721,6 +741,8 @@ describe("private subagent completion processing receipts", () => {
           });
         }
       } finally {
+        releaseTerminal.resolve();
+        terminalWrite?.mockRestore();
         clearInterval(timers.tickInterval);
         clearInterval(timers.healthInterval);
         clearInterval(timers.dedupeCleanup);
@@ -736,15 +758,24 @@ describe("private subagent completion processing receipts", () => {
       const outcome = JSON.parse(String(rows[0]?.outcome_json));
       expect(response).toMatchObject({ value: { status: "timeout", stopReason: "timeout" } });
       expect(outcome).toMatchObject({ status: "timeout", stopReason: "timeout" });
-      // The RPC receipt can precede terminal session persistence. Join the
-      // captured registration's lifecycle owner before asserting its removal.
-      expect(
-        await waitForChatAbortControllerRemoval({
-          entries: kernel.gatewayRequestContext.chatAbortControllers,
-          targets: [{ runId, entry: active }],
-          timeoutMs: SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
-        }),
-      ).toBe(true);
+      if (kind === "abandoned") {
+        // Maintenance already removed this entry; its flags no longer track settlement.
+        // Join the captured write itself before checking the durable terminal row.
+        await waitForChatAbortTerminalPersistence(active);
+        expect(loadSessionEntry(sessionKey).entry).toMatchObject({
+          status: "timeout",
+          lastRunId: runId,
+        });
+      } else {
+        // The RPC receipt can precede terminal session persistence and removal.
+        expect(
+          await waitForChatAbortControllerRemoval({
+            entries: kernel.gatewayRequestContext.chatAbortControllers,
+            targets: [{ runId, entry: active }],
+            timeoutMs: SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
+          }),
+        ).toBe(true);
+      }
       expect(kernel.gatewayRequestContext.chatAbortControllers.has(runId)).toBe(false);
       if (kind === "resolved") {
         expect(outcome).toMatchObject({
