@@ -325,14 +325,13 @@ function runEvidenceReports(
   baseRef: string,
   execFileSyncImpl: ExecFileSyncLike,
 ) {
+  const toolingRoot = path.resolve(import.meta.dirname, "..");
   // Report implementations belong to this tooling checkout; --root selects only the source data.
   // Release branches can keep frozen product bytes while trusted release tooling is repaired.
   for (const report of DEPENDENCY_EVIDENCE_REPORTS) {
     runCommand(
       "pnpm",
       [
-        "--dir",
-        path.resolve(import.meta.dirname, ".."),
         report.command.slice("pnpm ".length),
         "--",
         "--root",
@@ -343,7 +342,7 @@ function runEvidenceReports(
         "--markdown",
         reportPath(outputDir, report.markdown),
       ],
-      rootDir,
+      toolingRoot,
       execFileSyncImpl,
     );
   }
