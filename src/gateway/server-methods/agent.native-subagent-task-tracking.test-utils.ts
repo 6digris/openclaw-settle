@@ -6,15 +6,14 @@ import {
   mockSpawnedChildSessionEntry,
   spyDetachedCreateRunningTaskRun,
 } from "./agent-task-tracking.test-helpers.js";
+import { nativeSubagentClient } from "./agent.spawned-child.test-support.js";
 import {
-  type AgentHandlerArgs,
   backendGatewayClient,
   expectRecordFields,
   getAgentTestMocks,
   invokeAgent,
   makeContext,
   mockCallArg,
-  requireValue,
   resetAgentTaskRegistryForTests,
   useTestStateDir,
   waitForAgentCommandCall,
@@ -24,21 +23,13 @@ const mocks = getAgentTestMocks();
 
 export function registerNativeSubagentTaskTrackingTests() {
   describe("native subagent child run task tracking", () => {
-    function nativeSubagentClient(): AgentHandlerArgs["client"] {
-      const baseClient = requireValue(backendGatewayClient(), "expected backend client");
-      return {
-        connect: baseClient.connect,
-        internal: { ...baseClient.internal, agentRunTracking: "native_subagent" },
-      };
-    }
-
     it("suppresses the gateway CLI task row for native subagent child runs", async () => {
       await withTestDir({ prefix: "openclaw-gateway-native-subagent-" }, async (root) => {
         useTestStateDir(root);
         resetAgentTaskRegistryForTests();
         const childSessionKey = "agent:main:subagent:native-child";
         const runId = "native-subagent-run";
-        mockSpawnedChildSessionEntry(childSessionKey);
+        mockSpawnedChildSessionEntry(childSessionKey, root);
         const createRunningTaskRunSpy = spyDetachedCreateRunningTaskRun();
 
         const context = makeContext();
@@ -57,6 +48,11 @@ export function registerNativeSubagentTaskTrackingTests() {
           },
           { reqId: runId, client: nativeSubagentClient(), context, flushDispatch: false },
         );
+        expect(respond.mock.calls[0]?.slice(0, 3)).toEqual([
+          true,
+          expect.objectContaining({ status: "accepted", runId }),
+          undefined,
+        ]);
         // This case owns no clock semantics. Join the accepted run on real timers so
         // pre-dispatch failures also settle and the row assertion covers its full lifetime.
         expect(execution).toBeDefined();
@@ -79,7 +75,7 @@ export function registerNativeSubagentTaskTrackingTests() {
         resetAgentTaskRegistryForTests();
         const childSessionKey = "agent:main:subagent:unmarked-child";
         const runId = "native-subagent-unmarked";
-        mockSpawnedChildSessionEntry(childSessionKey);
+        mockSpawnedChildSessionEntry(childSessionKey, root);
         const createRunningTaskRunSpy = spyDetachedCreateRunningTaskRun();
 
         // An operator follow-up to a subagent session owns no registry row, so
