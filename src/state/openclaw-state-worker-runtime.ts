@@ -9,7 +9,7 @@ import {
   listNativeHookRelayBridgeSnapshotsInDatabase,
 } from "../agents/harness/native-hook-relay-store.kernel.js";
 import { executeNativeHookRelayMutation } from "../agents/harness/native-hook-relay-store.worker.js";
-import { insertSandboxRegistryRowIfMissingInDatabase } from "../agents/sandbox/registry.kernel.js";
+import { importSandboxRegistryRow } from "../agents/sandbox/registry-import.worker.js";
 import { writeSubagentRunValuesInDatabase } from "../agents/subagents/registry/subagent-registry.store.kernel.js";
 import { listRegistryWorktreesInDatabase } from "../agents/worktrees/registry-read.kernel.js";
 import { listAuditEventsInDatabase } from "../audit/audit-event-read.kernel.js";
@@ -39,6 +39,7 @@ import {
   listManagedImageRecordEntriesInDatabase,
   listManagedImageOriginalMediaIdsInDatabase,
 } from "../gateway/managed-image-record-store.kernel.js";
+import { registerSessionGroupInDatabase } from "../gateway/session-group-registration.kernel.js";
 import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
 import {
   countFailedDeliveryQueueEntriesInDatabase,
@@ -100,6 +101,7 @@ import {
 } from "../sessions/session-state-events.kernel.js";
 import { listWatchedSessionUpstreamLinksInDatabase } from "../sessions/session-upstream-links.kernel.js";
 import { commitSkillUploadInDatabase } from "../skills/lifecycle/upload-store-commit.js";
+import * as skillWorkshop from "../skills/workshop/store.worker.js";
 import { isTaskRegistryWorkerCommand } from "../tasks/task-registry.worker-contract.js";
 import { executeTaskRegistryCommand } from "../tasks/task-registry.worker.js";
 import { ensureMeetingTranscriptsSchema } from "../transcripts/sqlite-schema.js";
@@ -387,6 +389,9 @@ export function executeSharedStateCommand(
   if (command.type === "githubRepository.personalPending") {
     return readPendingRepositoryGitHubPublicationInDatabase(database.db, command.input);
   }
+  if (skillWorkshop.isSkillWorkshopCommand(command)) {
+    return skillWorkshop.executeSkillWorkshopCommand(command, database, context.databasePath);
+  }
   if (command.type === "deviceAuth.list") {
     return deviceAuth.readDeviceAuthTokensFromDatabase(database.db, command.input);
   }
@@ -477,11 +482,10 @@ export function executeSharedStateCommand(
     env: getSqliteWorkerStateContext().environment,
   };
   if (command.type === "sandboxRegistry.insertIfMissing") {
-    return runOpenClawStateWriteTransaction(({ db }) => {
-      requestSqliteWorkerOperationAdmission({ stage: "transaction", facts: undefined });
-      insertSandboxRegistryRowIfMissingInDatabase(db, command.input);
-      requestSqliteWorkerOperationAdmission({ stage: "commit", facts: undefined });
-    }, writeOptions);
+    return importSandboxRegistryRow(command.input, writeOptions);
+  }
+  if (command.type === "sessionGroups.register") {
+    return registerSessionGroupInDatabase(database, command.input.name, writeOptions.env);
   }
   if (command.type === "deliveryQueue.ack") {
     return executeDeliveryQueueAck(command.input, writeOptions);
