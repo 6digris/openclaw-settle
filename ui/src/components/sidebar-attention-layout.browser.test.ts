@@ -67,6 +67,7 @@ function panelParams(
       refresh: vi.fn().mockResolvedValue(undefined),
       dismiss: vi.fn().mockResolvedValue(undefined),
       subscribe: () => () => undefined,
+      subscribeArrivals: () => () => undefined,
       dispose: () => undefined,
     },
     entries,

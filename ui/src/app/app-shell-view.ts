@@ -5,6 +5,7 @@ import { isRouteId, type RouteId } from "../app-routes.ts";
 import { renderGatewayStatus } from "../components/gateway-status.ts";
 import { icons } from "../components/icons.ts";
 import { renderConnectingSplash } from "../components/loading-skeleton.ts";
+import "../components/mention-notifications.ts";
 import { renderNewSessionLink } from "../components/new-session-link.ts";
 import { renderLazySettingsSidebar } from "../components/settings-sidebar-lazy.ts";
 import type { ThemeModeChangeDetail } from "../components/theme-mode-toggle.ts";
@@ -628,6 +629,9 @@ export function renderApplicationShell(host: ShellViewHost) {
           : nothing
       }
       <openclaw-toast-host></openclaw-toast-host>
+      <openclaw-mention-notifications
+        .watchedSessionKey=${sessionRoute ? host.activeSessionKey : null}
+      ></openclaw-mention-notifications>
     </div>
   `;
   // Keep plugin settings reachable when a replacement owns the workspace.

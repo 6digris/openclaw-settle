@@ -471,4 +471,82 @@ describe("shared toast", () => {
 
     expect(reasons).toEqual(["replaced", "action", "ran-action", "dismiss", "disconnected"]);
   });
+  it("renders notification headings with an icon dismiss and animates the five-second timeout", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("matchMedia", () => ({ matches: false }));
+    const host = await mountHost();
+    const onDismiss = vi.fn();
+    showToast({
+      title: "Design review",
+      message: "Alice mentioned you",
+      actionLabel: "View session",
+      onAction: vi.fn(),
+      durationMs: 5_000,
+      onDismiss,
+    });
+    await host.updateComplete;
+    expect(host.querySelector(".app-toast__title")?.textContent).toBe("Design review");
+    expect(host.querySelector(".app-toast__dismiss svg")).not.toBeNull();
+    expect(host.querySelector(".app-toast__dismiss")?.textContent?.trim()).toBe("");
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(onDismiss).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await host.updateComplete;
+    expect(host.querySelector('.app-toast--notification[data-active="false"]')).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(450);
+    expect(onDismiss).toHaveBeenCalledExactlyOnceWith("timeout");
+  });
+
+  it.each(["queued", "shared"] as const)(
+    "retires %s aborted toasts without blocking the FIFO successor",
+    async (mode) => {
+      const host = await mountHost();
+      const scope = new AbortController();
+      const first = vi.fn();
+      const queued = vi.fn();
+      showToast({
+        message: "First",
+        signal: mode === "shared" ? scope.signal : undefined,
+        onDismiss: first,
+      });
+      showToast({ message: "Retired", signal: scope.signal, fifo: true, onDismiss: queued });
+      showToast({ message: "Still authorized", fifo: true });
+      scope.abort();
+      await host.updateComplete;
+      expect(queued).toHaveBeenCalledExactlyOnceWith("cancelled");
+      if (mode === "queued") {
+        expect(host.textContent).toContain("First");
+        host.querySelector<HTMLButtonElement>(".app-toast__dismiss")!.click();
+        await host.updateComplete;
+      } else {
+        expect(first).toHaveBeenCalledExactlyOnceWith("cancelled");
+      }
+      expect(host.textContent).toContain("Still authorized");
+      expect(host.textContent).not.toContain("Retired");
+    },
+  );
+  it("does not promote or leak a queued notification while replacing an exiting toast", async () => {
+    vi.stubGlobal("matchMedia", () => ({ matches: false }));
+    const host = await mountHost();
+    const queued = new AbortController();
+    const onQueuedDismiss = vi.fn();
+    showToast({ title: "First", message: "Exiting notification" });
+    showToast({
+      title: "Second",
+      message: "Queued notification",
+      signal: queued.signal,
+      fifo: true,
+      onDismiss: onQueuedDismiss,
+    });
+    await host.updateComplete;
+    host.querySelector<HTMLButtonElement>(".app-toast__dismiss")!.click();
+    await host.updateComplete;
+    expect(host.querySelector('.app-toast[data-active="false"]')).not.toBeNull();
+    showToast({ message: "Urgent replacement" });
+    await host.updateComplete;
+    queued.abort();
+    await host.updateComplete;
+    expect(onQueuedDismiss).toHaveBeenCalledExactlyOnceWith("cancelled");
+    expect(host.textContent).toContain("Urgent replacement");
+  });
 });

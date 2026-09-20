@@ -411,4 +411,30 @@ describe("application mention Inbox", () => {
     await flushMicrotasks();
     expect(request).toHaveBeenCalledTimes(2);
   });
+  it("publishes only new arrivals after hydration and never replays a reconnected Inbox", async () => {
+    let response = result(1);
+    const request = vi.fn<RequestFn>(() => Promise.resolve(response));
+    const harness = gatewayForMentions(request);
+    const capability = createCapability(harness.gateway);
+    const arrivals = vi.fn();
+    capability.subscribeArrivals(arrivals);
+    await capability.refresh();
+    expect(arrivals).not.toHaveBeenCalled();
+
+    const newer = { ...mention, id: "newer", createdAt: 3_000 };
+    const older = { ...mention, id: "older", createdAt: 2_000 };
+    response = result(2, [newer, older, mention]);
+    harness.emitEvent("mentions.changed", { gatewayInstanceId: "boot-a", revision: 2 });
+    await capability.refresh();
+    expect(arrivals).toHaveBeenCalledExactlyOnceWith([older, newer]);
+    await capability.refresh();
+    expect(arrivals).toHaveBeenCalledTimes(1);
+
+    harness.update({ client: client(request) });
+    await capability.refresh();
+    expect(arrivals).toHaveBeenCalledTimes(1);
+    response = result(3, []);
+    await capability.dismiss([mention.id]);
+    expect(arrivals).toHaveBeenCalledTimes(1);
+  });
 });

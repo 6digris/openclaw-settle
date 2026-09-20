@@ -23,6 +23,7 @@ const unavailableMentionsCapability = {
   refresh: async () => undefined,
   dismiss: async () => undefined,
   subscribe: () => () => undefined,
+  subscribeArrivals: () => () => undefined,
   dispose: () => undefined,
 } satisfies MentionsCapability;
 

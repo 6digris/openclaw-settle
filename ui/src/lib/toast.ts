@@ -6,12 +6,22 @@ import { t } from "../i18n/index.ts";
 import { OpenClawLightDomContentsElement } from "../lit/openclaw-element.ts";
 import { formatUiExternalText } from "./format-error.ts";
 
-type ToastDismissReason = "action" | "dismiss" | "disconnected" | "replaced" | "timeout";
+type ToastDismissReason =
+  | "action"
+  | "cancelled"
+  | "dismiss"
+  | "disconnected"
+  | "replaced"
+  | "timeout";
 
 export type ToastOptions = {
   /** A template lets a message name a destination the operator can actually open,
    * instead of spelling out a settings path the toast then makes them find. */
   message: string | TemplateResult;
+  /** A heading gives notifications a compact card with a separate action row. */
+  title?: string;
+  /** Retire transient notifications when their owning view or access changes. */
+  signal?: AbortSignal;
   /** Positions a compact toast at the top center of the owning surface. */
   anchor?: Element;
   anchorTopOffset?: number;
@@ -52,7 +62,7 @@ let queuedToast: ToastOptions | null = null;
 class OpenClawToastHost extends OpenClawLightDomContentsElement {
   @state() private toast: ToastOptions | null = null;
   @state() private active = false;
-  private readonly toastQueue: ToastOptions[] = [];
+  private readonly toastQueue: { options: ToastOptions; abort: () => void }[] = [];
   private dismissTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
   private exitTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
   private exitReason: ToastDismissReason | null = null;
@@ -92,13 +102,32 @@ class OpenClawToastHost extends OpenClawLightDomContentsElement {
     }
   }
 
+  private readonly abortActive = () => this.dismiss("cancelled");
+
   show(options: ToastOptions) {
-    if (options.fifo && this.toast) {
-      this.toastQueue.push(options);
+    if (options.signal?.aborted) {
+      options.onDismiss?.("cancelled");
       return;
     }
-    this.finishDismiss(this.exitReason ?? "replaced");
+    if (options.fifo && this.toast) {
+      const pending = {
+        options,
+        abort: () => {
+          const index = this.toastQueue.indexOf(pending);
+          if (index >= 0) {
+            this.toastQueue.splice(index, 1);
+            options.onDismiss?.("cancelled");
+          }
+        },
+      };
+      this.toastQueue.push(pending);
+      options.signal?.addEventListener("abort", pending.abort, { once: true });
+      return;
+    }
+    // A replacement keeps FIFO entries queued even when the old toast is exiting.
+    this.finishDismiss(this.exitReason ?? "replaced", false);
     this.toast = options;
+    options.signal?.addEventListener("abort", this.abortActive, { once: true });
     this.active = true;
     this.exitReason = null;
     this.remainingMs = options.durationMs ?? DEFAULT_TOAST_DURATION_MS;
@@ -145,8 +174,9 @@ class OpenClawToastHost extends OpenClawLightDomContentsElement {
     }
   }
 
-  private finishDismiss(reason: ToastDismissReason) {
+  private finishDismiss(reason: ToastDismissReason, promoteNext = true) {
     const toast = this.toast;
+    toast?.signal?.removeEventListener("abort", this.abortActive);
     this.clearDismissTimer();
     this.active = false;
     this.exitReason = null;
@@ -156,12 +186,19 @@ class OpenClawToastHost extends OpenClawLightDomContentsElement {
       this.hovered = false;
       const queued = this.toastQueue.splice(0);
       for (const pending of queued) {
-        pending.onDismiss?.("disconnected");
+        pending.options.signal?.removeEventListener("abort", pending.abort);
+        pending.options.onDismiss?.("disconnected");
       }
-    } else if (reason !== "replaced") {
-      const next = this.toastQueue.shift();
-      if (next) {
-        this.show(next);
+    } else if (promoteNext && reason !== "replaced") {
+      while (this.toastQueue.length) {
+        const next = this.toastQueue.shift()!;
+        next.options.signal?.removeEventListener("abort", next.abort);
+        if (next.options.signal?.aborted) {
+          next.options.onDismiss?.("cancelled");
+          continue;
+        }
+        this.show(next.options);
+        break;
       }
     }
   }
@@ -176,7 +213,7 @@ class OpenClawToastHost extends OpenClawLightDomContentsElement {
       (reason !== "dismiss" && reason !== "timeout") ||
       !this.isConnected ||
       globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ||
-      !resolveToastAnchorRect(toast.anchor)
+      (!toast.title && !resolveToastAnchorRect(toast.anchor))
     ) {
       this.finishDismiss(reason);
       return;
@@ -198,7 +235,7 @@ class OpenClawToastHost extends OpenClawLightDomContentsElement {
     const anchorRect = resolveToastAnchorRect(toast.anchor);
     return html`
       <div
-        class="app-toast ${anchorRect ? "app-toast--anchored" : toast.placement === "bottom" ? "app-toast--bottom" : ""}"
+        class="app-toast ${toast.title ? "app-toast--notification" : ""} ${anchorRect ? "app-toast--anchored" : toast.placement === "bottom" ? "app-toast--bottom" : ""}"
         data-active=${this.active ? "true" : "false"}
         style=${styleMap(
           anchorRect
@@ -238,6 +275,7 @@ class OpenClawToastHost extends OpenClawLightDomContentsElement {
           }
         }}
       >
+        ${toast.title ? html`<strong class="app-toast__title" title=${toast.title}>${toast.title}</strong>` : nothing}
         ${
           toast.icon
             ? html`<span class="app-toast__icon" aria-hidden="true">${toast.icon}</span>`

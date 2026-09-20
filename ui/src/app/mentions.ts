@@ -27,6 +27,7 @@ export type MentionsCapability = {
   refresh: () => Promise<void>;
   dismiss: (ids: readonly string[]) => Promise<void>;
   subscribe: (listener: () => void) => () => void;
+  subscribeArrivals: (listener: (items: readonly MentionInboxItem[]) => void) => () => void;
   dispose: () => void;
 };
 
@@ -57,6 +58,7 @@ export function createMentionsCapability(
   let connection: MentionConnection | null = null;
   let disposed = false;
   const listeners = new Set<() => void>();
+  const arrivalListeners = new Set<(items: readonly MentionInboxItem[]) => void>();
   const publish = (patch: Partial<MentionsSnapshot>) => {
     snapshot = { ...snapshot, ...patch };
     for (const listener of listeners) {
@@ -90,8 +92,21 @@ export function createMentionsCapability(
       ) {
         return;
       }
+      // The first accepted snapshot seeds this connection without replaying its Inbox.
+      const previousIds =
+        owner.revision === null ? null : new Set(snapshot.items.map((item) => item.id));
       owner.revision = result.revision;
       publish({ phase: "ready", items: result.items, error: null });
+      if (previousIds && isCurrent(owner)) {
+        const arrivals = result.items
+          .filter((item) => !previousIds.has(item.id))
+          .toSorted((left, right) => left.createdAt - right.createdAt);
+        if (arrivals.length) {
+          for (const listener of arrivalListeners) {
+            listener(arrivals);
+          }
+        }
+      }
     } catch (error) {
       if (!isCurrent(owner)) {
         return;
@@ -269,12 +284,17 @@ export function createMentionsCapability(
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
+    subscribeArrivals(listener) {
+      arrivalListeners.add(listener);
+      return () => arrivalListeners.delete(listener);
+    },
     dispose() {
       disposed = true;
       connection = null;
       stopGateway();
       stopEvents();
       listeners.clear();
+      arrivalListeners.clear();
     },
   };
 }
