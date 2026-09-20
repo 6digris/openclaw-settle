@@ -18,7 +18,7 @@ import { relocateRuntimePath } from "./update-runtime-relocation.js";
 export type RetainUpdateRuntime = (params: {
   mutationRoots: readonly string[];
   timeoutMs: number;
-  assertCurrent(): void;
+  assertCurrent: () => void;
 }) => Promise<void>;
 
 /** The command retains its own workers through reporting, rollback, and native settlement. */

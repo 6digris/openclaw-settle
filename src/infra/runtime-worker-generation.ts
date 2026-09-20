@@ -71,14 +71,7 @@ export async function withRuntimeWorkerGeneration<T>(
           (directory ? `. Runtime retained at ${directory}; keep it until the workers stop.` : ""),
       );
     }
-    try {
-      await release();
-    } catch (error) {
-      if ("error" in outcome) {
-        throw new AggregateError([outcome.error, error], "Update runtime cleanup failed");
-      }
-      throw error;
-    }
+    await release();
     if ("error" in outcome) {
       throw outcome.error;
     }

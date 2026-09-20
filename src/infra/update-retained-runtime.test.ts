@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import fs from "node:fs/promises";
-import { mkdir, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import fs, { mkdir, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
