@@ -664,7 +664,9 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
       fastModeOverridden: defaults.fastModeOverridden,
       catalogDiscovering:
         this.catalogDiscovery.discovering || Boolean(catalog?.pendingProviders?.length),
-      catalogDiscoveryError: this.catalogDiscovery.error ?? data.catalogError,
+      catalogDiscoveryError: this.catalogDiscovery.discovering
+        ? null
+        : (this.catalogDiscovery.error ?? data.catalogError),
       configBusy: modelProviderConfigBusy(this.context),
       quickAddSupported: data.authStatus?.providerCapabilities !== undefined,
       unconfiguredProviders: buildUnconfiguredProviderOptions(

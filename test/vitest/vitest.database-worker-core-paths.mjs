@@ -254,6 +254,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/tasks/task-registry-read.test.ts",
   "src/tasks/task-registry.maintenance-projection.test.ts",
   "src/tasks/task-registry.maintenance-acp-authority.test.ts",
+  "src/tasks/task-registry.maintenance-plugin-ttl.test.ts",
   "src/tasks/context-engine-maintenance-task-owner.test.ts",
   "src/tasks/task-registry-terminal-read.test.ts",
   "src/tasks/task-registry-progress-runtime.test.ts",

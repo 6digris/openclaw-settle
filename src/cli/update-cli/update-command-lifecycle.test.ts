@@ -202,7 +202,7 @@ vi.mock("./update-command-runtime.js", () => ({
 vi.mock("./update-command-post-core.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./update-command-post-core.js")>()),
   continuePostCoreUpdateInFreshProcess: vi.fn(),
-  postCoreUpdateParentOwnsCompletion: vi.fn(),
+  postCoreUpdateParentOwnsCompletion: vi.fn(async () => false),
   readPostCorePluginInstallRecordsFile: vi.fn(async () => {
     record("handoff-records");
     return {};
@@ -264,6 +264,7 @@ describe("update plugin lifecycle lease boundaries", () => {
     mocks.interactive = false;
     mocks.triage.mockReset().mockResolvedValue({ status: "completed", hint: "fixture" });
     mocks.maintenance.mockReset().mockResolvedValue(undefined);
+    vi.mocked(postCoreUpdateParentOwnsCompletion).mockReset().mockResolvedValue(false);
     vi.mocked(writePostCorePluginUpdateResultFile).mockReset().mockResolvedValue(undefined);
     vi.mocked(writePostCoreUpdateFailureFile).mockReset().mockResolvedValue(undefined);
     const root = dirs.make("update-lease-package-");
@@ -614,7 +615,7 @@ describe("update plugin lifecycle lease boundaries", () => {
   it.each([undefined, "parent"])(
     "resumes with completion owner %s before publishing",
     async (owner) => {
-      vi.mocked(postCoreUpdateParentOwnsCompletion).mockResolvedValueOnce(owner === "parent");
+      vi.mocked(postCoreUpdateParentOwnsCompletion).mockResolvedValue(owner === "parent");
       vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_RESULT_PATH", "/fixture/post-core-result.json");
       vi.mocked(writePostCorePluginUpdateResultFile).mockImplementationOnce(async () => {
         record("publish-result");

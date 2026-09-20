@@ -19,6 +19,7 @@ export type UpdateDoctorInput = {
   repair: boolean;
   yes?: boolean;
   workspaceSuggestions?: boolean;
+  postCoreSchemaRepair?: true;
 };
 
 export type MigratedUpdateFinalizationInput = Partial<UpdateTimeoutHandoff> & {
