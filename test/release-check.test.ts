@@ -685,6 +685,7 @@ describe("createPackedPluginSdkTypescriptSmokeProject", () => {
     const { packedPluginSdkMayOmitSetupSurface } = await import("../scripts/release-check.js");
     expect(packedPluginSdkMayOmitSetupSurface("2026.7.33")).toBe(true);
     expect(packedPluginSdkMayOmitSetupSurface("2026.7.34")).toBe(true);
+    expect(packedPluginSdkMayOmitSetupSurface("2026.7.35")).toBe(true);
     expect(packedPluginSdkMayOmitSetupSurface("2026.9.4")).toBe(false);
     expect(packedPluginSdkMayOmitSetupSurface("2026.10.1")).toBe(false);
   });

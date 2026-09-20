@@ -125,7 +125,11 @@ const PACKED_PLUGIN_SDK_PROGRESS_CONSUMER_FIXTURE = new URL(
   "./fixtures/packed-plugin-sdk-progress-consumer.ts",
   import.meta.url,
 );
-const PACKED_PLUGIN_SDK_SETUP_SURFACE_OMISSION_VERSIONS = new Set(["2026.7.33", "2026.7.34"]);
+const PACKED_PLUGIN_SDK_SETUP_SURFACE_OMISSION_VERSIONS = new Set([
+  "2026.7.33",
+  "2026.7.34",
+  "2026.7.35",
+]);
 
 export function packedPluginSdkMayOmitSetupSurface(packageVersion: string): boolean {
   return PACKED_PLUGIN_SDK_SETUP_SURFACE_OMISSION_VERSIONS.has(packageVersion);
