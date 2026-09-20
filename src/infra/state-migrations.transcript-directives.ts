@@ -437,6 +437,7 @@ export async function migrateHistoricalTranscriptDirectives(
   const env = params.env ?? process.env;
   const changes: string[] = [];
   const warnings: string[] = [];
+  const notices: string[] = [];
   let recoverableWarningCount = 0;
   try {
     const discovery = params.preparedTargets
@@ -446,6 +447,7 @@ export async function migrateHistoricalTranscriptDirectives(
           configuredAgentDatabaseTargets: params.configuredAgentDatabaseTargets ?? [],
           env,
           warnings,
+          notices,
           preparedDiscovery: params.preparedDiscovery,
         });
     recoverableWarningCount = discovery.recoverableWarningCount;
@@ -498,6 +500,7 @@ export async function migrateHistoricalTranscriptDirectives(
   return {
     changes,
     warnings,
+    ...(notices.length > 0 ? { notices } : {}),
     ...(warnings.length > 0 && warnings.length === recoverableWarningCount
       ? { warningDisposition: "recoverable" as const }
       : {}),
