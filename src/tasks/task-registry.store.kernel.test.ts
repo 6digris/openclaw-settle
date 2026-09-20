@@ -405,6 +405,7 @@ it("compares raw triage identity on the supplied connection without normalizing 
       { ownerKey: "other" },
       { requesterSessionKey: "other" },
       { startedAt: 101 },
+      { createdAt: 101 },
       { childSessionKey: "other" },
     ]) {
       expect(matchesTaskIdentityInDatabase(db, { ...task, ...replacement })).toBe(false);

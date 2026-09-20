@@ -26,6 +26,7 @@ export function matchesTaskIdentityInDatabase(
     "requester_session_key",
     "child_session_key",
     "started_at",
+    "created_at",
   ] as const;
   if (!tableExists(db, "task_runs") || !tableHasColumns(db, "task_runs", columns)) {
     return undefined;
@@ -37,7 +38,11 @@ export function matchesTaskIdentityInDatabase(
       .select(columns)
       .where("task_id", "=", task.taskId),
   );
-  if (!row || (row.started_at !== null && typeof row.started_at !== "number")) {
+  if (
+    !row ||
+    typeof row.created_at !== "number" ||
+    (row.started_at !== null && typeof row.started_at !== "number")
+  ) {
     return undefined;
   }
   const values = [
@@ -64,6 +69,7 @@ export function matchesTaskIdentityInDatabase(
     row.owner_key === task.ownerKey &&
     row.requester_session_key === task.requesterSessionKey &&
     row.child_session_key === (task.childSessionKey ?? null) &&
-    row.started_at === (task.startedAt ?? null)
+    row.started_at === (task.startedAt ?? null) &&
+    row.created_at === task.createdAt
   );
 }
