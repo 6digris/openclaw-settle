@@ -109,6 +109,7 @@ extension DashboardManager {
     {
         let manager = DashboardManager(
             websiteDataStore: websiteDataStore,
+            requestBrowserProfileImportOffer: { _ in false },
             selection: selection ?? MacGatewaySelectionPreferences(
                 defaults: UserDefaults(suiteName: "DashboardSelectionTests.\(UUID().uuidString)")!),
             authTokenProvider: authTokenProvider,

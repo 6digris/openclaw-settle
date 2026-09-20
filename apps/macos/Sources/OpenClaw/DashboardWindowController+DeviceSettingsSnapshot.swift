@@ -73,6 +73,7 @@ extension DashboardWindowController {
             browser: .init(
                 importAvailable: state.connectionMode == .local && BrowserProfileImportModel.shared.importAvailable,
                 macTabImportAvailable: true,
+                macTabPasskeys: MacTabPasskeys.state,
                 cookieSync: Self.deviceCookieSyncSnapshot(state: state)),
             permissions: .init(
                 entries: permissions,

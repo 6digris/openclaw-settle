@@ -10,6 +10,21 @@ enum BundledNodeWorker {
         let buildId: String
     }
 
+    static func cookieImportLaunch(bundle: Bundle = .main) throws -> MacNodeHostWorkerLaunch {
+        let runtime = try self.launch(bundle: bundle)
+        guard let node = runtime.command.first, let root = runtime.currentDirectoryURL else {
+            throw MacTabCookieImport.ImportError.unavailable
+        }
+        let entry = root.appendingPathComponent("dist/extensions/browser/mac-cookie-import-entry.js")
+        guard FileManager.default.isReadableFile(atPath: entry.path) else {
+            throw MacTabCookieImport.ImportError.unavailable
+        }
+        return MacNodeHostWorkerLaunch(
+            command: [node, entry.path],
+            currentDirectoryURL: root,
+            environment: runtime.environment)
+    }
+
     static func launch(bundle: Bundle, profile: AppProfile = .current) throws -> MacNodeHostWorkerLaunch {
         #if arch(arm64)
         let architecture = "arm64"

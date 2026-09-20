@@ -40,6 +40,27 @@ vi.mock("./server-context.js", () => ({
 const { readSystemProfileCookies } = await import("../system-profile-api.js");
 const { importSystemProfileCookies } = await import("./system-profiles.js");
 
+it("rejects a schema-24 cookie whose encrypted host binding does not match", async () => {
+  const homeDir = createSystemProfileFixture();
+  const db = new DatabaseSync(
+    path.join(homeDir, "Library/Application Support/Google/Chrome/Default/Network/Cookies"),
+  );
+  db.exec(
+    "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT); INSERT INTO meta VALUES('version','24'); UPDATE cookies SET host_key='.tampered.test'",
+  );
+  db.close();
+  const result = await readSystemProfileCookies(
+    {},
+    {
+      platform: "darwin",
+      homeDir,
+      readSecret: async () => Buffer.from(KEYCHAIN_FIXTURE),
+    },
+  );
+  expect(result.cookies).toEqual([]);
+  expect(result.counts.failed).toBe(2);
+});
+
 const KEYCHAIN_FIXTURE = "fixture-value";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 

@@ -620,7 +620,6 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         AppDefaults.standard.set(true, forKey: onboardingSeenKey)
         AppDefaults.standard.set(currentOnboardingVersion, forKey: onboardingVersionKey)
         AppStateStore.shared.onboardingSeen = true
-        DashboardManager.shared.handleOnboardingCompletion()
     }
 
     func show() {

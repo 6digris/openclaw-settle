@@ -1,19 +1,25 @@
 import AppKit
 import Foundation
-import SQLite3
 import Testing
 import WebKit
 @testable import OpenClaw
 
-struct MacTabChromeCookiesTests {
+struct MacTabCookieImportTests {
     private static let now = Date(timeIntervalSince1970: 1_800_000_000)
 
     static func cookie(
         domain: String = ".example.test", expires: Date? = nil,
-        secure: Bool = true, sameSite: Int = 2) -> MacTabChromeCookies.Cookie
+        secure: Bool = true, sameSite: Int = 2) -> MacTabCookieImport.Cookie
     {
-        .init(domain: domain, name: "synthetic-session", value: "synthetic-cookie-value", path: "/",
-              expires: expires, secure: secure, httpOnly: true, sameSite: sameSite)
+        .init(
+            domain: domain,
+            name: "synthetic-session",
+            value: "synthetic-cookie-value",
+            path: "/",
+            expires: expires,
+            secure: secure,
+            httpOnly: true,
+            sameSite: sameSite)
     }
 
     @Test func `cookie security and lifetime survive the Foundation conversion`() throws {
@@ -45,56 +51,6 @@ struct MacTabChromeCookiesTests {
         #expect(Self.cookie().httpCookie(protectedHost: "notexample.test", now: Self.now) != nil)
         #expect(Self.cookie(sameSite: -1).httpCookie(protectedHost: nil, now: Self.now)?.sameSitePolicy == .sameSiteLax)
     }
-
-    @Test func `synthetic Chrome ciphertext is bound to the schema 24 host`() throws {
-        // Synthetic AES fixtures: a repeated test key, never a real Keychain secret.
-        let key = Data(repeating: 0x61, count: 16)
-        let old = try #require(Data(base64Encoded: "djEwDKi6TEAGWe1pUirmJ0whVyA35fuJS0oxDsJyrckpXyU="))
-        let current = try #require(Data(base64Encoded:
-            "djEwnoMic2YMIvru4HoIyLGZVIQ8FSSXY5kNKcK5OiXOCeJtGWci9sgemv8WtkPwH/YlMSI4Vg9CdhTVPJ7KjgDtkw=="))
-        #expect(try MacTabChromeCookies.decrypt(
-            old, key: key, domain: ".example.test", version: 23) == "synthetic-session")
-        #expect(try MacTabChromeCookies.decrypt(
-            current, key: key, domain: ".example.test", version: 24) == "synthetic-session")
-        #expect(throws: MacTabChromeCookies.ImportError.self) {
-            try MacTabChromeCookies.decrypt(current, key: key, domain: "other.test", version: 24)
-        }
-        #expect(throws: MacTabChromeCookies.ImportError.self) {
-            try MacTabChromeCookies.decrypt(old, key: key, domain: ".example.test", version: 24)
-        }
-    }
-
-    @Test func `read-only Chrome import skips partitions and unsupported encryption without Keychain access`() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let profile = root.appendingPathComponent("Default")
-        try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let path = profile.appendingPathComponent("Cookies")
-        var database: OpaquePointer?
-        try #require(sqlite3_open(path.path, &database) == SQLITE_OK)
-        let handle = try #require(database)
-        defer { sqlite3_close(handle) }
-        let sql = """
-        PRAGMA journal_mode=WAL;
-        CREATE TABLE meta(key TEXT, value TEXT);
-        INSERT INTO meta VALUES('version', '24');
-        CREATE TABLE cookies(host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB, path TEXT,
-                             expires_utc INTEGER, is_secure INTEGER, is_httponly INTEGER, has_expires INTEGER,
-                             samesite INTEGER, top_frame_site_key TEXT);
-        INSERT INTO cookies VALUES('.example.test','synthetic','synthetic-value',X'','/',0,1,1,0,2,'');
-        INSERT INTO cookies VALUES('.example.test','partitioned','synthetic',X'','/',0,1,1,0,2,'https://other.test');
-        INSERT INTO cookies VALUES('.example.test','unsupported','',X'763230','/',0,1,1,0,2,'');
-        """
-        try #require(sqlite3_exec(handle, sql, nil, nil, nil) == SQLITE_OK)
-        let profiles = MacTabChromeCookies.profiles(root: root)
-        let selected = try #require(profiles.first)
-        let batch = try MacTabChromeCookies.read(selected, root: root)
-        #expect(batch.total == 3)
-        #expect(batch.skipped == 2)
-        #expect(batch.failed == 0)
-        #expect(batch.cookies.count == 1)
-        #expect(batch.cookies.first?.value == "synthetic-value")
-    }
 }
 
 @Suite(.serialized)
@@ -111,7 +67,7 @@ struct MacTabCookieStoreTests {
         defer { host.dispose() }
         let url = try #require(URL(string: "about:blank"))
         try host.open(tabId: "before", url: url, sessionKey: nil)
-        let batch = MacTabChromeCookies.Batch(cookies: [MacTabChromeCookiesTests.cookie()], total: 1)
+        let batch = MacTabCookieImport.Batch(cookies: [MacTabCookieImportTests.cookie()], total: 1)
         let result = try await host.importChromeCookies(batch, protectedHost: "gateway.invalid", isCurrent: { true })
         #expect(result.imported == 1)
         #expect(!result.persistent)
@@ -137,10 +93,68 @@ struct MacTabCookieStoreTests {
         defer { host.dispose() }
         do {
             _ = try await host.importChromeCookies(
-                .init(cookies: [MacTabChromeCookiesTests.cookie()], total: 1),
+                .init(cookies: [MacTabCookieImportTests.cookie()], total: 1),
                 protectedHost: nil, isCurrent: { false })
             Issue.record("Retired import must fail")
         } catch is CancellationError {}
         #expect(await store.httpCookieStore.allCookies().isEmpty)
+    }
+
+    @Test(arguments: [false, true])
+    func `retirement after asynchronous write restores prior cookie or removes new cookie`(
+        _ hadPrevious: Bool) async throws
+    {
+        let store = WKWebsiteDataStore.nonPersistent()
+        let imported = MacTabCookieImportTests.cookie()
+        if hadPrevious {
+            let prior = try #require(HTTPCookie(properties: [
+                .domain: ".example.test", .path: "/", .name: "synthetic-session", .value: "synthetic-original",
+            ]))
+            await store.httpCookieStore.setCookie(prior)
+        }
+        var checks = 0
+        do {
+            _ = try await MacTabCookieWriter.write(
+                .init(cookies: [imported], total: 1),
+                to: store,
+                protectedHost: nil,
+                isCurrent: {
+                    checks += 1
+                    // Retire after lock acquisition, selection and the prior-cookie read,
+                    // when the asynchronous setCookie has completed.
+                    return checks < 4
+                })
+            Issue.record("Retired write must fail")
+        } catch is CancellationError {}
+        let remaining = await store.httpCookieStore.allCookies()
+        if hadPrevious {
+            #expect(remaining.count == 1)
+            #expect(remaining.first?.value == "synthetic-original")
+        } else {
+            #expect(remaining.isEmpty)
+        }
+    }
+
+    @Test func `a retired import cannot roll back a queued import of the same cookie`() async throws {
+        let store = WKWebsiteDataStore.nonPersistent()
+        let batch = MacTabCookieImport.Batch(cookies: [MacTabCookieImportTests.cookie()], total: 1)
+        var second: Task<MacTabCookieImport.ImportResult, Error>?
+        var checks = 0
+        do {
+            _ = try await MacTabCookieWriter.write(batch, to: store, protectedHost: nil, isCurrent: {
+                checks += 1
+                if checks == 3 {
+                    second = Task {
+                        try await MacTabCookieWriter.write(batch, to: store, protectedHost: nil, isCurrent: { true })
+                    }
+                }
+                return checks < 4
+            })
+            Issue.record("First import must retire after its write")
+        } catch is CancellationError {}
+        let next = try #require(second)
+        #expect(try await next.value.imported == 1)
+        let cookies = await store.httpCookieStore.allCookies()
+        #expect(cookies.first?.value == "synthetic-cookie-value")
     }
 }

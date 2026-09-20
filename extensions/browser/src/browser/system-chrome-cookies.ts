@@ -158,7 +158,11 @@ function mapChromeSameSite(
   return undefined;
 }
 
-function decryptCookieValue(row: ChromeCookieRow, key: Buffer): string | undefined {
+function decryptCookieValue(
+  row: ChromeCookieRow,
+  key: Buffer,
+  databaseVersion: number,
+): string | undefined {
   const encrypted = Buffer.from(row.encrypted_value);
   if (encrypted.length === 0) {
     return row.value;
@@ -173,6 +177,9 @@ function decryptCookieValue(row: ChromeCookieRow, key: Buffer): string | undefin
     decipher.final(),
   ]);
   const hostPrefix = crypto.createHash("sha256").update(row.host_key).digest();
+  if (databaseVersion >= 24 && !plain.subarray(0, hostPrefix.length).equals(hostPrefix)) {
+    throw new Error("Cookie host binding mismatch");
+  }
   if (
     plain.length >= hostPrefix.length &&
     plain.subarray(0, hostPrefix.length).equals(hostPrefix)
@@ -214,6 +221,7 @@ function matchesDomain(hostKey: string, domains: readonly string[] | undefined):
 async function decryptChromeCookieRows(params: {
   browser: SystemBrowser;
   rows: readonly ChromeCookieRow[];
+  databaseVersion: number;
   domains?: readonly string[];
   readSecret?: KeychainSecretReader;
   signal?: AbortSignal;
@@ -255,12 +263,21 @@ async function decryptChromeCookieRows(params: {
         continue;
       }
       try {
-        const value = decryptCookieValue(row, decryptionKey);
+        const value = decryptCookieValue(row, decryptionKey, params.databaseVersion);
         if (value === undefined) {
           counts.skipped += 1;
           continue;
         }
-        cookies.push(mapCookie(row, value));
+        const cookie = mapCookie(row, value);
+        if (
+          (Number(row.has_expires) !== 0 && cookie.expires === undefined) ||
+          ![-1, 0, 1, 2].includes(Number(row.samesite)) ||
+          (Number(row.samesite) === 0 && !cookie.secure)
+        ) {
+          counts.skipped += 1;
+          continue;
+        }
+        cookies.push(cookie);
       } catch {
         counts.failed += 1;
       }
@@ -284,12 +301,22 @@ export async function readChromeCookiesDatabase(params: {
 }) {
   const database = openNodeSqliteDatabase(params.databasePath, { readOnly: true });
   try {
+    const hasMeta = database
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")
+      .get();
+    const version = hasMeta
+      ? Number(database.prepare("SELECT value FROM meta WHERE key = 'version'").get()?.value)
+      : 0;
+    if (!Number.isInteger(version) || version < 0) {
+      throw new Error("Unsupported cookie database version");
+    }
     const statement = database.prepare(COOKIE_QUERY);
     statement.setReadBigInts(true);
     const rows = statement.all() as unknown as ChromeCookieRow[];
     return await decryptChromeCookieRows({
       browser: params.browser,
       rows,
+      databaseVersion: version,
       domains: params.domains,
       readSecret: params.readSecret,
       signal: params.signal,

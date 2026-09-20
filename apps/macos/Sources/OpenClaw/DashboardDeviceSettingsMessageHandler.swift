@@ -67,6 +67,7 @@ final class DashboardDeviceSettingsMessageHandler: NSObject, WKScriptMessageHand
     func cancelRequests() {
         // Consent and queued changes belong to the displayed document, not its reusable window.
         self.requests.cancel()
+        self.owner?.macTabLoginPreparation.cancel()
         if let alert = self.consentAlert, let parent = alert.window.sheetParent {
             parent.endSheet(alert.window, returnCode: .cancel)
         }
@@ -152,25 +153,26 @@ final class DashboardDeviceSettingsMessageHandler: NSObject, WKScriptMessageHand
     }
 
     func chooseMacTabChromeProfile(
-        _ profiles: [MacTabChromeCookies.Profile], persistent: Bool) async -> MacTabChromeCookies.Profile?
+        _ profiles: [MacTabCookieImport.Profile], persistent: Bool) async -> MacTabCookieImport.Profile?
     {
         guard !Task.isCancelled, self.consentAlert == nil, let window = self.owner?.window,
               self.owner?.isWindowOpen == true, window.attachedSheet == nil, !profiles.isEmpty else { return nil }
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = String(localized: "Import Chrome logins into Mac tabs?")
+        alert.messageText = String(localized: "Use your browser logins in Mac tabs?")
         let lifetime = persistent
             ? String(localized: "Persistent cookies remain in this app's browser store until they expire.")
             : String(localized: "This window uses a private browser store. Imported logins disappear when it closes.")
         alert.informativeText = String(localized: """
         Cookies can grant access to signed-in accounts and replace existing Mac tab logins. \
         They stay on this Mac, even with a remote Gateway. No passwords or passkeys are imported. \
-        Agent browser profiles and cookie sync are unchanged. macOS may ask for Chrome Safe Storage access.
+        Choose one source profile. Import finishes before the link opens. macOS may ask for Safe Storage access.
+        Agent browser profiles and remote cookie sync are unchanged.
         """) + "\n\n" + lifetime
         let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 28))
-        picker.addItems(withTitles: profiles.map { "Chrome — " + $0.id })
+        picker.addItems(withTitles: profiles.map { $0.browser.capitalized + " — " + $0.name })
         alert.accessoryView = picker
-        alert.addButton(withTitle: String(localized: "Cancel")).keyEquivalent = "\r"
+        alert.addButton(withTitle: String(localized: "Continue without importing")).keyEquivalent = "\r"
         alert.addButton(withTitle: String(localized: "Import into Mac tabs")).keyEquivalent = ""
         self.consentAlert = alert
         defer { self.consentAlert = nil }
@@ -178,6 +180,18 @@ final class DashboardDeviceSettingsMessageHandler: NSObject, WKScriptMessageHand
         guard !Task.isCancelled, response == .alertSecondButtonReturn,
               profiles.indices.contains(picker.indexOfSelectedItem) else { return nil }
         return profiles[picker.indexOfSelectedItem]
+    }
+
+    func showMacTabImportResult(_ message: String) async {
+        guard !Task.isCancelled, self.consentAlert == nil, let window = self.owner?.window,
+              self.owner?.isWindowOpen == true, window.attachedSheet == nil else { return }
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Mac tab login import")
+        alert.informativeText = message
+        alert.addButton(withTitle: String(localized: "Continue"))
+        self.consentAlert = alert
+        defer { self.consentAlert = nil }
+        _ = await alert.beginSheetModal(for: window)
     }
 
     func refresh(refreshAvailability: Bool = false) {

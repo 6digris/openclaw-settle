@@ -18,13 +18,20 @@ extension DashboardWindowController {
         do {
             let request = try DashboardBrowserMessageHandler.decode(message.body)
             switch request {
-            case let .open(tabId, url, sessionKey, _):
-                // Activation is presentation owned by the requesting web panel.
-                let openedTabId = try self.nativeBrowser.open(tabId: tabId, url: url, sessionKey: sessionKey)
-                replyHandler(["ok": true, "tabId": openedTabId], nil)
+            case .open, .navigate:
+                let sourceID = self.notificationSourceID
+                Task { @MainActor [weak self] in
+                    do {
+                        guard let self else { throw DashboardBrowserError.unavailable }
+                        let tabId = try await self.performBrowserNavigation(request, sourceID: sourceID)
+                        replyHandler(["ok": true, "tabId": tabId], nil)
+                    } catch {
+                        replyHandler(
+                            ["ok": false, "error": DashboardBrowserError.unavailable.localizedDescription],
+                            nil)
+                    }
+                }
                 return
-            case let .navigate(tabId, url):
-                try self.nativeBrowser.navigate(tabId: tabId, url: url)
             case let .action(.download, tabId):
                 self.downloadBrowserReply(tabId: tabId, replyHandler: replyHandler)
                 return
@@ -47,6 +54,31 @@ extension DashboardWindowController {
         }
     }
 
+    func performBrowserNavigation(_ request: DashboardBrowserRequest, sourceID: String) async throws -> String {
+        let url: URL
+        switch request {
+        case let .open(_, requested, _, _), let .navigate(_, requested): url = requested
+        default: throw DashboardBrowserError.invalidRequest
+        }
+        let isCurrent: @MainActor () -> Bool = { self.canUseBrowserDocument(sourceID: sourceID) && !Task.isCancelled }
+        guard isCurrent() else { throw DashboardBrowserError.unavailable }
+        if ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+            try await self.macTabLoginPreparation.prepare {
+                try await self.prepareMacTabLogins()
+                guard isCurrent() else { throw CancellationError() }
+            }
+        }
+        guard isCurrent() else { throw DashboardBrowserError.unavailable }
+        switch request {
+        case let .open(tabId, url, sessionKey, _):
+            return try self.nativeBrowser.open(tabId: tabId, url: url, sessionKey: sessionKey)
+        case let .navigate(tabId, url):
+            try self.nativeBrowser.navigate(tabId: tabId, url: url)
+            return tabId
+        default: throw DashboardBrowserError.invalidRequest
+        }
+    }
+
     func publishBrowserState(_ state: DashboardBrowserState) {
         guard self.canUseBrowserDocument(sourceID: self.notificationSourceID),
               let data = try? JSONEncoder().encode(state), let json = String(data: data, encoding: .utf8)
@@ -63,7 +95,7 @@ extension DashboardWindowController {
     }
 
     private func canUseBrowserDocument(sourceID: String) -> Bool {
-        self.window != nil && !self.isHiddenForExperience && self.canDeliverNativeCommands &&
+        self.isWindowOpen && !self.isHiddenForExperience && self.canDeliverNativeCommands &&
             self.notificationSourceID == sourceID && self.hasCurrentBrowserSession &&
             Self.isTrustedLinkSource(self.webView.url, dashboardURL: self.currentURL)
     }

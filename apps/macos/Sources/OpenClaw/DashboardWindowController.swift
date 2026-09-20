@@ -99,6 +99,7 @@ final class DashboardWindowController: NSWindowController, WKNavigationDelegate,
 
     let webView: DashboardWebView
     let nativeBrowser: DashboardNativeBrowserHost
+    let macTabLoginPreparation = MacTabLoginPreparation()
     private let updateMessageHandler: DashboardUpdateMessageHandler
     let deviceSettingsMessageHandler: DashboardDeviceSettingsMessageHandler
     private(set) var currentURL: URL
@@ -128,14 +129,10 @@ final class DashboardWindowController: NSWindowController, WKNavigationDelegate,
     private let dashboardFrameAutosaveName: String
     let updater: UpdaterProviding?
     private var updateBridgeEnabled: Bool
-    private let requestBrowserProfileImportOffer:
-        @MainActor (@escaping @MainActor () -> Bool) async -> Bool
+    let requestBrowserProfileImportOffer:
+        (@MainActor (@escaping @MainActor () -> Bool) async -> Bool)?
     private var canGoBackObservation: NSKeyValueObservation?
     private var canGoForwardObservation: NSKeyValueObservation?
-    private var didRequestBrowserProfileImportOffer = false
-    private var browserProfileImportOfferIsArmed = false
-    private var browserProfileImportOfferRequestIsInFlight = false
-    private var browserProfileImportOfferRetryPending = false
     private var hasLiveContent = false
     private var nativeCommandsReady = false
     private(set) var isShowingFailurePage = false
@@ -163,7 +160,7 @@ final class DashboardWindowController: NSWindowController, WKNavigationDelegate,
         windowAutosaveName: String,
         reusingWindow: NSWindow? = nil,
         requestBrowserProfileImportOffer:
-        @escaping @MainActor (@escaping @MainActor () -> Bool) async -> Bool)
+        (@MainActor (@escaping @MainActor () -> Bool) async -> Bool)? = nil)
     {
         let shouldEnableUpdateBridge = updater?.isAvailable == true && updateBridgeEnabled
         self.currentURL = url
@@ -267,11 +264,6 @@ final class DashboardWindowController: NSWindowController, WKNavigationDelegate,
         self.webView.uiDelegate = self
         self.nativeBrowser.navigationDelegate = self
         self.nativeBrowser.uiDelegate = self
-        self.nativeBrowser.onOpen = { [weak self] in
-            guard let self else { return }
-            self.browserProfileImportOfferIsArmed = true
-            self.requestBrowserProfileImportOfferIfNeeded()
-        }
         self.window?.delegate = self
         self.updateToolbarVisibility(isFullScreen: window.styleMask.contains(.fullScreen))
         self.installHistoryStateBridge()
@@ -432,7 +424,6 @@ final class DashboardWindowController: NSWindowController, WKNavigationDelegate,
             self.refreshNativeAuthScript(url: url, auth: auth)
             self.load(url)
         }
-        self.requestBrowserProfileImportOfferIfNeeded()
     }
 
     /// Miniaturized windows report `isVisible == false` but must still follow
@@ -485,7 +476,6 @@ final class DashboardWindowController: NSWindowController, WKNavigationDelegate,
         window?.makeFirstResponder(self.webView)
         window?.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
-        self.requestBrowserProfileImportOfferIfNeeded()
     }
 
     func closeDashboard() {
@@ -548,44 +538,6 @@ final class DashboardWindowController: NSWindowController, WKNavigationDelegate,
         self.loadGeneration &+= 1
         self.pendingLoad?.cancel()
         self.pendingLoad = nil
-    }
-
-    private func requestBrowserProfileImportOfferIfNeeded() {
-        guard !self.isHiddenForExperience,
-              self.browserProfileImportOfferIsArmed,
-              self.nativeBrowser.hasTabs,
-              !self.didRequestBrowserProfileImportOffer
-        else { return }
-        if self.browserProfileImportOfferRequestIsInFlight {
-            // Gateway readiness can arrive while the status poll awaits transport.
-            // Latch one retry so in-flight dedupe does not discard that reconnect signal.
-            self.browserProfileImportOfferRetryPending = true
-            return
-        }
-        self.browserProfileImportOfferRequestIsInFlight = true
-        Task { [weak self] in
-            guard let self else { return }
-            let didApply = await self.requestBrowserProfileImportOffer { [weak self] in
-                guard let self else { return false }
-                return !self.isHiddenForExperience && self.browserProfileImportOfferIsArmed &&
-                    self.nativeBrowser.hasTabs &&
-                    !self.didRequestBrowserProfileImportOffer
-            }
-            self.browserProfileImportOfferRequestIsInFlight = false
-            let shouldRetry = self.browserProfileImportOfferRetryPending && !didApply
-            self.browserProfileImportOfferRetryPending = false
-            if didApply {
-                self.didRequestBrowserProfileImportOffer = true
-            } else if shouldRetry {
-                self.requestBrowserProfileImportOfferIfNeeded()
-            }
-        }
-    }
-
-    func handleOnboardingCompletion() {
-        // A Mac tab opened before onboarding leaves the one-shot armed. Retry at
-        // the eligibility transition so it does not depend on later navigation.
-        self.requestBrowserProfileImportOfferIfNeeded()
     }
 
     private func openExternal(_ url: URL) {

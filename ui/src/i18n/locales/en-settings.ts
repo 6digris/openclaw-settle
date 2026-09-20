@@ -667,9 +667,21 @@ const enSettings = {
         "Native host registered and extension found. Open the extension to check its connection; installation alone does not verify a connection.",
       chromeExtensionFailed:
         "Setup could not finish. Install the OpenClaw CLI on this Mac and run openclaw browser extension install for details.",
+      platformPasskeys: "Platform passkeys",
+      platformPasskeysRequest: "Allow platform passkeys…",
+      platformPasskeysStates: {
+        "requires-signing":
+          "Browser-wide platform passkeys need an Apple-approved signed build. Cookie import cannot grant this permission. WebKit still owns website WebAuthn, including security-key and cross-device choices.",
+        "not-determined":
+          "Allow this browser app to use passkeys from the system Keychain and credential providers. Passkeys are not imported; WebKit handles website sign-in.",
+        denied:
+          "Platform-passkey access was denied for this app. Review the system permission before retrying the website. Cookie import does not change this choice.",
+        authorized:
+          "System platform-passkey access is allowed. WebKit handles each website’s secure sign-in ceremony; website and authenticator requirements still apply.",
+      },
       macTabImport: "Mac tab logins",
       macTabImportHint:
-        "Import Chrome cookies into this window’s integrated browser tabs. Cookies stay on this Mac, including with a remote Gateway. No passwords or passkeys are imported.",
+        "Use Chrome, Brave, Edge, or Chromium logins in this window’s integrated tabs. Setup is also offered before the first link opens. Cookies stay on this Mac; no passwords or passkeys are imported.",
       importMacTabLogins: "Import Chrome logins into Mac tabs…",
       browserImport: "Browser logins",
       browserImportHint:

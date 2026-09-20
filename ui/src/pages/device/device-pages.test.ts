@@ -246,6 +246,25 @@ describe("native device settings pages", () => {
     expect(capability.openPanel).not.toHaveBeenCalledWith("browser-import");
   });
 
+  it.each(["requires-signing", "not-determined", "denied", "authorized"] as const)(
+    "reports platform passkey access independently of cookies: %s",
+    async (state) => {
+      const snapshot = createNativeDeviceSettingsSnapshot();
+      Object.assign(snapshot.browser, { macTabPasskeys: state });
+      const { capability } = createCapability(snapshot);
+      const page = await mount("openclaw-device-page", capability);
+      const passkeys = row(page, "Platform passkeys");
+      if (state === "not-determined") {
+        passkeys.querySelector<HTMLButtonElement>("button")!.click();
+        expect(capability.openPanel).toHaveBeenCalledWith("mac-tab-passkeys");
+      } else {
+        expect(passkeys.querySelector("button")).toBeNull();
+      }
+      if (state === "requires-signing") expect(passkeys.textContent).toContain("Apple-approved");
+      expect(capability.openPanel).not.toHaveBeenCalledWith("mac-tab-import");
+    },
+  );
+
   it("renders new native snapshots and removes controls whose native capabilities became unavailable", async () => {
     const native = createCapability();
     const page = await mount("openclaw-device-page", native.capability);

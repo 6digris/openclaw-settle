@@ -228,10 +228,33 @@ class DevicePage extends OpenClawLightDomElement {
         }),
       )}
       ${
-        browser.macTabImportAvailable || browser.importAvailable || !sync.available
+        browser.macTabPasskeys ||
+        browser.macTabImportAvailable ||
+        browser.importAvailable ||
+        !sync.available
           ? renderSettingsSection(
               { title: t("configPage.deviceSettings.browser") },
               html`
+                ${
+                  browser.macTabPasskeys
+                    ? renderSettingsRow({
+                        title: t("configPage.deviceSettings.platformPasskeys"),
+                        description: t(
+                          `configPage.deviceSettings.platformPasskeysStates.${browser.macTabPasskeys}`,
+                        ),
+                        control:
+                          browser.macTabPasskeys === "not-determined"
+                            ? html`<button
+                                type="button"
+                                class="btn"
+                                @click=${() => capability?.openPanel("mac-tab-passkeys")}
+                              >
+                                ${t("configPage.deviceSettings.platformPasskeysRequest")}
+                              </button>`
+                            : nothing,
+                      })
+                    : nothing
+                }
                 ${
                   browser.macTabImportAvailable
                     ? renderSettingsRow({
