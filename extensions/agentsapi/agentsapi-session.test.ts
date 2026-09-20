@@ -120,6 +120,8 @@ describe("Agents API native session receipts", () => {
     );
     void run.catch(() => {});
     await messageRequested.promise;
+    const queuedSteer = session.queueMessage("Queued steering fixture");
+    void queuedSteer.catch(() => {});
     const interruption = new Error("Host interruption");
     controller.abort(interruption);
     let cancellationSettled = false;
@@ -132,6 +134,7 @@ describe("Agents API native session receipts", () => {
     expect(cancellationSettled).toBe(false);
 
     messageAcknowledgement.resolve(Response.json({}));
+    await expect(queuedSteer).rejects.toThrow("Agents API turn settled before input was submitted");
     await idleRequested.promise;
     expect(inputTypes).toEqual(["agent.session.input.message", "agent.session.input.cancel"]);
     expect(cancellationSettled).toBe(false);
