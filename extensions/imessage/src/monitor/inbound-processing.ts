@@ -17,6 +17,7 @@ import {
 } from "openclaw/plugin-sdk/channel-inbound";
 import {
   defineStableChannelIngressIdentity,
+  type ChannelIngressContextBinding,
   type ChannelIngressIdentityDescriptor,
   type ResolvedChannelMessageIngress,
 } from "openclaw/plugin-sdk/channel-ingress-runtime";
@@ -335,7 +336,9 @@ async function isKnownFromMeIMessageReactionTarget(params: {
 
 type IMessageInboundDispatchDecision = {
   kind: "dispatch";
-  channelIngress?: ResolvedChannelMessageIngress;
+  resolveChannelIngress: (
+    contextBinding: ChannelIngressContextBinding,
+  ) => Promise<ResolvedChannelMessageIngress>;
   isGroup: boolean;
   chatId?: number;
   chatGuid?: string;
@@ -535,15 +538,15 @@ export async function resolveIMessageInboundDecision(params: {
     sender,
     chatId,
   });
-  const accessDecision = await getIMessageRuntime()
-    .channel.inbound.ingress.createResolver({
-      channelId: "imessage",
-      accountId: params.accountId,
-      identity: imessageIngressIdentity,
-      cfg: params.cfg,
-      readStoreAllowFrom: async () => params.storeAllowFrom,
-    })
-    .message({
+  const ingressResolver = getIMessageRuntime().channel.inbound.ingress.createResolver({
+    channelId: "imessage",
+    accountId: params.accountId,
+    identity: imessageIngressIdentity,
+    cfg: params.cfg,
+    readStoreAllowFrom: async () => params.storeAllowFrom,
+  });
+  const resolveChannelIngress = (contextBinding?: ChannelIngressContextBinding) =>
+    ingressResolver.message({
       subject: {
         stableId: sender,
         aliases: {
@@ -554,19 +557,9 @@ export async function resolveIMessageInboundDecision(params: {
       },
       conversation: {
         kind: isGroup ? "group" : "direct",
-        id: isGroup
-          ? String(chatId ?? chatGuid ?? chatIdentifier ?? "unknown")
-          : normalizeIMessageHandle(sender),
+        id: chatId != null ? String(chatId) : sender,
       },
-      ...(reactionContext
-        ? {}
-        : {
-            contextBinding: {
-              agentId: route.agentId,
-              sessionKey: route.sessionKey,
-              inboundEventKind: "user_request",
-            },
-          }),
+      contextBinding,
       dmPolicy: normalizeDmPolicy(params.dmPolicy),
       groupPolicy: normalizeGroupPolicy(params.groupPolicy),
       policy: { groupAllowFromFallbackToAllowFrom: false },
@@ -578,6 +571,7 @@ export async function resolveIMessageInboundDecision(params: {
         directGroupAllowFrom: "effective",
       },
     });
+  const accessDecision = await resolveChannelIngress();
   const { commandAccess, senderAccess } = accessDecision;
   const effectiveGroupAllowFrom = senderAccess.effectiveGroupAllowFrom;
 
@@ -856,7 +850,7 @@ export async function resolveIMessageInboundDecision(params: {
 
   return {
     kind: "dispatch",
-    channelIngress: accessDecision,
+    resolveChannelIngress,
     isGroup,
     chatId,
     chatGuid,
@@ -1011,8 +1005,14 @@ export async function buildIMessageInboundContext(params: {
   const media = await toInboundMediaFactsWithMetadata(
     params.media?.facts?.map((entry) => ({ ...entry, url: entry.url ?? entry.path })),
   );
+  const channelIngress = await decision.resolveChannelIngress({
+    agentId: decision.route.agentId,
+    sessionKey: decision.route.sessionKey,
+    messageId: messageSid,
+    inboundEventKind: "user_request",
+  });
   const ctxPayload = (params.buildContext ?? buildChannelInboundEventContext)({
-    channelIngress: decision.channelIngress,
+    channelIngress,
     channel: "imessage",
     supplemental: {
       quote: decision.replyContext
