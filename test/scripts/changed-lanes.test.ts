@@ -2182,7 +2182,7 @@ describe("scripts/changed-lanes", () => {
     })),
     {
       name: "selects consuming test graphs with UI CSS and docs companions",
-      path: "ui/src/e2e/chat-composer-picker-layout.e2e.test.ts",
+      path: "ui/src/e2e/chat-composer-focus.e2e.test.ts",
       extraPaths: [
         "ui/src/styles/chat/composer.css",
         "ui/src/styles/chat/composer-surface.css",
@@ -2194,6 +2194,7 @@ describe("scripts/changed-lanes", () => {
         excludes: ["tsgo:core"],
         coreTestChecks: ["checkBoundary", "checkTypes"],
         stylelintTargets: [
+          "ui/src/e2e/chat-composer-focus.e2e.test.ts",
           "ui/src/styles/chat/composer-surface.css",
           "ui/src/styles/chat/composer.css",
         ],
@@ -2202,7 +2203,7 @@ describe("scripts/changed-lanes", () => {
     ...["ui/src/app.ts", "tsconfig.ui.json", "ui/src/e2e/chat-flow.test-support.ts"].map(
       (companion) => ({
         name: `retains full test graphs with ${companion}`,
-        path: "ui/src/e2e/chat-composer-picker-layout.e2e.test.ts",
+        path: "ui/src/e2e/chat-composer-focus.e2e.test.ts",
         extraPaths: ["ui/src/styles/chat/composer.css", companion],
         expected: {
           lanes: { ui: true, coreTests: true },
@@ -2271,6 +2272,7 @@ describe("scripts/changed-lanes", () => {
       "coreTestChecks" in expected ? expected.coreTestChecks : [],
     );
     if ("stylelintTargets" in expected && expected.stylelintTargets) {
+      expect(existsSync(changedPath)).toBe(true);
       expect(
         plan.commands.find((command) => command.name.startsWith("lint UI changed style")),
       ).toMatchObject({
