@@ -5,11 +5,16 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import {
   loadTranscriptEvents,
   replaceSessionEntry,
+  updateSessionEntry,
 } from "../../config/sessions/session-accessor.js";
 import {
   resolveSqliteReadScope,
   toDatabaseOptions,
 } from "../../config/sessions/session-accessor.sqlite-scope.js";
+import {
+  SessionTranscriptWriterClaimReboundError,
+  withOwnedSessionTranscriptWrites,
+} from "../../config/sessions/transcript-write-context.js";
 import { resolveSqliteDatabaseFilePaths } from "../../infra/sqlite-files.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { drainStoreWriterQueuesForTest } from "../../shared/store-writer-queue.js";
@@ -177,6 +182,90 @@ describe("model transitions after SQLite write admission", () => {
           ? { type: "model_change", provider: lastModel.provider, modelId: lastModel.id }
           : { type: "thinking_level_change", thinkingLevel: "low" },
       ]);
+    },
+  );
+
+  it.each([
+    { kind: "model", authority: "current" },
+    { kind: "thinking", authority: "current" },
+    { kind: "model", authority: "writer" },
+    { kind: "thinking", authority: "writer" },
+    { kind: "model", authority: "lifecycle" },
+    { kind: "thinking", authority: "lifecycle" },
+  ] as const)(
+    "preserves ambient $authority authority for $kind metadata",
+    async ({ kind, authority }) => {
+      const thinkingSelections: ThinkingLevelSelectEvent[] = [];
+      const { session, sessionManager, settingsManager, options, target, transitions } =
+        await createModelSession(undefined, async (event) => {
+          thinkingSelections.push(event);
+        });
+      await session.setModel(nextModel);
+      transitions.length = 0;
+      thinkingSelections.length = 0;
+      const fence = {
+        expectedWriterRunId: "metadata-writer",
+        expectedLifecycleRevision: "metadata-lifecycle",
+      };
+      await updateSessionEntry(target, () => ({
+        activeWriterRunId: fence.expectedWriterRunId,
+        lifecycleRevision: fence.expectedLifecycleRevision,
+      }));
+      const database = openOpenClawAgentDatabase(options).db;
+      const readRows = () =>
+        database
+          .prepare(
+            "SELECT seq, event_json FROM transcript_events WHERE session_id = ? ORDER BY seq",
+          )
+          .all(target.sessionId);
+      const readView = () => ({
+        entries: sessionManager.getEntries(),
+        leaf: sessionManager.getLeafId(),
+        context: sessionManager.buildSessionContext(),
+        model: session.model?.id,
+        thinking: session.thinkingLevel,
+        defaultModel: settingsManager.getDefaultModel(),
+        defaultThinking: settingsManager.getDefaultThinkingLevel(),
+      });
+      const beforeRows = readRows();
+      const beforeView = structuredClone(readView());
+      if (authority !== "current") {
+        await updateSessionEntry(target, () =>
+          authority === "writer"
+            ? { activeWriterRunId: "replacement-writer" }
+            : { lifecycleRevision: "replacement-lifecycle" },
+        );
+      }
+      const change = withOwnedSessionTranscriptWrites(
+        {
+          sessionTarget: { ...target, ...fence },
+          withTranscriptWrite: async (write) => await write(),
+        },
+        () => (kind === "model" ? session.setModel(lastModel) : session.setThinkingLevel("low")),
+      );
+      if (authority !== "current") {
+        await expect(change).rejects.toBeInstanceOf(SessionTranscriptWriterClaimReboundError);
+        expect(readRows()).toEqual(beforeRows);
+        expect(readView()).toEqual(beforeView);
+        expect(transitions).toEqual([]);
+        expect(thinkingSelections).toEqual([]);
+        return;
+      }
+      await expect(change).resolves.toBeUndefined();
+      const afterRows = readRows();
+      expect(afterRows.slice(0, beforeRows.length)).toEqual(beforeRows);
+      expect(afterRows).toHaveLength(beforeRows.length + 1);
+      expect(sessionManager.getEntries().at(-1)).toMatchObject(
+        kind === "model"
+          ? { type: "model_change", modelId: lastModel.id }
+          : { type: "thinking_level_change", thinkingLevel: "low" },
+      );
+      expect(session.model?.id).toBe(kind === "model" ? lastModel.id : nextModel.id);
+      expect(session.thinkingLevel).toBe(kind === "thinking" ? "low" : "medium");
+      expect(settingsManager.getDefaultModel()).toBe(session.model?.id);
+      expect(settingsManager.getDefaultThinkingLevel()).toBe(session.thinkingLevel);
+      expect(transitions).toHaveLength(kind === "model" ? 1 : 0);
+      expect(thinkingSelections).toHaveLength(kind === "thinking" ? 1 : 0);
     },
   );
 

@@ -17,6 +17,7 @@ import {
   getOwnedSessionTranscriptInitialWriter,
   getOwnedSessionTranscriptWriterFence,
   SessionTranscriptWriterClaimReboundError,
+  withOwnedSessionTranscriptWriterFence,
   type InitialSessionTranscriptWriter,
 } from "../../config/sessions/transcript-write-context.js";
 import { runInDetachedAsyncContext } from "../../shared/async-work-scope.js";
@@ -122,7 +123,7 @@ export class SessionManagerPersistence extends SessionManagerCore {
     const sessionId = this.getSessionId();
     const { database, options } = writeAdmission;
     const captured: SessionMetadataWorkerOperations["session.metadata.append"]["input"]["scope"] = {
-      ...target,
+      ...withOwnedSessionTranscriptWriterFence(target),
       storePath: database.path,
       env: options.env,
     };
