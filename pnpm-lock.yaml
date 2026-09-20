@@ -657,8 +657,8 @@ importers:
   extensions/agentsapi:
     dependencies:
       zod:
-        specifier: 4.4.3
-        version: 4.4.3
+        specifier: 4.5.4
+        version: 4.5.4
     devDependencies:
       '@openclaw/plugin-sdk':
         specifier: workspace:*
