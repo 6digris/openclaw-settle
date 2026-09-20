@@ -73,7 +73,10 @@ import { MANAGED_HANDOFF_NATIVE_SCOPE_SOURCE } from "./update-managed-service-ha
 import { MANAGED_HANDOFF_RUNTIME_ENTRY } from "./update-managed-service-handoff-runtime-assets.js";
 import { stageManagedHandoffRuntime } from "./update-managed-service-handoff-runtime.js";
 import { resolveGatewayServiceRecovery } from "./update-managed-service-handoff-service.js";
-import { resolveManagedUpdateRequester } from "./update-requester-authority.js";
+import {
+  resolveManagedUpdateRequester,
+  type UpdateRequester,
+} from "./update-requester-authority.js";
 import type {
   ForegroundUpdateOrigin,
   UpdateRestartSentinelMeta,
@@ -1694,7 +1697,7 @@ type ManagedServiceUpdateHandoffParams = {
   acceptCapabilities?: boolean;
   reapplyLocalOverrides?: boolean;
   meta: UpdateRestartSentinelMeta;
-  requester?: { channel?: string; accountId?: string; senderId?: string };
+  requester?: UpdateRequester;
   handoffId?: string;
   supervisor?: RespawnSupervisor | null;
   foregroundOrigin?: ForegroundUpdateOrigin;
