@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
   service: vi.fn<() => GatewayService>(),
   activeRoot: "",
   runtimeDirectory: "",
+  runtimePath: "",
   installPlanBuilt: false,
   audit: vi.fn<typeof import("../daemon/service-audit.js").auditGatewayServiceConfig>(),
   confirm: vi.fn(),
@@ -60,7 +61,7 @@ vi.mock("./daemon-install-helpers.js", () => ({
     mocks.installPlanBuilt = true;
     return {
       programArguments: [
-        process.execPath,
+        mocks.runtimePath,
         path.join(mocks.activeRoot, "dist/index.js"),
         "gateway",
         "--port",
@@ -73,6 +74,17 @@ vi.mock("./daemon-install-helpers.js", () => ({
       },
     };
   },
+}));
+// Installation consent owns the launcher drift; runtime capability is a separate probe.
+vi.mock("../daemon/runtime-paths.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../daemon/runtime-paths.js")>()),
+  resolveNodeRuntimeInfo: async () => ({
+    status: "supported" as const,
+    version: "26.8.1",
+    sqliteVersion: "3.53.4",
+    sqliteProbe: { available: true, version: "3.53.4", text: true, blob: true, json: true },
+    nodeSharedSqlite: false,
+  }),
 }));
 vi.mock("../daemon/service-audit.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../daemon/service-audit.js")>()),
@@ -155,7 +167,7 @@ async function runInstallationCase(params: {
     aggressive: boolean;
     approved: boolean;
     interactive: boolean;
-    mixed?: "stale-native" | "custom-argv";
+    mixed?: "stale-native" | "custom-argv" | "version-managed-runtime";
   };
 }) {
   const { installFails, initiallyStopped } = params;
@@ -189,6 +201,10 @@ async function runInstallationCase(params: {
   mockSystemAccountHome();
   const home = await fs.realpath(tempDirs.make("openclaw-doctor-installation-"));
   mocks.runtimeDirectory = home;
+  mocks.runtimePath =
+    params.consent?.mixed === "version-managed-runtime"
+      ? path.join(home, ".nvm", "versions", "node", "v26.8.1", "bin", "node")
+      : path.join(home, "runtime", "node");
   const oldRoot = path.join(home, "prefix-a/lib/node_modules/openclaw");
   mocks.activeRoot = path.join(home, "prefix-b/lib/node_modules/openclaw");
   for (const [root, version] of [
@@ -230,7 +246,7 @@ async function runInstallationCase(params: {
       }
       let command: GatewayServiceCommandConfig = {
         programArguments: [
-          process.execPath,
+          mocks.runtimePath,
           path.join(oldRoot, "dist/index.js"),
           ...(params.consent?.aggressive ? ["node", "run"] : ["gateway"]),
           "--port",
@@ -652,6 +668,9 @@ it.each([
   { aggressive: false, approved: false, interactive: true, mixed: "custom-argv" },
   { aggressive: false, approved: true, interactive: true, mixed: "custom-argv" },
   { aggressive: false, approved: false, interactive: false, mixed: "custom-argv" },
+  { aggressive: false, approved: false, interactive: true, mixed: "version-managed-runtime" },
+  { aggressive: false, approved: true, interactive: true, mixed: "version-managed-runtime" },
+  { aggressive: false, approved: false, interactive: false, mixed: "version-managed-runtime" },
 ] as const)(
   "requires consent beyond installation drift (aggressive=$aggressive, mixed=$mixed, approved=$approved, interactive=$interactive)",
   async (consent) => runInstallationCase({ platform: "darwin", mode: "direct", consent }),
