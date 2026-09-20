@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,9 +12,6 @@ import {
   inspectPersistedAuthProfileStoreRaw,
   writePersistedAuthProfileStoreRaw,
 } from "../agents/auth-profiles/sqlite.js";
-import { operatorMcpOAuthIdentity } from "../agents/mcp-oauth-identity.js";
-import { createMcpOAuthClientProvider } from "../agents/mcp-oauth-provider.js";
-import { resolveMcpOAuthAccessToken } from "../agents/mcp-oauth.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveCronJobsStorePathFromConfig, saveCronStore } from "../cron/store.js";
 import { clearHealthChecksForTest } from "../flows/health-check-registry.js";
@@ -42,6 +38,7 @@ import {
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { collectDoctorFindings, runDoctorLintCli } from "./doctor-lint.js";
+import { verifyDoctorLintOAuthStateIsolation } from "./doctor-lint.oauth-isolation.test-support.js";
 import { snapshotDoctorLintSqliteFamily } from "./doctor-lint.test-support.js";
 import { createAppliedLegacyProposal } from "./doctor-skill-workshop-sqlite.test-support.js";
 import { createTestRuntime } from "./test-runtime-config-helpers.js";
@@ -980,71 +977,9 @@ describe("doctor lint state isolation", () => {
   );
 
   it("keeps runtime schema OAuth inspection off the writable source state", async () => {
-    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-doctor-lint-oauth-"));
-    const stateDir = path.join(rootDir, "operator-state");
-    const configPath = path.join(stateDir, "openclaw.json");
-    const serverUrl = "https://mcp.example.test/rpc";
-    const identity = operatorMcpOAuthIdentity("oauth-proof", serverUrl);
-    process.env.HOME = stateDir;
-    process.env.OPENCLAW_CONFIG_PATH = configPath;
-    process.env.OPENCLAW_STATE_DIR = stateDir;
-    fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(configPath, "{}\n");
-    await createMcpOAuthClientProvider({ identity }).saveTokens({
-      access_token: "stored-inspection-token-not-real",
-      token_type: "Bearer",
-      expires_in: 3600,
+    await verifyDoctorLintOAuthStateIsolation(runtime, (checks) => {
+      mocks.resolveDoctorContributionHealthChecks.mockResolvedValue(checks);
     });
-    const databasePath = resolveOpenClawStateSqlitePath(process.env);
-    await closeOpenClawStateDatabaseByPathAsync(databasePath);
-    const lock = openNodeSqliteDatabase(databasePath);
-    // Windows byte-range locks block raw file reads while the transaction is held.
-    // Compare bytes outside that interval, but keep the caller locked through lint.
-    const before = snapshotDoctorLintSqliteFamily(databasePath);
-    lock.exec("BEGIN IMMEDIATE");
-    mocks.resolveDoctorContributionHealthChecks.mockResolvedValue([
-      {
-        id: "core/doctor/runtime-tool-schemas",
-        kind: "core",
-        description: "checks OAuth state ownership",
-        async detect() {
-          const token = await resolveMcpOAuthAccessToken({
-            identity,
-            acceptUnknownExpiry: true,
-            signal: AbortSignal.timeout(250),
-          });
-          expect(token).toBe("stored-inspection-token-not-real");
-          return [];
-        },
-      },
-    ]);
-
-    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    try {
-      await expect(
-        runDoctorLintCli(runtime, {
-          json: true,
-          onlyIds: ["core/doctor/runtime-tool-schemas"],
-        }),
-      ).resolves.toBe(0);
-      expect(JSON.parse(String(stdout.mock.calls.at(-1)?.[0]))).toMatchObject({
-        ok: true,
-        checksRun: 1,
-        findings: [],
-      });
-      expect(lock.isOpen).toBe(true);
-      expect(lock.isTransaction).toBe(true);
-      lock.exec("ROLLBACK");
-      expect(snapshotDoctorLintSqliteFamily(databasePath)).toEqual(before);
-    } finally {
-      stdout.mockRestore();
-      if (lock.isTransaction) {
-        lock.exec("ROLLBACK");
-      }
-      lock.close();
-      await closeOpenClawStateDatabaseByPathAsync(databasePath);
-      fs.rmSync(rootDir, { recursive: true, force: true });
-    }
   });
 });
 
