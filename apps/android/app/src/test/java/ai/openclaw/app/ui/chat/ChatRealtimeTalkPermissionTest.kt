@@ -237,7 +237,10 @@ class ChatRealtimeTalkPermissionTest {
         runtime.setForeground(true)
         runtime.switchChatSession("agent:main:selected")
       }
-      compose.waitForIdle()
+      // The gesture needs an admissible captured owner, not only a connected display.
+      compose.waitUntil(10_000) {
+        compose.runOnIdle { model.captureChatTalkStart()?.also { it.retire() } != null }
+      }
       block(runtime) { granted ->
         if (granted) shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
         registry.dispatchResult(checkNotNull(pendingRequestCode), granted)

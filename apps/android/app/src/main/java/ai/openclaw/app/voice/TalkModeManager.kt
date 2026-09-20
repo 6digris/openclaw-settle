@@ -9,6 +9,7 @@ import ai.openclaw.app.gateway.chatSendAckHistorySinceSeconds
 import ai.openclaw.app.gateway.parseChatSendAck
 import ai.openclaw.app.i18n.LocaleResolvingStateFlow
 import ai.openclaw.app.i18n.NativeText
+import ai.openclaw.app.i18n.joinedNativeText
 import ai.openclaw.app.i18n.nativeText
 import ai.openclaw.app.i18n.resolveNativeText
 import ai.openclaw.app.resolveAgentIdFromMainSessionKey
@@ -148,6 +149,7 @@ private data class TalkStatus(
   val state: TalkStatusState,
   val awaitingAgent: Boolean = false,
   val owner: TalkStatusOwner = TalkStatusOwner(),
+  val route: TalkModeRoute? = null,
 )
 
 private data class TalkConfigCache(
@@ -308,7 +310,10 @@ class TalkModeManager internal constructor(
 
   private val status = MutableStateFlow(TalkStatus(text = nativeText("Off"), state = TalkStatusState.Off))
   private val currentStatus: TalkStatus get() = status.value
-  val statusText: StateFlow<String> = LocaleResolvingStateFlow(status) { it.text.resolveNativeText() }
+  val statusText: StateFlow<String> =
+    LocaleResolvingStateFlow(status) {
+      joinedNativeText(" — ", listOfNotNull(it.text, it.route?.description)).resolveNativeText()
+    }
   val awaitingAgent: StateFlow<Boolean> = LocaleResolvingStateFlow(status) { it.awaitingAgent }
 
   /** Why Talk last failed, until Talk starts again; relay failures end Talk without any other visible trace. */
@@ -319,12 +324,13 @@ class TalkModeManager internal constructor(
     text: NativeText,
     state: TalkStatusState = TalkStatusState.Active,
     awaitingAgent: Boolean = false,
+    route: TalkModeRoute? = currentStatus.route,
   ) {
-    setStatus(TalkStatus(text = text, state = state, awaitingAgent = awaitingAgent))
+    setStatus(TalkStatus(text = text, state = state, awaitingAgent = awaitingAgent, route = route))
   }
 
   private fun setStatus(next: TalkStatus) {
-    status.value = next
+    status.value = if (next.state == TalkStatusState.Active) next else next.copy(route = null)
   }
 
   private fun setTalkFailure(text: NativeText) {
@@ -1081,10 +1087,11 @@ class TalkModeManager internal constructor(
         audioRetirement.await()
         ensureConfigLoaded()
         if (generation != startGeneration.get() || !_isEnabled.value || stopRequested) return@launch
-        if (realtimeRelayModelSupported) {
+        val route = configCache.get().value.route
+        if (route == TalkModeRoute.RealtimeRelay) {
           startRealtimeRelay(generation, target = target)
         } else {
-          startNativeTalk(generation, target)
+          startNativeTalk(generation, route, target)
         }
       } catch (err: Throwable) {
         if (err is CancellationException) {
@@ -1292,7 +1299,7 @@ class TalkModeManager internal constructor(
 
     synchronized(realtimeCapturePauseLock) {
       if (generation != startGeneration.get() || !_isEnabled.value || stopRequested) throw CancellationException("realtime talk stopped while connecting")
-      setStatus(nativeText("Connecting…"), awaitingAgent = true)
+      setStatus(nativeText("Connecting…"), awaitingAgent = true, route = TalkModeRoute.RealtimeRelay)
     }
     val language = realtimeTranscriptionLanguage(resolvedSpeechLocaleTag())
     val lease = change?.lease ?: target?.lease ?: session.captureRequestLease(gatewayStableId()) ?: error("Gateway not connected")
@@ -1528,6 +1535,7 @@ class TalkModeManager internal constructor(
 
   private suspend fun startNativeTalk(
     generation: Long,
+    route: TalkModeRoute,
     target: ChatStart?,
   ) {
     if (target?.canStart() == false) throw CancellationException("Talk owner changed")
@@ -1556,6 +1564,8 @@ class TalkModeManager internal constructor(
       synchronized(realtimeCapturePauseLock) {
         if (generation != startGeneration.get() || !_isEnabled.value || stopRequested) return@withContext
         recognizer = SpeechRecognizer.createSpeechRecognizer(context).also { it.setRecognitionListener(recognitionListener(null, it)) }
+        // Record the admitted route, not a later config refresh, for this native speech loop.
+        setStatus(nativeText("Listening"), route = route)
         startListeningInternal(markListening = true)
         startSilenceMonitor()
       }
