@@ -261,7 +261,8 @@ run_positive_hops() {
     >"$ARTIFACT_DIR/$lane-doctor-service-start.stdout" \
     2>"$ARTIFACT_DIR/$lane-doctor-service-start.stderr" || return "$?"
   wait_service_active
-  candidate_pid="$(cat "$OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_PID_FILE")"
+  local post_doctor_pid
+  post_doctor_pid="$(cat "$OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_PID_FILE")"
   record_service_state "$ARTIFACT_DIR/$lane-service-after-doctor.txt"
 
   run_update "$lane-second" "$FUTURE_PACKAGE"
@@ -269,7 +270,7 @@ run_positive_hops() {
   wait_service_active
   local future_pid
   future_pid="$(cat "$OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_PID_FILE")"
-  if [ "$future_pid" = "$candidate_pid" ]; then
+  if [ "$future_pid" = "$post_doctor_pid" ]; then
     echo "second hop did not replace the managed service process" >&2
     return 1
   fi
@@ -281,7 +282,7 @@ run_positive_hops() {
   record_residue "$ARTIFACT_DIR/$lane-second-transaction-residue.txt"
   assert_no_residue "$ARTIFACT_DIR/$lane-second-transaction-residue.txt"
   record_service_state "$ARTIFACT_DIR/$lane-service-after-second.txt"
-  printf '%s\n' "$first_pid" "$candidate_pid" "$future_pid" \
+  printf '%s\n' "$first_pid" "$candidate_pid" "$post_doctor_pid" "$future_pid" \
     >"$ARTIFACT_DIR/$lane-service-pids.txt"
   stop_lane
 }
@@ -302,14 +303,14 @@ node -e '
   const root = process.argv[1];
   const read = name => JSON.parse(fs.readFileSync(path.join(root, name), "utf8"));
   const source = read("source.json");
-  const [sourcePid, candidatePid, futurePid] = fs.readFileSync(path.join(root, "positive-service-pids.txt"), "utf8").trim().split("\n").map(Number);
+  const [sourcePid, candidatePid, postDoctorPid, futurePid] = fs.readFileSync(path.join(root, "positive-service-pids.txt"), "utf8").trim().split("\n").map(Number);
   fs.writeFileSync(path.join(root, "summary.json"), `${JSON.stringify({
     source,
     negativeControl: source.expectedMissingChunk
       ? { status: "passed", exit: 1, missingChunk: source.expectedMissingChunk }
       : source.negativeControl,
     firstHop: { exit: 0, method: "in-process-self-update", selfUpdatePassed: true, serviceIntent: "active", residueCount: 0, build: read("positive-first-build-info.json"), beforePid: sourcePid, afterPid: candidatePid },
-    secondHop: { exit: 0, method: "in-process-self-update", legacyCompatibilityChunksPresent: false, serviceIntent: "active", residueCount: 0, build: read("positive-second-build-info.json"), beforePid: candidatePid, afterPid: futurePid },
+    secondHop: { exit: 0, method: "in-process-self-update", legacyCompatibilityChunksPresent: false, serviceIntent: "active", residueCount: 0, build: read("positive-second-build-info.json"), beforePid: postDoctorPid, afterPid: futurePid },
   }, null, 2)}\n`);
 ' "$ARTIFACT_DIR"
 

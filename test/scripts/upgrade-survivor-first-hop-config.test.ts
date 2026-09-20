@@ -1019,9 +1019,14 @@ describe.skipIf(process.platform === "win32")("first-hop preservation shell orde
       join(fixture.artifacts, "positive-skills-status.json"),
       join(fixture.artifacts, "positive-skills-status-input.json"),
     );
-    const positive = readFileSync(laneScript, "utf8").match(
-      /^run_positive_hops\(\) \{[\s\S]*?^\}/mu,
-    )?.[0];
+    const source = readFileSync(laneScript, "utf8");
+    const positive = source.match(/^run_positive_hops\(\) \{[\s\S]*?^\}/mu)?.[0];
+    const report = source.slice(source.lastIndexOf("\nnode -e '") + 1);
+    expect(report).toContain('"summary.json"');
+    writeFileSync(
+      join(fixture.artifacts, "source.json"),
+      JSON.stringify({ expectedMissingChunk: "", negativeControl: { status: "not-applicable" } }),
+    );
     expect(positive).toBeDefined();
     const log = join(fixture.artifacts, "order.txt");
     writeFileSync(join(fixture.artifacts, "positive-before.pid"), "1\n");
@@ -1123,14 +1128,15 @@ run_update() {
     fi
   fi
 }
-assert_installed_build() { :; }
+assert_installed_build() { printf '{"package":"%s"}\\n' "$1" > "$2"; }
 wait_service_active() { :; }
 record_residue() { : > "$1"; }
 assert_no_residue() { test ! -s "$1"; }
-record_service_state() { : > "$1"; }
+record_service_state() { cat "$OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_PID_FILE" > "$1"; }
 stop_lane() { echo stop >> "$ORDER_LOG"; }
 ${positive}
 run_positive_hops
+${report}
 `,
       ],
       {
@@ -1202,6 +1208,23 @@ run_positive_hops
       }
     }
     expect(calls).toStrictEqual(expected);
+    if (failure === "none") {
+      const summary = JSON.parse(readFileSync(join(fixture.artifacts, "summary.json"), "utf8"));
+      expect(summary.firstHop).toMatchObject({ beforePid: 1, afterPid: 2 });
+      expect(summary.secondHop).toMatchObject({ beforePid: 3, afterPid: 4 });
+      expect(readFileSync(join(fixture.artifacts, "positive-service-pids.txt"), "utf8")).toBe(
+        "1\n2\n3\n4\n",
+      );
+      for (const [phase, pid] of [
+        ["first", 2],
+        ["doctor", 3],
+        ["second", 4],
+      ] as const) {
+        expect(
+          readFileSync(join(fixture.artifacts, `positive-service-after-${phase}.txt`), "utf8"),
+        ).toBe(`${pid}\n`);
+      }
+    }
     if (failure.endsWith("-capture")) {
       const phase = failure.startsWith("repair-") ? "repair" : "doctor";
       expect(
