@@ -105,11 +105,11 @@ let failedRun: UpdateRunRecord;
 let latestRun: UpdateRunRecord;
 const validateDoctor = vi.fn<() => Promise<UpdateRepairValidation>>();
 
-function validate(savedFailure = failure()) {
+function validate(savedFailure = failure(), env: NodeJS.ProcessEnv = {}) {
   return validateTriageUpdateResolution({
     failure: savedFailure,
     installRoot: "/fixture/openclaw",
-    env: { OPENCLAW_STATE_DIR: "/fixture/state" },
+    env: { OPENCLAW_STATE_DIR: "/fixture/state", ...env },
     signal: new AbortController().signal,
     validateDoctor,
   });
@@ -277,9 +277,13 @@ describe("saved update failure resolution", () => {
     expect(latestRun.status).toBe("skipped");
   });
 
-  it.each(["before verification", "during verification"])(
-    "does not certify pending plugin migrations %s despite updater completion",
-    async (when) => {
+  it.each(
+    ["before verification", "during verification"].flatMap((when) =>
+      [false, true].map((updating) => ({ when, updating })),
+    ),
+  )(
+    "does not certify pending plugin migrations $when despite updater completion (updating: $updating)",
+    async ({ when, updating }) => {
       const pending = [
         {
           pluginId: "codex",
@@ -296,10 +300,14 @@ describe("saved update failure resolution", () => {
           return true;
         });
       }
-      expect(await validate()).toMatchObject({
+      const result = await validate(failure(), {
+        OPENCLAW_UPDATE_IN_PROGRESS: updating ? "1" : "0",
+      });
+      expect(result).toMatchObject({
         ok: false,
         summary: expect.stringContaining('Plugin "codex" state migration is pending'),
       });
+      expect(result.summary.includes("Let the current update or repair finish.")).toBe(updating);
     },
   );
 
