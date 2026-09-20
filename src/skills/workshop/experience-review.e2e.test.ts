@@ -190,8 +190,9 @@ describe("Workshop draft-only review through the real provider and tool owners",
             config: candidate.config,
             source,
           });
+          const laterSession = SessionManager.open(target);
           for (const message of laterMessages) {
-            SessionManager.appendMessageToTranscript(target, message, {
+            laterSession.appendMessage(message, {
               config: candidate.config,
             });
           }

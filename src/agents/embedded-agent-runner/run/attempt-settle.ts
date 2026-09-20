@@ -3,6 +3,13 @@
  * It may assume stream runtime preparation and session state are ready.
  */
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import { sameSessionTranscriptTargetBinding } from "../../../config/sessions/transcript-target-binding.js";
+import {
+  assertOwnedTranscriptWriteCommit,
+  SessionTranscriptWriterClaimReboundError,
+  withSessionTranscriptWriteAssertion,
+} from "../../../config/sessions/transcript-write-context.js";
+import { isIncognitoSessionKey } from "../../../routing/session-key.js";
 import {
   mergeAgentRunAttemptTerminal,
   projectAgentRunAttemptTerminal,
@@ -12,6 +19,7 @@ import {
 import { sanitizeCompactionReplayMessages } from "../../compaction-replay.js";
 import type { AgentMessage } from "../../runtime/index.js";
 import { SessionManager } from "../../sessions/index.js";
+import { SessionTranscriptMessageCommittedError } from "../../sessions/session-manager-message-error.js";
 import { withSessionManagerWrite } from "../../sessions/session-manager-write-admission.js";
 import { log } from "../logger.js";
 import { clearActiveEmbeddedRun } from "../runs.js";
@@ -322,22 +330,59 @@ export async function runEmbeddedAttemptSettledPhase(
         },
         timestamp: Date.now(),
       };
-      await input.sessionLock.withOwnedTranscriptWrite(() =>
-        withSessionManagerWrite(sessionManager, () => {
-          const target = sessionManager.getSessionTarget();
-          if (target) {
-            SessionManager.appendMessageToTranscript(
-              target,
-              note,
-              attempt.config ? { config: attempt.config } : undefined,
+      const target = sessionManager.getSessionTarget();
+      const sessionId = sessionManager.getSessionId();
+      const assertBinding = () => {
+        if (
+          sessionManager.getSessionId() !== sessionId ||
+          !sameSessionTranscriptTargetBinding(target, sessionManager.getSessionTarget())
+        ) {
+          throw new SessionTranscriptWriterClaimReboundError();
+        }
+      };
+      let committedMessageId: string | undefined;
+      try {
+        await input.sessionLock.withOwnedTranscriptWrite(async () => {
+          assertBinding();
+          if (target && !isIncognitoSessionKey(target.sessionKey)) {
+            const committed = await withSessionTranscriptWriteAssertion(target, assertBinding, () =>
+              SessionManager.appendMessageToTranscript(
+                target,
+                note,
+                attempt.config ? { config: attempt.config } : undefined,
+              ),
             );
+            committedMessageId = committed.messageId;
+            assertBinding();
+            assertOwnedTranscriptWriteCommit(target);
+            activeSession.agent.state.messages = [...activeSession.messages, committed.message];
+            messagesSnapshot = [...messagesSnapshot, committed.message];
           } else {
-            sessionManager.appendMessage(note);
+            // Detached and incognito transcripts retain their process-held manager owner.
+            await withSessionManagerWrite(sessionManager, () => {
+              assertBinding();
+              let canonicalMessage: AgentMessage = note;
+              if (target) {
+                const committed = sessionManager.appendMessageWithTranscriptAnchor(
+                  note,
+                  attempt.config ? { config: attempt.config } : undefined,
+                );
+                committedMessageId = committed.entryId;
+                canonicalMessage = committed.message;
+              } else {
+                sessionManager.appendMessage(note);
+              }
+              activeSession.agent.state.messages = [...activeSession.messages, canonicalMessage];
+              messagesSnapshot = [...messagesSnapshot, canonicalMessage];
+            });
           }
-          activeSession.agent.state.messages = [...activeSession.messages, note];
-        }),
-      );
-      messagesSnapshot = [...messagesSnapshot, note];
+        });
+      } catch (error) {
+        if (committedMessageId && target) {
+          throw new SessionTranscriptMessageCommittedError(committedMessageId, error, target);
+        }
+        throw error;
+      }
     }
   } finally {
     cleanupError = cleanupEmbeddedAttemptStreamExecution({

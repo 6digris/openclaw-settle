@@ -53,7 +53,6 @@ import {
 } from "./session-transcript-projection-append.js";
 import { startSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
 import { copyRetainedTranscriptPayload } from "./session-transcript-retained-data.js";
-import { createSessionTranscriptHeader } from "./transcript-header.js";
 
 type TranscriptAppendOptions = {
   /** Exact event bytes, including canonical media, prepared by the message append owner. */
@@ -360,30 +359,6 @@ function appendTranscriptEventRowInTransaction(
   }
   state.insertIdentity({ ...identity, seq, createdAt });
   return true;
-}
-
-export function ensureTranscriptHeader(
-  database: OpenClawAgentDatabase,
-  scope: ResolvedTranscriptScope,
-  cwd: string | undefined,
-): void {
-  const db = getSessionKysely(database.db);
-  const existing = executeSqliteQueryTakeFirstSync(
-    database.db,
-    db
-      .selectFrom("transcript_events")
-      .select("seq")
-      .where("session_id", "=", scope.sessionId)
-      .limit(1),
-  );
-  if (existing) {
-    return;
-  }
-  appendTranscriptEventInTransaction(
-    database,
-    scope,
-    createSessionTranscriptHeader({ cwd, sessionId: scope.sessionId }),
-  );
 }
 
 export function replaceSqliteTranscriptEventsInTransaction(

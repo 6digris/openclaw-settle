@@ -1,6 +1,30 @@
+import path from "node:path";
+import { DatabaseSync, StatementSync } from "node:sqlite";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  loadTranscriptEvents,
+  upsertSessionEntryCore,
+} from "../../../config/sessions/session-accessor.js";
+import { waitForSessionTranscriptProjection } from "../../../config/sessions/session-transcript-reconcile.js";
+import { withOwnedSessionTranscriptWrites } from "../../../config/sessions/transcript-write-context.js";
+import { SqliteWorkerError } from "../../../infra/sqlite-worker-contract.js";
+import * as workerAdmission from "../../../infra/sqlite-worker-operation-admission.js";
+import * as workerStore from "../../../infra/sqlite-worker-store.js";
+import type {
+  SqliteWorkerOperations,
+  SqliteWorkerStore,
+} from "../../../infra/sqlite-worker-store.js";
 import { createNestedToolActivity } from "../../../sessions/nested-tool-activity.js";
+import { createDeferredCore } from "../../../shared/deferred.js";
+import { openOpenClawAgentDatabase } from "../../../state/openclaw-agent-db.js";
+import {
+  withOpenClawTestState,
+  type OpenClawTestState,
+} from "../../../test-utils/openclaw-test-state.js";
 import { createTestAdmittedRunContext } from "../../admitted-run-context.test-support.js";
+import { isRecordedModelFallbackStop } from "../../model-fallback-stop.js";
+import { SessionManager } from "../../sessions/session-manager.js";
 import { createUsageAccumulator } from "../usage-accumulator.js";
 
 const mocks = vi.hoisted(() => ({
@@ -47,6 +71,7 @@ vi.mock("./attempt-stream-settle.js", () => ({
 }));
 
 import { runEmbeddedAttemptSettledPhase } from "./attempt-settle.js";
+import { createEmbeddedAttemptTranscriptLifecycle } from "./attempt-transcript-lifecycle.js";
 import { createEmbeddedRunContextRecoveryState } from "./context-recovery-state.js";
 import { prepareEmbeddedRunTerminal } from "./terminal-preparation.js";
 
@@ -330,8 +355,88 @@ function createFixture() {
   };
 }
 
+async function createPersistedImageNoteFixture(
+  testState: OpenClawTestState,
+  storage: "file-backed" | "incognito" = "file-backed",
+) {
+  const fixture = createFixture();
+  const target = {
+    agentId: "main",
+    sessionId: "image-note",
+    sessionKey:
+      storage === "incognito"
+        ? "agent:main:dashboard:incognito-image-note"
+        : "agent:main:image-note",
+    storePath: path.join(testState.agentDir("main"), "openclaw-agent.sqlite"),
+  };
+  const entry = await upsertSessionEntryCore(target, {
+    sessionId: target.sessionId,
+    updatedAt: 1,
+    lifecycleRevision: "image-note-generation",
+    activeWriterRunId: fixture.input.attempt.runId,
+    ...(storage === "incognito" ? { incognito: true } : {}),
+  });
+  if (!entry?.lifecycleRevision) {
+    throw new Error("Expected a durable lifecycle revision for the admitted image-note writer");
+  }
+  const manager = SessionManager.open(target, testState.workspaceDir);
+  const activeSession = fixture.input.prepared.sessionRuntime.agentSession.activeSession;
+  manager.appendMessage({ role: "user", content: "Describe this image", timestamp: 1 });
+  for (const message of activeSession.messages) {
+    if (message.role !== "assistant") {
+      throw new Error("Expected the completed assistant turn in the settlement fixture");
+    }
+    manager.appendMessage(message);
+  }
+  await waitForSessionTranscriptProjection(target);
+  const before = await loadTranscriptEvents(target);
+  const previousLeaf = manager.getLeafId();
+  const previousMessages = manager.buildSessionContext().messages;
+  activeSession.agent.state.messages = [...previousMessages];
+  Object.defineProperty(activeSession, "messages", {
+    get: () => activeSession.agent.state.messages,
+  });
+  fixture.input.prepared.sessionRuntime.sessionManager = manager;
+  fixture.input.attempt.sessionTarget = target;
+  fixture.input.attempt.sessionId = target.sessionId;
+  fixture.input.attempt.sessionKey = target.sessionKey;
+  fixture.input.getRepairedRejectedProviderReplay = () => false;
+  fixture.input.preparedStreamRuntime.stream.getBeforeAgentFinalizeRevisionReason = () => undefined;
+  fixture.sessionRuntimeState.currentTurnImageFailureCount = 1;
+  const settleStream = mocks.settleStream.getMockImplementation()!;
+  mocks.settleStream.mockImplementationOnce(async (...args) => ({
+    ...(await settleStream(...args)),
+    messagesSnapshot: [...previousMessages],
+  }));
+  const lifecycle = createEmbeddedAttemptTranscriptLifecycle(fixture.input.attempt);
+  fixture.input.sessionLock.withOwnedTranscriptWrite = (operation) =>
+    withOwnedSessionTranscriptWrites(
+      {
+        sessionTarget: {
+          ...target,
+          expectedLifecycleRevision: entry.lifecycleRevision,
+          expectedWriterRunId: fixture.input.attempt.runId,
+        },
+        assertCommitAllowed: () => fixture.input.runAbortController.signal.throwIfAborted(),
+        withTranscriptWrite: (write) => lifecycle.withTranscriptWrite(write),
+      },
+      () => lifecycle.withTranscriptWrite(operation),
+    );
+  return {
+    fixture,
+    target,
+    manager,
+    activeSession,
+    before,
+    previousLeaf,
+    previousMessages,
+    lifecycle,
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.completeResult.mockReset();
 });
 
 describe("runEmbeddedAttemptSettledPhase", () => {
@@ -411,6 +516,306 @@ describe("runEmbeddedAttemptSettledPhase", () => {
       }),
     );
   });
+
+  it("persists and publishes image failure notes through settlement without parent SQL", async () => {
+    await withOpenClawTestState({ label: "settled-image-note" }, async (testState) => {
+      const { fixture, target, activeSession, before, previousLeaf, previousMessages, lifecycle } =
+        await createPersistedImageNoteFixture(testState);
+      const actualAttemptResult =
+        await vi.importActual<typeof import("./attempt-result.js")>("./attempt-result.js");
+      mocks.completeResult.mockImplementationOnce(
+        actualAttemptResult.completeEmbeddedAttemptResult,
+      );
+
+      try {
+        const database = openOpenClawAgentDatabase({ agentId: "main", path: target.storePath });
+        // Prepare before instrumentation so the probes must observe cached statements too.
+        const calibration = database.db.prepare("SELECT 1 AS value");
+        const probes = {
+          prepare: vi.spyOn(DatabaseSync.prototype, "prepare"),
+          exec: vi.spyOn(DatabaseSync.prototype, "exec"),
+          get: vi.spyOn(StatementSync.prototype, "get"),
+          all: vi.spyOn(StatementSync.prototype, "all"),
+          run: vi.spyOn(StatementSync.prototype, "run"),
+          iterate: vi.spyOn(StatementSync.prototype, "iterate"),
+        };
+        const measured = await (async () => {
+          try {
+            database.db.exec("SELECT 1");
+            database.db.prepare("SELECT 1");
+            calibration.get();
+            calibration.all();
+            calibration.run();
+            expect([...calibration.iterate()]).toEqual([{ value: 1 }]);
+            for (const [name, probe] of Object.entries(probes)) {
+              expect(
+                probe.mock.calls.length,
+                `positive parent ${name} calibration`,
+              ).toBeGreaterThan(0);
+              probe.mockClear();
+            }
+
+            const result = await runEmbeddedAttemptSettledPhase(fixture.input);
+            return {
+              result,
+              parentSql: Object.fromEntries(
+                Object.entries(probes).map(([name, probe]) => [name, probe.mock.calls.length]),
+              ),
+            };
+          } finally {
+            Object.values(probes).forEach((probe) => probe.mockRestore());
+          }
+        })();
+
+        const after = await loadTranscriptEvents(target);
+        expect(after.slice(0, before.length)).toEqual(before);
+        expect(after).toHaveLength(before.length + 1);
+        const reopened = SessionManager.open(target);
+        const appended = reopened.getLeafEntry();
+        expect(appended).toMatchObject({
+          type: "message",
+          parentId: previousLeaf,
+          message: {
+            role: "custom",
+            customType: "openclaw.system-note",
+            display: true,
+            content: expect.stringMatching(/1.*image contents.*unavailable.*resend.*not claim/is),
+            details: {
+              source: "prompt-image-hydration",
+              runId: fixture.input.attempt.runId,
+              failedMediaCount: 1,
+            },
+            timestamp: expect.any(Number),
+          },
+        });
+        if (appended?.type !== "message") {
+          throw new Error("Expected a durable image failure message");
+        }
+        expect(appended.message).not.toHaveProperty("excludeFromContext");
+        const expectedMessages = [...previousMessages, appended.message];
+        expect(activeSession.messages).toEqual(expectedMessages);
+        expect(measured.result.messagesSnapshot).toEqual(expectedMessages);
+        expect(fixture.unsubscribe).toHaveBeenCalledOnce();
+        expect(fixture.detachBackend).toHaveBeenCalledOnce();
+        expect(measured.parentSql).toEqual({
+          prepare: 0,
+          exec: 0,
+          get: 0,
+          all: 0,
+          run: 0,
+          iterate: 0,
+        });
+      } finally {
+        await lifecycle.dispose();
+      }
+    });
+  });
+
+  it.each(["file-backed", "incognito"] as const)(
+    "publishes the canonical redacted %s image failure note into live messages and the result",
+    async (storage) => {
+      await withOpenClawTestState({ label: "settled-image-note-redaction" }, async (testState) => {
+        const { fixture, target, activeSession, previousMessages, lifecycle } =
+          await createPersistedImageNoteFixture(testState, storage);
+        fixture.input.attempt.config = { logging: { redactPatterns: ["run-1"] } };
+        const actualAttemptResult =
+          await vi.importActual<typeof import("./attempt-result.js")>("./attempt-result.js");
+        mocks.completeResult.mockImplementationOnce(
+          actualAttemptResult.completeEmbeddedAttemptResult,
+        );
+        try {
+          const result = await runEmbeddedAttemptSettledPhase(fixture.input);
+          const stored = SessionManager.open(target).getLeafEntry();
+          expect(stored).toMatchObject({
+            type: "message",
+            message: { role: "custom", customType: "openclaw.system-note" },
+          });
+          if (stored?.type !== "message") {
+            throw new Error("Expected a durable image failure message");
+          }
+          expect(JSON.stringify(stored.message)).not.toContain("run-1");
+          const expected = [...previousMessages, stored.message];
+          expect({ live: activeSession.messages, result: result.messagesSnapshot }).toEqual({
+            live: expected,
+            result: expected,
+          });
+        } finally {
+          await lifecycle.dispose();
+        }
+      });
+    },
+  );
+
+  it.each(["cancel before commit", "retarget after commit", "unknown reply after commit"] as const)(
+    "keeps image note publication with its original owner: %s",
+    async (transition) => {
+      await withOpenClawTestState({ label: "settled-image-note-owner" }, async (testState) => {
+        const { fixture, target, manager, activeSession, before, previousMessages, lifecycle } =
+          await createPersistedImageNoteFixture(testState);
+        const replacement = {
+          ...target,
+          sessionId: "replacement",
+          sessionKey: "agent:main:replacement",
+        };
+        await upsertSessionEntryCore(replacement, {
+          sessionId: replacement.sessionId,
+          updatedAt: 1,
+        });
+        const replacementManager = SessionManager.open(replacement);
+        replacementManager.appendMessage({
+          role: "user",
+          content: "Keep replacement",
+          timestamp: 2,
+        });
+        await waitForSessionTranscriptProjection(replacement);
+        const replacementBefore = await loadTranscriptEvents(replacement);
+        const replacementMessages = replacementManager.buildSessionContext().messages;
+        const committed = createDeferredCore();
+        const release = createDeferredCore();
+        const cancellation = new Error("image note owner cancelled before commit");
+        let noteInFlight = false;
+        let interceptedNotes = 0;
+        let cancelledGrants = 0;
+        const createAdmission = workerAdmission.createSqliteWorkerOperationAdmission;
+        const admissionSpy = vi
+          .spyOn(workerAdmission, "createSqliteWorkerOperationAdmission")
+          .mockImplementation((admit) =>
+            createAdmission((request, grant) => {
+              if (
+                transition === "cancel before commit" &&
+                noteInFlight &&
+                request.stage === "commit"
+              ) {
+                cancelledGrants++;
+                fixture.input.runAbortController.abort(cancellation);
+              }
+              admit(request, grant);
+            }),
+          );
+        const runOperation = workerStore.runSqliteWorkerStoreOperation;
+        const operationSpy = vi
+          .spyOn(workerStore, "runSqliteWorkerStoreOperation")
+          .mockImplementation(
+            <Operations extends SqliteWorkerOperations, T>(
+              store: SqliteWorkerStore<Operations>,
+              operation: (scope: Pick<SqliteWorkerStore<Operations>, "execute">) => T | Promise<T>,
+              stateContext?: Parameters<typeof runOperation>[2],
+              assertCurrent?: Parameters<typeof runOperation>[3],
+              admission?: Parameters<typeof runOperation>[4],
+              requireStateLifecycle?: Parameters<typeof runOperation>[5],
+            ) =>
+              runOperation(
+                store,
+                (scope) =>
+                  operation({
+                    execute: async (command, options) => {
+                      const selected =
+                        command.type === "database.domain.execute" &&
+                        isRecord(command.input) &&
+                        isRecord(command.input.command) &&
+                        command.input.command.type === "session.transcript.appendMessage";
+                      if (!selected) {
+                        return await scope.execute(command, options);
+                      }
+                      interceptedNotes++;
+                      noteInFlight = true;
+                      try {
+                        const result = await scope.execute(command, options);
+                        if (transition === "unknown reply after commit") {
+                          throw new SqliteWorkerError(
+                            "Transcript reply outcome is unknown",
+                            "outcome-unknown",
+                          );
+                        }
+                        if (transition === "retarget after commit") {
+                          committed.resolve();
+                          await release.promise;
+                        }
+                        return result;
+                      } finally {
+                        noteInFlight = false;
+                      }
+                    },
+                  }),
+                stateContext,
+                assertCurrent,
+                admission,
+                requireStateLifecycle,
+              ),
+          );
+        const outcome = runEmbeddedAttemptSettledPhase(fixture.input).then(
+          (value) => ({ ok: true as const, value }),
+          (error: unknown) => ({ ok: false as const, error }),
+        );
+        try {
+          if (transition === "retarget after commit") {
+            await Promise.race([
+              committed.promise,
+              outcome.then(() => {
+                throw new Error("Attempt settled before the real image note commit boundary");
+              }),
+            ]);
+            expect(activeSession.messages).toEqual(previousMessages);
+            expect(mocks.completeResult).not.toHaveBeenCalled();
+            manager.setSessionTarget(replacement);
+            activeSession.agent.state.messages = [...replacementMessages];
+            release.resolve();
+          }
+          const settled = await outcome;
+          expect(interceptedNotes).toBe(1);
+          expect(settled.ok).toBe(false);
+          if (settled.ok) {
+            throw new Error("Expected stale image note publication to be rejected");
+          }
+          expect(mocks.completeResult).not.toHaveBeenCalled();
+          expect(fixture.unsubscribe).toHaveBeenCalledOnce();
+          expect(fixture.detachBackend).toHaveBeenCalledOnce();
+          expect(await loadTranscriptEvents(replacement)).toEqual(replacementBefore);
+          const originalAfter = await loadTranscriptEvents(target);
+          if (transition === "cancel before commit") {
+            expect(cancelledGrants).toBe(1);
+            expect(settled.error).toMatchObject({ message: cancellation.message });
+            expect(isRecordedModelFallbackStop(settled.error)).toBe(false);
+            expect(originalAfter).toEqual(before);
+            expect(activeSession.messages).toEqual(previousMessages);
+          } else {
+            expect(cancelledGrants).toBe(0);
+            expect(originalAfter.slice(0, before.length)).toEqual(before);
+            expect(originalAfter).toHaveLength(before.length + 1);
+            expect(originalAfter.at(-1)).toMatchObject({
+              type: "message",
+              message: {
+                customType: "openclaw.system-note",
+                details: { source: "prompt-image-hydration", runId: fixture.input.attempt.runId },
+              },
+            });
+            expect(isRecordedModelFallbackStop(settled.error)).toBe(true);
+            const committedEntry = SessionManager.open(target).getLeafEntry();
+            expect(committedEntry).toBeDefined();
+            if (transition === "retarget after commit") {
+              expect(settled.error).toMatchObject({
+                message: expect.stringMatching(/committed.*do not replay/is),
+                committedMessageId: committedEntry?.id,
+                committedTarget: target,
+              });
+              expect(activeSession.messages).toEqual(replacementMessages);
+              expect(manager.getSessionTarget()?.sessionId).toBe(replacement.sessionId);
+            } else {
+              expect(settled.error).toMatchObject({ code: "outcome-unknown" });
+              expect(settled.error).not.toHaveProperty("committedMessageId");
+              expect(activeSession.messages).toEqual(previousMessages);
+            }
+          }
+        } finally {
+          release.resolve();
+          await outcome;
+          operationSpy.mockRestore();
+          admissionSpy.mockRestore();
+          await lifecycle.dispose();
+        }
+      });
+    },
+  );
 
   it("carries a successful hidden target through settlement into the terminal receipt", async () => {
     const fixture = createFixture();
