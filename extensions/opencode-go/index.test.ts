@@ -597,6 +597,68 @@ describe("opencode-go provider plugin", () => {
     expect(provider.wrapStreamFn?.({ streamFn: undefined } as never)).toBeUndefined();
   });
 
+  it.each([
+    ["openai-completions", "https://opencode.ai/zen/go/v1"],
+    ["anthropic-messages", "https://opencode.ai/zen/go"],
+  ] as const)("sends stable conversation identity to the %s endpoint", async (api, baseUrl) => {
+    const provider = await registerSingleProviderPlugin(plugin);
+    const streamFn = vi.fn(() => ({}) as never);
+    const wrapped = provider.wrapStreamFn?.({ streamFn } as never);
+
+    await wrapped?.(
+      { provider: "opencode-go", id: "fixture", api, baseUrl } as never,
+      { messages: [] } as never,
+      { sessionId: "conversation-123" },
+    );
+
+    expect(streamFn).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ headers: { "x-opencode-session": "conversation-123" } }),
+    );
+  });
+
+  it("preserves explicit session routing and leaves custom proxies unchanged", async () => {
+    const provider = await registerSingleProviderPlugin(plugin);
+    const capturedHeaders: Array<Record<string, string> | undefined> = [];
+    const streamFn = vi.fn(
+      (_model: unknown, _context: unknown, options?: { headers?: Record<string, string> }) => {
+        capturedHeaders.push(options?.headers);
+        return {} as never;
+      },
+    );
+    const wrapped = provider.wrapStreamFn?.({ streamFn } as never);
+
+    await wrapped?.(
+      {
+        provider: "opencode-go",
+        id: "fixture",
+        api: "anthropic-messages",
+        baseUrl: "https://opencode.ai/zen/go",
+      } as never,
+      {} as never,
+      {
+        sessionId: "conversation-123",
+        headers: { "X-OpenCode-Session": "operator-route" },
+      },
+    );
+    await wrapped?.(
+      {
+        provider: "opencode-go",
+        id: "fixture",
+        api: "openai-completions",
+        baseUrl: "https://proxy.example.com/v1",
+      } as never,
+      {} as never,
+      { sessionId: "conversation-123" },
+    );
+
+    expect(capturedHeaders[0]).toEqual({
+      "X-OpenCode-Session": "operator-route",
+    });
+    expect(capturedHeaders[1]).toBeUndefined();
+  });
+
   it.each(["deepseek-v4-pro", "deepseek-v4-flash"] as const)(
     "disables invalid DeepSeek V4 reasoning_effort off payloads on OpenCode Go for %s",
     async (modelId) => {
