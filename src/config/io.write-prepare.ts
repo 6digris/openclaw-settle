@@ -11,10 +11,11 @@ import {
 } from "../agents/agent-scope-config.js";
 import { isBlockedObjectKey } from "../infra/prototype-keys.js";
 import { normalizeAgentId } from "../routing/session-key.js";
+import { appendConfigPathSegment } from "../shared/dot-path.js";
 import { parseConfigPathArrayIndex } from "../shared/path-array-index.js";
 import { isRecord } from "../utils.js";
 import { configIncludeOwnsAgentRosterValues } from "./agent-roster-provenance.js";
-import { cloneEnvWithPlatformSemantics } from "./config-env-vars.js";
+import { createConfigRuntimeEnvBase } from "./config-env-vars.js";
 import { restoreEnvVarRefsFromResolved } from "./env-preserve.js";
 import { containsEnvVarReference } from "./env-substitution.js";
 import { coerceConfig, resolveConfigForRead } from "./io.read-helpers.js";
@@ -1001,7 +1002,7 @@ function indexAgentRosterSourcePaths(
               normalizeAgentId(id),
               source.kind === "list"
                 ? `agents.list[${source.index}]`
-                : `agents.entries.${source.key}`,
+                : appendConfigPathSegment("agents.entries", source.key),
             ],
           ];
     }),
@@ -1604,13 +1605,14 @@ export function prepareConfigWriteValues(params: {
   const authoredConfig = restore(params.nextConfig, params.explicitSetPaths);
   const resolution = resolveConfigForRead(
     authoredConfig,
-    cloneEnvWithPlatformSemantics(params.env),
+    createConfigRuntimeEnvBase(source, params.env),
     params.lowerPrecedenceEnv,
   );
   const resolvedConfig = coerceConfig(resolution.resolvedConfigRaw);
   setConfigResolutionFacts(resolvedConfig, resolution.resolutionFacts);
   return {
     authoredConfig,
+    resolutionEnv: resolution.envSnapshotForRestore,
     explicitSetValueSource: params.explicitSetValueSource
       ? restore(params.explicitSetValueSource, params.explicitSetPaths)
       : authoredConfig,

@@ -61,9 +61,14 @@ describe("config snapshot plugin metadata", () => {
     expect(fs.existsSync(context.configPath)).toBe(false);
   });
 
-  it.each([false, true])(
-    "pairs authored include references with their resolved read (invalid: %s)",
-    async (invalid) => {
+  it.each([
+    { useInclude: false, invalid: false },
+    { useInclude: false, invalid: true },
+    { useInclude: true, invalid: false },
+    { useInclude: true, invalid: true },
+  ])(
+    "pairs authored references with their resolved read (include: $useInclude, invalid: $invalid)",
+    async ({ useInclude, invalid }) => {
       const root = tempDirs.make("openclaw-config-authored-snapshot-");
       const context = createContext(root);
       context.deps.env.PLUGIN_TOKEN = "read-time-token";
@@ -76,7 +81,7 @@ describe("config snapshot plugin metadata", () => {
         context.configPath,
         JSON.stringify({
           gateway: { auth: { token: "${PLUGIN_TOKEN}" } },
-          plugins: { $include: "plugins.json" },
+          plugins: useInclude ? { $include: "plugins.json" } : plugins,
           ...(invalid ? { nodeHost: { browserProxy: { enabled: "invalid" } } } : {}),
         }),
       );
@@ -93,7 +98,9 @@ describe("config snapshot plugin metadata", () => {
       expect(snapshot.sourceConfigBeforeMigrations?.plugins?.entries?.retired?.config).toEqual({
         token: "read-time-token",
       });
-      expect(snapshot.parsed).toMatchObject({ plugins: { $include: "plugins.json" } });
+      expect(snapshot.parsed).toMatchObject({
+        plugins: useInclude ? { $include: "plugins.json" } : plugins,
+      });
       expect(snapshot.hash).toBe(hash);
       expect(snapshot.path).toBe(context.configPath);
     },
@@ -255,6 +262,7 @@ describe("config snapshot plugin metadata", () => {
     const result = await readConfigFileSnapshotWithPluginMetadataFromContext(context);
 
     expect(result.snapshot.valid).toBe(false);
+    expect(result.snapshot.authoredConfig).toBeUndefined();
     expect(result.pluginMetadataSnapshot).toBeUndefined();
     expect(loader).not.toHaveBeenCalled();
   });

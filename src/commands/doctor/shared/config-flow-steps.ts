@@ -68,10 +68,14 @@ export function applyLegacyCompatibilityStep(params: {
     config: migrated,
     sourceConfig: migratedSource,
     changes,
+    warnings,
     partiallyValid,
   } = migrateLegacyConfig(params.snapshot.sourceConfig, {
-    authoredRaw: params.snapshot.parsed,
-    resolvedRaw: params.snapshot.sourceConfig,
+    sourceConfigBeforeMigrations: params.snapshot.sourceConfigBeforeMigrations,
+    context: {
+      authoredRaw: params.snapshot.parsed,
+      resolvedRaw: params.snapshot.sourceConfig,
+    },
   });
   const migrationCandidate = migratedSource ?? migrated;
   // Read-time normalization still needs persistence; unresolved advice alone does not.
@@ -98,7 +102,7 @@ export function applyLegacyCompatibilityStep(params: {
               `Run "${params.doctorFixCommand}" to ${partiallyValid ? "finish fixing" : "migrate"} legacy config keys.`,
             ],
     },
-    issueLines,
+    issueLines: [...issueLines, ...(warnings ?? [])],
     changeLines: changes,
     partiallyValid: partiallyValid === true ? true : undefined,
   };
@@ -178,7 +182,7 @@ function retainValuePreservingMigrationRefs(
         collect(
           value,
           resolved && typeof resolved === "object"
-            ? (resolved as Record<string, unknown>)[key]
+            ? (resolved as Record<string, unknown>)[key] // SAFETY: non-null object; indexed values remain unknown.
             : undefined,
         );
       }
@@ -207,7 +211,7 @@ function retainValuePreservingMigrationRefs(
           retain(
             value,
             resolved && typeof resolved === "object"
-              ? (resolved as Record<string, unknown>)[key]
+              ? (resolved as Record<string, unknown>)[key] // SAFETY: non-null object; indexed values remain unknown.
               : undefined,
           ),
         ]),
@@ -243,8 +247,14 @@ export function restoreDoctorConfigEnvRefs(
     explicitSetPaths,
   );
   const context = { authoredRaw: source.parsed, resolvedRaw: source.resolved };
-  const migratedAuthored = applyLegacyDoctorMigrations(canonicalAuthored, context);
-  const migratedResolved = applyLegacyDoctorMigrations(canonicalResolved, context);
+  const migratedAuthored = applyLegacyDoctorMigrations(canonicalAuthored, {
+    sourceConfigBeforeMigrations: source.resolved,
+    context,
+  });
+  const migratedResolved = applyLegacyDoctorMigrations(canonicalResolved, {
+    sourceConfigBeforeMigrations: source.resolved,
+    context,
+  });
   // Only migration-owned destinations participate in the second pass. Unchanged policy
   // templates must not restore retired IDs after their resolved values were canonicalized.
   const referenceTemplate = createMergePatch(

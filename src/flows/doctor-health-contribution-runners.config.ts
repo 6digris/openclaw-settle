@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import nodePath from "node:path";
 import { shouldSkipLegacyUpdateDoctorConfigWrite } from "../commands/doctor/shared/update-phase.js";
+import { ConfigWritePostCommitError } from "../config/io.write-errors.js";
 import { resolveIsConfigReadOnly, resolveIsNixMode } from "../config/paths.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { recordUpdateModelRetirement } from "../infra/update-deferred-model-retirement.js";
@@ -38,6 +39,9 @@ export async function runWriteConfigHealth(
   ctx: DoctorHealthFlowContext,
   options: { runPostWriteRepairs?: boolean } = {},
 ): Promise<boolean> {
+  if (ctx.configWriteError) {
+    throw ctx.configWriteError;
+  }
   if (ctx.configWriteRefusal) {
     // The initial write already reported the refusal; retrying the
     // same candidate would fail identically and duplicate the warning.
@@ -50,6 +54,8 @@ export async function runWriteConfigHealth(
   const { hashConfigRaw } = await import("../config/io.read-helpers.js");
   const { resolveConfigIncludeWriteBoundary } = await import("../config/mutate.js");
   const { isDeepStrictEqual } = await import("node:util");
+  const { getDeferredPluginMigrationConfigFacts, preserveDeferredPluginMigrationConfig } =
+    await import("../config/deferred-plugin-migration-config.js");
   const { createSubsystemLogger } = await import("../logging/subsystem.js");
   const { recordDoctorHealthWarnings } = await import("./doctor-health-contribution.js");
   const { logConfigUpdated } = await import("../config/logging.js");
@@ -77,6 +83,7 @@ export async function runWriteConfigHealth(
       await import("../commands/doctor/shared/config-flow-steps.js");
     const { assertShippedPluginInstallConfigImportCurrent } =
       await import("../commands/doctor/shared/plugin-registry-migration.js");
+    let committed: Awaited<ReturnType<typeof transformConfigFile>>;
     try {
       if (!confirmedConfigSource?.hash) {
         throw new ConfigMutationConflictError("Doctor config write has no source revision", {
@@ -153,31 +160,34 @@ export async function runWriteConfigHealth(
               : {}),
           },
         });
-      const result = includeWrite
-        ? await runUpdateDoctorIncludeWrite(
-            includeWrite.path,
-            hashConfigRaw(includeWrite.raw),
-            async () => {
-              const keys = [
-                ...new Set(
-                  collectChangedConfigPaths(includeWrite.sourceConfig, ctx.cfg).paths.flatMap(
-                    ([key]) => (key === undefined ? [] : [key]),
-                  ),
-                ),
-              ].toSorted();
-              const warning = `Doctor include-owned keys ${keys.join(", ")}: promotion unavailable for include-owned configuration.`;
-              recordDoctorHealthWarnings(ctx, [], [warning]);
-              createSubsystemLogger("update").warn(warning);
-              ctx.runtime.log(warning);
-              return await writeConfig();
-            },
-          )
-        : await writeConfig();
-      ctx.configResult.confirmedConfigSource = {
-        path: result.path,
-        hash: result.persistedHash,
-      };
+      if (includeWrite) {
+        const keys = [
+          ...new Set(
+            collectChangedConfigPaths(includeWrite.sourceConfig, ctx.cfg).paths.flatMap(([key]) =>
+              key === undefined ? [] : [key],
+            ),
+          ),
+        ].toSorted();
+        committed = await runUpdateDoctorIncludeWrite(
+          includeWrite.path,
+          hashConfigRaw(includeWrite.raw),
+          async () => {
+            const warning = `Doctor include-owned keys ${keys.join(", ")}: promotion unavailable for include-owned configuration.`;
+            recordDoctorHealthWarnings(ctx, [], [warning]);
+            createSubsystemLogger("update").warn(warning);
+            ctx.runtime.log(warning);
+            return await writeConfig();
+          },
+        );
+      } else {
+        committed = await writeConfig();
+      }
     } catch (error) {
+      if (error instanceof ConfigWritePostCommitError) {
+        // Preserve terminal publication failure before a diagnostic can replace it. No later contribution may replay this committed candidate.
+        ctx.configWriteError = error;
+        throw error;
+      }
       recordUpdateDoctorConfigWriteRefusal({
         reason: "config-write-refused",
         message: formatErrorMessage(error),
@@ -258,6 +268,10 @@ export async function runWriteConfigHealth(
       ctx.configWriteRefusal = "cron-owner-safety";
       return false;
     }
+    ctx.configResult.confirmedConfigSource = {
+      path: committed.path,
+      hash: committed.persistedHash,
+    };
     // The atomic write committed: repair panels queued by the config flow are now
     // true statements about disk state, so print them exactly once.
     const pendingChangePanels = ctx.configResult.pendingChangePanels;
@@ -271,9 +285,15 @@ export async function runWriteConfigHealth(
       }
       delete ctx.configResult.pendingChangePanels;
     }
-    // The final writer runs again after health repairs. Advance its baseline only
-    // after the atomic write succeeds so later failures cannot mark volatile state durable.
-    ctx.cfgForPersistence = structuredClone(ctx.cfg);
+    // Preserve committed retained inputs in the runtime-shaped baseline so late
+    // migration completion still triggers the final cleanup write.
+    ctx.cfgForPersistence = structuredClone(
+      preserveDeferredPluginMigrationConfig({
+        sourceConfig: committed.nextConfig,
+        nextConfig: ctx.cfg,
+        pending: getDeferredPluginMigrationConfigFacts(committed.nextConfig) ?? [],
+      }),
+    );
     if (ctx.configResult.shouldWriteConfig === true) {
       ctx.configResultWriteCommitted = true;
     }
