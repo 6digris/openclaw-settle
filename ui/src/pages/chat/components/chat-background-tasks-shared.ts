@@ -1,11 +1,9 @@
+import { isActiveTask, taskTimestampMs, type TaskSummary } from "@openclaw/gateway-client/browser";
 import { t } from "../../../i18n/index.ts";
 import { registerBackgroundTasksEnglish } from "../../../i18n/locales/en-background-tasks.ts";
-import { isActiveTask, taskStatusLabel, taskTimestampMs } from "../../../lib/tasks/data.ts";
-import type { TaskSummary } from "../../../lib/tasks/task-summary.ts";
+import { taskStatusLabel } from "../../../lib/tasks/data.ts";
 
 registerBackgroundTasksEnglish();
-
-export { newestTaskSnapshot } from "../../../lib/tasks/data.ts";
 
 // Status tone drives the meta line's colored word and the running pulse dot;
 // pill chips read too heavy at rail width, so tone is typographic only.
@@ -71,48 +69,8 @@ export function backgroundTaskDeliveryLabel(task: TaskSummary): string | undefin
 }
 
 export type BackgroundTaskObservations = {
-  taskActivityById: Map<string, Pick<TaskSummary, "lastActivity" | "diffStat">>;
   terminalObservedAtByTask: Map<string, number>;
 };
-
-function retainTaskStreamingFields(
-  state: BackgroundTaskObservations,
-  task: TaskSummary,
-): TaskSummary {
-  const retained = state.taskActivityById.get(task.id);
-  const lastActivity = isActiveTask(task)
-    ? (task.lastActivity ?? retained?.lastActivity)
-    : undefined;
-  const diffStat = task.diffStat ?? retained?.diffStat;
-  const streamingFields = {
-    ...(lastActivity ? { lastActivity } : {}),
-    ...(diffStat ? { diffStat } : {}),
-  };
-  if (lastActivity || diffStat) {
-    state.taskActivityById.set(task.id, streamingFields);
-  } else {
-    state.taskActivityById.delete(task.id);
-  }
-  if (lastActivity === task.lastActivity && diffStat === task.diffStat) {
-    return task;
-  }
-  const next = { ...task, ...streamingFields };
-  if (!lastActivity) {
-    delete next.lastActivity;
-  }
-  return next;
-}
-
-export function prepareTaskSnapshot(
-  state: BackgroundTaskObservations,
-  task: TaskSummary,
-): TaskSummary {
-  const retained = retainTaskStreamingFields(state, task);
-  if (isActiveTask(retained)) {
-    state.terminalObservedAtByTask.delete(retained.id);
-  }
-  return retained;
-}
 
 export function observeTaskTerminal(
   state: BackgroundTaskObservations,

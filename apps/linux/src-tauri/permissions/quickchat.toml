@@ -9,6 +9,7 @@ commands.allow = [
   "quickchat_ready",
   "quickchat_select_agent",
   "quickchat_send",
+  "quickchat_session_read",
   "quickchat_set_expanded",
   "quickchat_set_shortcut",
   "quickchat_shortcut",

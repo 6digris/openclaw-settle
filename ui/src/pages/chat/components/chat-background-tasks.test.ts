@@ -1,8 +1,8 @@
+import type { TaskSummary } from "@openclaw/gateway-client/browser";
 import { html, render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred as deferred } from "../../../../../test/helpers/promise.js";
 import { GatewayRequestError } from "../../../api/gateway.ts";
-import type { TaskSummary } from "../../../lib/tasks/task-summary.ts";
 import { createHost, flushAsync, makeTask } from "../../../test-helpers/chat-background-tasks.ts";
 import { renderBackgroundTasksRail } from "./chat-background-tasks-render.ts";
 import { renderBackgroundTasksStatusRow } from "./chat-background-tasks-status.ts";

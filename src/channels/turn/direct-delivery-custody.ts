@@ -78,5 +78,8 @@ export function toCoreManagedDeliveryInfo(info: ChannelDeliveryInfo) {
     ...(info.assistantMessageIndex === undefined
       ? {}
       : { assistantMessageIndex: info.assistantMessageIndex }),
+    ...(info.adoptProgressContinuation
+      ? { adoptProgressContinuation: info.adoptProgressContinuation }
+      : {}),
   };
 }

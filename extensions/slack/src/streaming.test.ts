@@ -2,6 +2,7 @@
 import { WebClient } from "@slack/web-api";
 import { ChatStreamer } from "@slack/web-api/dist/chat-stream.js";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { withServer } from "openclaw/plugin-sdk/test-env";
 import { describe, expect, it, vi } from "vitest";
 import { getSlackListenerWriteClient } from "./client.js";
 import {
@@ -53,6 +54,76 @@ function createNativeStreamClient() {
 }
 
 describe("stopSlackStream finalize error handling", () => {
+  it.each([false, true])(
+    "only returns a finalized buffered receipt while request authority is live (revoke=%s)",
+    async (revokeAfterStart) => {
+      const requests: Array<{ path: string; body: URLSearchParams }> = [];
+      let current = true;
+      for (const key of ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"]) {
+        vi.stubEnv(key, undefined);
+      }
+      vi.stubEnv("NO_PROXY", "*");
+      try {
+        await withServer(
+          (request, response) => {
+            const chunks: Buffer[] = [];
+            request.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+            request.once("end", () => {
+              requests.push({
+                path: request.url ?? "",
+                body: new URLSearchParams(Buffer.concat(chunks).toString()),
+              });
+              if (request.url === "/api/chat.startStream" && revokeAfterStart) {
+                current = false;
+              }
+              response.writeHead(200, { "content-type": "application/json" });
+              response.end(
+                JSON.stringify({
+                  ok: true,
+                  ...(request.url === "/api/chat.startStream" ? { ts: "1700000000.5" } : {}),
+                }),
+              );
+            });
+          },
+          async (baseUrl) => {
+            const session = await startSlackStream({
+              client: new WebClient("xoxb-progress-fixture", { slackApiUrl: `${baseUrl}/api/` }),
+              channel: "C_PROGRESS",
+              threadTs: "1700000000.1",
+              text: "Child work continues",
+              assertCurrent: () => {
+                if (!current) {
+                  throw new Error("progress owner expired");
+                }
+              },
+            });
+            expect(session.delivered).toBe(false);
+            expect(requests).toEqual([]);
+            const stopping = stopSlackStream({ session });
+            if (revokeAfterStart) {
+              await expect(stopping).rejects.toThrow("progress owner expired");
+              expect(requests.map(({ path }) => path)).toEqual(["/api/chat.startStream"]);
+              expect(session.delivered).toBe(false);
+              return;
+            }
+            await expect(stopping).resolves.toEqual({ messageId: "1700000000.5" });
+            expect(requests.map(({ path }) => path)).toEqual([
+              "/api/chat.startStream",
+              "/api/chat.stopStream",
+            ]);
+            expect(requests[1]?.body.get("ts")).toBe("1700000000.5");
+            expect(JSON.parse(requests[1]?.body.get("chunks") ?? "[]")).toEqual([
+              { type: "markdown_text", text: "Child work continues" },
+            ]);
+            expect(session.pendingText).toBe("");
+          },
+        );
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
   it("discards a Slack-stopped stream's buffered tail without flushing or falling back", async () => {
     const { client, append, stop } = createNativeStreamClient();
     const session = await startSlackStream({

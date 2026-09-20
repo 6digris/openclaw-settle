@@ -2081,6 +2081,8 @@ class MainViewModel private constructor(
 
   suspend fun getBackgroundTask(taskId: String): BackgroundTask = ensureRuntime().getBackgroundTask(taskId)
 
+  internal fun backgroundTaskEvents() = ensureRuntime().backgroundTaskEvents
+
   internal suspend fun sendChatForOwnerAwaitAcceptance(
     owner: ChatComposerOwner,
     message: String,

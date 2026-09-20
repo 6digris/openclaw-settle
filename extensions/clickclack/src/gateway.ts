@@ -21,6 +21,11 @@ import {
 } from "./http-client.js";
 import { handleClickClackInbound } from "./inbound.js";
 import { resolveWorkspaceId } from "./resolve.js";
+import { getClickClackRuntime, readClickClackTaskRecoverySessions } from "./runtime.js";
+import {
+  createClickClackTaskProgressObserver,
+  type ClickClackTaskProgressObserver,
+} from "./task-progress.js";
 import type {
   ClickClackEvent,
   ClickClackMessage,
@@ -72,6 +77,7 @@ async function processEvent(params: {
   event: ClickClackEvent;
   botUserId: string;
   buildContext?: typeof buildChannelInboundEventContext;
+  taskProgress?: ClickClackTaskProgressObserver;
   log?: { info: (message: string) => void; warn?: (message: string) => void };
 }) {
   if (params.event.type !== "message.created" && params.event.type !== "thread.reply_created") {
@@ -127,6 +133,8 @@ async function processEvent(params: {
     message,
     access,
     buildContext: params.buildContext,
+    signal: params.abortSignal,
+    taskProgress: params.taskProgress,
     ...(correlationId ? { correlationId } : {}),
   });
 }
@@ -184,6 +192,33 @@ export async function startClickClackGatewayAccount(
     botUserId: configuredAccount.botUserId ?? me.id,
     botHandle: me.handle,
   };
+  const taskProgressAbort =
+    account.nativeProgress || account.agentActivity ? new AbortController() : undefined;
+  const taskProgress = taskProgressAbort
+    ? createClickClackTaskProgressObserver({
+        runtime: getClickClackRuntime(),
+        account,
+        signal: AbortSignal.any([ctx.abortSignal, taskProgressAbort.signal]),
+        onError: (error) =>
+          ctx.log?.warn?.(
+            `[${account.accountId}] ClickClack task progress failed: ${String(error)}`,
+          ),
+      })
+    : undefined;
+  const taskProgressRecovery =
+    taskProgress && taskProgressAbort
+      ? readClickClackTaskRecoverySessions(
+          AbortSignal.any([ctx.abortSignal, taskProgressAbort.signal]),
+        )
+          .then((sessions) => taskProgress.restore(sessions))
+          .catch((error: unknown) => {
+            if (!ctx.abortSignal.aborted && !taskProgressAbort.signal.aborted) {
+              ctx.log?.warn?.(
+                `[${account.accountId}] ClickClack task progress recovery failed: ${String(error)}`,
+              );
+            }
+          })
+      : undefined;
   const processIncomingEvent = (event: ClickClackEvent) =>
     processEvent({
       abortSignal: ctx.abortSignal,
@@ -195,6 +230,7 @@ export async function startClickClackGatewayAccount(
       buildContext: (ctx.channelRuntime as PluginRuntime["channel"] | undefined)?.inbound
         .buildContext,
       log: ctx.log,
+      taskProgress,
     });
   if (account.commandMenu) {
     await syncClickClackCommandMenu({
@@ -363,6 +399,8 @@ export async function startClickClackGatewayAccount(
       }
     }
   } finally {
+    taskProgressAbort?.abort();
+    await Promise.all([taskProgressRecovery, taskProgress?.close()]);
     ctx.setStatus(channelStoppedPatch({ accountId: account.accountId }));
   }
 }

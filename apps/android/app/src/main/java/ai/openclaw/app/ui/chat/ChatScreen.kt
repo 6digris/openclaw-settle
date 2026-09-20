@@ -2812,7 +2812,7 @@ private fun SubagentActivityRows(
       activities.forEach { activity -> SubagentActivityRow(activity, animationsEnabled) }
       if (moreWorkingCount > 0) {
         Text(
-          text = nativeString("+\${moreWorkingCount} more working", moreWorkingCount),
+          text = nativeString("+\${moreWorkingCount} more active", moreWorkingCount),
           style = ClawTheme.type.caption,
           color = ClawTheme.colors.textSubtle,
         )
@@ -2827,14 +2827,21 @@ private fun SubagentActivityRow(
   animationsEnabled: Boolean,
 ) {
   val completed = activity.status == "completed"
-  val summary = if (activity.isWorking) activity.snippet else activity.terminalSummary ?: activity.error ?: activity.snippet
+  val summary =
+    if (!activity.isWorking) {
+      activity.terminalSummary ?: activity.error ?: activity.snippet
+    } else if (activity.progress != null) {
+      activity.progress.items.lastOrNull()?.let { it.progressText?.takeIf(String::isNotBlank) ?: it.title }
+    } else {
+      activity.snippet
+    }
   Row(
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(8.dp),
   ) {
-    if (activity.isWorking) {
+    if (activity.isWorking && activity.executionState == "running") {
       WorkingClawIcon(runKey = activity.id, color = ClawTheme.colors.primary)
-    } else {
+    } else if (!activity.isWorking) {
       Icon(
         imageVector = if (completed) Icons.Default.Check else Icons.Default.Close,
         contentDescription = null,
@@ -2843,7 +2850,7 @@ private fun SubagentActivityRow(
       )
     }
     Text(
-      text = subagentActivityStatusLabel(activity.status),
+      text = subagentActivityStatusLabel(activity),
       style = ClawTheme.type.label,
       color = ClawTheme.colors.text,
       maxLines = 1,
@@ -2909,13 +2916,21 @@ private fun DiffStatChip(
 }
 
 @Composable
-private fun subagentActivityStatusLabel(status: String): String =
-  when (status) {
-    "queued", "running" -> nativeString("Subagent working")
+private fun subagentActivityStatusLabel(activity: ChatSubagentActivity): String =
+  when (activity.status) {
+    "queued" -> nativeString("Subagent queued")
+    "running" ->
+      when (activity.executionState) {
+        "running" -> nativeString("Subagent working")
+        "waiting" -> nativeString("Subagent waiting")
+        "queued" -> nativeString("Subagent queued")
+        "finished" -> nativeString("Subagent execution finished")
+        else -> nativeString("Subagent activity unavailable")
+      }
     "completed" -> nativeString("Subagent finished")
     "failed", "timed_out" -> nativeString("Subagent failed")
     "cancelled" -> nativeString("Subagent cancelled")
-    else -> nativeString("Subagent finished")
+    else -> nativeString("Subagent activity unavailable")
   }
 
 @Composable
@@ -2944,20 +2959,12 @@ private fun ChatNotice(
   }
 }
 
-internal fun progressCardIsComplete(
-  card: ChatProgressCard,
-  hasActiveRun: Boolean,
-): Boolean =
-  if (card.steps.isEmpty()) {
-    !hasActiveRun
-  } else {
-    card.steps.all { it.status == ChatPlanStepStatus.Completed }
-  }
+internal fun progressCardIsComplete(card: ChatProgressCard): Boolean =
+  card.steps.isNotEmpty() && card.steps.all { it.status == ChatPlanStepStatus.Completed }
 
 @Composable
-private fun ProgressCardPill(
+internal fun ProgressCardPill(
   card: ChatProgressCard,
-  hasActiveRun: Boolean,
   modifier: Modifier = Modifier,
   attachedToComposer: Boolean = false,
 ) {
@@ -2966,7 +2973,7 @@ private fun ProgressCardPill(
     steps.firstOrNull { it.status == ChatPlanStepStatus.InProgress }
       ?: steps.firstOrNull { it.status == ChatPlanStepStatus.Pending }
       ?: steps.lastOrNull { it.status == ChatPlanStepStatus.Completed }
-  val complete = progressCardIsComplete(card, hasActiveRun)
+  val complete = progressCardIsComplete(card)
   val currentPosition = if (complete) steps.size else (steps.indexOf(currentStep) + 1).coerceAtLeast(1)
   var expanded by rememberSaveable { mutableStateOf(false) }
   LaunchedEffect(complete) {
@@ -3305,7 +3312,7 @@ private fun ChatComposer(
       )
     }
     progressCard?.let { card ->
-      ProgressCardPill(card, pendingRunCount > 0, Modifier.fillMaxWidth().heightIn(max = availableHeight), attachedProgress && !detailsExpanded)
+      ProgressCardPill(card, Modifier.fillMaxWidth().heightIn(max = availableHeight), attachedProgress && !detailsExpanded)
     }
   }
 

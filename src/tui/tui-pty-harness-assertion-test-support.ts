@@ -113,7 +113,8 @@ function assertEvidence(condition: boolean, message: string) {
   }
 }
 
-const lifecycleCsiBody = /^(?:\?25[hl]|\?2004[hl]|>7u|\?u|c|<u|>4;[02]m)$/u;
+// The image-capable terminal's cell-size query is lifecycle traffic, not display content.
+const lifecycleCsiBody = /^(?:\?25[hl]|\?2004[hl]|>7u|\?u|c|<u|>4;[02]m|16t)$/u;
 const screenMutationCsiBody = /^(?:[02]?J|[02]?K)$/u;
 
 function assertAllowedCsi(screen: PtyTestScreen, value: string, controls: string[] = []) {

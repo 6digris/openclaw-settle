@@ -1,10 +1,10 @@
+import type { TaskSummary } from "@openclaw/gateway-client/browser";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
   parseAgentSessionKey,
   resolveUiConversationIdentity,
   type UiSessionDefaultsHost,
 } from "../../../lib/sessions/session-key.ts";
-import type { TaskSummary } from "../../../lib/tasks/task-summary.ts";
 
 export function taskMatchesSessionScope(
   host: UiSessionDefaultsHost,

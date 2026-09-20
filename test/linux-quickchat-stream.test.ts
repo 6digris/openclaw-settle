@@ -156,6 +156,16 @@ function createQuickChatHarness(): Record<string, any> {
     reject: (error: Error) => void;
   }> = [];
   let deferRefresh = false;
+  let deferSessionRead = false;
+  const sessionReadResults: Record<string, unknown> = {
+    "tasks.list": { tasks: [] },
+    "progressCard.get": { card: null },
+  };
+  const sessionReads: Array<{
+    method: string;
+    resolve: (value: unknown) => void;
+    reject: (error: Error) => void;
+  }> = [];
   const widgetSyncs: Array<{
     args: Record<string, any>;
     resolve: () => void;
@@ -207,6 +217,7 @@ function createQuickChatHarness(): Record<string, any> {
             sessionId?: string;
             rendererEpoch?: number;
             generation?: number;
+            method?: string;
           },
         ) {
           calls.push({ method, args: args ?? {} });
@@ -214,6 +225,15 @@ function createQuickChatHarness(): Record<string, any> {
             return new Promise((resolve, reject) => {
               sends.push({ resolve, reject });
             });
+          }
+          if (method === "quickchat_session_read") {
+            const rpcMethod = args?.method ?? "";
+            if (deferSessionRead) {
+              return new Promise<unknown>((resolve, reject) => {
+                sessionReads.push({ method: rpcMethod, resolve, reject });
+              });
+            }
+            return Promise.resolve(structuredClone(sessionReadResults[rpcMethod]));
           }
           if (method === "quickchat_refresh_widget_surface") {
             widgetSurfaceRefreshCount += 1;
@@ -320,6 +340,9 @@ function createQuickChatHarness(): Record<string, any> {
 this.harness = {
   send,
   handleChatEvent(payload) { handleChatEvent({gatewayGeneration: 1, ...payload}); },
+  handleTaskEvent(payload) { handleTaskEvent({gatewayGeneration: 1, ...payload}); },
+  handleProgressCardEvent(payload) { handleProgressCardEvent({gatewayGeneration: 1, ...payload}); },
+  selectAgent,
   nextVisibilityOperation,
   requestHide,
   clearReply,
@@ -334,6 +357,9 @@ this.harness = {
   pendingCount() { return pendingChatEvents.length; },
   activeRunId() { return activeReply?.runId ?? null; },
   replyText() { return elements.replyText.textContent; },
+  replyState() { return elements.replyState.textContent; },
+  progressCardText() { return elements.replyProgressCard.textContent; },
+  progressStatus() { return elements.replyProgressStatus.textContent; },
   readOnly() { return elements.input.readOnly; },
   thinking() { return !elements.replyThinking.hidden; },
   draft() { return elements.input.value; },
@@ -361,6 +387,19 @@ this.harness = {
     sendCount: () => sends.length,
     calls,
     drain,
+    setSessionReadResult: (method: string, value: unknown) => {
+      sessionReadResults[method] = value;
+    },
+    deferSessionReads: () => {
+      deferSessionRead = true;
+    },
+    sessionReads,
+    tasksText: () => {
+      type TextNode = { textContent: string; children?: TextNode[] };
+      const text = (element: TextNode): string =>
+        [element.textContent, ...(element.children ?? []).map(text)].filter(Boolean).join("\n");
+      return text(elements.get("#reply-tasks"));
+    },
     flushWidgets: async () => {
       await drain();
       await browserContext.harness.flushWidgets();
@@ -722,6 +761,370 @@ test("widget URLs stay inside the capability-scoped Canvas host", () => {
     ),
     null,
   );
+});
+
+const progressTask = {
+  id: "task-child",
+  sessionKey: "global",
+  runId: "canonical-child",
+  agentId: "worker",
+  status: "running",
+  title: "Research",
+  execution: { state: "waiting", wait: { kind: "children" } },
+  progress: {
+    runId: "child-run",
+    revision: 1,
+    items: [
+      {
+        itemId: "read",
+        phase: "update",
+        kind: "tool",
+        title: "Reading sources",
+        status: "running",
+      },
+    ],
+  },
+};
+
+test("a yielded reply unlocks without completing its task or authored checklist", async () => {
+  const harness = createQuickChatHarness();
+  harness.setSessionReadResult("tasks.list", { tasks: [progressTask] });
+  harness.setSessionReadResult("progressCard.get", {
+    card: {
+      sessionKey: "global",
+      revision: 1,
+      steps: [{ step: "Review evidence", status: "in_progress" }],
+    },
+  });
+  harness.setGatewayUp();
+  harness.setMessage("Research with a background worker");
+  const sending = harness.send(false);
+  harness.resolveSend({ sessionKey: "global", agentId: "work", runId: "parent-run" });
+  await sending;
+  await harness.drain();
+  harness.handleChatEvent({
+    sessionKey: "global",
+    agentId: "work",
+    runId: "unrelated",
+    state: "final",
+    yielded: true,
+    stopReason: "end_turn",
+  });
+  assert.equal(harness.thinking(), true, "another run cannot retire this foreground");
+  harness.handleChatEvent({
+    sessionKey: "global",
+    agentId: "work",
+    runId: "parent-run",
+    state: "final",
+    yielded: true,
+    stopReason: "end_turn",
+    message: { role: "assistant", content: "The worker is still researching." },
+  });
+  await harness.advanceTime(450);
+  assert.equal(harness.readOnly(), false);
+  assert.notEqual(harness.replyState(), "Done");
+  assert.match(harness.tasksText(), /Research — waiting \(children\)/u);
+  assert.match(harness.tasksText(), /Reading sources — running/u);
+  assert.equal(harness.progressCardText(), "in progress — Review evidence");
+
+  for (const state of ["queued", "unknown", "running", "finished"]) {
+    harness.handleTaskEvent({
+      action: "upserted",
+      task: { ...progressTask, execution: { state } },
+    });
+    assert.match(harness.tasksText(), new RegExp(`Research — ${state}`, "u"));
+    assert.notEqual(harness.replyState(), "Done");
+  }
+
+  harness.handleTaskEvent({
+    action: "upserted",
+    task: {
+      ...progressTask,
+      execution: { state: "running" },
+      progress: { runId: "replacement-child", revision: 2, items: [] },
+    },
+  });
+  assert.doesNotMatch(
+    harness.tasksText(),
+    /Reading sources/u,
+    "an empty prepared snapshot retracts old items",
+  );
+  assert.match(harness.tasksText(), /Research — running/u);
+  harness.handleTaskEvent({
+    action: "upserted",
+    task: {
+      ...progressTask,
+      status: "failed",
+      progress: undefined,
+      terminalSummary: "Source unavailable",
+      deliveryStatus: "pending",
+    },
+  });
+  assert.match(harness.tasksText(), /Research — failed/u);
+  assert.match(harness.tasksText(), /Source unavailable/u);
+  assert.match(harness.tasksText(), /Delivery: pending/u);
+  assert.notEqual(harness.replyState(), "Done");
+  harness.handleTaskEvent({ action: "deleted", taskId: progressTask.id });
+  assert.equal(harness.tasksText(), "");
+  assert.equal(harness.progressCardText(), "in progress — Review evidence");
+  harness.setSessionReadResult("progressCard.get", { card: null });
+  harness.handleProgressCardEvent({ sessionKey: "global", revision: null });
+  await harness.drain();
+  assert.equal(harness.progressCardText(), "");
+});
+
+test("task revisions order resumed execution observations until reconnect or restore", async () => {
+  const harness = createQuickChatHarness();
+  harness.setSessionReadResult("tasks.list", { tasks: [progressTask] });
+  harness.setGatewayUp();
+  harness.setMessage("Research with a background worker");
+  const sending = harness.send(false);
+  harness.resolveSend({ sessionKey: "global", agentId: "work", runId: "parent-run" });
+  await sending;
+  await harness.drain();
+  const resumed = {
+    ...progressTask,
+    execution: { state: "running", lastActivityAt: 10 },
+    progress: {
+      runId: "resumed-physical-run",
+      revision: 2,
+      items: [
+        {
+          itemId: "resumed",
+          phase: "update",
+          kind: "tool",
+          title: "Checking results",
+          status: "running",
+        },
+      ],
+    },
+  };
+  harness.handleTaskEvent({ action: "upserted", task: resumed });
+  harness.handleTaskEvent({
+    action: "upserted",
+    task: {
+      ...progressTask,
+      execution: { state: "running", lastActivityAt: 20 },
+    },
+  });
+  assert.match(harness.tasksText(), /Checking results/u);
+  assert.doesNotMatch(
+    harness.tasksText(),
+    /Reading sources/u,
+    "old physical execution cannot replace resumed revision",
+  );
+
+  // Discovery of another task triggers a list read; its stale copy must also lose.
+  harness.handleTaskEvent({ action: "upserted", task: { ...progressTask, id: "other-task" } });
+  await harness.drain();
+  assert.match(harness.tasksText(), /Checking results/u);
+  harness.emitGatewayState({ state: "down" });
+  harness.setGatewayUp();
+  await harness.drain();
+  assert.match(
+    harness.tasksText(),
+    /Reading sources/u,
+    "reconnect accepts a reset observation epoch",
+  );
+  assert.doesNotMatch(harness.tasksText(), /Checking results/u);
+  harness.handleTaskEvent({ action: "upserted", task: resumed });
+  harness.handleTaskEvent({ action: "restored" });
+  await harness.drain();
+  assert.match(harness.tasksText(), /Reading sources/u, "registry restore accepts reset revisions");
+  assert.doesNotMatch(harness.tasksText(), /Checking results/u);
+});
+
+test("task snapshots publish scoped rows while overlapping progress keeps arriving", async () => {
+  const harness = createQuickChatHarness();
+  harness.deferSessionReads();
+  harness.setGatewayUp();
+  harness.setMessage("Keep showing background work");
+  const sending = harness.send(false);
+  harness.resolveSend({ sessionKey: "global", agentId: "work", runId: "parent-run" });
+  await sending;
+  const latest = {
+    ...progressTask,
+    execution: { state: "running" },
+    progress: {
+      runId: "resumed-child",
+      revision: 2,
+      items: [
+        {
+          itemId: "check",
+          phase: "update",
+          kind: "tool",
+          title: "Checking evidence",
+          status: "running",
+        },
+      ],
+    },
+  };
+  const discovered = {
+    ...progressTask,
+    id: "discovered",
+    title: "New scoped task",
+    progress: undefined,
+  };
+  const unrelated = { ...progressTask, id: "unrelated", title: "Different session task" };
+  harness.handleTaskEvent({ action: "upserted", task: latest });
+  harness.handleTaskEvent({ action: "deleted", taskId: "deleted" });
+  harness.handleTaskEvent({ action: "upserted", task: discovered });
+  harness.handleTaskEvent({ action: "upserted", task: unrelated });
+  harness.sessionReads[0].resolve({
+    tasks: [progressTask, { ...progressTask, id: "deleted", title: "Deleted task" }],
+  });
+  await harness.drain();
+  assert.match(
+    harness.tasksText(),
+    /Checking evidence/u,
+    "first snapshot is published despite overlapping updates",
+  );
+  assert.doesNotMatch(harness.tasksText(), /Deleted task|Different session task|New scoped task/u);
+  assert.equal(harness.sessionReads.length, 3, "one scoped discovery follows the task/card reads");
+
+  const current = {
+    ...latest,
+    progress: { ...latest.progress, revision: 3, items: [] },
+  };
+  harness.handleTaskEvent({ action: "upserted", task: current });
+  harness.handleTaskEvent({
+    action: "upserted",
+    task: { ...discovered, execution: { state: "queued" } },
+  });
+  harness.handleTaskEvent({ action: "upserted", task: unrelated });
+  harness.sessionReads[2].resolve({ tasks: [progressTask, discovered] });
+  await harness.drain();
+  assert.match(harness.tasksText(), /New scoped task — queued/u);
+  assert.doesNotMatch(
+    harness.tasksText(),
+    /Checking evidence|Reading sources|Different session task/u,
+  );
+  assert.equal(
+    harness.sessionReads.length,
+    3,
+    "known progress and excluded IDs do not restart discovery",
+  );
+});
+
+test("task reads fence restoration and preserve live facts when a refresh fails", async () => {
+  const harness = createQuickChatHarness();
+  harness.setSessionReadResult("tasks.list", { tasks: [progressTask] });
+  harness.setGatewayUp();
+  harness.setMessage("Research with a background worker");
+  const sending = harness.send(false);
+  harness.resolveSend({ sessionKey: "global", agentId: "work", runId: "parent-run" });
+  await sending;
+  await harness.drain();
+  harness.deferSessionReads();
+  harness.handleTaskEvent({ action: "upserted", task: { ...progressTask, id: "discovery" } });
+  harness.handleTaskEvent({ action: "deleted", taskId: progressTask.id });
+  harness.handleTaskEvent({
+    action: "upserted",
+    task: {
+      ...progressTask,
+      progress: { runId: "recreated-child", revision: 0, items: [] },
+      title: "Recreated task",
+    },
+  });
+  harness.sessionReads[0].resolve({ tasks: [progressTask] });
+  await harness.drain();
+  assert.match(harness.tasksText(), /Recreated task/u);
+  assert.doesNotMatch(
+    harness.tasksText(),
+    /Reading sources/u,
+    "recreation does not inherit deleted revisions",
+  );
+
+  harness.handleTaskEvent({ action: "restored" });
+  harness.handleTaskEvent({ action: "restored" });
+  harness.sessionReads[1].resolve({ tasks: [progressTask] });
+  await harness.drain();
+  assert.equal(harness.tasksText(), "", "an older registry read cannot cross restoration");
+  harness.sessionReads[2].resolve({ tasks: [] });
+  await harness.drain();
+  harness.emitGatewayState({ state: "down" });
+  harness.setGatewayUp();
+  await harness.drain();
+  harness.sessionReads[3].resolve({
+    tasks: [{ ...progressTask, progress: undefined, execution: { state: "unknown" } }],
+  });
+  harness.sessionReads[4].resolve({ card: null });
+  await harness.drain();
+  assert.match(harness.tasksText(), /Research — unknown/u);
+  assert.doesNotMatch(harness.tasksText(), /Reading sources/u);
+
+  harness.handleTaskEvent({
+    action: "upserted",
+    task: { ...progressTask, id: "another-discovery" },
+  });
+  harness.handleTaskEvent({
+    action: "upserted",
+    task: {
+      ...progressTask,
+      progress: undefined,
+      execution: { state: "queued" },
+    },
+  });
+  harness.sessionReads[5].reject(new Error("Scoped task read failed"));
+  await harness.drain();
+  assert.match(harness.tasksText(), /Research — queued/u);
+  assert.match(harness.progressStatus(), /Scoped task read failed/u);
+  assert.equal(harness.sessionReads.length, 6, "failed reads do not start an automatic retry loop");
+});
+
+test("old progress reads and events cannot cross a Gateway or agent switch", async () => {
+  const harness = createQuickChatHarness();
+  harness.deferSessionReads();
+  harness.setGatewayUp();
+  harness.setMessage("Research with a background worker");
+  const first = harness.send(false);
+  harness.resolveSend({ sessionKey: "global", agentId: "work", runId: "parent-run" });
+  await first;
+  await harness.drain();
+  harness.emitGatewayState({ state: "up", gatewayGeneration: 2 });
+  harness.sessionReads[0].resolve({ tasks: [progressTask] });
+  harness.sessionReads[1].resolve({ card: { sessionKey: "global", markdown: "Old checklist" } });
+  harness.handleTaskEvent({ action: "upserted", task: progressTask });
+  await harness.drain();
+  assert.equal(harness.tasksText(), "");
+  assert.equal(harness.progressCardText(), "");
+  await harness.advanceTime(450);
+
+  harness.setMessage("A new request");
+  const sending = harness.send(false);
+  harness.resolveSend({
+    gatewayGeneration: 2,
+    sessionKey: "global",
+    agentId: "work",
+    runId: "new-parent",
+  });
+  await sending;
+  await harness.selectAgent("different-agent");
+  harness.sessionReads[2].resolve({ tasks: [progressTask] });
+  harness.sessionReads[3].resolve({
+    card: { sessionKey: "global", markdown: "Previous agent checklist" },
+  });
+  await harness.drain();
+  assert.equal(harness.tasksText(), "");
+  assert.equal(harness.progressCardText(), "");
+  await harness.advanceTime(450);
+  harness.setMessage("A send still awaiting its ACK");
+  const pendingSend = harness.send(false);
+  await harness.selectAgent("another-agent");
+  harness.resolveSend({
+    gatewayGeneration: 2,
+    sessionKey: "global",
+    agentId: "work",
+    runId: "old-selection",
+  });
+  await pendingSend;
+  await harness.drain();
+  assert.equal(
+    harness.activeRunId(),
+    null,
+    "a late send ACK cannot restore the previous selection",
+  );
+  assert.equal(harness.tasksText(), "");
 });
 
 test("a cached terminal retry presents the recovered reply and unlocks without another event", async () => {

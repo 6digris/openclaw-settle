@@ -1562,27 +1562,6 @@ describe("EmbeddedTuiBackend", () => {
     });
   });
 
-  it("returns embedded history when runtime plugin loading fails", async () => {
-    loadAgentRuntimePluginRegistryHandleMock.mockImplementationOnce(() => {
-      throw new Error("runtime unavailable");
-    });
-    loadSessionEntryMock.mockReturnValue({
-      cfg: {},
-      agentId: "main",
-      canonicalKey: "agent:main:main",
-      storePath: "/tmp/openclaw-sessions.json",
-      entry: {},
-    });
-
-    const backend = new EmbeddedTuiBackend();
-
-    await expect(backend.loadHistory({ sessionKey: "agent:main:main" })).resolves.toMatchObject({
-      sessionKey: "agent:main:main",
-      messages: [],
-      runtimePluginsPrewarm: { status: "failed", error: "runtime unavailable" },
-    });
-  });
-
   it("waits for the newest publication before returning model choices", async () => {
     const initial = deferred<void>();
     const replacement = deferred<void>();
@@ -3564,6 +3543,11 @@ describe("EmbeddedTuiBackend", () => {
     createBackend: () => new EmbeddedTuiBackend(),
     createPendingReply: () => deferred<EmbeddedAgentResult>(),
     prepareReply: (reply) => agentCommandFromIngressMock.mockReturnValueOnce(reply),
+    failNextRuntimePluginLoad: () => {
+      loadAgentRuntimePluginRegistryHandleMock.mockImplementationOnce(() => {
+        throw new Error("runtime unavailable");
+      });
+    },
     emitAgentEvent: (event) => registeredListener?.(event),
     captureBackendEvents,
     flushMicrotasks,

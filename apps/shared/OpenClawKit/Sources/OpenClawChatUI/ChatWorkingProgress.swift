@@ -224,8 +224,13 @@ struct ChatTurnRecapResolver {
         sessionKey: String,
         indicatorVisible: Bool,
         row: ChatTurnRecapSessionRow?,
+        yielded: Bool = false,
         now: Date = Date()) -> ChatTurnRecap?
     {
+        if yielded {
+            self.watches[sessionKey] = nil
+            return nil
+        }
         var watch = self.watches[sessionKey]
         let rowEndedAt = row?.endedAt
 

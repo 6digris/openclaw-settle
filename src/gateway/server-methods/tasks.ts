@@ -24,6 +24,7 @@ import {
   prepareTaskRegistryRead,
 } from "../../tasks/runtime-internal.js";
 import type { TaskRecord, TaskStatus } from "../../tasks/task-registry.types.js";
+import { mapTaskSummary } from "../../tasks/task-summary.js";
 import { readGatewayAccessRevision } from "../gateway-access-revision.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import {
@@ -31,7 +32,6 @@ import {
   prepareTaskSessionReadFilter,
 } from "../task-session-access.js";
 import { taskHistoryHandler } from "./task-history.js";
-import { mapTaskSummary } from "./task-summary.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 

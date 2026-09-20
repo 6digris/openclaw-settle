@@ -282,6 +282,21 @@ describe("tasks gateway execution and activity", () => {
     });
     emitAgentEvent({
       runId: "run-tool-activity",
+      stream: "item",
+      data: {
+        itemId: "call-3",
+        kind: "tool",
+        phase: "start",
+        title: "Check the current turn",
+        status: "running",
+      },
+    });
+    expect((await getTaskPayload(task.taskId)).payload?.task?.progress).toMatchObject({
+      runId: "run-tool-activity",
+      items: [{ itemId: "call-3" }],
+    });
+    emitAgentEvent({
+      runId: "run-tool-activity",
       stream: "tool",
       data: { phase: "start", name: "exec", toolCallId: "call-3" },
     });
@@ -310,9 +325,9 @@ describe("tasks gateway execution and activity", () => {
       stream: "execution",
       data: { state: "running", executionId: "turn-2" },
     });
-    expect((await getTaskPayload(task.taskId)).payload?.task?.execution).not.toHaveProperty(
-      "currentTool",
-    );
+    const replacementTurn = (await getTaskPayload(task.taskId)).payload?.task;
+    expect(replacementTurn?.execution).not.toHaveProperty("currentTool");
+    expect(replacementTurn?.progress).toMatchObject({ items: [] });
     emitAgentEvent({
       runId: "run-tool-activity",
       stream: "execution",
@@ -331,10 +346,24 @@ describe("tasks gateway execution and activity", () => {
       expect((await getTaskPayload(task.taskId)).payload?.task?.execution).not.toHaveProperty(
         "currentTool",
       );
+      expect((await getTaskPayload(task.taskId)).payload?.task?.progress).toMatchObject({
+        items: [],
+      });
       emitAgentEvent({
         runId: "run-tool-activity",
         stream: "tool",
         data: { phase: "start", name: "exec", toolCallId: sourceId },
+      });
+      emitAgentEvent({
+        runId: "run-tool-activity",
+        stream: "item",
+        data: {
+          itemId: sourceId,
+          kind: "tool",
+          phase: "start",
+          title: "Check the current source",
+          status: "running",
+        },
       });
     }
     emitAgentEvent({

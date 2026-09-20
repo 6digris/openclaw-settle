@@ -8,6 +8,7 @@ import type { ChannelsAddOptions } from "../commands/channels/add.js";
 import { buildAgentMainSessionKey } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { notifyListeners } from "../shared/listeners.js";
+import { EmbeddedTaskObserver } from "../tui/embedded-task-observer.js";
 import type {
   ChatSendOptions,
   TuiAgentsList,
@@ -134,6 +135,9 @@ class SystemAgentTuiBackend implements TuiBackend {
   private requestExit: (() => void) | null = null;
   private responseQueue: Promise<void> = Promise.resolve();
   private readonly messages: SystemAgentHistoryMessage[] = [];
+  private readonly taskObserver = new EmbeddedTaskObserver((event) =>
+    this.emit(event.event, event.payload),
+  );
 
   constructor(
     private readonly opts: SystemAgentTuiOptions,
@@ -159,13 +163,14 @@ class SystemAgentTuiBackend implements TuiBackend {
   }
 
   start(): void {
+    this.taskObserver.start();
     queueMicrotask(() => {
       this.onConnected?.();
     });
   }
 
-  stop(): void {
-    // The enclosing TUI owns terminal shutdown; OpenClaw has no transport to close.
+  async stop(): Promise<void> {
+    await this.taskObserver.stop();
   }
 
   async sendChat(opts: ChatSendOptions): Promise<{ runId: string }> {
@@ -196,6 +201,14 @@ class SystemAgentTuiBackend implements TuiBackend {
       thinkingLevel: this.route.thinkingLevel,
       verboseLevel: "off",
     };
+  }
+
+  listTasks(opts: Parameters<TuiBackend["listTasks"]>[0]) {
+    return this.taskObserver.listTasks(opts);
+  }
+
+  getProgressCard(opts: Parameters<TuiBackend["getProgressCard"]>[0]) {
+    return this.taskObserver.getProgressCard(opts);
   }
 
   async listSessions(): Promise<TuiSessionList> {

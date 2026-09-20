@@ -3253,6 +3253,7 @@ class NodeRuntime private constructor(
   val chatPendingToolCalls: StateFlow<List<ChatPendingToolCall>> = chat.pendingToolCalls
   val chatToolActivities: StateFlow<List<ChatPendingToolCall>> = chat.toolActivities
   val chatSubagentActivities: StateFlow<Map<String, ai.openclaw.app.chat.ChatSubagentActivity>> = chat.subagentActivities
+  internal val backgroundTaskEvents = chat.backgroundTaskEvents
   val chatQuestions: StateFlow<List<ChatQuestionPrompt>> = chat.questions
   val chatProgressCard: StateFlow<ChatProgressCard?> = chat.progressCard
   val chatSessions: StateFlow<List<ChatSessionEntry>> = chat.sessions

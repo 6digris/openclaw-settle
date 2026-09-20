@@ -1,3 +1,4 @@
+import type { TaskStatus, TaskSummary } from "@openclaw/gateway-client/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred as deferred } from "../../../../test/helpers/promise.js";
 import {
@@ -10,7 +11,6 @@ import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/c
 import { i18n, t } from "../../i18n/index.ts";
 import { captureI18nStateForTesting } from "../../i18n/lib/translate.test-support.ts";
 import { formatMs } from "../../lib/format.ts";
-import type { TaskStatus, TaskSummary } from "../../lib/tasks/task-summary.ts";
 import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
 import { waitForFast } from "../../test-helpers/wait-for.ts";
 import "./tasks-page.ts";
@@ -518,6 +518,9 @@ describe("TasksPage active pagination", () => {
   it("clears stale rows after the bounded retry also loses its continuation", async () => {
     const stale = createTask("task-stale");
     const fresh = createTask("task-fresh", "running", { updatedAt: 200 });
+    const recoveredSnapshot = deferred<{ tasks: TaskSummary[] }>();
+    const duringRecovery = createTask("task-during-recovery", "running", { updatedAt: 300 });
+    let recoveryReads = 0;
     let continuationFailures = 0;
     let phase: "initial" | "rejected" | "recovered" = "initial";
     const request = vi.fn(
@@ -532,7 +535,8 @@ describe("TasksPage active pagination", () => {
           return Promise.resolve({ tasks: [stale] });
         }
         if (phase === "recovered") {
-          return Promise.resolve({ tasks: [fresh] });
+          recoveryReads += 1;
+          return recoveredSnapshot.promise;
         }
         if (params?.cursor) {
           continuationFailures += 1;
@@ -560,15 +564,22 @@ describe("TasksPage active pagination", () => {
     expect(page.tasks).toEqual([]);
 
     phase = "recovered";
-    await page.refreshTasks();
+    const recovery = page.refreshTasks();
+    await waitForFast(() => expect(recoveryReads).toBe(1));
+    source.emitTask({ action: "upserted", task: duringRecovery });
+    recoveredSnapshot.resolve({ tasks: [fresh] });
+    await recovery;
 
-    expect(page.tasks).toEqual([fresh]);
+    expect(page.tasks).toEqual([duringRecovery, fresh]);
     expect(page.error).toBeNull();
     expect(request.mock.calls.at(-2)?.[1]).toEqual({
       agentId: "main",
       limit: 500,
       status: ["queued", "running"],
     });
+    const completed = { ...duringRecovery, status: "completed" as const, updatedAt: 400 };
+    source.emitTask({ action: "upserted", task: completed });
+    expect(page.tasks).toEqual([completed, fresh]);
   });
 
   it("ignores a rejected continuation from a replaced gateway identity", async () => {
@@ -946,9 +957,14 @@ describe("TasksPage cancellation lifecycle", () => {
     const pendingRecovery = deferred<{
       results: Array<{ taskId: string; ok: true; task: TaskSummary }>;
     }>();
+    const reconnectSnapshot = deferred<{ tasks: TaskSummary[] }>();
+    let reconnecting = false;
     const request = vi.fn((method: string) => {
       if (method === "tasks.retry") {
         return pendingRecovery.promise;
+      }
+      if (reconnecting) {
+        return reconnectSnapshot.promise;
       }
       return Promise.resolve({ tasks: [blocked] });
     });
@@ -961,6 +977,7 @@ describe("TasksPage cancellation lifecycle", () => {
     const recovery = page.recoverTask(blocked.taskId, "retry");
     await vi.waitFor(() => expect(page.cancellingTaskIds.has(blocked.taskId)).toBe(true));
     source.emitConnected(false);
+    reconnecting = true;
     source.emitConnected(true);
     pendingRecovery.resolve({
       results: [
@@ -972,6 +989,9 @@ describe("TasksPage cancellation lifecycle", () => {
       ],
     });
     await recovery;
+    expect(page.tasks).toEqual([]);
+    reconnectSnapshot.resolve({ tasks: [blocked] });
+    await waitForFast(() => expect(page.tasks).toEqual([blocked]));
 
     expect(page.tasks[0]).toMatchObject({
       deliveryStatus: "failed",

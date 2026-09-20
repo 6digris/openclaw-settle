@@ -1,7 +1,7 @@
+import type { TaskSummary } from "@openclaw/gateway-client/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred as deferred } from "../../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../../api/gateway.ts";
-import type { TaskSummary } from "../../../lib/tasks/task-summary.ts";
 import {
   loadOlderTaskTranscript,
   observeTaskDetailEvent,

@@ -4,6 +4,7 @@ import {
 } from "openclaw/plugin-sdk/channel-inbound";
 import {
   createMessageReceiptFromOutboundResults,
+  type ChannelProgressDraftCompositorSnapshot,
   type MessageReceipt,
   type MessageReceiptPart,
   type MessageReceiptPartKind,
@@ -26,7 +27,7 @@ import {
   uploadAndShareSharePoint,
 } from "./graph-upload.js";
 import { extractFilename, extractMessageId } from "./media-helpers.js";
-import { buildMSTeamsMessageActivity } from "./message-activity.js";
+import { buildMSTeamsMessageActivity, buildMSTeamsProgressActivity } from "./message-activity.js";
 import { buildConversationReference, sendMSTeamsMessages } from "./messenger.js";
 import { setPendingUploadActivityIdFs } from "./pending-uploads-fs.js";
 import { setPendingUploadActivityId } from "./pending-uploads.js";
@@ -618,7 +619,7 @@ export async function sendAdaptiveCardMSTeams(
   });
 }
 
-type MSTeamsMessageMutationParams = {
+type MSTeamsMessageMutationParams = MSTeamsSendHandoff & {
   /** Full config (for credentials) */
   cfg: OpenClawConfig;
   /** Conversation ID or user ID */
@@ -638,17 +639,22 @@ type MSTeamsMessageMutationResult = {
  * original turn context.
  */
 export async function editMessageMSTeams(
-  params: MSTeamsMessageMutationParams & { text: string },
+  params: MSTeamsMessageMutationParams & {
+    text: string;
+    progressSnapshot?: ChannelProgressDraftCompositorSnapshot;
+  },
 ): Promise<MSTeamsMessageMutationResult> {
   return updateMSTeamsMessageActivity({
     ...params,
     activity: {
-      ...buildMSTeamsMessageActivity(
-        formatMSTeamsMarkdown(
-          params.text,
-          resolveMarkdownTableMode({ cfg: params.cfg, channel: "msteams" }),
-        ),
-      ),
+      ...(params.progressSnapshot
+        ? buildMSTeamsProgressActivity(params.progressSnapshot, params.cfg.channels?.msteams)
+        : buildMSTeamsMessageActivity(
+            formatMSTeamsMarkdown(
+              params.text,
+              resolveMarkdownTableMode({ cfg: params.cfg, channel: "msteams" }),
+            ),
+          )),
       id: params.activityId,
     },
   });
@@ -675,6 +681,7 @@ export async function editAdaptiveCardMSTeams(
 async function updateMSTeamsMessageActivity(
   params: MSTeamsMessageMutationParams & { activity: Record<string, unknown> },
 ): Promise<MSTeamsMessageMutationResult> {
+  assertMSTeamsSendHandoff(params);
   const { cfg, to, activityId, activity } = params;
   const { app, conversationId, ref, log, sdkCloudOptions } = await resolveMSTeamsSendContext({
     cfg,
@@ -687,6 +694,8 @@ async function updateMSTeamsMessageActivity(
     const baseRef = buildConversationReference(ref);
     await updateMSTeamsActivityWithReference(app, baseRef, activityId, activity, {
       serviceUrlBoundary: sdkCloudOptions,
+      assertDirectAdapterHandoff: params.assertDirectAdapterHandoff,
+      onPlatformSendDispatch: params.onPlatformSendDispatch,
     });
   } catch (err) {
     throw createMSTeamsSendError("msteams edit", err);

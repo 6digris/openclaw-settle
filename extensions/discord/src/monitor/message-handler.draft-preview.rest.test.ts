@@ -101,6 +101,65 @@ describe("Discord draft preview REST lifecycle", () => {
     },
   );
 
+  it("does not retire a queued turn admitted while continuation acceptance is pending", async () => {
+    const { controller, visible } = createContinuationHarness();
+    await controller.pushPlanProgress([{ step: "Parent work", status: "in_progress" }]);
+    controller.markFinalReplyStarted();
+    const adopting = controller.adoptProgressContinuation(
+      { text: "Waiting for workers" },
+      {
+        kind: "final",
+        adoptProgressContinuation: async () => {
+          controller.handleQueuedFollowupAdmitted();
+          await controller.pushPlanProgress([{ step: "Queued work", status: "in_progress" }]);
+          await controller.flush();
+          return true;
+        },
+      },
+      { to: "channel:c1" },
+    );
+
+    expect(await adopting).toBe(true);
+    expect(visible.get("1")).toContain("Parent work");
+    expect(visible.get("2")).toContain("Queued work");
+    await controller.pushPlanProgress([{ step: "Queued work updated", status: "in_progress" }]);
+    await controller.flush();
+    expect([...visible.keys()]).toEqual(["1", "2"]);
+    expect(visible.get("2")).toContain("Queued work updated");
+    await controller.cleanup();
+    expect([...visible.keys()]).toEqual(["1"]);
+  });
+
+  it("joins pending continuation acceptance before deleting unowned drafts", async () => {
+    const { controller, visible } = createContinuationHarness();
+    await controller.pushPlanProgress([{ step: "Child work", status: "in_progress" }]);
+    controller.markFinalReplyStarted();
+    const started = createDeferred<void>();
+    const accepted = createDeferred<boolean>();
+    const adopting = controller.adoptProgressContinuation(
+      { text: "Waiting for workers" },
+      {
+        kind: "final",
+        adoptProgressContinuation: () => {
+          started.resolve();
+          return accepted.promise;
+        },
+      },
+      { to: "channel:c1" },
+    );
+    await started.promise;
+    const cleaning = controller.cleanup();
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    expect([...visible]).toEqual([["1", "▸ Child work"]]);
+    accepted.resolve(true);
+    expect(await adopting).toBe(true);
+    await cleaning;
+
+    expect([...visible]).toEqual([["1", "▸ Child work"]]);
+  });
+
   it("publishes retained preamble data after the final gate without reopening parent progress", async () => {
     const { controller, visible } = createContinuationHarness();
     await controller.pushItemEvent({

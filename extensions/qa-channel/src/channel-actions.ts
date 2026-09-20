@@ -1,6 +1,9 @@
 // Qa Channel plugin module implements channel actions behavior.
 import { jsonResult, readStringParam } from "openclaw/plugin-sdk/channel-actions";
-import { createMessageReceiptFromOutboundResults } from "openclaw/plugin-sdk/channel-outbound";
+import {
+  createChannelProgressDraftCompositor,
+  createMessageReceiptFromOutboundResults,
+} from "openclaw/plugin-sdk/channel-outbound";
 import { extractToolSend } from "openclaw/plugin-sdk/tool-send";
 import { Type } from "typebox";
 import { resolveQaChannelAccount } from "./accounts.js";
@@ -284,11 +287,22 @@ export const qaChannelMessageActions: ChannelMessageActionAdapter = {
       }
       case "edit": {
         const messageId = readStringParam(params, "messageId");
-        const text = readStringParam(params, "message") ?? readStringParam(params, "text");
+        const text = context.progressSnapshot
+          ? (context.progressSnapshot.preparedBlocks?.map((block) => block.text).join("\n\n") ??
+            createChannelProgressDraftCompositor({
+              entry: undefined,
+              mode: "partial",
+              active: false,
+              seed: "",
+              initialSnapshot: context.progressSnapshot,
+              formatPlainText: (plainText) => plainText,
+            }).getText())
+          : (readStringParam(params, "message") ?? readStringParam(params, "text"));
         if (!messageId || !text) {
           throw new Error("qa-channel edit requires messageId and message/text");
         }
         await readBoundMessage();
+        context.assertDirectAdapterHandoff?.();
         const { message } = await editQaBusMessage({
           baseUrl,
           accountId: account.accountId,

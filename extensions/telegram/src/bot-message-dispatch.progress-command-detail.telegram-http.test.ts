@@ -25,6 +25,7 @@ describe("Telegram progress command detail through the shared dispatcher and Tel
   let apiRoot: string;
   let nextMessageId = 0;
   let inboundSequence = 0;
+  let failProgressEdits = false;
   const sockets = new Set<Socket>();
   const calls: RecordedBotApiCall[] = [];
   const visibleMessages = new Map<number, string>();
@@ -42,6 +43,13 @@ describe("Telegram progress command detail through the shared dispatcher and Tel
         const method = request.url?.split("/").at(-1) ?? "";
         calls.push({ method, fields });
         response.setHeader("content-type", "application/json");
+        if (method === "editMessageText" && failProgressEdits) {
+          response.statusCode = 400;
+          response.end(
+            JSON.stringify({ ok: false, error_code: 400, description: "progress edit rejected" }),
+          );
+          return;
+        }
         if (method === "sendMessage" || method === "editMessageText") {
           const messageId =
             typeof fields.message_id === "number" ? fields.message_id : ++nextMessageId;
@@ -79,6 +87,7 @@ describe("Telegram progress command detail through the shared dispatcher and Tel
     calls.length = 0;
     visibleMessages.clear();
     nextMessageId = 0;
+    failProgressEdits = false;
     resetPluginStateStoreForTests({ closeDatabase: false });
     resetTelegramReplyFenceForTest();
     setTelegramPluginStateRuntimeForTests();
@@ -288,6 +297,84 @@ describe("Telegram progress command detail through the shared dispatcher and Tel
     expect([...visibleMessages.values()]).toEqual([expect.stringContaining(commentary)]);
     expect(calls.filter((call) => call.method === "sendMessage")).toHaveLength(1);
     expect(calls.some((call) => call.fields.text === waitingPayload.text)).toBe(false);
+  });
+
+  it("declines a stale receipt when Telegram rejects the newest progress edit", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const adopt = vi.fn(async () => true);
+    const waitingPayload = setReplyPayloadMetadata(
+      { text: "Waiting for delegated work." },
+      { progressContinuation: { adopt, close: () => undefined } },
+    );
+    await dispatchProgressTurn(
+      async (options) => {
+        await options?.onPlanUpdate?.({
+          phase: "update",
+          steps: [{ step: "Inspect the request", status: "in_progress" }],
+        });
+        await waitForBotApiCall((call) => call.method === "sendMessage");
+        failProgressEdits = true;
+        await options?.onPlanUpdate?.({
+          phase: "update",
+          steps: [{ step: "Verify the changed result", status: "in_progress" }],
+        });
+      },
+      { mode: "progress", toolProgress: true, finalReply: waitingPayload },
+    );
+    await vi.advanceTimersByTimeAsync(4_100);
+
+    expect(adopt).not.toHaveBeenCalled();
+    await expect.poll(() => [...visibleMessages.values()]).toEqual([waitingPayload.text]);
+  });
+
+  it("preserves queued-turn ownership when admission overlaps a positive handoff", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let parentCallbacks: ReplyResolverOptions | undefined;
+    let retainedMessageId: number | undefined;
+    let queuedMessageId: number | undefined;
+    const waitingPayload = setReplyPayloadMetadata(
+      { text: "Waiting for delegated work." },
+      {
+        progressContinuation: {
+          adopt: async (receipt) => {
+            retainedMessageId = Number(receipt.messageId);
+            expect(receipt.text).toContain("Parent work (in progress)");
+            expect(receipt.text).not.toContain("<b>");
+            await parentCallbacks?.onQueuedFollowupAdmitted?.();
+            await parentCallbacks?.onPlanUpdate?.({
+              phase: "update",
+              steps: [{ step: "Queued work", status: "in_progress" }],
+            });
+            await waitForBotApiCall(
+              (call) =>
+                call.method === "sendMessage" && String(call.fields.text).includes("Queued work"),
+            );
+            queuedMessageId = [...visibleMessages.keys()].find((id) => id !== retainedMessageId);
+            return true;
+          },
+          close: () => undefined,
+        },
+      },
+    );
+    await dispatchProgressTurn(
+      async (options) => {
+        parentCallbacks = options;
+        await options?.onPlanUpdate?.({
+          phase: "update",
+          steps: [{ step: "Parent work", status: "in_progress" }],
+        });
+      },
+      { mode: "progress", toolProgress: true, finalReply: waitingPayload },
+    );
+    await vi.advanceTimersByTimeAsync(4_100);
+
+    expect(queuedMessageId).toBeDefined();
+    await expect.poll(() => [...visibleMessages.keys()]).toEqual([retainedMessageId]);
+    expect(
+      calls
+        .filter((call) => call.method === "deleteMessage")
+        .map((call) => Number(call.fields.message_id)),
+    ).toEqual([queuedMessageId]);
   });
 
   it.each([true, false])(

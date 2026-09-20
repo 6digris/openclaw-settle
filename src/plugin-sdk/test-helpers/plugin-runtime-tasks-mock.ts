@@ -36,6 +36,13 @@ function createAsyncReadSession(params: { sessionKey?: string }) {
   };
 }
 
+function createAsyncRunReadSession(params: { sessionKey?: string }) {
+  return {
+    ...createAsyncReadSession(params),
+    observeProgress: vi.fn(async () => async () => {}),
+  };
+}
+
 function createAsyncFlowReadSession(params: { sessionKey?: string }) {
   return { ...createAsyncReadSession(params), getTaskSummary: vi.fn(async () => undefined) };
 }
@@ -68,7 +75,7 @@ function readBinding<Bound>(factory: (params: { sessionKey?: string }) => Bound)
 export function createPluginTasksRuntimeMock(): PluginRuntime["tasks"] {
   return {
     async: {
-      runs: readBinding(createAsyncReadSession),
+      runs: readBinding(createAsyncRunReadSession),
       flows: readBinding(createAsyncFlowReadSession),
       managedFlows: readBinding(createAsyncManagedFlowSession),
     },

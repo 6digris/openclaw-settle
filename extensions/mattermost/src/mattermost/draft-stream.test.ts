@@ -40,7 +40,7 @@ function createDraftStreamFixture(options: DraftStreamOptions = {}): {
       return { id: `post-${nextId++}` } as T;
     }
     if (path.startsWith("/posts/")) {
-      return { id: "patched" } as T;
+      return { id: path.slice("/posts/".length) } as T;
     }
     return {} as T;
   };
@@ -485,7 +485,7 @@ describe("createMattermostDraftStream", () => {
           failNextPatch = false;
           throw new Error("patch failed");
         }
-        return { id: "patched" } as T;
+        return { id: path.slice("/posts/".length) } as T;
       }
       return {} as T;
     };
@@ -660,7 +660,7 @@ describe("createMattermostDraftStream forceNewMessage", () => {
       }
       if (path.startsWith("/posts/")) {
         await boundaryPatchInFlight;
-        return { id: "patched" } as T;
+        return { id: path.slice("/posts/".length) } as T;
       }
       return {} as T;
     };
@@ -714,7 +714,7 @@ describe("createMattermostDraftStream forceNewMessage", () => {
         return { id: `post-${nextId++}` } as T;
       }
       if (path.startsWith("/posts/")) {
-        return { id: "patched" } as T;
+        return { id: path.slice("/posts/".length) } as T;
       }
       return {} as T;
     };

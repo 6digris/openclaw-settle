@@ -25,8 +25,8 @@ import {
 import type { TaskRegistryObserverEvent } from "../tasks/task-registry.store.types.js";
 import { createTaskFixture } from "../tasks/task-registry.test-support.js";
 import { bindTaskRunOwner } from "../tasks/task-run-owner.js";
+import type { TaskEventPayload } from "../tasks/task-summary.js";
 import type { GatewayBroadcastFn } from "./server-broadcast-types.js";
-import type { TaskEventPayload } from "./server-methods/task-summary.js";
 import { TerminalSessionManager } from "./terminal/session-manager.js";
 import {
   baseOpenRequest,

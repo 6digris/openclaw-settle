@@ -295,6 +295,18 @@ disabled by default inside tmux and GNU Screen. Sixel is not supported.
 - Failed assistant attachments show an actionable warning alongside any reply text. Attachment summaries use generic media kinds without exposing filenames or source URLs.
 - Messages sent to the same session from another client appear automatically.
 - The TUI also listens to agent tool events for richer tool cards.
+- Background task progress and the session's authored checklist are independent
+  of the foreground reply. They remain visible after a parent yields, while the
+  composer stays editable.
+- Task updates use the Gateway's prepared public commentary and command
+  activity. Reconnects and registry restoration discard stale observations
+  before accepting a fresh snapshot. Explicitly unknown execution is not
+  inferred as running from old tool rows.
+
+The Gateway and local backends use the same task projection. Local mode observes
+tasks in its own embedded runtime; it does not enable Gateway-only subagent
+spawning. See [Subagent yield handoff](/concepts/subagent-yield-handoff#client-task-progress)
+for the shared client contract.
 
 ## Connection details
 

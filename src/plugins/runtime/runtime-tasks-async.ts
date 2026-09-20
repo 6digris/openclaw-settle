@@ -115,6 +115,11 @@ function bindRuns(params: Binding): BoundAsyncTaskRunsRuntime {
       return task ? mapTaskRunDetail(task) : undefined;
     },
     list: async () => (await list()).map(mapTaskRunView),
+    async observeProgress(options) {
+      // Binding stays cheap; task/session publication owners load only for an opted-in observer.
+      const { observeRuntimeTaskProgress } = await import("./runtime-task-progress.js");
+      return observeRuntimeTaskProgress({ binding: { ...params, ...binding }, list, ...options });
+    },
     async findLatest() {
       const task = (await list())[0];
       return task ? mapTaskRunDetail(task) : undefined;

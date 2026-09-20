@@ -1,9 +1,15 @@
 import type { Direction } from "matrix-js-sdk/lib/models/event-timeline.js";
+import {
+  createChannelProgressDraftCompositor,
+  type ChannelProgressDraftCompositorSnapshot,
+} from "openclaw/plugin-sdk/channel-outbound";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { resolveMatrixAccountConfig } from "../accounts.js";
 import { resolveMatrixReplacementContent } from "../media-text.js";
+import { formatMatrixToolProgressMarkdownCode } from "../monitor/handler-helpers.js";
 import { fetchMatrixPollMessageSummary, resolveMatrixPollRootEventId } from "../poll-summary.js";
 import { isPollEventType, isPollStartType } from "../poll-types.js";
-import { editMessageMatrix, sendMessageMatrix } from "../send.js";
+import { editMessageMatrix, prepareMatrixSingleText, sendMessageMatrix } from "../send.js";
 import { withResolvedRoomAction } from "./client.js";
 import { resolveMatrixActionLimit } from "./limits.js";
 import { fetchEventSummary, summarizeMatrixRawEvent } from "./summary.js";
@@ -93,19 +99,54 @@ export async function editMatrixMessage(
   roomId: string,
   messageId: string,
   content: string,
-  opts: MatrixActionClientOpts = {},
+  opts: MatrixActionClientOpts & {
+    progressSnapshot?: ChannelProgressDraftCompositorSnapshot;
+    threadId?: string;
+    assertCurrent?: () => void;
+  } = {},
 ) {
   if (!opts.cfg) {
     throw new Error("Matrix message actions require a resolved runtime config.");
   }
-  if (!content.trim()) {
+  let messageContent = content;
+  if (opts.progressSnapshot) {
+    const entry = resolveMatrixAccountConfig({
+      cfg: opts.cfg,
+      accountId: opts.accountId ?? undefined,
+    });
+    const mode = entry.streaming?.mode;
+    messageContent = createChannelProgressDraftCompositor({
+      entry,
+      mode: mode === "quiet" ? "partial" : (mode ?? "off"),
+      active: true,
+      seed: `${opts.accountId ?? "default"}:${roomId}`,
+      initialSnapshot: opts.progressSnapshot,
+      formatLine: formatMatrixToolProgressMarkdownCode,
+    })
+      .getText()
+      .replace(/^• /gmu, "- ");
+    if (
+      !prepareMatrixSingleText(messageContent, {
+        cfg: opts.cfg,
+        accountId: opts.accountId ?? undefined,
+        preserveWhitespace: true,
+      }).fitsInSingleEvent
+    ) {
+      throw new Error("Matrix progress edit exceeds the single-event limit");
+    }
+  }
+  if (!messageContent.trim()) {
     throw new Error("Matrix edit requires content");
   }
-  const eventId = await editMessageMatrix(roomId, messageId, content.trimEnd(), {
+  const eventId = await editMessageMatrix(roomId, messageId, messageContent.trimEnd(), {
     cfg: opts.cfg,
     accountId: opts.accountId ?? undefined,
     client: opts.client,
     timeoutMs: opts.timeoutMs,
+    assertCurrent: opts.assertCurrent,
+    ...(opts.progressSnapshot
+      ? { includeMentions: false, preserveMsgtype: true, live: false, threadId: opts.threadId }
+      : {}),
   });
   return { eventId: eventId || null };
 }

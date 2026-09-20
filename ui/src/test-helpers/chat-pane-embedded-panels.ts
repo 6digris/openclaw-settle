@@ -1,8 +1,8 @@
+import type { TaskSummary } from "@openclaw/gateway-client/browser";
 import { html, render, type LitElement } from "lit";
 import { onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { SessionWorkspaceGetResult, SessionWorkspaceListResult } from "../api/types.ts";
-import type { TaskSummary } from "../lib/tasks/task-summary.ts";
 import {
   sidebarPanelDefinitions,
   sidebarPanelTemplates,

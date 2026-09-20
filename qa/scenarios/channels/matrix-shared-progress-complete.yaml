@@ -1,0 +1,32 @@
+title: Matrix shared progress complete lifecycle
+scenario:
+  id: matrix-shared-progress-complete
+  surface: channels
+  coverage:
+    primary:
+      - agent-runtime.streaming-replies
+  execution:
+    kind: flow
+    channel: matrix
+    providerMode: mock-openai
+    runtime: openclaw
+    timeoutMs: 420000
+    retryCount: 0
+    suiteIsolation: isolated
+    isolationReason: Owns a real homeserver conversation and the temporary Gateway lifecycle.
+    config:
+      requiredChannelDriver: live
+      requiredProvider: mock-openai
+      requiredModel: shared-progress-fixture-v1
+    summary: >-
+      Opt-in only. Start the shared-progress-v1 loopback provider from retained proof
+      assets. Pass --model mock-openai/shared-progress-fixture-v1 and set
+      OPENCLAW_QA_SHARED_PROGRESS_ROOT, OPENCLAW_QA_SHARED_PROGRESS_RUN,
+      OPENCLAW_QA_SHARED_PROGRESS_PROVIDER_URL. The maintained Matrix adapter provisions
+      real disposable Tuwunel accounts and owns Gateway restart and cleanup.
+flow:
+  module: ./live-transports/matrix/scenarios/scenario-runtime-shared-progress.js
+  call: runMatrixSharedProgressScenario
+  args:
+    - { expr: scenarioContext }
+    - complete

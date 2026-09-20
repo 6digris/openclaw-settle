@@ -46,10 +46,9 @@ class ChatScreenTest {
     val completed = note.copy(steps = listOf(ChatPlanStep("Done", ChatPlanStepStatus.Completed)))
     val paused = note.copy(steps = listOf(ChatPlanStep("Waiting", ChatPlanStepStatus.InProgress)))
 
-    assertFalse(progressCardIsComplete(note, hasActiveRun = true))
-    assertTrue(progressCardIsComplete(note, hasActiveRun = false))
-    assertTrue(progressCardIsComplete(completed, hasActiveRun = true))
-    assertFalse(progressCardIsComplete(paused, hasActiveRun = false))
+    assertFalse(progressCardIsComplete(note))
+    assertTrue(progressCardIsComplete(completed))
+    assertFalse(progressCardIsComplete(paused))
   }
 
   @Test

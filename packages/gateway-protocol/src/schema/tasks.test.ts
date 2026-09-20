@@ -28,4 +28,42 @@ describe("TaskSummarySchema", () => {
       }),
     ).toBe(false);
   });
+
+  it("accepts optional prepared progress but rejects overflow and private event fields", () => {
+    const item = {
+      itemId: "command-1",
+      kind: "tool",
+      phase: "end",
+      title: "Run checks",
+      status: "blocked",
+    };
+    const progress = {
+      runId: "execution-1",
+      revision: 7,
+      items: Array.from({ length: 64 }, (_, index) => ({ ...item, itemId: `command-${index}` })),
+    };
+    const summary = { id: "task-1", status: "running", progress };
+    expect(Value.Check(TaskSummarySchema, summary)).toBe(true);
+    expect(
+      Value.Check(TaskSummarySchema, {
+        ...summary,
+        progress: { ...progress, items: [...progress.items, item] },
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(TaskSummarySchema, {
+        ...summary,
+        progress: { ...progress, revision: -1 },
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(TaskSummarySchema, {
+        ...summary,
+        progress: { ...progress, items: [{ ...item, result: "Private output" }] },
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(TaskSummarySchema, { ...summary, progress: { ...progress, items: [] } }),
+    ).toBe(true);
+  });
 });

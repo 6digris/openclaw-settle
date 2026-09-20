@@ -4,6 +4,7 @@ import { createChannelPartialDeliveryError } from "openclaw/plugin-sdk/channel-i
 import {
   collectErrorGraphCandidates,
   PlatformMessageNotDispatchedError,
+  readErrorName,
 } from "openclaw/plugin-sdk/error-runtime";
 import { buildTimeoutAbortSignal } from "openclaw/plugin-sdk/extension-shared";
 import {
@@ -45,6 +46,8 @@ type MattermostRequestInit = RequestInit & {
   timeoutMs?: number;
   /** Internal dispatch evidence; never forwarded to the HTTP transport. */
   isMessagePost?: boolean;
+  /** Operation-local draft handoff fence; never forwarded to HTTP. */
+  assertCurrent?: () => void;
 };
 
 export type MattermostClient = {
@@ -241,7 +244,7 @@ export function createMattermostClient(params: {
     assertRequestCurrent?.();
     const url =
       typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-    const { timeoutMs: initTimeoutMs, isMessagePost, ...requestInit } = init ?? {};
+    const { timeoutMs: initTimeoutMs, isMessagePost, assertCurrent, ...requestInit } = init ?? {};
     const timeoutMs = resolveTimerTimeoutMs(initTimeoutMs, requestTimeoutMs);
     const { response, release } = await fetchWithSsrFGuard({
       url,
@@ -249,6 +252,7 @@ export function createMattermostClient(params: {
       beforeRequest: () => {
         assertReadAuthority?.();
         assertRequestCurrent?.();
+        assertCurrent?.();
         if (isMessagePost) {
           postDispatchStarted = true;
         }
@@ -269,7 +273,12 @@ export function createMattermostClient(params: {
         assertReadAuthority?.();
         const url =
           typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-        const { timeoutMs: initTimeoutMs, isMessagePost, ...requestInit } = init ?? {};
+        const {
+          timeoutMs: initTimeoutMs,
+          isMessagePost,
+          assertCurrent,
+          ...requestInit
+        } = init ?? {};
         const timeoutMs = resolveTimerTimeoutMs(initTimeoutMs, requestTimeoutMs);
         const { signal: timeoutSignal, cleanup } = buildTimeoutAbortSignal({
           timeoutMs,
@@ -283,6 +292,7 @@ export function createMattermostClient(params: {
             : (callerSignal ?? timeoutSignal);
         try {
           assertRequestCurrent?.();
+          assertCurrent?.();
           if (isMessagePost) {
             postDispatchStarted = true;
           }
@@ -662,14 +672,6 @@ function readErrorMessage(error: unknown): string | undefined {
   return typeof message === "string" && message.trim() ? message : undefined;
 }
 
-function readErrorName(error: unknown): string | undefined {
-  if (!error || typeof error !== "object") {
-    return undefined;
-  }
-  const name = (error as { name?: unknown }).name;
-  return typeof name === "string" && name.trim() ? name : undefined;
-}
-
 function readErrorCode(error: unknown): string | undefined {
   if (!error || typeof error !== "object") {
     return undefined;
@@ -696,6 +698,7 @@ export async function createMattermostPost(
     rootId?: string;
     fileIds?: string[];
     props?: Record<string, unknown>;
+    assertCurrent?: () => void;
   },
 ): Promise<MattermostPost> {
   const payload: Record<string, unknown> = {
@@ -714,6 +717,7 @@ export async function createMattermostPost(
   const post = await client.request<MattermostPost>("/posts", {
     method: "POST",
     body: JSON.stringify(payload),
+    assertCurrent: params.assertCurrent,
   });
   const postId = post && typeof post === "object" ? normalizeOptionalString(post.id) : undefined;
   if (!postId) {
@@ -745,6 +749,7 @@ export async function updateMattermostPost(
   params: {
     message?: string;
     props?: Record<string, unknown>;
+    assertCurrent?: () => void;
   },
 ): Promise<MattermostPost> {
   const payload: Record<string, unknown> = { id: postId };
@@ -757,6 +762,7 @@ export async function updateMattermostPost(
   return await client.request<MattermostPost>(`/posts/${postId}`, {
     method: "PUT",
     body: JSON.stringify(payload),
+    assertCurrent: params.assertCurrent,
   });
 }
 

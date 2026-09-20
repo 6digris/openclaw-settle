@@ -412,6 +412,21 @@ body.shown .composer {
   white-space: normal;
 }
 
+.reply-progress {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-strong);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.reply-task + .reply-task {
+  margin-top: 10px;
+}
+
 .popover {
   position: absolute;
   z-index: 2;

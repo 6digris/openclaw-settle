@@ -62,6 +62,7 @@ export function createSlackNativeProgressTransport(params: {
       const session = await startSlackStream({
         client: slackClient,
         clientOptions: params.setup.slackClientOptions,
+        assertCurrent: () => delivery.assertProgressCurrent?.(),
         channel: message.channel,
         threadTs: streamThreadTs,
         ...(update.text ? { text: update.text } : {}),

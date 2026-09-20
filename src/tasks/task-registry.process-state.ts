@@ -55,6 +55,9 @@ export type TaskActivityOverlayState = {
   currentTools: Map<string, { name: string; startedAt: number }>;
   preparedItems: Map<string, AgentActivityItem>;
   preparedGeneration?: number;
+  preparedLifecycleGeneration: string;
+  preparedRevision: number;
+  preparedSnapshot?: NonNullable<TaskSummary["progress"]>;
   assistantText: string;
   thinkingText: string;
   hasAssistantActivity: boolean;

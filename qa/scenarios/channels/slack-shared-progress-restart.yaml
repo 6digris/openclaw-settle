@@ -1,0 +1,33 @@
+title: Slack shared progress restart lifecycle
+scenario:
+  id: slack-shared-progress-restart
+  surface: channels
+  coverage:
+    primary:
+      - agent-runtime.streaming-replies
+  execution:
+    kind: flow
+    channel: slack
+    providerMode: mock-openai
+    runtime: openclaw
+    timeoutMs: 360000
+    retryCount: 0
+    suiteIsolation: isolated
+    isolationReason: Owns a live conversation and restarts only its temporary Gateway.
+    config:
+      requiredChannelDriver: live
+      requiredProvider: mock-openai
+      requiredModel: shared-progress-fixture-v1
+    summary: >-
+      Opt-in only. Start the shared-progress-v1 loopback provider from the retained proof
+      assets. Pass --model mock-openai/shared-progress-fixture-v1; this synthetic model
+      keeps the scenario out of ordinary default lanes.
+      Set OPENCLAW_QA_SHARED_PROGRESS_ROOT, OPENCLAW_QA_SHARED_PROGRESS_RUN,
+      and OPENCLAW_QA_SHARED_PROGRESS_PROVIDER_URL. The maintained Slack adapter owns
+      the lease and Gateway lifecycle; no external model credentials are used.
+flow:
+  module: ./live-transports/slack/shared-progress-scenario.js
+  call: runSlackSharedProgressScenario
+  args:
+    - { expr: slackScenarioContext }
+    - restart

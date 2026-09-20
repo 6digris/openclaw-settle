@@ -1,10 +1,4 @@
-import {
-  jsonResult,
-  readPositiveIntegerParam,
-  readStringArrayParam,
-  readStringParam,
-  withNormalizedTimestamp,
-} from "openclaw/plugin-sdk/channel-actions";
+import { readStringArrayParam, readStringParam } from "openclaw/plugin-sdk/channel-actions";
 import type {
   ChannelMessageActionAdapter,
   ChannelMessageActionName,
@@ -30,7 +24,10 @@ import {
   type MessagePresentation,
   resolveMessagePresentationButtonAction,
 } from "openclaw/plugin-sdk/interactive-runtime";
-import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
+import {
+  createLazyRuntimeModule,
+  createLazyRuntimeNamedExport,
+} from "openclaw/plugin-sdk/lazy-runtime";
 import { resolvePayloadMediaUrls, sendTextMediaPayload } from "openclaw/plugin-sdk/reply-payload";
 import { isPrivateNetworkOptInEnabled } from "openclaw/plugin-sdk/ssrf-runtime";
 import {
@@ -69,7 +66,6 @@ import {
   resolveMattermostReplyToMode,
   type ResolvedMattermostAccount,
 } from "./mattermost/accounts.js";
-import { normalizeMattermostEmojiName } from "./mattermost/emoji.js";
 import { mattermostIngressIdentity } from "./mattermost/ingress-identity.js";
 import {
   looksLikeMattermostTargetId,
@@ -81,9 +77,12 @@ import { collectRuntimeConfigAssignments, secretTargetRegistryEntries } from "./
 import { resolveMattermostOutboundSessionRoute } from "./session-route.js";
 import { mattermostSetupContract } from "./setup-core.js";
 import { mattermostSetupWizard } from "./setup-surface.js";
-import type { MattermostConfig } from "./types.js";
 
 const loadMattermostChannelRuntime = createLazyRuntimeModule(() => import("./channel.runtime.js"));
+const loadMattermostActionHandler = createLazyRuntimeNamedExport(
+  () => import("./channel-action-runtime.js"),
+  "handleMattermostAction",
+);
 
 const MATTERMOST_PRESENTATION_CAPABILITIES = {
   supported: true,
@@ -341,6 +340,7 @@ async function listMattermostDirectoryPeers(params: MattermostDirectoryListParam
 const mattermostMessageActions: ChannelMessageActionAdapter = {
   providerOwnedReadGates: ["read"],
   readAuthorityActions: ["read"],
+  writeAuthorityActions: ["edit"],
   describeMessageTool: describeMattermostMessageTool,
   extractToolSend: ({ args }) => extractMattermostToolSend(args),
   prepareSendPayload: ({ ctx, payload }) => {
@@ -368,151 +368,10 @@ const mattermostMessageActions: ChannelMessageActionAdapter = {
     };
   },
   supportsAction: ({ action }) => {
-    return action === "react" || action === "read";
+    return action === "react" || action === "read" || action === "edit";
   },
-  handleAction: async ({
-    action,
-    params,
-    cfg,
-    accountId,
-    conversationReadOrigin,
-    requesterAccountId,
-    toolContext,
-  }) => {
-    if (action === "read") {
-      const resolvedAccountId = accountId ?? resolveDefaultMattermostAccountId(cfg);
-      const mattermostConfig = cfg.channels?.mattermost as MattermostConfig | undefined;
-      const account = resolveMattermostAccount({ cfg, accountId: resolvedAccountId });
-      if (!account.enabled) {
-        throw new Error(`Mattermost account "${resolvedAccountId}" is disabled`);
-      }
-      const messagesEnabled =
-        account.config.actions?.messages ?? mattermostConfig?.actions?.messages ?? false;
-      if (!messagesEnabled) {
-        throw new Error("Mattermost message reads are disabled in config");
-      }
-
-      const rawTarget =
-        readStringParam(params, "to") ??
-        readStringParam(params, "channelId") ??
-        readStringParam(params, "target");
-      if (!rawTarget) {
-        throw new Error("Mattermost read requires target, to, or channelId.");
-      }
-      const normalizedTarget = normalizeMattermostMessagingTarget(rawTarget);
-      const channelId = normalizedTarget?.startsWith("channel:")
-        ? normalizedTarget.slice("channel:".length).trim()
-        : !rawTarget.includes(":")
-          ? rawTarget
-          : "";
-      if (!channelId) {
-        throw new Error("Mattermost read requires a channel target.");
-      }
-
-      const before = readStringParam(params, "before");
-      const after = readStringParam(params, "after");
-      if (before && after) {
-        throw new Error("Mattermost read accepts either before or after, not both.");
-      }
-      const result = await (
-        await loadMattermostChannelRuntime()
-      ).readMattermostMessages({
-        cfg,
-        channelId,
-        limit: readPositiveIntegerParam(params, "limit", {
-          message: "limit must be a positive integer.",
-        }),
-        before,
-        after,
-        accountId: resolvedAccountId,
-        context: {
-          conversationReadOrigin,
-          requesterAccountId,
-          toolContext,
-        },
-      });
-      return jsonResult({
-        ok: true,
-        channelId,
-        messages: result.messages.map((message) =>
-          withNormalizedTimestamp(message as Record<string, unknown>, message.create_at),
-        ),
-        hasMore: result.hasMore,
-      });
-    }
-
-    if (action === "react") {
-      const resolvedAccountId = accountId ?? resolveDefaultMattermostAccountId(cfg);
-      const mattermostConfig = cfg.channels?.mattermost as MattermostConfig | undefined;
-      const account = resolveMattermostAccount({ cfg, accountId: resolvedAccountId });
-      if (!account.enabled) {
-        throw new Error(`Mattermost account "${resolvedAccountId}" is disabled`);
-      }
-      const reactionsEnabled =
-        account.config.actions?.reactions ?? mattermostConfig?.actions?.reactions ?? true;
-      if (!reactionsEnabled) {
-        throw new Error("Mattermost reactions are disabled in config");
-      }
-
-      const { postId, emojiName, remove } = parseMattermostReactActionParams(params);
-      // The runner preserves the caller's spelling in `target` and puts the
-      // directory-resolved provider destination in `to` before dispatch.
-      const authorizedTarget = normalizeOptionalString(params.to);
-      const runtime = await loadMattermostChannelRuntime();
-      const mutateReaction = remove
-        ? runtime.removeMattermostReaction
-        : runtime.addMattermostReaction;
-      const result = await mutateReaction({
-        cfg,
-        postId,
-        emojiName,
-        accountId: resolvedAccountId,
-        authorizedTarget,
-        conversationReadOrigin,
-      });
-      if (!result.ok) {
-        throw new Error(result.error);
-      }
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: remove
-              ? `Removed reaction :${emojiName}: from ${postId}`
-              : `Reacted with :${emojiName}: on ${postId}`,
-          },
-        ],
-        details: {},
-      };
-    }
-
-    throw new Error(`Unsupported Mattermost action: ${action}`);
-  },
+  handleAction: async (context) => (await loadMattermostActionHandler())(context),
 };
-
-function parseMattermostReactActionParams(params: Record<string, unknown>): {
-  postId: string;
-  emojiName: string;
-  remove: boolean;
-} {
-  const postId =
-    normalizeOptionalString(params.messageId) ?? normalizeOptionalString(params.postId);
-  if (!postId) {
-    throw new Error("Mattermost react requires messageId (post id)");
-  }
-
-  const emojiName = normalizeMattermostEmojiName(normalizeOptionalString(params.emoji));
-  if (!emojiName) {
-    throw new Error("Mattermost react requires emoji");
-  }
-
-  return {
-    postId,
-    emojiName,
-    remove: params.remove === true,
-  };
-}
 
 function resolveMattermostSendAttachmentMedia(params: Record<string, unknown>): string | undefined {
   const sourceKeys = ["media", "mediaUrl", "path", "filePath", "fileUrl"];

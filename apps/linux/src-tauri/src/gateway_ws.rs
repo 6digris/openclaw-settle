@@ -146,7 +146,7 @@ struct ChatSendAck {
     message: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ChatRoutingTarget {
     pub(crate) session_key: String,
@@ -213,6 +213,23 @@ struct SuspendResumeResponse {
     resumed: bool,
 }
 
+#[derive(Clone, Copy, Deserialize)]
+pub(crate) enum QuickChatSessionRead {
+    #[serde(rename = "tasks.list")]
+    Tasks,
+    #[serde(rename = "progressCard.get")]
+    ProgressCard,
+}
+
+impl QuickChatSessionRead {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Tasks => "tasks.list",
+            Self::ProgressCard => "progressCard.get",
+        }
+    }
+}
+
 enum GatewayRequest {
     AgentsList,
     #[cfg(target_os = "linux")]
@@ -234,6 +251,11 @@ enum GatewayRequest {
         generation: GatewayGeneration,
         offset: Option<u64>,
         deadline: Instant,
+    },
+    SessionRead {
+        method: QuickChatSessionRead,
+        target: ChatRoutingTarget,
+        generation: GatewayGeneration,
     },
     #[cfg(target_os = "linux")]
     SuspendPrepare {
@@ -274,6 +296,7 @@ enum GatewayResponse {
     ChatSend(ChatSendAck),
     CanvasSurface(Option<String>),
     ChatHistory(ChatHistoryPage),
+    SessionRead(Value),
     #[cfg(target_os = "linux")]
     SuspendPrepare(SuspendPrepareResponse),
     #[cfg(target_os = "linux")]
@@ -684,6 +707,27 @@ impl GatewayClient {
             return Err("Gateway returned the wrong response for chat.history.".to_string());
         };
         Ok(page)
+    }
+
+    pub(crate) async fn session_read(
+        &self,
+        method: QuickChatSessionRead,
+        target: ChatRoutingTarget,
+        generation: GatewayGeneration,
+    ) -> Result<Value, String> {
+        self.with_generation(generation, || Ok(()))?;
+        let response = self
+            .request(GatewayRequest::SessionRead {
+                method,
+                target,
+                generation,
+            })
+            .await?;
+        self.with_generation(generation, || Ok(()))?;
+        let GatewayResponse::SessionRead(value) = response else {
+            return Err("Gateway returned the wrong Quick Chat session response.".to_string());
+        };
+        Ok(value)
     }
 
     pub(crate) async fn refresh_canvas_surface(
@@ -1818,6 +1862,35 @@ async fn perform_session_request(
                     )
                 })
         }
+        GatewayRequest::SessionRead {
+            method,
+            target,
+            generation,
+        } => {
+            let mut params = json!({ "sessionKey": target.session_key });
+            if let Some(agent_id) = target.agent_id {
+                params["agentId"] = Value::String(agent_id);
+            }
+            if matches!(method, QuickChatSessionRead::Tasks) {
+                params["limit"] = json!(100);
+            }
+            request_on_session(
+                client,
+                session,
+                method.name(),
+                params,
+                deadline,
+                Some(RequestDispatch {
+                    generation,
+                    connection_generation,
+                    deadline: Some(deadline),
+                    #[cfg(target_os = "linux")]
+                    sleep_route: None,
+                }),
+            )
+            .await
+            .map(GatewayResponse::SessionRead)
+        }
         GatewayRequest::RefreshCanvasSurface {
             observed_url,
             generation,
@@ -2061,14 +2134,17 @@ fn dispatch_gateway_event<R: tauri::Runtime>(
     if event.event == "config.changed" {
         config_changed.store(true, Ordering::SeqCst);
     }
-    if event.event != "chat" {
-        return;
-    }
+    let renderer_event = match event.event.as_str() {
+        "chat" => CHAT_EVENT,
+        "task" => "quickchat:task-event",
+        "progressCard.changed" => "quickchat:progress-card-event",
+        _ => return,
+    };
     if let Some(payload) = event.payload.as_object() {
         let mut payload = payload.clone();
         // Stamp the socket that delivered this event, not whichever route is active now.
         payload.insert("gatewayGeneration".to_string(), json!(generation));
-        let _ = app.emit_to(QUICKCHAT_LABEL, CHAT_EVENT, payload);
+        let _ = app.emit_to(QUICKCHAT_LABEL, renderer_event, payload);
     }
 }
 
@@ -2585,6 +2661,54 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn session_reads_preserve_scope_and_reject_gateway_replacement() {
+        for method in [
+            QuickChatSessionRead::Tasks,
+            QuickChatSessionRead::ProgressCard,
+        ] {
+            for replace in [false, true] {
+                let mut fixture = RpcFixture::new().await;
+                let client = fixture.client.clone();
+                let generation = client.generation();
+                let read = tokio::spawn(async move {
+                    client
+                        .session_read(method, routing_target("global", "work", "main"), generation)
+                        .await
+                });
+                let (request, reply) = fixture.request(method.name()).await;
+                assert_eq!(request["params"]["sessionKey"], "global");
+                assert_eq!(request["params"]["agentId"], "work");
+                let snapshot = match method {
+                    QuickChatSessionRead::Tasks => json!({
+                        "tasks": [{
+                            "id": "child", "status": "running",
+                            "execution": {"state": "waiting", "wait": {"kind": "children"}},
+                            "progress": {"runId": "child-run", "revision": 2, "items": []}
+                        }],
+                        "nextCursor": "more",
+                    }),
+                    QuickChatSessionRead::ProgressCard => json!({
+                        "card": {"sessionKey": "global", "revision": 4, "markdown": "Authored plan"}
+                    }),
+                };
+                if replace {
+                    fixture.replace_route();
+                }
+                reply.send(Ok(snapshot.clone())).unwrap();
+                let result = read.await.unwrap();
+                if replace {
+                    assert!(
+                        result.is_err(),
+                        "old Gateway facts must not enter a new view"
+                    );
+                } else {
+                    assert_eq!(result.unwrap(), snapshot);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn history_dispatch_revalidates_owner_and_queue_deadline() {
         for replace in [false, true] {
             let mut fixture = RpcFixture::new().await;
@@ -2689,6 +2813,7 @@ pub(crate) mod tests {
         use futures_util::FutureExt;
         use std::future::Future;
         use std::task::Poll;
+        use tauri::Listener;
 
         struct IdentityDirectory(std::path::PathBuf);
 
@@ -2893,9 +3018,72 @@ pub(crate) mod tests {
         let app = tauri::Builder::default()
             .any_thread()
             .setup(move |app| {
-                tauri::WindowBuilder::new(app, QUICKCHAT_LABEL)
+                let window = tauri::WindowBuilder::new(app, QUICKCHAT_LABEL)
                     .visible(false)
                     .build()?;
+                for (wire_event, renderer_event, payload) in [
+                    (
+                        "chat",
+                        CHAT_EVENT,
+                        json!({
+                            "runId": "parent", "sessionKey": "global", "state": "final",
+                            "yielded": true, "stopReason": "end_turn",
+                        }),
+                    ),
+                    (
+                        "task",
+                        "quickchat:task-event",
+                        json!({
+                            "action": "upserted", "task": {
+                                "id": "child", "status": "running",
+                                "progress": {"runId": "child-run", "revision": 1, "items": []},
+                            },
+                        }),
+                    ),
+                    (
+                        "task",
+                        "quickchat:task-event",
+                        json!({"action": "deleted", "taskId": "child"}),
+                    ),
+                    (
+                        "task",
+                        "quickchat:task-event",
+                        json!({"action": "restored"}),
+                    ),
+                    (
+                        "progressCard.changed",
+                        "quickchat:progress-card-event",
+                        json!({
+                            "sessionKey": "global", "revision": null,
+                        }),
+                    ),
+                ] {
+                    let (sent, received) = std::sync::mpsc::channel();
+                    let listener = window.listen(renderer_event, move |event| {
+                        let _ = sent.send(serde_json::from_str::<Value>(event.payload()));
+                    });
+                    let mut expected = payload.clone();
+                    expected["gatewayGeneration"] = json!(7);
+                    let event: GatewayEvent = serde_json::from_value(json!({
+                        "event": wire_event, "payload": payload,
+                    }))
+                    .unwrap();
+                    dispatch_gateway_event(
+                        app.handle(),
+                        &event,
+                        GatewayGeneration(7),
+                        &AtomicBool::new(false),
+                    );
+                    assert_eq!(
+                        received
+                            .recv_timeout(Duration::from_secs(1))
+                            .unwrap()
+                            .unwrap(),
+                        expected,
+                        "the native adapter must preserve canonical facts and socket ownership",
+                    );
+                    window.unlisten(listener);
+                }
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let outcome = std::panic::AssertUnwindSafe(async {

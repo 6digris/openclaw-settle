@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GATEWAY_SERVER_CAPS } from "../../packages/gateway-protocol/src/server-capabilities.js";
+import { stripAnsi } from "../../packages/terminal-core/src/ansi.js";
+import { createTuiTaskProgressController } from "./tui-task-progress.js";
 // Covers gateway-backed chat behavior used by the TUI backend.
 
 const { GatewayChatClient } = await import("./gateway-chat.js");
@@ -8,6 +10,75 @@ const { GatewayClient, GatewayClientRequestError } = await import("../gateway/cl
 describe("GatewayChatClient", () => {
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("renders authoritative child observations without retaining a running claim after reconnect", async () => {
+    const task = {
+      id: "remote-child",
+      taskId: "remote-child",
+      runId: "remote-run",
+      sessionKey: "agent:main:main",
+      title: "Remote child",
+      status: "running",
+      updatedAt: 10,
+      execution: { state: "running" },
+      progress: {
+        runId: "remote-run",
+        revision: 1,
+        items: [
+          {
+            itemId: "command",
+            phase: "update",
+            kind: "tool",
+            title: "Run child check",
+            status: "running",
+            progressText: "Remote child is testing",
+          },
+        ],
+      },
+    };
+    let restarted = false;
+    const request = vi
+      .spyOn(GatewayClient.prototype, "request")
+      .mockImplementation(async (method, params) => {
+        if (method === "progressCard.get") {
+          return { card: null };
+        }
+        if (method === "tasks.list") {
+          const query = params as { sortBy?: string };
+          return {
+            tasks:
+              query.sortBy === "endedAt"
+                ? []
+                : [
+                    restarted
+                      ? { ...task, progress: undefined, execution: { state: "unknown" } }
+                      : task,
+                  ],
+          };
+        }
+        throw new Error(`Unexpected request: ${method}`);
+      });
+    const client = new GatewayChatClient({ url: "ws://127.0.0.1:18789", token: "test-token" });
+    const progress = createTuiTaskProgressController({
+      client,
+      getScope: () => ({ sessionKey: "agent:main:main", agentId: "main" }),
+      requestRender: () => {},
+    });
+    const render = () => stripAnsi(progress.component.render(100).join("\n"));
+    try {
+      await progress.connect();
+      expect(render()).toContain("Remote child is testing");
+      progress.disconnect();
+      restarted = true;
+      await progress.connect();
+      expect(render()).toContain("Remote child [unknown]");
+      expect(render()).not.toContain("Remote child is testing");
+    } finally {
+      progress.dispose();
+      await progress.settled();
+      request.mockRestore();
+    }
   });
 
   it.each([true, false])(

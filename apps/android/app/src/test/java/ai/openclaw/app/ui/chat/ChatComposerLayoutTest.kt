@@ -1530,6 +1530,162 @@ class ChatComposerLayoutTest {
 
   @Test
   @Config(qualifiers = "w800dp-h800dp-mdpi")
+  fun backgroundTaskProgressDuringSnapshotDoesNotStarveQuietOrFinishedRows() {
+    val releaseRecent = CompletableDeferred<Unit>()
+    val requests = AtomicInteger()
+    withBackgroundTaskRequests(
+      response = { _, _ ->
+        when (requests.incrementAndGet()) {
+          1 ->
+            """{"tasks":[{"id":"quiet","agentId":"main","status":"running","runtime":"subagent","title":"Quiet worker","execution":{"state":"waiting"}},{"id":"busy","agentId":"main","runId":"canonical-busy","status":"running","runtime":"subagent","title":"Busy worker","progress":{"runId":"old-source","revision":1,"items":[]}},{"id":"deleted","agentId":"main","status":"running","runtime":"subagent","title":"Deleted worker"}]}"""
+          2 -> {
+            releaseRecent.await()
+            """{"tasks":[{"id":"finished","agentId":"main","status":"completed","runtime":"subagent","title":"Finished worker","execution":{"state":"finished"}}]}"""
+          }
+          else -> awaitCancellation()
+        }
+      },
+    ) { _, _ ->
+      composeRule.onNodeWithContentDescription(nativeString("Chat actions")).performClick()
+      composeRule.onNodeWithText(nativeString("Background tasks")).performClick()
+      composeRule.waitUntil { requests.get() == 2 }
+      composeRule.runOnIdle {
+        repeat(3) { index ->
+          controller.handleGatewayEvent(
+            "task",
+            """{"action":"upserted","task":{"id":"busy","agentId":"main","sessionKey":"${controller.sessionKey.value}","runId":"canonical-busy","status":"running","runtime":"subagent","title":"Busy worker","progress":{"runId":"replacement-source","revision":${index + 2},"items":[{"itemId":"note","kind":"preamble","phase":"end","title":"","progressText":"Current work ${index + 1}"}]}}}""",
+          )
+        }
+        controller.handleGatewayEvent("task", """{"action":"deleted","taskId":"deleted"}""")
+      }
+      releaseRecent.complete(Unit)
+      composeRule.waitUntil {
+        composeRule.onAllNodesWithContentDescription(nativeString("Refresh background tasks")).fetchSemanticsNodes().isNotEmpty()
+      }
+      composeRule.onNode(hasText("Quiet worker") and hasAnyAncestor(isDialog())).assertIsDisplayed()
+      composeRule.onNode(hasText("Finished worker") and hasAnyAncestor(isDialog())).assertIsDisplayed()
+      composeRule.onNode(hasText("Current work 3") and hasAnyAncestor(isDialog())).assertIsDisplayed()
+      composeRule.onNodeWithText("Deleted worker").assertDoesNotExist()
+    }
+  }
+
+  @Test
+  @Config(qualifiers = "w800dp-h800dp-mdpi")
+  fun backgroundTasksShowCanonicalProgressRetractionsAndSeparateDelivery() {
+    val fixture = AndroidScreenshotFixture.createRequester()
+    var snapshot = ""
+    withBackgroundTaskRequests(
+      response = { method, params ->
+        if (method == "tasks.get") """{"task":$snapshot}""" else fixture(method, params)
+      },
+    ) { _, _ ->
+      showProgressCard(listOf("Waiting for workers"))
+      openBackgroundTasks()
+      composeRule.onNode(hasText(nativeString("Conversation checklist")) and hasAnyAncestor(isDialog())).assertIsDisplayed()
+      snapshot =
+        """{"id":"screenshot-ledger-8","updatedAt":1783555269999,"agentId":"main","sessionKey":"${controller.sessionKey.value}","runId":"worker-run","runtime":"subagent","title":"Release task 08","status":"running","execution":{"state":"waiting","wait":{"kind":"children"}},"deliveryStatus":"pending","prompt":"Synthetic delegated request","progress":{"runId":"worker-run","revision":1,"items":[{"itemId":"work","kind":"preamble","phase":"end","title":"","progressText":"Public delegated activity"},{"itemId":"hidden","kind":"tool","phase":"start","title":"Private hidden activity","hideFromChannelProgress":true}]}}"""
+      composeRule.runOnIdle { controller.handleGatewayEvent("task", """{"action":"upserted","task":$snapshot}""") }
+      composeRule.onNode(hasText("Public delegated activity") and hasAnyAncestor(isDialog())).assertIsDisplayed()
+      composeRule.onNodeWithText("Private hidden activity").assertDoesNotExist()
+      composeRule.onNodeWithText("Release task 08").performClick()
+      composeRule.onNode(hasText("Waiting for delegated work", substring = true) and hasAnyAncestor(isDialog())).assertIsDisplayed()
+      composeRule.onNode(hasText(nativeString("Final delivery")) and hasAnyAncestor(isDialog())).assertIsDisplayed()
+      composeRule.onNode(hasText(nativeString("Pending")) and hasAnyAncestor(isDialog())).assertIsDisplayed()
+
+      snapshot =
+        """{"id":"screenshot-ledger-8","updatedAt":1783555269999,"agentId":"main","sessionKey":"${controller.sessionKey.value}","runId":"worker-run","runtime":"subagent","title":"Release task 08","status":"running","execution":{"state":"unknown"},"deliveryStatus":"pending","progress":{"runId":"worker-run","revision":2,"items":[]}}"""
+      composeRule.runOnIdle { controller.handleGatewayEvent("task", """{"action":"upserted","task":$snapshot}""") }
+      composeRule.onNodeWithText("Public delegated activity").assertDoesNotExist()
+      composeRule.onNode(hasText(nativeString("No current activity")) and hasAnyAncestor(isDialog())).assertIsDisplayed()
+      composeRule.onNode(hasText(nativeString("Activity unavailable"), substring = true) and hasAnyAncestor(isDialog())).assertIsDisplayed()
+
+      composeRule.runOnIdle { controller.handleGatewayEvent("task", """{"action":"deleted","taskId":"screenshot-ledger-8"}""") }
+      composeRule.onNodeWithContentDescription(nativeString("Back to background tasks")).assertDoesNotExist()
+      composeRule.onNodeWithText("Release task 08").assertDoesNotExist()
+    }
+  }
+
+  @Test
+  @Config(qualifiers = "w800dp-h800dp-mdpi")
+  fun backgroundTasksUnrelatedProgressDoesNotDiscardRestoredDetail() =
+    assertBackgroundTaskDetailReplay("unrelated")
+
+  @Test
+  @Config(qualifiers = "w800dp-h800dp-mdpi")
+  fun backgroundTasksSelectedProgressWinsOverHeldDetail() =
+    assertBackgroundTaskDetailReplay("selected")
+
+  @Test
+  @Config(qualifiers = "w800dp-h800dp-mdpi")
+  fun backgroundTasksDeletionRetiresHeldDetail() =
+    assertBackgroundTaskDetailReplay("deleted")
+
+  private fun assertBackgroundTaskDetailReplay(update: String) {
+    val reply = CompletableDeferred<String>()
+    val gets = AtomicInteger()
+    val completed = CompletableDeferred<Unit>()
+    val fixture = AndroidScreenshotFixture.createRequester()
+    fun detailPayload(note: String, revision: Int, execution: String, prompt: String): String =
+      """{"task":{"id":"screenshot-ledger-8","updatedAt":1783555269999,"agentId":"main","sessionKey":"${controller.sessionKey.value}","runId":"screenshot-run-8","runtime":"subagent","title":"Release task 08","status":"running","execution":{"state":"$execution"},"deliveryStatus":"pending","prompt":"$prompt","progress":{"runId":"detail-source","revision":$revision,"items":[{"itemId":"note","kind":"preamble","phase":"end","title":"","progressText":"$note"}]}}}"""
+    try {
+      withBackgroundTaskRequests(
+        response = { method, params ->
+          if (method != "tasks.get") {
+            fixture(method, params)
+          } else if (gets.incrementAndGet() == 1) {
+            detailPayload("Earlier progress", 7, "waiting", "Initial task input")
+          } else {
+            val result = withContext(NonCancellable) { reply.await() }
+            completed.complete(Unit)
+            result
+          }
+        },
+      ) { _, _ ->
+        openBackgroundTasks()
+        composeRule.onNodeWithText("Release task 08").performClick()
+        composeRule.waitUntil {
+          composeRule.onAllNodes(hasText("Initial task input") and hasAnyAncestor(isDialog())).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.runOnIdle { controller.handleGatewayEvent("task", """{"action":"restored"}""") }
+        composeRule.waitUntil { gets.get() == 2 }
+        composeRule.runOnIdle {
+          if (update == "deleted") {
+            controller.handleGatewayEvent("task", """{"action":"deleted","taskId":"screenshot-ledger-8"}""")
+          } else {
+            val index = if (update == "selected") 8 else 7
+            controller.handleGatewayEvent(
+              "task",
+              """{"action":"upserted","task":{"id":"screenshot-ledger-$index","updatedAt":1783555269999,"agentId":"main","sessionKey":"${controller.sessionKey.value}","runId":"screenshot-run-$index","runtime":"subagent","title":"Release task 0$index","status":"running","execution":{"state":"waiting","wait":{"kind":"children"}},"progress":{"runId":"live-source","revision":9,"items":[{"itemId":"note","kind":"preamble","phase":"end","title":"","progressText":"Latest selected progress"}]}}}""",
+            )
+          }
+        }
+        composeRule.waitForIdle()
+        reply.complete(detailPayload("Recovered quiet work", 8, "running", "Fresh private input"))
+        composeRule.waitUntil { completed.isCompleted }
+        composeRule.waitForIdle()
+        if (update == "deleted") {
+          composeRule.onNodeWithContentDescription(nativeString("Back to background tasks")).assertDoesNotExist()
+          composeRule.onNodeWithContentDescription(nativeString("Refresh background tasks")).assertIsDisplayed()
+          composeRule.onNodeWithText("Release task 08").assertDoesNotExist()
+        } else {
+          composeRule.waitUntil {
+            composeRule.onAllNodes(hasText("Fresh private input") and hasAnyAncestor(isDialog())).fetchSemanticsNodes().isNotEmpty()
+          }
+          val expectedNote = if (update == "selected") "Latest selected progress" else "Recovered quiet work"
+          val expectedStatus = if (update == "selected") nativeString("Waiting for delegated work") else nativeString("Running")
+          composeRule.onNode(hasText(expectedNote) and hasAnyAncestor(isDialog())).assertIsDisplayed()
+          composeRule.onNode(hasText(expectedStatus, substring = true) and hasAnyAncestor(isDialog())).assertIsDisplayed()
+          composeRule.onNode(hasText("Fresh private input") and hasAnyAncestor(isDialog())).assertIsDisplayed()
+          if (update == "selected") composeRule.onNodeWithText("Recovered quiet work").assertDoesNotExist()
+        }
+      }
+    } finally {
+      reply.complete(fixture("tasks.get", """{"taskId":"screenshot-ledger-8"}"""))
+    }
+  }
+
+  @Test
+  @Config(qualifiers = "w800dp-h800dp-mdpi")
   fun backgroundTasksDisposalCancelsOnlyOwnedReads() {
     val cancelled = ConcurrentLinkedQueue<String>()
     withBackgroundTaskRequests(

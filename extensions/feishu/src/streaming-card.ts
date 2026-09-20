@@ -14,6 +14,7 @@ import { FEISHU_HTTP_TIMEOUT_MS } from "./client-timeout.js";
 import { getFeishuUserAgent } from "./client.js";
 import { requestFeishuApi } from "./comment-shared.js";
 import { readFeishuJsonResponse } from "./json-response.js";
+import { captureFeishuSendAuthority } from "./send-context.js";
 import { resolveFeishuCardTemplate, type CardHeaderConfig } from "./send.js";
 import { resolveStreamingCardSendMode } from "./streaming-card-send-mode.js";
 import type { FeishuDomain } from "./types.js";
@@ -414,15 +415,17 @@ export class FeishuStreamingSession {
     const apiBase = resolveApiBase(this.creds.domain);
     this.state.sequence += 1;
     try {
+      const token = await getToken(this.creds, {
+        fetchImpl: this.fetchImpl,
+        lookupFn: this.lookupFn,
+      });
+      captureFeishuSendAuthority()?.();
       const { response, release } = await fetchWithSsrFGuard({
         url: `${apiBase}/cardkit/v1/cards/${this.state.cardId}/elements/content/content`,
         init: {
           method: "PUT",
           headers: {
-            Authorization: `Bearer ${await getToken(this.creds, {
-              fetchImpl: this.fetchImpl,
-              lookupFn: this.lookupFn,
-            })}`,
+            Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
             "User-Agent": getFeishuUserAgent(),
           },
@@ -464,15 +467,17 @@ export class FeishuStreamingSession {
     const apiBase = resolveApiBase(this.creds.domain);
     this.state.sequence += 1;
     try {
+      const token = await getToken(this.creds, {
+        fetchImpl: this.fetchImpl,
+        lookupFn: this.lookupFn,
+      });
+      captureFeishuSendAuthority()?.();
       const { response, release } = await fetchWithSsrFGuard({
         url: `${apiBase}/cardkit/v1/cards/${this.state.cardId}/elements/content`,
         init: {
           method: "PUT",
           headers: {
-            Authorization: `Bearer ${await getToken(this.creds, {
-              fetchImpl: this.fetchImpl,
-              lookupFn: this.lookupFn,
-            })}`,
+            Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
             "User-Agent": getFeishuUserAgent(),
           },
@@ -577,15 +582,17 @@ export class FeishuStreamingSession {
     }
     const apiBase = resolveApiBase(this.creds.domain);
     this.state.sequence += 1;
+    const token = await getToken(this.creds, {
+      fetchImpl: this.fetchImpl,
+      lookupFn: this.lookupFn,
+    });
+    captureFeishuSendAuthority()?.();
     await fetchWithSsrFGuard({
       url: `${apiBase}/cardkit/v1/cards/${this.state.cardId}/elements/note/content`,
       init: {
         method: "PUT",
         headers: {
-          Authorization: `Bearer ${await getToken(this.creds, {
-            fetchImpl: this.fetchImpl,
-            lookupFn: this.lookupFn,
-          })}`,
+          Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
           "User-Agent": getFeishuUserAgent(),
         },
@@ -663,15 +670,17 @@ export class FeishuStreamingSession {
     this.state.sequence += 1;
     let closeError: unknown;
     try {
+      const token = await getToken(this.creds, {
+        fetchImpl: this.fetchImpl,
+        lookupFn: this.lookupFn,
+      });
+      captureFeishuSendAuthority()?.();
       const { response, release } = await fetchWithSsrFGuard({
         url: `${apiBase}/cardkit/v1/cards/${this.state.cardId}/settings`,
         init: {
           method: "PATCH",
           headers: {
-            Authorization: `Bearer ${await getToken(this.creds, {
-              fetchImpl: this.fetchImpl,
-              lookupFn: this.lookupFn,
-            })}`,
+            Authorization: `Bearer ${token}`,
             "Content-Type": "application/json; charset=utf-8",
             "User-Agent": getFeishuUserAgent(),
           },
@@ -758,6 +767,10 @@ export class FeishuStreamingSession {
       // A rejected clear leaves accepted text visible; preserve its receipt and failure.
       return this.closeWithResult("");
     }
+  }
+
+  getMessageId(): string | undefined {
+    return this.state?.messageId;
   }
 
   isActive(): boolean {

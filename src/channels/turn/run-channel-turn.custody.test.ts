@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setReplyPayloadMetadata, type ReplyPayload } from "../../auto-reply/reply-payload.js";
 import type { DispatchReplyWithDispatcher } from "../../auto-reply/reply/provider-dispatcher.types.js";
+import { createReplyDispatcher } from "../../auto-reply/reply/reply-dispatcher.js";
 import type { FinalizedMsgContext } from "../../auto-reply/templating.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { PlatformMessageNotDispatchedError } from "../../infra/outbound/deliver-types.js";
+import { createChannelProgressContinuation } from "../message/live.js";
+import type { ProgressContinuationReceipt } from "../progress-continuation.js";
 import { createDirectPendingFinalCustody } from "./direct-delivery-custody.js";
 import { dispatchRoutedChannelTurn } from "./lifecycle.js";
 
@@ -76,6 +79,75 @@ describe("channel turn failed-send custody", () => {
       state,
     }));
   });
+
+  it.each([true, false])(
+    "retains ordinary-channel progress only after accepted custody (accepted=%s)",
+    async (accepted) => {
+      const receipt: ProgressContinuationReceipt = {
+        channel: "test",
+        to: "room",
+        messageId: "progress-1",
+        text: "Worker is checking results",
+        snapshot: { lines: ["Worker is checking results"] },
+      };
+      const visible = new Map([[receipt.messageId, receipt.text]]);
+      const owned = new Set<string>();
+      let released = false;
+      const continuation = createChannelProgressContinuation({
+        prepareReceipt: async () => receipt,
+        releaseReceipt: () => {
+          released = true;
+        },
+        discardPending: async () => {},
+      });
+      const payload = setReplyPayloadMetadata(
+        { text: "Waiting for the worker" },
+        {
+          progressContinuation: {
+            adopt: async (confirmed) => {
+              if (accepted) {
+                owned.add(confirmed.messageId);
+              }
+              return accepted;
+            },
+            close: () => {},
+          },
+        },
+      );
+      const dispatch: DispatchReplyWithDispatcher = async (params) => {
+        const dispatcher = createReplyDispatcher(params.dispatcherOptions);
+        dispatcher.sendFinalReply(payload);
+        dispatcher.markComplete();
+        const settledReceipt = (await dispatcher.waitForIdle()) || undefined;
+        return { queuedFinal: true, counts: { tool: 0, block: 0, final: 1 }, settledReceipt };
+      };
+      dispatchReplyWithRoutedChannelDispatcherCore.mockImplementationOnce(dispatch);
+      await dispatchRoutedChannelTurn({
+        cfg,
+        channel: "test",
+        route: { agentId: "main", sessionKey: "agent:main:test:peer" },
+        ctxPayload: createCtx(),
+        delivery: {
+          preparePayload: (current) => ({ ...current }),
+          deliver: async (current, info) => {
+            if (!(await continuation.adopt(current, info))) {
+              visible.set("final-1", current.text ?? "");
+            }
+            return { visibleReplySent: true };
+          },
+        },
+      });
+      await continuation.settle();
+      if (!released) {
+        visible.delete(receipt.messageId);
+      }
+
+      expect([...visible]).toEqual(
+        accepted ? [[receipt.messageId, receipt.text]] : [["final-1", payload.text]],
+      );
+      expect([...owned]).toEqual(accepted ? [receipt.messageId] : []);
+    },
+  );
 
   it("revalidates the session writer immediately before provider I/O", async () => {
     const sourcePayload = setReplyPayloadMetadata(

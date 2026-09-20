@@ -103,6 +103,62 @@ describe("createClickClackActivityPublisher", () => {
     expect(updateMessageBody).toHaveBeenLastCalledWith("msg_1", "");
   });
 
+  it("retracts a published commentary row when its prepared replacement is hidden", async () => {
+    const { client, createActivityMessage, updateMessageBody } = createClientMock();
+    const publisher = createClickClackActivityPublisher({
+      client,
+      target: { channelId: "chn_1" },
+      turnId: "msg_turn",
+    });
+    publisher.onItemEvent({
+      itemId: "commentary",
+      kind: "preamble",
+      phase: "end",
+      progressText: "Visible progress",
+    });
+    await publisher.finalize();
+    publisher.onItemEvent({
+      itemId: "commentary",
+      kind: "preamble",
+      phase: "end",
+      hideFromChannelProgress: true,
+      progressText: "Hidden replacement",
+    });
+    await publisher.finalize();
+    expect(updateMessageBody).toHaveBeenLastCalledWith("msg_1", "");
+    expect(JSON.stringify(createActivityMessage.mock.calls)).not.toContain("Hidden replacement");
+  });
+
+  it("discards staged commentary without losing its confirmed row or suppressing a later current snapshot", async () => {
+    const { client, createActivityMessage, updateMessageBody } = createClientMock();
+    const publisher = createClickClackActivityPublisher({
+      client,
+      target: { channelId: "chn_1" },
+      turnId: "msg_turn",
+    });
+    publisher.onItemEvent({
+      itemId: "commentary",
+      kind: "preamble",
+      phase: "end",
+      progressText: "Confirmed",
+    });
+    await publisher.finalize();
+    const replacement = {
+      itemId: "commentary",
+      kind: "preamble",
+      phase: "end" as const,
+      progressText: "Current replacement",
+    };
+    publisher.onItemEvent(replacement);
+    publisher.discardPendingItem("commentary");
+    await publisher.finalize();
+    expect(updateMessageBody).not.toHaveBeenCalled();
+    publisher.onItemEvent(replacement);
+    await publisher.finalize();
+    expect(createActivityMessage).toHaveBeenCalledOnce();
+    expect(updateMessageBody).toHaveBeenLastCalledWith("msg_1", "Current replacement");
+  });
+
   it("opens a new durable row for each commentary segment (item id)", async () => {
     const { client, createActivityMessage } = createClientMock();
     const publisher = createClickClackActivityPublisher({

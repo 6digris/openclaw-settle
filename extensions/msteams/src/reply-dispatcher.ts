@@ -5,6 +5,7 @@ import {
 } from "openclaw/plugin-sdk/channel-inbound";
 // Msteams plugin module implements reply dispatcher behavior.
 import {
+  createChannelProgressContinuation,
   normalizeAgentPlanSteps,
   resolveChannelPreviewStreamMode,
   resolveChannelStreamingBlockEnabled,
@@ -192,6 +193,28 @@ export function createMSTeamsReplyDispatcher(params: {
   // Wire the forward-declared gates used by sendTypingIndicator.
   streamActiveRef.current = () => streamController.isStreamActive();
   streamCanceledRef.current = () => streamController.wasCanceled();
+
+  const progressContinuation = createChannelProgressContinuation({
+    prepareReceipt: async (assertCurrent) => {
+      const conversationId = params.conversationRef.conversation?.id;
+      if (!conversationId) {
+        return undefined;
+      }
+      const receipt = await streamController.prepareProgressContinuation(assertCurrent);
+      return receipt
+        ? {
+            ...receipt,
+            channel: "msteams",
+            accountId: params.accountId,
+            to: `conversation:${conversationId}`,
+          }
+        : undefined;
+    },
+    releaseReceipt: streamController.releaseProgressContinuation,
+    discardPending: async () => {
+      await streamController.finalize();
+    },
+  });
 
   // Resolve block-streaming preference from the canonical nested config
   // (`streaming.mode = "block"` or `streaming.block.enabled = true`); legacy
@@ -441,9 +464,12 @@ export function createMSTeamsReplyDispatcher(params: {
   };
   const delivery: ChannelInboundTurnPlan["delivery"] = {
     observeMessageSent: true,
-    deliver: async (payload) => {
+    deliver: async (payload, info) => {
       if (pendingSettlement) {
         await pendingSettlement;
+      }
+      if (await progressContinuation.adopt(payload, info)) {
+        return { visibleReplySent: false, suppression: { reason: "no_visible_result" } };
       }
       const preparedPayload = streamController.preparePayload(payload);
       const native = streamController.claimNativeDelivery();
@@ -614,7 +640,10 @@ export function createMSTeamsReplyDispatcher(params: {
   return {
     dispatcherOptions: {
       ...dispatcherOptions,
-      onSettled: settleDelivery,
+      onSettled: async () => {
+        await progressContinuation.settle();
+        await settleDelivery();
+      },
     },
     delivery,
     replyOptions: {

@@ -1,4 +1,6 @@
 import Foundation
+import OpenClawChatUI
+import OpenClawKit
 import SwiftUI
 
 struct MobileBackgroundTask: Decodable, Identifiable, Equatable {
@@ -23,7 +25,12 @@ struct MobileBackgroundTask: Decodable, Identifiable, Equatable {
         }
     }
 
+    struct Execution: Decodable, Equatable {
+        let state: String
+    }
+
     let id: String
+    let runId: String?
     let status: String
     let runtime: String?
     let title: String?
@@ -38,7 +45,9 @@ struct MobileBackgroundTask: Decodable, Identifiable, Equatable {
     let progressSummary: String?
     let terminalSummary: String?
     let error: String?
-    let prompt: String?
+    var prompt: String?
+    let progress: OpenClawTaskProgress?
+    let execution: Execution?
 
     var displayTitle: String {
         self.title?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
@@ -53,8 +62,17 @@ struct MobileBackgroundTask: Decodable, Identifiable, Equatable {
     var statusLabel: String {
         switch self.status {
         case "queued": String(localized: "Queued")
-        case "running": String(localized: "Running")
+        case "running":
+            switch self.execution?.state {
+            case "running": String(localized: "Running")
+            case "queued": String(localized: "Queued")
+            case "waiting": String(localized: "Waiting")
+            case "finished": String(localized: "Finished")
+            default: String(localized: "Execution unknown")
+            }
         case "completed": String(localized: "Completed")
+        case "cancelled": String(localized: "Cancelled")
+        case "timed_out": String(localized: "Timed out")
         default: String(localized: "Failed")
         }
     }
@@ -70,6 +88,9 @@ struct MobileBackgroundTask: Decodable, Identifiable, Equatable {
     }
 
     var output: String? {
+        if self.isActive, let progress = self.progress {
+            return progress.items.last?.progressDisplayText
+        }
         let candidates = if self.status == "failed" || self.status == "timed_out" {
             [self.error, self.terminalSummary, self.lastActivity, self.progressSummary]
         } else {
@@ -108,6 +129,12 @@ private struct MobileBackgroundTaskGetParams: Encodable {
     let taskId: String
 }
 
+private struct MobileBackgroundTaskEvent: Decodable {
+    let action: String
+    let task: MobileBackgroundTask?
+    let taskId: String?
+}
+
 enum MobileBackgroundTaskList {
     @MainActor
     static func load(
@@ -131,11 +158,7 @@ enum MobileBackgroundTaskList {
                 byId[task.id] = task
                 continue
             }
-            if task.activityMilliseconds > current.activityMilliseconds ||
-                (task.activityMilliseconds == current.activityMilliseconds && !task.isActive)
-            {
-                byId[task.id] = task
-            }
+            byId[task.id] = self.newest(task, replacing: current)
         }
         return byId.values.sorted {
             if $0.activityMilliseconds != $1.activityMilliseconds {
@@ -143,6 +166,22 @@ enum MobileBackgroundTaskList {
             }
             return $0.id < $1.id
         }
+    }
+
+    static func newest(_ task: MobileBackgroundTask, replacing current: MobileBackgroundTask) -> MobileBackgroundTask {
+        if task.activityMilliseconds > current.activityMilliseconds { return task }
+        if task.activityMilliseconds < current.activityMilliseconds { return current }
+        if task.isActive != current.isActive { return task.isActive ? current : task }
+        guard task.isActive else { return current }
+        if task.status == "running", current.status == "queued" { return task }
+        if task.status == "queued", current.status == "running" { return current }
+        if task.runId == current.runId,
+           let incoming = task.progress, let previous = current.progress,
+           incoming.revision != previous.revision
+        {
+            return incoming.revision > previous.revision ? task : current
+        }
+        return current
     }
 }
 
@@ -153,6 +192,12 @@ struct BackgroundTasksScreen: View {
     @State private var tasks: [MobileBackgroundTask] = []
     @State private var loading = true
     @State private var errorMessage: String?
+    @State private var route: GatewayNodeSessionRoute?
+    @State private var requestID: UInt64 = 0
+
+    private var observationID: String {
+        "\(self.appModel.chatViewModelIdentityID)|\(self.appModel.operatorAuthorityGeneration)|\(self.agentID)"
+    }
 
     private var activeTasks: [MobileBackgroundTask] {
         self.tasks.filter(\.isActive)
@@ -236,12 +281,13 @@ struct BackgroundTasksScreen: View {
                 }
             }
         }
-        .task { await self.loadTasks() }
+        .id(self.observationID)
+        .task(id: self.observationID) { await self.observeTasks() }
     }
 
     private func taskLink(_ task: MobileBackgroundTask) -> some View {
         NavigationLink {
-            BackgroundTaskDetailScreen(task: task)
+            BackgroundTaskDetailScreen(task: task, route: self.route)
         } label: {
             VStack(alignment: .leading, spacing: 7) {
                 Text(task.displayTitle)
@@ -279,34 +325,66 @@ struct BackgroundTasksScreen: View {
     }
 
     @MainActor
+    private func observeTasks() async {
+        self.tasks = []
+        let observationID = self.observationID
+        let route = await self.appModel.operatorSession.currentRoute()
+        guard !Task.isCancelled, observationID == self.observationID else { return }
+        self.route = route
+        let subscription = await self.appModel.operatorSession.makeServerEventSubscription {
+            $0.event == "task"
+        }
+        defer { subscription.cancel() }
+        await self.loadTasks()
+        for await event in subscription.events {
+            guard !Task.isCancelled, let route, observationID == self.observationID,
+                  await self.appModel.operatorSession.currentRoute() == route
+            else { return }
+            guard let payload = event.payload,
+                  let change = try? GatewayPayloadDecoding.decode(payload, as: MobileBackgroundTaskEvent.self)
+            else { continue }
+            self.requestID &+= 1
+            self.loading = false
+            switch change.action {
+            case "upserted":
+                guard let task = change.task, task.agentId == self.agentID else { continue }
+                self.tasks = MobileBackgroundTaskList.merge(recent: [task], active: self.tasks)
+            case "deleted":
+                self.tasks.removeAll { $0.id == change.taskId }
+            case "restored":
+                self.tasks = []
+                await self.loadTasks()
+            default:
+                break
+            }
+        }
+    }
+
+    @MainActor
     private func loadTasks() async {
+        self.requestID &+= 1
+        let requestID = self.requestID
+        let observationID = self.observationID
         self.loading = true
         self.errorMessage = nil
         do {
-            self.tasks = try await MobileBackgroundTaskList.load { status, limit in
-                try await self.requestTasks(status: status, limit: limit)
+            guard let route = self.route else { throw CancellationError() }
+            let tasks = try await MobileBackgroundTaskList.load { status, limit in
+                let params = MobileBackgroundTasksListParams(agentId: self.agentID, status: status, limit: limit)
+                let data = try await self.appModel.operatorSession.request(
+                    method: "tasks.list",
+                    paramsJSON: String(decoding: JSONEncoder().encode(params), as: UTF8.self),
+                    timeoutSeconds: 12,
+                    ifCurrentRoute: route)
+                return try JSONDecoder().decode(MobileBackgroundTasksEnvelope.self, from: data).tasks
             }
+            guard !Task.isCancelled, observationID == self.observationID, requestID == self.requestID else { return }
+            self.tasks = tasks.filter { $0.agentId == nil || $0.agentId == self.agentID }
         } catch {
+            guard !Task.isCancelled, observationID == self.observationID, requestID == self.requestID else { return }
             self.errorMessage = error.localizedDescription
         }
         self.loading = false
-    }
-
-    private func requestTasks(status: [String]?, limit: Int) async throws -> [MobileBackgroundTask] {
-        let params = MobileBackgroundTasksListParams(agentId: self.agentID, status: status, limit: limit)
-        let data = try await self.request(method: "tasks.list", params: params)
-        return try JSONDecoder().decode(MobileBackgroundTasksEnvelope.self, from: data).tasks
-    }
-
-    private func request(method: String, params: some Encodable) async throws -> Data {
-        let payload = try JSONEncoder().encode(params)
-        guard let paramsJSON = String(data: payload, encoding: .utf8) else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
-        return try await self.appModel.operatorSession.request(
-            method: method,
-            paramsJSON: paramsJSON,
-            timeoutSeconds: 12)
     }
 }
 
@@ -315,12 +393,32 @@ private struct BackgroundTaskDetailScreen: View {
     @State private var task: MobileBackgroundTask
     @State private var loading = true
     @State private var errorMessage: String?
+    @State private var unavailable = false
+    private let route: GatewayNodeSessionRoute?
 
-    init(task: MobileBackgroundTask) {
+    init(task: MobileBackgroundTask, route: GatewayNodeSessionRoute?) {
         self._task = State(initialValue: task)
+        self.route = route
     }
 
     var body: some View {
+        Group {
+            if self.unavailable {
+                ContentUnavailableView(
+                    "Task unavailable",
+                    systemImage: "clock.arrow.circlepath",
+                    description: Text(self.errorMessage ?? String(localized: "This task is no longer available."))
+                        .font(OpenClawType.body))
+            } else {
+                self.taskContent
+            }
+        }
+        .navigationTitle("Task Details")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await self.observeTask() }
+    }
+
+    private var taskContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 7) {
@@ -331,6 +429,9 @@ private struct BackgroundTaskDetailScreen: View {
                         Text(self.task.runtimeLabel)
                             .font(OpenClawType.caption)
                             .foregroundStyle(.secondary)
+                    }
+                    if let progress = self.task.progress, !progress.items.isEmpty {
+                        OpenClawTaskProgressView(progress: progress)
                     }
                 }
                 self.detailBlock(
@@ -350,9 +451,6 @@ private struct BackgroundTaskDetailScreen: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(20)
         }
-        .navigationTitle("Task Details")
-        .navigationBarTitleDisplayMode(.inline)
-        .task { await self.loadDetail() }
     }
 
     private func detailBlock(title: String, body: String) -> some View {
@@ -371,9 +469,46 @@ private struct BackgroundTaskDetailScreen: View {
     }
 
     @MainActor
+    private func observeTask() async {
+        let subscription = await self.appModel.operatorSession.makeServerEventSubscription {
+            $0.event == "task"
+        }
+        defer { subscription.cancel() }
+        await self.loadDetail()
+        for await event in subscription.events {
+            guard !Task.isCancelled, let route = self.route,
+                  await self.appModel.operatorSession.currentRoute() == route
+            else { return }
+            guard let payload = event.payload,
+                  let change = try? GatewayPayloadDecoding.decode(payload, as: MobileBackgroundTaskEvent.self)
+            else { continue }
+            if change.action == "deleted", change.taskId == self.task.id {
+                self.unavailable = true
+                // Deletion hides the record, not the view's registry observation.
+                continue
+            }
+            if change.action == "restored" {
+                self.unavailable = true
+                await self.loadDetail()
+            } else if let task = change.task, task.id == self.task.id {
+                if self.unavailable {
+                    await self.loadDetail()
+                    continue
+                }
+                var updated = MobileBackgroundTaskList.newest(self.task, replacing: task)
+                // List/event summaries omit the bounded prompt returned by tasks.get.
+                updated.prompt = updated.prompt ?? self.task.prompt
+                self.task = updated
+            }
+        }
+    }
+
+    @MainActor
     private func loadDetail() async {
         self.loading = true
+        self.errorMessage = nil
         do {
+            guard let route = self.route else { throw CancellationError() }
             let params = MobileBackgroundTaskGetParams(taskId: self.task.id)
             let payload = try JSONEncoder().encode(params)
             guard let paramsJSON = String(data: payload, encoding: .utf8) else {
@@ -382,9 +517,13 @@ private struct BackgroundTaskDetailScreen: View {
             let data = try await self.appModel.operatorSession.request(
                 method: "tasks.get",
                 paramsJSON: paramsJSON,
-                timeoutSeconds: 12)
+                timeoutSeconds: 12,
+                ifCurrentRoute: route)
+            guard !Task.isCancelled else { return }
             self.task = try JSONDecoder().decode(MobileBackgroundTaskEnvelope.self, from: data).task
+            self.unavailable = false
         } catch {
+            guard !Task.isCancelled else { return }
             self.errorMessage = error.localizedDescription
         }
         self.loading = false

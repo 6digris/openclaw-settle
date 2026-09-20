@@ -45,13 +45,24 @@ export function createSlackStreamingDeliveryRuntime(setup: SlackDispatchSetup) {
     slackMessageMetadata,
     slackStreamFallbackTeamId,
   } = setup;
-  const state = {
-    streamSession: null as SlackStreamSession | null,
-    nativeProgressStreamStartPromise: null as Promise<SlackStreamSession | null> | null,
-    nativeProgressStreamThreadTs: undefined as string | undefined,
+  const state: {
+    streamSession: SlackStreamSession | null;
+    nativeProgressStreamStartPromise: Promise<SlackStreamSession | null> | null;
+    nativeProgressStreamThreadTs: string | undefined;
+    assertProgressCurrent: (() => void) | undefined;
+    streamFailed: boolean;
+    usedReplyThreadTs: string | undefined;
+    usedBlockReplyThreadTs: string | undefined;
+    observedReplyDelivery: boolean;
+    observedFinalReplyDelivery: boolean;
+  } = {
+    streamSession: null,
+    nativeProgressStreamStartPromise: null,
+    nativeProgressStreamThreadTs: undefined,
+    assertProgressCurrent: undefined,
     streamFailed: false,
-    usedReplyThreadTs: undefined as string | undefined,
-    usedBlockReplyThreadTs: undefined as string | undefined,
+    usedReplyThreadTs: undefined,
+    usedBlockReplyThreadTs: undefined,
     observedReplyDelivery: false,
     observedFinalReplyDelivery: false,
   };
@@ -338,6 +349,9 @@ export function createSlackStreamingDeliveryRuntime(setup: SlackDispatchSetup) {
         session = await startSlackStream({
           client: slackClient,
           clientOptions: slackClientOptions,
+          ...(params.taskDisplayMode === "plan"
+            ? { assertCurrent: () => state.assertProgressCurrent?.() }
+            : {}),
           channel: message.channel,
           threadTs,
           text,

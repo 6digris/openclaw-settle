@@ -458,6 +458,7 @@ export async function sendSingleTextMessageMatrix(
     extraContent?: MatrixExtraContentFields;
     /** When true, marks the message as a live/streaming update (MSC4357). */
     live?: boolean;
+    assertCurrent?: () => void;
   },
 ): Promise<MatrixSendResult> {
   const {
@@ -486,6 +487,7 @@ export async function sendSingleTextMessageMatrix(
       client: opts.client,
       cfg: opts.cfg,
       accountId: opts.accountId,
+      assertDirectAdapterHandoff: opts.assertCurrent,
     },
     async (client) => {
       const resolvedRoom = await resolveMatrixRoomId(client, roomId);
@@ -511,6 +513,9 @@ export async function sendSingleTextMessageMatrix(
         (content as Record<string, unknown>)[MSC4357_LIVE_KEY] = {};
       }
       const eventId = await client.sendMessage(resolvedRoom, content);
+      if (!eventId) {
+        throw new Error("Matrix single-message send returned no event ID");
+      }
       const replyToId = resolveMatrixReplyToEventId(content);
       return {
         messageId: eventId ?? "unknown",
@@ -544,6 +549,8 @@ export async function editMessageMatrix(
     extraContent?: MatrixExtraContentFields;
     /** When true, marks the edit as a live/streaming update (MSC4357). */
     live?: boolean;
+    assertCurrent?: () => void;
+    preserveMsgtype?: boolean;
   },
 ): Promise<string> {
   return await withResolvedMatrixSendClient(
@@ -552,6 +559,7 @@ export async function editMessageMatrix(
       cfg: opts.cfg,
       accountId: opts.accountId,
       timeoutMs: opts.timeoutMs,
+      assertDirectAdapterHandoff: opts.assertCurrent,
     },
     async (client) => {
       const resolvedRoom = await resolveMatrixRoomId(client, roomId);
@@ -561,9 +569,17 @@ export async function editMessageMatrix(
         accountId: opts.accountId,
         preserveWhitespace: true,
       });
+      const threadId = normalizeThreadId(opts.threadId);
+      const previousEvent =
+        opts.includeMentions !== false || threadId || opts.preserveMsgtype
+          ? ((await client.getEvent(resolvedRoom, originalEventId)) as MatrixRawEvent)
+          : null;
       const newContent = withMatrixExtraContentFields(
         buildTextContent(convertedText, undefined, {
-          msgtype: opts.msgtype,
+          msgtype:
+            opts.preserveMsgtype && previousEvent?.content?.msgtype === MsgType.Notice
+              ? MsgType.Notice
+              : opts.msgtype,
         }),
         opts.extraContent,
       );
@@ -575,11 +591,6 @@ export async function editMessageMatrix(
         includeMentions: opts.includeMentions,
         tableMode,
       });
-      const threadId = normalizeThreadId(opts.threadId);
-      const previousEvent =
-        opts.includeMentions !== false || threadId
-          ? ((await client.getEvent(resolvedRoom, originalEventId)) as MatrixRawEvent)
-          : null;
       const replaceMentions =
         opts.includeMentions === false
           ? undefined
@@ -628,6 +639,7 @@ export async function editMessageMatrix(
         (content["m.new_content"] as Record<string, unknown>)[MSC4357_LIVE_KEY] = {};
       }
 
+      opts.assertCurrent?.();
       const eventId = await client.sendMessage(resolvedRoom, content);
       return eventId ?? "";
     },

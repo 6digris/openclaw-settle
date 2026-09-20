@@ -612,6 +612,7 @@ public enum OpenClawChatTransportUpgradeMessage {
 
 public enum OpenClawChatRunTerminalState: Sendable, Equatable {
     case completed
+    case yielded
     case failed(message: String)
 }
 
@@ -637,7 +638,7 @@ public enum OpenClawChatRunObservation: Sendable, Equatable {
             return .checkAgain
         }
         if ["ok", "completed", "success", "succeeded"].contains(status) {
-            return .terminal(.completed)
+            return .terminal(yielded == true ? .yielded : .completed)
         }
         if [
             "error", "failed", "aborted", "cancelled", "canceled", "killed", "timed_out",

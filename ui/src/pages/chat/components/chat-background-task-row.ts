@@ -1,19 +1,17 @@
-import { html, nothing, type TemplateResult } from "lit";
+import { isActiveTask, taskTimestampMs, type TaskSummary } from "@openclaw/gateway-client/browser";
 import "../../../components/elapsed-time.ts";
-import { icons } from "../../../components/icons.ts";
+import { html, nothing, type TemplateResult } from "lit";
 import "../../../components/tooltip.ts";
+import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
 import { registerBackgroundTasksEnglish } from "../../../i18n/locales/en-background-tasks.ts";
 import { formatMs, formatRelativeTimestamp } from "../../../lib/format.ts";
 import {
-  isActiveTask,
   taskDetail,
   taskFinishedDuration,
   taskRuntimeLabel,
-  taskTimestampMs,
   taskTitle,
 } from "../../../lib/tasks/data.ts";
-import type { TaskSummary } from "../../../lib/tasks/task-summary.ts";
 import {
   backgroundTaskDeliveryLabel,
   backgroundTaskIsExecuting,
@@ -46,7 +44,11 @@ function taskDisplayFacts(task: TaskSummary): TaskDisplayFacts {
   };
 }
 
-function renderTaskMeta(task: TaskSummary, facts: TaskDisplayFacts): TemplateResult {
+function renderTaskMeta(
+  task: TaskSummary,
+  facts: TaskDisplayFacts,
+  connected: boolean,
+): TemplateResult {
   const tone = STATUS_TONES[task.status];
   return html`
     <div class="chat-tasks-rail__task-meta">
@@ -56,7 +58,7 @@ function renderTaskMeta(task: TaskSummary, facts: TaskDisplayFacts): TemplateRes
       <span class="chat-tasks-rail__task-sep" aria-hidden="true">·</span>
       <span>${taskRuntimeLabel(task)}</span>
       ${
-        facts.active && facts.startedMs > 0
+        connected && facts.active && facts.startedMs > 0
           ? html`<span class="chat-tasks-rail__task-sep" aria-hidden="true">·</span>
               <span
                 ><openclaw-elapsed-time .startMs=${facts.startedMs}></openclaw-elapsed-time
@@ -129,7 +131,7 @@ export function renderTaskRow(task: TaskSummary, props: BackgroundTasksProps): T
           @click=${() => props.onOpenTaskDetail?.(task)}
         >
           ${
-            backgroundTaskIsExecuting(task)
+            props.connected && backgroundTaskIsExecuting(task)
               ? html`<span class="chat-tasks-rail__task-pulse" aria-hidden="true"></span>`
               : nothing
           }
@@ -160,7 +162,7 @@ export function renderTaskRow(task: TaskSummary, props: BackgroundTasksProps): T
             : nothing
         }
       </div>
-      ${renderTaskMeta(task, facts)}
+      ${renderTaskMeta(task, facts, props.connected)}
       ${delivery ? html`<div class="chat-tasks-rail__task-detail">${delivery}</div>` : nothing}
       ${detail ? html`<div class="chat-tasks-rail__task-detail">${detail}</div>` : nothing}
     </div>

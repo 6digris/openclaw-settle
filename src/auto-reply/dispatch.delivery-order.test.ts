@@ -1,4 +1,5 @@
 /** Tests foreground reply delivery ordering for buffered inbound dispatch. */
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -92,6 +93,7 @@ function dispatchWithDeliveries(
     beforeDeliverOptions?: ReplyDispatchBeforeDeliverOptions;
     deliver?: (payload: ReplyPayload, info: { kind: Delivery["kind"] }) => Promise<object | void>;
     onBeforeDeliverCancelled?: (payload: ReplyPayload, info: { kind: Delivery["kind"] }) => void;
+    onIdle?: () => void | Promise<void>;
     onSettled?: () => object | void | Promise<object | void>;
     onFreshSettledDelivery?: () => object | void | Promise<object | void>;
   } = {},
@@ -119,6 +121,71 @@ describe("foreground reply delivery order", () => {
   afterEach(() => {
     resetGlobalHookRunner();
   });
+
+  it.each(["success", "resolver-error"] as const)(
+    "joins late native settlement before returning from a no-payload %s turn",
+    async (outcome) => {
+      const idleEntered = createDeferred();
+      const releaseIdle = createDeferred();
+      const settlementEntered = createDeferred();
+      const releaseSettlement = createDeferred();
+      const resolverError = new Error("resolver failed");
+      const settlementError = new Error("native settlement failed");
+      const onSettled = vi.fn(async () => {
+        settlementEntered.resolve();
+        await releaseSettlement.promise;
+        if (outcome === "resolver-error") {
+          throw settlementError;
+        }
+      });
+      hoisted.dispatchReplyFromConfigMock.mockImplementationOnce(async () => {
+        if (outcome === "resolver-error") {
+          throw resolverError;
+        }
+        return expectedNoQueuedReplyResult();
+      });
+      let returned = false;
+      const dispatch = dispatchWithDeliveries(buildForegroundCtx(), [], {
+        onIdle: async () => {
+          idleEntered.resolve();
+          await releaseIdle.promise;
+        },
+        onSettled,
+      });
+      const completion = dispatch.then(
+        (value) => {
+          returned = true;
+          return { value, error: undefined };
+        },
+        (error: unknown) => {
+          returned = true;
+          return { value: undefined, error };
+        },
+      );
+      try {
+        await idleEntered.promise;
+        await nextTurn();
+        expect(returned).toBe(false);
+        releaseIdle.resolve();
+        await settlementEntered.promise;
+        await nextTurn();
+        expect(returned).toBe(false);
+        releaseSettlement.resolve();
+        const result = await completion;
+        if (outcome === "resolver-error") {
+          expect(result.error).toBe(resolverError);
+        } else {
+          expect(result.value).toMatchObject(expectedNoQueuedReplyResult());
+        }
+        expect(onSettled).toHaveBeenCalledOnce();
+      } finally {
+        releaseIdle.resolve();
+        releaseSettlement.resolve();
+        await completion;
+        await nextTurn();
+      }
+    },
+  );
 
   it("delivers same-target foreground finals once in inbound order", async () => {
     const deliveries: Delivery[] = [];

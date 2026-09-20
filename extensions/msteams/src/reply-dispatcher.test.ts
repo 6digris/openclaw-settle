@@ -2,10 +2,14 @@
 import { projectAgentToolActivity } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { PlatformMessageNotDispatchedError } from "openclaw/plugin-sdk/error-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import { createReplyDispatcher } from "openclaw/plugin-sdk/reply-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReplyPayload } from "../runtime-api.js";
-import { createStreamMock, type StreamMock } from "./reply-dispatcher.test-support.js";
+import {
+  assertProgressFinalSettlement,
+  assertProgressHandoffSettlement,
+  createStreamMock,
+  type StreamMock,
+} from "./reply-dispatcher.test-support.js";
 
 const createChannelMessageReplyPipelineMock = vi.hoisted(() => vi.fn());
 const getMSTeamsRuntimeMock = vi.hoisted(() => vi.fn());
@@ -935,48 +939,18 @@ describe("createMSTeamsReplyDispatcher", () => {
     });
   });
 
+  it("joins the confirmed progress handoff before teardown and never sends the waiting final", async () => {
+    const teams = createDispatcher("personal", { streaming: { mode: "progress" } });
+    await assertProgressHandoffSettlement(teams, getStreamMock(), sendMSTeamsMessagesMock);
+  });
+
   it("preserves both progress finals through real dispatcher settlement", async () => {
     renderReplyPayloadsToMessagesMock.mockImplementation((payloads) =>
       payloads.flatMap((payload) => (payload.text ? [{ text: payload.text }] : [])),
     );
     sendMSTeamsMessagesMock.mockResolvedValue(["block-result"]);
     const teams = createDispatcher("personal", { streaming: { mode: "progress" } });
-    const deliveries: Array<Awaited<ReturnType<typeof teams.delivery.deliver>>> = [];
-    const events: string[] = [];
-    const producer = createReplyDispatcher({
-      deliver: async (payload, info) => {
-        events.push(`deliver:${payload.text}`);
-        const result = await teams.delivery.deliver(payload, info);
-        deliveries.push(result);
-        return result;
-      },
-      onIdle: async () => {
-        events.push("settle");
-        await teams.dispatcherOptions.onSettled?.();
-      },
-    });
-    producer.sendFinalReply({ text: "First distinct result." });
-    producer.sendFinalReply({ text: "# Second distinct result" });
-    producer.markComplete();
-    await producer.waitForIdle();
-    const results = await Promise.all(
-      deliveries.map((result) => Promise.resolve(result?.finalization ?? result)),
-    );
-    expect(events).toEqual([
-      "deliver:First distinct result.",
-      "deliver:# Second distinct result",
-      "settle",
-    ]);
-    for (const text of ["First distinct result.", "Second distinct result"]) {
-      expect(results).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            visibleReplySent: true,
-            content: expect.stringContaining(text),
-          }),
-        ]),
-      );
-    }
+    await assertProgressFinalSettlement(teams);
   });
 
   it.each(["close", "fallback"])("joins an active native %s before later blocks", async (phase) => {

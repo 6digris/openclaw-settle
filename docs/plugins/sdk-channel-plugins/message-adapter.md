@@ -101,6 +101,47 @@ Omit this option for existing plugins that use raw callbacks. Their arguments,
 detail mode, custom line builder, and terminal command/patch rendering remain
 supported. This is an adapter capability, not a user configuration setting.
 
+### Progress after requester yield
+
+Use `createChannelProgressContinuation(...)` from
+`openclaw/plugin-sdk/channel-outbound` to transfer an existing progress surface
+to the core task presenter. Do not duplicate adoption, settlement, or cleanup
+policy in each channel.
+
+Its `ChannelProgressContinuationOptions` describe the transport-specific work:
+
+- `prepareReceipt(assertCurrent)` drains the prepared generation and returns a
+  `ProgressContinuationReceipt` only after confirming the platform message,
+  published text, and matching compositor snapshot. Recheck `assertCurrent`
+  after asynchronous preparation and immediately before platform writes.
+- `releaseReceipt(receipt)` synchronously detaches that exact generation from
+  local cleanup. It must not throw or detach a later generation.
+- `discardPending()` joins pending work on the detached transport without
+  deleting the adopted message.
+- Optional `assertCurrent()` adds the adapter's own currentness check to the
+  delivery authority supplied by core.
+
+A receipt contains `channel`, `to`, `messageId`, `text`, and `snapshot`, plus
+optional `accountId` and `threadId`. It carries data and positive platform
+evidence, never a retained transport callback.
+
+Call the returned `ChannelProgressContinuation.adopt(payload, info)` from
+`delivery.deliver`, not `beforeDeliver`: core attaches the continuation
+capability after preparation. Only a positive acknowledgement transfers
+ownership. A declined or unconfirmed receipt leaves ordinary delivery intact;
+media, control, interactive, and error replies retain their normal paths.
+
+Before retargeting or cleaning up the controller, stop admitting deliveries and
+await `settle()`, including on cancellation or failure. An accepted transfer
+remains accepted even if authority closes or transport retirement fails
+afterward; the released generation must not return to local deletion. Settlement
+does not prevent a later turn from adopting another generation.
+
+The registered edit action renders the host-provided `progressSnapshot` using
+the channel's normal formatter and fresh write authority. Never take that
+snapshot from model-controlled action parameters. Channels without a confirmed
+editable surface keep their existing typing or final-delivery behavior.
+
 ### Quiet acknowledgement and coalesced progress
 
 `createStatusReactionController({ presentation: "acknowledgement", ... })`

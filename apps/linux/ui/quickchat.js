@@ -265,6 +265,9 @@ const elements = {
   replyText: document.querySelector("#reply-text"),
   replyThinking: document.querySelector("#reply-thinking"),
   replyWidgets: document.querySelector("#reply-widgets"),
+  replyTasks: document.querySelector("#reply-tasks"),
+  replyProgressCard: document.querySelector("#reply-progress-card"),
+  replyProgressStatus: document.querySelector("#reply-progress-status"),
   send: document.querySelector("#send"),
   sendIcon: document.querySelector("#send-icon"),
   shortcutCapture: document.querySelector("#shortcut-capture"),
@@ -280,6 +283,7 @@ const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 let agents = [];
 let activeIdentity = { id: "", name: "Agent", isDefault: true };
 let selectingAgent = false;
+let agentSelectionSequence = 0;
 let sending = false;
 let accepted = false;
 let hiding = false;
@@ -308,6 +312,7 @@ let menuIndex = 0;
 let capturingShortcut = false;
 let activeReply = null;
 let pendingChatEvents = [];
+let sessionProgress = null;
 
 const MAX_PENDING_CHAT_EVENTS = 64;
 
@@ -374,6 +379,13 @@ function setGatewayState(payload) {
   if (ownerChanged || gatewayState !== "up") {
     gatewayDisconnectSequence += 1;
     terminalizeDisconnectedReply();
+    if (sessionProgress) {
+      sessionProgress.tasksRead = null;
+      sessionProgress.cardRequest += 1;
+      sessionProgress.tasks = [];
+      if (ownerChanged) sessionProgress = null;
+    }
+    renderSessionProgress();
   }
   renderStatus();
   updateSendButton();
@@ -382,6 +394,10 @@ function setGatewayState(payload) {
   }
   if (gatewayState === "up" && (!wasUp || ownerChanged)) {
     void refreshAgents();
+    if (sessionProgress) {
+      void refreshTasks();
+      void refreshProgressCard();
+    }
   }
 }
 
@@ -446,6 +462,8 @@ function clearReply() {
   elements.replyWidgets.replaceChildren();
   elements.replyWidgets.hidden = true;
   elements.replyThinking.hidden = true;
+  sessionProgress = null;
+  renderSessionProgress();
   scheduleWidgetSync();
 }
 
@@ -736,6 +754,186 @@ function updateReplyWidgets(message) {
   }
 }
 
+function progressOwnerIsCurrent(owner) {
+  return sessionProgress === owner && owner.gatewayGeneration === gatewayGeneration &&
+    gatewayState === "up";
+}
+
+function sessionRead(owner, method) {
+  return invoke("quickchat_session_read", {
+    method,
+    target: owner.target,
+    gatewayGeneration: owner.gatewayGeneration,
+  });
+}
+
+function newestTaskObservation(current, incoming) {
+  // Canonical task identity survives physical progress.runId replacement. Only
+  // reconnect/restore resets the owner's revision epoch, not activity timestamps.
+  return current?.runId === incoming.runId && current?.progress && incoming.progress &&
+    incoming.progress.revision < current.progress.revision ? current : incoming;
+}
+
+async function refreshTasks(discoveredIds = []) {
+  const owner = sessionProgress;
+  if (!owner || !progressOwnerIsCurrent(owner) || owner.tasksRead) return;
+  const read = { events: new Map(), discoveredIds: new Set(discoveredIds) };
+  owner.tasksRead = read;
+  const undiscoveredIds = [];
+  try {
+    const result = await sessionRead(owner, "tasks.list");
+    if (!progressOwnerIsCurrent(owner) || owner.tasksRead !== read) return;
+    const previousTasks = new Map();
+    for (const task of owner.tasks) previousTasks.set(task.id, task);
+    const snapshotIds = new Set();
+    const tasks = [];
+    for (const task of result.tasks) {
+      snapshotIds.add(task.id);
+      const event = read.events.get(task.id);
+      if (event?.action === "deleted") continue;
+      // The scoped list owns membership; an event from a moved session cannot
+      // import that session's facts into an older list response.
+      if (event?.task && event.task.sessionKey !== task.sessionKey) continue;
+      const snapshot = event?.afterDelete
+        ? task : newestTaskObservation(previousTasks.get(task.id), task);
+      tasks.push(event?.task
+        ? (event.afterDelete ? event.task : newestTaskObservation(snapshot, event.task))
+        : snapshot);
+    }
+    for (const [taskId, event] of read.events) {
+      if (event.action === "upserted" && !snapshotIds.has(taskId) &&
+          !read.discoveredIds.has(taskId)) {
+        undiscoveredIds.push(taskId);
+      }
+    }
+    owner.tasks = tasks;
+    owner.moreTasks = Boolean(result.nextCursor);
+    owner.tasksError = "";
+    renderSessionProgress();
+  } catch (error) {
+    if (progressOwnerIsCurrent(owner) && owner.tasksRead === read) {
+      owner.tasksError = friendlyError(error, "Background tasks could not be loaded.");
+      renderSessionProgress();
+    }
+  } finally {
+    if (owner.tasksRead === read) {
+      owner.tasksRead = null;
+      // Publish this snapshot before discovering task IDs first seen during it.
+      // IDs already known before the next read cannot cause a retry loop.
+      if (undiscoveredIds.length) void refreshTasks(undiscoveredIds);
+    }
+  }
+}
+
+async function refreshProgressCard() {
+  const owner = sessionProgress;
+  if (!owner || !progressOwnerIsCurrent(owner)) return;
+  const request = ++owner.cardRequest;
+  try {
+    const result = await sessionRead(owner, "progressCard.get");
+    if (!progressOwnerIsCurrent(owner) || owner.cardRequest !== request) return;
+    owner.card = result.card;
+    owner.cardError = "";
+  } catch (error) {
+    if (!progressOwnerIsCurrent(owner) || owner.cardRequest !== request) return;
+    owner.cardError = friendlyError(error, "Session progress could not be loaded.");
+  }
+  renderSessionProgress();
+}
+
+function handleTaskEvent(payload) {
+  const owner = sessionProgress;
+  if (!owner || !progressOwnerIsCurrent(owner) ||
+      payload?.gatewayGeneration !== owner.gatewayGeneration) return;
+  if (payload.action === "restored") {
+    owner.tasksRead = null;
+    owner.tasks = [];
+    void refreshTasks();
+    renderSessionProgress();
+    return;
+  }
+  if (payload.action !== "upserted" && payload.action !== "deleted") return;
+  const taskId = payload.action === "upserted" ? payload.task.id : payload.taskId;
+  const index = owner.tasks.findIndex((task) => task.id === taskId);
+  if (payload.action === "upserted" && index !== -1 &&
+      payload.task.sessionKey === owner.tasks[index].sessionKey) {
+    owner.tasks[index] = newestTaskObservation(owner.tasks[index], payload.task);
+  } else if (payload.action === "deleted" && index !== -1) {
+    owner.tasks.splice(index, 1);
+  } else if (payload.action === "upserted") {
+    void refreshTasks([taskId]);
+  }
+  const pending = owner.tasksRead?.events;
+  if (pending) {
+    const previous = pending.get(taskId);
+    pending.set(taskId, payload.action === "deleted" ? { action: "deleted" } : {
+      action: "upserted",
+      task: previous?.action === "upserted"
+        ? newestTaskObservation(previous.task, payload.task) : payload.task,
+      afterDelete: previous?.action === "deleted" || previous?.afterDelete === true,
+    });
+  }
+  renderSessionProgress();
+}
+
+function handleProgressCardEvent(payload) {
+  const owner = sessionProgress;
+  if (!owner || !progressOwnerIsCurrent(owner) ||
+      payload?.gatewayGeneration !== owner.gatewayGeneration) return;
+  // The read owner resolves session aliases and agent scope; the event is only an invalidation.
+  if (payload.sessionKey === owner.target.sessionKey ||
+      payload.sessionKey === owner.card?.sessionKey || !owner.card) {
+    void refreshProgressCard();
+  }
+}
+
+function renderSessionProgress() {
+  const owner = sessionProgress;
+  elements.replyTasks.replaceChildren();
+  elements.replyTasks.hidden = !owner?.tasks.length;
+  for (const task of owner?.tasks ?? []) {
+    const row = document.createElement("div");
+    row.className = "reply-task";
+    const heading = document.createElement("strong");
+    const execution = ["queued", "running"].includes(task.status) ? task.execution?.state : undefined;
+    const state = execution === "waiting"
+      ? `waiting${task.execution.wait?.kind ? ` (${task.execution.wait.kind})` : ""}`
+      : (execution ?? task.status);
+    heading.textContent = `${task.title || task.id} — ${state}`;
+    row.append(heading);
+    const details = document.createElement("div");
+    const summary = task.terminalSummary || task.progressSummary || task.lastActivity;
+    const lines = summary ? [summary] : [];
+    for (const item of task.progress?.items ?? []) {
+      lines.push([item.title, item.status, item.progressText || item.summary || item.error]
+        .filter(Boolean).join(" — "));
+    }
+    if (task.deliveryStatus && task.deliveryStatus !== "not_applicable") {
+      lines.push(`Delivery: ${task.deliveryStatus}`);
+    }
+    details.textContent = lines.join("\n");
+    row.append(details);
+    elements.replyTasks.append(row);
+  }
+  const card = owner?.card;
+  elements.replyProgressCard.hidden = !card;
+  elements.replyProgressCard.textContent = [
+    card?.markdown,
+    ...(card?.steps ?? []).map((step) => `${step.status.replaceAll("_", " ")} — ${step.step}`),
+  ].filter(Boolean).join("\n");
+  elements.replyProgressStatus.textContent = [
+    owner && gatewayState !== "up" ? "Progress is offline; reconnecting…" : "",
+    owner?.tasksError,
+    owner?.cardError,
+    owner?.moreTasks ? "More tasks are available in the dashboard." : "",
+  ].filter(Boolean).join(" ");
+  if (activeReply?.yielded) {
+    elements.replyState.textContent = owner?.tasks.some((task) =>
+      ["queued", "running"].includes(task.status)) ? "Waiting for background work" : "Turn yielded";
+  }
+  if (activeReply?.widgets.length) scheduleWidgetSync();
+}
+
 function stopReplyThinking() {
   elements.replyThinking.hidden = true;
 }
@@ -770,6 +968,7 @@ function startReply(target, identity, runId) {
       agentId: typeof target.agentId === "string" ? target.agentId : null,
     },
     terminal: false,
+    yielded: false,
     text: null,
     widgets: [],
     activeWidgetKey: null,
@@ -786,6 +985,17 @@ function startReply(target, identity, runId) {
   renderAvatar(elements.replyAgentAvatar, identity);
   elements.replyAgentName.textContent = identity?.name?.trim() || "Agent";
   void invoke("quickchat_set_expanded", { expanded: true });
+  sessionProgress = {
+    target: activeReply.target,
+    gatewayGeneration: target.gatewayGeneration,
+    tasks: [],
+    card: null,
+    tasksRead: null,
+    cardRequest: 0,
+  };
+  renderSessionProgress();
+  void refreshTasks();
+  void refreshProgressCard();
 }
 
 function applyChatEvent(payload) {
@@ -827,7 +1037,9 @@ function applyChatEvent(payload) {
   stopReplyThinking();
   elements.reply.classList.add("is-terminal");
   if (payload.state === "final") {
-    elements.replyState.textContent = "Done";
+    activeReply.yielded = payload.yielded === true;
+    elements.replyState.textContent = activeReply.yielded ? "Turn yielded" : "Done";
+    renderSessionProgress();
   } else if (payload.state === "aborted") {
     activeReply.text = `${activeReply.text || ""}${activeReply.text ? "\n\n" : ""}(stopped)`;
     elements.replyState.textContent = "Stopped";
@@ -954,6 +1166,8 @@ async function selectAgent(agentId) {
   try {
     await invoke("quickchat_select_agent", { agentId });
     if (gatewayGeneration !== owner) return;
+    agentSelectionSequence += 1;
+    clearReply();
     await refreshIdentity(owner);
     if (gatewayGeneration !== owner) return;
     closePopover();
@@ -1198,6 +1412,7 @@ async function send(openDashboard) {
   const sendDisconnectSequence = gatewayDisconnectSequence;
   const sendVisibilitySequence = visibilitySequence;
   const sendGeneration = gatewayGeneration;
+  const sendAgentSelectionSequence = agentSelectionSequence;
   clearReply();
   pendingChatEvents = [];
   void invoke("quickchat_set_expanded", { expanded: false });
@@ -1218,6 +1433,11 @@ async function send(openDashboard) {
     }
     sending = false;
     sendError = "";
+    if (agentSelectionSequence !== sendAgentSelectionSequence) {
+      pendingChatEvents = [];
+      updateSendButton();
+      return;
+    }
     elements.input.value = "";
     if (visibilitySequence !== sendVisibilitySequence || hiding) {
       pendingChatEvents = [];
@@ -1247,7 +1467,8 @@ async function send(openDashboard) {
   } catch (error) {
     sending = false;
     pendingChatEvents = [];
-    if (visibilitySequence !== sendVisibilitySequence || hiding) {
+    if (visibilitySequence !== sendVisibilitySequence || hiding ||
+        agentSelectionSequence !== sendAgentSelectionSequence) {
       updateSendButton();
       return;
     }
@@ -1367,6 +1588,12 @@ await listen("quickchat:gateway-state", (event) => {
 });
 await listen("quickchat:chat-event", (event) => {
   handleChatEvent(event.payload);
+});
+await listen("quickchat:task-event", (event) => {
+  handleTaskEvent(event.payload);
+});
+await listen("quickchat:progress-card-event", (event) => {
+  handleProgressCardEvent(event.payload);
 });
 
 const readySequence = visibilitySequence;

@@ -3,8 +3,103 @@
  *
  * Tracks draft previews and converts them into finalized message receipts when possible.
  */
+import { isReplyPayloadTerminalContent } from "../../auto-reply/reply-payload.js";
+import type { ReplyDispatchRuntimeInfo } from "../../auto-reply/reply/reply-dispatcher.types.js";
 import { runBestEffortCleanup } from "../../infra/non-fatal-cleanup.js";
+import { resolveSendableOutboundReplyParts } from "../../infra/outbound/reply-payload-parts.js";
+import type { ReplyPayload } from "../../shared/reply-payload.types.js";
+import type { ProgressContinuationReceipt } from "../progress-continuation.js";
 import type { LiveMessageState, MessageReceipt, RenderedMessageBatch } from "./types.js";
+
+export type ChannelProgressContinuationOptions = {
+  /**
+   * Quiesce this generation's compositor/transport and return only confirmed,
+   * matching message text, snapshot, and route. Recheck authority after awaits
+   * and before provider I/O. An unknown receipt returns undefined.
+   */
+  prepareReceipt: (assertCurrent: () => void) => Promise<ProgressContinuationReceipt | undefined>;
+  /** Synchronously detach exactly the prepared generation from local cleanup; must not throw. */
+  releaseReceipt: (receipt: ProgressContinuationReceipt) => void;
+  /** Discard pending work on the prepared transport, never a replacement generation. */
+  discardPending: () => Promise<void>;
+  assertCurrent?: () => void;
+};
+
+export type ChannelProgressContinuation = {
+  adopt: (payload: ReplyPayload, info: ReplyDispatchRuntimeInfo) => Promise<boolean>;
+  settle: () => Promise<void>;
+};
+
+/**
+ * Transfers an existing progress receipt through the waiting final's capability.
+ *
+ * Call adopt from deliver, not beforeDeliver: the dispatcher injects the
+ * capability only after that hook. A false result leaves ordinary final
+ * delivery/cleanup with the adapter. Before cleanup, stop admitting deliveries
+ * and await settle, including on cancellation or failure. Neither settlement
+ * nor a successful handoff disables adoption for a later parent turn.
+ */
+export function createChannelProgressContinuation(
+  params: ChannelProgressContinuationOptions,
+): ChannelProgressContinuation {
+  let pending: Promise<void> = Promise.resolve();
+  const ignoreResult = () => undefined;
+
+  return {
+    adopt(payload, info) {
+      const adopt = info.adoptProgressContinuation;
+      if (
+        info.kind !== "final" ||
+        typeof adopt !== "function" ||
+        payload.isError === true ||
+        !isReplyPayloadTerminalContent(payload) ||
+        payload.interactive !== undefined ||
+        payload.presentation !== undefined ||
+        payload.channelData !== undefined ||
+        payload.location !== undefined ||
+        payload.delivery !== undefined ||
+        payload.btw !== undefined ||
+        Boolean(payload.attachments?.length)
+      ) {
+        return Promise.resolve(false);
+      }
+      const parts = resolveSendableOutboundReplyParts(payload);
+      if (!parts.hasText || parts.hasMedia) {
+        return Promise.resolve(false);
+      }
+
+      const adopting = pending.then(async () => {
+        const assertCurrent = () => {
+          params.assertCurrent?.();
+          info.assertPlatformSendAuthorized?.();
+        };
+        assertCurrent();
+        const receipt = await params.prepareReceipt(assertCurrent);
+        assertCurrent();
+        if (!receipt || !(await adopt(receipt))) {
+          return false;
+        }
+
+        // A positive acknowledgement transfers ownership even if authority
+        // closes while it settles. Detach before any await or authority check.
+        params.releaseReceipt(receipt);
+        await params.discardPending();
+        return true;
+      });
+      // The caller observes errors; cleanup still joins the completed transfer,
+      // and one failed attempt cannot poison the next generation's queue.
+      pending = adopting.then(ignoreResult, ignoreResult);
+      return adopting;
+    },
+    async settle() {
+      let settling: Promise<void>;
+      do {
+        settling = pending;
+        await settling;
+      } while (settling !== pending);
+    },
+  };
+}
 
 /** Mutable draft preview handle used before a live message is finalized or discarded. */
 export type LivePreviewFinalizerDraft<TId> = {

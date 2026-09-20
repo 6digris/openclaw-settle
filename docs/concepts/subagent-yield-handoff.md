@@ -112,13 +112,17 @@ with its scheduler-owned continuation.
 
 ## Progress after yield
 
-Yield closes the old execution, not the delegated work. On Discord and Telegram,
-an interactive requester can hand its existing progress card to the core task
-presenter. The message ID, checklist, commentary, and bounded public display
-state survive the handoff. Channel cleanup stops the old stream without
-deleting the adopted card. The final answer remains a separate delivery.
-Discord requires `streaming.mode: "progress"`; this handoff does not change
-channel streaming defaults.
+Yield closes the old execution, not the delegated work. Channels with a confirmed
+editable progress surface can hand it to the core task presenter. The message
+ID, checklist, commentary, and bounded public display state survive the handoff.
+Channel cleanup stops the old stream without deleting the adopted card. The
+final answer remains a separate delivery.
+
+Discord, Matrix, Mattermost, Microsoft Teams personal-chat streams, Slack, and
+Telegram use the shared continuation owner. Other native adapters retain their
+own supported message or activity representation; the handoff does not add
+streaming modes or change channel defaults. Discord still requires
+`streaming.mode: "progress"`.
 
 An adopted card can continue for `done_only` children; `silent` children remain
 excluded. Channel commentary, tool-detail, and quiet-mode settings still apply.
@@ -157,6 +161,30 @@ settlement observation, and synthesis share the existing follow-up deadline
 and stop on cron cancellation. Suspended or permanently failed child delivery
 retains the registry's terminal semantics, allowing cron's existing fallback
 policy to resolve the scheduled result without retrying that delivery.
+
+### Client task progress
+
+The Gateway exposes the same prepared public activity through `tasks.list`,
+`tasks.get`, and `task` events. `TaskSummary.progress` contains the current
+execution `runId`, a `revision`, and bounded `items`. This is an observation of
+the task, not another task registry or a transcript reconstructed by each UI.
+
+The Control UI, TUI, and bundled native task views consume these facts separately
+from foreground reply cleanup. A parent's yielded final unlocks its composer;
+it does not finish its children or complete the authored checklist.
+`TaskSummary.execution` distinguishes running, queued, waiting, finished, and
+unknown execution. A running ledger entry alone does not prove current execution.
+
+JavaScript clients can use `TaskProjection` from `@openclaw/gateway-client` to
+reconcile scoped snapshots with concurrent updates and deletions. Invalidate
+the projection when its connection, agent, or session changes, and reload after
+registry restoration. A prepared revision orders observations within that
+scope; a new connection or registry epoch can start at revision zero.
+
+Prepared progress is transient and may be absent, including after restart.
+Absence is not permission to revive old running items. Custom clients must
+consume and render this contract; a core update cannot change an external UI's
+renderer automatically.
 
 See [Subagents](/tools/subagents#tool-sessions_yield) for tool behavior and
 [Progress drafts](/concepts/progress-drafts) for channel presentation.

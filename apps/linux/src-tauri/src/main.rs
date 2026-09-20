@@ -3325,6 +3325,7 @@ fn main() {
         quickchat::quickchat_ready,
         quickchat::quickchat_select_agent,
         quickchat::quickchat_send,
+        quickchat::quickchat_session_read,
         quickchat::quickchat_set_expanded,
         quickchat::quickchat_set_shortcut,
         quickchat::quickchat_shortcut,

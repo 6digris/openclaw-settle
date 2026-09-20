@@ -30,7 +30,6 @@ vi.mock("../tui/gateway-chat.js", () => ({
 }));
 
 vi.mock("../tui/tui.js", () => ({
-  resolveGatewayDisconnectState: vi.fn(),
   runTui: mocks.runTui,
 }));
 

@@ -46,6 +46,7 @@ export type SlackStreamSession = {
 type StartSlackStreamParams = {
   client: WebClient;
   clientOptions?: WebClientOptions;
+  assertCurrent?: () => void;
   channel: string;
   threadTs: string;
   /** Optional initial markdown text to include in the stream start. */
@@ -194,6 +195,7 @@ export async function startSlackStream(
     listenerClient: client,
     clientOptions: params.clientOptions,
     teamId: params.clientOptions?.teamId,
+    assertCurrent: params.assertCurrent,
   });
   if (!writeClient) {
     throw new Error(
@@ -304,10 +306,9 @@ export async function appendSlackStream(params: AppendSlackStreamParams): Promis
 /** Result of {@link stopSlackStream}. */
 type StopSlackStreamResult = {
   /**
-   * The Slack `ts` of the finalized streamed message, when `chat.stopStream`
-   * reports it. Used to populate `MessageSentEvent.messageId` for the
-   * streaming reply path. Undefined when the stream was already stopped or
-   * Slack omitted the timestamp.
+   * The Slack `ts` after an acknowledged stop, from its response or the SDK's
+   * acknowledged start. Undefined for an already stopped stream, an unconfirmed
+   * stop, or an unknown message identity.
    */
   messageId?: string;
 };
@@ -331,7 +332,7 @@ type StopSlackStreamResult = {
  *
  * Errors without buffered text propagate unchanged.
  *
- * On success, returns the finalized message's Slack `ts` (when reported) so the
+ * On success, returns the finalized message's known Slack `ts` so the
  * caller can emit the `message_sent` hook with a populated `messageId`.
  */
 export async function stopSlackStream(
@@ -363,9 +364,8 @@ export async function stopSlackStream(
     session.delivered = true;
     session.pendingText = "";
     logVerbose("slack-stream: stream stopped");
-    // `chat.stopStream` reports the finalized message `ts` at the top level
-    // (and on `message.ts`); prefer the former and fall back to the latter.
-    const messageId = stopResponse?.ts ?? stopResponse?.message?.ts;
+    // Some successful stops omit ts; the SDK retains the acknowledged start identity.
+    const messageId = stopResponse?.ts ?? stopResponse?.message?.ts ?? session.streamer.ts;
     return messageId ? { messageId } : {};
   } catch (err) {
     if (applySlackStreamStop(session)) {

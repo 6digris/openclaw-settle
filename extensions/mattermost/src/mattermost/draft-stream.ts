@@ -40,6 +40,10 @@ type MattermostDraftStream = {
   updateAssistantText: (text: string) => void;
   flush: () => Promise<void>;
   postId: () => string | undefined;
+  prepareContinuation: (
+    assertCurrent: () => void,
+  ) => Promise<MattermostDraftPublishedPart | undefined>;
+  releaseContinuation: (messageId: string) => void;
   clear: () => Promise<void>;
   deleteCurrentMessage: () => Promise<void>;
   discardPending: () => Promise<void>;
@@ -59,6 +63,10 @@ function normalizeMattermostDraftText(text: string, maxChars: number): string {
     return trimmed;
   }
   return `${sliceUtf16Safe(trimmed, 0, Math.max(0, maxChars - 3)).trimEnd()}...`;
+}
+
+export function formatMattermostProgressText(text: string): string {
+  return normalizeMattermostDraftText(text.replace(/@/gu, "@\u200b"), MATTERMOST_STREAM_MAX_CHARS);
 }
 
 function consumeMattermostPublishedChunk(params: {
@@ -131,6 +139,7 @@ export function createMattermostDraftStream(params: {
     postId?: string;
     lastSentText: string;
     lastProviderText?: string;
+    deliveryUncertain?: boolean;
     // A boundary can arrive after pending text flushed. Keep the full source so sealing can
     // replace the ellipsized preview with lossless chunks instead of retaining truncation.
     latestSourceText: string;
@@ -144,6 +153,8 @@ export function createMattermostDraftStream(params: {
   };
   const sealedAssistantTexts: Array<{ text: string; requiresBlockBoundary: boolean }> = [];
   const publishedAssistantParts = new Map<string, MattermostDraftPublishedPart>();
+  let assertContinuationCurrent: (() => void) | undefined;
+  const assertRequestCurrent = () => assertContinuationCurrent?.();
 
   const sendOrEditStreamMessage = async (text: string): Promise<boolean> => {
     if (streamState.stopped && !streamState.final) {
@@ -163,23 +174,34 @@ export function createMattermostDraftStream(params: {
       return true;
     }
     try {
+      assertContinuationCurrent?.();
       if (target.postId) {
         const updated = await updateMattermostPost(params.client, target.postId, {
           message: normalized,
+          assertCurrent: assertRequestCurrent,
         });
+        if (updated.id !== target.postId) {
+          throw new Error("Mattermost draft edit returned no matching post id");
+        }
         target.lastProviderText = updated.message ?? normalized;
       } else {
         const sent = await createMattermostPost(params.client, {
           channelId: params.channelId,
           message: normalized,
           rootId: params.rootId,
+          assertCurrent: assertRequestCurrent,
         });
         target.postId = sent.id;
         target.lastProviderText = sent.message ?? normalized;
       }
+      if (!target.postId) {
+        target.deliveryUncertain = true;
+        return false;
+      }
       target.lastSentText = normalized;
       return true;
     } catch (err) {
+      target.deliveryUncertain = true;
       // Stop immediately so a discarded background failure cannot queue a second visible post.
       streamState.stopped = true;
       const acceptedDeliveryError = isChannelPartialDeliveryError(err)
@@ -277,25 +299,31 @@ export function createMattermostDraftStream(params: {
           }
           let providerFirstChunk = sealed.lastProviderText ?? firstChunk;
           if (firstChunk !== sealed.lastSentText) {
+            assertContinuationCurrent?.();
             const updated = await updateMattermostPost(params.client, sealed.postId, {
               message: firstChunk,
+              assertCurrent: assertRequestCurrent,
             });
             providerFirstChunk = updated.message ?? firstChunk;
           }
           recordPublishedAssistantPart(sealed.postId, providerFirstChunk, 0);
         } else {
+          assertContinuationCurrent?.();
           const firstPost = await createMattermostPost(params.client, {
             channelId: params.channelId,
             message: firstChunk,
             rootId: params.rootId,
+            assertCurrent: assertRequestCurrent,
           });
           recordPublishedAssistantPart(firstPost.id, firstPost.message ?? firstChunk, 0);
         }
         for (const chunk of chunks.slice(1)) {
+          assertContinuationCurrent?.();
           const post = await createMattermostPost(params.client, {
             channelId: params.channelId,
             message: chunk,
             rootId: params.rootId,
+            assertCurrent: assertRequestCurrent,
           });
           recordPublishedAssistantPart(post.id, post.message ?? chunk, publishedAssistantOffset);
         }
@@ -435,6 +463,30 @@ export function createMattermostDraftStream(params: {
       : { kind: "already-delivered" as const, publishedParts };
   };
 
+  const prepareContinuation = async (assertCurrent: () => void) => {
+    const generation = currentGeneration;
+    assertContinuationCurrent = assertCurrent;
+    assertCurrent();
+    await stop();
+    assertCurrent();
+    if (
+      generation !== currentGeneration ||
+      generation.deliveryUncertain ||
+      !generation.postId ||
+      !generation.lastProviderText?.trim()
+    ) {
+      return undefined;
+    }
+    return { messageId: generation.postId, content: generation.lastProviderText };
+  };
+  const releaseContinuation = (messageId: string) => {
+    if (currentGeneration.postId === messageId) {
+      currentGeneration.postId = undefined;
+      currentGeneration.lastSentText = "";
+      currentGeneration.lastProviderText = undefined;
+    }
+  };
+
   params.log?.(`mattermost stream preview ready (maxChars=${maxChars}, throttleMs=${throttleMs})`);
 
   return {
@@ -442,6 +494,8 @@ export function createMattermostDraftStream(params: {
     updateAssistantText,
     flush,
     postId: () => currentGeneration.postId,
+    prepareContinuation,
+    releaseContinuation,
     clear,
     deleteCurrentMessage,
     discardPending,

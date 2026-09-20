@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { expectDefined } from "@openclaw/normalization-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
 import { settleRequesterTurnAfterSessionSpawns } from "../agents/subagents/registry/subagent-registry-requester-yield.js";
 import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
@@ -17,6 +17,7 @@ import {
   markConversationDeliveryUnknown,
 } from "../config/sessions/conversation-delivery-store.js";
 import { buildConversationIdentity } from "../config/sessions/conversation-identity.js";
+import * as conversationRegistry from "../config/sessions/conversation-registry.js";
 import {
   resolveConversationRegistryScope,
   resolveCurrentConversationSession,
@@ -36,6 +37,7 @@ import {
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
 import { createPluginRecord } from "../plugins/status.test-fixtures.js";
 import { getActiveGatewayRootWorkCount } from "../process/gateway-work-admission.js";
+import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseByPathAsync,
@@ -650,6 +652,79 @@ describe("detached progress at the registered channel boundary", () => {
       expect(fixture.sends).toEqual([]);
       expect(fixture.edits).toEqual([]);
       expect([...fixture.messages.values()]).toEqual([initialMessage]);
+    });
+  });
+
+  it("acknowledges the committed receipt without granting authority to a later edit", async () => {
+    await withPublisher(async (fixture) => {
+      const assertCurrent = () => {
+        if (getConversationDeliveryOperation(fixture.scope, operationId)) {
+          throw new Error("Requester authority ended after receipt commit");
+        }
+      };
+      expect(await fixture.adopt({}, { assertCurrent })).toBe(true);
+      expect(getConversationDeliveryOperation(fixture.scope, operationId)).toMatchObject({
+        status: "sent",
+        platformMessageId: initialMessage.messageId,
+      });
+      expect(fixture.readSnapshot()).toEqual(initialSnapshot);
+      await expect(fixture.publish(updatedContent, { assertCurrent })).rejects.toThrow(
+        "Requester authority ended after receipt commit",
+      );
+      expect(fixture.edits).toEqual([]);
+      expect([...fixture.messages.values()]).toEqual([initialMessage]);
+    });
+  });
+
+  it("does not acknowledge a receipt when its SQLite commit fails and rolls back", async () => {
+    await withPublisher(async (fixture) => {
+      const { db } = openOpenClawAgentDatabase({
+        agentId: fixture.scope.databaseAgentId,
+        path: fixture.scope.storePath,
+        env: fixture.scope.env,
+      });
+      const exec = db.exec.bind(db);
+      const commitFailure = vi.spyOn(db, "exec").mockImplementation((sql) => {
+        if (sql === "COMMIT") {
+          throw new Error("Receipt commit failed");
+        }
+        exec(sql);
+      });
+      try {
+        await expect(fixture.adopt()).rejects.toThrow("Receipt commit failed");
+      } finally {
+        commitFailure.mockRestore();
+      }
+      expect(getConversationDeliveryOperation(fixture.scope, operationId)).toBeUndefined();
+      expect(fixture.readSnapshot()).toBeUndefined();
+      expect(await fixture.publish(updatedContent)).toBe("unknown");
+      expect(fixture.sends).toEqual([]);
+      expect(fixture.edits).toEqual([]);
+      expect([...fixture.messages.values()]).toEqual([initialMessage]);
+    });
+  });
+
+  it("retains committed custody when database admission cleanup rejects", async () => {
+    await withPublisher(async (fixture) => {
+      const write = conversationRegistry.runConversationDatabaseWrite;
+      const cleanupFailure = vi
+        .spyOn(conversationRegistry, "runConversationDatabaseWrite")
+        .mockImplementationOnce(async (scope, operation) => {
+          await write(scope, operation);
+          throw new Error("Database cleanup failed after commit");
+        });
+      try {
+        expect(await fixture.adopt()).toBe(true);
+      } finally {
+        cleanupFailure.mockRestore();
+      }
+      expect(getConversationDeliveryOperation(fixture.scope, operationId)).toMatchObject({
+        status: "sent",
+        platformMessageId: initialMessage.messageId,
+      });
+      expect(await fixture.publish(updatedContent)).toBe("sent");
+      expect(fixture.sends).toEqual([]);
+      expect([...fixture.messages.values()]).toEqual([{ ...initialMessage, text: updatedContent }]);
     });
   });
 

@@ -352,6 +352,100 @@ for this run, but the error warns that the saved choice may enable it again afte
 a restart. The checked menu item is marked **inactive**; restore access to the
 credential store and uncheck it again to save the off preference.
 
+## Quick Chat background progress
+
+A yielded parent reply retires that foreground turn and unlocks the composer; it
+does not mark background work or the session checklist complete. Quick Chat reads
+the current session's task summaries through `tasks.list` and the authored
+checklist through `progressCard.get`. The native Gateway adapter forwards `task`
+and `progressCard.changed` events on its existing connection. Task status,
+execution waits, prepared activity, and delivery status remain Gateway-owned.
+The compact view shows the latest 100 task summaries and points to the dashboard
+when another page exists.
+
+Prepared task activity is a current-generation observation: an empty item list
+retracts previous items, and an omitted progress object does not revive cached
+activity after a restart. The authored checklist is independent and remains
+visible until its document changes. Reconnect refreshes both read projections;
+changing the Gateway or selected agent invalidates old in-flight reads. Hiding
+Quick Chat retains its existing transient-reply behavior; the task ledger and
+authored document remain on the Gateway.
+Within one connection/registry epoch, prepared progress revisions order updates
+for the same canonical task run even when its physical execution changes.
+Reconnect and registry restore discard those observations so reset revisions
+can be read without reviving the previous epoch.
+
+### Progress regression and visual proof recipe
+
+Run the focused source regressions from the repository root after building the
+shared Gateway packages:
+
+```bash
+node scripts/run-vitest.mjs packages/sdk/src/index.test.ts packages/sdk/src/task-events.test.ts test/linux-quickchat-stream.test.ts
+cargo test --manifest-path apps/linux/src-tauri/Cargo.toml session_reads_preserve_scope_and_reject_gateway_replacement
+```
+
+For a browser-only visual check, serve `apps/linux/ui` on an isolated loopback
+port and preload a synthetic Tauri bridge before loading `quickchat.html`.
+Use the same page assets, not a recreated progress component. The bridge needs
+these responses:
+
+| Invocation | Synthetic response |
+| --- | --- |
+| `quickchat_ready`, `quickchat_activate`, `quickchat_hide` | `true` |
+| `quickchat_agents` | `[{ "id": "work", "name": "Work", "isDefault": true }]` |
+| `quickchat_identity`, `quickchat_select_agent` | `{ "id": "work", "name": "Work", "isDefault": true }` |
+| `quickchat_shortcut` | `{ "accelerator": "Control+Shift+Space", "registered": true }` |
+| `quickchat_send` | `{ "sessionKey": "global", "agentId": "work", "runId": "parent-run", "status": "started", "gatewayGeneration": 1 }` |
+| `quickchat_session_read` with `method: "tasks.list"` | `{ "tasks": [{ "id": "child", "sessionKey": "global", "status": "running", "title": "Research", "execution": { "state": "waiting", "wait": { "kind": "children" } }, "progress": { "runId": "child-run", "revision": 1, "items": [{ "itemId": "read", "phase": "update", "kind": "tool", "title": "Reading sources", "status": "running" }] } }] }` |
+| `quickchat_session_read` with `method: "progressCard.get"` | `{ "card": { "sessionKey": "global", "revision": 1, "updatedAt": 1, "steps": [{ "step": "Review evidence", "status": "in_progress" }] } }` |
+
+The bridge's `listen` implementation stores listeners by event name and invokes
+them with `{ payload }`. Other no-result presentation commands may resolve
+without a value. Exercise this sequence and capture inspected screenshots:
+
+1. Emit `quickchat:gateway-state` with `{ "state": "up", "gatewayGeneration": 1 }`,
+   enter a prompt, and send it. Capture the running task and authored checklist.
+2. Emit `quickchat:chat-event` with the ACK's route/run/generation plus
+   `state: "final"`, `yielded: true`, `stopReason: "end_turn"`, and an assistant
+   message. Verify the composer unlocks, no **Done** appears, and task/checklist
+   rows remain. Capture this yielded state.
+3. Emit `quickchat:task-event` upserts for the child: first new prepared activity,
+   then `progress.items: []`, then a failed terminal task with delivery pending.
+   Verify each new fact renders without inventing overall success. Delete the
+   task and verify its row disappears without deleting the checklist.
+   Also exercise active ledger tasks with explicit execution states `queued`,
+   `unknown`, and `finished`; none should be relabeled as executing.
+4. Hold the first task read while emitting task progress and deletion events,
+   then release its stale snapshot. Scoped rows must appear with the newer
+   activity immediately; deleted rows must not return or force a retry loop.
+   Repeat across registry restore, rejecting the older epoch's response.
+   Reconnect with progress omitted in the fresh task response; old activity
+   must not return. Clear the authored card by returning `card: null` and
+   emitting `quickchat:progress-card-event` with its session and `revision: null`.
+5. Hold both reads while changing the Gateway generation or selecting another
+   agent. Release the old responses and emit old-generation events; neither may
+   populate the new context.
+
+Browser injection proves the renderer only. For native routing proof on Linux,
+use the development binary with an isolated HOME, X11 display and session bus,
+WebKitGTK, AT-SPI, and a synthetic loopback Gateway. The existing native dispatch
+fixture also checks forwarding of yielded chat, all three task actions, and card
+invalidation while preserving the socket generation:
+
+```bash
+xvfb-run -a -s '-screen 0 1280x1024x24' dbus-run-session -- \
+  cargo test --manifest-path apps/linux/src-tauri/Cargo.toml \
+  quickchat_dispatch_rejects_route_change_after_driver_wait -- --ignored --nocapture
+```
+
+Then open the actual Quick Chat window with its configured shortcut and repeat
+the sequence above through WebSocket Gateway events and real RPC responses,
+not injected Tauri events. Capture the native window before yield, during child
+progress, and after terminal delivery. Keep artifacts outside the checkout and
+label synthetic Gateway proof separately from a live provider run. Neither the
+browser fixture nor the backend test establishes a live-provider outcome.
+
 ## Quick Chat widgets
 
 Quick Chat advertises the Gateway `inline-widgets` capability and renders hosted `show_widget` results in isolated child WebViews. The parent Quick Chat WebView is the only one granted Tauri commands; widget WebViews match no capability and therefore have no IPC access. Quick Chat accepts only assistant-message widget previews under the capability-scoped `/__openclaw__/canvas/documents/` route, blocks navigation away from the original document, uses nonpersistent WebViews, and keeps stable widget instances while switching among multiple previews. Connections that require a custom Gateway TLS leaf pin remain text-only because the platform WebView cannot bind that pin. Like the other native clients, Quick Chat does not expose the Control UI `sendPrompt` bridge.

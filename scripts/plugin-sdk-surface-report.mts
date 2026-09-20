@@ -388,7 +388,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +13: twelve decision contract types and one prepared plugin secret reader.
       // +6: shared delivery facts, source-reply detection, argument sanitization, and media comparison.
       // +1: workspace Memory file client.
-      4518,
+      // +4: approved shared progress continuation helper, options, handle, and confirmed receipt.
+      4522,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -536,7 +537,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: prepared plugin capability secret reader.
       // +6: shared delivery facts, source-reply detection, argument sanitization, and media comparison.
       // +1: workspace Memory file client.
-      2662,
+      // +1: approved shared confirmed progress continuation ownership.
+      2663,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

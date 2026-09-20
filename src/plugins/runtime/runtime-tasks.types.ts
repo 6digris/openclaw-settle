@@ -1,4 +1,5 @@
 // Runtime task types describe plugin task runtime config and invocation options.
+import type { TaskSummary } from "../../../packages/gateway-protocol/src/schema/tasks.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { TaskFlowRecord } from "../../tasks/task-flow-registry.types.js";
 import type { TaskDeliveryState, TaskRegistrySummary } from "../../tasks/task-registry.types.js";
@@ -76,11 +77,35 @@ type AsyncTaskReadBinding = {
   readonly requesterOrigin?: TaskDeliveryState["requesterOrigin"];
 };
 
+/** Existing durable source correlation, not a platform receipt or permission to publish. */
+export type TaskProgressSource = Readonly<{
+  channel?: string;
+  accountId?: string;
+  to?: string;
+  threadId?: string | number;
+  channelId?: string | number;
+  messageId?: string | number;
+}>;
+
 export type BoundAsyncTaskRunsRuntime = AsyncTaskReadBinding & {
   get: (taskId: string) => Promise<TaskRunDetail | undefined>;
   list: () => Promise<TaskRunView[]>;
   findLatest: () => Promise<TaskRunDetail | undefined>;
   resolve: (token: string) => Promise<TaskRunDetail | undefined>;
+  /**
+   * Observe public progress in this binding's read scope. Callbacks are serialized
+   * and coalesced; recheck assertCurrent after awaits and before publishing.
+   * Abort/unsubscribe retires assertions immediately and joins callback work.
+   */
+  observeProgress: (options: {
+    signal: AbortSignal;
+    onChange: (
+      tasks: readonly TaskSummary[],
+      assertCurrent: () => void,
+      sources: ReadonlyMap<string, TaskProgressSource>,
+    ) => void | Promise<void>;
+    onError?: (error: unknown) => void;
+  }) => Promise<() => Promise<void>>;
 };
 export type BoundAsyncTaskFlowsRuntime = AsyncTaskReadBinding & {
   get: (flowId: string) => Promise<TaskFlowDetail | undefined>;

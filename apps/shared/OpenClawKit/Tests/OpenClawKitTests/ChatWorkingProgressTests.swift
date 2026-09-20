@@ -464,6 +464,23 @@ struct ChatWorkingProgressTests {
             indicatorVisible: false,
             row: self.doneRow(self.runEndedAt + 1000)) == nil)
     }
+    @Test func `yielded foreground never claims done when a later task completes`() {
+        var resolver = ChatTurnRecapResolver()
+        _ = resolver.resolve(
+            sessionKey: self.session,
+            indicatorVisible: true,
+            row: self.doneRow(self.previousEndedAt))
+        #expect(resolver.resolve(
+            sessionKey: self.session,
+            indicatorVisible: false,
+            row: self.doneRow(self.runEndedAt),
+            yielded: true) == nil)
+        #expect(resolver.resolve(
+            sessionKey: self.session,
+            indicatorVisible: false,
+            row: self.doneRow(self.runEndedAt + 1000)) == nil)
+    }
+
 
     private func doneRow(
         _ endedAt: Double,

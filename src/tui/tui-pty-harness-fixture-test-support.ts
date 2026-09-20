@@ -108,7 +108,7 @@ export async function writeTuiPtyFixtureScript(dir: string) {
   await writeFile(
     scriptPath,
     `
-      import { appendFileSync, existsSync, watchFile, unwatchFile } from "node:fs";
+      import { appendFileSync, existsSync, readFileSync, watchFile, unwatchFile } from "node:fs";
       import { buildEmbeddedRunPayloads } from ${JSON.stringify(payloadsModuleUrl)};
       import { getReplyPayloadMetadata } from ${JSON.stringify(replyPayloadModuleUrl)};
       import { normalizeReplyPayloadsForDelivery } from ${JSON.stringify(outboundPayloadsModuleUrl)};
@@ -223,9 +223,7 @@ export async function writeTuiPtyFixtureScript(dir: string) {
           queueMicrotask(() => this.onConnected?.());
         }
 
-        stop() {
-          record("stop");
-        }
+        ${TUI_PTY_TASK_FIXTURE.stop}
 
         ${TUI_PTY_SESSION_SUBSCRIPTION_FIXTURE_SCRIPT}
 
@@ -234,6 +232,7 @@ export async function writeTuiPtyFixtureScript(dir: string) {
           const runId = opts.runId ?? "run-pty-fixture";
           ${TUI_PTY_RECONNECT_FIXTURE.sendChat}
           ${TUI_PTY_FALLBACK_FIXTURE.sendChat}
+          ${TUI_PTY_TASK_FIXTURE.sendChat}
           if (opts.message.startsWith("live reply dedupe proof: ")) {
             const reply = opts.message.endsWith("first") ? "TUI_LIVE_FIRST" : "TUI_LIVE_SECOND";
             const userSequence = ++liveReplySequence;

@@ -1,16 +1,17 @@
-import { html, nothing, type ReactiveController, type ReactiveControllerHost } from "lit";
-import type { GatewayBrowserClient } from "../../api/gateway.ts";
-import type { CronRunLogEntry } from "../../api/types.ts";
-import "../../styles/chat/sidebar.css";
-import { t } from "../../i18n/index.ts";
-import { formatUiError } from "../../lib/format-error.ts";
 import {
   normalizeTaskEventPayload,
   normalizeTasksGetResult,
   normalizeTasksListResult,
-  taskTitle,
-} from "../../lib/tasks/data.ts";
-import type { TaskSummary } from "../../lib/tasks/task-summary.ts";
+  newestTaskSnapshot,
+  type TaskSummary,
+} from "@openclaw/gateway-client/browser";
+import { html, nothing, type ReactiveController, type ReactiveControllerHost } from "lit";
+import type { GatewayBrowserClient } from "../../api/gateway.ts";
+import "../../styles/chat/sidebar.css";
+import type { CronRunLogEntry } from "../../api/types.ts";
+import { t } from "../../i18n/index.ts";
+import { formatUiError } from "../../lib/format-error.ts";
+import { taskTitle } from "../../lib/tasks/data.ts";
 import {
   observeTaskDetailEvent,
   resetTaskDetail,
@@ -64,6 +65,10 @@ export class CronRunTranscript implements ReactiveController {
     ) {
       this.close();
       return;
+    }
+    if (event.action === "upserted" && event.task.id === this.task?.id) {
+      this.task = newestTaskSnapshot(this.task, event.task, "event");
+      this.host.requestUpdate();
     }
     observeTaskDetailEvent(this.transcript, event);
   }

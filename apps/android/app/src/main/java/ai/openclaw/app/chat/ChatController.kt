@@ -37,10 +37,13 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -540,6 +543,23 @@ class ChatController internal constructor(
   private val _subagentActivities = MutableStateFlow<Map<String, ChatSubagentActivity>>(emptyMap())
   val subagentActivities: StateFlow<Map<String, ChatSubagentActivity>> = _subagentActivities.asStateFlow()
 
+  private class SubagentActivityRead {
+    val events = mutableMapOf<String, CoalescedBackgroundTaskEvent>()
+    var job: Job? = null
+  }
+  private var subagentActivityRead: SubagentActivityRead? = null
+
+  private val backgroundTaskUpdates = MutableSharedFlow<Pair<ChatCacheScope?, BackgroundTaskEvent>>()
+  internal val backgroundTaskEvents =
+    backgroundTaskUpdates.filter { it.first == currentCacheScope() }.map { it.second }
+
+  private fun publishBackgroundTaskEvent(event: BackgroundTaskEvent) {
+    val gatewayScope = currentCacheScope()
+    scope.launch(start = CoroutineStart.UNDISPATCHED) {
+      backgroundTaskUpdates.emit(gatewayScope to event)
+    }
+  }
+
   private val _questions = MutableStateFlow<List<ChatQuestionPrompt>>(emptyList())
   val questions: StateFlow<List<ChatQuestionPrompt>> = _questions.asStateFlow()
   private val questionStateLock = Any()
@@ -740,31 +760,35 @@ class ChatController internal constructor(
   suspend fun listBackgroundTasks(agentId: String): List<BackgroundTask> {
     val lease = captureRequestLease(cacheScope()) ?: throw GatewayRequestNotEnqueued("not connected")
 
-    suspend fun request(
-      statuses: List<String>?,
-      limit: Int,
-    ): List<BackgroundTask> {
-      val params =
-        buildJsonObject {
-          put("agentId", JsonPrimitive(agentId))
-          put("limit", JsonPrimitive(limit))
-          statuses?.let { values -> put("status", JsonArray(values.map(::JsonPrimitive))) }
-        }
-      if (!lease.isCurrent()) throw GatewayRequestNotEnqueued("background task connection changed")
-      val response =
-        lease.request("tasks.list", params.toString()) { enqueue ->
-          if (!lease.isCurrent()) throw GatewayRequestNotEnqueued("background task connection changed")
-          enqueue()
-        }
-      if (!lease.isCurrent()) throw GatewayRequestNotEnqueued("background task connection changed")
-      return parseBackgroundTasks(json, response)
-    }
-
-    val active = request(listOf("queued", "running"), limit = 100)
-    val recent = request(listOf("completed", "failed", "cancelled", "timed_out"), limit = 50)
+    val active = requestBackgroundTasks(lease, agentId, listOf("queued", "running"), limit = 100)
+    val recent = requestBackgroundTasks(lease, agentId, listOf("completed", "failed", "cancelled", "timed_out"), limit = 50)
     val tasks = mergeBackgroundTasks(active, recent)
     if (!lease.isCurrent()) throw GatewayRequestNotEnqueued("background task connection changed")
     return tasks
+  }
+
+  private suspend fun requestBackgroundTasks(
+    lease: GatewaySession.RequestLease,
+    agentId: String,
+    statuses: List<String>,
+    limit: Int,
+    sessionKey: String? = null,
+  ): List<BackgroundTask> {
+    val params =
+      buildJsonObject {
+        put("agentId", JsonPrimitive(agentId))
+        put("limit", JsonPrimitive(limit))
+        put("status", JsonArray(statuses.map(::JsonPrimitive)))
+        sessionKey?.let { put("sessionKey", JsonPrimitive(it)) }
+      }
+    if (!lease.isCurrent()) throw GatewayRequestNotEnqueued("background task connection changed")
+    val response =
+      lease.request("tasks.list", params.toString()) { enqueue ->
+        if (!lease.isCurrent()) throw GatewayRequestNotEnqueued("background task connection changed")
+        enqueue()
+      }
+    if (!lease.isCurrent()) throw GatewayRequestNotEnqueued("background task connection changed")
+    return parseBackgroundTasks(json, response)
   }
 
   suspend fun getBackgroundTask(taskId: String): BackgroundTask {
@@ -967,6 +991,7 @@ class ChatController internal constructor(
       preserveDisconnectedOwnership = true,
     )
     clearLiveRunUi()
+    invalidateSubagentProgress()
     _historyLoading.value = false
     _sessionId.value = null
     // Failed connect attempts pass through onGatewayScopeChanging, which empties the published
@@ -1054,6 +1079,9 @@ class ChatController internal constructor(
   }
 
   private fun refreshConnectedGateway() {
+    invalidateSubagentProgress()
+    publishBackgroundTaskEvent(BackgroundTaskEvent.Restored)
+    refreshSubagentActivities()
     refreshProgressCard()
     refreshQuestions()
     refreshHistoryForRecovery(forceHealth = true)
@@ -3260,7 +3288,10 @@ class ChatController internal constructor(
         restorePendingRunProjectionsForCurrentOwner()
         generation to changed
       }
-    if (selectionChanged) refreshProgressCard()
+    if (selectionChanged) {
+      refreshProgressCard()
+      if (refreshHealth) refreshSubagentActivities()
+    }
     return generation
   }
 
@@ -3972,6 +4003,8 @@ class ChatController internal constructor(
         refreshQuestions()
         refreshProgressCard()
         if (restoreRunStateOnReconnect) {
+          publishBackgroundTaskEvent(BackgroundTaskEvent.Restored)
+          refreshSubagentActivities()
           refreshHistoryForRecovery(forceHealth = true)
         } else {
           markHealthOk()
@@ -3990,6 +4023,8 @@ class ChatController internal constructor(
         publishRunPresentation()
         clearLiveRunUi()
         clearSubagentActivities()
+        publishBackgroundTaskEvent(BackgroundTaskEvent.Restored)
+        refreshSubagentActivities()
         refreshQuestions()
         refreshProgressCard()
         refreshHistoryForRecovery()
@@ -6473,7 +6508,8 @@ class ChatController internal constructor(
         "final", "aborted", "error" -> {
           val terminalHasAssistantMessage =
             state == "final" && payload["message"].asObjectOrNull()?.get("role").asStringOrNull() == "assistant"
-          val resolvesWithoutReply = state != "final" || !terminalHasAssistantMessage
+          val yielded = payload["yielded"].asBooleanOrNull() == true
+          val resolvesWithoutReply = yielded || state != "final" || !terminalHasAssistantMessage
           val wasTimedOut = runId != null && timedOutRunIds.remove(runId)
           if (runId != null && runId == lastHandledTerminalRunId) return
           if (runId != null && !isOwned && !wasTimedOut) {
@@ -7057,6 +7093,7 @@ class ChatController internal constructor(
     owner: ChatComposerOwner?,
   ) {
     if (payload["state"].asStringOrNull() != "final") return
+    if (payload["yielded"].asBooleanOrNull() == true) return
     val normalizedRunId = runId?.trim()?.takeIf(String::isNotEmpty) ?: return
     val verifiedOwner = owner?.takeIf { it.routingVerified } ?: return
     val text = parseAssistantDeltaText(payload)?.trim()?.takeIf(String::isNotEmpty) ?: return
@@ -7086,21 +7123,101 @@ class ChatController internal constructor(
     }
   }
 
+  private fun refreshSubagentActivities() {
+    if (gatewayAdvertisesMethod("tasks.list") == false) return
+    val gatewayScope = currentCacheScope() ?: return
+    val sessionKey = _sessionKey.value
+    val agentId = resolveAgentIdForSessionKey(sessionKey) ?: return
+    val selectionGeneration = chatSelectionGeneration.value
+    val read = SubagentActivityRead()
+    fun ownsSelection(): Boolean =
+      currentCacheScope() == gatewayScope &&
+        chatSelectionGeneration.value == selectionGeneration &&
+        _sessionKey.value == sessionKey &&
+        resolveAgentIdForSessionKey(sessionKey) == agentId
+
+    synchronized(gatewayScopeApplyLock) {
+      if (!ownsSelection()) return
+      synchronized(subagentActivityLock) {
+        subagentActivityRead?.job?.cancel()
+        subagentActivityRead = read
+        read.job = scope.launch(start = CoroutineStart.LAZY) {
+          try {
+            val lease = captureRequestLease(gatewayScope) ?: return@launch
+            if (!ownsSelection()) return@launch
+            val snapshot = requestBackgroundTasks(lease, agentId, listOf("queued", "running"), limit = 100, sessionKey = sessionKey)
+            lease.commitIfCurrent {
+              synchronized(gatewayScopeApplyLock) {
+                if (!ownsSelection()) return@synchronized
+                synchronized(subagentActivityLock) {
+                  if (subagentActivityRead !== read) return@synchronized
+                  val tasks = replayBackgroundTaskEvents(snapshot.filter(::isCurrentSubagentTask), read.events)
+                  val ids = tasks.mapTo(mutableSetOf()) { it.id }
+                  _subagentActivities.value = _subagentActivities.value.filter { (id, activity) -> !activity.isWorking || id in ids }
+                  tasks.forEach(::applySubagentActivity)
+                }
+              }
+            }
+          } catch (err: CancellationException) {
+            throw err
+          } catch (err: Throwable) {
+            Log.w("OpenClawChat", "Background activity refresh failed: ${err.message}")
+          } finally {
+            synchronized(subagentActivityLock) {
+              if (subagentActivityRead === read) subagentActivityRead = null
+            }
+          }
+        }
+      }
+    }
+    read.job?.start()
+  }
+
   private fun handleTaskEvent(payloadJson: String) {
     val payload = json.parseToJsonElement(payloadJson).asObjectOrNull() ?: return
-    if (payload["action"].asStringOrNull() == "deleted") {
-      payload["taskId"]
-        .asStringOrNull()
-        ?.trim()
-        ?.takeIf(String::isNotEmpty)
-        ?.let(::removeSubagentActivity)
-      return
+    when (payload["action"].asStringOrNull()) {
+      "deleted" -> {
+        val taskId = payload["taskId"].asStringOrNull()?.trim()?.takeIf(String::isNotEmpty) ?: return
+        synchronized(gatewayScopeApplyLock) {
+        synchronized(subagentActivityLock) {
+          subagentActivityRead?.events?.let { coalesceBackgroundTaskEvent(it, BackgroundTaskEvent.Deleted(taskId)) }
+        }
+        removeSubagentActivity(taskId)
+        publishBackgroundTaskEvent(BackgroundTaskEvent.Deleted(taskId))
+        }
+        return
+      }
+      "restored" -> {
+        clearSubagentActivities()
+        publishBackgroundTaskEvent(BackgroundTaskEvent.Restored)
+        refreshSubagentActivities()
+        return
+      }
+      "upserted" -> Unit
+      else -> return
     }
     val task = payload["task"].asObjectOrNull() ?: return
-    if (task["runtime"].asStringOrNull() != "subagent") return
-    if (task["sessionKey"].asStringOrNull()?.trim() != _sessionKey.value) return
-    val taskId = task["id"].asStringOrNull()?.trim()?.takeIf(String::isNotEmpty) ?: return
-    val status = task["status"].asStringOrNull()?.trim()?.lowercase() ?: return
+    val summary = parseBackgroundTask(task)?.copy(prompt = null, result = null) ?: return
+    synchronized(gatewayScopeApplyLock) {
+    publishBackgroundTaskEvent(BackgroundTaskEvent.Upserted(summary))
+    if (isCurrentSubagentTask(summary)) {
+      synchronized(subagentActivityLock) {
+        subagentActivityRead?.events?.let { coalesceBackgroundTaskEvent(it, BackgroundTaskEvent.Upserted(summary)) }
+      }
+    }
+    applySubagentActivity(summary)
+    }
+  }
+
+  private fun isCurrentSubagentTask(task: BackgroundTask): Boolean =
+    task.runtime == "subagent" &&
+      task.sessionKey != null && sameOutboxSession(task.sessionKey, _sessionKey.value) &&
+      (task.agentId == null || task.agentId == resolveAgentIdForSessionKey(_sessionKey.value))
+
+  private fun applySubagentActivity(summary: BackgroundTask) {
+    if (!isCurrentSubagentTask(summary)) return
+    val taskId = summary.id
+    val status = summary.status
     if (status !in setOf("queued", "running", "completed", "failed", "cancelled", "timed_out")) return
 
     val terminal = status != "queued" && status != "running"
@@ -7108,10 +7225,15 @@ class ChatController internal constructor(
     synchronized(subagentActivityLock) {
       val existing = _subagentActivities.value[taskId]
       if (terminal && existing == null && subagentActivityExpiryJobs.containsKey(taskId)) return@synchronized
-      val lastActivity = task["lastActivity"].asStringOrNull()?.trim()?.takeIf(String::isNotEmpty)
+      val previousProgress = existing?.progress
+      val nextProgress = summary.progress
+      if (!terminal && previousProgress != null && nextProgress != null &&
+        existing?.runId == summary.runId && previousProgress.revision > nextProgress.revision
+      ) return@synchronized
+      val lastActivity = summary.lastActivity?.trim()?.takeIf(String::isNotEmpty)
       val fallback =
-        task["progressSummary"].asStringOrNull()?.trim()?.takeIf(String::isNotEmpty)
-          ?: task["lastToolName"].asStringOrNull()?.trim()?.takeIf(String::isNotEmpty)
+        summary.progressSummary?.trim()?.takeIf(String::isNotEmpty)
+          ?: summary.lastToolName?.trim()?.takeIf(String::isNotEmpty)
       val activity =
         ChatSubagentActivity(
           id = taskId,
@@ -7119,27 +7241,30 @@ class ChatController internal constructor(
           snippet =
             lastActivity
               ?: if (terminal) existing?.snippet ?: fallback else fallback ?: existing?.snippet,
-          diffStat = parseChatDiffStat(task["diffStat"], includeFiles = true) ?: existing?.diffStat,
+          diffStat = summary.diffStat ?: existing?.diffStat,
           terminalSummary =
-            task["terminalSummary"].asStringOrNull()?.trim()?.takeIf(String::isNotEmpty)
+            summary.terminal?.trim()?.takeIf(String::isNotEmpty)
               ?: existing?.terminalSummary,
           error =
-            task["error"].asStringOrNull()?.trim()?.takeIf(String::isNotEmpty)
+            summary.error?.trim()?.takeIf(String::isNotEmpty)
               ?: existing?.error,
           startedAtMs =
-            task["startedAt"]?.let(::parseTaskTimestampMs)
+            summary.startedAtMs
               ?: existing?.startedAtMs
-              ?: task["createdAt"]?.let(::parseTaskTimestampMs)
+              ?: summary.createdAtMs
               ?: now,
           endedAtMs =
             if (terminal) {
-              task["endedAt"]?.let(::parseTaskTimestampMs) ?: existing?.endedAtMs ?: now
+              summary.endedAtMs ?: existing?.endedAtMs ?: now
             } else {
               null
             },
           childSessionKey =
-            task["childSessionKey"].asStringOrNull()?.trim()?.takeIf(String::isNotEmpty)
+            summary.childSessionKey?.trim()?.takeIf(String::isNotEmpty)
               ?: existing?.childSessionKey,
+          executionState = summary.executionState,
+          progress = summary.progress,
+          runId = summary.runId,
         )
       _subagentActivities.value = _subagentActivities.value + (taskId to activity)
       if (activity.isWorking) {
@@ -7172,8 +7297,20 @@ class ChatController internal constructor(
     }
   }
 
+  private fun invalidateSubagentProgress() {
+    synchronized(subagentActivityLock) {
+      subagentActivityRead?.job?.cancel()
+      subagentActivityRead = null
+      _subagentActivities.value = _subagentActivities.value.mapValues { (_, activity) ->
+        activity.copy(executionState = null, progress = null)
+      }
+    }
+  }
+
   private fun clearSubagentActivities() {
     synchronized(subagentActivityLock) {
+      subagentActivityRead?.job?.cancel()
+      subagentActivityRead = null
       subagentActivityExpiryJobs.values.forEach { it?.cancel() }
       subagentActivityExpiryJobs.clear()
       _subagentActivities.value = emptyMap()
@@ -9090,7 +9227,7 @@ private fun JsonElement?.asBooleanOrNull(): Boolean? =
     else -> null
   }
 
-private fun parseChatDiffStat(
+internal fun parseChatDiffStat(
   element: JsonElement?,
   includeFiles: Boolean,
 ): ChatDiffStat? {

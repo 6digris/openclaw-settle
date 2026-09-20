@@ -1,8 +1,8 @@
+import type { TaskSummary } from "@openclaw/gateway-client/browser";
 /* @vitest-environment jsdom */
 import { render } from "lit";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../../test/helpers/promise.js";
-import type { TaskSummary } from "../../../lib/tasks/task-summary.ts";
 import { createGatewayBrowserClientFixture } from "../chat-pane.test-support.ts";
 import {
   createBackgroundTasksProps,
@@ -62,6 +62,60 @@ it("loads the saved selection even when it is outside the bounded task rows", as
   expect(f.props().tasks).toEqual([]);
   expect(f.request.mock.calls.filter(([method]) => method === "tasks.get")).toHaveLength(1);
 });
+it.each(["snapshot", "event"] as const)(
+  "keeps newer saved detail when a delayed %s first admits its row",
+  async (admission) => {
+    const f = fixture();
+    f.props();
+    await vi.waitFor(() => expect(f.props().tasks).toEqual([]));
+    const listing = createDeferred<unknown>();
+    f.request.mockImplementation((method) =>
+      method === "tasks.get" ? f.pending.promise : listing.promise,
+    );
+    f.props().onRefresh();
+    const completed: TaskSummary = {
+      ...task,
+      updatedAt: 300,
+      endedAt: 300,
+      execution: { state: "finished" },
+      prompt: "Retain the saved task's full prompt.",
+      terminalSummary: "Current completion from saved detail",
+    };
+    const stale: TaskSummary = {
+      ...task,
+      status: "running",
+      updatedAt: 100,
+      execution: { state: "running" },
+      terminalSummary: undefined,
+      progressSummary: "Obsolete running activity",
+    };
+    f.pending.resolve({ task: completed });
+    await vi.waitFor(() => expect(f.props().taskDetails.get(task.id)).toEqual(completed));
+    expect(f.props().tasks).toEqual([]);
+
+    if (admission === "event") {
+      handleBackgroundTasksEvent(f.host, { action: "upserted", task: stale });
+      expect(f.props().tasks).toEqual([completed]);
+      expect(f.props().taskDetails.get(task.id)).toEqual(completed);
+    }
+    listing.resolve({ tasks: [stale] });
+    await vi.waitFor(() => expect(f.props().loading).toBe(false));
+    expect(f.props().tasks).toEqual([completed]);
+    handleBackgroundTasksEvent(f.host, { action: "upserted", task: stale });
+    const props = f.props();
+    expect(props.activeCount).toBe(0);
+    expect(props.taskDetails.get(task.id)).toEqual(completed);
+    const mount = document.body.appendChild(document.createElement("div"));
+    render(
+      renderTaskDetailPanel({ backgroundTasks: props, host: f.host, task: props.tasks?.[0] }),
+      mount,
+    );
+    expect(mount.textContent).toContain(completed.terminalSummary);
+    expect(mount.textContent).not.toContain("Obsolete running activity");
+    expect(mount.querySelector(".chat-tasks-rail__task-pulse")).toBeNull();
+  },
+);
+
 it("keeps saved selection loading with Back while initial scoped reads are deferred", () => {
   const f = fixture();
   f.host.chatSecondaryReadsReady = () => false;

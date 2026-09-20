@@ -2,12 +2,16 @@
 import { resolveHumanDelayConfig } from "openclaw/plugin-sdk/agent-runtime";
 import {
   isChannelPartialDeliveryError,
+  createChannelPartialDeliveryError,
   type ChannelInboundTurnPlan,
 } from "openclaw/plugin-sdk/channel-inbound";
 import {
   bindIngressLifecycleToReplyOptions,
   createMessageReceiptFromOutboundResults,
   createChannelProgressDraftCompositor,
+  createChannelProgressContinuation,
+  createPreviewMessageReceipt,
+  type ProgressContinuationReceipt,
   listMessageReceiptPlatformIds,
 } from "openclaw/plugin-sdk/channel-outbound";
 import { getGlobalHookRunner } from "openclaw/plugin-sdk/plugin-runtime";
@@ -17,6 +21,7 @@ import type { MattermostPost } from "./client.js";
 import {
   createMattermostDraftPreviewBoundaryController,
   createMattermostDraftStream,
+  formatMattermostProgressText,
 } from "./draft-stream.js";
 import { normalizeMattermostAllowEntry } from "./ingress-identity.js";
 import {
@@ -58,6 +63,8 @@ function createDisabledMattermostDraftStream(): ReturnType<typeof createMattermo
     updateAssistantText: () => {},
     flush: noopAsync,
     postId: () => undefined,
+    prepareContinuation: async () => undefined,
+    releaseContinuation: () => {},
     clear: noopAsync,
     deleteCurrentMessage: noopAsync,
     discardPending: noopAsync,
@@ -115,22 +122,24 @@ export async function dispatchMattermostInboundTurn(
     (account.streamingMode === "progress" || shouldUpdateMattermostDraftToolProgress(account));
   const suppressDefaultToolProgressMessages =
     draftPreviewEnabled && shouldSuppressMattermostDefaultToolProgressMessages(account);
-  const draftStream = draftPreviewEnabled
-    ? createMattermostDraftStream({
-        client,
-        channelId,
-        rootId: effectiveReplyToId,
-        throttleMs: 1200,
-        chunkText: (value) =>
-          core.channel.text.chunkMarkdownTextWithMode(
-            core.channel.text.convertMarkdownTables(value, tableMode),
-            textLimit,
-            chunkMode,
-          ),
-        log: monitor.logVerboseMessage,
-        warn: monitor.logVerboseMessage,
-      })
-    : createDisabledMattermostDraftStream();
+  const createDraftStream = () =>
+    draftPreviewEnabled
+      ? createMattermostDraftStream({
+          client,
+          channelId,
+          rootId: effectiveReplyToId,
+          throttleMs: 1200,
+          chunkText: (value) =>
+            core.channel.text.chunkMarkdownTextWithMode(
+              core.channel.text.convertMarkdownTables(value, tableMode),
+              textLimit,
+              chunkMode,
+            ),
+          log: monitor.logVerboseMessage,
+          warn: monitor.logVerboseMessage,
+        })
+      : createDisabledMattermostDraftStream();
+  let draftStream = createDraftStream();
   const previewBoundaryController = createMattermostDraftPreviewBoundaryController({
     enabled: draftPreviewEnabled && account.streamingMode === "block",
     forceNewMessage: async () => {
@@ -151,12 +160,45 @@ export async function dispatchMattermostInboundTurn(
     seed: `${account.accountId}:${channelId}`,
     shouldStartNow: (line) => typeof line === "object" && line.kind === "item",
     update: async (previewText, options) => {
-      draftStream.update(previewText);
+      draftStream.update(
+        formatMattermostProgressText(
+          core.channel.text.convertMarkdownTables(previewText, tableMode),
+        ),
+      );
       if (options?.flush) {
         await draftStream.flush();
       }
     },
     deleteCurrent: () => draftStream.deleteCurrentMessage(),
+  });
+  let adoptedProgressReceipt: ProgressContinuationReceipt | undefined;
+  const progressContinuation = createChannelProgressContinuation({
+    prepareReceipt: async (assertCurrent) => {
+      if (!draftProgressEnabled || !progressDraft.isVisible) {
+        return undefined;
+      }
+      const snapshot = progressDraft.getSnapshot();
+      progressDraft.markFinalReplyStarted();
+      const confirmed = await draftStream.prepareContinuation(assertCurrent);
+      assertCurrent();
+      if (!confirmed) {
+        return undefined;
+      }
+      return {
+        channel: "mattermost",
+        accountId: account.accountId,
+        to: `channel:${channelId}`,
+        threadId: effectiveReplyToId,
+        messageId: confirmed.messageId,
+        text: confirmed.content,
+        snapshot,
+      };
+    },
+    releaseReceipt: (receipt) => {
+      draftStream.releaseContinuation(receipt.messageId);
+      adoptedProgressReceipt = receipt;
+    },
+    discardPending: () => draftStream.discardPending(),
   });
   const enterBlockPreviewActivity = (activity: "reasoning" | "text" | "tool") => {
     if (account.streamingMode !== "block") {
@@ -292,6 +334,44 @@ export async function dispatchMattermostInboundTurn(
   const delivery: ChannelInboundTurnPlan["delivery"] = {
     observeMessageSent: true,
     deliver: async (payloadEntry: ReplyPayload, info) => {
+      if (await progressContinuation.adopt(payloadEntry, info)) {
+        const adopted = adoptedProgressReceipt;
+        if (!adopted) {
+          throw new Error("Mattermost progress adoption returned no receipt");
+        }
+        const receipt = createPreviewMessageReceipt({
+          id: adopted.messageId,
+          ...(effectiveReplyToId
+            ? { threadId: effectiveReplyToId, replyToId: effectiveReplyToId }
+            : {}),
+        });
+        progressDraft.markFinalReplyDelivered();
+        previewState.finalizedViaPreviewPost = true;
+        if (kind !== "direct" && effectiveReplyToId) {
+          await recordMattermostThreadParticipation(
+            account.accountId,
+            channelId,
+            effectiveReplyToId,
+            {
+              agentId: route.agentId,
+            },
+          ).catch((error: unknown) => {
+            throw createChannelPartialDeliveryError(error, {
+              messageIds: receipt.platformMessageIds,
+              receipt,
+              visibleReplySent: true,
+              content: adopted.text,
+            });
+          });
+        }
+        return {
+          outcome: "text",
+          messageIds: receipt.platformMessageIds,
+          receipt,
+          visibleReplySent: true,
+          content: adopted.text,
+        };
+      }
       if (info.kind === "final") {
         await enterBlockPreviewActivity("text");
         // Final text uses only confirmed-visible generations, so join prior boundary work before deciding whether to edit in place.
@@ -480,7 +560,28 @@ export async function dispatchMattermostInboundTurn(
               ? true
               : undefined,
             preserveProgressCallbackStartOrder: draftPreviewEnabled ? true : undefined,
-            onObservedReplyDelivery: draftProgressEnabled ? () => draftStream.clear() : undefined,
+            onObservedReplyDelivery: draftProgressEnabled
+              ? async () => {
+                  await progressContinuation.settle();
+                  await draftStream.clear();
+                }
+              : undefined,
+            onQueuedFollowupAdmitted: draftPreviewEnabled
+              ? async () => {
+                  await progressContinuation.settle();
+                  await draftStream.stop();
+                  draftStream = createDraftStream();
+                  adoptedProgressReceipt = undefined;
+                  previewState.finalizedViaPreviewPost = false;
+                  lastPartialText = "";
+                  firstAssistantPreviewPrefix = undefined;
+                  firstAssistantPreviewPrefixPending = true;
+                  currentAssistantPreviewUsesPrefix = false;
+                  blockPreviewActivity = "none";
+                  blockPreviewAssistantMessagePending = false;
+                  progressDraft.beginNewTurn({ force: true });
+                }
+              : undefined,
             disableBlockStreaming: draftPreviewEnabled ? true : replyOptions.disableBlockStreaming,
             ...(suppressDefaultToolProgressMessages
               ? { suppressDefaultToolProgressMessages: true }
@@ -554,6 +655,8 @@ export async function dispatchMattermostInboundTurn(
       },
     });
   } finally {
+    await progressContinuation.settle();
+    progressDraft.cancel();
     try {
       await draftStream.stop();
     } catch (err) {

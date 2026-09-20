@@ -4,6 +4,8 @@ import type {
   CommandEntry,
   CommandsListParams,
   ModelChoice,
+  ProgressCardGetParams,
+  ProgressCardGetResult,
   QuestionGetResult,
   QuestionListResult,
   QuestionResolveParams,
@@ -14,6 +16,10 @@ import type {
   TaskSuggestion,
   TaskSuggestionsAcceptResult,
 } from "../../packages/gateway-protocol/src/index.js";
+import type {
+  TasksListParams,
+  TasksListResult,
+} from "../../packages/gateway-protocol/src/schema/tasks.js";
 import type { ResponseUsageMode, SessionInfo, SessionScope } from "./tui-types.js";
 
 // Transport-agnostic backend contract consumed by the TUI runtime.
@@ -212,6 +218,8 @@ export type TuiBackend = {
   }) => Promise<{ ok: boolean; aborted: boolean; runIds?: string[] }>;
   loadHistory: (opts: { sessionKey: string; agentId?: string; limit?: number }) => Promise<unknown>;
   loadImage?: (opts: TuiImageRequest) => Promise<TuiImageData>;
+  listTasks: (opts: TasksListParams) => Promise<TasksListResult>;
+  getProgressCard: (opts: ProgressCardGetParams) => Promise<ProgressCardGetResult>;
   listSessions: (opts?: SessionsListParams) => Promise<TuiSessionList>;
   listAgents: () => Promise<TuiAgentsList>;
   patchSession: (opts: SessionsPatchParams) => Promise<SessionsPatchResult>;

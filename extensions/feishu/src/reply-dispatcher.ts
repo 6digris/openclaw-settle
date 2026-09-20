@@ -5,6 +5,7 @@ import {
   type ChannelInboundTurnPlan,
 } from "openclaw/plugin-sdk/channel-inbound";
 import {
+  type buildChannelProgressDraftLineForEntry,
   createChannelMessageReplyPipeline,
   formatChannelProgressDraftLineForEntry,
   resolveChannelPreviewStreamMode,
@@ -24,7 +25,6 @@ import type { ClawdbotConfig, OutboundIdentity, ReplyPayload, RuntimeEnv } from 
 import { resolveFeishuRuntimeAccount } from "./accounts.js";
 import { resolveConfiguredHttpTimeoutMs } from "./client-timeout.js";
 import { createFeishuClient } from "./client.js";
-import { resolveFeishuIdentityEmoji } from "./identity-header.js";
 import { chunkFeishuPostMarkdown, materializeFeishuPostMarkdownSoftBreaks } from "./markdown.js";
 import { buildFeishuMediaFallbackText } from "./media-fallback.js";
 import { sendMediaFeishu, shouldSuppressFeishuTextForVoiceMedia } from "./media.js";
@@ -44,6 +44,14 @@ import {
   type FeishuReplyDeliverySource,
 } from "./reply-delivery-result.js";
 import { streamingStartBackoffUntilByAccount } from "./reply-dispatcher-state.js";
+import {
+  buildCombinedStreamText,
+  createFeishuProgressContinuation,
+  mergeStreamingFinalText,
+  resolveCardHeader,
+  resolveCardNote,
+  shouldUseCard,
+} from "./reply-streaming.js";
 import { getFeishuRuntime } from "./runtime.js";
 import {
   chunkFeishuCardMarkdown,
@@ -59,28 +67,6 @@ import {
 } from "./streaming-card.js";
 import { resolveReceiveIdType } from "./targets.js";
 import { addTypingIndicator, removeTypingIndicator, type TypingIndicatorState } from "./typing.js";
-
-/** Detect if text contains markdown elements that benefit from card rendering */
-function shouldUseCard(text: string): boolean {
-  return /```[\s\S]*?```/.test(text) || /\|.+\|[\r\n]+\|[-:| ]+\|/.test(text);
-}
-
-function mergeStreamingFinalText(
-  previousText: string,
-  nextText: string,
-  appendError: boolean,
-): string {
-  if (!appendError || !previousText) {
-    return nextText;
-  }
-  if (nextText.startsWith(previousText)) {
-    return nextText;
-  }
-  if (previousText.endsWith(`\n\n${nextText}`)) {
-    return previousText;
-  }
-  return `${previousText}\n\n${nextText}`;
-}
 
 /** Maximum age (ms) for a message to receive a typing indicator reaction.
  * Messages older than this are likely replays after context compaction (#30418). */
@@ -115,40 +101,6 @@ function normalizeEpochMs(timestamp: number | undefined): number | undefined {
   // Defensive normalization: some payloads use seconds, others milliseconds.
   // Values below 1e12 are treated as epoch-seconds.
   return timestamp < MS_EPOCH_MIN ? timestamp * 1000 : timestamp;
-}
-
-/** Build a card header from agent identity config. */
-function resolveCardHeader(
-  agentId: string,
-  identity: OutboundIdentity | undefined,
-): CardHeaderConfig | undefined {
-  const name = identity?.name?.trim() || (agentId === "main" ? "" : agentId);
-  const emoji = resolveFeishuIdentityEmoji(identity?.emoji);
-  const title = (emoji ? `${emoji} ${name}` : name).trim();
-  if (!title) {
-    return undefined;
-  }
-  return {
-    title,
-    template: identity?.theme ?? "blue",
-  };
-}
-
-/** Build a card note footer from agent identity and model context. */
-function resolveCardNote(
-  agentId: string,
-  identity: OutboundIdentity | undefined,
-  prefixCtx: { model?: string; provider?: string },
-): string {
-  const name = identity?.name?.trim() || agentId;
-  const parts: string[] = [`Agent: ${name}`];
-  if (prefixCtx.model) {
-    parts.push(`Model: ${prefixCtx.model}`);
-  }
-  if (prefixCtx.provider) {
-    parts.push(`Provider: ${prefixCtx.provider}`);
-  }
-  return parts.join(" | ");
 }
 
 type CreateFeishuReplyDispatcherParams = {
@@ -302,8 +254,10 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
   let lastPartial = "";
   let reasoningText = "";
   let statusLine = "";
+  let statusProgressInput: Parameters<typeof buildChannelProgressDraftLineForEntry>[1] | undefined;
   let snapshotBaseText = "";
   let lastSnapshotTextLength = 0;
+  let previewPaused = false;
   // Partial previews are replaceable; only committed final text may precede an error notice.
   let hasStreamingFinalText = false;
   const deliveredFinalTexts = new Set<string>();
@@ -357,33 +311,6 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     visibleReplySent = true;
   };
 
-  const formatReasoningPrefix = (thinking: string): string => {
-    if (!thinking) {
-      return "";
-    }
-    const withoutLabel = thinking.replace(/^(?:Reasoning:|Thinking\.{0,3})\s*/u, "");
-    const plain = withoutLabel.replace(/^_(.*)_$/gm, "$1");
-    const lines = plain.split("\n").map((line) => `> ${line}`);
-    return `> 💭 **Thinking**\n${lines.join("\n")}`;
-  };
-
-  const buildCombinedStreamText = (thinking: string, answer: string): string => {
-    const parts: string[] = [];
-    if (thinking) {
-      parts.push(formatReasoningPrefix(thinking));
-    }
-    if (thinking && answer) {
-      parts.push("\n\n---\n\n");
-    }
-    if (answer) {
-      parts.push(answer);
-    }
-    if (statusLine) {
-      parts.push(parts.length > 0 ? `\n\n${statusLine}` : statusLine);
-    }
-    return parts.join("");
-  };
-
   const flushStreamingCardUpdate = (combined: string) => {
     const session = streaming;
     const generation = activeStreamingGeneration;
@@ -435,7 +362,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       }
       lastSnapshotTextLength = nextText.length;
     }
-    flushStreamingCardUpdate(buildCombinedStreamText(reasoningText, streamText));
+    flushStreamingCardUpdate(buildCombinedStreamText(reasoningText, streamText, statusLine));
   };
 
   const queueReasoningUpdate = (nextThinking: string) => {
@@ -443,7 +370,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       return;
     }
     reasoningText = nextThinking;
-    flushStreamingCardUpdate(buildCombinedStreamText(reasoningText, streamText));
+    flushStreamingCardUpdate(buildCombinedStreamText(reasoningText, streamText, statusLine));
   };
 
   const startStreaming = () => {
@@ -515,10 +442,46 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     lastPartial = "";
     reasoningText = "";
     statusLine = "";
+    statusProgressInput = undefined;
     snapshotBaseText = "";
     lastSnapshotTextLength = 0;
     hasStreamingFinalText = false;
   };
+
+  const progressContinuation = createFeishuProgressContinuation({
+    cfg,
+    account,
+    accountId,
+    agentId,
+    identity,
+    to: sendTarget,
+    threadId: effectiveReplyInThread ? (rootId ?? sendReplyToMessageId) : undefined,
+    enabled: previewStreamingEnabled,
+    responsePrefixContextProvider,
+    pause: () => {
+      previewPaused = true;
+    },
+    getState: () => ({
+      session: streaming,
+      generation: activeStreamingGeneration,
+      start: streamingStartPromise,
+      updates: partialUpdateQueue,
+      hasFinalText: hasStreamingFinalText,
+      hasPendingDelivery: pendingStreamingDeliveries.some(
+        (delivery) => delivery.streamingGeneration === activeStreamingGeneration,
+      ),
+      text: buildCombinedStreamText(reasoningText, streamText, statusLine),
+      answer: streamText,
+      statusLine,
+      statusProgressInput,
+    }),
+    release: (session, generation) => {
+      if (streaming === session && activeStreamingGeneration === generation) {
+        resetStreamingState();
+      }
+    },
+    markVisible: markVisibleReplySent,
+  });
 
   const rememberClosedStreamingSettlement = (
     generation: number | undefined,
@@ -565,7 +528,11 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       let finalizationError: unknown;
       if (streamingToClose?.isActive()) {
         statusLine = "";
-        const text = buildCombinedStreamText(finalizedReasoningText, finalizedAnswerText);
+        const text = buildCombinedStreamText(
+          finalizedReasoningText,
+          finalizedAnswerText,
+          statusLine,
+        );
         let closed;
         try {
           if (disposition === "discarded") {
@@ -726,15 +693,22 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
 
   const updateStreamingStatusLine = (
     nextStatusLine: string,
-    options?: { startIfNeeded?: boolean },
+    options?: {
+      startIfNeeded?: boolean;
+      progressInput?: Parameters<typeof buildChannelProgressDraftLineForEntry>[1];
+    },
   ) => {
+    if (previewPaused) {
+      return false;
+    }
     statusLine = nextStatusLine;
+    statusProgressInput = options?.progressInput;
     const hasStreamingSession = Boolean(streaming?.isActive() || streamingStartPromise);
     if (!hasStreamingSession && (options?.startIfNeeded === false || renderMode !== "card")) {
       return false;
     }
     startStreaming();
-    flushStreamingCardUpdate(buildCombinedStreamText(reasoningText, streamText));
+    flushStreamingCardUpdate(buildCombinedStreamText(reasoningText, streamText, statusLine));
     return false;
   };
 
@@ -1041,6 +1015,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     }
     const nextIdleSideEffects = idleSideEffectsPromise.then(async () => {
       try {
+        await progressContinuation.settle();
         do {
           // Include deliveries appended while CardKit close is in flight; every returned
           // finalization promise must be owned by this idle pass or a later loop iteration.
@@ -1298,6 +1273,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         sentIndependentBlockText = false;
         idleRequestedForReply = false;
         visibleReplySent = false;
+        previewPaused = false;
         replyOutcome = undefined;
       }
       if (previewStreamingEnabled && renderMode === "card") {
@@ -1305,7 +1281,8 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       }
       await Promise.resolve(typingCallbacks?.onReplyStart?.());
     },
-    onIdle: () => queueIdleSideEffects(),
+    onIdle: () => typingCallbacks?.onIdle?.(),
+    onSettled: () => queueIdleSideEffects(),
     onCleanup: () => {
       typingCallbacks?.onCleanup?.();
     },
@@ -1354,6 +1331,10 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       }
     },
     deliver: async (inputPayload: ReplyPayload, info) => {
+      const progressResult = await progressContinuation.deliver(inputPayload, info);
+      if (progressResult) {
+        return progressResult;
+      }
       // Delivery runs after modifying hooks. Render here so native cards carry the
       // accepted prose, and a canceled payload never creates a card.
       const prepared = await renderFeishuReplyPayload(inputPayload, {
@@ -1540,7 +1521,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
           if (activeStreamingGeneration !== undefined) {
             if (info?.kind === "block") {
               // Some runtimes emit block payloads without onPartial/final callbacks.
-              // Mirror block text into streamText so onIdle close still sends content.
+              // Mirror block text into streamText so settlement close still sends content.
               queueStreamingUpdate(text, { mode: "delta", dedupeWithLastPartial: true });
             }
             if (info?.kind === "final") {
@@ -1550,7 +1531,9 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
               hasStreamingFinalText = true;
               snapshotBaseText = "";
               lastSnapshotTextLength = text.length;
-              flushStreamingCardUpdate(buildCombinedStreamText(reasoningText, streamText));
+              flushStreamingCardUpdate(
+                buildCombinedStreamText(reasoningText, streamText, statusLine),
+              );
             }
           }
           // Send media even when streaming handled the text
@@ -1649,7 +1632,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         typeof blockStreamingEnabled === "boolean" ? !blockStreamingEnabled : true,
       onPartialReply: previewStreamingEnabled
         ? (payload: ReplyPayload) => {
-            if (!payload.text) {
+            if (previewPaused || !payload.text) {
               return false;
             }
             const cleaned = stripReasoningTagsFromText(payload.text, {
@@ -1669,7 +1652,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         : undefined,
       onReasoningStream: reasoningPreviewEnabled
         ? (payload: ReplyPayload) => {
-            if (!payload.text) {
+            if (previewPaused || !payload.text) {
               return false;
             }
             startStreaming();
@@ -1681,6 +1664,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       onItemEvent: previewStreamingEnabled
         ? (payload: Parameters<NonNullable<GetReplyOptions["onItemEvent"]>>[0]) => {
             if (
+              previewPaused ||
               payload.kind === "preamble" ||
               payload.hideFromChannelProgress ||
               payload.suppressChannelProgress
@@ -1688,13 +1672,13 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
               return false;
             }
             const { kind: itemKind, ...item } = payload;
-            const statusLineLocal = formatChannelProgressDraftLineForEntry(account.config, {
-              event: "item",
-              itemKind,
-              ...item,
-            });
+            const progressInput = { event: "item" as const, itemKind, ...item };
+            const statusLineLocal = formatChannelProgressDraftLineForEntry(
+              account.config,
+              progressInput,
+            );
             if (statusLineLocal) {
-              return updateStreamingStatusLine(statusLineLocal);
+              return updateStreamingStatusLine(statusLineLocal, { progressInput });
             }
             return false;
           }

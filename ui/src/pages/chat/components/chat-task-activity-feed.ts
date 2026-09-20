@@ -1,3 +1,4 @@
+import type { TaskSummary } from "@openclaw/gateway-client/browser";
 import { flattenMarkdownToPlainText } from "@openclaw/normalization-core/markdown-plain-text";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
@@ -51,11 +52,19 @@ type Entry = { key: string; timestamp: number | null } & (
 
 function toolLine(call: ToolCard): string {
   const view = resolveToolCallView(call);
-  const text = view.command ?? view.code ?? call.inputText ?? call.name;
+  const text =
+    view.command ??
+    view.code ??
+    call.inputText ??
+    (call.activity
+      ? [call.activity.meta, call.activity.progressText, call.activity.summary, call.activity.error]
+          .filter(Boolean)
+          .join("\n") || call.activity.title
+      : call.name);
   return redactToolPayloadText(text.trim(), { preservePaths: true });
 }
 
-function entries(messages: unknown[]): Entry[] {
+function entries(messages: unknown[], progress?: TaskSummary["progress"]): Entry[] {
   const result: Entry[] = [];
   // Give inferred calls the canonical block type before message normalization,
   // which otherwise drops untyped blocks without text.
@@ -162,6 +171,67 @@ function entries(messages: unknown[]): Entry[] {
       }
     }
   }
+  if (progress) {
+    const existing = new Map<string, { key: string; card: ToolCard }>();
+    for (const entry of result) {
+      if (entry.kind !== "tools") {
+        continue;
+      }
+      for (const call of entry.calls) {
+        if (call.card.callId && (!call.card.runId || call.card.runId === progress.runId)) {
+          existing.set(call.card.callId, call);
+        }
+      }
+    }
+    for (const item of progress.items) {
+      if (
+        item.hideFromChannelProgress ||
+        item.suppressChannelProgress ||
+        item.kind === "analysis"
+      ) {
+        continue;
+      }
+      const key = `progress:${progress.runId}:${item.itemId}`;
+      if (item.kind === "preamble") {
+        const text = stripThinkingTags(item.progressText ?? item.summary ?? item.title);
+        if (text.trim()) {
+          result.push({ kind: "assistant", key, timestamp: item.startedAt ?? null, text });
+        }
+        continue;
+      }
+      const callId = item.toolCallId ?? item.itemId;
+      const current = existing.get(callId);
+      if (current) {
+        current.card = { ...current.card, activity: item, live: true };
+        continue;
+      }
+      const card: ToolCard = {
+        id: key,
+        callId,
+        runId: progress.runId,
+        name: item.name ?? item.title,
+        activity: item,
+        live: true,
+      };
+      const previous = result.at(-1);
+      if (previous?.kind === "tools") {
+        previous.calls.push({ key, card });
+      } else {
+        result.push({
+          kind: "tools",
+          key,
+          timestamp: item.startedAt ?? null,
+          calls: [{ key, card }],
+          activity: [],
+        });
+      }
+    }
+    for (const entry of result) {
+      if (entry.kind === "tools") {
+        entry.activity = entry.calls.flatMap(({ card }) => (card.activity ? [card.activity] : []));
+      }
+    }
+  }
   return result;
 }
 
@@ -180,18 +250,22 @@ function toolIcon(call: ToolCard) {
   }
 }
 
-function renderToolLine(call: ToolCard) {
+function renderToolLine(call: ToolCard, runActive: boolean) {
   const view = resolveToolCallView(call);
   const raw = toolLine(call);
   const command = view.command ? stripShellPreamble(view.command).command : undefined;
   const label = truncateUtf16Safe(
     redactToolPayloadText(
-      view.title ?? view.target ?? (command || view.command)?.split("\n")[0] ?? call.name,
+      view.title ??
+        view.target ??
+        (command || view.command)?.split("\n")[0] ??
+        call.activity?.title ??
+        call.name,
       { preservePaths: true },
     ),
     160,
   );
-  const outcome = resolveToolCardOutcome(call, false);
+  const outcome = resolveToolCardOutcome(call, runActive);
   const outcomeLabel = t(
     `chat.toolCards.${outcome === "succeeded" ? "completed" : outcome === "unknown" ? "outcomeUnknown" : outcome}`,
   );
@@ -210,8 +284,14 @@ function renderToolLine(call: ToolCard) {
   </details>`;
 }
 
-function renderToolGroup(entry: Extract<Entry, { kind: "tools" }>) {
-  const overview = describeToolGroup(entry.activity);
+function renderToolGroup(entry: Extract<Entry, { kind: "tools" }>, runActive: boolean) {
+  const overview = describeToolGroup(
+    runActive
+      ? entry.activity
+      : entry.activity.map((item) =>
+          item.status === "running" ? { ...item, status: undefined } : item,
+        ),
+  );
   return html`<details class="chat-task-feed__tool-group">
     <summary>
       <span class="chat-task-feed__overview">
@@ -229,7 +309,7 @@ function renderToolGroup(entry: Extract<Entry, { kind: "tools" }>) {
       ${repeat(
         entry.calls,
         ({ key }) => key,
-        ({ card }) => renderToolLine(card),
+        ({ card }) => renderToolLine(card, runActive),
       )}
     </div>
   </details>`;
@@ -259,10 +339,12 @@ function messageDisclosure(
 export function renderTaskActivityFeed(
   messages: unknown[],
   recovery?: TaskMessageRecovery,
+  progress?: TaskSummary["progress"],
+  runActive = false,
 ): TemplateResult {
   return html`<div class="chat-task-feed">
     ${repeat(
-      entries(messages),
+      entries(messages, progress),
       (entry) => entry.key,
       (entry) => html` <div class="chat-task-feed__entry" data-task-feed-entry=${entry.key}>
         <span class="chat-task-feed__icon" aria-hidden="true"
@@ -271,7 +353,7 @@ export function renderTaskActivityFeed(
         <div class="chat-task-feed__body">
           ${
             entry.kind === "tools"
-              ? renderToolGroup(entry)
+              ? renderToolGroup(entry, runActive)
               : entry.kind === "assistant"
                 ? renderMessageMarkdown(
                     entry.text,

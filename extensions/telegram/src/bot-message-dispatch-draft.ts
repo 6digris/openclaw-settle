@@ -564,6 +564,7 @@ export function isQueuedAnswerBlock(
 }
 
 export function beginDraftQueuedFollowup(turn: Turn): void {
+  turn.progressContinuationGeneration += 1;
   turn.progressContinuationAdopted = false;
   for (const lane of [turn.answerLane, turn.reasoningLane]) {
     if (!lane.stream) {
@@ -575,7 +576,11 @@ export function beginDraftQueuedFollowup(turn: Turn): void {
 }
 
 export async function cleanupDrafts(turn: Turn, superseded: boolean): Promise<void> {
+  await turn.progressContinuation.settle();
   for (const lane of [turn.answerLane, turn.reasoningLane]) {
+    if (lane === turn.answerLane && turn.progressContinuationAdopted) {
+      continue;
+    }
     const stream = lane.stream;
     if (!stream) {
       continue;

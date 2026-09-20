@@ -179,7 +179,7 @@ class WearAgentPulseProjectionTest {
       updatedAtMs = 2,
       startedAtMs = 3,
       endedAtMs = 4,
-      progress = "private-progress",
+      progressSummary = "private-progress",
       terminal = "private-terminal",
       error = "private-error",
       prompt = "private-prompt",

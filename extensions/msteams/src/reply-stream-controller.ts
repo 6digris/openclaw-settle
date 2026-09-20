@@ -1,6 +1,7 @@
 import {
   type AgentPlanStep,
   createChannelProgressDraftCompositor,
+  type ProgressContinuationReceipt,
   resolveChannelPreviewStreamMode,
 } from "openclaw/plugin-sdk/channel-outbound";
 import { coerceErrorMessage } from "openclaw/plugin-sdk/error-runtime";
@@ -8,9 +9,10 @@ import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/string-coe
 import type { MarkdownTableMode, MSTeamsConfig, ReplyPayload } from "../runtime-api.js";
 import { formatMSTeamsMarkdown } from "./format.js";
 import { extractMessageId } from "./media-helpers.js";
-import { buildMSTeamsMessageActivity } from "./message-activity.js";
+import { buildMSTeamsMessageActivity, buildMSTeamsProgressActivity } from "./message-activity.js";
 import type { MSTeamsMonitorLogger } from "./monitor-types.js";
 import type { MSTeamsTurnContext } from "./sdk-types.js";
+import { withMSTeamsConnectorHandoff } from "./send-handoff.js";
 
 type Maybe<T> = T | undefined;
 
@@ -118,6 +120,11 @@ export function createTeamsReplyStreamController(params: {
   let failedSegmentFallbackPrepared = false;
   const streamEvents = (stream as { events?: TeamsStreamChunkEvents } | undefined)?.events;
   let streamChunkSubscription: number | undefined;
+  let informativeUpdateQueued = false;
+  let progressHandoffStarted = false;
+  let preparedProgressReceipt:
+    | Pick<ProgressContinuationReceipt, "messageId" | "text" | "snapshot">
+    | undefined;
 
   // The SDK emits `chunk` only after Teams acknowledges a cumulative typing
   // activity. Never infer delivered text from emit(), queued bytes, or errors.
@@ -238,11 +245,12 @@ export function createTeamsReplyStreamController(params: {
     active: Boolean(stream) && streamMode === "progress",
     seed: params.progressSeed ?? "msteams",
     update: (text) => {
-      if (!stream || wasCanceled() || streamFinalizationPending) {
+      if (!stream || wasCanceled() || streamFinalizationPending || progressHandoffStarted) {
         return false;
       }
       try {
         stream.update(text.replace(/^• /gmu, "- "));
+        informativeUpdateQueued = true;
         return true;
       } catch (err) {
         if (isStreamCancelledError(err)) {
@@ -265,7 +273,13 @@ export function createTeamsReplyStreamController(params: {
     onPartialReply(payload: { text?: string }): void {
       // Partial-token streaming only fires in "partial" mode. Progress-mode
       // final payloads arrive at preparePayload instead.
-      if (!stream || !payload.text || wasCanceled() || streamMode !== "partial") {
+      if (
+        !stream ||
+        !payload.text ||
+        wasCanceled() ||
+        streamMode !== "partial" ||
+        progressHandoffStarted
+      ) {
         return;
       }
       if (replacementSettlementPending && replacementFinalPending) {
@@ -432,7 +446,12 @@ export function createTeamsReplyStreamController(params: {
       }
       // A native stream owns one final segment. Later progress payloads use
       // block delivery, just like later partial-mode segments after tools.
-      if (streamMode === "progress" && payload.text && !nativeDispatchStarted) {
+      if (
+        streamMode === "progress" &&
+        payload.text &&
+        !nativeDispatchStarted &&
+        !progressHandoffStarted
+      ) {
         try {
           stream.emit(payload.text);
           emittedText = payload.text;
@@ -464,6 +483,87 @@ export function createTeamsReplyStreamController(params: {
       }
       nativeDeliveryClaimed = true;
       return true;
+    },
+
+    async prepareProgressContinuation(assertCurrent: () => void) {
+      if (
+        !stream ||
+        progressHandoffStarted ||
+        nativeDeliveryClaimed ||
+        streamFailed ||
+        wasCanceled() ||
+        (!nativeDispatchStarted && !informativeUpdateQueued)
+      ) {
+        return undefined;
+      }
+      assertCurrent();
+      progressHandoffStarted = true;
+      progressDraft.markFinalReplyStarted();
+      const snapshot = progressDraft.getSnapshot();
+      const activity =
+        streamMode === "progress"
+          ? buildMSTeamsProgressActivity(snapshot, params.msteamsConfig)
+          : {
+              ...buildMSTeamsMessageActivity(),
+              text: pendingFinalPayload?.text ?? emittedText,
+              textFormat: "plain" as const,
+            };
+      streamFinalizationPending = true;
+      tokensEmitted = false;
+      nativeDispatchStarted = true;
+      pendingFinalPayload = undefined;
+      replacementFinalPending = false;
+      replacementSettlementPending = false;
+      replacementTextAwaitingAcknowledgement = {
+        text: activity.text,
+        logicalText: activity.text,
+      };
+      try {
+        // Informative-only close has no editable result in the Teams SDK.
+        // Materialize the existing status as message content, not task completion.
+        // close() joins its queued/in-flight chunks and confirms the same activity.
+        const result = await withMSTeamsConnectorHandoff(
+          { assertDirectAdapterHandoff: assertCurrent },
+          async () => {
+            assertCurrent();
+            stream.clearText();
+            stream.emit(activity);
+            return await stream.close();
+          },
+        );
+        assertCurrent();
+        const messageId = extractMessageId(result)?.trim();
+        if (!wasCanceled() && messageId && messageId !== "unknown") {
+          nativeDeliveryClaimed = true;
+          preparedProgressReceipt = { messageId, text: activity.text, snapshot };
+          return preparedProgressReceipt;
+        }
+        streamFailed = !wasCanceled();
+      } catch (error) {
+        if (isStreamCancelledError(error)) {
+          canceledLocally = true;
+        } else {
+          streamFailed = true;
+          params.log?.warn?.(`msteams progress handoff failed: ${coerceErrorMessage(error)}`);
+        }
+      } finally {
+        streamFinalizationPending = false;
+        replacementTextAwaitingAcknowledgement = undefined;
+        releaseStreamChunkSubscription();
+      }
+      assertCurrent();
+      return undefined;
+    },
+
+    releaseProgressContinuation(this: void, receipt: ProgressContinuationReceipt): void {
+      if (preparedProgressReceipt?.messageId !== receipt.messageId) {
+        return;
+      }
+      preparedProgressReceipt = undefined;
+      nativeDispatchStarted = false;
+      acknowledgedStreamId = undefined;
+      acknowledgedText = "";
+      acknowledgedLogicalText = "";
     },
 
     async finalize(): Promise<MSTeamsNativeDeliveryFinalization> {

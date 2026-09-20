@@ -9,6 +9,7 @@ import {
   getReplyPayloadTtsSupplement,
   resolveSendableOutboundReplyParts,
 } from "openclaw/plugin-sdk/reply-payload";
+import type { ReplyDispatchRuntimeInfo } from "openclaw/plugin-sdk/reply-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveMatrixExtraContent } from "../../outbound.js";
 import type { CoreConfig, MatrixStreamingMode, ReplyToMode } from "../../types.js";
@@ -106,7 +107,24 @@ export function createMatrixReplyDispatcher(config: {
   const dispatcherOptions = {
     ...prefixOptions,
     humanDelay,
-    deliver: async (payload: ReplyPayload, info: { kind: string }) => {
+    deliver: async (payload: ReplyPayload, info: ReplyDispatchRuntimeInfo) => {
+      if (await draftController.adoptProgressContinuation(payload, info)) {
+        const adopted = draftController.adoptedProgressReceipt();
+        if (!adopted) {
+          throw new Error("Matrix progress adoption returned no receipt");
+        }
+        const receipt = createPreviewMessageReceipt({
+          id: adopted.messageId,
+          ...(threadTarget ? { threadId: threadTarget } : {}),
+        });
+        hasRepliedRef.value = true;
+        return {
+          messageIds: receipt.platformMessageIds,
+          receipt,
+          visibleReplySent: true,
+          content: adopted.text,
+        };
+      }
       const completeDelivery = async (
         result: MatrixReplyDeliveryResult,
       ): Promise<MatrixReplyDeliveryResult> => {

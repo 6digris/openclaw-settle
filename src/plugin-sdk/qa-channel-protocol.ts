@@ -244,6 +244,8 @@ export type QaBusEditMessageInput = {
   accountId?: string;
   messageId: string;
   text: string;
+  /** Omission retains the existing trace; a supplied list replaces it. */
+  toolCalls?: QaBusToolCall[];
   timestamp?: number;
 };
 

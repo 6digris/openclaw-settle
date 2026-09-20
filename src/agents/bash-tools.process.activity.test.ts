@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { createProcessSupervisor } from "../process/supervisor/supervisor.js";
 import { createStubChildAdapter } from "../process/supervisor/supervisor.test-support.js";
+import { mapTaskSummary } from "../tasks/task-summary.js";
 import { cancelBackgroundExecSession } from "./bash-process-control.js";
 import { getFinishedSession, markBackgrounded, waitForExecScope } from "./bash-process-registry.js";
 import { resetProcessRegistryForTests } from "./bash-process-registry.test-support.js";
@@ -135,7 +136,6 @@ it("publishes coalesced exec activity and cleanup without durable writes or late
     await import("../test-utils/task-registry-runtime.js");
   const { configureTaskRegistryRuntime } = await import("../tasks/task-registry.store.js");
   const { resetTaskRegistryForTests } = await import("../tasks/task-registry.test-support.js");
-  const { mapTaskSummary } = await import("../gateway/server-methods/task-summary.js");
   const { createExecTool } = await import("./bash-tools.exec-run.js");
   await withOpenClawTestState({ layout: "home", scenario: "minimal" }, async ({ workspaceDir }) => {
     resetTaskRegistryForTests({ persist: false });

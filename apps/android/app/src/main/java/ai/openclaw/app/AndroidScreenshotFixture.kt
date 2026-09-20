@@ -345,6 +345,42 @@ internal object AndroidScreenshotFixture {
         put("title", JsonPrimitive("Release task ${index.toString().padStart(2, '0')}"))
         put("status", JsonPrimitive(if (index <= 8) "running" else "completed"))
         put("runtime", JsonPrimitive("subagent"))
+        put("sessionKey", JsonPrimitive(mainSessionKey))
+        put("runId", JsonPrimitive("screenshot-run-$index"))
+        put("deliveryStatus", JsonPrimitive(if (index <= 9) "pending" else "delivered"))
+        put(
+          "execution",
+          buildJsonObject {
+            put("state", JsonPrimitive(when {
+              index == 8 -> "waiting"
+              index == 7 -> "unknown"
+              index <= 8 -> "running"
+              else -> "finished"
+            }))
+            if (index == 8) put("wait", buildJsonObject { put("kind", JsonPrimitive("children")) })
+          },
+        )
+        if (index <= 8 && index != 7) {
+          put(
+            "progress",
+            buildJsonObject {
+              put("runId", JsonPrimitive("screenshot-run-$index"))
+              put("revision", JsonPrimitive(1))
+              put(
+                "items",
+                buildJsonArray {
+                  add(buildJsonObject {
+                    put("itemId", JsonPrimitive("screenshot-item-$index"))
+                    put("kind", JsonPrimitive("tool"))
+                    put("phase", JsonPrimitive("start"))
+                    put("title", JsonPrimitive("Reviewing release task $index"))
+                    put("status", JsonPrimitive("running"))
+                  })
+                },
+              )
+            },
+          )
+        }
         put("createdAt", JsonPrimitive(1_783_555_200_000L + index))
         put("updatedAt", JsonPrimitive(1_783_555_260_000L + index))
         put("progressSummary", JsonPrimitive("Reviewing the synthetic release checklist, item $index."))

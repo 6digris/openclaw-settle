@@ -3,6 +3,14 @@ package ai.openclaw.app.ui.chat
 import ai.openclaw.app.MainViewModel
 import ai.openclaw.app.chat.BackgroundTask
 import ai.openclaw.app.chat.BackgroundTaskDisplayStatus
+import ai.openclaw.app.chat.BackgroundTaskEvent
+import ai.openclaw.app.chat.ChatAgentActivity
+import ai.openclaw.app.chat.ChatProgressCard
+import ai.openclaw.app.chat.CoalescedBackgroundTaskEvent
+import ai.openclaw.app.chat.coalesceBackgroundTaskEvent
+import ai.openclaw.app.chat.replayBackgroundTaskEvents
+import ai.openclaw.app.chat.mergeBackgroundTasks
+import ai.openclaw.app.chat.newestBackgroundTaskSnapshot
 import ai.openclaw.app.i18n.nativeString
 import ai.openclaw.app.ui.AppModalBottomSheet
 import ai.openclaw.app.ui.design.ClawStatus
@@ -33,6 +41,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -46,6 +55,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
@@ -55,6 +65,8 @@ private class BackgroundTaskReads {
   var detailToken: Any? = null
   var listJob: Job? = null
   var detailJob: Job? = null
+  var listEvents: MutableMap<String, CoalescedBackgroundTaskEvent>? = null
+  var detailEvents: MutableMap<String, CoalescedBackgroundTaskEvent>? = null
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -73,6 +85,7 @@ internal fun BackgroundTasksSheet(
   var detailError by remember(opening) { mutableStateOf<String?>(null) }
   val reads = remember(opening) { BackgroundTaskReads() }
   val scope = rememberCoroutineScope()
+  val progressCard by viewModel.chatProgressCard.collectAsState()
 
   // Reads can finish before first placement or after a same-owner disconnect.
   // Only user actions require placed geometry; neither completion gate requires a live socket.
@@ -81,7 +94,9 @@ internal fun BackgroundTasksSheet(
   fun loadTasks() {
     if (!isCurrent()) return
     val token = Any()
+    val pendingEvents = mutableMapOf<String, CoalescedBackgroundTaskEvent>()
     reads.listToken = token
+    reads.listEvents = pendingEvents
     reads.listJob?.cancel()
     loading = true
     listError = null
@@ -90,22 +105,34 @@ internal fun BackgroundTasksSheet(
         if (!isCurrent() || reads.listToken !== token) return@launch
         try {
           val result = viewModel.listBackgroundTasks(opening.composerOwner.agentId)
-          if (isCurrent() && reads.listToken === token) tasks = result
+          if (isCurrent() && reads.listToken === token) {
+            val knownIds = (result + tasks).mapTo(mutableSetOf()) { it.id }
+            val admittedEvents = pendingEvents.filterValues { event ->
+              event !is CoalescedBackgroundTaskEvent.Upserted ||
+                event.task.agentId == opening.composerOwner.agentId || event.task.id in knownIds
+            }
+            tasks = backgroundTaskWindow(replayBackgroundTaskEvents(result, admittedEvents))
+          }
         } catch (failure: Exception) {
           if (failure is CancellationException) throw failure
           if (isCurrent() && reads.listToken === token) {
             listError = failure.message ?: nativeString("Couldn’t load background tasks")
           }
         } finally {
-          if (isCurrent() && reads.listToken === token) loading = false
+          if (isCurrent() && reads.listToken === token) {
+            reads.listEvents = null
+            loading = false
+          }
         }
       }
   }
 
   fun selectTask(task: BackgroundTask) {
-    if (!admit()) return
+    if (!isCurrent()) return
     val token = Any()
+    val pendingEvents = mutableMapOf<String, CoalescedBackgroundTaskEvent>()
     reads.detailToken = token
+    reads.detailEvents = pendingEvents
     reads.detailJob?.cancel()
     selectedTask = task
     detailLoading = true
@@ -115,24 +142,68 @@ internal fun BackgroundTasksSheet(
         if (!isCurrent() || reads.detailToken !== token) return@launch
         try {
           val result = viewModel.getBackgroundTask(task.id)
-          if (isCurrent() && reads.detailToken === token) selectedTask = result
+          if (isCurrent() && reads.detailToken === token) {
+            selectedTask = replayBackgroundTaskEvents(listOf(result), pendingEvents).singleOrNull { it.id == task.id }
+          }
         } catch (failure: Exception) {
           if (failure is CancellationException) throw failure
           if (isCurrent() && reads.detailToken === token) {
             detailError = failure.message ?: nativeString("Couldn’t load task details")
           }
         } finally {
-          if (isCurrent() && reads.detailToken === token) detailLoading = false
+          if (isCurrent() && reads.detailToken === token) {
+            reads.detailEvents = null
+            detailLoading = false
+          }
         }
       }
   }
 
-  LaunchedEffect(opening) { loadTasks() }
+  LaunchedEffect(opening) {
+    launch(start = CoroutineStart.UNDISPATCHED) {
+    viewModel.backgroundTaskEvents().collect { event ->
+      if (!isCurrent()) return@collect
+      when (event) {
+        is BackgroundTaskEvent.Upserted -> {
+          val task = event.task
+          val alreadyVisible = tasks.any { it.id == task.id } || selectedTask?.id == task.id
+          if (task.agentId != null && task.agentId != opening.composerOwner.agentId) return@collect
+          reads.listEvents?.let { coalesceBackgroundTaskEvent(it, event) }
+          if (task.agentId == null && !alreadyVisible) return@collect
+          tasks = backgroundTaskWindow(mergeBackgroundTasks(tasks, listOf(task)))
+          selectedTask?.takeIf { it.id == task.id }?.let { previous ->
+            reads.detailEvents?.let { coalesceBackgroundTaskEvent(it, event) }
+            selectedTask = newestBackgroundTaskSnapshot(previous, task)
+          }
+        }
+        is BackgroundTaskEvent.Deleted -> {
+          reads.listEvents?.let { coalesceBackgroundTaskEvent(it, event) }
+          tasks = tasks.filterNot { it.id == event.taskId }
+          if (selectedTask?.id == event.taskId) {
+            reads.detailToken = null
+            reads.detailEvents = null
+            reads.detailJob?.cancel()
+            selectedTask = null
+          }
+        }
+        BackgroundTaskEvent.Restored -> {
+          tasks = tasks.map { it.copy(progress = null, executionState = null) }
+          selectedTask = selectedTask?.copy(progress = null, executionState = null)
+          loadTasks()
+          selectedTask?.let(::selectTask)
+        }
+      }
+    }
+    }
+    loadTasks()
+  }
   DisposableEffect(opening) {
     onDispose {
       reads.disposed = true
       reads.listToken = null
+      reads.listEvents = null
       reads.detailToken = null
+      reads.detailEvents = null
       reads.listJob?.cancel()
       reads.detailJob?.cancel()
     }
@@ -150,10 +221,12 @@ internal fun BackgroundTasksSheet(
         task = selectedTask!!,
         loading = detailLoading,
         error = detailError,
+        progressCard = progressCard?.takeIf { selectedTask?.sessionKey == opening.sessionKey },
         onBack = {
           if (admit()) {
             // Retire the detail result before cancellation or deferred Compose removal.
             reads.detailToken = null
+            reads.detailEvents = null
             reads.detailJob?.cancel()
             selectedTask = null
             detailLoading = false
@@ -166,23 +239,28 @@ internal fun BackgroundTasksSheet(
         tasks = tasks,
         loading = loading,
         error = listError,
+        progressCard = progressCard,
         onRefresh = { if (admit()) loadTasks() },
-        onSelect = ::selectTask,
+        onSelect = { if (admit()) selectTask(it) },
       )
     }
   }
 }
+
+private fun backgroundTaskWindow(tasks: List<BackgroundTask>): List<BackgroundTask> =
+  tasks.filterNot(BackgroundTask::isTerminal).take(100) + tasks.filter(BackgroundTask::isTerminal).take(50)
 
 @Composable
 private fun BackgroundTaskList(
   tasks: List<BackgroundTask>,
   loading: Boolean,
   error: String?,
+  progressCard: ChatProgressCard?,
   onRefresh: () -> Unit,
   onSelect: (BackgroundTask) -> Unit,
 ) {
-  val running = tasks.filter(BackgroundTask::isActive)
-  val finished = tasks.filterNot(BackgroundTask::isActive)
+  val running = tasks.filterNot(BackgroundTask::isTerminal)
+  val finished = tasks.filter(BackgroundTask::isTerminal)
   LazyColumn(
     modifier = Modifier.fillMaxWidth().heightIn(max = 620.dp),
     contentPadding = PaddingValues(bottom = 28.dp),
@@ -206,6 +284,9 @@ private fun BackgroundTaskList(
         }
       }
     }
+    progressCard?.let { card ->
+      item { BackgroundTaskChecklist(card) }
+    }
     error?.let { message ->
       item {
         Text(
@@ -226,7 +307,7 @@ private fun BackgroundTaskList(
         )
       }
     }
-    taskSection(nativeString("Running"), running, onSelect)
+    taskSection(nativeString("Active"), running, onSelect)
     taskSection(nativeString("Finished"), finished, onSelect)
   }
 }
@@ -277,11 +358,21 @@ private fun androidx.compose.foundation.lazy.LazyListScope.taskSection(
               status =
                 when {
                   task.isActive -> ClawStatus.Warning
-                  task.status == "completed" -> ClawStatus.Success
+                  task.displayStatus == BackgroundTaskDisplayStatus.Completed -> ClawStatus.Success
+                  task.displayStatus == BackgroundTaskDisplayStatus.Unknown -> ClawStatus.Warning
                   else -> ClawStatus.Danger
                 },
             )
             Text(task.runtime, style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted)
+          }
+          task.progress?.items?.lastOrNull()?.let { activity ->
+            Text(
+              text = activity.progressText?.takeIf(String::isNotBlank) ?: activity.title,
+              style = ClawTheme.type.caption,
+              color = ClawTheme.colors.textMuted,
+              maxLines = 2,
+              overflow = TextOverflow.Ellipsis,
+            )
           }
           task.output?.let { output ->
             Text(
@@ -305,6 +396,7 @@ private fun BackgroundTaskDetail(
   task: BackgroundTask,
   loading: Boolean,
   error: String?,
+  progressCard: ChatProgressCard?,
   onBack: () -> Unit,
 ) {
   val statusLabel = backgroundTaskStatusLabel(task)
@@ -346,6 +438,25 @@ private fun BackgroundTaskDetail(
         )
       }
     }
+    item {
+      TaskTextBlock(
+        label = nativeString("Final delivery"),
+        text = backgroundTaskDeliveryLabel(task.deliveryStatus),
+      )
+    }
+    progressCard?.let { card -> item { BackgroundTaskChecklist(card) } }
+    if (task.progress == null) {
+      item { TaskTextBlock(label = nativeString("Activity"), text = nativeString("Activity unavailable")) }
+    } else if (task.progress.items.isEmpty()) {
+      item { TaskTextBlock(label = nativeString("Activity"), text = nativeString("No current activity")) }
+    } else {
+      items(task.progress.items, key = ChatAgentActivity::itemId) { activity ->
+        TaskTextBlock(
+          label = activity.status ?: nativeString("Activity"),
+          text = activity.progressText?.takeIf(String::isNotBlank) ?: activity.title,
+        )
+      }
+    }
     item { TaskTextBlock(label = nativeString("Prompt"), text = task.prompt ?: nativeString("Prompt unavailable")) }
     item { TaskTextBlock(label = nativeString("Output"), text = task.output ?: nativeString("No output yet")) }
   }
@@ -357,7 +468,37 @@ private fun backgroundTaskStatusLabel(task: BackgroundTask): String =
     BackgroundTaskDisplayStatus.Running -> nativeString("Running")
     BackgroundTaskDisplayStatus.Completed -> nativeString("Completed")
     BackgroundTaskDisplayStatus.Failed -> nativeString("Failed")
+    BackgroundTaskDisplayStatus.Waiting ->
+      when (task.waitKind) {
+        "children" -> nativeString("Waiting for delegated work")
+        "approval" -> nativeString("Waiting for approval")
+        "user_input" -> nativeString("Waiting for input")
+        else -> nativeString("Waiting")
+      }
+    BackgroundTaskDisplayStatus.ExecutionFinished -> nativeString("Execution finished")
+    BackgroundTaskDisplayStatus.Blocked -> nativeString("Blocked")
+    BackgroundTaskDisplayStatus.Unknown -> nativeString("Activity unavailable")
   }
+
+private fun backgroundTaskDeliveryLabel(status: String?): String =
+  when (status) {
+    "pending" -> nativeString("Pending")
+    "delivered" -> nativeString("Delivered")
+    "session_queued" -> nativeString("Queued for conversation")
+    "failed" -> nativeString("Delivery failed")
+    "dismissed" -> nativeString("Dismissed")
+    "parent_missing" -> nativeString("Parent unavailable")
+    "not_applicable" -> nativeString("Not applicable")
+    else -> nativeString("Unavailable")
+  }
+
+@Composable
+private fun BackgroundTaskChecklist(card: ChatProgressCard) {
+  Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp)) {
+    Text(nativeString("Conversation checklist"), style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted)
+    ProgressCardPill(card)
+  }
+}
 
 @Composable
 private fun TaskTextBlock(

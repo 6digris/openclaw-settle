@@ -348,7 +348,10 @@ async function dispatchInboundMessageWithBufferedDispatcherCore(
     createReplyDispatcherWithTyping({
       ...params.dispatcherOptions,
       beforeDeliver,
-      onSettled: settleDeliveries,
+      onSettled:
+        params.dispatcherOptions.onSettled || params.dispatcherOptions.onFreshSettledDelivery
+          ? settleDeliveries
+          : undefined,
       onFreshSettledDelivery: undefined,
       silentReplyContext: params.dispatcherOptions.silentReplyContext ?? silentReplyContext,
     });
@@ -378,13 +381,9 @@ async function dispatchInboundMessageWithBufferedDispatcherCore(
       onSessionMetadataChanges: params.onSessionMetadataChanges,
     });
   } finally {
-    try {
-      await settledDeliveries;
-    } finally {
-      foregroundReplyLease?.release();
-      markRunComplete();
-      markDispatchIdle();
-    }
+    foregroundReplyLease?.release();
+    markRunComplete();
+    markDispatchIdle();
   }
 }
 

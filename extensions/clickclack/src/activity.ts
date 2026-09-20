@@ -117,6 +117,7 @@ function activityBody(payload: ClickClackItemEventPayload): string {
 type CommentarySegment = {
   messageId?: string;
   body: string;
+  sentBody?: string;
   dirty: boolean;
   timer?: ReturnType<typeof setTimeout>;
 };
@@ -131,6 +132,8 @@ type ToolRow = {
 /** Publisher wired into one agent turn via `replyOptions.onItemEvent`. */
 export type ClickClackActivityPublisher = {
   onItemEvent: (payload: ClickClackItemEventPayload) => false;
+  /** Discard staged commentary without erasing an already confirmed historical row. */
+  discardPendingItem: (itemId: string) => void;
   /**
    * Records the resolved model/thinking for this turn (from
    * `replyOptions.onModelSelected`); stamped onto subsequent activity rows.
@@ -187,15 +190,21 @@ export function createClickClackActivityPublisher(params: {
     if (!segment.dirty || !segment.body.trim()) {
       return Promise.resolve();
     }
-    segment.dirty = false;
     const body = segment.body;
     return enqueue(async () => {
-      if (segment.messageId) {
-        await params.client.updateMessageBody(segment.messageId, body);
+      if (!segment.dirty) {
         return;
       }
-      const posted = await postRow("agent_commentary", body);
-      segment.messageId = posted.id;
+      if (segment.messageId) {
+        await params.client.updateMessageBody(segment.messageId, body);
+      } else {
+        const posted = await postRow("agent_commentary", body);
+        segment.messageId = posted.id;
+      }
+      segment.sentBody = body;
+      if (segment.body === body) {
+        segment.dirty = false;
+      }
     });
   };
 
@@ -225,7 +234,7 @@ export function createClickClackActivityPublisher(params: {
       segment = { body: "", dirty: false };
       commentaryByItem.set(key, segment);
     }
-    if (body === segment.body) {
+    if (body === segment.body && (body === segment.sentBody || segment.dirty)) {
       return;
     }
     segment.body = body;
@@ -269,7 +278,7 @@ export function createClickClackActivityPublisher(params: {
       });
       return;
     }
-    if (body === existing.body) {
+    if (body === existing.body && body === existing.sentBody) {
       return;
     }
     existing.body = body;
@@ -288,6 +297,7 @@ export function createClickClackActivityPublisher(params: {
         payload.suppressChannelProgress ||
         payload.suppressDurableProgress
       ) {
+        handleCommentary({ ...payload, progressText: "", summary: "", meta: "" });
         const key = toolRowKey(payload);
         const row = key ? toolRows.get(`agent_tool:${key}`) : undefined;
         if (row) {
@@ -314,6 +324,14 @@ export function createClickClackActivityPublisher(params: {
       handleDiscreteItem(payload);
       // Activity transport is serialized in the background; queueing is not visibility.
       return false;
+    },
+    discardPendingItem(itemId) {
+      const segment = commentaryByItem.get(itemId);
+      if (segment) {
+        clearTimeout(segment.timer);
+        segment.timer = undefined;
+        segment.dirty = false;
+      }
     },
     setProvenance: (next) => {
       provenance = next;

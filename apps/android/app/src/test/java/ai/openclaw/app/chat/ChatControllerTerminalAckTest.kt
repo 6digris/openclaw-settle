@@ -71,6 +71,49 @@ class ChatControllerTerminalAckTest {
     }
 
   @Test
+  fun yieldedParentReleasesForegroundWithoutCompletingDelegatedWorkOrNotifying() =
+    runTest {
+      val finalized = mutableListOf<String>()
+      val controller =
+        createChatController(
+          cacheScope = { ChatCacheScope("gateway-a", 1) },
+          currentDefaultAgentId = { "main" },
+          onAssistantReplyFinalized = { _, runId, _ -> finalized += runId },
+        ) { method, _ ->
+          when (method) {
+            "chat.send" -> """{"runId":"run-yield","status":"started"}"""
+            "progressCard.get" ->
+              """{"card":{"sessionKey":"agent:main:main","revision":1,"updatedAt":1,"markdown":"Delegated checklist","steps":[{"step":"Wait for worker","status":"in_progress"}]}}"""
+            else -> emptyChatGatewayResponse(method)
+          }
+        }
+      controller.prepareMainSessionKey("agent:main:main")
+      controller.load(controller.sessionKey.value)
+      controller.handleGatewayEvent("progressCard.changed", """{"sessionKey":"agent:main:main","revision":1}""")
+      runCurrent()
+      assertTrue(controller.sendMessageAwaitAcceptance("delegate", "off", emptyList()))
+      controller.handleGatewayEvent(
+        "task",
+        """{"action":"upserted","task":{"id":"child","agentId":"main","sessionKey":"agent:main:main","runtime":"subagent","status":"running","execution":{"state":"running"},"runId":"child-run","progress":{"runId":"child-run","revision":1,"items":[{"itemId":"item","kind":"tool","phase":"start","title":"Checking delegated work","status":"running"}]}}}""",
+      )
+      controller.handleGatewayEvent(
+        "chat",
+        """{"sessionKey":"agent:main:main","runId":"run-yield","seq":2,"state":"final","yielded":true,"message":{"role":"assistant","content":[{"type":"text","text":"Delegated work continues"}]}}""",
+      )
+      runCurrent()
+
+      assertEquals(0, controller.pendingRunCount.value)
+      assertNull(controller.streamingAssistantText.value)
+      assertTrue(finalized.isEmpty())
+      val child = controller.subagentActivities.value.getValue("child")
+      assertTrue(child.isWorking)
+      assertEquals("running", child.executionState)
+      assertEquals("Checking delegated work", child.progress?.items?.single()?.title)
+      assertEquals("Delegated checklist", controller.progressCard.value?.markdown)
+      assertEquals(ChatPlanStepStatus.InProgress, controller.progressCard.value?.steps?.single()?.status)
+    }
+
+  @Test
   fun finalAssistantEventPublishesOriginalOwnerAfterSessionSwitch() =
     runTest {
       val finalized = mutableListOf<Triple<ChatComposerOwner, String, String>>()

@@ -1,4 +1,8 @@
-import { createChannelProgressDraftCompositor } from "openclaw/plugin-sdk/channel-outbound";
+import {
+  createChannelProgressContinuation,
+  createChannelProgressDraftCompositor,
+  type ProgressContinuationReceipt,
+} from "openclaw/plugin-sdk/channel-outbound";
 import type { GetReplyOptions } from "openclaw/plugin-sdk/reply-runtime";
 import type { CoreConfig, MatrixConfig, MatrixStreamingMode, ReplyToMode } from "../../types.js";
 import type { MatrixClient } from "../sdk.js";
@@ -32,7 +36,7 @@ export async function createMatrixDraftController(params: {
     client,
     logVerboseMessage,
   } = params;
-  type DraftDisposition = "active" | "retained" | "consumed";
+  type DraftDisposition = "active" | "retained" | "consumed" | "adopted";
   let draftDisposition: DraftDisposition = "active";
 
   const draftStreamingEnabled = streaming !== "off";
@@ -92,6 +96,40 @@ export async function createMatrixDraftController(params: {
       return Boolean(draftStream.eventId());
     },
     deleteCurrent: () => draftStream?.deleteCurrentMessage(),
+  });
+  let adoptedProgressReceipt: ProgressContinuationReceipt | undefined;
+  const progressContinuation = createChannelProgressContinuation({
+    prepareReceipt: async (assertCurrent) => {
+      if (!draftStream || draftDisposition !== "active" || !progressDraft.isVisible) {
+        return undefined;
+      }
+      const snapshot = progressDraft.getSnapshot();
+      progressDraft.markFinalReplyStarted();
+      const confirmed = await draftStream.prepareContinuation(assertCurrent);
+      assertCurrent();
+      if (!confirmed) {
+        return undefined;
+      }
+      return {
+        channel: "matrix",
+        accountId,
+        to: `room:${roomId}`,
+        threadId: threadTarget,
+        messageId: confirmed.messageId,
+        text: confirmed.content,
+        snapshot,
+      };
+    },
+    releaseReceipt: (receipt) => {
+      if (draftStream?.eventId() === receipt.messageId) {
+        draftStream.releaseContinuation(receipt.messageId);
+        draftDisposition = "adopted";
+      }
+      adoptedProgressReceipt = receipt;
+    },
+    discardPending: async () => {
+      await draftStream?.discardPending();
+    },
   });
 
   const buildPreviewToolProgressReplyOptions = (): Partial<GetReplyOptions> => {
@@ -183,6 +221,7 @@ export async function createMatrixDraftController(params: {
   };
 
   const resetDraftDeliveryState = async () => {
+    await progressContinuation.settle();
     await draftStream?.discardPending();
     draftStream?.reset();
     draftDisposition = "active";
@@ -193,10 +232,14 @@ export async function createMatrixDraftController(params: {
     latestQueuedDraftBoundaryOffsets.clear();
     currentDraftReplyToId = draftReplyToId;
     progressDraft.beginNewTurn({ force: true });
+    adoptedProgressReceipt = undefined;
   };
 
   return {
     draftStream,
+    adoptProgressContinuation: progressContinuation.adopt,
+    settleProgressContinuation: progressContinuation.settle,
+    adoptedProgressReceipt: () => adoptedProgressReceipt,
     cancelProgressDraft: () => progressDraft.cancel(),
     buildPreviewToolProgressReplyOptions,
     queueDraftBlockBoundary,

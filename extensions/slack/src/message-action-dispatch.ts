@@ -13,7 +13,7 @@ import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { resolveDefaultSlackAccountId } from "./accounts.js";
+import { resolveDefaultSlackAccountId, resolveSlackAccount } from "./accounts.js";
 import { SLACK_MAX_BLOCKS } from "./blocks-input.js";
 import { buildSlackPresentationBlocks, canRenderSlackPresentation } from "./blocks-render.js";
 import { normalizeSlackOutboundText } from "./format.js";
@@ -235,6 +235,44 @@ export async function handleSlackMessageAction(params: {
       required: true,
     });
     const content = readStringParam(actionParams, "message", { allowEmpty: true });
+    if (ctx.progressSnapshot) {
+      const [
+        { resolveChannelProgressDraftMaxLineChars },
+        { resolveExplicitSlackProgressTitle, resolveSlackProgressStyle },
+        { buildSlackProgressSnapshotBlocks },
+        { buildSlackProgressTextBlocks },
+      ] = await Promise.all([
+        import("openclaw/plugin-sdk/channel-outbound"),
+        import("./monitor/message-handler/dispatch-helpers.js"),
+        import("./monitor/message-handler/dispatch-progress-render.js"),
+        import("./progress-blocks.js"),
+      ]);
+      const account = resolveSlackAccount({ cfg, accountId });
+      const snapshot = ctx.progressSnapshot;
+      const blocks =
+        resolveSlackProgressStyle(account.config) === "compact"
+          ? buildSlackProgressTextBlocks(
+              snapshot.preparedBlocks ?? [{ text: content ?? "", format: "plain" }],
+            )
+          : buildSlackProgressSnapshotBlocks({
+              snapshot,
+              state: "working",
+              explicitTitle: resolveExplicitSlackProgressTitle(account.config),
+              maxLineChars: resolveChannelProgressDraftMaxLineChars(account.config),
+            });
+      return await invoke(
+        {
+          action: "editMessage",
+          channelId: resolveChannelId(),
+          messageId,
+          content: content ?? "",
+          blocks,
+          accountId: account.accountId,
+        },
+        cfg,
+        ctx.toolContext,
+      );
+    }
     const presentation = normalizeMessagePresentation(actionParams.presentation);
     const renderedPresentation = renderSlackActionPresentation(presentation);
     // Slack hides top-level text when blocks are present on updates. Keep an

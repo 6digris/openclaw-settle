@@ -2447,6 +2447,39 @@ struct ChatViewModelTests {
         #expect(viewModel.subagentActivities[0].terminalSummary == "Finished cleanly")
         #expect(viewModel.subagentActivities[0].diffStat?.added == 9)
     }
+    @Test(arguments: ["deleted", "updated", "disconnected"])
+    @MainActor func `task hydration cannot overwrite live observations or cross a connection`(change: String) async {
+        let gate = SessionSubscribeGate()
+        let transport = TestChatTransport(historyResponses: [], listTasksHook: { _, _ in
+            await gate.wait()
+            return [
+                subagentTaskSummary(id: "changed", status: "running", lastActivity: "Old activity"),
+                subagentTaskSummary(id: "other", status: "running", lastActivity: "Still working"),
+            ]
+        })
+        let viewModel = OpenClawChatViewModel(sessionKey: "main", transport: transport, activeAgentId: "main")
+        let refresh = Task { await viewModel.refreshSubagentActivities(sessionSnapshot: viewModel.currentSessionSnapshot()) }
+        await gate.waitUntilBlocked()
+        switch change {
+        case "deleted":
+            viewModel.handleTransportEvent(.task(.deleted(taskID: "changed")))
+        case "updated":
+            viewModel.handleTransportEvent(.task(.upserted(subagentTaskSummary(
+                id: "changed", status: "running", lastActivity: "Current activity"))))
+        default:
+            viewModel.handleTransportEvent(.health(ok: false))
+        }
+        await gate.release()
+        await refresh.value
+        if change == "disconnected" {
+            #expect(viewModel.subagentActivities.isEmpty)
+        } else {
+            #expect(viewModel.subagentActivities.contains { $0.id == "other" })
+            #expect(viewModel.subagentActivities.first { $0.id == "changed" }?.snippet ==
+                (change == "updated" ? "Current activity" : nil))
+        }
+    }
+
 
     @Test @MainActor func `tool input delta updates the matching pending edit diff`() {
         let viewModel = OpenClawChatViewModel(

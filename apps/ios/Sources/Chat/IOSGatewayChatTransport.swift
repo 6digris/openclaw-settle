@@ -505,6 +505,14 @@ struct IOSGatewayChatTransport: OpenClawChatGatewayTransport {
             agentID: OpenClawChatSessionKey.agentID(from: target.sessionKey) ?? target.agentID)
     }
 
+    func listTasks(sessionKey: String, agentID: String?) async throws -> [TaskSummary] {
+        let target = self.sessionTarget(for: sessionKey, overrideAgentID: agentID)
+        guard let route = await self.currentSessionMutationRoute() else { throw CancellationError() }
+        let request = OpenClawChatGatewayRequests.tasksList(sessionKey: target.sessionKey, agentID: target.agentID)
+        let data = try await self.gateway.request(request, ifCurrentRoute: route)
+        return try JSONDecoder().decode(TasksListResult.self, from: data).tasks
+    }
+
     func resolveInlineWidgetResource(
         path: String,
         replacing failedResource: OpenClawChatWidgetResource?) async -> OpenClawChatWidgetResource?

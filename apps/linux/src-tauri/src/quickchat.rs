@@ -1,5 +1,6 @@
 use crate::gateway_ws::{
-    AgentsListResult, ChatHistoryPage, ChatSendResult, GatewayClient, GatewayGeneration,
+    AgentsListResult, ChatHistoryPage, ChatRoutingTarget, ChatSendResult, GatewayClient,
+    GatewayGeneration, QuickChatSessionRead,
 };
 use crate::quickchat_widgets::QuickChatWidgetState;
 use crate::{tray, DesktopState};
@@ -1098,6 +1099,20 @@ pub async fn quickchat_send(
 ) -> Result<ChatSendResult, String> {
     require_quickchat_webview(&webview)?;
     state.send(gateway.inner(), message).await
+}
+
+#[tauri::command]
+pub(crate) async fn quickchat_session_read(
+    webview: Webview,
+    gateway: State<'_, GatewayClient>,
+    method: QuickChatSessionRead,
+    target: ChatRoutingTarget,
+    gateway_generation: GatewayGeneration,
+) -> Result<Value, String> {
+    require_quickchat_webview(&webview)?;
+    gateway
+        .session_read(method, target, gateway_generation)
+        .await
 }
 
 #[tauri::command]

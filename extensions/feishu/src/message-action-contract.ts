@@ -19,3 +19,20 @@ export const messageActionTargetAliases = {
   "list-pins": { aliases: ["chatId"] },
   "channel-info": { aliases: ["chatId"] },
 } satisfies NonNullable<ChannelMessageActionAdapter["messageActionTargetAliases"]>;
+
+export function readFirstString(
+  params: Record<string, unknown>,
+  keys: string[],
+  fallback?: string | null,
+): string | undefined {
+  for (const key of keys) {
+    const value = params[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  if (typeof fallback === "string" && fallback.trim()) {
+    return fallback.trim();
+  }
+  return undefined;
+}

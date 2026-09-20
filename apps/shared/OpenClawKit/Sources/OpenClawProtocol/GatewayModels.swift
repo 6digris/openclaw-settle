@@ -21761,6 +21761,7 @@ public struct TaskSummary: Codable, Sendable {
     public let toolusecount: Int?
     public let lasttoolname: String?
     public let execution: [String: AnyCodable]?
+    public let progress: [String: AnyCodable]?
     public let lastactivity: String?
     public let diffstat: [String: AnyCodable]?
     public let progresssummary: String?
@@ -21794,6 +21795,7 @@ public struct TaskSummary: Codable, Sendable {
         toolusecount: Int? = nil,
         lasttoolname: String? = nil,
         execution: [String: AnyCodable]? = nil,
+        progress: [String: AnyCodable]? = nil,
         lastactivity: String? = nil,
         diffstat: [String: AnyCodable]? = nil,
         progresssummary: String? = nil,
@@ -21826,6 +21828,7 @@ public struct TaskSummary: Codable, Sendable {
         self.toolusecount = toolusecount
         self.lasttoolname = lasttoolname
         self.execution = execution
+        self.progress = progress
         self.lastactivity = lastactivity
         self.diffstat = diffstat
         self.progresssummary = progresssummary
@@ -21860,6 +21863,7 @@ public struct TaskSummary: Codable, Sendable {
         case toolusecount = "toolUseCount"
         case lasttoolname = "lastToolName"
         case execution
+        case progress
         case lastactivity = "lastActivity"
         case diffstat = "diffStat"
         case progresssummary = "progressSummary"

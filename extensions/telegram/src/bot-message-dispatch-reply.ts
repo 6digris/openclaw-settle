@@ -2,6 +2,11 @@ import {
   createChannelPartialDeliveryError,
   isChannelPartialDeliveryError,
 } from "openclaw/plugin-sdk/channel-inbound";
+import {
+  createChannelProgressContinuation,
+  resolveChannelProgressDraftMaxLineChars,
+  resolveChannelProgressDraftMaxLines,
+} from "openclaw/plugin-sdk/channel-outbound";
 import { normalizeMessagePresentation } from "openclaw/plugin-sdk/interactive-runtime";
 import {
   isFastModeAutoProgressPayload,
@@ -57,6 +62,7 @@ import {
   shouldSuppressTelegramError,
 } from "./error-policy.js";
 import { shouldSuppressLocalTelegramExecApprovalPrompt } from "./exec-approvals.js";
+import { renderTelegramProgressDraftPreview } from "./progress-draft-preview.js";
 import { createTelegramReasoningStepState } from "./reasoning-lane-coordinator.js";
 import { resolveTelegramTargetChatType } from "./targets.js";
 
@@ -124,8 +130,101 @@ function hasExecApprovalPayload(payload: ReplyPayload): boolean {
   return payload.channelData?.execApproval !== undefined;
 }
 
-export function createReplyState(): TelegramReplyStateSlice {
+export function createReplyState(getTurn: () => Turn): TelegramReplyStateSlice {
+  let preparedStream: Turn["answerLane"]["stream"];
+  let preparedGeneration: number | undefined;
+  let releasedGeneration: number | undefined;
+  const progressContinuation = createChannelProgressContinuation({
+    assertCurrent: () => getTurn().turnAdoptionLifecycle?.abortSignal?.throwIfAborted(),
+    prepareReceipt: async (assertCurrent) => {
+      const turn = getTurn();
+      const generation = turn.progressContinuationGeneration;
+      releasedGeneration = undefined;
+      turn.progressCompositor.cancel();
+      await waitForDraftEvents(turn);
+      assertCurrent();
+      const stream = turn.answerLane.stream;
+      if (
+        !stream ||
+        turn.answerLane.finalized ||
+        generation !== turn.progressContinuationGeneration
+      ) {
+        return undefined;
+      }
+      markFinalStarted(turn);
+      const snapshot = turn.progressCompositor.getSnapshot();
+      if (!snapshot.statusHeadline && !snapshot.plan?.length && !snapshot.lines.length) {
+        return undefined;
+      }
+      const assertReceiptCurrent = () => {
+        assertCurrent();
+        if (
+          generation !== turn.progressContinuationGeneration ||
+          stream !== turn.answerLane.stream
+        ) {
+          throw new Error("Telegram progress generation retired");
+        }
+      };
+      const preview = renderTelegramProgressDraftPreview(snapshot, {
+        toolProgress: turn.progressCompositor.previewToolProgressEnabled,
+        richMessages: turn.telegramCfg.richMessages === true,
+        maxLines: resolveChannelProgressDraftMaxLines(turn.telegramCfg),
+        maxLineChars: resolveChannelProgressDraftMaxLineChars(turn.telegramCfg),
+      });
+      assertReceiptCurrent();
+      stream.updatePreview(preview, { assertPlatformSendAuthorized: assertReceiptCurrent });
+      await stream.flush();
+      assertReceiptCurrent();
+      const messageId = stream.messageId();
+      const text = stream.currentMessageSnapshot()?.text;
+      if (
+        typeof messageId !== "number" ||
+        !Number.isFinite(messageId) ||
+        !text ||
+        stream.lastDeliveredText() !== preview.text.trimEnd()
+      ) {
+        return undefined;
+      }
+      preparedStream = stream;
+      preparedGeneration = generation;
+      return {
+        channel: "telegram",
+        accountId: turn.context.route.accountId,
+        to: String(turn.context.chatId),
+        threadId: turn.context.threadSpec.id,
+        messageId: String(messageId),
+        text,
+        snapshot,
+      };
+    },
+    releaseReceipt: (receipt) => {
+      const turn = getTurn();
+      if (
+        !preparedStream ||
+        preparedGeneration !== turn.progressContinuationGeneration ||
+        preparedStream !== turn.answerLane.stream ||
+        String(preparedStream.messageId()) !== receipt.messageId
+      ) {
+        return;
+      }
+      releasedGeneration = preparedGeneration;
+      // Detach the accepted ID without deleting it; queued admission reopens
+      // this transport with a new generation after pending work is discarded.
+      preparedStream.forceNewMessage();
+      turn.progressContinuationAdopted = true;
+      resetLaneState(turn, turn.answerLane);
+      resetReasoningStepState(turn);
+      turn.deliveryState.markDelivered();
+    },
+    discardPending: async () => {
+      if (releasedGeneration === getTurn().progressContinuationGeneration) {
+        await preparedStream?.discard();
+      }
+    },
+  });
   return {
+    progressContinuation,
+    progressContinuationGeneration: 0,
     reasoningStepState: createTelegramReasoningStepState(),
     bufferedFinalSettlement: undefined as TelegramBufferedFinalSettlement | undefined,
     sentBlockMediaUrls: new Set<string>(),
@@ -218,75 +317,6 @@ function trackBlockMedia(
   }
 }
 
-async function adoptProgressContinuation(
-  turn: Turn,
-  payload: ReplyPayload,
-  info: Parameters<NonNullable<Deliver>>[1],
-): Promise<boolean> {
-  if (
-    info.kind !== "final" ||
-    payload.isError === true ||
-    typeof info.adoptProgressContinuation !== "function"
-  ) {
-    return false;
-  }
-  const adopt = info.adoptProgressContinuation;
-  await waitForDraftEvents(turn);
-  const stream = turn.answerLane.stream;
-  if (!stream || turn.answerLane.finalized || turn.isSuperseded()) {
-    return false;
-  }
-  if (
-    !turn.progressCompositor.isVisible &&
-    !turn.progressCompositor.hasStarted &&
-    (turn.progressCompositor.hasStatusHeadline ||
-      turn.progressCompositor.hasPlanProgress ||
-      turn.progressCompositor.getSnapshot().lines.length > 0)
-  ) {
-    info.assertPlatformSendAuthorized?.();
-    await turn.progressCompositor.start();
-  }
-  if (!turn.progressCompositor.isVisible || turn.isSuperseded()) {
-    return false;
-  }
-  turn.progressCompositor.cancel();
-  info.assertPlatformSendAuthorized?.();
-  await stream.flush();
-  const messageId = stream.messageId();
-  const text = stream.lastDeliveredText();
-  // Only a confirmed provider receipt can transfer custody, never staged draft intent.
-  if (
-    typeof messageId !== "number" ||
-    !Number.isFinite(messageId) ||
-    !text ||
-    turn.isSuperseded()
-  ) {
-    return false;
-  }
-  info.assertPlatformSendAuthorized?.();
-  const adopted = await adopt({
-    channel: "telegram",
-    accountId: turn.context.route.accountId,
-    to: String(turn.context.chatId),
-    threadId: turn.context.threadSpec.id,
-    messageId: String(messageId),
-    text,
-    snapshot: turn.progressCompositor.getSnapshot(),
-  });
-  if (!adopted) {
-    return false;
-  }
-  // Core now owns the visible card. Remove the old transport before any awaited
-  // retirement so late callbacks and unconditional cleanup cannot delete it.
-  turn.answerLane.stream = undefined;
-  turn.progressContinuationAdopted = true;
-  resetLaneState(turn, turn.answerLane);
-  resetReasoningStepState(turn);
-  turn.deliveryState.markDelivered();
-  await stream.discard();
-  return true;
-}
-
 export function formatTelegramGroupThreadReply(
   text: string,
   participant: { name: string },
@@ -335,15 +365,7 @@ export async function deliverReply(
   }
   const telegramButtons = controls.buttons;
   const reply = resolveSendableOutboundReplyParts(effectivePayload);
-  if (
-    !reply.hasMedia &&
-    telegramButtons === undefined &&
-    effectivePayload.interactive === undefined &&
-    effectivePayload.presentation === undefined &&
-    effectivePayload.channelData?.askUser === undefined &&
-    !hasExecApprovalPayload(effectivePayload) &&
-    (await adoptProgressContinuation(turn, incomingPayload, info))
-  ) {
+  if (await turn.progressContinuation.adopt(effectivePayload, info)) {
     return toTelegramReplyDeliveryResult(true);
   }
   const lanePayload =

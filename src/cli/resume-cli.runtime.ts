@@ -34,7 +34,7 @@ function requireInteractiveResumeTerminal() {
 async function formatResumeConnectionError(error: unknown): Promise<Error> {
   const [{ formatTuiErrorMessage }, { resolveGatewayDisconnectState }] = await Promise.all([
     import("../tui/tui-formatters.js"),
-    import("../tui/tui.js"),
+    import("../tui/tui-connection-lifecycle.js"),
   ]);
   const details =
     error && typeof error === "object" && "details" in error ? error.details : undefined;

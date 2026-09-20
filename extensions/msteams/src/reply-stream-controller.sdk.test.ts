@@ -10,6 +10,7 @@ type TeamsLoopbackRequest = {
   text: string;
   status: number;
   entities?: unknown[];
+  streamId?: string;
 };
 
 const acknowledgedPrefix = "a".repeat(4_000);
@@ -27,14 +28,18 @@ const provider = createServer((request, response) => {
       type?: string;
       text?: string;
       entities?: unknown[];
+      channelData?: { streamId?: string };
     };
     const scenario = request.url?.slice(1) ?? "";
     const priorScenarioRequests = requests.filter((entry) => entry.scenario === scenario).length;
     const rejected =
       scenario === "no-ack" ||
-      ((scenario === "cancel-replacement" || scenario === "presentation-cancel") &&
+      ((scenario === "cancel-replacement" ||
+        scenario === "presentation-cancel" ||
+        scenario === "cancel-handoff") &&
         priorScenarioRequests > 0) ||
-      (scenario === "presentation-close-failure" && activity.type === "message") ||
+      ((scenario === "presentation-close-failure" || scenario === "handoff-close-failure") &&
+        activity.type === "message") ||
       (scenario === "presentation-timeout" && priorScenarioRequests === 2) ||
       (activity.text?.length ?? 0) > 4_000;
     const status = rejected ? 403 : 201;
@@ -44,6 +49,7 @@ const provider = createServer((request, response) => {
       text: activity.text ?? "",
       status,
       ...(scenario.startsWith("presentation-") ? { entities: activity.entities } : {}),
+      ...(scenario.startsWith("handoff-") ? { streamId: activity.channelData?.streamId } : {}),
     });
     response.writeHead(status, { "content-type": "application/json" });
     response.end(
@@ -365,6 +371,95 @@ describe("Microsoft Teams SDK acknowledged stream fallback", () => {
       { id: "stream-cancel-replacement", text: acknowledgedPrefix },
     ]);
     expect(requests.filter((request) => request.scenario === "cancel-replacement")).toHaveLength(2);
+  });
+});
+
+describe("Teams native progress continuation receipts", () => {
+  it.each(["partial", "progress"] as const)(
+    "materializes the same %s activity without completing its work",
+    async (mode) => {
+      const scenario = `handoff-${mode}`;
+      const { controller, stream, firstAcknowledgement } = createLoopbackController(scenario, {
+        streaming: { mode },
+      });
+      const plan = [{ step: "Inspect", status: "in_progress" as const }];
+      if (mode === "progress") {
+        await controller.pushPlanProgress(plan);
+      } else {
+        controller.onPartialReply({ text: "Inspecting the deployment" });
+      }
+      await firstAcknowledgement;
+      if (mode === "progress") {
+        // Informative chunks have IDs, but no editable final activity yet.
+        await expect(stream.close()).resolves.toBeUndefined();
+      }
+
+      const receipt = await controller.prepareProgressContinuation(() => {});
+      expect(receipt).toEqual({
+        messageId: `stream-${scenario}`,
+        text: mode === "progress" ? "Working\n\n▸ Inspect" : "Inspecting the deployment",
+        snapshot: { label: "Working", lines: [], ...(mode === "progress" ? { plan } : {}) },
+      });
+      expect(requests.findLast((request) => request.scenario === scenario)).toMatchObject({
+        type: "message",
+        streamId: `stream-${scenario}`,
+        text: receipt!.text,
+        status: 201,
+      });
+      const requestCount = requests.filter((request) => request.scenario === scenario).length;
+      controller.releaseProgressContinuation({
+        ...receipt!,
+        channel: "msteams",
+        to: "conversation:loopback-conversation",
+      });
+      await controller.pushPlanProgress([
+        { step: "Must not replace retained work", status: "completed" },
+      ]);
+      controller.onPartialReply({ text: "late token" });
+      await controller.finalize();
+      expect(requests.filter((request) => request.scenario === scenario)).toHaveLength(
+        requestCount,
+      );
+    },
+  );
+
+  it("honors Stop discovered while materializing informative progress", async () => {
+    const scenario = "cancel-handoff";
+    const { controller, firstAcknowledgement } = createLoopbackController(scenario, {
+      streaming: { mode: "progress" },
+    });
+    await controller.pushPlanProgress([{ step: "Inspect", status: "in_progress" }]);
+    await firstAcknowledgement;
+
+    await expect(controller.prepareProgressContinuation(() => {})).resolves.toBeUndefined();
+    expect(controller.wasCanceled()).toBe(true);
+    expect(controller.preparePayload({ text: "Do not send after Stop" })).toBeUndefined();
+    await controller.finalize();
+    expect(
+      requests.filter((request) => request.scenario === scenario).map((request) => request.status),
+    ).toEqual([201, 403]);
+  });
+
+  it("refuses a failed close receipt and preserves only the acknowledged partial prefix", async () => {
+    const scenario = "handoff-close-failure";
+    const { controller, firstAcknowledgement } = createLoopbackController(scenario);
+    controller.onPartialReply({ text: "Accepted prefix." });
+    await firstAcknowledgement;
+
+    await expect(controller.prepareProgressContinuation(() => {})).resolves.toBeUndefined();
+    expect(controller.wasCanceled()).toBe(false);
+    expect(controller.preparePayload({ text: "Accepted prefix. Remaining result." })).toEqual({
+      text: " Remaining result.",
+    });
+    await expect(controller.finalize()).resolves.toEqual({
+      visibleReplySent: true,
+      messageId: `stream-${scenario}`,
+      content: "Accepted prefix.",
+    });
+    expect(requests.findLast((request) => request.scenario === scenario)).toMatchObject({
+      type: "message",
+      status: 403,
+    });
   });
 });
 

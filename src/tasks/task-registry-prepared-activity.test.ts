@@ -1,14 +1,19 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentActivityItem } from "../../packages/gateway-protocol/src/schema/logs-chat.js";
-import { emitAgentEvent, resetAgentEventsForTest } from "../infra/agent-events.js";
+import {
+  emitAgentEvent,
+  getAgentEventLifecycleGeneration,
+  resetAgentEventsForTest,
+  rotateAgentEventLifecycleGeneration,
+} from "../infra/agent-events.js";
 import { resetSystemEventsForTest } from "../infra/system-events.js";
 import {
   createInMemoryTaskFlowRegistryStore,
   createInMemoryTaskRegistryStore,
 } from "../test-utils/task-registry-store.js";
 import { createSubagentTaskBackingDetail } from "./task-backing-records.js";
-import { getTaskPreparedActivity, recordTaskActivityEvent } from "./task-registry-activity.js";
+import { getTaskProgressSnapshot, recordTaskActivityEvent } from "./task-registry-activity.js";
 import { updateTaskStateByRunId } from "./task-registry-record-api.js";
 import { getTaskById, markTaskTerminalById } from "./task-registry.js";
 import { configureTaskRegistryRuntime } from "./task-registry.store.js";
@@ -82,7 +87,11 @@ describe("prepared task activity", () => {
       data: { text: "Private reasoning activity" },
     });
     data.title = "Mutated after emission";
-    expect(getTaskPreparedActivity(task.taskId)).toEqual(new Map([[prepared.itemId, prepared]]));
+    expect(getTaskProgressSnapshot(task.taskId)).toEqual({
+      runId: task.runId,
+      revision: 1,
+      items: [prepared],
+    });
 
     const replacement = {
       itemId: prepared.itemId,
@@ -100,12 +109,11 @@ describe("prepared task activity", () => {
       progressText: "The focused tests passed.",
     } satisfies AgentActivityItem;
     emitAgentEvent({ runId: task.runId!, stream: "item", data: preamble });
-    expect(getTaskPreparedActivity(task.taskId)).toEqual(
-      new Map<string, AgentActivityItem>([
-        [replacement.itemId, replacement],
-        [preamble.itemId, preamble],
-      ]),
-    );
+    expect(getTaskProgressSnapshot(task.taskId)).toEqual({
+      runId: task.runId,
+      revision: 3,
+      items: [replacement, preamble],
+    });
   });
 
   it("retains anonymous public preambles only at complete host-sequenced boundaries", () => {
@@ -126,7 +134,7 @@ describe("prepared task activity", () => {
         },
       });
     }
-    expect(getTaskPreparedActivity(task.taskId)?.size).toBe(0);
+    expect(getTaskProgressSnapshot(task.taskId)).toBeUndefined();
     const completed = {
       kind: "preamble",
       phase: "end",
@@ -139,15 +147,41 @@ describe("prepared task activity", () => {
       stream: "item",
       data: { ...completed, progressText: "The command finished." },
     });
-    expect(getTaskPreparedActivity(task.taskId)).toEqual(
-      new Map([
-        ["preamble:3", { ...completed, itemId: "preamble:3" }],
-        [
-          "preamble:4",
-          { ...completed, itemId: "preamble:4", progressText: "The command finished." },
-        ],
-      ]),
-    );
+    expect(getTaskProgressSnapshot(task.taskId)?.items).toEqual([
+      { ...completed, itemId: "preamble:3" },
+      { ...completed, itemId: "preamble:4", progressText: "The command finished." },
+    ]);
+  });
+
+  it("publishes identified preambles only at complete boundaries and honors retractions", () => {
+    const task = createTaskFixture("subagent", {
+      childSessionKey: "agent:main:subagent:identified-preamble",
+      runId: "run-identified-preamble",
+      task: "Report completed public commentary",
+    });
+    const completed = {
+      itemId: "commentary-1",
+      kind: "preamble",
+      phase: "end",
+      title: "Commentary",
+      progressText: "Checking the command output.",
+    } satisfies AgentActivityItem;
+    const emit = (data: AgentActivityItem) =>
+      emitAgentEvent({ runId: task.runId!, stream: "item", data });
+    emit({ ...completed, phase: "start", progressText: "sk-proj-partial" });
+    expect(getTaskProgressSnapshot(task.taskId)).toBeUndefined();
+    emit(completed);
+    emit({ ...completed, phase: "update", progressText: "sk-proj-partial" });
+    expect(getTaskProgressSnapshot(task.taskId)?.items).toEqual([completed]);
+
+    emit({ ...completed, phase: "update", hideFromChannelProgress: true });
+    expect(getTaskProgressSnapshot(task.taskId)?.items).toEqual([]);
+    emit(completed);
+    emit({ ...completed, phase: "update", suppressChannelProgress: true });
+    expect(getTaskProgressSnapshot(task.taskId)?.items).toEqual([]);
+    emit(completed);
+    emit({ ...completed, phase: "update", progressText: " " });
+    expect(getTaskProgressSnapshot(task.taskId)?.items).toEqual([]);
   });
 
   it("bounds prepared activity while retaining the latest replacement of an item", () => {
@@ -173,14 +207,80 @@ describe("prepared task activity", () => {
     }
     emitItem(0, "end");
     emitItem(64);
-    const items = expectDefined(getTaskPreparedActivity(task.taskId), "prepared task activity");
-    expect(items.size).toBe(64);
-    expect(items.has("tool:command-1")).toBe(false);
-    expect(items.get("tool:command-0")).toMatchObject({
+    const progress = expectDefined(getTaskProgressSnapshot(task.taskId), "task progress");
+    expect(progress.items).toHaveLength(64);
+    expect(progress.items.some((item) => item.itemId === "tool:command-1")).toBe(false);
+    expect(progress.items.find((item) => item.itemId === "tool:command-0")).toMatchObject({
       phase: "end",
       status: "completed",
     });
-    expect(items.get("tool:command-64")).toMatchObject({ status: "running" });
+    expect(progress.items.at(-1)).toMatchObject({
+      itemId: "tool:command-64",
+      status: "running",
+    });
+  });
+
+  it("bounds public text without splitting Unicode or losing the newest terminal replacement", () => {
+    const task = createTaskFixture("subagent", {
+      childSessionKey: "agent:main:subagent:prepared-text-budget",
+      runId: "run-prepared-text-budget",
+      task: "Bound the public projection",
+    });
+    const longText = `Public ${"\u{1D400}".repeat(2_000)}`;
+    const item = {
+      kind: "tool",
+      phase: "start",
+      status: "running",
+      title: longText,
+      progressText: longText,
+      name: longText,
+      meta: longText,
+      error: longText,
+      summary: longText,
+    } satisfies Omit<AgentActivityItem, "itemId">;
+    for (let index = 0; index < 10; index += 1) {
+      emitAgentEvent({
+        runId: task.runId!,
+        stream: "item",
+        data: { ...item, itemId: `command-${index}` },
+      });
+    }
+    emitAgentEvent({
+      runId: task.runId!,
+      stream: "item",
+      data: { ...item, itemId: "command-0", phase: "end", status: "failed" },
+    });
+    const progress = expectDefined(getTaskProgressSnapshot(task.taskId), "bounded progress");
+    expect(progress.items.map((retained) => retained.itemId)).toEqual(["command-9", "command-0"]);
+    expect(progress.items.at(-1)).toMatchObject({ phase: "end", status: "failed" });
+    const strings = progress.items.flatMap((retained) =>
+      Object.values(retained).filter((value): value is string => typeof value === "string"),
+    );
+    expect(
+      strings.reduce((chars, value) => chars + value.length, progress.runId.length),
+    ).toBeLessThanOrEqual(8_192);
+    for (const text of strings) {
+      expect(text.length).toBeLessThanOrEqual(512);
+      expect(text).not.toMatch(/[\uD800-\uDFFF]/u);
+    }
+    expect(progress.items.at(-1)?.title).toContain("Public");
+    expect(progress.items.at(-1)?.title).toMatch(/…$/u);
+
+    const retraction = recordTaskActivityEvent(task, {
+      runId: task.runId!,
+      seq: 12,
+      ts: 100,
+      stream: "item",
+      data: {
+        ...item,
+        itemId: "command-0",
+        toolCallId: "oversized-identity".repeat(1_000),
+      },
+    });
+    expect(retraction).toMatchObject({ itemId: "command-0", suppressChannelProgress: true });
+    const retracted = expectDefined(getTaskProgressSnapshot(task.taskId), "retracted progress");
+    expect(retracted.items.map((retained) => retained.itemId)).toEqual(["command-9"]);
+    expect(retracted.revision).toBeGreaterThan(progress.revision);
   });
 
   it("keeps visible work through hidden polling and retracts hidden item replacements", () => {
@@ -226,12 +326,11 @@ describe("prepared task activity", () => {
         progressText: "Private reasoning must not become public activity.",
       },
     });
-    expect(getTaskPreparedActivity(task.taskId)).toEqual(
-      new Map([
-        [command.itemId, command],
-        [otherCommand.itemId, otherCommand],
-      ]),
-    );
+    expect(getTaskProgressSnapshot(task.taskId)).toEqual({
+      runId: task.runId,
+      revision: 2,
+      items: [command, otherCommand],
+    });
     for (const [index, item] of [command, otherCommand].entries()) {
       const retraction = recordTaskActivityEvent(task, {
         runId: task.runId!,
@@ -251,7 +350,11 @@ describe("prepared task activity", () => {
       });
       expect(JSON.stringify(retraction ?? null)).not.toContain("Private");
     }
-    expect(getTaskPreparedActivity(task.taskId)?.size).toBe(0);
+    expect(getTaskProgressSnapshot(task.taskId)).toEqual({
+      runId: task.runId,
+      revision: 4,
+      items: [],
+    });
   });
 
   it("discards replaced overlays but preserves returned public facts through terminal cleanup", () => {
@@ -277,7 +380,11 @@ describe("prepared task activity", () => {
       stream: "execution",
       data: { state: "running" },
     });
-    expect(getTaskPreparedActivity(task.taskId)?.size).toBe(0);
+    expect(getTaskProgressSnapshot(task.taskId)).toEqual({
+      runId: "run-prepared-successor",
+      revision: 2,
+      items: [],
+    });
     const successor = {
       itemId: "successor-commentary",
       kind: "preamble",
@@ -295,11 +402,15 @@ describe("prepared task activity", () => {
         result: { content: [{ type: "text", text: "Private final output" }] },
       },
     });
-    const items = expectDefined(getTaskPreparedActivity(task.taskId), "prepared task activity");
-    expect(items).toEqual(new Map([[successor.itemId, successor]]));
+    const progress = expectDefined(getTaskProgressSnapshot(task.taskId), "task progress");
+    expect(progress).toEqual({
+      runId: "run-prepared-successor",
+      revision: 3,
+      items: [successor],
+    });
     markTaskTerminalById({ taskId: task.taskId, status: "succeeded", endedAt: 500 });
-    expect(getTaskPreparedActivity(task.taskId)).toBeUndefined();
-    expect(items.size).toBe(0);
+    expect(getTaskProgressSnapshot(task.taskId)).toBeUndefined();
+    expect(progress.items).toEqual([successor]);
     expect(prepared).toEqual(successor);
   });
 
@@ -322,14 +433,15 @@ describe("prepared task activity", () => {
         title: "Predecessor command",
       },
     });
-    expect(getTaskPreparedActivity(task.taskId)?.has("predecessor-command")).toBe(true);
+    const predecessor = expectDefined(getTaskProgressSnapshot(task.taskId), "task progress");
+    expect(predecessor.items[0]?.itemId).toBe("predecessor-command");
     updateTaskStateByRunId({
       taskId: task.taskId,
       runId: task.runId!,
       runtime: "subagent",
       detail: createSubagentTaskBackingDetail(2),
     });
-    expect(getTaskPreparedActivity(task.taskId)).toBeUndefined();
+    expect(getTaskProgressSnapshot(task.taskId)).toBeUndefined();
 
     const successor = {
       itemId: "successor-command",
@@ -344,6 +456,40 @@ describe("prepared task activity", () => {
       stream: "item",
       data: successor,
     });
-    expect(getTaskPreparedActivity(task.taskId)).toEqual(new Map([[successor.itemId, successor]]));
+    expect(getTaskProgressSnapshot(task.taskId)).toEqual({
+      runId: task.runId,
+      revision: predecessor.revision + 2,
+      items: [successor],
+    });
+  });
+
+  it("does not revive progress from an earlier agent lifecycle", () => {
+    const task = createTaskFixture("subagent", {
+      childSessionKey: "agent:main:subagent:prepared-lifecycle",
+      runId: "run-prepared-lifecycle",
+      task: "Keep lifecycle ownership",
+    });
+    const lifecycleGeneration = getAgentEventLifecycleGeneration();
+    const item = {
+      itemId: "command-1",
+      kind: "tool",
+      phase: "start",
+      title: "Read current work",
+    } satisfies AgentActivityItem;
+    emitAgentEvent({ runId: task.runId!, lifecycleGeneration, stream: "item", data: item });
+    expect(getTaskProgressSnapshot(task.taskId)?.items).toEqual([item]);
+
+    rotateAgentEventLifecycleGeneration();
+    expect(getTaskProgressSnapshot(task.taskId)).toBeUndefined();
+    emitAgentEvent({
+      runId: task.runId!,
+      lifecycleGeneration,
+      stream: "item",
+      data: { ...item, title: "Stale update" },
+    });
+    expect(getTaskProgressSnapshot(task.taskId)).toBeUndefined();
+    const replacement = { ...item, itemId: "command-2", title: "New lifecycle work" };
+    emitAgentEvent({ runId: task.runId!, stream: "item", data: replacement });
+    expect(getTaskProgressSnapshot(task.taskId)?.items).toEqual([replacement]);
   });
 });

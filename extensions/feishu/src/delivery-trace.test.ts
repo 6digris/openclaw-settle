@@ -13,8 +13,16 @@ import {
   type DeliveryTraceScenarioName,
   type WireRecorder,
 } from "openclaw/plugin-sdk/channel-contract-testing";
+import type { ProgressContinuationReceipt } from "openclaw/plugin-sdk/channel-outbound";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { setReplyPayloadMetadata } from "openclaw/plugin-sdk/reply-payload-testing";
+import {
+  createReplyDispatcherWithTyping,
+  settleReplyDispatcher,
+} from "openclaw/plugin-sdk/reply-runtime";
 import { withFetchPreconnect } from "openclaw/plugin-sdk/test-env";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { feishuPlugin as FeishuPlugin } from "./channel.js";
 import { FeishuConfigSchema } from "./config-schema.js";
 import type { ResolvedFeishuAccount } from "./types.js";
 
@@ -137,6 +145,7 @@ vi.mock("./streaming-card.js", async (importOriginal) => {
 let createFeishuReplyDispatcher: CreateFeishuReplyDispatcher;
 let feishuOutbound: typeof import("./outbound.js").feishuOutbound;
 let streamingStartBackoffUntilByAccount: StreamingStartBackoffMap;
+let feishuPlugin: typeof FeishuPlugin;
 
 beforeAll(async () => {
   // Collection can share a worker with suites that mock the same Feishu modules.
@@ -145,6 +154,7 @@ beforeAll(async () => {
   ({ createFeishuReplyDispatcher } = await import("./reply-dispatcher.js"));
   ({ feishuOutbound } = await import("./outbound.js"));
   ({ streamingStartBackoffUntilByAccount } = await import("./reply-dispatcher-state.js"));
+  ({ feishuPlugin } = await import("./channel.js"));
 });
 
 afterAll(() => {
@@ -203,6 +213,42 @@ function createRecordingLarkClient() {
         },
       },
       message: {
+        get: (args: { path: { message_id: string } }) =>
+          Promise.resolve({
+            code: 0,
+            data: {
+              items: [
+                {
+                  message_id: args.path.message_id,
+                  chat_id: "oc-trace-chat",
+                  chat_type: "group",
+                  msg_type: "interactive",
+                  body: { content: "{}" },
+                },
+              ],
+            },
+          }),
+        patch: (args: { path: { message_id: string }; data: { content: string } }) => {
+          traceState.recordWireCall({
+            method: "im.message.patch",
+            target: args.path.message_id,
+            payload: { content: parseJsonRecord(args.data.content) },
+            result: { code: 0 },
+          });
+          return Promise.resolve({ code: 0, msg: "ok" });
+        },
+        update: (args: {
+          path: { message_id: string };
+          data: { msg_type: string; content: string };
+        }) => {
+          traceState.recordWireCall({
+            method: "im.message.update",
+            target: args.path.message_id,
+            payload: { msg_type: args.data.msg_type, content: parseJsonRecord(args.data.content) },
+            result: { code: 0 },
+          });
+          return Promise.resolve({ code: 0, msg: "ok" });
+        },
         create: (args: {
           params: { receive_id_type: string };
           data: { receive_id: string; msg_type: string; content: string; root_id?: string };
@@ -418,7 +464,7 @@ function setupFeishuTrace(recorder: WireRecorder, scenario: DeliveryTraceScenari
         // An aborted run stops emitting payloads; closeout happens on idle.
         break;
       case "idle":
-        await options.onIdle?.();
+        await options.onSettled?.();
         options.onCleanup?.();
         break;
       case "wire-fault":
@@ -440,6 +486,323 @@ const FEISHU_TRACE_SCENARIOS: readonly DeliveryTraceScenarioName[] = [
 ];
 
 describe("feishu delivery trace goldens", () => {
+  it("joins native preview close through the dispatcher settlement hook", async () => {
+    const closeEntered = createDeferred<void>();
+    const releaseClose = createDeferred<void>();
+    let settled = false;
+    const events = await runDeliveryTraceScenario({
+      scenario: {
+        name: "feishu-preview-settlement",
+        steps: [{ kind: "partial", text: "Active progress" }],
+      },
+      setup: (recorder) => {
+        setupFeishuTrace(recorder, "streaming-happy");
+        const cardKitFetch = createRecordingCardKitFetch();
+        traceState.cardKitFetch = withFetchPreconnect(
+          async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = new URL(
+              typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+            );
+            if (url.pathname.endsWith("/settings")) {
+              closeEntered.resolve();
+              await releaseClose.promise;
+            }
+            return await cardKitFetch(input, init);
+          },
+        );
+        const turn = createFeishuReplyDispatcher({
+          cfg: {},
+          agentId: "agent",
+          runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+          chatId: "oc-trace-chat",
+          sendTarget: "oc-trace-chat",
+        });
+        return async () => {
+          turn.replyOptions.onPartialReply?.({ text: "Active progress" });
+          const { dispatcher } = createReplyDispatcherWithTyping({
+            ...turn.dispatcherOptions,
+            ...turn.delivery,
+          });
+          const settlement = settleReplyDispatcher({
+            dispatcher,
+          }).then(() => {
+            settled = true;
+            recorder.recordWireCall({ method: "turn.settled" });
+          });
+          try {
+            await closeEntered.promise;
+            await vi.advanceTimersByTimeAsync(0);
+            expect(settled).toBe(false);
+          } finally {
+            releaseClose.resolve();
+            await settlement;
+            await turn.dispatcherOptions.onSettled?.();
+          }
+          turn.dispatcherOptions.onCleanup?.();
+        };
+      },
+    });
+    const closeIndex = events.findIndex(
+      (event) => event.kind === "PATCH /cardkit/v1/cards/card-1/settings",
+    );
+    expect(closeIndex).toBeGreaterThan(-1);
+    expect(events.findIndex((event) => event.kind === "turn.settled")).toBeGreaterThan(closeIndex);
+  });
+
+  it.each([
+    { preview: "partial", accepted: true },
+    { preview: "status", accepted: true },
+    { preview: "partial", accepted: false },
+  ] as const)(
+    "hands off confirmed $preview progress (accepted=$accepted)",
+    async ({ preview, accepted }) => {
+      let receipt: ProgressContinuationReceipt | undefined;
+      const entered = createDeferred<void>();
+      const release = createDeferred<void>();
+      const adopt = vi.fn(async (candidate: ProgressContinuationReceipt) => {
+        receipt = candidate;
+        traceState.recordWireCall({ method: "task.adopt", target: candidate.messageId });
+        entered.resolve();
+        await release.promise;
+        return accepted;
+      });
+      const events = await runDeliveryTraceScenario({
+        scenario: { name: "feishu-progress-handoff", steps: [{ kind: "final", text: "Waiting" }] },
+        setup: (recorder) => {
+          setupFeishuTrace(recorder, "streaming-happy");
+          traceState.account!.config = FeishuConfigSchema.parse({
+            renderMode: preview === "status" ? "card" : "auto",
+            streaming: { mode: "partial" },
+            groupPolicy: "open",
+          });
+          const turn = createFeishuReplyDispatcher({
+            cfg: {},
+            agentId: "agent",
+            runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+            chatId: "oc-trace-chat",
+            sendTarget: "oc-trace-chat",
+          });
+          return async () => {
+            if (preview === "partial") {
+              turn.replyOptions.onPartialReply?.({ text: "Review delegated to a child" });
+            } else {
+              turn.replyOptions.onItemEvent?.({
+                itemId: "review",
+                kind: "tool",
+                name: "sessions_spawn",
+                title: "Review",
+                phase: "start",
+                status: "running",
+              });
+            }
+            const { dispatcher } = createReplyDispatcherWithTyping({
+              ...turn.dispatcherOptions,
+              ...turn.delivery,
+            });
+            dispatcher.sendFinalReply(
+              setReplyPayloadMetadata(
+                { text: "Waiting" },
+                {
+                  progressContinuation: { adopt, close: () => {} },
+                },
+              ),
+            );
+            dispatcher.markComplete();
+            await Promise.race([entered.promise, dispatcher.waitForIdle()]);
+            const idle = turn.dispatcherOptions.onSettled?.();
+            turn.replyOptions.onPartialReply?.({ text: "late parent text" });
+            release.resolve();
+            await dispatcher.waitForIdle();
+            await idle;
+            turn.dispatcherOptions.onCleanup?.();
+            if (accepted) {
+              expect(receipt?.messageId).toBe("om-1");
+              await feishuPlugin.actions!.handleAction!({
+                channel: "feishu",
+                action: "edit",
+                cfg: {},
+                params: { messageId: receipt?.messageId, message: "untrusted fallback" },
+                conversationReadOrigin: "direct-operator",
+                progressSnapshot: {
+                  lines: [],
+                  statusHeadline: "Review complete",
+                  plan: [{ step: "Review", status: "completed" }],
+                },
+              });
+              await feishuPlugin.actions!.handleAction!({
+                channel: "feishu",
+                action: "edit",
+                cfg: {},
+                params: {
+                  messageId: receipt?.messageId,
+                  message: "Ordinary edit",
+                  progressSnapshot: { lines: [], statusHeadline: "Forged progress" },
+                },
+                conversationReadOrigin: "direct-operator",
+              });
+            }
+          };
+        },
+      });
+      expect(adopt).toHaveBeenCalledOnce();
+      expect(receipt).toMatchObject({
+        channel: "feishu",
+        accountId: "main",
+        to: "oc-trace-chat",
+        messageId: "om-1",
+      });
+      const sends = events.filter((event) => event.kind === "im.message.create");
+      expect(sends).toHaveLength(1);
+      expect(events.filter((event) => event.kind === "im.message.delete")).toHaveLength(0);
+      const closeIndex = events.findIndex(
+        (event) => event.kind === "PATCH /cardkit/v1/cards/card-1/settings",
+      );
+      const edits = events.filter((event) => event.kind === "im.message.patch");
+      const firstEditIndex = events.findIndex((event) => event.kind === "im.message.patch");
+      expect(closeIndex).toBeGreaterThan(-1);
+      expect(firstEditIndex).toBeGreaterThan(closeIndex);
+      expect(events.findIndex((event) => event.kind === "task.adopt")).toBeGreaterThan(
+        firstEditIndex,
+      );
+      expect(edits).toHaveLength(2);
+      expect(edits[0]).toMatchObject({
+        data: {
+          target: "om-1",
+          payload: {
+            content: {
+              body: {
+                elements: [
+                  { tag: "markdown", content: receipt?.text },
+                  { tag: "hr" },
+                  expect.any(Object),
+                ],
+              },
+            },
+          },
+        },
+      });
+      const lastEdit = JSON.stringify(edits.at(-1));
+      expect(lastEdit).toContain(accepted ? "Review complete" : "Waiting");
+      expect(lastEdit).not.toContain("late parent text");
+      expect(lastEdit).not.toContain("untrusted fallback");
+      if (accepted) {
+        const ordinaryEdit = events.find((event) => event.kind === "im.message.update");
+        expect(JSON.stringify(ordinaryEdit)).toContain("Ordinary edit");
+        expect(JSON.stringify(ordinaryEdit)).not.toContain("Forged progress");
+      }
+    },
+  );
+
+  it.each(["empty-card", "missing-receipt", "off", "admitted-block"] as const)(
+    "does not manufacture a progress receipt for %s",
+    async (surface) => {
+      const adopt = vi.fn(async () => true);
+      const events = await runDeliveryTraceScenario({
+        scenario: {
+          name: `feishu-progress-${surface}`,
+          steps: [{ kind: "final", text: "Waiting" }],
+        },
+        setup: (recorder) => {
+          setupFeishuTrace(recorder, "streaming-happy");
+          traceState.account!.config = FeishuConfigSchema.parse({
+            renderMode: "card",
+            streaming: { mode: surface === "off" ? "off" : "partial" },
+          });
+          traceState.omitNextMessageReceipt = surface === "missing-receipt";
+          const turn = createFeishuReplyDispatcher({
+            cfg: {},
+            agentId: "agent",
+            runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+            chatId: "oc-trace-chat",
+            sendTarget: "oc-trace-chat",
+          });
+          return async () => {
+            await turn.dispatcherOptions.onReplyStart?.();
+            if (surface !== "empty-card") {
+              turn.replyOptions.onPartialReply?.({ text: "Preview" });
+            }
+            if (surface === "admitted-block") {
+              await turn.delivery.deliver({ text: "Committed block" }, { kind: "block" });
+            }
+            const { dispatcher } = createReplyDispatcherWithTyping({
+              ...turn.dispatcherOptions,
+              ...turn.delivery,
+            });
+            dispatcher.sendFinalReply(
+              setReplyPayloadMetadata(
+                { text: "Waiting" },
+                {
+                  progressContinuation: { adopt, close: () => {} },
+                },
+              ),
+            );
+            dispatcher.markComplete();
+            await dispatcher.waitForIdle();
+            await turn.dispatcherOptions.onSettled?.();
+          };
+        },
+      });
+      expect(adopt).not.toHaveBeenCalled();
+      expect(events.filter((event) => event.kind === "im.message.create")).toHaveLength(1);
+      expect(events.filter((event) => event.kind === "im.message.patch")).toHaveLength(0);
+      expect(JSON.stringify(events)).toContain("Waiting");
+    },
+  );
+
+  it("does not adopt a closed card when the native editable-message conversion is rejected", async () => {
+    const adopt = vi.fn(async () => true);
+    const events = await runDeliveryTraceScenario({
+      scenario: {
+        name: "feishu-progress-edit-rejected",
+        steps: [{ kind: "final", text: "Waiting" }],
+      },
+      setup: (recorder) => {
+        setupFeishuTrace(recorder, "streaming-happy");
+        const client = createRecordingLarkClient();
+        client.im.message.patch = (args) => {
+          recorder.recordWireCall({
+            method: "im.message.patch",
+            target: args.path.message_id,
+            result: { code: 230002 },
+          });
+          return Promise.resolve({ code: 230002, msg: "card edit rejected" });
+        };
+        traceState.larkClient = client;
+        const turn = createFeishuReplyDispatcher({
+          cfg: {},
+          agentId: "agent",
+          runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+          chatId: "oc-trace-chat",
+          sendTarget: "oc-trace-chat",
+        });
+        return async () => {
+          turn.replyOptions.onPartialReply?.({ text: "Child review is running" });
+          const { dispatcher } = createReplyDispatcherWithTyping({
+            ...turn.dispatcherOptions,
+            ...turn.delivery,
+          });
+          dispatcher.sendFinalReply(
+            setReplyPayloadMetadata(
+              { text: "Waiting" },
+              {
+                progressContinuation: { adopt, close: () => {} },
+              },
+            ),
+          );
+          dispatcher.markComplete();
+          await dispatcher.waitForIdle();
+          expect(dispatcher.getFailedCounts().final).toBe(1);
+          expect(turn.getVisibleReplyState().visibleReplySent).toBe(true);
+        };
+      },
+    });
+    expect(adopt).not.toHaveBeenCalled();
+    expect(events.filter((event) => event.kind === "im.message.create")).toHaveLength(1);
+    expect(events.filter((event) => event.kind === "im.message.patch")).toMatchObject([
+      { data: { target: "om-1", result: { code: 230002 } } },
+    ]);
+  });
+
   it("updates the accepted card without a duplicate send when its message receipt is absent", async () => {
     const events = await runDeliveryTraceScenario({
       scenario: deliveryTraceScenarios["final-only"],

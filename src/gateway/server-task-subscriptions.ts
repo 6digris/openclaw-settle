@@ -5,8 +5,8 @@ import { cloneTaskRecordForObserver } from "../tasks/task-registry-records.js";
 import { getTaskRegistryProcessState } from "../tasks/task-registry.process-state.js";
 import type { TaskRegistryObserverEvent } from "../tasks/task-registry.store.types.js";
 import { isTerminalTaskStatus, type TaskRecord } from "../tasks/task-registry.types.js";
+import { mapTaskSummary, type TaskEventPayload } from "../tasks/task-summary.js";
 import type { GatewayBroadcastFn } from "./server-broadcast-types.js";
-import { mapTaskSummary, type TaskEventPayload } from "./server-methods/task-summary.js";
 import { resolveTaskRequesterSessionTarget } from "./task-session-access.js";
 import type { TerminalSessionManager } from "./terminal/session-manager.js";
 

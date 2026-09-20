@@ -438,10 +438,11 @@ full runtime-behavior breakdown per channel.
 
 When the final answer is ready, OpenClaw tries to keep the chat clean:
 
-- A Discord or Telegram progress card handed off to accepted subagents stays visible across
-  parent yield. Core updates that same card while delegated work continues;
-  the eventual final answer is separate. See
-  [Subagent yield handoff](/concepts/subagent-yield-handoff#progress-after-yield).
+- A confirmed progress surface handed off to accepted subagents stays visible
+  across parent yield. Core updates that same surface while delegated work
+  continues; the eventual final answer is separate. Supported channel adapters
+  share the handoff and cleanup owner without changing their streaming modes.
+  See [Subagent yield handoff](/concepts/subagent-yield-handoff#progress-after-yield).
 
 - Otherwise, in `progress` mode on Discord, the final answer is sent as a fresh
   message and the status draft is deleted once that answer is delivered. Busy

@@ -232,6 +232,7 @@ export async function editQaBusMessage(params: {
   accountId: string;
   messageId: string;
   text: string;
+  toolCalls?: QaBusToolCall[];
 }) {
   return await postJson<{ message: QaBusMessage }>(params.baseUrl, "/v1/actions/edit", params);
 }

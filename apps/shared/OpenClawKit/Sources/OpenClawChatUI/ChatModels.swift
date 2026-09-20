@@ -772,6 +772,12 @@ public struct OpenClawAgentActivityItem: Codable, Hashable, Sendable {
     public let status: String?
     public let hideFromChannelProgress: Bool?
     public let suppressChannelProgress: Bool?
+    public let progressText: String?
+
+    public var progressDisplayText: String? {
+        guard self.isVisible else { return nil }
+        return ChatPayloadDecoding.trimmedNonEmptyString(self.kind == "preamble" ? self.progressText : self.title)
+    }
 
     var isVisible: Bool {
         self.hideFromChannelProgress != true && self.suppressChannelProgress != true
@@ -910,6 +916,8 @@ public struct OpenClawChatEventPayload: Codable, Sendable {
     public let state: String?
     public let message: AnyCodable?
     public let errorMessage: String?
+    public let stopReason: String?
+    public let yielded: Bool?
 
     // periphery:ignore - package tests construct transport events; app consumers decode them.
     public init(
@@ -918,7 +926,9 @@ public struct OpenClawChatEventPayload: Codable, Sendable {
         agentId: String? = nil,
         state: String?,
         message: AnyCodable?,
-        errorMessage: String?)
+        errorMessage: String?,
+        stopReason: String? = nil,
+        yielded: Bool? = nil)
     {
         self.runId = runId
         self.sessionKey = sessionKey
@@ -926,6 +936,8 @@ public struct OpenClawChatEventPayload: Codable, Sendable {
         self.state = state
         self.message = message
         self.errorMessage = errorMessage
+        self.stopReason = stopReason
+        self.yielded = yielded
     }
 }
 

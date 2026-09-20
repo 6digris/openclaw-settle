@@ -1,8 +1,13 @@
 // Clickclack tests cover gateway plugin behavior.
 import { EventEmitter } from "node:events";
 import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-contract";
+import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
+import type { PluginRuntime } from "openclaw/plugin-sdk/core";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { handleClickClackInbound } from "./inbound.js";
+import { createClickClackAgentProgressPublisher } from "./progress.js";
+import { setClickClackRuntime } from "./runtime.js";
 import type { ResolvedClickClackAccount } from "./types.js";
 
 class FakeSocket extends EventEmitter {
@@ -29,6 +34,7 @@ const mocks = vi.hoisted(() => ({
     websocket: vi.fn(),
     message: vi.fn(),
     setBotCommands: vi.fn(),
+    publishEphemeral: vi.fn(),
   },
   handleClickClackInbound: vi.fn(),
   resolveClickClackInboundAccess: vi.fn(),
@@ -68,6 +74,7 @@ function createGatewayContext(
   abortSignal: AbortSignal,
   options: {
     commandMenu?: boolean;
+    nativeProgress?: boolean;
   } = {},
 ): ChannelGatewayContext<ResolvedClickClackAccount> {
   const setStatus = vi.fn();
@@ -82,6 +89,9 @@ function createGatewayContext(
           workspace: "main",
           reconnectMs: 1,
           ...(options.commandMenu === undefined ? {} : { commandMenu: options.commandMenu }),
+          ...(options.nativeProgress === undefined
+            ? {}
+            : { nativeProgress: options.nativeProgress }),
         },
       },
     } as ChannelGatewayContext<ResolvedClickClackAccount>["cfg"],
@@ -161,6 +171,120 @@ describe("ClickClack gateway", () => {
         created_at: "2026-01-01T00:00:00.000Z",
       },
     });
+  });
+
+  it("retains task progress and its native sequence across a realtime socket reconnect", async () => {
+    type Observe = ReturnType<
+      PluginRuntime["tasks"]["async"]["runs"]["bindSession"]
+    >["observeProgress"];
+    type Update = Parameters<Parameters<Observe>[0]["onChange"]>;
+    const runtime = createPluginRuntimeMock();
+    const sessionKey = "agent:main:clickclack:channel:chan-1";
+    const bound = runtime.tasks.async.runs.bindSession({ sessionKey, agentId: "main" });
+    let current: Update[0][number] = {
+      id: "task-1",
+      runId: "logical-task",
+      status: "running",
+      execution: { state: "running" },
+      progress: {
+        runId: "execution-1",
+        revision: 1,
+        items: [{ itemId: "work", kind: "tool", phase: "start", title: "Before reconnect" }],
+      },
+    };
+    let update: (() => Promise<void>) | undefined;
+    bound.observeProgress = async (options) => {
+      let active = true;
+      update = async () => {
+        await options.onChange(
+          [current],
+          () => {
+            options.signal.throwIfAborted();
+            if (!active) {
+              throw new Error("Task observation retired");
+            }
+          },
+          new Map([
+            [
+              "task-1",
+              {
+                channel: "clickclack",
+                accountId: "default",
+                to: "channel:chan-1",
+                channelId: "chan-1",
+                messageId: "msg-1",
+              },
+            ],
+          ]),
+        );
+      };
+      await update();
+      return async () => {
+        active = false;
+      };
+    };
+    vi.spyOn(runtime.tasks.async.runs, "bindSession").mockReturnValue(bound);
+    setClickClackRuntime(runtime);
+    const frames: Array<{ turn_id: string; seq: number; op: string; line?: { text: string } }> = [];
+    mocks.client.publishEphemeral.mockImplementation(async ({ payload }) => {
+      frames.push(payload);
+    });
+    mocks.handleClickClackInbound.mockImplementation(
+      async (input: Parameters<typeof handleClickClackInbound>[0]) => {
+        if (!input.taskProgress) {
+          throw new Error("Expected opted-in task progress");
+        }
+        const progress = createClickClackAgentProgressPublisher({
+          client: mocks.client,
+          target: { workspaceId: "workspace-1", channelId: "chan-1" },
+          turnId: input.message.id,
+        });
+        const foreground = await input.taskProgress.attach({
+          sessionKey,
+          agentId: "main",
+          message: input.message,
+          progress,
+        });
+        await foreground.finishForeground();
+      },
+    );
+    const first = new FakeSocket();
+    const second = new FakeSocket();
+    mocks.client.websocket.mockReturnValueOnce(first).mockReturnValue(second);
+    const abort = new AbortController();
+    const run = startClickClackGatewayAccount(
+      createGatewayContext(abort.signal, { commandMenu: false, nativeProgress: true }),
+    );
+    try {
+      await waitForGatewayState(() => expect(mocks.client.websocket).toHaveBeenCalledTimes(1));
+      first.emit("open");
+      emitMessageEvent(first, 1);
+      await waitForGatewayState(() =>
+        expect(frames.some((frame) => frame.line?.text === "Background work is continuing")).toBe(
+          true,
+        ),
+      );
+      first.close();
+      await waitForGatewayState(() => expect(mocks.client.websocket).toHaveBeenCalledTimes(2));
+      second.emit("open");
+      current = {
+        ...current,
+        progress: {
+          runId: "execution-1",
+          revision: 2,
+          items: [{ itemId: "work", kind: "tool", phase: "update", title: "After reconnect" }],
+        },
+      };
+      await update?.();
+      expect(frames.some((frame) => frame.line?.text === "After reconnect")).toBe(true);
+      expect(frames.some((frame) => frame.op === "clear")).toBe(false);
+      expect(new Set(frames.map((frame) => frame.turn_id))).toEqual(new Set(["msg-1"]));
+      expect(frames.map((frame) => frame.seq)).toEqual(frames.map((_frame, index) => index + 1));
+    } finally {
+      abort.abort();
+      await run;
+      mocks.handleClickClackInbound.mockReset();
+    }
   });
 
   it("uses the private API base for REST and realtime startup", async () => {

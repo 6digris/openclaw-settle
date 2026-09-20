@@ -10,7 +10,6 @@ import {
   TuiMainScreen,
 } from "@earendil-works/pi-tui";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
-import { classifyGatewayConnectFailure } from "../../packages/gateway-protocol/src/connect-error-details.js";
 import type { CommandEntry } from "../../packages/gateway-protocol/src/index.js";
 import {
   resolveAgentIdByWorkspacePath,
@@ -57,6 +56,10 @@ import { createTuiAuthChildOwner } from "./tui-auth-child.js";
 import { createTuiAutocompleteProvider } from "./tui-autocomplete.js";
 import type { TuiBackend } from "./tui-backend.js";
 import { createCommandHandlers } from "./tui-command-handlers.js";
+import {
+  createTuiConnectionLineage,
+  resolveGatewayDisconnectState,
+} from "./tui-connection-lifecycle.js";
 import { createEventHandlers } from "./tui-event-handlers.js";
 import {
   formatTuiErrorMessage,
@@ -83,6 +86,7 @@ import {
   shouldEnableWindowsGitBashPasteFallback,
   type TuiSubmitAction,
 } from "./tui-submit.js";
+import { createTuiTaskProgressController } from "./tui-task-progress.js";
 import { createTuiTaskSuggestionController } from "./tui-task-suggestions.js";
 import type {
   SessionInfo,
@@ -320,53 +324,6 @@ function resolveExplicitInitialTuiAgentId(params: {
   const parsed = parseAgentSessionKey((params.initialSessionInput ?? "").trim());
   const explicitAgentId = parsed?.agentId ?? params.agentId?.trim();
   return explicitAgentId ? normalizeAgentId(explicitAgentId) : null;
-}
-
-export function resolveGatewayDisconnectState(
-  input: {
-    details?: unknown;
-    reason?: string | null;
-  } = {},
-): {
-  connectionStatus: string;
-  activityStatus: string;
-  remediation?: string;
-} {
-  if (input.reason === "gateway starting") {
-    return {
-      connectionStatus: "gateway starting",
-      activityStatus: "starting up",
-    };
-  }
-  const failure = classifyGatewayConnectFailure(input);
-  const reasonLabel =
-    failure.userMessage === "gateway unreachable" ? "closed" : failure.userMessage;
-  if (failure.kind === "pairing-required") {
-    return {
-      connectionStatus: `gateway disconnected: ${reasonLabel}`,
-      activityStatus: "device approval needed: preview latest request",
-      remediation: failure.remediation,
-    };
-  }
-  if (failure.kind === "rate-limited") {
-    return {
-      connectionStatus: `gateway disconnected: ${reasonLabel}`,
-      activityStatus: "gateway authentication temporarily rate-limited",
-      remediation: failure.remediation,
-    };
-  }
-  if (failure.kind === "identity-proxy") {
-    return {
-      connectionStatus: `gateway disconnected: ${reasonLabel}`,
-      activityStatus: "identity-aware proxy rejected connection",
-      remediation: failure.remediation,
-    };
-  }
-  return {
-    connectionStatus: `gateway disconnected: ${reasonLabel}`,
-    activityStatus: failure.remediation ? "gateway authentication needs attention" : "idle",
-    remediation: failure.remediation,
-  };
 }
 
 export function createBackspaceDeduper(params?: { dedupeWindowMs?: number; now?: () => number }) {
@@ -686,25 +643,6 @@ export function resolveTuiCtrlCAction(params: {
   return resolveCtrlCAction(params);
 }
 
-export function createTuiConnectionLineage() {
-  let hasConnected = false;
-  let wasDisconnected = false;
-  return {
-    connect: () => {
-      const reconnected = wasDisconnected;
-      hasConnected = true;
-      wasDisconnected = false;
-      return reconnected;
-    },
-    disconnect: () => {
-      if (hasConnected) {
-        wasDisconnected = true;
-      }
-    },
-    wasDisconnected: () => wasDisconnected,
-  };
-}
-
 function resolveEmptySessionInfoDefaults(config: OpenClawConfig): SessionInfo {
   return {
     verboseLevel: config.agents?.defaults?.verboseDefault,
@@ -851,6 +789,7 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
     set sessionGeneration(value: number) {
       const generationKey = this.sessionIdentity.generationKey();
       this.sessionIdentity.generations.set(generationKey, Math.max(this.sessionGeneration, value));
+      notifySessionChanged();
     },
     activeChatRunId: null,
     pendingSubmit: null,
@@ -930,10 +869,16 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
       chatLog.addSystem(notice, { coalesceConsecutive: true });
     }
   };
+  const taskProgress = createTuiTaskProgressController({
+    client,
+    getScope: () => ({ sessionKey: state.currentSessionKey, agentId: state.currentAgentId }),
+    requestRender: () => tui.requestRender(),
+  });
   const editor = new CustomEditor(tui, editorTheme);
   const root = new Container();
   root.addChild(header);
   root.addChild(chatLog);
+  root.addChild(taskProgress.component);
   root.addChild(statusContainer);
   root.addChild(footer);
   root.addChild(questionStatus);
@@ -1548,6 +1493,7 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
     pluginApprovals.sessionChanged();
     void questions.sessionChanged().catch(reportQuestionRefreshError);
     taskSuggestions.sessionChanged();
+    taskProgress.sessionChanged();
   };
 
   const {
@@ -1624,10 +1570,14 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
     pluginApprovals?.dispose();
     questions.dispose();
     taskSuggestions?.dispose();
+    taskProgress.dispose();
     chatLog.dispose();
     beginTuiShutdown({
       stopCommandScopes: () => localShell.shutdown(),
-      stopClient: () => client.stop(),
+      stopClient: async () => {
+        await client.stop();
+        await taskProgress.settled();
+      },
       stopTui: () => drainAndStopTuiSafely(tui),
       disposeStatus,
       requestFinish: deferredFinish.requestFinish,
@@ -1806,6 +1756,7 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
     pluginApprovals?.handleEvent(evt.event, evt.payload);
     questions.handleEvent(evt.event, evt.payload);
     taskSuggestions?.handleEvent(evt.event, evt.payload);
+    taskProgress.handleEvent(evt.event, evt.payload);
     if (evt.event === "chat") {
       handleChatEvent(evt.payload);
     }
@@ -1907,6 +1858,9 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
         return;
       }
       await loadHistory(reconnected);
+      if (ownsConnection()) {
+        await taskProgress.connect();
+      }
       if (!ownsConnection()) {
         return;
       }
@@ -1952,6 +1906,7 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
     }
     connectionGeneration += 1;
     state.isConnected = false;
+    taskProgress.disconnect();
     connectionLineage.disconnect();
     state.historyLoaded = false;
     dynamicSlashCommands = [];
@@ -1994,6 +1949,7 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
     setConnectionStatus(`event gap: expected ${info.expected}, got ${info.received}`, 5000);
     addConnectionNotice(`gateway event gap: expected ${info.expected}, got ${info.received}`);
     reconcileHistoryAfterGap();
+    void taskProgress.reload();
     void refreshQuestions();
     void (async () => {
       try {
@@ -2047,6 +2003,7 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
       pluginApprovals?.dispose();
       questions.dispose();
       taskSuggestions?.dispose();
+      taskProgress.dispose();
       if (isLocalMode) {
         setConsoleSubsystemFilter(previousConsoleSubsystemFilter);
       }

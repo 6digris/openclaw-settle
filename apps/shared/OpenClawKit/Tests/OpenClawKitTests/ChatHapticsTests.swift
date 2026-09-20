@@ -1,5 +1,6 @@
 import Foundation
 import OpenClawKit
+import OpenClawProtocol
 import Testing
 @testable import OpenClawChatUI
 
@@ -119,6 +120,58 @@ struct ChatHapticsTests {
         }
         try await Task.sleep(for: .milliseconds(20))
         #expect(recorder.events == [.messageSent, .runCompleted])
+    }
+
+    @Test @MainActor func `yield retires foreground without completion and task observations continue`() throws {
+        let recorder = HapticRecorder()
+        let viewModel = OpenClawChatViewModel(
+            sessionKey: "agent:main:main",
+            transport: HapticsTestTransport(status: "started"),
+            activeAgentId: "main",
+            haptics: OpenClawChatHaptics(performer: recorder.record))
+        viewModel.pendingRuns = ["parent"]
+        viewModel.applyProgressCard(ProgressCard(
+            sessionkey: "agent:main:main", revision: 1, updatedat: 1000,
+            steps: [ProgressCardStep(step: "Child work", status: .inProgress)]))
+        let yielded = try JSONDecoder().decode(OpenClawChatEventPayload.self, from: Data(#"""
+        {"runId":"parent","sessionKey":"agent:main:main","state":"final","yielded":true,"stopReason":"end_turn"}
+        """#.utf8))
+        viewModel.handleTransportEvent(.chat(yielded))
+        #expect(viewModel.pendingRunCount == 0)
+        #expect(viewModel.lastTurnYielded)
+        #expect(recorder.events.isEmpty)
+        #expect(viewModel.progressCard?.steps?.first?.status == .inProgress)
+
+        let task = try JSONDecoder().decode(TaskSummary.self, from: Data(#"""
+        {"id":"child-task","runtime":"subagent","status":"running","agentId":"main",
+         "sessionKey":"agent:main:main","execution":{"state":"waiting"},
+         "progress":{"runId":"child-run","revision":2,"items":[
+           {"itemId":"tool","kind":"tool","phase":"end","title":"Command outcome unknown"}]}}
+        """#.utf8))
+        viewModel.handleTransportEvent(.task(.upserted(task)))
+        #expect(viewModel.subagentActivities.first?.progress?.items.first?.title == "Command outcome unknown")
+        #expect(viewModel.subagentActivities.first?.executionState == "waiting")
+        viewModel.adoptRun(runId: "parent", bufferedText: "Late parent delta")
+        #expect(viewModel.pendingRunCount == 0)
+        #expect(recorder.events.isEmpty)
+        viewModel.handleTransportEvent(.task(.deleted(taskID: "child-task")))
+        #expect(viewModel.subagentActivities.isEmpty)
+    }
+
+    @Test @MainActor func `yielded lifecycle and wait result are not successful completion`() {
+        let recorder = HapticRecorder()
+        let viewModel = OpenClawChatViewModel(
+            sessionKey: "main",
+            transport: HapticsTestTransport(status: "started"),
+            haptics: OpenClawChatHaptics(performer: recorder.record))
+        viewModel.pendingRuns = ["parent"]
+        viewModel.handleTransportEvent(.agent(OpenClawAgentEventPayload(
+            runId: "parent", seq: nil, stream: "lifecycle", ts: nil,
+            data: ["phase": AnyCodable("end"), "yielded": AnyCodable(true), "stopReason": AnyCodable("end_turn")])))
+        #expect(viewModel.pendingRunCount == 0)
+        #expect(recorder.events.isEmpty)
+        #expect(OpenClawChatRunObservation.fromWaitResponse(
+            status: "ok", stopReason: "end_turn", yielded: true) == .terminal(.yielded))
     }
 
     @Test(arguments: ["error", "aborted"])

@@ -360,6 +360,13 @@ export async function handleMatrixAction(
       editMatrixMessage(target.roomId, messageId, content, {
         ...clientOpts,
         client: target.client,
+        ...(ctx.progressSnapshot
+          ? {
+              progressSnapshot: ctx.progressSnapshot,
+              threadId: readStringParam(params, "threadId"),
+            }
+          : {}),
+        assertCurrent: ctx.assertDirectAdapterHandoff,
       }),
     );
     return jsonResult({ ok: true, result });

@@ -1,8 +1,8 @@
+import type { TaskSummary } from "@openclaw/gateway-client/browser";
 import type {
   AgentActivityItem,
   TasksHistoryResult,
 } from "../../../packages/gateway-protocol/src/index.ts";
-import type { TaskSummary } from "../lib/tasks/task-summary.ts";
 
 const timestamp = Date.UTC(2026, 8, 18, 12, 0);
 const root = "/workspace/synthetic-review/very-long-component-ownership-and-verification-path";

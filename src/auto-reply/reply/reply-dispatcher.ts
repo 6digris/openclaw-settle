@@ -14,6 +14,7 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import type { SilentReplyConversationType } from "../../shared/silent-reply-policy.js";
 import { sleep } from "../../utils.js";
+import { registerReplyDispatcherSettledTask } from "../dispatch-dispatcher.js";
 import { getGroupThreadParticipant } from "../group-thread-context.js";
 import {
   copyReplyPayloadMetadata,
@@ -733,15 +734,24 @@ export function createReplyDispatcherWithTyping(
   const resolvedOnIdle = onIdle ?? typingCallbacks?.onIdle;
   const resolvedOnCleanup = onCleanup ?? typingCallbacks?.onCleanup;
   let typingController: TypingController | undefined;
+  const notifyTypingIdle = async () => {
+    try {
+      typingController?.markDispatchIdle();
+      await resolvedOnIdle?.();
+    } catch {
+      // Typing notifications remain best effort; required settlement must still run.
+    }
+  };
   const dispatcher = createReplyDispatcher({
     ...dispatcherOptions,
-    onIdle: async () => {
-      typingController?.markDispatchIdle();
-      const idle = resolvedOnIdle?.();
-      if (idle) {
-        await Promise.resolve(idle);
+    onIdle: () => {
+      const settling = notifyTypingIdle().then(async () => {
+        await onSettled?.();
+      });
+      if (onSettled) {
+        registerReplyDispatcherSettledTask(dispatcher, () => settling);
       }
-      await onSettled?.();
+      return settling;
     },
   });
 
@@ -755,11 +765,8 @@ export function createReplyDispatcherWithTyping(
       },
     },
     markDispatchIdle: () => {
-      typingController?.markDispatchIdle();
-      resolvedOnIdle?.();
+      void notifyTypingIdle();
     },
-    markRunComplete: () => {
-      typingController?.markRunComplete();
-    },
+    markRunComplete: () => typingController?.markRunComplete(),
   };
 }

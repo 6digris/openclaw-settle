@@ -1,5 +1,48 @@
 import SwiftUI
 
+public struct OpenClawTaskProgressView: View {
+    private let progress: OpenClawTaskProgress
+
+    public init(progress: OpenClawTaskProgress) {
+        self.progress = progress
+    }
+
+    public var body: some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(self.progress.items, id: \.itemId) { item in
+                    if let text = item.progressDisplayText {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            if item.kind == "tool" || item.status != nil {
+                                Text(Self.statusLabel(item.status))
+                                    .font(OpenClawChatTypography.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(verbatim: text)
+                                .font(OpenClawChatTypography.footnote)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                }
+            }
+        } label: {
+            Text("Activity")
+                .font(OpenClawChatTypography.caption)
+        }
+    }
+
+    private static func statusLabel(_ status: String?) -> LocalizedStringResource {
+        switch status {
+        case "running": "Working"
+        case "completed": "Finished"
+        case "failed": "Failed"
+        case "blocked": "Blocked"
+        default: "Outcome unknown"
+        }
+    }
+}
+
 struct ChatSubagentActivityList: View {
     @Environment(\.openClawChatDesktopLayout) private var isDesktopLayout
     let activities: [ChatSubagentActivity]
@@ -35,6 +78,9 @@ private struct ChatSubagentActivityRow: View {
 
     private var detail: String? {
         if self.activity.status.isWorking {
+            if let progress = self.activity.progress {
+                return progress.items.last?.progressDisplayText
+            }
             return self.activity.snippet
         }
         return self.activity.terminalSummary ?? self.activity.snippet
@@ -48,7 +94,13 @@ private struct ChatSubagentActivityRow: View {
         case .queued:
             "Subagent queued"
         case .running:
-            "Subagent working"
+            switch self.activity.executionState {
+            case "running": "Subagent working"
+            case "queued": "Subagent queued"
+            case "waiting": "Subagent waiting"
+            case "finished": "Subagent finishing"
+            default: "Subagent execution unknown"
+            }
         case .completed:
             "Subagent finished"
         case .failed, .timedOut:
@@ -80,7 +132,14 @@ private struct ChatSubagentActivityRow: View {
     private var statusLabel: LocalizedStringResource {
         switch self.activity.status {
         case .queued: "Queued"
-        case .running: "Working"
+        case .running:
+            switch self.activity.executionState {
+            case "running": "Working"
+            case "queued": "Queued"
+            case "waiting": "Waiting"
+            case "finished": "Finished"
+            default: "Execution unknown"
+            }
         case .completed: "Finished"
         case .failed, .timedOut: "Failed"
         case .cancelled: "Cancelled"
@@ -91,8 +150,15 @@ private struct ChatSubagentActivityRow: View {
     private var statusHelp: String {
         switch self.activity.status {
         case .queued: String(localized: "Queued — waiting to start.")
-        case .running: String(localized: "Running — working on this task.")
-        case .completed: String(localized: "Completed — finished successfully.")
+        case .running:
+            switch self.activity.executionState {
+            case "running": String(localized: "Running — working on this task.")
+            case "queued": String(localized: "Queued — waiting to start.")
+            case "waiting": String(localized: "Waiting for a dependency.")
+            case "finished": String(localized: "Subagent finishing")
+            default: String(localized: "Execution outcome unknown.")
+            }
+        case .completed: String(localized: "Task completed — individual command outcomes may differ.")
         case .failed: String(localized: "Failed — the task ended with an error.")
         case .cancelled: String(localized: "Cancelled — stopped before completion.")
         case .timedOut: String(localized: "Timed out — reached its time limit.")
@@ -131,6 +197,10 @@ private struct ChatSubagentActivityRow: View {
                     .textSelection(.enabled)
                     .padding(.leading, 35)
             }
+            if (!self.isDesktopLayout || self.expanded), let progress = self.activity.progress, !progress.items.isEmpty {
+                OpenClawTaskProgressView(progress: progress)
+                    .padding(.leading, 35)
+            }
         }
         .modifier(ChatWorkCardStyle())
         .help(Text(self.rowHelp))
@@ -141,7 +211,7 @@ private struct ChatSubagentActivityRow: View {
             #if os(macOS)
             ChatSubagentStatusClaw(activity: self.activity)
             #else
-            if self.activity.status == .running {
+            if self.activity.isExecuting {
                 ChatWorkingClawView(seed: self.activity.id)
             } else {
                 Image(systemName: self.statusSymbol)
@@ -149,7 +219,7 @@ private struct ChatSubagentActivityRow: View {
                     .foregroundStyle(
                         self.activity.status == .completed
                             ? OpenClawChatTheme.success
-                            : self.activity.status == .cancelled || self.activity.status == .queued
+                            : self.activity.status.isWorking || self.activity.status == .cancelled
                             ? Color.secondary
                             : OpenClawChatTheme.danger)
                     .frame(width: 28, height: 24)
@@ -222,7 +292,7 @@ private struct ChatSubagentStatusClaw: View {
     var body: some View {
         ChatWorkingClawView(
             seed: self.activity.id,
-            parked: self.activity.status != .running,
+            parked: !self.activity.isExecuting,
             tint: self.tint)
             .overlay(alignment: .topTrailing) {
                 if self.activity.status == .failed || self.activity.status == .timedOut {

@@ -5,7 +5,6 @@ import type {
   QuestionResolveParams,
   SessionsPatchResult,
 } from "../../packages/gateway-protocol/src/index.js";
-import { CHAT_HISTORY_MAX_ENTRIES } from "../../packages/gateway-protocol/src/schema/chat-history-constants.js";
 import { agentCommandFromIngress } from "../agents/agent-command.js";
 import { isAgentLifecycleYieldedWaiting } from "../agents/agent-lifecycle-parent-state.js";
 import { findAgentRunTerminalOutcome } from "../agents/agent-run-terminal-error.js";
@@ -18,7 +17,6 @@ import {
 } from "../agents/agent-run-terminal-outcome.js";
 import {
   resolveAgentDir,
-  resolveAgentWorkspaceDir,
   resolveDefaultAgentId,
   resolveSessionAgentId,
 } from "../agents/agent-scope.js";
@@ -29,15 +27,12 @@ import {
   queueEmbeddedAgentMessageWithOutcomeAsync,
 } from "../agents/embedded-agent-runner/runs.js";
 import { QuestionAnswerUnconfirmedError } from "../agents/harness/gateway-question-dispatch.js";
-import { resolveThinkingDefault } from "../agents/model-selection.js";
 import { resolvePublishedModelCatalogOwner } from "../agents/prepared-model-catalog-owner.js";
 import {
-  readPreparedModelCatalog,
   loadPreparedModelCatalogSnapshot,
   withPreparedModelCatalogOwner,
 } from "../agents/prepared-model-catalog.js";
 import { getPreparedModelRuntimeAuthMaterializations } from "../agents/prepared-model-runtime-auth.js";
-import { loadAgentRuntimePluginRegistryHandle } from "../agents/runtime-plugins.js";
 import { readToolValidationErrorSummary } from "../agents/tool-error-summary.js";
 import { bindEmbeddedSessionRowProjection } from "../agents/tools/embedded-gateway-stub.js";
 import { resolveTextCommand } from "../auto-reply/commands-registry.js";
@@ -53,30 +48,17 @@ import { createDefaultDeps } from "../cli/deps.js";
 import { getRuntimeConfig, registerConfigWriteListener } from "../config/config.js";
 import type { SessionEntry } from "../config/sessions.js";
 import { applySessionPatchProjection } from "../config/sessions/session-accessor.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   mergeAssistantText,
   resolveAssistantTextInput,
 } from "../gateway/agent-event-assistant-text.js";
 import { isChatStopCommandText } from "../gateway/chat-abort.js";
-import { resolveEffectiveChatHistoryMaxChars } from "../gateway/chat-display-projection.js";
 import {
   capLiveAssistantText,
   normalizeLiveAssistantBufferedText,
   projectLiveAssistantBufferedText,
   shouldSuppressAssistantEventForLiveChat,
 } from "../gateway/live-chat-projector.js";
-import { getMaxChatHistoryMessagesBytes } from "../gateway/server-constants.js";
-import {
-  createChatHistoryActivityProjection,
-  createChatHistoryByteCounter,
-} from "../gateway/server-methods/chat-history-budget.js";
-import { enrichChatHistoryCompactionMarkers } from "../gateway/server-methods/chat-history-page-kernel.js";
-import { readChatHistoryPage } from "../gateway/server-methods/chat-history-pages.js";
-import {
-  CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES,
-  replaceOversizedChatHistoryMessages,
-} from "../gateway/server-methods/chat.js";
 import { buildModelsListResult } from "../gateway/server-methods/models-list-result.js";
 import { createGatewaySession } from "../gateway/session-create-service.js";
 import { performGatewaySessionReset } from "../gateway/session-reset-service.js";
@@ -84,13 +66,9 @@ import {
   createSessionRowProjection,
   type SessionRowProjection,
 } from "../gateway/session-row-projection.js";
-import { capArrayByJsonBytes } from "../gateway/session-transcript-readers.js";
 import { listProjectedSessions } from "../gateway/session-utils-list.js";
 import { projectSessionPatchResult } from "../gateway/session-utils-model.js";
-import { buildGatewaySessionRow } from "../gateway/session-utils-row.js";
-import { createGatewaySessionEntryReader } from "../gateway/session-utils-store-lookup.js";
 import {
-  getSessionDefaults,
   listAgentsForGateway,
   loadSessionEntry,
   loadGatewaySessionEntryReadOnly,
@@ -113,15 +91,12 @@ import {
   setEmbeddedQuestionBroker,
 } from "../infra/embedded-question-broker.js";
 import { logInfo, logWarn } from "../logger.js";
-import {
-  agentSessionKeysMatchByRequestKey,
-  isIncognitoSessionKey,
-  normalizeAgentId,
-} from "../routing/session-key.js";
+import { normalizeAgentId } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
 import { applyQueueDropPolicy, waitForQueueDebounce } from "../utils/queue-helpers.js";
 import { payloadText, resolveDeltaPayload } from "./embedded-chat-projection.js";
+import { loadEmbeddedHistory } from "./embedded-history.js";
 import {
   buildLocalQueuedPrompt,
   createQueuedRunReadiness,
@@ -131,6 +106,7 @@ import {
   type QueuedSessionRun,
 } from "./embedded-local-run.js";
 import { EmbeddedPreparedModelRuntimeHost } from "./embedded-prepared-runtime.js";
+import { EmbeddedTaskObserver } from "./embedded-task-observer.js";
 import type {
   ChatSendOptions,
   TuiAgentsList,
@@ -172,22 +148,6 @@ const embeddedSessionStartupMigrationLog = {
   warn: (message: string) => logWarn(message, silentRuntime),
 };
 
-function ensureEmbeddedHistoryRuntimePluginsLoaded(params: {
-  cfg: OpenClawConfig;
-  sessionAgentId: string;
-}): { status: "warmed" } | { status: "failed"; error: string } {
-  try {
-    const workspaceDir = resolveAgentWorkspaceDir(params.cfg, params.sessionAgentId);
-    loadAgentRuntimePluginRegistryHandle({
-      config: params.cfg,
-      workspaceDir,
-    });
-    return { status: "warmed" };
-  } catch (err) {
-    return { status: "failed", error: formatTuiErrorMessage(err) };
-  }
-}
-
 function resolveBtwQuestion(message: string): string | undefined {
   const match = /^\/(?:btw|side)(?::|\s)+(.*)$/i.exec(message.trim());
   const question = match?.[1]?.trim();
@@ -223,6 +183,9 @@ export class EmbeddedTuiBackend implements TuiBackend {
   private readonly pendingLifecycleErrors = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly pluginApprovalBroker = new EmbeddedPluginApprovalBroker();
   private readonly questionBroker = new EmbeddedQuestionBroker();
+  private readonly taskObserver = new EmbeddedTaskObserver((event) =>
+    this.emit(event.event, event.payload),
+  );
   private readonly preparedModelRuntime = new EmbeddedPreparedModelRuntimeHost();
   private unsubscribePluginApprovals?: () => void;
   private unsubscribeQuestions?: () => void;
@@ -254,6 +217,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
     this.unsubscribeQuestions = this.questionBroker.subscribe((event) => {
       this.emit(event.event, event.payload);
     });
+    this.taskObserver.start();
     const config = getRuntimeConfig();
     this.unsubscribeConfigWrites = registerConfigWriteListener((event) => {
       this.preparedModelRuntime.publish(event.runtimeConfig);
@@ -278,6 +242,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
   }
 
   async stop() {
+    const taskObserverStopped = this.taskObserver.stop();
     this.unsubscribeConfigWrites?.();
     this.unsubscribeConfigWrites = undefined;
     clearEmbeddedPluginApprovalBroker(this.pluginApprovalBroker);
@@ -315,6 +280,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
       (value) => value.dispose(),
       () => {},
     );
+    await taskObserverStopped;
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     this.pendingLifecycleErrors.forEach(clearTimeout);
@@ -512,145 +478,20 @@ export class EmbeddedTuiBackend implements TuiBackend {
   async loadHistory(opts: { sessionKey: string; agentId?: string; limit?: number }) {
     await this.ready;
     await this.preparedModelRuntime.waitUntilReady();
-    const loadOptions = opts.agentId ? { agentId: opts.agentId } : undefined;
-    const selected = loadGatewaySessionEntryReadOnly(opts.sessionKey, {
-      ...loadOptions,
-      includeStoreChildEntries: true,
+    return loadEmbeddedHistory(opts, {
+      runs: this.runs,
+      getSessionProjection: () => this.sessionProjection,
     });
-    const {
-      cfg,
-      agentId: sessionAgentId,
-      storePath,
-      store,
-      readSource,
-      entry,
-      canonicalKey,
-    } = selected;
-    const sessionId = entry?.sessionId;
-    const runtimePluginsPrewarm = ensureEmbeddedHistoryRuntimePluginsLoaded({
-      cfg,
-      sessionAgentId,
-    });
-    const resolvedSessionModel = resolveSessionModelRef(cfg, entry, sessionAgentId);
-    const max = Math.min(
-      CHAT_HISTORY_MAX_ENTRIES,
-      typeof opts.limit === "number" ? opts.limit : 200,
-    );
-    const maxHistoryBytes = getMaxChatHistoryMessagesBytes();
-    const effectiveMaxChars = resolveEffectiveChatHistoryMaxChars();
-    const historyPage = await readChatHistoryPage({
-      entry,
-      provider: resolvedSessionModel.provider,
-      sessionId,
-      storePath,
-      sessionAgentId,
-      canonicalKey,
-      max,
-      maxHistoryBytes,
-      effectiveMaxChars,
-      offset: undefined,
-      messageId: undefined,
-    });
-    const normalized = enrichChatHistoryCompactionMarkers(historyPage.messages, entry);
-    const activity = createChatHistoryActivityProjection(normalized, historyPage.activity);
-    const byteCounter = createChatHistoryByteCounter(activity);
-    const perMessageHardCap = Math.min(CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES, maxHistoryBytes);
-    const replaced = replaceOversizedChatHistoryMessages({
-      messages: normalized,
-      byteCounter,
-      maxSingleMessageBytes: perMessageHardCap,
-    });
-    const messages = capArrayByJsonBytes(
-      replaced.messages,
-      maxHistoryBytes - byteCounter.framingBytes(replaced.messages),
-      byteCounter.messageBytes,
-    ).items;
-    const newestInFlightRun = [...this.runs.entries()].findLast(
-      ([, run]) =>
-        !run.isBtw &&
-        run.terminalState !== "final" &&
-        agentSessionKeysMatchByRequestKey(run.sessionKey, opts.sessionKey) &&
-        normalizeAgentId(run.agentId) === normalizeAgentId(sessionAgentId),
-    );
-    const inFlightRun = newestInFlightRun
-      ? {
-          runId: newestInFlightRun[0],
-          text: projectLiveAssistantBufferedText(
-            normalizeLiveAssistantBufferedText(newestInFlightRun[1].buffer, {
-              managedMediaUrls: [...newestInFlightRun[1].managedMediaUrls],
-            }).trim(),
-            { suppressLeadFragments: true },
-          ).text.trim(),
-        }
-      : undefined;
+  }
 
-    let thinkingLevel = entry?.thinkingLevel;
-    if (!thinkingLevel) {
-      const catalog = await readPreparedModelCatalog({
-        config: cfg,
-        agentId: sessionAgentId,
-        readOnly: true,
-      });
-      thinkingLevel = resolveThinkingDefault({
-        cfg,
-        agentId: sessionAgentId,
-        provider: resolvedSessionModel.provider,
-        model: resolvedSessionModel.model,
-        catalog,
-      });
-    }
+  async listTasks(opts: Parameters<TuiBackend["listTasks"]>[0]) {
+    await this.ready;
+    return this.taskObserver.listTasks(opts);
+  }
 
-    const defaults = getSessionDefaults(cfg, undefined, { allowPluginNormalization: false });
-    const projection = await this.sessionProjection;
-    if (projection) {
-      do {
-        await projection.ensureMaterialized();
-      } while (projection.needsMaterialization);
-    }
-    const target = {
-      key: canonicalKey,
-      agentId: sessionAgentId,
-      storePath: readSource?.path ?? storePath,
-    };
-    const current = projection?.describe(target);
-    const sessionInfo =
-      entry && (entry.incognito || isIncognitoSessionKey(canonicalKey))
-        ? buildGatewaySessionRow({
-            cfg,
-            storePath,
-            store,
-            key: canonicalKey,
-            entry,
-            agentId: sessionAgentId,
-            modelSource: { entry, readSourceEntry: createGatewaySessionEntryReader(selected) },
-            lightweightListRow: true,
-            skipTranscriptUsageFallback: true,
-          })
-        : entry &&
-            current &&
-            current.entry.sessionId === sessionId &&
-            current.entry.lifecycleRevision === entry.lifecycleRevision
-          ? (projection?.snapshot(target).row ?? undefined)
-          : undefined;
-    const verboseLevel = entry?.verboseLevel ?? cfg.agents?.defaults?.verboseDefault;
-    if (sessionInfo) {
-      sessionInfo.thinkingLevel = thinkingLevel;
-      sessionInfo.verboseLevel = verboseLevel;
-    }
-
-    return {
-      sessionKey: opts.sessionKey,
-      sessionId,
-      messages,
-      defaults,
-      activity: messages.flatMap((message) => activity.get(message) ?? []),
-      ...(sessionInfo ? { sessionInfo } : {}),
-      thinkingLevel,
-      fastMode: entry?.fastMode,
-      verboseLevel,
-      runtimePluginsPrewarm,
-      ...(inFlightRun ? { inFlightRun } : {}),
-    };
+  async getProgressCard(opts: Parameters<TuiBackend["getProgressCard"]>[0]) {
+    await this.ready;
+    return this.taskObserver.getProgressCard(opts);
   }
 
   async listSessions(opts?: Parameters<TuiBackend["listSessions"]>[0]): Promise<TuiSessionList> {

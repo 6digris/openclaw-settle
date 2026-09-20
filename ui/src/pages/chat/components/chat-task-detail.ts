@@ -1,6 +1,12 @@
+import {
+  isActiveTask,
+  newestTaskSnapshot,
+  taskTimestampMs,
+  type TaskSummary,
+} from "@openclaw/gateway-client/browser";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { html, nothing, type TemplateResult } from "lit";
 import "../../../components/elapsed-time.ts";
+import { html, nothing, type TemplateResult } from "lit";
 import { ref } from "lit/directives/ref.js";
 import { icons } from "../../../components/icons.ts";
 import { renderPanelLoadingSkeleton } from "../../../components/panel-loading-skeleton.ts";
@@ -8,20 +14,16 @@ import { t } from "../../../i18n/index.ts";
 import { registerBackgroundTasksEnglish } from "../../../i18n/locales/en-background-tasks.ts";
 import { uiConversationMatches } from "../../../lib/sessions/session-key.ts";
 import {
-  isActiveTask,
   taskDetail,
   taskRuntimeLabel,
-  taskTimestampMs,
   taskDisplayTitle,
   taskFinishedDuration,
 } from "../../../lib/tasks/data.ts";
-import type { TaskSummary } from "../../../lib/tasks/task-summary.ts";
 import { renderBackgroundTasksError } from "./chat-background-tasks-render.ts";
 import {
   backgroundTaskStatusLabel,
   backgroundTaskIsExecuting,
   backgroundTaskDeliveryLabel,
-  newestTaskSnapshot,
   STATUS_TONES,
 } from "./chat-background-tasks-shared.ts";
 import type { BackgroundTasksProps } from "./chat-background-tasks.types.ts";
@@ -137,7 +139,7 @@ function renderTaskHeader(
           task
             ? html`<div class="chat-task-detail__meta">
                 ${
-                  backgroundTaskIsExecuting(task)
+                  backgroundTasks?.connected && backgroundTaskIsExecuting(task)
                     ? html`<span class="chat-tasks-rail__task-pulse" aria-hidden="true"></span>`
                     : nothing
                 }
@@ -147,7 +149,7 @@ function renderTaskHeader(
                   }"
                   >${backgroundTaskStatusLabel(task)}</span
                 >
-                ${active && startedMs > 0 ? html`<span aria-hidden="true">·</span><openclaw-elapsed-time .startMs=${startedMs}></openclaw-elapsed-time>` : duration ? html`<span aria-hidden="true">·</span><span>${duration}</span>` : nothing}
+                ${active && backgroundTasks?.connected && startedMs > 0 ? html`<span aria-hidden="true">·</span><openclaw-elapsed-time .startMs=${startedMs}></openclaw-elapsed-time>` : duration ? html`<span aria-hidden="true">·</span><span>${duration}</span>` : nothing}
                 ${(task.toolUseCount ?? 0) > 0 ? html`<span aria-hidden="true">·</span><span>${t(task.toolUseCount === 1 ? "chat.backgroundTasks.toolCallsOne" : "chat.backgroundTasks.toolCallsMany", { count: String(task.toolUseCount) })}</span>` : nothing}
                 ${task.diffStat ? html`<span aria-hidden="true">·</span>${renderDiffStatChips(task.diffStat)}` : nothing}
                 ${task.runtime !== "subagent" ? html`<span aria-hidden="true">·</span><span>${taskRuntimeLabel(task)}</span>` : nothing}
@@ -176,7 +178,8 @@ function renderTaskHeader(
 
 function renderTaskObservation(task: TaskSummary, props: BackgroundTasksProps) {
   const active = isActiveTask(task);
-  const currentTool = backgroundTaskIsExecuting(task) ? task.execution?.currentTool : undefined;
+  const currentTool =
+    props.connected && backgroundTaskIsExecuting(task) ? task.execution?.currentTool : undefined;
   const activityAt = active ? taskTimestampMs(task.execution?.lastActivityAt) : 0;
   const wait = active && task.execution?.state === "waiting" ? task.execution.wait : undefined;
   const delivery = backgroundTaskDeliveryLabel(task);
@@ -295,8 +298,8 @@ export function renderTaskTranscript(params: {
         : nothing
     }
     ${load.status === "loaded" && load.nextCursor ? renderChatHistoryBoundary({ hasMore: true, loading: load.loading, onShowEarlier: () => loadOlderTaskTranscript(params.host) }) : nothing}
-    ${load.status === "loaded" && !messages.length && !load.nextCursor && !load.error ? html`<div class="chat-task-detail__state">${t("chat.backgroundTasks.transcriptEmpty")}</div>` : nothing}
-    ${renderTaskActivityFeed(messages, recovery)}
+    ${load.status === "loaded" && !messages.length && !params.task.progress?.items.length && !load.nextCursor && !load.error ? html`<div class="chat-task-detail__state">${t("chat.backgroundTasks.transcriptEmpty")}</div>` : nothing}
+    ${renderTaskActivityFeed(messages, recovery, isActiveTask(params.task) ? params.task.progress : undefined, params.host.connected && backgroundTaskIsExecuting(params.task))}
   </div>`;
 }
 
@@ -309,6 +312,7 @@ function renderTaskFallback(
   loadTaskDetail(task, backgroundTasks);
   return html`<div class="sidebar-content chat-task-detail__fallback">
     ${renderTaskNow(task)} ${renderTaskInspector(task, backgroundTasks)}
+    ${renderTaskActivityFeed([], undefined, isActiveTask(task) ? task.progress : undefined, backgroundTasks.connected && backgroundTaskIsExecuting(task))}
   </div>`;
 }
 
@@ -347,10 +351,16 @@ function renderTaskInspector(task: TaskSummary, props: BackgroundTasksProps): Te
         <div class="chat-tasks-rail__task-inspector-label">${t("chat.backgroundTasks.prompt")}</div>
         <pre>${detailedTask?.prompt ?? t("chat.backgroundTasks.promptUnavailable")}</pre>
       </section>
-      <section class="chat-tasks-rail__task-inspector-block">
-        <div class="chat-tasks-rail__task-inspector-label">${t("chat.backgroundTasks.output")}</div>
-        <pre>${output ?? t("chat.backgroundTasks.outputPending")}</pre>
-      </section>
+      ${
+        isActiveTask(newest) && newest.progress
+          ? nothing
+          : html`<section class="chat-tasks-rail__task-inspector-block">
+              <div class="chat-tasks-rail__task-inspector-label">
+                ${t("chat.backgroundTasks.output")}
+              </div>
+              <pre>${output ?? t("chat.backgroundTasks.outputPending")}</pre>
+            </section>`
+      }
     </div>
   `;
 }
@@ -367,6 +377,9 @@ function loadTaskDetail(task: TaskSummary, backgroundTasks: BackgroundTasksProps
 
 function renderTaskNow(task: TaskSummary) {
   const active = isActiveTask(task);
+  if (active && task.progress) {
+    return nothing;
+  }
   const text = active ? task.progressSummary : task.terminalSummary || task.error;
   return text
     ? html`<div

@@ -1,6 +1,10 @@
 import type { MessageMetadata } from "@slack/types";
 import type { Block, KnownBlock } from "@slack/web-api";
-import { createFinalizableDraftStreamControlsForState } from "openclaw/plugin-sdk/channel-outbound";
+import {
+  createFinalizableDraftStreamControlsForState,
+  type ChannelProgressDraftCompositorSnapshot,
+  type ProgressContinuationReceipt,
+} from "openclaw/plugin-sdk/channel-outbound";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { deleteSlackMessage, editSlackMessage } from "./actions.js";
 import { trackSlackDraftMessage } from "./draft-message-boundaries.js";
@@ -9,10 +13,11 @@ import { SLACK_TEXT_LIMIT } from "./limits.js";
 import type { SlackEventScope } from "./monitor/event-scope.js";
 import type { SlackSendIdentity } from "./send.js";
 import { sendMessageSlack } from "./send.js";
+import { formatSlackTarget } from "./target-parsing.js";
 
 const DEFAULT_THROTTLE_MS = 1000;
 
-type SlackDraftStream = {
+export type SlackDraftStream = {
   update: (update: SlackDraftStreamUpdate) => void;
   flush: () => Promise<void>;
   clear: (options?: { preserveHumanReplies?: boolean }) => Promise<void>;
@@ -23,6 +28,8 @@ type SlackDraftStream = {
   finalizeMessage: (messageId: string, editFinal: () => Promise<void>) => Promise<boolean>;
   messageId: () => string | undefined;
   channelId: () => string | undefined;
+  progressReceipt: () => ProgressContinuationReceipt | undefined;
+  releaseProgressReceipt: (receipt: ProgressContinuationReceipt) => void;
 };
 
 type SlackDraftStreamUpdate =
@@ -30,12 +37,19 @@ type SlackDraftStreamUpdate =
   | {
       text: string;
       blocks?: (Block | KnownBlock)[];
+      snapshot?: ChannelProgressDraftCompositorSnapshot;
       // Partial preambles can edit a visible draft, but must never create a
       // fresh Slack notification after an intervening human reply rotates it.
       allowNewMessage?: boolean;
     };
 
-type SlackDraftMessage = { channelId: string; messageId: string; detachedByHuman?: boolean };
+type SlackDraftMessage = {
+  channelId: string;
+  messageId: string;
+  threadTs?: string;
+  detachedByHuman?: boolean;
+  receipt?: ProgressContinuationReceipt;
+};
 
 export function createSlackDraftStream(params: {
   target: string;
@@ -64,6 +78,7 @@ export function createSlackDraftStream(params: {
   let streamMessage: SlackDraftMessage | undefined;
   let untrackConversationBoundary: (() => void) | undefined;
   let lastVisibleUpdate: { text: string; blocks?: (Block | KnownBlock)[] } | undefined;
+  let progressReceipt: ProgressContinuationReceipt | undefined;
   let lastSentKey = "";
   const pendingCleanupMessages: SlackDraftMessage[] = [];
   let cleanupTail = Promise.resolve();
@@ -72,6 +87,31 @@ export function createSlackDraftStream(params: {
 
   const normalizeUpdate = (update: SlackDraftStreamUpdate) =>
     typeof update === "string" ? { text: update } : update;
+
+  const confirmProgressReceipt = (
+    message: SlackDraftMessage,
+    text: string,
+    snapshot: ChannelProgressDraftCompositorSnapshot | undefined,
+  ) => {
+    progressReceipt =
+      snapshot && streamMessage === message
+        ? {
+            channel: "slack",
+            accountId: params.accountId,
+            to: formatSlackTarget({
+              kind: "channel",
+              id: message.channelId,
+              explicitKind: true,
+              teamId: params.eventScope?.teamId,
+            }),
+            threadId: message.threadTs,
+            messageId: message.messageId,
+            text,
+            snapshot,
+          }
+        : undefined;
+    message.receipt = progressReceipt;
+  };
 
   const sendOrEditStreamMessage = async (pending: SlackDraftStreamUpdate) => {
     if (streamState.stopped) {
@@ -98,14 +138,19 @@ export function createSlackDraftStream(params: {
     lastSentKey = sentKey;
     try {
       if (streamMessage) {
-        await edit(streamMessage.channelId, streamMessage.messageId, trimmed, {
+        const currentMessage = streamMessage;
+        progressReceipt = undefined;
+        await edit(currentMessage.channelId, currentMessage.messageId, trimmed, {
           cfg: params.cfg,
           token: params.token,
           accountId: params.accountId,
           ...(params.eventScope ? { client: params.eventScope.client } : {}),
           ...(blocks ? { blocks } : {}),
         });
-        lastVisibleUpdate = { text: trimmed, ...(blocks ? { blocks } : {}) };
+        if (streamMessage === currentMessage) {
+          lastVisibleUpdate = { text: trimmed, ...(blocks ? { blocks } : {}) };
+          confirmProgressReceipt(currentMessage, trimmed, update.snapshot);
+        }
         return;
       }
       const threadTs = params.resolveThreadTs?.();
@@ -135,7 +180,8 @@ export function createSlackDraftStream(params: {
         params.warn?.("slack stream preview stopped (missing identifiers from sendMessage)");
         return;
       }
-      streamMessage = { channelId: sent.channelId, messageId: sent.messageId };
+      const sentMessage = { channelId: sent.channelId, messageId: sent.messageId, threadTs };
+      streamMessage = sentMessage;
       lastVisibleUpdate = { text: trimmed, ...(blocks ? { blocks } : {}) };
       if (pendingBoundary && params.conversationChannelId === streamMessage.channelId) {
         pendingBoundary.setMessageTs(streamMessage.messageId);
@@ -151,8 +197,10 @@ export function createSlackDraftStream(params: {
         });
         untrackConversationBoundary = tracker.stop;
       }
+      confirmProgressReceipt(sentMessage, trimmed, update.snapshot);
     } catch (err) {
       stopTrackingConversationBoundary();
+      progressReceipt = undefined;
       streamState.stopped = true;
       params.warn?.(`slack stream preview failed: ${formatSlackError(err)}`);
     }
@@ -218,6 +266,7 @@ export function createSlackDraftStream(params: {
       streamMessage = undefined;
     }
     lastVisibleUpdate = undefined;
+    progressReceipt = undefined;
     lastSentKey = "";
     await dropDetachedMessages(options?.preserveHumanReplies);
   };
@@ -238,6 +287,7 @@ export function createSlackDraftStream(params: {
     }
     streamMessage = undefined;
     lastVisibleUpdate = undefined;
+    progressReceipt = undefined;
     lastSentKey = "";
     loop.resetPending();
   };
@@ -287,6 +337,22 @@ export function createSlackDraftStream(params: {
     forceNewMessage,
     dropDetachedMessages,
     finalizeMessage,
+    progressReceipt: () => progressReceipt,
+    releaseProgressReceipt: (receipt) => {
+      if (streamMessage?.receipt === receipt) {
+        stopTrackingConversationBoundary();
+        streamMessage = undefined;
+        lastVisibleUpdate = undefined;
+        lastSentKey = "";
+        progressReceipt = undefined;
+      }
+      for (let index = pendingCleanupMessages.length - 1; index >= 0; index -= 1) {
+        const message = pendingCleanupMessages[index];
+        if (message?.receipt === receipt) {
+          pendingCleanupMessages.splice(index, 1);
+        }
+      }
+    },
     messageId: () => streamMessage?.messageId,
     channelId: () => streamMessage?.channelId,
   };

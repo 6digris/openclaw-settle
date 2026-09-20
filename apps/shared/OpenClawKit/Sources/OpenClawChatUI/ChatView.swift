@@ -84,6 +84,7 @@ private struct ChatTurnRecapObservation: Equatable {
     let sessionKey: String
     let indicatorVisible: Bool
     let row: ChatTurnRecapSessionRow?
+    let yielded: Bool
 }
 
 public struct OpenClawChatDisplayOptions: OptionSet, Sendable {
@@ -966,7 +967,8 @@ public struct OpenClawChatView: View {
         return ChatTurnRecapObservation(
             sessionKey: self.viewModel.sessionKey,
             indicatorVisible: self.showsWorkingIndicator,
-            row: row)
+            row: row,
+            yielded: self.viewModel.lastTurnYielded)
     }
 
     private func updateTurnRecap(_ observation: ChatTurnRecapObservation) {
@@ -974,7 +976,8 @@ public struct OpenClawChatView: View {
         let recap = resolver.resolve(
             sessionKey: observation.sessionKey,
             indicatorVisible: observation.indicatorVisible,
-            row: observation.row)
+            row: observation.row,
+            yielded: observation.yielded)
         self.turnRecapResolver = resolver
         self.turnRecap = recap
         self.turnRecapSessionKey = recap == nil ? nil : observation.sessionKey

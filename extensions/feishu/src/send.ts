@@ -1,3 +1,7 @@
+import {
+  createChannelProgressDraftCompositor,
+  type ChannelProgressDraftCompositorSnapshot,
+} from "openclaw/plugin-sdk/channel-outbound";
 import { resolveMarkdownTableMode } from "openclaw/plugin-sdk/markdown-table-runtime";
 import { parseStrictNonNegativeInteger } from "openclaw/plugin-sdk/number-runtime";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
@@ -19,9 +23,9 @@ import {
 import type { MentionTarget } from "./mention-target.types.js";
 import { buildMentionedCardContent } from "./mention.js";
 import { parseMergeForwardContent } from "./message-content.js";
-import { resolveFeishuCardTemplate } from "./native-card.js";
+import { escapeFeishuCardMarkdownText, resolveFeishuCardTemplate } from "./native-card.js";
 import { renderPostContent } from "./post.js";
-import { withFeishuMessageDispatch } from "./send-context.js";
+import { captureFeishuSendAuthority, withFeishuMessageDispatch } from "./send-context.js";
 import { resolveFeishuReceiptKind, toFeishuSendResult } from "./send-result.js";
 import { resolveFeishuSendTarget } from "./send-target.js";
 import type { FeishuChatType, FeishuMessageInfo, FeishuSendResult } from "./types.js";
@@ -548,12 +552,35 @@ export async function editMessageFeishu(params: {
   text?: string;
   card?: Record<string, unknown>;
   accountId?: string;
+  progressSnapshot?: ChannelProgressDraftCompositorSnapshot;
+  header?: CardHeaderConfig;
+  note?: string;
 }): Promise<{ messageId: string; contentType: "post" | "interactive" }> {
-  const { cfg, messageId, text, card, accountId } = params;
+  const { cfg, messageId, accountId } = params;
   const account = resolveFeishuRuntimeAccount({ cfg, accountId });
   if (!account.configured) {
     throw new Error(`Feishu account "${account.accountId}" not configured`);
   }
+  const progressText = params.progressSnapshot
+    ? (params.progressSnapshot.preparedBlocks
+        ?.map((block) =>
+          block.format === "plain" ? escapeFeishuCardMarkdownText(block.text) : block.text,
+        )
+        .join("\n\n") ??
+      createChannelProgressDraftCompositor({
+        entry: account.config,
+        mode: "partial",
+        active: false,
+        seed: "",
+        initialSnapshot: params.progressSnapshot,
+        formatPlainText: escapeFeishuCardMarkdownText,
+      }).getText())
+    : undefined;
+  const card =
+    progressText !== undefined
+      ? buildStructuredCard(progressText, { header: params.header, note: params.note })
+      : params.card;
+  const text = progressText === undefined ? params.text : undefined;
 
   const hasText = typeof text === "string" && text.trim().length > 0;
   const hasCard = Boolean(card);
@@ -565,6 +592,7 @@ export async function editMessageFeishu(params: {
 
   if (card) {
     const content = JSON.stringify(card);
+    captureFeishuSendAuthority()?.();
     const response = await client.im.message.patch({
       path: { message_id: messageId },
       data: { content },

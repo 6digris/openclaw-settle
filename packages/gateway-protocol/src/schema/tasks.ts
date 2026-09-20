@@ -2,7 +2,7 @@
 import type { Static } from "typebox";
 import { Type } from "typebox";
 import { closedObject } from "./closed-object.js";
-import { ChatHistoryActivitySchema } from "./logs-chat.js";
+import { AgentActivityItemSchema, ChatHistoryActivitySchema } from "./logs-chat.js";
 import { NonEmptyString } from "./primitives.js";
 import { withSince } from "./since.js";
 
@@ -104,6 +104,21 @@ export const TaskSummarySchema = closedObject({
   toolUseCount: Type.Optional(Type.Integer({ minimum: 0 })),
   lastToolName: Type.Optional(Type.String()),
   execution: Type.Optional(withSince("2026.9", TaskExecutionSchema)),
+  /**
+   * Current-generation prepared activity; absent when unavailable, including after restart.
+   * Producer bounds display fields to 512 UTF-16 units and retains the newest items within
+   * 8,192 total string units (including exact opaque IDs), at most 64 items. Full text is history.
+   */
+  progress: Type.Optional(
+    withSince(
+      "2026.9",
+      closedObject({
+        runId: NonEmptyString,
+        revision: Type.Integer({ minimum: 0 }),
+        items: Type.Array(AgentActivityItemSchema, { maxItems: 64 }),
+      }),
+    ),
+  ),
   lastActivity: Type.Optional(withSince("2026.8", Type.String({ maxLength: 200 }))),
   diffStat: Type.Optional(TaskDiffStatSchema),
   progressSummary: Type.Optional(Type.String()),

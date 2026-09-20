@@ -35,9 +35,11 @@ extension OpenClawChatViewModel {
                 Task { [weak self] in await self?.fetchModels(sessionSnapshot: session) }
                 self.scheduleProgressCardFetch()
                 Task { [weak self] in await self?.refreshQuestions() }
+                Task { [weak self] in await self?.refreshSubagentActivities(sessionSnapshot: session) }
                 Task { [weak self] in await self?.refreshSwarmCapability() }
                 Task { [weak self] in await self?.loadComposerCapabilities(force: true) }
             } else if !ok {
+                self.clearSubagentActivities()
                 self.invalidateSourceContext()
                 self.invalidateAgentCatalog()
                 self.modelAvailabilityIsSessionScoped = false
@@ -76,6 +78,7 @@ extension OpenClawChatViewModel {
             self.resolveQuestionEvent(resolved)
             self.reconcileQuestionsAfterEvent()
         case .routeChanged, .seqGap:
+            self.clearSubagentActivities()
             self.refreshSourceContext()
             self.invalidateAgentCatalog(clear: true)
             self.refreshAgentsIfRequested()
@@ -228,10 +231,12 @@ extension OpenClawChatViewModel {
         } == true
 
         if isTerminal, ownsCurrentRun, let runID {
+            let yielded = change.status == "waiting" || change.session?.status == "waiting"
+            self.lastTurnYielded = yielded
             let wasSelectedRun = self.liveUsageRunID == runID
             self.retirePendingRun(
                 runID,
-                hapticEvent: phase == "error" ? .runFailed : .runCompleted)
+                hapticEvent: phase == "error" ? .runFailed : yielded ? nil : .runCompleted)
             if wasSelectedRun {
                 self.turnToolCallsById = [:]
                 self.updateStreamingAssistantText(nil)
@@ -534,6 +539,9 @@ extension OpenClawChatViewModel {
             matchesCurrentSession && explicitRunID == nil && self.pendingRuns.isEmpty &&
             self.activeSessionRunIDs.isEmpty && self.hasActiveSessionRunWithoutChatSnapshot
         if isTerminal {
+            if matchesCurrentSession, chat.state == "final", chat.yielded == true {
+                self.lastTurnYielded = true
+            }
             self.invalidateHistorySnapshots()
             if settlesAdvertisedRun, !ownsTerminalRun {
                 self.retireTerminalRun(explicitRunID)
@@ -564,7 +572,7 @@ extension OpenClawChatViewModel {
             self.errorText = chat.errorMessage ?? "Chat failed"
         }
         let hapticEvent: OpenClawChatHaptics.Event? = switch chat.state {
-        case "final": .runCompleted
+        case "final": chat.yielded == true ? nil : .runCompleted
         case "error": .runFailed
         default: nil
         }
@@ -605,7 +613,7 @@ extension OpenClawChatViewModel {
                         arguments: nil),
                 ],
                 timestamp: Date().timeIntervalSince1970 * 1000,
-                stopReason: "stop")
+                stopReason: chat.stopReason ?? "stop")
         }
 
         let runId = Self.normalizedRunID(chat.runId)
@@ -791,6 +799,7 @@ extension OpenClawChatViewModel {
         let phase = Self.lowercasedAgentEventString(evt.data["phase"])
         let status = Self.lowercasedAgentEventString(evt.data["status"])
         let aborted = Self.agentEventBool(evt.data["aborted"])
+        let yielded = Self.agentEventBool(evt.data["yielded"])
         let isFailure =
             phase == "error" || phase == "failed" || phase == "aborted" ||
             status == "error" || status == "failed" || status == "aborted"
@@ -816,9 +825,10 @@ extension OpenClawChatViewModel {
 
         self.invalidateHistorySnapshots()
         if isPendingRun {
+            self.lastTurnYielded = yielded
             self.retirePendingRun(
                 evt.runId,
-                hapticEvent: isFailure || aborted ? .runFailed : .runCompleted)
+                hapticEvent: isFailure || aborted ? .runFailed : yielded ? nil : .runCompleted)
         } else if !isLegacySessionStream || evt.seq == nil {
             // Sequenced legacy streams carry a session ID.
             self.retireTerminalRun(evt.runId)
@@ -929,6 +939,12 @@ extension OpenClawChatViewModel {
             return false
         }
         self.logDiagnostic(diagnostic)
+        if terminalState == .yielded {
+            self.finishPendingRun(runId: runId, terminalState: .yielded)
+            let context = self.beginHistoryRequest(for: sessionSnapshot)
+            _ = await self.refreshHistoryAfterRun(historyRequest: context)
+            return false
+        }
         let historyContext = self.beginHistoryRequest(for: sessionSnapshot)
         let refresh = await refreshHistoryAfterRun(historyRequest: historyContext)
         guard self.isCurrentPendingRunOwner(
@@ -991,10 +1007,13 @@ extension OpenClawChatViewModel {
     }
 
     private func finishPendingRun(runId: String, terminalState: OpenClawChatRunTerminalState) {
-        let hapticEvent: OpenClawChatHaptics.Event
+        let hapticEvent: OpenClawChatHaptics.Event?
         switch terminalState {
         case .completed:
             hapticEvent = .runCompleted
+        case .yielded:
+            self.lastTurnYielded = true
+            hapticEvent = nil
         case let .failed(message):
             self.errorText = message
             hapticEvent = .runFailed
@@ -1496,7 +1515,9 @@ extension OpenClawChatViewModel {
             self.logDiagnostic(
                 "chat.ui pending cleared sessionKey=\(self.sessionKey) "
                     + "runId=\(runId)")
-            if self.pendingRuns.isEmpty, let hapticEvent {
+            if self.pendingRuns.isEmpty, let hapticEvent,
+               hapticEvent != .runCompleted || !self.lastTurnYielded
+            {
                 self.haptics.perform(hapticEvent)
             }
         }

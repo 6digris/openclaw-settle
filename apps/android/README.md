@@ -44,6 +44,26 @@ earlier tool failures remain available in expanded work. Active work stays expan
 including a run continued by a steering message. Channel conversations retain
 their full transcript.
 
+## Background tasks
+
+Open **Chat actions → Background tasks** to see the selected agent's active and
+recent tasks. Task events update the open list and detail view. A parent reply
+that yields releases the chat composer; it does not finish delegated work.
+Quiet workers in the current conversation are also restored inline from a scoped
+task snapshot after reconnect, registry restoration, or a session switch. Live
+updates received during a snapshot read are replayed without restarting that read.
+
+Task status, observed execution, and final delivery are separate facts. Waiting
+for delegated work is not completion, and finished execution can still have
+pending final delivery. **Activity unavailable** means the Gateway has no current
+execution observation; **No current activity** means an explicit empty activity
+snapshot. Prepared activity is bounded to 64 public items and is not reconstructed
+from private tool arguments or old transcript text.
+
+The conversation checklist remains the session's durable progress card, separate
+from task activity. A note without checklist steps never becomes complete merely
+because the foreground run ends.
+
 ## Message information
 
 Tap the subdued timestamp under an assistant message to see its recorded model,
@@ -253,6 +273,37 @@ For completed-work proof, use `openclaw.screenshotScene=completed-work`,
 synthetic history in a node-owned app conversation. They cover disclosure
 expansion, active work, attachments, and failed tools without a live Gateway.
 Start a fresh app process between scenes.
+
+For background-task display proof, install a debug build on a test device or
+emulator, then start a fresh fixture process:
+
+```bash
+adb shell am force-stop ai.openclaw.app.debug
+adb shell am start -n ai.openclaw.app.debug/ai.openclaw.app.MainActivity \
+  --ez openclaw.screenshotMode true --es openclaw.screenshotScene chat
+```
+
+Open **Chat actions → Background tasks**. **Release task 08** waits for delegated
+work and shows prepared activity; **Release task 07** has unavailable activity.
+Open a detail view and check that **Final delivery** remains distinct from task
+status. **Release task 09** is completed with delivery still pending. Capture
+sanitized list and detail screenshots in portrait and after rotation.
+
+This local fixture proves display only. For the event lifecycle, use an isolated
+test Gateway and session: start delegated work, send a parent `chat` final with
+`yielded: true`, then publish canonical `task` upserts with increasing progress
+revisions, an empty `items` retraction, and omitted progress after restoration.
+Keep the sheet open throughout. Confirm that the composer becomes usable, the
+child remains active until its task status becomes terminal, removed activity
+does not reappear, and the authored checklist remains unchanged. Complete the
+task while final delivery is pending, then publish delivery success separately.
+Leave a worker waiting without emitting new activity, then reconnect and restore
+the registry; confirm that it reappears inline without opening the sheet. Hold a
+sheet list response while emitting progress and deletion events; after releasing
+the response, quiet active and finished rows must appear without another refresh.
+Switch agent/session and reconnect during a held detail read to verify that stale
+results cannot overwrite the current opening. Capture before/after screenshots
+and the sanitized event sequence; do not run this against an operator's Gateway.
 
 `pnpm android:release:archive` builds signed release artifacts into `apps/android/build/release-artifacts/` and writes `.sha256` checksum files:
 

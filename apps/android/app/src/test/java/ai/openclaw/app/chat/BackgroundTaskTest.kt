@@ -5,7 +5,10 @@ import ai.openclaw.app.gateway.GatewaySession
 import ai.openclaw.app.ui.chat.backgroundTasksEmptyStateVisible
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
@@ -22,6 +25,41 @@ import org.robolectric.RobolectricTestRunner
 @RunWith(RobolectricTestRunner::class)
 class BackgroundTaskTest {
   private val json = Json { ignoreUnknownKeys = true }
+
+  @Test
+  @OptIn(ExperimentalCoroutinesApi::class)
+  fun backgroundEventsRejectRetiredConnectionsAndExcludeDetailOnlyFields() =
+    runTest {
+      var gatewayScope = ChatCacheScope("gateway-test", 1L)
+      val controller =
+        ChatController(
+          scope = backgroundScope,
+          commandOutbox = backgroundScope.createChatCommandOutbox(),
+          cacheScope = { gatewayScope },
+          json = json,
+          requestGateway = { method, _ -> emptyChatGatewayResponse(method) },
+        )
+      val observed = mutableListOf<BackgroundTaskEvent>()
+      backgroundScope.launch { controller.backgroundTaskEvents.collect { observed += it } }
+      runCurrent()
+      val payload =
+        """{"action":"upserted","task":{"id":"task","agentId":"main","status":"running","runtime":"cli","prompt":"Private prompt","result":"Private result","progress":{"runId":"source-run","revision":1,"items":[{"itemId":"public","kind":"tool","phase":"start","title":"Public progress"}]}}}"""
+      controller.handleGatewayEvent("task", payload)
+      gatewayScope = gatewayScope.copy(connectionGeneration = 2L)
+      runCurrent()
+      assertTrue(observed.isEmpty())
+
+      controller.handleGatewayEvent("task", payload)
+      runCurrent()
+      val task = (observed.single() as BackgroundTaskEvent.Upserted).task
+      assertNull(task.prompt)
+      assertNull(task.result)
+      assertEquals("Public progress", task.progress?.items?.single()?.title)
+      controller.handleGatewayEvent("task", """{"action":"deleted","taskId":"task"}""")
+      controller.handleGatewayEvent("task", """{"action":"restored"}""")
+      runCurrent()
+      assertEquals(listOf(BackgroundTaskEvent.Deleted("task"), BackgroundTaskEvent.Restored), observed.drop(1))
+    }
 
   @Test
   fun listRejectsLeaseChangedAfterActiveResponse() = assertReadLeaseBoundary(revokeAfter = 1, detail = false)
@@ -150,7 +188,7 @@ class BackgroundTaskTest {
   }
 
   @Test
-  fun parsesRunningBackgroundExecTask() {
+  fun runningLedgerStatusDoesNotInventExecutionLiveness() {
     val tasks =
       parseBackgroundTasks(
         json,
@@ -161,7 +199,7 @@ class BackgroundTaskTest {
     assertEquals("CLI command", tasks.single().displayTitle)
     assertEquals("Command running", tasks.single().output)
     assertTrue(tasks.single().isActive)
-    assertEquals(BackgroundTaskDisplayStatus.Running, tasks.single().displayStatus)
+    assertEquals(BackgroundTaskDisplayStatus.Unknown, tasks.single().displayStatus)
   }
 
   @Test
@@ -173,6 +211,54 @@ class BackgroundTaskTest {
       ).single()
 
     assertEquals("Editing timeline rows", task.output)
+  }
+
+  @Test
+  fun executionAndDeliveryAreIndependentOfTaskOutcome() {
+    fun task(status: String, execution: String, outcome: String? = null): BackgroundTask =
+      parseBackgroundTasks(
+        json,
+        """{"tasks":[{"id":"task","status":"$status","execution":{"state":"$execution","wait":{"kind":"children"}},"deliveryStatus":"pending","terminalOutcome":${outcome?.let { "\"$it\"" } ?: "null"}}]}""",
+      ).single()
+
+    val waiting = task("running", "waiting")
+    assertTrue(waiting.isActive)
+    assertEquals(BackgroundTaskDisplayStatus.Waiting, waiting.displayStatus)
+    assertEquals("children", waiting.waitKind)
+    val executionFinished = task("running", "finished")
+    assertTrue(executionFinished.isActive)
+    assertFalse(executionFinished.isTerminal)
+    assertEquals(BackgroundTaskDisplayStatus.ExecutionFinished, executionFinished.displayStatus)
+    val completed = task("completed", "finished", "succeeded")
+    assertEquals(BackgroundTaskDisplayStatus.Completed, completed.displayStatus)
+    assertEquals("pending", completed.deliveryStatus)
+    assertEquals(BackgroundTaskDisplayStatus.Blocked, task("completed", "finished", "blocked").displayStatus)
+  }
+
+  @Test
+  fun preparedProgressIsBoundedRedactedAndOrderedAcrossPhysicalExecutions() {
+    val items = (0..64).joinToString(",") { index ->
+      """{"itemId":"item-$index","kind":"tool","phase":"start","title":"Public $index","status":"running","args":{"token":"private"},"hideFromChannelProgress":${index == 0}}"""
+    }
+    fun task(progress: String, activityAt: Long = 200): BackgroundTask =
+      parseBackgroundTasks(json, """{"tasks":[{"id":"task","status":"running","runId":"run-1","execution":{"state":"running","lastActivityAt":$activityAt},"progress":$progress}]}""").single()
+
+    val original = task("""{"runId":"run-1","revision":7,"items":[$items]}""")
+    val progress = checkNotNull(original.progress)
+    assertEquals((1..63).map { "Public $it" }, progress.items.map { it.title })
+    assertEquals("run-1", progress.runId)
+    assertEquals(7L, progress.revision)
+    val successor = task("""{"runId":"resumed-source-run","revision":8,"items":[]}""", activityAt = 100)
+    assertEquals("resumed-source-run", mergeBackgroundTasks(listOf(original), listOf(successor)).single().progress?.runId)
+    assertEquals("resumed-source-run", mergeBackgroundTasks(listOf(successor), listOf(original)).single().progress?.runId)
+    val retraction = task("""{"runId":"run-1","revision":8,"items":[]}""")
+    assertTrue(checkNotNull(mergeBackgroundTasks(listOf(original), listOf(retraction)).single().progress).items.isEmpty())
+    assertTrue(checkNotNull(mergeBackgroundTasks(listOf(retraction), listOf(original)).single().progress).items.isEmpty())
+    assertNull(mergeBackgroundTasks(listOf(original), listOf(task("null"))).single().progress)
+    val preamble = task(
+      """{"runId":"source-run","revision":1,"items":[{"itemId":"public","kind":"preamble","phase":"end","title":"","progressText":"Public progress note"},{"itemId":"reasoning","kind":"reasoning","phase":"end","title":"Private reasoning"},{"itemId":"quiet","kind":"tool","phase":"end","title":"Suppressed tool","suppressChannelProgress":true}]}""",
+    )
+    assertEquals("Public progress note", preamble.progress?.items?.single()?.progressText)
   }
 
   @Test
@@ -259,6 +345,39 @@ class BackgroundTaskTest {
   }
 
   @Test
+  fun snapshotReplayPreservesQuietRowsAndDoesNotResurrectDeletedGenerations() {
+    val quiet = sampleTask("quiet", "queued", 100)
+    val original = sampleTask("changing", "running", 200).copy(
+      runId = "canonical",
+      prompt = "Retired private prompt",
+      progress = BackgroundTaskProgress("old-source", 8, emptyList()),
+    )
+    val pending = mutableMapOf<String, CoalescedBackgroundTaskEvent>()
+    coalesceBackgroundTaskEvent(pending, BackgroundTaskEvent.Upserted(original.copy(progress = null)))
+    val unavailable = replayBackgroundTaskEvents(listOf(quiet, original), pending)
+    assertEquals(setOf("quiet", "changing"), unavailable.map { it.id }.toSet())
+    assertNull(unavailable.single { it.id == "changing" }.progress)
+
+    coalesceBackgroundTaskEvent(pending, BackgroundTaskEvent.Deleted("changing"))
+    coalesceBackgroundTaskEvent(
+      pending,
+      BackgroundTaskEvent.Upserted(
+        sampleTask("changing", "running", 1).copy(
+          title = "Replacement task",
+          runId = "replacement",
+          progress = BackgroundTaskProgress("new-source", 0, emptyList()),
+        ),
+      ),
+    )
+    val replacement = replayBackgroundTaskEvents(listOf(quiet, original), pending).single { it.id == "changing" }
+    assertEquals("Replacement task", replacement.displayTitle)
+    assertEquals(0L, replacement.progress?.revision)
+    assertNull(replacement.prompt)
+    coalesceBackgroundTaskEvent(pending, BackgroundTaskEvent.Deleted("changing"))
+    assertEquals(listOf("quiet"), replayBackgroundTaskEvents(listOf(quiet, original), pending).map { it.id })
+  }
+
+  @Test
   fun finishedProtocolStatusesUseTheBinaryFailedPresentation() {
     assertEquals(
       BackgroundTaskDisplayStatus.Failed,
@@ -291,7 +410,7 @@ class BackgroundTaskTest {
     updatedAtMs = endedAtMs,
     startedAtMs = 500,
     endedAtMs = endedAtMs,
-    progress = null,
+    progressSummary = null,
     terminal = null,
     error = null,
     prompt = null,

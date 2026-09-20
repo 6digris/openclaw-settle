@@ -2,7 +2,10 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { expect, it, vi, type Mock } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
-import type { ProgressContinuationCapability } from "../channels/progress-continuation.js";
+import type {
+  ProgressContinuationCapability,
+  ProgressContinuationReceipt,
+} from "../channels/progress-continuation.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import {
   createSubagentTaskBackingDetail,
@@ -14,8 +17,10 @@ import {
   runTaskFlowRegistryWorkerMutation,
 } from "./task-flow-registry.js";
 import { getTaskFlowRegistryStore } from "./task-flow-registry.store.js";
+import { createTaskProgressContinuation } from "./task-progress-requester.js";
 import { captureTaskAgentEventTarget } from "./task-registry-agent-event-target.js";
 import type {
+  adoptTaskProgressMessage,
   publishTaskProgressMessage,
   TaskProgressPublication,
 } from "./task-registry-progress-runtime.js";
@@ -33,15 +38,37 @@ export type TaskProgressTestChild = {
 
 type TaskProgressAuthorityFixture = {
   requesterSessionKey: string;
+  requesterTurnRunId: string;
+  receipt: () => ProgressContinuationReceipt;
+  receipts: Map<string, ProgressContinuationReceipt>;
+  accepted: (
+    items: readonly TaskProgressTestChild[],
+  ) => Parameters<typeof createTaskProgressContinuation>[0]["acceptedSessionSpawns"];
+  continuation: (
+    items: readonly TaskProgressTestChild[],
+  ) => Promise<ProgressContinuationCapability | undefined>;
+  tool: (entry: SubagentRunRecord, index?: number) => void;
   origin: TaskProgressPublication["origin"];
-  child: (name: string, options?: { notifyPolicy?: TaskNotifyPolicy }) => TaskProgressTestChild;
+  child: (
+    name: string,
+    options?: { notifyPolicy?: TaskNotifyPolicy; turn?: string },
+  ) => TaskProgressTestChild;
   adopt: (items: readonly TaskProgressTestChild[]) => Promise<ProgressContinuationCapability>;
-  runtime: { publishTaskProgressMessage: Mock<typeof publishTaskProgressMessage> };
+  runtime: {
+    publishTaskProgressMessage: Mock<typeof publishTaskProgressMessage>;
+    adoptTaskProgressMessage: Mock<typeof adoptTaskProgressMessage>;
+  };
   publications: Array<TaskProgressPublication & { messageId: string }>;
 };
 
 export function registerTaskProgressAuthorityTests({
   requesterSessionKey: PARENT,
+  requesterTurnRunId: TURN,
+  receipt,
+  receipts,
+  accepted,
+  continuation,
+  tool,
   origin,
   child,
   adopt,
@@ -171,4 +198,72 @@ export function registerTaskProgressAuthorityTests({
       expect(publications).toEqual([]);
     },
   );
+  it("acknowledges committed custody without reviving a closed requester", async () => {
+    const item = child("Worker");
+    const committed = createDeferred();
+    const acknowledged = createDeferred();
+    runtime.adoptTaskProgressMessage.mockImplementationOnce(async (params) => {
+      params.assertCurrent();
+      receipts.set(params.operationId, structuredClone(params.receipt));
+      committed.resolve();
+      await acknowledged.promise;
+      return true;
+    });
+    const capability = (await continuation([item]))!;
+    const pending = capability.adopt(receipt());
+    await committed.promise;
+    capability.close();
+    acknowledged.resolve();
+
+    expect(await pending).toBe(true);
+    expect([...receipts.values()].map((card) => card.messageId)).toEqual(["existing-parent-card"]);
+    expect(item.entry.requesterSettleWake?.progressOperationId).toBeUndefined();
+    tool(item.entry);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(publications).toEqual([]);
+  });
+
+  it("does not decline committed custody when requester attachment fails", async () => {
+    const item = child("Worker");
+    const capability = await createTaskProgressContinuation({
+      requesterSessionKey: PARENT,
+      requesterAgentId: "main",
+      requesterTurnRunId: TURN,
+      acceptedSessionSpawns: accepted([item]),
+      onAdopted: () => {
+        throw new Error("Requester settlement failed");
+      },
+    });
+    expect(capability).toBeDefined();
+    expect(await capability!.adopt(receipt())).toBe(true);
+    capability!.close();
+    expect([...receipts.values()].map((card) => card.messageId)).toEqual(["existing-parent-card"]);
+  });
+  it("rechecks authority at publication and preserves newer activity arriving during transport", async () => {
+    const first = child("First");
+    await adopt([first]);
+    const publish = runtime.publishTaskProgressMessage.getMockImplementation()!;
+    runtime.publishTaskProgressMessage.mockImplementationOnce(async (params) => {
+      first.entry.killIntent = { requestedAt: Date.now(), reason: "cancelled at handoff" };
+      return publish(params);
+    });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(publications).toEqual([]);
+    const second = child("Second", { turn: "second-turn" });
+    await adopt([second]);
+    runtime.publishTaskProgressMessage.mockImplementationOnce(async (params) => {
+      tool(second.entry, 2);
+      return publish(params);
+    });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(publications).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(publications).toHaveLength(2);
+    expect(publications[1]!.content).toContain("public-notes-2.txt");
+    expect(publications[1]!.content).toContain("Check release gates");
+    expect(publications.every((display) => display.messageId === "existing-parent-card")).toBe(
+      true,
+    );
+    expect(publications.map((display) => display.origin)).toEqual([origin, origin]);
+  });
 }

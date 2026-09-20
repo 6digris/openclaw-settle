@@ -80,7 +80,7 @@ import {
 import { feishuDoctor } from "./doctor.js";
 import { normalizeFeishuExternalKey } from "./external-keys.js";
 import { chunkFeishuMarkdown } from "./markdown.js";
-import { messageActionTargetAliases } from "./message-action-contract.js";
+import { messageActionTargetAliases, readFirstString } from "./message-action-contract.js";
 import { readNativeFeishuCardJson } from "./native-card.js";
 import {
   FEISHU_PROPAGATE_MEDIA_UPLOAD_FAILURE_MARKER,
@@ -725,23 +725,6 @@ function jsonActionResult(details: Record<string, unknown>) {
     content: [{ type: "text" as const, text: JSON.stringify(details) }],
     details,
   };
-}
-
-function readFirstString(
-  params: Record<string, unknown>,
-  keys: string[],
-  fallback?: string | null,
-): string | undefined {
-  for (const key of keys) {
-    const value = params[key];
-    if (typeof value === "string" && value.trim()) {
-      return value.trim();
-    }
-  }
-  if (typeof fallback === "string" && fallback.trim()) {
-    return fallback.trim();
-  }
-  return undefined;
 }
 
 const UNRESOLVED_RESPONSE_PREFIX_VAR_PATTERN = /\{[a-zA-Z][a-zA-Z0-9.]*\}/;
@@ -1432,6 +1415,7 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
                 text,
                 card,
                 accountId: ctx.accountId ?? undefined,
+                ...(ctx.progressSnapshot ? { progressSnapshot: ctx.progressSnapshot } : {}),
               });
               return jsonActionResult({
                 ok: true,

@@ -7,6 +7,7 @@ import {
   buildChannelProgressDraftLine,
   isCompleteAgentPreamble,
 } from "openclaw/plugin-sdk/channel-outbound";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { GetReplyOptions } from "openclaw/plugin-sdk/reply-runtime";
 
 export type ClickClackItemEventPayload = Parameters<NonNullable<GetReplyOptions["onItemEvent"]>>[0];
@@ -112,15 +113,39 @@ function createLineIdResolver(): (payload: ClickClackItemEventPayload) => string
   };
 }
 
-type ClickClackAgentProgressPublisher = {
-  start(): void;
-  onItemEvent(payload: ClickClackItemEventPayload): false;
+export type ClickClackProgressPublication = "delivered" | "skipped" | "failed";
+
+export type ClickClackAgentProgressPublisher = {
+  start(text?: string, assertCurrent?: () => void, options?: { running?: boolean }): void;
+  onItemEvent(payload: ClickClackItemEventPayload, assertCurrent?: () => void): false;
+  /** Resolves only when this item's frame is accepted, excluded, or fails; queueing is not delivery. */
+  publishItem(
+    payload: ClickClackItemEventPayload,
+    assertCurrent: () => void,
+  ): Promise<ClickClackProgressPublication>;
+  setStatus(text: string, assertCurrent: () => void, options?: { running?: boolean }): void;
+  flush(): Promise<void>;
   finalize(): Promise<void>;
 };
 
+type ProgressLine = {
+  id: string;
+  kind: string;
+  text: string;
+  status?: string;
+  tool_name?: string;
+};
+type ProgressLineFrame = {
+  op: "append" | "update" | "finalize";
+  line: ProgressLine;
+};
+type ProgressFrame = ProgressLineFrame | { op: "clear" };
+
 type QueuedProgressFrame = {
   lineId?: string;
-  payload: Record<string, unknown>;
+  payload: ProgressFrame;
+  assertCurrent?: () => void;
+  settle?: (result: ClickClackProgressPublication) => void;
 };
 
 const CLICKCLACK_PROGRESS_UPDATE_INTERVAL_MS = 100;
@@ -141,6 +166,9 @@ export function createClickClackAgentProgressPublisher(params: {
   let started = false;
   let cleared = false;
   const seenLines = new Set<string>();
+  // A failed HTTP request may already have published. Re-offer that identity as
+  // an update, never a blind duplicate append; a pre-dispatch fence failure has no such claim.
+  const attemptedLines = new Set<string>();
   const resolveLineId = createLineIdResolver();
 
   const drain = (): Promise<void> => {
@@ -153,20 +181,39 @@ export function createClickClackAgentProgressPublisher(params: {
         if (!frame) {
           continue;
         }
-        if (frame.lineId) {
+        if (frame.lineId && queuedLines.get(frame.lineId) === frame) {
           queuedLines.delete(frame.lineId);
         }
         try {
+          frame.assertCurrent?.();
+          const payload = frame.payload;
+          const op =
+            payload.op !== "clear" && payload.op !== "finalize" && payload.line.text
+              ? attemptedLines.has(payload.line.id)
+                ? "update"
+                : "append"
+              : payload.op;
+          if (payload.op !== "clear" && payload.line.text) {
+            attemptedLines.add(payload.line.id);
+          }
           await params.client.publishEphemeral({
             ...params.target,
             type: "agent.progress",
             payload: {
               turn_id: params.turnId,
               seq: ++sequence,
-              ...frame.payload,
+              ...payload,
+              op,
             },
           });
+          if (payload.op === "clear") {
+            attemptedLines.clear();
+          } else if (!payload.line.text) {
+            attemptedLines.delete(payload.line.id);
+          }
+          frame.settle?.("delivered");
         } catch (error) {
+          frame.settle?.("failed");
           try {
             params.onError?.(error);
           } catch {
@@ -183,8 +230,8 @@ export function createClickClackAgentProgressPublisher(params: {
     return drainPromise;
   };
 
-  const enqueue = (payload: Record<string, unknown>): void => {
-    queue.push({ payload });
+  const enqueue = (payload: ProgressFrame, assertCurrent?: () => void): void => {
+    queue.push({ payload, assertCurrent });
     void drain();
   };
 
@@ -197,6 +244,14 @@ export function createClickClackAgentProgressPublisher(params: {
   };
 
   const discardQueuedLines = (): void => {
+    for (const frame of queuedLines.values()) {
+      frame.settle?.("failed");
+    }
+    for (const frame of queue) {
+      if (frame.lineId) {
+        frame.settle?.("failed");
+      }
+    }
     queuedLines.clear();
     const controlFrames = queue.filter((frame) => !frame.lineId);
     queue.splice(0, queue.length, ...controlFrames);
@@ -232,7 +287,12 @@ export function createClickClackAgentProgressPublisher(params: {
     }, CLICKCLACK_PROGRESS_UPDATE_INTERVAL_MS);
   };
 
-  const enqueueLine = (lineId: string, payload: Record<string, unknown>): void => {
+  const enqueueLine = (
+    lineId: string,
+    payload: ProgressLineFrame,
+    assertCurrent?: () => void,
+    settle?: (result: ClickClackProgressPublication) => void,
+  ): void => {
     const queued = queuedLines.get(lineId);
     if (queued) {
       // Preserve an initial append while the request is in flight, but keep
@@ -244,74 +304,151 @@ export function createClickClackAgentProgressPublisher(params: {
           : queued.payload.op === "append"
             ? "append"
             : payload.op;
-      queued.payload = { ...payload, ...(op ? { op } : {}) };
+      queued.settle?.("failed");
+      queued.payload = { ...payload, op };
+      queued.assertCurrent = assertCurrent;
+      queued.settle = settle;
       return;
     }
-    const frame = { lineId, payload };
+    const frame = { lineId, payload, assertCurrent, settle };
     queuedLines.set(lineId, frame);
     scheduleLineDrain();
   };
 
-  return {
-    start() {
-      if (started) {
-        return;
+  const pushItem = (
+    payload: ClickClackItemEventPayload,
+    assertCurrent?: () => void,
+    settle?: (result: ClickClackProgressPublication) => void,
+  ) => {
+    if (!started || cleared) {
+      settle?.("failed");
+      return;
+    }
+    assertCurrent?.();
+    if (
+      payload.suppressChannelProgress ||
+      (payload.kind === "preamble" && !isCompleteAgentPreamble(payload))
+    ) {
+      settle?.("skipped");
+      return;
+    }
+    const id = resolveLineId(payload);
+    if (payload.hideFromChannelProgress) {
+      const known = seenLines.delete(id);
+      if (known || settle) {
+        // An observing consumer retains possibly-published IDs until removal
+        // acknowledges, so a blocked retraction must be safe to offer again.
+        enqueueLine(
+          id,
+          { op: "update", line: { id, kind: normalizedKind(payload), text: "" } },
+          assertCurrent,
+          settle,
+        );
       }
-      started = true;
-      enqueue({
-        op: "append",
-        line: {
-          id: "turn",
-          kind: "commentary",
-          text: params.agentLabel ? `${params.agentLabel} is responding` : "Agent is responding",
-          status: "running",
-        },
-      });
-    },
-    onItemEvent(payload) {
-      if (!started || cleared) {
-        return false;
-      }
-      if (
-        payload.suppressChannelProgress ||
-        (payload.kind === "preamble" && !isCompleteAgentPreamble(payload))
-      ) {
-        return false;
-      }
-      const id = resolveLineId(payload);
-      if (payload.hideFromChannelProgress) {
-        if (seenLines.delete(id)) {
-          enqueueLine(id, { op: "update", line: { id, kind: normalizedKind(payload), text: "" } });
-        }
-        return false;
-      }
-      const final = isFinal(payload);
-      const kind = normalizedKind(payload);
-      const retractsExistingCommentary =
-        kind === "commentary" &&
-        seenLines.has(id) &&
-        payload.progressText !== undefined &&
-        payload.progressText.trim() === "";
-      if (retractsExistingCommentary && queuedLines.get(id)?.payload.op === "append") {
-        queuedLines.delete(id);
-        seenLines.delete(id);
-        return false;
-      }
-      const line: Record<string, unknown> = {
-        id,
-        kind,
-        text: retractsExistingCommentary ? "" : progressText(payload),
-        status: payload.status?.trim() || (final ? "blocked" : "running"),
-      };
-      if (payload.name?.trim()) {
-        line.tool_name = payload.name.trim();
-      }
-      enqueueLine(id, {
+      return;
+    }
+    const final = isFinal(payload);
+    const kind = normalizedKind(payload);
+    const retractsExistingCommentary =
+      kind === "commentary" &&
+      seenLines.has(id) &&
+      payload.progressText !== undefined &&
+      payload.progressText.trim() === "";
+    if (retractsExistingCommentary && queuedLines.get(id)?.payload.op === "append") {
+      queuedLines.get(id)?.settle?.("failed");
+      queuedLines.delete(id);
+      seenLines.delete(id);
+      settle?.("skipped");
+      return;
+    }
+    const line: ProgressLine = {
+      id,
+      kind,
+      text: retractsExistingCommentary ? "" : progressText(payload),
+      status: payload.status?.trim() || (final ? "blocked" : "running"),
+    };
+    if (payload.name?.trim()) {
+      line.tool_name = payload.name.trim();
+    }
+    enqueueLine(
+      id,
+      {
         op: final ? "finalize" : seenLines.has(id) ? "update" : "append",
         line,
-      });
-      seenLines.add(id);
+      },
+      assertCurrent,
+      settle,
+    );
+    seenLines.add(id);
+  };
+
+  return {
+    start(text, assertCurrent, options) {
+      if (started && !(cleared && assertCurrent)) {
+        return;
+      }
+      assertCurrent?.();
+      // Only a fresh task-owner assertion may resume a temporarily unavailable
+      // native observation; retain the original correlation and sequence.
+      if (cleared) {
+        cleared = false;
+        seenLines.clear();
+      }
+      started = true;
+      enqueue(
+        {
+          op: "append",
+          line: {
+            id: "turn",
+            kind: "commentary",
+            text:
+              text ??
+              (params.agentLabel ? `${params.agentLabel} is responding` : "Agent is responding"),
+            ...(options?.running === false ? {} : { status: "running" }),
+          },
+        },
+        assertCurrent,
+      );
+    },
+    setStatus(text, assertCurrent, options) {
+      if (!started || cleared) {
+        return;
+      }
+      assertCurrent();
+      enqueueLine(
+        "turn",
+        {
+          op: "update",
+          line: {
+            id: "turn",
+            kind: "commentary",
+            text,
+            ...(options?.running === true ? { status: "running" } : {}),
+          },
+        },
+        assertCurrent,
+      );
+    },
+    async flush() {
+      if (lineDrainTimer) {
+        clearTimeout(lineDrainTimer);
+        lineDrainTimer = undefined;
+      }
+      flushQueuedLines();
+      let currentDrain = drainPromise;
+      while (currentDrain) {
+        await currentDrain;
+        currentDrain = drainPromise;
+      }
+    },
+    onItemEvent(payload, assertCurrent) {
+      pushItem(payload, assertCurrent);
       return false;
+    },
+    publishItem(payload, assertCurrent) {
+      const result = createDeferred<ClickClackProgressPublication>();
+      pushItem(payload, assertCurrent, result.resolve);
+      return result.promise;
     },
     async finalize() {
       if (!started || cleared) {

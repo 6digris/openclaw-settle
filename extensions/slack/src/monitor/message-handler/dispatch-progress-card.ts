@@ -9,12 +9,8 @@ import { buildControlUiSessionPath } from "openclaw/plugin-sdk/session-discussio
 import { createSlackDraftStream } from "../../draft-stream.js";
 import { formatSlackError } from "../../errors.js";
 import { normalizeSlackOutboundText } from "../../format.js";
-import { buildSlackProgressCardBlocks } from "../../progress-blocks.js";
 import { escapeSlackMrkdwn } from "../mrkdwn.js";
-import {
-  combineProgressHeadlineAndExplanation,
-  resolveStructuredProgressLines,
-} from "./dispatch-progress-render.js";
+import { buildSlackProgressSnapshotBlocks } from "./dispatch-progress-render.js";
 import type { SlackDispatchSetup } from "./dispatch-setup.js";
 import { finalizeSlackPreviewEdit } from "./preview-finalize.js";
 
@@ -78,36 +74,13 @@ export function createSlackDraftProgressCardRuntime(params: {
     snapshot: ChannelProgressDraftCompositorSnapshot,
     state: DraftProgressCardState,
   ) => {
-    const title = params.explicitTitle ?? snapshot.statusHeadline ?? "Working";
-    const titleFormat = params.explicitTitle ? undefined : snapshot.statusHeadlineFormat;
-    const narration = params.explicitTitle
-      ? snapshot.statusHeadlineFormat === "plain" || snapshot.planExplanationFormat === "plain"
-        ? [
-            ...(snapshot.statusHeadline &&
-            (snapshot.statusHeadline !== snapshot.planExplanation ||
-              snapshot.statusHeadlineFormat !== snapshot.planExplanationFormat)
-              ? [{ text: snapshot.statusHeadline, format: snapshot.statusHeadlineFormat }]
-              : []),
-            ...(snapshot.planExplanation
-              ? [{ text: snapshot.planExplanation, format: snapshot.planExplanationFormat }]
-              : []),
-          ]
-        : combineProgressHeadlineAndExplanation(snapshot.statusHeadline, snapshot.planExplanation)
-      : snapshot.planExplanation &&
-          (snapshot.planExplanation !== title || snapshot.planExplanationFormat !== titleFormat)
-        ? [{ text: snapshot.planExplanation, format: snapshot.planExplanationFormat }]
-        : undefined;
     const workCounter = state === "working" ? params.progressWorkCounter : undefined;
     const sessionUrl = state === "working" ? undefined : resolveSessionUrl();
-    return buildSlackProgressCardBlocks({
+    return buildSlackProgressSnapshotBlocks({
+      snapshot,
       state,
-      title,
-      titleFormat,
-      narration,
-      plan: snapshot.plan,
-      lines: resolveStructuredProgressLines(snapshot.lines),
+      explicitTitle: params.explicitTitle,
       maxLineChars: params.maxLineChars,
-      diffStat: snapshot.diffStat,
       toolCalls: workCounter?.toolCalls,
       elapsedSeconds: workCounter?.elapsedSeconds,
       sessionUrl,

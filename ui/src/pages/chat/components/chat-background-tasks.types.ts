@@ -1,4 +1,4 @@
-import type { TaskSummary } from "../../../lib/tasks/task-summary.ts";
+import type { TaskSummary } from "@openclaw/gateway-client/browser";
 import type { SubagentActivityPresentation } from "./chat-subagent-activity.ts";
 
 export type BackgroundTasksProps = {

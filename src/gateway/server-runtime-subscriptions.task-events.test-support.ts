@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+import type { AgentActivityItem } from "../../packages/gateway-protocol/src/schema/logs-chat.js";
 import { buildAgentRunTerminalOutcome } from "../agents/agent-run-terminal-outcome.js";
 import { createAgentCommandLifecycle } from "../agents/command/lifecycle.js";
 import type { CronServiceState } from "../cron/service/state.js";
@@ -25,7 +26,7 @@ import {
   reloadTaskRegistryFromStoreAsync,
 } from "../tasks/task-registry.test-support.js";
 import { bindTaskRunOwner } from "../tasks/task-run-owner.js";
-import type { TaskEventPayload } from "./server-methods/task-summary.js";
+import type { TaskEventPayload } from "../tasks/task-summary.js";
 import { runTaskHandler } from "./server-methods/tasks.test-helpers.js";
 import type { startGatewayEventSubscriptions } from "./server-runtime-subscriptions.js";
 import {
@@ -326,6 +327,117 @@ export function registerTaskEventSubscriptionTests(
     broadcast.mockClear();
     await vi.advanceTimersByTimeAsync(1_000);
     expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it("coalesces item-only progress and publishes retraction to task events, list, and get", async () => {
+    const broadcast = vi.fn<SubscriptionParams["broadcast"]>();
+    unsubs = start({ broadcast });
+    await waitForFast(() => expect(getTaskRegistryObservers()).not.toBeNull());
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    const task = createTaskFixture("subagent", {
+      ...sessionTaskDefaults,
+      childSessionKey: "agent:main:subagent:item-only",
+      runId: "run-item-only",
+      task: "Show prepared command progress",
+      status: "running",
+    });
+    broadcast.mockClear();
+    const secret =
+      "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const command = {
+      itemId: "command-1",
+      kind: "tool",
+      phase: "start",
+      title: `Run focused tests with ${secret}`,
+      name: `exec ${secret}`,
+      meta: `printf 'first line'\nprintf 'second line'\nAPI_KEY=${secret}`,
+      status: "running",
+    } satisfies AgentActivityItem;
+    emitAgentEvent({
+      runId: task.runId!,
+      stream: "item",
+      data: { ...command, args: { private: "Raw command input" } },
+    });
+    const blocked = {
+      ...command,
+      phase: "end",
+      status: "blocked",
+      error: `Approval required for ${secret}`,
+      summary: `${"x".repeat(500)} ${secret}`,
+    } satisfies AgentActivityItem;
+    emitAgentEvent({ runId: task.runId!, stream: "item", data: blocked });
+    const commentary = {
+      itemId: "commentary-1",
+      kind: "preamble",
+      phase: "end",
+      title: "Commentary",
+      progressText: `First commentary line.\nUsing ${secret}\nSecond commentary line.`,
+    } satisfies AgentActivityItem;
+    emitAgentEvent({ runId: task.runId!, stream: "item", data: commentary });
+    await vi.advanceTimersByTimeAsync(999);
+    expect(readTaskUpserts(broadcast)).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+
+    const events = readTaskUpserts(broadcast);
+    expect(events).toHaveLength(1);
+    const progress = events[0]?.task.progress;
+    expect(progress).toMatchObject({
+      runId: task.runId,
+      revision: 3,
+      items: [
+        {
+          itemId: command.itemId,
+          status: "blocked",
+          title: expect.stringContaining("Run focused tests"),
+          meta: expect.stringContaining("printf 'first line'\nprintf 'second line'"),
+        },
+        {
+          itemId: commentary.itemId,
+          progressText: expect.stringContaining("First commentary line.\n"),
+        },
+      ],
+    });
+    expect(progress?.items[0]?.summary?.length).toBeLessThanOrEqual(512);
+    expect(broadcast).toHaveBeenCalledWith(
+      "task",
+      expect.objectContaining({ action: "upserted" }),
+      { dropIfSlow: true, sessionKeys: ["agent:main:main"], agentId: "main" },
+    );
+    const listed = await runTaskHandler("tasks.list", {});
+    const detail = await runTaskHandler("tasks.get", { taskId: task.taskId });
+    expect(listed.payload?.tasks?.find((summary) => summary.id === task.taskId)?.progress).toEqual(
+      progress,
+    );
+    expect(detail.payload?.task?.progress).toEqual(progress);
+    for (const payload of [events, listed.payload, detail.payload]) {
+      const wire = JSON.stringify(payload);
+      expect(wire).not.toContain(secret);
+      expect(wire).not.toContain("sk-proj-ab");
+      expect(wire).not.toContain("Raw command input");
+    }
+
+    broadcast.mockClear();
+    emitAgentEvent({ runId: task.runId!, stream: "item", data: blocked });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(readTaskUpserts(broadcast)).toEqual([]);
+    emitAgentEvent({
+      runId: task.runId!,
+      stream: "item",
+      data: { ...blocked, title: "Private replacement", suppressChannelProgress: true },
+    });
+    emitAgentEvent({
+      runId: task.runId!,
+      stream: "item",
+      data: { ...commentary, suppressChannelProgress: true },
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(readTaskUpserts(broadcast).map(({ task: summary }) => summary.progress)).toEqual([
+      { runId: task.runId, revision: 5, items: [] },
+    ]);
+    expect(
+      (await runTaskHandler("tasks.get", { taskId: task.taskId })).payload?.task?.progress,
+    ).toEqual({ runId: task.runId, revision: 5, items: [] });
   });
 
   it.each([

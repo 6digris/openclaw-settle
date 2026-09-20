@@ -288,11 +288,15 @@ export async function updateMSTeamsActivityWithReference(
   source: MSTeamsSdkReferenceSource,
   activityId: string,
   activity: unknown,
-  options?: MSTeamsProactiveOptions,
+  options?: MSTeamsProactiveOptions & MSTeamsSendHandoff,
 ): Promise<unknown> {
-  const ref = buildSdkConversationReference(source, options);
-  const api = await getApiClientForReference(app, ref);
-  return api.conversations.activities(ref.conversation.id).update(activityId, activity);
+  return withMSTeamsConnectorHandoff(options ?? {}, async (handoff) => {
+    assertMSTeamsSendHandoff(handoff);
+    const ref = buildSdkConversationReference(source, options);
+    const api = await getApiClientForReference(app, ref);
+    assertMSTeamsSendHandoff(handoff);
+    return api.conversations.activities(ref.conversation.id).update(activityId, activity);
+  });
 }
 
 export async function deleteMSTeamsActivityWithReference(

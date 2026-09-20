@@ -20,6 +20,7 @@ import {
   runConversationDatabaseWrite,
 } from "../config/sessions/conversation-registry.js";
 import { loadSessionEntryReadOnly } from "../config/sessions/session-accessor.js";
+import { formatErrorMessage } from "../infra/errors.js";
 import { resolveMessageActionOutcome } from "../infra/outbound/message-action-contracts.js";
 import { runMessageAction } from "../infra/outbound/message-action-runner.js";
 import { getRuntimeConfig } from "../infra/outbound/message.config.runtime.js";
@@ -30,6 +31,7 @@ import { channelRouteTargetsMatchExact } from "../plugin-sdk/channel-route.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import { runWithGatewayDetachedWorkContinuation } from "../process/gateway-work-admission.js";
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
+import { taskRegistryLog } from "./task-registry-state.js";
 
 export type TaskProgressPublication = {
   operationId: string;
@@ -200,18 +202,29 @@ export async function adoptTaskProgressMessage(
   ) {
     return false;
   }
-  await runConversationDatabaseWrite(scope, (writeScope) =>
-    recordConversationProgressReceipt(writeScope, {
-      operationId: params.operationId,
-      conversationRef: conversation.conversationRef,
-      sourceSessionKey: params.sessionKey,
-      message: receipt.text,
-      platformMessageId: receipt.messageId,
-      progressSnapshot: receipt.snapshot,
-      assertCurrent,
-    }),
-  );
-  assertCurrent();
+  let committed = false;
+  try {
+    await runConversationDatabaseWrite(scope, (writeScope) => {
+      recordConversationProgressReceipt(writeScope, {
+        operationId: params.operationId,
+        conversationRef: conversation.conversationRef,
+        sourceSessionKey: params.sessionKey,
+        message: receipt.text,
+        platformMessageId: receipt.messageId,
+        progressSnapshot: receipt.snapshot,
+        assertCurrent,
+      });
+      committed = true;
+    });
+  } catch (error) {
+    if (!committed) {
+      throw error;
+    }
+    taskRegistryLog.debug("Progress receipt committed before write cleanup failed", {
+      error: formatErrorMessage(error),
+    });
+  }
+  // The committed receipt transfers custody; later authority loss cannot decline it.
   return true;
 }
 

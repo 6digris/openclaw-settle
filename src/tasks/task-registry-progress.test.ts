@@ -663,14 +663,17 @@ describe("adopted requester progress", () => {
   });
 
   it.each(["replace", "cancel", "close", "restart"] as const)(
-    "rejects adoption when the owner changes during its await: %s",
+    "rejects adoption when the owner changes before receipt commit: %s",
     async (change) => {
       const item = child("Worker");
       const entered = createDeferred();
-      const finished = createDeferred<boolean>();
-      runtime.adoptTaskProgressMessage.mockImplementationOnce(async () => {
+      const finished = createDeferred();
+      runtime.adoptTaskProgressMessage.mockImplementationOnce(async (params) => {
         entered.resolve();
-        return finished.promise;
+        await finished.promise;
+        params.assertCurrent();
+        receipts.set(params.operationId, structuredClone(params.receipt));
+        return true;
       });
       const capability = (await continuation([item]))!;
       const pending = capability.adopt(receipt());
@@ -685,8 +688,9 @@ describe("adopted requester progress", () => {
       } else {
         rotateAgentEventLifecycleGeneration();
       }
-      finished.resolve(true);
+      finished.resolve();
       expect(await pending).toBe(false);
+      expect(receipts.size).toBe(0);
       capability.close();
       tool(item.entry);
       await vi.advanceTimersByTimeAsync(15_000);
@@ -995,38 +999,16 @@ describe("adopted requester progress", () => {
 
   registerTaskProgressAuthorityTests({
     requesterSessionKey: PARENT,
+    requesterTurnRunId: TURN,
+    receipt,
+    receipts,
+    accepted,
+    continuation,
+    tool,
     origin,
     child,
     adopt,
     runtime,
     publications,
-  });
-
-  it("rechecks authority at publication and preserves newer activity arriving during transport", async () => {
-    const first = child("First");
-    await adopt([first]);
-    const publish = runtime.publishTaskProgressMessage.getMockImplementation()!;
-    runtime.publishTaskProgressMessage.mockImplementationOnce(async (params) => {
-      first.entry.killIntent = { requestedAt: Date.now(), reason: "cancelled at handoff" };
-      return publish(params);
-    });
-    await vi.advanceTimersByTimeAsync(15_000);
-    expect(publications).toEqual([]);
-    const second = child("Second", { turn: "second-turn" });
-    await adopt([second]);
-    runtime.publishTaskProgressMessage.mockImplementationOnce(async (params) => {
-      tool(second.entry, 2);
-      return publish(params);
-    });
-    await vi.advanceTimersByTimeAsync(15_000);
-    expect(publications).toHaveLength(1);
-    await vi.advanceTimersByTimeAsync(15_000);
-    expect(publications).toHaveLength(2);
-    expect(publications[1]!.content).toContain("public-notes-2.txt");
-    expect(publications[1]!.content).toContain("Check release gates");
-    expect(publications.every((display) => display.messageId === "existing-parent-card")).toBe(
-      true,
-    );
-    expect(publications.map((display) => display.origin)).toEqual([origin, origin]);
   });
 });

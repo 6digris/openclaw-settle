@@ -19,7 +19,7 @@ import { getRuntimeConfig } from "../config/config.js";
 import { resolveChannelAccountKey } from "../routing/account-lookup.js";
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
 import { getTaskExecutionObservation } from "./task-execution-observation.js";
-import { getTaskPreparedActivity } from "./task-registry-activity.js";
+import { getTaskProgressSnapshot } from "./task-registry-activity.js";
 import type { TaskProgressItem, TaskProgressPlan } from "./task-registry.process-state.js";
 import type { TaskRecord } from "./task-registry.types.js";
 import { formatTaskStatusTitleText } from "./task-status.js";
@@ -147,8 +147,8 @@ export async function prepareProgressContent(
     };
     const terminalItem = observation.state === "finished" ? taskItem : undefined;
     const items: AgentActivityItem[] = terminalItem ? [] : [taskItem];
-    const prepared = initialSnapshot ? getTaskPreparedActivity(task.taskId) : undefined;
-    for (const item of prepared?.values() ?? []) {
+    const prepared = initialSnapshot ? getTaskProgressSnapshot(task.taskId) : undefined;
+    for (const item of prepared?.items ?? []) {
       items.push(
         prepareItem({
           item,

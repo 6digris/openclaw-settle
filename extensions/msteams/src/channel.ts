@@ -45,7 +45,14 @@ import {
   DEFAULT_ACCOUNT_ID,
   PAIRING_APPROVED_MESSAGE,
 } from "../runtime-api.js";
-import { resolveActionContent, resolveActionUploadFilePath } from "./action-params.js";
+import {
+  readOptionalTrimmedString,
+  resolveActionContent,
+  resolveActionMessageId,
+  resolveActionPinnedMessageId,
+  resolveActionQuery,
+  resolveActionUploadFilePath,
+} from "./action-params.js";
 import {
   actionError,
   jsonActionResultWithDetails,
@@ -186,29 +193,6 @@ function resolveCurrentGraphActionTarget(toolContext?: {
     normalizeOptionalString(toolContext?.currentGraphChannelId) ??
     normalizeOptionalString(toolContext?.currentMessagingTarget)
   );
-}
-
-function resolveActionMessageId(params: Record<string, unknown>): string {
-  return normalizeOptionalString(params.messageId) ?? "";
-}
-
-function resolveActionPinnedMessageId(params: Record<string, unknown>): string {
-  return typeof params.pinnedMessageId === "string"
-    ? params.pinnedMessageId.trim()
-    : typeof params.messageId === "string"
-      ? params.messageId.trim()
-      : "";
-}
-
-function resolveActionQuery(params: Record<string, unknown>): string {
-  return normalizeOptionalString(params.query) ?? "";
-}
-
-function readOptionalTrimmedString(
-  params: Record<string, unknown>,
-  key: string,
-): string | undefined {
-  return normalizeOptionalString(params[key]);
 }
 
 type MSTeamsActionTargetParams = {
@@ -652,7 +636,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
           }
           if (ctx.action === "edit") {
             const content = resolveActionContent(ctx.params);
-            if (!content) {
+            if (!content && !ctx.progressSnapshot) {
               return actionError("Edit requires content.");
             }
             return await runWithRequiredActionMessageTarget({
@@ -666,7 +650,10 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
                   cfg: ctx.cfg,
                   to,
                   activityId: target.messageId,
-                  text: content,
+                  text: content ?? "",
+                  progressSnapshot: ctx.progressSnapshot,
+                  assertDirectAdapterHandoff: ctx.assertDirectAdapterHandoff,
+                  onPlatformSendDispatch: ctx.onPlatformSendDispatch,
                 });
                 return jsonMSTeamsConversationResult(result.conversationId);
               },

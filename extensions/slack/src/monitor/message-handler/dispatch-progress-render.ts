@@ -4,6 +4,51 @@ import {
   type ChannelProgressDraftCompositorSnapshot,
   type ChannelProgressDraftLine,
 } from "openclaw/plugin-sdk/channel-outbound";
+import { buildSlackProgressCardBlocks } from "../../progress-blocks.js";
+
+export function buildSlackProgressSnapshotBlocks(params: {
+  snapshot: ChannelProgressDraftCompositorSnapshot;
+  state: "working" | "success" | "error";
+  explicitTitle?: string;
+  maxLineChars?: number;
+  toolCalls?: number;
+  elapsedSeconds?: number;
+  sessionUrl?: string;
+}) {
+  const { snapshot } = params;
+  const title = params.explicitTitle ?? snapshot.statusHeadline ?? "Working";
+  const titleFormat = params.explicitTitle ? undefined : snapshot.statusHeadlineFormat;
+  const narration = params.explicitTitle
+    ? snapshot.statusHeadlineFormat === "plain" || snapshot.planExplanationFormat === "plain"
+      ? [
+          ...(snapshot.statusHeadline &&
+          (snapshot.statusHeadline !== snapshot.planExplanation ||
+            snapshot.statusHeadlineFormat !== snapshot.planExplanationFormat)
+            ? [{ text: snapshot.statusHeadline, format: snapshot.statusHeadlineFormat }]
+            : []),
+          ...(snapshot.planExplanation
+            ? [{ text: snapshot.planExplanation, format: snapshot.planExplanationFormat }]
+            : []),
+        ]
+      : combineProgressHeadlineAndExplanation(snapshot.statusHeadline, snapshot.planExplanation)
+    : snapshot.planExplanation &&
+        (snapshot.planExplanation !== title || snapshot.planExplanationFormat !== titleFormat)
+      ? [{ text: snapshot.planExplanation, format: snapshot.planExplanationFormat }]
+      : undefined;
+  return buildSlackProgressCardBlocks({
+    state: params.state,
+    title,
+    titleFormat,
+    narration,
+    plan: snapshot.plan,
+    lines: resolveStructuredProgressLines(snapshot.lines),
+    maxLineChars: params.maxLineChars,
+    diffStat: snapshot.diffStat,
+    toolCalls: params.toolCalls,
+    elapsedSeconds: params.elapsedSeconds,
+    sessionUrl: params.sessionUrl,
+  });
+}
 
 export function resolveStructuredProgressLines(
   lines: readonly ChannelProgressDraftCompositorLine[],

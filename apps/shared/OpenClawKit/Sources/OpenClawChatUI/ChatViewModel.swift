@@ -273,8 +273,14 @@ public final class OpenClawChatViewModel {
     var runOwnershipGeneration: UInt64 = 0
     var latestAppliedRunSnapshotRequestID: UInt64 = 0
     var isApplyingRunSnapshot = false
+    var lastTurnYielded = false
     var pendingRuns = Set<String>() {
         didSet {
+            if self.pendingRuns.contains(where: {
+                !oldValue.contains($0) && self.liveRunStateByRunID[$0]?.terminal != true
+            }) {
+                self.lastTurnYielded = false
+            }
             if self.pendingRuns != oldValue, !self.isApplyingRunSnapshot {
                 self.runOwnershipGeneration &+= 1
             }
@@ -502,6 +508,12 @@ public final class OpenClawChatViewModel {
     var subagentActivityState = ChatSubagentActivityState()
     @ObservationIgnored
     var subagentActivityCleanupTask: Task<Void, Never>?
+    @ObservationIgnored
+    var subagentActivityGeneration: UInt64 = 0
+    @ObservationIgnored
+    var subagentActivityRequestID: UInt64 = 0
+    @ObservationIgnored
+    var subagentActivitySnapshotChanges: Set<String>?
 
     var lastHealthPollAt: Date?
 
@@ -1277,6 +1289,7 @@ extension OpenClawChatViewModel {
         self.sessionId = nil
         self.turnToolCallsById = [:]
         self.clearSubagentActivities()
+        self.lastTurnYielded = false
         self.updateStreamingAssistantText(nil)
         self.clearProgressCard()
         self.updateActiveSessionRunWithoutChatSnapshot(false)

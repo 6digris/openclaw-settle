@@ -55,3 +55,65 @@ it.each(["accept", "dismiss"])(
   },
   TEST_TIMEOUT_MS,
 );
+
+it.each(["complete", "cancel"])(
+  "keeps a draft editable while yielded child activity retracts and reaches %s",
+  async (terminal) => {
+    const dir = tempDirs.make("openclaw-tui-child-progress-");
+    const progressPath = path.join(dir, "progress");
+    await writeFile(progressPath, "");
+    const fixture = await startTuiFixture({
+      env: { OPENCLAW_TUI_PTY_TASK_PROGRESS_PATH: progressPath },
+    });
+    try {
+      await fixture.run.waitForOutput("local ready", STARTUP_TIMEOUT_MS);
+      await fixture.run.write("task progress proof\r");
+      await fixture.run.waitForOutput("PARENT_YIELDED");
+      await fixture.run.waitForOutput("CHILD_STARTED");
+      await fixture.run.write("draft remains editable");
+      await writeFile(progressPath, "update");
+      const running = await waitForSynchronizedFrameRows(
+        fixture.run,
+        (rows) =>
+          rows.some((row) => row.includes("CHILD_PROGRESS_AFTER_YIELD")) &&
+          rows.some((row) => row.includes("draft remains editable")),
+        5_000,
+      );
+      expect(running.join("\n")).toContain("Child investigation [running]");
+      expect(running.join("\n")).toContain("[ ] Review child result");
+
+      await writeFile(progressPath, "retract");
+      await waitForSynchronizedFrameRows(
+        fixture.run,
+        (rows) =>
+          rows.some((row) => row.includes("Child investigation [running]")) &&
+          !rows.some((row) => row.includes("Child command")),
+        5_000,
+      );
+      await writeFile(progressPath, "unknown");
+      const unknown = await waitForSynchronizedFrameRows(
+        fixture.run,
+        (rows) => rows.some((row) => row.includes("Child investigation [unknown]")),
+        5_000,
+      );
+      expect(unknown.join("\n")).not.toContain("Child command");
+
+      await writeFile(progressPath, terminal);
+      const done = await waitForSynchronizedFrameRows(
+        fixture.run,
+        (rows) =>
+          rows.some((row) =>
+            row.includes(terminal === "complete" ? "CHILD_COMPLETED" : "CHILD_CANCELLED"),
+          ),
+        5_000,
+      );
+      expect(done.join("\n")).not.toContain("[running]");
+      expect(done.join("\n")).toContain("draft remains editable");
+      // A child terminal event cannot complete the parent's authored checklist.
+      expect(done.join("\n")).toContain("[ ] Review child result");
+    } finally {
+      await fixture.cleanup();
+    }
+  },
+  TEST_TIMEOUT_MS,
+);

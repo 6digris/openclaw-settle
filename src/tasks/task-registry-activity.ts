@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { hasExecutionSettlement } from "@openclaw/normalization-core/agent-run-terminal-outcome";
 import { asOptionalObjectRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
@@ -8,6 +9,7 @@ import {
   AgentActivityItemSchema,
   type AgentActivityItem,
 } from "../../packages/gateway-protocol/src/schema/logs-chat.js";
+import type { TaskSummary } from "../../packages/gateway-protocol/src/schema/tasks.js";
 import {
   isCompleteAgentPreamble,
   projectAgentActivityItem,
@@ -15,6 +17,8 @@ import {
 import { readCompletedFileMutationDelta } from "../agents/file-mutation-args.js";
 import { resolveFileMutationToolName } from "../agents/tool-mutation-names.js";
 import type { AgentEventPayload } from "../infra/agent-events.js";
+import { getAgentRunLifecycleGeneration } from "../infra/agent-run-registry.js";
+import { redactToolPayloadText } from "../logging/redact.js";
 import { readTaskBackingInstance } from "./task-backing-records.js";
 import { cloneTaskRecordForObserver } from "./task-registry-records.js";
 import {
@@ -24,6 +28,7 @@ import {
 } from "./task-registry-state.js";
 import type { TaskActivityOverlayState } from "./task-registry.process-state.js";
 import { isTerminalTaskStatus, type TaskRecord } from "./task-registry.types.js";
+import { truncateTaskStatusText } from "./task-status.js";
 
 const MAX_ACTIVITY_CHARS = 200;
 const ACTIVITY_LINE_PREFIX = new RegExp(`^(?:\\s*\\S){1,${MAX_ACTIVITY_CHARS + 1}}`);
@@ -32,6 +37,24 @@ const ACTIVITY_FLUSH_MS = 1_000;
 const MAX_PENDING_DIFFS = 64;
 const MAX_CURRENT_TOOLS = 64;
 const MAX_PREPARED_ITEMS = 64;
+// Progress is a compact public view; full command/commentary text belongs to task history.
+const MAX_PREPARED_TEXT_CHARS = 512;
+const MAX_PREPARED_TOTAL_TEXT_CHARS = 8_192;
+const PREPARED_STRING_FIELDS = [
+  "itemId",
+  "kind",
+  "phase",
+  "status",
+  "title",
+  "progressText",
+  "toolCallId",
+  "name",
+  "meta",
+  "error",
+  "summary",
+  "approvalId",
+  "approvalSlug",
+] as const;
 const liveActivitySchema = Type.Object(
   {
     ...AgentActivityItemSchema.properties,
@@ -53,11 +76,17 @@ type TaskActivitySnapshot = {
 function activityFor(task: TaskRecord): TaskActivityOverlayState {
   const runId = task.runId ?? "";
   const preparedGeneration = readTaskBackingInstance(task.detail)?.generation;
+  const preparedLifecycleGeneration = getAgentRunLifecycleGeneration();
   const existing = taskActivityByTaskId.get(task.taskId);
   if (existing?.runId === runId) {
-    if (existing.preparedGeneration !== preparedGeneration) {
+    if (
+      existing.preparedGeneration !== preparedGeneration ||
+      existing.preparedLifecycleGeneration !== preparedLifecycleGeneration
+    ) {
       existing.preparedItems.clear();
       existing.preparedGeneration = preparedGeneration;
+      existing.preparedLifecycleGeneration = preparedLifecycleGeneration;
+      markPreparedChanged(task.taskId, existing);
     }
     return existing;
   }
@@ -70,6 +99,8 @@ function activityFor(task: TaskRecord): TaskActivityOverlayState {
     currentTools: new Map(),
     preparedItems: new Map(),
     preparedGeneration,
+    preparedLifecycleGeneration,
+    preparedRevision: 0,
     pendingApprovalIds: new Set(),
     assistantText: "",
     thinkingText: "",
@@ -115,6 +146,12 @@ function markChanged(taskId: string, activity: TaskActivityOverlayState): void {
   scheduleFlush(taskId, activity);
 }
 
+function markPreparedChanged(taskId: string, activity: TaskActivityOverlayState): void {
+  activity.preparedRevision += 1;
+  activity.preparedSnapshot = undefined;
+  markChanged(taskId, activity);
+}
+
 /** Coalesces producer-owned activity without persisting or duplicating its execution state. */
 export function invalidateTaskActivity(taskId: string, at: number): void {
   const task = tasks.get(taskId);
@@ -155,6 +192,22 @@ function readExecutionWait(value: unknown): TaskActivityOverlayState["executionW
   };
 }
 
+function prepareTaskActivityText(value: string | undefined) {
+  if (value === undefined) {
+    return undefined;
+  }
+  // Redact complete values before truncating; raw command mode still retains interior newlines.
+  return truncateTaskStatusText(redactToolPayloadText(value), MAX_PREPARED_TEXT_CHARS);
+}
+
+function preparedItemTextChars(item: AgentActivityItem): number {
+  let chars = 0;
+  for (const field of PREPARED_STRING_FIELDS) {
+    chars += item[field]?.length ?? 0;
+  }
+  return chars;
+}
+
 export function readPreparedTaskActivityItem(
   event: AgentEventPayload,
 ): AgentActivityItem | undefined {
@@ -170,37 +223,49 @@ export function readPreparedTaskActivityItem(
   if (!itemId) {
     return undefined;
   }
-  if (item.hideFromChannelProgress || item.suppressChannelProgress) {
+  const kind = prepareTaskActivityText(item.kind) ?? "";
+  if (
+    item.hideFromChannelProgress ||
+    item.suppressChannelProgress ||
+    (item.kind === "preamble" && !item.progressText?.trim())
+  ) {
     return {
       itemId,
-      kind: item.kind,
+      kind,
       phase: item.phase,
       title: "",
       hideFromChannelProgress: item.hideFromChannelProgress,
       suppressChannelProgress: true,
     };
   }
+  if (item.kind === "preamble" && !isCompleteAgentPreamble(item)) {
+    return undefined;
+  }
   // Live events may carry private telemetry. Retain only the prepared public contract.
-  return {
+  const prepared: AgentActivityItem = {
     itemId,
-    kind: item.kind,
+    kind,
     phase: item.phase,
     status: item.status,
-    title: item.title,
-    progressText: item.progressText,
+    title: prepareTaskActivityText(item.title) ?? "",
+    progressText: prepareTaskActivityText(item.progressText),
     toolCallId: item.toolCallId,
-    name: item.name,
-    meta: item.meta,
+    name: prepareTaskActivityText(item.name),
+    meta: prepareTaskActivityText(item.meta),
     commandBearing: item.commandBearing,
     startedAt: item.startedAt,
     endedAt: item.endedAt,
-    error: item.error,
-    summary: item.summary,
+    error: prepareTaskActivityText(item.error),
+    summary: prepareTaskActivityText(item.summary),
     approvalId: item.approvalId,
     approvalSlug: item.approvalSlug,
     hideFromChannelProgress: item.hideFromChannelProgress,
     suppressChannelProgress: item.suppressChannelProgress,
   };
+  // Opaque identifiers are not display text: retain exact identity or retract the oversized item.
+  return preparedItemTextChars(prepared) <= MAX_PREPARED_TOTAL_TEXT_CHARS
+    ? prepared
+    : { itemId, kind, phase: item.phase, title: "", suppressChannelProgress: true };
 }
 
 /** Folds transient text and file activity into the in-memory task overlay. */
@@ -208,12 +273,22 @@ export function recordTaskActivityEvent(
   task: TaskRecord,
   event: AgentEventPayload,
 ): AgentActivityItem | undefined {
+  if (
+    event.lifecycleGeneration !== undefined &&
+    event.lifecycleGeneration !== getAgentRunLifecycleGeneration()
+  ) {
+    return undefined;
+  }
   const activity = activityFor(task);
   if (activity.executionRunId !== event.runId) {
     // Task identity survives a resumed execution; its in-flight calls do not.
     activity.executionRunId = event.runId;
     activity.currentTools.clear();
     activity.preparedItems.clear();
+    activity.preparedSnapshot = undefined;
+    if (activity.preparedRevision > 0) {
+      markPreparedChanged(task.taskId, activity);
+    }
     activity.pendingApprovalIds.clear();
     activity.approvalObservationOverflow = undefined;
     activity.pendingDiffByToolCallId.clear();
@@ -227,17 +302,45 @@ export function recordTaskActivityEvent(
     if (!prepared) {
       return undefined;
     }
-    activity.preparedItems.delete(prepared.itemId);
-    if (prepared.suppressChannelProgress) {
+    const previous = activity.preparedItems.get(prepared.itemId);
+    if (previous && isDeepStrictEqual(previous, prepared)) {
       return prepared;
     }
-    activity.preparedItems.set(prepared.itemId, prepared);
-    if (activity.preparedItems.size > MAX_PREPARED_ITEMS) {
-      const oldest = activity.preparedItems.keys().next().value;
-      if (oldest !== undefined) {
-        activity.preparedItems.delete(oldest);
+    const removed = activity.preparedItems.delete(prepared.itemId);
+    if (
+      prepared.suppressChannelProgress ||
+      event.runId.length + preparedItemTextChars(prepared) > MAX_PREPARED_TOTAL_TEXT_CHARS
+    ) {
+      if (removed) {
+        markPreparedChanged(task.taskId, activity);
       }
+      return prepared.suppressChannelProgress
+        ? prepared
+        : {
+            itemId: prepared.itemId,
+            kind: prepared.kind,
+            phase: prepared.phase,
+            title: "",
+            suppressChannelProgress: true,
+          };
     }
+    activity.preparedItems.set(prepared.itemId, prepared);
+    let textChars = event.runId.length;
+    for (const item of activity.preparedItems.values()) {
+      textChars += preparedItemTextChars(item);
+    }
+    while (
+      activity.preparedItems.size > MAX_PREPARED_ITEMS ||
+      textChars > MAX_PREPARED_TOTAL_TEXT_CHARS
+    ) {
+      const oldest = activity.preparedItems.entries().next().value;
+      if (!oldest) {
+        break;
+      }
+      textChars -= preparedItemTextChars(oldest[1]);
+      activity.preparedItems.delete(oldest[0]);
+    }
+    markPreparedChanged(task.taskId, activity);
     return prepared;
   }
   if (event.stream === "execution") {
@@ -266,6 +369,15 @@ export function recordTaskActivityEvent(
       return undefined;
     }
     const executionId = normalizeOptionalString(event.data.executionId);
+    if (
+      (sourceId && activity.executionSourceId && activity.executionSourceId !== sourceId) ||
+      (executionId && activity.executionId && activity.executionId !== executionId)
+    ) {
+      activity.preparedItems.clear();
+      if (activity.preparedRevision > 0) {
+        markPreparedChanged(task.taskId, activity);
+      }
+    }
     if (
       state === "unknown" ||
       (sourceId && activity.executionSourceId !== sourceId) ||
@@ -410,17 +522,27 @@ export function recordTaskActivityEvent(
   return undefined;
 }
 
-export function getTaskPreparedActivity(
-  taskId: string,
-): ReadonlyMap<string, AgentActivityItem> | undefined {
+/** Prepared public facts from the current in-memory execution, never reconstructed history. */
+export function getTaskProgressSnapshot(taskId: string): TaskSummary["progress"] {
   const activity = taskActivityByTaskId.get(taskId);
   const task = tasks.get(taskId);
-  return activity &&
-    task &&
-    activity.runId === (task.runId ?? "") &&
-    activity.preparedGeneration === readTaskBackingInstance(task.detail)?.generation
-    ? activity.preparedItems
-    : undefined;
+  if (
+    !activity?.executionRunId ||
+    activity.executionRunId.length > MAX_PREPARED_TOTAL_TEXT_CHARS ||
+    activity.preparedRevision === 0 ||
+    !task ||
+    isTerminalTaskStatus(task.status) ||
+    activity.runId !== (task.runId ?? "") ||
+    activity.preparedGeneration !== readTaskBackingInstance(task.detail)?.generation ||
+    activity.preparedLifecycleGeneration !== getAgentRunLifecycleGeneration()
+  ) {
+    return undefined;
+  }
+  return (activity.preparedSnapshot ??= {
+    runId: activity.executionRunId,
+    revision: activity.preparedRevision,
+    items: [...activity.preparedItems.values()],
+  });
 }
 
 export function getTaskActivitySnapshot(taskId: string): TaskActivitySnapshot | undefined {

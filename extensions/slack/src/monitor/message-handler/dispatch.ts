@@ -222,6 +222,10 @@ async function dispatchSlackMessageWithSetup(
         text: formatSlackGroupThreadReply(payload.text ?? "", info.participant),
       };
     }
+    if (await progress.continuation.adopt(payload, info)) {
+      delivery.observedReplyDelivery = true;
+      return;
+    }
     if (info.kind === "final" && slackStreaming.mode === "progress" && progress.isProgressMode) {
       if (progress.useNativeProgressStreaming) {
         await progress.deliverNativeFinal(payload, info.kind);
@@ -608,6 +612,7 @@ async function dispatchSlackMessageWithSetup(
   } catch (err) {
     dispatchError ??= err;
   } finally {
+    await progress.continuation.settle();
     await progress.cancel();
     if (!progress.useDraftProgressCard) {
       await draftStream?.discardPending();

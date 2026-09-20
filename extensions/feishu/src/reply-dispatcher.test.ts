@@ -6,7 +6,7 @@ import {
   createChannelPartialDeliveryError,
   isChannelPartialDeliveryError,
 } from "openclaw/plugin-sdk/channel-inbound";
-import { createReplyDispatcher } from "openclaw/plugin-sdk/reply-runtime";
+import { createReplyDispatcherWithTyping } from "openclaw/plugin-sdk/reply-runtime";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { afterAll, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
@@ -248,7 +248,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       model: "gpt-5.6-luna",
       thinkLevel: "off",
     });
-    const dispatcher = createReplyDispatcher(toTypingDispatcherOptions(result));
+    const { dispatcher } = createReplyDispatcherWithTyping(toTypingDispatcherOptions(result));
     dispatcher.sendFinalReply({ text: "reply" });
     dispatcher.markComplete();
     await dispatcher.waitForIdle();
@@ -263,7 +263,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       thinkLevel: "off",
     });
     const delivery = await options.deliver({ text: "reply" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
     await delivery?.finalization;
     expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledWith("reply", {
       note: "Agent: agent | Model: gpt-5.6-luna | Provider: openai",
@@ -289,7 +289,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       const delivery = await options.deliver({ text: "accepted final" }, { kind: "final" });
       expect(streamingInstances).toHaveLength(1);
       expect(requireStreamingInstance(0).start).toHaveBeenCalledTimes(1);
-      const idle = Promise.resolve(options.onIdle?.());
+      const idle = options.onSettled?.();
       await idle;
       await delivery?.finalization;
       expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledWith("accepted final", {
@@ -565,7 +565,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
   it("streams auto mode plain final text when streaming is enabled", async () => {
     const { options } = createDispatcherHarness();
     await options.deliver({ text: "plain text" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).credentials).toMatchObject({ httpTimeoutMs: 45_000 });
@@ -582,7 +582,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
 
     const { options } = createDispatcherHarness();
     await options.deliver({ text: "0123456789abcdefghij" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(0);
     expect(sendMessageFeishuMock).toHaveBeenCalledTimes(2);
@@ -608,7 +608,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
 
     const { options } = createDispatcherHarness();
     await options.deliver({ text }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(sendMessageFeishuMock.mock.calls.length).toBeGreaterThan(1);
     for (const [params] of sendMessageFeishuMock.mock.calls) {
@@ -624,7 +624,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
 
     const { options } = createDispatcherHarness({ runtime: createRuntimeLogger() });
     await options.deliver({ text: "```ts\nconst x = 1\n```\ntail" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(0);
     expect(runtime.channel.text.chunkMarkdownTextWithMode).toHaveBeenCalledTimes(1);
@@ -683,7 +683,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
           visibleReplySent: false,
         });
       }
-      await options.onIdle?.();
+      await options.onSettled?.();
       await delivery?.finalization;
       expect(create.mock.calls.length).toBeGreaterThan(1);
       const bodies: string[] = [];
@@ -711,7 +711,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     const { result, options } = createDispatcherHarness({ runtime: createRuntimeLogger() });
     result.replyOptions.onPartialReply?.({ text: "partial" });
     await options.deliver({ text: "final text overflow" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).discard).toHaveBeenCalledTimes(1);
@@ -750,7 +750,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     result.replyOptions.onAssistantMessageStart?.();
     await options.deliver({ text: "tool summary" }, { kind: "tool" });
     await options.deliver({ text: "plain final answer" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).start).toHaveBeenCalledTimes(1);
@@ -1210,7 +1210,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     const { result, options } = createDispatcherHarness();
     const deliveries: RecordedFeishuDelivery[] = [];
     const entered = vi.fn();
-    const dispatcher = createReplyDispatcher({
+    const { dispatcher } = createReplyDispatcherWithTyping({
       ...options,
       deliver: async (payload, info) => {
         entered(info.kind);
@@ -1430,7 +1430,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     } finally {
       releaseClose();
       dispatcher.markComplete();
-      await options.onIdle?.();
+      await options.onSettled?.();
       await dispatcher.waitForIdle();
     }
   });
@@ -1500,7 +1500,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       releaseClose();
       releaseMedia();
       dispatcher.markComplete();
-      await options.onIdle?.();
+      await options.onSettled?.();
       await dispatcher.waitForIdle();
     }
   });
@@ -1542,7 +1542,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     expect(result.replyOptions).toHaveProperty("disableBlockStreaming", false);
 
     await options.deliver({ text: "plain block" }, { kind: "block" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledWith("plain block", {
@@ -1569,7 +1569,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       { text: "Second paragraph.", mediaUrl: "https://example.com/block.png" },
       { kind: "block" },
     );
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(sendMessageFeishuMock).toHaveBeenCalledTimes(3);
     expectMockArgFields(sendMessageFeishuMock, "first block chunk", {
@@ -1595,7 +1595,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
 
     await options.deliver({ text: "partial block" }, { kind: "block" });
     await options.deliver({ text: "final answer" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(sendMessageFeishuMock).toHaveBeenCalledTimes(2);
     expectMockArgFields(sendMessageFeishuMock, "block message", { text: "partial block" });
@@ -1609,7 +1609,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     } as Partial<ReplyDispatcherArgs>;
     const { options } = createDispatcherHarness(overrides);
     await options.deliver({ text: "```md\nanswer\n```" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledWith("```md\nanswer\n```", {
@@ -1646,7 +1646,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       rootId: "om_root_topic",
     });
     await options.deliver({ text: "```ts\nconst x = 1\n```" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).start).toHaveBeenCalledTimes(1);
@@ -1694,7 +1694,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       runtime: createRuntimeLogger(),
     });
     await options.deliver({ text: "```md\npartial answer\n```" }, { kind: "block" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).start).toHaveBeenCalledTimes(1);
@@ -1713,7 +1713,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     });
     await options.deliver({ text: "```md\n完整回复第一段\n```" }, { kind: "final" });
     await options.deliver({ text: "```md\n完整回复第一段 + 第二段\n```" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledTimes(1);
@@ -1736,7 +1736,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       { kind: "final" },
     );
 
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     await expect(firstDelivery?.finalization).resolves.toMatchObject({
       content: "first final",
@@ -1754,7 +1754,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     });
     await options.deliver({ text: "The file is ready." }, { kind: "final" });
     await options.deliver({ text: "⚠️ Exec failed", isError: true }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledTimes(1);
@@ -1775,7 +1775,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       { text: "The file is ready.\n\n⚠️ Exec failed", isError: true },
       { kind: "final" },
     );
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledWith(
@@ -1829,7 +1829,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     });
     result.replyOptions.onPartialReply?.({ text: "Working on it..." });
     await options.deliver({ text: "⚠️ Exec failed", isError: true }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledWith("⚠️ Exec failed", {
@@ -1846,7 +1846,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     });
     await options.deliver({ text: "123456789012345678" }, { kind: "final" });
     await options.deliver({ text: "⚠️ Exec failed", isError: true }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).discard).toHaveBeenCalledTimes(1);
@@ -1862,7 +1862,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       runtime: createRuntimeLogger(),
     });
     await options.deliver({ text: "```md\n同一条回复\n```" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
     await options.deliver({ text: "```md\n同一条回复\n```" }, { kind: "final" });
 
     expect(streamingInstances).toHaveLength(1);
@@ -1885,7 +1885,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
 
     await options.onReplyStart?.();
     result.replyOptions.onPartialReply?.({ text: "```md\nidle streamed reply\n```" });
-    await options.onIdle?.();
+    await options.onSettled?.();
     await options.deliver({ text: "```md\nidle streamed reply\n```" }, { kind: "final" });
 
     expect(streamingInstances).toHaveLength(1);
@@ -1908,7 +1908,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     await options.onReplyStart?.();
     result.replyOptions.onAssistantMessageStart?.();
     await options.deliver({ text: "plain final answer" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).start).toHaveBeenCalledTimes(1);
@@ -1925,7 +1925,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
 
     await options.onReplyStart?.();
     result.replyOptions.onAssistantMessageStart?.();
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(0);
     expect(sendMessageFeishuMock).not.toHaveBeenCalled();
@@ -1939,7 +1939,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
 
     result.replyOptions.onPartialReply?.({ text: "plain" });
     result.replyOptions.onPartialReply?.({ text: "plain streamed answer" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledWith(
@@ -1959,12 +1959,12 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     });
 
     await options.deliver({ text: "First complete answer" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
     await options.deliver(
       { text: "Late tool-result final", mediaUrl: "https://example.com/a.png" },
       { kind: "final" },
     );
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(2);
     expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledTimes(1);
@@ -1998,12 +1998,12 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     });
 
     await options.deliver({ text: "First" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
     await options.deliver(
       { text: "oversized late final", mediaUrl: "https://example.com/a.png" },
       { kind: "final" },
     );
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledTimes(1);
@@ -2065,7 +2065,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     await options.onReplyStart?.();
     result.replyOptions.onPartialReply?.({ text: "hello" });
     await options.deliver({ text: "lo world" }, { kind: "block" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledTimes(1);
@@ -2083,7 +2083,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     await options.onReplyStart?.();
     result.replyOptions.onPartialReply?.({ text: "```md\npartial\n```" });
     await options.deliver({ text: "```md\npartial\n```" }, { kind: "block" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledTimes(1);
@@ -2114,7 +2114,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     await options.onReplyStart?.();
     result.replyOptions.onPartialReply?.({ text });
     const delivery = await options.deliver({ text }, { kind: "block" });
-    await options.onIdle?.();
+    await options.onSettled?.();
     const finalized = await delivery?.finalization;
 
     expect(streamingInstances).toHaveLength(1);
@@ -2144,7 +2144,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     });
     result.replyOptions.onPartialReply?.({ text: "Found" });
     result.replyOptions.onPartialReply?.({ text: "Found the answer." });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledWith(
@@ -2165,7 +2165,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     result.replyOptions.onPartialReply?.({
       text: "<thinking>private chain of thought</thinking>\nvisible answer",
     });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledWith("visible answer", {
       note: "Agent: agent",
@@ -2264,7 +2264,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       },
       { kind: "final" },
     );
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).discard).not.toHaveBeenCalled();
@@ -2289,7 +2289,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       },
       { kind: "final" },
     );
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).discard).toHaveBeenCalledTimes(1);
@@ -2315,7 +2315,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       },
       { kind: "final" },
     );
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).discard).not.toHaveBeenCalled();
@@ -2607,7 +2607,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       }),
     );
 
-    await expect(options.onIdle?.()).rejects.toThrow("final update failed");
+    await expect(options.onSettled?.()).rejects.toThrow("final update failed");
     await expect(delivery?.finalization).rejects.toMatchObject({
       code: "CHANNEL_PARTIAL_DELIVERY",
       deliveryResult: {
@@ -2630,7 +2630,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       }),
     );
 
-    await expect(options.onIdle?.()).rejects.toThrow("final update failed");
+    await expect(options.onSettled?.()).rejects.toThrow("final update failed");
     await expect(rejectedDelivery?.finalization).rejects.toMatchObject({
       deliveryResult: {
         content: "accepted preview",
@@ -2661,7 +2661,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       }),
     );
 
-    await expect(options.onIdle?.()).rejects.toThrow("final update failed");
+    await expect(options.onSettled?.()).rejects.toThrow("final update failed");
     await expect(delivery?.finalization).rejects.toMatchObject({
       code: "CHANNEL_PARTIAL_DELIVERY",
       deliveryResult: {
@@ -2675,7 +2675,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     );
 
     await options.deliver({ text: "accepted final" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
     expect(sendStructuredCardFeishuMock).toHaveBeenCalledTimes(1);
   });
 
@@ -2694,7 +2694,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       }),
     );
 
-    await expect(options.onIdle?.()).rejects.toThrow("final update failed");
+    await expect(options.onSettled?.()).rejects.toThrow("final update failed");
     await expect(delivery?.finalization).rejects.toMatchObject({
       code: "CHANNEL_PARTIAL_DELIVERY",
       deliveryResult: {
@@ -2719,7 +2719,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       messageId: "om-empty-stream",
     });
 
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     await expect(firstDelivery?.finalization).resolves.toMatchObject({
       content: "first final",
@@ -2748,7 +2748,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       messageId: "om-empty-stream",
     });
 
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     await expect(delivery?.finalization).rejects.toMatchObject({
       code: "CHANNEL_PARTIAL_DELIVERY",
@@ -2769,7 +2769,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       resolveClose = resolve;
     });
     instance.closeWithResult.mockReturnValueOnce(closePromise);
-    const firstIdle = Promise.resolve(options.onIdle?.());
+    const firstIdle = options.onSettled?.();
     await vi.waitFor(() => expect(instance.closeWithResult).toHaveBeenCalledTimes(1));
 
     const nextDelivery = await options.deliver({ text: "second" }, { kind: "final" });
@@ -2799,7 +2799,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       resolveClose = resolve;
     });
     instance.closeWithResult.mockReturnValueOnce(closePromise);
-    const firstIdle = Promise.resolve(options.onIdle?.());
+    const firstIdle = options.onSettled?.();
     await vi.waitFor(() => expect(instance.closeWithResult).toHaveBeenCalledOnce());
 
     const text = makeTableText(6);
@@ -2839,7 +2839,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       resolveClose = resolve;
     });
     instance.closeWithResult.mockReturnValueOnce(closePromise);
-    const idle = Promise.resolve(options.onIdle?.());
+    const idle = options.onSettled?.();
     await vi.waitFor(() => expect(instance.closeWithResult).toHaveBeenCalledTimes(1));
     instance.active = false;
 
@@ -2887,7 +2887,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       }),
     );
 
-    await expect(options.onIdle?.()).rejects.toThrow("close failed");
+    await expect(options.onSettled?.()).rejects.toThrow("close failed");
     resolveMedia({ messageId: "om-media" });
     const delivery = await deliveryPromise;
 
@@ -2929,7 +2929,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
         resolveClose = resolve;
       }),
     );
-    const idle = Promise.resolve(options.onIdle?.());
+    const idle = options.onSettled?.();
     await vi.waitFor(() => expect(instance.closeWithResult).toHaveBeenCalledTimes(1));
 
     rejectMedia(new Error("media failed"));
@@ -2964,7 +2964,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
         rejectClose = reject;
       }),
     );
-    const idle = Promise.resolve(options.onIdle?.());
+    const idle = options.onSettled?.();
     await vi.waitFor(() => expect(instance.closeWithResult).toHaveBeenCalledTimes(1));
 
     const lateDelivery = await options.deliver({ text: "second" }, { kind: "final" });
@@ -3001,7 +3001,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       resolveClose = resolve;
     });
     firstInstance.closeWithResult.mockReturnValueOnce(closePromise);
-    const idle = Promise.resolve(options.onIdle?.());
+    const idle = options.onSettled?.();
     await vi.waitFor(() => expect(firstInstance.closeWithResult).toHaveBeenCalledTimes(1));
     firstInstance.active = false;
 
@@ -3025,7 +3025,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     const { result, options } = createDispatcherHarness();
     await options.onReplyStart?.();
     result.replyOptions.onPartialReply?.({ text: "accepted answer" });
-    await options.onIdle?.();
+    await options.onSettled?.();
     sendMediaFeishuMock.mockResolvedValueOnce({ messageId: "om-media" });
 
     const delivery = await options.deliver(
@@ -3060,7 +3060,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       content: "first",
       messageId: "om-first",
     });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     result.replyOptions.onPartialReply?.({ text: "second" });
     await vi.waitFor(() => expect(streamingInstances).toHaveLength(2));
@@ -3132,7 +3132,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       content: "second",
       messageId: "om-shared",
     });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     resolveFirstMedia({ messageId: "om-media-first" });
     const firstDelivery = await firstDeliveryPromise;
@@ -3347,7 +3347,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       { text: "```ts\nconst x = 1\n```", mediaUrls: ["https://example.com/a.png"] },
       { kind: "final" },
     );
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).start).toHaveBeenCalledTimes(1);
@@ -3451,7 +3451,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     result.replyOptions.onPartialReply?.({ text: "answer part" });
     result.replyOptions.onReasoningEnd?.();
     await options.deliver({ text: "answer part final" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     const updateCalls = requireStreamingInstance(0).update.mock.calls.map((c: unknown[]) =>
@@ -3515,7 +3515,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     await options.onReplyStart?.();
     result.replyOptions.onReasoningStream?.({ text: "deep thought" });
     result.replyOptions.onReasoningEnd?.();
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledTimes(1);
@@ -3536,7 +3536,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     result.replyOptions.onReasoningStream?.({ text: "" });
     result.replyOptions.onPartialReply?.({ text: "```ts\ncode\n```" });
     await options.deliver({ text: "```ts\ncode\n```" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     const closeArg = firstStreamingCloseText();
@@ -3554,7 +3554,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     result.replyOptions.onReasoningStream?.({ text: "thought" });
     result.replyOptions.onReasoningEnd?.();
     await options.deliver({ text: "```ts\nfinal answer\n```" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(1);
     expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledTimes(1);
@@ -3610,7 +3610,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       runtime: createRuntimeLogger(),
     });
     await options.deliver({ text: "streamed card" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expectStreamingStartOptions(0, {
       header: undefined,
@@ -3644,7 +3644,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       }),
     );
     result.replyOptions.onPartialReply?.({ text: "final answer" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     const updateTexts = streamingUpdateTexts();
     expect(updateTexts.join("\n")).toContain("🔎 Web Search");
@@ -3681,7 +3681,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       }),
     );
     result.replyOptions.onPartialReply?.({ text: "final answer" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     const updateTexts = streamingUpdateTexts();
     expect(updateTexts.join("\n")).toContain("🛠️ run tests, `pnpm test -- --watch=false`");
@@ -3704,7 +3704,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       }),
     );
     result.replyOptions.onPartialReply?.({ text: "final answer" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     const updateTexts = streamingUpdateTexts();
     expect(updateTexts.join("\n")).not.toContain("Process");
@@ -3729,10 +3729,10 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     ).rejects.toThrow("media failed");
     await Promise.all([
       Promise.resolve(options.onError?.(new Error("media failed"), { kind: "final" })),
-      options.onIdle?.(),
+      options.onSettled?.(),
     ]);
     await options.deliver({ text: "Second answer" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(2);
     expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledWith("First answer", {
@@ -3753,7 +3753,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     });
 
     await options.deliver({ text: "First answer" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
     sendMediaFeishuMock.mockRejectedValueOnce(new Error("media failed"));
     await expect(
       options.deliver(
@@ -3763,7 +3763,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     ).rejects.toThrow("media failed");
     await Promise.resolve(options.onError?.(new Error("media failed"), { kind: "final" }));
     await options.deliver({ text: "Recovered answer" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
 
     expect(streamingInstances).toHaveLength(3);
     expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledWith("First answer", {
@@ -4072,7 +4072,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     const { result, options } = createDispatcherHarness({ runtime });
 
     await options.deliver({ text: "```md\nvisible answer\n```" }, { kind: "final" });
-    await options.onIdle?.();
+    await options.onSettled?.();
     await expect(result.ensureNoVisibleReplyFallback("zero-final-count")).resolves.toBe(false);
 
     expect(streamingInstances).toHaveLength(1);
@@ -4094,7 +4094,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       return { visibleReplySent: false, messageId: "om_stream" };
     });
 
-    await options.onIdle?.();
+    await options.onSettled?.();
     await expect(result.ensureNoVisibleReplyFallback("zero-final-count")).resolves.toBe(false);
 
     expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledWith(
@@ -4134,7 +4134,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     });
     streamingSession.closeWithResult = closeMock;
 
-    const idlePromise = options.onIdle?.();
+    const idlePromise = options.onSettled?.();
     const fallbackPromise = result.ensureNoVisibleReplyFallback("zero-final-count");
 
     for (let attempt = 0; attempt < 20 && closeMock.mock.calls.length === 0; attempt += 1) {
@@ -4180,7 +4180,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     const { result, options } = createDispatcherHarness({ runtime });
 
     await options.onReplyStart?.();
-    await options.onIdle?.();
+    await options.onSettled?.();
     await expect(result.ensureNoVisibleReplyFallback("zero-final-count")).resolves.toBe(true);
 
     expect(streamingInstances).toHaveLength(1);
@@ -4247,10 +4247,10 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       });
       const firstDelivery = await options.deliver({ text: "```md\nfirst\n```" }, { kind: "final" });
       const firstFinalization = expect(firstDelivery?.finalization).rejects.toThrow("close failed");
-      await expect(options.onIdle?.()).rejects.toThrow("close failed");
+      await expect(options.onSettled?.()).rejects.toThrow("close failed");
       await firstFinalization;
       await options.deliver({ text: "```md\nsecond\n```" }, { kind: "final" });
-      await options.onIdle?.();
+      await options.onSettled?.();
 
       expect(streamingInstances).toHaveLength(2);
       expect(requireStreamingInstance(1).closeWithResult).toHaveBeenCalledWith(
@@ -4329,7 +4329,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       // or transient Feishu failures recover without a process restart.
       nowSpy.mockReturnValue(62_000);
       await options.deliver({ text: "```ts\nconst z = 3\n```" }, { kind: "final" });
-      await options.onIdle?.();
+      await options.onSettled?.();
 
       expect(streamingInstances).toHaveLength(2);
       expect(requireStreamingInstance(1).start).toHaveBeenCalled();

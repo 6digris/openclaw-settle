@@ -4,6 +4,8 @@ import { createChannelPartialDeliveryError } from "openclaw/plugin-sdk/channel-i
 // Mattermost plugin module implements send behavior.
 import {
   createMessageReceiptFromOutboundResults,
+  createChannelProgressDraftCompositor,
+  type ChannelProgressDraftCompositorSnapshot,
   listMessageReceiptPlatformIds,
   type MessageReceipt,
   type MessageReceiptPartKind,
@@ -32,9 +34,12 @@ import {
   parseMattermostApiStatus,
   uploadMattermostFile,
   type MattermostUser,
+  updateMattermostPost,
+  type MattermostPost,
   type MattermostClient,
   type CreateDmChannelRetryOptions,
 } from "./client.js";
+import { formatMattermostProgressText } from "./draft-stream.js";
 import {
   buildButtonProps,
   resolveInteractionCallbackUrl,
@@ -391,6 +396,69 @@ async function resolveMattermostSendContext(
       resolveChannelLimitMb: () => account.config.mediaMaxMb,
     }),
   };
+}
+
+export async function editMattermostProgressMessage(params: {
+  cfg: OpenClawConfig;
+  accountId?: string;
+  to: string;
+  messageId: string;
+  threadId?: string;
+  snapshot: ChannelProgressDraftCompositorSnapshot;
+  assertCurrent?: () => void;
+}) {
+  const account = resolveMattermostAccount({ cfg: params.cfg, accountId: params.accountId });
+  if (!account.enabled) {
+    throw new Error(`Mattermost account "${account.accountId}" is disabled`);
+  }
+  const target = parseMattermostTarget(params.to);
+  if (target.kind !== "channel") {
+    throw new Error("Mattermost progress edits require a canonical channel target");
+  }
+  const { client, channelId } = await resolveMattermostSendContext(params.to, {
+    cfg: params.cfg,
+    accountId: account.accountId,
+    assertDirectAdapterHandoff: params.assertCurrent,
+  });
+  const post = await client.request<MattermostPost>(
+    `/posts/${encodeURIComponent(params.messageId)}`,
+  );
+  params.assertCurrent?.();
+  if (
+    post.id !== params.messageId ||
+    post.channel_id !== channelId ||
+    (post.root_id || undefined) !== params.threadId
+  ) {
+    throw new Error("Mattermost progress post no longer matches its conversation");
+  }
+  const compositor = createChannelProgressDraftCompositor({
+    entry: account.config,
+    mode: account.streamingMode,
+    active: true,
+    seed: `${account.accountId}:${channelId}`,
+    initialSnapshot: params.snapshot,
+  });
+  const text = renderMattermostMarkdown(
+    compositor.getText(),
+    resolveMarkdownTableMode({
+      cfg: params.cfg,
+      channel: "mattermost",
+      accountId: account.accountId,
+    }),
+  );
+  const message = formatMattermostProgressText(text);
+  if (!message) {
+    throw new Error("Mattermost progress edit requires visible content");
+  }
+  params.assertCurrent?.();
+  const updated = await updateMattermostPost(client, params.messageId, { message });
+  if (updated.id !== params.messageId) {
+    throw createChannelPartialDeliveryError(
+      new Error("Mattermost progress edit returned no matching post id"),
+      { messageIds: [params.messageId], visibleReplySent: true },
+    );
+  }
+  return { messageId: updated.id, channelId, content: updated.message ?? message };
 }
 
 export async function sendMessageMattermost(

@@ -2,6 +2,25 @@ import Foundation
 import OpenClawKit
 import OpenClawProtocol
 
+/// Read-only projection of the task owner's bounded, public activity snapshot.
+public struct OpenClawTaskProgress: Decodable, Equatable, Sendable {
+    public let runId: String
+    public let revision: Int
+    public let items: [OpenClawAgentActivityItem]
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.runId = try container.decode(String.self, forKey: .runId)
+        self.revision = try container.decode(Int.self, forKey: .revision)
+        self.items = try container.decode([OpenClawAgentActivityItem].self, forKey: .items)
+            .prefix(64).filter { $0.progressDisplayText != nil }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case runId, revision, items
+    }
+}
+
 enum ChatSubagentActivityStatus: String, Sendable {
     case queued
     case running
@@ -22,6 +41,7 @@ enum ChatSubagentActivitySource: Sendable {
 
 struct ChatSubagentActivity: Identifiable, Equatable, Sendable {
     let id: String
+    let runID: String?
     let title: String?
     let status: ChatSubagentActivityStatus
     let snippet: String?
@@ -29,6 +49,12 @@ struct ChatSubagentActivity: Identifiable, Equatable, Sendable {
     let updatedAt: Double
     let terminalObservedAt: Double?
     let terminalSummary: String?
+    let progress: OpenClawTaskProgress?
+    let executionState: String?
+
+    var isExecuting: Bool {
+        self.status == .running && self.executionState == "running"
+    }
 }
 
 struct ChatSubagentActivityPresentation: Equatable, Sendable {
@@ -47,6 +73,27 @@ struct ChatSubagentActivityState: Equatable, Sendable {
         guard let status = task.status.stringValue.flatMap(ChatSubagentActivityStatus.init(rawValue:))
         else { return }
         let previous = self.activitiesByID[task.id]
+        let updatedAt = Self.timestampMilliseconds(task.updatedat)
+            ?? previous?.updatedAt
+            ?? Self.timestampMilliseconds(task.endedat)
+            ?? nowMilliseconds
+        let progress = task.progress.flatMap {
+            try? ChatPayloadDecoding.decode(AnyCodable($0), as: OpenClawTaskProgress.self)
+        }
+        if let previous {
+            guard updatedAt >= previous.updatedAt else { return }
+            if updatedAt == previous.updatedAt {
+                if !previous.status.isWorking, status.isWorking { return }
+                if previous.status == .running, status == .queued { return }
+                if status.isWorking, previous.status == status,
+                   task.runid == previous.runID,
+                   let progress, let previousProgress = previous.progress,
+                   progress.revision < previousProgress.revision
+                {
+                    return
+                }
+            }
+        }
         let fallbackSnippet = Self.firstNonBlank(task.lastactivity, task.progresssummary, task.lasttoolname)
         let snippet = if !status.isWorking,
                          previous != nil,
@@ -57,10 +104,6 @@ struct ChatSubagentActivityState: Equatable, Sendable {
             fallbackSnippet ?? previous?.snippet
         }
         let endedAt = Self.timestampMilliseconds(task.endedat)
-        let updatedAt = Self.timestampMilliseconds(task.updatedat)
-            ?? previous?.updatedAt
-            ?? endedAt
-            ?? nowMilliseconds
         let terminalObservedAt: Double? = if status.isWorking {
             nil
         } else if let previous, !previous.status.isWorking {
@@ -70,6 +113,7 @@ struct ChatSubagentActivityState: Equatable, Sendable {
         }
         self.activitiesByID[task.id] = ChatSubagentActivity(
             id: task.id,
+            runID: task.runid,
             title: ChatPayloadDecoding.trimmedNonEmptyString(task.title),
             status: status,
             snippet: snippet,
@@ -77,7 +121,9 @@ struct ChatSubagentActivityState: Equatable, Sendable {
             updatedAt: updatedAt,
             terminalObservedAt: terminalObservedAt,
             terminalSummary: ChatPayloadDecoding.trimmedNonEmptyString(task.terminalsummary)
-                ?? previous?.terminalSummary)
+                ?? previous?.terminalSummary,
+            progress: progress,
+            executionState: task.execution?["state"]?.stringValue)
     }
 
     mutating func remove(taskID: String) {
@@ -158,17 +204,28 @@ extension OpenClawChatViewModel {
     func handleTaskEvent(_ event: OpenClawChatTaskEvent) {
         switch event {
         case let .upserted(task):
+            self.subagentActivitySnapshotChanges?.insert(task.id)
             self.foldSubagentTask(task)
         case let .deleted(taskID):
+            self.subagentActivitySnapshotChanges?.insert(taskID)
             self.updateSubagentActivityState { $0.remove(taskID: taskID) }
         case .restored:
+            self.clearSubagentActivities()
             let session = self.currentSessionSnapshot()
             Task { await self.refreshSubagentActivities(sessionSnapshot: session) }
         }
     }
 
     func refreshSubagentActivities(sessionSnapshot: SessionSnapshot) async {
-        let baseline = self.subagentActivityState.activitiesByID
+        let generation = self.subagentActivityGeneration
+        self.subagentActivityRequestID &+= 1
+        let requestID = self.subagentActivityRequestID
+        self.subagentActivitySnapshotChanges = []
+        defer {
+            if requestID == self.subagentActivityRequestID {
+                self.subagentActivitySnapshotChanges = nil
+            }
+        }
         let tasks: [TaskSummary]
         do {
             tasks = try await self.transport.listTasks(
@@ -177,12 +234,15 @@ extension OpenClawChatViewModel {
         } catch {
             return
         }
-        guard self.isCurrentSession(sessionSnapshot) else { return }
+        guard self.isCurrentSession(sessionSnapshot),
+              generation == self.subagentActivityGeneration,
+              requestID == self.subagentActivityRequestID
+        else { return }
         self.updateSubagentActivityState { state in
             let now = Date().timeIntervalSince1970 * 1000
             for task in tasks where self.isCurrentSubagentTask(task) {
-                // A task event received during this request is newer than its list snapshot.
-                guard state.activitiesByID[task.id] == baseline[task.id] else { continue }
+                // Live events win over a list response, including deleted rows.
+                guard self.subagentActivitySnapshotChanges?.contains(task.id) != true else { continue }
                 state.upsert(task, nowMilliseconds: now, source: .snapshot)
             }
             state.removeExpired(nowMilliseconds: now)
@@ -190,6 +250,8 @@ extension OpenClawChatViewModel {
     }
 
     func clearSubagentActivities() {
+        self.subagentActivityGeneration &+= 1
+        self.subagentActivitySnapshotChanges = nil
         self.subagentActivityCleanupTask?.cancel()
         self.subagentActivityCleanupTask = nil
         self.subagentActivityState.removeAll()

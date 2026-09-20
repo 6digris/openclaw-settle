@@ -57,6 +57,7 @@ type ClientOptions = {
   token: string;
   correlationId?: string;
   fetch?: typeof fetch;
+  signal?: AbortSignal;
 };
 
 const CLICKCLACK_ERROR_BODY_LIMIT_BYTES = 8 * 1024;
@@ -162,9 +163,18 @@ export function createClickClackClient(options: ClientOptions) {
       ? setTimeout(() => controller.abort(), requestOptions.timeoutMs)
       : undefined;
     try {
+      options.signal?.throwIfAborted();
       const response = await fetcher(`${baseUrl}${path}`, {
         ...init,
-        ...(controller ? { signal: controller.signal } : {}),
+        ...(controller || options.signal
+          ? {
+              signal: AbortSignal.any(
+                [controller?.signal, options.signal, init.signal].filter(
+                  (signal): signal is AbortSignal => signal != null,
+                ),
+              ),
+            }
+          : {}),
         headers: requestHeaders,
       });
       if (!response.ok) {

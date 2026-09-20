@@ -1,6 +1,6 @@
+import type { TaskSummary } from "@openclaw/gateway-client/browser";
 import { vi } from "vitest";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
-import type { TaskSummary } from "../lib/tasks/task-summary.ts";
 import type { BackgroundTasksHost } from "../pages/chat/components/chat-background-tasks.ts";
 
 export function flushAsync() {

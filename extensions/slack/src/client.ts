@@ -16,7 +16,7 @@ const SLACK_STARTUP_AUTH_RETRY_BUDGET_MS = 35_000;
 const slackWriteClientCache = new Map<string, WebClient>();
 const slackListenerWriteClientCache = new WeakMap<
   WebClient,
-  { teamId: string | undefined; client: WebClient }
+  { teamId: string | undefined; client?: WebClient }
 >();
 
 type SlackWriteClientCacheOptions = Pick<WebClientOptions, "slackApiUrl" | "teamId">;
@@ -152,6 +152,7 @@ export function getSlackListenerWriteClient(params: {
   listenerClient: WebClient;
   teamId?: string;
   clientOptions?: WebClientOptions;
+  assertCurrent?: () => void;
 }): WebClient | undefined {
   const token = params.listenerClient.token?.trim();
   const teamId = params.teamId?.trim().toUpperCase();
@@ -159,10 +160,11 @@ export function getSlackListenerWriteClient(params: {
     return undefined;
   }
   const cached = slackListenerWriteClientCache.get(params.listenerClient);
-  if (cached) {
-    // Bolt pools listener clients by authorized team. Reusing one for a
-    // different team is invalid scope, not another write-client key.
-    return cached.teamId === teamId ? cached.client : undefined;
+  if (cached && cached.teamId !== teamId) {
+    return undefined;
+  }
+  if (cached?.client && !params.assertCurrent) {
+    return cached.client;
   }
   const headers = Object.fromEntries(
     Object.entries(params.clientOptions?.headers ?? {}).filter(
@@ -173,15 +175,24 @@ export function getSlackListenerWriteClient(params: {
   // scope, but never inherit its retry policy or request deadline.
   const client = new WebClient(
     token,
-    resolveSlackWriteClientOptions({
-      ...params.clientOptions,
-      headers,
-      slackApiUrl: params.listenerClient.slackApiUrl,
-      teamId,
-      retryConfig: SLACK_WRITE_RETRY_OPTIONS,
-      timeout: 0,
-    }),
+    resolveSlackWriteClientOptions(
+      {
+        ...params.clientOptions,
+        headers,
+        slackApiUrl: params.listenerClient.slackApiUrl,
+        teamId,
+        retryConfig: SLACK_WRITE_RETRY_OPTIONS,
+        timeout: 0,
+      },
+      undefined,
+      params.assertCurrent,
+    ),
   );
-  slackListenerWriteClientCache.set(params.listenerClient, { teamId, client });
+  if (!params.assertCurrent) {
+    slackListenerWriteClientCache.set(params.listenerClient, { teamId, client });
+  } else if (!cached) {
+    // Keep installation scope without caching a turn-bound authority callback.
+    slackListenerWriteClientCache.set(params.listenerClient, { teamId });
+  }
   return client;
 }

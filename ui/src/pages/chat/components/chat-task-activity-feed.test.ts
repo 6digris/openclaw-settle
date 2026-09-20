@@ -1,3 +1,4 @@
+import type { TaskSummary } from "@openclaw/gateway-client/browser";
 import { render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../../test/helpers/promise.js";
@@ -32,6 +33,72 @@ function toolResult(toolCallId: string, isError = false) {
 }
 
 describe("task activity feed", () => {
+  it("reconciles public prepared activity with history without duplicate calls or stale live claims", () => {
+    const messages = [
+      {
+        role: "assistant",
+        content: [toolCall("read-child", "read", { path: "package.json" })],
+      },
+    ];
+    const progress: NonNullable<TaskSummary["progress"]> = {
+      runId: "child-run",
+      revision: 1,
+      items: [
+        {
+          itemId: "preamble",
+          kind: "preamble",
+          phase: "update",
+          title: "Review",
+          progressText: "Checking the child package",
+        },
+        {
+          itemId: "read-child",
+          toolCallId: "read-child",
+          kind: "tool",
+          phase: "start",
+          title: "Read package",
+          name: "read",
+          status: "running",
+        },
+        {
+          itemId: "quiet",
+          kind: "tool",
+          phase: "update",
+          title: "Routine poll",
+          hideFromChannelProgress: true,
+        },
+        { itemId: "private", kind: "analysis", phase: "update", title: "Private reasoning" },
+      ],
+    };
+    const container = mount([]);
+    render(renderTaskActivityFeed(messages, undefined, progress, true), container);
+    expect(container.textContent).toContain("Checking the child package");
+    expect(container.querySelectorAll(".chat-task-feed__tool-line")).toHaveLength(1);
+    expect(container.querySelector(".chat-task-feed__row-outcome")?.textContent).toContain(
+      "Running",
+    );
+    expect(container.textContent).not.toContain("Routine poll");
+    expect(container.textContent).not.toContain("Private reasoning");
+
+    render(renderTaskActivityFeed(messages, undefined, progress, false), container);
+    expect(container.querySelector(".chat-task-feed__row-outcome")?.textContent).toContain(
+      "Outcome unknown",
+    );
+    expect(container.querySelector(".chat-task-feed__overview")?.textContent).not.toContain(
+      "running",
+    );
+
+    render(
+      renderTaskActivityFeed(messages, undefined, { ...progress, revision: 2, items: [] }, true),
+      container,
+    );
+    expect(container.textContent).not.toContain("Checking the child package");
+    expect(container.querySelectorAll(".chat-task-feed__tool-line")).toHaveLength(1);
+    expect(container.querySelector(".chat-task-feed__row-outcome")?.textContent).toContain(
+      "Outcome unknown",
+    );
+  });
+
   const capped = {
     role: "assistant",
     content: "Capped preview",

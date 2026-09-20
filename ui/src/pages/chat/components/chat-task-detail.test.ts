@@ -1,7 +1,7 @@
+import type { TaskSummary } from "@openclaw/gateway-client/browser";
 import { html, render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../../test/helpers/promise.js";
-import type { TaskSummary } from "../../../lib/tasks/task-summary.ts";
 import { createGatewayBrowserClientFixture } from "../chat-pane.test-support.ts";
 import type { BackgroundTasksProps } from "./chat-background-tasks.types.ts";
 import type { SidebarFullMessageLoader } from "./chat-sidebar-content-types.ts";

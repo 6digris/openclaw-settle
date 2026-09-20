@@ -1,17 +1,17 @@
 // Public task summaries keep task-registry internals and unbounded status text
-// out of gateway responses and events.
-import type { TaskSummary } from "../../../packages/gateway-protocol/src/index.js";
-import { getTaskExecutionObservation } from "../../tasks/task-execution-observation.js";
-import { hasTaskTranscript } from "../../tasks/task-history.js";
-import { getTaskActivitySnapshot } from "../../tasks/task-registry-activity.js";
-import type { TaskRecord, TaskStatus } from "../../tasks/task-registry.types.js";
+// out of native clients, Gateway responses, and events.
+import type { TaskSummary } from "../../packages/gateway-protocol/src/schema/tasks.js";
+import { getTaskExecutionObservation } from "./task-execution-observation.js";
+import { hasTaskTranscript } from "./task-history.js";
+import { getTaskActivitySnapshot, getTaskProgressSnapshot } from "./task-registry-activity.js";
+import type { TaskRecord, TaskStatus } from "./task-registry.types.js";
 import {
   TASK_STATUS_DETAIL_MAX_CHARS,
   formatTaskStatusTitle,
   sanitizeTaskPromptText,
   sanitizeTaskStatusText,
   truncateTaskStatusText,
-} from "../../tasks/task-status.js";
+} from "./task-status.js";
 
 type TaskLedgerStatus = TaskSummary["status"];
 
@@ -49,6 +49,7 @@ function sanitizeOptionalTaskText(
 
 export function mapTaskSummary(task: TaskRecord, opts?: { includePrompt?: boolean }): TaskSummary {
   const activity = getTaskActivitySnapshot(task.taskId);
+  const progress = getTaskProgressSnapshot(task.taskId);
   const execution = getTaskExecutionObservation(task);
   const lastActivity = sanitizeOptionalTaskText(activity?.lastActivity);
   const progressResult = sanitizeTaskStatusText(task.progressSummary);
@@ -94,6 +95,7 @@ export function mapTaskSummary(task: TaskRecord, opts?: { includePrompt?: boolea
     ...(lastToolName ? { lastToolName } : {}),
     ...(lastActivity ? { lastActivity } : {}),
     ...(activity?.diffStat ? { diffStat: activity.diffStat } : {}),
+    ...(progress ? { progress } : {}),
     ...(progressSummary ? { progressSummary } : {}),
     ...(terminalSummary ? { terminalSummary } : {}),
     ...(error ? { error } : {}),

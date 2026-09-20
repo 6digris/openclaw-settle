@@ -349,7 +349,7 @@ export const dispatchTelegramMessage = async (
     ...draftState,
     ...progressState,
     ...deliveryState,
-    ...createReplyState(),
+    ...createReplyState(() => turn),
     queuedFinal: false,
     noVisibleReplyFallbackEligible: false,
     suppressSilentReplyFallback: false,
@@ -395,6 +395,7 @@ export const dispatchTelegramMessage = async (
       turn.dispatchError = err;
       runtime.error?.(danger(`telegram dispatch failed: ${String(err)}`));
     } finally {
+      await turn.progressContinuation.settle();
       // Stop producers before draining drafts, finalizing accepted text, and cleaning previews.
       turn.progressCompositor.cancel();
       await waitForDraftEvents(turn);

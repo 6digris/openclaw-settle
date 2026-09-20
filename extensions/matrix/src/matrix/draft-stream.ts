@@ -47,6 +47,10 @@ export function createMatrixDraftStream(params: {
   let currentEventId: string | undefined;
   let lastSentText = "";
   let lastSentContent = "";
+  let generation = 0;
+  let deliveryUncertain = false;
+  let assertContinuationCurrent: (() => void) | undefined;
+  const assertRequestCurrent = () => assertContinuationCurrent?.();
   const streamState = { stopped: false, final: false };
   let sendFailed = false;
   let finalizeInPlaceBlocked = false;
@@ -81,6 +85,7 @@ export function createMatrixDraftStream(params: {
       return true;
     }
     try {
+      assertContinuationCurrent?.();
       if (!currentEventId) {
         const result = await sendSingleTextMessageMatrix(roomId, preparedText.trimmedText, {
           client,
@@ -91,26 +96,40 @@ export function createMatrixDraftStream(params: {
           msgtype: preview.msgtype,
           includeMentions: preview.includeMentions,
           live: useLive,
+          assertCurrent: assertRequestCurrent,
         });
+        if (!result.messageId) {
+          throw new Error("Matrix draft send returned no event ID");
+        }
         currentEventId = result.messageId;
         lastSentText = preparedText.trimmedText;
         lastSentContent = preparedText.convertedText;
         log?.(`draft-stream: created message ${currentEventId}${useLive ? " (MSC4357 live)" : ""}`);
       } else {
-        await editMessageMatrix(roomId, currentEventId, preparedText.trimmedText, {
-          client,
-          cfg,
-          threadId,
-          accountId,
-          msgtype: preview.msgtype,
-          includeMentions: preview.includeMentions,
-          live: useLive,
-        });
+        const editedEventId = await editMessageMatrix(
+          roomId,
+          currentEventId,
+          preparedText.trimmedText,
+          {
+            client,
+            cfg,
+            threadId,
+            accountId,
+            msgtype: preview.msgtype,
+            includeMentions: preview.includeMentions,
+            live: useLive,
+            assertCurrent: assertRequestCurrent,
+          },
+        );
+        if (!editedEventId) {
+          throw new Error("Matrix draft edit returned no event ID");
+        }
         lastSentText = preparedText.trimmedText;
         lastSentContent = preparedText.convertedText;
       }
       return true;
     } catch (err) {
+      deliveryUncertain = true;
       log?.(`draft-stream: send/edit failed: ${String(err)}`);
       const isPreviewLimitError =
         err instanceof Error && err.message.startsWith("Matrix single-message text exceeds limit");
@@ -145,7 +164,7 @@ export function createMatrixDraftStream(params: {
     if (useLive && !liveFinalized && currentEventId && lastSentText) {
       liveFinalized = true;
       try {
-        await editMessageMatrix(roomId, currentEventId, lastSentText, {
+        const editedEventId = await editMessageMatrix(roomId, currentEventId, lastSentText, {
           client,
           cfg,
           threadId,
@@ -153,10 +172,15 @@ export function createMatrixDraftStream(params: {
           msgtype: preview.msgtype,
           includeMentions: preview.includeMentions,
           live: false,
+          assertCurrent: assertRequestCurrent,
         });
+        if (!editedEventId) {
+          throw new Error("Matrix draft finalization returned no event ID");
+        }
         log?.(`draft-stream: finalized ${currentEventId} (MSC4357 stream ended)`);
         return true;
       } catch (err) {
+        deliveryUncertain = true;
         log?.(`draft-stream: finalize edit failed: ${String(err)}`);
         // If the finalize edit fails, the live marker remains on the last
         // successful edit. Flag the stream so callers can fall back to
@@ -175,6 +199,9 @@ export function createMatrixDraftStream(params: {
   };
 
   const resetCurrentMessage = (): void => {
+    generation += 1;
+    deliveryUncertain = false;
+    assertContinuationCurrent = undefined;
     currentEventId = undefined;
     lastSentText = "";
     lastSentContent = "";
@@ -200,6 +227,36 @@ export function createMatrixDraftStream(params: {
     resetCurrentMessage();
   };
 
+  const prepareContinuation = async (assertCurrent: () => void) => {
+    const preparingGeneration = generation;
+    assertContinuationCurrent = assertCurrent;
+    assertCurrent();
+    await stop();
+    assertCurrent();
+    if (
+      preparingGeneration !== generation ||
+      deliveryUncertain ||
+      finalizeInPlaceBlocked ||
+      !currentEventId ||
+      !lastSentContent.trim()
+    ) {
+      return undefined;
+    }
+    if (!(await finalizeLive())) {
+      return undefined;
+    }
+    assertCurrent();
+    if (preparingGeneration !== generation) {
+      return undefined;
+    }
+    return { messageId: currentEventId, content: lastSentContent };
+  };
+  const releaseContinuation = (messageId: string) => {
+    if (currentEventId === messageId) {
+      resetCurrentMessage();
+    }
+  };
+
   return {
     update,
     flush: loop.flush,
@@ -208,6 +265,8 @@ export function createMatrixDraftStream(params: {
     deleteCurrentMessage,
     finalizeLive,
     reset,
+    prepareContinuation,
+    releaseContinuation,
     eventId: () => currentEventId,
     content: () => lastSentContent || undefined,
     matchesPreparedText: (text: string) =>

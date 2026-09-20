@@ -1,6 +1,11 @@
+import {
+  taskTimestampMs,
+  type TaskStatus,
+  type TaskSummary,
+} from "@openclaw/gateway-client/browser";
 import { html, nothing } from "lit";
-import { repeat } from "lit/directives/repeat.js";
 import "../../styles/tasks.css";
+import { repeat } from "lit/directives/repeat.js";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { renderAgentRowChip } from "../../components/agent-row-chip.ts";
 import {
@@ -21,10 +26,8 @@ import {
   taskDetail,
   taskRuntimeLabel,
   taskStatusLabel,
-  taskTimestampMs,
   taskTitle,
 } from "../../lib/tasks/data.ts";
-import type { TaskStatus, TaskSummary } from "../../lib/tasks/task-summary.ts";
 
 type TasksProps = {
   basePath: string;

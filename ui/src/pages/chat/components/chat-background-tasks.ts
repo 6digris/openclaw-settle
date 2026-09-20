@@ -1,3 +1,13 @@
+import {
+  TaskProjection,
+  isActiveTask,
+  normalizeTaskEventPayload,
+  normalizeTasksCancelResult,
+  normalizeTasksGetResult,
+  normalizeTasksListResult,
+  newestTaskSnapshot,
+  type TaskSummary,
+} from "@openclaw/gateway-client/browser";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
   GatewayRequestError,
@@ -13,24 +23,9 @@ import {
   canonicalUiSessionKeyForPersistence,
   resolveUiConversationIdentity,
 } from "../../../lib/sessions/session-key.ts";
-import {
-  coalesceTaskEvent,
-  type CoalescedTaskEvent,
-  isActiveTask,
-  mergeTaskLists,
-  normalizeTaskEventPayload,
-  normalizeTasksCancelResult,
-  normalizeTasksGetResult,
-  normalizeTasksListResult,
-  replayTaskEvents,
-  sortTasks,
-} from "../../../lib/tasks/data.ts";
-import type { TaskSummary } from "../../../lib/tasks/task-summary.ts";
 import { taskMatchesSessionScope } from "./chat-background-task-scope.ts";
 import {
-  newestTaskSnapshot,
   observeTaskTerminal,
-  prepareTaskSnapshot,
   type BackgroundTaskObservations,
 } from "./chat-background-tasks-shared.ts";
 import type { BackgroundTasksProps } from "./chat-background-tasks.types.ts";
@@ -42,13 +37,6 @@ import {
 } from "./chat-task-detail-state.ts";
 
 registerBackgroundTasksEnglish();
-
-type BackgroundTaskLoadEvent = NonNullable<ReturnType<typeof normalizeTaskEventPayload>>;
-
-type BackgroundTaskEventBuffer = {
-  requestId: number;
-  events: Map<string, CoalescedTaskEvent>;
-};
 
 type BackgroundTaskSnapshotResult =
   | { kind: "ready"; active: unknown; recent: unknown }
@@ -68,7 +56,7 @@ type BackgroundTasksState = BackgroundTaskObservations & {
   // the snapshot instead of trusting the previous connection's task list.
   loadedClient: GatewayBrowserClient | null;
   loading: boolean;
-  pendingTaskEvents: BackgroundTaskEventBuffer | null;
+  projection: TaskProjection;
   pendingReload: boolean;
   requestId: number;
   sessionKey: string;
@@ -121,6 +109,7 @@ function getBackgroundTasksState(host: BackgroundTasksHost): BackgroundTasksStat
   ) {
     window.clearTimeout(current.subagentActivityExpiryTimer);
   }
+  current?.projection.dispose();
   resetTaskDetail(host);
   nextStatusRowId += 1;
   const next: BackgroundTasksState = {
@@ -139,7 +128,7 @@ function getBackgroundTasksState(host: BackgroundTasksHost): BackgroundTasksStat
     finishedCollapsed: current?.finishedCollapsed ?? true,
     loadedClient: null,
     loading: false,
-    pendingTaskEvents: null,
+    projection: new TaskProjection(),
     pendingReload: false,
     requestId: 0,
     sessionKey,
@@ -147,9 +136,10 @@ function getBackgroundTasksState(host: BackgroundTasksHost): BackgroundTasksStat
     statusRowId: `chat-tasks-status-${nextStatusRowId}`,
     subagentActivityExpiryAt: null,
     subagentActivityExpiryTimer: null,
-    taskActivityById: new Map(),
     terminalObservedAtByTask: new Map(),
-    tasks: null,
+    get tasks() {
+      return this.projection.tasks;
+    },
     taskDetails: new Map(),
     taskDetailErrors: new Map(),
     taskDetailRequests: new Map(),
@@ -276,13 +266,7 @@ function loadBackgroundTasks(
     return;
   }
   const requestId = ++state.requestId;
-  // The state owns the client and conversation pair; its request owns this
-  // buffer so late pages cannot resurrect an unopened concurrent task.
-  const buffer: BackgroundTaskEventBuffer = {
-    requestId,
-    events: state.pendingTaskEvents?.events ?? new Map(),
-  };
-  state.pendingTaskEvents = buffer;
+  const token = state.projection.beginSnapshot();
   state.loading = true;
   state.error = null;
   state.pendingReload = false;
@@ -291,7 +275,12 @@ function loadBackgroundTasks(
     try {
       const result = await requestTaskSnapshot(host, state, client, requestId);
       const current = getBackgroundTasksState(host);
-      if (current !== state || current.requestId !== requestId || result.kind === "stale") {
+      if (
+        !host.connected ||
+        current !== state ||
+        current.requestId !== requestId ||
+        result.kind === "stale"
+      ) {
         return;
       }
       if (result.kind === "deferred") {
@@ -299,44 +288,36 @@ function loadBackgroundTasks(
         current.pendingReload = true;
         return;
       }
+      // Saved selections can hold newer detail without belonging to this
+      // bounded window. Reconcile only rows the scoped snapshot admits.
       const active = normalizeTasksListResult(result.active)?.tasks.map((task) =>
-        prepareTaskSnapshot(state, task),
+        newestTaskSnapshot(task, current.taskDetails.get(task.id)),
       );
       const recent = normalizeTasksListResult(result.recent)?.tasks.map((task) =>
-        prepareTaskSnapshot(state, task),
+        newestTaskSnapshot(task, current.taskDetails.get(task.id)),
       );
       if (!active || !recent) {
         throw new Error(t("tasksPage.invalidResponse"));
       }
-      // The active query is issued first. Apply the later recent snapshot last
-      // so same-millisecond running progress cannot regress when events drop.
-      const merged = replayTaskEvents(mergeTaskLists(active, recent), buffer.events);
-      current.tasks = sortTasks(
-        merged.map((task) => newestTaskSnapshot(task, current.taskDetails.get(task.id))),
-      );
-      for (const task of current.tasks) {
+      if (!current.projection.applySnapshot(token, active, recent)) {
+        return;
+      }
+      for (const task of current.tasks ?? []) {
         observeTaskTerminal(current, task, "snapshot");
       }
       current.loadedClient = client;
     } catch (error) {
       const current = getBackgroundTasksState(host);
       if (current === state && current.requestId === requestId) {
-        if (current.tasks === null && buffer.events.size > 0) {
-          // Real registry events remain authoritative when an initial page
-          // fails; discarding them would hide active work and completions.
-          current.tasks = replayTaskEvents([], buffer.events);
-          for (const task of current.tasks) {
-            observeTaskTerminal(current, task, "event");
-          }
+        current.projection.failSnapshot(token);
+        for (const task of current.tasks ?? []) {
+          observeTaskTerminal(current, task, "event");
         }
         current.error = formatUiError(error, t("tasksPage.loadFailed"));
       }
     } finally {
       const current = getBackgroundTasksState(host);
       if (current === state && current.requestId === requestId) {
-        if (current.pendingTaskEvents === buffer && current.deferredRetryAttempt === undefined) {
-          current.pendingTaskEvents = null;
-        }
         current.loading = false;
         const reload = current.pendingReload;
         current.pendingReload = false;
@@ -351,22 +332,6 @@ function loadBackgroundTasks(
       host.requestUpdate?.();
     }
   })();
-}
-
-function bufferBackgroundTaskEvent(
-  state: BackgroundTasksState,
-  event: BackgroundTaskLoadEvent,
-): boolean {
-  if (event.action === "restored") {
-    return false;
-  }
-  const buffer = (state.pendingTaskEvents ??=
-    state.tasks === null ? { requestId: state.requestId, events: new Map() } : null);
-  if (!buffer || buffer.requestId !== state.requestId) {
-    return false;
-  }
-  coalesceTaskEvent(buffer.events, event);
-  return state.loading;
 }
 
 /** Apply a gateway `task` event to the pane's snapshot. Events for other
@@ -400,27 +365,27 @@ export function handleBackgroundTasksEvent(
     normalizedEvent.action === "upserted"
       ? {
           ...normalizedEvent,
-          task: prepareTaskSnapshot(state, normalizedEvent.task),
+          task: newestTaskSnapshot(
+            normalizedEvent.task,
+            state.taskDetails.get(normalizedEvent.task.id),
+          ),
         }
       : normalizedEvent;
-  const bufferedEvent = bufferBackgroundTaskEvent(state, event);
+  const result = state.projection.applyEvent(event);
   const readReady =
     presented && host.chatSecondaryReadsReady?.(state.explicitReadRequested) !== false;
   if (event.action === "restored") {
     state.taskDetailRequests.clear();
     state.taskDetails.clear();
     state.taskDetailErrors.clear();
-    state.pendingTaskEvents?.events.clear();
     delete state.deferredRetryAttempt;
   }
   if (event.action === "restored" && !readReady) {
     // Restore replaces the registry snapshot. Retire any older page without
     // issuing hidden work; presentation will start the authoritative reload.
     state.requestId += 1;
-    state.pendingTaskEvents = null;
     state.pendingReload = false;
     state.loading = false;
-    state.tasks = null;
     state.loadedClient = null;
     state.error = null;
     host.requestUpdate?.();
@@ -438,39 +403,29 @@ export function handleBackgroundTasksEvent(
     state.taskDetailErrors.set(event.taskId, t("chat.backgroundTasks.taskUnavailable"));
     host.requestUpdate?.();
   }
-  if (state.tasks === null) {
-    // The exact in-flight snapshot already replays its buffered events; a
-    // redundant stale reload would immediately undo that initial-load replay.
-    if (readReady && !bufferedEvent) {
+  if (result.refetch || (state.tasks === null && !state.loading)) {
+    if (readReady) {
       loadBackgroundTasks(host, state, true);
-    } else if (!bufferedEvent) {
+    } else {
       state.pendingReload = true;
-      host.requestUpdate?.();
+      state.loadedClient = null;
     }
-    return;
-  }
-  if (event.action === "restored") {
-    loadBackgroundTasks(host, state, true);
-    return;
-  }
-  if (event.action === "deleted") {
-    if (!state.tasks.some((task) => task.id === event.taskId)) {
-      return;
-    }
-    state.tasks = state.tasks.filter((task) => task.id !== event.taskId);
-    state.taskDetails.delete(event.taskId);
-    state.taskActivityById.delete(event.taskId);
-    state.terminalObservedAtByTask.delete(event.taskId);
-
     host.requestUpdate?.();
     return;
   }
-  const current = state.tasks.find((task) => task.id === event.task.id);
+  if (event.action === "deleted") {
+    state.terminalObservedAtByTask.delete(event.taskId);
+  }
+  if (event.action !== "upserted") {
+    host.requestUpdate?.();
+    return;
+  }
+  const newest = state.tasks?.find((task) => task.id === event.task.id);
+  if (!newest) {
+    return;
+  }
   const detail = state.taskDetails.get(event.task.id);
-  let newest = current ? newestTaskSnapshot(current, event.task, "event") : event.task;
-  newest = newestTaskSnapshot(newest, detail);
   observeTaskTerminal(state, newest, "event");
-  state.tasks = sortTasks([newest, ...state.tasks.filter((task) => task.id !== event.task.id)]);
   if (detail) {
     state.taskDetails = new Map(state.taskDetails).set(event.task.id, {
       ...newest,
@@ -508,8 +463,7 @@ async function loadBackgroundTaskDetail(
     if (!isCurrent()) {
       return;
     }
-    const normalizedDetail = normalizeTasksGetResult(payload);
-    const detail = normalizedDetail ? prepareTaskSnapshot(state, normalizedDetail) : null;
+    const detail = normalizeTasksGetResult(payload);
     if (!detail || detail.id !== rowId) {
       throw new Error(t("chat.backgroundTasks.detailFailed"));
     }
@@ -523,11 +477,8 @@ async function loadBackgroundTaskDetail(
       ...newest,
       ...(detail.prompt ? { prompt: detail.prompt } : {}),
     });
-    if (current && state.tasks) {
-      state.tasks = sortTasks([
-        newest,
-        ...state.tasks.filter((candidate) => candidate.id !== rowId),
-      ]);
+    if (current) {
+      state.projection.applyEvent({ action: "upserted", task: newest });
     }
   } catch (error) {
     if (isCurrent()) {
@@ -565,19 +516,12 @@ async function cancelBackgroundTask(
       return;
     }
     const result = normalizeTasksCancelResult(payload);
-    if (result?.task && state.tasks !== null) {
-      const cancelled = prepareTaskSnapshot(state, result.task);
-      observeTaskTerminal(state, cancelled, "event");
-      const event = normalizeTaskEventPayload({ action: "upserted", task: cancelled });
-      if (event) {
-        // A slow client may miss the best-effort task event; the successful
-        // cancel response must still survive its own in-flight list snapshot.
-        bufferBackgroundTaskEvent(state, event);
+    if (result?.task) {
+      state.projection.applyEvent({ action: "upserted", task: result.task });
+      const current = state.tasks?.find((task) => task.id === result.task?.id);
+      if (current) {
+        observeTaskTerminal(state, current, "event");
       }
-      state.tasks = sortTasks([
-        cancelled,
-        ...state.tasks.filter((task) => task.id !== cancelled.id),
-      ]);
     }
     // Refusals (already terminal, stale id, no cancellation handle) are
     // successful responses with cancelled=false; surface them like errors.
@@ -620,8 +564,14 @@ export function createBackgroundTasksProps(
 ): BackgroundTasksProps {
   const state = getBackgroundTasksState(host);
   if (!host.connected) {
-    // A reconnect can silently drop `task` events, so a disconnect invalidates
-    // the loaded marker and the next connected render refetches the snapshot.
+    // Reconnect replaces observation authority even when the client is reused.
+    state.requestId += 1;
+    state.projection.invalidate();
+    state.loading = false;
+    state.taskDetails.clear();
+    state.taskDetailRequests.clear();
+    state.taskDetailErrors.clear();
+    resetTaskDetail(host);
     state.loadedClient = null;
   }
   // Load eagerly even while collapsed: the toggle badge is how running work

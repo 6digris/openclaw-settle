@@ -124,6 +124,7 @@ function resolveMatrixActionAccount(params: { cfg: CoreConfig; accountId?: strin
 
 export const matrixMessageActions: ChannelMessageActionAdapter = {
   providerOwnedReadGates: true,
+  writeAuthorityActions: ["edit"],
   readAuthorityActions: [
     "read",
     "reactions",

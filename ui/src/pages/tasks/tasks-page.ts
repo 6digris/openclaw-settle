@@ -1,5 +1,15 @@
 import { consume } from "@lit/context";
 import { initialState, Task, TaskStatus } from "@lit/task";
+import {
+  TaskProjection,
+  mergeTaskLists,
+  normalizeTaskEventPayload,
+  normalizeTasksCancelResult,
+  normalizeTasksGetResult,
+  normalizeTasksListResult,
+  normalizeTasksRecoveryResult,
+  type TaskSummary,
+} from "@openclaw/gateway-client/browser";
 import { html, nothing } from "lit";
 import { state } from "lit/decorators.js";
 import { GatewayRequestError, type GatewayBrowserClient } from "../../api/gateway.ts";
@@ -23,17 +33,7 @@ import {
   parseAgentSessionKey,
   resolveUiConfiguredMainKey,
 } from "../../lib/sessions/session-key.ts";
-import {
-  applyTaskEvent,
-  mergeTaskLists,
-  normalizeTaskEventPayload,
-  normalizeTasksCancelResult,
-  normalizeTasksGetResult,
-  normalizeTasksListResult,
-  normalizeTasksRecoveryResult,
-  taskTitle,
-} from "../../lib/tasks/data.ts";
-import type { TaskSummary } from "../../lib/tasks/task-summary.ts";
+import { taskTitle } from "../../lib/tasks/data.ts";
 import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
@@ -57,15 +57,6 @@ function taskMatchesAgentScope(task: TaskSummary, agentId: string | null): boole
     (key) => parseAgentSessionKey(key)?.agentId === agentId,
   );
 }
-
-type TaskRefreshEvent = NonNullable<ReturnType<typeof normalizeTaskEventPayload>>;
-
-type TaskRefreshEventBuffer = {
-  gateway: ApplicationContext["gateway"];
-  client: GatewayBrowserClient;
-  scopeId: string | null;
-  events: TaskRefreshEvent[];
-};
 
 class TaskListContinuationError extends Error {
   constructor(readonly reason: unknown) {
@@ -175,14 +166,12 @@ class TasksPage extends OpenClawLightDomElement {
     requestUpdate: () => this.requestUpdate(),
   };
 
-  private taskRefreshEvents: TaskRefreshEventBuffer | null = null;
-  private taskSnapshotInvalidated = false;
+  private taskProjection = new TaskProjection();
   private copyResultAttempt = 0;
   private readonly gateway = new GatewayPageController(this, {
     getGateway: () => this.context?.gateway,
     onIdentityChange: () => {
       this.tasks = [];
-      this.taskSnapshotInvalidated = false;
       this.error = null;
       this.copyResultError = null;
     },
@@ -204,24 +193,9 @@ class TasksPage extends OpenClawLightDomElement {
     this.requestUpdate();
   });
 
-  private bufferTaskRefreshEvent(event: TaskRefreshEvent | null) {
-    const buffer = this.taskRefreshEvents;
-    if (
-      event &&
-      event.action !== "restored" &&
-      buffer &&
-      buffer.gateway === this.gateway.gateway &&
-      buffer.client === this.gateway.client &&
-      buffer.scopeId === this.context.agentSelection.state.scopeId
-    ) {
-      buffer.events.push(event);
-    }
-  }
-
   private invalidateTaskSnapshot() {
     this.closeTranscript();
-    this.taskRefreshEvents = null;
-    this.taskSnapshotInvalidated = true;
+    this.taskProjection.invalidate();
     this.tasks = [];
   }
 
@@ -238,36 +212,29 @@ class TasksPage extends OpenClawLightDomElement {
       if (!gateway || !client) {
         return initialState;
       }
-      const buffer: TaskRefreshEventBuffer = {
-        gateway,
-        client,
-        scopeId,
-        events: [],
-      };
-      this.taskRefreshEvents = buffer;
+      const projection = this.taskProjection;
+      const token = projection.beginSnapshot();
       const agentId = scopeId ?? undefined;
-      const snapshot = await loadTaskSnapshot({ client, agentId, signal });
-      return { ...snapshot, buffer };
+      try {
+        const snapshot = await loadTaskSnapshot({ client, agentId, signal });
+        return { ...snapshot, projection, token };
+      } catch (error) {
+        projection.failSnapshot(token);
+        throw error;
+      }
     },
-    onComplete: ({ active, recent, buffer }) => {
-      // The active query is issued first; a same-millisecond recent page
-      // must win running-progress ties when a pushed event is dropped.
-      let tasks = mergeTaskLists(active, recent);
-      for (const event of buffer.events) {
-        tasks = applyTaskEvent(tasks, event).tasks;
+    onComplete: ({ active, recent, projection, token }) => {
+      if (projection !== this.taskProjection || !projection.applySnapshot(token, active, recent)) {
+        return;
       }
-      this.taskSnapshotInvalidated = false;
-      this.tasks = tasks;
+      this.tasks = projection.tasks ?? [];
       this.reconcileTranscriptSelection();
-      if (this.taskRefreshEvents === buffer) {
-        this.taskRefreshEvents = null;
-      }
     },
     onError: (error) => {
       if (error instanceof TaskListContinuationError) {
         this.invalidateTaskSnapshot();
       } else {
-        this.taskRefreshEvents = null;
+        this.tasks = this.taskProjection.tasks ?? [];
       }
       this.error = formatUiError(
         error instanceof TaskListContinuationError ? error.reason : error,
@@ -288,24 +255,28 @@ class TasksPage extends OpenClawLightDomElement {
           ) {
             return;
           }
+          // A lost continuation invalidates list membership. Events outside a
+          // replacement read cannot establish the complete scoped snapshot.
+          if (
+            this.listTask.status === TaskStatus.ERROR &&
+            this.listTask.error instanceof TaskListContinuationError
+          ) {
+            return;
+          }
           const scopeId = this.context.agentSelection.state.scopeId;
           const normalizedEvent = normalizeTaskEventPayload(event.payload);
           if (
-            normalizedEvent?.action === "deleted" ||
-            (normalizedEvent?.action === "upserted" &&
-              taskMatchesAgentScope(normalizedEvent.task, scopeId))
+            normalizedEvent?.action === "upserted" &&
+            !taskMatchesAgentScope(normalizedEvent.task, scopeId)
           ) {
-            this.bufferTaskRefreshEvent(normalizedEvent);
-          }
-          if (this.taskSnapshotInvalidated) {
             return;
           }
-          const result = applyTaskEvent(this.tasks, event.payload);
+          const result = this.taskProjection.applyEvent(event.payload);
+          this.tasks = this.taskProjection.tasks ?? [];
           if (result.refetch) {
             void this.refreshTasks();
             return;
           }
-          this.tasks = result.tasks.filter((task) => taskMatchesAgentScope(task, scopeId));
           this.reconcileTranscriptSelection();
           if (normalizedEvent) {
             observeTaskDetailEvent(this.transcriptHost, normalizedEvent);
@@ -327,6 +298,7 @@ class TasksPage extends OpenClawLightDomElement {
     this.closeTranscript();
     this.copyResultAttempt += 1;
     this.copyResultError = null;
+    this.taskProjection.dispose();
     this.subscriptions.clear();
     super.disconnectedCallback();
   }
@@ -337,7 +309,9 @@ class TasksPage extends OpenClawLightDomElement {
     // cancellation responses from mutating the replacement task snapshot.
     this.copyResultAttempt += 1;
     this.copyResultError = null;
-    this.taskRefreshEvents = null;
+    this.taskProjection.dispose();
+    this.taskProjection = new TaskProjection();
+    this.tasks = [];
     void this.listTask.run([null, null, null]);
     this.cancellingTaskIds = new Set();
   }
@@ -374,11 +348,8 @@ class TasksPage extends OpenClawLightDomElement {
       }
       const result = normalizeTasksCancelResult(payload);
       if (result?.task) {
-        const event = normalizeTaskEventPayload({ action: "upserted", task: result.task });
-        // Mutation replies are authoritative even if the best-effort registry
-        // event is dropped while the matching pages are in flight.
-        this.bufferTaskRefreshEvent(event);
-        this.tasks = applyTaskEvent(this.tasks, { action: "upserted", task: result.task }).tasks;
+        this.taskProjection.applyEvent({ action: "upserted", task: result.task });
+        this.tasks = this.taskProjection.tasks ?? [];
       }
       // Refusals (already terminal, stale id, no cancellation handle) are
       // successful responses with cancelled=false; surface them like errors.
@@ -425,12 +396,8 @@ class TasksPage extends OpenClawLightDomElement {
         return;
       }
       if (result.task) {
-        const event = normalizeTaskEventPayload({
-          action: "upserted",
-          task: result.task,
-        });
-        this.bufferTaskRefreshEvent(event);
-        this.tasks = applyTaskEvent(this.tasks, event).tasks;
+        this.taskProjection.applyEvent({ action: "upserted", task: result.task });
+        this.tasks = this.taskProjection.tasks ?? [];
       }
     } catch (error) {
       if (this.gateway.isCurrent(scope)) {

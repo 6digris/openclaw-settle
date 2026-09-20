@@ -1,11 +1,175 @@
+import type { TaskSummary } from "@openclaw/gateway-client/browser";
+import { validateChatSendParams } from "@openclaw/gateway-protocol";
 import { expect, it } from "vitest";
-import type { TaskSummary } from "../lib/tasks/task-summary.ts";
-import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
+import { installMockGateway, reconnectMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createControlUiE2eSuite({ name: "Parent-first subagent inspection" });
 
 suite.define(() => {
+  it("keeps prepared child progress attached across a new parent turn, retraction, reconnect, and cancellation", async () => {
+    await suite.withPage({ viewport: { width: 1440, height: 900 } }, async ({ page }) => {
+      const sessionKey = "agent:main:main";
+      const now = Date.now();
+      const task: TaskSummary = {
+        id: "continuing-child",
+        taskId: "continuing-child",
+        runtime: "subagent",
+        status: "running",
+        sessionKey,
+        ownerKey: sessionKey,
+        agentId: "main",
+        title: "Review child evidence",
+        hasTranscript: true,
+        startedAt: now - 10_000,
+        updatedAt: now,
+        execution: { state: "running", lastActivityAt: now },
+        progress: {
+          runId: "child-execution",
+          revision: 1,
+          items: [
+            {
+              itemId: "child-preamble",
+              kind: "preamble",
+              phase: "end",
+              title: "Review evidence",
+              progressText: "Inspecting the child package",
+            },
+            {
+              itemId: "child-read",
+              toolCallId: "child-read",
+              kind: "tool",
+              phase: "start",
+              title: "Read package",
+              name: "read",
+              status: "running",
+            },
+          ],
+        },
+      };
+      const gateway = await installMockGateway(page, {
+        sessionKey,
+        historyMessages: [
+          { role: "assistant", content: "The child review will continue independently." },
+        ],
+        methodResponses: {
+          "tasks.list": { tasks: [task] },
+          "tasks.history": {
+            messages: [
+              {
+                role: "assistant",
+                messageId: "child-tool",
+                content: [
+                  {
+                    type: "toolCall",
+                    id: "child-read",
+                    name: "read",
+                    arguments: { path: "package.json" },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      });
+      await page.goto(`${suite.server.baseUrl}chat`);
+      const notice = page.locator('[data-subagent-task-id="continuing-child"]');
+      await notice.click();
+      const inspector = page.locator("[data-task-detail-panel]");
+      await inspector.getByText("Inspecting the child package", { exact: true }).waitFor();
+      await inspector.locator(".chat-task-feed__tool-group > summary").click();
+      expect(await inspector.locator(".chat-task-feed__tool-line").count()).toBe(1);
+      expect(await inspector.locator(".chat-task-feed__row-outcome").textContent()).toContain(
+        "Running",
+      );
+
+      const composer = page.locator(".agent-chat__composer-combobox textarea");
+      await composer.fill("Start a separate parent question");
+      await page.getByRole("button", { name: "Send message", exact: true }).click();
+      const send = await gateway.waitForRequest("chat.send");
+      if (!validateChatSendParams(send.params)) {
+        throw new Error("Expected a valid chat.send request");
+      }
+      const parentRunId = send.params.idempotencyKey;
+      await gateway.emitGatewayEvent("chat", {
+        sessionKey,
+        runId: parentRunId,
+        state: "delta",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Working on the separate question." }],
+        },
+      });
+      await page.getByText("Working on the separate question.", { exact: true }).waitFor();
+      await notice.waitFor({ state: "visible" });
+      expect(await notice.count()).toBe(1);
+      expect(await inspector.getByText("Review child evidence", { exact: true }).count()).toBe(1);
+
+      const retracted: TaskSummary = {
+        ...task,
+        progress: { runId: "child-execution", revision: 2, items: [] },
+      };
+      await gateway.emitGatewayEvent("task", { action: "upserted", task: retracted });
+      await inspector
+        .getByText("Inspecting the child package", { exact: true })
+        .waitFor({ state: "detached" });
+      await gateway.emitGatewayEvent("task", { action: "upserted", task });
+      expect(
+        await inspector.getByText("Inspecting the child package", { exact: true }).count(),
+      ).toBe(0);
+      expect(await inspector.locator(".chat-task-feed__row-outcome").textContent()).toContain(
+        "Outcome unknown",
+      );
+
+      const restarted: TaskSummary = {
+        ...task,
+        updatedAt: now + 1,
+        execution: { state: "unknown" },
+        progress: undefined,
+      };
+      await gateway.setMethodResponse("tasks.list", { tasks: [restarted] });
+      await reconnectMockGateway(page, gateway);
+      await notice.waitFor({ state: "visible" });
+      await expect.poll(() => notice.getAttribute("aria-label")).toContain("Activity unknown");
+      await inspector.getByText("Activity unknown", { exact: true }).waitFor();
+      expect(
+        await inspector.getByText("Inspecting the child package", { exact: true }).count(),
+      ).toBe(0);
+      expect(await inspector.locator(".chat-tasks-rail__task-pulse").count()).toBe(0);
+
+      const cancelled: TaskSummary = {
+        ...restarted,
+        status: "cancelled",
+        updatedAt: now + 2,
+        endedAt: now + 2,
+        execution: { state: "finished" },
+        terminalSummary: "Child review cancelled",
+      };
+      await gateway.setMethodResponse("tasks.cancel", {
+        found: true,
+        cancelled: true,
+        task: cancelled,
+      });
+      await inspector.getByRole("button", { name: "Stop Review child evidence" }).click();
+      expect((await gateway.waitForRequest("tasks.cancel")).params).toEqual({ taskId: task.id });
+      await inspector.getByText("Child review cancelled", { exact: true }).waitFor();
+      await gateway.emitGatewayEvent("task", { action: "upserted", task });
+      expect(
+        await inspector.getByRole("button", { name: "Stop Review child evidence" }).count(),
+      ).toBe(0);
+      expect(
+        await inspector.getByText("Inspecting the child package", { exact: true }).count(),
+      ).toBe(0);
+      await gateway.emitChatFinal({
+        runId: parentRunId,
+        sessionKey,
+        text: "The separate parent answer is ready.",
+      });
+      await page.getByText("The separate parent answer is ready.", { exact: true }).waitFor();
+      expect(await inspector.getByText("Child review cancelled", { exact: true }).count()).toBe(1);
+    });
+  });
+
   it("keeps the parent draft while execution, waits, and result delivery advance", async () => {
     await suite.withPage({ viewport: { width: 1440, height: 900 } }, async ({ page }) => {
       const now = Date.now();

@@ -28,6 +28,12 @@ describe("hasSynchronizedFrameRow", () => {
     }
   });
 
+  it("accepts the terminal's cell-size query only outside display evidence", () => {
+    expect(parse(`\x1b[16t${frame(EXPECTED)}`)).toEqual([[EXPECTED]]);
+    expect(() => parse(frame(`\x1b[16t${EXPECTED}`))).toThrow();
+    expect(() => parse(`\x1b[8;40;120t${frame(EXPECTED)}`)).toThrow();
+  });
+
   it("authenticates a bidi-isolated disconnect row before reconnect erases it", () => {
     const markers = ["T08Ia", "T08Ib", "T08Ic", "T08Id"];
     const status = "local runtime stopped: T08IaT08Ib café 東京 👩🏽‍💻 T08Ic مرحبا שלום T08Id";

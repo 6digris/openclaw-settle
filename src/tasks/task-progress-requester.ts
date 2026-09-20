@@ -330,16 +330,39 @@ function createPreparedTaskProgressContinuation(
         return false;
       }
       used = true;
+      let adopted = false;
       try {
         // Transport and SQLite stay lazy until a channel offers an actual receipt.
         const { adoptTaskProgressMessage } = await import("./task-registry-progress-runtime.js");
+        let attachPresentation = params.onAdopted;
+        if (!attachPresentation) {
+          // Break registry bootstrap's import cycle, but prepare attachment before custody moves.
+          const { attachRequesterProgressPresentation } =
+            await import("../agents/subagents/registry/subagent-registry.js");
+          const members = rows.map((row) => {
+            if (row.wakeGeneration === undefined) {
+              throw new Error("Progress handoff has no yielded batch");
+            }
+            return {
+              runId: row.entry.runId,
+              generation: row.generation,
+              rearmGeneration: row.wakeGeneration,
+            };
+          });
+          attachPresentation = ({ operationId }) => {
+            attachRequesterProgressPresentation({ operationId, members, assertCurrent });
+            for (const row of rows) {
+              scheduleYieldedSubagentRunProgress(row.entry);
+            }
+          };
+        }
         assertCurrent();
         const operationId = `task-progress:${createHash("sha256")
           .update(
             JSON.stringify([requesterSessionId, params.requesterTurnRunId, receipt.messageId]),
           )
           .digest("hex")}`;
-        const adopted = await adoptTaskProgressMessage({
+        adopted = await adoptTaskProgressMessage({
           operationId,
           requesterSessionId,
           sessionKey: params.requesterSessionKey,
@@ -353,34 +376,17 @@ function createPreparedTaskProgressContinuation(
           return false;
         }
         assertCurrent();
-        if (params.onAdopted) {
-          params.onAdopted({ operationId });
-        } else {
-          // Registry bootstrap imports this presenter through its lifecycle owner.
-          const { attachRequesterProgressPresentation } =
-            await import("../agents/subagents/registry/subagent-registry.js");
-          assertCurrent();
-          const members = rows.map((row) => {
-            if (row.wakeGeneration === undefined) {
-              throw new Error("Progress handoff has no yielded batch");
-            }
-            return {
-              runId: row.entry.runId,
-              generation: row.generation,
-              rearmGeneration: row.wakeGeneration,
-            };
-          });
-          attachRequesterProgressPresentation({ operationId, members, assertCurrent });
-          for (const row of rows) {
-            scheduleYieldedSubagentRunProgress(row.entry);
-          }
-        }
+        attachPresentation({ operationId });
         return true;
       } catch (error) {
-        taskRegistryLog.debug("Existing progress card could not transfer", {
-          error: formatErrorMessage(error),
-        });
-        return false;
+        taskRegistryLog.debug(
+          adopted
+            ? "Existing progress card transferred without requester presentation"
+            : "Existing progress card could not transfer",
+          { error: formatErrorMessage(error) },
+        );
+        // Custody is durable even if the old owner can no longer attach presentation.
+        return adopted;
       }
     },
     close: () => {

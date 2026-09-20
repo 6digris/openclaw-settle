@@ -1,6 +1,7 @@
 import { EmbeddedBlockChunker } from "openclaw/plugin-sdk/agent-runtime";
 import {
   type ChannelProgressDraftLine,
+  createChannelProgressContinuation,
   createChannelProgressDraftCompositor,
   resolveChannelStreamingBlockEnabled,
   resolveChannelStreamingPreviewCommandText,
@@ -9,10 +10,7 @@ import {
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import { getGlobalHookRunner } from "openclaw/plugin-sdk/plugin-runtime";
-import {
-  resolveSendableOutboundReplyParts,
-  type ReplyPayload,
-} from "openclaw/plugin-sdk/reply-payload";
+import type { ReplyPayload } from "openclaw/plugin-sdk/reply-payload";
 import type { ReplyDispatchRuntimeInfo } from "openclaw/plugin-sdk/reply-runtime";
 import {
   convertMarkdownTables,
@@ -150,6 +148,77 @@ export function createDiscordDraftPreviewController(params: {
     draftChunker?.reset();
   };
 
+  let progressGeneration = 0;
+  let continuationTarget: { to: string; threadId?: string | number } | undefined;
+  let preparedGeneration: number | undefined;
+  let releasedGeneration: number | undefined;
+  const progressContinuation = createChannelProgressContinuation({
+    assertCurrent: () => params.abortSignal?.throwIfAborted(),
+    prepareReceipt: async (assertCurrent) => {
+      releasedGeneration = undefined;
+      const target = continuationTarget;
+      if (!draftStream || discordStreamMode !== "progress" || !target) {
+        return undefined;
+      }
+      const generation = progressGeneration;
+      const snapshot = progressDraft.getSnapshot();
+      if (!snapshot.statusHeadline && !snapshot.plan?.length && !snapshot.lines.length) {
+        return undefined;
+      }
+      const assertReceiptCurrent = () => {
+        assertCurrent();
+        if (generation !== progressGeneration) {
+          throw new Error("Discord progress generation retired");
+        }
+      };
+      return await withDiscordRequestAuthority(assertReceiptCurrent, async () => {
+        assertReceiptCurrent();
+        // The final gate freezes producers before core injects its capability.
+        // Retained display data may still publish a delayed meaningful card.
+        progressDraftStartedBeforeFinal ||= progressDraft.hasStarted;
+        progressDraft.markFinalReplyStarted();
+        progressNarratorLifecycle?.stopTurn();
+        const text = progressDraft.getText().trimEnd();
+        draftStream.update(text, { complete: true });
+        await draftStream.flush();
+        assertReceiptCurrent();
+        const messageId = draftStream.messageId();
+        if (!messageId || !text || draftStream.lastDeliveredText() !== text) {
+          return undefined;
+        }
+        preparedGeneration = generation;
+        return {
+          channel: "discord",
+          accountId: params.accountId,
+          ...target,
+          messageId,
+          text,
+          snapshot,
+        };
+      });
+    },
+    releaseReceipt: (receipt) => {
+      if (
+        !draftStream ||
+        preparedGeneration !== progressGeneration ||
+        draftStream.messageId() !== receipt.messageId
+      ) {
+        return;
+      }
+      releasedGeneration = progressGeneration;
+      draftStream.forceNewMessage();
+      progressDraftCollapsed = true;
+      progressDraftStartedBeforeFinal = false;
+      finalizedViaPreviewMessage = true;
+      resetProgressState();
+    },
+    discardPending: async () => {
+      if (releasedGeneration === progressGeneration) {
+        await draftStream?.discardPending();
+      }
+    },
+  });
+
   const forceNewMessageIfNeeded = () => {
     if (shouldSplitPreviewMessages && hasStreamedAssistantText) {
       params.log("discord: calling forceNewMessage() for draft stream");
@@ -164,6 +233,7 @@ export function createDiscordDraftPreviewController(params: {
       progressDraft.beginAssistantMessage();
     }
     if (beganNewTurn) {
+      progressGeneration += 1;
       progressDraftCollapsed = false;
       progressDraftStartedBeforeFinal = false;
       finalReplyError = undefined;
@@ -222,72 +292,16 @@ export function createDiscordDraftPreviewController(params: {
     markPreviewFinalized() {
       finalizedViaPreviewMessage = true;
     },
-    async adoptProgressContinuation(
+    adoptProgressContinuation(
       payload: ReplyPayload,
       info: ReplyDispatchRuntimeInfo,
       target: { to: string; threadId?: string | number },
     ) {
-      const adopt = info.adoptProgressContinuation;
-      if (
-        !draftStream ||
-        discordStreamMode !== "progress" ||
-        !adopt ||
-        info.kind !== "final" ||
-        payload.isError ||
-        payload.isCommentary ||
-        resolveSendableOutboundReplyParts(payload).hasMedia ||
-        payload.interactive !== undefined ||
-        payload.presentation !== undefined ||
-        payload.channelData !== undefined
-      ) {
-        return false;
-      }
-      const snapshot = progressDraft.getSnapshot();
-      if (!snapshot.statusHeadline && !snapshot.plan?.length && !snapshot.lines.length) {
-        return false;
-      }
-      const assertCurrent = () => {
-        params.abortSignal?.throwIfAborted();
-        info.assertPlatformSendAuthorized?.();
-      };
-      return await withDiscordRequestAuthority(assertCurrent, async () => {
-        assertCurrent();
-        // beforeDeliver has frozen the compositor. Its retained display data can
-        // still publish a delayed card, without reopening progress callbacks.
-        progressDraftStartedBeforeFinal ||= progressDraft.hasStarted;
-        progressDraft.markFinalReplyStarted();
-        progressNarratorLifecycle?.stopTurn();
-        const text = progressDraft.getText().trimEnd();
-        draftStream.update(text, { complete: true });
-        await draftStream.flush();
-        assertCurrent();
-        const messageId = draftStream.messageId();
-        if (!messageId || !text || draftStream.lastDeliveredText() !== text) {
-          return false;
-        }
-        const adopted = await adopt({
-          channel: "discord",
-          accountId: params.accountId,
-          ...target,
-          messageId,
-          text,
-          snapshot,
-        });
-        if (!adopted) {
-          return false;
-        }
-        // Release the confirmed ID synchronously: core now owns it, including
-        // cancellation/restart cleanup. The next admitted turn gets a new draft.
-        draftStream.forceNewMessage();
-        progressDraftCollapsed = true;
-        progressDraftStartedBeforeFinal = false;
-        finalizedViaPreviewMessage = true;
-        resetProgressState();
-        await draftStream.discardPending();
-        return true;
-      });
+      continuationTarget = target;
+      return progressContinuation.adopt(payload, info);
     },
     async retarget(channelId: string) {
+      await progressContinuation.settle();
       await draftStream?.retarget(channelId);
     },
     async finalizeProgressDraft() {
@@ -432,6 +446,7 @@ export function createDiscordDraftPreviewController(params: {
     },
     async cleanup({ finalDeliveryFailed = false }: { finalDeliveryFailed?: boolean } = {}) {
       try {
+        await progressContinuation.settle();
         progressDraft.cancel();
         if (finalReplyError !== false) {
           await draftStream?.discardPending();

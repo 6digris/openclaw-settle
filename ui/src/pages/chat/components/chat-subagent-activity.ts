@@ -1,14 +1,19 @@
+import {
+  isActiveTask,
+  sortTasks,
+  taskTimestampMs,
+  type TaskSummary,
+} from "@openclaw/gateway-client/browser";
 import { flattenMarkdownToPlainText } from "@openclaw/normalization-core/markdown-plain-text";
 import { html, nothing, type TemplateResult } from "lit";
 import { keyed } from "lit/directives/keyed.js";
 import { repeat } from "lit/directives/repeat.js";
 import remend from "remend";
-import { icons } from "../../../components/icons.ts";
 import "../../../components/tooltip.ts";
+import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
 import { registerBackgroundTasksEnglish } from "../../../i18n/locales/en-background-tasks.ts";
-import { isActiveTask, sortTasks, taskTimestampMs } from "../../../lib/tasks/data.ts";
-import type { TaskSummary } from "../../../lib/tasks/task-summary.ts";
+import { taskDetail } from "../../../lib/tasks/data.ts";
 import {
   backgroundTaskDeliveryLabel,
   backgroundTaskIsExecuting,
@@ -83,6 +88,9 @@ export function deriveSubagentActivity(params: {
 function subagentActivitySnippet(task: TaskSummary): string | undefined {
   if (!isActiveTask(task)) {
     return task.terminalSummary?.trim() || task.error?.trim() || undefined;
+  }
+  if (task.progress) {
+    return taskDetail(task) ?? undefined;
   }
   return (
     task.lastActivity?.trim() ||

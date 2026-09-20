@@ -21,6 +21,7 @@ import {
   type ClickClackItemEventPayload,
 } from "./progress.js";
 import { getClickClackRuntime } from "./runtime.js";
+import type { ClickClackTaskProgressObserver } from "./task-progress.js";
 import type {
   ClickClackMessage,
   ClickClackMessageProvenance,
@@ -114,6 +115,8 @@ export async function handleClickClackInbound(params: {
   access?: ClickClackInboundAccess;
   correlationId?: string;
   buildContext?: typeof buildChannelInboundEventContext;
+  signal?: AbortSignal;
+  taskProgress?: ClickClackTaskProgressObserver;
 }) {
   const runtime = getClickClackRuntime();
   const message = params.message;
@@ -132,12 +135,13 @@ export async function handleClickClackInbound(params: {
     return;
   }
   const { discussionRoute, isDirect, route, target } = access.preparedRoute;
-  const progress = params.account.nativeProgress
+  let progress = params.account.nativeProgress
     ? createClickClackAgentProgressPublisher({
         client: createClickClackClient({
           baseUrl: params.account.apiEndpoint,
           token: params.account.token,
           correlationId: params.correlationId,
+          signal: params.signal,
         }),
         target: message.channel_id
           ? { workspaceId: message.workspace_id, channelId: message.channel_id }
@@ -199,6 +203,7 @@ export async function handleClickClackInbound(params: {
         baseUrl: params.account.apiEndpoint,
         token: params.account.token,
         correlationId: params.correlationId,
+        signal: params.signal,
       }),
       target: message.channel_id
         ? { channelId: message.channel_id }
@@ -291,6 +296,23 @@ export async function handleClickClackInbound(params: {
         }
       : {}),
   };
+  let finishForegroundProgress: (() => Promise<void>) | undefined;
+  if (params.taskProgress) {
+    try {
+      const observation = await params.taskProgress.attach({
+        sessionKey: route.sessionKey,
+        agentId: route.agentId,
+        message,
+        progress,
+      });
+      progress = observation.progress;
+      finishForegroundProgress = observation.finishForeground;
+    } catch (error) {
+      runtime.logging
+        .getChildLogger({ plugin: "clickclack", feature: "agent-progress" })
+        .warn(`clickclack task progress subscription failed: ${String(error)}`);
+    }
+  }
   progress?.start();
   const dispatch = () =>
     runtime.channel.inbound.dispatch({
@@ -363,10 +385,21 @@ export async function handleClickClackInbound(params: {
   try {
     await dispatch();
   } finally {
-    // Clear transient UI before awaiting optional durable activity writes:
-    // their transport has separate failure/latency characteristics and must
-    // not leave the native progress indicator behind after final delivery.
-    await progress?.finalize();
-    await activity?.finalize();
+    // A returned parent can leave task-owned work running. The observer takes
+    // a current snapshot before retiring the original native correlation.
+    try {
+      if (finishForegroundProgress) {
+        await finishForegroundProgress();
+      } else {
+        await progress?.finalize();
+      }
+    } catch (error) {
+      runtime.logging
+        .getChildLogger({ plugin: "clickclack", feature: "agent-progress" })
+        .warn(`clickclack task progress settlement failed: ${String(error)}`);
+      await progress?.finalize();
+    } finally {
+      await activity?.finalize();
+    }
   }
 }

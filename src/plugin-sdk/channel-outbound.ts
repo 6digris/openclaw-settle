@@ -174,10 +174,16 @@ export {
   verifyDurableFinalCapabilityProofs,
 } from "../channels/message/contracts.js";
 export {
+  createChannelProgressContinuation,
   createPreviewMessageReceipt,
   defineFinalizableLivePreviewAdapter,
   deliverWithFinalizableLivePreviewAdapter,
 } from "../channels/message/live.js";
+export type {
+  ChannelProgressContinuation,
+  ChannelProgressContinuationOptions,
+} from "../channels/message/live.js";
+export type { ProgressContinuationReceipt } from "../channels/progress-continuation.js";
 export {
   createMessageReceiptFromOutboundResults,
   listMessageReceiptPlatformIds,

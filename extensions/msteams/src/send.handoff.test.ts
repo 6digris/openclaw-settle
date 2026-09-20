@@ -119,6 +119,93 @@ afterEach(() => {
 });
 
 describe("registered Teams delivery handoff", () => {
+  it("edits retained progress through the registered action using only the trusted snapshot", async () => {
+    const fixture = await createConnectorFixture();
+    const headline = "Inspect @[Ops](11111111-2222-3333-4444-555555555555)";
+    try {
+      await msteamsPlugin.actions!.handleAction!({
+        action: "edit",
+        channel: "msteams",
+        cfg,
+        params: {
+          to: `conversation:${conversationId}`,
+          messageId: "retained-stream",
+          progressSnapshot: { statusHeadline: "Untrusted model status" },
+        },
+        progressSnapshot: {
+          label: "Working",
+          statusHeadline: headline,
+          statusHeadlineFormat: "plain",
+          lines: [],
+          plan: [{ step: "Inspect", status: "in_progress" }],
+        },
+        conversationReadOrigin: "direct-operator",
+        assertDirectAdapterHandoff: () => {},
+      });
+
+      expect(fixture.requests).toEqual([
+        {
+          method: "PUT",
+          path: `/amer/v3/conversations/${conversationId}/activities/retained-stream`,
+          activity: expect.objectContaining({
+            id: "retained-stream",
+            type: "message",
+            textFormat: "plain",
+            text: expect.stringContaining(headline),
+          }),
+        },
+      ]);
+      expect(fixture.requests[0]?.activity.text).toContain("▸ Inspect");
+      expect(fixture.requests[0]?.activity.text).not.toContain("Untrusted model status");
+      expect(fixture.requests[0]?.activity.entities).toEqual([
+        expect.objectContaining({ type: "https://schema.org/Message" }),
+      ]);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it("fences retained progress edits after asynchronous Connector token resolution", async () => {
+    const fixture = await createConnectorFixture();
+    const tokenStarted = createDeferred<void>();
+    const releaseToken = createDeferred<void>();
+    let active = true;
+    fixture.token.mockImplementation(async () => {
+      tokenStarted.resolve();
+      await releaseToken.promise;
+      return "fixture-token";
+    });
+    try {
+      const editing = msteamsPlugin.actions!.handleAction!({
+        action: "edit",
+        channel: "msteams",
+        cfg,
+        params: { to: `conversation:${conversationId}`, messageId: "retained-stream" },
+        progressSnapshot: { label: "Working", lines: [], statusHeadline: "Still running" },
+        conversationReadOrigin: "direct-operator",
+        assertDirectAdapterHandoff: () => {
+          if (!active) {
+            throw new Error("progress authority closed");
+          }
+        },
+      }).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      await tokenStarted.promise;
+      active = false;
+      releaseToken.resolve();
+      expect(await editing).toMatchObject({
+        name: "PlatformMessageNotDispatchedError",
+        retryable: false,
+      });
+      expect(fixture.requests).toEqual([]);
+    } finally {
+      releaseToken.resolve();
+      await fixture.close();
+    }
+  });
+
   it.each([true, false])(
     "preserves handoff through replay contexts with active authority=%s",
     async (keepActive) => {

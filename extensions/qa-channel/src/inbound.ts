@@ -8,14 +8,20 @@ import {
 } from "openclaw/plugin-sdk/channel-inbound";
 // Qa Channel plugin module implements inbound behavior.
 import { resolveStableChannelMessageIngress } from "openclaw/plugin-sdk/channel-ingress-runtime";
+import {
+  createChannelProgressContinuation,
+  type ProgressContinuationReceipt,
+} from "openclaw/plugin-sdk/channel-outbound";
 import { resolveNativeCommandSessionTargets } from "openclaw/plugin-sdk/command-auth-native";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { getAgentScopedMediaLocalRoots } from "openclaw/plugin-sdk/media-local-roots";
 import { saveMediaBuffer, saveMediaSource } from "openclaw/plugin-sdk/media-store";
 import {
   sanitizeQaBusToolCallArguments,
+  sanitizeQaBusToolCalls,
   type QaBusToolCall,
 } from "openclaw/plugin-sdk/qa-channel-protocol";
+import type { ReplyDispatchRuntimeInfo, ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { resolveThreadSessionKeys } from "openclaw/plugin-sdk/routing";
 import {
   buildQaTarget,
@@ -159,6 +165,7 @@ function serializeQaToolCallSnapshot(toolCalls: QaBusToolCall[]): string {
 }
 
 function createQaReplyPreview(params: {
+  channelId: string;
   config: CoreConfig;
   account: ResolvedQaChannelAccount;
   inbound: QaBusMessage;
@@ -247,10 +254,75 @@ function createQaReplyPreview(params: {
     lastDurableToolCallSnapshot = toolCallSnapshot;
   };
 
-  return {
-    clear: () => {
+  let preparedReceipt: ProgressContinuationReceipt | undefined;
+  const continuation = createChannelProgressContinuation({
+    prepareReceipt: async (assertCurrent) => {
       previewStopped = true;
-      return withPreviewLock(clear);
+      return await withPreviewLock(async () => {
+        assertCurrent();
+        if (!messageId || !currentText.trim()) {
+          return undefined;
+        }
+        const toolCalls = sanitizeQaBusToolCalls(params.toolCalls) ?? [];
+        const { message } = await editQaBusMessage({
+          baseUrl: params.account.baseUrl,
+          accountId: params.account.accountId,
+          messageId,
+          text: currentText,
+          toolCalls,
+        });
+        assertCurrent();
+        if (
+          message.id !== messageId ||
+          message.text !== currentText ||
+          message.deleted ||
+          message.accountId !== params.account.accountId ||
+          message.conversation.id !== params.inbound.conversation.id ||
+          message.conversation.kind !== params.inbound.conversation.kind ||
+          message.threadId !== params.inbound.threadId ||
+          serializeQaToolCallSnapshot(message.toolCalls ?? []) !==
+            serializeQaToolCallSnapshot(toolCalls)
+        ) {
+          return undefined;
+        }
+        preparedReceipt = {
+          channel: params.channelId,
+          accountId: params.account.accountId,
+          to: params.target,
+          threadId: params.inbound.threadId,
+          messageId,
+          text: currentText,
+          snapshot: {
+            lines: [],
+            statusHeadline: currentText,
+            preparedBlocks: [{ text: currentText, format: "markdown" }],
+          },
+        };
+        return preparedReceipt;
+      });
+    },
+    releaseReceipt: (receipt) => {
+      if (receipt === preparedReceipt && receipt.messageId === messageId) {
+        messageId = null;
+        currentText = "";
+        preparedReceipt = undefined;
+      }
+    },
+    // Preparation drained the same queue and stopped further partial admission.
+    discardPending: () => withPreviewLock(async () => {}),
+  });
+
+  return {
+    adopt: (payload: ReplyPayload, info: ReplyDispatchRuntimeInfo) => {
+      if (info.kind === "final") {
+        previewStopped = true;
+      }
+      return continuation.adopt(payload, info);
+    },
+    clear: async () => {
+      previewStopped = true;
+      await continuation.settle();
+      return await withPreviewLock(clear);
     },
     deliver: (text: string, kind: string, isError?: boolean, mediaUrls: string[] = []) => {
       // Stop queued partials at final admission, not after an awaited send.
@@ -338,6 +410,7 @@ export async function handleQaInbound(params: {
     },
   });
   const preview = createQaReplyPreview({
+    channelId: params.channelId,
     config: params.config,
     account: params.account,
     inbound,
@@ -502,6 +575,9 @@ export async function handleQaInbound(params: {
     ctxPayload,
     delivery: {
       deliver: async (payload, info) => {
+        if (await preview.adopt(payload, info)) {
+          return;
+        }
         const reply =
           payload && typeof payload === "object"
             ? (payload as {

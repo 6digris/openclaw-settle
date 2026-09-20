@@ -1,10 +1,10 @@
+import type { TaskSummary } from "@openclaw/gateway-client/browser";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { html, LitElement, render } from "lit";
-import { describe, expect, it } from "vitest";
 import "../../../styles.css";
 import "../../../styles/chat.ts";
 import "../../../styles/chat/side-panel.css";
-import type { TaskSummary } from "../../../lib/tasks/task-summary.ts";
+import { describe, expect, it } from "vitest";
 import { createTestGatewayClient } from "../../../test-helpers/gateway-client.ts";
 import type { BackgroundTasksProps } from "./chat-background-tasks.types.ts";
 import type { SidebarContent } from "./chat-sidebar.ts";

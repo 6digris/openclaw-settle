@@ -1,6 +1,7 @@
 import type { Bot } from "grammy";
 import type { Message } from "grammy/types";
 import type {
+  ChannelProgressContinuation,
   createChannelProgressDraftCompositor,
   TextChunkMode,
 } from "openclaw/plugin-sdk/channel-outbound";
@@ -173,6 +174,8 @@ export type TelegramDeliveryStateSlice = {
 };
 
 export type TelegramReplyStateSlice = {
+  progressContinuation: ChannelProgressContinuation;
+  progressContinuationGeneration: number;
   reasoningStepState: TelegramReasoningStepState;
   bufferedFinalSettlement: TelegramBufferedFinalSettlement | undefined;
   sentBlockMediaUrls: Set<string>;

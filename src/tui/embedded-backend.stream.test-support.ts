@@ -1,9 +1,14 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
+import { stripAnsi } from "../../packages/terminal-core/src/ansi.js";
 import {
   INTERNAL_RUNTIME_CONTEXT_BEGIN,
   INTERNAL_RUNTIME_CONTEXT_END,
 } from "../agents/internal-runtime-context.js";
+import { recordTaskActivityEvent, flushTaskActivity } from "../tasks/task-registry-activity.js";
+import { markTaskTerminalById } from "../tasks/task-registry.js";
+import { createTaskFixture, withTaskRegistryTempDir } from "../tasks/task-registry.test-support.js";
 import type { EmbeddedTuiBackend } from "./embedded-backend.js";
+import { createTuiTaskProgressController } from "./tui-task-progress.js";
 
 type EmbeddedAgentResult = {
   payloads: Array<{ text: string }>;
@@ -17,6 +22,7 @@ type StreamTestContext = {
     resolve: (result: EmbeddedAgentResult) => void;
   };
   prepareReply: (reply: Promise<EmbeddedAgentResult>) => void;
+  failNextRuntimePluginLoad: () => void;
   emitAgentEvent: (event: unknown) => void;
   captureBackendEvents: (backend: EmbeddedTuiBackend) => Array<{ event: string; payload: unknown }>;
   flushMicrotasks: () => Promise<void>;
@@ -27,11 +33,91 @@ export function registerEmbeddedBackendStreamTests({
   createBackend,
   createPendingReply,
   prepareReply,
+  failNextRuntimePluginLoad,
   emitAgentEvent,
   captureBackendEvents,
   flushMicrotasks,
   embeddedEventTimestamp,
 }: StreamTestContext) {
+  it("renders ongoing child registry activity without a foreground run and retires it on cancellation", async () => {
+    vi.useRealTimers();
+    await withTaskRegistryTempDir(async () => {
+      const sessionKey = "agent:main:main";
+      const backend = createBackend();
+      const progress = createTuiTaskProgressController({
+        client: backend,
+        getScope: () => ({ sessionKey, agentId: "main" }),
+        requestRender: () => {},
+      });
+      const render = () => stripAnsi(progress.component.render(100).join("\n"));
+      backend.onEvent = ({ event, payload }) => progress.handleEvent(event, payload);
+      backend.start();
+      try {
+        const task = createTaskFixture("subagent", {
+          requesterSessionKey: sessionKey,
+          requesterAgentId: "main",
+          childSessionKey: "agent:main:subagent:child",
+          runId: "child-progress-run",
+          task: "Detached investigation",
+        });
+        recordTaskActivityEvent(task, {
+          runId: "child-progress-run",
+          seq: 1,
+          ts: Date.now(),
+          stream: "execution",
+          data: { state: "running" },
+        });
+        await progress.connect();
+        recordTaskActivityEvent(task, {
+          runId: "child-progress-run",
+          seq: 1,
+          ts: Date.now(),
+          stream: "item",
+          data: {
+            itemId: "inspect",
+            phase: "start",
+            kind: "tool",
+            title: "Inspect child files",
+            status: "running",
+            progressText: "Post-yield child output",
+          },
+        });
+        flushTaskActivity(task.taskId);
+        await vi.waitFor(() => expect(render()).toContain("Post-yield child output"));
+        markTaskTerminalById({
+          taskId: task.taskId,
+          status: "cancelled",
+          endedAt: Date.now(),
+          terminalSummary: "Operator cancelled child",
+        });
+        await vi.waitFor(() => expect(render()).toContain("[cancelled]"));
+        expect(render()).not.toContain("Post-yield child output");
+        progress.dispose();
+        await backend.stop();
+        createTaskFixture("subagent", {
+          requesterSessionKey: sessionKey,
+          runId: "after-stop",
+          task: "Must not appear",
+        });
+        await progress.settled();
+        expect(render()).not.toContain("Must not appear");
+      } finally {
+        progress.dispose();
+        await backend.stop();
+      }
+    });
+  });
+  it("returns embedded history when runtime plugin loading fails", async () => {
+    failNextRuntimePluginLoad();
+
+    const backend = createBackend();
+
+    await expect(backend.loadHistory({ sessionKey: "agent:main:main" })).resolves.toMatchObject({
+      sessionKey: "agent:main:main",
+      messages: [],
+      runtimePluginsPrewarm: { status: "failed", error: "runtime unavailable" },
+    });
+  });
   it("keeps internal context private when local deltas split its delimiters", async () => {
     const pending = createPendingReply();
     prepareReply(pending.promise);

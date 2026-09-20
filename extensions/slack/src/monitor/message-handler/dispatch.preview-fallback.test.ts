@@ -3,6 +3,7 @@ import {
   projectAgentToolActivity,
   projectProgressCardChannelUpdate,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import type { ProgressContinuationReceipt } from "openclaw/plugin-sdk/channel-outbound";
 import {
   createTestRegistry,
   resetPluginRuntimeStateForTest,
@@ -10,7 +11,6 @@ import {
 } from "openclaw/plugin-sdk/channel-test-helpers";
 import {
   createReplyDispatcher,
-  finalizeInboundContext,
   type GetReplyOptions,
   type ReplyPayload,
 } from "openclaw/plugin-sdk/reply-runtime";
@@ -22,6 +22,10 @@ import {
   emitCompactProgressScenario,
   type SlackReplyOptionEvent,
 } from "./dispatch.compact-progress.test-support.js";
+import {
+  registerSlackProgressDispatchContracts,
+  type DeliveryParams,
+} from "./dispatch.progress-contracts.test-support.js";
 
 const FINAL_REPLY_TEXT = "final answer";
 const THREAD_TS = "thread-1";
@@ -30,12 +34,6 @@ const SAME_TEXT = "same reply";
 
 const getGlobalHookRunnerMock = vi.hoisted(() => vi.fn());
 const createSlackDraftStreamMock = vi.fn();
-type DeliveryParams = Omit<
-  Parameters<typeof import("../replies.js").deliverReplies>[0],
-  "replies"
-> & {
-  replies: ReplyPayload[];
-};
 const deliverRepliesMock = vi.fn(
   async (_params: DeliveryParams) =>
     undefined as { messageId?: string; channelId?: string } | undefined,
@@ -45,6 +43,9 @@ const finalizeSlackPreviewEditMock = vi.fn(async (_input: { blocks?: unknown }) 
 const normalizeSlackOutboundTextMock = vi.fn((value: string) => value.trim());
 const postMessageMock = vi.fn(async () => ({ ok: true, ts: "171234.999" }));
 const chatUpdateMock = vi.fn(async () => ({ ok: true, ts: "171234.999" }));
+const editSlackRenderedMessageMock = vi.fn(
+  async (_channelId: string, _messageId: string, _text: string, _options: unknown) => {},
+);
 const recordSlackThreadParticipationMock = vi.fn();
 const updateLastRouteMock = vi.fn(async () => {});
 const appendSlackStreamMock = vi.fn(async (_input?: unknown) => {});
@@ -273,6 +274,8 @@ function createDraftStreamStub() {
     }),
     messageId: (): string | undefined => "171234.567",
     channelId: () => "C123",
+    progressReceipt: vi.fn((): ProgressContinuationReceipt | undefined => undefined),
+    releaseProgressReceipt: vi.fn((_receipt: ProgressContinuationReceipt) => {}),
   };
 }
 
@@ -874,6 +877,7 @@ vi.mock("openclaw/plugin-sdk/string-coerce-runtime", async (importOriginal) => {
 vi.mock("../../actions.js", () => ({
   reactSlackMessage: reactSlackMessageMock,
   removeSlackReaction: removeSlackReactionMock,
+  editSlackRenderedMessage: editSlackRenderedMessageMock,
 }));
 
 vi.mock("../../draft-stream.js", () => ({
@@ -1178,6 +1182,7 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
     appendSlackStreamMock.mockReset();
     startSlackStreamMock.mockReset();
     stopSlackStreamMock.mockReset();
+    editSlackRenderedMessageMock.mockReset();
     reactSlackMessageMock.mockReset();
     removeSlackReactionMock.mockReset();
     logVerboseMock.mockReset();
@@ -1224,119 +1229,40 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
 
   afterEach(() => resetPluginRuntimeStateForTest());
 
-  it.each([
-    { agents: ["alice"], withMedia: true },
-    { agents: ["alice", "bob"], withMedia: true },
-    { agents: ["alice", "bob"], withMedia: false },
-  ])(
-    "binds group-thread completion hooks and media to the participant: $agents (media: $withMedia)",
-    async ({ agents, withMedia }) => {
-      useRealChannelInboundTurn = true;
-      mockedNativeStreaming = true;
-      const { resolveGroupThreadMentionFacts } =
-        await import("openclaw/plugin-sdk/channel-inbound");
-      const { createMessageReceiptFromOutboundResults } =
-        await import("openclaw/plugin-sdk/channel-outbound");
-      const cfg = {
-        agents: {
-          entries: {
-            root: { workspace: "/tmp/.openclaw/workspace-root" },
-            alice: { workspace: "/tmp/.openclaw/workspace-alice" },
-            bob: { workspace: "/tmp/.openclaw/workspace-bob" },
-          },
-        },
-        broadcast: { "slack:C123": agents },
-      };
-      const rootSessionKey = `agent:root:slack:channel:c123:thread:${THREAD_TS}`;
-      const actualReplies = await vi.importActual<typeof import("../replies.js")>("../replies.js");
-      const { prepareSlackReply } = await import("../../reply-blocks.js");
-      deliverRepliesMock.mockImplementation(async (params) =>
-        actualReplies.deliverReplies({ ...params, replies: params.replies.map(prepareSlackReply) }),
-      );
-      sendMessageSlackMock.mockResolvedValue({
-        messageId: "sent-1",
-        channelId: "C123",
-        receipt: createMessageReceiptFromOutboundResults({
-          results: [{ channel: "slack", messageId: "sent-1", channelId: "C123" }],
-          kind: withMedia ? "media" : "text",
-        }),
-      });
-      const participantRuns: string[] = [];
-      const dispatchReplyFromConfig: NonNullable<
-        Parameters<typeof dispatchPreparedSlackMessage>[0]["ctx"]["dispatchReplyFromConfig"]
-      > = async ({ ctx, dispatcher }) => {
-        if (!ctx.AgentId) {
-          throw new Error("Expected participant agent identity");
-        }
-        participantRuns.push(ctx.AgentId);
-        return {
-          queuedFinal: dispatcher.sendFinalReply({
-            text: `Reply from ${ctx.AgentId}`,
-            ...(withMedia
-              ? { mediaUrl: `/tmp/.openclaw/workspace-${ctx.AgentId}/attachment.txt` }
-              : {}),
-          }),
-          counts: dispatcher.getQueuedCounts(),
-        };
-      };
-
-      await dispatchPreparedSlackMessage(
-        createPreparedSlackMessage({
-          cfg,
-          route: { agentId: "root", sessionKey: rootSessionKey },
-          ctxPayload: finalizeInboundContext({
-            AgentId: "root",
-            SessionKey: rootSessionKey,
-            ChatType: "channel",
-            Provider: "slack",
-            Surface: "slack",
-            OriginatingChannel: "slack",
-            OriginatingTo: "channel:C123",
-            NativeChannelId: "C123",
-            AccountId: "default",
-            From: "slack:C123",
-            To: "channel:C123",
-            SenderId: "U123",
-            MessageSid: "171234.111",
-            MessageThreadId: THREAD_TS,
-            Body: "Review the attachment.",
-            GroupThread: resolveGroupThreadMentionFacts({
-              cfg,
-              channel: "slack",
-              peerId: "C123",
-              text: "Review the attachment.",
-              sessionKey: rootSessionKey,
-            }),
-          }),
-          dispatchReplyFromConfig,
-        }),
-      );
-
-      expect(participantRuns.toSorted()).toEqual(agents.toSorted());
-      expect(emitSlackMessageSentHooksMock).toHaveBeenCalledTimes(agents.length);
-      expect(sendMessageSlackMock).toHaveBeenCalledTimes(agents.length);
-      for (const agentId of agents) {
-        expect(emitSlackMessageSentHooksMock).toHaveBeenCalledWith(
-          expect.objectContaining({
-            sessionKeyForInternalHooks: `agent:${agentId}:slack:channel:c123:thread:${THREAD_TS}`,
-            success: true,
-          }),
-        );
-        expect(sendMessageSlackMock).toHaveBeenCalledWith(
-          "channel:C123",
-          expect.stringContaining(`Reply from ${agentId}`),
-          expect.objectContaining({
-            ...(withMedia
-              ? { mediaUrl: `/tmp/.openclaw/workspace-${agentId}/attachment.txt` }
-              : {}),
-            mediaLocalRoots: expect.arrayContaining([`/tmp/.openclaw/workspace-${agentId}`]),
-          }),
-        );
+  registerSlackProgressDispatchContracts({
+    THREAD_TS,
+    STREAM_MESSAGE_TS,
+    createSlackDraftStreamMock,
+    deliverRepliesMock,
+    sendMessageSlackMock,
+    finalizeSlackPreviewEditMock,
+    editSlackRenderedMessageMock,
+    startSlackStreamMock,
+    stopSlackStreamMock,
+    emitSlackMessageSentHooksMock,
+    dispatchPreparedSlackMessage: (prepared) => dispatchPreparedSlackMessage(prepared),
+    createPreparedSlackMessage,
+    dispatchNativeProgressScenario,
+    collectNativeTaskUpdates,
+    expectDeliverReplyCall,
+    configure: ({ mode, native, realInbound, events, final }) => {
+      if (mode !== undefined) {
+        mockedSlackStreamingMode = mode;
       }
-      expect(startSlackStreamMock).not.toHaveBeenCalled();
-      expect(createSlackDraftStreamMock).not.toHaveBeenCalled();
+      if (native !== undefined) {
+        mockedNativeStreaming = native;
+      }
+      if (realInbound !== undefined) {
+        useRealChannelInboundTurn = realInbound;
+      }
+      if (events !== undefined) {
+        mockedReplyOptionEvents = events;
+      }
+      if (final !== undefined) {
+        mockedDispatchSequence = [{ kind: "final", payload: final }];
+      }
     },
-  );
+  });
 
   it.each([false, true])(
     "delivers literal authored fallback normally with native streaming %s",
@@ -2740,7 +2666,7 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       }),
     );
 
-    expect(draftStream.update).toHaveBeenLastCalledWith({
+    expect(draftStream.update.mock.calls.at(-1)?.[0]).toMatchObject({
       text: ["Shelling", "", "Checking the workspace", "", "▸ Patch"].join("\n"),
       blocks: [
         {

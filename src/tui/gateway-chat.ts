@@ -20,6 +20,7 @@ import {
   type CommandEntry,
   type CommandsListParams,
   type CommandsListResult,
+  type ProgressCardGetResult,
   type QuestionGetResult,
   type QuestionListResult,
   type QuestionResolveParams,
@@ -32,6 +33,7 @@ import {
   type TaskSuggestionsAcceptResult,
   type TaskSuggestionsListResult,
 } from "../../packages/gateway-protocol/src/index.js";
+import type { TasksListResult } from "../../packages/gateway-protocol/src/schema/tasks.js";
 import { GATEWAY_SERVER_CAPS } from "../../packages/gateway-protocol/src/server-capabilities.js";
 import { isRetryableGatewayStartupUnavailableError } from "../../packages/gateway-protocol/src/startup-unavailable.js";
 import { getRuntimeConfig } from "../config/config.js";
@@ -317,6 +319,14 @@ export class GatewayChatClient implements TuiBackend {
 
   async subscribeSessionEvents() {
     return await this.client.request("sessions.subscribe", {});
+  }
+
+  async listTasks(opts: Parameters<TuiBackend["listTasks"]>[0]) {
+    return await this.client.request<TasksListResult>("tasks.list", opts);
+  }
+
+  async getProgressCard(opts: Parameters<TuiBackend["getProgressCard"]>[0]) {
+    return await this.client.request<ProgressCardGetResult>("progressCard.get", opts);
   }
 
   async waitForReady() {

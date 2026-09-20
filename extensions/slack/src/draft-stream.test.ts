@@ -1,5 +1,6 @@
 // Slack tests cover draft stream plugin behavior.
 import { createMessageReceiptFromOutboundResults } from "openclaw/plugin-sdk/channel-outbound";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { describe, expect, it, vi } from "vitest";
 import { noteSlackDraftConversationMessage } from "./draft-message-boundaries.js";
 import { createSlackDraftStream } from "./draft-stream.js";
@@ -63,6 +64,81 @@ function createDraftStreamHarness(
 }
 
 describe("createSlackDraftStream", () => {
+  it("retains only the acknowledged snapshot when a queued update is sealed", async () => {
+    const { stream, remove } = createDraftStreamHarness({ accountId: "work", threadTs: "100.000" });
+    stream.update({ text: "Confirmed", snapshot: { lines: ["Confirmed"] } });
+    await stream.flush();
+    stream.update({ text: "Only queued", snapshot: { lines: ["Only queued"] } });
+    await stream.seal();
+    const receipt = stream.progressReceipt();
+    expect(receipt).toMatchObject({
+      channel: "slack",
+      accountId: "work",
+      to: "channel:C123",
+      threadId: "100.000",
+      messageId: "111.222",
+      text: "Confirmed",
+      snapshot: { lines: ["Confirmed"] },
+    });
+    if (!receipt) {
+      throw new Error("missing confirmed receipt");
+    }
+    stream.releaseProgressReceipt(receipt);
+    await stream.clear();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("joins an in-flight update and declines an ambiguous edit instead of adopting stale content", async () => {
+    const attempted = createDeferred<void>();
+    const response = createDeferred<void>();
+    const { stream } = createDraftStreamHarness({
+      edit: async () => {
+        attempted.resolve();
+        await response.promise;
+      },
+    });
+    stream.update({ text: "Confirmed", snapshot: { lines: ["Confirmed"] } });
+    await stream.flush();
+    stream.update({ text: "Uncertain", snapshot: { lines: ["Uncertain"] } });
+    const flushing = stream.flush();
+    await attempted.promise;
+    expect(stream.progressReceipt()).toBeUndefined();
+    const sealing = stream.seal();
+    response.reject(new Error("response lost"));
+    await Promise.all([flushing, sealing]);
+    expect(stream.progressReceipt()).toBeUndefined();
+  });
+
+  it("releases an adopted human-detached message without releasing the replacement turn", async () => {
+    const send = vi
+      .fn<DraftSendFn>()
+      .mockResolvedValueOnce(slackDraftSendResult("111.222"))
+      .mockResolvedValueOnce(slackDraftSendResult("333.444"));
+    const { stream, remove } = createDraftStreamHarness({ send, threadTs: "100.000" });
+    stream.update({ text: "First", snapshot: { lines: ["First"] } });
+    await stream.flush();
+    const receipt = stream.progressReceipt();
+    if (!receipt) {
+      throw new Error("missing confirmed receipt");
+    }
+    noteSlackDraftConversationMessage({
+      channelId: "C123",
+      threadTs: "100.000",
+      messageTs: "112.000",
+      userId: "U_HUMAN",
+    });
+    expect(stream.progressReceipt()).toBeUndefined();
+    stream.forceNewMessage();
+    stream.update({ text: "Second", snapshot: { lines: ["Second"] } });
+    await stream.flush();
+    stream.releaseProgressReceipt(receipt);
+    await stream.dropDetachedMessages();
+    expect(remove).not.toHaveBeenCalled();
+    expect(stream.progressReceipt()?.messageId).toBe("333.444");
+    await stream.clear();
+    expect(remove).toHaveBeenCalledWith("C123", "333.444", expect.any(Object));
+  });
+
   it("still edits an existing preview with partial preamble text", async () => {
     const { stream, send, edit } = createDraftStreamHarness();
     stream.update("_I’ll check the report._");

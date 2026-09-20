@@ -216,6 +216,7 @@ data class ChatAgentActivity(
   val toolCallId: String? = null,
   val name: String? = null,
   val status: String? = null,
+  val progressText: String? = null,
   val hideFromChannelProgress: Boolean = false,
   val suppressChannelProgress: Boolean = false,
 ) {
@@ -268,6 +269,9 @@ data class ChatSubagentActivity(
   val startedAtMs: Long,
   val endedAtMs: Long?,
   val childSessionKey: String?,
+  val executionState: String? = null,
+  val progress: BackgroundTaskProgress? = null,
+  val runId: String? = null,
 ) {
   val isWorking: Boolean
     get() = status == "queued" || status == "running"

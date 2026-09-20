@@ -27,6 +27,8 @@ export function makeTuiBackend(overrides: Partial<TuiBackend> = {}): TuiBackend 
     sendChat: vi.fn<TuiBackend["sendChat"]>(async () => ({ runId: "test-run" })),
     abortChat: vi.fn<TuiBackend["abortChat"]>(async () => ({ ok: true, aborted: false })),
     loadHistory: vi.fn<TuiBackend["loadHistory"]>(async () => ({ messages: [] })),
+    listTasks: vi.fn<TuiBackend["listTasks"]>(async () => ({ tasks: [] })),
+    getProgressCard: vi.fn<TuiBackend["getProgressCard"]>(async () => ({ card: null })),
     listSessions: vi.fn<TuiBackend["listSessions"]>(async () => ({
       ts: 0,
       path: "",

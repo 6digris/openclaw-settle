@@ -318,6 +318,9 @@ export function createQaBusState() {
       const accountId = normalizeAccountId(input.accountId);
       const message = requireActiveMessageForAccount(input);
       message.text = input.text;
+      if (input.toolCalls !== undefined) {
+        message.toolCalls = sanitizeQaBusToolCalls(input.toolCalls);
+      }
       message.editedAt = input.timestamp ?? Date.now();
       pushEvent({
         kind: "message-edited",

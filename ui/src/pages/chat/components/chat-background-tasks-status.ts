@@ -1,16 +1,11 @@
-import { html, nothing, type TemplateResult } from "lit";
+import { isActiveTask, taskTimestampMs, type TaskSummary } from "@openclaw/gateway-client/browser";
 import "../../../components/elapsed-time.ts";
 import "../../../components/tooltip.ts";
+import { html, nothing, type TemplateResult } from "lit";
 import { t } from "../../../i18n/index.ts";
 import { registerBackgroundTasksEnglish } from "../../../i18n/locales/en-background-tasks.ts";
 import { formatRelativeTimestamp } from "../../../lib/format.ts";
-import {
-  isActiveTask,
-  partitionTasks,
-  taskTimestampMs,
-  taskTitle,
-} from "../../../lib/tasks/data.ts";
-import type { TaskSummary } from "../../../lib/tasks/task-summary.ts";
+import { partitionTasks, taskTitle } from "../../../lib/tasks/data.ts";
 import {
   backgroundTaskIsExecuting,
   backgroundTaskStatusLabel,
@@ -105,10 +100,8 @@ function renderStatusPreview(remainingTasks: readonly TaskSummary[]): TemplateRe
   `;
 }
 
-/** Post-turn status row in the chat thread: once the agent turn settles while
- * background tasks keep running, the running work stays visible next to a
- * free composer. Hover previews the latest tasks; the link opens the tasks
- * list, including when that panel already shows a task detail. */
+/** Task-owned status stays visible across foreground turns; the link opens
+ * the existing task list rather than reviving the parent run. */
 export function renderBackgroundTasksStatusRow(
   backgroundTasks: BackgroundTasksProps | undefined,
 ): TemplateResult | typeof nothing {

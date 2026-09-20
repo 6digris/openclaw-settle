@@ -590,7 +590,7 @@ export function projectChatTranscript(
     });
   }
   const backgroundTasks =
-    !props.runWorking && !isEmpty && !showLoadingSkeleton
+    !isEmpty && !showLoadingSkeleton
       ? renderBackgroundTasksStatusRow(props.backgroundTasks)
       : nothing;
   if (backgroundTasks !== nothing) {

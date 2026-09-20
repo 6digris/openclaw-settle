@@ -1,6 +1,6 @@
+import type { TaskSummary } from "@openclaw/gateway-client/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GatewayRequestError, type GatewayBrowserClient } from "../../../api/gateway.ts";
-import type { TaskSummary } from "../../../lib/tasks/task-summary.ts";
 import {
   createBackgroundTasksProps,
   handleBackgroundTasksEvent,
@@ -91,7 +91,7 @@ afterEach(() => {
 });
 
 describe("background tasks concurrent snapshots", () => {
-  it("keeps one pending entry for repeated task updates before initial admission", async () => {
+  it("keeps the latest task update through deferred initial admission", async () => {
     let admitted = false;
     const request = vi.fn().mockResolvedValue({ tasks: [] });
     const host: BackgroundTasksHost = {
@@ -109,7 +109,6 @@ describe("background tasks concurrent snapshots", () => {
       });
     }
     expect(request).not.toHaveBeenCalled();
-    expect(Array.from(host.backgroundTasksState?.pendingTaskEvents?.events ?? []).length).toBe(1);
 
     admitted = true;
     createBackgroundTasksProps(host);
@@ -118,7 +117,6 @@ describe("background tasks concurrent snapshots", () => {
       makeTask({ id: "frequent-task", updatedAt: 10_000, toolUseCount: 10_000 }),
     ]);
     expect(request).toHaveBeenCalledTimes(2);
-    expect(host.backgroundTasksState?.pendingTaskEvents).toBeNull();
   });
 
   it("does not retry a transient snapshot after the pane switches sessions", async () => {
@@ -252,7 +250,7 @@ describe("background tasks concurrent snapshots", () => {
     for (const pane of [main, work, child]) {
       handleBackgroundTasksEvent(pane, { action: "upserted", task });
     }
-    expect(createBackgroundTasksProps(work).tasks).toEqual([]);
+    expect(createBackgroundTasksProps(work).tasks ?? []).toEqual([]);
     await flushAsync();
     expect(createBackgroundTasksProps(main).tasks).toEqual([task]);
     expect(createBackgroundTasksProps(work).tasks).toEqual([]);

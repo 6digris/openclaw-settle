@@ -13,3 +13,4 @@ export {
   setClickClackRuntime,
 } from "./api.js";
 export { registerClickClackDiscussions } from "./src/discussions/register.js";
+export { registerClickClackTaskProgressRecovery } from "./src/task-progress-recovery.js";

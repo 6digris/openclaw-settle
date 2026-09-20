@@ -1,9 +1,9 @@
+import type { TaskSummary } from "@openclaw/gateway-client/browser";
 import type { TasksHistoryResult } from "../../../../../packages/gateway-protocol/src/index.ts";
 import type { GatewayBrowserClient } from "../../../api/gateway.ts";
 import { extractTextCached } from "../../../lib/chat/message-extract.ts";
 import { visibleChatHistoryMessages } from "../../../lib/chat/message-visibility.ts";
 import type { UiSessionDefaultsHost } from "../../../lib/sessions/session-key.ts";
-import type { TaskSummary } from "../../../lib/tasks/task-summary.ts";
 import { attachHistoryActivity } from "../chat-history-request.ts";
 import type { AssistantMessageExpansionState } from "../chat-message-recovery.ts";
 import { readChatThreadMessageIdentity } from "../chat-thread-items.ts";

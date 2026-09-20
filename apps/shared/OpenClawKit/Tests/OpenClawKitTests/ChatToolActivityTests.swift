@@ -11,14 +11,14 @@ struct ChatToolActivityTests {
         item.activity = OpenClawAgentActivityItem(
             itemId: "tool:call", toolCallId: "call", kind: "tool", phase: "end",
             title: "Read — outcome unknown", name: "read", status: nil,
-            hideFromChannelProgress: nil, suppressChannelProgress: nil)
+            hideFromChannelProgress: nil, suppressChannelProgress: nil, progressText: nil)
         #expect(item.displayState == .unavailable)
         #expect(!item.isPending)
         #expect(item.resultText == "result")
         item.activity = OpenClawAgentActivityItem(
             itemId: "tool:call", toolCallId: "call", kind: "tool", phase: "end",
             title: "Read", name: "read", status: "blocked",
-            hideFromChannelProgress: nil, suppressChannelProgress: nil)
+            hideFromChannelProgress: nil, suppressChannelProgress: nil, progressText: nil)
         #expect(item.displayState == .blocked)
         #expect(!item.isError)
         #expect(!item.isPending)

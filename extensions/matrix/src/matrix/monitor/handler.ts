@@ -622,6 +622,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
       }
       runtime.error?.(`matrix handler failed: ${String(err)}`);
     } finally {
+      await draftControllerRef?.settleProgressContinuation();
       // Stop the draft stream timer so partial drafts don't leak if the
       // model run throws or times out mid-stream.
       const draftStream = draftControllerRef?.draftStream;
