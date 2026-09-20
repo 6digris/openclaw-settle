@@ -358,7 +358,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     const ctx = buildTestCtx({
       Provider: "discord",
       Surface: "discord",
-      SessionKey: "agent:regular-tail",
+      SessionKey: "agent:main:regular-tail",
       BodyForAgent: "/reset continue",
     });
     const result = await dispatchReplyFromConfig({
@@ -408,7 +408,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     const ctx = buildTestCtx({
       Provider: "discord",
       Surface: "discord",
-      SessionKey: "agent:tail-abort",
+      SessionKey: "agent:main:tail-abort",
       BodyForAgent: "/reset continue",
     });
     const dispatchPromise = dispatchReplyFromConfig({
@@ -433,13 +433,13 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     let operation: ReturnType<typeof createReplyOperation> | undefined;
     try {
       await tailDispatchStarted.promise;
-      operation = replyRunRegistry.get("agent:tail-abort");
+      operation = replyRunRegistry.get("agent:main:tail-abort");
       expect(operation?.ownerSettlement).toBeDefined();
       expect(tailAbortSignal).toBeDefined();
-      expect(replyRunRegistry.abort("agent:tail-abort")).toBe(true);
+      expect(replyRunRegistry.abort("agent:main:tail-abort")).toBe(true);
 
       await expect(dispatchPromise).resolves.toMatchObject(expectedNoQueuedReplyResult());
-      expect(replyRunRegistry.get("agent:tail-abort")).toBe(operation);
+      expect(replyRunRegistry.get("agent:main:tail-abort")).toBe(operation);
       expect(operation?.abortSignal.aborted).toBe(true);
       expect(tailAbortSignal?.aborted).toBe(true);
 
@@ -489,7 +489,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     const ctx = buildTestCtx({
       Provider: "discord",
       Surface: "discord",
-      SessionKey: "agent:reply-dispatch-abort",
+      SessionKey: "agent:main:reply-dispatch-abort",
       BodyForAgent: "hang in reply dispatch",
     });
     const dispatchPromise = dispatchReplyFromConfig({
@@ -507,12 +507,12 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     let operation: ReturnType<typeof createReplyOperation> | undefined;
     try {
       await hookStarted.promise;
-      operation = replyRunRegistry.get("agent:reply-dispatch-abort");
+      operation = replyRunRegistry.get("agent:main:reply-dispatch-abort");
       expect(operation?.ownerSettlement).toBeDefined();
-      expect(replyRunRegistry.abort("agent:reply-dispatch-abort")).toBe(true);
+      expect(replyRunRegistry.abort("agent:main:reply-dispatch-abort")).toBe(true);
 
       await expect(dispatchPromise).resolves.toMatchObject(expectedNoQueuedReplyResult());
-      expect(replyRunRegistry.get("agent:reply-dispatch-abort")).toBe(operation);
+      expect(replyRunRegistry.get("agent:main:reply-dispatch-abort")).toBe(operation);
       expect(operation?.abortSignal.aborted).toBe(true);
       expect(dispatcher.sendToolResult).not.toHaveBeenCalled();
       expect(dispatcher.sendBlockReply).not.toHaveBeenCalled();
@@ -679,7 +679,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     const ctx = buildTestCtx({
       Provider: "discord",
       Surface: "discord",
-      SessionKey: "agent:pre-dispatch-abort",
+      SessionKey: "agent:main:pre-dispatch-abort",
       BodyForAgent: "hang in before dispatch",
     });
     const dispatchPromise = dispatchReplyFromConfig({
@@ -697,12 +697,12 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     let operation: ReturnType<typeof createReplyOperation> | undefined;
     try {
       await beforeDispatchStarted.promise;
-      operation = replyRunRegistry.get("agent:pre-dispatch-abort");
+      operation = replyRunRegistry.get("agent:main:pre-dispatch-abort");
       expect(operation?.ownerSettlement).toBeDefined();
-      expect(replyRunRegistry.abort("agent:pre-dispatch-abort")).toBe(true);
+      expect(replyRunRegistry.abort("agent:main:pre-dispatch-abort")).toBe(true);
 
       await expect(dispatchPromise).resolves.toMatchObject(expectedNoQueuedReplyResult());
-      expect(replyRunRegistry.get("agent:pre-dispatch-abort")).toBe(operation);
+      expect(replyRunRegistry.get("agent:main:pre-dispatch-abort")).toBe(operation);
       expect(operation?.abortSignal.aborted).toBe(true);
       expect(diagnosticMocks.logMessageProcessed).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -739,7 +739,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     const ctx = buildTestCtx({
       Provider: "discord",
       Surface: "discord",
-      SessionKey: "agent:diagnostics-disabled-abort",
+      SessionKey: "agent:main:diagnostics-disabled-abort",
       BodyForAgent: "hang in before dispatch",
     });
     const dispatchPromise = dispatchReplyFromConfig({
@@ -757,12 +757,12 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     let operation: ReturnType<typeof createReplyOperation> | undefined;
     try {
       await beforeDispatchStarted.promise;
-      operation = replyRunRegistry.get("agent:diagnostics-disabled-abort");
+      operation = replyRunRegistry.get("agent:main:diagnostics-disabled-abort");
       expect(operation?.ownerSettlement).toBeDefined();
-      expect(replyRunRegistry.abort("agent:diagnostics-disabled-abort")).toBe(true);
+      expect(replyRunRegistry.abort("agent:main:diagnostics-disabled-abort")).toBe(true);
 
       await expect(dispatchPromise).resolves.toMatchObject(expectedNoQueuedReplyResult());
-      expect(replyRunRegistry.get("agent:diagnostics-disabled-abort")).toBe(operation);
+      expect(replyRunRegistry.get("agent:main:diagnostics-disabled-abort")).toBe(operation);
       expect(operation?.abortSignal.aborted).toBe(true);
       expect(diagnosticMocks.logMessageProcessed).not.toHaveBeenCalled();
 
@@ -792,7 +792,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     });
 
     const existingOperation = createReplyOperation({
-      sessionKey: "agent:already-active",
+      sessionKey: "agent:main:already-active",
       sessionId: "already-active-session",
       resetTriggered: false,
     });
@@ -800,7 +800,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     const ctx = buildTestCtx({
       Provider: "discord",
       Surface: "discord",
-      SessionKey: "agent:already-active",
+      SessionKey: "agent:main:already-active",
       BodyForAgent: "hang while an operation is already active",
     });
     const dispatchPromise = dispatchReplyFromConfig({
@@ -818,7 +818,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     await expect(beforeDispatchStartedPromise.then(() => "started" as const)).resolves.toBe(
       "started",
     );
-    expect(replyRunRegistry.abort("agent:already-active")).toBe(true);
+    expect(replyRunRegistry.abort("agent:main:already-active")).toBe(true);
     type DispatchOutcome =
       | { status: "settled"; result: Awaited<typeof dispatchPromise> }
       | { status: "pending" };
@@ -844,12 +844,12 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     );
     mocks.routeReply.mockClear();
     const existingOperation = createReplyOperation({
-      sessionKey: "agent:already-active-handled",
+      sessionKey: "agent:main:already-active-handled",
       sessionId: "already-active-session",
       resetTriggered: false,
     });
     hookMocks.runner.runBeforeDispatch.mockImplementation(async () => {
-      expect(replyRunRegistry.abort("agent:already-active-handled")).toBe(true);
+      expect(replyRunRegistry.abort("agent:main:already-active-handled")).toBe(true);
       return {
         handled: true,
         text: "handled by hook",
@@ -859,7 +859,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     const ctx = buildTestCtx({
       Provider: "discord",
       Surface: "discord",
-      SessionKey: "agent:already-active-handled",
+      SessionKey: "agent:main:already-active-handled",
       BodyForAgent: "hook handles while an operation is already active",
     });
 
@@ -932,7 +932,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     );
 
     const existingOperation = createReplyOperation({
-      sessionKey: "agent:already-active-reply-dispatch",
+      sessionKey: "agent:main:already-active-reply-dispatch",
       sessionId: "already-active-reply-dispatch-session",
       resetTriggered: false,
     });
@@ -940,7 +940,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     const ctx = buildTestCtx({
       Provider: "discord",
       Surface: "discord",
-      SessionKey: "agent:already-active-reply-dispatch",
+      SessionKey: "agent:main:already-active-reply-dispatch",
       BodyForAgent: "reply dispatch while an operation is already active",
     });
     const dispatchPromise = dispatchReplyFromConfig({
@@ -959,7 +959,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     // The hook signal composes the operation signal with lifecycle/upstream
     // signals, so assert propagation instead of instance identity.
     expect(hookAbortSignal?.aborted).toBe(false);
-    expect(replyRunRegistry.abort("agent:already-active-reply-dispatch")).toBe(true);
+    expect(replyRunRegistry.abort("agent:main:already-active-reply-dispatch")).toBe(true);
     expect(existingOperation.abortSignal.aborted).toBe(true);
     expect(hookAbortSignal?.aborted).toBe(true);
 
@@ -978,7 +978,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
 
   it("suppresses reply resolver runs after active source abort", async () => {
     const existingOperation = createReplyOperation({
-      sessionKey: "agent:already-active-resolver",
+      sessionKey: "agent:main:already-active-resolver",
       sessionId: "active-session",
       resetTriggered: false,
     });
@@ -988,7 +988,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     const ctx = buildTestCtx({
       Provider: "discord",
       Surface: "discord",
-      SessionKey: "agent:already-active-resolver",
+      SessionKey: "agent:main:already-active-resolver",
       BodyForAgent: "resolver waits behind active operation",
     });
     const dispatchPromise = dispatchReplyFromConfig({
@@ -1003,7 +1003,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
       replyResolver,
     });
 
-    expect(replyRunRegistry.abort("agent:already-active-resolver")).toBe(true);
+    expect(replyRunRegistry.abort("agent:main:already-active-resolver")).toBe(true);
 
     await expect(dispatchPromise).resolves.toMatchObject(expectedNoQueuedReplyResult());
     expect(existingOperation.result).toEqual({ kind: "aborted", code: "aborted_by_user" });
@@ -1015,7 +1015,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
 
   it("keeps caller abort active while waiting for an active source operation", async () => {
     const existingOperation = createReplyOperation({
-      sessionKey: "agent:already-active-caller-abort",
+      sessionKey: "agent:main:already-active-caller-abort",
       sessionId: "active-session",
       resetTriggered: false,
     });
@@ -1025,7 +1025,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     const ctx = buildTestCtx({
       Provider: "discord",
       Surface: "discord",
-      SessionKey: "agent:already-active-caller-abort",
+      SessionKey: "agent:main:already-active-caller-abort",
       BodyForAgent: "resolver should honor caller abort too",
     });
     const dispatchPromise = dispatchReplyFromConfig({
@@ -1066,7 +1066,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
       const ctx = buildTestCtx({
         Provider: "discord",
         Surface: "discord",
-        SessionKey: "agent:resolver-abort",
+        SessionKey: "agent:main:resolver-abort",
         BodyForAgent: "hang in resolver",
       });
       const dispatchPromise = dispatchReplyFromConfig({
@@ -1100,7 +1100,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
       });
 
       await resolverStarted.promise;
-      const operation = replyRunRegistry.get("agent:resolver-abort");
+      const operation = replyRunRegistry.get("agent:main:resolver-abort");
       try {
         expect(operation?.[abort]()).toBe(true);
         await expect(dispatchPromise).resolves.toMatchObject(expectedNoQueuedReplyResult());
@@ -1110,7 +1110,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
       } finally {
         releaseResolver.resolve();
         await resolverFinished.promise;
-        await replyRunRegistry.waitForIdle("agent:resolver-abort");
+        await replyRunRegistry.waitForIdle("agent:main:resolver-abort");
       }
 
       expect(dispatcher.sendToolResult).not.toHaveBeenCalled();
@@ -1130,7 +1130,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     const ctx = buildTestCtx({
       Provider: "discord",
       Surface: "discord",
-      SessionKey: "agent:resolver-abort-error",
+      SessionKey: "agent:main:resolver-abort-error",
       BodyForAgent: "abort in resolver",
     });
     const dispatchPromise = dispatchReplyFromConfig({
@@ -1158,7 +1158,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     });
 
     await resolverStartedPromise;
-    expect(replyRunRegistry.abort("agent:resolver-abort-error")).toBe(true);
+    expect(replyRunRegistry.abort("agent:main:resolver-abort-error")).toBe(true);
 
     await expect(dispatchPromise).resolves.toMatchObject(expectedNoQueuedReplyResult());
     expect(diagnosticMocks.logMessageProcessed).toHaveBeenCalledWith(
@@ -1322,7 +1322,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     const ctx = buildTestCtx({
       Provider: "discord",
       Surface: "discord",
-      SessionKey: "agent:self-stop",
+      SessionKey: "agent:main:self-stop",
       BodyForAgent: "/stop",
     });
     const replyResolver = vi.fn();
@@ -1340,7 +1340,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
         replyOptions: { sourceReplyDeliveryMode: "automatic" },
         replyResolver,
         fastAbortResolver: async () => {
-          expect(replyRunRegistry.abort("agent:self-stop")).toBe(false);
+          expect(replyRunRegistry.abort("agent:main:self-stop")).toBe(false);
           return { handled: true, aborted: true };
         },
         formatAbortReplyTextResolver: () => "stopped",
