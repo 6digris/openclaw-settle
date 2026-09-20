@@ -9,6 +9,7 @@ import type { DoctorHealthFlowContext } from "../flows/doctor-health-contributio
 import { captureUpdateDoctorConfigWrites } from "../infra/update-doctor-result.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { finalizeDoctorConfigFlow } from "./doctor/finalize-config-flow.js";
+import { prepareDoctorConfigReferenceSource } from "./doctor/shared/config-flow-steps.js";
 
 async function plan(configPath: string): Promise<DoctorHealthFlowContext> {
   const snapshot = await readConfigFileSnapshot();
@@ -29,7 +30,7 @@ async function plan(configPath: string): Promise<DoctorHealthFlowContext> {
     prompter: {} as DoctorHealthFlowContext["prompter"],
     configResult: {
       ...finalized,
-      sourceConfigForWrite: snapshot.sourceConfig,
+      referenceSource: prepareDoctorConfigReferenceSource(snapshot),
       skipWizardMetadataForIncludeWrite: true,
     },
     cfg,
