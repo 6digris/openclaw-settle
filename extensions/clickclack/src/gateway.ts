@@ -209,6 +209,7 @@ export async function startClickClackGatewayAccount(
     taskProgress && taskProgressAbort
       ? readClickClackTaskRecoverySessions(
           AbortSignal.any([ctx.abortSignal, taskProgressAbort.signal]),
+          account.accountId,
         )
           .then((sessions) => taskProgress.restore(sessions))
           .catch((error: unknown) => {

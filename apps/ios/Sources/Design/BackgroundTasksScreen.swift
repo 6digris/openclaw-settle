@@ -48,6 +48,7 @@ struct MobileBackgroundTask: Decodable, Identifiable, Equatable {
     var prompt: String?
     let progress: OpenClawTaskProgress?
     let execution: Execution?
+    let deliveryStatus: String?
 
     var displayTitle: String {
         self.title?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
@@ -74,6 +75,19 @@ struct MobileBackgroundTask: Decodable, Identifiable, Equatable {
         case "cancelled": String(localized: "Cancelled")
         case "timed_out": String(localized: "Timed out")
         default: String(localized: "Failed")
+        }
+    }
+
+    var deliveryLabel: String {
+        switch self.deliveryStatus {
+        case "pending": String(localized: "Pending")
+        case "delivered": String(localized: "Delivered")
+        case "session_queued": String(localized: "Queued for conversation")
+        case "failed": String(localized: "Delivery failed")
+        case "dismissed": String(localized: "Dismissed")
+        case "parent_missing": String(localized: "Parent unavailable")
+        case "not_applicable": String(localized: "Not applicable")
+        default: String(localized: "Unavailable")
         }
     }
 
@@ -330,6 +344,9 @@ struct BackgroundTasksScreen: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                 }
+                Text(verbatim: String(format: String(localized: "Final delivery: %@"), task.deliveryLabel))
+                    .font(OpenClawType.caption)
+                    .foregroundStyle(.secondary)
                 if let output = task.output {
                     Text(output)
                         .font(OpenClawType.footnote)
@@ -476,6 +493,9 @@ private struct BackgroundTaskDetailScreen: View {
                             .font(OpenClawType.caption)
                             .foregroundStyle(.secondary)
                     }
+                    Text(verbatim: String(format: String(localized: "Final delivery: %@"), self.task.deliveryLabel))
+                        .font(OpenClawType.caption)
+                        .foregroundStyle(.secondary)
                     if let progress = self.task.progress, !progress.items.isEmpty {
                         OpenClawTaskProgressView(progress: progress)
                     }

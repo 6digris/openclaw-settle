@@ -79,6 +79,10 @@ function normalizeNamedEventType(event: GatewayEvent): OpenClawEventType {
     case "exec.approval.resolved":
     case "plugin.approval.resolved":
       return "approval.resolved";
+    // Shipped SDK v1 event names remain supported until a breaking SDK release.
+    case "task.updated":
+    case "tasks.changed":
+      return "task.updated";
     default:
       return "raw";
   }

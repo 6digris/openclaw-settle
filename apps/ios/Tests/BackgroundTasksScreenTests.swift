@@ -66,6 +66,32 @@ struct BackgroundTasksScreenTests {
         #expect(task.isActive == active)
     }
 
+    @Test(arguments: [
+        ("pending", "Pending"),
+        ("session_queued", "Queued for conversation"),
+        ("failed", "Delivery failed"),
+        ("delivered", "Delivered"),
+        ("unknown", "Unavailable"),
+        (nil, "Unavailable"),
+    ] as [(String?, String)])
+    func `completed task presentation distinguishes final delivery from execution`(
+        deliveryStatus: String?, deliveryLabel: String) throws
+    {
+        var payload: [String: Any] = [
+            "id": "completed",
+            "status": "completed",
+            "execution": ["state": "finished"],
+        ]
+        if let deliveryStatus { payload["deliveryStatus"] = deliveryStatus }
+        let task = try JSONDecoder().decode(
+            MobileBackgroundTask.self,
+            from: JSONSerialization.data(withJSONObject: payload))
+
+        #expect(task.statusLabel == "Completed")
+        #expect(task.deliveryLabel == deliveryLabel)
+        #expect(!task.isActive)
+    }
+
     @Test func `prepared progress replaces legacy activity without inventing execution success`() throws {
         let task = try JSONDecoder().decode(MobileBackgroundTask.self, from: Data(#"""
         {"id":"continuing","status":"running","execution":{"state":"waiting"},
@@ -108,7 +134,6 @@ struct BackgroundTasksScreenTests {
         #expect(MobileBackgroundTaskList.newest(resumed, replacing: predecessor).output == "Resumed work")
         #expect(MobileBackgroundTaskList.newest(predecessor, replacing: resumed).output == "Resumed work")
     }
-
 
     @Test func `groups active work and deduplicates newest task snapshot`() throws {
         let recent = try self.task(id: "finished", status: "completed", updatedAt: 4000)

@@ -156,6 +156,7 @@ function createQuickChatHarness(): Record<string, any> {
     reject: (error: Error) => void;
   }> = [];
   let deferRefresh = false;
+  let selectedIdentity = { id: "work", name: "Work", isDefault: true };
   let deferSessionRead = false;
   const sessionReadResults: Record<string, unknown> = {
     "tasks.list": { tasks: [] },
@@ -218,6 +219,7 @@ function createQuickChatHarness(): Record<string, any> {
             rendererEpoch?: number;
             generation?: number;
             method?: string;
+            agentId?: string;
           },
         ) {
           calls.push({ method, args: args ?? {} });
@@ -269,7 +271,12 @@ function createQuickChatHarness(): Record<string, any> {
             return Promise.resolve([]);
           }
           if (method === "quickchat_identity") {
-            return Promise.resolve({ id: "work", name: "Work", isDefault: true });
+            return Promise.resolve(selectedIdentity);
+          }
+          if (method === "quickchat_select_agent") {
+            const id = args?.agentId ?? "";
+            selectedIdentity = { id, name: id, isDefault: id === "work" };
+            return Promise.resolve(selectedIdentity);
           }
           return Promise.resolve(true);
         },
@@ -346,6 +353,7 @@ this.harness = {
   nextVisibilityOperation,
   requestHide,
   clearReply,
+  toggleReply,
   setGatewayUp(surface = "https://gateway.example/__openclaw__/cap/fixture-capability", gatewayGeneration = 1) {
     setGatewayState({state: "up", canvasSurfaceUrl: surface, gatewayGeneration});
     if (visibilitySequence === 0) reveal();
@@ -353,7 +361,7 @@ this.harness = {
   advanceTime(ms) { return advanceTime(ms); },
   emitGatewayState(payload) { setGatewayState({gatewayGeneration: 1, ...payload}); },
   accent() { return document.documentElement.style.getPropertyValue("--accent"); },
-  setMessage(value) { elements.input.value = value; },
+  setMessage(value) { elements.input.value = value; updateSendButton(); },
   pendingCount() { return pendingChatEvents.length; },
   activeRunId() { return activeReply?.runId ?? null; },
   replyText() { return elements.replyText.textContent; },
@@ -361,6 +369,8 @@ this.harness = {
   progressCardText() { return elements.replyProgressCard.textContent; },
   progressStatus() { return elements.replyProgressStatus.textContent; },
   readOnly() { return elements.input.readOnly; },
+  sendDisabled() { return elements.send.disabled; },
+  replyVisible() { return !elements.reply.hidden; },
   thinking() { return !elements.replyThinking.hidden; },
   draft() { return elements.input.value; },
   error() { return elements.status.textContent; },
@@ -835,6 +845,13 @@ test("a yielded reply unlocks without completing its task or authored checklist"
     assert.match(harness.tasksText(), new RegExp(`Research — ${state}`, "u"));
     assert.notEqual(harness.replyState(), "Done");
   }
+  harness.handleTaskEvent({
+    action: "upserted",
+    task: { ...progressTask, execution: undefined, progress: undefined },
+  });
+  assert.match(harness.tasksText(), /Research — unknown/u);
+  assert.doesNotMatch(harness.tasksText(), /Research — running/u);
+  assert.equal(harness.readOnly(), false);
 
   harness.handleTaskEvent({
     action: "upserted",
@@ -1099,6 +1116,15 @@ test("old progress reads and events cannot cross a Gateway or agent switch", asy
     runId: "new-parent",
   });
   await sending;
+  harness.handleChatEvent({
+    gatewayGeneration: 2,
+    sessionKey: "global",
+    agentId: "work",
+    runId: "new-parent",
+    state: "final",
+    yielded: true,
+  });
+  await harness.advanceTime(450);
   await harness.selectAgent("different-agent");
   harness.sessionReads[2].resolve({ tasks: [progressTask] });
   harness.sessionReads[3].resolve({
@@ -1107,24 +1133,6 @@ test("old progress reads and events cannot cross a Gateway or agent switch", asy
   await harness.drain();
   assert.equal(harness.tasksText(), "");
   assert.equal(harness.progressCardText(), "");
-  await harness.advanceTime(450);
-  harness.setMessage("A send still awaiting its ACK");
-  const pendingSend = harness.send(false);
-  await harness.selectAgent("another-agent");
-  harness.resolveSend({
-    gatewayGeneration: 2,
-    sessionKey: "global",
-    agentId: "work",
-    runId: "old-selection",
-  });
-  await pendingSend;
-  await harness.drain();
-  assert.equal(
-    harness.activeRunId(),
-    null,
-    "a late send ACK cannot restore the previous selection",
-  );
-  assert.equal(harness.tasksText(), "");
 });
 
 test("a cached terminal retry presents the recovered reply and unlocks without another event", async () => {
@@ -1167,14 +1175,18 @@ test("a cached terminal retry presents the recovered reply and unlocks without a
   harness.resolveSend({ sessionKey: "global", agentId: "work", runId: "next-key" });
   await next;
   await harness.advanceTime(450);
-  assert.equal(harness.readOnly(), true, "ordinary started ACK still waits for its final");
+  assert.equal(harness.readOnly(), false, "the next draft stays editable during the reply");
+  harness.setMessage("A prepared follow-up");
+  assert.equal(harness.sendDisabled(), true);
+  await harness.send(false);
+  assert.equal(harness.sendCount(), 3, "ordinary started ACK still waits for its final");
   harness.handleChatEvent({
     sessionKey: "global",
     agentId: "work",
     runId: "other-run",
     state: "final",
   });
-  assert.equal(harness.readOnly(), true);
+  assert.equal(harness.sendDisabled(), true);
   harness.handleChatEvent({
     sessionKey: "global",
     agentId: "work",
@@ -1182,6 +1194,8 @@ test("a cached terminal retry presents the recovered reply and unlocks without a
     state: "final",
   });
   assert.equal(harness.readOnly(), false);
+  assert.equal(harness.sendDisabled(), false);
+  assert.equal(harness.draft(), "A prepared follow-up");
 });
 
 test("a buffered matching final wins over terminal history recovery", async () => {
@@ -1207,6 +1221,64 @@ test("a buffered matching final wins over terminal history recovery", async () =
   await harness.advanceTime(450);
   assert.equal(harness.replyText(), "Live final");
   assert.equal(harness.readOnly(), false);
+});
+
+test("collapse preserves live replies, drafts, and widget instances and wins a delayed acknowledgement", async () => {
+  const harness = createQuickChatHarness();
+  harness.setGatewayUp();
+  harness.setMessage("Show the current status");
+  const first = harness.send(false);
+  const target = { sessionKey: "global", agentId: "work", runId: "first-run" };
+  harness.resolveSend(target);
+  await first;
+  await harness.advanceTime(450);
+  harness.handleChatEvent({
+    ...target,
+    state: "delta",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Checking the project." },
+        ...canvasMessage("assistant", "/__openclaw__/canvas/documents/status/index.html").content,
+      ],
+    },
+  });
+  await harness.drain();
+  const widget = { ...harness.syncedWidgets()[0] };
+  assert.equal(widget.visible, true);
+  harness.setMessage("Keep this\nnext draft.");
+  harness.toggleReply();
+  await harness.drain();
+  assert.equal(harness.replyVisible(), false);
+  assert.equal(harness.syncedExpanded(), false);
+  assert.deepEqual({ ...harness.syncedWidgets()[0] }, { ...widget, visible: false });
+  assert.equal(harness.draft(), "Keep this\nnext draft.");
+  harness.handleChatEvent({ ...target, state: "delta", deltaText: " Still working." });
+  await harness.drain();
+  assert.equal(harness.replyVisible(), false);
+  harness.toggleReply();
+  await harness.drain();
+  assert.equal(harness.replyVisible(), true);
+  assert.equal(harness.replyText(), "Checking the project. Still working.");
+  assert.equal(harness.draft(), "Keep this\nnext draft.");
+  assert.deepEqual({ ...harness.syncedWidgets()[0] }, widget);
+  assert.equal(harness.sendCount(), 1);
+
+  harness.handleChatEvent({ ...target, state: "final" });
+  const next = harness.send(false);
+  harness.toggleReply();
+  const followup = { ...target, runId: "follow-up-run" };
+  harness.handleChatEvent({ ...followup, state: "delta", deltaText: "A new reply." });
+  harness.resolveSend(followup);
+  await next;
+  await harness.drain();
+  assert.equal(harness.replyVisible(), false, "the acknowledgement cannot undo a newer collapse");
+  assert.equal(
+    harness.replyText(),
+    "A new reply.",
+    "the retained old reply cannot swallow early frames",
+  );
+  assert.equal(harness.draft(), "");
 });
 
 function widgetFinal(gatewayGeneration = 1) {

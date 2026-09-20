@@ -1,6 +1,7 @@
 /** Shutdown request reasons and installation-replacement handoff cases share the run-loop fixture. */
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { expect, it, vi, type Mock } from "vitest";
+import { withTimeout } from "../../infra/fs-safe.js";
 import type { GatewayActiveWorkSnapshot } from "../../infra/gateway-active-work.js";
 import type { GatewayBootLifecycleCompletion } from "../../infra/gateway-boot-lifecycle.js";
 import type { GatewayRestartIntent } from "../../infra/restart-intent.js";
@@ -13,6 +14,7 @@ import {
   waitForStart,
   waitForLoopCondition,
   withIsolatedSignals,
+  type UpdateRespawnFixtures,
 } from "./run-loop.test-support.js";
 
 type RequestFixtures = {
@@ -23,6 +25,7 @@ type RequestFixtures = {
   runLoopWithStart: (params: {
     start: ReturnType<typeof createSignaledStart>["start"];
     runtime: ReturnType<typeof createRuntimeWithExitSignal>["runtime"];
+    beginBoot?: (startedAtMs: number) => void | Promise<void>;
     completeBoot?: (completion: GatewayBootLifecycleCompletion) => void;
   }) => Promise<unknown>;
   waitForGatewayActiveWork: Mock<
@@ -31,11 +34,13 @@ type RequestFixtures = {
   restartGatewayProcessWithFreshPid: Mock<
     typeof import("../../infra/process-respawn.js").restartGatewayProcessWithFreshPid
   >;
-  consumeGatewaySigusr1RestartIntent: Mock<() => GatewayRestartIntent | null>;
+  respawnGatewayProcessForUpdate: UpdateRespawnFixtures["respawnGatewayProcessForUpdate"];
+  captureForegroundUpdateHandoffStop: UpdateRespawnFixtures["captureForegroundUpdateHandoffStop"];
+  consumeGatewayRestartIntent: Mock<() => GatewayRestartIntent | null>;
   consumeGatewayRestartIntentPayloadSync: Mock<
     () => Pick<GatewayRestartIntent, "reason" | "force" | "waitMs"> | null
   >;
-  peekGatewaySigusr1RestartReason: Mock<() => string | undefined>;
+  peekGatewayRestartReason: Mock<() => string | undefined>;
   managedUpdateSuccessorOwner: NonNullable<GatewayRestartIntent["successorOwner"]>;
   commitManagedServiceUpdateHandoff: Mock<
     typeof import("../../infra/update-managed-service-handoff.js").commitManagedServiceUpdateHandoff
@@ -50,41 +55,172 @@ export function registerGatewayRequestTests({
   runLoopWithStart,
   waitForGatewayActiveWork,
   restartGatewayProcessWithFreshPid,
-  consumeGatewaySigusr1RestartIntent,
+  respawnGatewayProcessForUpdate,
+  captureForegroundUpdateHandoffStop,
+  consumeGatewayRestartIntent,
   consumeGatewayRestartIntentPayloadSync,
-  peekGatewaySigusr1RestartReason,
+  peekGatewayRestartReason,
   managedUpdateSuccessorOwner,
   commitManagedServiceUpdateHandoff,
   isGatewayWorkAdmissionClosed,
   gatewayLog,
 }: RequestFixtures): void {
   const idleActiveWorkSnapshot = createActiveWorkSnapshot();
-  it.each(["lock", "restart-cleanup"] as const)(
-    "does not resume a replaced runtime when replacement arrives during %s",
-    async (phase) => {
+  it("keeps replacement shutdown behind an owned pre-park Stop settlement", async () => {
+    const joined = createDeferredCore<boolean>();
+    const settle = vi.fn(() => joined.promise);
+    captureForegroundUpdateHandoffStop.mockReturnValueOnce({ settle, canPark: () => false });
+    await withIsolatedSignals(async ({ captureSignal }) => {
+      const close = createCloseMock();
+      const { start, started } = createSignaledStart(close);
+      const { runtime, exited } = createRuntimeWithExitSignal();
+      const completeBoot = vi.fn();
+      await runLoopWithStart({ start, runtime, completeBoot });
+      await waitForStart(started);
+      try {
+        captureSignal("SIGINT")();
+        await waitForLoopCondition(
+          () => settle.mock.calls.length === 1,
+          "Stop did not join its foreground update owner",
+        );
+        const { classifyGatewayStaleInstall } = await import("../../gateway/stale-install.js");
+        classifyGatewayStaleInstall(
+          Object.assign(new Error("replaced runtime while updater is held"), {
+            code: "ENOENT",
+            path: fileURLToPath(new URL("../../gateway/missing-runtime.js", import.meta.url)),
+          }),
+        );
+        expect(isGatewayWorkAdmissionClosed()).toBe(true);
+        expect(captureForegroundUpdateHandoffStop).toHaveBeenCalledOnce();
+        expect(settle).toHaveBeenCalledOnce();
+        expect(close).not.toHaveBeenCalled();
+        expect(runtime.exit).not.toHaveBeenCalled();
+        expect(restartGatewayProcessWithFreshPid).not.toHaveBeenCalled();
+        expect(respawnGatewayProcessForUpdate).not.toHaveBeenCalled();
+        joined.resolve(true);
+        await expect(exited).resolves.toBe(0);
+        expect(close).toHaveBeenCalledOnce();
+        expect(start).toHaveBeenCalledOnce();
+        expect(acquireGatewayLock).toHaveBeenCalledOnce();
+        expect(runtime.exit).toHaveBeenCalledExactlyOnceWith(0);
+        expect(restartGatewayProcessWithFreshPid).not.toHaveBeenCalled();
+        expect(respawnGatewayProcessForUpdate).not.toHaveBeenCalled();
+        expect(completeBoot).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            outcome: "clean_stop",
+            reason: expect.stringContaining("gateway.installation_replaced"),
+          }),
+        );
+      } finally {
+        joined.resolve(true);
+        await exited;
+      }
+    });
+  });
+
+  it("does not start a replaced runtime after awaited beginBoot", async () => {
+    const entered = createDeferredCore();
+    const resume = createDeferredCore();
+    const beginBoot = vi.fn(async () => {
+      entered.resolve();
+      await resume.promise;
+    });
+    await withIsolatedSignals(async ({ captureSignal }) => {
+      const { start } = createSignaledStart(createCloseMock());
+      const { runtime, exited } = createRuntimeWithExitSignal();
+      const completeBoot = vi.fn();
+      await runLoopWithStart({ start, runtime, beginBoot, completeBoot });
+      await entered.promise;
+      try {
+        const { classifyGatewayStaleInstall } = await import("../../gateway/stale-install.js");
+        classifyGatewayStaleInstall(
+          Object.assign(new Error("installation replaced during boot preparation"), {
+            code: "ENOENT",
+            path: fileURLToPath(new URL("../../gateway/missing-runtime.js", import.meta.url)),
+          }),
+        );
+        expect(start).not.toHaveBeenCalled();
+        expect(runtime.exit).not.toHaveBeenCalled();
+        resume.resolve();
+        await expect(exited).resolves.toBe(1);
+        expect(beginBoot).toHaveBeenCalledOnce();
+        expect(start).not.toHaveBeenCalled();
+        expect(acquireGatewayLock).toHaveBeenCalledOnce();
+        expect(runtime.exit).toHaveBeenCalledExactlyOnceWith(1);
+        expect(completeBoot).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            reason: expect.stringContaining("gateway.installation_replaced"),
+          }),
+        );
+      } finally {
+        resume.resolve();
+        if (!runtime.exit.mock.calls.length) {
+          captureSignal("SIGINT")();
+          await exited;
+        }
+      }
+    });
+  });
+
+  it.each([
+    { phase: "lock", pendingStop: false },
+    { phase: "restart-cleanup", pendingStop: false },
+    { phase: "lock", pendingStop: true },
+    { phase: "beginBoot", pendingStop: true },
+  ] as const)(
+    "does not resume a replaced runtime during $phase (pending Stop: $pendingStop)",
+    async ({ phase, pendingStop }) => {
       await withIsolatedSignals(async ({ captureSignal }) => {
         const { start, started } = createSignaledStart(createCloseMock());
         const { runtime, exited } = createRuntimeWithExitSignal();
         const completeBoot = vi.fn();
-        await runLoopWithStart({ start, runtime, completeBoot });
-        await waitForStart(started);
         const reached = createDeferredCore();
         const resume = createDeferredCore();
+        const joined = createDeferredCore<boolean>();
+        const settle = vi.fn(() => joined.promise);
+        if (pendingStop) {
+          captureForegroundUpdateHandoffStop.mockReturnValueOnce({ settle, canPark: () => false });
+        }
+        await runLoopWithStart({
+          start,
+          runtime,
+          completeBoot,
+          beginBoot:
+            phase === "beginBoot"
+              ? async () => {
+                  reached.resolve();
+                  await resume.promise;
+                }
+              : undefined,
+        });
+        if (phase !== "beginBoot") {
+          await waitForStart(started);
+        }
         if (phase === "lock") {
           acquireGatewayLock.mockImplementationOnce(async () => {
             reached.resolve();
             await resume.promise;
             return { release: vi.fn(async () => {}) };
           });
-        } else {
+        } else if (phase === "restart-cleanup") {
           reloadTaskRuntimeStateFromStore.mockImplementationOnce(async () => {
             reached.resolve();
             await resume.promise;
           });
         }
+        const failures: unknown[] = [];
         try {
-          captureSignal("SIGUSR1")();
-          await reached.promise;
+          if (phase !== "beginBoot") {
+            captureSignal("SIGUSR2")();
+          }
+          await withTimeout(reached.promise, 4_000);
+          if (pendingStop) {
+            captureSignal("SIGINT")();
+            await waitForLoopCondition(
+              () => settle.mock.calls.length === 1,
+              "Stop did not capture the unsettled foreground update",
+            );
+          }
           const { classifyGatewayStaleInstall } = await import("../../gateway/stale-install.js");
           classifyGatewayStaleInstall(
             Object.assign(new Error("replaced runtime"), {
@@ -93,23 +229,63 @@ export function registerGatewayRequestTests({
             }),
           );
           resume.resolve();
+          if (pendingStop) {
+            await waitForLoopCondition(
+              () =>
+                gatewayLog.error.mock.calls.some(([message]) =>
+                  String(message).includes("Cannot continue in this process"),
+                ),
+              "resumed continuation did not reach the installation-replacement fence",
+            );
+            await new Promise<void>((resolve) => {
+              setImmediate(resolve);
+            });
+            expect(isGatewayWorkAdmissionClosed()).toBe(true);
+            expect(runtime.exit).not.toHaveBeenCalled();
+            expect(completeBoot).not.toHaveBeenCalled();
+            expect(captureForegroundUpdateHandoffStop).toHaveBeenCalledOnce();
+            expect(settle).toHaveBeenCalledOnce();
+            joined.resolve(true);
+          }
           await waitForLoopCondition(
             () => start.mock.calls.length > 1 || runtime.exit.mock.calls.length > 0,
             "replacement did not settle the old process",
           );
-          expect(start).toHaveBeenCalledOnce();
-          await expect(exited).resolves.toBe(1);
+          await expect(withTimeout(exited, 4_000)).resolves.toBe(1);
+          await new Promise<void>((resolve) => {
+            setImmediate(resolve);
+          });
+          expect(start).toHaveBeenCalledTimes(phase === "beginBoot" ? 0 : 1);
+          expect(runtime.exit).toHaveBeenCalledExactlyOnceWith(1);
           expect(completeBoot).toHaveBeenCalledExactlyOnceWith(
             expect.objectContaining({
               reason: expect.stringContaining("gateway.installation_replaced"),
             }),
           );
-        } finally {
+          expect(respawnGatewayProcessForUpdate).not.toHaveBeenCalled();
+        } catch (error) {
+          failures.push(error);
+        }
+        try {
           resume.resolve();
+          joined.resolve(true);
           if (!runtime.exit.mock.calls.length) {
             captureSignal("SIGINT")();
-            await exited;
           }
+          await withTimeout(exited, 4_000);
+          await new Promise<void>((resolve) => {
+            setImmediate(resolve);
+          });
+        } catch (error) {
+          failures.push(error);
+        }
+        if (failures.length > 1) {
+          throw new AggregateError(failures, "Replacement Stop assertion and cleanup failed", {
+            cause: failures[0],
+          });
+        }
+        if (failures.length === 1) {
+          throw failures[0];
         }
       });
     },
@@ -162,7 +338,7 @@ export function registerGatewayRequestTests({
         );
         try {
           if (mode === "managed-update") {
-            consumeGatewaySigusr1RestartIntent.mockReturnValueOnce({
+            consumeGatewayRestartIntent.mockReturnValueOnce({
               reason: "update.run",
               successorOwner: managedUpdateSuccessorOwner,
             });
@@ -172,7 +348,7 @@ export function registerGatewayRequestTests({
             mode === "existing-stop" ||
             mode === "managed-update"
           ) {
-            captureSignal(mode === "existing-stop" ? "SIGINT" : "SIGUSR1")();
+            captureSignal(mode === "existing-stop" ? "SIGINT" : "SIGUSR2")();
             await drainStarted.promise;
           }
           classifyGatewayStaleInstall(
@@ -231,11 +407,11 @@ export function registerGatewayRequestTests({
   it.each([
     { signal: "SIGTERM", restartReason: undefined, reason: "stop (SIGTERM)" },
     { signal: "SIGINT", restartReason: undefined, reason: "stop (SIGINT)" },
-    { signal: "SIGUSR1", restartReason: undefined, reason: "restart (SIGUSR1)" },
+    { signal: "SIGUSR2", restartReason: undefined, reason: "restart (SIGUSR2)" },
     {
-      signal: "SIGUSR1",
+      signal: "SIGUSR2",
       restartReason: "config reload: gateway.bind",
-      reason: "restart (SIGUSR1: config reload: gateway.bind)",
+      reason: "restart (SIGUSR2: config reload: gateway.bind)",
     },
     {
       signal: "SIGTERM",
@@ -247,7 +423,7 @@ export function registerGatewayRequestTests({
     if (signal === "SIGTERM" && restartReason) {
       consumeGatewayRestartIntentPayloadSync.mockReturnValueOnce({ reason: restartReason });
     } else {
-      peekGatewaySigusr1RestartReason.mockReturnValueOnce(restartReason);
+      peekGatewayRestartReason.mockReturnValueOnce(restartReason);
     }
     await withIsolatedSignals(async ({ captureSignal }) => {
       const close = createCloseMock();
@@ -257,7 +433,7 @@ export function registerGatewayRequestTests({
       await runLoopWithStart({ start, runtime, completeBoot });
       await waitForStart(started);
       captureSignal(signal)();
-      if (signal === "SIGUSR1") {
+      if (signal === "SIGUSR2") {
         await waitForLoopCondition(() => start.mock.calls.length === 2, "restart did not finish");
         captureSignal("SIGINT")();
       }

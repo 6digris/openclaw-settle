@@ -127,6 +127,8 @@ export type TuiSessionList = {
       key: string;
       sessionId?: string;
       updatedAt?: number | null;
+      archived?: boolean;
+      incognito?: boolean;
       fastMode?: FastMode;
       sendPolicy?: string;
       responseUsage?: ResponseUsageMode;
@@ -149,6 +151,11 @@ export type TuiSessionList = {
       lastMessagePreview?: string;
     }
   >;
+};
+
+export type TuiSessionDescription = {
+  session: TuiSessionList["sessions"][number] | null;
+  defaults?: TuiSessionList["defaults"];
 };
 
 /** Agent-list payload used by TUI agent switching. */
@@ -221,6 +228,9 @@ export type TuiBackend = {
   listTasks: (opts: TasksListParams) => Promise<TasksListResult>;
   getProgressCard: (opts: ProgressCardGetParams) => Promise<ProgressCardGetResult>;
   listSessions: (opts?: SessionsListParams) => Promise<TuiSessionList>;
+  describeSession: (
+    opts: Pick<ChatSendOptions, "sessionKey" | "agentId">,
+  ) => Promise<TuiSessionDescription>;
   listAgents: () => Promise<TuiAgentsList>;
   patchSession: (opts: SessionsPatchParams) => Promise<SessionsPatchResult>;
   createSession: (opts: TuiSessionCreateOptions) => Promise<TuiSessionMutationResult>;

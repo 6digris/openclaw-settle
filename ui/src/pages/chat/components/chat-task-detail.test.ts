@@ -2,6 +2,7 @@ import type { TaskSummary } from "@openclaw/gateway-client/browser";
 import { html, render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../../test/helpers/promise.js";
+import { t } from "../../../i18n/index.ts";
 import { createGatewayBrowserClientFixture } from "../chat-pane.test-support.ts";
 import type { BackgroundTasksProps } from "./chat-background-tasks.types.ts";
 import type { SidebarFullMessageLoader } from "./chat-sidebar-content-types.ts";
@@ -439,6 +440,114 @@ describe("task activity monitor", () => {
     rerender();
     return { container, rerender };
   }
+
+  it.each([
+    { status: "completed", transcript: "absent" },
+    { status: "failed", transcript: "error" },
+    { status: "cancelled", transcript: "empty" },
+    { status: "timed_out", transcript: "history" },
+  ] as const)(
+    "retains public facts for a $status task with $transcript transcript without live claims",
+    async ({ status, transcript }) => {
+      const current: TaskSummary = {
+        ...task,
+        status,
+        hasTranscript: transcript !== "absent",
+        endedAt: 5_000,
+        execution: { state: "finished" },
+        progress: {
+          runId: "retained-run",
+          revision: 3,
+          items: [
+            {
+              itemId: "public-commentary",
+              kind: "preamble",
+              phase: "update",
+              title: "Review update",
+              progressText: "The retained review reached the tool boundary.",
+            },
+            {
+              itemId: "unfinished-tool",
+              toolCallId: "unfinished-tool",
+              kind: "tool",
+              phase: "start",
+              title: "Read retained report",
+              name: "read",
+              status: "running",
+            },
+            {
+              itemId: "failed-tool",
+              toolCallId: "failed-tool",
+              kind: "tool",
+              phase: "end",
+              title: "Check retained report",
+              name: "exec",
+              status: "failed",
+            },
+          ],
+        },
+      };
+      const request = vi.fn(async () => {
+        if (transcript === "error") {
+          throw new Error("Task history unavailable");
+        }
+        return {
+          messages:
+            transcript === "history"
+              ? [
+                  {
+                    role: "assistant",
+                    content: [
+                      {
+                        type: "toolCall",
+                        id: "unfinished-tool",
+                        name: "read",
+                        arguments: { path: "retained-report.txt" },
+                      },
+                    ],
+                  },
+                ]
+              : [],
+        };
+      });
+      const host: TaskDetailHost = {
+        sessionKey: "agent:main:main",
+        client: createGatewayBrowserClientFixture({ request }),
+        connected: true,
+        hello: null,
+      };
+      const props = backgroundTasks(current);
+      const container = document.body.appendChild(document.createElement("div"));
+      const rerender = () =>
+        render(renderTaskDetailPanel({ backgroundTasks: props, host, task: current }), container);
+      rerender();
+      if (transcript !== "absent") {
+        await vi.waitFor(() =>
+          expect(host.taskDetailState?.load.status).toBe(
+            transcript === "error" ? "error" : "loaded",
+          ),
+        );
+        rerender();
+      }
+
+      expect(container.textContent).toContain("The retained review reached the tool boundary.");
+      expect(container.querySelectorAll(".chat-task-feed__tool-line")).toHaveLength(2);
+      expect(
+        [...container.querySelectorAll(".chat-task-feed__row-outcome")].map((row) =>
+          row.textContent?.trim(),
+        ),
+      ).toEqual([t("chat.toolCards.outcomeUnknown"), t("chat.toolCards.failed")]);
+      expect(container.querySelector(".chat-task-feed__overview")?.textContent).not.toContain(
+        "running",
+      );
+      expect(container.querySelector(".chat-tasks-rail__task-pulse")).toBeNull();
+      expect(container.querySelector("openclaw-elapsed-time")).toBeNull();
+      expect(container.querySelector('[role="img"][aria-label="Completed"]')).toBeNull();
+      if (transcript === "error") {
+        expect(container.querySelector("button")?.textContent).toContain("Retry");
+      }
+    },
+  );
 
   it.each([
     {

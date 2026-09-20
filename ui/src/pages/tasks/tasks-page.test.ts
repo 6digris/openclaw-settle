@@ -1,93 +1,28 @@
-import type { TaskStatus, TaskSummary } from "@openclaw/gateway-client/browser";
+import { ContextProvider } from "@lit/context";
+import type { TaskSummary } from "@openclaw/gateway-client/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred as deferred } from "../../../../test/helpers/promise.js";
-import {
-  GatewayRequestError,
-  type GatewayBrowserClient,
-  type GatewayEventFrame,
-} from "../../api/gateway.ts";
+import { GatewayRequestError, type GatewayBrowserClient } from "../../api/gateway.ts";
 import { sessionRefFromPath } from "../../app-session-route-paths.ts";
-import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/context.ts";
+import {
+  applicationContext,
+  type ApplicationContext,
+  type ApplicationGatewaySnapshot,
+} from "../../app/context.ts";
 import { i18n, t } from "../../i18n/index.ts";
 import { captureI18nStateForTesting } from "../../i18n/lib/translate.test-support.ts";
+import { createAgentIdentityCapability } from "../../lib/agents/identity.ts";
 import { formatMs } from "../../lib/format.ts";
 import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
+import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
 import { waitForFast } from "../../test-helpers/wait-for.ts";
+import {
+  createGateway,
+  createTask,
+  staleCursorError,
+  type TasksPageTestElement,
+} from "./tasks-page.test-support.ts";
 import "./tasks-page.ts";
-
-type TasksPageTestElement = HTMLElement & {
-  context: ApplicationContext;
-  tasks: TaskSummary[];
-  error: string | null;
-  copyResultError: string | null;
-  cancellingTaskIds: Set<string>;
-  cancelTask: (taskId: string) => Promise<void>;
-  copyTaskResult: (taskId: string) => Promise<void>;
-  recoverTask: (taskId: string, action: "retry" | "dismiss") => Promise<void>;
-  refreshTasks: () => Promise<void>;
-};
-
-function staleCursorError() {
-  return new GatewayRequestError({
-    code: "INVALID_REQUEST",
-    message: "invalid or expired tasks.list cursor; restart pagination without a cursor",
-  });
-}
-
-function createGateway(
-  client: GatewayBrowserClient,
-  hello: ApplicationGatewaySnapshot["hello"] = null,
-) {
-  const snapshot: ApplicationGatewaySnapshot = {
-    client,
-    phase: "connected",
-    offlineStable: false,
-    canvasPluginSurfaceUrl: null,
-    hello,
-    assistantAgentId: null,
-    sessionKey: "main",
-    lastError: null,
-    lastErrorCode: null,
-  };
-  let snapshotListener: ((snapshot: ApplicationGatewaySnapshot) => void) | undefined;
-  const eventListeners = new Set<(event: GatewayEventFrame) => void>();
-  const gateway = {
-    snapshot,
-    subscribe(listener: (snapshot: ApplicationGatewaySnapshot) => void) {
-      snapshotListener = listener;
-      return () => {
-        if (snapshotListener === listener) {
-          snapshotListener = undefined;
-        }
-      };
-    },
-    subscribeEvents(listener: (event: GatewayEventFrame) => void) {
-      eventListeners.add(listener);
-      return () => eventListeners.delete(listener);
-    },
-  } as unknown as ApplicationContext["gateway"];
-  return {
-    emitConnected(connected: boolean) {
-      snapshot.phase = connected ? "connected" : "stopped";
-      snapshotListener?.(snapshot);
-    },
-    emitTask(payload: unknown) {
-      const event: GatewayEventFrame = { event: "task", payload, type: "event" };
-      for (const listener of eventListeners) {
-        listener(event);
-      }
-    },
-    gateway,
-  };
-}
-
-function createTask(
-  id: string,
-  status: TaskStatus = "running",
-  overrides: Partial<TaskSummary> = {},
-): TaskSummary {
-  return { id, taskId: id, status, agentId: "main", updatedAt: 100, ...overrides };
-}
 
 async function createDeferredTaskRefresh(initialTasks: TaskSummary[]) {
   const active = deferred<{ tasks: TaskSummary[] }>();
@@ -142,6 +77,7 @@ function createContext(
   return {
     basePath: "",
     gateway,
+    agentIdentity: createAgentIdentityCapability(gateway),
     agents: {
       state: {
         agentsList: {
@@ -383,6 +319,116 @@ describe("TasksPage concurrent refresh events", () => {
     await pending;
 
     expect(refresh.page.tasks.map((task) => task.id)).toEqual(["task-after-reconnect"]);
+  });
+
+  it("retires a replaced Gateway's rows and pending transcript before a failing snapshot", async ({
+    onTestFinished,
+  }) => {
+    const scrollIntoView = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
+    Object.defineProperty(Element.prototype, "scrollIntoView", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    onTestFinished(() => {
+      if (scrollIntoView) {
+        Object.defineProperty(Element.prototype, "scrollIntoView", scrollIntoView);
+      } else {
+        Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+      }
+    });
+    const stale = createTask("old-gateway-task", "completed", { title: "Old Gateway task" });
+    const shared = createTask("shared-task", "completed", {
+      title: "Old shared task",
+      hasTranscript: true,
+    });
+    const replacementTask = {
+      ...shared,
+      title: "Replacement Gateway task",
+      updatedAt: 200,
+    };
+    const oldSnapshot = deferred<{ tasks: TaskSummary[] }>();
+    const replacementSnapshot = deferred<{ tasks: TaskSummary[] }>();
+    const oldTranscript = deferred<{ messages: unknown[] }>();
+    let refreshing = false;
+    let replaced = false;
+    const request = vi.fn((method: string) => {
+      if (method === "tasks.history") {
+        return replaced
+          ? Promise.resolve({
+              messages: [{ role: "assistant", content: "Replacement task transcript" }],
+            })
+          : oldTranscript.promise;
+      }
+      return replaced
+        ? replacementSnapshot.promise
+        : refreshing
+          ? oldSnapshot.promise
+          : Promise.resolve({ tasks: [stale, shared] });
+    });
+    const client = createTestGatewayClient(request);
+    const hello = gatewayHelloForMethods(["tasks.list", "tasks.history"], ["operator.read"]);
+    const source = createGateway(client, hello);
+    const context = createContext(source.gateway);
+    const root = document.createElement("div");
+    const provider = new ContextProvider(root, {
+      context: applicationContext,
+      initialValue: context,
+    });
+    const page = document.createElement("openclaw-tasks-page");
+    root.append(page);
+    document.body.append(root);
+    await waitForFast(() => expect(page.querySelectorAll("[data-task-id]")).toHaveLength(2));
+    page.querySelector<HTMLButtonElement>('[data-task-id="shared-task"] button')?.click();
+    await waitForFast(() => expect(page.querySelector(".tasks-transcript")).not.toBeNull());
+    await waitForFast(() =>
+      expect(request).toHaveBeenCalledWith("tasks.history", { taskId: shared.id, limit: 100 }),
+    );
+
+    refreshing = true;
+    [...page.querySelectorAll("button")]
+      .find((button) => button.textContent?.trim() === t("common.refresh"))
+      ?.click();
+    await waitForFast(() =>
+      expect(request.mock.calls.filter(([method]) => method === "tasks.list")).toHaveLength(4),
+    );
+    // The provider changes, but the transport object and connected phase do not.
+    // Source identity must retire readers even without a disconnect transition.
+    replaced = true;
+    const replacement = createGateway(client, hello);
+    provider.setValue({ ...context, gateway: replacement.gateway });
+    await waitForFast(() =>
+      expect(request.mock.calls.filter(([method]) => method === "tasks.list")).toHaveLength(6),
+    );
+    expect(page.querySelector("[data-task-id]")).toBeNull();
+    expect(page.querySelector(".tasks-transcript")).toBeNull();
+    source.emitTask({
+      action: "upserted",
+      task: createTask("old-source-event", "completed", { updatedAt: 300 }),
+    });
+    replacement.emitTask({ action: "upserted", task: replacementTask });
+    expect(page.querySelector('[data-task-id="old-gateway-task"]')).toBeNull();
+
+    replacementSnapshot.reject(new Error("Replacement snapshot unavailable"));
+    oldSnapshot.resolve({ tasks: [stale, shared] });
+    oldTranscript.resolve({
+      messages: [{ role: "assistant", content: "Retired Gateway transcript" }],
+    });
+    await waitForFast(() => {
+      expect(page.textContent).toContain("Replacement snapshot unavailable");
+      expect(page.textContent).toContain("Replacement Gateway task");
+      expect(
+        [...page.querySelectorAll("[data-task-id]")].map((row) => row.getAttribute("data-task-id")),
+      ).toEqual([replacementTask.id]);
+    });
+    expect(page.querySelector(".tasks-transcript")).toBeNull();
+    page.querySelector<HTMLButtonElement>('[data-task-id="shared-task"] button')?.click();
+    await waitForFast(() =>
+      expect(page.querySelector(".tasks-transcript")?.textContent).toContain(
+        "Replacement task transcript",
+      ),
+    );
+    expect(page.textContent).not.toContain("Retired Gateway transcript");
+    expect(page.textContent).not.toContain("Old Gateway task");
   });
 });
 

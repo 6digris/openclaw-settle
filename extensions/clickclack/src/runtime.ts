@@ -14,7 +14,11 @@ const { setRuntime: setClickClackRuntime, getRuntime: getClickClackRuntime } =
 
 export { getClickClackRuntime, setClickClackRuntime };
 
-export type ClickClackTaskRecoverySession = Readonly<{ sessionKey: string; agentId: string }>;
+export type ClickClackTaskRecoverySession = Readonly<{
+  sessionKey: string;
+  agentId: string;
+  accountId: string;
+}>;
 export type RecoverySnapshot = {
   ready: Promise<void>;
   sessions: Map<string, ClickClackTaskRecoverySession>;
@@ -25,21 +29,41 @@ export const recovery = createPluginRuntimeStore<RecoverySnapshot>({
   errorMessage: "ClickClack task recovery is not activated",
 });
 
-/** Keep admitted scopes discoverable after account restarts without rescanning session storage. */
+export function hasClickClackTaskRecoveryWork(task: {
+  status: string;
+  deliveryStatus?: string;
+}): boolean {
+  return (
+    task.status === "queued" ||
+    task.status === "running" ||
+    task.deliveryStatus === "pending" ||
+    task.deliveryStatus === "session_queued"
+  );
+}
+
+/** The observation can forget only its own admission, never a replacement account's. */
 export function rememberClickClackTaskRecoverySession(
   session: ClickClackTaskRecoverySession,
-): void {
+): () => void {
   const snapshot = recovery.tryGetRuntime();
   if (!snapshot) {
-    return;
+    return () => {};
   }
   snapshot.assertCurrent();
-  snapshot.sessions.set(JSON.stringify([session.agentId, session.sessionKey]), session);
+  const key = JSON.stringify([session.agentId, session.sessionKey, session.accountId]);
+  snapshot.sessions.set(key, session);
+  return () => {
+    snapshot.assertCurrent();
+    if (snapshot.sessions.get(key) === session) {
+      snapshot.sessions.delete(key);
+    }
+  };
 }
 
 /** Waiting for service startup never holds account shutdown or a reconnect cycle. */
 export async function readClickClackTaskRecoverySessions(
   signal: AbortSignal,
+  accountId: string,
 ): Promise<readonly ClickClackTaskRecoverySession[]> {
   const snapshot = recovery.tryGetRuntime();
   if (!snapshot) {
@@ -53,7 +77,7 @@ export async function readClickClackTaskRecoverySessions(
     await Promise.race([snapshot.ready, aborted.promise]);
     signal.throwIfAborted();
     snapshot.assertCurrent();
-    return [...snapshot.sessions.values()];
+    return [...snapshot.sessions.values()].filter((session) => session.accountId === accountId);
   } finally {
     signal.removeEventListener("abort", onAbort);
   }

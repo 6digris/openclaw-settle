@@ -7,7 +7,7 @@ import {
   type ClickClackItemEventPayload,
   type ClickClackProgressPublication,
 } from "./progress.js";
-import { rememberClickClackTaskRecoverySession } from "./runtime.js";
+import { hasClickClackTaskRecoveryWork, rememberClickClackTaskRecoverySession } from "./runtime.js";
 import type { ClickClackMessage, ResolvedClickClackAccount } from "./types.js";
 
 type BoundTasks = ReturnType<PluginRuntime["tasks"]["async"]["runs"]["bindSession"]>;
@@ -23,7 +23,7 @@ type TaskPublication = {
 };
 type TurnPublication = {
   message: ClickClackMessage;
-  foreground: boolean;
+  foreground: number;
   progress?: ClickClackAgentProgressPublisher;
   waitingPresentation?: boolean;
   tasks: Map<string, TaskPublication>;
@@ -31,7 +31,7 @@ type TurnPublication = {
 type SessionObservation = {
   turns: Map<string, TurnPublication>;
   controller: AbortController;
-  ready?: Promise<() => Promise<void>>;
+  ready?: Promise<(() => Promise<void>) | undefined>;
   refresh: () => Promise<void>;
   retirement?: Promise<void>;
 };
@@ -67,6 +67,7 @@ export function createClickClackTaskProgressObserver(params: {
   });
   const closeTurn = async (turn: TurnPublication) => {
     await turn.progress?.finalize();
+    await turn.progress?.flush();
     const activityFinalizations: Promise<void>[] = [];
     for (const task of turn.tasks.values()) {
       if (task.activity) {
@@ -107,6 +108,11 @@ export function createClickClackTaskProgressObserver(params: {
       return existing;
     }
     const controller = new AbortController();
+    const forgetRecovery = rememberClickClackTaskRecoverySession({
+      sessionKey,
+      agentId,
+      accountId: params.account.accountId,
+    });
     const state: SessionObservation = {
       turns: new Map(),
       controller,
@@ -115,6 +121,7 @@ export function createClickClackTaskProgressObserver(params: {
         state.ready = (async () => {
           const stop = await previous;
           await stop?.();
+          signal.throwIfAborted();
           return subscribe();
         })();
         await state.ready;
@@ -135,6 +142,19 @@ export function createClickClackTaskProgressObserver(params: {
         }
       };
       assertCurrent();
+      const hasWork = tasks.some((task) => {
+        if (!hasClickClackTaskRecoveryWork(task)) {
+          return false;
+        }
+        const source = sources.get(task.id);
+        // Restoration can precede source recovery. Missing correlation is not
+        // proof of idle; a known foreign account is outside this observation.
+        return (
+          !source ||
+          (source.channel === "clickclack" &&
+            (source.accountId ?? "default") === params.account.accountId)
+        );
+      });
       const settleNative = async (
         turn: TurnPublication,
         receipts: Array<Promise<ClickClackProgressPublication>>,
@@ -202,7 +222,7 @@ export function createClickClackTaskProgressObserver(params: {
           }
           turn = state.turns.get(message.id) ?? {
             message,
-            foreground: false,
+            foreground: 0,
             tasks: new Map(),
             progress: params.account.nativeProgress
               ? createClickClackAgentProgressPublisher({
@@ -351,6 +371,9 @@ export function createClickClackTaskProgressObserver(params: {
         }
       }
       for (const [turnId, turn] of state.turns) {
+        if (turn.foreground && turn.tasks.size === 0) {
+          continue;
+        }
         for (const [taskId, publication] of turn.tasks) {
           if (active.get(taskId) !== turnId) {
             if (!(await retractItems(turn, publication))) {
@@ -364,10 +387,14 @@ export function createClickClackTaskProgressObserver(params: {
           if (turn.tasks.size === 0) {
             await closeTurn(turn);
             assertCurrent();
-            state.turns.delete(turnId);
-            continue;
+            if (!turn.foreground) {
+              state.turns.delete(turnId);
+              continue;
+            }
           }
-          if (runningTurns.has(turnId)) {
+          if (turn.foreground) {
+            turn.progress?.start(undefined, assertCurrent);
+          } else if (runningTurns.has(turnId)) {
             turn.progress?.setStatus("Background work is continuing", assertCurrent, {
               running: true,
             });
@@ -392,17 +419,37 @@ export function createClickClackTaskProgressObserver(params: {
         await turn.progress?.flush();
         assertCurrent();
       }
+      assertCurrent();
+      if (!hasWork && state.turns.size === 0) {
+        forgetRecovery();
+        // Unsubscribe joins this callback, so retirement must not be awaited here.
+        void retire(key, state).catch(params.onError);
+      }
     };
-    const subscribe = () =>
-      params.runtime.tasks.async.runs.bindSession({ sessionKey, agentId }).observeProgress({
-        signal,
-        onChange: update,
-        onError(error) {
-          params.onError(error);
-          void retire(key, state).catch(params.onError);
-        },
-      });
-    state.ready = subscribe();
+    const subscribe = async () => {
+      try {
+        signal.throwIfAborted();
+        return await params.runtime.tasks.async.runs
+          .bindSession({ sessionKey, agentId })
+          .observeProgress({
+            signal,
+            onChange: update,
+            onError(error) {
+              params.onError(error);
+              void retire(key, state).catch(params.onError);
+            },
+          });
+      } catch (error) {
+        // Initial idle retirement aborts and joins the host's first callback
+        // before observeProgress has returned its unsubscribe function.
+        if (!signal.aborted) {
+          throw error;
+        }
+        return undefined;
+      }
+    };
+    // Attach installs its foreground turn before the initial snapshot can prove idle.
+    state.ready = Promise.resolve().then(subscribe);
     void state.ready.catch((error: unknown) => {
       params.onError(error);
       void retire(key, state).catch(params.onError);
@@ -412,27 +459,38 @@ export function createClickClackTaskProgressObserver(params: {
   return {
     /** Reuse the original inbound correlation; never select an activity-row ID as a receipt. */
     async attach(input) {
-      rememberClickClackTaskRecoverySession({
-        sessionKey: input.sessionKey,
-        agentId: input.agentId,
-      });
+      params.signal.throwIfAborted();
       const state = observe(input.sessionKey, input.agentId);
       const turn: TurnPublication = state.turns.get(input.message.id) ?? {
         message: input.message,
-        foreground: true,
+        foreground: 0,
         progress: input.progress,
         tasks: new Map(),
       };
-      turn.foreground = true;
+      turn.foreground += 1;
       state.turns.set(input.message.id, turn);
-      turn.progress?.start();
+      turn.progress?.start(undefined, () => {
+        params.signal.throwIfAborted();
+        state.controller.signal.throwIfAborted();
+      });
+      let finished = false;
       return {
         progress: turn.progress,
         finishForeground: async () => {
+          if (finished) {
+            return;
+          }
+          finished = true;
           // Parent settlement is not task completion. Refresh the owner snapshot
           // in the account lifecycle, without making optional progress delay replies.
-          turn.foreground = false;
+          turn.foreground -= 1;
+          if (closed || state.controller.signal.aborted || params.signal.aborted) {
+            return;
+          }
           void state.refresh().catch((error: unknown) => {
+            if (state.controller.signal.aborted || params.signal.aborted) {
+              return;
+            }
             params.onError(error);
             void retire(JSON.stringify([input.agentId, input.sessionKey]), state).catch(
               params.onError,

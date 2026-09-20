@@ -1,22 +1,16 @@
 import type { Bot } from "grammy";
-import type { Message } from "grammy/types";
-import { escapeTelegramHtml } from "./format.js";
+import {
+  fallbackSnapshot,
+  sendTelegramDraftMessage,
+  toDraftSnapshot,
+  type TelegramDraftMessageSnapshot,
+  type TelegramDraftTransportReceipt,
+} from "./draft-stream-message.js";
 import {
   withTelegramPlainFallback,
   warnTelegramRichBlocksDegradations,
 } from "./rich-plain-fallback.js";
 import type { TelegramTextDeliveryPage } from "./telegram-text-delivery.js";
-
-export type TelegramDraftMessageSnapshot = {
-  text: string;
-  sourceText: string;
-  sourceTextMode?: "html" | "markdown";
-};
-
-export type TelegramDraftTransportReceipt = {
-  message: Message;
-  snapshot: TelegramDraftMessageSnapshot;
-};
 
 type TelegramDraftSendMessageParams = NonNullable<Parameters<Bot["api"]["sendMessage"]>[2]>;
 
@@ -24,7 +18,7 @@ type TelegramDraftTransport = {
   send: (
     page: TelegramTextDeliveryPage,
     sendMessageParams: TelegramDraftSendMessageParams,
-    assertPlatformSendAuthorized?: () => void,
+    assertCurrentSend: () => void,
   ) => Promise<TelegramDraftTransportReceipt>;
   edit: (
     page: TelegramTextDeliveryPage,
@@ -32,22 +26,6 @@ type TelegramDraftTransport = {
     assertPlatformSendAuthorized?: () => void,
   ) => Promise<TelegramDraftMessageSnapshot>;
 };
-
-export function toDraftSnapshot(page: TelegramTextDeliveryPage): TelegramDraftMessageSnapshot {
-  return {
-    text: page.plainText,
-    sourceText: page.sourceText,
-    sourceTextMode: page.sourceTextMode,
-  };
-}
-
-function fallbackSnapshot(plainText: string): TelegramDraftMessageSnapshot {
-  return {
-    text: plainText,
-    sourceText: escapeTelegramHtml(plainText),
-    sourceTextMode: "html",
-  };
-}
 
 export function createTelegramDraftTransport(params: {
   api: Bot["api"];
@@ -73,72 +51,15 @@ export function createTelegramDraftTransport(params: {
   };
 
   return {
-    async send(page, sendMessageParams, assertPlatformSendAuthorized) {
-      assertPlatformSendAuthorized?.();
-      if (page.richMessage) {
-        const richMessage = page.richMessage;
-        warnTelegramRichBlocksDegradations({
-          context: "stream preview",
-          reasons: page.degradationReasons ?? [],
-          warn: (message) => params.warn?.(message),
-        });
-        return await withTelegramPlainFallback<TelegramDraftTransportReceipt>({
-          kind: "rich",
-          context: "stream preview",
-          plainText: page.plainText,
-          warn: (message) => params.warn?.(message),
-          sendFormatted: async () => ({
-            message: await api.raw.sendRichMessage({
-              chat_id: chatId,
-              rich_message: richMessage,
-              ...sendMessageParams,
-            }),
-            snapshot: toDraftSnapshot(page),
-          }),
-          sendPlain: async (plan) => {
-            assertPlatformSendAuthorized?.();
-            return {
-              message: await api.sendMessage(chatId, plan.plainText, {
-                ...sendMessageParams,
-                ...linkPreviewParams,
-              }),
-              snapshot: fallbackSnapshot(plan.plainText),
-            };
-          },
-        });
-      }
-      if (page.sourceTextMode !== "html") {
-        return {
-          message: await api.sendMessage(chatId, page.plainText, {
-            ...sendMessageParams,
-            ...linkPreviewParams,
-          }),
-          snapshot: toDraftSnapshot(page),
-        };
-      }
-      return await withTelegramPlainFallback<TelegramDraftTransportReceipt>({
-        kind: "html",
-        context: "stream preview",
-        plainText: page.plainText,
-        warn: (message) => params.warn?.(message),
-        sendFormatted: async () => ({
-          message: await api.sendMessage(chatId, page.htmlText ?? page.sourceText, {
-            parse_mode: "HTML" as const,
-            ...sendMessageParams,
-            ...linkPreviewParams,
-          }),
-          snapshot: toDraftSnapshot(page),
-        }),
-        sendPlain: async (plan) => {
-          assertPlatformSendAuthorized?.();
-          return {
-            message: await api.sendMessage(chatId, plan.plainText, {
-              ...sendMessageParams,
-              ...linkPreviewParams,
-            }),
-            snapshot: fallbackSnapshot(plan.plainText),
-          };
-        },
+    async send(page, sendMessageParams, assertCurrentSend) {
+      return await sendTelegramDraftMessage({
+        api,
+        chatId,
+        page,
+        sendMessageParams,
+        linkPreviewParams,
+        warn: params.warn,
+        assertCurrentSend,
       });
     },
     async edit(page, messageId, assertPlatformSendAuthorized) {

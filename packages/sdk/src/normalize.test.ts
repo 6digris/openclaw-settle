@@ -29,6 +29,17 @@ describe("normalizeGatewayEvent IDs", () => {
   });
 });
 
+describe("normalizeGatewayEvent released task names", () => {
+  it.each(["task.updated", "tasks.changed"])("classifies shipped %s events", (event) => {
+    expect(
+      normalizeGatewayEvent({
+        event,
+        payload: { taskId: "legacy-task", status: "running", ts: 123 },
+      }).type,
+    ).toBe("task.updated");
+  });
+});
+
 describe("normalizeGatewayEvent terminal tool item status", () => {
   it("classifies a failed terminal tool item as tool.call.failed", () => {
     expect(normalizeGatewayEvent(agentItemEvent({ phase: "end", status: "failed" })).type).toBe(

@@ -2,7 +2,12 @@ import { listAgentIds } from "openclaw/plugin-sdk/agent-scope-runtime";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { listClickClackAccountIds, resolveClickClackAccount } from "./accounts.js";
-import { recovery, type RecoverySnapshot } from "./runtime.js";
+import {
+  hasClickClackTaskRecoveryWork,
+  recovery,
+  type ClickClackTaskRecoverySession,
+  type RecoverySnapshot,
+} from "./runtime.js";
 
 /** One activation catch-up shared by accounts; source ownership is checked by each observation. */
 export function registerClickClackTaskProgressRecovery(api: OpenClawPluginApi): void {
@@ -35,11 +40,11 @@ export function registerClickClackTaskProgressRecovery(api: OpenClawPluginApi): 
     id: "clickclack-task-progress-recovery",
     start({ config: cfg }) {
       discovery = (async () => {
-        const enabled = listClickClackAccountIds(cfg).some((accountId) => {
+        const enabled = listClickClackAccountIds(cfg).filter((accountId) => {
           const account = resolveClickClackAccount({ cfg, accountId });
           return account.enabled && (account.nativeProgress || account.agentActivity);
         });
-        if (enabled) {
+        if (enabled.length > 0) {
           for (const agentId of listAgentIds(cfg)) {
             snapshot.assertCurrent();
             // Shared/global owners can carry ClickClack work even when their
@@ -49,15 +54,27 @@ export function registerClickClackTaskProgressRecovery(api: OpenClawPluginApi): 
               readOnly: true,
             });
             for (const { sessionKey } of entries) {
+              // Admit before the awaited read so live observations can replace
+              // or retire these candidates without discovery resurrecting them.
+              const candidates = new Map<string, ClickClackTaskRecoverySession>();
+              for (const accountId of enabled) {
+                const key = JSON.stringify([agentId, sessionKey, accountId]);
+                if (!snapshot.sessions.has(key)) {
+                  const session = { sessionKey, agentId, accountId };
+                  snapshot.sessions.set(key, session);
+                  candidates.set(key, session);
+                }
+              }
               const tasks = await api.runtime.tasks.async.runs
                 .bindSession({ sessionKey, agentId })
                 .list();
               snapshot.assertCurrent();
-              if (tasks.some((task) => task.status === "queued" || task.status === "running")) {
-                snapshot.sessions.set(JSON.stringify([agentId, sessionKey]), {
-                  sessionKey,
-                  agentId,
-                });
+              if (!tasks.some(hasClickClackTaskRecoveryWork)) {
+                for (const [key, session] of candidates) {
+                  if (snapshot.sessions.get(key) === session) {
+                    snapshot.sessions.delete(key);
+                  }
+                }
               }
             }
           }

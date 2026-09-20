@@ -84,7 +84,7 @@ function taskSnapshot() {
       ? {
           endedAt: created + revision,
           terminalSummary: `Synthetic worker ${stage}; no command was executed.`,
-          deliveryStatus: "not_applicable",
+          deliveryStatus: taskScenario.deliveryStatus ?? "not_applicable",
         }
       : {
           progress: {
@@ -140,18 +140,43 @@ function emitTask() {
   broadcast("task", { action: "upserted", task: taskSnapshot() });
 }
 
-function advanceTaskScenario(stage) {
-  if (!taskScenario?.parentYielded || ["failed", "completed"].includes(taskScenario.stage)) {
+function advanceTaskScenario(stage, deliveryStatus) {
+  const deliveryUpdate = taskScenario?.stage === "completed" && stage === "completed";
+  if (!taskScenario?.parentYielded || taskScenario.stage === "failed") {
     throw new Error("Send the synthetic parent prompt before advancing an active task");
   }
+  if (
+    deliveryStatus !== undefined &&
+    (stage !== "completed" ||
+      ![
+        "pending",
+        "session_queued",
+        "delivered",
+        "failed",
+        "dismissed",
+        "parent_missing",
+        "not_applicable",
+      ].includes(deliveryStatus))
+  ) {
+    throw new Error("Expected an existing completed-task delivery status");
+  }
   const expected = { yielded: ["working"], working: ["unknown"], unknown: ["failed", "completed"] };
-  if (!expected[taskScenario.stage]?.includes(stage)) {
-    throw new Error("Expected working, unknown, then failed or completed");
+  if (
+    deliveryUpdate ? deliveryStatus === undefined : !expected[taskScenario.stage]?.includes(stage)
+  ) {
+    throw new Error(
+      "Expected working, unknown, then failed or completed; completed updates require deliveryStatus",
+    );
   }
   taskScenario.stage = stage;
   taskScenario.revision += 1;
+  taskScenario.deliveryStatus = deliveryStatus;
   emitTask();
-  if (stage === "failed" || stage === "completed") {
+  if (
+    (stage === "failed" || stage === "completed") &&
+    (deliveryStatus === undefined || deliveryStatus === "delivered") &&
+    !taskScenario.messages.some((message) => message["__openclaw"].id === "native-progress-final")
+  ) {
     const message = taskMessage(
       "assistant",
       `Synthetic final: ${stage} fixture result; no command was executed.`,
@@ -410,7 +435,8 @@ async function handleHttpRequest(req, res) {
             throw new Error("Task scenario request is too large");
           }
         }
-        advanceTaskScenario(JSON.parse(body).stage);
+        const { stage, deliveryStatus } = JSON.parse(body);
+        advanceTaskScenario(stage, deliveryStatus);
         res.end(JSON.stringify(taskEvidence()));
       } else if (req.method === "GET" && path === "/task-progress/evidence") {
         res.end(JSON.stringify(taskEvidence()));

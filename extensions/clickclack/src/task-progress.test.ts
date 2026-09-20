@@ -1,10 +1,13 @@
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
-import type { PluginRuntime } from "openclaw/plugin-sdk/core";
+import type { OpenClawPluginService, PluginRuntime } from "openclaw/plugin-sdk/core";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveClickClackAccount } from "./accounts.js";
 import { createClickClackClient } from "./http-client.js";
 import { createClickClackAgentProgressPublisher } from "./progress.js";
+import { readClickClackTaskRecoverySessions } from "./runtime.js";
+import { registerClickClackTaskProgressRecovery } from "./task-progress-recovery.js";
 import { createClickClackTaskProgressObserver } from "./task-progress.js";
 import type { ClickClackMessage } from "./types.js";
 
@@ -120,12 +123,9 @@ function createHarness(options?: { nativeProgress?: boolean; agentActivity?: boo
     return Response.json({ message: sourceMessage });
   });
   const runtime = createPluginRuntimeMock();
-  const bound = runtime.tasks.async.runs.bindSession({ sessionKey, agentId: "main" });
-  let currentTasks: TaskUpdate[0] = [];
-  let version = 0;
-  let callback: ObserveOptions | undefined;
-  let pending = Promise.resolve();
-  const sources: TaskUpdate[2] = new Map([
+  const template = runtime.tasks.async.runs.bindSession({ sessionKey, agentId: "main" });
+  const subscriptions = new Set<ObserveOptions>();
+  const sources = new Map([
     [
       "task-1",
       {
@@ -137,61 +137,117 @@ function createHarness(options?: { nativeProgress?: boolean; agentActivity?: boo
       },
     ],
   ]);
-  const publish = () => {
-    const observer = callback;
-    if (!observer) {
-      return Promise.resolve();
+  const scopes = new Map<
+    string,
+    {
+      bound: BoundTasks;
+      seed: (tasks: TaskUpdate[0]) => void;
+      update: (tasks: TaskUpdate[0]) => Promise<void>;
+      reobserve: () => Promise<void>;
     }
-    const captured = version;
-    const assertCurrent = () => {
-      observer.signal.throwIfAborted();
-      if (callback !== observer || captured !== version) {
-        throw new Error("Task source was replaced");
-      }
+  >();
+  const forSession = (key: string) => {
+    const existing = scopes.get(key);
+    if (existing) {
+      return existing;
+    }
+    const bound = { ...template, sessionKey: key };
+    let currentTasks: TaskUpdate[0] = [];
+    let version = 0;
+    const callbacks = new Map<ObserveOptions, Promise<void>>();
+    const publish = async (initial?: ObserveOptions) => {
+      const captured = version;
+      await Promise.all(
+        [...(initial ? [initial] : callbacks.keys())].map((observer) => {
+          const assertCurrent = () => {
+            observer.signal.throwIfAborted();
+            if (!callbacks.has(observer) || captured !== version) {
+              throw new Error("Task source was replaced");
+            }
+          };
+          const pending = Promise.resolve(observer.onChange(currentTasks, assertCurrent, sources));
+          callbacks.set(observer, pending);
+          return pending;
+        }),
+      );
     };
-    pending = Promise.resolve(observer.onChange(currentTasks, assertCurrent, sources));
-    return pending;
-  };
-  bound.observeProgress = async (observer) => {
-    callback = observer;
-    await publish();
-    return async () => {
-      if (callback === observer) {
-        callback = undefined;
+    bound.observeProgress = async (observer) => {
+      callbacks.set(observer, Promise.resolve());
+      subscriptions.add(observer);
+      try {
+        await publish(observer);
+      } catch (error) {
+        callbacks.delete(observer);
+        subscriptions.delete(observer);
+        throw error;
       }
-      await pending.catch(() => undefined);
+      return async () => {
+        const pending = callbacks.get(observer);
+        callbacks.delete(observer);
+        subscriptions.delete(observer);
+        await pending?.catch(() => undefined);
+      };
     };
+    const scope = {
+      bound,
+      seed(tasks: TaskUpdate[0]) {
+        currentTasks = tasks;
+        version += 1;
+      },
+      async update(tasks: TaskUpdate[0]) {
+        currentTasks = tasks;
+        version += 1;
+        await publish();
+      },
+      async reobserve() {
+        version += 1;
+        await Promise.all([...callbacks.values()].map((pending) => pending.catch(() => undefined)));
+        await publish();
+      },
+    };
+    scopes.set(key, scope);
+    return scope;
   };
-  vi.spyOn(runtime.tasks.async.runs, "bindSession").mockReturnValue(bound);
+  vi.spyOn(runtime.tasks.async.runs, "bindSession").mockImplementation(
+    ({ sessionKey: key }) => forSession(key).bound,
+  );
   const abort = new AbortController();
-  const observer = createClickClackTaskProgressObserver({
-    runtime,
-    account,
-    signal: abort.signal,
-    onError: () => {},
-  });
+  const createObserver = (accountId = account.accountId) =>
+    createClickClackTaskProgressObserver({
+      runtime,
+      account: { ...account, accountId },
+      signal: abort.signal,
+      onError: () => {},
+    });
+  const observer = createObserver();
   return {
     account,
     observer,
+    createObserver,
+    subscriptions,
+    sources,
+    forSession,
+    async activateRecovery() {
+      const services: OpenClawPluginService[] = [];
+      const api = createTestPluginApi({
+        runtime,
+        config: { channels: { clickclack: { nativeProgress: true } } },
+        registerService: (service) => services.push(service),
+      });
+      registerClickClackTaskProgressRecovery(api);
+      const service = services[0]!;
+      const context = { config: api.config, stateDir: "/unused", logger: api.logger };
+      await service.start(context);
+      return async () => {
+        await service.stop?.(context);
+      };
+    },
     frames,
     visible,
     durable,
     reads,
     writes,
-    seed(tasks: TaskUpdate[0]) {
-      currentTasks = tasks;
-      version += 1;
-    },
-    async update(tasks: TaskUpdate[0]) {
-      currentTasks = tasks;
-      version += 1;
-      await publish();
-    },
-    async reobserve() {
-      version += 1;
-      await pending.catch(() => undefined);
-      await publish();
-    },
+    ...forSession(sessionKey),
   };
 }
 
@@ -457,6 +513,181 @@ describe("ClickClack task-owned progress", () => {
       expect(h.frames).toEqual([]);
       expect([...h.durable.values()].join("\n")).toContain("Inspect execution-1");
     } finally {
+      await h.observer.close();
+    }
+  });
+
+  it("retires idle turns without dropping overlapping turns, sessions, or accounts", async () => {
+    const h = createHarness({ nativeProgress: false, agentActivity: false });
+    const stopRecovery = await h.activateRecovery();
+    const other = h.createObserver("secondary");
+    const signal = new AbortController().signal;
+    const secondSession = `${sessionKey}:thread:second`;
+    try {
+      const first = await h.observer.attach({
+        sessionKey,
+        agentId: "main",
+        message: sourceMessage,
+      });
+      const overlapping = await h.observer.attach({
+        sessionKey,
+        agentId: "main",
+        message: { ...sourceMessage, id: "second-turn" },
+      });
+      const second = await h.observer.attach({
+        sessionKey: secondSession,
+        agentId: "main",
+        message: { ...sourceMessage, id: "other-session-turn" },
+      });
+      const otherAccount = await other.attach({
+        sessionKey,
+        agentId: "main",
+        message: sourceMessage,
+      });
+      await first.finishForeground();
+      await first.finishForeground();
+      await h.reobserve();
+      expect(
+        (await readClickClackTaskRecoverySessions(signal, "default")).map(
+          (session) => session.sessionKey,
+        ),
+      ).toEqual([sessionKey, secondSession]);
+      await overlapping.finishForeground();
+      await vi.waitFor(async () => {
+        expect(
+          (await readClickClackTaskRecoverySessions(signal, "default")).map(
+            (session) => session.sessionKey,
+          ),
+        ).toEqual([secondSession]);
+      });
+      expect(await readClickClackTaskRecoverySessions(signal, "secondary")).toEqual([
+        { sessionKey, agentId: "main", accountId: "secondary" },
+      ]);
+      await second.finishForeground();
+      await otherAccount.finishForeground();
+      await vi.waitFor(async () => {
+        expect(await readClickClackTaskRecoverySessions(signal, "default")).toEqual([]);
+        expect(await readClickClackTaskRecoverySessions(signal, "secondary")).toEqual([]);
+        expect(h.subscriptions.size).toBe(0);
+      });
+      const restarted = h.createObserver();
+      await restarted.restore(await readClickClackTaskRecoverySessions(signal, "default"));
+      expect(h.subscriptions.size).toBe(0);
+      await restarted.close();
+    } finally {
+      await Promise.all([h.observer.close(), other.close()]);
+      await stopRecovery();
+    }
+  });
+
+  it("keeps late children and pending delivery observed through foreground yield and account restart", async () => {
+    const h = createHarness({ agentActivity: false });
+    const stopRecovery = await h.activateRecovery();
+    const signal = new AbortController().signal;
+    const restarted = h.createObserver();
+    try {
+      const foreground = await h.observer.attach({
+        sessionKey,
+        agentId: "main",
+        message: sourceMessage,
+      });
+      // The child becomes authoritative after the last callback; settlement
+      // must refresh instead of treating the old empty snapshot as idle.
+      const source = h.sources.get("task-1")!;
+      h.sources.clear();
+      h.seed([task()]);
+      await foreground.finishForeground();
+      await h.observer.restore([{ sessionKey, agentId: "main" }]);
+      h.sources.set("task-1", source);
+      await h.update([task()]);
+      await vi.waitFor(() => {
+        expect(h.visible.get(sourceMessage.id)?.get("turn")).toBe("Background work is continuing");
+      });
+      const terminal: TaskUpdate[0][number] = {
+        ...task(),
+        status: "completed",
+        execution: { state: "finished" },
+        deliveryStatus: "pending",
+      };
+      await h.update([terminal]);
+      expect(h.visible.has(sourceMessage.id)).toBe(false);
+      await h.observer.close();
+      const sessions = await readClickClackTaskRecoverySessions(signal, "default");
+      expect(sessions).toEqual([{ sessionKey, agentId: "main", accountId: "default" }]);
+      await restarted.restore(sessions);
+      await h.update([{ ...terminal, deliveryStatus: "session_queued" }]);
+      expect(await readClickClackTaskRecoverySessions(signal, "default")).toEqual(sessions);
+      await h.update([task(2, "late-child")]);
+      expect([...h.visible.get(sourceMessage.id)!.values()]).toContain("Inspect late-child");
+      await h.update([{ ...terminal, deliveryStatus: "delivered" }]);
+      await vi.waitFor(async () => {
+        expect(h.subscriptions.size).toBe(0);
+        expect(await readClickClackTaskRecoverySessions(signal, "default")).toEqual([]);
+      });
+    } finally {
+      await Promise.all([h.observer.close(), restarted.close()]);
+      await stopRecovery();
+    }
+  });
+
+  it("does not retire a scope from an idle snapshot superseded during native publication", async () => {
+    const h = createHarness({ agentActivity: false });
+    const stopRecovery = await h.activateRecovery();
+    const release = createDeferred<void>();
+    h.seed([task()]);
+    try {
+      await h.observer.restore([{ sessionKey, agentId: "main" }]);
+      h.writes.gate = release.promise;
+      const ending = h.update([
+        {
+          ...task(),
+          status: "completed",
+          execution: { state: "finished" },
+          deliveryStatus: "delivered",
+        },
+      ]);
+      const stale = expect(ending).rejects.toThrow("Task source was replaced");
+      await h.writes.entered.promise;
+      h.seed([task(2, "continuing-child")]);
+      const continuing = h.reobserve();
+      release.resolve();
+      await stale;
+      await continuing;
+      expect([...h.visible.get(sourceMessage.id)!.values()]).toContain("Inspect continuing-child");
+      expect(
+        await readClickClackTaskRecoverySessions(new AbortController().signal, "default"),
+      ).toEqual([{ sessionKey, agentId: "main", accountId: "default" }]);
+    } finally {
+      release.resolve();
+      await h.observer.close();
+      await stopRecovery();
+    }
+  });
+
+  it("joins an in-flight recovered lookup on shutdown and never publishes its late result", async () => {
+    const h = createHarness();
+    const release = createDeferred<void>();
+    h.reads.gate = release.promise;
+    h.seed([task()]);
+    const restoring = h.observer.restore([{ sessionKey, agentId: "main" }]);
+    let closed = false;
+    try {
+      await h.reads.entered.promise;
+      const closing = h.observer.close().then(() => {
+        closed = true;
+      });
+      await Promise.resolve();
+      expect(closed).toBe(false);
+      release.resolve();
+      await Promise.all([closing, restoring]);
+      expect(h.frames).toEqual([]);
+      expect(h.durable.size).toBe(0);
+      expect(h.subscriptions.size).toBe(0);
+      await expect(
+        h.observer.attach({ sessionKey, agentId: "main", message: sourceMessage }),
+      ).rejects.toThrow("closed");
+    } finally {
+      release.resolve();
       await h.observer.close();
     }
   });

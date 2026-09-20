@@ -499,12 +499,6 @@ export async function runServiceRestart(params: {
       serviceNoun: params.serviceNoun,
       service: params.service,
       intent: restartIntent,
-      warn: (message) => {
-        warnings.push(message);
-        if (!json) {
-          defaultRuntime.log(message);
-        }
-      },
     });
   const emitScheduledRestart = (
     restartStatus: ReturnType<typeof describeGatewayServiceRestart>,
@@ -532,7 +526,7 @@ export async function runServiceRestart(params: {
   }
 
   // Pre-flight config validation: check before any restart action (including
-  // onNotLoaded which may send SIGUSR1 to an unmanaged process). (#35862)
+  // onNotLoaded which may request an unmanaged process restart). (#35862)
   {
     const preflight = await getServiceActionPreflightFailure("restart");
     if (preflight) {

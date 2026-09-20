@@ -299,7 +299,7 @@ export function renderTaskTranscript(params: {
     }
     ${load.status === "loaded" && load.nextCursor ? renderChatHistoryBoundary({ hasMore: true, loading: load.loading, onShowEarlier: () => loadOlderTaskTranscript(params.host) }) : nothing}
     ${load.status === "loaded" && !messages.length && !params.task.progress?.items.length && !load.nextCursor && !load.error ? html`<div class="chat-task-detail__state">${t("chat.backgroundTasks.transcriptEmpty")}</div>` : nothing}
-    ${renderTaskActivityFeed(messages, recovery, isActiveTask(params.task) ? params.task.progress : undefined, params.host.connected && backgroundTaskIsExecuting(params.task))}
+    ${renderTaskActivityFeed(messages, recovery, params.task.progress, params.host.connected && backgroundTaskIsExecuting(params.task))}
   </div>`;
 }
 
@@ -312,7 +312,7 @@ function renderTaskFallback(
   loadTaskDetail(task, backgroundTasks);
   return html`<div class="sidebar-content chat-task-detail__fallback">
     ${renderTaskNow(task)} ${renderTaskInspector(task, backgroundTasks)}
-    ${renderTaskActivityFeed([], undefined, isActiveTask(task) ? task.progress : undefined, backgroundTasks.connected && backgroundTaskIsExecuting(task))}
+    ${renderTaskActivityFeed([], undefined, task.progress, backgroundTasks.connected && backgroundTaskIsExecuting(task))}
   </div>`;
 }
 

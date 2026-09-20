@@ -27,6 +27,27 @@ const newTask = {
   childSessionKey: "agent:main:cron:synthetic:run:new-generation",
   createdAt: 3000,
   updatedAt: 4000,
+  progress: {
+    runId: "new-generation",
+    revision: 1,
+    items: [
+      {
+        itemId: "retained-commentary",
+        kind: "preamble",
+        phase: "update",
+        title: "Automation update",
+        progressText: "The automation inspected the retained report.",
+      },
+      {
+        itemId: "retained-read",
+        kind: "tool",
+        phase: "start",
+        title: "Read retained report",
+        name: "read",
+        status: "running",
+      },
+    ],
+  },
 };
 
 suite.define(() => {
@@ -108,6 +129,13 @@ suite.define(() => {
         .getByRole("button", { name: "View transcript", exact: true })
         .click();
       await transcript.getByText("Latest automation output", { exact: true }).waitFor();
+      await transcript
+        .getByText("The automation inspected the retained report.", { exact: true })
+        .waitFor();
+      await transcript.locator(".chat-task-feed__tool-group > summary").click();
+      await transcript.getByText("Outcome unknown", { exact: true }).waitFor();
+      expect(await transcript.locator('[role="img"][aria-label="Completed"]').count()).toBe(0);
+      expect(await transcript.locator("openclaw-elapsed-time").count()).toBe(0);
       await gateway.resolveDeferred("tasks.history", {
         messages: [{ role: "assistant", content: "Stale earlier response" }],
       });

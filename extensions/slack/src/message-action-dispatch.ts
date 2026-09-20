@@ -237,7 +237,7 @@ export async function handleSlackMessageAction(params: {
     const content = readStringParam(actionParams, "message", { allowEmpty: true });
     if (ctx.progressSnapshot) {
       const [
-        { resolveChannelProgressDraftMaxLineChars },
+        { formatChannelProgressDraftText, resolveChannelProgressDraftMaxLineChars },
         { resolveExplicitSlackProgressTitle, resolveSlackProgressStyle },
         { buildSlackProgressSnapshotBlocks },
         { buildSlackProgressTextBlocks },
@@ -249,23 +249,37 @@ export async function handleSlackMessageAction(params: {
       ]);
       const account = resolveSlackAccount({ cfg, accountId });
       const snapshot = ctx.progressSnapshot;
-      const blocks =
-        resolveSlackProgressStyle(account.config) === "compact"
-          ? buildSlackProgressTextBlocks(
-              snapshot.preparedBlocks ?? [{ text: content ?? "", format: "plain" }],
-            )
-          : buildSlackProgressSnapshotBlocks({
-              snapshot,
-              state: "working",
-              explicitTitle: resolveExplicitSlackProgressTitle(account.config),
-              maxLineChars: resolveChannelProgressDraftMaxLineChars(account.config),
-            });
+      const compact = resolveSlackProgressStyle(account.config) === "compact";
+      let preparedBlocks = snapshot.preparedBlocks;
+      if (compact && !preparedBlocks) {
+        formatChannelProgressDraftText({
+          entry: account.config,
+          lines: [...snapshot.lines],
+          seed: messageId,
+          narration: snapshot.statusHeadline,
+          narrationFormat: snapshot.statusHeadlineFormat,
+          plan: snapshot.plan,
+          diffStat: snapshot.diffStat,
+          onPreparedBlocks: (blocks) => {
+            preparedBlocks = blocks;
+          },
+        });
+      }
+      const blocks = compact
+        ? buildSlackProgressTextBlocks(preparedBlocks ?? [])
+        : buildSlackProgressSnapshotBlocks({
+            snapshot,
+            state: "working",
+            explicitTitle: resolveExplicitSlackProgressTitle(account.config),
+            maxLineChars: resolveChannelProgressDraftMaxLineChars(account.config),
+          });
       return await invoke(
         {
           action: "editMessage",
           channelId: resolveChannelId(),
           messageId,
-          content: content ?? "",
+          // The edit owner derives accessible text from these trusted blocks, never raw action text.
+          content: "",
           blocks,
           accountId: account.accountId,
         },

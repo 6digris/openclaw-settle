@@ -126,6 +126,32 @@ describe("Slack interactive-action request authority", () => {
               }),
             ]),
           );
+          await interactiveAction(
+            cfg,
+            "edit",
+            {
+              channelId: "C_CURRENT",
+              messageId: "171234.1",
+              message: "Untrusted retained fallback",
+            },
+            () => {
+              if (!current) {
+                throw new Error("progress owner expired");
+              }
+            },
+            {
+              lines: [],
+              plan: [{ step: "Preserve the authored checklist", status: "in_progress" }],
+            },
+          );
+          const planUpdate = requests.filter(({ path }) => path === "/api/chat.update")[1];
+          expect(planUpdate?.body.get("blocks")).toContain("Preserve the authored checklist");
+          expect(planUpdate?.body.get("blocks")).not.toContain("Untrusted retained fallback");
+          expect(planUpdate?.body.get("text")).toContain("Preserve the authored checklist");
+          expect(planUpdate?.body.get("text")).not.toContain("Untrusted retained fallback");
+          expect(
+            planUpdate?.body.get("text")?.match(/Preserve the authored checklist/gu),
+          ).toHaveLength(1);
           const requestsBeforeRevocation = requests.length;
           current = false;
           await expect(
@@ -150,8 +176,8 @@ describe("Slack interactive-action request authority", () => {
             progressSnapshot: snapshot,
           });
           const ordinaryUpdates = requests.filter(({ path }) => path === "/api/chat.update");
-          expect(ordinaryUpdates).toHaveLength(2);
-          expect(ordinaryUpdates[1]?.body.get("blocks")).toBeNull();
+          expect(ordinaryUpdates).toHaveLength(3);
+          expect(ordinaryUpdates[2]?.body.get("blocks")).toBeNull();
         },
       );
     },
