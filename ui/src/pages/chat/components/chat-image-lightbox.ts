@@ -57,6 +57,7 @@ export function renderChatImageLightbox(
     <openclaw-image-lightbox
       .mediaKind=${item.kind ?? "image"}
       .gallery=${item.gallery}
+      .loadOriginal=${item.loadOriginal}
       src=${item.src}
       .originalSrc=${item.originalSrc ?? ""}
       .imageTitle=${item.title}

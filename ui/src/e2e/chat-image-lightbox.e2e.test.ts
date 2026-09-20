@@ -2,6 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { beforeEach, afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { finishElementAnimations } from "../test-helpers/animations.ts";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { takeControlUiViewportScreenshot } from "../test-helpers/control-ui-e2e-screenshot.ts";
@@ -424,6 +425,120 @@ describeControlUiE2e("Control UI image lightbox", () => {
       await closeContext(context);
     }
   });
+
+  it.each(["loaded", "failed", "closed"] as const)(
+    "opens a cold managed image on the first click while the original is %s",
+    async (settlement) => {
+      const banner = await readFile(
+        path.join(process.cwd(), "docs/assets/openclaw-banner-dark.png"),
+      );
+      const context = await newContext({
+        locale: "en-US",
+        serviceWorkers: "block",
+        viewport: { height: 900, width: 1440 },
+      });
+      const page = await context.newPage();
+      const source = "/api/chat/media/outgoing/agent%3Amain%3Amain/cold-image/full";
+      const releaseFull = createDeferred();
+      let fullRequests = 0;
+      await page.route("**/api/chat/media/outgoing/**", async (route) => {
+        if (new URL(route.request().url()).pathname.endsWith("/full")) {
+          fullRequests += 1;
+          await releaseFull.promise;
+        }
+        const failed =
+          settlement !== "loaded" && new URL(route.request().url()).pathname.endsWith("/full");
+        await route.fulfill({
+          status: failed ? 503 : 200,
+          contentType: "image/png",
+          body: failed ? "" : banner,
+        });
+      });
+      const gateway = await installMockGateway(page, {
+        historyMessages: [
+          {
+            role: "assistant",
+            content: [{ type: "image", url: source, alt: "Cold image" }],
+            timestamp: Date.now(),
+          },
+        ],
+      });
+      try {
+        await page.goto(`${server.baseUrl}chat`);
+        await gateway.waitForRequest("chat.startup");
+        const trigger = page.getByRole("button", { name: "Open image Cold image", exact: true });
+        await trigger.waitFor({ state: "visible" });
+        await trigger.locator("img").evaluate((image: HTMLImageElement) => image.decode());
+        await trigger.click();
+        await expect.poll(() => fullRequests).toBe(1);
+        const dialog = page.getByRole("dialog", { name: "Image preview: Cold image" });
+        // Hold the original response: a cold request must not make the click look lost.
+        await expect.poll(() => dialog.isVisible()).toBe(true);
+        const lightbox = page.locator("openclaw-image-lightbox");
+        const image = lightbox.locator(".image");
+        const previewUrl = await trigger.locator("img").getAttribute("src");
+        expect(await image.getAttribute("src")).toBe(previewUrl);
+        expect(await lightbox.locator(".stage").getAttribute("aria-busy")).toBe("true");
+        expect(await lightbox.getByRole("link", { name: "Open in new tab" }).count()).toBe(0);
+        if (captureUiProofEnabled) {
+          await writeFile(
+            path.join(proofDir, "cold-image-pending.png"),
+            await takeControlUiViewportScreenshot(page, dialog, [image]),
+          );
+        }
+        expect(fullRequests).toBe(1);
+        if (settlement === "closed") {
+          await page.keyboard.press("Escape");
+          await expect.poll(() => dialog.count()).toBe(0);
+        }
+        const finished = page.waitForResponse((response) =>
+          new URL(response.url()).pathname.endsWith("/full"),
+        );
+        releaseFull.resolve();
+        // Error bodies are not consumed by the loader; the UI owns settlement.
+        expect((await finished).status()).toBe(settlement === "loaded" ? 200 : 503);
+        if (settlement === "closed") {
+          // Flush rendering after the retired original settles, without clicking again.
+          await page.evaluate(
+            () =>
+              new Promise<void>((resolve) => {
+                requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+              }),
+          );
+          expect(await dialog.count()).toBe(0);
+          expect(
+            await page.getByText("Could not load this image. Try again.", { exact: true }).count(),
+          ).toBe(0);
+        } else {
+          await expect
+            .poll(() => lightbox.locator(".stage").getAttribute("aria-busy"))
+            .toBe("false");
+          if (settlement === "failed") {
+            await lightbox.getByRole("alert").waitFor({ state: "visible" });
+            expect(await image.getAttribute("src")).toBe(previewUrl);
+            expect(await lightbox.getByRole("link", { name: "Open in new tab" }).count()).toBe(0);
+          } else {
+            await expect.poll(() => image.getAttribute("src")).not.toBe(previewUrl);
+            await expect
+              .poll(() =>
+                image.evaluate(
+                  (element: HTMLImageElement) => element.complete && element.naturalWidth > 0,
+                ),
+              )
+              .toBe(true);
+            await lightbox
+              .getByRole("link", { name: "Open in new tab" })
+              .waitFor({ state: "visible" });
+          }
+          await page.keyboard.press("Escape");
+          await expect.poll(() => dialog.count()).toBe(0);
+        }
+      } finally {
+        releaseFull.resolve();
+        await closeContext(context);
+      }
+    },
+  );
 
   it("navigates only the opened message gallery and restores its original tile focus", async () => {
     const context = await newContext({

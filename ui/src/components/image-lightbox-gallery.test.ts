@@ -28,16 +28,23 @@ afterEach(() => {
 });
 
 describe("image lightbox gallery resource lifecycle", () => {
-  it.each(["close", "reset"] as const)(
-    "releases a late image once after %s without replacing the current selection",
-    async (action) => {
-      const initial = imageItem("initial");
+  it.each(
+    (["close", "reset"] as const).flatMap((action) =>
+      (["initial", "neighbor"] as const).map((loading) => ({ action, loading })),
+    ),
+  )(
+    "releases a late $loading image once after $action without replacing the current selection",
+    async ({ action, loading }) => {
+      const initial: ImageLightboxItem = imageItem("initial");
       const late = imageItem("late");
       const replacement = imageItem("replacement");
       const pending = createDeferred<ImageLightboxItem | null>();
       const load = vi.fn(() => pending.promise);
+      if (loading === "initial") {
+        initial.loadOriginal = load;
+      }
       controller.reset({ index: 0, items: [async () => initial, load] }, initial);
-      const moving = controller.move(1);
+      const moving = loading === "neighbor" ? controller.move(1) : undefined;
       await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
       expect(controller.current).toBe(initial);
       expect(controller.busy).toBe(true);
@@ -49,7 +56,9 @@ describe("image lightbox gallery resource lifecycle", () => {
       }
       pending.resolve(late);
 
-      expect(await moving).toBe(false);
+      if (moving) {
+        expect(await moving).toBe(false);
+      }
       await vi.waitFor(() => expect(late.release).toHaveBeenCalledOnce());
       expect(controller.current).toBe(action === "reset" ? replacement : undefined);
       expect(controller.busy).toBe(false);
@@ -61,6 +70,27 @@ describe("image lightbox gallery resource lifecycle", () => {
       expect(replacement.release).not.toHaveBeenCalled();
     },
   );
+
+  it("keeps the preview until its original decodes and owns the replacement lease", async () => {
+    const response = createDeferred<ImageLightboxItem | null>();
+    const decoded = createDeferred();
+    decode.mockImplementation(() => decoded.promise);
+    const preview = { ...imageItem("preview"), loadOriginal: () => response.promise };
+    const original = imageItem("original");
+    controller.reset(undefined, preview);
+    expect(controller.current).toBe(preview);
+    expect(controller.busy).toBe(true);
+    response.resolve(original);
+    await vi.waitFor(() => expect(decode).toHaveBeenCalledOnce());
+    expect(controller.current).toBe(preview);
+    decoded.resolve();
+    await vi.waitFor(() => expect(controller.current).toBe(original));
+    expect(controller.busy).toBe(false);
+    expect(controller.failed).toBe(false);
+    controller.dispose();
+    await vi.waitFor(() => expect(original.release).toHaveBeenCalledOnce());
+    expect(preview.release).not.toHaveBeenCalled();
+  });
 
   it("keeps the current image after a failed neighbor load and retries on navigation", async () => {
     const initial = imageItem("initial");

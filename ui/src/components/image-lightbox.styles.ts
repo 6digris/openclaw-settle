@@ -184,7 +184,7 @@ export const imageLightboxStyles = css`
   }
 
   .gallery-counter,
-  .gallery-error {
+  .gallery-status {
     position: fixed;
     z-index: 1;
     margin: 0;
@@ -201,7 +201,7 @@ export const imageLightboxStyles = css`
     inset-inline-start: max(16px, calc(12px + var(--safe-area-left, 0px)));
   }
 
-  .gallery-error {
+  .gallery-status {
     bottom: max(68px, calc(64px + var(--safe-area-bottom, 0px)));
     left: 50%;
     transform: translateX(-50%);

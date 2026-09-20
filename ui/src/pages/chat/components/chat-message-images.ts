@@ -420,17 +420,27 @@ function openMessageImage(
     return;
   }
 
+  if (onOpenImage) {
+    const preview = resolveManagedOutgoingImageResource(img.url, opts, img.artifactId);
+    // Acknowledge the click before fetching the original. The modal owns its
+    // async result and cancellation; keep the displayed preview leased until close.
+    openResolvedImage(
+      (item) => open({ ...item, loadOriginal: () => loadGalleryImage(img, opts, true) }),
+      previewUrl,
+      title,
+      retainManagedImageBlobUrl(preview.cacheKey),
+    );
+    return;
+  }
+
   const resource = resolveManagedOutgoingImageResource(img.url, opts, img.artifactId, "full", true);
-  const openFull = (url: string) => {
-    const release = opts?.onOpenImage ? retainManagedImageBlobUrl(resource.cacheKey) : undefined;
-    openResolvedImage(onOpenImage ? open : undefined, url, title, release);
-  };
+  const openFull = (url: string) => openResolvedImage(undefined, url, title);
   if (resource.value) {
     openFull(resource.value);
     return;
   }
 
-  const pendingWindow = opts?.onOpenImage ? null : reserveExternalWindowForDeferredNavigation();
+  const pendingWindow = reserveExternalWindowForDeferredNavigation();
   const failed = () => {
     pendingWindow?.close();
     showToast({ message: t("chat.imageLightbox.loadFailed") });

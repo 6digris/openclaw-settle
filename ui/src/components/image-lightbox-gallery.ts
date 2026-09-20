@@ -21,9 +21,13 @@ export class ImageLightboxGalleryController {
     this.gallery = gallery;
     this.index = gallery?.index ?? 0;
     this.current = initial;
-    // The opener retains and releases the initial image independently of the modal.
-    this.images.set(this.index, Promise.resolve({ ...initial, release: undefined }));
-    this.preloadNeighbors();
+    // The opener owns the preview lease; the modal owns any original it loads.
+    if (initial.loadOriginal) {
+      void this.select(this.index, initial.loadOriginal);
+    } else {
+      this.images.set(this.index, Promise.resolve({ ...initial, release: undefined }));
+      this.preloadNeighbors();
+    }
   }
 
   dispose() {
@@ -47,12 +51,18 @@ export class ImageLightboxGalleryController {
     if (this.busy || !this.canMove(delta)) {
       return false;
     }
+    return this.select(this.index + delta);
+  }
+
+  private async select(
+    next: number,
+    loadOriginal?: ImageLightboxItem["loadOriginal"],
+  ): Promise<boolean> {
     const generation = this.generation;
-    const next = this.index + delta;
     this.busy = true;
     this.failed = false;
     this.notify();
-    const item = await this.load(next, true);
+    const item = await this.load(next, true, loadOriginal);
     if (generation !== this.generation) {
       return false;
     }
@@ -67,12 +77,15 @@ export class ImageLightboxGalleryController {
     return item !== null;
   }
 
-  private load(index: number, retryFailed = false): Promise<ImageLightboxItem | null> {
+  private load(
+    index: number,
+    retryFailed = false,
+    load = this.gallery?.items[index],
+  ): Promise<ImageLightboxItem | null> {
     const cached = this.images.get(index);
     if (cached) {
       return cached;
     }
-    const load = this.gallery?.items[index];
     if (!load) {
       return Promise.resolve(null);
     }

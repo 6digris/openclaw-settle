@@ -6,7 +6,7 @@ import { OpenClawLitElement } from "../lit/openclaw-element.ts";
 import { icons } from "./icons.ts";
 import { ImageLightboxGalleryController } from "./image-lightbox-gallery.ts";
 import { imageLightboxStyles } from "./image-lightbox.styles.ts";
-import type { ImageLightboxGallery } from "./image-lightbox.types.ts";
+import type { ImageLightboxGallery, ImageLightboxItem } from "./image-lightbox.types.ts";
 import "./modal-dialog.ts";
 
 const SAFE_TOP_LEVEL_IMAGE_BLOB_TYPES = new Set([
@@ -34,6 +34,7 @@ function dataUrlMimeType(source: string): string | undefined {
 
 class OpenClawImageLightbox extends OpenClawLitElement {
   @property({ attribute: false }) gallery?: ImageLightboxGallery;
+  @property({ attribute: false }) loadOriginal?: ImageLightboxItem["loadOriginal"];
   @property() mediaKind: "image" | "video" = "image";
   @property() src = "";
   @property() originalSrc = "";
@@ -57,7 +58,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
   private readonly galleryController = new ImageLightboxGalleryController(() =>
     this.requestUpdate(),
   );
-  private displayedIndex = 0;
+  private displayedImage: ImageLightboxItem | undefined;
   private slideAnimation?: Animation;
   private swipe:
     | {
@@ -72,7 +73,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
   private suppressDoubleClick = false;
 
   private get currentImage() {
-    return this.hasGallery ? this.galleryController.current : undefined;
+    return this.hasGallery || this.loadOriginal ? this.galleryController.current : undefined;
   }
 
   private get hasGallery() {
@@ -122,6 +123,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
     this.galleryController.reset(this.mediaKind === "image" ? this.gallery : undefined, {
       src: this.src,
       originalSrc: this.originalSrc,
+      loadOriginal: this.mediaKind === "image" ? this.loadOriginal : undefined,
       title: this.imageTitle,
     });
   }
@@ -134,6 +136,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
       changed.has("src") ||
       changed.has("originalSrc") ||
       changed.has("gallery") ||
+      changed.has("loadOriginal") ||
       changed.has("mediaKind")
     ) {
       this.cancelSwipe();
@@ -150,9 +153,9 @@ class OpenClawImageLightbox extends OpenClawLitElement {
       changed.has("originalSrc") ||
       changed.has("gallery") ||
       changed.has("mediaKind") ||
-      this.displayedIndex !== this.galleryController.index
+      this.displayedImage !== this.currentImage
     ) {
-      this.displayedIndex = this.galleryController.index;
+      this.displayedImage = this.currentImage;
       this.destroyPanzoom();
       this.scale = 1;
       void this.resolveOriginalUrl();
@@ -220,6 +223,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
           </header>
           <div
             class=${this.hasGallery ? "stage stage--gallery" : "stage"}
+            aria-busy=${this.galleryController.busy}
             @pointerdown=${{ handleEvent: this.handleStagePointerDown, capture: true }}
             @pointermove=${this.handleStagePointerMove}
             @pointerup=${this.handleStagePointerUp}
@@ -280,8 +284,17 @@ class OpenClawImageLightbox extends OpenClawLitElement {
                   >
                     ${t("chat.imageLightbox.position", { current: String(this.galleryController.index + 1), total: String(this.galleryController.count) })}
                   </p>
-                  ${this.galleryController.failed ? html`<p class="gallery-error" role="alert">${t("chat.imageLightbox.loadFailed")}</p>` : nothing}
                 `
+              : nothing
+          }
+          ${
+            this.galleryController.busy || this.galleryController.failed
+              ? html`<p
+                  class="gallery-status"
+                  role=${this.galleryController.failed ? "alert" : "status"}
+                >
+                  ${this.galleryController.failed ? t("chat.imageLightbox.loadFailed") : t("common.loading")}
+                </p>`
               : nothing
           }
           ${
@@ -573,6 +586,11 @@ class OpenClawImageLightbox extends OpenClawLitElement {
     const request = ++this.originalUrlRequest;
     this.revokeOriginalBlobUrl();
     this.resolvingOriginal = false;
+    // A preview is not the original, including when the original failed to load.
+    if (this.currentImage?.loadOriginal) {
+      this.openOriginalUrl = "";
+      return;
+    }
     const source = (
       this.currentImage?.originalSrc ||
       this.currentImage?.src ||
