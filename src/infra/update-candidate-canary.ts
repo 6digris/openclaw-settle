@@ -568,9 +568,8 @@ export async function validateUpdateCandidateCanary(params: {
     stepStartedAt = Date.now();
     stepLogTail.length = 0;
     remaining();
-    const args = ["gateway", "run", "--update-canary", "--bind", "loopback", "--port"];
-    args.push(String(port));
-    const running = launch(entry, args);
+    const args = ["gateway", "run", "--update-canary", "--bind", "loopback"];
+    const running = launch(entry, [...args, "--port", String(port)]);
     try {
       const probeFailure = await waitForUpdateCandidateReadiness({
         port,
