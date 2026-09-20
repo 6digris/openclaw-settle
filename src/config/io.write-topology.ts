@@ -50,7 +50,11 @@ export function prepareConfigWriteTopology(
     nextConfig: OpenClawConfig;
     options: Pick<
       ConfigWriteOptions,
-      "explicitSetPaths" | "explicitSetValueSource" | "persistCanonicalAgentRoster"
+      | "explicitSetPaths"
+      | "explicitSetValueSource"
+      | "persistCanonicalAgentRoster"
+      | "expectedConfigPath"
+      | "envSnapshotForRestore"
     >;
     unsetPaths: readonly (readonly string[])[];
     env: NodeJS.ProcessEnv;
@@ -62,6 +66,7 @@ export function prepareConfigWriteTopology(
   const values = prepareConfigWriteValues({
     snapshot,
     nextConfig: params.nextConfig,
+    writeOptions: options,
     env,
     lowerPrecedenceEnv: params.lowerPrecedenceEnv,
     explicitSetPaths: options.explicitSetPaths,
@@ -221,9 +226,12 @@ export function prepareConfigWriteTopology(
     clearedSessionStoreOwner: sessionStoreOwnership.ownershipPaths.length > 0,
     resolutionEnv: values.resolutionEnv,
     // Apply topology changes to the paired authored view without materializing untouched refs.
-    authoredConfig: coerceConfig(
-      restoreEnvVarRefsFromResolved(nextConfig, values.authoredConfig, values.resolvedConfig),
-    ),
+    authoredConfig:
+      nextConfig === values.resolvedConfig
+        ? values.authoredConfig
+        : coerceConfig(
+            restoreEnvVarRefsFromResolved(nextConfig, values.authoredConfig, values.resolvedConfig),
+          ),
     authoredSourceConfig: values.authoredSourceConfig,
     authoredRuntimeConfig: values.authoredRuntimeConfig,
     explicitSetPaths,
