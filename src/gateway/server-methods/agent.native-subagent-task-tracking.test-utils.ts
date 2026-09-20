@@ -1,4 +1,5 @@
 // Registered in agent.test.ts's existing handler suite and cleanup lifetime.
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { findTaskByRunId } from "../../tasks/task-registry.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
@@ -59,13 +60,19 @@ export function registerNativeSubagentTaskTrackingTests() {
         );
         // This case owns no clock semantics. Join the accepted run on real timers so
         // pre-dispatch failures also settle and the row assertion covers its full lifetime.
-        expect(execution).toBeDefined();
+        expect(execution, JSON.stringify(respond.mock.calls)).toBeDefined();
         await execution;
         expect(respond.mock.calls.at(-1)?.slice(0, 2)).toEqual([
           true,
           expect.objectContaining({ runId, status: "ok" }),
         ]);
         expect(mocks.agentCommand).toHaveBeenCalledTimes(1);
+        expect(mocks.stageSessionPendingInput).toHaveBeenCalledWith(
+          expect.objectContaining({
+            storePath: path.join(root, "agents", "main", "sessions", "sessions.json"),
+          }),
+          expect.anything(),
+        );
 
         // src/agents/subagent-spawn.ts owns the `subagent` row for this runId.
         expect(createRunningTaskRunSpy).not.toHaveBeenCalled();

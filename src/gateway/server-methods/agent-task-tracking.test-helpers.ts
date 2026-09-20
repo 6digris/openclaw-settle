@@ -1,4 +1,6 @@
 import { vi } from "vitest";
+import { resolveSessionStorePathCore } from "../../config/sessions.js";
+import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { getDetachedTaskLifecycleRuntime } from "../../tasks/detached-task-runtime.js";
 import { setDetachedTaskLifecycleRuntime } from "../../tasks/task-runtime.test-helpers.js";
 import { getAgentTestMocks } from "./agent.test-harness.js";
@@ -20,7 +22,9 @@ export function spyDetachedCreateRunningTaskRun() {
 // plain `agent` run: ACP manual spawns, plugin subagents, and native subagents.
 export function mockSpawnedChildSessionEntry(
   childSessionKey: string,
-  storePath = "/tmp/sessions.json",
+  storePath = resolveSessionStorePathCore(undefined, {
+    agentId: resolveAgentIdFromSessionKey(childSessionKey),
+  }),
 ) {
   const mocks = getAgentTestMocks();
   mocks.userTurnStorePath = storePath;
