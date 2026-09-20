@@ -139,6 +139,16 @@ export function prepareEmbeddedAttemptStream(input: {
   let beforeAgentFinalizeRevisionEntryId: string | undefined;
   let acceptingSteerMessages = true;
   let activeQueueAdmissions = 0;
+  // Logical settlement closes input admission before deferred run cleanup.
+  const unsubscribeSteeringAdmission = input.activeSession.subscribe((event) => {
+    if (event.type === "agent_settled" || event.type === "agent_handoff") {
+      acceptingSteerMessages = false;
+    }
+  });
+  const isSteeringAdmissionOpen = () =>
+    acceptingSteerMessages &&
+    !input.getRunState().aborted &&
+    !input.runAbortController.signal.aborted;
   const shouldRunBeforeAgentFinalize =
     attempt.operation !== "settled-tool-finalization" &&
     hookRunner?.hasHooks("before_agent_finalize");
@@ -173,15 +183,13 @@ export function prepareEmbeddedAttemptStream(input: {
         }
         const state = input.getRunState();
         const hasCompletedClientToolCall = input.clientToolCallSlots.some((slot) => slot.completed);
-        const silentFinalReply =
-          attempt.silentExpected && isSilentReplyText(lastAssistantMessage, SILENT_REPLY_TOKEN);
         if (
           state.aborted ||
           state.promptError ||
           state.timedOut ||
           hasCompletedClientToolCall ||
           state.yieldDetected ||
-          silentFinalReply
+          (attempt.silentExpected && isSilentReplyText(lastAssistantMessage, SILENT_REPLY_TOKEN))
         ) {
           return;
         }
@@ -526,9 +534,7 @@ export function prepareEmbeddedAttemptStream(input: {
     // check. Revalidate this exact publication and its live scope at the effect.
     registration?.toolAuthority?.assertActive();
     return (
-      acceptingSteerMessages &&
-      !input.getRunState().aborted &&
-      !input.runAbortController.signal.aborted &&
+      isSteeringAdmissionOpen() &&
       registration !== undefined &&
       ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(queueHandle) === registration &&
       ACTIVE_EMBEDDED_RUNS.get(attempt.sessionId) === queueHandle &&
@@ -606,10 +612,7 @@ export function prepareEmbeddedAttemptStream(input: {
     });
   const messageInjection = {
     version: 2 as const,
-    isAvailable: () =>
-      acceptingSteerMessages &&
-      !input.getRunState().aborted &&
-      !input.runAbortController.signal.aborted,
+    isAvailable: isSteeringAdmissionOpen,
     queueMessage,
     claimPendingUserInputAnswer,
     cancelPendingUserInput,
@@ -659,10 +662,7 @@ export function prepareEmbeddedAttemptStream(input: {
     messageInjectionV2: messageInjection,
     isStreaming: () => input.activeSession.isStreaming,
     isAborted: () => input.getRunState().aborted,
-    isStopped: () =>
-      !acceptingSteerMessages ||
-      input.getRunState().aborted ||
-      input.runAbortController.signal.aborted,
+    isStopped: () => !isSteeringAdmissionOpen(),
     isCompacting: () => subscription.isCompacting(),
     supportsTranscriptCommitWait: true,
     supportsQueueMessageImages: true,
@@ -722,6 +722,7 @@ export function prepareEmbeddedAttemptStream(input: {
     getBeforeAgentFinalizeRevisionEntryId: () => beforeAgentFinalizeRevisionEntryId,
     stopAcceptingSteerMessages: () => {
       acceptingSteerMessages = false;
+      unsubscribeSteeringAdmission();
     },
   };
 }

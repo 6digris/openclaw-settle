@@ -38,9 +38,13 @@ import {
   isAgentRunSupersededAbortReason,
 } from "../../run-termination.js";
 import {
+  createAssistant,
+  createAssistantResultStream,
   createTestSession,
   registerAgentSessionLoopTestLifecycle,
+  streamMocks,
 } from "../../sessions/agent-session-loop-correctness.test-support.js";
+import { createResourceLoader } from "../../sessions/agent-session-loop-resource-loader.test-support.js";
 import type { AgentSession } from "../../sessions/agent-session.js";
 import { SessionManager } from "../../sessions/session-manager.js";
 import { isToolResultError } from "../../tool-result-error.js";
@@ -553,6 +557,7 @@ describe("prepareEmbeddedAttemptStream", () => {
         isStreaming: false,
         messages,
         pendingMessageCount: 0,
+        subscribe: () => () => {},
       } as never,
       hookRunner: { hasHooks: (name: string) => name === "before_agent_finalize" } as never,
       hookAgentId: "main",
@@ -802,6 +807,55 @@ describe("prepareEmbeddedAttemptStream", () => {
       expect(mocks.notifyToolActivity).toHaveBeenCalledWith("run-output-schema");
     },
   );
+
+  it("rejects steering after session settlement while its lifecycle owner remains published", async () => {
+    const settled = createDeferredCore();
+    const releaseSettlement = createDeferredCore();
+    const { session } = await createTestSession({
+      resourceLoader: createResourceLoader(
+        new Map([
+          [
+            "agent_settled",
+            [
+              async () => {
+                settled.resolve();
+                await releaseSettlement.promise;
+              },
+            ],
+          ],
+        ]),
+      ),
+    });
+    streamMocks.streamSimple.mockImplementation((model) =>
+      createAssistantResultStream(createAssistant(model, [{ type: "text", text: "Done." }])),
+    );
+    const steer = vi.spyOn(session.agent, "steer");
+    const prepared = prepareCatalogExecutor([], {
+      activeSession: session,
+      attempt: { deferTerminalLifecycle: true, onDeferredLifecycleOwner: () => {} },
+    });
+    const prompt = session.prompt("Finish this turn.");
+    try {
+      await settled.promise;
+      expect(ACTIVE_EMBEDDED_RUNS.get("session-output-schema")).toBe(prepared.queueHandle);
+      await expect(
+        prepared.queueHandle.messageInjectionV2!.queueMessage(
+          "Start the next turn.",
+          { isInboundUserMessage: true },
+          () => {},
+          "source-bound",
+        ),
+      ).rejects.toThrow("active session is finalizing");
+      expect(steer).not.toHaveBeenCalled();
+      expect(session.getSteeringMessages()).toEqual([]);
+    } finally {
+      releaseSettlement.resolve();
+      await prompt;
+      prepared.stopAcceptingSteerMessages();
+      prepared.deferredLifecycleOwner?.discard();
+      prepared.subscription.unsubscribe();
+    }
+  });
 
   it("distinguishes an accepted abort from normal steering closure and sessions_yield", () => {
     const runAbortController = new AbortController();
