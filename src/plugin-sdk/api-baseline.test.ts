@@ -9,6 +9,7 @@ import ts from "typescript";
 import { afterEach, describe, expect, it } from "vitest";
 import { publicPluginSdkEntrypoints } from "../../scripts/lib/plugin-sdk-entries.mts";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { createDeclarationClosureRenderer } from "./api-baseline-declaration-closure.js";
 import { formatPluginSdkApiTypeAlias } from "./api-baseline-declaration-print.js";
 import {
   listPluginSdkApiBaselineEntrypoints,
@@ -637,6 +638,56 @@ describe("Plugin SDK API baseline", () => {
     const unrelated = await render("export type TelegramProbe = { ignored: boolean };\n");
 
     expect(unrelated).toEqual(baseline);
+  });
+
+  it("bounds shared cyclic declaration walks without dropping reachable sections", () => {
+    const repoRoot = tempDirs.make("openclaw-plugin-sdk-api-cyclic-diamond-");
+    const fileName = path.join(repoRoot, "fixture.ts");
+    const depth = 6;
+    const declarations = [
+      "export type Root = { nested: N0 | M0 };",
+      "export type Alternate = { nested: M0 };",
+      "type Marker = { required: string };",
+    ];
+    for (let level = 0; level < depth; level++) {
+      const fields =
+        level + 1 === depth
+          ? "root: Root; marker: Marker"
+          : `left: N${level + 1}; right: M${level + 1}`;
+      declarations.push(`type N${level} = { ${fields} };`, `type M${level} = { ${fields} };`);
+    }
+    fs.writeFileSync(fileName, declarations.join("\n"));
+    const program = ts.createProgram([fileName], {
+      module: ts.ModuleKind.NodeNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeNext,
+      target: ts.ScriptTarget.ESNext,
+      declaration: true,
+      emitDeclarationOnly: true,
+    });
+    const sourceFile = program.getSourceFile(fileName);
+    expect(sourceFile).toBeDefined();
+    const printer = ts.createPrinter();
+    const printNode = printer.printNode.bind(printer);
+    let statementPrints = 0;
+    printer.printNode = (...args) => {
+      statementPrints++;
+      return printNode(...args);
+    };
+    const render = createDeclarationClosureRenderer({ printer, program, repoRoot });
+    const root = render(sourceFile!, "Root");
+    const reachable = [
+      "Root",
+      "Marker",
+      ...Array.from({ length: depth }, (_, i) => [`N${i}`, `M${i}`]).flat(),
+    ];
+    expect(root?.sections.map((section) => section.name).toSorted()).toEqual(reachable.toSorted());
+    // Work must track reachable declarations, not every path through the cyclic diamond.
+    expect(statementPrints).toBeLessThanOrEqual(reachable.length * 4);
+    const alternate = render(sourceFile!, "Alternate");
+    expect(alternate?.sections.map((section) => section.name).toSorted()).toEqual(
+      [...reachable, "Alternate"].toSorted(),
+    );
+    expect(render(sourceFile!, "Root")).toEqual(root);
   });
 
   it("keeps cycle members complete across cached export walks", async () => {
