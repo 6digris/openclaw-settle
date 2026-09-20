@@ -23,7 +23,11 @@ async function writeUpdateFailureLintArtifact(
   inventory: TriageUpdateFailure,
   directory: string,
 ): Promise<string> {
-  const outputPath = path.join(directory, `openclaw-update-lint-${randomUUID()}.json`);
+  // Keep UUID digit groups in one word so identifier redaction preserves diagnostic links.
+  const outputPath = path.join(
+    directory,
+    `openclaw-update-lint-${randomUUID().replaceAll("-", "_")}.json`,
+  );
   await writeTextAtomic(outputPath, `${JSON.stringify(inventory)}\n`, {
     mode: 0o600,
     dirMode: 0o700,
@@ -39,7 +43,12 @@ export async function writeTriageUpdateFailure(
   const stateDir = resolveStateDir(env);
   const outputPath =
     options.outputPath ??
-    path.join(stateDir, "logs", "support", `openclaw-update-failure-${randomUUID()}.json`);
+    path.join(
+      stateDir,
+      "logs",
+      "support",
+      `openclaw-update-failure-${randomUUID().replaceAll("-", "_")}.json`,
+    );
   const inventory = sanitizeTriageUpdateFailure(failure, { env, stateDir }, "inventory");
   if ("result" in inventory && inventory.result.steps.some((step) => step.doctorLintFindings)) {
     const detail = await writeUpdateFailureLintArtifact(inventory, path.dirname(outputPath)).then(
@@ -77,7 +86,7 @@ export async function writeUpdateRunReportArtifact(params: {
           {
             env,
             outputPath: params.detached
-              ? path.join(directory, `openclaw-update-failure-${id}.json`)
+              ? path.join(directory, `openclaw-update-failure-${id.replaceAll("-", "_")}.json`)
               : undefined,
           },
         )

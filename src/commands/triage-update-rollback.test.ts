@@ -1,3 +1,4 @@
+import * as crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,6 +12,12 @@ import {
   updateFailureSchema,
 } from "./triage-update.js";
 import { readReleasedTriageUpdateFailure } from "./triage-update.released-reader.test-support.js";
+
+vi.mock("node:crypto", async () => {
+  const actual = await vi.importActual<typeof import("node:crypto")>("node:crypto");
+  return { ...actual, randomUUID: vi.fn(actual.randomUUID) };
+});
+afterEach(() => vi.mocked(crypto.randomUUID).mockReset());
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -94,6 +101,8 @@ describe("rollback-readable update diagnostics", () => {
         errorCount === 40
           ? `Initial activation failure ${"diagnostic context ".repeat(100)}`
           : undefined;
+      // A valid UUID with a numeric tail must remain a readable diagnostic link.
+      vi.mocked(crypto.randomUUID).mockReturnValue("00000000-0000-4000-8000-123456789012");
       const outputPath = await writeTriageUpdateFailure(
         { result, error: originalError },
         {
