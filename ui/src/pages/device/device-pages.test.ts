@@ -180,6 +180,22 @@ describe("native device settings pages", () => {
     capability.installChromeExtension.mockRejectedValueOnce(new Error("CLI missing"));
     row(page, "Chrome on this Mac").querySelector<HTMLButtonElement>("button")!.click();
     await vi.waitFor(() => expect(page.textContent).toContain("Setup could not finish"));
+    capability.installChromeExtension.mockResolvedValueOnce({
+      nativeHostRegistered: true,
+      installRequested: false,
+      discoveredProfiles: 0,
+    });
+    row(page, "Chrome on this Mac").querySelector<HTMLButtonElement>("button")!.click();
+    await vi.waitFor(() =>
+      expect(page.textContent).toContain(
+        "Automatic installation checks require an updated Mac app",
+      ),
+    );
+    expect(row(page, "Chrome on this Mac").textContent).toContain("Status unavailable");
+    expect(row(page, "Chrome on this Mac").textContent).not.toContain("Not installed");
+    expect(row(page, "Chrome on this Mac").textContent).not.toContain(
+      "Add OpenClaw from the Chrome Web Store",
+    );
   });
   it.each([
     {
