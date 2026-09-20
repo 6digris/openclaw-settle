@@ -1,0 +1,141 @@
+# Temporary single-attempt PR experiment; remove after recording the results.
+name: Windows class experiment
+on:
+  pull_request:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  windows:
+    if: github.repository == 'openclaw/openclaw' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'ci-burden/w1-windows-class' && github.run_attempt == 1
+    name: windows-${{ matrix.vcpu }}-part-${{ matrix.part }}
+    runs-on: blacksmith-${{ matrix.vcpu }}vcpu-windows-2025
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      # Four one-shot jobs make both classes eligible without matrix admission wait.
+      max-parallel: 4
+      matrix:
+        vcpu: [16, 32]
+        part: [1, 2]
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      NODE_VERSION: "24.x"
+      NODE_OPTIONS: --max-old-space-size=8192
+      OPENCLAW_VITEST_MAX_WORKERS: 1
+      OPENCLAW_TEST_SKIP_FULL_EXTENSIONS_SHARD: 1
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Report delivered Windows resources
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $machine = Get-CimInstance Win32_ComputerSystem
+          $os = Get-CimInstance Win32_OperatingSystem
+          [ordered]@{
+            capturedAt = [DateTime]::UtcNow.ToString("o")
+            processorCount = [Environment]::ProcessorCount
+            totalMemoryBytes = [long]$machine.TotalPhysicalMemory
+            freeMemoryBytes = [long]$os.FreePhysicalMemory * 1024
+            runnerName = $env:RUNNER_NAME
+            requestedClass = "blacksmith-${{ matrix.vcpu }}vcpu-windows-2025"
+            vitestWorkerCeiling = $env:OPENCLAW_VITEST_MAX_WORKERS
+          } | ConvertTo-Json -Compress | Write-Output
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Try to exclude workspace from Windows Defender (best-effort)
+        shell: pwsh
+        run: |
+          $cmd = Get-Command Add-MpPreference -ErrorAction SilentlyContinue
+          if (-not $cmd) {
+            Write-Host "Add-MpPreference not available, skipping Defender exclusions."
+            exit 0
+          }
+
+          try {
+            # Defender sometimes intercepts process spawning (vitest workers). If this fails
+            # (eg hardened images), keep going and rely on worker limiting above.
+            Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE" -ErrorAction Stop
+            Add-MpPreference -ExclusionProcess "node.exe" -ErrorAction Stop
+            Write-Host "Defender exclusions applied."
+          } catch {
+            Write-Warning "Failed to apply Defender exclusions, continuing. $($_.Exception.Message)"
+          }
+
+      - name: Setup Node.js
+        env:
+          REQUESTED_NODE_VERSION: "24.x"
+        run: |
+          set -euo pipefail
+          source .github/actions/setup-pnpm-store-cache/ensure-node.sh
+          openclaw_ensure_node "$REQUESTED_NODE_VERSION"
+
+      - name: Setup pnpm
+        uses: ./.github/actions/setup-pnpm-store-cache
+        with:
+          cache-mode: restore
+          node-version: 24.x
+
+      - name: Runtime versions
+        run: |
+          node -v
+          npm -v
+          pnpm -v
+          # OS-visible resources at setup, not enforced job limits or peak memory.
+          node -e 'const os = require("node:os"); console.log("Native OS resources: " + JSON.stringify({ logicalCpuCount: os.cpus().length, availableParallelism: os.availableParallelism(), osTotalMemoryBytes: os.totalmem(), osFreeMemoryBytes: os.freemem() }));'
+
+      - name: Capture node path
+        run: |
+          node_bin="$(dirname "$(node -p 'process.execPath')")"
+          if command -v cygpath >/dev/null 2>&1; then
+            node_bin="$(cygpath -u "$node_bin")"
+          fi
+          echo "NODE_BIN=$node_bin" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        env:
+          CI: true
+        run: |
+          export PATH="$NODE_BIN:$PATH"
+          which node
+          node -v
+          pnpm -v
+          # Persist Windows-native postinstall outputs in the pnpm store so restored
+          # caches can skip repeated rebuild/download work on later shards/runs.
+          pnpm install --frozen-lockfile --prefer-offline --config.ignore-scripts=false --config.engine-strict=false --config.enable-pre-post-scripts=true --config.side-effects-cache=true || pnpm install --frozen-lockfile --prefer-offline --config.ignore-scripts=false --config.engine-strict=false --config.enable-pre-post-scripts=true --config.side-effects-cache=true
+
+      - name: Run test-${{ matrix.part }} (node)
+        env:
+          TASK: test-${{ matrix.part }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Native allocation can be smaller than the runner label. Keep projects
+          # serial within each machine; the two matrix jobs still run concurrently.
+          export OPENCLAW_TEST_PROJECTS_PARALLEL=1
+          case "$TASK" in
+            # Linux owns the full repo test suite. Keep the Windows runner focused on
+            # Windows-native process/path wrappers so platform regressions fail fast.
+            test-1)
+              if node -e 'process.exit(require("./package.json").scripts?.["test:windows:ci:1"] ? 0 : 1)'; then
+                pnpm test:windows:ci:1 -- --reporter=default --reporter=./scripts/lib/vitest-resource-reporter.mts
+              else
+                pnpm test:windows:ci
+              fi
+              ;;
+            test-2)
+              if node -e 'process.exit(require("./package.json").scripts?.["test:windows:ci:2"] ? 0 : 1)'; then
+                pnpm test:windows:ci:2 -- --reporter=default --reporter=./scripts/lib/vitest-resource-reporter.mts
+              else
+                echo "[skip] target's combined Windows suite ran in test-1"
+              fi
+              ;;
+            *)
+              echo "Unsupported Windows checks task: $TASK" >&2
+              exit 1
+              ;;
+          esac
