@@ -18,6 +18,7 @@ import {
   cloneEnvWithPlatformSemantics,
   createConfigRuntimeEnvBase,
   getPublishedConfigRuntimeEnvState,
+  snapshotEnv,
 } from "./config-env-vars.js";
 import {
   applyUnsetPathsForWrite,
@@ -729,7 +730,7 @@ async function tryWriteIncludeOwnedConfigMutation(params: {
         pathProof.assertCurrent();
         assertConfigPathForWrite();
       };
-      const envBeforePostWriteRead = { ...writeEnv };
+      const envBeforePostWriteRead = snapshotEnv(writeEnv);
       let envAfterPostWriteRead = envBeforePostWriteRead;
       try {
         assertPostCommitCurrent();
@@ -756,7 +757,7 @@ async function tryWriteIncludeOwnedConfigMutation(params: {
             writeOptions: params.writeOptions,
           });
         } finally {
-          envAfterPostWriteRead = { ...writeEnv };
+          envAfterPostWriteRead = snapshotEnv(writeEnv);
         }
         assertPostCommitCurrent();
         const refreshedSnapshot = refreshed.snapshot;

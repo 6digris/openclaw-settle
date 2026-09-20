@@ -6,7 +6,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { FILE_LOCK_TIMEOUT_ERROR_CODE } from "../infra/file-lock.js";
 import { createSuiteTempRootTracker } from "../test-helpers/temp-dir.js";
 import { withEnvAsync } from "../test-utils/env.js";
-import { initializePublishedConfigRuntimeEnv, prepareConfigRuntimeEnv } from "./config-env-vars.js";
+import {
+  applyConfigEnvVars,
+  initializePublishedConfigRuntimeEnv,
+  prepareConfigRuntimeEnv,
+} from "./config-env-vars.js";
 import { setConfigValueAtPath } from "./config-paths.js";
 import {
   collectChangedConfigPaths,
@@ -2820,7 +2824,7 @@ describe("config mutate helpers", () => {
         },
       };
       ioMocks.readConfigFileSnapshotForWrite.mockImplementation(async () => {
-        env[envKey] = "written-env-value";
+        applyConfigEnvVars({ env: { [envKey]: "written-env-value" } }, env);
         return {
           snapshot: createSnapshot({
             hash: "hash-include-refresh-written",
