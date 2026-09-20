@@ -363,7 +363,8 @@ async function finishManagedTaskCancellation(
     await ensureTaskFlowRegistryReadyAsync(context);
     assertCurrent();
     await runTaskFlowRegistryWorkerMutation(
-      { flowId, admission: context.admission },
+      // Cancellation settlement preserves the flow's routing and classification.
+      { flowId, admission: context.admission, readIdentity: "preserved" },
       () =>
         store.runInitialMutationAsync(
           context,

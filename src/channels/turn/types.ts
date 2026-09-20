@@ -504,6 +504,8 @@ export type RunChannelTurnParams<
   accountId?: string;
   raw: TRaw;
   adapter: ChannelTurnAdapter<TRaw, TDispatchResult, TDelivery>;
+  /** Overrides resolved turn dispatchers; prepared runDispatch callbacks keep their own context. */
+  dispatchReplyFromConfig?: DispatchReplyFromConfig;
   log?: (event: ChannelTurnLogEvent) => void;
   /** Canonical adoption lifecycle for this turn. */
   turnAdoptionLifecycle?: TurnAdoptionLifecycle;

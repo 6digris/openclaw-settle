@@ -49,6 +49,11 @@ import {
 } from "../../channels/plugins/conversation-bindings.js";
 import { loadChannelOutboundAdapter } from "../../channels/plugins/outbound/load.js";
 import { recordInboundSession } from "../../channels/session.js";
+import type {
+  ChannelTurnDeliveryAdapter,
+  DispatchedChannelTurnResult,
+  RunChannelTurnParams,
+} from "../../channels/turn/types.js";
 import {
   resolveChannelGroupPolicy,
   resolveChannelGroupRequireMention,
@@ -97,28 +102,36 @@ const loadPreparedChannelTurn = createLazyRuntimeModule(
 const runPreparedChannelTurn: PluginRuntime["channel"]["inbound"]["runPreparedReply"] = async (
   params,
 ) => (await loadPreparedChannelTurn()).runPreparedChannelTurn(params);
-const runChannelTurn = createLazyRuntimeMethod(
-  createLazyRuntimeModule(() => import("../../channels/turn/run-channel-turn.js")),
-  (runtime) => runtime.runChannelTurn,
-  // SAFETY: Forwarding async overloads unchanged preserves the raw-event and dispatch-result generics.
-) as PluginRuntime["channel"]["inbound"]["run"];
+const loadChannelTurn = createLazyRuntimeModule(
+  () => import("../../channels/turn/run-channel-turn.js"),
+);
 
 export function createRuntimeChannel(options?: {
   dispatchReplyFromConfig?: PluginRuntime["channel"]["reply"]["dispatchReplyFromConfig"];
 }): PluginRuntime["channel"] {
+  const dispatchReplyFromConfig = options?.dispatchReplyFromConfig;
+  const runInbound: PluginRuntime["channel"]["inbound"]["run"] = async <
+    TRaw,
+    TDispatchResult = DispatchedChannelTurnResult["dispatchResult"],
+  >(
+    params: RunChannelTurnParams<TRaw, TDispatchResult, ChannelTurnDeliveryAdapter>,
+  ) =>
+    (await loadChannelTurn()).runChannelTurn(
+      dispatchReplyFromConfig ? { ...params, dispatchReplyFromConfig } : params,
+    );
   const dispatchInbound: PluginRuntime["channel"]["inbound"]["dispatch"] = async (params) =>
-    (await loadChannelTurnLifecycle()).dispatchRoutedChannelTurn({
-      ...params,
-      ...(options?.dispatchReplyFromConfig
-        ? { dispatchReplyFromConfig: options.dispatchReplyFromConfig }
-        : {}),
-    });
+    (await loadChannelTurnLifecycle()).dispatchRoutedChannelTurn(
+      dispatchReplyFromConfig ? { ...params, dispatchReplyFromConfig } : params,
+    );
   const inboundRuntime = {
     buildContext: buildChannelInboundEventContext,
-    run: runChannelTurn,
+    run: runInbound,
     runPreparedReply: runPreparedChannelTurn,
     dispatch: dispatchInbound,
-    dispatchReply: dispatchAssembledChannelTurn,
+    dispatchReply: async (params) =>
+      dispatchAssembledChannelTurn(
+        dispatchReplyFromConfig ? { ...params, dispatchReplyFromConfig } : params,
+      ),
   } satisfies PluginRuntime["channel"]["inbound"];
   const sessionRuntime = {
     resolveStorePath: resolveSessionStorePathCore,
@@ -144,12 +157,14 @@ export function createRuntimeChannel(options?: {
       convertMarkdownTables,
     },
     reply: {
-      dispatchReplyWithBufferedBlockDispatcher: dispatchReplyWithBufferedBlockDispatcherCore,
+      dispatchReplyWithBufferedBlockDispatcher: async (params) =>
+        dispatchReplyWithBufferedBlockDispatcherCore(
+          dispatchReplyFromConfig ? { ...params, dispatchReplyFromConfig } : params,
+        ),
       createReplyDispatcherWithTyping,
       resolveEffectiveMessagesConfig,
       resolveHumanDelayConfig,
-      dispatchReplyFromConfig:
-        options?.dispatchReplyFromConfig ?? dispatchLowLevelChannelReplyFromConfig,
+      dispatchReplyFromConfig: dispatchReplyFromConfig ?? dispatchLowLevelChannelReplyFromConfig,
       withReplyDispatcher,
       settleReplyDispatcher,
       finalizeInboundContext,

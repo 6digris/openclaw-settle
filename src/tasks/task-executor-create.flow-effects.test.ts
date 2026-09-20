@@ -12,7 +12,11 @@ import {
   createInMemoryTaskFlowRegistryStore,
   createInMemoryTaskRegistryStore,
 } from "../test-utils/task-registry-store.js";
-import { createRunningTaskRunCoreWithReceiptAsync } from "./task-executor-create.async.js";
+import { prepareTaskBackingRead } from "./task-backing-authority.js";
+import {
+  createRunningTaskRunCoreWithReceiptAsync,
+  finishTaskMutation,
+} from "./task-executor-create.async.js";
 import { getTaskFlowById } from "./task-flow-registry.js";
 import { applyFlowPatch } from "./task-flow-registry.records.js";
 import { getTaskFlowRegistryStore } from "./task-flow-registry.store.js";
@@ -74,7 +78,9 @@ async function fixture(syncMode: TaskFlowRecord["syncMode"] = "task_mirrored") {
   const commands: Array<keyof TaskInitialWorkerOperations> = [];
   const beforeFinalize =
     vi.fn<
-      (input: TaskInitialWorkerOperations["flows.finalizeTaskCancellation"]["input"]) => void
+      (
+        input: TaskInitialWorkerOperations["flows.finalizeTaskCancellation"]["input"],
+      ) => void | Promise<void>
     >();
   store.runInitialMutationAsync = async function (context, command, assertCurrent, onGranted) {
     commands.push(command.type);
@@ -115,8 +121,8 @@ async function fixture(syncMode: TaskFlowRecord["syncMode"] = "task_mirrored") {
             onCommitted() {},
           },
         ),
-      "flows.finalizeTaskCancellation": (input) => {
-        beforeFinalize(input);
+      "flows.finalizeTaskCancellation": async (input) => {
+        await beforeFinalize(input);
         const task = store.loadSnapshot().tasks.get(input.taskId) ?? null;
         if (!task || task.parentFlowId?.trim() !== input.flowId) {
           return { changed: false, task, flow: null };
@@ -177,6 +183,41 @@ async function drainRetry(delayMs = 1_000) {
   // Observe root settlement without consuming the next fake retry deadline.
   await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0), { interval: 0 });
 }
+
+it("keeps task identity readable while cancellation bookkeeping checks a mirrored flow", async () => {
+  const f = await fixture();
+  const created = await f.create();
+  if (!created) {
+    throw new Error("Expected the linked task");
+  }
+  const read = await prepareTaskBackingRead();
+  if (!read) {
+    throw new Error("Expected a prepared task reader");
+  }
+  const entered = createDeferred();
+  const release = createDeferred();
+  f.beforeFinalize.mockImplementationOnce(async () => {
+    entered.resolve();
+    await release.promise;
+  });
+  const owner = taskFlowSyncOwner(created.task.taskId, f.flows);
+  const update = finishTaskMutation(f.context, f.store, f.flows, created.task.taskId, {
+    operation: "update",
+    assertCurrent: () => owner.assertCurrent(f.context, f.store),
+  });
+  try {
+    await Promise.race([
+      entered.promise,
+      update.then(() => {
+        throw new Error("Update finished before its cancellation bookkeeping gate");
+      }),
+    ]);
+    expect(read.getTaskById(created.task.taskId)?.taskId).toBe(created.task.taskId);
+  } finally {
+    release.resolve();
+    await update;
+  }
+});
 
 it("retains a created task's flow repair when its publication snapshot fails", async () => {
   const f = await fixture();

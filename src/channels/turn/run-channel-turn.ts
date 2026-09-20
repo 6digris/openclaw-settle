@@ -164,6 +164,12 @@ export async function runChannelTurn<
   TDispatchResult = DispatchedChannelTurnResult["dispatchResult"],
 >(
   params: RunChannelTurnParams<TRaw, TDispatchResult, ChannelTurnDeliveryAdapter>,
+): Promise<ChannelTurnResult<TDispatchResult>>;
+export async function runChannelTurn<
+  TRaw,
+  TDispatchResult = DispatchedChannelTurnResult["dispatchResult"],
+>(
+  params: RunChannelTurnParams<TRaw, TDispatchResult, ChannelTurnDeliveryAdapter>,
 ): Promise<ChannelTurnResult<TDispatchResult>> {
   emit({
     ...params,
@@ -264,6 +270,9 @@ export async function runChannelTurn<
         : isRoutedTurn
           ? await dispatchRoutedChannelTurn({
               ...(unresolved as ChannelTurnPlan<ChannelTurnDeliveryAdapter>),
+              ...(params.dispatchReplyFromConfig
+                ? { dispatchReplyFromConfig: params.dispatchReplyFromConfig }
+                : {}),
               admission,
               log: params.log,
               messageId: input.id,
@@ -273,6 +282,9 @@ export async function runChannelTurn<
             })
           : await dispatchAssembledChannelTurn({
               ...(resolved as AssembledChannelTurn),
+              ...(params.dispatchReplyFromConfig
+                ? { dispatchReplyFromConfig: params.dispatchReplyFromConfig }
+                : {}),
               admission,
               log: params.log,
               messageId: input.id,

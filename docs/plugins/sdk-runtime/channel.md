@@ -34,6 +34,14 @@ Channel-specific runtime helpers, available when a channel plugin is loaded. Par
     | `threadBindings` | Adjust idle-timeout/max-age for bound session threads. |
     | `runtimeContexts` | Register, read, and watch process-local per-channel/account/capability context. |
 
+    The dispatch helpers `inbound.run`, `inbound.dispatch`, `inbound.dispatchReply`,
+    and `reply.dispatchReplyWithBufferedBlockDispatcher` use the runtime's
+    instance-bound reply dispatcher when the host supplies one. This binding
+    takes precedence over a caller-supplied `dispatchReplyFromConfig` and preserves
+    the owning Gateway context and lifetime across raw-event resolution.
+    Prepared `runDispatch` callbacks keep their own dispatch context:
+    `inbound.run` and `inbound.runPreparedReply` do not replace them.
+
     `api.runtime.channel.media` is the preferred surface for channel media downloads and storage:
 
     ```typescript
