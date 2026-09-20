@@ -867,6 +867,8 @@ suite.define(() => {
           picker.locator('[data-chat-model-option="anthropic/claude-sonnet-4-6"]'),
         );
         const search = picker.locator("[data-chat-model-search]");
+        // Exercise keyboard search dismissal without a row-hover tooltip taking Escape first.
+        await page.mouse.move(0, 0);
         await search.fill("anthropic");
         await expect.poll(() => picker.locator("[data-chat-model-option]:visible").count()).toBe(1);
         if (artifactDir) {

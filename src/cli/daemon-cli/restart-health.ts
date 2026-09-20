@@ -441,7 +441,11 @@ export async function waitForGatewayHealthyRestart(
     signal: params.signal,
   });
   params.signal?.throwIfAborted();
-  if (performance.now() - startedAtMs >= standardDeadlineMs) {
+  // Without an explicit time budget, zero retries still performs the initial inspection.
+  if (
+    (timeoutMs !== undefined || progressWindowMs > 0) &&
+    performance.now() - startedAtMs >= standardDeadlineMs
+  ) {
     return exhaustedBudgetSnapshot();
   }
   let snapshot = await inspectGatewayRestart({

@@ -196,6 +196,25 @@ describe("restart health supervision", () => {
     },
   );
 
+  it.each([undefined, 0])(
+    "keeps zero-retry inspection distinct from an explicit %s ms time budget",
+    async (timeoutMs) => {
+      const service = makeGatewayService({ status: "stopped" });
+      const snapshot = await waitForGatewayHealthyRestart({
+        service,
+        port: 18789,
+        attempts: 0,
+        delayMs: 1,
+        timeoutMs,
+      });
+      expect(snapshot).toMatchObject({ healthy: false, waitOutcome: "timeout", elapsedMs: 0 });
+      expect(service.isLoaded).not.toHaveBeenCalled();
+      expect(service.readRuntime).toHaveBeenCalledTimes(timeoutMs === undefined ? 1 : 0);
+      expect(inspectPortUsage).toHaveBeenCalledTimes(timeoutMs === undefined ? 1 : 0);
+      expect(sleep).not.toHaveBeenCalled();
+    },
+  );
+
   it("preserves stopped-free failure for a runtime-only diagnostic adapter", async () => {
     const nativeService = makeGatewayService({ status: "stopped" });
     vi.mocked(nativeService.isLoaded).mockResolvedValue(true);
