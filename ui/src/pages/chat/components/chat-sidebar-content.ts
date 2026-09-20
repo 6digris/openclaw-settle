@@ -5,7 +5,7 @@ import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { formatFencedCodeBlock } from "../../../../../src/shared/markdown-code.js";
 import { isStaleChunkImportError } from "../../../app/stale-chunk-reload.ts";
 import { icons } from "../../../components/icons.ts";
-import type { ImageLightboxItem } from "../../../components/image-lightbox.ts";
+import type { ImageLightboxItem } from "../../../components/image-lightbox.types.ts";
 import { renderLazyViewError } from "../../../components/lazy-view-error.ts";
 import { markdownBlocks } from "../../../components/markdown-blocks.ts";
 import { handleMarkdownCodeBlockClick } from "../../../components/markdown-code-blocks.ts";
@@ -38,6 +38,7 @@ import {
 import {
   isCrossOriginHttpSource,
   safeAttachmentHref,
+  safePlainTextAttachmentHref,
   safeMediaAttachmentHref,
 } from "./chat-attachment-href.ts";
 import { openInlineChatImage } from "./chat-image-lightbox.ts";
@@ -48,8 +49,6 @@ import type { AttachmentSidebarRuntime, SidebarContent } from "./chat-sidebar-co
 import { renderSidebarFile, type FileViewControls } from "./chat-sidebar-file-view.ts";
 import { isTextAttachment } from "./chat-text-attachment.ts";
 import "./session-diff-panel.ts";
-
-type ChatDetailPanelContent = Exclude<SidebarContent, { kind: "task" }>;
 
 function renderSidebarAttachment(
   content: Extract<SidebarContent, { kind: "attachment" }>,
@@ -68,9 +67,13 @@ function renderSidebarAttachment(
         : content.attachmentKind === "image" || mimeType.startsWith("image/")
           ? "image"
           : "document";
-  const src = (kind === "audio" || kind === "video" ? safeMediaAttachmentHref : safeAttachmentHref)(
-    source?.src ?? "",
-  );
+  const src = (
+    content.plainText
+      ? safePlainTextAttachmentHref
+      : kind === "audio" || kind === "video"
+        ? safeMediaAttachmentHref
+        : safeAttachmentHref
+  )(source?.src ?? "");
   const authToken = source?.authToken ?? null;
   const pending = resolution?.status === "pending";
   const inferTypeFromExtension = !mimeType || mimeType === "application/octet-stream";
@@ -89,6 +92,8 @@ function renderSidebarAttachment(
   ) {
     return html`<openclaw-chat-text-attachment
       .compact=${true}
+      .plainText=${content.plainText ?? false}
+      .actions=${content.renderActions?.() ?? nothing}
       .embedSandboxMode=${embedSandboxMode}
       .src=${src ?? ""}
       .sourceIdentity=${[runtime.connectionEpoch ?? "", runtime.agentId ?? "", runtime.sessionKey ?? "", content.sourceIdentity ?? src ?? ""].join("\u0000")}
@@ -157,6 +162,14 @@ function renderSidebarAttachment(
               : html`<div class="sidebar-attachment-preview__unavailable">
                   ${t("chat.attachments.previewUnavailable")}
                   ${resolution?.status === "error" ? html`<span>${resolution.reason}</span>` : nothing}
+                  ${
+                    (resolution?.status === "error" || resolution?.status === "unavailable") &&
+                    resolution.onRetry
+                      ? html`<button class="btn btn--sm" type="button" @click=${resolution.onRetry}>
+                          ${t("common.retry")}
+                        </button>`
+                      : nothing
+                  }
                 </div>`
           }
         </div>
@@ -185,9 +198,7 @@ function renderSidebarAttachment(
   });
 }
 
-export function buildRawContent(
-  content: ChatDetailPanelContent | null | undefined,
-): ChatDetailPanelContent | null {
+export function buildRawContent(content: SidebarContent | null | undefined): SidebarContent | null {
   if (!content) {
     return null;
   }
@@ -222,7 +233,7 @@ export function buildRawContent(
 // lines silently rewritten on save.
 
 function resolveSidebarCanvasSandbox(
-  content: ChatDetailPanelContent,
+  content: SidebarContent,
   embedSandboxMode: EmbedSandboxMode,
 ): string {
   return content.kind === "canvas"
@@ -231,7 +242,7 @@ function resolveSidebarCanvasSandbox(
 }
 
 type MarkdownSidebarProps = {
-  content: ChatDetailPanelContent | null;
+  content: SidebarContent | null;
   showingRawText: boolean;
   error: Error | null;
   onRetry: () => void;
@@ -243,6 +254,7 @@ type MarkdownSidebarProps = {
   embedSandboxMode?: EmbedSandboxMode;
   allowExternalEmbedUrls?: boolean;
   githubRepo?: MarkdownRenderOptions["githubRepo"];
+  githubRepositories?: MarkdownRenderOptions["githubRepositories"];
   embedded?: boolean;
   onAttachmentUpdate: () => void;
   attachmentRuntime: AttachmentSidebarRuntime;
@@ -256,6 +268,7 @@ function renderMarkdownSidebar(props: MarkdownSidebarProps) {
           codeBlockInteraction: "interactive",
           fileLinks: true,
           githubRepo: props.githubRepo ?? null,
+          githubRepositories: props.githubRepositories,
           interactiveImages: props.onOpenImage !== undefined,
           sessionLinks: true,
         })

@@ -1,16 +1,20 @@
+import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error-coercion";
 // Owns durable queue admission and hands stable custody to the execution loop.
 import { readAskUserQuestionId } from "../../auto-reply/reply-payload.js";
 import { deriveDurableFinalDeliveryRequirementsForBatch } from "../../channels/message/capabilities.js";
 import { createRenderedMessageBatchPlan } from "../../channels/message/rendered-batch.js";
+import type { ChannelMessageDeferredDeliveryAdmissionResult } from "../../channels/message/types.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import {
   captureDeliveryQueueStateContext,
   type DeliveryQueueStateContext,
 } from "../delivery-queue-sqlite.js";
+import { isDeliveryRecoveryOwnedRetry } from "../delivery-recovery.shared.js";
 import { formatErrorMessage } from "../errors.js";
 import { runWithQuestionChannelDeliveries } from "../question-channel-runtime.js";
-import { resolveDeferredDeliveryAdmission } from "./deferred-delivery-admission.js";
+import { throwIfAborted } from "./abort.js";
+import { prepareDeferredDeliveryAdmission } from "./deferred-delivery-admission.js";
 import { resolveOutboundDurableFinalDeliverySupport } from "./deliver-channel.js";
 import type {
   DeliverOutboundPayloadsParams,
@@ -229,6 +233,33 @@ async function runOutboundDeliveryWithQueue(
       startedAt: auditStartedAt,
     });
   };
+  const emitPreparationFailure = (error: unknown): void => {
+    emitPreQueueFailure();
+    // Preparation aborts the whole batch, so hooks get one failure per
+    // logical payload — matching the per-payload audit terminals above and
+    // the recovery sibling's queuedTerminalFailureEvents.
+    if (params.payloads.length > 0) {
+      const { emitMessageSent } = createMessageSentEmitter({
+        hookRunner: getGlobalHookRunner(),
+        channel,
+        to,
+        accountId: params.accountId,
+        sessionKeyForInternalHooks: params.mirror?.sessionKey ?? params.session?.key,
+        isGroup: params.mirror?.isGroup,
+        groupId: params.mirror?.groupId,
+        runId: params.replyPayloadSendingHook?.runId,
+        logPrefix: OUTBOUND_DELIVERY_LOG_SCOPE,
+      });
+      for (const payload of params.payloads) {
+        const summary = buildPayloadSummary(payload);
+        emitMessageSent({
+          success: false,
+          content: summary.hookContent ?? summary.text,
+          error: formatErrorMessage(error),
+        });
+      }
+    }
+  };
   if (params.requireUnknownSendReconciliation === true && payloads.length !== 1) {
     emitPreQueueFailure();
     throw new Error(
@@ -236,16 +267,30 @@ async function runOutboundDeliveryWithQueue(
     );
   }
   if (params.deferredDeliveryAdmissionPassed !== true) {
-    const admission = resolveDeferredDeliveryAdmission(
-      {
-        cfg: params.cfg,
-        channel,
-        to,
-        accountId: params.accountId,
-        phase: "live",
-      },
-      { agentId: params.session?.agentId },
-    );
+    let admission: ChannelMessageDeferredDeliveryAdmissionResult;
+    try {
+      const resolveAdmission = await prepareDeferredDeliveryAdmission(
+        {
+          cfg: params.cfg,
+          channel,
+          to,
+          accountId: params.accountId,
+          phase: "live",
+        },
+        {
+          agentId: params.session?.agentId,
+          assertCurrent: () => {
+            throwIfAborted(params.abortSignal);
+            params.deliveryQueueOwner?.signal?.throwIfAborted();
+            params.deliveryQueueStateContext?.workerContext.admission.assertCurrent();
+          },
+        },
+      );
+      admission = resolveAdmission();
+    } catch (error) {
+      emitPreparationFailure(error);
+      throw error;
+    }
     if (admission.status === "permanent_rejection") {
       emitPreQueueFailure();
       throw new Error(admission.reason);
@@ -295,31 +340,7 @@ async function runOutboundDeliveryWithQueue(
       }));
     await stablePreparationOwner?.markPrepared();
   } catch (error) {
-    emitPreQueueFailure();
-    // Preparation aborts the whole batch, so hooks get one failure per
-    // logical payload — matching the per-payload audit terminals above and
-    // the recovery sibling's queuedTerminalFailureEvents.
-    if (params.payloads.length > 0) {
-      const { emitMessageSent } = createMessageSentEmitter({
-        hookRunner: getGlobalHookRunner(),
-        channel,
-        to,
-        accountId: params.accountId,
-        sessionKeyForInternalHooks: params.mirror?.sessionKey ?? params.session?.key,
-        isGroup: params.mirror?.isGroup,
-        groupId: params.mirror?.groupId,
-        runId: params.replyPayloadSendingHook?.runId,
-        logPrefix: OUTBOUND_DELIVERY_LOG_SCOPE,
-      });
-      for (const payload of params.payloads) {
-        const summary = buildPayloadSummary(payload);
-        emitMessageSent({
-          success: false,
-          content: summary.hookContent ?? summary.text,
-          error: formatErrorMessage(error),
-        });
-      }
-    }
+    emitPreparationFailure(error);
     throw error;
   }
   const preparedPayloads = acceptedPreparedOutboundEntries(preparedBatch).map(
@@ -380,7 +401,15 @@ async function runOutboundDeliveryWithQueue(
             ? { getStablePreparation: stablePreparationOwner.current }
             : {}),
         }).catch((err: unknown) => {
-          if (queuePolicy === "required" || err instanceof StableDeliveryPreparationLostError) {
+          if (isDeliveryRecoveryOwnedRetry(err)) {
+            throw err;
+          }
+          if (
+            queuePolicy === "required" ||
+            collectNestedErrorCandidates(err).some(
+              (candidate) => candidate instanceof StableDeliveryPreparationLostError,
+            )
+          ) {
             emitPreQueueFailure();
             throw err;
           }

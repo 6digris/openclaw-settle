@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { isDirectRunUrl } from "../lib/direct-run.mjs";
 import {
   createReviewArtifactTemplate,
-  createReviewMarkdownTemplate,
+  renderReviewMarkdown,
   validateReviewArtifacts,
 } from "./review-artifacts.mjs";
 
@@ -19,23 +19,18 @@ function readRegular(path) {
   return readFileSync(path, "utf8");
 }
 
-function incomingReview(pr, incoming, jsonOid, markdownOid) {
+function incomingReview(pr, incoming, jsonOid) {
   const reviewPath = ".local/review.json";
-  const markdownPath = ".local/review.md";
   const review = JSON.parse(readRegular(reviewPath));
-  const reviewMarkdown = readRegular(markdownPath);
   const prMeta = JSON.parse(readRegular(".local/pr-meta.json"));
-  const violations = validateReviewArtifacts({ review, reviewMarkdown, prMeta });
+  const violations = validateReviewArtifacts({ review, prMeta });
   if (violations.length) {
     throw new Error(violations.join("\n"));
   }
   if (prMeta.number !== pr || prMeta.headRefOid !== incoming) {
     throw new Error("Correction preparation does not match the incoming PR review.");
   }
-  if (
-    git("hash-object", "--no-filters", reviewPath) !== jsonOid ||
-    git("hash-object", "--no-filters", markdownPath) !== markdownOid
-  ) {
+  if (git("hash-object", "--no-filters", reviewPath) !== jsonOid) {
     throw new Error(
       "Incoming review changed after correction admission. Retain evidence and re-review.",
     );
@@ -72,7 +67,7 @@ function candidateMetadata(prMeta, incoming, head) {
   return { ...prMeta, headRefOid: head, files: [...paths].map((path) => ({ path })) };
 }
 
-function runCorrectionReview(command, pr, incoming, head, jsonOid, markdownOid) {
+function runCorrectionReview(command, pr, incoming, head, jsonOid) {
   if (
     !["init", "validate"].includes(command) ||
     !Number.isSafeInteger(pr) ||
@@ -81,15 +76,13 @@ function runCorrectionReview(command, pr, incoming, head, jsonOid, markdownOid) 
   ) {
     throw new Error("Invalid correction-review command or PR number.");
   }
-  const { prMeta, findings } = incomingReview(pr, incoming, jsonOid, markdownOid);
+  const { prMeta, findings } = incomingReview(pr, incoming, jsonOid);
   const candidate = candidateMetadata(prMeta, incoming, head);
   const jsonPath = ".local/correction-review.json";
-  const markdownPath = ".local/correction-review.md";
   const incomingJsonPath = ".local/correction-incoming-review.json";
-  const incomingMarkdownPath = ".local/correction-incoming-review.md";
   if (command === "init") {
-    const existing = [jsonPath, markdownPath, incomingJsonPath, incomingMarkdownPath].filter(
-      (path) => lstatSync(path, { throwIfNoEntry: false }),
+    const existing = [jsonPath, incomingJsonPath].filter((path) =>
+      lstatSync(path, { throwIfNoEntry: false }),
     );
     for (const path of existing) {
       readRegular(path);
@@ -104,31 +97,24 @@ function runCorrectionReview(command, pr, incoming, head, jsonOid, markdownOid) 
     review.correction = {
       incomingHeadSha: incoming,
       incomingReviewJsonOid: jsonOid,
-      incomingReviewMarkdownOid: markdownOid,
       resolvedFindings: findings.map(({ id }) => ({ id, resolution: "" })),
     };
     copyFileSync(".local/review.json", incomingJsonPath);
-    copyFileSync(".local/review.md", incomingMarkdownPath);
     writeFileSync(jsonPath, `${JSON.stringify(review, null, 2)}\n`);
-    writeFileSync(markdownPath, createReviewMarkdownTemplate({ number: pr, headSha: head }));
     return;
   }
   const review = JSON.parse(readRegular(jsonPath));
   const violations = validateReviewArtifacts({
     review,
-    reviewMarkdown: readRegular(markdownPath),
     prMeta: candidate,
   });
   if (violations.length) {
     throw new Error(violations.join("\n"));
   }
   readRegular(incomingJsonPath);
-  readRegular(incomingMarkdownPath);
   if (
     review.correction?.incomingReviewJsonOid !== jsonOid ||
-    review.correction?.incomingReviewMarkdownOid !== markdownOid ||
-    git("hash-object", "--no-filters", incomingJsonPath) !== jsonOid ||
-    git("hash-object", "--no-filters", incomingMarkdownPath) !== markdownOid
+    git("hash-object", "--no-filters", incomingJsonPath) !== jsonOid
   ) {
     throw new Error("Correction approval does not bind these exact incoming review bytes.");
   }
@@ -154,17 +140,18 @@ function runCorrectionReview(command, pr, incoming, head, jsonOid, markdownOid) 
   ) {
     throw new Error("The correction review must resolve every incoming BLOCKER/IMPORTANT finding.");
   }
+  process.stdout.write(renderReviewMarkdown(review));
 }
 
 if (isDirectRunUrl(process.argv[1], import.meta.url)) {
   try {
-    const [command, pr, incoming, head, jsonOid, markdownOid, ...extra] = process.argv.slice(2);
-    if (extra.length || !markdownOid) {
+    const [command, pr, incoming, head, jsonOid, ...extra] = process.argv.slice(2);
+    if (extra.length || !jsonOid) {
       throw new Error(
-        "Expected command, PR, incoming/candidate heads and incoming review object IDs.",
+        "Expected command, PR, incoming/candidate heads and incoming review JSON object ID.",
       );
     }
-    runCorrectionReview(command, Number(pr), incoming, head, jsonOid, markdownOid);
+    runCorrectionReview(command, Number(pr), incoming, head, jsonOid);
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

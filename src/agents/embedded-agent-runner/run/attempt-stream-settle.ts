@@ -1,11 +1,12 @@
-/**
- * Prepares transport before streaming and settles the completed stream afterward.
- * It may assume session runtime ownership and provider inputs are established.
- */
 import {
   isAnthropicServerToolClearingEnabled,
   resolveCompactionReplayEligibility,
 } from "@openclaw/ai/transports";
+/**
+ * Prepares transport before streaming and settles the completed stream afterward.
+ * It may assume session runtime ownership and provider inputs are established.
+ */
+import type { ModelCompatConfig } from "../../../config/types.models.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { createCodexNativeWebSearchWrapper } from "../../../llm/providers/stream-wrappers/openai.js";
 import type { AssistantMessage } from "../../../llm/types.js";
@@ -13,6 +14,7 @@ import { getAgentScopedMediaLocalRoots } from "../../../media/local-roots.js";
 import type { ProviderRuntimePluginHandle } from "../../../plugins/provider-hook-runtime.js";
 import { resolveProviderTextTransforms } from "../../../plugins/provider-runtime.js";
 import type { NestedToolActivity } from "../../../sessions/nested-tool-activity.js";
+import { resolveAdmittedRunActiveAssertion } from "../../admitted-run-context.js";
 import type { AgentRunAttemptFailureSource } from "../../agent-run-terminal-outcome.js";
 import type { subscribeEmbeddedAgentSession } from "../../embedded-agent-subscribe.js";
 import { wrapStreamFnTextTransforms } from "../../plugin-text-transforms.js";
@@ -285,6 +287,7 @@ export async function settleEmbeddedAttemptStream(input: {
     withSessionManagerWrite(sessionManager, () => {
       const { timedOutDuringCompaction } = input.readLifecycleState();
       compactionOccurredThisAttempt = subscription.getCompactionCount() > 0;
+      const cacheTtlCompat: ModelCompatConfig | undefined = attempt.model.compat;
       appendAttemptCacheTtlIfNeeded({
         sessionManager,
         timedOutDuringCompaction,
@@ -293,6 +296,10 @@ export async function settleEmbeddedAttemptStream(input: {
         provider: attempt.provider,
         modelId: attempt.modelId,
         modelApi: attempt.model.api,
+        modelRoute: {
+          baseUrl: attempt.model.baseUrl,
+          supportsPromptCacheKey: cacheTtlCompat?.supportsPromptCacheKey,
+        },
         isCacheTtlEligibleProvider,
         toolResultPromptProjectionState: input.toolResultPromptProjectionState,
       });
@@ -439,6 +446,10 @@ export async function prepareEmbeddedAttemptTransport(input: {
 }) {
   const attempt = input.attempt;
   const session = input.session;
+  const assertRunCurrent = resolveAdmittedRunActiveAssertion(
+    attempt.admittedRunContext,
+    input.abortSignal,
+  );
   // Rebuild each turn from the session's original stream base so prior-turn
   // wrappers do not pin us to stale provider/API transport behavior.
   const defaultSessionStreamFn = resolveEmbeddedAgentBaseStreamFn({
@@ -485,11 +496,13 @@ export async function prepareEmbeddedAttemptTransport(input: {
     ? wrapStreamFnWithMessageTransform(
         providerStreamFn,
         (messages) => messages,
-        ({ context, ...provider }) =>
-          materializeProviderContext({
+        async ({ context, ...provider }) => {
+          assertRunCurrent?.();
+          const prepared = await materializeProviderContext({
             ...provider,
             context,
             workspaceDir: input.workspaceDir,
+            agentWorkspaceDir: attempt.workspaceDir,
             workspaceOnly: input.workspaceOnly,
             localRoots: input.workspaceOnly
               ? undefined
@@ -499,7 +512,10 @@ export async function prepareEmbeddedAttemptTransport(input: {
               input.sandbox?.enabled && input.sandbox.fsBridge
                 ? { root: input.sandbox.workspaceDir, bridge: input.sandbox.fsBridge }
                 : undefined,
-          }),
+          });
+          assertRunCurrent?.();
+          return prepared;
+        },
       )
     : undefined;
   const transportApiKey = await resolveEmbeddedAgentApiKey({
@@ -518,6 +534,7 @@ export async function prepareEmbeddedAttemptTransport(input: {
     transportAuthAvailable: Boolean(transportApiKey?.trim()),
     authProfileId: resolveAttemptStreamAuthProfileId(attempt),
     authStorage: attempt.authStorage,
+    assertCurrent: assertRunCurrent,
   });
   session.agent.streamFn = streamFn;
   // Install inside provider/config wrappers so their full onPayload chain runs

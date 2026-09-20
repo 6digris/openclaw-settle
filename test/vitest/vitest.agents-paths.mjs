@@ -25,9 +25,7 @@ const coreIsolatedFiles = [
   "src/agents/openai-transport-stream.streaming.test.ts",
   "src/agents/subagents/announce/subagent-announce.test.ts",
   "src/agents/subagents/registry/subagent-registry.announce-loop-guard.test.ts",
-  "src/agents/subagents/registry/subagent-registry-restart-recovery-notice.test.ts",
   "src/agents/subagents/registry/subagent-registry-restart-recovery.test.ts",
-  "src/agents/subagents/spawn/subagent-spawn.authority.test.ts",
 ];
 const incompleteTurnFiles = [
   `${embeddedRoot}/run.incomplete-turn.classification.test.ts`,
@@ -88,7 +86,7 @@ export const agentVitestProjectOwners = {
     root: embeddedRoot,
     dir: agentsRoot,
     include: [`${embeddedRoot}/*.test.ts`],
-    exclude: [...incompleteTurnFiles, ...overflowCompactionFiles],
+    exclude: [...incompleteTurnFiles, ...overflowCompactionFiles, ...databaseWorkerCoreTestFiles],
   },
   embeddedIncompleteTurn: {
     kind: "agentEmbeddedIncompleteTurn",
@@ -115,7 +113,7 @@ export const agentVitestProjectOwners = {
     root: `${embeddedRoot}/run`,
     dir: `${embeddedRoot}/run`,
     include: [`${embeddedRoot}/run/**/*.test.ts`],
-    exclude: [],
+    exclude: databaseWorkerCoreTestFiles,
   },
   support: {
     kind: "agentSupport",

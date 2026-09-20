@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
@@ -68,6 +68,11 @@ function fixture() {
           'source "$1/pr-lib/gates.sh"',
           'require_artifact() { [ -s "$1" ]; }',
           "enter_worktree() { :; }",
+          'pr_git() { git "$@"; }',
+          'pr_gh() { gh "$@"; }',
+          "common_repo_root() { pwd; }",
+          "pr_worktree_state() { jq -n --arg path \"$PWD\" '{present:true,path:$path}'; }",
+          "read_pr_view_json() { cat .local/pr-meta.json; }",
           'review_guard() { REVIEW_MODE=pr; source .local/pr-meta.env; [ "$(git rev-parse HEAD)" = "$PR_HEAD_SHA" ]; }',
           "print_review_stdout_summary() { :; }",
           "mark_pr_operation_side_effects_started() { touch .local/side-effects; }",
@@ -230,12 +235,7 @@ describePosix("native correction preparation", () => {
       const candidate = f.git("rev-parse", "HEAD");
       expect(f.run("prepare_correction_review_init 42").status).toBe(0);
       f.approve();
-      const names = [
-        "correction-review.json",
-        "correction-review.md",
-        "correction-incoming-review.json",
-        "correction-incoming-review.md",
-      ];
+      const names = ["correction-review.json", "correction-incoming-review.json"];
       const retained = names.map((name) => ({
         name,
         bytes: readFileSync(join(f.root, ".local", name)),
@@ -329,6 +329,91 @@ describePosix("native correction preparation", () => {
         "verify_pr_head_branch_matches_expected() { :; }; push_prep_head_to_pr_branch() { return 73; }; prepare_sync_head 42",
       );
       expect(sync.status, sync.stderr).toBe(1);
+    },
+  );
+
+  it.each(["missing", "stale"])(
+    "ignores %s Markdown presentation during correction admission",
+    (kind) => {
+      const f = fixture();
+      const markdown = join(f.root, ".local/review.md");
+      if (kind === "missing") {
+        rmSync(markdown);
+      } else {
+        writeFileSync(markdown, "Obsolete presentation, not review authority\n");
+      }
+      expect(f.run("prepare_init 42 correction").status).toBe(0);
+      f.commitFix();
+      expect(f.run("prepare_correction_review_init 42").status).toBe(0);
+      f.approve();
+      writeFileSync(join(f.root, ".local/correction-review.md"), "NEEDS WORK\n");
+      const result = f.run("require_prepared_review 42");
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("READY FOR /prepare-pr");
+    },
+  );
+
+  it("includes runtime fixup paths in candidate review even when incoming scope is docs", () => {
+    const f = fixture();
+    expect(f.run("prepare_init 42 correction").status).toBe(0);
+    f.commitFix();
+    mkdirSync(join(f.root, "src"));
+    writeFileSync(join(f.root, "src/fix.ts"), "export const fixed = true;\n");
+    f.git("add", "src/fix.ts");
+    f.git("commit", "-qm", "fix runtime");
+    expect(f.run("prepare_correction_review_init 42").status).toBe(0);
+    f.approve();
+    const result = f.run("require_prepared_review 42");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("runtime file changes require");
+  });
+
+  it.each([
+    ["git", "unchanged"],
+    ["git", "JSON"],
+    ["git", "Markdown"],
+    ["graphql", "unchanged"],
+    ["graphql", "JSON"],
+    ["graphql", "Markdown"],
+  ])(
+    "revalidates JSON authority immediately before %s publication after %s change",
+    (route, change) => {
+      const f = fixture();
+      expect(f.run("prepare_init 42 correction").status).toBe(0);
+      f.commitFix();
+      expect(f.run("prepare_correction_review_init 42").status).toBe(0);
+      f.approve();
+      const head = f.git("rev-parse", "HEAD");
+      writeFileSync(
+        join(f.root, ".local/gates.env"),
+        `PR_NUMBER=42\nGATES_MODE=full\nLAST_VERIFIED_HEAD_SHA=${head}\nFULL_GATES_HEAD_SHA=${head}\n`,
+      );
+      const mutation =
+        change === "JSON"
+          ? "printf '\\n' >> .local/correction-review.json"
+          : change === "Markdown"
+            ? "printf 'obsolete presentation\\n' > .local/correction-review.md"
+            : ":";
+      const result = f.run(
+        [
+          'source "$script_parent_dir/pr-lib/push.sh"',
+          "PREP_PUBLICATION_PR=42; PREP_PUBLICATION_ALLOW_PENDING=false",
+          "PREP_PUBLICATION_REVIEW_SNAPSHOT=$(correction_review_snapshot 42)",
+          'pr_git() { if [ "$1" = push ]; then touch .local/publication; return 0; fi; git "$@"; }',
+          `pr_gh_plain() { touch .local/publication; printf '%s\\n' '{"data":{"createCommitOnBranch":{"commit":{"oid":"${head}"}}}}'; }`,
+          `verify_prep_first_parent_range_signed() { ${mutation}; return 0; }`,
+          `verify_prep_head_extends_hosted_head() { git merge-base --is-ancestor "$1" HEAD || return 1; ${mutation}; }`,
+          "PRHEAD_REMOTE_URL=https://example.invalid/repo.git; OPENCLAW_PR_PUSH_MODE=git",
+          route === "git"
+            ? `push_prep_head_once topic ${f.incoming} ${head}`
+            : `graphql_push_to_fork fixture/repo topic ${f.incoming}`,
+        ].join("\n"),
+      );
+      expect(result.status, result.stdout + result.stderr).toBe(change === "JSON" ? 1 : 0);
+      expect(existsSync(join(f.root, ".local/publication"))).toBe(change !== "JSON");
+      if (change === "JSON") {
+        expect(result.stderr).toContain("Correction review authority changed");
+      }
     },
   );
 

@@ -64,6 +64,15 @@ reconcile dependencies before the remote wrapper starts.
 Run the test toolchain on Node 24.16+ or Node 26.1+, matching the packaged
 runtime floor. Older Node bindings can truncate SQLite TEXT values at embedded NUL characters.
 
+Test processes and their CLI fixtures keep Sparkplug baseline compilation enabled
+but run it synchronously. This avoids a Node 24 shutdown deadlock where a
+background compiler waits for main-thread garbage collection while `process.exit`
+joins that compiler. The shared Node argument policy owns this test-only
+mitigation; production CLI exit behavior, assertions, and deadlines are unchanged.
+
+The script erasability gate uses Node's strip-only parser, including when package
+checks run under Bun. It selects an installed Node runtime and skips Bun's `node` shim.
+
 The test toolchain pins stable Vitest `5.0.0`, including its browser and coverage
 packages. Use `describe(name, { concurrent: false }, callback)` for ordered
 suites. Await asynchronous assertions, keep `vi.mock`/`vi.hoisted` at module
@@ -137,7 +146,7 @@ Isolated Doctor config scripts also share the prepared config-flow, health-write
 and install-index modules. Each case still starts a fresh process with separate
 state; standalone and watch runs resolve the original TypeScript entrypoints.
 
-The model-catalog and session model-context workers also use this compiled generation.
+The model-catalog, Codex catalog-page, and session model-context workers also use this compiled generation.
 Model-catalog workers still belong to their prepared model generations; context reads
 retain their serial worker pool. Plugin source/built selection remains independent
 of worker compilation.
@@ -154,6 +163,11 @@ The session-title and child-link retention tests declare their title-reader,
 session-utils, and listing roots in this same generation. Each fresh
 heap-measurement child runs their JavaScript without spending its execution
 deadline on TypeScript imports.
+
+Native Bash output-lifecycle fixtures also prepare the real tool and executor
+roots in this generation. Each scenario still uses a fresh process and real
+shell, pipe, and spill file; its unchanged child deadline covers prepared
+JavaScript startup and output handling instead of repeated TypeScript compilation.
 
 Automatic-triage process fixtures share this generation for admission, failure handling, execution, process identity, and respawn checks. Compilation finishes before readiness deadlines begin, so children load prepared JavaScript. The detached helper uses the same sealed lease runtime as the installed package.
 
@@ -190,10 +204,12 @@ they impose resource limits. Third-party dependencies remain external except for
 the always-bundled OpenClaw packages. fs-safe remains external so its native loader
 resolves the optional platform package from fs-safe's own dependency scope, including
 nested pnpm installs. Compiled workers use that same installed package; they do not
-copy native binaries. Native defaults stay off on macOS/Linux and auto on Windows,
-where secure credential reads require the matching native helper. Explicit
-`off`/`auto`/`require` settings retain precedence. Sealed portable worker bundles use guarded JavaScript
-only and explicitly disable native loading.
+copy native binaries. Native mode defaults to `auto` on macOS, Linux, and Windows.
+No-clobber Root moves require native support; Windows secure credential reads
+require the matching helper for descriptor-bound ACL checks. Explicit
+`off`/`auto`/`require` settings and programmatic configuration retain their
+precedence. Sealed portable worker bundles use guarded JavaScript only and
+explicitly disable native loading.
 
 Watch mode deliberately keeps the existing live-source path, including tsx for
 Node subprocesses and native TypeScript handling for Bun. It creates no prepared generation, so a new child launch

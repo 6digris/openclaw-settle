@@ -1,4 +1,5 @@
 // Stores durable delivery queue entries through their connection-bound owner.
+import { withExistingOpenClawStateDatabaseArtifactPreservingReadOnlyAsync } from "../state/openclaw-state-db-readonly.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -6,7 +7,6 @@ import {
 import {
   loadDeliveryQueueEntryInDatabase,
   type DeliveryQueueReadMode,
-  type UpsertDeliveryQueueEntryParams,
 } from "./delivery-queue-sqlite-bound.js";
 import {
   countPendingDeliveryQueueEntriesInDatabase,
@@ -18,7 +18,6 @@ import {
   reserveDeliveryQueueEntryAttemptInDatabase,
   terminalizePendingDeliveryQueueEntryInDatabase,
   updateDeliveryQueueEntryInDatabase,
-  upsertDeliveryQueueEntryInDatabase,
   type DeliveryQueueStoredStatus,
   type ReserveDeliveryQueueAttemptResult,
   type TerminalizePendingDeliveryQueueEntryParams,
@@ -46,14 +45,6 @@ function openStateDatabase(stateDir?: string, context?: DeliveryQueueStateContex
   return openOpenClawStateDatabase({
     env: resolveDeliveryQueueStateEnv(stateDir, context),
   });
-}
-
-/** Insert or replace a delivery queue entry under a queue namespace. */
-export function upsertDeliveryQueueEntry(
-  params: UpsertDeliveryQueueEntryParams,
-  context?: DeliveryQueueStateContext,
-): boolean {
-  return upsertDeliveryQueueEntryInDatabase(params, openStateDatabase(params.stateDir, context));
 }
 
 /** Load a single pending delivery queue entry. */
@@ -174,6 +165,19 @@ export function countPendingDeliveryQueueEntries(
     return 0;
   }
   return countPendingDeliveryQueueEntriesInDatabase(openStateDatabase(stateDir), queueNames);
+}
+
+/** Inventory retired custody without opening a writer or creating state. */
+export async function countPendingDeliveryQueueEntriesReadOnly(
+  queueNames: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<number> {
+  return (
+    (await withExistingOpenClawStateDatabaseArtifactPreservingReadOnlyAsync(
+      (database) => countPendingDeliveryQueueEntriesInDatabase(database, queueNames),
+      { env },
+    )) ?? 0
+  );
 }
 
 /** Physically expire age-bounded delivery queue tombstones. */

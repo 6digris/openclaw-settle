@@ -1,9 +1,9 @@
-import { promises as fs } from "node:fs";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import type { callGateway } from "../../../gateway/call.js";
 import { isFastTestRuntimeEnv } from "../../../infra/env.js";
 import { getPluginRuntimeGatewayRequestScope } from "../../../plugins/runtime/gateway-request-scope.js";
 import { deleteSubagentSessionForCleanup } from "../registry/subagent-session-cleanup.js";
+import { cleanupMaterializedSubagentAttachments } from "./subagent-attachments.js";
 import { callSubagentGateway } from "./subagent-spawn-gateway.js";
 
 const SUBAGENT_CONTROL_GATEWAY_TIMEOUT_MS = 60_000;
@@ -56,6 +56,7 @@ export async function retrySubagentCleanup(
 }
 
 type SessionCleanupOptions = {
+  isCurrent?: () => boolean;
   emitLifecycleHooks?: boolean;
   deleteTranscript?: boolean;
   expectedSessionId?: string;
@@ -89,29 +90,37 @@ async function waitForProvisionalSessionDeletion(
   options?: SessionCleanupOptions,
 ): Promise<boolean> {
   let deleted = false;
-  await retrySubagentCleanup(async () => {
-    const outcome = await requestProvisionalSessionCleanup(childSessionKey, options);
-    deleted = outcome === "deleted";
-    return outcome !== "failed";
-  });
+  await retrySubagentCleanup(
+    async () => {
+      const outcome = await requestProvisionalSessionCleanup(childSessionKey, options);
+      deleted = outcome === "deleted";
+      return outcome !== "failed";
+    },
+    { shouldRetry: options?.isCurrent },
+  );
   return deleted;
 }
 
 export async function cleanupFailedSpawnBeforeAgentStart(params: {
+  isCurrent?: () => boolean;
   childSessionKey: string;
-  attachmentAbsDir?: string;
+  attachmentId?: string;
   emitLifecycleHooks?: boolean;
   deleteTranscript?: boolean;
   waitForSessionDeletion?: boolean;
   expectedSessionId?: string;
   expectedLifecycleRevision?: string;
 }): Promise<{ attachmentsRemoved: boolean; sessionDeleted: boolean }> {
-  const { childSessionKey, attachmentAbsDir, waitForSessionDeletion, ...sessionCleanupOptions } =
+  const { childSessionKey, attachmentId, waitForSessionDeletion, ...sessionCleanupOptions } =
     params;
   let attachmentsRemoved = true;
-  if (attachmentAbsDir) {
+  if (attachmentId) {
     try {
-      await fs.rm(attachmentAbsDir, { recursive: true, force: true });
+      await cleanupMaterializedSubagentAttachments({
+        childSessionKey,
+        attachmentId,
+        isCurrent: params.isCurrent,
+      });
     } catch {
       attachmentsRemoved = false;
     }
@@ -125,6 +134,7 @@ export async function cleanupFailedSpawnBeforeAgentStart(params: {
 }
 
 export async function terminateAcceptedCollectorRun(params: {
+  isCurrent?: () => boolean;
   childSessionKey: string;
   gatewayRunId: string;
   expectedSessionId?: string;
@@ -163,6 +173,7 @@ export async function terminateAcceptedCollectorRun(params: {
         return false;
       }
       const cleanup = await requestProvisionalSessionCleanup(params.childSessionKey, {
+        isCurrent: params.isCurrent,
         deleteTranscript: true,
         expectedSessionId: params.expectedSessionId,
         expectedLifecycleRevision: params.expectedLifecycleRevision,
@@ -170,7 +181,7 @@ export async function terminateAcceptedCollectorRun(params: {
         timeoutMs,
       });
       // A changed lifecycle proves the accepted run no longer owns this session.
-      return cleanup !== "failed";
+      return cleanup !== "failed" || params.isCurrent?.() === false;
     },
     {
       // A retired request scope can never dispatch again; retrying would retain

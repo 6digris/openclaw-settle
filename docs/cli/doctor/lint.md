@@ -45,6 +45,7 @@ JSON output is the scripting surface:
 
 ```json
 {
+  "schemaVersion": 1,
   "ok": false,
   "checksRun": 5,
   "checksSkipped": 0,
@@ -72,6 +73,12 @@ Explicit lint exit codes:
 
 When the updater runs lint, warning-severity findings below its error threshold are retained in a separate JSON `warnings` array. They do not change the lint exit code. The updater records these advisories in its run history, including intentional open channel policies, so they remain available in `openclaw update status`. Ordinary standalone lint keeps the selected output threshold.
 
+If a caller cancels state-lease acquisition before an inspection starts, Doctor records
+an informational diagnostic with `errorCode: OPENCLAW_STATE_LEASE_ABORTED`, the elapsed
+time, and the caller's signal as its cause. Below the selected threshold, this diagnostic
+appears in JSON `warnings` and human output without failing lint. It means the inspection
+was not performed. Cancellation after acquisition and other inspection failures remain errors.
+
 A configured Codex plugin that is missing or whose advertised health API cannot be
 verified produces an availability warning under `core/doctor/codex-session-routes`,
 with the plugin name and repair command. Untrusted installations are not imported
@@ -79,8 +86,14 @@ to inspect their health API.
 The updater's `--severity-min error` pass exits `0` for these warnings, using the
 same warning policy as Gateway startup. Invalid configuration, unsafe state
 inspection, and errors reported by an actual health check retain their failures.
-Missing configured `plugins.load.paths` remain discovery errors and can still
-block update candidates; see [Plugin repair warnings](/install/update-troubleshooting#plugin-repair-warnings).
+Missing configured `plugins.load.paths` produce a warning under
+`core/doctor/final-config-validation`, with requirement
+`configured-plugin-path-unavailable` and the unavailable path in `source`.
+Permission, I/O, and other inspection failures instead use
+`configured-plugin-path-inspection-failed`, retain the filesystem `errorCode`
+and error message, and provide a recovery hint for the affected path.
+The updater retains the warning and continues. Doctor preserves settings whose
+plugin owner could not be inspected; see [Plugin repair warnings](/install/update-troubleshooting#plugin-repair-warnings).
 
 Bare `openclaw doctor --json` exits `0` once it emits a findings payload, including when `ok` is `false`. Argument errors remain nonzero. If the lint runner fails before producing a report, Doctor exits `2` and emits one redacted `{ ok: false, error: { type: "cli_error", message } }` document on stdout in JSON mode, without generic CLI startup guidance.
 

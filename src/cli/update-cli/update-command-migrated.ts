@@ -14,12 +14,14 @@ import {
 import { resolveUpdateFinalizationTimeoutMs } from "../../infra/update-finalization-budget.js";
 import type { UpdateRunStep } from "../../infra/update-run-record.js";
 import { isUpdateGatewayReadinessPending } from "../../infra/update-run-step.js";
+import { createUpdateTimeoutHandoff } from "../../infra/update-timeout-provenance.js";
 import { runUtf8CommandWithTimeout } from "../../process/exec.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { CLI_NAME } from "../cli-name.js";
 import { resolveNodeRunner } from "./shared.js";
 import {
+  requiresRetainedUpdateCommandOwner,
   withUpdateCommandExecutorChild,
   type UpdateCommandChildGrant,
 } from "./update-command-executor.js";
@@ -128,7 +130,7 @@ export async function continueMigratedUpdateInFreshProcess(
   try {
     const root = result.root;
     if (!root) {
-      throw new Error("The active installation root is unknown; candidate finalization is unsafe.");
+      throw new Error("The active installation root is unknown; update finalization is unsafe.");
     }
     const workerCommand = [
       params.packageUpdateNodeRunner ?? resolveNodeRunner(),
@@ -147,6 +149,7 @@ export async function continueMigratedUpdateInFreshProcess(
     };
     if (run.executorFence) {
       assertCurrent();
+      const requiresRetainedOwner = requiresRetainedUpdateCommandOwner(run.executorFence);
       // Compatibility only, never authority. An older installed worker ignores
       // new JSON fields, so refuse before exposing any continuation input.
       const check = await runUtf8CommandWithTimeout([...workerCommand, "--check"], {
@@ -165,7 +168,7 @@ export async function continueMigratedUpdateInFreshProcess(
         contract = JSON.parse(check.stdout);
       } catch (cause) {
         throw new UpdateCommandRecoveryPendingError(
-          "Candidate live executor delegation capability could not be inspected.",
+          "Update live executor delegation capability could not be inspected.",
           { cause },
         );
       }
@@ -174,10 +177,11 @@ export async function continueMigratedUpdateInFreshProcess(
         check.code !== 0 ||
         check.cleanup !== "normal" ||
         !isRecord(contract) ||
-        contract.executorDelegation !== "pid-start-v1"
+        contract.executorDelegation !== "pid-start-v1" ||
+        (requiresRetainedOwner && contract.retainedOwnerBinding !== true)
       ) {
         throw new UpdateCommandRecoveryPendingError(
-          "Candidate runtime does not support live executor delegation; recovery remains pending.",
+          "Update runtime does not support live executor delegation; recovery remains pending.",
         );
       }
     }
@@ -198,23 +202,28 @@ export async function continueMigratedUpdateInFreshProcess(
       const { windowsTaskAutoStartRecovery: _windows, ...serializableStop } = preManagedServiceStop;
       stopState = serializableStop;
     }
-    run.activationTimeoutMs ??= await resolveUpdateFinalizationTimeoutMs(
-      params.updateStepTimeoutMs,
-      {
-        env: params.ownedManagedUpdateEnv ?? run.env,
-        databases: params.schemaVersions,
-        pluginCount: Object.keys(params.preUpdatePluginInstallRecords).length,
-        nodeRunner: params.packageUpdateNodeRunner,
-      },
-    );
+    if (params.opts.timeout !== undefined) {
+      run.activationTimeoutMs ??= await resolveUpdateFinalizationTimeoutMs(
+        params.updateStepTimeoutMs,
+        {
+          env: params.ownedManagedUpdateEnv ?? run.env,
+          databases: params.schemaVersions,
+          pluginCount: Object.keys(params.preUpdatePluginInstallRecords).length,
+          nodeRunner: params.packageUpdateNodeRunner,
+        },
+      );
+    }
+    const handoff = createUpdateTimeoutHandoff(params.opts.timeout, params.updateStepTimeoutMs);
     assertCurrent();
     const resultPath = path.join(scratchDir, "result.json");
     const { requesterAuthority, executorFence, ...runIdentity } = run;
     const input: MigratedUpdateFinalizationInput = {
+      ...handoff,
       params: {
         ...serializable,
         opts: {
           ...params.opts,
+          timeout: handoff.timeout.serialized,
           run: {
             ...runIdentity,
             ...(requesterAuthority
@@ -239,8 +248,8 @@ export async function continueMigratedUpdateInFreshProcess(
         env: workerEnv,
         input: JSON.stringify({ ...input, ...(grant ? { executor: grant } : {}) }),
         beforeInput: bindChild,
-        // This continuation includes bounded plugin steps as well as service
-        // verification; the whole-process bound must exceed one step's budget.
+        // Only an operator deadline bounds forward finalization. Probes and
+        // cancellation settlement keep their separate finite allowances.
         timeoutMs: run.activationTimeoutMs,
         killProcessTree: true,
         requireProcessTreeExtinction: true,
@@ -268,9 +277,7 @@ export async function continueMigratedUpdateInFreshProcess(
       response.result.runId !== run.runId ||
       !Number.isInteger(response.exitCode)
     ) {
-      throw new Error(
-        "Candidate finalization did not confirm the admitted run's terminal outcome.",
-      );
+      throw new Error("Update finalization did not confirm the admitted run's terminal outcome.");
     }
     try {
       await windowsRecovery?.complete(
@@ -308,7 +315,7 @@ export async function continueMigratedUpdateInFreshProcess(
     } catch (cause) {
       throw new AggregateError(
         [error, cause],
-        `Candidate finalization failed (${formatErrorMessage(error)}) and Windows task autostart compensation failed (${formatErrorMessage(cause)})`,
+        `Update finalization failed (${formatErrorMessage(error)}) and Windows task autostart compensation failed (${formatErrorMessage(cause)})`,
         { cause },
       );
     }

@@ -3,9 +3,11 @@
 import { html, nothing, render } from "lit";
 import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestTranscript } from "../chat-view.test-helpers.ts";
+import { renderChatPositionRail } from "./chat-position-rail.ts";
 import { getTranscriptState } from "./chat-thread-interactions.ts";
 import { renderChatThread } from "./chat-thread.ts";
 import { ChatTranscriptController } from "./chat-transcript-controller.ts";
+import { publishTranscriptScroll } from "./chat-transcript-scroll-events.ts";
 import {
   installTranscriptDomMocks,
   mountTestTranscript,
@@ -28,6 +30,163 @@ function message(id: string, role: string, content: unknown, seq: number, runId?
 describe("conversation position rail", () => {
   beforeEach(installTranscriptDomMocks);
   afterEach(resetTranscriptTestDom);
+
+  it.each(["resize", "focus", "focus-resize", "pointer", "reader"] as const)(
+    "keeps the reader's rail position through %s updates",
+    async (scenario) => {
+      vi.stubGlobal(
+        "IntersectionObserver",
+        class {
+          observe = vi.fn();
+          unobserve = vi.fn();
+          disconnect = vi.fn();
+        },
+      );
+      const transcript = createTestTranscript();
+      const container = document.body.appendChild(document.createElement("div"));
+      const activeMessage = vi.fn(() => "message-79");
+      const positions = {
+        markers: Array.from({ length: 80 }, (_, index) => ({
+          id: `message-${index}`,
+          anchorId: `message-${index}`,
+          role: "user" as const,
+          message: message(`message-${index}`, "user", `Checkpoint ${index}`, index + 1),
+        })),
+        markerIdsByMessageId: new Map(
+          Array.from({ length: 80 }, (_, index) => [`message-${index}`, `message-${index}`]),
+        ),
+      };
+      render(
+        transcript.renderSession(
+          "rail-scroll-policy",
+          "agent:main:rail-scroll-policy",
+          (session) => {
+            vi.spyOn(session, "activeMessageId").mockImplementation(activeMessage);
+            return html`<div class="chat-thread">
+              ${renderChatPositionRail({ positions, transcript: session, requestUpdate: () => {} })}
+            </div>`;
+          },
+        ),
+        container,
+      );
+      const root = container.querySelector<HTMLElement>(".chat-thread")!;
+      const marks = container.querySelector<HTMLElement>(".chat-position-rail__marks")!;
+      const marker = (index: number) =>
+        marks.querySelector<HTMLButtonElement>(`[data-position-marker-id="message-${index}"]`)!;
+      let height = 597;
+      let marksHeight = 283;
+      let railOffset = 0;
+      Object.defineProperties(root, {
+        clientHeight: { configurable: true, get: () => height },
+        scrollHeight: { configurable: true, value: 8912 },
+      });
+      Object.defineProperties(marks, {
+        clientHeight: { configurable: true, get: () => marksHeight },
+        scrollTop: {
+          configurable: true,
+          get: () => railOffset,
+          set: (value: number) => {
+            railOffset = Math.max(0, Math.min(value, 960 - marksHeight));
+          },
+        },
+      });
+      root.scrollTop = 8315;
+      const flush = async () => {
+        marks.dispatchEvent(new Event("scroll"));
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        });
+      };
+      try {
+        await flush();
+        expect(marks.scrollTop).toBe(677);
+        expect(marks.querySelectorAll(".chat-position-rail__marker").length).toBeLessThan(50);
+        if (scenario === "resize") {
+          height = 554;
+          marksHeight = 240;
+          activeMessage.mockReturnValue("message-76");
+          await flush();
+          expect(marks.scrollTop).toBe(677);
+          root.scrollTop = 8319;
+          await flush();
+          expect(marks.scrollTop).toBe(677);
+          // A second resize retargets the same smooth compensation, including its last 6px.
+          height = 512;
+          marksHeight = 198;
+          await flush();
+          for (const offset of [8323, 8394, 8400]) {
+            root.scrollTop = offset;
+            await flush();
+            expect(marks.scrollTop).toBe(677);
+          }
+          publishTranscriptScroll(root, {
+            type: "input",
+            event: new WheelEvent("wheel", { deltaY: -200 }),
+            touching: false,
+          });
+          root.scrollTop = 8000;
+          activeMessage.mockReturnValue("message-40");
+          await flush();
+          expect(marks.scrollTop).toBeLessThan(677);
+        } else if (scenario === "focus") {
+          marks.scrollTop = 40 * 12 - 100;
+          await flush();
+          document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+          marker(40).focus();
+          expect(marker(40).matches(":focus-visible")).toBe(true);
+          await flush();
+          expect(Number.parseFloat(marker(40).style.top)).toBeGreaterThanOrEqual(marks.scrollTop);
+          expect(Number.parseFloat(marker(40).style.top) + 12).toBeLessThanOrEqual(
+            marks.scrollTop + marks.clientHeight,
+          );
+          const focusedOffset = marks.scrollTop;
+          activeMessage.mockReturnValue("message-77");
+          await flush();
+          expect(document.activeElement).toBe(marker(40));
+          expect(marks.scrollTop).toBe(focusedOffset);
+          marker(40).blur();
+          activeMessage.mockReturnValue("message-79");
+          await flush();
+          expect(marks.scrollTop).toBe(677);
+        } else if (scenario === "focus-resize") {
+          document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+          marker(79).focus();
+          expect(marker(79).matches(":focus-visible")).toBe(true);
+          height = 554;
+          marksHeight = 240;
+          await flush();
+          expect(document.activeElement).toBe(marker(79));
+          expect(marks.scrollTop).toBe(720);
+        } else if (scenario === "pointer") {
+          marker(60).dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+          marker(60).focus();
+          expect(marker(60).matches(":focus-visible")).toBe(false);
+          expect(marks.scrollTop).toBe(677);
+          activeMessage.mockReturnValue("message-0");
+          await flush();
+          expect(document.activeElement).toBe(marker(60));
+          expect(marks.scrollTop).toBe(0);
+        } else {
+          height = 554;
+          marksHeight = 240;
+          await flush();
+          expect(marks.scrollTop).toBe(677);
+          publishTranscriptScroll(root, {
+            type: "input",
+            event: new WheelEvent("wheel", { deltaY: 120 }),
+            touching: false,
+          });
+          root.scrollTop = 8319;
+          await flush();
+          expect(marker(79).getAttribute("aria-current")).toBe("true");
+          expect(marks.scrollTop).toBe(720);
+        }
+      } finally {
+        render(nothing, container);
+        transcript.hostDisconnected();
+      }
+    },
+  );
 
   it("keeps stream edits off target scans while reconciling bubble mounts and identities", async () => {
     const observed = new Set<Element>();
