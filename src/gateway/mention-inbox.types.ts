@@ -5,7 +5,7 @@ import type {
   UsersMentionableParams,
   UsersMentionableResult,
 } from "../../packages/gateway-protocol/src/index.js";
-import type { MentionAudienceIdentity } from "./mention-inbox-audience-store.js";
+import type { MentionAudienceIdentity } from "./mention-inbox-audience-schema.js";
 import type { GatewayClient } from "./server-methods/client-types.js";
 
 export type MentionCommittedInput = {

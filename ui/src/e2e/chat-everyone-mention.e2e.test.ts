@@ -1,6 +1,10 @@
 import { expect, it } from "vitest";
 import { defaultControlUiFeatureMethods } from "../test-helpers/control-ui-e2e.ts";
-import { createChatFlowE2eSuite, installMockGateway } from "./chat-flow.test-support.ts";
+import {
+  createChatFlowE2eSuite,
+  installMockGateway,
+  requireRecord,
+} from "./chat-flow.test-support.ts";
 import { waitForGatewayRecoveryScope } from "./new-session-page.test-support.ts";
 
 const suite = createChatFlowE2eSuite();
@@ -44,9 +48,11 @@ suite.define(() => {
           await input.pressSequentially("Please review the release checklist.");
           await input.press("Enter");
           const request = await gateway.waitForRequest("chat.send");
-          expect(request.params.message).toBe("@everyone Please review the release checklist.");
-          expect(request.params.mentions).toEqual([{ kind: "everyone", start: 0, end: 9 }]);
-          await expect.poll(() => page.locator(".human-mention-everyone").count()).toBe(1);
+          const params = requireRecord(request.params);
+          expect(params.message).toBe("@everyone Please review the release checklist.");
+          expect(params.mentions).toEqual([{ kind: "everyone", start: 0, end: 9 }]);
+          await page.locator(".human-mention-everyone").waitFor({ state: "visible" });
+          expect(await page.locator(".human-mention-everyone").count()).toBe(1);
           expect(await page.locator(".human-mention-everyone").textContent()).toBe("@everyone");
           expect(await page.locator("openclaw-person-reference").count()).toBe(0);
         },

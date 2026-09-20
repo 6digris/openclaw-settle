@@ -9,12 +9,12 @@ import {
   runOpenClawStateWriteTransaction,
 } from "../state/openclaw-state-db.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
+import type { MentionAudienceIdentity } from "./mention-inbox-audience-schema.js";
 import {
   applyMentionAudienceCleanup,
   prepareMentionAudienceCleanup,
   readMentionAudience,
   retainMentionAudience,
-  type MentionAudienceIdentity,
 } from "./mention-inbox-audience-store.js";
 import { MENTION_RETENTION_MS } from "./mention-inbox-store.js";
 import {

@@ -140,7 +140,7 @@ export function registerChatSendPendingMentionTests(
   it("keeps an everyone audience private and immutable through actual pending-input restart recovery", async () => {
     const fixture = await createMentionFixture();
     const resumedRelease = createDeferred();
-    let resumedRecorder: UserTurnTranscriptRecorder | undefined;
+    const resumedReady = createDeferred<UserTurnTranscriptRecorder>();
     fixture.params.message = "@everyone review this";
     fixture.params.mentions = [{ kind: "everyone", start: 0, end: 9 }];
     try {
@@ -168,15 +168,19 @@ export function registerChatSendPendingMentionTests(
       const late = ensureProfileForEmail("late-after-restart@example.test");
       dispatchInboundMessageMock.mockImplementation(async (options: unknown) => {
         const { replyOptions } = options as Parameters<typeof dispatchInboundMessage>[0];
-        resumedRecorder = replyOptions?.userTurnTranscriptRecorder;
+        const recorder = replyOptions?.userTurnTranscriptRecorder;
+        if (!recorder) {
+          throw new Error("Expected the recovered user-turn recorder");
+        }
+        resumedReady.resolve(recorder);
         await resumedRelease.promise;
         return {};
       });
       Object.assign(fixture.params, { __controlUiReconnectResume: true });
       expect((await fixture.send()).mock.calls[0]?.[0]).toBe(true);
-      await vi.waitFor(() => expect(resumedRecorder).toBeDefined());
+      const resumedRecorder = await resumedReady.promise;
       expect(() => originalRecorder.withPendingInput?.(() => {})).toThrow("ownership ended");
-      const committed = await resumedRecorder!.persistApproved();
+      const committed = await resumedRecorder.persistApproved();
       expect(JSON.stringify(committed?.message)).not.toContain(
         fixture.bobClient.authenticatedUserProfile.profileId,
       );

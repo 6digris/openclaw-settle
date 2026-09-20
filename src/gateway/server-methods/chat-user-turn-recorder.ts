@@ -13,7 +13,7 @@ import {
 } from "../../sessions/user-turn-transcript.js";
 import type { UserTurnOriginalInputCommit } from "../../sessions/user-turn-transcript.types.js";
 import { extractTextFromChatContent } from "../../shared/chat-content.js";
-import type { MentionAudienceIdentity } from "../mention-inbox-audience-store.js";
+import type { MentionAudienceIdentity } from "../mention-inbox-audience-schema.js";
 import type { MentionInbox } from "../mention-inbox.types.js";
 import { loadSessionEntry } from "../session-utils.js";
 import { formatForLog } from "../ws-log.js";

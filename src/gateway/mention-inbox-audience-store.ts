@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { MAX_EVERYONE_MENTION_RECIPIENTS } from "../../packages/gateway-protocol/src/index.js";
-import { hasRetainedSessionPendingInput } from "../config/sessions/session-accessor.js";
+import { hasRetainedSessionPendingInput } from "../config/sessions/session-accessor.pending-input-sources.js";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
@@ -10,6 +10,10 @@ import {
 } from "../infra/kysely-sync.js";
 import type { ConfigMachineStateDatabase } from "../state/config-machine-state.js";
 import { withExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
+import {
+  mentionAudienceIdentitySchema,
+  type MentionAudienceIdentity,
+} from "./mention-inbox-audience-schema.js";
 import { MAX_MENTION_SOURCES, MENTION_RETENTION_MS } from "./mention-inbox-store.js";
 
 // Unlike transcript metadata, this namespace is private to both current and shipped readers.
@@ -17,21 +21,10 @@ const PREFIX = "notifications.mentions.audience.";
 const END = "notifications.mentions.audience/";
 const MAX_AUDIENCE_RECORD_CHARS = 300_000;
 const CLEANUP_BATCH_SIZE = 64;
-const reference = z.string().min(1).max(256);
-const identitySchema = z.object({
-  agentId: reference,
-  sessionKey: z.string().min(1).max(512),
-  sessionId: reference,
-  storePath: z.string().min(1).max(4096).optional(),
-  sourceId: reference,
-  senderProfileId: reference,
-  requestFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
-});
-const receiptSchema = identitySchema.extend({
+const receiptSchema = mentionAudienceIdentitySchema.extend({
   createdAt: z.number().int().nonnegative(),
-  recipients: z.array(reference).max(MAX_EVERYONE_MENTION_RECIPIENTS),
+  recipients: z.array(z.string().min(1).max(256)).max(MAX_EVERYONE_MENTION_RECIPIENTS),
 });
-export type MentionAudienceIdentity = z.infer<typeof identitySchema>;
 export type MentionAudienceReceipt = z.infer<typeof receiptSchema>;
 
 function key(identity: MentionAudienceIdentity): string {
@@ -71,8 +64,8 @@ export function readMentionAudience(
   }
   const receipt = receiptSchema.parse(JSON.parse(row.value_json));
   if (
-    JSON.stringify(identitySchema.parse(receipt)) !==
-      JSON.stringify(identitySchema.parse(identity)) ||
+    JSON.stringify(mentionAudienceIdentitySchema.parse(receipt)) !==
+      JSON.stringify(mentionAudienceIdentitySchema.parse(identity)) ||
     new Set(receipt.recipients).size !== receipt.recipients.length
   ) {
     throw new Error("Mention audience conflicts with the admitted input");

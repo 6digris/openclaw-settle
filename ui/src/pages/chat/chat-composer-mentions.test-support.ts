@@ -110,7 +110,13 @@ export function composerFixture(
   const textarea = container.querySelector<HTMLTextAreaElement>("textarea")!;
   const edit = (
     next: string,
-    options: { start?: number; end?: number; caret?: number; inputType?: string; data?: string | null } = {},
+    options: {
+      start?: number;
+      end?: number;
+      caret?: number;
+      inputType?: string;
+      data?: string | null;
+    } = {},
   ) => {
     const inputType = options.inputType ?? "insertText";
     textarea.setSelectionRange(
