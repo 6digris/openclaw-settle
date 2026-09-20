@@ -2,13 +2,13 @@ package ai.openclaw.app.chat
 
 import ai.openclaw.app.gateway.GatewaySession
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -270,7 +270,14 @@ class ChatControllerSubagentActivityTest {
           progress = """{"runId":"run-task-1","revision":1,"items":[{"itemId":"work","kind":"tool","phase":"start","title":"Public activity","status":"running"},{"itemId":"hidden","kind":"tool","phase":"start","title":"Private activity","hideFromChannelProgress":true}]}""",
         ),
       )
-      assertEquals(listOf("Public activity"), controller.subagentActivities.value.getValue("task-1").progress?.items?.map { it.title })
+      assertEquals(
+        listOf("Public activity"),
+        controller.subagentActivities.value
+          .getValue("task-1")
+          .progress
+          ?.items
+          ?.map { it.title },
+      )
       controller.handleGatewayEvent(
         "task",
         taskPayload(
@@ -292,7 +299,13 @@ class ChatControllerSubagentActivityTest {
           progress = """{"runId":"replacement-source","revision":1,"items":[{"itemId":"stale","kind":"tool","phase":"start","title":"Stale activity"}]}""",
         ),
       )
-      assertEquals(2L, controller.subagentActivities.value.getValue("task-1").progress?.revision)
+      assertEquals(
+        2L,
+        controller.subagentActivities.value
+          .getValue("task-1")
+          .progress
+          ?.revision,
+      )
       controller.handleGatewayEvent(
         "task",
         taskPayload(
@@ -301,7 +314,13 @@ class ChatControllerSubagentActivityTest {
           progress = """{"runId":"replacement-source","revision":3,"items":[]}""",
         ),
       )
-      assertEquals("replacement-source", controller.subagentActivities.value.getValue("task-1").progress?.runId)
+      assertEquals(
+        "replacement-source",
+        controller.subagentActivities.value
+          .getValue("task-1")
+          .progress
+          ?.runId,
+      )
       controller.handleGatewayEvent("task", """{"action":"restored"}""")
       assertTrue(controller.subagentActivities.value.isEmpty())
       controller.handleGatewayEvent(
@@ -312,9 +331,19 @@ class ChatControllerSubagentActivityTest {
           progress = """{"runId":"restored-source","revision":0,"items":[]}""",
         ),
       )
-      assertEquals(0L, controller.subagentActivities.value.getValue("task-1").progress?.revision)
+      assertEquals(
+        0L,
+        controller.subagentActivities.value
+          .getValue("task-1")
+          .progress
+          ?.revision,
+      )
       controller.handleGatewayEvent("task", taskPayload(id = "task-1", status = "running"))
-      assertNull(controller.subagentActivities.value.getValue("task-1").progress)
+      assertNull(
+        controller.subagentActivities.value
+          .getValue("task-1")
+          .progress,
+      )
     }
 
   @Test
@@ -323,43 +352,62 @@ class ChatControllerSubagentActivityTest {
     runTest {
       for (boundary in listOf("connect", "reconnect", "restored", "seqGap", "session")) {
         val sessionKey = if (boundary == "session") "other" else "main"
-        val controller = newController { method, params ->
-          if (method == "tasks.list") {
-            val request = json.parseToJsonElement(checkNotNull(params)).jsonObject
-            assertEquals("main", request.getValue("agentId").jsonPrimitive.content)
-            assertEquals(sessionKey, request.getValue("sessionKey").jsonPrimitive.content)
-            taskList(
-              taskPayload(
-                id = "quiet",
-                sessionKey = sessionKey,
-                agentId = "worker",
-                status = "running",
-                executionState = "waiting",
-                progress = """{"runId":"restored-source","revision":0,"items":[{"itemId":"note","kind":"preamble","phase":"end","title":"","progressText":"Waiting for delegated work"}]}""",
-              ),
-              taskPayload(id = "another-owner", sessionKey = "agent:other:main", agentId = "other"),
-            )
-          } else {
-            emptyChatGatewayResponse(method)
+        val controller =
+          newController { method, params ->
+            if (method == "tasks.list") {
+              val request = json.parseToJsonElement(checkNotNull(params)).jsonObject
+              assertEquals("main", request.getValue("agentId").jsonPrimitive.content)
+              assertEquals(sessionKey, request.getValue("sessionKey").jsonPrimitive.content)
+              taskList(
+                taskPayload(
+                  id = "quiet",
+                  sessionKey = sessionKey,
+                  agentId = "worker",
+                  status = "running",
+                  executionState = "waiting",
+                  progress = """{"runId":"restored-source","revision":0,"items":[{"itemId":"note","kind":"preamble","phase":"end","title":"","progressText":"Waiting for delegated work"}]}""",
+                ),
+                taskPayload(id = "another-owner", sessionKey = "agent:other:main", agentId = "other"),
+              )
+            } else {
+              emptyChatGatewayResponse(method)
+            }
           }
-        }
         when (boundary) {
-          "connect" -> controller.onGatewayConnected()
+          "connect" -> {
+            controller.onGatewayConnected()
+          }
+
           "reconnect" -> {
             controller.handleGatewayEvent("task", taskPayload(id = "quiet", status = "running"))
             controller.onDisconnected("offline")
             controller.onGatewayConnected()
           }
-          "restored" -> controller.handleGatewayEvent("task", """{"action":"restored"}""")
-          "seqGap" -> controller.handleGatewayEvent("seqGap", null)
-          "session" -> controller.switchSession(sessionKey)
+
+          "restored" -> {
+            controller.handleGatewayEvent("task", """{"action":"restored"}""")
+          }
+
+          "seqGap" -> {
+            controller.handleGatewayEvent("seqGap", null)
+          }
+
+          "session" -> {
+            controller.switchSession(sessionKey)
+          }
         }
         runCurrent()
         assertEquals(boundary, setOf("quiet"), controller.subagentActivities.value.keys)
         val quiet = controller.subagentActivities.value.getValue("quiet")
         assertTrue(quiet.isWorking)
         assertEquals("waiting", quiet.executionState)
-        assertEquals("Waiting for delegated work", quiet.progress?.items?.single()?.progressText)
+        assertEquals(
+          "Waiting for delegated work",
+          quiet.progress
+            ?.items
+            ?.single()
+            ?.progressText,
+        )
       }
     }
 
@@ -368,9 +416,10 @@ class ChatControllerSubagentActivityTest {
   fun heldHydrationReplaysLiveProgressAndDeletionWithoutLosingQuietWorkers() =
     runTest {
       val response = CompletableDeferred<String>()
-      val controller = newController { method, _ ->
-        if (method == "tasks.list") response.await() else emptyChatGatewayResponse(method)
-      }
+      val controller =
+        newController { method, _ ->
+          if (method == "tasks.list") response.await() else emptyChatGatewayResponse(method)
+        }
       controller.onGatewayConnected()
       runCurrent()
       controller.handleGatewayEvent(
@@ -391,8 +440,21 @@ class ChatControllerSubagentActivityTest {
       )
       runCurrent()
       assertEquals(setOf("quiet", "busy"), controller.subagentActivities.value.keys)
-      assertEquals("waiting", controller.subagentActivities.value.getValue("quiet").executionState)
-      assertEquals("Current work", controller.subagentActivities.value.getValue("busy").progress?.items?.single()?.progressText)
+      assertEquals(
+        "waiting",
+        controller.subagentActivities.value
+          .getValue("quiet")
+          .executionState,
+      )
+      assertEquals(
+        "Current work",
+        controller.subagentActivities.value
+          .getValue("busy")
+          .progress
+          ?.items
+          ?.single()
+          ?.progressText,
+      )
     }
 
   @Test
@@ -429,9 +491,18 @@ class ChatControllerSubagentActivityTest {
         controller.switchSession("global", "main")
         runCurrent()
         when (boundary) {
-          "socket" -> physicalConnection++
-          "session" -> controller.switchSession("other", "main")
-          "agent" -> controller.switchSession("global", "other")
+          "socket" -> {
+            physicalConnection++
+          }
+
+          "session" -> {
+            controller.switchSession("other", "main")
+          }
+
+          "agent" -> {
+            controller.switchSession("global", "other")
+          }
+
           "session-aba" -> {
             controller.switchSession("other", "main")
             controller.switchSession("global", "main")
@@ -444,7 +515,13 @@ class ChatControllerSubagentActivityTest {
     }
 
   private fun taskList(vararg events: String): String =
-    """{"tasks":[${events.joinToString(",") { json.parseToJsonElement(it).jsonObject.getValue("task").toString() }}]}"""
+    """{"tasks":[${events.joinToString(",") {
+      json
+        .parseToJsonElement(it)
+        .jsonObject
+        .getValue("task")
+        .toString()
+    }}]}"""
 
   private fun TestScope.newController(
     request: suspend (String, String?) -> String = { method, _ -> emptyChatGatewayResponse(method) },

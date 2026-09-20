@@ -54,7 +54,13 @@ class BackgroundTaskTest {
       val task = (observed.single() as BackgroundTaskEvent.Upserted).task
       assertNull(task.prompt)
       assertNull(task.result)
-      assertEquals("Public progress", task.progress?.items?.single()?.title)
+      assertEquals(
+        "Public progress",
+        task.progress
+          ?.items
+          ?.single()
+          ?.title,
+      )
       controller.handleGatewayEvent("task", """{"action":"deleted","taskId":"task"}""")
       controller.handleGatewayEvent("task", """{"action":"restored"}""")
       runCurrent()
@@ -215,7 +221,11 @@ class BackgroundTaskTest {
 
   @Test
   fun executionAndDeliveryAreIndependentOfTaskOutcome() {
-    fun task(status: String, execution: String, outcome: String? = null): BackgroundTask =
+    fun task(
+      status: String,
+      execution: String,
+      outcome: String? = null,
+    ): BackgroundTask =
       parseBackgroundTasks(
         json,
         """{"tasks":[{"id":"task","status":"$status","execution":{"state":"$execution","wait":{"kind":"children"}},"deliveryStatus":"pending","terminalOutcome":${outcome?.let { "\"$it\"" } ?: "null"}}]}""",
@@ -237,11 +247,15 @@ class BackgroundTaskTest {
 
   @Test
   fun preparedProgressIsBoundedRedactedAndOrderedAcrossPhysicalExecutions() {
-    val items = (0..64).joinToString(",") { index ->
-      """{"itemId":"item-$index","kind":"tool","phase":"start","title":"Public $index","status":"running","args":{"token":"private"},"hideFromChannelProgress":${index == 0}}"""
-    }
-    fun task(progress: String, activityAt: Long = 200): BackgroundTask =
-      parseBackgroundTasks(json, """{"tasks":[{"id":"task","status":"running","runId":"run-1","execution":{"state":"running","lastActivityAt":$activityAt},"progress":$progress}]}""").single()
+    val items =
+      (0..64).joinToString(",") { index ->
+        """{"itemId":"item-$index","kind":"tool","phase":"start","title":"Public $index","status":"running","args":{"token":"private"},"hideFromChannelProgress":${index == 0}}"""
+      }
+
+    fun task(
+      progress: String,
+      activityAt: Long = 200,
+    ): BackgroundTask = parseBackgroundTasks(json, """{"tasks":[{"id":"task","status":"running","runId":"run-1","execution":{"state":"running","lastActivityAt":$activityAt},"progress":$progress}]}""").single()
 
     val original = task("""{"runId":"run-1","revision":7,"items":[$items]}""")
     val progress = checkNotNull(original.progress)
@@ -255,10 +269,17 @@ class BackgroundTaskTest {
     assertTrue(checkNotNull(mergeBackgroundTasks(listOf(original), listOf(retraction)).single().progress).items.isEmpty())
     assertTrue(checkNotNull(mergeBackgroundTasks(listOf(retraction), listOf(original)).single().progress).items.isEmpty())
     assertNull(mergeBackgroundTasks(listOf(original), listOf(task("null"))).single().progress)
-    val preamble = task(
-      """{"runId":"source-run","revision":1,"items":[{"itemId":"public","kind":"preamble","phase":"end","title":"","progressText":"Public progress note"},{"itemId":"reasoning","kind":"reasoning","phase":"end","title":"Private reasoning"},{"itemId":"quiet","kind":"tool","phase":"end","title":"Suppressed tool","suppressChannelProgress":true}]}""",
+    val preamble =
+      task(
+        """{"runId":"source-run","revision":1,"items":[{"itemId":"public","kind":"preamble","phase":"end","title":"","progressText":"Public progress note"},{"itemId":"reasoning","kind":"reasoning","phase":"end","title":"Private reasoning"},{"itemId":"quiet","kind":"tool","phase":"end","title":"Suppressed tool","suppressChannelProgress":true}]}""",
+      )
+    assertEquals(
+      "Public progress note",
+      preamble.progress
+        ?.items
+        ?.single()
+        ?.progressText,
     )
-    assertEquals("Public progress note", preamble.progress?.items?.single()?.progressText)
   }
 
   @Test
@@ -347,11 +368,12 @@ class BackgroundTaskTest {
   @Test
   fun snapshotReplayPreservesQuietRowsAndDoesNotResurrectDeletedGenerations() {
     val quiet = sampleTask("quiet", "queued", 100)
-    val original = sampleTask("changing", "running", 200).copy(
-      runId = "canonical",
-      prompt = "Retired private prompt",
-      progress = BackgroundTaskProgress("old-source", 8, emptyList()),
-    )
+    val original =
+      sampleTask("changing", "running", 200).copy(
+        runId = "canonical",
+        prompt = "Retired private prompt",
+        progress = BackgroundTaskProgress("old-source", 8, emptyList()),
+      )
     val pending = mutableMapOf<String, CoalescedBackgroundTaskEvent>()
     coalesceBackgroundTaskEvent(pending, BackgroundTaskEvent.Upserted(original.copy(progress = null)))
     val unavailable = replayBackgroundTaskEvents(listOf(quiet, original), pending)

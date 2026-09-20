@@ -81,10 +81,17 @@ class ChatControllerTerminalAckTest {
           onAssistantReplyFinalized = { _, runId, _ -> finalized += runId },
         ) { method, _ ->
           when (method) {
-            "chat.send" -> """{"runId":"run-yield","status":"started"}"""
-            "progressCard.get" ->
+            "chat.send" -> {
+              """{"runId":"run-yield","status":"started"}"""
+            }
+
+            "progressCard.get" -> {
               """{"card":{"sessionKey":"agent:main:main","revision":1,"updatedAt":1,"markdown":"Delegated checklist","steps":[{"step":"Wait for worker","status":"in_progress"}]}}"""
-            else -> emptyChatGatewayResponse(method)
+            }
+
+            else -> {
+              emptyChatGatewayResponse(method)
+            }
           }
         }
       controller.prepareMainSessionKey("agent:main:main")
@@ -108,9 +115,21 @@ class ChatControllerTerminalAckTest {
       val child = controller.subagentActivities.value.getValue("child")
       assertTrue(child.isWorking)
       assertEquals("running", child.executionState)
-      assertEquals("Checking delegated work", child.progress?.items?.single()?.title)
+      assertEquals(
+        "Checking delegated work",
+        child.progress
+          ?.items
+          ?.single()
+          ?.title,
+      )
       assertEquals("Delegated checklist", controller.progressCard.value?.markdown)
-      assertEquals(ChatPlanStepStatus.InProgress, controller.progressCard.value?.steps?.single()?.status)
+      assertEquals(
+        ChatPlanStepStatus.InProgress,
+        controller.progressCard.value
+          ?.steps
+          ?.single()
+          ?.status,
+      )
     }
 
   @Test

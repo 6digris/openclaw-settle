@@ -1571,7 +1571,18 @@ class ChatComposerLayoutTest {
       sheetScroll.performScrollToNode(hasText("Quiet worker"))
       composeRule.onNode(hasText("Quiet worker") and hasAnyAncestor(isDialog())).assertIsDisplayed()
       sheetScroll.performScrollToNode(hasText("Finished worker"))
-      composeRule.onNode(hasText("Finished worker") and hasAnyAncestor(isDialog())).assertIsDisplayed()
+      val finished = composeRule.onNode(hasText("Finished worker") and hasAnyAncestor(isDialog()))
+      try {
+        finished.assertIsDisplayed()
+      } catch (failure: AssertionError) {
+        val scroll = sheetScroll.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange]
+        throw AssertionError(
+          "Finished worker bounds=${finished.getUnclippedBoundsInRoot()}, " +
+            "clipped=${finished.fetchSemanticsNode().boundsInRoot}, " +
+            "list=${sheetScroll.getUnclippedBoundsInRoot()}, scroll=${scroll.value()}/${scroll.maxValue()}",
+          failure,
+        )
+      }
       sheetScroll.performScrollToNode(hasText("Current work 3"))
       composeRule.onNode(hasText("Current work 3") and hasAnyAncestor(isDialog())).assertIsDisplayed()
       composeRule.onNodeWithText("Deleted worker").assertDoesNotExist()
