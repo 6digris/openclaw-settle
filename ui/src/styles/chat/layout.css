@@ -648,10 +648,11 @@ openclaw-pending-session-create {
   content-visibility: auto;
 }
 
-/* Auto content visibility clips row-edge focus rings. Keep hovered rows
-   uncontained too: restoring containment during native mouse focus can crash
-   Chromium before a context menu opens. Other rows retain layout skipping. */
-.chat-virtual-row:is(:hover, :focus-within) {
+/* Auto content visibility clips row-edge focus rings. Keep hovered message
+   bubbles uncontained too: restoring containment during native mouse focus can
+   crash Chromium before a context menu opens. Metadata keeps its top-layer path. */
+.chat-virtual-row:focus-within,
+.chat-virtual-row:has(.chat-bubble:hover) {
   content-visibility: visible;
 }
 
