@@ -4,6 +4,8 @@ import type { SessionMember } from "./session-sharing-store.kernel.js";
 import type { SessionStoreTargetInventoryResult } from "./session-store-target-inventory.js";
 import type {
   PreparedSessionTranscriptHydration,
+  SessionColdMetadataWorkerInput,
+  SessionColdMetadataWorkerResult,
   SessionIdentityEvidenceWorkerInput,
   SessionIdentityEvidenceWorkerResult,
   SessionTranscriptHistoryWorkerInput,
@@ -17,6 +19,7 @@ import type {
 
 export type SessionHistoryWorkerRequestRunner = <TResult>(
   prepare: () =>
+    | Omit<SessionColdMetadataWorkerInput, "database">
     | Omit<SessionTranscriptHistoryWorkerInput, "database">
     | Omit<SessionRowPresenceWorkerInput, "database">
     | Omit<SessionEntryListWorkerInput, "database">
@@ -27,6 +30,7 @@ export type SessionHistoryWorkerRequestRunner = <TResult>(
   inputBytes: number,
   receive: (
     value:
+      | SessionColdMetadataWorkerResult
       | SessionHistoryWorkerResult
       | boolean
       | SessionEntryListWorkerResult
@@ -41,6 +45,23 @@ export type SessionHistoryWorkerRequestRunner = <TResult>(
 /** Decode domain results; database custody remains with the enclosing history owner. */
 export function createSessionHistoryWorkerReaders(runRequest: SessionHistoryWorkerRequestRunner) {
   return {
+    readColdMetadata: async (input: Omit<SessionColdMetadataWorkerInput, "kind" | "database">) =>
+      await runRequest(
+        () => ({ kind: "cold-metadata", ...input }),
+        JSON.stringify(input).length * 2,
+        (value) => {
+          if (
+            typeof value === "boolean" ||
+            Array.isArray(value) ||
+            value.kind !== "cold-metadata"
+          ) {
+            throw new Error(
+              "Session history worker returned another result instead of cold metadata",
+            );
+          }
+          return value;
+        },
+      ),
     run: async (
       prepare: () => Omit<SessionTranscriptHistoryWorkerInput, "database">,
       inputBytes: number,

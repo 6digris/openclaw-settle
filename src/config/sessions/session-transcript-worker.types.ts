@@ -34,6 +34,7 @@ import type {
   SessionTranscriptRuntimeTarget,
 } from "./session-accessor.types.js";
 import type { CanonicalSessionReaderContinuation } from "./session-canonical-key.js";
+import type { SessionColdArchive } from "./session-cold-storage-state.js";
 import type {
   SessionHistoryWorkerRequest,
   SessionHistoryWorkerResult,
@@ -97,6 +98,18 @@ export type SessionTranscriptHydrationWorkerInput = {
   admission?: UserTurnTranscriptAdmissionReceipt;
 };
 
+export type SessionColdMetadataWorkerInput = {
+  kind: "cold-metadata";
+  database: { agentId: string; path: string };
+  sessionId: string;
+  env: NodeJS.ProcessEnv;
+};
+
+export type SessionColdMetadataWorkerResult = {
+  kind: "cold-metadata";
+  archive: Omit<SessionColdArchive, "archive_blob"> | undefined;
+};
+
 export type SessionRowPresenceWorkerInput = {
   kind: "session-row-presence";
   database: { agentId: string; path: string };
@@ -152,6 +165,7 @@ export type SessionBranchSummaryWorkerInput = {
 };
 
 export type SessionTranscriptWorkerValues = {
+  "cold-metadata": SessionColdMetadataWorkerResult;
   "transcript-hydration": PreparedSessionTranscriptHydration;
   "sqlite-target": { target: ResolvedSqliteStoreTarget };
   "branch-summaries": SessionBranchSummaryReadResult;

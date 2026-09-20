@@ -154,6 +154,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
         );
         const value = receive(
           unwrapSessionTranscriptWorkerReply<
+            | "cold-metadata"
             | "history-page"
             | "session-row-presence"
             | "session-members"

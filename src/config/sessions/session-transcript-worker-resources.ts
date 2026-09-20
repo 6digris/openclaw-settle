@@ -30,6 +30,7 @@ import type {
   SessionStoreTargetInventoryResult,
 } from "./session-store-target-inventory.js";
 import type {
+  SessionColdMetadataWorkerInput,
   SessionEntryListWorkerInput,
   SessionTargetInventoryWorkerInput,
   SessionIdentityEvidenceWorkerInput,
@@ -43,6 +44,7 @@ import type {
 
 const workerUrl = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sessionTranscript);
 export const historyPages = new WorkerTaskPool<
+  | SessionColdMetadataWorkerInput
   | SessionTranscriptHistoryWorkerInput
   | SessionRowPresenceWorkerInput
   | SessionMembersWorkerInput
@@ -52,6 +54,7 @@ export const historyPages = new WorkerTaskPool<
   | SessionUsageCacheWorkerInput
   | SessionTranscriptHydrationWorkerInput,
   SessionTranscriptWorkerReply<
+    | "cold-metadata"
     | "history-page"
     | "session-row-presence"
     | "session-members"
@@ -359,6 +362,7 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
             },
           );
           const result = unwrapSessionTranscriptWorkerReply<
+            | "cold-metadata"
             | "history-page"
             | "session-row-presence"
             | "session-members"
