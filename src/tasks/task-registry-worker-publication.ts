@@ -28,6 +28,8 @@ export type TaskRegistryWorkerMutationContext = {
   readEventTarget?: () => TaskAgentEventTarget | undefined;
   /** Only a producer whose write contract preserves task routing, access, and detail. */
   readIdentity?: "preserved";
+  /** Prepare current rows before this mutation invalidates their projection. */
+  prepare?: () => Promise<void>;
   taskRowsWritten?: () => boolean;
   beforeObservers?: (assertCurrent: () => void) => Promise<void>;
   recoverPublication?: (snapshot: TaskRegistryStoreSnapshot) => TaskRecord | undefined;
@@ -74,9 +76,9 @@ export function createTaskRegistryPublicationRecovery(
       witness.writtenTaskIds.clear();
       witness.replaced = false;
     },
-    recover,
-    bindExpected(record: TaskRecord | undefined) {
-      expected = record;
+    recover: (snapshot: TaskRegistryStoreSnapshot) => {
+      expected = recover(snapshot);
+      return expected;
     },
     assertCurrent() {
       if (!expected) {
@@ -292,7 +294,12 @@ export function claimTaskRegistryPublication(
     ready: new Set(),
     invalidated: new Set(),
   };
+  const recovery = pending.recoveryWitness;
   for (const [taskId, record] of pending.publication.records) {
+    // Competing writes can precede the receipt's publication claim.
+    if (recovery?.replaced || recovery?.writtenTaskIds.has(taskId)) {
+      pending.publication.invalidated.add(taskId);
+    }
     const previous = pending.published.get(taskId);
     for (const other of getTaskRegistryProcessState().projection.pending) {
       if (

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { buildActiveNodeContextText } from "../../infra/active-node-context.js";
 import { emitAgentRunOutputTokens } from "../../infra/agent-events.js";
 import { getActiveDiagnosticTraceContext } from "../../infra/diagnostic-trace-context.js";
 import {
@@ -64,6 +65,7 @@ import {
   resolveAgentQuestionAnswerAuthority,
   withAgentQuestionAnswerAuthority,
 } from "./host-private-capabilities.js";
+import { formatHarnessApprovalPresentation } from "./native-hook-relay-approval-presentation.js";
 import { createSessionNodeAuthorities } from "./node-execution-authority.js";
 import { bindHarnessReplyMedia } from "./reply-media.js";
 
@@ -511,6 +513,10 @@ export function createAgentHarnessHostCapabilities(params: {
         ...(localProcessEnv ? { localProcessEnv } : {}),
       });
     },
+    activeComputerContext: () => {
+      assertActive();
+      return buildActiveNodeContextText();
+    },
     bindToolSurface,
     createToolSurface: (options, bindingOptions) => {
       assertActive();
@@ -596,8 +602,8 @@ export function createAgentHarnessHostCapabilities(params: {
                   "plugin.approval.request",
                   { timeoutMs: request.transportTimeoutMs ?? request.timeoutMs },
                   {
-                    title: request.title,
-                    description: request.description,
+                    ...formatHarnessApprovalPresentation(request),
+                    ...(request.detail !== undefined ? { detail: request.detail } : {}),
                     severity: request.severity,
                     toolName: request.toolName,
                     toolCallId: request.toolCallId,

@@ -8,6 +8,7 @@ import {
   resolveAttemptFsWorkspaceOnly,
   setActiveEmbeddedRun,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { prepareAgentWorkspaceAttachments } from "openclaw/plugin-sdk/agent-workspace-runtime";
 import { getAgentScopedMediaLocalRoots } from "openclaw/plugin-sdk/media-local-roots";
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-payload";
 import { hasPromptImageInput } from "openclaw/plugin-sdk/session-transcript-runtime";
@@ -23,13 +24,14 @@ import type { EmbeddedRunAttemptResult } from "./attempt-terminal.js";
 import { CodexAppServerEventProjector } from "./event-projector.js";
 import { createCodexNativeMcpAppResultDetailsPreparer } from "./native-mcp-app.js";
 import { canonicalizeNativeProgressCardInput } from "./plan-compaction-state.js";
-import { isJsonObject, type CodexTurnStartResponse } from "./protocol.js";
+import { isJsonObject } from "./protocol.js";
 import { readRecentCodexRateLimits } from "./rate-limit-cache.js";
 import { readBoundedCodexRemoteWorkspaceFile } from "./remote-workspace-media.js";
 import { mapCodexAppServerRemoteWorkspacePath } from "./remote-workspace-path.js";
 import type { CodexAttemptLifecycleController } from "./run-attempt-lifecycle-controller.js";
 import type { CodexAttemptNotificationController } from "./run-attempt-notification-controller.js";
 import type { CodexAttemptResources } from "./run-attempt-resources.js";
+import type { CodexStartedTurn } from "./run-attempt-turn-request.js";
 import type { CodexAttemptTurnState } from "./run-attempt-turn-state.js";
 import {
   codexTranscriptMirrorRuntime,
@@ -45,7 +47,7 @@ export function activateCodexAttemptTurn(
   turnRuntime: CodexAttemptTurnState,
   lifecycle: CodexAttemptLifecycleController,
   notifications: CodexAttemptNotificationController,
-  turn: CodexTurnStartResponse,
+  { turn, upstreamUserText }: CodexStartedTurn,
 ) {
   const {
     prompt,
@@ -230,7 +232,7 @@ export function activateCodexAttemptTurn(
           }
         : {}),
       ...(prepareNativeMcpAppResultDetails ? { prepareNativeMcpAppResultDetails } : {}),
-      upstreamUserText: turnState.codexTurnPromptText,
+      upstreamUserText,
       onContextCompacted: async () => {
         computerContextEpoch.value += 1;
         delete computerContextEpoch.frameToolCallId;
@@ -338,6 +340,7 @@ export function activateCodexAttemptTurn(
   const workspaceOnly = resolveAttemptFsWorkspaceOnly({ config: params.config, sessionAgentId });
   const imageContext = {
     workspaceDir: connection.effectiveWorkspace,
+    agentWorkspaceDir: params.workspaceDir,
     model: params.model,
     config: params.config,
     workspaceOnly,
@@ -356,7 +359,18 @@ export function activateCodexAttemptTurn(
     requestTimeoutMs: connection.appServer.requestTimeoutMs,
     signal: runAbortController.signal,
     assertActive: assertSteeringActive,
-    prepareMessage: async (text, options) => {
+    prepareMessage: async (text, options, assertMessageCurrent) => {
+      const attachmentNote = await prepareAgentWorkspaceAttachments({
+        workspaceDir: params.workspaceDir,
+        turn: {
+          config: params.config,
+          media: options.media,
+          timeoutMs: params.timeoutMs,
+          abortSignal: runAbortController.signal,
+          userTurnTranscriptRecorder: options.userTurnTranscriptRecorder,
+        },
+        assertCurrent: assertMessageCurrent,
+      });
       const result = await detectAndLoadAgentHarnessPromptImages({
         ...imageContext,
         prompt: text,
@@ -377,7 +391,10 @@ export function activateCodexAttemptTurn(
         userTurnTranscriptRecorder: options.userTurnTranscriptRecorder,
       });
       return {
-        input: buildCodexUserInput(text, result.images),
+        input: buildCodexUserInput(
+          attachmentNote ? `${text}\n\n${attachmentNote}` : text,
+          result.images,
+        ),
         message: {
           ...source,
           role: "user",
@@ -664,7 +681,7 @@ export function activateCodexAttemptTurn(
           cwd: effectiveCwd,
           threadId: resourceState.thread.threadId,
           turnId: activeTurnId,
-          upstreamUserText: turnState.codexTurnPromptText,
+          upstreamUserText,
         }),
       );
     } catch (error) {

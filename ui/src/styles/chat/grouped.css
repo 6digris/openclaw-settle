@@ -1088,7 +1088,7 @@ img.chat-avatar {
 
 .chat-group.user
   :is(.chat-bubble--with-images, .chat-bubble--with-images > .chat-message-avatar-anchor)
-  > :is(.chat-text, .chat-message-disclosure, .chat-json-collapse) {
+  > :is(.chat-text, .chat-message-disclosure) {
   width: fit-content;
   max-width: 100%;
   padding: 10px 14px;
@@ -1099,7 +1099,7 @@ img.chat-avatar {
 :where(:root[data-theme-mode="light"])
   .chat-group.user
   :is(.chat-bubble--with-images, .chat-bubble--with-images > .chat-message-avatar-anchor)
-  > :is(.chat-text, .chat-message-disclosure, .chat-json-collapse) {
+  > :is(.chat-text, .chat-message-disclosure) {
   color: var(--text-strong);
 }
 
@@ -1307,12 +1307,9 @@ img.chat-avatar {
   .chat-thread
     .chat-group.assistant:not(.chat-group--forwarded)
     .chat-bubble:not(.chat-bubble--tool-shell)
-    :is(
-      .chat-assistant-attachments,
-      .chat-message-images,
-      openclaw-chat-async-question,
-      openclaw-chat-clawhub-card
-    ):not(.chat-assistant-attachments *) {
+    :is(.chat-assistant-attachments, .chat-message-images, openclaw-chat-clawhub-card):not(
+      .chat-assistant-attachments *
+    ) {
     max-width: 90%;
   }
 
