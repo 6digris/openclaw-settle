@@ -2,11 +2,128 @@ import type { ChildProcess } from "node:child_process";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { vi } from "vitest";
+import { expect, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import type { HostedGatewayStop } from "../../daemon/hosted-stop.js";
+import type { GatewayServer } from "../../gateway/server-public.js";
 import { withTimeout } from "../../infra/fs-safe.js";
 import { createManagedServiceBoundaryCleanup } from "../../infra/update-managed-service-handoff-process.test-support.js";
 import type { UpdateRespawnFixtures } from "./run-loop.test-support.js";
+
+export async function startPackageLifecycleStopFixture(params: {
+  fixtures: UpdateRespawnFixtures;
+  control: string;
+  signal: "SIGINT" | "SIGTERM" | "hosted Gateway stop";
+  close: GatewayServer["close"];
+  lockPort: number;
+  isReleased: () => boolean;
+  isServing: () => boolean;
+  captureSignal: (signal: "SIGINT" | "SIGTERM") => () => void;
+}) {
+  const { fixtures, control, signal, close } = params;
+  const hosted = signal === "hosted Gateway stop";
+  const { start, started } = fixtures.createSignaledStart(close);
+  const { runtime, exited } = fixtures.createRuntimeWithExitSignal();
+  let earlyExit = false;
+  let helperClosed = false;
+  const hostedExecute = vi.fn<HostedGatewayStop["execute"]>();
+  const hostedDispose = vi.fn<HostedGatewayStop["dispose"]>();
+  if (hosted) {
+    const native = await vi.importActual<typeof import("../../daemon/hosted-stop.js")>(
+      "../../daemon/hosted-stop.js",
+    );
+    const assertHostedSettlement = () => {
+      expect(params.isReleased()).toBe(true);
+      expect(helperClosed).toBe(true);
+      expect(fsSync.existsSync(path.join(control, "script-settled"))).toBe(true);
+    };
+    fixtures.hostedStopPrepare.mockImplementationOnce(async (...args) => {
+      expect(args[0]).toEqual({ ownsProcessLifecycle: true, supervisor: null });
+      const prepared = await native.prepareHostedGatewayStop(...args);
+      const execute = prepared.execute.bind(prepared);
+      const dispose = prepared.dispose.bind(prepared);
+      hostedExecute.mockImplementation((assertCurrent) => {
+        assertHostedSettlement();
+        return execute(assertCurrent);
+      });
+      hostedDispose.mockImplementation(() => {
+        assertHostedSettlement();
+        return dispose();
+      });
+      prepared.execute = hostedExecute;
+      prepared.dispose = hostedDispose;
+      return prepared;
+    });
+  }
+  const originalExit = runtime.exit.getMockImplementation()!;
+  runtime.exit.mockImplementation((code) => {
+    earlyExit ||= !params.isReleased();
+    originalExit(code);
+  });
+  const waitingStop = createDeferred();
+  fixtures.gatewayLog.info.mockImplementation((message) => {
+    if (String(message).includes("stopping after foreground update settlement")) {
+      waitingStop.resolve();
+    }
+  });
+  await fixtures.runLoopWithStart({
+    start,
+    runtime,
+    lockPort: params.lockPort,
+    ownsProcessLifecycle: hosted,
+  });
+  await fixtures.waitForStart(started);
+  const host = start.mock.calls[0]?.[0]?.hostLifecycle;
+  if (!host) {
+    throw new Error("missing registered host lifecycle");
+  }
+  return {
+    runtime,
+    exited,
+    get earlyExit() {
+      return earlyExit;
+    },
+    requestStop: async () => {
+      if (signal === "hosted Gateway stop") {
+        await expect(host.request("stop", () => {})).resolves.toEqual({
+          ok: true,
+          value: { outcome: "scheduled" },
+        });
+      } else {
+        params.captureSignal(signal)();
+      }
+      await Promise.race([waitingStop.promise, exited]);
+    },
+    observeHelper(pid: number | undefined) {
+      const spawned = fixtures.spawnProcess.mock.results.find(
+        (result) => result.type === "return" && result.value.pid === pid,
+      );
+      if (!spawned || spawned.type !== "return") {
+        throw new Error("missing hosted Stop helper process");
+      }
+      spawned.value.once("close", () => {
+        helperClosed = true;
+      });
+    },
+    async expectHostedPending() {
+      expect(fixtures.captureForegroundUpdateHandoffStop).toHaveBeenCalledOnce();
+      await expect(host.request("stop", () => {})).resolves.toMatchObject({ ok: false });
+      expect(fixtures.hostedStopPrepare).toHaveBeenCalledOnce();
+      expect(fixtures.captureForegroundUpdateHandoffStop).toHaveBeenCalledOnce();
+      expect(params.isServing()).toBe(true);
+      expect(close).not.toHaveBeenCalled();
+      expect(hostedExecute).not.toHaveBeenCalled();
+      expect(hostedDispose).not.toHaveBeenCalled();
+      expect(runtime.exit).not.toHaveBeenCalled();
+    },
+    expectHostedCompleted() {
+      expect(hostedExecute).toHaveBeenCalledOnce();
+      expect(hostedDispose).toHaveBeenCalledOnce();
+      expect(hostedExecute).toHaveBeenCalledBefore(hostedDispose);
+      expect(hostedDispose).toHaveBeenCalledBefore(runtime.exit);
+    },
+  };
+}
 
 /** Pause the real preparation flight after its owner exists, before helper spawn. */
 export async function gateFixtureHandoffPublication(root: string, handoffId: string) {
