@@ -181,7 +181,10 @@ use hosted capacity; the security-fast and UI budget decisions remain unchanged.
 
 After the existing optional admission, the five checks consume only space left
 inside the existing 45-hosted-row limit. Only current automatic canonical hybrid
-first attempts with trusted contributors qualify. No coverage, planner profile,
+main pushes and trusted PRs selecting both fixed Windows lanes qualify. Other
+PRs retain these checks on Blacksmith: precise Node plans do not establish enough
+critical-path headroom for hosted compilers. The health probe is skipped outside
+that cohort and for fast Node-only scopes. No coverage, planner profile,
 worker limit, timeout, cache writer, or repository variable changes. Hosted checks
 use their existing ordinary store-cache setup; Blacksmith fallback retains exact
 dependency-cache eligibility. The worst-case registration ceiling is unchanged.
@@ -213,8 +216,8 @@ The modeled six-run job-envelope wall remains 16m18s median (15m32s–16m54s),
 measured from first job creation through the aggregate gate. This excludes the new
 health-read overhead and is a prediction, not a latency guarantee. Five admitted
 rows save a median 17.64 Blacksmith minutes, about $0.56 at the 16-class list rate
-of $0.032/minute before billing rounding. A PR selecting the same checks has the
-same modeled saving; scoped PRs vary. Native PR evidence must establish actual
+of $0.032/minute before billing rounding. An eligible Windows-selected PR has the
+same modeled saving; other PRs retain their previous placement. Native PR evidence must establish actual
 hosted setup, assignment, and completion times before landing.
 
 Hybrid is the normal degraded-capacity mode. If Blacksmith is down: rerun the failed or stuck heavy job; it lands on hosted automatically. During a full Blacksmith outage, record whether `OPENCLAW_CI_RUNNER_BACKEND` is set and its current value, then enable the `github` circuit breaker:

@@ -1233,7 +1233,7 @@ jobs:
 
       - name: Check hybrid hosted assignment health
         id: hosted_health
-        if: vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt == 1 && github.repository == 'openclaw/openclaw' && (github.event_name == 'push' || (github.event_name == 'pull_request' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)))
+        if: vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt == 1 && github.repository == 'openclaw/openclaw' && steps.changed_scope.outputs.run_node == 'true' && steps.changed_scope.outputs.run_node_fast_only != 'true' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && steps.changed_scope.outputs.run_windows == 'true' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)))
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -2071,7 +2071,11 @@ jobs:
             ).length : 0);
           const hybridHostedExistingRows = hybridHostedBaseRows +
             (hybridHostedOffload ? hybridHostedOffloadRows : 0);
+          // Precise PR plans can finish before hosted compiler checks. Keep unknown
+          // headroom on Blacksmith; main and the fixed Windows workload are measured.
           const hybridHostedChecks = hybridHostedEligible &&
+            ((eventName === "push" && process.env.GITHUB_REF === "refs/heads/main") ||
+              (eventName === "pull_request" && manifest.run_checks_windows)) &&
             process.env.OPENCLAW_CI_HOSTED_HEALTHY === "true" &&
             hybridHostedExistingRows + hybridHostedCheckRows <= HYBRID_HOSTED_ROW_LIMIT;
           Object.assign(manifest, {
