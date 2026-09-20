@@ -121,7 +121,7 @@ describe("PR tooling timing weights", () => {
         }));
       try {
         const jobs = createSelectedNodeTestShardBundles([target], { runnerBackend: profile });
-        const job = jobs.find((candidate) =>
+        const job = jobs?.find((candidate) =>
           candidate.groups.some((group) => group.includePatterns?.includes(target)),
         );
         expect(job?.groups.flatMap((group) => group.includePatterns)).toEqual([target]);
