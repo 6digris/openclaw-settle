@@ -59,6 +59,7 @@ Use `openclaw plugins inspect <id>` to see a plugin's shape.
 - [Plugin setup and config](/plugins/sdk-setup) - manifest and setup entry loading
 - [Building channel plugins](/plugins/sdk-channel-plugins) - building the `ChannelPlugin` object
 - [Building provider plugins](/plugins/sdk-provider-plugins) - provider registration and hooks
+- [Decision models](/plugins/sdk-overview/capabilities#decision-models-contract-version-1) - `openclaw/plugin-sdk/decisions` and the typed decision provider contract
 
 ## MCP subprocess runtime
 
@@ -84,3 +85,23 @@ The returned client exposes three methods:
 After successful `stop()`, the optional read-only `cleanupResult` records forced relay retirement: `reason: "forced-relay-exit"`, `signalRequested`, the observed relay `exit` code and signal, `durationMs`, and `escalationAfterMs`. It retains `signalError` when signal delivery reported failure but exit was subsequently confirmed. It is absent for ordinary cleanup. Closed control/output/lineage pipes and a matching closing receipt admit escalation; pending force requests are reconsidered as closure and group-exit facts arrive. A live anchor is killed and reaped through its relay. Confirmed anchor-group absence permits direct native termination of an unresponsive relay. Actual relay exit and server-group disappearance must then be confirmed within the original hard deadline. Uncertain cleanup retains missing closure facts and timing or signal-delivery details in the error's cause chain.
 
 Malformed frames, incompatible initialization, write failures, and unexpected process exit also retire the whole connection. The first fatal error is retained. Create a new client to reconnect. Timeout classification follows the SDK error code, so a timeout-coded server error also retires the connection.
+
+## Workspace access
+
+Use `openclaw/plugin-sdk/agent-workspace-runtime` to declare, register, and acquire
+`AgentWorkspaceAccess` without loading the agent execution runtime. Declare a
+configured remote workspace during registration so callers cannot fall back to
+local files before its service starts. Register its bridge when ready and release
+it when the service stops. Callers keep their existing document authorization.
+
+`createWorkspaceBootstrapFilePolicy({ workspaceDir, config })` lets adapters
+restrict this bridge to native bootstrap documents and the configured
+`bootstrap-extra-files` patterns. Check `canList` for directory metadata,
+`canRead` for file bytes, and `canWrite` for the four owner-editable documents.
+Directory access does not grant reads of other files. The underlying bridge
+still enforces filesystem containment and returns the read's canonical source.
+
+Workspace access that has not started or has stopped throws
+`WorkspaceAccessUnavailableError`. Use `isWorkspaceAccessUnavailableError(error)`
+to recognize this condition through wrapped errors or separate SDK instances.
+The error code is `WORKSPACE_ACCESS_UNAVAILABLE`; do not match message text.

@@ -3,7 +3,7 @@ import type { probeGatewayMemoryStatus } from "../commands/doctor-gateway-health
 import type { DoctorOptions, DoctorPrompter } from "../commands/doctor-prompter.js";
 import type { ShippedPluginInstallConfigImport } from "../commands/doctor/shared/plugin-registry-migration.js";
 import type { ConfigWritePostCommitError } from "../config/io.write-errors.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { ConfigFileSnapshot, OpenClawConfig } from "../config/types.openclaw.js";
 import type { buildGatewayConnectionDetails } from "../gateway/call.js";
 import type {
   LegacyStateMigrationStepReceipt,
@@ -12,6 +12,8 @@ import type {
 import type { UpdatePostInstallDoctorResult } from "../infra/update-doctor-result.js";
 import type { PluginMetadataSnapshotScopeRunner } from "../plugins/current-plugin-metadata-snapshot.js";
 import type { RuntimeEnv } from "../runtime.js";
+import type { AgentDatabaseAdmissionRefusal } from "../state/agent-database-admission.js";
+import type { DoctorUpdateBudget, DoctorUpdateWork } from "./doctor-update-budget.js";
 import type { DoctorHealthCheck } from "./health-check-runner-types.js";
 import type { HealthCheckContext } from "./health-checks.js";
 import type { FlowContribution } from "./types.js";
@@ -76,6 +78,10 @@ export type DoctorHealthFlowContext = {
   env?: NodeJS.ProcessEnv;
   /** State migration owns service activation until final readiness passes. */
   gatewayMaintenanceActive?: boolean;
+  agentDatabaseRefusals?: readonly AgentDatabaseAdmissionRefusal[];
+  preparedAgentCount?: number;
+  updateBudget?: DoctorUpdateBudget;
+  authProfileHealthReady?: boolean;
   gatewayDetails?: ReturnType<typeof buildGatewayConnectionDetails>;
   healthOk?: boolean;
   gatewayHealthAuthenticated?: boolean;
@@ -90,7 +96,10 @@ export type DoctorHealthFlowContext = {
 
 /** Internal facts carried through Doctor detect/repair/validate passes without widening the SDK. */
 export type DoctorHealthCheckContext = HealthCheckContext & {
+  /** Read-only lint validates the source once; mutable Doctor passes must reread it. */
+  readonly lintConfigSnapshot?: Pick<ConfigFileSnapshot, "exists" | "issues" | "warnings">;
   readonly runWithPluginMetadataSnapshot?: PluginMetadataSnapshotScopeRunner;
+  readonly agentDatabaseRefusals?: readonly AgentDatabaseAdmissionRefusal[];
 };
 
 export type DoctorHealthContribution = FlowContribution & {
@@ -98,7 +107,7 @@ export type DoctorHealthContribution = FlowContribution & {
   surface: "health";
   required?: true;
   /** Diagnostics with no update migration or readiness dependency stay in standalone Doctor. */
-  updatePolicy?: "standalone";
+  updateWork?: DoctorUpdateWork;
   healthChecks: readonly DoctorHealthCheck[];
   healthCheckIds: readonly string[];
   run: (ctx: DoctorHealthFlowContext) => Promise<void>;
