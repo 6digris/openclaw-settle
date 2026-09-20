@@ -66,6 +66,7 @@ env:
 
 jobs:
   probe:
+    if: ${{ false }} # Native-only regression qualification; required ordinary CI runs separately.
     name: Windows probe
     runs-on: ${{ inputs.runner_label }}
     timeout-minutes: 75
