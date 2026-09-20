@@ -1005,7 +1005,7 @@ describe("node-host duplex capability selection", () => {
 });
 
 describe("installed application command advertisement", () => {
-  it("advertises device.apps only when sharing is enabled on macOS", async () => {
+  it("advertises device.apps only when sharing is enabled on a supported desktop", async () => {
     const disabled = await prepareNodeHostRuntime({
       config: { nodeHost: { skills: { enabled: false } } },
       env: { PATH: "/usr/bin" },
@@ -1019,6 +1019,7 @@ describe("installed application command advertisement", () => {
       installedAppsSharingEnabled: true,
     });
     const nonDarwin = await prepareNodeHostRuntime({
+      enableDuplexPluginCommands: true,
       config: { nodeHost: { skills: { enabled: false } } },
       env: { PATH: "/usr/bin" },
       platform: "linux",
@@ -1027,6 +1028,8 @@ describe("installed application command advertisement", () => {
 
     expect(disabled.manifest.commands).not.toContain(NODE_DEVICE_APPS_COMMAND);
     expect(enabled.manifest.commands).toContain(NODE_DEVICE_APPS_COMMAND);
-    expect(nonDarwin.manifest.commands).not.toContain(NODE_DEVICE_APPS_COMMAND);
+    expect(nonDarwin.manifest.commands).toContain(NODE_DEVICE_APPS_COMMAND);
+    expect(nonDarwin.manifest.commands).toContain("device.apps.launch");
+    expect(enabled.manifest.commands).not.toContain("device.apps.launch");
   });
 });

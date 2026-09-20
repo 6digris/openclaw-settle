@@ -896,6 +896,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "talk.realtime.prefixPaddingMs": "Talk Realtime Prefix Padding (ms)",
   "talk.realtime.reasoningEffort": "Talk Realtime Reasoning Effort",
   "talk.realtime.brain": "Talk Realtime Brain",
+  "talk.realtime.appLaunchPolicies": "Talk Installed-App Launch Policies",
   "talk.realtime.consultRouting": "Talk Realtime Consult Routing",
   channels: "Channels",
   "channels.defaults": "Channel Defaults",

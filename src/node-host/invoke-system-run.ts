@@ -1156,6 +1156,10 @@ async function executeSystemRunPhase(
   const assertCurrent = () => {
     try {
       assertCommittedAuthorization();
+      // Launch adapters may await after preparation; the execution owner keeps cwd identity live.
+      if (phase.approvedCwdSnapshot && !revalidateApprovedCwdSnapshot(phase.approvedCwdSnapshot)) {
+        throw new Error(APPROVAL_CWD_DRIFT_DENIED_MESSAGE);
+      }
     } catch (error) {
       authorizationDenied = true;
       throw error;

@@ -130,6 +130,104 @@ stays provisional until the provider's completion boundary.
 
 Voice-originated consult runs require a new, exact spoken confirmation before high-impact actions such as sending messages, controlling nodes, browser/computer actions, service changes, destructive shell commands, or publication. The gate applies to runs started through `talk.client.toolCall`, the Gateway relay, and GPT-Live sideband delegations. The confirmation applies only to the canonical final execution arguments and is consumed once; if a policy or hook rewrites the approved action, OpenClaw blocks it until the rewritten action is confirmed. Unrelated concurrent runs remain unaffected. When a call closes, OpenClaw can send a compact **Voice call changes** digest for mutating tools to the session's last non-WebChat delivery target.
 
+### Preauthorize an exact installed-app launch
+
+An operator can configure `talk.realtime.appLaunchPolicies` to satisfy only the
+Talk confirmation requirement for a narrowly scoped installed-app launch. It is
+empty by default. Each policy names an agent, an authenticated originating device,
+a separately scoped target paired-node identity, an installed app and its executable
+revision, and an absolute expiry in Unix milliseconds. No wildcards or shell
+commands are accepted.
+
+The first supported operation is `nodes` with `action: "app_launch"` on a Linux
+TypeScript node host. Enable installed-app sharing on that node, approve its
+updated pairing declaration, and explicitly allow `device.apps.launch` in the
+Gateway node-command policy. Use `nodes` with `action: "app_list"`, the full node
+ID, and an optional `query` to inspect eligible applications without a mutation
+confirmation. The node serves this read through `device.apps`. Inspect the results
+and copy the exact `appId` and `appRevision`. Display names and Computer Use's
+execution-local app references are not policy identities.
+
+For example, this is the policy-list shape; replace every example identity,
+revision, and expiry with the intended values:
+
+```json5
+{
+  talk: {
+    realtime: {
+      appLaunchPolicies: [
+        {
+          id: "calculator",
+          agentId: "main",
+          originatingDeviceId: "paired-voice-client-id",
+          nodeId: "paired-linux-desktop-id",
+          appId: "linux-desktop:org.gnome.Calculator.desktop",
+          appRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          expiresAtMs: 1893456000000,
+        },
+      ],
+    },
+  },
+}
+```
+
+Use an authenticated operator's config editor or `config.patch`/
+`config.apply` RPC with the current base hash. Read the list with `config.get`.
+To revoke a policy, remove it with explicit array replacement intent
+(`replacePaths: ["talk.realtime.appLaunchPolicies"]`), or replace the full config.
+A successful policy-write acknowledgment means the active Gateway applied the
+change. Reload-disabled or restart-requiring mixed edits are refused by immediate
+application preflight; apply unrelated settings separately. Offline file/CLI edits
+are saved configuration, not proof of active revocation until the Gateway applies
+them. Existing privileged filesystem access remains part of the installation's
+trust boundary.
+
+Model-originated config proposals cannot obtain these grants from Full Access
+alone: the system-agent owner requires explicit approval of the exact proposal.
+Delegation text, transcripts, and provider/plugin prompts never mint grants.
+
+The originating client must authenticate with its signed, paired-device token.
+A newly paired client may need to reconnect after receiving that token. Shared-token
+only clients and unknown origins keep ordinary confirmation. A persisted call can
+resume with a fresh authenticated origin; stored call IDs never restore authority
+on their own. Already admitted consults retain their own device-revocation hold
+after hangup or same-device transport resume; completion releases that hold. The same owner handles Browser Talk, native thin
+clients using Gateway control, Gateway relay, and native sideband delegation.
+
+Launches accept only an installed desktop-entry identity, its revision, and the
+explicit node. The initial Linux implementation supports top-level XDG application
+entries that directly select a native ELF executable with no arguments, including
+a single correctly quoted executable path. Entries
+requiring shell/script launchers, field codes, terminal execution, custom working
+directories, or command-line arguments are not eligible. Other applications keep
+their existing launch/confirmation paths. The revision binds the canonical entry/executable paths and executable identity
+metadata, not cosmetic desktop-entry text. Changes to the selected executable or
+its installation invalidate that binding; inspect and explicitly authorize the
+new revision rather than broadening the match.
+
+The Gateway rechecks current policy and originating-device authority after hook,
+node-policy, and readiness waits. After the node has completed its independent
+execution-policy preparation, it requests one final invocation-bound launch permit.
+The node rechecks its local permission and app revision immediately before a
+zero-argument, non-shell spawn. Revocation stops operations that have not received
+that final permit; it does not undo an already admitted launch. A short permit
+round-trip budget prevents a delayed permit from executing later.
+
+Tool permissions, node allowlists, pairing, plugin denials, and ordinary node
+execution approvals still apply. Nodes configured with `ask: "always"` return an
+approval-required denial for this constrained operation; this operation does not
+open or bypass the ordinary interactive execution-approval exchange. Use an
+approval-supported launch path when that exchange is required.
+
+When policies are configured, Nodes remains directly available under code mode so
+app discovery and launch do not need an outer arbitrary `exec` call. Generic code
+execution and unrelated Nodes actions keep their existing confirmation rules.
+A policy for one app does not authorize another
+app, node, client, agent, shell command, messaging, publication, or administration.
+Talk's existing effect record retains only the matching policy ID, not executable
+arguments. A launch acknowledgment reports process dispatch, not proof that a GUI
+window appeared.
+
 After a confirmation prompt, say **yes** to confirm the pending action or **no**
 to cancel it. Each confirmation permits one matching action; another action may
 need another confirmation. Native GPT-Live calls use the finalized user speech

@@ -5,6 +5,7 @@ import type { OpenClawConfig } from "../config/config.js";
 import { getRuntimeConfig } from "../config/config.js";
 import type { SkillBinTrustEntry } from "../infra/exec-approvals.js";
 import { resolveExecutableFromPathEnv } from "../infra/executable-path.js";
+import { NODE_INSTALLED_APP_LAUNCH_COMMAND } from "../infra/installed-app-launch.js";
 import { NODE_CLAUDE_SKILLS_MESSAGE_BYTES } from "../infra/node-claude-skill-protocol.js";
 import {
   NODE_AGENT_CLI_CLAUDE_RUN_COMMAND,
@@ -220,7 +221,7 @@ export async function prepareNodeHostRuntime(params?: {
     params?.enableAgentRuns === true || params?.enableDuplexPluginCommands === true;
   const platform = params?.platform ?? process.platform;
   const installedAppsSharingEnabled =
-    platform === "darwin" && params?.installedAppsSharingEnabled === true;
+    (platform === "darwin" || platform === "linux") && params?.installedAppsSharingEnabled === true;
   const desktopStreamingEnabled =
     (platform === "darwin" || platform === "linux" || platform === "win32") &&
     config.desktop?.host?.enabled === true;
@@ -311,6 +312,8 @@ export async function prepareNodeHostRuntime(params?: {
       commandAllowlist,
       claudeEnabled: Boolean(claudePath),
       installedAppsSharingEnabled,
+      installedAppLaunchEnabled:
+        platform === "linux" && installedAppsSharingEnabled && duplexEnabled,
       desktopStreamingEnabled,
       ephemeral: params?.ephemeral === true,
       pathEnv,
@@ -508,8 +511,10 @@ export async function prepareNodeHostRuntime(params?: {
             const claudeSkills =
               frame.command === NODE_AGENT_CLI_CLAUDE_RUN_COMMAND &&
               requestsClaudeNodeSkillRuntime(frame.paramsJSON);
+            const appLaunch = frame.command === NODE_INSTALLED_APP_LAUNCH_COMMAND;
             const duplexCommand =
-              duplexEnabled && (claudeSkills || isRegisteredNodeHostCommandDuplex(frame.command));
+              duplexEnabled &&
+              (claudeSkills || appLaunch || isRegisteredNodeHostCommandDuplex(frame.command));
             const progressEnabled = duplexCommand || frame.command === NODE_DESKTOP_STREAM_COMMAND;
             const controller = new AbortController();
             // Every command must remain cancellable after dispatch; only duplex

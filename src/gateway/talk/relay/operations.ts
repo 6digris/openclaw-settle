@@ -137,6 +137,7 @@ export function closeRelaySession(
   }
   const closing: NonNullable<RelaySession["closing"]> = { reason };
   session.closing = closing;
+  session.originAuthority?.release();
   const disposition =
     options?.disposition ??
     (isTalkVoiceSessionReplacing(session.id, session.connId, session.sessionTarget.agentId)

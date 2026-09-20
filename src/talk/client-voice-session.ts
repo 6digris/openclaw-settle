@@ -15,6 +15,7 @@ import {
   type TrustedToolExecutionEvent,
 } from "../infra/diagnostic-events.js";
 import { runOpenClawAgentWriteTransaction } from "../state/openclaw-agent-db.js";
+import type { ClientVoiceAppLaunchOrigin } from "./client-voice-app-launch-policy.js";
 import {
   type ClientVoiceConfirmationUtteranceContext,
   deactivateClientVoiceConfirmationSession,
@@ -30,6 +31,8 @@ import {
 } from "./client-voice-mutation-digest-owner.js";
 import {
   assertVoiceSessionOwnership as assertOwnership,
+  createOrResumeVoiceSessionRecord,
+  recordVoiceSessionAppLaunchPolicyUse,
   type ClientVoiceRunBinding,
   type ClientVoiceSessionRecord,
   type ClientVoiceToolEffect,
@@ -38,7 +41,6 @@ import {
   readVoiceSessionRecord as readRecord,
   readVoiceSessionRecordInTransaction as readRecordInTransaction,
   readVoiceSessionRecordRows,
-  VOICE_SESSION_RECORD_VERSION as RECORD_VERSION,
   VOICE_SESSION_STALE_AFTER_MS as STALE_AFTER_MS,
   writeVoiceSessionRecordInTransaction as writeRecordInTransaction,
 } from "./client-voice-session-store.js";
@@ -50,6 +52,7 @@ import {
 } from "./voice-transcript.js";
 
 const voiceSessionByRunId = new Map<string, ClientVoiceRunBinding>();
+const voiceOrigins = new Map<string, ClientVoiceAppLaunchOrigin>();
 const voiceSessionOperations = createVoiceTranscriptOperationRegistry(
   VOICE_TRANSCRIPT_QUEUE_POLICY,
 );
@@ -160,6 +163,7 @@ function ensureToolEffectSubscription(): void {
       if (!binding) {
         return;
       }
+      binding.originAuthority?.release();
       voiceSessionByRunId.delete(event.runId);
       releaseClientVoiceConfirmationRun(binding.agentId, binding.voiceSessionId, event.runId);
       mutationDigestDeliveryOwner.retry(binding);
@@ -170,6 +174,7 @@ function ensureToolEffectSubscription(): void {
 
 /** Create a call record or resume the same open call across transport restarts. */
 export function createOrResumeClientVoiceSession(params: {
+  originAuthority?: ClientVoiceAppLaunchOrigin;
   agentId: string;
   sessionKey: string;
   provider?: string;
@@ -181,48 +186,25 @@ export function createOrResumeClientVoiceSession(params: {
   const voiceSessionId = params.voiceSessionId?.trim() || randomUUID();
   const provider = params.provider?.trim() || undefined;
   const now = params.now ?? Date.now();
-  runOpenClawAgentWriteTransaction(
-    (database) => {
-      const existing = readRecordInTransaction(database, voiceSessionId);
-      if (existing) {
-        assertOwnership(existing, params);
-        if (existing.origin !== params.origin) {
-          throw new Error("voice session origin does not match");
-        }
-        if (existing.status !== "open") {
-          throw new Error("voice session is already closed");
-        }
-        if (existing.provider && provider && existing.provider !== provider) {
-          throw new Error("voice session provider does not match");
-        }
-        if (!existing.provider && provider) {
-          existing.provider = provider;
-        }
-        if (params.transcriptCapable === true) {
-          existing.transcriptCapable = true;
-        }
-        existing.updatedAt = now;
-        writeRecordInTransaction(database, existing);
-        return;
-      }
-      writeRecordInTransaction(database, {
-        version: RECORD_VERSION,
-        voiceSessionId,
-        agentId: params.agentId,
-        sessionKey: params.sessionKey,
-        ...(provider ? { provider } : {}),
-        origin: params.origin,
-        ...(params.transcriptCapable === true ? { transcriptCapable: true } : {}),
-        status: "open",
-        createdAt: now,
-        updatedAt: now,
-        consultRunIds: [],
-        effects: [],
-        transcriptFailureKeys: [],
-      });
-    },
-    { agentId: params.agentId },
-  );
+  const originKey = operationKey(params.agentId, voiceSessionId);
+  const previousOrigin = voiceOrigins.get(originKey);
+  if (previousOrigin && params.originAuthority?.deviceId !== previousOrigin.deviceId) {
+    params.originAuthority?.release();
+    throw new Error("voice session originating device does not match");
+  }
+  try {
+    createOrResumeVoiceSessionRecord({ ...params, voiceSessionId, provider, now });
+  } catch (error) {
+    params.originAuthority?.release();
+    throw error;
+  }
+  // A resumed record receives only this fresh ingress's authority, never authority from stored IDs.
+  if (params.originAuthority) {
+    if (previousOrigin !== params.originAuthority) {
+      previousOrigin?.release();
+    }
+    voiceOrigins.set(originKey, params.originAuthority);
+  }
   return voiceSessionId;
 }
 
@@ -325,12 +307,16 @@ export function registerClientVoiceConsultRun(params: {
     previousBinding.sessionKey !== params.sessionKey
   ) {
     // Replays keep the operational claim; a reassignment must never revive it.
+    previousBinding?.originAuthority?.release();
+    const origin = voiceOrigins.get(operationKey(params.agentId, params.voiceSessionId));
+    const originAuthority = origin?.isCurrent() ? origin.retain() : undefined;
     voiceSessionByRunId.set(
       params.runId,
       Object.freeze({
         agentId: params.agentId,
         voiceSessionId: params.voiceSessionId,
         sessionKey: params.sessionKey,
+        originAuthority,
       }),
     );
   }
@@ -347,54 +333,38 @@ export function registerClientVoiceConsultRun(params: {
 }
 
 /** Return the open voice-call binding for one executing run. */
+export function recordClientVoiceAppLaunchPolicyUse(params: {
+  runId: string;
+  toolCallId: string;
+  policyId: string;
+}): void {
+  const binding = voiceSessionByRunId.get(params.runId);
+  if (!binding) {
+    throw new Error("Voice app launch lost its call binding");
+  }
+  recordVoiceSessionAppLaunchPolicyUse(binding, params);
+}
+
+export function assertClientVoiceSessionOrigin(params: {
+  agentId: string;
+  voiceSessionId: string;
+  deviceId?: string;
+}): void {
+  const origin = voiceOrigins.get(operationKey(params.agentId, params.voiceSessionId));
+  if (origin && origin.deviceId !== params.deviceId) {
+    throw new Error("voice session originating device does not match");
+  }
+}
+
 export function resolveClientVoiceRunBinding(runId?: string): ClientVoiceRunBinding | undefined {
   return runId ? voiceSessionByRunId.get(runId) : undefined;
 }
 
-/**
- * Confirmation applies only when the session can observe spoken approvals:
- * relay sessions (server hears utterances) or clients that report transcripts.
- * Legacy clients without transcript reporting keep pre-gate behavior.
- */
-export function isClientVoiceSessionConfirmable(binding: ClientVoiceRunBinding): boolean {
-  const record = readRecord(binding.agentId, binding.voiceSessionId);
-  return (
-    record?.origin === "relay" ||
-    record?.transcriptCapable === true ||
-    record?.hasUserTranscript === true
-  );
-}
-
-/** Validate ownership and open state before starting a voice-bound consult. */
-export function assertClientVoiceSessionOpen(params: {
-  agentId: string;
-  sessionKey: string;
-  voiceSessionId: string;
-}): "client" | "relay" {
-  const record = readRecord(params.agentId, params.voiceSessionId);
-  if (!record) {
-    throw new Error("voice session not found");
-  }
-  assertOwnership(record, params);
-  if (record.status !== "open") {
-    throw new Error("voice session is closed");
-  }
-  return record.origin;
-}
-
-/** Validate durable ownership without rejecting an idempotent close retry. */
-export function resolveClientVoiceSessionOrigin(params: {
-  agentId: string;
-  sessionKey: string;
-  voiceSessionId: string;
-}): "client" | "relay" {
-  const record = readRecord(params.agentId, params.voiceSessionId);
-  if (!record) {
-    throw new Error("voice session not found");
-  }
-  assertOwnership(record, params);
-  return record.origin;
-}
+export {
+  isClientVoiceSessionConfirmable,
+  assertClientVoiceSessionOpen,
+  resolveClientVoiceSessionOrigin,
+} from "./client-voice-session-store.js";
 
 /** Resolve the unique open client-owned call for legacy tool-call clients. */
 export function resolveOpenClientVoiceSessionId(params: {
@@ -675,6 +645,9 @@ async function closeClientVoiceSessionInternal(params: {
     return binding?.voiceSessionId === params.voiceSessionId && binding.agentId === params.agentId;
   });
   deactivateClientVoiceConfirmationSession(params.agentId, params.voiceSessionId, liveRunIds);
+  const originKey = operationKey(params.agentId, params.voiceSessionId);
+  voiceOrigins.get(originKey)?.release();
+  voiceOrigins.delete(originKey);
   // Record retry ownership only after canonical close and confirmation cleanup.
   // Channel delivery is best-effort and must never delay this durable boundary.
   mutationDigestDeliveryOwner.record({
@@ -761,6 +734,13 @@ const clientVoiceSessionTesting = {
   digestDeliveryPolicy: CLIENT_VOICE_MUTATION_DIGEST_POLICY,
   digestDeliverySnapshot: () => mutationDigestDeliveryOwner.snapshot(),
   reset(): void {
+    for (const binding of voiceSessionByRunId.values()) {
+      binding.originAuthority?.release();
+    }
+    for (const origin of voiceOrigins.values()) {
+      origin.release();
+    }
+    voiceOrigins.clear();
     voiceSessionByRunId.clear();
     voiceSessionOperations.clear();
     mutationDigestDeliveryOwner.clear();

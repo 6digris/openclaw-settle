@@ -52,7 +52,7 @@ export async function invokeDeviceApps(params: {
     return {
       ok: false,
       code: "UNAVAILABLE",
-      message: "UNAVAILABLE: installed application inventory is only available on macOS",
+      message: "UNAVAILABLE: installed application inventory is available on macOS and Linux",
     };
   }
   const query = request.query?.toLocaleLowerCase("en-US");

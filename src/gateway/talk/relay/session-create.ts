@@ -660,6 +660,7 @@ export function createTalkRealtimeRelaySession(
     toolResultEpoch: 0,
     ...(params.cfg ? { voiceConfig: params.cfg } : {}),
     voiceSessionCreated: false,
+    originAuthority: params.captureOriginAuthority?.(),
     voiceTranscriptSeq: 0,
     voiceTranscriptQueue: VOICE_TRANSCRIPT_QUEUE_POLICY.createQueue(),
     confirmationReadiness,

@@ -120,13 +120,13 @@ Notes:
 
 ## Device and personal data commands
 
-iOS and Android nodes advertise several read-only data commands by default (see the [Command policy](/nodes/command-policy#command-policy) table); Android additionally exposes a larger family gated by its own in-app settings. A macOS or headless-mac TypeScript node host advertises `device.apps` only after the operator enables installed-app sharing with `--share-installed-apps`.
+iOS and Android nodes advertise several read-only data commands by default (see the [Command policy](/nodes/command-policy#command-policy) table); Android additionally exposes a larger family gated by its own in-app settings. A macOS or Linux TypeScript node host advertises `device.apps` only after the operator enables installed-app sharing with `--share-installed-apps`.
 
 Available families:
 
 - `device.status`, `device.info` — iOS, Android, Windows.
 - `device.permissions`, `device.health` — Android only.
-- `device.apps` — Android, macOS, and headless-mac nodes. Android requires Installed Apps sharing in Settings and returns launcher-visible apps by default. TypeScript node hosts keep sharing off by default and accept `query`, `limit`, and `includeSystem`; macOS results contain `label`, `bundleId`, `path`, and `system`.
+- `device.apps` — Android, macOS, and Linux TypeScript nodes. Android requires Installed Apps sharing in Settings and returns launcher-visible apps by default. TypeScript node hosts keep sharing off by default and accept `query`, `limit`, and `includeSystem`; macOS results contain `label`, `bundleId`, `path`, and `system`. Linux returns eligible zero-argument native desktop apps with `label`, `path`, `appId`, and `appRevision`. The separately allowlisted `device.apps.launch` command is used by the constrained `nodes` `app_launch` action; see [Talk app preauthorization](/nodes/talk/realtime-sessions#preauthorize-an-exact-installed-app-launch).
 - `notifications.list`, `notifications.actions` — Android only.
 - `photos.latest` — iOS, Android.
 - `contacts.search` — iOS, Android (read-only default); `contacts.add` is dangerous and needs `gateway.nodes.commands.allow`.

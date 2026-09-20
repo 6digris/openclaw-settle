@@ -4,7 +4,10 @@ import {
   ErrorCodes,
   errorShape,
 } from "../../../packages/gateway-protocol/src/schema/error-codes.js";
-import type { RespondFn } from "./types.js";
+import type { NodeInvokeResult } from "../node-registry.js";
+import { parseGatewayPayload } from "../server-json.js";
+import { emitTalkPttNodeEvent } from "./nodes.invoke-talk-events.js";
+import type { RespondFn, GatewayRequestContext } from "./types.js";
 export { parseGatewayPayload } from "../server-json.js";
 
 /** Narrows successful node invoke results or responds with the node error details. */
@@ -44,4 +47,32 @@ export function respondUnavailableOnNodeInvokeErrorWithProvenance<
     }),
   );
   return false;
+}
+
+export function respondNodeInvokeSuccess(params: {
+  context: GatewayRequestContext;
+  nodeId: string;
+  command: string;
+  res: NodeInvokeResult;
+  respond: RespondFn;
+}): void {
+  const { context, nodeId, command, res, respond } = params;
+  const payload = res.payloadJSON ? parseGatewayPayload(res.payloadJSON) : res.payload;
+  emitTalkPttNodeEvent({
+    context,
+    nodeId,
+    command,
+    payload,
+  });
+  respond(
+    true,
+    {
+      ok: true,
+      nodeId,
+      command,
+      payload,
+      payloadJSON: res.payloadJSON ?? null,
+    },
+    undefined,
+  );
 }

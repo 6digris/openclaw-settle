@@ -26,6 +26,7 @@ import {
   assertClientVoiceSessionOpen,
   closeClientVoiceSession,
   createOrResumeClientVoiceSession,
+  assertClientVoiceSessionOrigin,
   ensureClientVoiceAgentSessionEntry,
   registerClientVoiceConsultRun,
   resolveClientVoiceSessionOrigin,
@@ -127,6 +128,14 @@ export const talkClientHandlers: GatewayRequestHandlers = {
         await flushTalkRealtimeRelayVoiceWrites({ relaySessionId, connId });
       }
       const parsedArgs = parseRealtimeVoiceAgentConsultArgs(params.args ?? {});
+      assertClientVoiceSessionOrigin({
+        agentId,
+        voiceSessionId,
+        deviceId:
+          request.client?.isDeviceTokenAuth === true
+            ? request.client.connect.device?.id
+            : undefined,
+      });
       const origin = assertClientVoiceSessionOpen({
         agentId,
         sessionKey: params.sessionKey,

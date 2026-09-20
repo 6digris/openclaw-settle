@@ -1,6 +1,12 @@
 /** In-memory spoken confirmation binding for high-impact Talk actions. */
 import { randomUUID } from "node:crypto";
+import { getRuntimeConfig } from "../config/config.js";
+import { InstalledAppLaunchToolParamsSchema } from "../infra/installed-app-launch.js";
 import { createDeferredCore, type Deferred } from "../shared/deferred.js";
+import {
+  resolveClientVoiceAppLaunchPolicy,
+  type ClientVoiceAppLaunchOrigin,
+} from "./client-voice-app-launch-policy.js";
 import {
   requiresHighImpactVoiceConfirmation,
   stableToolFingerprint,
@@ -326,6 +332,8 @@ export function noteClientVoiceConfirmationUtterance(params: {
 }
 
 type ClientVoiceToolConfirmationPolicyParams = {
+  originAuthority?: ClientVoiceAppLaunchOrigin;
+  appLaunchEffectBoundary?: boolean;
   agentId?: string;
   voiceSessionId?: string;
   runId?: string;
@@ -337,7 +345,7 @@ type ClientVoiceToolConfirmationPolicyParams = {
 };
 
 type ClientVoiceToolConfirmationPolicyResult =
-  | { allowed: true }
+  | { allowed: true; policyId?: string; policyExpiresAtMs?: number }
   | { allowed: false; reason: string };
 
 function resolveClientVoiceToolConfirmationPolicy(
@@ -360,7 +368,27 @@ function resolveClientVoiceToolConfirmationPolicy(
   const now = params.now ?? Date.now();
   const fingerprint = stableToolFingerprint(params.toolName, params.toolParams);
   const scopeKey = confirmationScopeKey(params.agentId, params.voiceSessionId);
-  if (resolveApprovedFingerprint(scopeKey, params.runId, fingerprint, now, consume)) {
+  const appLaunch =
+    params.toolName === "nodes"
+      ? InstalledAppLaunchToolParamsSchema.safeParse(params.toolParams)
+      : undefined;
+  if (appLaunch?.success) {
+    const policy = resolveClientVoiceAppLaunchPolicy({
+      agentId: params.agentId,
+      origin: params.originAuthority,
+      nodeId: appLaunch.data.node,
+      action: appLaunch.data,
+      policies: getRuntimeConfig().talk?.realtime?.appLaunchPolicies ?? [],
+      nowMs: now,
+    });
+    if (policy) {
+      return { allowed: true, policyId: policy.id, policyExpiresAtMs: policy.expiresAtMs };
+    }
+  }
+  // The app owner still prepares the target and crosses node policies after the generic wrapper.
+  // Its final dispatch consumes a spoken grant; all other tools keep the existing boundary.
+  const consumeHere = consume && (!appLaunch?.success || params.appLaunchEffectBoundary === true);
+  if (resolveApprovedFingerprint(scopeKey, params.runId, fingerprint, now, consumeHere)) {
     return { allowed: true };
   }
   const state = getPrunedConfirmationScope(scopeKey, now) ?? getOrCreateConfirmationScope(scopeKey);

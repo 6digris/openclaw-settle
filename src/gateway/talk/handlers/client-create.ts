@@ -41,6 +41,7 @@ import {
   createTalkClientGatewayControlOwner,
   resolveTalkAgentConsultAuthority,
 } from "../client-gateway-control.js";
+import { captureTalkVoiceOrigin } from "../client-voice-origin.js";
 import {
   buildRealtimeInstructions,
   buildRealtimeVoiceLaunchOptions,
@@ -74,6 +75,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
   respond,
   context,
   client,
+  hasCurrentClientAuthority,
   sessionMutationAuthorization,
   sessionMutationCommitGuard,
 }) => {
@@ -416,6 +418,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
             context.logGateway.warn(`talk voice session recovery failed: ${formatForLog(error)}`),
           );
           const voiceSessionId = createOrResumeClientVoiceSession({
+            originAuthority: captureTalkVoiceOrigin({ client, hasCurrentClientAuthority }),
             agentId,
             sessionKey,
             provider: resolution.provider.id,

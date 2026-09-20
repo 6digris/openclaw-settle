@@ -947,7 +947,7 @@ export const configHandlers: GatewayRequestHandlers = {
     }
     respond(true, result, undefined);
   },
-  "config.set": async ({ params, respond, context }) => {
+  "config.set": async ({ params, respond, context, client, hasCurrentClientAuthority }) => {
     if (!assertValidParams(params, validateConfigSetParams, "config.set", respond)) {
       return;
     }
@@ -991,6 +991,8 @@ export const configHandlers: GatewayRequestHandlers = {
       writeOptions,
       nextConfig: parsed.writeConfig,
       context,
+      client,
+      hasCurrentClientAuthority,
       respond,
     });
     if (!writeResult) {
@@ -1013,7 +1015,7 @@ export const configHandlers: GatewayRequestHandlers = {
     );
     writeResult.queueFollowUp();
   },
-  "config.patch": async ({ params, respond, client, context }) => {
+  "config.patch": async ({ params, respond, client, context, hasCurrentClientAuthority }) => {
     if (!assertValidParams(params, validateConfigPatchParams, "config.patch", respond)) {
       return;
     }
@@ -1200,6 +1202,8 @@ export const configHandlers: GatewayRequestHandlers = {
       writeOptions,
       nextConfig: writeConfig,
       context,
+      client,
+      hasCurrentClientAuthority,
       disconnectSharedAuthClients,
       awaitRuntimeApplication: shouldAwaitGatewayConfigApplication({
         changedPaths,
@@ -1226,7 +1230,7 @@ export const configHandlers: GatewayRequestHandlers = {
       preparedSecretsSnapshot,
     });
   },
-  "config.apply": async ({ params, respond, client, context }) => {
+  "config.apply": async ({ params, respond, client, context, hasCurrentClientAuthority }) => {
     if (!assertValidParams(params, validateConfigApplyParams, "config.apply", respond)) {
       return;
     }
@@ -1278,6 +1282,8 @@ export const configHandlers: GatewayRequestHandlers = {
       writeOptions,
       nextConfig: parsed.writeConfig,
       context,
+      client,
+      hasCurrentClientAuthority,
       disconnectSharedAuthClients,
       awaitRuntimeApplication: shouldAwaitGatewayConfigApplication({
         changedPaths,

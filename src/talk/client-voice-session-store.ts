@@ -4,8 +4,10 @@ import { compileSqliteQueryBindings, getNodeSqliteKysely } from "../infra/kysely
 import type { DB as OpenClawAgentKyselyDatabase } from "../state/openclaw-agent-db.generated.js";
 import {
   openOpenClawAgentDatabase,
+  runOpenClawAgentWriteTransaction,
   type OpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
+import type { ClientVoiceAppLaunchOrigin } from "./client-voice-app-launch-policy.js";
 import { VOICE_TRANSCRIPT_MAX_UNRESOLVED } from "./voice-transcript.js";
 
 const VOICE_SESSION_CACHE_SCOPE = "talk-client-voice-sessions";
@@ -13,6 +15,7 @@ export const VOICE_SESSION_RECORD_VERSION = 1;
 export const VOICE_SESSION_STALE_AFTER_MS = 6 * 60 * 60_000;
 
 export type ClientVoiceToolEffect = {
+  voicePolicyId?: string;
   runId: string;
   toolCallId?: string;
   toolName: string;
@@ -44,6 +47,7 @@ export type ClientVoiceSessionRecord = {
 };
 
 export type ClientVoiceRunBinding = Readonly<{
+  originAuthority?: ClientVoiceAppLaunchOrigin;
   agentId: string;
   voiceSessionId: string;
   sessionKey: string;
@@ -201,4 +205,127 @@ export function assertVoiceSessionOwnership(
 
 export function operationKey(agentId: string, voiceSessionId: string): string {
   return `${agentId}\0${voiceSessionId}`;
+}
+
+export function createOrResumeVoiceSessionRecord(params: {
+  agentId: string;
+  sessionKey: string;
+  provider?: string;
+  origin: "client" | "relay";
+  transcriptCapable?: boolean;
+  voiceSessionId: string;
+  now: number;
+}): void {
+  const { voiceSessionId, provider, now } = params;
+  runOpenClawAgentWriteTransaction(
+    (database) => {
+      const existing = readVoiceSessionRecordInTransaction(database, voiceSessionId);
+      if (existing) {
+        assertVoiceSessionOwnership(existing, params);
+        if (existing.origin !== params.origin) {
+          throw new Error("voice session origin does not match");
+        }
+        if (existing.status !== "open") {
+          throw new Error("voice session is already closed");
+        }
+        if (existing.provider && provider && existing.provider !== provider) {
+          throw new Error("voice session provider does not match");
+        }
+        if (!existing.provider && provider) {
+          existing.provider = provider;
+        }
+        if (params.transcriptCapable === true) {
+          existing.transcriptCapable = true;
+        }
+        existing.updatedAt = now;
+        writeVoiceSessionRecordInTransaction(database, existing);
+        return;
+      }
+      writeVoiceSessionRecordInTransaction(database, {
+        version: VOICE_SESSION_RECORD_VERSION,
+        voiceSessionId,
+        agentId: params.agentId,
+        sessionKey: params.sessionKey,
+        ...(provider ? { provider } : {}),
+        origin: params.origin,
+        ...(params.transcriptCapable === true ? { transcriptCapable: true } : {}),
+        status: "open",
+        createdAt: now,
+        updatedAt: now,
+        consultRunIds: [],
+        effects: [],
+        transcriptFailureKeys: [],
+      });
+    },
+    { agentId: params.agentId },
+  );
+}
+
+export function recordVoiceSessionAppLaunchPolicyUse(
+  binding: ClientVoiceRunBinding,
+  params: { runId: string; toolCallId: string; policyId: string },
+): void {
+  runOpenClawAgentWriteTransaction(
+    (database) => {
+      const record = readVoiceSessionRecordInTransaction(database, binding.voiceSessionId);
+      if (!record) {
+        throw new Error("Voice app launch call no longer exists");
+      }
+      assertVoiceSessionOwnership(record, binding);
+      const effect = record.effects.find(
+        (entry) => entry.runId === params.runId && entry.toolCallId === params.toolCallId,
+      );
+      if (!effect) {
+        throw new Error("Voice app launch has no tool execution record");
+      }
+      effect.voicePolicyId = params.policyId;
+      writeVoiceSessionRecordInTransaction(database, record);
+    },
+    { agentId: binding.agentId },
+  );
+}
+
+/**
+ * Confirmation applies only when the session can observe spoken approvals:
+ * relay sessions (server hears utterances) or clients that report transcripts.
+ * Legacy clients without transcript reporting keep pre-gate behavior.
+ */
+export function isClientVoiceSessionConfirmable(binding: ClientVoiceRunBinding): boolean {
+  const record = readVoiceSessionRecord(binding.agentId, binding.voiceSessionId);
+  return (
+    record?.origin === "relay" ||
+    record?.transcriptCapable === true ||
+    record?.hasUserTranscript === true
+  );
+}
+
+/** Validate ownership and open state before starting a voice-bound consult. */
+export function assertClientVoiceSessionOpen(params: {
+  agentId: string;
+  sessionKey: string;
+  voiceSessionId: string;
+}): "client" | "relay" {
+  const record = readVoiceSessionRecord(params.agentId, params.voiceSessionId);
+  if (!record) {
+    throw new Error("voice session not found");
+  }
+  assertVoiceSessionOwnership(record, params);
+  if (record.status !== "open") {
+    throw new Error("voice session is closed");
+  }
+  return record.origin;
+}
+
+/** Validate durable ownership without rejecting an idempotent close retry. */
+export function resolveClientVoiceSessionOrigin(params: {
+  agentId: string;
+  sessionKey: string;
+  voiceSessionId: string;
+}): "client" | "relay" {
+  const record = readVoiceSessionRecord(params.agentId, params.voiceSessionId);
+  if (!record) {
+    throw new Error("voice session not found");
+  }
+  assertVoiceSessionOwnership(record, params);
+  return record.origin;
 }

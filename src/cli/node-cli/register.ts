@@ -64,7 +64,10 @@ export function registerNodeCli(program: Command) {
     .option("--display-name <name>", "Override node display name")
     .option("--session-host", "Host worker sessions for this foreground process")
     .addOption(new Option("--ephemeral").hideHelp())
-    .option("--share-installed-apps", "Share installed macOS applications with the Gateway")
+    .option(
+      "--share-installed-apps",
+      "Share installed macOS or Linux applications with the Gateway",
+    )
     .option("--no-share-installed-apps", "Disable installed application sharing")
     .action(async (opts, command: Command) => {
       let pair;
@@ -138,7 +141,10 @@ export function registerNodeCli(program: Command) {
     .option("--tls-fingerprint <sha256>", "Expected TLS certificate fingerprint (sha256)")
     .option("--node-id <id>", "Override the generated node instance id")
     .option("--display-name <name>", "Override node display name")
-    .option("--share-installed-apps", "Share installed macOS applications with the Gateway")
+    .option(
+      "--share-installed-apps",
+      "Share installed macOS or Linux applications with the Gateway",
+    )
     .option("--no-share-installed-apps", "Disable installed application sharing")
     .option("--runtime <runtime>", "Service runtime (node|bun). Default: node")
     .option("--runtime-path <path>", "Pin an absolute Node/Bun executable path")

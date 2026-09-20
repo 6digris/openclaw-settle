@@ -35,12 +35,16 @@ import {
   createOrResumeClientVoiceSession,
   ensureClientVoiceAgentSessionEntry,
   resolveClientVoiceRunBinding,
+  registerClientVoiceConsultRun,
 } from "../../../talk/client-voice-session.js";
 import { clientVoiceSessionTesting } from "../../../talk/client-voice-session.test-support.js";
 import { captureEnv, setTestEnvValue } from "../../../test-utils/env.js";
-import type { GatewayRequestHandlerOptions } from "../../server-methods/types.js";
+import {
+  captureGatewayDeviceRevocation,
+  invalidateGatewayDeviceRevocation,
+} from "../../device-revocation.js";
 import { runWithGatewayHttpWorkAdmission } from "../../server/http-work-admission.js";
-import { resolveSessionMutationAuthorization } from "../../session-sharing.js";
+import { sharingPolicyClient } from "../../session-sharing.test-utils.js";
 import { closeTalkClientGatewayControlSession } from "../client-gateway-control.js";
 import { cleanupTalkConnection } from "../session-registry.js";
 import {
@@ -49,7 +53,12 @@ import {
   requestTalkVoiceChange,
   resolveTalkVoiceSession,
 } from "../voice-selection.js";
-import { createTalkClient } from "./client-create.js";
+import {
+  browserSession,
+  configureBrowserProviderFixture,
+  invokeCreate,
+  type BrowserRequest,
+} from "./client-browser-provider.test-support.js";
 import { readLegacyVoiceBinding } from "./client-legacy-voice-bindings.js";
 import { talkClientHandlers } from "./client.js";
 
@@ -86,71 +95,14 @@ const sessionId = "voice-transcript-session";
 let tempDir: string;
 let ownedVoiceSessionId: string | undefined;
 const offerResources: AsyncResource[] = [];
-type BrowserRequest = Parameters<
-  NonNullable<
-    import("../../../plugins/types.js").RealtimeVoiceProviderPlugin["createBrowserSession"]
-  >
->[0];
-const browserSession = {
-  provider: "openai",
-  transport: "webrtc" as const,
-  clientSecret: "test-pending-offer",
-  offerUrl: "/plugins/openai/realtime/calls",
-};
-
 function configureDelegatedBrowserProvider(
   createBrowserSession: (request: BrowserRequest) => Promise<typeof browserSession>,
 ) {
-  const cancelBrowserSession = vi.fn(async () => undefined);
-  const provider = {
-    id: "openai",
-    capabilities: { transports: ["webrtc"], handlesAgentConsult: true, supportsToolCalls: false },
+  return configureBrowserProviderFixture(
+    tempDir,
+    voiceMocks.resolveConfiguredRealtimeVoiceProvider,
     createBrowserSession,
-  };
-  Object.defineProperty(provider, Symbol.for("openclaw.internal.realtime-voice-provider.v1"), {
-    value: { isBrowserSessionConfigured: () => true, cancelBrowserSession },
-  });
-  voiceMocks.resolveConfiguredRealtimeVoiceProvider.mockReturnValue({
-    provider,
-    providerConfig: {},
-    capabilities: provider.capabilities,
-  });
-  const client = { connId: "conn-close" };
-  const clients = new Set([client]);
-  return {
-    provider,
-    cancelBrowserSession,
-    client,
-    clients,
-    context: {
-      getRuntimeConfig: () => ({
-        agents: { defaults: { workspace: path.join(tempDir, "workspace") } },
-      }),
-      getClientConnIds: (filter?: (candidate: typeof client) => boolean) =>
-        new Set(
-          [...clients]
-            .filter((candidate) => !filter || filter(candidate))
-            .map((candidate) => candidate.connId),
-        ),
-      chatAbortControllers: new Map(),
-      logGateway: { warn: vi.fn() },
-      broadcastToConnIds: vi.fn(),
-    },
-  };
-}
-
-async function invokeCreate(options: GatewayRequestHandlerOptions) {
-  const admission = resolveSessionMutationAuthorization({
-    method: "talk.client.create",
-    requestParams: options.params,
-    context: options.context,
-    client: options.client,
-  });
-  if (admission.error) {
-    options.respond(false, undefined, admission.error);
-    return;
-  }
-  await createTalkClient({ ...options, sessionMutationAuthorization: admission.authorization });
+  );
 }
 
 async function invokeTranscript(params: Record<string, unknown>) {
@@ -267,6 +219,54 @@ describe("talk.client.transcript", () => {
     envSnapshot.restore();
     await fs.rm(tempDir, { recursive: true, force: true });
     expect(remainingRootWork).toBe(0);
+  });
+
+  it("binds gateway-control-v1 origin only from its authenticated ingress and retains revocation", async () => {
+    const createBrowserSession = vi.fn(async (_request: BrowserRequest) => browserSession);
+    const fixture = configureDelegatedBrowserProvider(createBrowserSession);
+    Object.assign(fixture.provider.capabilities, { supportsGatewayControl: true });
+    Object.assign(
+      fixture.client,
+      sharingPolicyClient({ deviceId: "paired-widget", scopes: ["operator.admin"] }),
+      { isDeviceTokenAuth: true },
+    );
+    const captured = captureGatewayDeviceRevocation(
+      fixture.context,
+      { deviceId: "paired-widget", role: "operator" },
+      () => true,
+    );
+    const respond = vi.fn();
+    await invokeCreate({
+      params: {
+        sessionKey,
+        provider: "openai",
+        model: "gpt-live-1-codex",
+        capabilities: ["gateway-control-v1"],
+      },
+      context: fixture.context,
+      client: fixture.client,
+      respond,
+      hasCurrentClientAuthority: captured.isCurrent,
+    } as never);
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({ voiceSessionId: expect.any(String) }),
+      undefined,
+    );
+    const voiceSessionId = respond.mock.calls.at(-1)![1].voiceSessionId as string;
+    ownedVoiceSessionId = voiceSessionId;
+    captured.release();
+    registerClientVoiceConsultRun({
+      agentId: "main",
+      sessionKey,
+      voiceSessionId,
+      runId: "origin-bound-run",
+    });
+    const origin = resolveClientVoiceRunBinding("origin-bound-run")?.originAuthority;
+    expect(origin?.deviceId).toBe("paired-widget");
+    expect(origin?.isCurrent()).toBe(true);
+    invalidateGatewayDeviceRevocation(fixture.context, "paired-widget", "operator");
+    expect(origin?.isCurrent()).toBe(false);
   });
 
   it("replaces a voice on the same chat only after both the browser and provider are ready", async () => {
