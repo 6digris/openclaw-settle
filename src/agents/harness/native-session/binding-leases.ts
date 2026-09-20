@@ -211,18 +211,19 @@ export type NativeSessionBindingLease = { token: string; expiresAt: number };
 
 export type NativeSessionBindingRecord = { lease?: NativeSessionBindingLease };
 
-export type NativeSessionBindingStateStore<TRecord extends NativeSessionBindingRecord> =
-  Pick<PluginStateSyncKeyedStore<TRecord>, "deleteIf" | "lookup" | "registerIfAbsent" | "update">;
+export type NativeSessionBindingStateStore<TRecord extends NativeSessionBindingRecord> = Pick<
+  PluginStateSyncKeyedStore<TRecord>,
+  "deleteIf" | "lookup" | "registerIfAbsent" | "update"
+>;
 
-export type NativeSessionBindingLeaseOptions<TRecord extends NativeSessionBindingRecord> =
-  {
-    assertCurrent?: () => void;
-    /** Undefined refuses acquisition without changing the current row. */
-    prepareLease: (
-      current: TRecord | undefined,
-      lease: NativeSessionBindingLease,
-    ) => TRecord | undefined;
-  };
+export type NativeSessionBindingLeaseOptions<TRecord extends NativeSessionBindingRecord> = {
+  assertCurrent?: () => void;
+  /** Undefined refuses acquisition without changing the current row. */
+  prepareLease: (
+    current: TRecord | undefined,
+    lease: NativeSessionBindingLease,
+  ) => TRecord | undefined;
+};
 
 export type NativeSessionBindingLeaseConfig<TRecord extends NativeSessionBindingRecord> = {
   readRecord: (raw: unknown) => TRecord | undefined;

@@ -183,9 +183,10 @@ export function createNativeSessionBindingLifecycle<TRecord extends NativeSessio
   };
 }
 
-type NativeSessionBindingLifecycleOptions<
-  TRecord extends NativeSessionBindingRecord,
-> = Omit<NativeSessionBindingLeaseConfig<TRecord>, "errors"> & {
+type NativeSessionBindingLifecycleOptions<TRecord extends NativeSessionBindingRecord> = Omit<
+  NativeSessionBindingLeaseConfig<TRecord>,
+  "errors"
+> & {
   errors: NativeSessionBindingLeaseConfig<TRecord>["errors"] & {
     mutationBlocked: string;
     conditionalDeletionRequired: string;
@@ -194,11 +195,10 @@ type NativeSessionBindingLifecycleOptions<
   };
 };
 
-type NativeSessionBindingDeletionOptions<
-  TRecord extends NativeSessionBindingRecord,
-> = NativeSessionBindingLeaseOptions<TRecord> & {
-  assertCurrent: () => void;
-  assertRecordCurrent: (current: TRecord | undefined) => void;
-};
+type NativeSessionBindingDeletionOptions<TRecord extends NativeSessionBindingRecord> =
+  NativeSessionBindingLeaseOptions<TRecord> & {
+    assertCurrent: () => void;
+    assertRecordCurrent: (current: TRecord | undefined) => void;
+  };
 
 export type { NativeSessionBindingLeaseOptions } from "./binding-leases.js";

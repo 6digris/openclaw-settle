@@ -3,14 +3,16 @@ import { loadSessionEntryReadOnly } from "../../../config/sessions/session-acces
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 
 /** Resolve host lineage before selecting a native queue, catalog, or connection. */
-export async function resolveNativeSessionBinding<TBinding>(params: Omit<NativeSessionGenerationParams, "target"> & {
-  target?: NativeSessionGenerationTarget;
-  readBinding: (sessionId?: string) => TBinding | undefined;
-  generation?: NativeSessionGenerationOperations;
-  reclaimStale?: boolean;
-  signal?: AbortSignal;
-  assertBinding?: (binding: TBinding | undefined) => void;
-}): Promise<{ binding: TBinding | undefined; assertCurrent: () => void }> {
+export async function resolveNativeSessionBinding<TBinding>(
+  params: Omit<NativeSessionGenerationParams, "target"> & {
+    target?: NativeSessionGenerationTarget;
+    readBinding: (sessionId?: string) => TBinding | undefined;
+    generation?: NativeSessionGenerationOperations;
+    reclaimStale?: boolean;
+    signal?: AbortSignal;
+    assertBinding?: (binding: TBinding | undefined) => void;
+  },
+): Promise<{ binding: TBinding | undefined; assertCurrent: () => void }> {
   let assertCurrent = params.assertCurrent ?? (() => {});
   const assertAdmissionCurrent = () => {
     // Cancellation errors and cleanup behavior remain with each backend caller.
@@ -45,11 +47,13 @@ export async function resolveNativeSessionBinding<TBinding>(params: Omit<NativeS
 }
 
 /** Let the authoritative OpenClaw generation adopt its predecessor or reclaim a stale row. */
-export async function reclaimNativeSessionGeneration(params: NativeSessionGenerationParams & {
-  generation: NativeSessionGenerationOperations;
-  onHostGenerationVerified?: (assertHostGeneration: () => void) => void;
-  reclaimStale?: boolean;
-}): Promise<boolean> {
+export async function reclaimNativeSessionGeneration(
+  params: NativeSessionGenerationParams & {
+    generation: NativeSessionGenerationOperations;
+    onHostGenerationVerified?: (assertHostGeneration: () => void) => void;
+    reclaimStale?: boolean;
+  },
+): Promise<boolean> {
   params.assertCurrent?.();
   if (!params.target.sessionKey?.trim()) {
     return true;

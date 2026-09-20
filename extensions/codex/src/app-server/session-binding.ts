@@ -390,8 +390,10 @@ export function createCodexAppServerBindingStore(
       lostLease: bindingLeaseLostError,
       leaseTimeout: (key) => new Error(`Timed out waiting for Codex binding lease: ${key}`),
       acquisitionRejected: (key) => new Error(`Codex binding generation was retired: ${key}`),
-      mutationBlocked: "Codex binding mutation blocked while a native archive is in progress; retry",
-      conditionalDeletionRequired: "Codex session deletion requires conditional plugin-state deletion",
+      mutationBlocked:
+        "Codex binding mutation blocked while a native archive is in progress; retry",
+      conditionalDeletionRequired:
+        "Codex session deletion requires conditional plugin-state deletion",
       deletionChanged: "Codex binding changed before session deletion",
       rollbackChanged: "Codex binding changed before session deletion rollback",
     },
