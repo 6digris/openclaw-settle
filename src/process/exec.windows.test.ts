@@ -517,7 +517,7 @@ describe("Windows command execution", () => {
         expect(command.signalCode).toBe("SIGTERM");
         // The command and helper no longer own handles. Their awaited grace period
         // must still retain process liveness, including outside a test runner.
-        expect(timers[0].hasRef()).toBe(true);
+        expect(timers[0]?.hasRef()).toBe(true);
       } finally {
         await expect(result).resolves.toMatchObject({ code: 124, termination: "timeout" });
       }
