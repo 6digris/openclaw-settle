@@ -640,7 +640,7 @@ async function waitForProcessClose(
 
 type WrapperCleanupProof =
   | { kind: "signal"; entrypoint: "node" | "pnpm"; repeated: boolean; cooperative?: boolean }
-  | { kind: "readiness" }
+  | { kind: "readiness"; partialPidReceipt: boolean }
   | { kind: "preparation"; cleanupFails?: boolean }
   | { kind: "stdin"; target: "macos" | "capsule" }
   | { kind: "escaped" }
@@ -697,7 +697,7 @@ const phase = (name) => {
 if (entry === ${JSON.stringify(wrapperPath)}) phase("entrypoint started");
 if (entry === ${JSON.stringify(implementationPath)}) {
   phase("loading wrapper");
-  fs.writeFileSync(${JSON.stringify(wrapperPidPath)}, String(process.pid));
+  fs.writeFileSync(${JSON.stringify(wrapperPidPath)}, ${proof.kind === "readiness" && proof.partialPidReceipt} ? "" : String(process.pid));
   process.once("exit", (code) => fs.writeFileSync(${JSON.stringify(wrapperExitPath)}, JSON.stringify({ code })));
   if (${proof.kind === "readiness"}) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
   const childProcess = require("node:child_process");
@@ -1120,9 +1120,9 @@ child.once("exit", (code, signal) => {
             }
           }
         }
-        const wrapperPid = existsSync(wrapperPidPath)
-          ? Number.parseInt(readFileSync(wrapperPidPath, "utf8"), 10)
-          : 0;
+        // Phase publication is atomic; the redundant PID file may still be in its truncate window.
+        const phases: WrapperReadinessPhase[] = JSON.parse(readFileSync(phasesPath, "utf8"));
+        const wrapperPid = phases.findLast(({ phase }) => phase === "loading wrapper")?.pid ?? 0;
         identity ??= existsSync(identityPath)
           ? JSON.parse(readFileSync(identityPath, "utf8"))
           : undefined;
@@ -5992,12 +5992,12 @@ cp.spawnSync = (command, args, options) => {
     25_000,
   );
 
-  it.skipIf(process.platform === "win32")(
-    "reports the readiness deadline and last phase without inventing a writer failure",
-    async () => {
+  it.skipIf(process.platform === "win32").each([false, true])(
+    "reports the readiness deadline and last phase without inventing a writer failure (partial PID receipt=%s)",
+    async (partialPidReceipt) => {
       let failure: Error | undefined;
       try {
-        await runWrapperCleanupProof({ kind: "readiness" });
+        await runWrapperCleanupProof({ kind: "readiness", partialPidReceipt });
       } catch (error) {
         if (!(error instanceof Error)) {
           throw error;
@@ -6016,6 +6016,7 @@ cp.spawnSync = (command, args, options) => {
         expect(failure.message).toContain(
           "wrapper readiness not observed within 8 s; last observed phase loading wrapper",
         );
+        expect(failure.message).not.toContain("fixture teardown could not be verified");
         expect(failure.message).not.toContain("fixture writers did not settle");
         expect(failure.message).not.toContain("fixture ownership receipts are incomplete");
         expect(existsSync(path.join(retained, "run.spawned"))).toBe(false);
