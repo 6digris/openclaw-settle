@@ -46,6 +46,10 @@ import {
 import { databaseWorkerCoreTestFiles } from "../vitest/vitest.database-worker-core-paths.mjs";
 import { databaseWorkerExtensionTestFiles } from "../vitest/vitest.extension-database-workers-paths.mjs";
 import { gatewayDatabaseWorkerTestFiles } from "../vitest/vitest.gateway-server-paths.mjs";
+import {
+  startupCorpusTestFiles,
+  stateStartupCorpusTestFiles,
+} from "../vitest/vitest.startup-corpus-paths.mjs";
 
 const normalizeRepoPath = toRepoPath;
 const CODEX_TEST_PROCESS_FILE_LIMIT = 12;
@@ -102,7 +106,7 @@ describe("test runtime prerequisites", () => {
     ["infra config", ["test/vitest/vitest.infra.config.ts"], "runtime"],
     ["native SDK generation", ["src/plugins/plugin-module-generation.sdk.test.ts"], "runtime"],
     ["config startup SDK", ["src/config/config-startup-corpus.test.ts"], "runtime"],
-    ["state startup SDK", ["src/config/state-startup-corpus.test.ts"], "runtime"],
+    ...stateStartupCorpusTestFiles.map((file) => [file, [file], "runtime"] as const),
     ["runtime config project", ["test/vitest/vitest.runtime-config.config.ts"], "runtime"],
     [
       "context engine sandbox SDK",
@@ -299,17 +303,14 @@ describe("test runtime prerequisites", () => {
     ["tooling", ["test/**"], undefined],
     ["plugins", ["plugin-module-generation.sdk.test.ts"], undefined],
     ["runtime-config", ["config/config-startup-corpus.test.ts"], "runtime"],
-    ["runtime-config", ["config/state-startup-corpus.test.ts"], "runtime"],
-    [
-      "runtime-config",
-      ["config/config-startup-corpus.test.ts", "config/state-startup-corpus.test.ts"],
-      "runtime",
-    ],
+    ...stateStartupCorpusTestFiles.map(
+      (file) => ["runtime-config", [file.slice("src/".length)], "runtime"] as const,
+    ),
+    ["runtime-config", startupCorpusTestFiles.map((file) => file.slice("src/".length)), "runtime"],
     [
       "runtime-config",
       [
-        "config/config-startup-corpus.test.ts",
-        "config/state-startup-corpus.test.ts",
+        ...startupCorpusTestFiles.map((file) => file.slice("src/".length)),
         "config/sessions/session-accessor.sqlite-reclamation-memory.test.ts",
       ],
       undefined,
