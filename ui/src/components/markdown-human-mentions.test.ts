@@ -12,6 +12,19 @@ function selected(
 }
 
 describe("explicit human mention Markdown", () => {
+  it("distinguishes an explicit everyone broadcast without a person-card identity", () => {
+    const source = "@everyone please review; typed @everyone stays plain";
+    const fragment = htmlFragment(
+      toSanitizedMarkdownHtml(source, {
+        humanMentions: [{ kind: "everyone", start: 0, end: 9 }],
+      }),
+    );
+    expect(fragment.querySelectorAll("strong")).toHaveLength(1);
+    expect(fragment.querySelector("strong")?.textContent).toBe("@everyone");
+    expect(fragment.querySelector("openclaw-person-reference")).toBeNull();
+    expect(fragment.textContent?.trim()).toBe(source);
+  });
+
   it("keeps original Unicode labels and only decorates the selected occurrence across line normalization", () => {
     const source = "🦞 **Hello**\r\n@Ada Lovelace cc @Ada Lovelace";
     const label = "@Ada Lovelace";

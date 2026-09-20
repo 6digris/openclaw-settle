@@ -166,6 +166,7 @@ export function buildLateResolvedMediaMessage(params: {
     lateMedia: true,
   };
   delete metadata.humanMentions;
+  delete metadata.everyoneMentionProfileIds;
   // Like #111204, mark late-media scaffolding as wire-only so UIs never render it.
   return {
     ...params.resolvedMessage,

@@ -3,6 +3,7 @@ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import {
   ErrorCodes,
   MAX_HUMAN_MENTIONS,
+  MAX_EVERYONE_MENTION_RECIPIENTS,
   MAX_MENTIONABLE_USERS,
   errorShape,
   type ErrorShape,
@@ -256,6 +257,32 @@ export function createHumanMentionPolicy(params: {
     });
   }
 
+  function eligibleRoster(target: MentionTarget, cfg: OpenClawConfig) {
+    if (!directory) {
+      throw new Error("The mention directory has not been prepared.");
+    }
+    // Keystrokes reuse one bounded eligible roster; identity/session/role changes replace it.
+    const key = JSON.stringify([profileVersion, target, cfg.gateway?.roles]);
+    if (eligibleDirectory?.key !== key) {
+      const users = directory.profiles.flatMap(({ id, logins }) => {
+        const candidate = recipientProfile(id, target, cfg);
+        return candidate
+          ? [
+              {
+                profileId: candidate.profileId,
+                displayName: humanMentionDisplayLabel(candidate.label, candidate.profileId),
+                avatarUrl: candidate.avatarUrl,
+                logins,
+                online: false,
+              },
+            ]
+          : [];
+      });
+      eligibleDirectory = { key, users, truncated: directory.truncated };
+    }
+    return eligibleDirectory;
+  }
+
   return {
     identify,
     prepareDirectory,
@@ -281,35 +308,16 @@ export function createHumanMentionPolicy(params: {
         return context;
       }
       const { target, profile } = context.value;
-      if (!directory) {
-        throw new Error("The mention directory has not been prepared.");
-      }
-      // Keystrokes reuse one bounded eligible roster; identity/session/role changes replace it.
-      const key = JSON.stringify([profileVersion, target, cfg.gateway?.roles]);
-      if (eligibleDirectory?.key !== key) {
-        const users = directory.profiles.flatMap(({ id, logins }) => {
-          const candidate = recipientProfile(id, target, cfg);
-          return candidate
-            ? [
-                {
-                  profileId: candidate.profileId,
-                  displayName: humanMentionDisplayLabel(candidate.label, candidate.profileId),
-                  avatarUrl: candidate.avatarUrl,
-                  logins,
-                  online: false,
-                },
-              ]
-            : [];
-        });
-        eligibleDirectory = { key, users, truncated: directory.truncated };
-      }
+      const roster = eligibleRoster(target, cfg);
       const query = input.query?.trim().toLocaleLowerCase() ?? "";
-      const users = eligibleDirectory.users.filter(
+      const candidates = roster.users.filter(
+        (candidate) => candidate.profileId !== profile.profileId,
+      );
+      const users = candidates.filter(
         (candidate) =>
-          candidate.profileId !== profile.profileId &&
-          (!query ||
-            candidate.displayName.toLocaleLowerCase().includes(query) ||
-            candidate.logins.some((login) => login.toLocaleLowerCase().includes(query))),
+          !query ||
+          candidate.displayName.toLocaleLowerCase().includes(query) ||
+          candidate.logins.some((login) => login.toLocaleLowerCase().includes(query)),
       );
       const names = new Map<string, number>();
       for (const candidate of users) {
@@ -342,8 +350,48 @@ export function createHumanMentionPolicy(params: {
       );
       return ok({
         users: projected.slice(0, MAX_MENTIONABLE_USERS),
-        truncated: eligibleDirectory.truncated || projected.length > MAX_MENTIONABLE_USERS,
+        truncated: roster.truncated || projected.length > MAX_MENTIONABLE_USERS,
+        ...(!roster.truncated &&
+        candidates.length > 0 &&
+        candidates.length <= MAX_EVERYONE_MENTION_RECIPIENTS &&
+        (!query || "everyone".includes(query))
+          ? { everyone: { recipientCount: candidates.length } }
+          : {}),
       });
+    },
+    resolveEveryoneRecipients(
+      client: GatewayClient | null,
+      input: UsersMentionableParams,
+    ): Result<readonly string[], ErrorShape> {
+      const cfg = params.getRuntimeConfig();
+      const context = resolveContext(client, input, cfg);
+      if (!context.ok) {
+        return context;
+      }
+      const { target, profile } = context.value;
+      const roster = eligibleRoster(target, cfg);
+      const ids = [...new Set(roster.users.map((candidate) => candidate.profileId))].filter(
+        (id) => id !== profile.profileId,
+      );
+      if (roster.truncated || ids.length > MAX_EVERYONE_MENTION_RECIPIENTS) {
+        return err(
+          errorShape(
+            ErrorCodes.INVALID_REQUEST,
+            "@everyone exceeds the supported recipient limit (" +
+              MAX_EVERYONE_MENTION_RECIPIENTS +
+              "). Select individual people instead.",
+          ),
+        );
+      }
+      if (!ids.length) {
+        return err(
+          errorShape(
+            ErrorCodes.INVALID_REQUEST,
+            "No other people can read this session. Remove @everyone to continue.",
+          ),
+        );
+      }
+      return ok(ids);
     },
     validateRecipients(
       client: GatewayClient | null,

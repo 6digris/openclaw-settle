@@ -16,6 +16,22 @@ describe("human mention text ownership", () => {
     expect(updateHumanMentions("@Alex", next, [alex])).toEqual(expected);
   });
 
+  it("retains explicit everyone selections through drafts and invalidates changed tokens", () => {
+    const everyone = { kind: "everyone" as const, start: 0, end: 9 };
+    expect(readHumanMentions("@everyone", [everyone])).toEqual([everyone]);
+    expect(readHumanMentions("@everyone", undefined)).toBeUndefined();
+    expect(readHumanMentions("@somebody", [everyone])).toBeUndefined();
+    expect(readHumanMentions("@everyone", [{ ...everyone, profileId: "forged" }])).toBeUndefined();
+    expect(updateHumanMentions("@everyone", "Hi @everyone", [everyone])).toEqual([
+      { ...everyone, start: 3, end: 12 },
+    ]);
+    expect(updateHumanMentions("@everyone", "@everybody", [everyone])).toEqual([]);
+    expect(trimHumanMentions("  @everyone  ", [{ ...everyone, start: 2, end: 11 }])).toEqual({
+      text: "@everyone",
+      mentions: [everyone],
+    });
+  });
+
   it("deletes the actual selected occurrence when two people share a label", () => {
     const otherAlex = { profileId: "another-alex", start: 6, end: 11 };
     const previous = "@Alex @Alex";

@@ -46,7 +46,10 @@ export type PersistedUserTurnMessage = Extract<AgentMessage, { role: "user" }> &
   /** Private transcript correlation; never authorizes an execution. */
   idempotencyKey?: string;
   provenance?: InputProvenance;
-  __openclaw?: Record<string, unknown> & { humanMentions?: readonly HumanMention[] };
+  __openclaw?: Record<string, unknown> & {
+    humanMentions?: readonly HumanMention[];
+    everyoneMentionProfileIds?: readonly string[];
+  };
 };
 
 export type UserTurnInput = Pick<PersistedUserTurnMessage, "display" | "excludeFromContext"> & {
@@ -55,6 +58,8 @@ export type UserTurnInput = Pick<PersistedUserTurnMessage, "display" | "excludeF
   workContext?: AttachedChatWorkContext;
   /** Explicit human selections bound to UTF-16 offsets in text. */
   mentions?: readonly HumanMention[];
+  /** Admission-owned broadcast snapshot; queued/replayed input never expands it again. */
+  everyoneMentionProfileIds?: readonly string[];
   media?: readonly PersistedUserTurnMediaInput[] | null;
   /** Restart-safe native image placement; model-visible prompt bytes remain separate. */
   mediaImageLayout?: {

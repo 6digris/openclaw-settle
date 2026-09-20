@@ -217,13 +217,24 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
         respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, normalized.error));
         return;
       }
-      const eligible = context.mentionInbox?.validateRecipients(
+      const inbox = context.mentionInbox;
+      const everyone = p.mentions.some((mention) => "kind" in mention);
+      if (everyone && inbox) {
+        const prepared = await inbox.prepareEveryoneRecipients();
+        commitGuard();
+        if (!prepared.ok) {
+          respond(false, undefined, prepared.error);
+          return;
+        }
+      }
+      const mentionTarget = {
+        agentId: explicitlyRequestedAgent.agentId,
+        ...(p.visibility ? { visibility: p.visibility } : {}),
+      };
+      const eligible = inbox?.validateRecipients(
         client,
-        {
-          agentId: explicitlyRequestedAgent.agentId,
-          ...(p.visibility ? { visibility: p.visibility } : {}),
-        },
-        p.mentions.map((mention) => mention.profileId),
+        mentionTarget,
+        p.mentions.flatMap((mention) => ("profileId" in mention ? [mention.profileId] : [])),
       );
       if (!eligible?.ok) {
         respond(
@@ -236,6 +247,13 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
             ),
         );
         return;
+      }
+      if (everyone && inbox) {
+        const recipients = inbox.resolveEveryoneRecipients(client, mentionTarget);
+        if (!recipients.ok) {
+          respond(false, undefined, recipients.error);
+          return;
+        }
       }
     }
     let requestedCwd = normalizeOptionalString(p.cwd);

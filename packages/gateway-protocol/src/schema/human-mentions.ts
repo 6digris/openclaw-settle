@@ -4,6 +4,7 @@ import { closedObject } from "./closed-object.js";
 import { SessionVisibilitySchema } from "./sessions-sharing-values.js";
 
 export const MAX_HUMAN_MENTIONS = 10;
+export const MAX_EVERYONE_MENTION_RECIPIENTS = 1_000;
 export const MAX_MENTIONABLE_USERS = 100;
 export const MENTION_INBOX_MAX_ITEMS = 100;
 
@@ -14,10 +15,28 @@ const MentionAvatarUrlSchema = Type.String({ minLength: 1, maxLength: 2048 });
 const MentionTimestampSchema = Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER });
 
 /** Explicit selections bound to UTF-16 offsets in the submitted message text. */
-export const HumanMentionSchema = closedObject({
-  profileId: MentionReferenceSchema,
+const MentionSpanProperties = {
   start: Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
   end: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+};
+const PersonMentionSchema = closedObject({
+  profileId: MentionReferenceSchema,
+  ...MentionSpanProperties,
+});
+const EveryoneMentionSchema = closedObject({
+  kind: Type.Literal("everyone"),
+  ...MentionSpanProperties,
+});
+const HumanMentionVariants = Type.Union([PersonMentionSchema, EveryoneMentionSchema]);
+// Native generators retain the named object and its fields; anyOf still enforces
+// the exclusive wire shapes, and TypeScript derives the same union from them.
+export const HumanMentionSchema = Type.Unsafe<Static<typeof HumanMentionVariants>>({
+  ...closedObject({
+    profileId: Type.Optional(PersonMentionSchema.properties.profileId),
+    kind: Type.Optional(EveryoneMentionSchema.properties.kind),
+    ...MentionSpanProperties,
+  }),
+  anyOf: HumanMentionVariants.anyOf,
 });
 export const HumanMentionsSchema = Type.Array(HumanMentionSchema, {
   maxItems: MAX_HUMAN_MENTIONS,
@@ -45,6 +64,11 @@ export const MentionableUserSchema = closedObject({
 export const UsersMentionableResultSchema = closedObject({
   users: Type.Array(MentionableUserSchema, { maxItems: MAX_MENTIONABLE_USERS }),
   truncated: Type.Boolean(),
+  everyone: Type.Optional(
+    closedObject({
+      recipientCount: Type.Integer({ minimum: 1, maximum: MAX_EVERYONE_MENTION_RECIPIENTS }),
+    }),
+  ),
 });
 
 export const MentionInboxItemSchema = closedObject({

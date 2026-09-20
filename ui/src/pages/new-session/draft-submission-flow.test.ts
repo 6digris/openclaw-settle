@@ -32,6 +32,20 @@ afterEach(() => {
 });
 
 describe("DraftSubmissionFlow", () => {
+  it("preserves explicit everyone metadata for the first message", async () => {
+    const { context, flow } = createDraftFixture();
+    flow.setMessage("  @everyone review this  ", [{ kind: "everyone", start: 2, end: 11 }]);
+    await flow.submit();
+    expect(context.sessions.createResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "@everyone review this",
+        mentions: [{ kind: "everyone", start: 0, end: 9 }],
+      }),
+      { reconciliation: "background" },
+    );
+    flow.disconnect();
+  });
+
   it.each(["navigation", "reconnect"])("retires only the captured draft after %s", async (mode) => {
     const { context, flow } = createDraftFixture();
     let accept!: (value: { key: string; initialRun: { status: "started"; runId: string } }) => void;

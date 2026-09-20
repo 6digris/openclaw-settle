@@ -40,7 +40,9 @@ export function prepareMarkdownHumanMentions(
     const marker = prefix + tokens.length + "end";
     tokens.push({
       marker,
-      profileId: mention.profileId,
+      ...("profileId" in mention
+        ? { profileId: mention.profileId }
+        : { kind: "everyone" as const }),
       label: source.slice(mention.start, mention.end),
     });
     masked += source.slice(cursor, mention.start) + marker;
@@ -147,7 +149,11 @@ export function installMarkdownHumanMentions(parser: MarkdownIt): void {
           leading.content = token.content.slice(cursor, mention.index);
           const reference = new state.Token("human_mention", "", 0);
           reference.content = mention.label;
-          reference.attrSet("profile-id", mention.profileId);
+          if ("profileId" in mention) {
+            reference.attrSet("profile-id", mention.profileId);
+          } else {
+            reference.attrSet("mention-kind", "everyone");
+          }
           replacements.push(leading, reference);
           cursor = mention.index + mention.marker.length;
         }
@@ -160,6 +166,11 @@ export function installMarkdownHumanMentions(parser: MarkdownIt): void {
   });
   parser.renderer.rules.human_mention = (tokens, index) => {
     const token = tokens[index];
+    if (token?.attrGet("mention-kind") === "everyone") {
+      return (
+        '<strong class="human-mention-everyone">' + escapeMarkdownHtml(token.content) + "</strong>"
+      );
+    }
     const profileId = token?.attrGet("profile-id");
     return token && typeof profileId === "string" && profileId
       ? '<openclaw-person-reference profile-id="' +

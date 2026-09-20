@@ -161,6 +161,64 @@ describe("normalizeChatSendRequest", () => {
     expect(fingerprint("alex-one").requestIdentity).toBe(fingerprint("alex-one").requestIdentity);
   });
 
+  it("requires an explicit exact everyone token and distinguishes broadcast identity", () => {
+    const normalize = (mentions?: unknown) =>
+      normalizeChatSendRequest({
+        params: validParams({ message: "  @everyone hello  ", ...(mentions ? { mentions } : {}) }),
+        client: humanClient(),
+      });
+    const plain = normalize();
+    const broadcast = normalize([{ kind: "everyone", start: 2, end: 11 }]);
+    const individual = normalize([{ profileId: "everyone", start: 2, end: 11 }]);
+    expect(plain.ok).toBe(true);
+    if (plain.ok) {
+      expect(plain.value.mentions).toBeUndefined();
+    }
+    expect(broadcast).toMatchObject({
+      ok: true,
+      value: {
+        rawMessage: "@everyone hello",
+        mentions: [{ kind: "everyone", start: 0, end: 9 }],
+      },
+    });
+    if (!plain.ok || !broadcast.ok || !individual.ok) throw new Error("Expected valid requests");
+    expect(
+      new Set([
+        plain.value.requestIdentity,
+        broadcast.value.requestIdentity,
+        individual.value.requestIdentity,
+      ]).size,
+    ).toBe(3);
+    for (const message of ["@Everyone", "@everyon", "@someone", "@every\u0001one"]) {
+      expect(
+        normalizeChatSendRequest({
+          params: validParams({
+            message,
+            mentions: [{ kind: "everyone", start: 0, end: message.length }],
+          }),
+          client: humanClient(),
+        }).ok,
+      ).toBe(false);
+    }
+    expect(
+      normalize([
+        { kind: "everyone", start: 2, end: 11 },
+        { profileId: "bob", start: 2, end: 11 },
+      ]).ok,
+    ).toBe(false);
+    const synthetic = humanClient();
+    synthetic.internal = { syntheticClient: true };
+    expect(
+      normalizeChatSendRequest({
+        params: validParams({
+          message: "@everyone",
+          mentions: [{ kind: "everyone", start: 0, end: 9 }],
+        }),
+        client: synthetic,
+      }).ok,
+    ).toBe(false);
+  });
+
   it("requires authenticated human ingress and rejects unsupported mention modes", () => {
     const mentions = [{ profileId: "bob", start: 0, end: 4 }];
     const unqualified = humanClient();

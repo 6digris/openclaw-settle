@@ -600,7 +600,7 @@ describe("persistUserTurnTranscript", () => {
         target,
         beforeMessageWrite: ({ message }) => {
           if (mode === "mutate-spans") {
-            message["__openclaw"]!.humanMentions![0]!.profileId = "forged";
+            Object.assign(message["__openclaw"]!.humanMentions![0]!, { profileId: "forged" });
           }
           return {
             ...message,
@@ -618,6 +618,39 @@ describe("persistUserTurnTranscript", () => {
       expect(
         (message?.["__openclaw"] as { humanMentions?: unknown } | undefined)?.humanMentions,
       ).toEqual(mode === "replace-text" || mode === "forge" ? undefined : mentions);
+    },
+  );
+
+  it.each(["retain", "replace-text", "mutate", "forge"] as const)(
+    "protects the admitted everyone recipient snapshot through %s",
+    async (mode) => {
+      const target = createSqliteTranscriptTarget({ dir: tempDirs.make("everyone-hook-") });
+      const mentions = [{ kind: "everyone" as const, start: 0, end: 9 }];
+      const recipients = ["ada", "grace"];
+      const recorder = createUserTurnTranscriptRecorder({
+        input: {
+          text: "@everyone review",
+          ...(mode === "forge" ? {} : { mentions, everyoneMentionProfileIds: recipients }),
+        },
+        target,
+        beforeMessageWrite: ({ message }) => {
+          if (mode === "mutate") {
+            Object.assign(message["__openclaw"]!.everyoneMentionProfileIds!, { 0: "forged" });
+          }
+          return {
+            ...message,
+            content: mode === "replace-text" ? "[redacted]" : message.content,
+            __openclaw: { humanMentions: mentions, everyoneMentionProfileIds: ["forged"] },
+          };
+        },
+      });
+      await recorder.persistApproved();
+      const [message] = await readTranscriptMessages(target);
+      if (mode === "forge" || mode === "replace-text") {
+        expect(message).not.toHaveProperty("__openclaw.everyoneMentionProfileIds");
+      } else {
+        expect(message).toHaveProperty("__openclaw.everyoneMentionProfileIds", recipients);
+      }
     },
   );
 

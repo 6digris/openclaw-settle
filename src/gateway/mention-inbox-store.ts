@@ -1,6 +1,6 @@
+import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
-import { MAX_HUMAN_MENTIONS } from "../../packages/gateway-protocol/src/index.js";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
@@ -13,6 +13,8 @@ import { withExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-sta
 
 export const MENTION_RETENTION_MS = 7 * 24 * 60 * 60_000;
 export const MAX_MENTION_SOURCES = 10_000;
+// The shipped reader contract is independent of the current mention picker/broadcast limits.
+export const MAX_MENTION_SOURCE_RECIPIENTS = 10;
 
 const HEAD_KEY = "notifications.mentions.head";
 const SOURCE_PREFIX = "notifications.mentions.source.";
@@ -35,7 +37,9 @@ const sourceSchema = z.object({
   key: z.string().regex(/^[a-f0-9]{64}$/),
   sequence: timestamp,
   expiresAt: timestamp,
-  recipients: z.array(z.tuple([reference, reference.nullable()])).max(MAX_HUMAN_MENTIONS),
+  recipients: z
+    .array(z.tuple([reference, reference.nullable()]))
+    .max(MAX_MENTION_SOURCE_RECIPIENTS),
   message: messageSchema.optional(),
 });
 
@@ -46,6 +50,15 @@ export type MentionStoreSnapshot = {
   head: MentionStoreHead;
   sources: MentionStoreSource[];
 };
+
+/** Chunk zero retains the original replay identity, including for older Inbox writers. */
+export function mentionSourceChunkKey(sourceKey: string, index: number): string {
+  return index === 0
+    ? sourceKey
+    : createHash("sha256")
+        .update(JSON.stringify([sourceKey, index]))
+        .digest("hex");
+}
 
 /** The existing machine-state primary key owns lookup; this feature creates no schema. */
 export function readMentionStoreSnapshot(
@@ -165,7 +178,10 @@ export function writeMentionStoreChanges(
       continue;
     }
     flushDeletes();
-    const valueJson = JSON.stringify(source);
+    const valueJson = JSON.stringify(sourceSchema.parse(source));
+    if (source.key !== key || valueJson.length > 32_768) {
+      throw new Error("Invalid mention source record");
+    }
     executeSqliteQuerySync(
       database,
       db

@@ -56,9 +56,9 @@ export function prepareDraftSubmission(
   const pendingPlacement = !startup && Boolean(pending.sessionKey);
   const submitted = trimHumanMentions(draft.message, draft.mentions);
   const message = startup?.params.message ?? (pendingPlacement ? pending.message : submitted.text);
-  const mentions = (
-    startup ? startup.params.mentions : pendingPlacement ? pending.mentions : submitted.mentions
-  )?.map(({ profileId, start, end }) => ({ profileId, start, end }));
+  const mentions = structuredClone(
+    startup ? startup.params.mentions : pendingPlacement ? pending.mentions : submitted.mentions,
+  );
   const attachments = draft.attachmentDraft.attachments;
   const draftAttachments = startup
     ? startup.params.attachments

@@ -483,11 +483,13 @@ export async function handleSendChat(
   const effectiveMessage = quotedMessage;
   // Annotation and fallback-reply prefixes shift mentions; structured work context never does.
   const mentionOffset = quotedMessage.length - userMessage.length;
-  const effectiveMentions = submitted.mentions?.map((mention) => ({
-    profileId: mention.profileId,
-    start: mention.start + mentionOffset,
-    end: mention.end + mentionOffset,
-  }));
+  const effectiveMentions = submitted.mentions?.map((mention) => {
+    const start = mention.start + mentionOffset;
+    const end = mention.end + mentionOffset;
+    return "profileId" in mention
+      ? { profileId: mention.profileId, start, end }
+      : { kind: mention.kind, start, end };
+  });
 
   // A row edit and a composer send may intentionally carry the same payload.
   // Keep their guards independent so submitting one cannot suppress the other.

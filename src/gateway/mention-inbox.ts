@@ -5,6 +5,7 @@ import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import {
   ErrorCodes,
+  MAX_EVERYONE_MENTION_RECIPIENTS,
   MAX_HUMAN_MENTIONS,
   MENTION_INBOX_MAX_ITEMS,
   errorShape,
@@ -23,7 +24,9 @@ import { onUserProfilesChanged, readUserProfileVersion } from "../state/user-pro
 import { createHumanMentionPolicy, humanMentionDisplayLabel } from "./human-mention-policy.js";
 import {
   MAX_MENTION_SOURCES,
+  MAX_MENTION_SOURCE_RECIPIENTS,
   MENTION_RETENTION_MS,
+  mentionSourceChunkKey,
   readMentionStoreSnapshot,
   writeMentionStoreChanges,
   type MentionStoreHead,
@@ -52,6 +55,8 @@ type ProcessedSource = {
   expiresAt: number;
   /** Null retains consumption after dismissal, eviction, or intentional non-delivery. */
   recipients: Map<string, StoredMention | null>;
+  /** Disposable family index; durable chunks retain the shipped source record shape. */
+  rootKey: string;
 };
 
 type MentionNotification = {
@@ -93,6 +98,10 @@ export function createMentionInbox(params: {
   let profileInvalidationPending = false;
   let nextExpiryAt = Infinity;
 
+  function createSource(key: string, sequence: number, expiresAt: number): ProcessedSource {
+    return { key, sequence, expiresAt, recipients: new Map(), rootKey: key };
+  }
+
   function synchronize(database?: DatabaseSync): boolean {
     const snapshot = readMentionStoreSnapshot(head.revision, database);
     if (!snapshot) {
@@ -104,12 +113,7 @@ export function createMentionInbox(params: {
     dirtySources.clear();
     nextExpiryAt = Infinity;
     for (const stored of snapshot.sources) {
-      const source: ProcessedSource = {
-        key: stored.key,
-        sequence: stored.sequence,
-        expiresAt: stored.expiresAt,
-        recipients: new Map(),
-      };
+      const source = createSource(stored.key, stored.sequence, stored.expiresAt);
       processed.set(source.key, source);
       nextExpiryAt = Math.min(nextExpiryAt, source.expiresAt);
       for (const [profileId, id] of stored.recipients) {
@@ -122,6 +126,23 @@ export function createMentionInbox(params: {
           items.set(item.id, item);
           indexItem(item, false);
         }
+      }
+    }
+    // Atomic admission writes contiguous deterministic children. Stop at the first missing
+    // child; dismissal/alias reconciliation retain empty rows until the shared expiry.
+    for (const source of processed.values()) {
+      if (source.rootKey !== source.key) {
+        continue;
+      }
+      for (let index = 1; ; index++) {
+        const child = processed.get(mentionSourceChunkKey(source.key, index));
+        if (!child) {
+          break;
+        }
+        if (child.sequence !== source.sequence + index || child.expiresAt !== source.expiresAt) {
+          throw new Error("Invalid mention source chunk identity");
+        }
+        child.rootKey = source.key;
       }
     }
     head = snapshot.head;
@@ -246,25 +267,33 @@ export function createMentionInbox(params: {
       return;
     }
     profileVersion = version;
+    const families = new Map<string, Map<string, ProcessedSource>>();
     for (const source of processed.values()) {
+      const family = families.get(source.rootKey) ?? new Map<string, ProcessedSource>();
+      families.set(source.rootKey, family);
       const recipients = new Map<string, StoredMention | null>();
       for (const [profileId, item] of source.recipients) {
         const canonical = policy.readProfile(profileId)?.profileId ?? profileId;
-        if (canonical !== profileId || recipients.has(canonical)) {
+        if (canonical !== profileId || family.has(canonical)) {
           dirtySources.add(source.key);
         }
-        if (!recipients.has(canonical)) {
+        const previousSource = family.get(canonical);
+        if (!previousSource) {
+          family.set(canonical, source);
           recipients.set(canonical, item);
           if (item) {
             item.recipientProfileId = canonical;
           }
           continue;
         }
-        const previous = recipients.get(canonical);
-        // An acknowledgement remains acknowledged when two aliases become one person.
+        const previousRecipients =
+          previousSource === source ? recipients : previousSource.recipients;
+        const previous = previousRecipients.get(canonical);
+        // An acknowledgement remains acknowledged across chunks when aliases become one person.
         if (item === null && previous) {
           items.delete(previous.id);
-          recipients.set(canonical, null);
+          previousRecipients.set(canonical, null);
+          dirtySources.add(previousSource.key);
         } else if (item) {
           items.delete(item.id);
         }
@@ -498,6 +527,18 @@ export function createMentionInbox(params: {
     },
     validateRecipients: (...args: Parameters<typeof policy.validateRecipients>) =>
       readOperation(() => policy.validateRecipients(...args)),
+    async prepareEveryoneRecipients() {
+      try {
+        while (policy.needsDirectoryPreparation()) {
+          await policy.prepareDirectory();
+        }
+        return active ? ok(undefined) : unavailable();
+      } catch {
+        return unavailable(true);
+      }
+    },
+    resolveEveryoneRecipients: (...args: Parameters<typeof policy.resolveEveryoneRecipients>) =>
+      readOperation(() => policy.resolveEveryoneRecipients(...args)),
     list(client: GatewayClient | null): Result<MentionsListResult, ErrorShape> {
       return readOperation(() => {
         if (maintain()) {
@@ -536,15 +577,29 @@ export function createMentionInbox(params: {
         if (!active || input.recipientProfileIds.length === 0) {
           return;
         }
+        if (
+          input.recipientProfileIds.length >
+          MAX_EVERYONE_MENTION_RECIPIENTS + MAX_HUMAN_MENTIONS
+        ) {
+          log.warn("Skipped mention delivery with invalid committed references.");
+          return;
+        }
+        // Canonicalize direct selections before applying the broadcast bound: an alias
+        // selected alongside everyone still denotes only one recipient.
+        const recipientProfileIds = [
+          ...new Set(
+            input.recipientProfileIds.map((id) => policy.readProfile(id)?.profileId ?? id),
+          ),
+        ];
         const references = [
           input.sourceId,
           input.sessionId,
           input.messageId,
           input.senderProfileId,
-          ...input.recipientProfileIds,
+          ...recipientProfileIds,
         ];
         if (
-          input.recipientProfileIds.length > MAX_HUMAN_MENTIONS ||
+          recipientProfileIds.length > MAX_EVERYONE_MENTION_RECIPIENTS ||
           input.sessionKey.length > 512 ||
           references.some((value) => !value || value.length > 256)
         ) {
@@ -567,8 +622,21 @@ export function createMentionInbox(params: {
             log.debug("Skipped mention delivery because its committed session changed.");
             return [];
           }
+          const sourceKey = createHash("sha256")
+            .update(
+              JSON.stringify([
+                resolved.agentId,
+                resolved.canonicalKey,
+                input.sessionId,
+                input.sourceId,
+              ]),
+            )
+            .digest("hex");
+          if (processed.has(sourceKey)) {
+            return [];
+          }
           const senderProfile = policy.readProfile(input.senderProfileId);
-          const mentionedProfiles = input.recipientProfileIds.flatMap((id) => {
+          const mentionedProfiles = recipientProfileIds.flatMap((id) => {
             const recipient = policy.recipientProfile(
               id,
               {
@@ -594,21 +662,9 @@ export function createMentionInbox(params: {
               change: { kind: "mention", source: input.committedSource },
             },
           );
-          const sourceKey = createHash("sha256")
-            .update(
-              JSON.stringify([
-                resolved.agentId,
-                resolved.canonicalKey,
-                input.sessionId,
-                input.sourceId,
-              ]),
-            )
-            .digest("hex");
-          if (processed.has(sourceKey)) {
-            return [];
-          }
           // Never evict consumption early to make room: doing so could re-alert a dismissed message.
-          if (processed.size >= MAX_MENTION_SOURCES) {
+          const chunkCount = Math.ceil(recipientProfileIds.length / MAX_MENTION_SOURCE_RECIPIENTS);
+          if (processed.size + chunkCount > MAX_MENTION_SOURCES) {
             if (!capacityReported) {
               log.warn(
                 "Mention retention reached its replay budget; new mention alerts are skipped until retained sources expire.",
@@ -618,15 +674,17 @@ export function createMentionInbox(params: {
             return [];
           }
           const now = Date.now();
-          const source: ProcessedSource = {
-            key: sourceKey,
-            sequence: head.nextSequence++,
-            expiresAt: now + MENTION_RETENTION_MS,
-            recipients: new Map(),
-          };
-          processed.set(sourceKey, source);
-          dirtySources.add(sourceKey);
-          nextExpiryAt = Math.min(nextExpiryAt, source.expiresAt);
+          // Keep the root replay key and every child in the same admission/transaction.
+          // Older readers see ordinary mentions, each within their ten-recipient bound.
+          const sources = Array.from({ length: chunkCount }, (_, index) => {
+            const key = mentionSourceChunkKey(sourceKey, index);
+            const source = createSource(key, head.nextSequence++, now + MENTION_RETENTION_MS);
+            source.rootKey = sourceKey;
+            processed.set(key, source);
+            dirtySources.add(key);
+            return source;
+          });
+          nextExpiryAt = Math.min(nextExpiryAt, sources[0]!.expiresAt);
           const sender = policy.readProfile(input.senderProfileId);
           const target = {
             agentId: resolved.agentId,
@@ -656,7 +714,8 @@ export function createMentionInbox(params: {
           };
           const created: StoredMention[] = [];
           let unavailableRecipients = 0;
-          for (const profileId of input.recipientProfileIds) {
+          for (const [index, profileId] of recipientProfileIds.entries()) {
+            const source = sources[Math.floor(index / MAX_MENTION_SOURCE_RECIPIENTS)]!;
             const recipient = policy.recipientProfile(profileId, target, cfg);
             const canonicalId = recipient?.profileId ?? profileId;
             if (source.recipients.has(canonicalId)) {

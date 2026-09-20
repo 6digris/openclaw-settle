@@ -77,6 +77,9 @@ export function buildPersistedUserTurnMetadata(
     ...(input.mentions?.length
       ? { humanMentions: input.mentions.map((mention) => ({ ...mention })) }
       : {}),
+    ...(input.mentions?.some((mention) => "kind" in mention) && input.everyoneMentionProfileIds
+      ? { everyoneMentionProfileIds: [...input.everyoneMentionProfileIds] }
+      : {}),
     ...(replyToId ? { replyToId } : {}),
     ...(replyPreviewText
       ? {
@@ -171,11 +174,15 @@ export function restorePreparedUserTurnOperationalMetaForRuntime<
   }
   // Selections belong to the submitted bytes, not a hook's rewritten text.
   delete runtimeMeta.humanMentions;
+  delete runtimeMeta.everyoneMentionProfileIds;
   if (
     preparedMeta?.humanMentions !== undefined &&
     isDeepStrictEqual(params.runtimeMessage.content, params.preparedMessage.content)
   ) {
     runtimeMeta.humanMentions = preparedMeta.humanMentions;
+    if (preparedMeta.everyoneMentionProfileIds !== undefined) {
+      runtimeMeta.everyoneMentionProfileIds = preparedMeta.everyoneMentionProfileIds;
+    }
   }
   delete nextMessage["__openclaw"];
   if (Object.keys(runtimeMeta).length > 0) {
@@ -234,6 +241,10 @@ export function preparePersistedUserTurnMessageForTranscriptWrite(
     originalMeta?.humanMentions === undefined
       ? undefined
       : structuredClone(originalMeta.humanMentions);
+  const everyoneMentionProfileIds =
+    originalMeta?.everyoneMentionProfileIds === undefined
+      ? undefined
+      : [...originalMeta.everyoneMentionProfileIds];
   const display = message.display;
   const intent =
     originalMeta?.intent === undefined ? undefined : structuredClone(originalMeta.intent);
@@ -294,8 +305,12 @@ export function preparePersistedUserTurnMessageForTranscriptWrite(
     protectedMeta.workContext = workContext;
   }
   delete protectedMeta.humanMentions;
+  delete protectedMeta.everyoneMentionProfileIds;
   if (humanMentions !== undefined && isDeepStrictEqual(nextUserMessage.content, originalContent)) {
     protectedMeta.humanMentions = humanMentions;
+    if (everyoneMentionProfileIds !== undefined) {
+      protectedMeta.everyoneMentionProfileIds = everyoneMentionProfileIds;
+    }
   }
   delete protectedMeta.steerTargetRunId;
   if (steerTargetRunId) {

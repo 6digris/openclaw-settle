@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { StatementSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { validateMentionsListResult } from "../../packages/gateway-protocol/src/index.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { emitSessionIdentityMutation } from "../sessions/session-lifecycle-events.js";
@@ -15,6 +17,8 @@ import {
   setUserProfileRole,
 } from "../state/user-profiles.js";
 import {
+  MAX_MENTION_SOURCES,
+  MENTION_RETENTION_MS,
   readMentionStoreSnapshot,
   writeMentionStoreChanges,
   type MentionStoreSource,
@@ -28,10 +32,273 @@ import {
 } from "./mention-inbox.test-support.js";
 import { invalidateOperatorRolePolicy } from "./operator-role-policy.js";
 import { identifiedClient, soloClient } from "./server-methods/sessions-sharing.test-support.js";
+import { resolveSessionSharingTarget } from "./session-sharing.js";
+
+// Frozen v2026.9.3-v2026.9.5 source contract, deliberately independent of candidate constants.
+const legacyReference = z.string().min(1).max(256);
+const legacyTimestamp = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const legacySourceSchema = z.object({
+  key: z.string().regex(/^[a-f0-9]{64}$/),
+  sequence: legacyTimestamp,
+  expiresAt: legacyTimestamp,
+  recipients: z.array(z.tuple([legacyReference, legacyReference.nullable()])).max(10),
+  message: z
+    .object({
+      sessionId: legacyReference,
+      content: z.object({
+        senderProfileId: legacyReference,
+        sessionKey: z.string().min(1).max(512),
+        agentId: legacyReference,
+        messageId: legacyReference,
+        createdAt: legacyTimestamp,
+        excerpt: z.string().max(280).optional(),
+      }),
+    })
+    .optional(),
+});
+
+function readWithLegacySourceContract() {
+  const { db } = openOpenClawStateDatabase();
+  const headRow = db
+    .prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?")
+    .get("notifications.mentions.head");
+  const head = headRow
+    ? z
+        .object({ revision: legacyTimestamp, nextSequence: legacyTimestamp })
+        .parse(JSON.parse(String(headRow.value_json)))
+    : { revision: 0, nextSequence: 0 };
+  const rows = db
+    .prepare(
+      "SELECT state_key, value_json FROM config_machine_state WHERE state_key >= ? AND state_key < ? LIMIT 10001",
+    )
+    .all("notifications.mentions.source.", "notifications.mentions.source/");
+  expect(rows.length).toBeLessThanOrEqual(10_000);
+  const ids = new Set<string>();
+  const sequences = new Set<number>();
+  const sources = rows.map((row) => {
+    const json = String(row.value_json);
+    expect(json.length).toBeLessThanOrEqual(32_768);
+    const source = legacySourceSchema.parse(JSON.parse(json));
+    expect(row.state_key).toBe(`notifications.mentions.source.${source.key}`);
+    expect(source.sequence).toBeLessThan(head.nextSequence);
+    expect(sequences.has(source.sequence)).toBe(false);
+    sequences.add(source.sequence);
+    expect(new Set(source.recipients.map(([id]) => id)).size).toBe(source.recipients.length);
+    for (const [, id] of source.recipients) {
+      if (id === null) {
+        continue;
+      }
+      expect(source.message).toBeDefined();
+      expect(ids.has(id)).toBe(false);
+      ids.add(id);
+    }
+    if (source.message) {
+      expect(source.expiresAt).toBe(source.message.content.createdAt + 7 * 24 * 60 * 60_000);
+    }
+    return source;
+  });
+  expect(ids.size).toBeLessThanOrEqual(10_000);
+  return { head, sources: sources.toSorted((left, right) => left.sequence - right.sequence) };
+}
 
 afterEach(() => vi.useRealTimers());
 
 describe("temporary human mention Inbox", () => {
+  it("retains a full broadcast beyond the picker page, deduplicates direct mentions, and preserves dismissal on restart", async () => {
+    await withInbox(async (f) => {
+      const extra = Array.from({ length: 105 }, (_, index) =>
+        ensureProfileForEmail("broadcast-" + index + "@mentions.example.test"),
+      );
+      await f.inbox.prepareEveryoneRecipients();
+      const recipients = f.inbox.resolveEveryoneRecipients(f.aliceClient, {
+        sessionKey: SESSION_KEY,
+      });
+      if (!recipients.ok) {
+        throw new Error(recipients.error.message);
+      }
+      expect(recipients.value).toHaveLength(107);
+      f.post("everyone", {
+        recipientProfileIds: [...recipients.value, f.bob.id],
+        excerpt: "@everyone @Bob",
+      });
+      expect(f.push).toHaveBeenCalledTimes(107);
+      const legacy = readWithLegacySourceContract();
+      expect(legacy.sources).toHaveLength(11);
+      expect(
+        legacy.sources
+          .flatMap((source) => source.recipients)
+          .map(([id]) => id)
+          .toSorted(),
+      ).toEqual([...recipients.value].toSorted());
+      expect(legacy.sources.map((source) => source.sequence)).toEqual(
+        Array.from({ length: 11 }, (_, index) => index),
+      );
+      expect(read(f.inbox, f.bobClient).items).toHaveLength(1);
+      const last = identifiedClient(extra.at(-1)!.id, "Last offline person");
+      const retained = read(f.inbox, last).items;
+      expect(retained).toHaveLength(1);
+      f.inbox.dismiss(f.bobClient, [read(f.inbox, f.bobClient).items[0]!.id]);
+      f.inbox.dispose();
+      f.push.mockClear();
+      const restarted = f.openInbox();
+      expect(read(restarted, last).items).toEqual(retained);
+      expect(read(restarted, f.bobClient).items).toEqual([]);
+      const joined = ensureProfileForEmail("joined-after-broadcast@mentions.example.test");
+      f.post("everyone", { recipientProfileIds: [...recipients.value, joined.id] }, restarted);
+      expect(f.push).not.toHaveBeenCalled();
+      expect(read(restarted, identifiedClient(joined.id, "Joined later")).items).toEqual([]);
+      expect(read(restarted, f.bobClient).items).toEqual([]);
+      const target = resolveSessionSharingTarget({ cfg: {}, sessionKey: SESSION_KEY });
+      expect(target?.entry.profileInvolvement?.profiles[joined.id]).toBeUndefined();
+      expect(
+        readWithLegacySourceContract()
+          .sources.flatMap((source) => source.recipients)
+          .filter(([, id]) => id !== null),
+      ).toHaveLength(106);
+    });
+  });
+
+  it.each(["none", "first chunk", "last chunk"] as const)(
+    "reconciles merged aliases across broadcast chunks after restart (dismissal: %s)",
+    async (dismissal) => {
+      await withInbox(async (f) => {
+        vi.useFakeTimers();
+        f.clients.length = 0;
+        const alias = ensureProfileForEmail("chunk-alias@mentions.example.test");
+        const aliasClient = identifiedClient(alias.id);
+        const fillers = Array.from(
+          { length: 9 },
+          (_, index) => ensureProfileForEmail(`chunk-filler-${index}@mentions.example.test`).id,
+        );
+        const recipientProfileIds = [f.bob.id, ...fillers, alias.id];
+        f.post("chunk-merge", { recipientProfileIds });
+        const original = read(f.inbox, f.bobClient).items;
+        expect(readWithLegacySourceContract().sources).toHaveLength(2);
+        if (dismissal !== "none") {
+          const client = dismissal === "first chunk" ? f.bobClient : aliasClient;
+          expect(f.inbox.dismiss(client, [read(f.inbox, client).items[0]!.id]).ok).toBe(true);
+        }
+        f.inbox.dispose();
+        linkEmail("chunk-alias@mentions.example.test", f.bob.id);
+        const restarted = f.openInbox();
+        const expected = dismissal === "none" ? original : [];
+        expect(read(restarted, f.bobClient).items).toEqual(expected);
+        expect(read(restarted, aliasClient).items).toEqual(expected);
+        const legacy = readWithLegacySourceContract();
+        expect(legacy.sources).toHaveLength(2);
+        expect(legacy.sources[1]!.recipients).toEqual([]);
+        expect(legacy.sources[1]!.message).toBeUndefined();
+        expect(
+          legacy.sources.flatMap((source) => source.recipients).filter(([id]) => id === f.bob.id),
+        ).toHaveLength(1);
+        f.push.mockClear();
+        f.post("chunk-merge", { recipientProfileIds: recipientProfileIds.toReversed() }, restarted);
+        expect(f.push).not.toHaveBeenCalled();
+        expect(read(restarted, f.bobClient).items).toEqual(expected);
+        await vi.advanceTimersByTimeAsync(MENTION_RETENTION_MS);
+        expect(readWithLegacySourceContract().sources).toEqual([]);
+      });
+    },
+  );
+
+  it("rolls back every broadcast chunk on a later chunk write failure", async () => {
+    await withInbox(async (f) => {
+      f.clients.length = 0;
+      const extras = Array.from(
+        { length: 10 },
+        (_, index) => ensureProfileForEmail(`chunk-rollback-${index}@mentions.example.test`).id,
+      );
+      const recipientProfileIds = [f.bob.id, ...extras];
+      const rootKey = createHash("sha256")
+        .update(JSON.stringify(["main", SESSION_KEY, SESSION_ID, "chunk-rollback"]))
+        .digest("hex");
+      const childKey = createHash("sha256")
+        .update(JSON.stringify([rootKey, 1]))
+        .digest("hex");
+      const { db } = openOpenClawStateDatabase();
+      db.exec(`CREATE TEMP TRIGGER reject_broadcast_child BEFORE INSERT ON config_machine_state
+        WHEN NEW.state_key = 'notifications.mentions.source.${childKey}'
+        BEGIN SELECT RAISE(ABORT, 'synthetic child failure'); END`);
+      try {
+        f.post("chunk-rollback", { recipientProfileIds });
+        expect(readWithLegacySourceContract()).toEqual({
+          head: { revision: 0, nextSequence: 0 },
+          sources: [],
+        });
+        expect(read(f.inbox, f.bobClient).items).toEqual([]);
+        expect(f.push).not.toHaveBeenCalled();
+      } finally {
+        db.exec("DROP TRIGGER reject_broadcast_child");
+      }
+      const restarted = f.openInbox();
+      f.post("chunk-rollback", { recipientProfileIds }, restarted);
+      const stored = readWithLegacySourceContract();
+      expect(stored.sources.map((source) => source.key)).toEqual([rootKey, childKey]);
+      expect(stored.sources.map((source) => source.sequence)).toEqual([0, 1]);
+      expect(f.push).toHaveBeenCalledTimes(11);
+      // A downgraded Inbox writer only nulls the recipient and advances the shared head.
+      // It knows nothing about broadcast families; the candidate must still honor its dismissal.
+      const child = stored.sources[1]!;
+      const dismissedChild = { ...child, recipients: child.recipients.map(([id]) => [id, null]) };
+      runOpenClawStateWriteTransaction(({ db: database }) => {
+        database
+          .prepare("UPDATE config_machine_state SET value_json = ? WHERE state_key = ?")
+          .run(JSON.stringify(dismissedChild), `notifications.mentions.source.${child.key}`);
+        database
+          .prepare("UPDATE config_machine_state SET value_json = ? WHERE state_key = ?")
+          .run(
+            JSON.stringify({ ...stored.head, revision: stored.head.revision + 1 }),
+            "notifications.mentions.head",
+          );
+      });
+      const afterDowngrade = f.openInbox();
+      expect(read(afterDowngrade, identifiedClient(extras.at(-1)!)).items).toEqual([]);
+      expect(read(afterDowngrade, f.bobClient).items).toHaveLength(1);
+      f.post("chunk-rollback", { recipientProfileIds }, afterDowngrade);
+      expect(f.push).toHaveBeenCalledTimes(11);
+    });
+  });
+
+  it("admits all broadcast chunks against the shared source budget or none", async () => {
+    await withInbox(async (f) => {
+      f.clients.length = 0;
+      const recipients = Array.from(
+        { length: 11 },
+        (_, index) => ensureProfileForEmail(`chunk-budget-${index}@mentions.example.test`).id,
+      );
+      const now = Date.now();
+      const sources = new Map<string, MentionStoreSource>();
+      for (let index = 0; index < MAX_MENTION_SOURCES - 1; index++) {
+        const key = index.toString(16).padStart(64, "0");
+        sources.set(key, {
+          key,
+          sequence: index,
+          expiresAt: now + MENTION_RETENTION_MS,
+          recipients: [],
+        });
+      }
+      const stored = readMentionStoreSnapshot(-1)!;
+      runOpenClawStateWriteTransaction(({ db }) =>
+        writeMentionStoreChanges(
+          db,
+          { ...stored.head, nextSequence: MAX_MENTION_SOURCES - 1 },
+          sources,
+        ),
+      );
+      f.post("over-source-budget", { recipientProfileIds: recipients });
+      expect(readMentionStoreSnapshot(-1)!.sources).toHaveLength(MAX_MENTION_SOURCES - 1);
+      expect(f.push).not.toHaveBeenCalled();
+      f.post("last-source-slot");
+      expect(readMentionStoreSnapshot(-1)!.sources).toHaveLength(MAX_MENTION_SOURCES);
+      expect(read(f.inbox, f.bobClient).items).toHaveLength(1);
+      f.inbox.dispose();
+      const restarted = f.openInbox();
+      expect(read(restarted, f.bobClient).items).toHaveLength(1);
+      f.post("over-source-budget", { recipientProfileIds: recipients }, restarted);
+      expect(readMentionStoreSnapshot(-1)!.sources).toHaveLength(MAX_MENTION_SOURCES);
+    });
+  });
+
   it("retains original ids, order, and expiry across Gateway restart without replaying push", async () => {
     await withInbox(async (f) => {
       vi.useFakeTimers();

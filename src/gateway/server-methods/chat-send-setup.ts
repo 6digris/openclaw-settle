@@ -76,12 +76,25 @@ export async function prepareAndAdmitChatSend(
     return undefined;
   }
   if (normalizedRequest.value.mentions) {
+    const inbox = context.mentionInbox;
+    const everyone = normalizedRequest.value.mentions.some((mention) => "kind" in mention);
+    if (everyone && inbox) {
+      const prepared = await inbox.prepareEveryoneRecipients();
+      assertCurrent?.();
+      if (!prepared.ok) {
+        respond(false, undefined, prepared.error);
+        return undefined;
+      }
+    }
+    const target = preparedSession.value.entry
+      ? { sessionKey: preparedSession.value.sessionKey, agentId: preparedSession.value.agentId }
+      : { agentId: preparedSession.value.agentId };
     const mentions = context.mentionInbox?.validateRecipients(
       client,
-      preparedSession.value.entry
-        ? { sessionKey: preparedSession.value.sessionKey, agentId: preparedSession.value.agentId }
-        : { agentId: preparedSession.value.agentId },
-      normalizedRequest.value.mentions.map((mention) => mention.profileId),
+      target,
+      normalizedRequest.value.mentions.flatMap((mention) =>
+        "profileId" in mention ? [mention.profileId] : [],
+      ),
     );
     if (!mentions?.ok) {
       respond(
@@ -94,6 +107,14 @@ export async function prepareAndAdmitChatSend(
           ),
       );
       return undefined;
+    }
+    if (everyone && inbox) {
+      const recipients = inbox.resolveEveryoneRecipients(client, target);
+      if (!recipients.ok) {
+        respond(false, undefined, recipients.error);
+        return undefined;
+      }
+      normalizedRequest.value.everyoneMentionProfileIds = recipients.value;
     }
   }
   const shouldAdmit = await runChatSendPreAdmission({

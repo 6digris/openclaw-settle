@@ -75,6 +75,9 @@ export function createGatewayChatUserTurnController(params: {
     text: request.rawMessage,
     ...(request.workContext ? { workContext: request.workContext } : {}),
     ...(request.mentions ? { mentions: request.mentions } : {}),
+    ...(request.everyoneMentionProfileIds
+      ? { everyoneMentionProfileIds: request.everyoneMentionProfileIds }
+      : {}),
     timestamp: session.now,
     idempotencyKey: sourceId,
     ...(request.p.replyToId ? { replyToId: request.p.replyToId } : {}),
@@ -208,7 +211,10 @@ export function createGatewayChatUserTurnController(params: {
                 stored.some((value) => {
                   const span = asOptionalRecord(value);
                   return (
-                    span?.profileId === mention.profileId &&
+                    span &&
+                    ("kind" in mention
+                      ? span.kind === "everyone"
+                      : span.profileId === mention.profileId) &&
                     span.start === mention.start &&
                     span.end === mention.end &&
                     text.slice(mention.start, mention.end) ===
@@ -234,7 +240,15 @@ export function createGatewayChatUserTurnController(params: {
               sessionId: anchor.sessionId,
               messageId: anchor.entryId,
               senderProfileId,
-              recipientProfileIds: retained.map((mention) => mention.profileId),
+              recipientProfileIds: [
+                ...new Set(
+                  retained.flatMap((mention) =>
+                    "profileId" in mention
+                      ? [mention.profileId]
+                      : (message["__openclaw"]?.everyoneMentionProfileIds ?? []),
+                  ),
+                ),
+              ],
               excerpt: redactSensitiveText(text),
             });
           },

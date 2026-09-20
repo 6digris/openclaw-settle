@@ -7277,6 +7277,57 @@ test("sessions.create can start the first agent turn from an initial task", asyn
   ws.close();
 });
 
+test("sessions.create delivers its selected everyone first message to offline readers", () =>
+  withFixedOwnerSessionStore("per-sender", async ({ storePath }) => {
+    const alice = ensureProfileForEmail("alice@everyone-create.example.test");
+    const bob = ensureProfileForEmail("bob@everyone-create.example.test");
+    const carol = ensureProfileForEmail("carol@everyone-create.example.test");
+    const sender = { ...identifiedClient(alice.id, "Alice"), connId: "alice-everyone-create" };
+    const recipient = { ...identifiedClient(bob.id, "Bob"), connId: "bob-everyone-create" };
+    const offline = { ...identifiedClient(carol.id, "Carol"), connId: "carol-offline" };
+    const inbox = createMentionInbox({
+      gatewayInstanceId: "first-everyone-message",
+      getRuntimeConfig,
+      getClients: () => [sender, recipient],
+      broadcastToConnIds: vi.fn(),
+    });
+    const context = {
+      mentionInbox: inbox,
+      chatAbortControllers: new Map<string, ChatAbortControllerEntry>(),
+      getClientConnIds: (filter?: (client: GatewayClient) => boolean) =>
+        new Set(
+          [sender, recipient]
+            .filter((client) => !filter || filter(client))
+            .map(({ connId }) => connId),
+        ),
+    };
+    let key: string | undefined;
+    try {
+      const created = await directSessionReq<{ key: string; runStarted: boolean }>(
+        "sessions.create",
+        {
+          agentId: "main",
+          message: "@everyone review this",
+          mentions: [{ kind: "everyone", start: 0, end: 9 }],
+        },
+        { client: sender, context, isWebchatConnect: () => true },
+      );
+      expect(created.ok, JSON.stringify(created.error)).toBe(true);
+      expect(created.payload?.runStarted).toBe(true);
+      key = created.payload?.key;
+      for (const client of [recipient, offline]) {
+        expect(inbox.list(client)).toMatchObject({
+          ok: true,
+          value: { items: [{ sessionKey: key, senderProfileId: alice.id }] },
+        });
+      }
+      expect(inbox.list(sender)).toMatchObject({ ok: true, value: { items: [] } });
+    } finally {
+      await waitForCreatedSessionRun(context, storePath, key);
+      inbox.dispose();
+    }
+  }));
+
 const mentionCreationOwners = [
   ["main", "per-sender"],
   ["ops", "per-sender"],

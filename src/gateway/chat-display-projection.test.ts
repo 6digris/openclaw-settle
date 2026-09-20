@@ -487,6 +487,22 @@ describe("oversized multimodal chat history", () => {
 });
 
 describe("transcript metadata projection", () => {
+  it("renders the everyone annotation without disclosing the delivery recipient snapshot", () => {
+    const humanMentions = [{ kind: "everyone", start: 0, end: 9 }];
+    const message = {
+      role: "user",
+      content: "@everyone review",
+      __openclaw: {
+        humanMentions,
+        everyoneMentionProfileIds: ["offline-person", "another-person"],
+      },
+    };
+    expect(projectChatDisplayMessages([message])).toEqual([
+      { role: "user", content: message.content, __openclaw: { humanMentions } },
+    ]);
+    expect(message.__openclaw.everyoneMentionProfileIds).toHaveLength(2);
+  });
+
   it("keeps display metadata while omitting oversized upstream prompt metadata", () => {
     const message = {
       role: "user",

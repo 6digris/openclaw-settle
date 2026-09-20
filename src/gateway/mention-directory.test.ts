@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { validateUsersMentionableResult } from "../../packages/gateway-protocol/src/index.js";
+import {
+  MAX_EVERYONE_MENTION_RECIPIENTS,
+  validateUsersMentionableResult,
+} from "../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { loadSessionEntry, replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -46,6 +49,74 @@ function holdDirectoryRead() {
 }
 
 describe("human mention directory", () => {
+  it("offers everyone to a regular signed-in operator, including offline recipients and not the sender", async () => {
+    await withInbox(async (f) => {
+      f.aliceClient.connect.scopes = ["operator.read", "operator.write"];
+      f.clients.splice(f.clients.indexOf(f.carolClient), 1);
+      for (const query of ["", "every", "EVERYONE"]) {
+        expect(
+          await f.call("users.mentionable", { sessionKey: SESSION_KEY, query }, f.aliceClient),
+        ).toMatchObject({ ok: true, payload: { everyone: { recipientCount: 2 } } });
+      }
+      const narrow = await f.call(
+        "users.mentionable",
+        { sessionKey: SESSION_KEY, query: "Bob" },
+        f.aliceClient,
+      );
+      expect(narrow.payload).not.toHaveProperty("everyone");
+      expect(await f.inbox.prepareEveryoneRecipients()).toEqual({ ok: true, value: undefined });
+      expect(f.inbox.resolveEveryoneRecipients(f.aliceClient, { sessionKey: SESSION_KEY })).toEqual(
+        { ok: true, value: expect.arrayContaining([f.bob.id, f.carol.id]) },
+      );
+      await f.setSession({ visibility: "draft" });
+      const draft = await f.call("users.mentionable", { sessionKey: SESSION_KEY }, f.aliceClient);
+      expect(draft.payload).not.toHaveProperty("everyone");
+      expect(f.inbox.resolveEveryoneRecipients(f.aliceClient, { sessionKey: SESSION_KEY }).ok).toBe(
+        false,
+      );
+      await f.setSession({ incognito: true });
+      expect(
+        await f.call("users.mentionable", { sessionKey: SESSION_KEY }, f.aliceClient),
+      ).toMatchObject({ ok: false, error: { code: "INVALID_REQUEST" } });
+    });
+  });
+
+  it("rejects incomplete or oversized broadcast rosters rather than sending a partial ping", async () => {
+    await withInbox(async (f) => {
+      const directory = vi
+        .spyOn(userProfileReads, "readUserProfileDirectory")
+        .mockResolvedValueOnce({
+          profiles: [{ id: f.bob.id, logins: [] }],
+          truncated: true,
+        });
+      try {
+        const result = await f.call(
+          "users.mentionable",
+          { sessionKey: SESSION_KEY },
+          f.aliceClient,
+        );
+        expect(result.payload).not.toHaveProperty("everyone");
+        expect(
+          f.inbox.resolveEveryoneRecipients(f.aliceClient, { sessionKey: SESSION_KEY }),
+        ).toMatchObject({
+          ok: false,
+          error: { code: "INVALID_REQUEST", message: expect.stringContaining("recipient limit") },
+        });
+      } finally {
+        directory.mockRestore();
+      }
+      for (let index = 0; index < MAX_EVERYONE_MENTION_RECIPIENTS; index++) {
+        ensureProfileForEmail("too-many-" + index + "@mentions.example.test");
+      }
+      const result = await f.call("users.mentionable", { sessionKey: SESSION_KEY }, f.aliceClient);
+      expect(result.ok).toBe(true);
+      expect(result.payload).not.toHaveProperty("everyone");
+      expect(
+        f.inbox.resolveEveryoneRecipients(f.aliceClient, { sessionKey: SESSION_KEY }),
+      ).toMatchObject({ ok: false, error: { code: "INVALID_REQUEST" } });
+    });
+  });
+
   it.each([
     { change: "requester invalidation", code: "FORBIDDEN" },
     { change: "session visibility", code: "INVALID_REQUEST" },
@@ -456,6 +527,13 @@ describe("human mention directory", () => {
       }
       expect(result.payload.truncated).toBe(true);
       expect(result.payload.users).toHaveLength(100);
+      expect(
+        await f.call("users.mentionable", { sessionKey: SESSION_KEY }, f.aliceClient),
+      ).toMatchObject({ ok: true, payload: { everyone: { recipientCount: 107 } } });
+      const everyone = f.inbox.resolveEveryoneRecipients(f.aliceClient, {
+        sessionKey: SESSION_KEY,
+      });
+      expect(everyone.ok && everyone.value.length).toBe(107);
       expect(
         await f.call(
           "users.mentionable",

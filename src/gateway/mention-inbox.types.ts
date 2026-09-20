@@ -31,6 +31,12 @@ export type MentionInbox = {
     input: UsersMentionableParams,
     profileIds: readonly string[],
   ) => Result<readonly string[], ErrorShape>;
+  /** Prepare the bounded roster, then resolve current access without another yield. */
+  prepareEveryoneRecipients: () => Promise<Result<undefined, ErrorShape>>;
+  resolveEveryoneRecipients: (
+    client: GatewayClient | null,
+    input: UsersMentionableParams,
+  ) => Result<readonly string[], ErrorShape>;
   list: (client: GatewayClient | null) => Result<MentionsListResult, ErrorShape>;
   dismiss: (
     client: GatewayClient | null,

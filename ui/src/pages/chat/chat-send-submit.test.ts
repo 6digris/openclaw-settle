@@ -158,6 +158,32 @@ describe("structured Goal admission", () => {
 });
 
 describe("human mention submission", () => {
+  it("preserves everyone selection after annotation and reply prefixes", async () => {
+    const host = makeChatHost({
+      chatMessage: "  @everyone please review  ",
+      chatMentions: [{ kind: "everyone", start: 2, end: 11 }],
+      chatAttachments: [
+        createBrowserAnnotationAttachment("broadcast", "Context with plain @everyone"),
+      ],
+      chatReplyTarget: {
+        messageId: "synthetic-reply",
+        text: "A quoted @everyone",
+        senderLabel: "Reader",
+      },
+      requestHandlers: { "chat.send": { status: "started" } },
+    });
+    await handleSendChat(host);
+    const payload = findChatSendPayload(host);
+    const message = String(payload.message);
+    expect(payload.mentions).toEqual([
+      {
+        kind: "everyone",
+        start: message.lastIndexOf("@everyone"),
+        end: message.lastIndexOf("@everyone") + 9,
+      },
+    ]);
+  });
+
   it("keeps only selected recipients after annotation and reply prefixes", async () => {
     const host = makeChatHost({
       chatMessage: "  🔎 @Alex please review  ",

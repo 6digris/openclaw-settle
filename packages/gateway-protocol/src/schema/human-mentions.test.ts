@@ -31,7 +31,12 @@ describe("human mention protocol", () => {
   ])("preserves optional bounded mention annotations on $method", ({ validate, target }) => {
     const base = { ...target, message: "🙂 @Ada", idempotencyKey: "run-mentions" };
     const mention = { profileId: "profile-ada", start: 3, end: 7 };
-    for (const params of [base, { ...base, mentions: [] }, { ...base, mentions: [mention] }]) {
+    for (const params of [
+      base,
+      { ...base, mentions: [] },
+      { ...base, mentions: [mention] },
+      { ...base, mentions: [{ kind: "everyone", start: 0, end: 9 }] },
+    ]) {
       expect(validate(params)).toBe(true);
     }
     for (const mentions of [
@@ -42,6 +47,9 @@ describe("human mention protocol", () => {
       [{ ...mention, start: 3.5 }],
       [{ ...mention, end: 0 }],
       [{ ...mention, senderProfileId: "forged-sender" }],
+      [{ ...mention, kind: "everyone" }],
+      [{ kind: "everyone", start: 0, end: 9, recipientProfileIds: ["forged"] }],
+      [{ kind: "all", start: 0, end: 4 }],
       Array.from({ length: 11 }, () => mention),
     ]) {
       expect(validate({ ...base, mentions })).toBe(false);
@@ -74,6 +82,20 @@ describe("human mention protocol", () => {
   it("keeps directory results bounded and free of private profile fields", () => {
     const user = { profileId: "profile-ada", displayName: "Ada", online: false };
     expect(validateUsersMentionableResult({ users: [user], truncated: false })).toBe(true);
+    expect(
+      validateUsersMentionableResult({
+        users: [user],
+        truncated: false,
+        everyone: { recipientCount: 1 },
+      }),
+    ).toBe(true);
+    expect(
+      validateUsersMentionableResult({
+        users: [],
+        truncated: false,
+        everyone: { recipientCount: 0 },
+      }),
+    ).toBe(false);
     expect(
       validateUsersMentionableResult({
         users: [{ ...user, emails: ["ada@example.com"] }],

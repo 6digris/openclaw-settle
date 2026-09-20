@@ -165,6 +165,14 @@ In the transcript, selected mentions show a small inline avatar beside the origi
 
 In a normal Control UI chat, type `@` and search by a person's display name (including spaces) or any linked verified GitHub handle, then select the person from the picker. The composer shows **Will notify** with your selected recipients. You can select up to ten mentions per message. Typing or pasting `@name` without selecting a person sends ordinary text and does not notify anyone. **Remove mention** clears the recipient selections while keeping the message text.
 
+### Notify everyone with access
+
+Select **@everyone** from the same picker to notify all known human profiles that can read the session, including people who are offline. The picker shows the current recipient count, and **Will notify** identifies the selection as **Everyone with access**. Individual people appear first so opening the picker does not default to a broadcast.
+
+This is an explicit selection, not text matching: typing or pasting `@everyone` without selecting it never sends a ping. Editing the selected token removes the selection. The sender is excluded, agents are not recipients, and direct mentions combined with `@everyone` notify each person only once. It does not grant session access or override anyone's notification preferences.
+
+### Picker controls
+
 Use Up/Down to move through people, Home/End to jump to the first or last result,
 and Enter or Tab to insert the selected mention. Escape closes the picker. Filtering
 keeps the selected person when they still match. The picker shows placeholders while

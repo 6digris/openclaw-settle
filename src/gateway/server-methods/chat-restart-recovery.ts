@@ -102,7 +102,13 @@ function fingerprintRestartSafeChatRequest(params: {
         params.message,
         params.senderIsOwner,
         ...(params.mentions?.length
-          ? [params.mentions.map(({ profileId, start, end }) => [profileId, start, end])]
+          ? [
+              params.mentions.map((mention) =>
+                "kind" in mention
+                  ? [mention.kind, mention.start, mention.end, "broadcast"]
+                  : [mention.profileId, mention.start, mention.end],
+              ),
+            ]
           : []),
       ]),
     )

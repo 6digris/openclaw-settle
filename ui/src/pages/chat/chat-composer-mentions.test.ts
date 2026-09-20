@@ -216,6 +216,61 @@ describe("chat inline commands with human mentions", () => {
 });
 
 describe.each(["chat", "new-session"] as const)("%s human mentions", (kind) => {
+  it.each(["Enter", "Tab"])(
+    "explicitly selects everyone with %s and never defaults past people",
+    async (key) => {
+      const view = composerFixture(kind);
+      view.request.mockResolvedValue({ ...people, everyone: { recipientCount: 24 } });
+      view.edit("@");
+      await vi.advanceTimersByTimeAsync(150);
+      const options = view.container.querySelectorAll('[role="option"]');
+      expect(options).toHaveLength(3);
+      expect(options[0]?.getAttribute("aria-selected")).toBe("true");
+      expect(options[2]?.textContent).toContain("@everyone");
+      expect(options[2]?.textContent).toContain("Notify everyone with access (24)");
+      view.key("End");
+      view.key(key);
+      expect(view.value()).toEqual({
+        draft: "@everyone ",
+        mentions: [{ kind: "everyone", start: 0, end: 9 }],
+      });
+      expect(view.send).not.toHaveBeenCalled();
+      expect(view.container.textContent).toContain("Everyone with access");
+      view.container
+        .querySelector<HTMLButtonElement>('button[aria-label="Remove mention"]')!
+        .click();
+      view.key("Enter");
+      expect(view.send).toHaveBeenCalledWith({ draft: "@everyone ", mentions: [] });
+    },
+  );
+
+  it("selects a broadcast-only result without inventing a profile", async () => {
+    const view = composerFixture(kind);
+    view.request.mockResolvedValue({
+      users: [],
+      truncated: false,
+      everyone: { recipientCount: 2 },
+    });
+    view.edit("@every");
+    await vi.advanceTimersByTimeAsync(150);
+    expect(view.container.querySelectorAll('[role="option"]')).toHaveLength(1);
+    view.key("Enter");
+    view.key("Enter");
+    expect(view.send).toHaveBeenCalledWith({
+      draft: "@everyone ",
+      mentions: [{ kind: "everyone", start: 0, end: 9 }],
+    });
+  });
+
+  it("never broadcasts pasted everyone text", async () => {
+    const view = composerFixture(kind);
+    view.edit("@everyone", { inputType: "insertFromPaste" });
+    await vi.advanceTimersByTimeAsync(150);
+    view.key("Enter");
+    expect(view.request).not.toHaveBeenCalled();
+    expect(view.send).toHaveBeenCalledWith({ draft: "@everyone", mentions: [] });
+  });
+
   it("navigates the full list with Home, End, and wrapping arrows before inserting", async () => {
     const view = composerFixture(kind);
     view.edit("@");

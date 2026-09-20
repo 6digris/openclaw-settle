@@ -4,7 +4,10 @@ import type {
   MarkdownGitHubRepositoryAliases,
 } from "./markdown-github-repositories.ts";
 
-export type MarkdownHumanMentionToken = { marker: string; profileId: string; label: string };
+export type MarkdownHumanMentionToken = { marker: string; label: string } & (
+  | { profileId: string }
+  | { kind: "everyone" }
+);
 
 // Larger message-mode inputs use the literal-text fallback instead of Markdown parsing.
 export const MARKDOWN_PARSE_LIMIT = 40_000;

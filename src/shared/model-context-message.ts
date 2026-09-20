@@ -3,7 +3,10 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 
 // Native replay retains the exact submitted prompt. Model-context consumers already
 // have its visible content; copying this storage-only payload duplicates the prompt.
-export const MODEL_CONTEXT_PRIVATE_METADATA_KEYS = ["upstreamUserText"] as const;
+export const MODEL_CONTEXT_PRIVATE_METADATA_KEYS = [
+  "upstreamUserText",
+  "everyoneMentionProfileIds",
+] as const;
 
 export function stripToolResultDetails(messages: AgentMessage[]): AgentMessage[];
 export function stripToolResultDetails(messages: unknown[]): unknown[];

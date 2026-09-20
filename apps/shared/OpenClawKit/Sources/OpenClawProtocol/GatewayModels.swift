@@ -8461,22 +8461,26 @@ public struct HooksStatusParams: Codable, Sendable {
 }
 
 public struct HumanMention: Codable, Sendable {
-    public let profileid: String
+    public let profileid: String?
+    public let kind: String?
     public let start: Int
     public let end: Int
 
     public init(
-        profileid: String,
+        profileid: String? = nil,
+        kind: String? = nil,
         start: Int,
         end: Int)
     {
         self.profileid = profileid
+        self.kind = kind
         self.start = start
         self.end = end
     }
 
     private enum CodingKeys: String, CodingKey {
         case profileid = "profileId"
+        case kind
         case start
         case end
     }
@@ -24601,13 +24605,16 @@ public struct UsersListModelAccountsResult: Codable, Sendable {
 public struct UsersMentionableResult: Codable, Sendable {
     public let users: [MentionableUser]
     public let truncated: Bool
+    public let everyone: [String: AnyCodable]?
 
     public init(
         users: [MentionableUser],
-        truncated: Bool)
+        truncated: Bool,
+        everyone: [String: AnyCodable]? = nil)
     {
         self.users = users
         self.truncated = truncated
+        self.everyone = everyone
     }
 }
 
