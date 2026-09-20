@@ -279,7 +279,12 @@ export async function executeQueuedContextEngineCompaction(input: {
       checkpointSnapshot = engineOwnsCompaction
         ? await captureCompactionCheckpointSnapshotAsync({
             sessionFile: params.sessionFile,
-            sessionManager: SessionManager.open(runtimeTarget),
+            sessionManager: await SessionManager.openAsync(
+              runtimeTarget,
+              undefined,
+              undefined,
+              params.abortSignal,
+            ),
             sessionTarget: runtimeTarget,
           })
         : null;
@@ -509,7 +514,7 @@ export async function executeQueuedContextEngineCompaction(input: {
             expected,
             params.abortSignal,
           );
-          const sessionManager = SessionManager.open(
+          const sessionManager = await SessionManager.openAsync(
             postCompactionSessionTarget,
             resolvedWorkspaceDir,
           );
@@ -529,7 +534,7 @@ export async function executeQueuedContextEngineCompaction(input: {
             withSessionManagerRewriteLock: async (operation) =>
               await withOwnedSessionTranscriptWrites(rewriteContext, async () => {
                 rewriteContext.assertCommitAllowed();
-                sessionManager.reloadPersistedTranscript();
+                await sessionManager.reloadPersistedTranscriptAsync(params.abortSignal);
                 rewriteContext.assertCommitAllowed();
                 return await operation();
               }),

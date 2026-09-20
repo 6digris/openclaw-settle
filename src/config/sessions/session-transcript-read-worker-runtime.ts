@@ -11,13 +11,14 @@ import type {
   SessionBranchSummaryWorkerInput,
   SessionEntryWorkerInput,
   SessionModelContextWorkerInput,
+  SessionSqliteTargetWorkerInput,
   SessionTranscriptWorkerReply,
 } from "./session-transcript-worker.types.js";
 
 const workerUrl = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sessionTranscript);
 const modelContextReads = new WorkerTaskPool<
-  SessionModelContextWorkerInput,
-  SessionTranscriptWorkerReply<"model-context">
+  SessionModelContextWorkerInput | SessionSqliteTargetWorkerInput,
+  SessionTranscriptWorkerReply<"model-context" | "sqlite-target">
 >({
   workerUrl,
   // Preserve context-read admission order and avoid multiplying large SQLite scans.
@@ -44,12 +45,33 @@ export async function readSessionTranscriptModelContextAsync(
   limits?: SessionModelContextWorkerInput["limits"],
 ): Promise<ReturnType<typeof readSessionTranscriptModelContext>> {
   signal?.throwIfAborted();
-  return unwrapSessionTranscriptWorkerReply<"model-context">(
+  const value = unwrapSessionTranscriptWorkerReply<"model-context" | "sqlite-target">(
     await modelContextReads.run(
       { kind: "model-context", target, admission, through, limits },
       { timeoutMs: 60_000, signal },
     ),
   );
+  if (!("events" in value)) {
+    throw new Error("Session context worker returned a database target instead of context");
+  }
+  return value;
+}
+
+export async function resolveSessionSqliteTargetInWorker(
+  input: Omit<SessionSqliteTargetWorkerInput, "kind">,
+  signal?: AbortSignal,
+) {
+  signal?.throwIfAborted();
+  const value = unwrapSessionTranscriptWorkerReply<"model-context" | "sqlite-target">(
+    await modelContextReads.run(
+      { kind: "sqlite-target", ...input },
+      { inputBytes: JSON.stringify(input).length * 2, timeoutMs: 60_000, signal },
+    ),
+  );
+  if (!("target" in value)) {
+    throw new Error("Session context worker returned context instead of a database target");
+  }
+  return value.target;
 }
 
 export async function prepareSessionEntryInWorker(
