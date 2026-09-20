@@ -30,6 +30,7 @@ import type {
   SessionRowPresenceWorkerInput,
   SessionTranscriptHistoryWorkerInput,
   SessionTranscriptHydrationWorkerInput,
+  SessionTranscriptCurrentTurnEntryWorkerInput,
   SessionTranscriptWorkerReply,
   SessionTranscriptWorkerValues,
   SessionUsageCacheWorkerInput,
@@ -100,6 +101,7 @@ serveWorkerTasks(
       | SessionTargetInventoryWorkerInput
       | SessionIdentityEvidenceWorkerInput
       | SessionTranscriptHydrationWorkerInput
+      | SessionTranscriptCurrentTurnEntryWorkerInput
       | SessionTranscriptHistoryWorkerInput
       | SessionRowPresenceWorkerInput
       | SessionMembersWorkerInput
@@ -236,7 +238,7 @@ serveWorkerTasks(
       return await runWithSessionTranscriptReadFence(
         request.admission,
         async (): Promise<SessionTranscriptWorkerReply<keyof SessionTranscriptWorkerValues>> => {
-          if (request.kind === "transcript-hydration") {
+          if (request.kind === "transcript-hydration" || request.kind === "current-turn-entry") {
             const { readOpenClawDatabaseQuarantineFailure } =
               await import("../../state/openclaw-quarantine-store.js");
             const quarantine = readOpenClawDatabaseQuarantineFailure(
@@ -248,6 +250,22 @@ serveWorkerTasks(
             );
             if (quarantine) {
               throw quarantine;
+            }
+            if (request.kind === "current-turn-entry") {
+              const { readSessionTranscriptCurrentTurnEntry } =
+                await import("./session-accessor.sqlite-current-turn.js");
+              return {
+                ok: true,
+                ...(await withHistoryDatabase(request.database, () =>
+                  readSessionTranscriptCurrentTurnEntry(request.target, {
+                    entryId: request.entryId,
+                    version: request.version,
+                    includeEntry: request.includeEntry,
+                    readOnly: true,
+                    resolvedScope: request.resolvedScope,
+                  }),
+                )),
+              };
             }
             const { loadTranscriptReadSnapshotSync } =
               await import("./session-accessor.sqlite-read.js");

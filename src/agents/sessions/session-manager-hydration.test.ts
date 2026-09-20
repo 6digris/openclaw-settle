@@ -8,7 +8,9 @@ import {
   upsertSessionEntryCore,
   replaceTranscriptEvents,
 } from "../../config/sessions/session-accessor.js";
+import { prepareSessionTranscriptHydration } from "../../config/sessions/session-transcript-hydration.js";
 import { SessionTranscriptStorageUnavailableError } from "../../config/sessions/session-transcript-projection-error.js";
+import { runWithSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
 import { waitForSessionTranscriptProjection } from "../../config/sessions/session-transcript-reconcile.js";
 import { WorkerTaskPool } from "../../infra/worker-task-pool.js";
 import { SessionManager } from "../../plugin-sdk/agent-sessions.js";
@@ -81,9 +83,107 @@ it.each(["canonical", "custom", "shared"])(
         await cold.reloadPersistedTranscriptAsync();
         expect(cold.getCwd()).toBe("/runtime");
         expect(cold.getPersistedEntries()).toEqual(expected);
+        const reader = prepareSessionTranscriptHydration(
+          { ...target, sessionKey: target.sessionKey.toUpperCase() },
+          limits,
+        );
+        const { snapshot } = await reader.read();
+        const entryId = source.getLeafId()!;
+        const request = { entryId, version: snapshot.version, includeEntry: false };
+        const anchorOnly = await reader.readCurrentTurnEntry(request);
+        expect(anchorOnly.anchor).toMatchObject({
+          entryId,
+          sessionId: target.sessionId,
+          sessionKey: target.sessionKey,
+        });
+        expect(anchorOnly.event).toBeUndefined();
+        const withEntry = await reader.readCurrentTurnEntry({ ...request, includeEntry: true });
+        expect(withEntry.anchor).toEqual(anchorOnly.anchor);
+        expect(withEntry.event).toEqual(source.getEntry(entryId));
+        expect(
+          await reader.readCurrentTurnEntry({ ...request, entryId: "missing", includeEntry: true }),
+        ).toMatchObject({ version: snapshot.version, anchor: undefined, event: undefined });
         expect(probes.flatMap((probe) => probe.mock.calls)).toEqual([]);
       } finally {
         probes.forEach((probe) => probe.mockRestore());
+      }
+    });
+  },
+);
+
+it.each(["file", "incognito"])(
+  "pairs current-turn entries with the complete hydrated version and captured prefix in %s storage",
+  async (storage) => {
+    await withOpenClawTestState({ label: "current-turn-entry-version" }, async (state) => {
+      const target = {
+        agentId: "main",
+        sessionId: "current-turn-version",
+        sessionKey:
+          storage === "incognito"
+            ? "agent:main:dashboard:incognito-current-turn-version"
+            : "agent:main:current-turn-version",
+        storePath: path.join(state.agentDir("main"), "openclaw-agent.sqlite"),
+      };
+      await upsertSessionEntryCore(target, {
+        sessionId: target.sessionId,
+        updatedAt: 1,
+        ...(storage === "incognito" ? { incognito: true } : {}),
+      });
+      const source = SessionManager.open(target);
+      const beforeEntryId = source.appendMessage(makeUserMessage("earlier user", 0));
+      const entryId = source.appendMessage(makeUserMessage("current user", 1));
+      await waitForSessionTranscriptProjection(target);
+      const reader = prepareSessionTranscriptHydration(target, { maxBytes: 4096, maxEvents: 5 });
+      const { snapshot } = await reader.read();
+      const request = { entryId, version: snapshot.version, includeEntry: true };
+      const current = await reader.readCurrentTurnEntry(request);
+      expect(current.event).toEqual(source.getEntry(entryId));
+      if (!current.anchor) {
+        throw new Error("expected current-turn anchor");
+      }
+      const changedVersions = [
+        { ...snapshot.version, generation: "other-generation" },
+        { ...snapshot.version, rawSeq: (snapshot.version.rawSeq ?? 0) + 1 },
+        { ...snapshot.version, updatedAt: (snapshot.version.updatedAt ?? 0) + 1 },
+      ];
+      for (const version of changedVersions) {
+        await expect(reader.readCurrentTurnEntry({ ...request, version })).rejects.toThrow(
+          "changed before replay admission",
+        );
+      }
+      const laterEntryId = source.appendMessage(makeUserMessage("newer user", 2));
+      await waitForSessionTranscriptProjection(target);
+      await expect(reader.readCurrentTurnEntry(request)).rejects.toThrow(
+        "changed before replay admission",
+      );
+      const fencedReader = runWithSessionTranscriptReadFence(
+        { ...current.anchor, logicalTurnId: "current-turn-prefix", role: "user" },
+        () => prepareSessionTranscriptHydration(target, { maxBytes: 4096, maxEvents: 5 }),
+      );
+      const { snapshot: fencedSnapshot } = await fencedReader.read();
+      expect(fencedSnapshot.events).toContainEqual(source.getEntry(beforeEntryId));
+      expect(fencedSnapshot.events).not.toContainEqual(source.getEntry(entryId));
+      const fencedRequest = { ...request, version: fencedSnapshot.version };
+      expect(
+        (await fencedReader.readCurrentTurnEntry({ ...fencedRequest, entryId: beforeEntryId }))
+          .event,
+      ).toEqual(source.getEntry(beforeEntryId));
+      for (const hiddenEntryId of [entryId, laterEntryId]) {
+        for (const includeEntry of [false, true]) {
+          const hidden = await fencedReader.readCurrentTurnEntry({
+            ...fencedRequest,
+            entryId: hiddenEntryId,
+            includeEntry,
+          });
+          expect(hidden.anchor).toBeUndefined();
+          expect(hidden.event).toBeUndefined();
+        }
+      }
+      await expect(fencedReader.readCurrentTurnEntry(request)).rejects.toThrow(
+        "changed before replay admission",
+      );
+      if (storage === "incognito") {
+        expect(fs.existsSync(target.storePath)).toBe(false);
       }
     });
   },

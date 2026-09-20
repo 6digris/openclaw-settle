@@ -6,6 +6,8 @@ import type {
   PreparedSessionTranscriptHydration,
   SessionIdentityEvidenceWorkerInput,
   SessionIdentityEvidenceWorkerResult,
+  SessionTranscriptCurrentTurnEntryRead,
+  SessionTranscriptCurrentTurnEntryWorkerInput,
   SessionTranscriptHistoryWorkerInput,
   SessionEntryListWorkerInput,
   SessionEntryListWorkerResult,
@@ -23,7 +25,8 @@ export type SessionHistoryWorkerRequestRunner = <TResult>(
     | Omit<SessionIdentityEvidenceWorkerInput, "database">
     | Omit<SessionMembersWorkerInput, "database">
     | Omit<SessionUsageCacheWorkerInput, "database">
-    | Omit<SessionTranscriptHydrationWorkerInput, "database">,
+    | Omit<SessionTranscriptHydrationWorkerInput, "database">
+    | Omit<SessionTranscriptCurrentTurnEntryWorkerInput, "database">,
   inputBytes: number,
   receive: (
     value:
@@ -34,7 +37,8 @@ export type SessionHistoryWorkerRequestRunner = <TResult>(
       | SessionStoreTargetInventoryResult
       | SessionMember[]
       | SessionCostUsageCacheReadResult
-      | PreparedSessionTranscriptHydration,
+      | PreparedSessionTranscriptHydration
+      | SessionTranscriptCurrentTurnEntryRead,
   ) => TResult,
 ) => Promise<TResult>;
 
@@ -69,6 +73,25 @@ export function createSessionHistoryWorkerReaders(runRequest: SessionHistoryWork
           ) {
             throw new Error(
               "Session history worker returned another result instead of a transcript",
+            );
+          }
+          return value;
+        },
+      ),
+    readCurrentTurnEntry: async (
+      input: Omit<SessionTranscriptCurrentTurnEntryWorkerInput, "kind" | "database">,
+    ) =>
+      await runRequest(
+        () => ({ kind: "current-turn-entry", ...input }),
+        JSON.stringify(input).length * 2,
+        (value) => {
+          if (
+            typeof value === "boolean" ||
+            Array.isArray(value) ||
+            value.kind !== "current-turn-entry"
+          ) {
+            throw new Error(
+              "Session history worker returned another result instead of a current-turn entry",
             );
           }
           return value;

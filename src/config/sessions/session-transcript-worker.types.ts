@@ -17,6 +17,7 @@ import type {
   SessionBranchSummaryReadRequest,
   SessionBranchSummaryReadResult,
 } from "./session-accessor.sqlite-branches.js";
+import type { TranscriptEvent } from "./session-accessor.sqlite-contract.js";
 import type {
   SessionIdentityEvidenceIdentity,
   SessionIdentityEvidenceResult,
@@ -27,6 +28,7 @@ import type {
 } from "./session-accessor.sqlite-model-context.js";
 import type { loadTranscriptReadSnapshotSync } from "./session-accessor.sqlite-read.js";
 import type { ResolvedTranscriptReadScope } from "./session-accessor.sqlite-scope.js";
+import type { SessionTranscriptContextVersion } from "./session-accessor.sqlite-contract.js";
 import type {
   SessionAccessScope,
   SessionEntryListScope,
@@ -50,6 +52,19 @@ import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 export type PreparedSessionTranscriptHydration =
   | { kind: "full"; snapshot: ReturnType<typeof loadTranscriptReadSnapshotSync> }
   | { kind: "bounded"; snapshot: SessionTranscriptBoundedActiveContext };
+
+export type SessionTranscriptCurrentTurnEntryRequest = {
+  entryId: string;
+  version: SessionTranscriptContextVersion;
+  includeEntry: boolean;
+};
+
+export type SessionTranscriptCurrentTurnEntryRead = {
+  kind: "current-turn-entry";
+  version: SessionTranscriptContextVersion;
+  anchor?: TranscriptEntryAnchor;
+  event?: TranscriptEvent;
+};
 
 export type SessionModelContextWorkerInput = {
   kind: "model-context";
@@ -96,6 +111,12 @@ export type SessionTranscriptHydrationWorkerInput = {
   limits?: { maxBytes: number; maxEvents: number };
   admission?: UserTurnTranscriptAdmissionReceipt;
 };
+
+export type SessionTranscriptCurrentTurnEntryWorkerInput = Omit<
+  SessionTranscriptHydrationWorkerInput,
+  "kind" | "limits"
+> &
+  SessionTranscriptCurrentTurnEntryRequest & { kind: "current-turn-entry" };
 
 export type SessionRowPresenceWorkerInput = {
   kind: "session-row-presence";
@@ -152,6 +173,7 @@ export type SessionBranchSummaryWorkerInput = {
 };
 
 export type SessionTranscriptWorkerValues = {
+  "current-turn-entry": SessionTranscriptCurrentTurnEntryRead;
   "transcript-hydration": PreparedSessionTranscriptHydration;
   "sqlite-target": { target: ResolvedSqliteStoreTarget };
   "branch-summaries": SessionBranchSummaryReadResult;

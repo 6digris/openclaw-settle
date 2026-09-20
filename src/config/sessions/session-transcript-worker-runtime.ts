@@ -162,6 +162,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
             | "session-identity-evidence"
             | "usage-cache"
             | "transcript-hydration"
+            | "current-turn-entry"
           >(reply),
         );
         if (reply.ok && reply.closedHistoryDatabase) {

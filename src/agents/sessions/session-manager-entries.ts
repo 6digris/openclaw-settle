@@ -2,7 +2,6 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { buildSessionContext as buildCoreSessionContext } from "../../../packages/agent-core/src/harness/session/session.js";
 import {
   readActiveTranscriptEntryAnchor,
-  readTranscriptEventAtSeqSync,
   readTranscriptMutationAtSync,
   validatePreparedAssistantAppendSync,
   type TranscriptEntryAnchor,
@@ -29,7 +28,12 @@ import {
   copyCodeModeSourceAppendOptions,
 } from "../transcript-code-mode-source.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
-import { isIndexedSessionEntry, isSessionContextMetadataEntry } from "./session-manager-codec.js";
+import { isIndexedSessionEntry } from "./session-manager-codec.js";
+import {
+  prepareCurrentTurnReplayWitness,
+  resolveLoadedCurrentTurnEntryId,
+  sessionManagerPrepareCurrentTurnReplay,
+} from "./session-manager-current-turn.js";
 import { generateSessionEntryId } from "./session-manager-id.js";
 import { SessionMetadataCommittedError } from "./session-manager-metadata-error.js";
 import {
@@ -301,53 +305,37 @@ export class SessionManagerEntries extends SessionManagerSuffixPersistence {
     return error;
   }
 
-  resolveCurrentTurnEntryId(
-    isInterruptedTail?: (entry: SessionEntry) => boolean,
-    options?: { includeOmittedCustomMessages?: boolean },
-  ): string | null {
+  resolveCurrentTurnEntryId(isInterruptedTail?: (entry: SessionEntry) => boolean): string | null {
     this.assertTranscriptViewAvailable();
-    const includeOmitted = options?.includeOmittedCustomMessages === true;
-    let parentId = this.appendParentId;
-    let remainingAncestors = includeOmitted
-      ? (this.boundedContextLimits?.maxEvents ?? this.byId.size + this.opaqueParentsById.size)
-      : this.byId.size;
-    // Compaction rewrites context without consuming the current user turn.
-    // Walk physical parents: opaque/context-excluded users still close older
-    // turns. Replay may read its omitted activity, never skip unidentified rows.
-    while (parentId && remainingAncestors-- > 0) {
-      const parent =
-        this.byId.get(parentId) ??
-        (includeOmitted ? this.readOmittedCustomMessage(parentId) : undefined);
-      if (
-        !parent ||
-        parent.id !== parentId ||
-        (!isSessionContextMetadataEntry(parent) &&
-          parent.type !== "compaction" &&
-          !isInterruptedTail?.(parent))
-      ) {
-        break;
-      }
-      parentId = parent.parentId;
-    }
-    return parentId;
+    return resolveLoadedCurrentTurnEntryId({
+      entries: this.byId,
+      parentId: this.appendParentId,
+      remainingAncestors: this.byId.size,
+      isInterruptedTail,
+    });
   }
 
-  private readOmittedCustomMessage(entryId: string): SessionMessageEntry | undefined {
-    if (!this.persistenceTarget) {
-      return undefined;
-    }
-    const anchor = readActiveTranscriptEntryAnchor({ ...this.persistenceTarget, entryId });
-    if (!anchor) {
-      return undefined;
-    }
-    const event = readTranscriptEventAtSeqSync(this.persistenceTarget, anchor.rawSeq)?.event;
-    return isIndexedSessionEntry(event) &&
-      event.type === "message" &&
-      event.message.role === "custom" &&
-      event.id === anchor.entryId &&
-      event.parentId === anchor.effectiveParentId
-      ? event
-      : undefined;
+  [sessionManagerPrepareCurrentTurnReplay](
+    isInterruptedTail: (entry: SessionEntry) => boolean,
+    matchesUser: (entry: SessionEntry | undefined) => boolean,
+    signal?: AbortSignal,
+  ) {
+    return prepareCurrentTurnReplayWitness(
+      () => {
+        this.assertTranscriptViewAvailable();
+        return {
+          target: this.persistenceTarget,
+          version: this.transcriptVersion,
+          entries: this.byId,
+          parentId: this.appendParentId,
+          remainingAncestors:
+            this.boundedContextLimits?.maxEvents ?? this.byId.size + this.opaqueParentsById.size,
+          isInterruptedTail,
+        };
+      },
+      matchesUser,
+      signal,
+    );
   }
 
   appendMessage(
