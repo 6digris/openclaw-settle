@@ -64,7 +64,7 @@ suite.define(() => {
         const mention: MentionInboxItem = {
           id: "atlas-review-mention",
           sender: { type: "agent", id: "atlas" },
-          senderLabel: "Agent: Atlas",
+          senderLabel: "Atlas",
           sessionKey: reviewKey,
           agentId: "atlas",
           sessionTitle: review.label,
@@ -158,7 +158,7 @@ suite.define(() => {
         await expectBrowser(pane.getByText(homeText, { exact: true })).toBeVisible();
         await openMentions();
         await expectBrowser(mentionRow).toHaveCount(1);
-        await expectBrowser(mentionRow).toHaveAttribute("aria-label", "Agent: Atlas mentioned you");
+        await expectBrowser(mentionRow).toHaveAttribute("aria-label", "Atlas mentioned you");
         await expectBrowser(mentionRow.locator(".sidebar-issues-panel__state")).toHaveText(
           review.label,
         );
@@ -166,7 +166,7 @@ suite.define(() => {
           sourceText,
         );
         const avatar = mentionRow.locator(".identity-avatar--agent");
-        await expectBrowser(avatar).toHaveAttribute("aria-label", "Agent: Atlas");
+        await expectBrowser(avatar).toHaveAttribute("aria-label", "Atlas");
         await expectBrowser(avatar.locator("svg")).toBeVisible();
         await expectBrowser(mentionRow.locator("openclaw-viewer-avatar")).toHaveCount(0);
         await captureUiProof(suite, page, "02-after-agent-mention.png");

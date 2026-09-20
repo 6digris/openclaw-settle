@@ -178,7 +178,7 @@ The picker includes known Gateway profiles eligible to read the session, includi
 
 Mentions work for ordinary messages, queued or steered input, and the first message of a new session, including a remotely placed session. They are unavailable in incognito, Goal, catalog, suggestion-only, command-send, or terminal-launch modes. If selected mentions remain after switching to an unsupported mode, the composer blocks the send. It asks you to remove them, or to return to a normal chat. It does not silently discard selected recipients.
 
-Agents can also make an explicit [structured attention request](/concepts/session-tool#requesting-a-persons-attention). The Inbox shows the configured agent identity with an **Agent:** label. Ordinary assistant prose, including `@name`, remains inert. The agent saves a real assistant note in its current session; recipients must already have access.
+Agents can also make an explicit [structured attention request](/concepts/session-tool#requesting-a-persons-attention). The Inbox shows the configured agent name and avatar, using the same wording as human mentions: for example, **Atlas mentioned you**. Ordinary assistant prose, including `@name`, remains inert. The agent saves a real assistant note in its current session; recipients must already have access.
 
 <a id="temporary-mentions-inbox" />
 

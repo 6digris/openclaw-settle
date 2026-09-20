@@ -112,7 +112,7 @@ describe("structured agent mentions", () => {
       });
       expect(item).toMatchObject({
         sender: { type: "agent", id: "main" },
-        senderLabel: "Agent: Research assistant",
+        senderLabel: "Research assistant",
         excerpt: "Please review the evidence.",
       });
       expect(item).not.toHaveProperty("senderProfileId");
@@ -135,7 +135,7 @@ describe("structured agent mentions", () => {
       expect(entry?.profileInvolvement?.profiles[f.bob.id]?.lastMention).toBeDefined();
       expect(entry?.participants).toBeUndefined();
       expect(f.push).toHaveBeenCalledTimes(1);
-      expect(f.push.mock.calls[0]?.[0].senderLabel).toBe("Agent: Research assistant");
+      expect(f.push.mock.calls[0]?.[0].senderLabel).toBe("Research assistant");
       expect(f.broadcast).toHaveBeenCalledWith(
         "mentions.changed",
         expect.anything(),

@@ -120,11 +120,13 @@ describe("renderSidebarMentionItem", () => {
   it("renders an agent sender without a profile identity and links the committed message", () => {
     const { senderProfileId: _profile, ...common } = mention;
     const { context } = renderMention({
-      mention: { ...common, sender: { type: "agent", id: "writer" }, senderLabel: "Agent: Writer" },
+      mention: { ...common, sender: { type: "agent", id: "writer" }, senderLabel: "Writer" },
     });
     expect(container.querySelector("openclaw-viewer-avatar")).toBeNull();
     expect(container.querySelector(".identity-avatar--agent")).not.toBeNull();
-    expect(container.textContent).toContain("Agent: Writer");
+    expect(container.querySelector("[data-mention-id]")?.getAttribute("aria-label")).toBe(
+      "Writer mentioned you",
+    );
     container.querySelector<HTMLAnchorElement>("a[data-issue-row-focus]")!.click();
     expect(context.navigate).toHaveBeenCalledWith("chat", navigation);
   });

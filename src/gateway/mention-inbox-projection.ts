@@ -24,9 +24,9 @@ export function projectMentionInboxItem(
     "sender" in content
       ? {
           sender: content.sender,
-          senderLabel: truncateUtf16Safe(
-            `Agent: ${humanMentionDisplayLabel(agentSender?.label ?? content.sender.id, content.sender.id)}`,
-            256,
+          senderLabel: humanMentionDisplayLabel(
+            agentSender?.label ?? content.sender.id,
+            content.sender.id,
           ),
           ...(agentSender?.avatarUrl ? { senderAvatarUrl: agentSender.avatarUrl } : {}),
         }
