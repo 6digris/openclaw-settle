@@ -260,7 +260,9 @@ describe("native device settings pages", () => {
       } else {
         expect(passkeys.querySelector("button")).toBeNull();
       }
-      if (state === "requires-signing") expect(passkeys.textContent).toContain("Apple-approved");
+      if (state === "requires-signing") {
+        expect(passkeys.textContent).toContain("Apple-approved");
+      }
       expect(capability.openPanel).not.toHaveBeenCalledWith("mac-tab-import");
     },
   );
