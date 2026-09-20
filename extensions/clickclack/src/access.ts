@@ -294,6 +294,7 @@ export async function resolveClickClackInboundAccess(params: {
     contextBinding: {
       agentId: preparedRoute.route.agentId,
       sessionKey: preparedRoute.route.sessionKey,
+      nativeChannelId: params.message.channel_id || params.message.direct_conversation_id,
       messageId: params.message.id,
       inboundEventKind: "user_request",
     },

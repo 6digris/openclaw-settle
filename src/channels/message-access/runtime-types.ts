@@ -152,7 +152,7 @@ export type ChannelIngressContextBinding = {
   sessionKey: string;
   /** Stable transport message id when the event has one. */
   messageId?: string;
-  /** Native transport conversation id when it differs from the canonical conversation id. */
+  /** Match the host context's reply or conversation nativeChannelId, including when it equals id. */
   nativeChannelId?: string;
   /** Final inbound event classification used by the host context. */
   inboundEventKind: InboundEventKind;

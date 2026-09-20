@@ -69,6 +69,7 @@ export async function handleBuzzInbound(params: {
     contextBinding: {
       agentId: route.agentId,
       sessionKey: route.sessionKey,
+      nativeChannelId: channelId,
       messageId: message.id,
       inboundEventKind: "user_request",
     },

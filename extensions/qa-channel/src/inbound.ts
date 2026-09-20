@@ -393,6 +393,7 @@ export async function handleQaInbound(params: {
     contextBinding: {
       agentId: route.agentId,
       sessionKey,
+      nativeChannelId: inbound.conversation.id,
       messageId: inbound.id,
       inboundEventKind: "user_request",
     },

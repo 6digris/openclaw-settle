@@ -1350,6 +1350,7 @@ export async function prepareSlackMessage(params: {
     {
       agentId: route.agentId,
       sessionKey,
+      nativeChannelId: message.channel,
       messageId: threadContext.messageTs,
       inboundEventKind,
     },

@@ -76,7 +76,9 @@ host identity or operator authority.
 For a result that will enter a host context, resolve after the channel's route
 owner has selected the final agent and session. `contextBinding` freezes those
 facts with the stable transport message id (when present) and final inbound
-event kind. Decision-only checks may omit it, but such a result is not valid
+event kind. Set `contextBinding.nativeChannelId` to the host context's
+`reply.nativeChannelId ?? conversation.nativeChannelId`, even when it equals
+the conversation's `id`. Decision-only checks may omit the binding, but such a result is not valid
 execution provenance and must not be passed as `channelIngress`. When a channel
 batches several admitted messages, pass their exact results in source order;
 the finalized context message id identifies the last source result.

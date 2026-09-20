@@ -1356,6 +1356,7 @@ export async function handleFeishuMessage(params: {
       const contextBinding = {
         agentId,
         sessionKey: agentSessionKey,
+        nativeChannelId: ctx.chatId,
         messageId: ctx.messageId,
         inboundEventKind: "user_request" as const,
       };
