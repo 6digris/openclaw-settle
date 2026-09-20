@@ -179,7 +179,13 @@ jobs:
             --no-daemon --max-workers=2 \
             "-PopenclawBuildCommit=$TARGET_SHA" \
             "-PopenclawBuildTimestamp=$build_timestamp" \
-            :app:assemblePlayDebug :app:assemblePlayDebugAndroidTest
+            :app:assemblePlayDebug :app:assemblePlayDebugAndroidTest \
+            :app:testPlayDebugUnitTest \
+            --tests ai.openclaw.app.ui.ScreenTypographyLayoutTest.textSizeReachesRealChatAndReturnsToUnchangedDefault \
+            --tests ai.openclaw.app.ui.chat.ChatComposerLayoutTest.backgroundTaskProgressDuringSnapshotDoesNotStarveQuietOrFinishedRows \
+            :app:testThirdPartyDebugUnitTest \
+            --tests ai.openclaw.app.ui.ScreenTypographyLayoutTest.textSizeReachesRealChatAndReturnsToUnchangedDefault \
+            --tests ai.openclaw.app.ui.chat.ChatComposerLayoutTest.backgroundTaskProgressDuringSnapshotDoesNotStarveQuietOrFinishedRows
 
       - name: Prepare trusted Linux Android tooling
         shell: bash
@@ -203,10 +209,11 @@ jobs:
           /usr/bin/timeout --signal=TERM --kill-after=10s 300s \
             /usr/bin/sudo env DEBIAN_FRONTEND=noninteractive \
             /usr/bin/apt-get "${apt_options[@]}" update
+          # The headless emulator links PulseAudio even when launched with -no-audio.
           /usr/bin/timeout --signal=TERM --kill-after=10s 300s \
             /usr/bin/sudo env DEBIAN_FRONTEND=noninteractive \
             /usr/bin/apt-get "${apt_options[@]}" install \
-            -y --no-install-recommends acl imagemagick
+            -y --no-install-recommends acl imagemagick libpulse0
           test -x /usr/bin/convert
           test -x /usr/bin/identify
 
@@ -635,7 +642,7 @@ jobs:
               fi
               if [[ "$readiness_failure_latched" == "1" ]]; then
                 printf 'adb_devices_skipped_after_latched_timeout=true\n'
-              else
+              elif [[ "$adb_started" == "1" ]]; then
                 adb devices -l
               fi
             } >>"$DIAGNOSTIC_DIR/process-status.log" 2>&1
@@ -796,5 +803,7 @@ jobs:
           path: |
             apps/android/app/build/outputs/androidTest-results/connected/
             apps/android/app/build/reports/androidTests/connected/
+            apps/android/app/build/test-results/testPlayDebugUnitTest/
+            apps/android/app/build/test-results/testThirdPartyDebugUnitTest/
           if-no-files-found: warn
           retention-days: 7

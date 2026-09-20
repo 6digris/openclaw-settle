@@ -1,17 +1,17 @@
 package ai.openclaw.app.chat
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.decodeFromJsonElement
-import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import java.time.Instant
 
 data class BackgroundTask(
@@ -53,8 +53,11 @@ data class BackgroundTask(
   val displayStatus: BackgroundTaskDisplayStatus
     get() =
       when (status) {
-        "queued" -> BackgroundTaskDisplayStatus.Queued
-        "running" ->
+        "queued" -> {
+          BackgroundTaskDisplayStatus.Queued
+        }
+
+        "running" -> {
           when (executionState) {
             "running" -> BackgroundTaskDisplayStatus.Running
             "queued" -> BackgroundTaskDisplayStatus.Queued
@@ -62,9 +65,19 @@ data class BackgroundTask(
             "finished" -> BackgroundTaskDisplayStatus.ExecutionFinished
             else -> BackgroundTaskDisplayStatus.Unknown
           }
-        "completed" -> if (terminalOutcome == "blocked") BackgroundTaskDisplayStatus.Blocked else BackgroundTaskDisplayStatus.Completed
-        "failed", "cancelled", "timed_out" -> BackgroundTaskDisplayStatus.Failed
-        else -> BackgroundTaskDisplayStatus.Unknown
+        }
+
+        "completed" -> {
+          if (terminalOutcome == "blocked") BackgroundTaskDisplayStatus.Blocked else BackgroundTaskDisplayStatus.Completed
+        }
+
+        "failed", "cancelled", "timed_out" -> {
+          BackgroundTaskDisplayStatus.Failed
+        }
+
+        else -> {
+          BackgroundTaskDisplayStatus.Unknown
+        }
       }
 
   val output: String?
@@ -90,13 +103,24 @@ data class BackgroundTaskProgress(
 
 internal sealed interface BackgroundTaskEvent {
   sealed interface Change : BackgroundTaskEvent
-  data class Upserted(val task: BackgroundTask) : Change
-  data class Deleted(val taskId: String) : Change
+
+  data class Upserted(
+    val task: BackgroundTask,
+  ) : Change
+
+  data class Deleted(
+    val taskId: String,
+  ) : Change
+
   data object Restored : BackgroundTaskEvent
 }
 
 internal sealed interface CoalescedBackgroundTaskEvent {
-  data class Upserted(val task: BackgroundTask, val afterDelete: Boolean) : CoalescedBackgroundTaskEvent
+  data class Upserted(
+    val task: BackgroundTask,
+    val afterDelete: Boolean,
+  ) : CoalescedBackgroundTaskEvent
+
   data object Deleted : CoalescedBackgroundTaskEvent
 }
 
@@ -105,13 +129,17 @@ internal fun coalesceBackgroundTaskEvent(
   event: BackgroundTaskEvent.Change,
 ) {
   when (event) {
-    is BackgroundTaskEvent.Deleted -> pending[event.taskId] = CoalescedBackgroundTaskEvent.Deleted
+    is BackgroundTaskEvent.Deleted -> {
+      pending[event.taskId] = CoalescedBackgroundTaskEvent.Deleted
+    }
+
     is BackgroundTaskEvent.Upserted -> {
       val previous = pending[event.task.id]
-      pending[event.task.id] = CoalescedBackgroundTaskEvent.Upserted(
-        task = if (previous is CoalescedBackgroundTaskEvent.Upserted) newestBackgroundTaskSnapshot(previous.task, event.task) else event.task,
-        afterDelete = previous == CoalescedBackgroundTaskEvent.Deleted || (previous is CoalescedBackgroundTaskEvent.Upserted && previous.afterDelete),
-      )
+      pending[event.task.id] =
+        CoalescedBackgroundTaskEvent.Upserted(
+          task = if (previous is CoalescedBackgroundTaskEvent.Upserted) newestBackgroundTaskSnapshot(previous.task, event.task) else event.task,
+          afterDelete = previous == CoalescedBackgroundTaskEvent.Deleted || (previous is CoalescedBackgroundTaskEvent.Upserted && previous.afterDelete),
+        )
     }
   }
 }
@@ -123,7 +151,10 @@ internal fun replayBackgroundTaskEvents(
   val tasks = snapshot.associateByTo(linkedMapOf()) { it.id }
   for ((id, event) in pending) {
     when (event) {
-      CoalescedBackgroundTaskEvent.Deleted -> tasks.remove(id)
+      CoalescedBackgroundTaskEvent.Deleted -> {
+        tasks.remove(id)
+      }
+
       is CoalescedBackgroundTaskEvent.Upserted -> {
         val previous = tasks[id]
         tasks[id] = if (event.afterDelete || previous == null) event.task else newestBackgroundTaskSnapshot(previous, event.task)
@@ -197,14 +228,19 @@ private fun parseBackgroundTaskProgress(element: JsonElement?): BackgroundTaskPr
   return BackgroundTaskProgress(
     runId = runId,
     revision = revision,
-    items = items.take(64).mapNotNull { item ->
-      runCatching { backgroundTaskJson.decodeFromJsonElement<ChatAgentActivity>(item) }.getOrNull()
-        ?.takeIf { it.isVisible && it.kind != "reasoning" }
-    },
+    items =
+      items.take(64).mapNotNull { item ->
+        runCatching { backgroundTaskJson.decodeFromJsonElement<ChatAgentActivity>(item) }
+          .getOrNull()
+          ?.takeIf { it.isVisible && it.kind != "reasoning" }
+      },
   )
 }
 
-internal fun newestBackgroundTaskSnapshot(current: BackgroundTask, incoming: BackgroundTask): BackgroundTask {
+internal fun newestBackgroundTaskSnapshot(
+  current: BackgroundTask,
+  incoming: BackgroundTask,
+): BackgroundTask {
   val currentAt = current.updatedAtMs ?: current.endedAtMs ?: current.createdAtMs ?: 0L
   val incomingAt = incoming.updatedAtMs ?: incoming.endedAtMs ?: incoming.createdAtMs ?: 0L
   if (incomingAt < currentAt) return current

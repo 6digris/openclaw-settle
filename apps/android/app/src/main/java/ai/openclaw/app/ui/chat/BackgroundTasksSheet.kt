@@ -8,9 +8,9 @@ import ai.openclaw.app.chat.ChatAgentActivity
 import ai.openclaw.app.chat.ChatProgressCard
 import ai.openclaw.app.chat.CoalescedBackgroundTaskEvent
 import ai.openclaw.app.chat.coalesceBackgroundTaskEvent
-import ai.openclaw.app.chat.replayBackgroundTaskEvents
 import ai.openclaw.app.chat.mergeBackgroundTasks
 import ai.openclaw.app.chat.newestBackgroundTaskSnapshot
+import ai.openclaw.app.chat.replayBackgroundTaskEvents
 import ai.openclaw.app.i18n.nativeString
 import ai.openclaw.app.ui.AppModalBottomSheet
 import ai.openclaw.app.ui.design.ClawStatus
@@ -41,9 +41,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -107,10 +107,11 @@ internal fun BackgroundTasksSheet(
           val result = viewModel.listBackgroundTasks(opening.composerOwner.agentId)
           if (isCurrent() && reads.listToken === token) {
             val knownIds = (result + tasks).mapTo(mutableSetOf()) { it.id }
-            val admittedEvents = pendingEvents.filterValues { event ->
-              event !is CoalescedBackgroundTaskEvent.Upserted ||
-                event.task.agentId == opening.composerOwner.agentId || event.task.id in knownIds
-            }
+            val admittedEvents =
+              pendingEvents.filterValues { event ->
+                event !is CoalescedBackgroundTaskEvent.Upserted ||
+                  event.task.agentId == opening.composerOwner.agentId || event.task.id in knownIds
+              }
             tasks = backgroundTaskWindow(replayBackgroundTaskEvents(result, admittedEvents))
           }
         } catch (failure: Exception) {
@@ -161,39 +162,41 @@ internal fun BackgroundTasksSheet(
 
   LaunchedEffect(opening) {
     launch(start = CoroutineStart.UNDISPATCHED) {
-    viewModel.backgroundTaskEvents().collect { event ->
-      if (!isCurrent()) return@collect
-      when (event) {
-        is BackgroundTaskEvent.Upserted -> {
-          val task = event.task
-          val alreadyVisible = tasks.any { it.id == task.id } || selectedTask?.id == task.id
-          if (task.agentId != null && task.agentId != opening.composerOwner.agentId) return@collect
-          reads.listEvents?.let { coalesceBackgroundTaskEvent(it, event) }
-          if (task.agentId == null && !alreadyVisible) return@collect
-          tasks = backgroundTaskWindow(mergeBackgroundTasks(tasks, listOf(task)))
-          selectedTask?.takeIf { it.id == task.id }?.let { previous ->
-            reads.detailEvents?.let { coalesceBackgroundTaskEvent(it, event) }
-            selectedTask = newestBackgroundTaskSnapshot(previous, task)
+      viewModel.backgroundTaskEvents().collect { event ->
+        if (!isCurrent()) return@collect
+        when (event) {
+          is BackgroundTaskEvent.Upserted -> {
+            val task = event.task
+            val alreadyVisible = tasks.any { it.id == task.id } || selectedTask?.id == task.id
+            if (task.agentId != null && task.agentId != opening.composerOwner.agentId) return@collect
+            reads.listEvents?.let { coalesceBackgroundTaskEvent(it, event) }
+            if (task.agentId == null && !alreadyVisible) return@collect
+            tasks = backgroundTaskWindow(mergeBackgroundTasks(tasks, listOf(task)))
+            selectedTask?.takeIf { it.id == task.id }?.let { previous ->
+              reads.detailEvents?.let { coalesceBackgroundTaskEvent(it, event) }
+              selectedTask = newestBackgroundTaskSnapshot(previous, task)
+            }
           }
-        }
-        is BackgroundTaskEvent.Deleted -> {
-          reads.listEvents?.let { coalesceBackgroundTaskEvent(it, event) }
-          tasks = tasks.filterNot { it.id == event.taskId }
-          if (selectedTask?.id == event.taskId) {
-            reads.detailToken = null
-            reads.detailEvents = null
-            reads.detailJob?.cancel()
-            selectedTask = null
+
+          is BackgroundTaskEvent.Deleted -> {
+            reads.listEvents?.let { coalesceBackgroundTaskEvent(it, event) }
+            tasks = tasks.filterNot { it.id == event.taskId }
+            if (selectedTask?.id == event.taskId) {
+              reads.detailToken = null
+              reads.detailEvents = null
+              reads.detailJob?.cancel()
+              selectedTask = null
+            }
           }
-        }
-        BackgroundTaskEvent.Restored -> {
-          tasks = tasks.map { it.copy(progress = null, executionState = null) }
-          selectedTask = selectedTask?.copy(progress = null, executionState = null)
-          loadTasks()
-          selectedTask?.let(::selectTask)
+
+          BackgroundTaskEvent.Restored -> {
+            tasks = tasks.map { it.copy(progress = null, executionState = null) }
+            selectedTask = selectedTask?.copy(progress = null, executionState = null)
+            loadTasks()
+            selectedTask?.let(::selectTask)
+          }
         }
       }
-    }
     }
     loadTasks()
   }
@@ -247,8 +250,7 @@ internal fun BackgroundTasksSheet(
   }
 }
 
-private fun backgroundTaskWindow(tasks: List<BackgroundTask>): List<BackgroundTask> =
-  tasks.filterNot(BackgroundTask::isTerminal).take(100) + tasks.filter(BackgroundTask::isTerminal).take(50)
+private fun backgroundTaskWindow(tasks: List<BackgroundTask>): List<BackgroundTask> = tasks.filterNot(BackgroundTask::isTerminal).take(100) + tasks.filter(BackgroundTask::isTerminal).take(50)
 
 @Composable
 private fun BackgroundTaskList(
@@ -464,20 +466,42 @@ private fun BackgroundTaskDetail(
 
 private fun backgroundTaskStatusLabel(task: BackgroundTask): String =
   when (task.displayStatus) {
-    BackgroundTaskDisplayStatus.Queued -> nativeString("Queued")
-    BackgroundTaskDisplayStatus.Running -> nativeString("Running")
-    BackgroundTaskDisplayStatus.Completed -> nativeString("Completed")
-    BackgroundTaskDisplayStatus.Failed -> nativeString("Failed")
-    BackgroundTaskDisplayStatus.Waiting ->
+    BackgroundTaskDisplayStatus.Queued -> {
+      nativeString("Queued")
+    }
+
+    BackgroundTaskDisplayStatus.Running -> {
+      nativeString("Running")
+    }
+
+    BackgroundTaskDisplayStatus.Completed -> {
+      nativeString("Completed")
+    }
+
+    BackgroundTaskDisplayStatus.Failed -> {
+      nativeString("Failed")
+    }
+
+    BackgroundTaskDisplayStatus.Waiting -> {
       when (task.waitKind) {
         "children" -> nativeString("Waiting for delegated work")
         "approval" -> nativeString("Waiting for approval")
         "user_input" -> nativeString("Waiting for input")
         else -> nativeString("Waiting")
       }
-    BackgroundTaskDisplayStatus.ExecutionFinished -> nativeString("Execution finished")
-    BackgroundTaskDisplayStatus.Blocked -> nativeString("Blocked")
-    BackgroundTaskDisplayStatus.Unknown -> nativeString("Activity unavailable")
+    }
+
+    BackgroundTaskDisplayStatus.ExecutionFinished -> {
+      nativeString("Execution finished")
+    }
+
+    BackgroundTaskDisplayStatus.Blocked -> {
+      nativeString("Blocked")
+    }
+
+    BackgroundTaskDisplayStatus.Unknown -> {
+      nativeString("Activity unavailable")
+    }
   }
 
 private fun backgroundTaskDeliveryLabel(status: String?): String =

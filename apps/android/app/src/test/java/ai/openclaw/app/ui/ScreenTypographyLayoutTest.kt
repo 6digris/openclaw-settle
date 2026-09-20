@@ -216,7 +216,11 @@ class ScreenTypographyLayoutTest {
     model.enterScreenshotFixtureMode(AndroidScreenshotScene.Chat)
     showApp { RootScreen(model) }
     val message = "Summarize the open review feedback for me."
-    composeRule.onNodeWithText(message, useUnmergedTree = true).performScrollTo().assertIsDisplayed()
+    composeRule.waitUntil {
+      composeRule.runOnIdle { !model.chatHistoryLoading.value && model.chatMessages.value.isNotEmpty() }
+    }
+    composeRule.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.ScrollToIndex)).performScrollToNode(hasText(message))
+    composeRule.onNodeWithText(message, useUnmergedTree = true).assertIsDisplayed()
 
     fun messageDensity(): Density {
       val layouts = mutableListOf<TextLayoutResult>()

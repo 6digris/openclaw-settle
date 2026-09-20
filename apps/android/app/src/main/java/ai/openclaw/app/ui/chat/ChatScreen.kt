@@ -2831,7 +2831,9 @@ private fun SubagentActivityRow(
     if (!activity.isWorking) {
       activity.terminalSummary ?: activity.error ?: activity.snippet
     } else if (activity.progress != null) {
-      activity.progress.items.lastOrNull()?.let { it.progressText?.takeIf(String::isNotBlank) ?: it.title }
+      activity.progress.items
+        .lastOrNull()
+        ?.let { it.progressText?.takeIf(String::isNotBlank) ?: it.title }
     } else {
       activity.snippet
     }
@@ -2918,8 +2920,11 @@ private fun DiffStatChip(
 @Composable
 private fun subagentActivityStatusLabel(activity: ChatSubagentActivity): String =
   when (activity.status) {
-    "queued" -> nativeString("Subagent queued")
-    "running" ->
+    "queued" -> {
+      nativeString("Subagent queued")
+    }
+
+    "running" -> {
       when (activity.executionState) {
         "running" -> nativeString("Subagent working")
         "waiting" -> nativeString("Subagent waiting")
@@ -2927,10 +2932,23 @@ private fun subagentActivityStatusLabel(activity: ChatSubagentActivity): String 
         "finished" -> nativeString("Subagent execution finished")
         else -> nativeString("Subagent activity unavailable")
       }
-    "completed" -> nativeString("Subagent finished")
-    "failed", "timed_out" -> nativeString("Subagent failed")
-    "cancelled" -> nativeString("Subagent cancelled")
-    else -> nativeString("Subagent activity unavailable")
+    }
+
+    "completed" -> {
+      nativeString("Subagent finished")
+    }
+
+    "failed", "timed_out" -> {
+      nativeString("Subagent failed")
+    }
+
+    "cancelled" -> {
+      nativeString("Subagent cancelled")
+    }
+
+    else -> {
+      nativeString("Subagent activity unavailable")
+    }
   }
 
 @Composable
@@ -2959,8 +2977,7 @@ private fun ChatNotice(
   }
 }
 
-internal fun progressCardIsComplete(card: ChatProgressCard): Boolean =
-  card.steps.isNotEmpty() && card.steps.all { it.status == ChatPlanStepStatus.Completed }
+internal fun progressCardIsComplete(card: ChatProgressCard): Boolean = card.steps.isNotEmpty() && card.steps.all { it.status == ChatPlanStepStatus.Completed }
 
 @Composable
 internal fun ProgressCardPill(

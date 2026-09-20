@@ -5420,6 +5420,7 @@ jobs:
           fi
 
       - name: Build iOS app
+        id: ios_debug_build
         if: matrix.phase == 'smoke' || matrix.phase == 'tests'
         run: pnpm ios:build
 
@@ -5528,6 +5529,30 @@ jobs:
             -only-testing:OpenClawUITests/OpenClawSnapshotUITests/testWatchMessageDeliveryIsReachableFromSettings \
             test
 
+      - name: Run focused retained-task iOS UI tests
+        id: ios_shared_progress_tests
+        if: >-
+          !cancelled() && matrix.phase == 'tests' &&
+          needs.preflight.outputs.compatibility_target != 'true' &&
+          steps.ios_debug_build.outcome == 'success'
+        run: |
+          set -euo pipefail
+          simulator_id="$(
+            xcrun simctl list devices available --json | node --input-type=module -e '
+              const chunks = [];
+              for await (const chunk of process.stdin) chunks.push(chunk);
+              const runtimes = JSON.parse(Buffer.concat(chunks).toString("utf8")).devices;
+              const simulator = Object.values(runtimes)
+                .flat()
+                .find((device) => device.isAvailable && device.name.startsWith("iPhone"));
+              if (!simulator) {
+                console.error("No available iPhone simulator for retained-task UI tests");
+                process.exit(1);
+              }
+              process.stdout.write(simulator.udid);
+            '
+          )"
+          mkdir -p apps/ios/build/LifecycleTestResults
           fixture_pid=""
           progress_result_bundle="apps/ios/build/LifecycleTestResults/OpenClawSharedProgressUITests.xcresult"
           cleanup_progress_fixture() {
@@ -5636,7 +5661,7 @@ jobs:
             test-without-building
 
       - name: Upload iOS lifecycle simulator evidence
-        if: ${{ always() && ((steps.ios_lifecycle_tests.outcome != '' && steps.ios_lifecycle_tests.outcome != 'skipped') || (steps.ios_voice_cleanup_tests.outcome != '' && steps.ios_voice_cleanup_tests.outcome != 'skipped')) }}
+        if: ${{ always() && ((steps.ios_lifecycle_tests.outcome != '' && steps.ios_lifecycle_tests.outcome != 'skipped') || (steps.ios_voice_cleanup_tests.outcome != '' && steps.ios_voice_cleanup_tests.outcome != 'skipped') || (steps.ios_shared_progress_tests.outcome != '' && steps.ios_shared_progress_tests.outcome != 'skipped')) }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ios-lifecycle-tests-${{ needs.preflight.outputs.checkout_revision }}

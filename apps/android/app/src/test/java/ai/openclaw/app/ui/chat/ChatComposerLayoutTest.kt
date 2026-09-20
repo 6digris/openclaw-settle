@@ -1536,13 +1536,18 @@ class ChatComposerLayoutTest {
     withBackgroundTaskRequests(
       response = { _, _ ->
         when (requests.incrementAndGet()) {
-          1 ->
+          1 -> {
             """{"tasks":[{"id":"quiet","agentId":"main","status":"running","runtime":"subagent","title":"Quiet worker","execution":{"state":"waiting"}},{"id":"busy","agentId":"main","runId":"canonical-busy","status":"running","runtime":"subagent","title":"Busy worker","progress":{"runId":"old-source","revision":1,"items":[]}},{"id":"deleted","agentId":"main","status":"running","runtime":"subagent","title":"Deleted worker"}]}"""
+          }
+
           2 -> {
             releaseRecent.await()
             """{"tasks":[{"id":"finished","agentId":"main","status":"completed","runtime":"subagent","title":"Finished worker","execution":{"state":"finished"}}]}"""
           }
-          else -> awaitCancellation()
+
+          else -> {
+            awaitCancellation()
+          }
         }
       },
     ) { _, _ ->
@@ -1562,8 +1567,12 @@ class ChatComposerLayoutTest {
       composeRule.waitUntil {
         composeRule.onAllNodesWithContentDescription(nativeString("Refresh background tasks")).fetchSemanticsNodes().isNotEmpty()
       }
+      val sheetScroll = composeRule.onNode(hasScrollAction() and hasAnyAncestor(isDialog()))
+      sheetScroll.performScrollToNode(hasText("Quiet worker"))
       composeRule.onNode(hasText("Quiet worker") and hasAnyAncestor(isDialog())).assertIsDisplayed()
+      sheetScroll.performScrollToNode(hasText("Finished worker"))
       composeRule.onNode(hasText("Finished worker") and hasAnyAncestor(isDialog())).assertIsDisplayed()
+      sheetScroll.performScrollToNode(hasText("Current work 3"))
       composeRule.onNode(hasText("Current work 3") and hasAnyAncestor(isDialog())).assertIsDisplayed()
       composeRule.onNodeWithText("Deleted worker").assertDoesNotExist()
     }
@@ -1607,26 +1616,28 @@ class ChatComposerLayoutTest {
 
   @Test
   @Config(qualifiers = "w800dp-h800dp-mdpi")
-  fun backgroundTasksUnrelatedProgressDoesNotDiscardRestoredDetail() =
-    assertBackgroundTaskDetailReplay("unrelated")
+  fun backgroundTasksUnrelatedProgressDoesNotDiscardRestoredDetail() = assertBackgroundTaskDetailReplay("unrelated")
 
   @Test
   @Config(qualifiers = "w800dp-h800dp-mdpi")
-  fun backgroundTasksSelectedProgressWinsOverHeldDetail() =
-    assertBackgroundTaskDetailReplay("selected")
+  fun backgroundTasksSelectedProgressWinsOverHeldDetail() = assertBackgroundTaskDetailReplay("selected")
 
   @Test
   @Config(qualifiers = "w800dp-h800dp-mdpi")
-  fun backgroundTasksDeletionRetiresHeldDetail() =
-    assertBackgroundTaskDetailReplay("deleted")
+  fun backgroundTasksDeletionRetiresHeldDetail() = assertBackgroundTaskDetailReplay("deleted")
 
   private fun assertBackgroundTaskDetailReplay(update: String) {
     val reply = CompletableDeferred<String>()
     val gets = AtomicInteger()
     val completed = CompletableDeferred<Unit>()
     val fixture = AndroidScreenshotFixture.createRequester()
-    fun detailPayload(note: String, revision: Int, execution: String, prompt: String): String =
-      """{"task":{"id":"screenshot-ledger-8","updatedAt":1783555269999,"agentId":"main","sessionKey":"${controller.sessionKey.value}","runId":"screenshot-run-8","runtime":"subagent","title":"Release task 08","status":"running","execution":{"state":"$execution"},"deliveryStatus":"pending","prompt":"$prompt","progress":{"runId":"detail-source","revision":$revision,"items":[{"itemId":"note","kind":"preamble","phase":"end","title":"","progressText":"$note"}]}}}"""
+
+    fun detailPayload(
+      note: String,
+      revision: Int,
+      execution: String,
+      prompt: String,
+    ): String = """{"task":{"id":"screenshot-ledger-8","updatedAt":1783555269999,"agentId":"main","sessionKey":"${controller.sessionKey.value}","runId":"screenshot-run-8","runtime":"subagent","title":"Release task 08","status":"running","execution":{"state":"$execution"},"deliveryStatus":"pending","prompt":"$prompt","progress":{"runId":"detail-source","revision":$revision,"items":[{"itemId":"note","kind":"preamble","phase":"end","title":"","progressText":"$note"}]}}}"""
     try {
       withBackgroundTaskRequests(
         response = { method, params ->

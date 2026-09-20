@@ -233,10 +233,7 @@ it("keeps task identity readable while cancellation bookkeeping checks a mirrore
 
 it("settles an active task after its lifecycle start normalizes the creation timestamp", async () => {
   const f = await fixture();
-  const created = await f.create();
-  if (!created) {
-    throw new Error("Expected task receipt");
-  }
+  const created = expectDefined(await f.create(), "Expected task receipt");
   const startedAt = created.task.createdAt - 1_000;
   markTaskRunningByRunId({
     runId: created.task.runId!,
@@ -494,10 +491,11 @@ it.each([
   if (failure === "publication") {
     f.failSnapshot();
   } else if (failure.endsWith("flow publication")) {
-    const failFlowRead = () =>
-      vi
-        .spyOn(f.flows, "readFlowAsync")
-        .mockRejectedValueOnce(new Error("Synthetic committed flow read failure"));
+    const failFlowRead = () => {
+      vi.spyOn(f.flows, "readFlowAsync").mockRejectedValueOnce(
+        new Error("Synthetic committed flow read failure"),
+      );
+    };
     if (managed) {
       const current = f.flows.loadSnapshot().flows.get(flow.flowId)!;
       f.flows.upsertFlow({ ...current, cancelRequestedAt: Date.now() });

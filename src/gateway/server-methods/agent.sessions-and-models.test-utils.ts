@@ -3382,7 +3382,7 @@ describe("gateway agent handler", () => {
         mockSpawnedChildSessionEntry(childSessionKey);
         const createRunningTaskRunSpy = spyDetachedCreateRunningTaskRun();
 
-        await invokeAgent(
+        const respond = await invokeAgent(
           {
             message: "native subagent child run",
             sessionKey: childSessionKey,
@@ -3390,7 +3390,9 @@ describe("gateway agent handler", () => {
           },
           { reqId: runId, client: nativeSubagentClient() },
         );
-        await waitForAgentCommandCall();
+        await waitForAssertion(() => {
+          expect(mocks.agentCommand, JSON.stringify(respond.mock.calls)).toHaveBeenCalled();
+        });
 
         // src/agents/subagent-spawn.ts owns the `subagent` row for this runId.
         expect(createRunningTaskRunSpy).not.toHaveBeenCalled();

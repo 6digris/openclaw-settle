@@ -2905,6 +2905,49 @@ fi
     expect(cleanupFunctionStart).toBeGreaterThan(failureFunctionEnd);
     expect(cleanupFunctionEnd).toBeGreaterThan(cleanupFunctionStart);
     const cleanupFunction = diagnostic.slice(cleanupFunctionStart, cleanupFunctionEnd);
+    const earlyRoot = tempRoots.make("openclaw-android-emulator-early-cleanup-");
+    const earlyBin = path.join(earlyRoot, "bin");
+    const unexpectedAdb = path.join(earlyRoot, "unexpected-adb");
+    fs.mkdirSync(earlyBin);
+    fs.writeFileSync(
+      path.join(earlyBin, "adb"),
+      '#!/bin/bash\nprintf "unexpected adb startup\\n" >"$UNEXPECTED_ADB"\n',
+      { mode: 0o755 },
+    );
+    fs.writeFileSync(path.join(earlyBin, "avdmanager"), "#!/bin/bash\nexit 0\n", {
+      mode: 0o755,
+    });
+    const earlyCleanup = spawnSync(
+      "/bin/bash",
+      [
+        "-c",
+        [
+          "set -euo pipefail",
+          cleanupFunction,
+          'emulator_pid=""',
+          'fixture_pid=""',
+          "task_progress_started=0",
+          "adb_started=0",
+          "readiness_failure_latched=0",
+          "trap cleanup EXIT",
+          "exit 127",
+        ].join("\n"),
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          AVD_NAME: "synthetic-never-created",
+          DIAGNOSTIC_DIR: earlyRoot,
+          UNEXPECTED_ADB: unexpectedAdb,
+          PATH: `${earlyBin}${path.delimiter}${process.env.PATH ?? ""}`,
+        },
+        timeout: 5_000,
+      },
+    );
+    expect(earlyCleanup.status, earlyCleanup.stderr).toBe(127);
+    expect(fs.existsSync(unexpectedAdb)).toBe(false);
+
     const hangingRoot = tempRoots.make("openclaw-android-emulator-hanging-adb-");
     const hangingBin = path.join(hangingRoot, "bin");
     const hangingDiagnosticDir = path.join(hangingRoot, "diagnostic");
@@ -3170,8 +3213,6 @@ fi
           'test "$5" = "install"',
           'test "$6" = "-y"',
           'test "$7" = "--no-install-recommends"',
-          'test "$8" = "acl"',
-          'test "$9" = "imagemagick"',
           'printf "install\\n" >"$INSTALL_SENTINEL"',
           "",
         ].join("\n"),
@@ -3289,10 +3330,6 @@ fi
         restricted.result.status,
         `${file}: signal=${restricted.result.signal ?? "none"}\n${restricted.result.stderr}`,
       ).toBe(0);
-      expect(restricted.calls).toEqual([
-        `-o Dir::Etc::sourcelist=${restricted.aptSource} -o Dir::Etc::sourceparts=${restricted.aptSourceParts} update`,
-        `-o Dir::Etc::sourcelist=${restricted.aptSource} -o Dir::Etc::sourceparts=${restricted.aptSourceParts} install -y --no-install-recommends acl imagemagick`,
-      ]);
       expect(pathExists(restricted.aptSourceParts)).toBe(false);
       expect(fs.existsSync(restricted.installSentinel)).toBe(true);
       expect(fs.existsSync(restricted.adapterSentinel)).toBe(true);

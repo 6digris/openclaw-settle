@@ -97,7 +97,7 @@ describe("gateway cli backend connect", () => {
   });
 
   it.each([
-    { label: "default capabilities", caps: undefined },
+    { label: "explicit empty capability list", caps: [] },
     { label: "plugin approval capability", caps: [GATEWAY_CLIENT_CAPS.PLUGIN_APPROVALS] },
   ])(
     "connects a test gateway client through the live helper with $label",
@@ -119,7 +119,7 @@ describe("gateway cli backend connect", () => {
           deviceIdentity,
           timeoutMs: GATEWAY_CONNECT_OPERATION_TIMEOUT_MS,
           maxAttemptTimeoutMs: GATEWAY_CONNECT_OPERATION_TIMEOUT_MS,
-          ...(caps ? { caps } : {}),
+          caps,
           requestTimeoutMs: GATEWAY_CONNECT_OPERATION_TIMEOUT_MS,
           waitForEventLoopReady: false,
         });
@@ -132,7 +132,7 @@ describe("gateway cli backend connect", () => {
         expect(connectClient?.displayName).toBe("vitest-live");
         expect(connectClient?.version).toBe("dev");
         expect(connectClient?.mode).toBe(GATEWAY_CLIENT_MODES.TEST);
-        expect(server.connectParams?.caps).toEqual(caps ?? []);
+        expect(server.connectParams?.caps).toEqual(caps);
         expect(server.requests).toEqual(["connect", "health"]);
       } finally {
         await client

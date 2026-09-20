@@ -351,12 +351,17 @@ internal object AndroidScreenshotFixture {
         put(
           "execution",
           buildJsonObject {
-            put("state", JsonPrimitive(when {
-              index == 8 -> "waiting"
-              index == 7 -> "unknown"
-              index <= 8 -> "running"
-              else -> "finished"
-            }))
+            put(
+              "state",
+              JsonPrimitive(
+                when {
+                  index == 8 -> "waiting"
+                  index == 7 -> "unknown"
+                  index <= 8 -> "running"
+                  else -> "finished"
+                },
+              ),
+            )
             if (index == 8) put("wait", buildJsonObject { put("kind", JsonPrimitive("children")) })
           },
         )
@@ -369,13 +374,15 @@ internal object AndroidScreenshotFixture {
               put(
                 "items",
                 buildJsonArray {
-                  add(buildJsonObject {
-                    put("itemId", JsonPrimitive("screenshot-item-$index"))
-                    put("kind", JsonPrimitive("tool"))
-                    put("phase", JsonPrimitive("start"))
-                    put("title", JsonPrimitive("Reviewing release task $index"))
-                    put("status", JsonPrimitive("running"))
-                  })
+                  add(
+                    buildJsonObject {
+                      put("itemId", JsonPrimitive("screenshot-item-$index"))
+                      put("kind", JsonPrimitive("tool"))
+                      put("phase", JsonPrimitive("start"))
+                      put("title", JsonPrimitive("Reviewing release task $index"))
+                      put("status", JsonPrimitive("running"))
+                    },
+                  )
                 },
               )
             },

@@ -56,7 +56,13 @@ describe("core task creation in scoped runtime registries", () => {
         await release.promise;
         assertCurrent();
         persisted.push(task);
-        return { task, settleUnstarted: async () => false };
+        return {
+          task,
+          settleUnstarted: async () => false,
+          finalizeActive: async () => {
+            throw new Error("Scoped creation must not finalize active work");
+          },
+        };
       });
       try {
         await withPluginRuntimeRegistryScope(registry, async () => {

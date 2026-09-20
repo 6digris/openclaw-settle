@@ -358,9 +358,12 @@ original failure. The artifact contains only phone and Wear unit-test XML, not
 dependency caches or application build outputs.
 
 Native task-progress proof uses actual app UI with a synthetic loopback Gateway,
-not real model or worker-command execution. Full manual iOS lifecycle CI runs
-the retained-worker UI scenario and keeps its screenshots, hierarchy, and
-sanitized Gateway facts in the lifecycle `xcresult`. Linux App runs the same
+not real model or worker-command execution. Full manual iOS CI gives the
+retained-worker and final-delivery UI scenarios their own step after a successful
+Debug app build. An unrelated simulator-test failure does not suppress these
+scenarios or erase that failure from the job outcome. Screenshots, hierarchy,
+and sanitized Gateway facts remain in the lifecycle `xcresult`; exported
+attachments are uploaded alongside it. Linux App runs the retained-worker
 scenario through native Quick Chat and uploads `linux-task-progress`.
 
 Android's normal unit/build rows do not imply instrumentation coverage. Opt in
@@ -372,10 +375,13 @@ gh workflow run android-emulator-diagnostic.yml --repo openclaw/openclaw \
   -f task_progress_proof=true
 ```
 
-The default remains emulator diagnostics only. The opt-in case reuses the owned
-API 36 emulator, runs the real onboarding/controller flow, and collects native
-PNG, hierarchy, and sanitized Gateway evidence before emulator teardown, including
-on test failure. Missing capture files fail an otherwise successful proof.
+The default remains emulator diagnostics only. The opt-in case builds the app
+and instrumentation APKs, runs the focused Play and third-party UI boundary
+tests, then reuses the owned API 36 emulator for the real onboarding/controller
+flow. Linux host preparation includes the PulseAudio library linked by the
+headless emulator. Native PNG, hierarchy, sanitized Gateway evidence, and unit
+test XML are retained, including on failure. Missing capture files fail an
+otherwise successful native proof.
 These are candidate-only captures; initial-state images are not pre-fix evidence.
 
 Node test shards that need a built CLI run `pnpm build qaRuntime` before starting

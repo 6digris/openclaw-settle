@@ -3195,6 +3195,7 @@ NODE
         runAttempt: 1,
         env: { HISTORICAL_TARGET: String(historical), MACOS_PRIMARY_PHASE: "release" },
         fileHashes: { "apps/shared/OpenClawWatchRTC/Cargo.toml": "present" },
+        steps: { ios_debug_build: { outputs: {}, outcome: "success" } },
         preflightOutputs: {
           compatibility_target: String(historical),
           run_openclawkit_tests: "true",
@@ -3240,6 +3241,7 @@ NODE
                 "Build iOS app",
                 "Run focused iOS voice cleanup simulator tests",
                 "Run focused iOS lifecycle simulator tests",
+                "Run focused retained-task iOS UI tests",
                 "Run focused Apple Watch operation simulator tests",
               ],
             };
@@ -3292,6 +3294,35 @@ NODE
           runCiGateFixture(`preflight=success|true\n${jobName}=${conclusion}|true`).status,
         ).toBe(1);
       }
+    },
+  );
+
+  it.each([
+    { build: "success", cancelled: false, expected: true },
+    { build: "failure", cancelled: false, expected: false },
+    { build: "skipped", cancelled: false, expected: false },
+    { build: "success", cancelled: true, expected: false },
+  ])(
+    "requires a successful app build, not unrelated test success, for retained-task UI proof ($build, cancelled=$cancelled)",
+    ({ build, cancelled, expected }) => {
+      const workflow = readCiWorkflow();
+      const step = expectDefined(
+        workflow.jobs["ios-build"].steps.find(
+          (candidate: WorkflowStep) => candidate.id === "ios_shared_progress_tests",
+        ),
+        "retained-task iOS UI proof",
+      );
+      expect(
+        evaluateWorkflowExpression(`\${{ ${step.if} }}`, {
+          eventName: "workflow_dispatch",
+          failed: true,
+          cancelled,
+          matrix: { phase: "tests" },
+          preflightOutputs: { compatibility_target: "false" },
+          steps: { ios_debug_build: { outputs: {}, outcome: build } },
+        }),
+      ).toBe(expected);
+      expect(step["continue-on-error"]).toBeUndefined();
     },
   );
 

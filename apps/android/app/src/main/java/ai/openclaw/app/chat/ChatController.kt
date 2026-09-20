@@ -41,9 +41,9 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -547,6 +547,7 @@ class ChatController internal constructor(
     val events = mutableMapOf<String, CoalescedBackgroundTaskEvent>()
     var job: Job? = null
   }
+
   private var subagentActivityRead: SubagentActivityRead? = null
 
   private val backgroundTaskUpdates = MutableSharedFlow<Pair<ChatCacheScope?, BackgroundTaskEvent>>()
@@ -7130,6 +7131,7 @@ class ChatController internal constructor(
     val agentId = resolveAgentIdForSessionKey(sessionKey) ?: return
     val selectionGeneration = chatSelectionGeneration.value
     val read = SubagentActivityRead()
+
     fun ownsSelection(): Boolean =
       currentCacheScope() == gatewayScope &&
         chatSelectionGeneration.value == selectionGeneration &&
@@ -7141,33 +7143,34 @@ class ChatController internal constructor(
       synchronized(subagentActivityLock) {
         subagentActivityRead?.job?.cancel()
         subagentActivityRead = read
-        read.job = scope.launch(start = CoroutineStart.LAZY) {
-          try {
-            val lease = captureRequestLease(gatewayScope) ?: return@launch
-            if (!ownsSelection()) return@launch
-            val snapshot = requestBackgroundTasks(lease, agentId, listOf("queued", "running"), limit = 100, sessionKey = sessionKey)
-            lease.commitIfCurrent {
-              synchronized(gatewayScopeApplyLock) {
-                if (!ownsSelection()) return@synchronized
-                synchronized(subagentActivityLock) {
-                  if (subagentActivityRead !== read) return@synchronized
-                  val tasks = replayBackgroundTaskEvents(snapshot.filter(::isCurrentSubagentTask), read.events)
-                  val ids = tasks.mapTo(mutableSetOf()) { it.id }
-                  _subagentActivities.value = _subagentActivities.value.filter { (id, activity) -> !activity.isWorking || id in ids }
-                  tasks.forEach(::applySubagentActivity)
+        read.job =
+          scope.launch(start = CoroutineStart.LAZY) {
+            try {
+              val lease = captureRequestLease(gatewayScope) ?: return@launch
+              if (!ownsSelection()) return@launch
+              val snapshot = requestBackgroundTasks(lease, agentId, listOf("queued", "running"), limit = 100, sessionKey = sessionKey)
+              lease.commitIfCurrent {
+                synchronized(gatewayScopeApplyLock) {
+                  if (!ownsSelection()) return@synchronized
+                  synchronized(subagentActivityLock) {
+                    if (subagentActivityRead !== read) return@synchronized
+                    val tasks = replayBackgroundTaskEvents(snapshot.filter(::isCurrentSubagentTask), read.events)
+                    val ids = tasks.mapTo(mutableSetOf()) { it.id }
+                    _subagentActivities.value = _subagentActivities.value.filter { (id, activity) -> !activity.isWorking || id in ids }
+                    tasks.forEach(::applySubagentActivity)
+                  }
                 }
               }
-            }
-          } catch (err: CancellationException) {
-            throw err
-          } catch (err: Throwable) {
-            Log.w("OpenClawChat", "Background activity refresh failed: ${err.message}")
-          } finally {
-            synchronized(subagentActivityLock) {
-              if (subagentActivityRead === read) subagentActivityRead = null
+            } catch (err: CancellationException) {
+              throw err
+            } catch (err: Throwable) {
+              Log.w("OpenClawChat", "Background activity refresh failed: ${err.message}")
+            } finally {
+              synchronized(subagentActivityLock) {
+                if (subagentActivityRead === read) subagentActivityRead = null
+              }
             }
           }
-        }
       }
     }
     read.job?.start()
@@ -7179,33 +7182,40 @@ class ChatController internal constructor(
       "deleted" -> {
         val taskId = payload["taskId"].asStringOrNull()?.trim()?.takeIf(String::isNotEmpty) ?: return
         synchronized(gatewayScopeApplyLock) {
-        synchronized(subagentActivityLock) {
-          subagentActivityRead?.events?.let { coalesceBackgroundTaskEvent(it, BackgroundTaskEvent.Deleted(taskId)) }
-        }
-        removeSubagentActivity(taskId)
-        publishBackgroundTaskEvent(BackgroundTaskEvent.Deleted(taskId))
+          synchronized(subagentActivityLock) {
+            subagentActivityRead?.events?.let { coalesceBackgroundTaskEvent(it, BackgroundTaskEvent.Deleted(taskId)) }
+          }
+          removeSubagentActivity(taskId)
+          publishBackgroundTaskEvent(BackgroundTaskEvent.Deleted(taskId))
         }
         return
       }
+
       "restored" -> {
         clearSubagentActivities()
         publishBackgroundTaskEvent(BackgroundTaskEvent.Restored)
         refreshSubagentActivities()
         return
       }
-      "upserted" -> Unit
-      else -> return
+
+      "upserted" -> {
+        Unit
+      }
+
+      else -> {
+        return
+      }
     }
     val task = payload["task"].asObjectOrNull() ?: return
     val summary = parseBackgroundTask(task)?.copy(prompt = null, result = null) ?: return
     synchronized(gatewayScopeApplyLock) {
-    publishBackgroundTaskEvent(BackgroundTaskEvent.Upserted(summary))
-    if (isCurrentSubagentTask(summary)) {
-      synchronized(subagentActivityLock) {
-        subagentActivityRead?.events?.let { coalesceBackgroundTaskEvent(it, BackgroundTaskEvent.Upserted(summary)) }
+      publishBackgroundTaskEvent(BackgroundTaskEvent.Upserted(summary))
+      if (isCurrentSubagentTask(summary)) {
+        synchronized(subagentActivityLock) {
+          subagentActivityRead?.events?.let { coalesceBackgroundTaskEvent(it, BackgroundTaskEvent.Upserted(summary)) }
+        }
       }
-    }
-    applySubagentActivity(summary)
+      applySubagentActivity(summary)
     }
   }
 
@@ -7228,7 +7238,9 @@ class ChatController internal constructor(
       val nextProgress = summary.progress
       if (!terminal && previousProgress != null && nextProgress != null &&
         existing.runId == summary.runId && previousProgress.revision > nextProgress.revision
-      ) return@synchronized
+      ) {
+        return@synchronized
+      }
       val lastActivity = summary.lastActivity?.trim()?.takeIf(String::isNotEmpty)
       val fallback =
         summary.progressSummary?.trim()?.takeIf(String::isNotEmpty)
@@ -7300,9 +7312,10 @@ class ChatController internal constructor(
     synchronized(subagentActivityLock) {
       subagentActivityRead?.job?.cancel()
       subagentActivityRead = null
-      _subagentActivities.value = _subagentActivities.value.mapValues { (_, activity) ->
-        activity.copy(executionState = null, progress = null)
-      }
+      _subagentActivities.value =
+        _subagentActivities.value.mapValues { (_, activity) ->
+          activity.copy(executionState = null, progress = null)
+        }
     }
   }
 
