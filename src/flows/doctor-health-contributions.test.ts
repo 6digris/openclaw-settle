@@ -18,6 +18,7 @@ import {
   createDoctorConfigFixture,
   createDoctorHealthFlowContext,
   createDoctorLintContext,
+  createGatewayWriterFixture,
   resolveDoctorHealthContributions,
   runDoctorHealthContributionList,
 } from "./doctor-health-contributions.test-support.js";
@@ -4487,23 +4488,8 @@ describe("doctor health contributions", () => {
     const gatewayServicesContribution = requireDoctorContribution("doctor:gateway-services");
     const writeConfigContribution = requireDoctorContribution("doctor:write-config");
     const originalCfg = { gateway: {} };
-    const repairedCfg: OpenClawConfig = {
-      gateway: {
-        auth: {
-          mode: "token",
-          token: "recovered-token",
-        },
-      },
-    };
-    mocks.maybeRepairGatewayServiceConfig.mockImplementationOnce(
-      async (
-        _cfg: OpenClawConfig,
-        _mode: unknown,
-        _runtime: unknown,
-        _prompter: unknown,
-        options: { writeConfig: (nextConfig: OpenClawConfig) => Promise<OpenClawConfig> },
-      ) => options.writeConfig(repairedCfg),
-    );
+    const { config: repairedCfg, repair } = createGatewayWriterFixture("recovered-token");
+    mocks.maybeRepairGatewayServiceConfig.mockImplementationOnce(repair);
 
     const ctx = createDoctorContext({
       cfg: originalCfg,
