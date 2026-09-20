@@ -123,10 +123,8 @@ import {
   getOpenClawDatabaseMaintenanceScope,
   observeOpenClawDatabaseMaintenanceResource,
 } from "./openclaw-state-db-async-lifecycle.js";
-import {
-  OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
-  type OpenClawStateDatabaseOptions,
-} from "./openclaw-state-db.js";
+import type { OpenClawStateDatabaseOptions } from "./openclaw-state-db-contract.js";
+import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "./openclaw-state-db.js";
 
 export {
   OPENCLAW_AGENT_SCHEMA_VERSION,
@@ -364,8 +362,9 @@ function* openOpenClawAgentDatabaseSteps(
     // Eviction churn must avoid migration/convergence and registry busy waits.
     // Version and owner can change while evicted, so their read-only gates run on every open.
     const validationDatabase = { db, path: pathname, agentId };
-    if (pending?.validation) {
-      adoptOpenClawAgentDatabaseValidation(validationDatabase, pending.validation);
+    const validation = pending?.validation ?? preparedLease?.validation;
+    if (validation) {
+      adoptOpenClawAgentDatabaseValidation(validationDatabase, validation);
     }
     let isValidatedReopen = Boolean(getOpenClawAgentDatabaseValidation(validationDatabase));
     const walMaintenance = yield* (function* (): SqliteIntegrityOperation<SqliteWalMaintenance> {

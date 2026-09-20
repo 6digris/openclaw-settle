@@ -68,7 +68,9 @@ export type TaskRegistryStore = TaskExecutionRestoreStore & {
     context: OpenClawStateWorkerContext,
     scope?: TaskRegistryMutationScope,
   ) => Promise<TaskRegistryStoreSnapshot>;
-  loadMutationSnapshot?: (scope: TaskRegistryMutationScope) => TaskRegistryStoreSnapshot;
+  loadMutationSnapshot?: (
+    scopes: readonly TaskRegistryMutationScope[],
+  ) => TaskRegistryStoreSnapshot;
   listTasksForOwnerKey?: (ownerKey: string) => Promise<TaskRecord[]>;
   deleteTaskWithDeliveryState: (taskId: string) => void;
   upsertDeliveryState: (state: TaskDeliveryState) => void;
