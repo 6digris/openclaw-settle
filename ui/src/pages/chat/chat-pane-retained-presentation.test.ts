@@ -26,6 +26,8 @@ import {
 } from "./chat-pane-shared.ts";
 import {
   createGatewayBrowserClientFixture,
+  createInitializationContext,
+  createRenderTestChatPane,
   createSessionCapabilityFixture,
   createTestChatPane,
   type TestChatPane,
@@ -47,6 +49,28 @@ describe("chat pane retained presentation lifecycle", () => {
     resetChatComposerState();
     vi.unstubAllGlobals();
   });
+
+  it.each(["page", "dock"] as const)(
+    "hands portaled transcript interaction to the canonical %s input owner",
+    (region) => {
+      const context = createInitializationContext();
+      const pane = createRenderTestChatPane();
+      const state = pane.initialize(context);
+      pane.paneId = "rail-owner";
+      pane.inputRegion = region;
+      pane.onFocusPane = vi.fn();
+      pane.active = false;
+      state.sessionKey = "agent:main:rail-owner";
+      pane.render();
+      const owner = chatInputOwnerForContext(context);
+      owner.claim(region === "page" ? "dock" : "page");
+      expect(pane.chatProps?.onTranscriptInteraction).toBeTypeOf("function");
+      pane.chatProps!.onTranscriptInteraction!();
+      expect(owner.current).toBe(region);
+      expect(pane.onFocusPane).toHaveBeenCalledExactlyOnceWith("rail-owner");
+      expect(state.sessionKey).toBe("agent:main:rail-owner");
+    },
+  );
 
   it.each(["connection", "pane"] as const)(
     "releases reply preview objects at the %s retirement boundary",

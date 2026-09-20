@@ -194,6 +194,7 @@ class ChatPositionRailDirective extends AsyncDirective {
         positions: ChatPositionIndex;
         transcript: ChatTranscriptSession;
         requestUpdate: () => void;
+        onInteraction?: () => void;
         visible?: boolean;
       }
     | undefined;
@@ -617,17 +618,19 @@ class ChatPositionRailDirective extends AsyncDirective {
     positions,
     transcript,
     requestUpdate,
+    onInteraction,
     visible = true,
   }: {
     positions: ChatPositionIndex;
     transcript: ChatTranscriptSession;
     requestUpdate: () => void;
+    onInteraction?: () => void;
     visible?: boolean;
   }) {
     if (this.presented !== visible) this.schedulePresentation();
     this.presented = visible;
     this.requestUpdate = requestUpdate;
-    this.renderInput = { positions, transcript, requestUpdate, visible };
+    this.renderInput = { positions, transcript, requestUpdate, onInteraction, visible };
     if (this.session !== transcript) {
       this.session = transcript;
       this.interaction = initialInteraction();
@@ -719,7 +722,11 @@ class ChatPositionRailDirective extends AsyncDirective {
         ?.focus({ preventScroll: true });
     };
     const template = html`
-      <div class="chat-position-rail__track">
+      <div
+        class="chat-position-rail__track"
+        @pointerdown=${onInteraction}
+        @focusin=${onInteraction}
+      >
         <div
           ${ref(this.bindScroller)}
           class="chat-position-rail__marks"

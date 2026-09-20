@@ -169,6 +169,8 @@ export type ChatThreadProps = ChatSendStatusActions & {
   onRequestUpdate?: () => void;
   onChatScroll?: (event: Event) => void;
   onHistoryIntent?: (event: Event) => void;
+  /** Portaled transcript controls hand interaction back to the owning pane. */
+  onTranscriptInteraction?: () => void;
   onDraftChange: (next: string) => void;
   onSend: () => void;
   onSetReply?: (target: MessageReplyTarget) => void;
