@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { expectDefined } from "@openclaw/normalization-core";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
-import { withTestDir } from "../test-helpers/temp-dir.js";
-import { withEnvAsync } from "../test-utils/env.js";
+import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { clearTaskRegistrySqliteForTests } from "../test-utils/task-registry-sqlite.js";
 import {
   createInMemoryTaskFlowRegistryStore,
@@ -157,22 +156,25 @@ export async function withTaskRegistryTempDir<T>(
   run: (root: string) => Promise<T>,
   options?: { durableStore?: boolean },
 ): Promise<T> {
-  return await withTestDir({ prefix: "openclaw-task-registry-" }, async (root) => {
-    return await withEnvAsync({ OPENCLAW_STATE_DIR: root }, async () => {
+  return await withOpenClawTestState(
+    { prefix: "openclaw-task-registry-", layout: "state-only" },
+    async ({ stateDir }) => {
       resetTaskRegistryForTests({ persist: false });
       resetTaskFlowRegistryForTests({ persist: false });
       if (options?.durableStore !== true) {
         configureInMemoryTaskStoresForTests();
       }
       try {
-        return await run(root);
+        return await run(stateDir);
       } finally {
-        // Close both sqlite-backed registries before Windows temp-dir cleanup tries to remove them.
+        // Stop registry producers before the state fixture joins worker/native
+        // disposal and removes files. Synchronous resets alone leave admission
+        // identities behind for the filesystem to reuse in a later test.
         resetTaskRegistryForTests({ persist: false });
         resetTaskFlowRegistryForTests({ persist: false });
       }
-    });
-  });
+    },
+  );
 }
 
 export async function flushAsyncWork(times = 4) {

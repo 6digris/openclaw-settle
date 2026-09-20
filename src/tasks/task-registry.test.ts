@@ -1,4 +1,5 @@
 // Covers task registry lifecycle, delivery, notification, and query behavior.
+import { existsSync } from "node:fs";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AcpSessionStoreEntry } from "../acp/runtime/session-meta.js";
@@ -38,6 +39,11 @@ import {
   tryBeginGatewayRootWorkAdmission,
   tryBeginGatewaySuspendAdmission,
 } from "../process/gateway-work-admission.js";
+import { createDeferredCore } from "../shared/deferred.js";
+import {
+  closeOpenClawStateDatabaseByPathAsync,
+  registerOpenClawStateDatabaseAsyncResource,
+} from "../state/openclaw-state-db-cache.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
@@ -307,6 +313,49 @@ function expectHeartbeatWake(
 }
 
 describe("task-registry", () => {
+  it("joins database resources before removing a registry fixture", async () => {
+    const entered = createDeferredCore();
+    const release = createDeferredCore();
+    let stateDir = "";
+    let databasePath = "";
+    let unregister = () => {};
+    const fixture = withTaskRegistryTempDir(async (root) => {
+      stateDir = root;
+      const database = openOpenClawStateDatabase();
+      databasePath = database.path;
+      const { admission } = captureOpenClawStateWorkerContext();
+      unregister = registerOpenClawStateDatabaseAsyncResource({
+        async close(identity) {
+          if (identity?.key === admission.identity.key) {
+            entered.resolve();
+            await release.promise;
+          }
+        },
+      });
+    });
+    try {
+      const cleanupEntered = await Promise.race([
+        entered.promise.then(() => true),
+        fixture.then(() => false),
+      ]);
+      expect(cleanupEntered).toBe(true);
+      expect(existsSync(stateDir)).toBe(true);
+      release.resolve();
+      await fixture;
+      expect(existsSync(stateDir)).toBe(false);
+    } finally {
+      release.resolve();
+      try {
+        await fixture;
+      } finally {
+        unregister();
+        if (databasePath) {
+          await closeOpenClawStateDatabaseByPathAsync(databasePath);
+        }
+      }
+    }
+  });
+
   beforeEach(async () => {
     resetGatewayWorkAdmission();
     heartbeatWakeRequests = [];
