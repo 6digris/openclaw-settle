@@ -931,8 +931,14 @@ suite.define(() => {
       composer = await openMenu(page);
       menu = composer.locator("wa-dropdown.agent-chat__capability-menu");
       await menu.getByRole("menuitem", { name: /^Connectors/ }).click();
+      const globalDocs = menu.getByRole("menuitem", { name: /^global-docs/ });
+      await expect.poll(() => globalDocs.isVisible()).toBe(true);
       await expect
-        .poll(() => menu.getByRole("menuitem", { name: /^global-docs.*Enabled/ }).isVisible())
+        .poll(() =>
+          globalDocs
+            .locator("wa-switch")
+            .evaluate((node) => (node as HTMLElement & { checked: boolean }).checked),
+        )
         .toBe(true);
     });
   });

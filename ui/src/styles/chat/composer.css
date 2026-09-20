@@ -280,7 +280,7 @@
     var(--chat-composer-popover-max-height, calc(100dvh - 116px))
   );
   /* Root and every nested capability view share this viewport-clamped width. */
-  width: min(400px, calc(100vw - 24px));
+  width: min(320px, calc(100vw - 24px));
   min-width: 0;
   max-width: calc(100vw - 24px);
   padding: 4px;
@@ -302,7 +302,8 @@
   background: var(--bg-elevated);
 }
 
-.agent-chat__capability-menu-item {
+/* Match native item/checkbox specificity so one row padding wins in every view. */
+.agent-chat__capability-menu > wa-dropdown-item {
   --wa-color-text-normal: var(--text);
 
   display: flex;
@@ -329,8 +330,8 @@
 
 .agent-chat__capability-menu-divider {
   height: 1px;
-  margin: 4px 6px;
-  background: color-mix(in srgb, var(--border) 72%, transparent);
+  margin: 4px var(--chat-composer-menu-row-inset);
+  background: color-mix(in srgb, var(--text) 16%, transparent);
 }
 
 .agent-chat__capability-menu-details {
@@ -357,7 +358,6 @@
 }
 
 .agent-chat__capability-menu-session-tag {
-  margin-left: 5px;
   padding: 3px 5px;
 }
 
@@ -366,12 +366,11 @@
   color: var(--muted);
 }
 
-/* Row voice shared with the permission picker: 13/600 strong titles, muted 11px
-   notes, and a 16px icon part so the icon→label distance is the row gap alone
-   (wa-dropdown-item's default icon part is 24px wide, which read as a wider,
-   misaligned gap next to the custom-markup pickers). */
+/* Fix empty and filled icon tracks equally. Web Awesome owns the slotted
+   icon/details margins; intrinsic content must not shrink this rail. */
 .agent-chat__attach-menu-option::part(icon),
 .agent-chat__capability-menu-item::part(icon) {
+  flex: 0 0 var(--chat-composer-menu-icon);
   width: var(--chat-composer-menu-icon);
 }
 
@@ -408,7 +407,11 @@
 }
 
 .agent-chat__capability-menu-state {
-  padding: 10px 12px;
+  padding: var(--chat-composer-menu-row-padding);
+  padding-inline-start: calc(
+    var(--chat-composer-menu-row-inset) + var(--chat-composer-menu-icon) +
+      var(--chat-composer-menu-row-gap)
+  );
   line-height: 1.4;
 }
 
@@ -416,12 +419,16 @@
   pointer-events: none;
 }
 
-.agent-chat__capability-menu-toggle[type="checkbox"]::part(checkmark) {
-  display: none;
+.agent-chat__capability-menu > .agent-chat__capability-menu-subrow {
+  padding-inline-start: calc(
+    var(--chat-composer-menu-row-inset) + var(--chat-composer-menu-icon) +
+      var(--chat-composer-menu-row-gap)
+  );
 }
 
-.agent-chat__capability-menu-subrow {
-  padding-inline-start: 28px;
+.agent-chat__capability-menu-subrow::part(label) {
+  color: var(--text);
+  font-weight: 500;
 }
 
 .agent-chat__capability-menu-link {

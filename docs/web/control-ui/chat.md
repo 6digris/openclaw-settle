@@ -87,8 +87,8 @@ an invalid source folder.
 
 Select **+** beside the chat composer to open attachments and session capabilities in one menu:
 
-- **Skills** enables or disables individual skills for this session.
-- **Connectors** enables or disables configured MCP servers for this session. A **session** tag marks values that differ from the inherited configuration. **Browse connectors** opens the Plugins page on **Discover**.
+- **Skills** enables or disables individual skills for this session. **Manage skills** opens the Skills page.
+- **Connectors** enables or disables configured MCP servers for this session. A **session** tag marks values that differ from the inherited configuration. **Manage connectors** opens **Settings > MCP**. These management actions are also available in New Session; opening them does not change session availability.
 - **Web search** enables or disables managed web search plus native OpenAI and Codex search for this session.
 - **Manage plugins** opens the Plugins page.
 

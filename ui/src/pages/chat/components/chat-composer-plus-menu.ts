@@ -205,7 +205,7 @@ function renderRootView(props: ChatComposerPlusMenuProps) {
             })}
             ${menuDivider()}
             <wa-dropdown-item class="agent-chat__capability-menu-item" value="manage-plugins">
-              <span slot="icon" aria-hidden="true">${icons.plug}</span>
+              <span slot="icon" aria-hidden="true">${icons.settings}</span>
               ${internalLink(
                 pathForRoute("plugins", props.basePath),
                 t("chat.composer.menu.managePlugins"),
@@ -279,6 +279,7 @@ function renderSkillView(props: ChatComposerPlusMenuProps) {
   return html`
     ${renderBackRow()} ${renderComposerLibraryMenu(props.library)} ${rows} ${menuDivider()}
     <wa-dropdown-item class="agent-chat__capability-menu-item" value="manage-skills">
+      <span slot="icon" aria-hidden="true">${icons.settings}</span>
       ${internalLink(pathForRoute("skills", props.basePath), t("chat.composer.menu.manageSkills"))}
     </wa-dropdown-item>
   `;
@@ -295,22 +296,21 @@ function renderConnectorView(props: ChatComposerPlusMenuProps) {
           const override = readOwnEntry(props.toolOverrides?.mcpServers, server.name);
           const enabled = resolveToolOverrideState(server.enabled, override);
           return html`
+            ${index > 0 ? menuDivider() : nothing}
             ${renderCapabilityToggleRow({
               value: `connector:${index}`,
               label: server.name,
               checked: enabled,
               disabled: disabledReason !== null,
               title: disabledReason,
-              note: html`<span class="agent-chat__capability-menu-note">
-                ${enabled ? t("common.enabled") : t("common.disabled")}
-                ${
-                  override !== undefined
-                    ? html`<span class="agent-chat__capability-menu-session-tag"
+              note:
+                override !== undefined
+                  ? html`<span class="agent-chat__capability-menu-note"
+                      ><span class="agent-chat__capability-menu-session-tag"
                         >${t("chat.composer.menu.sessionTag")}</span
-                      >`
-                    : nothing
-                }
-              </span>`,
+                      ></span
+                    >`
+                  : nothing,
             })}
             ${
               props.onOpenToolAccess
@@ -320,6 +320,12 @@ function renderConnectorView(props: ChatComposerPlusMenuProps) {
                   >
                     <span slot="icon" aria-hidden="true">${icons.wrench}</span>
                     <span>${t("chat.composer.menu.toolAccess.label")}</span>
+                    <span
+                      slot="details"
+                      class="agent-chat__capability-menu-chevron"
+                      aria-hidden="true"
+                      >${icons.chevronRight}</span
+                    >
                   </wa-dropdown-item>`
                 : nothing
             }
@@ -328,6 +334,10 @@ function renderConnectorView(props: ChatComposerPlusMenuProps) {
   const adminDisabled = !props.canAdmin;
   return html`
     ${renderBackRow()} ${rows} ${menuDivider()}
+    <wa-dropdown-item class="agent-chat__capability-menu-item" value="manage-connectors">
+      <span slot="icon" aria-hidden="true">${icons.settings}</span>
+      ${internalLink(pathForRoute("mcp", props.basePath), t("chat.composer.menu.manageConnectors"))}
+    </wa-dropdown-item>
     ${
       props.onAddServer
         ? html`<wa-dropdown-item
@@ -586,6 +596,8 @@ function handleMenuSelection(
   }
   if (value === "manage-skills") {
     props.onNavigate("skills");
+  } else if (value === "manage-connectors") {
+    props.onNavigate("mcp");
   } else if (value === "manage-plugins") {
     props.onNavigate("plugins");
   }

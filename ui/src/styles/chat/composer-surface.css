@@ -169,7 +169,8 @@
      designs. Selected rows also carry a trailing accent check where the row is
      a single-select choice; binary rows carry a switch instead. */
   --chat-composer-menu-row-height: 40px;
-  --chat-composer-menu-row-padding: 6px 9px;
+  --chat-composer-menu-row-inset: 9px;
+  --chat-composer-menu-row-padding: 6px var(--chat-composer-menu-row-inset);
   --chat-composer-menu-row-gap: 8px;
   --chat-composer-menu-row-radius: calc(10px * var(--openclaw-corner-radius-scale));
   --chat-composer-menu-icon: 16px;

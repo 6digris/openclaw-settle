@@ -145,7 +145,7 @@ suite.define(() => {
       await expect.poll(() => attach.isVisible()).toBe(true);
       await attach.click();
       const panel = dropdown.locator('[part="menu"]');
-      const expectedWidth = Math.min(400, viewport.width - 24);
+      const expectedWidth = Math.min(320, viewport.width - 24);
       const assertWidth = async () => {
         await expect
           .poll(() => panel.evaluate((el) => el.getBoundingClientRect().width))

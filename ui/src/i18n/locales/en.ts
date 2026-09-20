@@ -4503,6 +4503,7 @@ export const en: TranslationMap & {
           "Web search is disabled in config. Click to clear this session’s enable override.",
         managePlugins: "Manage plugins",
         manageSkills: "Manage skills",
+        manageConnectors: "Manage connectors",
         addMcpServer: "Add MCP server…",
         addMcpServerTitle: "Add MCP server",
         addMcpServerDescription: "Configure the server and choose where it is enabled.",
