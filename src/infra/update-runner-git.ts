@@ -105,6 +105,20 @@ export async function updateGitCheckout(params: {
   let mutationPrepared = false;
   let sourceMutationStarted = false;
   let runtimePromotion: Awaited<ReturnType<typeof prepareGitRuntimePromotion>> | undefined;
+  const stageRuntime = async (candidateRoot: string, cleanupRoot: string, runner: CommandRunner) =>
+    runStep({
+      ...workStep("prepare runtime", [], candidateRoot),
+      runCommand: async () => {
+        runtimePromotion = await prepareGitRuntimePromotion(
+          gitRoot,
+          candidateRoot,
+          runner,
+          timeoutMs,
+          cleanupRoot,
+        );
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    });
   let candidateTransfer: Awaited<ReturnType<typeof prepareGitCandidateTransfer>>;
   let stateMigrationStarted = false;
   let recovery = await verifyGitUpdateRecovery({ root: gitRoot, sha: beforeSha });
@@ -450,13 +464,7 @@ export async function updateGitCheckout(params: {
             gitRoot = await opts.publishGitCheckout();
             publishedCandidate = true;
           }
-          runtimePromotion = await prepareGitRuntimePromotion(
-            gitRoot,
-            root,
-            runInspectionCommand,
-            timeoutMs,
-            cleanupRoot,
-          );
+          await stageRuntime(root, cleanupRoot, runInspectionCommand);
         },
       });
       if (selected.status !== "ok") {
@@ -547,13 +555,7 @@ export async function updateGitCheckout(params: {
         inspectGitCandidate: opts.inspectGitCandidate,
         prepareGitExposure: opts.prepareGitExposure,
         prepareCandidate: async (root, cleanupRoot) => {
-          runtimePromotion = await prepareGitRuntimePromotion(
-            gitRoot,
-            root,
-            runCommand,
-            timeoutMs,
-            cleanupRoot,
-          );
+          await stageRuntime(root, cleanupRoot, runCommand);
         },
       }));
     if (preflight.status !== "ok") {
