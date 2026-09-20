@@ -18,6 +18,7 @@ import { createAgentRuntimeApprovalAuthorityValidator } from "./agent-runtime-id
 import { ApprovalObserverClosedError } from "./exec-approval-lifecycle.js";
 import { getOperatorApprovalDetailed } from "./operator-approval-store.js";
 import { createGatewayAuxHandlers } from "./server-aux-handlers.js";
+import { SharedGatewaySessionGenerationState } from "./server-shared-auth-generation.js";
 import { createWorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
 import { seedAttachedPlacementEnvironment } from "./worker-environments/placement-test-fixtures.js";
 
@@ -41,7 +42,10 @@ function createAuthorityHarness(
     activateRuntimeSecrets: async () => {
       throw new Error("unexpected secrets reload");
     },
-    sharedGatewaySessionGenerationState: { current: undefined, required: null },
+    sharedGatewaySessionGenerationState: new SharedGatewaySessionGenerationState({
+      current: undefined,
+      required: null,
+    }),
     resolveSharedGatewaySessionGenerationForConfig: () => undefined,
     clients: [],
     channelManager: {

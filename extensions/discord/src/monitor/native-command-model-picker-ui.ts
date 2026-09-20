@@ -123,7 +123,6 @@ async function resolveDiscordModelPickerRouteState(params: {
   cfg: OpenClawConfig;
   accountId: string;
   threadBindings: ThreadBindingManager;
-  enforceConfiguredBindingReadiness?: boolean;
 }) {
   const { interaction, cfg, accountId } = params;
   const { isDirectMessage, isGroupDm, isThreadChannel, rawChannelId, threadParentId } =
@@ -140,7 +139,7 @@ async function resolveDiscordModelPickerRouteState(params: {
   const threadBinding = isThreadChannel
     ? params.threadBindings.getByThreadId(rawChannelId)
     : undefined;
-  return await resolveDiscordNativeInteractionRouteState({
+  return resolveDiscordNativeInteractionRouteState({
     cfg,
     accountId,
     guildId: interaction.guild?.id ?? undefined,
@@ -151,7 +150,6 @@ async function resolveDiscordModelPickerRouteState(params: {
     conversationId: rawChannelId,
     parentConversationId: threadParentId,
     threadBinding,
-    enforceConfiguredBindingReadiness: params.enforceConfiguredBindingReadiness,
   });
 }
 
@@ -174,7 +172,7 @@ export async function resolveDiscordNativeChoiceContext(params: {
   cfg: OpenClawConfig;
   accountId: string;
   threadBindings: ThreadBindingManager;
-  preparedRoute?: ResolvedAgentRoute | null;
+  route?: ResolvedAgentRoute;
 }): Promise<{
   provider?: string;
   model?: string;
@@ -182,20 +180,7 @@ export async function resolveDiscordNativeChoiceContext(params: {
   agentId: string;
 } | null> {
   try {
-    let route = params.preparedRoute;
-    if (route === undefined) {
-      const resolved = await resolveDiscordModelPickerRouteState({
-        interaction: params.interaction,
-        cfg: params.cfg,
-        accountId: params.accountId,
-        threadBindings: params.threadBindings,
-        enforceConfiguredBindingReadiness: true,
-      });
-      route = resolved.bindingReadiness?.ok === false ? null : resolved.effectiveRoute;
-    }
-    if (!route) {
-      return null;
-    }
+    const route = params.route ?? (await resolveDiscordModelPickerRoute(params));
     const fallback = resolveDefaultModelForAgent({
       cfg: params.cfg,
       agentId: route.agentId,

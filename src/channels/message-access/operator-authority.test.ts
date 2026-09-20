@@ -86,48 +86,106 @@ it("recognizes every linked Team admin through host ingress and gives Guardian o
   });
 });
 
-it.each(["role", "grant", "link", "reassign", "host"] as const)(
+it.each(["role", "role-scopes", "grant", "link", "reassign", "host"] as const)(
   "revokes admitted channel owner authority when its %s changes",
   async (change) => {
-    await withAdminIngress(async ({ cfg, admins, context, retire }) => {
-      const admin = admins[0]!;
-      const ctx = await context(admin.identity.senderId);
+    await withAdminIngress(
+      async ({ cfg, admins, context, retire }) => {
+        const admin = admins[0]!;
+        const ctx = await context(admin.identity.senderId);
+        expect(
+          resolveCommandAuthorization({ cfg, ctx, commandAuthorized: true }).senderIsOwner,
+        ).toBe(true);
+        const prepared = prepareChannelRunAdmission({
+          cfg,
+          runId: `linked-admin-${change}`,
+          agentId: "main",
+          ingressKind: "channel",
+          boundary: "test.channel",
+          assertSourceCurrent: captureCommandOwnerAssertion(ctx),
+        });
+        const admitted = await prepared.admit("embedded");
+        const assertCurrent = resolveAdmittedRunActiveAssertion(admitted);
+        expect(assertCurrent).toBeTypeOf("function");
+        expect(() => assertCurrent?.()).not.toThrow();
+        if (change === "role") {
+          setUserProfileRole(admin.profile.id, "member");
+        }
+        if (change === "role-scopes") {
+          cfg.gateway!.roles!.definitions.admin!.scopes = ["operator.read"];
+        }
+        if (change === "grant") {
+          delete cfg.gateway!.auth!.identityScopes!["ada@example.test"];
+        }
+        if (change === "link") {
+          unlinkUserChannelIdentity(admin.profile.id, admin.identity);
+        }
+        if (change === "reassign") {
+          unlinkUserChannelIdentity(admin.profile.id, admin.identity);
+          linkUserChannelIdentity(admins[1]!.profile.id, admin.identity);
+        }
+        if (change === "host") {
+          retire();
+        }
+        expect(
+          resolveCommandAuthorization({ cfg, ctx, commandAuthorized: true }).senderIsOwner,
+        ).toBe(false);
+        expect(() => assertCurrent?.()).toThrow();
+        prepared.close();
+      },
+      change === "grant" ? "identity-grant" : "role",
+    );
+  },
+);
+
+it.each([
+  { role: "maintainer", defaultRole: "member", identityGrant: false, owner: true },
+  { role: null, defaultRole: "maintainer", identityGrant: false, owner: true },
+  { role: "member", defaultRole: "maintainer", identityGrant: true, owner: false },
+])("uses current channel role policy for $role with default $defaultRole", async (scenario) => {
+  await withAdminIngress(async ({ cfg, admins, context }) => {
+    const roles = cfg.gateway!.roles!;
+    roles.definitions.maintainer = roles.definitions.admin!;
+    delete roles.definitions.admin;
+    roles.default = scenario.defaultRole;
+    if (scenario.identityGrant) {
+      cfg.gateway!.auth = { identityScopes: { "ada@example.test": ["operator.admin"] } };
+    }
+    const admin = admins[0]!;
+    setUserProfileRole(admin.profile.id, scenario.role);
+    const ctx = await context(admin.identity.senderId);
+    expect(resolveCommandAuthorization({ cfg, ctx, commandAuthorized: true }).senderIsOwner).toBe(
+      scenario.owner,
+    );
+  });
+});
+
+it("keeps configured owners independent of Team role and identity links", async () => {
+  await withAdminIngress(async ({ cfg, admins, context }) => {
+    cfg.commands!.ownerAllowFrom = admins.map(({ identity }) => `discord:${identity.senderId}`);
+    const contexts = await Promise.all(admins.map(({ identity }) => context(identity.senderId)));
+    const assertions = contexts.map(captureCommandOwnerAssertion);
+    for (const { profile, identity } of admins) {
+      setUserProfileRole(profile.id, "member");
+      unlinkUserChannelIdentity(profile.id, identity);
+    }
+    for (const [index, ctx] of contexts.entries()) {
       expect(resolveCommandAuthorization({ cfg, ctx, commandAuthorized: true }).senderIsOwner).toBe(
         true,
       );
-      const prepared = prepareChannelRunAdmission({
-        cfg,
-        runId: `linked-admin-${change}`,
-        agentId: "main",
-        ingressKind: "channel",
-        boundary: "test.channel",
-        assertSourceCurrent: captureCommandOwnerAssertion(ctx),
-      });
-      const admitted = await prepared.admit("embedded");
-      const assertCurrent = resolveAdmittedRunActiveAssertion(admitted);
-      expect(assertCurrent).toBeTypeOf("function");
-      expect(() => assertCurrent?.()).not.toThrow();
-      if (change === "role") {
-        setUserProfileRole(admin.profile.id, "member");
-      }
-      if (change === "grant") {
-        delete cfg.gateway!.auth!.identityScopes!["ada@example.test"];
-      }
-      if (change === "link") {
-        unlinkUserChannelIdentity(admin.profile.id, admin.identity);
-      }
-      if (change === "reassign") {
-        unlinkUserChannelIdentity(admin.profile.id, admin.identity);
-        linkUserChannelIdentity(admins[1]!.profile.id, admin.identity);
-      }
-      if (change === "host") {
-        retire();
-      }
-      expect(resolveCommandAuthorization({ cfg, ctx, commandAuthorized: true }).senderIsOwner).toBe(
-        false,
-      );
-      expect(() => assertCurrent?.()).toThrow();
-      prepared.close();
-    });
-  },
-);
+      expect(assertions[index]).toBeTypeOf("function");
+      expect(assertions[index]).not.toThrow();
+    }
+    cfg.commands!.ownerAllowFrom.shift();
+    expect(
+      resolveCommandAuthorization({ cfg, ctx: contexts[0]!, commandAuthorized: true })
+        .senderIsOwner,
+    ).toBe(false);
+    expect(assertions[0]).toThrow();
+    expect(
+      resolveCommandAuthorization({ cfg, ctx: contexts[1]!, commandAuthorized: true })
+        .senderIsOwner,
+    ).toBe(true);
+    expect(assertions[1]).not.toThrow();
+  });
+});

@@ -124,7 +124,10 @@ import {
 import { createGatewayReloadHandlers as createGatewayReloadHandlersImpl } from "./server-reload-hot.js";
 import { createManagedReloadSecretHandlers } from "./server-reload-managed-secrets.js";
 import { startManagedGatewayConfigReloader as startManagedGatewayConfigReloaderImpl } from "./server-reload-managed.js";
-import { enforceSharedGatewaySessionGenerationForConfigWrite } from "./server-shared-auth-generation.js";
+import {
+  enforceSharedGatewaySessionGenerationForConfigWrite,
+  SharedGatewaySessionGenerationState,
+} from "./server-shared-auth-generation.js";
 import { resolveSharedGatewaySessionGeneration } from "./server/ws-shared-generation.js";
 import { createTerminalLaunchPolicy } from "./terminal/launch.js";
 import { TerminalSessionManager } from "./terminal/session-manager.js";
@@ -252,7 +255,10 @@ function startManagedGatewayConfigReloader(params: ManagedReloaderTestParams) {
       makePreparedSecretsSnapshot(config),
     ) as never,
     resolveSharedGatewaySessionGenerationForConfig: () => undefined,
-    sharedGatewaySessionGenerationState: { current: undefined, required: null },
+    sharedGatewaySessionGenerationState: new SharedGatewaySessionGenerationState({
+      current: undefined,
+      required: null,
+    }),
     clients: [],
     reconcileRuntimePolicy: vi.fn(),
     commitRuntimePolicy: vi.fn(),
@@ -872,7 +878,10 @@ async function createManagedRestartSequenceHarness(
     }
     return makePreparedSecretsSnapshot(config);
   });
-  const sharedGatewaySessionGenerationState = { current: undefined, required: null };
+  const sharedGatewaySessionGenerationState = new SharedGatewaySessionGenerationState({
+    current: undefined,
+    required: null,
+  });
   let generationInvalidated = false;
   const reloader = startManagedGatewayConfigReloader({
     initialConfig,
@@ -1101,10 +1110,10 @@ async function runManagedOwnershipScenario(params: {
     : initialConfig;
   const generation = (token: string | undefined) =>
     resolveSharedGatewaySessionGeneration({ mode: "token", token, allowTailscale: false });
-  const sharedState = {
+  const sharedState = new SharedGatewaySessionGenerationState({
     current: generation(params.sharedAuthRotation ? "old-shared-token" : undefined),
     required: null,
-  };
+  });
   const staleClose = vi.fn();
   const currentClose = vi.fn();
   const nonSharedClose = vi.fn();
@@ -1723,7 +1732,10 @@ describe("managed reload transaction ownership", () => {
     expect(result.staleClose).toHaveBeenCalledExactlyOnceWith(4001, "gateway auth changed");
     expect(result.currentClose).not.toHaveBeenCalled();
     expect(result.nonSharedClose).not.toHaveBeenCalled();
-    expect(result.sharedState).toEqual({ current: result.expectedGeneration, required: null });
+    expect({ current: result.sharedState.current, required: result.sharedState.required }).toEqual({
+      current: result.expectedGeneration,
+      required: null,
+    });
     expect(result.startChannel).not.toHaveBeenCalled();
     expect(result.stopChannel).not.toHaveBeenCalled();
     expect(result.reloadPlugins).not.toHaveBeenCalled();
@@ -2470,7 +2482,10 @@ describe("gateway hot reload model state", () => {
         params: {
           activateRuntimeSecrets: vi.fn(async (config) => makePreparedSecretsSnapshot(config)),
           clients: [],
-          sharedGatewaySessionGenerationState: { current: undefined, required: null },
+          sharedGatewaySessionGenerationState: new SharedGatewaySessionGenerationState({
+            current: undefined,
+            required: null,
+          }),
           resolveSharedGatewaySessionGenerationForConfig: () => undefined,
           commitRuntimePolicy: vi.fn(),
           reconcileRuntimePolicy: async () => {
@@ -2643,7 +2658,10 @@ describe("gateway hot reload model state", () => {
         params: {
           activateRuntimeSecrets: vi.fn(async (config) => makePreparedSecretsSnapshot(config)),
           clients: [],
-          sharedGatewaySessionGenerationState: { current: undefined, required: null },
+          sharedGatewaySessionGenerationState: new SharedGatewaySessionGenerationState({
+            current: undefined,
+            required: null,
+          }),
           resolveSharedGatewaySessionGenerationForConfig: () => undefined,
           commitRuntimePolicy: vi.fn(),
           reconcileRuntimePolicy: vi.fn(),

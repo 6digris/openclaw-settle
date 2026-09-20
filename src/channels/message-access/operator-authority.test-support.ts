@@ -12,9 +12,10 @@ import { createHostChannelIngressRuntime } from "./runtime.js";
 
 export async function withAdminIngress(
   run: (fixture: Awaited<ReturnType<typeof createFixture>>) => Promise<void>,
+  authority: "role" | "identity-grant" = "role",
 ) {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-    const fixture = await createFixture(state);
+    const fixture = await createFixture(state, authority);
     try {
       await run(fixture);
     } finally {
@@ -23,17 +24,11 @@ export async function withAdminIngress(
   });
 }
 
-async function createFixture(state: OpenClawTestState) {
+async function createFixture(state: OpenClawTestState, authority: "role" | "identity-grant") {
   const cfg: OpenClawConfig = {
     channels: { discord: { accounts: { team: { allowFrom: ["*"] } } } },
     commands: { ownerAllowFrom: ["whatsapp:15550000000"] },
     gateway: {
-      auth: {
-        identityScopes: {
-          "ada@example.test": ["operator.admin"],
-          "grace@example.test": ["operator.admin"],
-        },
-      },
       roles: {
         default: "member",
         definitions: {
@@ -47,6 +42,16 @@ async function createFixture(state: OpenClawTestState) {
       },
     },
   };
+  if (authority === "identity-grant") {
+    cfg.gateway = {
+      auth: {
+        identityScopes: {
+          "ada@example.test": ["operator.admin"],
+          "grace@example.test": ["operator.admin"],
+        },
+      },
+    };
+  }
   const admins = ["ada", "grace"].map((name, index) => {
     const profile = ensureProfileForEmail(`${name}@example.test`);
     setUserProfileRole(profile.id, "admin");
@@ -59,8 +64,6 @@ async function createFixture(state: OpenClawTestState) {
   const gateway = { getRuntimeConfig: () => cfg } as GatewayRequestContext;
   const owner = {
     channelId: "discord",
-    record: {},
-    epoch: {},
     isLive: () => live,
     resolveGatewayContext: () => gateway,
   };

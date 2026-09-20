@@ -14,6 +14,7 @@ import { createEmptyPluginRegistry } from "../plugins/registry.js";
 import { buildGatewayReloadPlan } from "./config-reload-plan.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import { startManagedGatewayConfigReloader } from "./server-reload-managed.js";
+import { SharedGatewaySessionGenerationState } from "./server-shared-auth-generation.js";
 
 const hoisted = vi.hoisted(() => ({
   hotReloadStatus: { current: "active" as "active" | "disabled" },
@@ -131,7 +132,10 @@ describe("startManagedGatewayConfigReloader hotReloadStatus plumbing", () => {
         webTools: {},
       })) as never,
       resolveSharedGatewaySessionGenerationForConfig: () => undefined,
-      sharedGatewaySessionGenerationState: { current: undefined, required: null },
+      sharedGatewaySessionGenerationState: new SharedGatewaySessionGenerationState({
+        current: undefined,
+        required: null,
+      }),
       prepareTerminalConfig: vi.fn(),
       reconcileRuntimePolicy: vi.fn(),
       commitRuntimePolicy: vi.fn(),

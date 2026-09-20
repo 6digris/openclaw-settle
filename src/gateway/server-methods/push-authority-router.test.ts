@@ -11,7 +11,7 @@ import {
   invalidateGatewayDeviceRevocation,
 } from "../device-revocation.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
-import { createRequiredSharedGatewaySessionGenerationReader } from "../server-shared-auth-generation.js";
+import { SharedGatewaySessionGenerationState } from "../server-shared-auth-generation.js";
 import {
   createDispatchTestHarness,
   createOperatorWsClient,
@@ -147,12 +147,10 @@ describe("Web Push router authority at the worker grant", () => {
     const context = createDirectChatContext({ isConnectionActive, getClientConnIds });
     const harness = createDispatchTestHarness({
       connId: "original-connection",
-      getRequiredSharedGatewaySessionGeneration: createRequiredSharedGatewaySessionGenerationReader(
-        {
-          current: "generation-a",
-          required: null,
-        },
-      ),
+      getRequiredSharedGatewaySessionGeneration: new SharedGatewaySessionGenerationState({
+        current: "generation-a",
+        required: null,
+      }).reader,
       buildRequestContext: () => context,
       extraHandlers: pushHandlers,
     });

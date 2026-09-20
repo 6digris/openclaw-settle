@@ -199,11 +199,7 @@ export function createLazyPluginRuntime(params: {
   type RuntimeModule = {
     createPluginRuntime?: PluginRuntimeFactory;
   };
-  let runtimeModule: RuntimeModule | undefined;
   const resolveRuntimeModule = (): RuntimeModule => {
-    if (runtimeModule) {
-      return runtimeModule;
-    }
     const resolution = resolvePluginRuntimeModulePathWithDiagnostics({
       devSourceRoot: params.devSourceRoot,
       pluginSdkResolution: params.pluginSdkResolution,
@@ -217,10 +213,9 @@ export function createLazyPluginRuntime(params: {
       );
     }
     const resolvedPath = resolution.resolvedPath;
-    runtimeModule = withPluginCache(cache, () =>
+    return withPluginCache(cache, () =>
       withProfile({ source: resolvedPath }, "runtime-module", () => {
         const native = tryNativeRequireModule(resolvedPath, {
-          allowWindows: true,
           aliasMap: preparePluginLoaderAliases({
             modulePath: resolvedPath,
             moduleUrl: import.meta.url,
@@ -236,7 +231,6 @@ export function createLazyPluginRuntime(params: {
         return native.moduleExport as RuntimeModule;
       }),
     );
-    return runtimeModule;
   };
 
   const base = createRuntimeBase();

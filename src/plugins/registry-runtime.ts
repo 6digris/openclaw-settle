@@ -124,8 +124,6 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
     }
     const owner = Object.freeze({
       channelId: record.id,
-      record,
-      epoch: record,
       resolveGatewayContext: scopedGatewayContext,
       isLive: ownsLiveRegistrySlot,
     });

@@ -117,70 +117,78 @@ it.each(
 )(
   "preserves live owner authority through $command persistence (revoke=$revoke)",
   async ({ command, handler, persistedValue, expected, success, revocation, revoke }) => {
-    await withAdminIngress(async ({ cfg, admins, context, state }) => {
-      cfg.commands = { ...cfg.commands, text: true, config: true, mcp: true };
-      cfg.logging = { level: "info" };
-      cfg.mcp = { servers: { fixture: { command: "original-mcp" } } };
-      await state.writeConfig(cfg);
-      const original = await readFile(state.configPath, "utf8");
-      const admin = admins[0]!;
-      const params = buildCommandTestParams(command, cfg, await context(admin.identity.senderId), {
-        workspaceDir: state.workspaceDir,
-      });
-      expect(params.command.senderIsOwner).toBe(true);
+    await withAdminIngress(
+      async ({ cfg, admins, context, state }) => {
+        cfg.commands = { ...cfg.commands, text: true, config: true, mcp: true };
+        cfg.logging = { level: "info" };
+        cfg.mcp = { servers: { fixture: { command: "original-mcp" } } };
+        await state.writeConfig(cfg);
+        const original = await readFile(state.configPath, "utf8");
+        const admin = admins[0]!;
+        const params = buildCommandTestParams(
+          command,
+          cfg,
+          await context(admin.identity.senderId),
+          {
+            workspaceDir: state.workspaceDir,
+          },
+        );
+        expect(params.command.senderIsOwner).toBe(true);
 
-      const preparing = createDeferredCore();
-      const finishPreparation = createDeferredCore();
-      setRuntimeConfigSnapshotRefreshHandler({
-        preflight: async () => {
-          preparing.resolve();
-          await finishPreparation.promise;
-        },
-        refresh: () => false,
-      });
-      const pending = handler(params, true).then(
-        (result) => ({ result, error: undefined }),
-        (error: unknown) => ({ result: undefined, error }),
-      );
-      try {
-        expect(
-          await Promise.race([
-            preparing.promise.then(() => "preparing"),
-            pending.then(() => "finished"),
-          ]),
-        ).toBe("preparing");
-        expect(await readFile(state.configPath, "utf8")).toBe(original);
-        if (revoke) {
-          if (revocation === "role") {
-            setUserProfileRole(admin.profile.id, "member");
-          } else if (revocation === "grant") {
-            delete cfg.gateway!.auth!.identityScopes!["ada@example.test"];
-          } else {
-            unlinkUserChannelIdentity(admin.profile.id, admin.identity);
-            if (revocation === "reassign") {
-              linkUserChannelIdentity(admins[1]!.profile.id, admin.identity);
+        const preparing = createDeferredCore();
+        const finishPreparation = createDeferredCore();
+        setRuntimeConfigSnapshotRefreshHandler({
+          preflight: async () => {
+            preparing.resolve();
+            await finishPreparation.promise;
+          },
+          refresh: () => false,
+        });
+        const pending = handler(params, true).then(
+          (result) => ({ result, error: undefined }),
+          (error: unknown) => ({ result: undefined, error }),
+        );
+        try {
+          expect(
+            await Promise.race([
+              preparing.promise.then(() => "preparing"),
+              pending.then(() => "finished"),
+            ]),
+          ).toBe("preparing");
+          expect(await readFile(state.configPath, "utf8")).toBe(original);
+          if (revoke) {
+            if (revocation === "role") {
+              setUserProfileRole(admin.profile.id, "member");
+            } else if (revocation === "grant") {
+              delete cfg.gateway!.auth!.identityScopes!["ada@example.test"];
+            } else {
+              unlinkUserChannelIdentity(admin.profile.id, admin.identity);
+              if (revocation === "reassign") {
+                linkUserChannelIdentity(admins[1]!.profile.id, admin.identity);
+              }
             }
           }
+          finishPreparation.resolve();
+          const outcome = await pending;
+          const persisted = await readFile(state.configPath, "utf8");
+          if (revoke) {
+            expect(persisted).toBe(original);
+            expect(outcome.error).toMatchObject({
+              message: expect.stringContaining("authority changed"),
+            });
+          } else {
+            expect(outcome.error).toBeUndefined();
+            expect(persistedValue(JSON.parse(persisted) as OpenClawConfig)).toEqual(expected);
+            expect(outcome.result?.reply?.text).toContain(success);
+          }
+        } finally {
+          finishPreparation.resolve();
+          await pending;
+          setRuntimeConfigSnapshotRefreshHandler(null);
         }
-        finishPreparation.resolve();
-        const outcome = await pending;
-        const persisted = await readFile(state.configPath, "utf8");
-        if (revoke) {
-          expect(persisted).toBe(original);
-          expect(outcome.error).toMatchObject({
-            message: expect.stringContaining("authority changed"),
-          });
-        } else {
-          expect(outcome.error).toBeUndefined();
-          expect(persistedValue(JSON.parse(persisted) as OpenClawConfig)).toEqual(expected);
-          expect(outcome.result?.reply?.text).toContain(success);
-        }
-      } finally {
-        finishPreparation.resolve();
-        await pending;
-        setRuntimeConfigSnapshotRefreshHandler(null);
-      }
-    });
+      },
+      revocation === "grant" ? "identity-grant" : "role",
+    );
   },
 );
 

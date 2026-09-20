@@ -29,7 +29,7 @@ it.each([
   { commandName: "think", preparation: "settle", label: "revocation during accepted control" },
 ] as const)("fences /$commandName ACP $label", async ({ commandName, preparation }) => {
   await withDiscordNativeAdminFixture(
-    async ({ cfg, state, profile, publishConfig, run, dispatch }) => {
+    async ({ cfg, state, profile, publishConfig, run, dispatch, autocomplete }) => {
       const backendId = "discord-owner-proof";
       cfg.acp = { enabled: true, backend: backendId, allowedAgents: ["main"] };
       cfg.session = { store: state.path("native-acp-sessions.json") };
@@ -135,6 +135,23 @@ it.each([
         await writeFile(effectsPath, "");
         const target = { cfg, agentId: "main", sessionKey: binding.statefulTarget.sessionKey };
         const before = manager.resolveSession(target);
+        if (
+          commandName === "think" &&
+          ["initialize", "configure", "replace"].includes(preparation)
+        ) {
+          const completed = await autocomplete();
+          expect(completed.respond).toHaveBeenCalledWith(
+            expect.arrayContaining([expect.objectContaining({ value: "high" })]),
+          );
+          expect(await readFile(effectsPath, "utf8")).toBe("");
+          expect(manager.resolveSession(target)).toEqual(before);
+          setUserProfileRole(profile.id, "member");
+          const revoked = await autocomplete();
+          expect(revoked.respond).toHaveBeenCalledWith([]);
+          expect(await readFile(effectsPath, "utf8")).toBe("");
+          expect(manager.resolveSession(target)).toEqual(before);
+          setUserProfileRole(profile.id, "admin");
+        }
         const denied = await run({
           senderId: "100000000000000009",
           commandName,

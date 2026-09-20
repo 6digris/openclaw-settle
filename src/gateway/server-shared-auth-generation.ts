@@ -13,49 +13,130 @@ export type SharedGatewayAuthClient = GatewayPolicyClient & {
   sharedGatewaySessionGeneration?: string;
 };
 
-/** Mutable shared auth generation state. */
-export type SharedGatewaySessionGenerationState = {
-  current: string | undefined;
-  required: string | undefined | null;
-};
-
 export type SharedGatewaySessionGenerationOwnership = {
   generation: string | undefined;
   previousGeneration: string | undefined;
   revision: number;
 };
 
-const generationRevisionKey = Symbol("sharedGatewaySessionGenerationRevision");
-
-class GenerationRevision {
-  readonly #owner: SharedGatewaySessionGenerationState;
+/** One Gateway owns its generation fields, revision and read-only admission capability. */
+export class SharedGatewaySessionGenerationState {
+  #current: string | undefined;
+  #required: string | undefined | null;
   #revision = 0;
+  readonly #reader: GenerationReader;
 
-  constructor(owner: SharedGatewaySessionGenerationState) {
-    this.#owner = owner;
-    Object.setPrototypeOf(this, null);
-    Object.freeze(this);
+  constructor(initial: { current: string | undefined; required: string | undefined | null }) {
+    this.#current = initial.current;
+    this.#required = initial.required;
+    this.#reader = () => (this.#required === null ? this.#current : this.#required);
+    Object.defineProperty(this.#reader, generationReaderStateKey, {
+      value: new GenerationReaderBinding(this.#reader, this),
+    });
   }
 
-  static #read(owner: SharedGatewaySessionGenerationState): GenerationRevision | undefined {
-    const value: unknown = Object.getOwnPropertyDescriptor(owner, generationRevisionKey)?.value;
-    return typeof value === "object" && value !== null && #owner in value && value.#owner === owner
-      ? value
-      : undefined;
+  get current(): string | undefined {
+    return this.#current;
   }
 
-  static current(owner: SharedGatewaySessionGenerationState): number {
-    const state = this.#read(owner);
-    return state ? state.#revision : 0;
+  get required(): string | undefined | null {
+    return this.#required;
   }
 
-  static advance(owner: SharedGatewaySessionGenerationState): number {
-    let state = this.#read(owner);
-    if (!state) {
-      state = new GenerationRevision(owner);
-      Object.defineProperty(owner, generationRevisionKey, { value: state });
+  get requiredGeneration(): string | undefined {
+    return this.#required === null ? this.#current : this.#required;
+  }
+
+  get reader(): GenerationReader {
+    return this.#reader;
+  }
+
+  static fromReader(
+    read: GenerationReader | undefined,
+  ): SharedGatewaySessionGenerationState | undefined {
+    const binding: unknown =
+      read && Object.getOwnPropertyDescriptor(read, generationReaderStateKey)?.value;
+    return read ? GenerationReaderBinding.read(binding, read) : undefined;
+  }
+
+  capture(): SharedGatewaySessionGenerationOwnership {
+    return {
+      generation: this.#current,
+      previousGeneration: this.#current,
+      revision: this.#revision,
+    };
+  }
+
+  owns(ownership: SharedGatewaySessionGenerationOwnership): boolean {
+    return this.#revision === ownership.revision;
+  }
+
+  claim(
+    ownership: SharedGatewaySessionGenerationOwnership,
+    generation: string | undefined,
+  ): SharedGatewaySessionGenerationOwnership | null {
+    if (!this.owns(ownership)) {
+      return null;
     }
-    return ++state.#revision;
+    const previousGeneration = this.#current;
+    this.#current = generation;
+    return { generation, previousGeneration, revision: ++this.#revision };
+  }
+
+  publish(next: { current: string | undefined; required: string | undefined | null }): void {
+    this.#current = next.current;
+    this.#required = next.required;
+    this.#revision++;
+  }
+
+  replace(
+    ownership: SharedGatewaySessionGenerationOwnership,
+    next: { current: string | undefined; required: string | undefined | null },
+  ): boolean {
+    if (!this.owns(ownership)) {
+      return false;
+    }
+    this.publish(next);
+    return true;
+  }
+
+  restoreCurrent(
+    ownership: SharedGatewaySessionGenerationOwnership,
+    current: string | undefined,
+  ): boolean {
+    if (!this.owns(ownership)) {
+      return false;
+    }
+    this.#current = current;
+    this.#revision++;
+    return true;
+  }
+
+  setRequired(
+    ownership: SharedGatewaySessionGenerationOwnership,
+    required: string | undefined | null,
+  ): SharedGatewaySessionGenerationOwnership | null {
+    if (!this.owns(ownership)) {
+      return null;
+    }
+    this.#required = required;
+    this.#revision++;
+    return this.capture();
+  }
+
+  finalize(ownership: SharedGatewaySessionGenerationOwnership): boolean {
+    if (!this.owns(ownership)) {
+      return false;
+    }
+    this.#current = ownership.generation;
+    if (
+      this.#required === ownership.generation ||
+      (this.#required !== null && ownership.previousGeneration !== ownership.generation)
+    ) {
+      this.#required = null;
+    }
+    this.#revision++;
+    return true;
   }
 }
 
@@ -81,41 +162,6 @@ class GenerationReaderBinding {
       ? value.#state
       : undefined;
   }
-}
-
-/** Retain the actual generation owner for request admission across an awaited write. */
-export function createRequiredSharedGatewaySessionGenerationReader(
-  state: SharedGatewaySessionGenerationState,
-): () => string | undefined {
-  const read = () => getRequiredSharedGatewaySessionGeneration(state);
-  Object.defineProperty(read, generationReaderStateKey, {
-    value: new GenerationReaderBinding(read, state),
-  });
-  return read;
-}
-
-/** Only readers created by this owner provide transaction-safe generation facts. */
-export function getSharedGatewaySessionGenerationReaderState(
-  read: (() => string | undefined) | undefined,
-): SharedGatewaySessionGenerationState | undefined {
-  const binding: unknown =
-    read && Object.getOwnPropertyDescriptor(read, generationReaderStateKey)?.value;
-  return read ? GenerationReaderBinding.read(binding, read) : undefined;
-}
-
-function advanceStateRevision(state: SharedGatewaySessionGenerationState): number {
-  return GenerationRevision.advance(state);
-}
-
-/** Capture current generation-state ownership without mutating it. */
-export function captureSharedGatewaySessionGenerationOwnership(
-  state: SharedGatewaySessionGenerationState,
-): SharedGatewaySessionGenerationOwnership {
-  return {
-    generation: state.current,
-    previousGeneration: state.current,
-    revision: GenerationRevision.current(state),
-  };
 }
 
 /** Disconnect shared-auth clients whose generation no longer matches the expected one. */
@@ -154,121 +200,6 @@ export function disconnectAllSharedGatewayAuthClients(
   }
 }
 
-/** Resolve the generation clients must use, treating null as "current is required". */
-export function getRequiredSharedGatewaySessionGeneration(
-  state: SharedGatewaySessionGenerationState,
-): string | undefined {
-  return state.required === null ? state.current : state.required;
-}
-
-/** Claim current generation while preserving required until its transaction commits. */
-function claimSharedGatewaySessionGeneration(
-  state: SharedGatewaySessionGenerationState,
-  generation: string | undefined,
-): SharedGatewaySessionGenerationOwnership {
-  const previousGeneration = state.current;
-  state.current = generation;
-  return { generation, previousGeneration, revision: advanceStateRevision(state) };
-}
-
-/** Claim current only while no later generation-state writer has run. */
-export function claimSharedGatewaySessionGenerationIfOwned(
-  state: SharedGatewaySessionGenerationState,
-  ownership: SharedGatewaySessionGenerationOwnership,
-  generation: string | undefined,
-): SharedGatewaySessionGenerationOwnership | null {
-  if (!isSharedGatewaySessionGenerationOwnershipCurrent(state, ownership)) {
-    return null;
-  }
-  return claimSharedGatewaySessionGeneration(state, generation);
-}
-
-/** Check whether a transaction still owns all generation-state mutations. */
-export function isSharedGatewaySessionGenerationOwnershipCurrent(
-  state: SharedGatewaySessionGenerationState,
-  ownership: SharedGatewaySessionGenerationOwnership,
-): boolean {
-  return GenerationRevision.current(state) === ownership.revision;
-}
-
-/** Replace both generation fields as one ownership-changing mutation. */
-function replaceSharedGatewaySessionGenerationState(
-  state: SharedGatewaySessionGenerationState,
-  next: Pick<SharedGatewaySessionGenerationState, "current" | "required">,
-): void {
-  state.current = next.current;
-  state.required = next.required;
-  advanceStateRevision(state);
-}
-
-/** Replace both fields only while the caller still owns generation state. */
-export function replaceOwnedSharedGatewaySessionGenerationState(
-  state: SharedGatewaySessionGenerationState,
-  ownership: SharedGatewaySessionGenerationOwnership,
-  next: Pick<SharedGatewaySessionGenerationState, "current" | "required">,
-): boolean {
-  if (!isSharedGatewaySessionGenerationOwnershipCurrent(state, ownership)) {
-    return false;
-  }
-  replaceSharedGatewaySessionGenerationState(state, next);
-  return true;
-}
-
-/** Restore current only while preserving the required marker owned by the transaction. */
-export function restoreOwnedCurrentSharedGatewaySessionGeneration(
-  state: SharedGatewaySessionGenerationState,
-  ownership: SharedGatewaySessionGenerationOwnership,
-  current: string | undefined,
-): boolean {
-  if (!isSharedGatewaySessionGenerationOwnershipCurrent(state, ownership)) {
-    return false;
-  }
-  state.current = current;
-  advanceStateRevision(state);
-  return true;
-}
-
-/** Update the required marker as one ownership-changing mutation. */
-function setRequiredSharedGatewaySessionGeneration(
-  state: SharedGatewaySessionGenerationState,
-  required: string | undefined | null,
-): void {
-  state.required = required;
-  advanceStateRevision(state);
-}
-
-/** Update required only while no later generation-state writer has run. */
-export function setRequiredSharedGatewaySessionGenerationIfOwned(
-  state: SharedGatewaySessionGenerationState,
-  ownership: SharedGatewaySessionGenerationOwnership,
-  required: string | undefined | null,
-): SharedGatewaySessionGenerationOwnership | null {
-  if (!isSharedGatewaySessionGenerationOwnershipCurrent(state, ownership)) {
-    return null;
-  }
-  setRequiredSharedGatewaySessionGeneration(state, required);
-  return captureSharedGatewaySessionGenerationOwnership(state);
-}
-
-/** Finalize only while no later generation-state writer has replaced this owner. */
-export function finalizeOwnedSharedGatewaySessionGeneration(
-  state: SharedGatewaySessionGenerationState,
-  ownership: SharedGatewaySessionGenerationOwnership,
-): boolean {
-  if (!isSharedGatewaySessionGenerationOwnershipCurrent(state, ownership)) {
-    return false;
-  }
-  state.current = ownership.generation;
-  if (
-    state.required === ownership.generation ||
-    (state.required !== null && ownership.previousGeneration !== ownership.generation)
-  ) {
-    state.required = null;
-  }
-  advanceStateRevision(state);
-  return true;
-}
-
 /** Enforce shared auth generation behavior after a config write. */
 export function enforceSharedGatewaySessionGenerationForConfigWrite(params: {
   state: SharedGatewaySessionGenerationState;
@@ -279,7 +210,7 @@ export function enforceSharedGatewaySessionGenerationForConfigWrite(params: {
   const reloadMode = resolveGatewayReloadSettings(params.nextConfig).mode;
   const nextSharedGatewaySessionGeneration = params.resolveRuntimeSnapshotGeneration();
   if (reloadMode === "off") {
-    replaceSharedGatewaySessionGenerationState(params.state, {
+    params.state.publish({
       current: nextSharedGatewaySessionGeneration,
       required: nextSharedGatewaySessionGeneration,
     });
@@ -289,7 +220,7 @@ export function enforceSharedGatewaySessionGenerationForConfigWrite(params: {
     });
     return;
   }
-  replaceSharedGatewaySessionGenerationState(params.state, {
+  params.state.publish({
     current: nextSharedGatewaySessionGeneration,
     required: null,
   });

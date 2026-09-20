@@ -14,7 +14,10 @@ describe("core and auxiliary method handler parity", () => {
       activateRuntimeSecrets: async () => {
         throw new Error("unexpected secrets reload");
       },
-      sharedGatewaySessionGenerationState: { current: undefined, required: null },
+      sharedGatewaySessionGenerationState: new SharedGatewaySessionGenerationState({
+        current: undefined,
+        required: null,
+      }),
       resolveSharedGatewaySessionGenerationForConfig: () => undefined,
       clients: [],
       channelManager: {
@@ -39,3 +42,4 @@ describe("core and auxiliary method handler parity", () => {
     }
   });
 });
+import { SharedGatewaySessionGenerationState } from "./server-shared-auth-generation.js";

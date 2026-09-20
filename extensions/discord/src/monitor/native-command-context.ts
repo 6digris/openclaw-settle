@@ -6,6 +6,7 @@ import {
 import type { ResolvedAgentRoute } from "openclaw/plugin-sdk/routing";
 import { resolveDiscordConversationIdentity } from "../conversation-identity.js";
 import type {
+  AutocompleteInteraction,
   ButtonInteraction,
   CommandInteraction,
   StringSelectMenuInteraction,
@@ -83,7 +84,7 @@ export async function buildDiscordNativeCommandContext(
   };
   // Native admission has already checked the live channel, member, DM, and command policy.
   // Carry that decision through the same identity-bound host ingress as ordinary messages.
-  const admissionGroup = "discord-native-command";
+  const allowFrom = params.commandAuthorized ? [`user:${params.user.id}`] : [];
   const channelIngress = await getDiscordRuntime()
     .channel.inbound.ingress.createResolver({
       channelId: "discord",
@@ -107,22 +108,8 @@ export async function buildDiscordNativeCommandContext(
       event: { kind: "native-command", mayPair: false },
       dmPolicy: "allowlist",
       groupPolicy: "allowlist",
-      allowFrom: [`accessGroup:${admissionGroup}`],
-      groupAllowFrom: [`accessGroup:${admissionGroup}`],
-      accessGroupMembership: [
-        params.commandAuthorized
-          ? {
-              kind: "matched",
-              groupName: admissionGroup,
-              source: "dynamic",
-              matchedEntryIds: [admissionGroup],
-            }
-          : {
-              kind: "not-matched",
-              groupName: admissionGroup,
-              source: "dynamic",
-            },
-      ],
+      allowFrom,
+      groupAllowFrom: allowFrom,
       command: { modeWhenAccessGroupsOff: "configured" },
     });
   return await (params.buildContext ?? buildChannelInboundEventContext)({
@@ -173,12 +160,7 @@ export async function buildDiscordNativeCommandContext(
           channelId: params.channelId,
         }) ?? (params.isDirectMessage ? `user:${params.user.id}` : `channel:${params.channelId}`),
     },
-    message: {
-      body: params.prompt,
-      bodyForAgent: params.prompt,
-      rawBody: params.prompt,
-      commandBody: params.prompt,
-    },
+    message: { rawBody: params.prompt },
     access: {
       mentions: { canDetectMention: true, wasMentioned: true },
       commands: { authorized: params.commandAuthorized },
@@ -214,7 +196,11 @@ export async function buildDiscordNativeInteractionContext(
     | "commandAuthorized"
     | "buildContext"
   > & {
-    interaction: CommandInteraction | ButtonInteraction | StringSelectMenuInteraction;
+    interaction:
+      | CommandInteraction
+      | ButtonInteraction
+      | StringSelectMenuInteraction
+      | AutocompleteInteraction;
     route: ResolvedAgentRoute;
     boundSessionKey?: string;
     sessionPrefix: string;

@@ -272,7 +272,6 @@ function createPluginModuleLoader(
               return undefined;
             }
             const native = tryNativeRequireModule(target, {
-              allowWindows: true,
               aliasMap: params.resolveAlias,
             });
             if (!native.ok) {
@@ -303,7 +302,6 @@ function createPluginModuleLoader(
       pluginModuleLoaderStats.calls += 1;
       if (params.tryNative) {
         const native = tryNativeRequireJavaScriptModule(target, {
-          allowWindows: true,
           aliasMap: params.resolveAlias,
           fallbackOnMissingDependency: true,
         });

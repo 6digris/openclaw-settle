@@ -64,7 +64,6 @@ type ChannelIngressResolutionBinding = Readonly<{
   participantOutcomeAffecting: boolean;
   identifierAuthentication: "affected" | "evaluated" | "not-evaluated";
   owner?: ChannelIngressHostOwner;
-  ownerEpoch?: object;
   gatewayContext?: ReturnType<GatewayContextResolver>;
   scope?: ChannelIngressResolutionScope;
   contextBinding?: Readonly<ChannelIngressContextBinding>;
@@ -285,7 +284,6 @@ export function recordChannelIngressResolution(params: {
     participantOutcomeAffecting: params.participantOutcomeAffecting,
     identifierAuthentication: params.identifierAuthentication,
     owner: activeOwner,
-    ownerEpoch: activeOwner?.epoch,
     gatewayContext: activeOwner.resolveGatewayContext?.(),
     scope: Object.freeze({ conversation: Object.freeze({ ...params.scope.conversation }) }),
     contextBinding: snapshotContextBinding(params.scope.contextBinding),
@@ -344,7 +342,6 @@ export function prepareHostChannelContextAdmissionEvidence(params: {
     const ownerMatches =
       params.owner !== undefined &&
       binding?.owner === params.owner &&
-      binding.ownerEpoch === params.owner.epoch &&
       binding.gatewayContext === params.owner.resolveGatewayContext?.() &&
       params.owner.isLive();
     const resultIngress = ownDataValue(result, "ingress");

@@ -112,7 +112,7 @@ function loadFacadeActivationCheckRuntime(): FacadeActivationCheckRuntimeModule 
         import.meta.url,
       ),
     );
-    const native = tryNativeRequireModule(modulePath, { allowWindows: true });
+    const native = tryNativeRequireModule(modulePath);
     if (!native.ok) {
       throw new Error(`Host facade activation runtime requires native loading: ${modulePath}`);
     }

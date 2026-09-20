@@ -8,6 +8,7 @@ import {
   buildHostChannelInboundEventContext,
 } from "../inbound-event/context.js";
 import { createHostChannelInboundEventContextBuilder } from "../inbound-event/host-context-builder.js";
+import { publicResultScopeKey } from "./admission-evidence-scope-key.js";
 import {
   combineChannelAdmissionEvidence,
   createChannelAdmissionAudit,
@@ -27,16 +28,12 @@ async function buildAdmittedContext(
   resolveGatewayContext?: GatewayContextResolver,
   authentication?: "verified" | "asserted" | "unverified" | "mutable",
 ) {
-  const record = {};
-  const epoch = {};
   const gateway = {
     channelAdmissionAudit: audit,
     getRuntimeConfig: () => ({}),
   } as GatewayRequestContext;
   const owner = {
     channelId: "test",
-    record,
-    epoch,
     isLive: () => true,
     resolveGatewayContext: resolveGatewayContext ?? (() => gateway),
   };
@@ -215,21 +212,62 @@ describe("channel admission evidence", () => {
     }
   });
 
-  it("preserves evidence only across a same-identity public copy", async () => {
-    const audit = createChannelAdmissionAudit({ enabled: true });
-    try {
-      const source = await buildAdmittedContext(audit, "person-a");
-      const target = { ...source };
+  it.each(["unchanged", "unreadable"])(
+    "copies admission only across a readable %s scope",
+    async (scope) => {
+      const audit = createChannelAdmissionAudit({ enabled: true });
+      try {
+        const source = await buildAdmittedContext(audit, "person-a");
+        const target = new Proxy(
+          { ...source },
+          {
+            getOwnPropertyDescriptor(value, key) {
+              if (scope === "unreadable" && key === "NativeDirectUserId") {
+                throw new Error("scope unavailable");
+              }
+              return Reflect.getOwnPropertyDescriptor(value, key);
+            },
+          },
+        );
 
-      copyChannelParticipantAdmissionEvidence(source, target);
+        copyChannelParticipantAdmissionEvidence(source, target);
 
-      expect(inspectChannelContext(target)).toMatchObject({
-        ingressState: "present",
-        invoker: { state: "present", kind: "person" },
-      });
-    } finally {
-      audit.close();
-    }
+        expect(inspectChannelContext(target)).toMatchObject({
+          ingressState: scope === "unchanged" ? "present" : "unknown",
+          invoker:
+            scope === "unchanged" ? { state: "present", kind: "person" } : { state: "unknown" },
+        });
+        if (scope === "unreadable") {
+          expect(readChannelContextGatewayContextResolver(target)).toBeUndefined();
+        }
+      } finally {
+        audit.close();
+      }
+    },
+  );
+
+  it("rejects an event whose symbol descriptor becomes unreadable without throwing", async () => {
+    const result = await resolveStableChannelMessageIngress({
+      channelId: "test",
+      accountId: "default",
+      subject: { stableId: "person-1" },
+      conversation: { kind: "direct", id: "dm-1" },
+      dmPolicy: "open",
+    });
+    const key = Symbol("unreadable-event-field");
+    let reads = 0;
+    result.state.event = new Proxy(
+      { ...result.state.event, [key]: true },
+      {
+        getOwnPropertyDescriptor(value, property) {
+          if (property === key && ++reads > 1) {
+            throw new Error("event field unavailable");
+          }
+          return Reflect.getOwnPropertyDescriptor(value, property);
+        },
+      },
+    );
+    expect(publicResultScopeKey(result)).toBeUndefined();
   });
 
   it.each([
@@ -418,8 +456,6 @@ describe("channel admission evidence", () => {
     } as GatewayRequestContext;
     const owner = {
       channelId: "public-test",
-      record: {},
-      epoch: {},
       isLive: () => true,
       resolveGatewayContext: () => gateway,
     };

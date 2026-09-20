@@ -1,9 +1,6 @@
 import { readGatewayDeviceRevocationGuard } from "../device-revocation.js";
 import type { ExpectedProfileBinding } from "../expected-profile.js";
-import {
-  getRequiredSharedGatewaySessionGeneration,
-  getSharedGatewaySessionGenerationReaderState,
-} from "../server-shared-auth-generation.js";
+import { SharedGatewaySessionGenerationState } from "../server-shared-auth-generation.js";
 import type { GatewayWsClient } from "../server/ws-types.js";
 import type {
   GatewayRequestHandlerOptions,
@@ -91,7 +88,7 @@ export function bindWebSocketRequestMutationAuthority<T extends GatewayRequestOp
   client: GatewayWsClient,
   generationReader: (() => string | undefined) | undefined,
 ): T {
-  const generationState = getSharedGatewaySessionGenerationReaderState(generationReader);
+  const generationState = SharedGatewaySessionGenerationState.fromReader(generationReader);
   const hasCurrentDeviceRevocation = readGatewayDeviceRevocationGuard(
     options.hasCurrentClientAuthority,
   );
@@ -120,7 +117,7 @@ export function bindWebSocketRequestMutationAuthority<T extends GatewayRequestOp
       throw new Error("Gateway requester authority changed");
     }
     const requiredGeneration = client.usesSharedGatewayAuth
-      ? getRequiredSharedGatewaySessionGeneration(generationState)
+      ? generationState.requiredGeneration
       : undefined;
     if (
       requiredGeneration !== undefined &&

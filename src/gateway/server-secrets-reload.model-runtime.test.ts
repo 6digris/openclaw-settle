@@ -26,6 +26,7 @@ import {
 import { createGatewaySecretsReloader } from "./server-secrets-reload.js";
 import {
   enforceSharedGatewaySessionGenerationForConfigWrite,
+  SharedGatewaySessionGenerationState,
   type SharedGatewayAuthClient,
 } from "./server-shared-auth-generation.js";
 import { createRuntimeSecretsActivator } from "./server-startup-config.js";
@@ -121,10 +122,10 @@ async function coldRuntime(clients: SharedGatewayAuthClient[] = []) {
       agentId: "main",
     })?.config.models?.providers?.["recoverable-fixture"]?.apiKey,
   ).toEqual(recoveredRef);
-  const generationState = {
-    current: "initial" as string | undefined,
-    required: null as string | undefined | null,
-  };
+  const generationState = new SharedGatewaySessionGenerationState({
+    current: "initial",
+    required: null,
+  });
   const activator = createRuntimeSecretsActivator({
     logSecrets: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     emitStateEvent: vi.fn(),
@@ -295,7 +296,10 @@ describe("secret reload model-runtime publication", () => {
         expect((await reader).config).toBe(current);
         expect(requireRuntimeConfig()).toBe(current);
         expect(getRuntimeConfigSourceSnapshot()?.models).toEqual(next.models);
-        expect(generationState).toEqual({ current: "newer", required: null });
+        expect({ current: generationState.current, required: generationState.required }).toEqual({
+          current: "newer",
+          required: null,
+        });
       } finally {
         release.resolve();
         await Promise.allSettled([oldReload, nextPublication]);

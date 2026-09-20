@@ -428,7 +428,6 @@ function loadBundledEntryModuleSync(
   let sourceLoaderReadyMs = 0;
   if (canTryNodeRequireBuiltModule(modulePath)) {
     const native = tryNativeRequireJavaScriptModule(modulePath, {
-      allowWindows: true,
       aliasMap: buildPluginLoaderAliasMap(modulePath, process.argv[1], import.meta.url),
       fallbackOnMissingDependency: true,
     });

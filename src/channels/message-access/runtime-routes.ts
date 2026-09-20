@@ -4,22 +4,7 @@ import type {
   ResolveChannelMessageIngressParams,
   ResolvedChannelMessageIngress,
 } from "./runtime-types.js";
-import type {
-  AccessGraphGate,
-  RedactedIngressMatch,
-  RouteGateFacts,
-  RouteSenderPolicy,
-} from "./types.js";
-
-type RouteFactDefaults = {
-  id: string;
-  kind?: RouteGateFacts["kind"];
-  precedence?: number;
-  senderPolicy?: RouteSenderPolicy;
-  senderAllowFrom?: Array<string | number>;
-  senderAllowFromSource?: RouteGateFacts["senderAllowFromSource"];
-  match?: RedactedIngressMatch;
-};
+import type { AccessGraphGate, RouteGateFacts } from "./types.js";
 
 function routeDescriptors(
   route: ResolveChannelMessageIngressParams["route"],
@@ -40,46 +25,6 @@ export function channelIngressRoutes(
   return routes.filter((route): route is ChannelIngressRouteDescriptor => Boolean(route));
 }
 
-function routeDescriptorMatch(descriptor: ChannelIngressRouteDescriptor) {
-  const matched = descriptor.matched ?? descriptor.allowed ?? descriptor.enabled !== false;
-  return {
-    matched,
-    matchedEntryIds: matched && descriptor.matchId ? [descriptor.matchId] : [],
-  };
-}
-
-function routeFact(
-  params: RouteFactDefaults & Pick<RouteGateFacts, "gate" | "effect">,
-): RouteGateFacts {
-  return {
-    id: params.id,
-    kind: params.kind ?? "route",
-    gate: params.gate,
-    effect: params.effect,
-    precedence: params.precedence ?? 0,
-    senderPolicy: params.senderPolicy ?? "inherit",
-    senderAllowFrom: params.senderAllowFrom,
-    senderAllowFromSource: params.senderAllowFromSource,
-    match: params.match,
-  };
-}
-
-function routeFactDefaults(descriptor: ChannelIngressRouteDescriptor) {
-  return {
-    id: descriptor.id,
-    ...(descriptor.kind ? { kind: descriptor.kind } : {}),
-    ...(descriptor.precedence !== undefined ? { precedence: descriptor.precedence } : {}),
-    ...(descriptor.senderPolicy ? { senderPolicy: descriptor.senderPolicy } : {}),
-    ...(descriptor.senderAllowFrom != null
-      ? { senderAllowFrom: [...descriptor.senderAllowFrom] }
-      : {}),
-    ...(descriptor.senderAllowFromSource
-      ? { senderAllowFromSource: descriptor.senderAllowFromSource }
-      : {}),
-    match: routeDescriptorMatch(descriptor),
-  };
-}
-
 export function routeFactsFromDescriptors(
   route: ResolveChannelMessageIngressParams["route"],
 ): RouteGateFacts[] {
@@ -87,35 +32,41 @@ export function routeFactsFromDescriptors(
     if (descriptor.configured === false) {
       return [];
     }
-    const defaults = routeFactDefaults(descriptor);
+    let kind = descriptor.kind ?? "route";
+    let gate: RouteGateFacts["gate"] = "matched";
+    let effect: RouteGateFacts["effect"] = "allow";
     if (descriptor.enabled === false) {
-      return [routeFact({ ...defaults, gate: "disabled", effect: "block-dispatch" })];
-    }
-    if (descriptor.allowed !== undefined) {
-      return [
-        routeFact({
-          ...defaults,
-          gate: descriptor.allowed ? "matched" : "not-matched",
-          effect: descriptor.allowed ? "allow" : "block-dispatch",
-        }),
-      ];
-    }
-    if (
+      gate = "disabled";
+      effect = "block-dispatch";
+    } else if (descriptor.allowed !== undefined) {
+      gate = descriptor.allowed ? "matched" : "not-matched";
+      effect = descriptor.allowed ? "allow" : "block-dispatch";
+    } else if (
       descriptor.senderPolicy !== "deny-when-empty" &&
       descriptor.senderAllowFrom == null &&
       descriptor.senderAllowFromSource == null
     ) {
       return [];
+    } else if (descriptor.senderPolicy !== "deny-when-empty") {
+      kind = "routeSender";
     }
+    const matched = descriptor.matched ?? descriptor.allowed ?? descriptor.enabled !== false;
     return [
-      routeFact({
-        ...defaults,
-        kind: descriptor.senderPolicy === "deny-when-empty" ? defaults.kind : "routeSender",
-        gate: "matched",
-        effect: "allow",
-        senderPolicy:
-          descriptor.senderPolicy === "deny-when-empty" ? "deny-when-empty" : defaults.senderPolicy,
-      }),
+      {
+        id: descriptor.id,
+        kind,
+        gate,
+        effect,
+        precedence: descriptor.precedence ?? 0,
+        senderPolicy: descriptor.senderPolicy ?? "inherit",
+        senderAllowFrom:
+          descriptor.senderAllowFrom == null ? undefined : [...descriptor.senderAllowFrom],
+        senderAllowFromSource: descriptor.senderAllowFromSource,
+        match: {
+          matched,
+          matchedEntryIds: matched && descriptor.matchId ? [descriptor.matchId] : [],
+        },
+      },
     ];
   });
 }

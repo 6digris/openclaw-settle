@@ -100,9 +100,7 @@ function expectJitiOptions(
 function expectNativeOptions(mock: unknown, target: string) {
   expect(callArg(mock, 0, 0, "native target")).toBe(target);
   const options = requireRecord(callArg(mock, 0, 1, "native options"), "native options");
-  expect(options.allowWindows).toBe(true);
   expect(options.fallbackOnMissingDependency).toBe(true);
-  expect(options.fallbackOnNativeError).toBeUndefined();
 }
 
 function expectStats(value: unknown, fields: Record<string, unknown>) {
@@ -581,7 +579,6 @@ describe("getCachedPluginModuleLoader", () => {
     // `tryNativeRequireJavaScriptModule` resolves.
     expect(createJiti).not.toHaveBeenCalled();
     expect(fromSourceTransformer).not.toHaveBeenCalled();
-    // allowWindows must be passed so the native fast path works on Windows too.
     expectNativeOptions(nativeStub, "/repo/dist/extensions/demo/api.js");
     expectStats(getPluginModuleLoaderStats(), {
       calls: 1,

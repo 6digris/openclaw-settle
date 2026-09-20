@@ -4,10 +4,7 @@ import { createDeferredCore } from "../../../shared/deferred.js";
 import { readUserProfileIdentity } from "../../../state/user-profile-list.js";
 import { createDirectChatContext } from "../../server-chat.agent-events.test-helpers.js";
 import { readGatewayRequestMutationAuthority } from "../../server-methods/session-mutation-guards.js";
-import {
-  createRequiredSharedGatewaySessionGenerationReader,
-  type SharedGatewaySessionGenerationState,
-} from "../../server-shared-auth-generation.js";
+import { SharedGatewaySessionGenerationState } from "../../server-shared-auth-generation.js";
 import {
   createDispatchTestHarness,
   createOperatorWsClient,
@@ -38,10 +35,10 @@ describe("authenticated request mutation custody", () => {
     "copied generation reader",
     "reminted generation reader",
   ] as const)("retains the admitted authority for %s", async (scenario) => {
-    const generation: SharedGatewaySessionGenerationState = {
+    const generation = new SharedGatewaySessionGenerationState({
       current: "generation-a",
       required: null,
-    };
+    });
     const connection = new AbortController();
     const client = createOperatorWsClient();
     client.usesSharedGatewayAuth = true;
@@ -62,7 +59,7 @@ describe("authenticated request mutation custody", () => {
       scenario === "opaque generation reader" ||
       scenario === "copied generation reader" ||
       scenario === "reminted generation reader";
-    const generationReader = createRequiredSharedGatewaySessionGenerationReader(generation);
+    const generationReader = generation.reader;
     const unboundReader = () => generation.current;
     if (scenario === "reminted generation reader") {
       for (const key of Object.getOwnPropertySymbols(generationReader)) {
@@ -179,7 +176,7 @@ describe("authenticated request mutation custody", () => {
       } else if (scenario === "client invalidated") {
         client.invalidated = true;
       } else if (scenario === "generation rotated" || compatibilityReader) {
-        generation.current = "generation-b";
+        generation.publish({ current: "generation-b", required: generation.required });
       }
     } finally {
       release.resolve();

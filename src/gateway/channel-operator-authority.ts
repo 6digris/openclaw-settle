@@ -7,13 +7,13 @@ import {
 import { resolveIdentityOperatorScopes } from "./operator-identity-scopes.js";
 import { resolveOperatorRolePolicyForAssignment } from "./operator-role-policy.js";
 
-/** A channel link proves identity, never an independent administrative grant. */
+/** Linked channel senders inherit their profile's current administrative authority. */
 export function resolveChannelOperatorAdmin(
   cfg: OpenClawConfig,
   identity: UserChannelIdentity,
   stateOptions: OpenClawStateDatabaseOptions = {},
 ): string | undefined {
-  if (!cfg.gateway?.auth?.identityScopes) {
+  if (!cfg.gateway?.roles && !cfg.gateway?.auth?.identityScopes) {
     return undefined;
   }
   const linked = resolveUserChannelIdentity(identity, stateOptions);
@@ -21,12 +21,12 @@ export function resolveChannelOperatorAdmin(
     return undefined;
   }
   const policy = resolveOperatorRolePolicyForAssignment(linked.profileId, linked.role, cfg);
-  const authorized =
-    (!policy || policy.scopes.includes("operator.admin")) &&
-    linked.loginIdentities.some((login) =>
-      resolveIdentityOperatorScopes(login, cfg.gateway?.auth?.identityScopes).includes(
-        "operator.admin",
-      ),
-    );
+  const authorized = policy
+    ? policy.scopes.includes("operator.admin")
+    : linked.loginIdentities.some((login) =>
+        resolveIdentityOperatorScopes(login, cfg.gateway?.auth?.identityScopes).includes(
+          "operator.admin",
+        ),
+      );
   return authorized ? linked.profileId : undefined;
 }

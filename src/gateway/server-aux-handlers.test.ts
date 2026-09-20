@@ -51,13 +51,16 @@ import {
   registerGatewaySecretCredentialReloadCases,
   type CredentialReloadHarnessOptions,
 } from "./server-secrets-reload.test-support.js";
-import { enforceSharedGatewaySessionGenerationForConfigWrite } from "./server-shared-auth-generation.js";
+import {
+  enforceSharedGatewaySessionGenerationForConfigWrite,
+  SharedGatewaySessionGenerationState,
+} from "./server-shared-auth-generation.js";
 
 const auxiliaries: ReturnType<typeof createGatewayAuxHandlers>[] = [];
 let fixture: OpenClawTestState | undefined;
 
 function publishSharedGatewayGeneration(
-  state: { current: string | undefined; required: string | undefined | null },
+  state: SharedGatewaySessionGenerationState,
   generation: string,
 ) {
   enforceSharedGatewaySessionGenerationForConfigWrite({
@@ -231,10 +234,12 @@ function createSecretsReloadHarness(params: SecretsReloadHarnessParams) {
     getNativeApprovalRouteCoordinator: () => undefined,
     activateRuntimeSecrets: params.activateRuntimeSecrets,
     buildReloadPlan: params.buildReloadPlan,
-    sharedGatewaySessionGenerationState: params.sharedGatewaySessionGenerationState ?? {
-      current: undefined,
-      required: null,
-    },
+    sharedGatewaySessionGenerationState:
+      params.sharedGatewaySessionGenerationState ??
+      new SharedGatewaySessionGenerationState({
+        current: undefined,
+        required: null,
+      }),
     resolveSharedGatewaySessionGenerationForConfig:
       params.resolveSharedGatewaySessionGenerationForConfig ?? (() => undefined),
     clients: params.clients ?? [],
@@ -635,10 +640,10 @@ describe("gateway aux handlers", () => {
       })
       .mockResolvedValue(undefined);
     const logChannelsInfo = vi.fn();
-    const sharedGatewaySessionGenerationState = {
-      current: "gen-old" as string | undefined,
-      required: "gen-old" as string | undefined | null,
-    };
+    const sharedGatewaySessionGenerationState = new SharedGatewaySessionGenerationState({
+      current: "gen-old",
+      required: "gen-old",
+    });
 
     const { reload, respond } = createSecretsReloadHarness({
       activateRuntimeSecrets,
@@ -688,7 +693,10 @@ describe("gateway aux handlers", () => {
     expect(getActiveSecretsRuntimeSnapshot()?.config).toEqual(
       slackZaloConfig("old-slack-secret", "old-zalo-secret"),
     );
-    expect(sharedGatewaySessionGenerationState).toEqual({
+    expect({
+      current: sharedGatewaySessionGenerationState.current,
+      required: sharedGatewaySessionGenerationState.required,
+    }).toEqual({
       current: "gen-old",
       required: "gen-old",
     });
@@ -704,10 +712,10 @@ describe("gateway aux handlers", () => {
     const prepared = createSnapshot(slackConfig("reload-secret"));
     const concurrent = createSnapshot(slackConfig("concurrent-secret"));
     const activateRuntimeSecrets = vi.fn(async () => prepared);
-    const sharedGatewaySessionGenerationState = {
-      current: "gen-old" as string | undefined,
-      required: "gen-old" as string | undefined | null,
-    };
+    const sharedGatewaySessionGenerationState = new SharedGatewaySessionGenerationState({
+      current: "gen-old",
+      required: "gen-old",
+    });
     const startChannel = vi
       .fn()
       .mockImplementationOnce(async () => {
@@ -736,7 +744,10 @@ describe("gateway aux handlers", () => {
       ["slack", "ops", { preserveManualStop: true }],
     ]);
     expect(getActiveSecretsRuntimeSnapshot()?.config).toEqual(slackConfig("concurrent-secret"));
-    expect(sharedGatewaySessionGenerationState).toEqual({
+    expect({
+      current: sharedGatewaySessionGenerationState.current,
+      required: sharedGatewaySessionGenerationState.required,
+    }).toEqual({
       current: "gen-concurrent",
       required: "gen-concurrent",
     });
@@ -746,10 +757,10 @@ describe("gateway aux handlers", () => {
     const initialConfig = slackConfig("old-slack-secret");
     const prepared = createSourceSnapshot(slackConfig("reload-secret"));
     activateSecretsRuntimeSnapshot(createSourceSnapshot(initialConfig));
-    const sharedGatewaySessionGenerationState = {
-      current: "gen-old" as string | undefined,
-      required: "gen-old" as string | undefined | null,
-    };
+    const sharedGatewaySessionGenerationState = new SharedGatewaySessionGenerationState({
+      current: "gen-old",
+      required: "gen-old",
+    });
     const startChannel = vi
       .fn()
       .mockImplementationOnce(async () => {
@@ -771,7 +782,10 @@ describe("gateway aux handlers", () => {
     expect(firstRespondCall(respond)[0]).toBe(false);
     expect(startChannel).toHaveBeenCalledTimes(2);
     expect(getActiveSecretsRuntimeSnapshot()?.config).toEqual(initialConfig);
-    expect(sharedGatewaySessionGenerationState).toEqual({
+    expect({
+      current: sharedGatewaySessionGenerationState.current,
+      required: sharedGatewaySessionGenerationState.required,
+    }).toEqual({
       current: "gen-concurrent",
       required: "gen-concurrent",
     });
@@ -831,10 +845,10 @@ describe("gateway aux handlers", () => {
     const stopChannel = vi.fn().mockResolvedValue(undefined);
     const startChannel = vi.fn().mockRejectedValue(new Error("slack refused to start"));
 
-    const sharedGatewaySessionGenerationState = {
-      current: "gen-a" as string | undefined,
-      required: "gen-a" as string | undefined | null,
-    };
+    const sharedGatewaySessionGenerationState = new SharedGatewaySessionGenerationState({
+      current: "gen-a",
+      required: "gen-a",
+    });
 
     const { reload, respond } = createSecretsReloadHarness({
       activateRuntimeSecrets,

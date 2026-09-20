@@ -16,7 +16,7 @@ function loadRequiredSnapshotReaders(): typeof import("./plugin-metadata-readers
       import.meta.url,
     ),
   );
-  const native = tryNativeRequireModule(modulePath, { allowWindows: true });
+  const native = tryNativeRequireModule(modulePath);
   if (!native.ok) {
     throw new Error(`Host plugin metadata runtime requires native loading: ${modulePath}`);
   }

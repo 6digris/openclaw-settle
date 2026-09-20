@@ -38,12 +38,7 @@ import {
 } from "./server-reload-contracts.js";
 import type { createGatewayReloadHandlers } from "./server-reload-hot.js";
 import {
-  captureSharedGatewaySessionGenerationOwnership,
-  claimSharedGatewaySessionGenerationIfOwned,
   disconnectStaleSharedGatewayAuthClients,
-  finalizeOwnedSharedGatewaySessionGeneration,
-  isSharedGatewaySessionGenerationOwnershipCurrent,
-  restoreOwnedCurrentSharedGatewaySessionGeneration,
   type SharedGatewaySessionGenerationOwnership,
 } from "./server-shared-auth-generation.js";
 import { publishRuntimeSecretsStateTransition } from "./server-startup-config.js";
@@ -330,9 +325,7 @@ export function createManagedReloadSecretHandlers(options: {
       // Prepared secrets carry effective defaults; commit and rollback must retain authored provenance.
       const previousRuntimeSourceConfig = getRuntimeConfigSourceSnapshot() ?? undefined;
       const previousSnapshotRevision = getActiveSecretsRuntimeSnapshotRevisionState();
-      const previousGenerationOwnership = captureSharedGatewaySessionGenerationOwnership(
-        params.sharedGatewaySessionGenerationState,
-      );
+      const previousGenerationOwnership = params.sharedGatewaySessionGenerationState.capture();
       const previousSharedGatewaySessionGeneration = previousGenerationOwnership.generation;
       const preparation = await tryPrepareRuntimeSecrets(
         prepareRuntimeCandidate(nextConfig, sourceConfig, transactionOwnership),
@@ -407,8 +400,7 @@ export function createManagedReloadSecretHandlers(options: {
           publish: async (commit, isCommitted) => {
             const claimGenerationOwnership = () => {
               publishedSharedGatewaySessionGeneration ??=
-                claimSharedGatewaySessionGenerationIfOwned(
-                  params.sharedGatewaySessionGenerationState,
+                params.sharedGatewaySessionGenerationState.claim(
                   previousGenerationOwnership,
                   nextSharedGatewaySessionGeneration,
                 );
@@ -459,11 +451,11 @@ export function createManagedReloadSecretHandlers(options: {
                       {
                         runtimeSourceConfig: previousRuntimeSourceConfig,
                         onActivated: () => {
-                          generationRestored = restoreOwnedCurrentSharedGatewaySessionGeneration(
-                            params.sharedGatewaySessionGenerationState,
-                            generationOwnership,
-                            previousSharedGatewaySessionGeneration,
-                          );
+                          generationRestored =
+                            params.sharedGatewaySessionGenerationState.restoreCurrent(
+                              generationOwnership,
+                              previousSharedGatewaySessionGeneration,
+                            );
                         },
                       },
                     );
@@ -474,11 +466,11 @@ export function createManagedReloadSecretHandlers(options: {
                     clearSecretsRuntimeSnapshotState();
                     snapshotRestored = true;
                     if (generationOwnership) {
-                      generationRestored = restoreOwnedCurrentSharedGatewaySessionGeneration(
-                        params.sharedGatewaySessionGenerationState,
-                        generationOwnership,
-                        previousSharedGatewaySessionGeneration,
-                      );
+                      generationRestored =
+                        params.sharedGatewaySessionGenerationState.restoreCurrent(
+                          generationOwnership,
+                          previousSharedGatewaySessionGeneration,
+                        );
                     }
                   }
                   if (snapshotRestored) {
@@ -508,10 +500,7 @@ export function createManagedReloadSecretHandlers(options: {
               transactionOwnership.assertInvokerOwned?.();
               return (
                 transactionOwnership.isCurrent() &&
-                isSharedGatewaySessionGenerationOwnershipCurrent(
-                  params.sharedGatewaySessionGenerationState,
-                  previousGenerationOwnership,
-                )
+                params.sharedGatewaySessionGenerationState.owns(previousGenerationOwnership)
               );
             };
             if (activateIfCurrent) {
@@ -587,8 +576,7 @@ export function createManagedReloadSecretHandlers(options: {
               {
                 runtimeSourceConfig: previousRuntimeSourceConfig,
                 onActivated: () => {
-                  generationRestored = restoreOwnedCurrentSharedGatewaySessionGeneration(
-                    params.sharedGatewaySessionGenerationState,
+                  generationRestored = params.sharedGatewaySessionGenerationState.restoreCurrent(
                     generationOwnership,
                     previousSharedGatewaySessionGeneration,
                   );
@@ -602,8 +590,7 @@ export function createManagedReloadSecretHandlers(options: {
           ) {
             clearSecretsRuntimeSnapshotState();
             snapshotRestored = true;
-            generationRestored = restoreOwnedCurrentSharedGatewaySessionGeneration(
-              params.sharedGatewaySessionGenerationState,
+            generationRestored = params.sharedGatewaySessionGenerationState.restoreCurrent(
               generationOwnership,
               previousSharedGatewaySessionGeneration,
             );
@@ -626,8 +613,7 @@ export function createManagedReloadSecretHandlers(options: {
       // revision after this commit. Finalize only while this transaction's
       // generation is still current so a genuinely newer generation wins.
       if (publishedSharedGatewaySessionGeneration) {
-        finalizeOwnedSharedGatewaySessionGeneration(
-          params.sharedGatewaySessionGenerationState,
+        params.sharedGatewaySessionGenerationState.finalize(
           publishedSharedGatewaySessionGeneration,
         );
       }

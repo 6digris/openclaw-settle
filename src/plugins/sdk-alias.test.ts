@@ -1647,7 +1647,6 @@ describe("plugin sdk alias helpers", () => {
       devSourceRoot: mode === "development" ? sibling.root : null,
       pluginSdkResolution: preference,
     });
-    expect(prepared.hasSourceSdkAliases()).toBe(preference === "src");
     for (const prefix of ["openclaw/plugin-sdk", "@openclaw/plugin-sdk"]) {
       const specifier = `${prefix}/plugin-state-store-runtime`;
       const target = prepared.resolveAlias(specifier);
@@ -1765,8 +1764,8 @@ describe("plugin sdk alias helpers", () => {
     }
   });
 
-  it.each(["dist", "fallback", "missing", "javascript-source", "sdk-looking-bundled"])(
-    "classifies source SDK aliases without changing target selection (%s)",
+  it.each(["dist", "fallback", "missing", "javascript-source"])(
+    "selects the canonical SDK alias target (%s)",
     (mode) => {
       const fixture = createPluginSdkAliasFixture({
         packageExports: {},
@@ -1777,21 +1776,12 @@ describe("plugin sdk alias helpers", () => {
         fs.unlinkSync(fixture.srcFile);
         fs.unlinkSync(fixture.distFile);
       }
-      if (mode === "sdk-looking-bundled") {
-        const extension = path.join(fixture.root, "extensions", "sdk-looking");
-        mkdirSafeDir(extension);
-        fs.writeFileSync(path.join(extension, "package.json"), '{"name":"@openclaw/plugin-sdk"}');
-        fs.writeFileSync(path.join(extension, "api.ts"), "export const marker = 1;\n");
-      }
       withPluginCache(createPluginCache(), () => {
         const prepared = preparePluginLoaderAliases({
           modulePath: writePluginEntry(fixture.root, "entry.js"),
           devSourceRoot: fixture.root,
           pluginSdkResolution: mode === "javascript-source" ? "src" : "dist",
         });
-        expect(prepared.hasSourceSdkAliases()).toBe(
-          mode === "fallback" || mode === "sdk-looking-bundled",
-        );
         expect(prepared.resolveAlias("openclaw/plugin-sdk/core")).toBe(
           mode === "missing"
             ? undefined
@@ -1832,7 +1822,6 @@ describe("plugin sdk alias helpers", () => {
       fs.unlinkSync(path.join(fixture.root, "src", "plugin-sdk", "plugin-entry.ts"));
       const prepared = withPluginCache(owner, () => preparePluginLoaderAliases(params));
       expect(prepared.resolveAlias("openclaw/plugin-sdk/plugin-entry")).toBeUndefined();
-      expect(prepared.hasSourceSdkAliases()).toBe(false);
       const restoredTarget =
         kind === "src"
           ? path.join(fixture.root, "src", "plugin-sdk", "plugin-entry.ts")
@@ -1842,9 +1831,7 @@ describe("plugin sdk alias helpers", () => {
       withPluginCache(other, () => {
         expect(prepared.resolveAlias("openclaw/plugin-sdk/plugin-entry")).toBeUndefined();
         expect(prepared.getAliasMap()["openclaw/plugin-sdk/plugin-entry"]).toBeUndefined();
-        expect(prepared.hasSourceSdkAliases()).toBe(false);
         const fresh = preparePluginLoaderAliases(params);
-        expect(fresh.hasSourceSdkAliases()).toBe(kind === "src");
         expect(fs.realpathSync(fresh.resolveAlias("openclaw/plugin-sdk/plugin-entry") ?? "")).toBe(
           fs.realpathSync(restoredTarget),
         );

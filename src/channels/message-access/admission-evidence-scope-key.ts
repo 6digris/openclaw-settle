@@ -28,14 +28,16 @@ function snapshotOwnedData(value: unknown, budget = { nodes: 0 }, depth = 0): un
     return INVALID_SCOPE_VALUE;
   }
   let descriptors: ReturnType<typeof Object.getOwnPropertyDescriptors>;
-  let symbols: symbol[];
   try {
     descriptors = Object.getOwnPropertyDescriptors(value);
-    symbols = Object.getOwnPropertySymbols(value);
+    if (
+      Object.getOwnPropertySymbols(value).some(
+        (key) => Object.getOwnPropertyDescriptor(value, key)?.enumerable,
+      )
+    ) {
+      return INVALID_SCOPE_VALUE;
+    }
   } catch {
-    return INVALID_SCOPE_VALUE;
-  }
-  if (symbols.some((key) => Object.getOwnPropertyDescriptor(value, key)?.enumerable)) {
     return INVALID_SCOPE_VALUE;
   }
   const keys = Object.keys(descriptors)
@@ -72,19 +74,17 @@ function stableOwnedScopeKey(value: unknown): string | undefined {
 function safeOwnPropertyDescriptor(
   value: object,
   key: PropertyKey,
-): PropertyDescriptor | undefined {
+): PropertyDescriptor | undefined | typeof INVALID_SCOPE_VALUE {
   try {
     return Object.getOwnPropertyDescriptor(value, key);
   } catch {
-    return undefined;
+    return INVALID_SCOPE_VALUE;
   }
 }
 
 export function ownDataValue(value: object, key: PropertyKey): unknown {
-  let descriptor: PropertyDescriptor | undefined;
-  try {
-    descriptor = Object.getOwnPropertyDescriptor(value, key);
-  } catch {
+  const descriptor = safeOwnPropertyDescriptor(value, key);
+  if (descriptor === INVALID_SCOPE_VALUE) {
     return INVALID_SCOPE_VALUE;
   }
   if (!descriptor) {
@@ -109,6 +109,9 @@ export function publicResultScopeKey(result: ResolvedChannelMessageIngress): str
   const routes: unknown[] = [];
   for (let index = 0; index < routeCount; index += 1) {
     const descriptor = safeOwnPropertyDescriptor(routeFacts, String(index));
+    if (descriptor === INVALID_SCOPE_VALUE) {
+      return undefined;
+    }
     const route = descriptor && "value" in descriptor ? descriptor.value : undefined;
     if (!route || typeof route !== "object") {
       return undefined;
@@ -162,6 +165,9 @@ export function finalizedContextScopeKey(context: object): string | undefined {
   const entries: unknown[] = [];
   for (const key of FINALIZED_CONTEXT_SCOPE_FIELDS) {
     const descriptor = safeOwnPropertyDescriptor(context, key);
+    if (descriptor === INVALID_SCOPE_VALUE) {
+      return undefined;
+    }
     if (!descriptor) {
       entries.push([key, "absent"]);
       continue;

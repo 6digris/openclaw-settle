@@ -41,8 +41,6 @@ it.each([
     } as GatewayRequestContext;
     const owner = {
       channelId: "test",
-      record: {},
-      epoch: {},
       isLive: () => live,
       resolveGatewayContext: () => gateway,
     };

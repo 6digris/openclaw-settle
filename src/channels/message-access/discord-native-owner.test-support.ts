@@ -1,4 +1,4 @@
-import { vi } from "vitest";
+import { beforeAll, vi } from "vitest";
 import type { DispatchReplyFromConfig } from "../../auto-reply/reply/dispatch-from-config.types.js";
 import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -23,6 +23,15 @@ import { createHostChannelInboundEventContextBuilder } from "../inbound-event/ho
 import type { ChannelPlugin } from "../plugins/types.public.js";
 import { createHostChannelIngressRuntime } from "./runtime.js";
 
+beforeAll(async () => {
+  // Finish cold plugin imports before any case changes process-global state.
+  await Promise.all(
+    ["api.js", "runtime-api.js"].map((artifactBasename) =>
+      loadBundledPluginFacade({ pluginId: "discord", artifactBasename }),
+    ),
+  );
+});
+
 function createInteraction(options: { senderId?: string; argument?: string } = {}) {
   return {
     user: { id: options.senderId ?? "123456789012345678", username: "ada", globalName: "Ada" },
@@ -42,6 +51,15 @@ function createInteraction(options: { senderId?: string; argument?: string } = {
   };
 }
 
+function createAutocompleteInteraction() {
+  const interaction = createInteraction();
+  return {
+    ...interaction,
+    options: { ...interaction.options, getFocused: () => ({ name: "level", value: "" }) },
+    respond: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
 async function createFixture(state: OpenClawTestState) {
   const cfg: OpenClawConfig = {
     commands: { ownerAllowFrom: ["discord:999999999999999999"] },
@@ -56,7 +74,6 @@ async function createFixture(state: OpenClawTestState) {
       },
     },
     gateway: {
-      auth: { identityScopes: { "ada@example.test": ["operator.admin"] } },
       roles: {
         default: "member",
         definitions: {
@@ -82,8 +99,6 @@ async function createFixture(state: OpenClawTestState) {
   let live = true;
   const host = {
     channelId: "discord",
-    record: {},
-    epoch: {},
     isLive: () => live,
     resolveGatewayContext: () => gateway,
   };
@@ -109,6 +124,12 @@ async function createFixture(state: OpenClawTestState) {
     await loadBundledPluginFacade<{
       createDiscordNativeCommand: (options: ReturnType<typeof createCommandOptions>) => {
         run: (interaction: ReturnType<typeof createInteraction>) => Promise<void>;
+        options?: Array<{
+          name: string;
+          autocomplete?: (
+            interaction: ReturnType<typeof createAutocompleteInteraction>,
+          ) => Promise<void>;
+        }>;
       };
       createNoopThreadBindingManager: (accountId: string) => object;
       setDiscordRuntime: (runtime: PluginRuntime) => void;
@@ -145,6 +166,19 @@ async function createFixture(state: OpenClawTestState) {
     publishConfig: () => setRuntimeConfigSnapshot(cfg, cfg),
     run,
     dispatch,
+    autocomplete: async () => {
+      const command = createDiscordNativeCommand({
+        ...createCommandOptions(createNoopThreadBindingManager("default")),
+        command: { name: "think", description: "Thinking level", acceptsArgs: true },
+      });
+      const complete = command.options?.find((option) => option.name === "level")?.autocomplete;
+      if (!complete) {
+        throw new Error("Expected the registered /think level autocomplete handler");
+      }
+      const interaction = createAutocompleteInteraction();
+      await complete(interaction);
+      return interaction;
+    },
     close: () => {
       live = false;
     },

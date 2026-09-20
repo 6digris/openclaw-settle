@@ -370,11 +370,11 @@ async function dispatchDiscordCommandInteraction(params: {
       threadParentName,
       threadParentSlug,
     });
-  let nativeRouteStatePromise:
+  let nativeRouteState:
     | ReturnType<typeof nativeCommandRuntime.resolveDiscordNativeInteractionRouteState>
     | undefined;
   const getNativeRouteState = () =>
-    (nativeRouteStatePromise ??= nativeCommandRuntime.resolveDiscordNativeInteractionRouteState({
+    (nativeRouteState ??= nativeCommandRuntime.resolveDiscordNativeInteractionRouteState({
       cfg,
       accountId,
       guildId: interaction.guild?.id ?? undefined,
@@ -385,27 +385,26 @@ async function dispatchDiscordCommandInteraction(params: {
       conversationId: rawChannelId || "unknown",
       parentConversationId: threadParentId,
       threadBinding: isThreadChannel ? threadBindings.getByThreadId(rawChannelId) : undefined,
-      enforceConfiguredBindingReadiness: false,
     }));
-  const canBypassConfiguredAcpGuildGuards = async () => {
+  const canBypassConfiguredAcpGuildGuards = () => {
     if (!interaction.guild || !shouldBypassConfiguredAcpGuildGuards(commandName)) {
       return false;
     }
-    const routeState = await getNativeRouteState();
+    const routeState = getNativeRouteState();
     return (
       routeState.effectiveRoute.matchedBy === "binding.channel" ||
       routeState.boundSessionKey != null ||
       routeState.configuredBinding != null
     );
   };
-  if (channelConfig?.enabled === false && !(await canBypassConfiguredAcpGuildGuards())) {
+  if (channelConfig?.enabled === false && !canBypassConfiguredAcpGuildGuards()) {
     await respond("This channel is disabled.");
     return { accepted: false };
   }
   if (
     interaction.guild &&
     channelConfig?.allowed === false &&
-    !(await canBypassConfiguredAcpGuildGuards())
+    !canBypassConfiguredAcpGuildGuards()
   ) {
     await respond("This channel is not allowed.");
     return { accepted: false };
@@ -421,7 +420,7 @@ async function dispatchDiscordCommandInteraction(params: {
       guildInfo,
       channelConfig,
     });
-    if (!policyAuthorizer.allowed && !(await canBypassConfiguredAcpGuildGuards())) {
+    if (!policyAuthorizer.allowed && !canBypassConfiguredAcpGuildGuards()) {
       await respond("This channel is not allowed.");
       return { accepted: false };
     }
@@ -513,7 +512,7 @@ async function dispatchDiscordCommandInteraction(params: {
       ownerAllowListConfigured,
       ownerAllowed: ownerOk,
     });
-    if (!commandAuthorized && !(await canBypassConfiguredAcpGuildGuards())) {
+    if (!commandAuthorized && !canBypassConfiguredAcpGuildGuards()) {
       await respond("You are not authorized to use this command.", { ephemeral: true });
       return { accepted: false };
     }
@@ -523,7 +522,7 @@ async function dispatchDiscordCommandInteraction(params: {
     await respond("Access policy changed. Try this interaction again.", { ephemeral: true });
     return { accepted: false };
   }
-  const routeState = await getNativeRouteState();
+  const routeState = getNativeRouteState();
   const effectiveRoute = routeState.effectiveRoute;
   const { ctxPayload, sessionKey, commandTargetSessionKey } =
     await buildDiscordNativeInteractionContext({
@@ -565,13 +564,14 @@ async function dispatchDiscordCommandInteraction(params: {
     return { accepted: false };
   }
 
-  if (routeState.configuredBinding && !shouldBypassConfiguredAcpEnsure(commandName)) {
-    routeState.bindingReadiness = await nativeCommandRuntime.ensureConfiguredBindingRouteReady({
-      cfg,
-      bindingResolution: routeState.configuredBinding,
-      assertActive: authority.assertActive,
-    });
-  }
+  const bindingReadiness =
+    routeState.configuredBinding && !shouldBypassConfiguredAcpEnsure(commandName)
+      ? await nativeCommandRuntime.ensureConfiguredBindingRouteReady({
+          cfg,
+          bindingResolution: routeState.configuredBinding,
+          assertActive: authority.assertActive,
+        })
+      : null;
 
   if (!authority.isAllowed()) {
     await respond("You are not authorized to use this command.", { ephemeral: true });
@@ -585,15 +585,16 @@ async function dispatchDiscordCommandInteraction(params: {
     command.args?.some(
       (arg) => typeof arg.choices === "function" && commandArgs?.values?.[arg.name] == null,
     );
-  const menuModelContext = menuNeedsModelContext
-    ? await resolveDiscordNativeChoiceContext({
-        interaction: interaction as CommandInteraction,
-        cfg,
-        accountId,
-        threadBindings,
-        preparedRoute: routeState.bindingReadiness?.ok === false ? null : effectiveRoute,
-      })
-    : null;
+  const menuModelContext =
+    menuNeedsModelContext && bindingReadiness?.ok !== false
+      ? await resolveDiscordNativeChoiceContext({
+          interaction: interaction as CommandInteraction,
+          cfg,
+          accountId,
+          threadBindings,
+          route: effectiveRoute,
+        })
+      : null;
   // Native /think must not wait on provider discovery; persisted rows retain its metadata.
   const menuModelCatalog =
     command.key === "think" && menuNeedsModelContext
@@ -608,16 +609,15 @@ async function dispatchDiscordCommandInteraction(params: {
           readOnly: true,
         })
       : undefined;
-  const menuRouteState = command.key === "verbose" ? await getNativeRouteState() : undefined;
   // Normal dispatch owns the unavailable-binding reply; do not offer choices it cannot apply.
   const menu =
-    menuRouteState?.bindingReadiness?.ok === false
+    command.key === "verbose" && bindingReadiness?.ok === false
       ? null
       : resolveCommandArgMenu({
           command,
           args: commandArgs,
           cfg,
-          session: menuRouteState?.effectiveRoute,
+          session: command.key === "verbose" ? effectiveRoute : undefined,
           provider: menuModelContext?.provider,
           model: menuModelContext?.model,
           agentRuntime: menuModelContext?.agentRuntime,
@@ -740,11 +740,11 @@ async function dispatchDiscordCommandInteraction(params: {
     return { accepted: true };
   }
 
-  if (routeState.bindingReadiness && !routeState.bindingReadiness.ok) {
+  if (bindingReadiness && !bindingReadiness.ok) {
     const configuredBinding = routeState.configuredBinding;
     if (configuredBinding) {
       logVerbose(
-        `discord native command: configured ACP binding unavailable for channel ${configuredBinding.record.conversation.conversationId}: ${routeState.bindingReadiness.error}`,
+        `discord native command: configured ACP binding unavailable for channel ${configuredBinding.record.conversation.conversationId}: ${bindingReadiness.error}`,
       );
       await respond("Configured ACP binding is unavailable right now. Please try again.");
       return { accepted: false };

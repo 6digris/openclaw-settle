@@ -26,6 +26,7 @@ import { createGatewayAuxHandlers } from "../server-aux-handlers.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { computerHandlers } from "../server-methods/computer.js";
 import type { RespondFn } from "../server-methods/types.js";
+import { SharedGatewaySessionGenerationState } from "../server-shared-auth-generation.js";
 import { createGatewayComputerService } from "./computer-service.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -248,7 +249,10 @@ module.exports = {
       activateRuntimeSecrets: async () => {
         throw new Error("Unexpected secrets reload");
       },
-      sharedGatewaySessionGenerationState: { current: undefined, required: null },
+      sharedGatewaySessionGenerationState: new SharedGatewaySessionGenerationState({
+        current: undefined,
+        required: null,
+      }),
       resolveSharedGatewaySessionGenerationForConfig: () => undefined,
       clients: [],
       channelManager: {

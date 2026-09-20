@@ -441,7 +441,7 @@ describe("discord native /think autocomplete", () => {
     expect(values).toContain("max");
   });
 
-  it("falls back when a configured binding is unavailable", async () => {
+  it("reads configured binding choices without preparing its runtime", async () => {
     const cfg = createConfig();
     resolveConfiguredBindingRouteMock.mockImplementation(createConfiguredRouteResult);
     ensureConfiguredBindingRouteReadyMock.mockResolvedValue({
@@ -471,8 +471,8 @@ describe("discord native /think autocomplete", () => {
       threadBindings: createNoopThreadBindingManager("default"),
     });
 
-    expect(context).toBeNull();
-    expect(ensureConfiguredBindingRouteReadyMock).toHaveBeenCalledTimes(1);
+    expect(context).toMatchObject({ provider: "openai", model: "gpt-5.4", agentId: "main" });
+    expect(ensureConfiguredBindingRouteReadyMock).not.toHaveBeenCalled();
 
     const { command, levelArg } = requireThinkLevelCommand();
     const choices = resolveCommandArgChoices({
@@ -484,7 +484,7 @@ describe("discord native /think autocomplete", () => {
       catalog: [],
     });
     const values = choices.map((choice) => choice.value);
-    expect(values).not.toContain("xhigh");
+    expect(values).toContain("xhigh");
   });
 });
 

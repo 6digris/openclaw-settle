@@ -9,10 +9,7 @@ import { formatErrorMessage } from "../infra/errors.js";
 import { resolveRequiredHomeDir } from "../infra/home-dir.js";
 import { resolveOpenClawPackageRootSync } from "../infra/openclaw-root.js";
 import { resolveOpenClawDevSourceRoot } from "./dev-source-root.js";
-import {
-  isPluginSourceModulePath,
-  PLUGIN_SOURCE_MODULE_EXTENSIONS,
-} from "./native-module-require.js";
+import { PLUGIN_SOURCE_MODULE_EXTENSIONS } from "./native-module-require.js";
 import {
   parsePluginCacheJson,
   pluginCacheExistsSync,
@@ -1099,32 +1096,22 @@ function createPluginSdkScopedAliases(context: PluginLoaderAliasContext) {
     targets.set(subpath, null);
     return undefined;
   };
-  const buildAliasMap = (stopAtSource: boolean) => {
+  const buildAliasMap = () => {
     const aliases: Record<string, string> = {};
     for (const subpath of targets.keys()) {
       const target = resolveSubpath(subpath);
       if (!target) {
         continue;
       }
-      if (stopAtSource && isPluginSourceModulePath(target)) {
-        return { aliases, hasSourceTarget: true };
-      }
       for (const packageName of PLUGIN_SDK_PACKAGE_NAMES) {
         aliases[`${packageName}/${subpath}`] = normalizeJitiAliasTargetPath(target);
       }
     }
-    return { aliases, hasSourceTarget: false };
+    return aliases;
   };
   return {
     resolveSubpath,
-    hasSourceTarget: () => {
-      const built = buildAliasMap(true);
-      if (!built.hasSourceTarget) {
-        aliasMap = built.aliases;
-      }
-      return built.hasSourceTarget;
-    },
-    getAliasMap: (): Record<string, string> => (aliasMap ??= buildAliasMap(false).aliases),
+    getAliasMap: (): Record<string, string> => (aliasMap ??= buildAliasMap()),
   };
 }
 
@@ -1167,7 +1154,6 @@ export function preparePluginLoaderAliases(
   if (cached) {
     return cached;
   }
-  let sourceSdkAliases: boolean | undefined;
   let sourceTransformAliasMap: Record<string, string> | undefined;
   let aliasMap: Record<string, string> | undefined;
   let sdkAliases: ReturnType<typeof createPluginSdkScopedAliases> | undefined;
@@ -1203,28 +1189,6 @@ export function preparePluginLoaderAliases(
       : [],
     getAliasMap,
     getSourceTransformAliasMap,
-    mayResolveSourceSdk: () =>
-      withPluginCache(cache, () =>
-        aliasMap
-          ? Object.entries(aliasMap).some(
-              ([specifier, target]) =>
-                isPluginSdkAliasSpecifier(specifier) && isPluginSourceModulePath(target),
-            )
-          : Boolean(
-              packageRoot && pluginCacheExistsSync(path.join(packageRoot, "src", "plugin-sdk")),
-            ),
-      ),
-    hasSourceSdkAliases: () =>
-      withPluginCache(
-        cache,
-        () =>
-          (sourceSdkAliases ??=
-            (!aliasMap && getSdkAliases().hasSourceTarget()) ||
-            Object.entries(getAliasMap()).some(
-              ([specifier, target]) =>
-                isPluginSdkAliasSpecifier(specifier) && isPluginSourceModulePath(target),
-            )),
-      ),
     resolveAlias: (specifier: string): string | undefined => {
       if (!isPluginLoaderAliasSpecifier(specifier)) {
         return undefined;

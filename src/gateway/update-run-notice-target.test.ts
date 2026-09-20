@@ -68,6 +68,8 @@ it("authorizes linked admins through Discord's direct-recipient grammar and curr
       setUserProfileRole(profile.id, "admin");
       expect(authorizeUpdateRunNoticeTarget(cfg, target)).toBe(target);
       cfg.gateway!.auth!.identityScopes = {};
+      expect(authorizeUpdateRunNoticeTarget(cfg, target)).toBe(target);
+      cfg.gateway!.roles!.definitions.admin!.scopes = ["operator.read"];
       expect(authorizeUpdateRunNoticeTarget(cfg, target).kind).toBe("none");
     } finally {
       rollbackStagedPluginRegistry(previous);
