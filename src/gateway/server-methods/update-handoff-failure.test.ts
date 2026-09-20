@@ -15,7 +15,7 @@ import {
   transferManagedServiceUpdateHandoffMock,
   cancelManagedServiceUpdateHandoffMock,
   sendGatewayLifecycleNoticeMock,
-  scheduleGatewaySigusr1RestartMock,
+  scheduleGatewayRestartMock,
   captureUpdateRunPayload,
   mockGlobalInstallSurface,
 } from "./update.test-harness.js";
@@ -63,7 +63,7 @@ describe("update.run handoff refusal diagnostics", () => {
       expect(transferManagedServiceUpdateHandoffMock).toHaveBeenCalledTimes(
         failure === "sentinel-write" ? 0 : 1,
       );
-      expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+      expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
       expect(payload).toMatchObject({
         ok: false,
         restart: null,
@@ -169,7 +169,7 @@ describe("update.run handoff refusal diagnostics", () => {
         captureUpdateRunPayload(),
       );
 
-      expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+      expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
       expect(payload?.ok).toBe(false);
       expect(payload?.result).toMatchObject({
         status: "error",
@@ -249,7 +249,7 @@ describe("update.run foreground respawn admission", () => {
       expect(sendGatewayLifecycleNoticeMock).not.toHaveBeenCalled();
       expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
       expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
-      expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+      expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
     },
   );
 
@@ -270,7 +270,7 @@ describe("update.run foreground respawn admission", () => {
       });
       expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
       expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
-      expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+      expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
     });
   });
 
@@ -295,7 +295,7 @@ describe("update.run foreground respawn admission", () => {
         await expect(expectDefined(handoff.beforePark, "parking callback")()).rejects.toThrow(
           "OPENCLAW_NO_RESPAWN",
         );
-        expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+        expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
       });
     },
   );

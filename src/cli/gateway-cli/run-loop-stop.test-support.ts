@@ -12,7 +12,7 @@ import {
 export function registerForegroundUpdateStopTests({
   waitForGatewayActiveWork,
   requestManagedServiceUpdateHandoffPark,
-  consumeGatewaySigusr1RestartIntent,
+  consumeGatewayRestartIntent,
   managedUpdateSuccessorOwner,
   isForegroundUpdateHandoff,
   completeForegroundUpdateHandoffAfterClose,
@@ -47,7 +47,7 @@ export function registerForegroundUpdateStopTests({
       .mockReturnValueOnce(first.promise)
       .mockReturnValueOnce(retry.promise);
     captureForegroundUpdateHandoffStop.mockReturnValueOnce({ settle, canPark: () => false });
-    consumeGatewaySigusr1RestartIntent.mockReturnValueOnce({
+    consumeGatewayRestartIntent.mockReturnValueOnce({
       reason: "update.run",
       successorOwner: managedUpdateSuccessorOwner,
     });
@@ -64,7 +64,7 @@ export function registerForegroundUpdateStopTests({
       try {
         await runLoopWithStart({ start, runtime, lockPort: 18789 });
         await waitForStart(started);
-        captureSignal("SIGUSR1")();
+        captureSignal("SIGUSR2")();
         await waitForLoopCondition(
           () => settle.mock.calls.length === 1,
           "pending foreground completion did not reconcile its captured helper",
@@ -226,7 +226,7 @@ export function registerForegroundUpdateStopTests({
     },
   );
 
-  it("preserves pending Stop admission when SIGUSR1 intent reading fails", async () => {
+  it("preserves pending Stop admission when SIGUSR2 intent reading fails", async () => {
     const joined = createDeferred<boolean>();
     const settle = vi.fn(() => joined.promise);
     captureForegroundUpdateHandoffStop.mockReturnValueOnce({ settle, canPark: () => false });
@@ -252,7 +252,7 @@ export function registerForegroundUpdateStopTests({
         consumeGatewayRestartIntentPayloadSync.mockImplementationOnce(() => {
           throw new Error("fixture restart intent unavailable");
         });
-        captureSignal("SIGUSR1")();
+        captureSignal("SIGUSR2")();
         await new Promise<void>((resolve) => {
           setImmediate(resolve);
         });
@@ -407,7 +407,7 @@ export function registerForegroundUpdateStopTests({
       const release = createDeferred();
       const initialLockRelease = vi.fn(async () => {});
       const restoredLockRelease = vi.fn(async () => {});
-      consumeGatewaySigusr1RestartIntent.mockReturnValueOnce({
+      consumeGatewayRestartIntent.mockReturnValueOnce({
         reason: "update.run",
         successorOwner: managedUpdateSuccessorOwner,
       });
@@ -439,7 +439,7 @@ export function registerForegroundUpdateStopTests({
       await withIsolatedSignals(async ({ captureSignal }) => {
         const { start, runtime, exited } = await createSignaledLoopHarness();
         try {
-          captureSignal("SIGUSR1")();
+          captureSignal("SIGUSR2")();
           await withTimeout(entered.promise, 4_000);
           captureSignal(signal)();
           await new Promise<void>((resolve) => {
@@ -490,7 +490,7 @@ export function registerForegroundUpdateStopTests({
       const release = createDeferred();
       const updater = createDeferred<{ respawn: boolean }>();
       const child = createUpdateRespawnChild();
-      consumeGatewaySigusr1RestartIntent.mockReturnValueOnce({
+      consumeGatewayRestartIntent.mockReturnValueOnce({
         reason: "update.run",
         successorOwner: managedUpdateSuccessorOwner,
       });
@@ -520,7 +520,7 @@ export function registerForegroundUpdateStopTests({
         try {
           await runLoopWithStart({ start, runtime, lockPort: 18789 });
           await waitForStart(started);
-          captureSignal("SIGUSR1")();
+          captureSignal("SIGUSR2")();
           await withTimeout(entered.promise, 4_000);
           expect(completeForegroundUpdateHandoffAfterClose).not.toHaveBeenCalled();
           if (restartIntent) {
@@ -567,7 +567,7 @@ export function registerForegroundUpdateStopTests({
     const flushEntered = createDeferred();
     const flush = createDeferred();
     const child = createUpdateRespawnChild();
-    consumeGatewaySigusr1RestartIntent.mockReturnValueOnce({
+    consumeGatewayRestartIntent.mockReturnValueOnce({
       reason: "update.run",
       successorOwner: managedUpdateSuccessorOwner,
     });
@@ -586,7 +586,7 @@ export function registerForegroundUpdateStopTests({
       try {
         await runLoopWithStart({ start, runtime, lockPort: 18789 });
         await waitForStart(started);
-        captureSignal("SIGUSR1")();
+        captureSignal("SIGUSR2")();
         await waitForLoopCondition(
           () => completeForegroundUpdateHandoffAfterClose.mock.calls.length === 1,
           "foreground updater did not receive its closed witness",

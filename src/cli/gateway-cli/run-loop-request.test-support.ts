@@ -36,11 +36,11 @@ type RequestFixtures = {
   >;
   respawnGatewayProcessForUpdate: UpdateRespawnFixtures["respawnGatewayProcessForUpdate"];
   captureForegroundUpdateHandoffStop: UpdateRespawnFixtures["captureForegroundUpdateHandoffStop"];
-  consumeGatewaySigusr1RestartIntent: Mock<() => GatewayRestartIntent | null>;
+  consumeGatewayRestartIntent: Mock<() => GatewayRestartIntent | null>;
   consumeGatewayRestartIntentPayloadSync: Mock<
     () => Pick<GatewayRestartIntent, "reason" | "force" | "waitMs"> | null
   >;
-  peekGatewaySigusr1RestartReason: Mock<() => string | undefined>;
+  peekGatewayRestartReason: Mock<() => string | undefined>;
   managedUpdateSuccessorOwner: NonNullable<GatewayRestartIntent["successorOwner"]>;
   commitManagedServiceUpdateHandoff: Mock<
     typeof import("../../infra/update-managed-service-handoff.js").commitManagedServiceUpdateHandoff
@@ -57,9 +57,9 @@ export function registerGatewayRequestTests({
   restartGatewayProcessWithFreshPid,
   respawnGatewayProcessForUpdate,
   captureForegroundUpdateHandoffStop,
-  consumeGatewaySigusr1RestartIntent,
+  consumeGatewayRestartIntent,
   consumeGatewayRestartIntentPayloadSync,
-  peekGatewaySigusr1RestartReason,
+  peekGatewayRestartReason,
   managedUpdateSuccessorOwner,
   commitManagedServiceUpdateHandoff,
   isGatewayWorkAdmissionClosed,
@@ -211,7 +211,7 @@ export function registerGatewayRequestTests({
         const failures: unknown[] = [];
         try {
           if (phase !== "beginBoot") {
-            captureSignal("SIGUSR1")();
+            captureSignal("SIGUSR2")();
           }
           await withTimeout(reached.promise, 4_000);
           if (pendingStop) {
@@ -338,7 +338,7 @@ export function registerGatewayRequestTests({
         );
         try {
           if (mode === "managed-update") {
-            consumeGatewaySigusr1RestartIntent.mockReturnValueOnce({
+            consumeGatewayRestartIntent.mockReturnValueOnce({
               reason: "update.run",
               successorOwner: managedUpdateSuccessorOwner,
             });
@@ -348,7 +348,7 @@ export function registerGatewayRequestTests({
             mode === "existing-stop" ||
             mode === "managed-update"
           ) {
-            captureSignal(mode === "existing-stop" ? "SIGINT" : "SIGUSR1")();
+            captureSignal(mode === "existing-stop" ? "SIGINT" : "SIGUSR2")();
             await drainStarted.promise;
           }
           classifyGatewayStaleInstall(
@@ -407,11 +407,11 @@ export function registerGatewayRequestTests({
   it.each([
     { signal: "SIGTERM", restartReason: undefined, reason: "stop (SIGTERM)" },
     { signal: "SIGINT", restartReason: undefined, reason: "stop (SIGINT)" },
-    { signal: "SIGUSR1", restartReason: undefined, reason: "restart (SIGUSR1)" },
+    { signal: "SIGUSR2", restartReason: undefined, reason: "restart (SIGUSR2)" },
     {
-      signal: "SIGUSR1",
+      signal: "SIGUSR2",
       restartReason: "config reload: gateway.bind",
-      reason: "restart (SIGUSR1: config reload: gateway.bind)",
+      reason: "restart (SIGUSR2: config reload: gateway.bind)",
     },
     {
       signal: "SIGTERM",
@@ -423,7 +423,7 @@ export function registerGatewayRequestTests({
     if (signal === "SIGTERM" && restartReason) {
       consumeGatewayRestartIntentPayloadSync.mockReturnValueOnce({ reason: restartReason });
     } else {
-      peekGatewaySigusr1RestartReason.mockReturnValueOnce(restartReason);
+      peekGatewayRestartReason.mockReturnValueOnce(restartReason);
     }
     await withIsolatedSignals(async ({ captureSignal }) => {
       const close = createCloseMock();
@@ -433,7 +433,7 @@ export function registerGatewayRequestTests({
       await runLoopWithStart({ start, runtime, completeBoot });
       await waitForStart(started);
       captureSignal(signal)();
-      if (signal === "SIGUSR1") {
+      if (signal === "SIGUSR2") {
         await waitForLoopCondition(() => start.mock.calls.length === 2, "restart did not finish");
         captureSignal("SIGINT")();
       }

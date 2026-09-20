@@ -34,7 +34,7 @@ import {
   claimManagedServiceUpdateHandoffMock,
   sendGatewayLifecycleNoticeMock,
   resolveGatewayLifecycleNoticeRouteMock,
-  scheduleGatewaySigusr1RestartMock,
+  scheduleGatewayRestartMock,
   readGatewayOwnerLeaseMock,
   invokeUpdateRun,
   captureUpdateRunPayload,
@@ -232,7 +232,7 @@ describe("update.run acknowledgement", () => {
       ok: false,
       result: { reason: "managed-service-handoff-already-running" },
     });
-    expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+    expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
     expect(sendGatewayLifecycleNoticeMock).toHaveBeenLastCalledWith(
       expect.objectContaining({ to: "C0456DEF" }),
     );
@@ -430,11 +430,11 @@ describe("update.run restart scheduling", () => {
   it("schedules the foreground continuation when update is accepted", async () => {
     const payload = await captureUpdateRunPayload();
 
-    expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+    expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
     expect(payload?.ok).toBe(true);
     expect(payload?.restart).toBeNull();
     await startManagedServiceUpdateHandoffMock.mock.calls[0]?.[0].beforePark?.();
-    expect(scheduleGatewaySigusr1RestartMock).toHaveBeenCalledWith(
+    expect(scheduleGatewayRestartMock).toHaveBeenCalledWith(
       expect.objectContaining({
         successorOwner: expect.objectContaining({ handoffId: expect.any(String) }),
       }),
@@ -468,7 +468,7 @@ describe("update.run restart scheduling", () => {
         meta: expect.objectContaining({ handoffId }),
       }),
     );
-    expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+    expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
     expect(transferManagedServiceUpdateHandoffMock).toHaveBeenCalledExactlyOnceWith({
       kind: "managed-update-handoff",
       handoffId,
@@ -526,7 +526,7 @@ describe("update.run restart scheduling", () => {
       }),
     );
 
-    expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+    expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
     expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
     expect(recordLatestUpdateRestartSentinelMock).not.toHaveBeenCalled();
     expect(sentinelState.capturedPayload).toBeUndefined();
@@ -599,7 +599,7 @@ describe("update.run restart scheduling", () => {
         }),
       );
       expect(transferManagedServiceUpdateHandoffMock).toHaveBeenCalledOnce();
-      expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+      expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
       expect(payload).toMatchObject({ ok: true, restart: null });
     },
   );
@@ -645,7 +645,7 @@ describe("update.run restart scheduling", () => {
         }),
       }),
     );
-    expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+    expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
     expect(transferManagedServiceUpdateHandoffMock).toHaveBeenCalledOnce();
     expect(payload?.ok).toBe(true);
     expect(payload?.result?.status).toBe("skipped");
@@ -670,7 +670,7 @@ describe("update.run restart scheduling", () => {
       result: { status: "error", reason: "managed-service-handoff-failed" },
     });
     expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
-    expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+    expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
   });
 
   it("hands Windows fallback gateways to the CLI path before doctor activation", async () => {
@@ -795,7 +795,7 @@ describe("update.run restart scheduling", () => {
     expect(startManagedServiceUpdateHandoffMock).toHaveBeenCalledWith(
       expect.objectContaining({ root: "/tmp/openclaw-git", supervisor: "systemd" }),
     );
-    expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+    expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
     expect(transferManagedServiceUpdateHandoffMock).toHaveBeenCalledOnce();
     expect(payload?.ok).toBe(true);
     expect(payload?.result?.status).toBe("skipped");
@@ -807,7 +807,7 @@ describe("update.run restart scheduling", () => {
   it("accepts a foreground global install without inventing a native service identity", async () => {
     mockGlobalInstallSurface();
     const payload = await captureUpdateRunPayload({ timeoutMs: 1_800_000 });
-    expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+    expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
     expect(startManagedServiceUpdateHandoffMock).toHaveBeenCalledWith(
       expect.objectContaining({
         foregroundOrigin: expect.objectContaining({ pid: process.pid }),
@@ -829,7 +829,7 @@ describe("update.run restart scheduling", () => {
     mockGlobalInstallSurface();
 
     const payload = await captureUpdateRunPayload();
-    expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+    expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
     expect(payload?.ok).toBe(false);
     expect(payload?.result?.status).toBe("skipped");
     expect(payload?.result?.reason).toBe("restart-unavailable");
@@ -848,7 +848,7 @@ describe("update.run restart scheduling", () => {
       () => captureUpdateRunPayload(),
     );
     expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
-    expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+    expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
     expect(payload?.ok).toBe(false);
     expect(payload?.restart).toBeNull();
     expect(payload?.result).toMatchObject({
@@ -879,9 +879,9 @@ describe("update.run prepared foreground handoff", () => {
     });
     expect(params.foregroundOrigin?.stateDatabasePath).toEqual(expect.any(String));
     expect(params.foregroundOrigin?.configPath).toEqual(expect.any(String));
-    expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+    expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
     await params.beforePark?.();
-    expect(scheduleGatewaySigusr1RestartMock).toHaveBeenCalledExactlyOnceWith(
+    expect(scheduleGatewayRestartMock).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
         delayMs: 0,
         reason: "update.run",
@@ -909,7 +909,7 @@ describe("update.run prepared foreground handoff", () => {
       return true;
     });
     await expect(params.beforePark?.()).rejects.toThrow("authority changed");
-    expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+    expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
   });
 
   it("keeps serving when its foreground helper loses its claim during the parking notice", async () => {
@@ -932,7 +932,7 @@ describe("update.run prepared foreground handoff", () => {
     claimManagedServiceUpdateHandoffMock.mockReturnValue(false);
     notice.resolve(true);
     await expect(parking).rejects.toThrow("authority changed");
-    expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+    expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
   });
 
   it("does not hand off an unverified foreground process", async () => {
@@ -940,6 +940,6 @@ describe("update.run prepared foreground handoff", () => {
     const payload = await captureUpdateRunPayload();
     expect(payload?.ok).toBe(false);
     expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
-    expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+    expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
   });
 });

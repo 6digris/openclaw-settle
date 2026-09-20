@@ -20,11 +20,13 @@ import { persistClawPackageRef } from "./provenance.js";
 import { parseClawManifest } from "./schema.js";
 import type { ClawSourceIdentity } from "./types.js";
 
-afterEach(async () => {
-  await closeOpenClawStateDatabaseAsync();
-  closeOpenClawStateDatabaseForTest();
-});
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeOpenClawStateDatabaseAsync();
+    closeOpenClawStateDatabaseForTest();
+    cleanup();
+  }),
+);
 
 function snapshotMcpServers(config: OpenClawConfig): Record<string, Record<string, unknown>> {
   return structuredClone(config.mcp?.servers ?? {}) as Record<string, Record<string, unknown>>;
@@ -226,16 +228,25 @@ describe("collectClawStateHealthFindings", () => {
   it("does not change existing database bytes, metadata, schema, or journal mode", async () => {
     const current = await installFixture({ withMcp: true, withCron: true });
     await closeOpenClawStateDatabaseAsync();
+    closeOpenClawStateDatabaseForTest();
     const databasePath = resolveOpenClawStateSqlitePath(current.env);
+    const readMetadata = () => {
+      const database = new DatabaseSync(databasePath, { readOnly: true });
+      try {
+        return {
+          schema: database
+            .prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
+            .all(),
+          version: database.prepare("PRAGMA user_version").get(),
+          journal: database.prepare("PRAGMA journal_mode").get(),
+        };
+      } finally {
+        database.close();
+      }
+    };
     const beforeBytes = await readFile(databasePath);
     const beforeStat = await stat(databasePath);
-    const beforeDb = new DatabaseSync(databasePath, { readOnly: true });
-    const beforeSchema = beforeDb
-      .prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
-      .all();
-    const beforeVersion = beforeDb.prepare("PRAGMA user_version").get();
-    const beforeJournal = beforeDb.prepare("PRAGMA journal_mode").get();
-    beforeDb.close();
+    const beforeMetadata = readMetadata();
 
     await collectClawStateHealthFindings({
       env: current.env,
@@ -244,16 +255,13 @@ describe("collectClawStateHealthFindings", () => {
     });
 
     const afterStat = await stat(databasePath);
-    const afterDb = new DatabaseSync(databasePath, { readOnly: true });
+    const afterMetadata = readMetadata();
     expect(await readFile(databasePath)).toEqual(beforeBytes);
     expect(afterStat.mtimeMs).toBe(beforeStat.mtimeMs);
     expect(afterStat.mode).toBe(beforeStat.mode);
-    expect(
-      afterDb.prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name").all(),
-    ).toEqual(beforeSchema);
-    expect(afterDb.prepare("PRAGMA user_version").get()).toEqual(beforeVersion);
-    expect(afterDb.prepare("PRAGMA journal_mode").get()).toEqual(beforeJournal);
-    afterDb.close();
+    expect(afterMetadata.schema).toEqual(beforeMetadata.schema);
+    expect(afterMetadata.version).toEqual(beforeMetadata.version);
+    expect(afterMetadata.journal).toEqual(beforeMetadata.journal);
   });
 
   it("stays hidden when the experimental Claws surface is disabled", async () => {

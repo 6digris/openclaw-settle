@@ -329,11 +329,11 @@ export function registerPackageLifecycleStopTests(fixtures: UpdateRespawnFixture
                       expect(handoff.claimManagedServiceUpdateHandoff(identity)).toBe(true);
                       expect(ledger.getUpdateRun(run.runId)?.status).toBe("running");
                       if (!admission.isGatewayRestartDraining()) {
-                        fixtures.consumeGatewaySigusr1RestartIntent.mockReturnValueOnce({
+                        fixtures.consumeGatewayRestartIntent.mockReturnValueOnce({
                           reason: "update.run",
                           successorOwner: identity,
                         });
-                        captureSignal("SIGUSR1")();
+                        captureSignal("SIGUSR2")();
                       }
                     },
                   };
@@ -464,18 +464,16 @@ export function registerPackageLifecycleStopTests(fixtures: UpdateRespawnFixture
                     });
                     expect(close).not.toHaveBeenCalled();
                     expect(runtime.exit).not.toHaveBeenCalled();
-                    const localReads =
-                      fixtures.consumeGatewaySigusr1RestartIntent.mock.calls.length;
-                    fixtures.consumeGatewaySigusr1RestartIntent.mockReturnValueOnce({
+                    const localReads = fixtures.consumeGatewayRestartIntent.mock.calls.length;
+                    fixtures.consumeGatewayRestartIntent.mockReturnValueOnce({
                       reason: "update.run",
                       successorOwner: identity,
                     });
-                    captureSignal("SIGUSR1")();
+                    captureSignal("SIGUSR2")();
                     await fixtures.waitForLoopCondition(
                       () =>
-                        fixtures.consumeGatewaySigusr1RestartIntent.mock.calls.length ===
-                        localReads + 1,
-                      "same-owner SIGUSR1 restart was not consumed",
+                        fixtures.consumeGatewayRestartIntent.mock.calls.length === localReads + 1,
+                      "same-owner SIGUSR2 restart was not consumed",
                     );
                     await new Promise<void>((resolve) => {
                       setImmediate(resolve);

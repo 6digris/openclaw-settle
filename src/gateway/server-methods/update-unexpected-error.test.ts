@@ -10,7 +10,7 @@ import {
   invokeUpdateRun,
   resolveUpdateInstallSurfaceMock,
   resolveStartupInstallStatusMock,
-  scheduleGatewaySigusr1RestartMock,
+  scheduleGatewayRestartMock,
   sentinelState,
   startManagedServiceUpdateHandoffMock,
   transferManagedServiceUpdateHandoffMock,
@@ -125,7 +125,7 @@ describe("update.run unexpected-error diagnostics", () => {
         }),
       );
       expect(cancelManagedServiceUpdateHandoffMock).toHaveBeenCalledOnce();
-      expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+      expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
       expect(getUpdateRun(response.runId)?.status).toBe("failed");
       const report = await prepareUpdateFailureReport({
         attemptId: response.runId,
@@ -251,7 +251,7 @@ describe("update.run unexpected-error diagnostics", () => {
       expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
       expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
       expect(cancelManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
-      expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+      expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
       const report = await prepareUpdateFailureReport({
         attemptId: response.runId,
         result: response.result,

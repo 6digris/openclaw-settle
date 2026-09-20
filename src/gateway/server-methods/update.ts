@@ -33,7 +33,7 @@ import {
 import {
   normalizeGatewayRestartDelayMs,
   resolveGatewayRestartDeferralTimeoutMs,
-  scheduleGatewaySigusr1Restart,
+  scheduleGatewayRestart,
 } from "../../infra/restart.js";
 import { detectRespawnSupervisor } from "../../infra/supervisor-markers.js";
 import { gatewayUpdateCampaign } from "../../infra/update-campaign.js";
@@ -491,7 +491,7 @@ export const updateHandlers: GatewayRequestHandlers = {
               await notify(current, current.phase === "requested" ? "parking" : "activating");
               assertMayPark();
               if (foregroundOrigin) {
-                scheduleGatewaySigusr1Restart({
+                scheduleGatewayRestart({
                   delayMs: 0,
                   reason: "update.run",
                   successorOwner: managedHandoffOwner,

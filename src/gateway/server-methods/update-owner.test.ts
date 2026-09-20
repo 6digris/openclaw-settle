@@ -16,7 +16,7 @@ import {
   readGatewayOwnerLeaseMock,
   resolveUpdateInstallSurfaceMock,
   resolveStartupInstallStatusMock,
-  scheduleGatewaySigusr1RestartMock,
+  scheduleGatewayRestartMock,
   sendGatewayLifecycleNoticeMock,
   sentinelState,
   startManagedServiceUpdateHandoffMock,
@@ -48,6 +48,41 @@ vi.mock("../server-plugins.js", () => ({
     return response;
   },
 }));
+
+// Prepare the tool surface before case deadlines; execution resolves the current Gateway context.
+const promptUpdateCases = (
+  [
+    { channel: "slack", supervisor: "launchd" },
+    { channel: "discord", supervisor: "systemd" },
+    { channel: "discord", supervisor: null },
+  ] as const
+).map(({ channel, supervisor }) => {
+  const config: OpenClawConfig = {
+    plugins: { enabled: false },
+    tools: { profile: "coding" },
+    commands: { ownerAllowFrom: [`${channel}:owner`] },
+  };
+  const { tools } = resolveGatewayScopedTools({
+    cfg: config,
+    sessionKey: `agent:main:${channel}:dm:owner`,
+    messageProvider: channel,
+    accountId: "primary",
+    agentTo: "owner",
+    senderIsOwner: true,
+    channelContext: { sender: { id: "owner" } },
+    surface: "loopback",
+  });
+  return {
+    channel,
+    supervisor,
+    config,
+    toolNames: tools.map((candidate) => candidate.name),
+    tool: expectDefined(
+      tools.find((candidate) => candidate.name === "gateway"),
+      "Gateway-scoped update tool",
+    ),
+  };
+});
 
 describe("update.run current owner authority", () => {
   let config: OpenClawConfig;
@@ -88,7 +123,7 @@ describe("update.run current owner authority", () => {
       if (allowed) {
         expect(startManagedServiceUpdateHandoffMock).toHaveBeenCalledOnce();
         expect(transferManagedServiceUpdateHandoffMock).toHaveBeenCalledOnce();
-        expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+        expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
         const run = expectDefined(listUpdateRuns()[0], "accepted update run");
         expect(run.status).toBe("running");
         expect(sentinelState.capturedPayload?.stats?.runId).toBe(run.runId);
@@ -112,7 +147,7 @@ describe("update.run current owner authority", () => {
         expect(sendGatewayLifecycleNoticeMock).not.toHaveBeenCalled();
         expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
         expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
-        expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+        expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
         expect(sentinelState.capturedPayload).toBeUndefined();
       }
     },
@@ -138,37 +173,15 @@ describe("update.run current owner authority", () => {
     );
   });
 
-  it.each([
-    { channel: "slack", supervisor: "launchd" },
-    { channel: "discord", supervisor: "systemd" },
-    { channel: "discord", supervisor: null },
-  ] as const)(
+  it.each(promptUpdateCases)(
     "matches the prompt update path for $channel with supervisor $supervisor",
-    async ({ channel, supervisor }) => {
-      config = {
-        plugins: { enabled: false },
-        tools: { profile: "coding" },
-        commands: { ownerAllowFrom: [`${channel}:owner`] },
-      };
+    async ({ channel, supervisor, config: promptConfig, toolNames, tool }) => {
+      config = promptConfig;
       detectRespawnSupervisorMock.mockReturnValue(supervisor);
       mockGlobalInstallSurface();
-      const { tools } = resolveGatewayScopedTools({
-        cfg: config,
-        sessionKey: `agent:main:${channel}:dm:owner`,
-        messageProvider: channel,
-        accountId: "primary",
-        agentTo: "owner",
-        senderIsOwner: true,
-        channelContext: { sender: { id: "owner" } },
-        surface: "loopback",
-      });
-      const tool = expectDefined(
-        tools.find((candidate) => candidate.name === "gateway"),
-        "Gateway-scoped update tool",
-      );
       const prompt = buildAgentSystemPrompt({
         workspaceDir: "/tmp/openclaw",
-        toolNames: tools.map((candidate) => candidate.name),
+        toolNames,
         runtimeInfo: { channel },
       });
       const guidance = expectDefined(
@@ -187,7 +200,7 @@ describe("update.run current owner authority", () => {
       expect(result.details).toMatchObject({ ok: true, handoff: { status: "started" } });
       expect(startManagedServiceUpdateHandoffMock).toHaveBeenCalledOnce();
       expect(transferManagedServiceUpdateHandoffMock).toHaveBeenCalledOnce();
-      expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+      expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
       const handoff = expectDefined(
         startManagedServiceUpdateHandoffMock.mock.calls[0]?.[0],
         "prepared update handoff",
@@ -227,9 +240,9 @@ describe("update.run current owner authority", () => {
       }
       await expectDefined(handoff.beforePark, "prepared update parking callback")();
       if (supervisor) {
-        expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+        expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
       } else {
-        expect(scheduleGatewaySigusr1RestartMock).toHaveBeenCalledExactlyOnceWith(
+        expect(scheduleGatewayRestartMock).toHaveBeenCalledExactlyOnceWith(
           expect.objectContaining({
             reason: "update.run",
             successorOwner: transferManagedServiceUpdateHandoffMock.mock.calls[0]?.[0],
@@ -273,7 +286,7 @@ describe("update.run current owner authority", () => {
       expect(sendGatewayLifecycleNoticeMock).not.toHaveBeenCalled();
       expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
       expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
-      expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+      expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
       expect(sentinelState.capturedPayload).toBeUndefined();
     },
   );
@@ -297,7 +310,7 @@ describe("update.run current owner authority", () => {
     });
     expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
     expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
-    expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+    expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
     expect(sentinelState.capturedPayload).toBeUndefined();
     expect(sendGatewayLifecycleNoticeMock).toHaveBeenCalledOnce();
   });
@@ -368,7 +381,7 @@ describe("update.run chat restart permission", () => {
     });
     expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
     expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
-    expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+    expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
     expect(sentinelState.capturedPayload).toBeUndefined();
   }
 

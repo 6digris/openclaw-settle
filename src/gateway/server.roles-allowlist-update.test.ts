@@ -518,9 +518,9 @@ describe("gateway update.run", () => {
           return true;
         });
       const claim = vi.spyOn(handoff, "claimManagedServiceUpdateHandoff").mockReturnValue(true);
-      const schedule = vi.spyOn(restart, "scheduleGatewaySigusr1Restart");
-      const sigusr1 = vi.fn();
-      process.on("SIGUSR1", sigusr1);
+      const schedule = vi.spyOn(restart, "scheduleGatewayRestart");
+      const restartSignal = vi.fn();
+      process.on("SIGUSR2", restartSignal);
 
       try {
         await fs.mkdir(path.dirname(entrypoint));
@@ -555,17 +555,17 @@ describe("gateway update.run", () => {
         });
         expect(getUpdateRun(res.payload.runId)?.status).toBe("running");
         expect(schedule).not.toHaveBeenCalled();
-        expect(sigusr1).not.toHaveBeenCalled();
+        expect(restartSignal).not.toHaveBeenCalled();
 
         await accepted.beforePark();
-        await vi.waitFor(() => expect(sigusr1).toHaveBeenCalledOnce(), FAST_WAIT_OPTS);
-        expect(restart.consumeGatewaySigusr1RestartIntent()).toMatchObject({
+        await vi.waitFor(() => expect(restartSignal).toHaveBeenCalledOnce(), FAST_WAIT_OPTS);
+        expect(restart.consumeGatewayRestartIntent()).toMatchObject({
           reason: "update.run",
           successorOwner: transfer.mock.calls[0]?.[0],
         });
       } finally {
         restart.resetGatewayRestartStateForInProcessRestart();
-        process.off("SIGUSR1", sigusr1);
+        process.off("SIGUSR2", restartSignal);
         schedule.mockRestore();
         claim.mockRestore();
         transfer.mockRestore();

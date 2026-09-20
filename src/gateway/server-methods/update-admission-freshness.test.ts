@@ -39,7 +39,7 @@ vi.mock("../../infra/update-managed-service-handoff.js", () => ({
 }));
 vi.mock("../../infra/restart.js", async (original) => ({
   ...(await original<typeof import("../../infra/restart.js")>()),
-  scheduleGatewaySigusr1Restart: () => ({ scheduled: true }),
+  scheduleGatewayRestart: () => ({ scheduled: true }),
 }));
 
 let home: TempHomeEnv;

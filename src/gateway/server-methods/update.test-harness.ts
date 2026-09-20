@@ -223,10 +223,10 @@ vi.mock("../server-restart-sentinel-notice.js", () => ({
   resolveGatewayLifecycleNoticeRoute: resolveGatewayLifecycleNoticeRouteMock,
 }));
 
-export const scheduleGatewaySigusr1RestartMock = vi.fn(
-  (
-    _opts?: Parameters<typeof import("../../infra/restart.js").scheduleGatewaySigusr1Restart>[0],
-  ) => ({ scheduled: true }),
+export const scheduleGatewayRestartMock = vi.fn(
+  (_opts?: Parameters<typeof import("../../infra/restart.js").scheduleGatewayRestart>[0]) => ({
+    scheduled: true,
+  }),
 );
 
 export const readGatewayOwnerLeaseMock =
@@ -285,7 +285,7 @@ vi.mock("../../infra/restart-sentinel.js", async () => {
 
 vi.mock("../../infra/restart.js", async () => ({
   ...(await vi.importActual<typeof import("../../infra/restart.js")>("../../infra/restart.js")),
-  scheduleGatewaySigusr1Restart: scheduleGatewaySigusr1RestartMock,
+  scheduleGatewayRestart: scheduleGatewayRestartMock,
 }));
 
 vi.mock("../../infra/package-json.js", () => ({ readPackageVersion: readPackageVersionMock }));
@@ -458,8 +458,8 @@ beforeEach(() => {
     handoffId: params?.handoffId ?? "handoff-default",
     installRoot: params?.root ?? "/tmp/openclaw",
   }));
-  scheduleGatewaySigusr1RestartMock.mockClear();
-  scheduleGatewaySigusr1RestartMock.mockReturnValue({ scheduled: true });
+  scheduleGatewayRestartMock.mockClear();
+  scheduleGatewayRestartMock.mockReturnValue({ scheduled: true });
   readGatewayOwnerLeaseMock.mockReset().mockImplementation(() =>
     detectRespawnSupervisorMock.mock.results.at(-1)?.value
       ? undefined

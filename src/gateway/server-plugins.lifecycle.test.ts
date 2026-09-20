@@ -7,7 +7,7 @@ import chokidar from "chokidar";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { markGatewaySigusr1RestartHandled } from "../infra/restart.js";
+import { markGatewayRestartHandled } from "../infra/restart.js";
 import { getGatewayPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-state.js";
 import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
@@ -73,7 +73,7 @@ describe("gateway plugin instance bindings", () => {
   afterEach(async () => {
     // Synthetic recovery emits no signal for a run loop to consume. Reopen admission
     // before teardown joins background work that may be waiting behind that fence.
-    markGatewaySigusr1RestartHandled();
+    markGatewayRestartHandled();
     // The replacement deadline has already been observed. Let the original
     // synthetic stop finish before final close releases its retained state.
     for (const finish of finishServiceStops.splice(0)) {
@@ -909,7 +909,7 @@ describe("gateway plugin instance bindings", () => {
       finishServiceStops.push(coordinator.serviceStopCompletion.resolve);
       const hotReloadRecovery = vi.fn(() => {
         // No run loop consumes this synthetic emission, so release its signal-admission lease.
-        markGatewaySigusr1RestartHandled();
+        markGatewayRestartHandled();
         return { status: "emitted" as const };
       });
       const port = await getGatewayTestPort();
