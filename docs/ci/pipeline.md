@@ -347,6 +347,27 @@ Gradle writes XML can leave no artifact; the upload warns without replacing the
 original failure. The artifact contains only phone and Wear unit-test XML, not
 dependency caches or application build outputs.
 
+Native task-progress proof uses actual app UI with a synthetic loopback Gateway,
+not real model or worker-command execution. Full manual iOS lifecycle CI runs
+the retained-worker UI scenario and keeps its screenshots, hierarchy, and
+sanitized Gateway facts in the lifecycle `xcresult`. Linux App runs the same
+scenario through native Quick Chat and uploads `linux-task-progress`.
+
+Android's normal unit/build rows do not imply instrumentation coverage. Opt in
+to the dedicated emulator owner's task-progress case with an exact source SHA:
+
+```bash
+gh workflow run android-emulator-diagnostic.yml --repo openclaw/openclaw \
+  --ref <workflow-ref> -f target_sha=<40-character-sha> \
+  -f task_progress_proof=true
+```
+
+The default remains emulator diagnostics only. The opt-in case reuses the owned
+API 36 emulator, runs the real onboarding/controller flow, and collects native
+PNG, hierarchy, and sanitized Gateway evidence before emulator teardown, including
+on test failure. Missing capture files fail an otherwise successful proof.
+These are candidate-only captures; initial-state images are not pre-fix evidence.
+
 Node test shards that need a built CLI run `pnpm build qaRuntime` before starting
 Vitest. This profile builds runtime JavaScript, plugin assets, and freshness and
 provenance metadata. Private QA shards select their private runtime entries. The

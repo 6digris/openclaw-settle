@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "apps/linux/**"
+      - "scripts/test-ios-sidebar-attention-gateway.mjs"
       - ".github/workflows/linux-app.yml"
       - ".github/workflows/linux-app-release.yml"
   workflow_dispatch:
@@ -160,6 +161,26 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
           path: ${{ runner.temp }}/linux-gateway-switch
+
+      - name: Test native Quick Chat task progress
+        id: task-progress
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/linux-task-progress"
+          xvfb-run -a -s '-screen 0 1440x1080x24' dbus-run-session -- \
+            /usr/bin/python3 apps/linux/tests/first_run.py \
+            apps/linux/src-tauri/target/debug/openclaw-desktop --task-progress \
+            --artifacts-dir "${RUNNER_TEMP}/linux-task-progress" \
+            2>&1 | tee "${RUNNER_TEMP}/linux-task-progress/run.log"
+
+      - name: Upload native Quick Chat task progress proof
+        if: always() && steps.task-progress.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: linux-task-progress
+          retention-days: 14
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/linux-task-progress
 
       - name: Stage AppImage GStreamer plugins
         if: github.event_name == 'workflow_dispatch'

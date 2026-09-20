@@ -5512,6 +5512,42 @@ jobs:
             -only-testing:OpenClawUITests/OpenClawSnapshotUITests/testWatchMessageDeliveryIsReachableFromSettings \
             test
 
+          fixture_pid=""
+          cleanup_progress_fixture() {
+            status=$?
+            trap - EXIT
+            if [[ -n "$fixture_pid" ]]; then
+              kill "$fixture_pid" 2>/dev/null || true
+              wait "$fixture_pid" 2>/dev/null || true
+            fi
+            exit "$status"
+          }
+          trap cleanup_progress_fixture EXIT
+          node scripts/test-ios-sidebar-attention-gateway.mjs --port 19879 \
+            >apps/ios/build/LifecycleTestResults/shared-progress-gateway.log 2>&1 &
+          fixture_pid=$!
+          fixture_ready=false
+          for _ in {1..30}; do
+            kill -0 "$fixture_pid"
+            if curl --fail --silent http://127.0.0.1:19879/task-progress/evidence >/dev/null; then
+              fixture_ready=true
+              break
+            fi
+            sleep 1
+          done
+          [[ "$fixture_ready" == "true" ]]
+          TEST_RUNNER_OPENCLAW_IOS_ATTENTION_FIXTURE_URL=http://127.0.0.1:19879 \
+            TEST_RUNNER_OPENCLAW_IOS_LIVE_SETUP_CODE='{"url":"ws://127.0.0.1:19879","token":"synthetic-attention-token"}' \
+            xcodebuild \
+              -project apps/ios/OpenClaw.xcodeproj \
+              -scheme OpenClawUITests \
+              -configuration Debug \
+              -destination "platform=iOS Simulator,id=${simulator_id}" \
+              -resultBundlePath apps/ios/build/LifecycleTestResults/OpenClawSharedProgressUITests.xcresult \
+              -parallel-testing-enabled NO \
+              -only-testing:OpenClawUITests/SidebarAttentionUITests/testYieldedParentRetainsWorkerProgressAndEditableDraft \
+              test
+
       - name: Run focused Apple Watch operation simulator tests
         if: matrix.phase == 'tests' && needs.preflight.outputs.compatibility_target != 'true'
         run: |

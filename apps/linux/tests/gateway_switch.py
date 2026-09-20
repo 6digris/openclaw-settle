@@ -89,6 +89,8 @@ class SwitchHandler(FixtureHandler):
 
 
 class GatewaySwitchFixture(GatewayFixture):
+    capture_prefix = "gateway-switch"
+
     def __init__(self, artifacts_dir):
         super().__init__(artifacts_dir)
         self.RequestHandlerClass = SwitchHandler
@@ -133,15 +135,41 @@ class GatewaySwitchFixture(GatewayFixture):
     def capture(self, name):
         if self.artifacts_dir:
             time.sleep(1)
-            self.chrome.command("import", "-window", "root", str(self.artifacts_dir / f"gateway-switch-{name}.png"))
+            self.chrome.command("import", "-window", "root", str(self.artifacts_dir / f"{self.capture_prefix}-{name}.png"))
+
+    @staticmethod
+    def in_active_window(node, Atspi):
+        while node is not None and node.get_localized_role_name() != "application":
+            if node.get_state_set().contains(Atspi.StateType.ACTIVE):
+                return True
+            node = node.get_parent()
+        return False
+
+    def focus_input(self, wait, Atspi, label):
+        node = wait(label, ("entry", "text", "password text"), predicate=lambda node:
+                    node.get_state_set().contains(Atspi.StateType.EDITABLE)
+                    and self.in_active_window(node, Atspi))
+        component = node.get_component_iface()
+        component.scroll_to(Atspi.ScrollType.ANYWHERE)
+        bounds = component.get_extents(Atspi.CoordType.SCREEN)
+        self.chrome.command("xdotool", "mousemove", str(bounds.x + bounds.width // 2),
+                            str(bounds.y + bounds.height // 2), "click", "1")
+        return node
+
+    def open_quickchat(self, app, wait, Atspi):
+        self.open_native_menu(app, "Quick Chat")
+        window = self.chrome.until(
+            lambda: next((window for window, title in self.windows(app).items() if title == "Quick Chat"), None),
+            "the native Quick Chat window",
+        )
+        self.chrome.command("wmctrl", "-ia", window)
+        self.chrome.until(lambda: int(self.chrome.command("xprop", "-root", "_NET_ACTIVE_WINDOW").split()[-1], 16)
+                          == int(window, 16), "native Quick Chat focus")
+        return self.focus_input(wait, Atspi, "Quick Chat message")
 
     def exercise(self, app, _binary, wait, Atspi, restart):
         def in_active_window(node):
-            while node is not None and node.get_localized_role_name() != "application":
-                if node.get_state_set().contains(Atspi.StateType.ACTIVE):
-                    return True
-                node = node.get_parent()
-            return False
+            return self.in_active_window(node, Atspi)
 
         def click(label, role=("button", "push button", "toggle button")):
             node = wait(label, role, predicate=in_active_window)
@@ -151,17 +179,8 @@ class GatewaySwitchFixture(GatewayFixture):
             self.chrome.command("xdotool", "mousemove", str(bounds.x + bounds.width // 2),
                                 str(bounds.y + bounds.height // 2), "click", "1")
 
-        def focus_input(label):
-            node = wait(label, ("entry", "text", "password text"), predicate=lambda node:
-                        node.get_state_set().contains(Atspi.StateType.EDITABLE) and in_active_window(node))
-            component = node.get_component_iface()
-            component.scroll_to(Atspi.ScrollType.ANYWHERE)
-            bounds = component.get_extents(Atspi.CoordType.SCREEN)
-            self.chrome.command("xdotool", "mousemove", str(bounds.x + bounds.width // 2),
-                                str(bounds.y + bounds.height // 2), "click", "1")
-
         def fill(label, value):
-            focus_input(label)
+            self.focus_input(wait, Atspi, label)
             self.chrome.command("xdotool", "key", "ctrl+a")
             self.chrome.command("xdotool", "type", "--clearmodifiers", "--delay", "10", value)
 
@@ -210,18 +229,7 @@ class GatewaySwitchFixture(GatewayFixture):
         self.chrome.until(lambda: any(r["page"] == "secondary" and r["tokenMatches"] for r in self.reports.values()),
                           "saved token delivered only to the target dashboard")
         record("saved token delivered to secondary dashboard")
-        self.open_native_menu(app, "Quick Chat")
-        quickchat = self.chrome.until(
-            lambda: next((window for window, title in self.windows(app).items() if title == "Quick Chat"), None),
-            "the native Quick Chat window",
-        )
-        self.chrome.command("wmctrl", "-ia", quickchat)
-        self.chrome.until(lambda: int(self.chrome.command("xprop", "-root", "_NET_ACTIVE_WINDOW").split()[-1], 16)
-                          == int(quickchat, 16), "native Quick Chat focus")
-        quick_input = wait("Quick Chat message", ("entry", "text"), predicate=in_active_window)
-        bounds = quick_input.get_component_iface().get_extents(Atspi.CoordType.SCREEN)
-        self.chrome.command("xdotool", "mousemove", str(bounds.x + bounds.width // 2),
-                            str(bounds.y + bounds.height // 2), "click", "1")
+        self.open_quickchat(app, wait, Atspi)
         self.chrome.until(lambda: "/fixture/" in self.websocket_paths, "Primary native chat RPC demand")
         self.chrome.command("xdotool", "key", "Escape")
         self.chrome.until(lambda: len(self.windows(app)) == 2, "Quick Chat to hide")
@@ -431,13 +439,17 @@ class GatewaySwitchFixture(GatewayFixture):
         if self.restarted_app is not None and self.restarted_app.poll() is None:
             self.restarted_app.terminate()
             self.restarted_app.wait(timeout=5)
-        self.shutdown()
+        if self.server_thread.is_alive():
+            self.shutdown()
+            self.server_thread.join(timeout=5)
         self.server_close()
-        self.server_thread.join(timeout=5)
         if self.vault is not None and self.vault.poll() is None:
             self.vault.terminate()
             self.vault.wait(timeout=5)
         self.chrome.close()
+        self.write_results()
+
+    def write_results(self):
         if self.artifacts_dir:
             (self.artifacts_dir / "gateway-switch-results.json").write_text(json.dumps({
                 "passed": self.passed, "checks": self.chrome.checks,

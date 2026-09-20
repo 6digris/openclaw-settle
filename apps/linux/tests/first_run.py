@@ -13,6 +13,7 @@ and requires xdotool for real pointer input.
 --window-chrome checks dragging, resizing, and window controls with xdotool and Openbox.
 --gateway-switch checks saved connections, native windows and the private credential vault.
 --gateway-onboarding checks native authority after local model setup under a Gateway base path.
+--task-progress checks retained Quick Chat progress through the shared synthetic Gateway.
 """
 
 import argparse
@@ -193,7 +194,7 @@ def interrupted(signum, _frame):
     raise RuntimeError(f"Native first-run smoke interrupted by signal {signum}")
 
 
-def drive(binary, *, remote_only, local_start_failure, inline_browser, window_chrome, gateway_switch, gateway_onboarding, artifacts_dir):
+def drive(binary, *, remote_only, local_start_failure, inline_browser, window_chrome, gateway_switch, gateway_onboarding, task_progress, fixture_node, artifacts_dir):
     try:
         import gi
 
@@ -210,7 +211,7 @@ def drive(binary, *, remote_only, local_start_failure, inline_browser, window_ch
     def capture(outcome):
         if artifacts_dir is None:
             return
-        if window_chrome or gateway_switch or gateway_onboarding:
+        if window_chrome or gateway_switch or gateway_onboarding or task_progress:
             if outcome == "failed" and inline_fixture is not None:
                 inline_fixture.capture("failed")
             return
@@ -263,15 +264,21 @@ def drive(binary, *, remote_only, local_start_failure, inline_browser, window_ch
         inline_fixture = GatewayOnboardingFixture(artifacts_dir)
         inline_fixture.start()
         binary = inline_fixture.stage_binary(binary)
+    elif task_progress:
+        from task_progress import TaskProgressFixture
+
+        inline_fixture = TaskProgressFixture(artifacts_dir, fixture_node)
+        inline_fixture.start()
 
     with Path("app.log").open("wb") as log:
-        app = subprocess.Popen(
-            [str(binary)],
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-        )
+        app = None
         try:
+            app = subprocess.Popen(
+                [str(binary)],
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+            )
             exercise(
                 app, Atspi, GLib,
                 remote_only=remote_only,
@@ -289,13 +296,14 @@ def drive(binary, *, remote_only, local_start_failure, inline_browser, window_ch
         else:
             capture("passed")
         finally:
-            if app.poll() is None:
-                app.terminate()
-            try:
-                app.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                app.kill()
-                app.wait(timeout=5)
+            if app is not None:
+                if app.poll() is None:
+                    app.terminate()
+                try:
+                    app.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    app.kill()
+                    app.wait(timeout=5)
             Atspi.exit()
             if inline_fixture is not None:
                 inline_fixture.close()
@@ -338,6 +346,11 @@ def main():
         "--gateway-onboarding", action="store_true",
         help="Verify native controls survive local onboarding and remain within the Gateway base path",
     )
+    scenarios.add_argument(
+        "--task-progress", action="store_true",
+        help="Verify native Quick Chat yield, retained worker detail, editable draft and terminal truth",
+    )
+    parser.add_argument("--fixture-node", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if sys.platform != "linux" or os.geteuid() == 0:
         parser.error("Run on Linux as a non-root user; do not disable the WebKit sandbox")
@@ -351,12 +364,21 @@ def main():
         parser.error("The minimal system PATH must not contain an OpenClaw CLI")
     if args.inline_browser and not os.access("/usr/bin/xdotool", os.X_OK):
         parser.error("Inline browser pointer proof requires xdotool")
-    if args.window_chrome or args.gateway_switch or args.gateway_onboarding:
+    if args.window_chrome or args.gateway_switch or args.gateway_onboarding or args.task_progress:
         for tool in ("xdotool", "wmctrl", "xprop", "xwininfo", "openbox"):
             if shutil.which(tool) is None:
                 parser.error(f"Window chrome proof requires {tool}")
-    if (args.gateway_switch or args.gateway_onboarding) and shutil.which("gnome-keyring-daemon") is None:
+    if (args.gateway_switch or args.gateway_onboarding or args.task_progress) and shutil.which("gnome-keyring-daemon") is None:
         parser.error("Gateway switching proof requires a private gnome-keyring-daemon")
+    if args.task_progress:
+        node = args.fixture_node or shutil.which("node")
+        if node is None:
+            parser.error("Task progress proof requires the existing Node/ws installation")
+        args.fixture_node = Path(node).resolve(strict=True)
+        if not os.access(args.fixture_node, os.X_OK):
+            parser.error("Task progress fixture Node must be executable")
+        if args.artifacts_dir is None:
+            parser.error("Task progress proof requires --artifacts-dir")
     if args.artifacts_dir:
         args.artifacts_dir = args.artifacts_dir.resolve()
         args.artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -372,6 +394,8 @@ def main():
             window_chrome=args.window_chrome,
             gateway_switch=args.gateway_switch,
             gateway_onboarding=args.gateway_onboarding,
+            task_progress=args.task_progress,
+            fixture_node=args.fixture_node,
             artifacts_dir=args.artifacts_dir,
         )
         return
@@ -443,6 +467,8 @@ def main():
             command.append("--gateway-switch")
         if args.gateway_onboarding:
             command.append("--gateway-onboarding")
+        if args.task_progress:
+            command.extend(["--task-progress", "--fixture-node", str(args.fixture_node)])
         if args.artifacts_dir:
             command.extend(["--artifacts-dir", str(args.artifacts_dir)])
         command.append(str(binary))

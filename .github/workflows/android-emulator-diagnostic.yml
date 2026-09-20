@@ -9,6 +9,11 @@ on:
         description: Exact lowercase 40-character commit SHA to diagnose
         required: true
         type: string
+      task_progress_proof:
+        description: Run the native retained-task UI proof after emulator readiness
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -120,6 +125,27 @@ jobs:
             cat /etc/os-release
           } >"$DIAGNOSTIC_DIR/runner.txt"
 
+      - name: Checkout exact product for task progress proof
+        if: inputs.task_progress_proof
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.target_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify task progress source identity
+        if: inputs.task_progress_proof
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+
+      - name: Setup task progress Node environment
+        if: inputs.task_progress_proof
+        uses: ./.github/actions/setup-node-env
+        with:
+          cache-mode: "off"
+          install-bun: "false"
+
       - name: Checkout trusted Android tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -132,10 +158,28 @@ jobs:
           path: .mobile-release-tooling
 
       - name: Setup Android toolchain
+        id: android-toolchain
         uses: ./.mobile-release-tooling/.github/actions/setup-android-toolchain
         with:
           cache-mode: "off"
           install-screenshot-emulators: "true"
+
+      - name: Prepare task progress debug apps
+        if: inputs.task_progress_proof
+        id: task-progress-build
+        env:
+          JAVA_HOME: ${{ steps.android-toolchain.outputs.gradle-java-home }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          export PATH="$JAVA_HOME/bin:$PATH"
+          build_timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          printf 'timestamp=%s\n' "$build_timestamp" >>"$GITHUB_OUTPUT"
+          node --import ./scripts/tsx.mjs scripts/run-android-gradle.mts \
+            --no-daemon --max-workers=2 \
+            "-PopenclawBuildCommit=$TARGET_SHA" \
+            "-PopenclawBuildTimestamp=$build_timestamp" \
+            :app:assemblePlayDebug :app:assemblePlayDebugAndroidTest
 
       - name: Prepare trusted Linux Android tooling
         shell: bash
@@ -249,9 +293,16 @@ jobs:
 
       - name: Run phone emulator diagnostic
         shell: bash
+        env:
+          TASK_PROGRESS_PROOF: ${{ inputs.task_progress_proof }}
+          TASK_PROGRESS_JAVA_HOME: ${{ steps.android-toolchain.outputs.gradle-java-home }}
+          TASK_PROGRESS_BUILD_TIMESTAMP: ${{ steps.task-progress-build.outputs.timestamp }}
+          TARGET_SHA: ${{ inputs.target_sha }}
         run: |
           set -euo pipefail
           emulator_pid=""
+          fixture_pid=""
+          task_progress_started=0
           adb_started=0
           readiness_failure_latched=0
           final_cold_boot_observation_seconds=900
@@ -558,6 +609,24 @@ jobs:
           cleanup() {
             status=$?
             set +e
+            if [[ "$task_progress_started" == "1" && -n "${serial:-}" &&
+              "$readiness_failure_latched" != "1" ]]; then
+              mkdir -p "$DIAGNOSTIC_DIR/task-progress-failed"
+              /usr/bin/timeout --signal=TERM --kill-after=5s 30s \
+                adb -s "$serial" pull \
+                /sdcard/Android/data/ai.openclaw.app.debug/files/task-progress-failed/. \
+                "$DIAGNOSTIC_DIR/task-progress-failed/"
+              collection_status=$?
+              printf 'task_progress_collection_status=%s\n' "$collection_status" \
+                >>"$DIAGNOSTIC_DIR/cleanup.log"
+              if [[ "$status" == "0" && "$collection_status" != "0" ]]; then
+                status=1
+              fi
+            fi
+            if [[ -n "$fixture_pid" ]]; then
+              kill "$fixture_pid" 2>/dev/null
+              wait "$fixture_pid" 2>/dev/null
+            fi
             {
               printf 'exit_status=%s\n' "$status"
               printf 'finished_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -667,6 +736,42 @@ jobs:
                 printf 'avd=%s\n' "$(adb -s "$serial" emu avd name 2>/dev/null | tr -d '\r' | sed -n '1p')"
                 printf 'boot_completed=1\n'
               } >"$DIAGNOSTIC_DIR/result.txt"
+              if [[ "$TASK_PROGRESS_PROOF" == "true" ]]; then
+                node scripts/test-ios-sidebar-attention-gateway.mjs --port 19877 \
+                  >"$DIAGNOSTIC_DIR/task-progress-gateway.log" 2>&1 &
+                fixture_pid=$!
+                fixture_ready=false
+                for _ in {1..30}; do
+                  kill -0 "$fixture_pid"
+                  if curl --fail --silent http://127.0.0.1:19877/task-progress/evidence >/dev/null; then
+                    fixture_ready=true
+                    break
+                  fi
+                  sleep 1
+                done
+                [[ "$fixture_ready" == "true" ]]
+                adb -s "$serial" shell input keyevent 82
+                adb -s "$serial" reverse tcp:19877 tcp:19877
+                gradle_env=(env "JAVA_HOME=$TASK_PROGRESS_JAVA_HOME"
+                  "PATH=$TASK_PROGRESS_JAVA_HOME/bin:$PATH" "ANDROID_SERIAL=$serial")
+                "${gradle_env[@]}" node --import ./scripts/tsx.mjs scripts/run-android-gradle.mts \
+                  --no-daemon --max-workers=2 \
+                  "-PopenclawBuildCommit=$TARGET_SHA" \
+                  "-PopenclawBuildTimestamp=$TASK_PROGRESS_BUILD_TIMESTAMP" \
+                  :app:installPlayDebug
+                adb -s "$serial" shell pm clear ai.openclaw.app.debug
+                task_progress_started=1
+                /usr/bin/timeout --signal=TERM --kill-after=30s 900s \
+                  "${gradle_env[@]}" node --import ./scripts/tsx.mjs scripts/run-android-gradle.mts \
+                  --no-daemon --max-workers=2 \
+                  "-PopenclawBuildCommit=$TARGET_SHA" \
+                  "-PopenclawBuildTimestamp=$TASK_PROGRESS_BUILD_TIMESTAMP" \
+                  :app:connectedPlayDebugAndroidTest \
+                  '-Pandroid.testInstrumentationRunnerArguments.class=ai.openclaw.app.ui.chat.TaskProgressGatewayTest#crossAgentProgressAfterYieldPreservesDraftAndAuthoredChecklist' \
+                  -Pandroid.testInstrumentationRunnerArguments.taskProgressGatewayUrl=ws://127.0.0.1:19877 \
+                  -Pandroid.testInstrumentationRunnerArguments.taskProgressControlUrl=http://127.0.0.1:19877 \
+                  -Pandroid.testInstrumentationRunnerArguments.taskProgressTerminalStage=failed
+              fi
               exit 0
             fi
             sleep 2
@@ -681,4 +786,15 @@ jobs:
         with:
           name: android-emulator-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/android-emulator-diagnostic
+          retention-days: 7
+
+      - name: Upload Android task progress test reports
+        if: always() && inputs.task_progress_proof
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: android-task-progress-tests-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            apps/android/app/build/outputs/androidTest-results/connected/
+            apps/android/app/build/reports/androidTests/connected/
+          if-no-files-found: warn
           retention-days: 7

@@ -19489,6 +19489,7 @@ describe("Linux App validation routing", () => {
               steps: {
                 "inline-browser": { outputs: {}, outcome: "success" },
                 "gateway-switch": { outputs: {}, outcome: "success" },
+                "task-progress": { outputs: {}, outcome: "success" },
               },
             }),
         );
@@ -19513,6 +19514,7 @@ describe("Linux App validation routing", () => {
       expect(linux.map((step) => step.run)).toContain("cargo +stable build --locked");
       expect(linux.find((step) => step.id === "inline-browser")?.run).toContain("--inline-browser");
       expect(linux.find((step) => step.id === "gateway-switch")?.run).toContain("--gateway-switch");
+      expect(linux.find((step) => step.id === "task-progress")?.run).toContain("--task-progress");
       for (const name of packagingSteps) {
         expect(
           linuxSteps.some((step) => step.name === name),
@@ -19528,7 +19530,7 @@ describe("Linux App validation routing", () => {
           linux
             .filter((step) => step.uses?.startsWith("actions/upload-artifact@"))
             .map((step) => step.with?.name),
-        ).toEqual(["linux-inline-browser", "linux-gateway-switch"]);
+        ).toEqual(["linux-inline-browser", "linux-gateway-switch", "linux-task-progress"]);
       }
     },
   );
@@ -19539,6 +19541,7 @@ describe("Linux App validation routing", () => {
       for (const [name, id] of [
         ["Upload native inline browser proof", "inline-browser"],
         ["Upload native Gateway switching proof", "gateway-switch"],
+        ["Upload native Quick Chat task progress proof", "task-progress"],
       ] as const) {
         const upload = expectDefined(
           linuxSteps.find((step) => step.name === name),
