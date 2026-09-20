@@ -228,7 +228,8 @@ describe("buildCliSpeechProvider", () => {
       expect(buildCliSpeechProvider().defaultTimeoutMs).toBe(120_000);
     });
 
-    it.each([
+    // Each timeout case owns its process and output workspace; retain the real deadlines.
+    it.concurrent.each([
       { method: "synthesize", providerTimeoutMs: undefined },
       { method: "synthesizeTelephony", providerTimeoutMs: undefined },
       { method: "synthesize", providerTimeoutMs: 8_000 },
