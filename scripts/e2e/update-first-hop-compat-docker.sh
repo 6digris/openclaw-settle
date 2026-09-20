@@ -22,7 +22,8 @@ IMAGE_NAME="$(
 )"
 SKIP_BUILD="${OPENCLAW_UPDATE_FIRST_HOP_E2E_SKIP_BUILD:-0}"
 DOCKER_RUN_TIMEOUT="${OPENCLAW_UPDATE_FIRST_HOP_DOCKER_RUN_TIMEOUT:-1200s}"
-ARTIFACT_DIR="${OPENCLAW_UPDATE_FIRST_HOP_ARTIFACT_DIR:-$ROOT_DIR/.artifacts/update-first-hop-compat}"
+# Keep rejected config observations with the Docker logs retained by CI.
+ARTIFACT_DIR="${OPENCLAW_UPDATE_FIRST_HOP_ARTIFACT_DIR:-$ROOT_DIR/.artifacts/docker-tests/update-first-hop-compat}"
 SOURCE_PACKAGE="${OPENCLAW_UPDATE_FIRST_HOP_SOURCE_PACKAGE_TGZ:-}"
 FIXTURE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/openclaw-update-first-hop.XXXXXX")"
 PACKAGE_TGZ=""
