@@ -290,7 +290,10 @@ try {
     $originalFailure = $_
     Write-Output 'APPX_DEPLOYMENT_FAILURE_DIAGNOSTICS_BEGIN'
     try {
-        Get-AppPackageLog -All -ErrorAction Stop | Select-Object -Last 100 | Format-List * | Out-String -Width 300 | Write-Output
+        $failureText = $originalFailure.Exception.Message + "`n" + $originalFailure.ErrorDetails.Message + "`n" + ($originalFailure | Out-String -Width 300)
+        $activity = [regex]::Match($failureText, '(?i)\[ActivityId\]\s+(?<id>[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})')
+        if (-not $activity.Success) { throw 'Original deployment error has no exact ActivityId; diagnostic correlation unavailable.' }
+        Get-AppPackageLog -ActivityID $activity.Groups['id'].Value -ErrorAction Stop | Select-Object -First 100 | Format-List * | Out-String -Width 300 | Write-Output
         Get-AppxPackage -AllUsers -Name Microsoft.DesktopAppInstaller | Select-Object Name,PackageFullName,Version,Architecture,InstallLocation,Status | ConvertTo-Json -Depth 4 | Write-Output
         Get-AppxProvisionedPackage -Online | Where-Object DisplayName -eq Microsoft.DesktopAppInstaller | Select-Object DisplayName,PackageName,Version,Architecture | ConvertTo-Json -Depth 4 | Write-Output
     } catch { Write-Output ('Deployment diagnostic capture failed: ' + $_.Exception.Message) }
