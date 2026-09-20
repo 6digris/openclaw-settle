@@ -238,10 +238,11 @@ export class ShellChromeOwner {
       this.navDrawerSwipe.closed();
     }
     restoreToastFromNavDrawer(host);
-    const trigger = options.restoreFocus ? host.navDrawerTrigger : null;
+    const restoreFocus = options.restoreFocus && host.navDrawerOpen;
+    const trigger = restoreFocus ? host.navDrawerTrigger : null;
     host.navDrawerOpen = false;
     host.navDrawerTrigger = null;
-    if (options.restoreFocus) {
+    if (restoreFocus) {
       requestAnimationFrame(() => this.restoreFocusTo(trigger));
     }
   };
