@@ -109,13 +109,17 @@ export async function triageAfterFailure(
           boundedFailure.gateway === "verify-running"
             ? await prepareStartupTriageValidator(targetEnv, boundedFailure).catch(() => undefined)
             : undefined;
-        const updateFailure = updateResultPath
-          ? await (
-              await import("./triage-update.js")
-            ).readTriageUpdateFailure(updateResultPath, redaction)
-          : undefined;
-        const updateRunId =
-          updateFailure && "result" in updateFailure ? updateFailure.result.runId : undefined;
+        let updateRunId: string | undefined;
+        if (updateResultPath) {
+          try {
+            const { readTriageUpdateFailure } = await import("./triage-update.js");
+            const updateFailure = await readTriageUpdateFailure(updateResultPath, redaction);
+            updateRunId = "result" in updateFailure ? updateFailure.result.runId : undefined;
+          } catch {
+            // Optional task correlation cannot veto repair when replacement removed
+            // the old lazy graph. The installed child still receives the diagnostic path.
+          }
+        }
         // The resident parent validates; only the installed child loads the repair graph.
         // Service selector hints do not grant a foreground updater a lease.
         const commandArgv = [

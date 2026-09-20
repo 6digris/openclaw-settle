@@ -394,7 +394,7 @@ export class WorkboardCoreStore extends WorkboardStoreRuntime {
       if (await this.store.hasCards(boardId)) {
         throw new Error("board still has cards; archive it or move/delete the cards first.");
       }
-      for (const entry of await this.subscriptionStore.entries()) {
+      for (const entry of await this.subscriptionStore.entries({ boardId })) {
         if (entry.value?.version === 1 && entry.value.subscription?.boardId === boardId) {
           await this.subscriptionStore.delete(entry.key);
         }
@@ -1144,23 +1144,6 @@ export class WorkboardCoreStore extends WorkboardStoreRuntime {
       return Boolean(card && cardParentIds(card).some(visit));
     };
     return visit(cardId);
-  }
-
-  protected async recordDispatch(card: WorkboardCard, now: number): Promise<WorkboardCard> {
-    const result = await this.updateLatestCard(card.id, (current) => ({
-      metadata: {
-        ...current.metadata,
-        automation: normalizeAutomation(
-          {
-            ...current.metadata?.automation,
-            dispatchCount: (current.metadata?.automation?.dispatchCount ?? 0) + 1,
-            lastDispatchAt: now,
-          },
-          current.metadata?.automation,
-        ),
-      },
-    }));
-    return result.card;
   }
 
   protected async recordOrchestrationCandidate(

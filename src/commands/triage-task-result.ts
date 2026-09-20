@@ -7,8 +7,8 @@ import { observeTriageBacking } from "../infra/triage-backing.js";
 import type { continueTriageInFreshProcess } from "../infra/triage-continuation.js";
 import type { UpdateRepairResult } from "../infra/update-repair-protocol.js";
 import { redactSupportString } from "../logging/diagnostic-support-redaction.js";
-import { finalizeTaskRunByRunId } from "../tasks/detached-task-runtime.js";
-import { listTaskRecords, reloadTaskRegistryFromStore } from "../tasks/runtime-internal.js";
+import { listTaskRecords, reloadTaskRuntimeStateFromStore } from "../tasks/runtime-internal.js";
+import { publishTaskRecordUpdate } from "../tasks/task-registry-mutation.js";
 import { getTaskRegistryStore } from "../tasks/task-registry.store.js";
 import { readTriageTaskDetail } from "../tasks/triage-task.js";
 import type { StartupTriageResult } from "./triage-startup.js";
@@ -18,7 +18,7 @@ type JoinedTriage = Extract<
   { status: "completed" }
 >;
 
-export function settleTriageRepairTask(
+export async function settleTriageRepairTask(
   params: {
     taskId?: string;
     outcome: JoinedTriage;
@@ -31,7 +31,7 @@ export function settleTriageRepairTask(
     | { repair: UpdateRepairResult; startup?: never }
     | { startup: StartupTriageResult; repair?: never }
   ),
-): void {
+): Promise<void> {
   if (!params.taskId || params.signal.aborted || params.isCurrent?.() === false) {
     return;
   }
@@ -57,9 +57,17 @@ export function settleTriageRepairTask(
     ) {
       return;
     }
-    reloadTaskRegistryFromStore();
+    await reloadTaskRuntimeStateFromStore();
+    if (
+      params.signal.aborted ||
+      params.isCurrent?.() === false ||
+      realpathSync(resolveStateDir()) !== realpathSync(stateDir) ||
+      resolveConfigPath() !== params.target.configPath
+    ) {
+      return;
+    }
     const tasks = listTaskRecords((task) => task.runId === params.outcome.generationOwner);
-    const task = tasks.length === 1 ? tasks[0] : undefined;
+    const task = tasks.find((candidate) => candidate.taskId === params.taskId);
     const detail = task && readTriageTaskDetail(task);
     if (
       !task ||
@@ -87,22 +95,28 @@ export function settleTriageRepairTask(
         ? "Startup repair checks passed. Gateway activation remains unconfirmed."
         : "Repair checks passed. Gateway activation remains unconfirmed."
       : `Repair incomplete: ${redactSupportString(params.startup ? params.startup.after.summary : (params.repair.reason ?? params.repair.finalValidation.summary), { env: process.env, stateDir }, { maxLength: 1024 })}`;
-    if (
-      getTaskRegistryStore().matchesTaskIdentity?.(task) !== true ||
-      params.signal.aborted ||
-      params.isCurrent?.() === false
-    ) {
-      return;
-    }
-    finalizeTaskRunByRunId({
-      runId: params.outcome.generationOwner,
-      runtime: "cli",
+    const store = getTaskRegistryStore();
+    const settled = store.settleTriageTask?.({
+      expected: task,
       status: succeeded ? "succeeded" : "failed",
       endedAt: Date.now(),
-      progressSummary: null,
       terminalSummary: summary,
-      suppressDelivery: true,
+      assertCurrent: () => {
+        params.signal.throwIfAborted();
+        if (
+          params.isCurrent?.() === false ||
+          getTaskRegistryStore() !== store ||
+          realpathSync(resolveStateDir()) !== realpathSync(stateDir) ||
+          resolveConfigPath() !== params.target.configPath
+        ) {
+          throw new Error("The original triage task owner is no longer current.");
+        }
+      },
     });
+    if (settled) {
+      // Reuse canonical terminal publication and linked-flow updates after the exact-row commit.
+      publishTaskRecordUpdate(task, settled, true);
+    }
   } catch {
     // Result projection is optional. A failed task write is not repair failure
     // and cannot manufacture successful task completion or retry permission.

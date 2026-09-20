@@ -94,6 +94,22 @@ Pass the same owner to shared capture helpers so screenshots, reports, and video
 stay together. Distinguish stage names within an attempt. Close the browser context
 before finalizing video.
 
+The chat-loading performance real-Gateway suite records browser timestamps in
+`loading-evidence.json` for the history request, data publication, committed row
+model, and visual quiescence. A pane update can still display the old row model
+while scrolling, so the probe verifies that a retained row's index advances
+before checking for 50 ms without transcript mutations, resizing, or scrolling.
+It records the start and confirmation of that quiet interval separately; the
+confirmation delay is not application latency. A nonzero `lateChanges` count
+invalidates that quiescence sample.
+
+Use ordinary runs without capture for latency comparisons. With
+`OPENCLAW_CAPTURE_UI_PROOF=1`, the suite also retains screenshots, video, and
+`history-pagination.cpuprofile`. Profiling and capture add overhead, and the CPU
+profile includes profiler startup before the pagination timer begins. Compare
+repeated runs of the same fixture and build mode; keep the legacy test-driver
+wall timings separate from the browser timestamps.
+
 Successful and failed evidence is retained. Cleanup is manual: remove only exact
 directories that you own and have finished reviewing. Never recursively delete
 the shared parent before a replay. Disposable build/media fixtures and temporary
@@ -101,11 +117,23 @@ raw video have their own cleanup. New captures cannot recover overwritten eviden
 do not describe a replay as recovery of lost files.
 
 Timeout diagnostics allocate fresh children beneath the existing
-`OPENCLAW_UI_E2E_DIAGNOSTIC_DIR` or default timeout directory, keeping each PNG and
-JSON report together. Their `ci.shardIndex` and `ci.vitestShardCount` fields record
-`VITEST_SHARD_INDEX` and `VITEST_SHARD_COUNT`, respectively, as supplied by normal
-CI. Missing values remain `null`; manual and separate release E2E invocations do
-not infer this metadata from Vitest's `--shard` argument.
+`OPENCLAW_UI_E2E_DIAGNOSTIC_DIR` or default timeout directory. Each child keeps its
+raw `failure.private.json` report and captured `failure.private.png` screenshot
+local, alongside an allowlisted `failure.public.json` summary. Automatic CI uploads
+match only `failure-*/failure.public.json`; raw reports and screenshots remain
+private. Older frozen targets without the public summary produce no matching
+upload and never fall back to raw captures.
+
+The shared failure collector gives renderer evaluation and screenshot capture one
+five-second budget. If the renderer stalls, it records incomplete diagnostics and
+returns so the caller can rethrow the original failure. A late browser response
+cannot publish a screenshot after that budget expires; test action deadlines and
+caller-owned browser cleanup remain unchanged.
+
+The private JSON report's `ci.shardIndex` and `ci.vitestShardCount` fields record
+`VITEST_SHARD_INDEX` and `VITEST_SHARD_COUNT`, respectively, as supplied by normal CI.
+Missing values remain `null`; manual and separate release E2E invocations do not
+infer this metadata from Vitest's `--shard` argument.
 
 Mantis allocates an invocation directory for setup logs,
 capture attempts, and its report; the builder preserves each attempt's relative

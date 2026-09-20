@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 // Private live continuations across the installed CLI, never serialized execution authority.
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { readFileSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { z } from "zod";
 import { resolveNodeRunner } from "../cli/update-cli/shared.js";
 import {
@@ -49,6 +49,7 @@ const TRIAGE_HANDOFF_GRACE_MS = 30_000;
 const readySchema = z.strictObject({ type: z.literal("triage-ready"), version: z.literal(2) });
 const operatorSchema = z.strictObject({
   kind: z.literal("operator"),
+  implicitUpdate: z.boolean().optional(),
   installationRoot: z.string().min(1).max(4096),
   gateway: z.literal("preserve"),
   // Same bounded diagnostic data as the prompt; never an execution grant.
@@ -562,7 +563,11 @@ export async function acceptTriageContinuation(): Promise<
         !lease ||
         !process.connected ||
         process.ppid !== parent.pid ||
-        !store.owns(lease, "executor")
+        !store.owns(lease, "executor") ||
+        (lease.action.kind === "triage" &&
+          lease.action.lifetime.kind === "native" &&
+          (lease.action.lifetime.placement.kind !== "attached" ||
+            !store.isInNativeScope(lease.action.lifetime)))
       ) {
         cancel();
       }
@@ -623,12 +628,7 @@ export async function acceptTriageContinuation(): Promise<
     lease = admitted;
     if (admitted.action.lifetime.kind === "native") {
       const life = admitted.action.lifetime;
-      if (
-        life.placement.kind !== "attached" ||
-        !readFileSync("/proc/self/cgroup", "utf8")
-          .trim()
-          .endsWith("/" + life.scope)
-      ) {
+      if (life.placement.kind !== "attached" || !store.isInNativeScope(life)) {
         throw new Error("automatic triage executor is outside its native scope");
       }
     }

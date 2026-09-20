@@ -3,9 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import {
+  closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
+import { createTranscriptCaptureAppends } from "../../transcripts/capture-appends.js";
 import { activeSessions } from "../../transcripts/capture.js";
 import type { TranscriptSourceProvider } from "../../transcripts/provider-types.js";
 import { TranscriptsStore, transcriptSessionSelector } from "../../transcripts/store.js";
@@ -62,8 +64,9 @@ beforeEach(async () => {
   getProvider.mockReset();
   await store.writeSession(session);
 });
-afterEach(() => {
+afterEach(async () => {
   activeSessions.clear();
+  await closeOpenClawStateDatabaseAsync();
   closeOpenClawStateDatabaseForTest();
 });
 
@@ -82,6 +85,7 @@ describe("transcripts read actions", () => {
       );
       if (state === "active") {
         activeSessions.set(session.sessionId, {
+          appends: createTranscriptCaptureAppends(() => {}),
           session: descriptor,
           providerId: "voice",
           provider: {},
@@ -201,6 +205,7 @@ describe("transcripts read actions", () => {
       },
     });
     activeSessions.set(session.sessionId, {
+      appends: createTranscriptCaptureAppends(() => {}),
       session,
       providerId: "voice",
       provider: {},
@@ -260,6 +265,7 @@ describe("transcripts read actions", () => {
 
   it("bounds model-facing notes and reports active captures without summaries", async () => {
     activeSessions.set(session.sessionId, {
+      appends: createTranscriptCaptureAppends(() => {}),
       session,
       providerId: "voice",
       provider: {},

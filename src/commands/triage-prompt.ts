@@ -35,6 +35,8 @@ export type TriageFailureContext = {
 
 export type TriageOperatorContext = Readonly<{
   kind: "operator";
+  // Preserve the original selector, not the generated diagnostic artifact path.
+  implicitUpdate?: boolean;
   installationRoot: string;
   gateway: "preserve";
   updateFailure?: TriageUpdateFailure;

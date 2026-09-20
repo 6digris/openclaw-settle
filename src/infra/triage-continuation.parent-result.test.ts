@@ -27,7 +27,7 @@ import fs from "node:fs";
 import { acceptTriageContinuation } from ${JSON.stringify(continuation.href)};
 const admission = await acceptTriageContinuation();
 admission.assertCurrent();
-fs.writeFileSync(${JSON.stringify(admitted)}, JSON.stringify(admission.backing));
+fs.writeFileSync(${JSON.stringify(admitted)}, JSON.stringify({backing: admission.backing, operator: admission.operator}));
 const wait = file => new Promise(resolve => {
   const timer = setInterval(() => {
     if (fs.existsSync(file) || admission.signal.aborted) {
@@ -61,7 +61,12 @@ process.exitCode = ${mode === "nonzero" ? 7 : 0};
     continueTriageInFreshProcess({
       root,
       commandArgv: [process.execPath, entry, "triage"],
-      operator: { kind: "operator", installationRoot: root, gateway: "preserve" },
+      operator: {
+        kind: "operator",
+        installationRoot: root,
+        gateway: "preserve",
+        implicitUpdate: true,
+      },
       signal: controller.signal,
       output: () => {},
     });
@@ -77,7 +82,11 @@ it("returns the parent's admitted correlation only after child close and release
   });
   try {
     await vi.waitFor(() => expect(fs.existsSync(f.admitted)).toBe(true), { timeout: 25000 });
-    const backing = JSON.parse(fs.readFileSync(f.admitted, "utf8")) as TriageBackingReference;
+    const { backing, operator } = JSON.parse(fs.readFileSync(f.admitted, "utf8")) as {
+      backing: TriageBackingReference;
+      operator: unknown;
+    };
+    expect(operator).toMatchObject({ kind: "operator", implicitUpdate: true });
     fs.writeFileSync(f.finish, "");
     await vi.waitFor(() => expect(fs.existsSync(f.finished)).toBe(true), { timeout: 10000 });
     const beforeExit = store.read(f.root);

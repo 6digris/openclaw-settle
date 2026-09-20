@@ -60,7 +60,7 @@ export async function readJoinedStartupTriageResult(params: {
     // The old parent's lazy task graph may have been replaced after admission.
     // Optional projection cannot discard an independently verified repair result.
     const projection = await import("./triage-task-result.js").catch(() => undefined);
-    projection?.settleTriageRepairTask({
+    await projection?.settleTriageRepairTask({
       taskId: report.repairTaskId,
       outcome: params.outcome,
       root: params.root,

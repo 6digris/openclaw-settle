@@ -2,11 +2,11 @@
 import { execFile } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { WebSocketServer } from "ws";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
@@ -83,23 +83,32 @@ it.each(["repair", "no-effect", "already-healthy", "preserve"])(
         agents: { defaults: { model: "fixture/model" } },
       }),
     );
+    // A request acknowledges the child effect without filesystem watcher coalescing
+    // or polling. The response releases the child only after the Gateway listens.
+    const repairControl = createServer();
+    const repairRequested = new Promise<ServerResponse>((resolve) => {
+      repairControl.once("request", (_request, response) => resolve(response));
+    });
+    repairControl.listen(0, "127.0.0.1");
+    await once(repairControl, "listening");
+    const controlAddress = repairControl.address();
+    if (!controlAddress || typeof controlAddress === "string") {
+      throw new Error("No fixture control port");
+    }
+    const controlUrl = `http://127.0.0.1:${controlAddress.port}`;
     const effectCode = 'require("node:fs").writeFileSync(process.argv[1],"actual-child-effect")';
     const agentCode = `
 import {execFileSync} from "node:child_process";
 import fs from "node:fs/promises";
-import {watch,existsSync} from "node:fs";
 import path from "node:path";
-import {once} from "node:events";
 const root=${JSON.stringify(root)},mode=${JSON.stringify(mode)};
 export async function agentExecCommand(prompt,options,runtime,deps){
  deps.assertSourceCurrent();
  await fs.writeFile(path.join(root,"agent-input.json"),JSON.stringify({prompt,cwd:options.cwd}));
  if(mode!=="no-effect" && mode!=="preserve"){
-  const changes=watch(root);
-  try{
-   execFileSync(process.execPath,["-e",${JSON.stringify(effectCode)},path.join(root,"effect")]);
-   while(!existsSync(path.join(root,"listening")))await once(changes,"change");
-  }finally{changes.close();}
+  execFileSync(process.execPath,["-e",${JSON.stringify(effectCode)},path.join(root,"effect")]);
+  const response=await fetch(${JSON.stringify(controlUrl)},{signal:deps.abortSignal});
+  await response.text();
  }
  deps.assertSourceCurrent();
  return {exitCode:0};
@@ -123,8 +132,8 @@ await triageCommand(defaultRuntime,{noExport:true});
       `
 import {triageAfterFailure} from ${JSON.stringify(source("src/commands/triage-failure.ts"))};
 const report=await triageAfterFailure({log:console.log,error:console.error,exit:code=>{throw new Error('unexpected parent exit '+code)}},{kind:'gateway-startup',phase:'startup',error:'original startup failure',installationRoot:${JSON.stringify(root)},expectedVersion:'2026.9.11',gateway:${JSON.stringify(mode === "preserve" ? "preserve" : "verify-running")}});
-const {reloadTaskRegistryFromStore,listTaskRecords}=await import(${JSON.stringify(source("src/tasks/task-registry.ts"))});
-reloadTaskRegistryFromStore();
+const {reloadTaskRuntimeStateFromStore,listTaskRecords}=await import(${JSON.stringify(source("src/tasks/runtime-internal.ts"))});
+await reloadTaskRuntimeStateFromStore();
 const tasks=listTaskRecords().map(({taskId,status,terminalSummary})=>({taskId,status,terminalSummary}));
 process.stdout.write(JSON.stringify({report,tasks})+'\\n');
 `,
@@ -153,20 +162,15 @@ process.stdout.write(JSON.stringify({report,tasks})+'\\n');
     );
     try {
       if (mode === "repair") {
-        await Promise.race([
-          vi.waitFor(
-            async () =>
-              expect(await fs.readFile(path.join(root, "effect"), "utf8")).toBe(
-                "actual-child-effect",
-              ),
-            { timeout: 60000 },
-          ),
+        const response = await Promise.race([
+          repairRequested,
           running.then((result) => {
             throw new Error(`parent ended before effect: ${result.stderr}`);
           }),
         ]);
+        expect(await fs.readFile(path.join(root, "effect"), "utf8")).toBe("actual-child-effect");
         await startGateway();
-        await fs.writeFile(path.join(root, "listening"), "ready");
+        response.end("ready");
       }
       const output = await running;
       const parsed = JSON.parse(output.stdout);
@@ -206,7 +210,10 @@ process.stdout.write(JSON.stringify({report,tasks})+'\\n');
         expect(parsed.report.agentExitCode).toBe(0);
       }
     } finally {
-      await fs.writeFile(path.join(root, "listening"), "test-drain");
+      repairControl.closeAllConnections();
+      await new Promise<void>((resolve) => {
+        repairControl.close(() => resolve());
+      });
       await running.catch(() => undefined);
       for (const client of sockets.clients) {
         client.terminate();

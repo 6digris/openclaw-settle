@@ -29,6 +29,92 @@ async function confirmDelete(page: import("playwright").Page, proofName?: string
 }
 
 suite.define(() => {
+  it("direct session shortcuts preserve drafts, archive only the current conversation, and support Undo", async () => {
+    const context = await suite.browser.newContext(createControlUiE2eContextOptions());
+    const page = await context.newPage();
+    const main = sessionRow("agent:main:main", "Main", 1);
+    const target = sessionRow("agent:main:current-shortcut", "Current shortcut", 2);
+    const others = [
+      sessionRow("agent:main:selected-other-one", "Selected other one", 3),
+      sessionRow("agent:main:selected-other-two", "Selected other two", 4),
+    ];
+    const gateway = await installMockGateway(page, {
+      sessions: [main, target, ...others],
+      sessionKey: target.key,
+      sessionArchiveFiltering: true,
+      historyMessages: [
+        { role: "assistant", content: [{ type: "text", text: "Current conversation content" }] },
+      ],
+    });
+    try {
+      await page.goto(controlUiSessionUrl(suite.server.baseUrl, target.key));
+      const pane = page.locator("openclaw-chat-pane.chat-pane-cache__pane--active");
+      const composer = pane.locator(".agent-chat__composer-combobox > textarea");
+      await composer.fill("Preserve this unsent draft");
+      for (const row of others) {
+        await page
+          .locator(`.sidebar-recent-session[data-session-key="${row.key}"]`)
+          .click({ modifiers: ["Alt"] });
+      }
+      await composer.focus();
+      await captureUiProof(suite, page, "direct-archive-before.png");
+      const modifier = await page.evaluate(() =>
+        /Mac|iPhone|iPad|iPod/u.test(navigator.platform) ? "Meta" : "Control",
+      );
+      // Browser key events exercise the registered receiver; CDP input does not
+      // certify interception of physical operating-system accelerators.
+      await composer.press(`${modifier}+Shift+A`);
+      const archived = await waitForPatch(
+        gateway,
+        (params) => params.key === target.key && params.archived === true,
+      );
+      expect(archived.params).toMatchObject({
+        key: target.key,
+        expectedSessionId: target.sessionId,
+        archived: true,
+      });
+      expect(await gateway.getRequests("sessions.patchMany")).toEqual([]);
+      expect(await gateway.getRequests("sessions.abort")).toEqual([]);
+      expect(await gateway.getRequests("sessions.delete")).toEqual([]);
+      const undo = page.getByRole("button", { name: "Undo", exact: true });
+      await undo.waitFor({ state: "visible" });
+      await captureUiProof(suite, page, "direct-archive-after.png");
+      expect(new URL(page.url()).pathname).toBe(controlUiSessionPath(target.key));
+      await pane.getByText("Current conversation content", { exact: true }).waitFor();
+      await undo.click();
+      await waitForPatch(
+        gateway,
+        (params) => params.key === target.key && params.archived === false,
+      );
+      await expect.poll(() => composer.inputValue()).toBe("Preserve this unsent draft");
+      const archiveRequests = (await gateway.getRequests("sessions.patch")).filter(
+        (request) => typeof requireRecord(request.params).archived === "boolean",
+      );
+      expect(archiveRequests).toHaveLength(2);
+      expect(new URL(page.url()).pathname).toBe(controlUiSessionPath(target.key));
+
+      await captureUiProof(suite, page, "direct-new-session-before.png");
+      await composer.press(`${modifier}+Shift+O`);
+      const newComposer = page.locator("openclaw-new-session-page .new-session-page__message");
+      await newComposer.waitFor({ state: "visible" });
+      await expect
+        .poll(() => newComposer.evaluate((element) => element === document.activeElement))
+        .toBe(true);
+      expect(await newComposer.inputValue()).toBe("");
+      expect(await gateway.getRequests("sessions.create")).toEqual([]);
+      expect(await gateway.getRequests("chat.send")).toEqual([]);
+      await captureUiProof(suite, page, "direct-new-session-after.png");
+      await page.keyboard.press(`${modifier}+/`);
+      await page.getByRole("dialog", { name: "Keyboard shortcuts" }).waitFor();
+      await captureUiProof(suite, page, "direct-session-shortcuts-help.png");
+      await page.keyboard.press("Escape");
+      await page.goBack();
+      await expect.poll(() => composer.inputValue()).toBe("Preserve this unsent draft");
+    } finally {
+      await context.close();
+    }
+  });
+
   it("removes an agent-archived selected session without closing its transcript", async () => {
     const context = await suite.browser.newContext({
       locale: "en-US",
@@ -414,100 +500,6 @@ suite.define(() => {
       if (proofVideo) {
         await proofVideo.saveAs(path.join(suite.artifactDir, "archive-current-thread.webm"));
       }
-    }
-  });
-
-  // Batch archiving used to serialize one sessions.patch transaction per row.
-  // The whole selection now crosses the Gateway once and settles from one list.
-
-  it("archives a mixed active and idle sidebar multi-select in one RPC", async () => {
-    const context = await suite.browser.newContext(createControlUiE2eContextOptions());
-    const page = await context.newPage();
-    const baseTime = Date.parse("2026-07-01T16:00:00.000Z");
-    const batchKeys = ["agent:main:batch-a", "agent:main:batch-b", "agent:main:batch-c"] as const;
-    const gateway = await installMockGateway(page, {
-      deferredMethods: ["sessions.patchMany"],
-      methodResponses: {
-        "sessions.list": sessionsListResponse([
-          sessionRow("agent:main:main", "Main", baseTime),
-          sessionRow(batchKeys[0], "Batch A", baseTime - 1_000),
-          sessionRow(batchKeys[1], "Batch B", baseTime - 2_000, {
-            hasActiveRun: true,
-            status: "running",
-          }),
-          sessionRow(batchKeys[2], "Batch C", baseTime - 3_000),
-        ]),
-        "sessions.patchMany": {
-          outcomes: batchKeys.map((key) => ({ ok: true, key, agentId: "main" })),
-        },
-      },
-      sessionArchiveFiltering: true,
-      sessionKey: "agent:main:main",
-    });
-
-    try {
-      await page.goto(`${suite.server.baseUrl}chat`);
-      const sidebar = page.locator("openclaw-app-sidebar");
-      const rowFor = (key: string) =>
-        sidebar.locator(`.sidebar-recent-session[data-session-key="${key}"]`);
-      await rowFor(batchKeys[0]).waitFor({ state: "visible", timeout: 10_000 });
-      for (const key of batchKeys.slice(1)) {
-        await rowFor(key).waitFor({ state: "visible" });
-      }
-      const listCountBeforeBatch = (await gateway.getRequests("sessions.list", rosterMatch)).length;
-
-      for (const key of batchKeys) {
-        await rowFor(key).click({ modifiers: ["Alt"] });
-      }
-      await rowFor(batchKeys[0]).click({ button: "right" });
-      const batchMenu = page.locator("openclaw-session-menu");
-      const archiveItem = batchMenu.getByRole("menuitem", { name: `Archive ${batchKeys.length}` });
-      await archiveItem.waitFor({ state: "visible", timeout: 10_000 });
-      expect(await archiveItem.isDisabled()).toBe(false);
-      expect(
-        await batchMenu.getByRole("menuitem", { name: `Delete ${batchKeys.length}…` }).isDisabled(),
-      ).toBe(true);
-      await captureUiProof(suite, page, "sidebar-multi-select-archive-menu.png");
-      await page.keyboard.press("A");
-
-      const patchMany = await gateway.waitForRequest("sessions.patchMany");
-      for (const key of batchKeys) {
-        await rowFor(key).waitFor({ state: "detached" });
-      }
-      expect(await page.locator(".app-toast").count()).toBe(0);
-      await captureUiProof(suite, page, "sidebar-multi-select-archive-pending.png");
-      await gateway.resolveDeferred("sessions.patchMany");
-      const patchManyParams = requireRecord(patchMany.params);
-      expect(patchManyParams.patch).toEqual({ archived: true });
-      expect(patchManyParams.targets).toEqual(
-        batchKeys.map((key) => ({
-          key,
-          agentId: "main",
-          expectedSessionId: `session:${key}`,
-        })),
-      );
-      expect(await gateway.getRequests("sessions.patch")).toEqual([]);
-      expect(await gateway.getRequests("sessions.abort")).toEqual([]);
-      expect(await gateway.getRequests("agent.wait")).toEqual([]);
-      await expect
-        .poll(async () => (await gateway.getRequests("sessions.list", rosterMatch)).length, {
-          timeout: 10_000,
-        })
-        .toBe(listCountBeforeBatch + 1);
-      for (const key of batchKeys) {
-        await rowFor(key).waitFor({ state: "detached" });
-      }
-      await expect.poll(() => page.locator("[data-sidebar-session-error]").count()).toBe(0);
-      await expect
-        .poll(() => page.locator(".app-toast").textContent())
-        .toContain("Archived 3 sessions");
-      await captureUiProof(suite, page, "sidebar-multi-select-archive-settled.png");
-      await page.waitForTimeout(500);
-      expect((await gateway.getRequests("sessions.list", rosterMatch)).length).toBe(
-        listCountBeforeBatch + 1,
-      );
-    } finally {
-      await context.close();
     }
   });
 

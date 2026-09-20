@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   continuation: vi.fn(),
   settle: vi.fn(),
   writeFailure: vi.fn(),
+  pendingFailure: vi.fn(),
 }));
 vi.mock("../infra/openclaw-root.js", () => ({ resolveOpenClawPackageRoot: mocks.root }));
 vi.mock("../infra/triage-continuation.js", () => ({
@@ -18,6 +19,9 @@ vi.mock("../infra/triage-continuation.js", () => ({
 vi.mock("./triage-task-result.js", () => ({ settleTriageRepairTask: mocks.settle }));
 vi.mock("./triage-update.js", async (original) => ({
   ...(await original<typeof import("./triage-update.js")>()),
+  readPendingTriageUpdateFailure: mocks.pendingFailure,
+}));
+vi.mock("../infra/update-failure-report-artifact.js", () => ({
   writeTriageUpdateFailure: mocks.writeFailure,
 }));
 const dirs = useAutoCleanupTempDirTracker(afterEach);
@@ -30,6 +34,8 @@ describe("original operator parent result", () => {
     root = dirs.make("operator-parent-");
     vi.stubEnv("OPENCLAW_STATE_DIR", root);
     mocks.root.mockResolvedValue(root);
+    mocks.pendingFailure.mockResolvedValue(undefined);
+    mocks.writeFailure.mockReset().mockResolvedValue(`${root}/failure.json`);
   });
   afterEach(() => vi.unstubAllEnvs());
 
@@ -72,7 +78,12 @@ describe("original operator parent result", () => {
     expect(runtime.writeJson).toHaveBeenCalledWith({ installationRoot: root, repair }, 2);
     expect(mocks.continuation).toHaveBeenCalledWith(
       expect.objectContaining({
-        operator: { kind: "operator", installationRoot: root, gateway: "preserve" },
+        operator: {
+          kind: "operator",
+          installationRoot: root,
+          gateway: "preserve",
+          implicitUpdate: true,
+        },
       }),
     );
   });
@@ -101,6 +112,7 @@ describe("original operator parent result", () => {
           kind: "operator",
           installationRoot: root,
           gateway: "preserve",
+          implicitUpdate: false,
           updateFailure: failure,
         },
         commandArgv: [
@@ -115,6 +127,51 @@ describe("original operator parent result", () => {
     );
     expect(runtime.exit).not.toHaveBeenCalled();
   });
+
+  it.each([false, true])(
+    "preserves implicit history selection when diagnostic export fails=%s",
+    async (exportFails) => {
+      const runId = "26c1f030-89ad-4bb3-bbf3-0dfbbd45b9a0";
+      const failure = {
+        result: {
+          runId,
+          status: "error" as const,
+          mode: "npm" as const,
+          reason: "global-install-failed",
+          steps: [],
+        },
+      };
+      mocks.pendingFailure.mockResolvedValue(failure);
+      if (exportFails) {
+        mocks.writeFailure.mockRejectedValueOnce(new Error("EACCES"));
+      }
+      const repair = { status: "unrepaired", attempts: [], finalValidation: validation };
+      const outcome = completed(repair);
+      outcome.commandOutput.stdout = JSON.stringify({
+        installationRoot: root,
+        updateRunId: runId,
+        repair,
+      });
+      mocks.continuation.mockResolvedValue(outcome);
+      const runtime = createTriageRuntime();
+      await expect(run(runtime)).rejects.toMatchObject({ code: 1 });
+      expect(mocks.continuation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operator: {
+            kind: "operator",
+            installationRoot: root,
+            gateway: "preserve",
+            implicitUpdate: true,
+            updateFailure: failure,
+          },
+          commandArgv: exportFails
+            ? expect.not.arrayContaining(["--update-result"])
+            : expect.arrayContaining(["--update-result", `${root}/failure.json`]),
+        }),
+      );
+      expect(mocks.settle).toHaveBeenCalledWith(expect.objectContaining({ updateRunId: runId }));
+    },
+  );
 
   it("explains a redacted transport failure in terminal output", async () => {
     mocks.continuation.mockRejectedValue(new Error("Installed child could not start"));

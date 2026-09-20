@@ -109,8 +109,8 @@ limits. A resolved target's real ancestors receive the same marker checks as
 the selected path. Links to marked directories are omitted; malformed or
 unreadable real markers refuse export. Loops and dangling links have no resolved
 target and remain link entries, unless a real selected ancestor excludes them.
-Ordinary unmarked links keep their original target text without copying target
-contents through the link.
+Ordinary unmarked links keep their original targets without copying target
+contents through the link. Windows target separators are stored as forward slashes.
 
 Explicit content exports, including SQLite snapshots, check the selected archive
 path and actual content source through the same classifier. A support bundle
@@ -204,6 +204,14 @@ valid schema-version-1 `manifest.json`. OpenClaw refuses to replace any other
 scope. With `--all`, it validates every existing entry under `agents/` before
 removing stale backup-owned agent scopes, so an unowned entry aborts the cleanup
 before anything is deleted.
+
+With `--all`, only agents removed from the configuration have their scopes
+pruned. If a configured agent's database is missing or cannot pass snapshot
+validation, its previous backup scope stays unchanged while other agents are
+backed up. The command reports that agent as degraded in CLI warnings, JSON
+`warnings`, and the recorded backup outcome. No scope is created if that agent
+has never been backed up. Explicit `--agent <id>` selections still fail if the
+selected database cannot be copied, and a run with no copyable databases fails.
 
 You can also select `--global`, repeat `--agent <id>`, or combine the shared database with selected agents. Explicit agent selections, `--all`, and scheduled backups resolve each database from its configured `agentDir`; historical artifact verification and restore use the artifact's recorded agent id without requiring that agent to remain in the current configuration. Snapshot creation uses the same online backup, sanitizer, `VACUUM`, owner validation, and integrity checks as `backup sqlite create`; it never reads live SQLite files directly. Rows and schema entries have deterministic ordering, and integers and blobs use lossless encodings. The command creates one commit named `openclaw backup <ISO8601>`. If the database content is unchanged, it prints `no changes` and creates no commit.
 
@@ -327,34 +335,43 @@ sources. A custom agent root becomes a distinct `agent` asset only when no
 existing asset covers it; the manifest still records its agent id and root when
 another asset contains it. Missing paths are reported as skipped.
 
+Legacy audit raw archives, import claims, and scrub journals are excluded as raw
+files; recoverable audit sources receive sanitized backup replacements. Their
+`.quarantined-*` variants remain excluded and are retained locally without being
+imported or rewritten. Sanitized `.migrated` companions and retained SQLite audit
+history remain included in the backup.
+
 During archive creation, OpenClaw excludes known live-mutation paths before `tar` reads them. This avoids races between a file's recorded size and concurrent writes. The filter applies these state-relative rules under each backed-up state directory:
 
-| State-relative scope                         | Skipped entries                                       |
-| -------------------------------------------- | ----------------------------------------------------- |
-| `sessions/**`                                | `.jsonl`, `.log`                                      |
-| `agents/<agentId>/sessions/**`               | `.jsonl`, `.log`                                      |
-| `cron/runs/**`                               | `.jsonl`, `.log`                                      |
-| `logs/**`                                    | `.jsonl`, `.log`                                      |
-| `delivery-queue/**`                          | `.json`, `.delivered`, `.tmp`                         |
-| `session-delivery-queue/**`                  | `.json`, `.delivered`, `.tmp`                         |
-| `browser/<profile>/user-data/`               | `SingletonCookie`, `SingletonLock`, `SingletonSocket` |
-| `sandbox/skills-workspaces/**`               | All entries                                           |
-| Any path under the backed-up state directory | `.sock`, `.pid`, `.tmp`                               |
+| State-relative scope                          | Skipped entries                                       |
+| --------------------------------------------- | ----------------------------------------------------- |
+| `sessions/**`                                 | `.jsonl`, `.log`                                      |
+| `agents/<agentId>/sessions/**`                | `.jsonl`, `.log`                                      |
+| `cron/runs/**`                                | `.jsonl`, `.log`                                      |
+| `logs/**`                                     | `.jsonl`, `.log`                                      |
+| `delivery-queue/**`                           | `.json`, `.delivered`, `.tmp`                         |
+| `session-delivery-queue/**`                   | `.json`, `.delivered`, `.tmp`                         |
+| `browser/<profile>/user-data/`                | `SingletonCookie`, `SingletonLock`, `SingletonSocket` |
+| `sandbox/skills-workspaces/**`                | All entries                                           |
+| Any archived root, including agent workspaces | `.sock`, `.pid`, `.tmp`, and `.tmp.*`                 |
 
-The active config file remains included even when its name or location matches a rule above. This exception keeps only the selected config file; neighboring files under excluded directories stay out of the archive.
+Explicitly selected asset roots stay included even when their names match a transient filename rule. The active config file remains included even when its name or location matches a rule above. This exception keeps only the selected config file; neighboring files under excluded directories stay out of the archive.
 
-These rules do not filter workspace files outside the state directory. They also omit completed transcript and log files that match the table, so retain those records separately when needed. The JSON result's `skippedVolatileCount` reports intentionally omitted volatile entries; regenerable agent temporary roots are listed separately in `skipped` and are not included in that count.
+Transient filename rules apply across all selected roots, including every agent workspace. State-specific log, queue, and browser rules remain scoped to state. They also omit completed transcript and log files that match the table, so retain those records separately when needed. The JSON result's `skippedVolatileCount` reports intentionally omitted volatile entries, each listed in `skipped` with reason `volatile`; regenerable agent temporary roots are listed separately and are not included in that count.
+
+If an entry disappears during traversal or before it can be opened, the archive continues with the surviving entries. Each omitted path appears in the result's `skipped` list with reason `vanished`, and in the result's `warnings` and text summary. Required source roots and staged captures must still exist; permission and I/O errors still fail the archive. Changes that could redirect a read outside the selected roots also fail. Files are opened before their archive headers are written, so a vanished file cannot leave a partial entry.
 
 Chromium singleton entries coordinate one running browser on one host and are recreated when that profile starts; the rest of the profile's `user-data/` remains in the archive. Sandbox skills workspaces are generated copies of current skill sources and are materialized again when OpenClaw prepares the next sandbox context after restore; adjacent sandbox registry and other durable state remain included.
 
-Managed SQLite snapshots cover the shared OpenClaw database, per-agent databases
+Managed SQLite snapshots cover the shared OpenClaw database, the quarantine and
+integrity-verification store, per-agent databases
 recorded in the captured durable agent registry, and SQLite files under activated plugins'
 declared `backupResources` with `disposition: "include"`. A file's location under
 the state directory or an agent directory alone does not make it managed.
 
 Managed databases are captured with SQLite's online backup API and compacted
 offline with `VACUUM`. Committed write-ahead log (WAL) changes are included,
-deleted-page remnants are removed, and sidecars are omitted. Canonical OpenClaw
+deleted-page remnants are removed, and sidecars are omitted. Shared and agent
 databases also receive their existing transient-state sanitization and must match
 their expected role and agent owner. Unsafe aliasing or an owner mismatch fails
 closed. A declared plugin database that requires unavailable SQLite capabilities
@@ -387,7 +404,7 @@ The state directory's `plugin-skills/` root is a generated, OpenClaw-owned symli
 
 Agent-scoped temporary trees under `agents/<agentId>/agent/**/{tmp,.tmp}/` are also omitted and reported as regenerable. This includes temporary files directly below an agent directory and temporary trees inside agent runtime homes; durable sibling directories remain included. An explicitly configured config file, credentials directory, or workspace nested below an omitted temporary root remains included.
 
-Symbolic links are archived as link entries with their original target text, including absolute and dangling targets. Creation never follows a link to copy its target. Targets outside the state directory, including separately backed-up config, credentials, or workspace targets, are recorded in the manifest and JSON result's `externalSymbolicLinks` list and reported in the text summary. Restore recreates the links after extracting the file content; it never writes through a restored link. Verification rejects archive entries nested beneath a symbolic link.
+Symbolic links are archived as link entries, including absolute and dangling targets. Windows target separators are stored as forward slashes to match tar's reader; POSIX target text, including literal backslashes, is preserved. Creation never follows a link to copy its target. Targets outside the state directory, including separately backed-up config, credentials, or workspace targets, are recorded in the manifest and JSON result's `externalSymbolicLinks` list and reported in the text summary. Restore recreates the links after extracting the file content; it never writes through a restored link. Verification rejects archive entries nested beneath a symbolic link.
 
 Absolute links retain their original location after restore, including links to separately backed-up config or credentials. They are no longer rewritten to relative targets. Review these links before activating a restored tree on another host or at another path. Older releases, including v2026.9.4, reject archives with absolute or escaping link targets; use the current release to restore those archives. Existing archives remain readable.
 

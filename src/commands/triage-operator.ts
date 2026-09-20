@@ -12,13 +12,14 @@ import {
   continueTriageInFreshProcess,
   resolveTriageEntrypoint,
 } from "../infra/triage-continuation.js";
+import { writeTriageUpdateFailure } from "../infra/update-failure-report-artifact.js";
 import { updateRepairWorkerMessageSchema } from "../infra/update-repair-protocol.js";
 import { redactSupportString } from "../logging/diagnostic-support-redaction.js";
 import { writeRuntimeJson, type RuntimeEnv } from "../runtime.js";
 import {
   readTriageUpdateFailure,
+  readPendingTriageUpdateFailure,
   sanitizeTriageUpdateFailure,
-  writeTriageUpdateFailure,
   type TriageUpdateFailure,
 } from "./triage-update.js";
 
@@ -50,11 +51,15 @@ export async function runOperatorTriage(params: {
     if (params.isCurrent?.() === false) {
       throw new Error("The original operator request is no longer current.");
     }
+    const pendingUpdate =
+      !params.updateFailure && !inputPath
+        ? await readPendingTriageUpdateFailure(targetEnv, redaction)
+        : undefined;
     const failure = params.updateFailure
       ? sanitizeTriageUpdateFailure(params.updateFailure, redaction)
       : inputPath
         ? await readTriageUpdateFailure(inputPath, redaction)
-        : undefined;
+        : pendingUpdate;
     updateRunId = failure && "result" in failure ? failure.result.runId : undefined;
     signal.throwIfAborted();
     const savedFailure = failure
@@ -88,6 +93,7 @@ export async function runOperatorTriage(params: {
         kind: "operator",
         installationRoot: root,
         gateway: "preserve",
+        implicitUpdate: !inputPath && !params.updateFailure,
         ...(failure ? { updateFailure: failure } : {}),
       },
       signal,
@@ -122,7 +128,7 @@ export async function runOperatorTriage(params: {
         throw new Error("Repair claimed success without passing independent validation.");
       }
       const projection = await import("./triage-task-result.js").catch(() => undefined);
-      projection?.settleTriageRepairTask({
+      await projection?.settleTriageRepairTask({
         taskId: parsed.repairTaskId,
         outcome,
         root,

@@ -4,7 +4,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MentionInboxItem } from "../../../packages/gateway-protocol/src/index.js";
 import { createDeferred as deferred } from "../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
-import type { CronJob, CronJobsListResult, ModelAuthStatusResult } from "../api/types.ts";
+import type {
+  CronCompactJob,
+  CronJob,
+  CronJobsListResult,
+  ModelAuthStatusResult,
+} from "../api/types.ts";
 import type { ApplicationContext, ApplicationGateway } from "../app/context.ts";
 import type { ScopeUpgradeState } from "../app/device-scope-upgrade-availability.ts";
 import { client as mockClient, createGatewayHarness } from "../app/overlays-access.test-support.ts";
@@ -13,10 +18,12 @@ import {
   createSidebarAttentionStore,
   type SidebarAttentionStore,
 } from "../app/sidebar-attention-store.ts";
+import { invalidateModelAuthStatusRequests } from "../lib/model-auth-request-state.ts";
 import {
   createApplicationContextProvider,
   hiddenScopeUpgradeCapability,
 } from "../test-helpers/application-context.ts";
+import { compactCronJobFixture } from "../test-helpers/cron.ts";
 import { createStorageMock as createTestStorageMock } from "../test-helpers/storage.ts";
 import { waitForFast } from "../test-helpers/wait-for.ts";
 import { CUSTODIAN_PANEL_TOGGLE_EVENT } from "./panel-toggle-contract.ts";
@@ -50,9 +57,9 @@ function cronJob(id: string): CronJob {
   };
 }
 
-function cronListResponse(jobs: CronJob[]): CronJobsListResult {
+function cronListResponse(jobs: CronJob[]): CronJobsListResult<CronCompactJob> {
   return {
-    jobs,
+    jobs: jobs.map(compactCronJobFixture),
     snapshotRevision: "sidebar-attention-cron-fixture",
     total: jobs.length,
     offset: 0,
@@ -575,6 +582,8 @@ describe("sidebar attention refresh ownership", () => {
 
       now = 200_000;
       document.dispatchEvent(new Event("visibilitychange"));
+      invalidateModelAuthStatusRequests(client);
+      eventListener?.({ type: "event", event: "chat.metadata.changed", payload: {} });
       await waitForFast(() => expect(request).toHaveBeenCalledTimes(6));
 
       selectionState.selectedId = "writer";

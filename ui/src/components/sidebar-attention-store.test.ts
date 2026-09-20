@@ -4,7 +4,12 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MentionInboxItem } from "../../../packages/gateway-protocol/src/index.js";
 import { createDeferred as deferred } from "../../../test/helpers/promise.js";
-import type { CronJobsListResult, CronStatus, ModelAuthStatusResult } from "../api/types.ts";
+import type {
+  CronCompactJob,
+  CronJobsListResult,
+  CronStatus,
+  ModelAuthStatusResult,
+} from "../api/types.ts";
 import { createConnectionBootstrapCoordinator } from "../app/connection-bootstrap.ts";
 import type { ApplicationContext } from "../app/context.ts";
 import { client as mockClient, createGatewayHarness } from "../app/overlays-access.test-support.ts";
@@ -12,26 +17,30 @@ import {
   createSidebarAttentionStore,
   type SidebarAttentionStore,
 } from "../app/sidebar-attention-store.ts";
+import { invalidateModelAuthStatusRequests } from "../lib/model-auth-request-state.ts";
 import { hiddenScopeUpgradeCapability } from "../test-helpers/application-context.ts";
 import { createStorageMock } from "../test-helpers/storage.ts";
 import { waitForFast } from "../test-helpers/wait-for.ts";
 import { dismissSidebarAttention, loadDismissals } from "./sidebar-attention-dismissals.ts";
 import { SidebarAttentionStoreController } from "./sidebar-attention-store.ts";
 
-function cronPage(id?: string): CronJobsListResult {
+type CompactCronPage = CronJobsListResult<CronCompactJob>;
+
+function cronPage(id?: string): CompactCronPage {
   const jobs = id
     ? [
         {
           id,
           name: id,
           enabled: true,
-          createdAtMs: 0,
           updatedAtMs: 0,
-          schedule: { kind: "every" as const, everyMs: 60_000 },
-          sessionTarget: "isolated" as const,
-          wakeMode: "now" as const,
-          payload: { kind: "agentTurn" as const, message: "test" },
-          state: { lastRunStatus: "error" as const },
+          scheduleKind: "every" as const,
+          nextRunAt: null,
+          nextRunAtMs: null,
+          lastRunAt: null,
+          lastRunAtMs: null,
+          lastRunError: null,
+          lastRunStatus: "error" as const,
         },
       ]
     : [];
@@ -139,7 +148,7 @@ describe("sidebar attention source publication", () => {
       ...Array.from({ length: 50 }, (_, index) => ({
         ...healthy,
         id: `healthy-${index}`,
-        state: { lastRunStatus: "ok" as const },
+        lastRunStatus: "ok" as const,
       })),
       ...cronPage("later-failure").jobs,
     ];
@@ -179,7 +188,7 @@ describe("sidebar attention source publication", () => {
     async (boundary) => {
       let visibility: DocumentVisibilityState = "visible";
       vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
-      const pendingAppend = deferred<CronJobsListResult>();
+      const pendingAppend = deferred<CompactCronPage>();
       const offsets: number[] = [];
       const request = vi.fn(async (method: string, params?: unknown) => {
         if (method === "cron.list") {
@@ -225,7 +234,7 @@ describe("sidebar attention source publication", () => {
   it.each(["list", "status"] as const)(
     "coalesces cron bursts until the whole inventory pair settles (%s first)",
     async (first) => {
-      const pendingList = deferred<CronJobsListResult>();
+      const pendingList = deferred<CompactCronPage>();
       const pendingStatus = deferred<CronStatus>();
       const pendingAuth = deferred<ModelAuthStatusResult>();
       const cronStatus = { enabled: true, triggersEnabled: true, jobs: 1 };
@@ -293,7 +302,7 @@ describe("sidebar attention source publication", () => {
       let visibility: DocumentVisibilityState = "visible";
       vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
       vi.spyOn(Date, "now").mockReturnValue(120_000);
-      const pendingList = deferred<CronJobsListResult>();
+      const pendingList = deferred<CompactCronPage>();
       let listCalls = 0;
       const request = vi.fn(async (method: string) => {
         if (method === "cron.list") {
@@ -344,7 +353,7 @@ describe("sidebar attention source publication", () => {
     let visibility: DocumentVisibilityState = "visible";
     vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
     vi.spyOn(Date, "now").mockReturnValue(120_000);
-    const pendingList = deferred<CronJobsListResult>();
+    const pendingList = deferred<CompactCronPage>();
     let listCalls = 0;
     const request = vi.fn(async (method: string) => {
       if (method === "cron.list") {
@@ -383,7 +392,7 @@ describe("sidebar attention source publication", () => {
 
   it("publishes progress but retires dismissals only after a fresh complete inventory", async () => {
     vi.stubGlobal("localStorage", createStorageMock());
-    const pages = Array.from({ length: 5 }, () => deferred<CronJobsListResult>());
+    const pages = Array.from({ length: 5 }, () => deferred<CompactCronPage>());
     let listCalls = 0;
     const request = vi.fn(async (method: string) => {
       if (method === "cron.list") {
@@ -438,7 +447,7 @@ describe("sidebar attention source publication", () => {
     }
   });
 
-  it("queues explicit auth freshness while publishing progress during repeated refreshes", async () => {
+  it("queues auth invalidations while publishing progress during repeated events", async () => {
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     let now = 120_000;
     vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -463,7 +472,8 @@ describe("sidebar attention source publication", () => {
       for (const index of [0, 1]) {
         now += 60_001;
         for (let event = 0; event < 20; event++) {
-          document.dispatchEvent(new Event("visibilitychange"));
+          invalidateModelAuthStatusRequests(harness.gateway.snapshot.client!);
+          harness.emitEvent("chat.metadata.changed", {});
         }
         expect(authCalls).toBe(index + 1);
         auth[index]!.resolve({
@@ -496,7 +506,7 @@ describe("sidebar attention source publication", () => {
     }
   });
 
-  it("does not let current cron inventory postpone stale auth", async () => {
+  it("keeps auth cached across visibility changes until an auth event", async () => {
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     let now = 120_000;
     vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -533,17 +543,29 @@ describe("sidebar attention source publication", () => {
       expect(authCalls).toBe(1);
     }
     document.dispatchEvent(new Event("visibilitychange"));
+    expect(authCalls).toBe(1);
+    invalidateModelAuthStatusRequests(harness.gateway.snapshot.client!);
+    harness.emitEvent("chat.metadata.changed", {});
     await waitForFast(() => expect(store?.entries).toMatchObject([{ label: `cron-${now}` }]));
     expect(authCalls).toBe(2);
   });
 
-  it("preserves loaded attention and dismissals when cron.list fails", async () => {
+  it.each([
+    { name: "request failure", row: undefined },
+    { name: "missing identity", row: { id: undefined } },
+    { name: "missing runtime status", row: { lastRunStatus: undefined } },
+    { name: "invalid active run", row: { runningAtMs: "0" } },
+    { name: "invalid scheduler disablement", row: { autoDisabled: {} } },
+  ])("preserves loaded attention and dismissals after $name", async ({ row }) => {
     vi.stubGlobal("localStorage", createStorageMock());
     const page = cronPage("overdue");
-    page.jobs[0]!.state = { lastRunStatus: "ok", nextRunAtMs: 1 };
+    Object.assign(page.jobs[0]!, { lastRunStatus: "ok", nextRunAtMs: 1 });
     let failing = false;
     const request = vi.fn(async (method: string) => {
       if (failing && method === "cron.list") {
+        if (row) {
+          return { ...page, jobs: [{ ...page.jobs[0], ...row }] };
+        }
         throw new Error("temporarily unavailable");
       }
       if (method === "cron.list") {
@@ -584,7 +606,7 @@ describe("sidebar attention source publication", () => {
 
   it("preserves disabled scheduler attention when cron.status fails", async () => {
     const page = cronPage("overdue");
-    page.jobs[0]!.state = { lastRunStatus: "ok", nextRunAtMs: 1 };
+    Object.assign(page.jobs[0]!, { lastRunStatus: "ok", nextRunAtMs: 1 });
     let failing = false;
     const request = vi.fn(async (method: string) => {
       if (method === "cron.status") {
@@ -615,7 +637,7 @@ describe("sidebar attention source publication", () => {
     "retires queued inventory and auth refreshes on %s",
     async (boundary) => {
       vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
-      const pendingList = deferred<CronJobsListResult>();
+      const pendingList = deferred<CompactCronPage>();
       const pendingStatus = deferred<CronStatus>();
       const pendingAuth = deferred<ModelAuthStatusResult>();
       const cronStatus = { enabled: true, triggersEnabled: true, jobs: 1 };

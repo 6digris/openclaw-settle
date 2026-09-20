@@ -1,9 +1,12 @@
 // Persists task registry records through the global shared-state database owner.
+import { isDeepStrictEqual } from "node:util";
 import type { AdmittedRunContext } from "../agents/admitted-run-context.js";
 import {
   executionOwnerBindingFromAdmission,
   type ExecutionOwnerBindingResult,
 } from "../audit/execution-owner-binding.js";
+import { readSqliteBusyTimeout } from "../infra/sqlite-busy-timeout.js";
+import { repairLegacyTaskIdentifiers } from "../state/openclaw-state-db-legacy-backfills.js";
 import { withExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
 import { withSharedStateWriteCoordinator } from "../state/openclaw-state-db-write-coordination.js";
 import {
@@ -13,11 +16,11 @@ import {
   type OpenClawStateDatabase,
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
+import { prepareTaskRecordUpdate } from "./task-registry-transition.operation.js";
 import { matchesTaskIdentityInDatabase } from "./task-registry.store.identity.js";
 import {
   bindTaskRunExecutionInDatabase,
   deleteTaskRowsWithDeliveryState,
-  listTaskRecordsByOwnerKeyInDatabase,
   listTaskRecordsByRuntimeSourceIdInDatabase,
   readTaskRegistrySnapshot,
   readTaskRegistryMutationSnapshotInDatabase,
@@ -61,6 +64,10 @@ export function loadTaskRegistryStateFromSqlite(): TaskRegistryStoreSnapshot {
   return readTaskRegistrySnapshot(openTaskRegistryDatabase());
 }
 
+export function repairLegacyTaskIdentifiersInSqlite(): void {
+  withWriteTransaction(({ db }) => repairLegacyTaskIdentifiers(db));
+}
+
 export function withTaskRegistrySqliteMutation<T>(operation: () => T): T {
   const database = openTaskRegistryDatabase();
   return withSharedStateWriteCoordinator(
@@ -69,10 +76,17 @@ export function withTaskRegistrySqliteMutation<T>(operation: () => T): T {
   );
 }
 
+/** A native compatibility caller joins already-granted worker writes before selecting rows. */
+export function settleTaskRegistrySqliteWrites(join: (deadlineMs: number) => void): void {
+  const deadlineMs = performance.now() + readSqliteBusyTimeout(openTaskRegistryDatabase().db);
+  runOpenClawStateWriteTransaction(() => {}, undefined, { operationLabel: "task.event.settle" });
+  join(deadlineMs);
+}
+
 export function loadTaskRegistryMutationStateFromSqlite(
-  scope: TaskRegistryMutationScope,
+  scopes: readonly TaskRegistryMutationScope[],
 ): TaskRegistryStoreSnapshot {
-  return readTaskRegistryMutationSnapshotInDatabase(openTaskRegistryDatabase().db, scope);
+  return readTaskRegistryMutationSnapshotInDatabase(openTaskRegistryDatabase().db, scopes);
 }
 
 /** Loads task records without creating or migrating shared state. */
@@ -88,17 +102,6 @@ export function loadTaskRegistryStateFromSqliteReadOnlyResult(): TaskRegistryRea
       snapshot: { tasks: new Map(), deliveryStates: new Map() },
     }
   );
-}
-
-export async function listTaskRegistryRecordsByOwnerKeyFromSqlite(
-  ownerKey: string,
-): Promise<TaskRecord[]> {
-  const key = ownerKey.trim();
-  if (!key) {
-    return [];
-  }
-  const { db } = openTaskRegistryDatabase();
-  return listTaskRecordsByOwnerKeyInDatabase(db, key);
 }
 
 /** Reads task rows for one runtime/source without restoring the process registry snapshot. */
@@ -126,6 +129,51 @@ export function matchesTaskIdentityFromSqlite(task: TaskRecord): boolean | undef
   } catch {
     return undefined;
   }
+}
+
+/** Compare and settle only the joined parent's exact persisted projection, in one write transaction. */
+export function settleTriageTaskFromSqlite(params: {
+  expected: TaskRecord;
+  status: "succeeded" | "failed";
+  endedAt: number;
+  terminalSummary: string;
+  assertCurrent: () => void;
+}): TaskRecord | undefined {
+  return runOpenClawStateWriteTransaction(({ db }) => {
+    params.assertCurrent();
+    if (matchesTaskIdentityInDatabase(db, params.expected) !== true) {
+      return undefined;
+    }
+    const snapshot = readTaskRegistryMutationSnapshotInDatabase(db, {
+      taskId: params.expected.taskId,
+    });
+    const current = snapshot.tasks.get(params.expected.taskId);
+    if (
+      !current ||
+      current.runtime !== "cli" ||
+      current.taskKind !== "triage_repair" ||
+      current.status !== "running" ||
+      current.endedAt !== undefined ||
+      !isDeepStrictEqual(current, params.expected)
+    ) {
+      return undefined;
+    }
+    const { task } = prepareTaskRecordUpdate(current, {
+      status: params.status,
+      endedAt: params.endedAt,
+      lastEventAt: params.endedAt,
+      progressSummary: undefined,
+      terminalSummary: params.terminalSummary,
+    });
+    upsertTaskWithDeliveryStateInDatabase(
+      { db },
+      {
+        task,
+        deliveryState: snapshot.deliveryStates.get(task.taskId),
+      },
+    );
+    return task;
+  });
 }
 
 /** Binds only the exact task row selected before admission; runId is never a join key. */

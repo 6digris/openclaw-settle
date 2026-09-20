@@ -44,7 +44,7 @@ export function initialTranscriptRect(host: ReactiveControllerHost) {
 export function measureConnectedTranscriptRows(
   scrollElement: HTMLDivElement | null,
   virtualizer: Virtualizer<HTMLDivElement, HTMLElement>,
-): void {
+): boolean {
   const rect = scrollElement?.getBoundingClientRect();
   if (
     !scrollElement ||
@@ -52,13 +52,20 @@ export function measureConnectedTranscriptRows(
     !rect?.width ||
     !rect.height
   ) {
-    return;
+    return false;
   }
   // Width changes and retired smooth commands can have undelivered sizes.
   // Ordinary row refs stay on TanStack's observer path; never clear its cache.
+  let changed = false;
   for (const row of scrollElement.querySelectorAll<HTMLElement>(".chat-virtual-row")) {
-    virtualizer.resizeItem(virtualizer.indexFromElement(row), row.offsetHeight);
+    const index = virtualizer.indexFromElement(row);
+    const height = row.offsetHeight;
+    const key = virtualizer.options.getItemKey(index);
+    const previousSize = virtualizer.itemSizeCache.get(key);
+    virtualizer.resizeItem(index, height);
+    changed ||= virtualizer.itemSizeCache.get(key) !== previousSize;
   }
+  return changed;
 }
 
 export function measureTranscriptRow(
@@ -83,6 +90,27 @@ export function maxTranscriptScrollOffset(element: HTMLElement | null): number |
   return element && element.clientHeight > 0
     ? Math.max(0, element.scrollHeight - element.clientHeight)
     : null;
+}
+
+export function reconcileInitialTranscriptOffset(
+  element: HTMLDivElement | null,
+  virtualizer: Virtualizer<HTMLDivElement, HTMLElement>,
+): "pending" | "settled" | "corrected" {
+  const maxOffset = maxTranscriptScrollOffset(element);
+  const offset = virtualizer.scrollOffset;
+  if (maxOffset === null || offset === null) {
+    return "pending";
+  }
+  if (offset >= 0 && offset <= maxOffset) {
+    return "settled";
+  }
+  if (maxOffset !== 0) {
+    return "pending";
+  }
+  // An underfilled end anchor clamps to zero without a native scroll event.
+  virtualizer.scrollOffset = 0;
+  virtualizer.scrollToOffset(0);
+  return "corrected";
 }
 
 export class PositionRailGutterController implements ReactiveController {
@@ -124,6 +152,9 @@ export class PositionRailGutterController implements ReactiveController {
     }
     const left = viewport.getBoundingClientRect().left + viewport.clientLeft;
     const gutter = inner.getBoundingClientRect().left - left;
+    // The conversation region stays fixed when its composer resizes the scrollport.
+    const region = viewport.closest<HTMLElement>(".chat-main__conversation") ?? viewport;
+    viewport.style.setProperty("--chat-position-rail-viewport-height", `${region.clientHeight}px`);
     // Reserve room for the compact left rail and breathing space, including
     // when a saved width fills the pane.
     viewport.toggleAttribute("data-position-rail-gutter", gutter >= 68);

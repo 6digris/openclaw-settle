@@ -33,6 +33,14 @@ export async function runPluginRegistryHealth(ctx: DoctorHealthFlowContext): Pro
   }
 }
 
+export async function runLegacyPluginSourceCapturesHealth(
+  ctx: DoctorHealthFlowContext,
+): Promise<void> {
+  const { noteLegacyPluginSourceCaptures } =
+    await import("../commands/doctor-plugin-source-captures.js");
+  await noteLegacyPluginSourceCaptures(ctx.env ?? process.env);
+}
+
 export async function runReleaseConfiguredPluginInstallsHealth(
   ctx: DoctorHealthFlowContext,
 ): Promise<void> {
@@ -79,7 +87,7 @@ export async function runDiskSpaceHealth(): Promise<void> {
 
 export async function runDatabaseBloatHealth(): Promise<void> {
   const { noteSqliteDatabaseBloat } = await import("../commands/doctor-db-bloat.js");
-  noteSqliteDatabaseBloat();
+  await noteSqliteDatabaseBloat();
 }
 
 export async function runAgentMemorySchemaHealth(ctx: DoctorHealthFlowContext): Promise<void> {

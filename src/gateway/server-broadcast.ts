@@ -1,3 +1,5 @@
+import { isProxy } from "node:util/types";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   GATEWAY_CLIENT_CAPS,
   hasGatewayClientCap,
@@ -36,6 +38,7 @@ import type {
 import type { SessionMessageSubscriberRegistry } from "./server-chat-state.js";
 import { MAX_BUFFERED_BYTES, WEBSOCKET_OPEN_READY_STATE } from "./server-constants.js";
 import type { GatewayClientRegistry } from "./server/client-registry.js";
+import { closeGatewayTransportWithGrace } from "./server/connection-transport-close.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
 import { logWs, summarizeAgentEventForWsLog } from "./ws-log.js";
 
@@ -70,6 +73,7 @@ const EVENT_SCOPE_GUARDS: Record<string, string[]> = {
   tick: [],
   "talk.event": [READ_SCOPE],
   "talk.mode": [TALK_SCOPE],
+  "talk.voice.change": [TALK_SCOPE],
   task: [READ_SCOPE],
   "task.suggestion": [READ_SCOPE],
   "update.available": [],
@@ -217,10 +221,12 @@ function hasEventScope(
   return required.some((scope) => scopes.includes(scope));
 }
 
-type FrameBase = {
+type FrameFields = {
   eventJSON: string;
-  payloadFragment: string;
   stateVersionFragment: string;
+};
+type FrameBase = FrameFields & {
+  payloadFragment: string;
   reservedBytes?: number;
 };
 // ws bufferedAmount includes the unmasked server frame's 2/4/10-byte header.
@@ -230,9 +236,9 @@ const MAX_RECIPIENT_PROFILE_FIELD_BYTES =
   Buffer.byteLength(',"recipientProfileId":""') + USER_PROFILE_ID_MAX_LENGTH * 6;
 
 function frameWithSequence(
-  base: FrameBase,
+  base: FrameFields,
   seq: number,
-  payload = base.payloadFragment,
+  payload: string,
   recipientProfileId?: string,
 ): string {
   const recipient =
@@ -265,6 +271,11 @@ export function createGatewayBroadcaster(params: {
   preparePresenceProjection?: (
     presence: SystemPresence[],
   ) => (client: GatewayWsClient) => SystemPresence[];
+  prepareSessionEventProjection?: (
+    event: string,
+    payload: unknown,
+    scope: { sessionKeys: readonly string[]; agentId?: string },
+  ) => ((client: GatewayWsClient) => unknown) | undefined;
   sessionMessageSubscribers?: SessionMessageSubscriberRegistry;
   canReceiveSessionEvent?: (
     client: GatewayWsClient,
@@ -374,27 +385,29 @@ export function createGatewayBroadcaster(params: {
       // SAFETY: Internal presence producers emit { presence: SystemPresence[] }; wire input cannot publish events.
       event === "presence" ? (payload as { presence: SystemPresence[] }) : undefined;
     let projectPresence: ((client: GatewayWsClient) => SystemPresence[]) | undefined;
+    let projectSession: ((client: GatewayWsClient) => unknown) | undefined;
+    let skipSourcePayload = false;
+    let sessionProjectionPrepared = false;
     let outboundEventLogged = false;
     let lastFrameSequence = 0;
     let lastFrameRecipientProfileId: string | undefined;
     let lastFrame: string | undefined;
     let frameBase: FrameBase | undefined = retained?.base;
-    let frameFields: Omit<FrameBase, "payloadFragment"> | undefined;
+    let frameFields: FrameFields | undefined = retained?.base;
     // Private coalescers preserve inputs; identical pending histories can share this merge.
     let mergedFrames: Map<unknown, { payload: unknown; base: FrameBase }> | undefined;
-    const frameBaseFor = (value: unknown): FrameBase => {
-      frameFields ??= {
+    const getFrameFields = (): FrameFields =>
+      (frameFields ??= {
         eventJSON: JSON.stringify(event),
         stateVersionFragment:
           opts?.stateVersion === undefined
             ? ""
             : serializeFrameField("stateVersion", opts.stateVersion),
-      };
-      return {
-        ...frameFields,
-        payloadFragment: presencePayload ? "" : serializeFrameField("payload", value),
-      };
-    };
+      });
+    const frameBaseFor = (value: unknown): FrameBase => ({
+      ...getFrameFields(),
+      payloadFragment: presencePayload ? "" : serializeFrameField("payload", value),
+    });
     // Lazy so filtered-out broadcasts (zero eligible clients) never pay
     // JSON.stringify for the payload.
     const getFrameBase = () => {
@@ -514,12 +527,7 @@ export function createGatewayBroadcaster(params: {
       if (slow) {
         state.retired = true;
         clearPending(state);
-        try {
-          c.socket.close(1008, "slow consumer");
-        } catch {
-          /* ignore */
-        }
-        c.socket.terminate();
+        closeGatewayTransportWithGrace(state.socket, 1008, "slow consumer");
         continue;
       }
       if (!retained && live?.coalesce && state.inFlight > 0) {
@@ -543,7 +551,9 @@ export function createGatewayBroadcaster(params: {
           // Reserve the complete frame and maximum sequence width once per serialized base;
           // unrelated sends can advance the sequence while this entry is waiting to drain.
           const bytes = (base.reservedBytes ??=
-            Buffer.byteLength(frameWithSequence(base, Number.MAX_SAFE_INTEGER)) +
+            Buffer.byteLength(
+              frameWithSequence(base, Number.MAX_SAFE_INTEGER, base.payloadFragment),
+            ) +
             MAX_SERVER_FRAME_HEADER_BYTES +
             MAX_RECIPIENT_PROFILE_FIELD_BYTES);
           if (bufferedBytes(state) - (previous?.bytes ?? 0) + bytes <= MAX_BUFFERED_BYTES) {
@@ -603,8 +613,33 @@ export function createGatewayBroadcaster(params: {
       // detector at once — a synchronized reconnect storm with no evidence.
       let frame: string;
       try {
-        const base = getFrameBase();
-        let payloadFragment = base.payloadFragment;
+        if (!sessionProjectionPrepared) {
+          // Headers precede source hooks and reads performed while preparing projection.
+          getFrameFields();
+          let canSkipSourcePayload = false;
+          if (
+            !retained &&
+            (event === "session.message" || event === "sessions.changed") &&
+            !isProxy(payload) &&
+            isRecord(payload)
+          ) {
+            // Classify without executing getters or Proxy traps.
+            const prototype = Object.getPrototypeOf(payload);
+            canSkipSourcePayload =
+              (prototype === null || prototype === Object.prototype) && !("toJSON" in payload);
+          }
+          if (!canSkipSourcePayload) {
+            getFrameBase();
+          }
+          projectSession = params.prepareSessionEventProjection?.(event, payload, {
+            sessionKeys,
+            agentId,
+          });
+          skipSourcePayload = canSkipSourcePayload && projectSession !== undefined;
+          sessionProjectionPrepared = true;
+        }
+        const base = skipSourcePayload ? getFrameFields() : getFrameBase();
+        let payloadFragment = frameBase?.payloadFragment ?? "";
         if (presencePayload) {
           // Presence contains session references. Only the connection owner's
           // recipient projection may cross this boundary; never send the raw roster.
@@ -617,11 +652,19 @@ export function createGatewayBroadcaster(params: {
             presence: projectPresence(c),
           });
         }
+        if (projectSession) {
+          const projected = projectSession(c);
+          if (projected === undefined) {
+            continue;
+          }
+          payloadFragment = serializeFrameField("payload", projected);
+        }
         // A drained write can refresh the recipient; cache only the profile at this send.
         const recipientProfileId =
           (c.connect.role ?? "operator") === "operator" ? c.preparedRecipientProfileId : undefined;
         if (
           !presencePayload &&
+          !projectSession &&
           lastFrame !== undefined &&
           lastFrameSequence === nextSeq &&
           lastFrameRecipientProfileId === recipientProfileId
@@ -629,7 +672,7 @@ export function createGatewayBroadcaster(params: {
           frame = lastFrame;
         } else {
           frame = frameWithSequence(base, nextSeq, payloadFragment, recipientProfileId);
-          if (!presencePayload) {
+          if (!presencePayload && !projectSession) {
             lastFrameSequence = nextSeq;
             lastFrameRecipientProfileId = recipientProfileId;
             lastFrame = frame;

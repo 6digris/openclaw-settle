@@ -9,9 +9,14 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { UPDATE_RUN_ID_ENV } from "../infra/update-control-plane-sentinel.js";
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
-it.each(["preserve", "verify-running"] as const)(
-  "retains original JSON and admits %s repair after the old package is removed",
-  async (gateway) => {
+it.each([
+  { gateway: "preserve" as const, diagnostics: false },
+  { gateway: "verify-running" as const, diagnostics: false },
+  { gateway: "preserve" as const, diagnostics: true },
+  { gateway: "verify-running" as const, diagnostics: true },
+])(
+  "retains original JSON and admits $gateway repair after package replacement (diagnostics=$diagnostics)",
+  async ({ gateway, diagnostics }) => {
     const root = await fs.realpath(dirs.make("triage-rotated-child-"));
     await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" }));
     const source = path.resolve("src/commands/triage-failure.ts");
@@ -20,6 +25,7 @@ it.each(["preserve", "verify-running"] as const)(
     // import protects the old updater's resident graph across package replacement.
     const relocated = new Map([
       [source, oldOwner],
+      [path.resolve("src/commands/triage-update.ts"), path.join(root, "triage-update.mts")],
       [path.resolve("src/commands/triage-startup.ts"), path.join(root, "startup.mts")],
       [
         path.resolve("src/commands/triage-startup-result.ts"),
@@ -90,6 +96,15 @@ await admission.finish("closed");
     );
     // A broken original config makes confirmation unavailable without probing a live Gateway.
     await fs.writeFile(path.join(root, "openclaw.json"), "{invalid");
+    const updateResultPath = diagnostics ? path.join(root, "update-result.json") : undefined;
+    if (updateResultPath) {
+      await fs.writeFile(
+        updateResultPath,
+        JSON.stringify({
+          result: { status: "error", mode: "npm", reason: "original failure", steps: [] },
+        }),
+      );
+    }
     const runner = path.join(root, "updater.mts");
     await fs.writeFile(
       runner,
@@ -100,7 +115,7 @@ await Promise.all(${JSON.stringify([...relocated.values(), path.join(root, "tria
 process.stdout.write('{"status":"error","reason":"original failure"}\\n');
 await triageAfterFailure({log:console.log,error:console.error,exit:()=>{throw new Error('failure owner exit overwritten');}}, {
   kind:'update',phase:'synthetic-replacement',error:'original failure',gateway:${JSON.stringify(gateway)},installationRoot:${JSON.stringify(installed)}
-});
+}, undefined, ${JSON.stringify(updateResultPath)});
 if(process.env.OPENCLAW_UPDATE_IN_PROGRESS!=='1') throw new Error('updater role was changed');
 process.exitCode=7;
 `,
@@ -142,7 +157,7 @@ process.exitCode=7;
     expect(result.code, result.stderr).toBe(7);
     expect(result.stdout).toBe('{"status":"error","reason":"original failure"}\n');
     expect(JSON.parse(await fs.readFile(receipt, "utf8"))).toMatchObject({
-      args: ["triage"],
+      args: ["triage", ...(updateResultPath ? ["--update-result", updateResultPath] : [])],
       message: { failure: { error: "original failure", gateway } },
       descendant: {
         updateRunId: null,
