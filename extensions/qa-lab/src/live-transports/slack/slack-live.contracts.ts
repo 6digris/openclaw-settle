@@ -202,6 +202,7 @@ export type SlackQaConfigOverrides = {
   messageTool?: boolean;
   progress?: {
     commentary?: boolean;
+    maxLines?: number;
     style?: "compact";
     toolProgress: boolean;
     verboseDefault?: "off" | "on" | "full";

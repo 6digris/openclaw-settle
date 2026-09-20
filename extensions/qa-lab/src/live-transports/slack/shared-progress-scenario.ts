@@ -20,7 +20,10 @@ export async function runSlackSharedProgressScenario(
   profile: "complete" | "cancel" | "restart" | "second-turn",
 ) {
   const { cfg } = await environment.configureScenario({
-    configOverrides: { progress: { commentary: true, toolProgress: true }, replyToMode: "off" },
+    configOverrides: {
+      progress: { commentary: true, toolProgress: true, maxLines: 12 },
+      replyToMode: "off",
+    },
     buildRun: () => ({ expectReply: true, input: "", matchText: "" }),
   });
   const { run, endpoint, patch } = await prepareSharedProgressFixtureConfig(cfg);

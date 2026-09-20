@@ -7,9 +7,11 @@ import type {
   ProgressContinuationReceipt,
 } from "../channels/progress-continuation.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
+import { createInMemoryTaskRegistryStore } from "../test-utils/task-registry-store.js";
 import {
   createSubagentTaskBackingDetail,
   resolveManagedTaskBackingDetail,
+  prepareTaskBackingRead,
 } from "./task-backing-authority.js";
 import {
   createManagedTaskFlow,
@@ -25,9 +27,13 @@ import type {
   TaskProgressPublication,
 } from "./task-registry-progress-runtime.js";
 import { linkTaskToFlowById } from "./task-registry-record-api.js";
-import { runTaskRegistryWorkerMutation, tasks } from "./task-registry-state.js";
-import { createTaskRecord } from "./task-registry.js";
-import { getTaskRegistryStore } from "./task-registry.store.js";
+import {
+  runTaskRegistryWorkerMutation,
+  syncFlowFromTaskAfterTaskMutationAsync,
+  tasks,
+} from "./task-registry-state.js";
+import { createTaskRecord, getTaskById } from "./task-registry.js";
+import { configureTaskRegistryRuntime, getTaskRegistryStore } from "./task-registry.store.js";
 import type { TaskNotifyPolicy, TaskRecord } from "./task-registry.types.js";
 
 export type TaskProgressTestChild = {
@@ -159,6 +165,85 @@ export function registerTaskProgressAuthorityTests({
       } finally {
         release.resolve();
         await pending;
+      }
+    },
+  );
+
+  it.each(["progress only", "concurrent audience change", "unpublished audience change"] as const)(
+    "preserves exact handoff authority during mirrored activity publication: %s",
+    async (change) => {
+      const flowStore = getTaskFlowRegistryStore();
+      const store = createInMemoryTaskRegistryStore(undefined, flowStore);
+      configureTaskRegistryRuntime({ store });
+      const item = child("Worker");
+      const flow = expectDefined(
+        createTaskFlowForTask({ task: item.task, requesterOrigin: origin }),
+        "mirrored task flow",
+      );
+      linkTaskToFlowById({ taskId: item.task.taskId, flowId: flow.flowId });
+      const capability = expectDefined(await continuation([item]), "prepared handoff");
+      const entered = createDeferred();
+      const release = createDeferred();
+      const releaseAudience = createDeferred();
+      const sync = store.syncLiveTaskFlowAsync.bind(store);
+      vi.spyOn(store, "syncLiveTaskFlowAsync").mockImplementation(async (...args) => {
+        entered.resolve();
+        await release.promise;
+        return sync(...args);
+      });
+      let audienceChange: Promise<void> | undefined;
+      if (change === "unpublished audience change") {
+        const context = captureOpenClawStateWorkerContext();
+        await runTaskFlowRegistryWorkerMutation(
+          { flowId: flow.flowId, admission: context.admission },
+          async () => {
+            flowStore.upsertFlow({
+              ...flow,
+              requesterOrigin: { ...origin, to: "new-audience" },
+            });
+          },
+          async () => {
+            throw new Error("Committed audience change has not reached the projection");
+          },
+        );
+      }
+      const publication = syncFlowFromTaskAfterTaskMutationAsync(
+        captureOpenClawStateWorkerContext(),
+        store,
+        expectDefined(getTaskById(item.task.taskId), "linked task"),
+        "update",
+        flowStore,
+      );
+      try {
+        await Promise.race([
+          entered.promise,
+          publication.then(() => {
+            throw new Error("Flow synchronization finished before its metadata gate");
+          }),
+        ]);
+        if (change === "concurrent audience change") {
+          const context = captureOpenClawStateWorkerContext();
+          audienceChange = runTaskFlowRegistryWorkerMutation(
+            { flowId: flow.flowId, admission: context.admission },
+            async () => {
+              await releaseAudience.promise;
+              flowStore.upsertFlow({
+                ...flow,
+                requesterOrigin: { ...origin, to: "new-audience" },
+              });
+            },
+            () => flowStore.readFlowAsync(context, flow.flowId),
+          );
+        }
+        expect(await capability.adopt(receipt())).toBe(change === "progress only");
+        expect(receipts.size).toBe(change === "progress only" ? 1 : 0);
+      } finally {
+        release.resolve();
+        releaseAudience.resolve();
+        await audienceChange;
+        await publication;
+        await prepareTaskBackingRead();
+        capability.close();
       }
     },
   );

@@ -21,7 +21,10 @@ export function createTaskFlowRegistryReaders(owner: {
     ready: boolean;
     dirtyFlowIds: ReadonlySet<string>;
   };
-  pendingWrites: ReadonlyMap<string, { completions: ReadonlySet<Promise<void>> }>;
+  pendingWrites: ReadonlyMap<
+    string,
+    { completions: ReadonlySet<Promise<void>>; readIdentity?: "preserved" }
+  >;
   ensureReady(): void;
   ensureReadyAsync(context: OpenClawStateWorkerContext): Promise<void>;
   isCurrentDatabase(admission: OpenClawStateDatabaseReadAdmission): boolean;
@@ -30,6 +33,9 @@ export function createTaskFlowRegistryReaders(owner: {
     admission: OpenClawStateDatabaseReadAdmission,
   ): void;
 }) {
+  const isFlowIdentityCurrent = (flowId: string, dirtyFlowIds: ReadonlySet<string>) =>
+    !dirtyFlowIds.has(flowId) || owner.pendingWrites.get(flowId)?.readIdentity === "preserved";
+
   const getTaskFlowById = (flowId: string): TaskFlowRecord | undefined => {
     owner.ensureReady();
     const flow = owner.projection().flows.get(flowId);
@@ -97,12 +103,12 @@ export function createTaskFlowRegistryReaders(owner: {
       assertCurrent,
       isTaskFlowCurrent(flowId) {
         assertCurrent();
-        return !owner.projection().dirtyFlowIds.has(flowId);
+        return isFlowIdentityCurrent(flowId, owner.projection().dirtyFlowIds);
       },
       getTaskFlowById(flowId) {
         assertCurrent();
         const projection = owner.projection();
-        if (projection.dirtyFlowIds.has(flowId)) {
+        if (!isFlowIdentityCurrent(flowId, projection.dirtyFlowIds)) {
           throw new Error("Task-flow registry read identity requires preparation.");
         }
         const flow = projection.flows.get(flowId);

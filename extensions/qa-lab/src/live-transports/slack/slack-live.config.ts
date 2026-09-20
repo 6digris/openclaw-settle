@@ -277,7 +277,7 @@ export function buildSlackQaConfig(
                         // key; the product default intentionally hides raw commands.
                         commandText: "raw" as const,
                         label: false,
-                        maxLines: 4,
+                        maxLines: progressOverrides.maxLines ?? 4,
                         ...(progressOverrides.style ? { style: progressOverrides.style } : {}),
                         toolProgress: progressOverrides.toolProgress,
                         ...(progressOverrides.commentary === undefined

@@ -1,9 +1,14 @@
 // Slack tests cover draft stream plugin behavior.
-import { createMessageReceiptFromOutboundResults } from "openclaw/plugin-sdk/channel-outbound";
+import {
+  createMessageReceiptFromOutboundResults,
+  type ChannelProgressDraftCompositorSnapshot,
+  type ProgressContinuationReceipt,
+} from "openclaw/plugin-sdk/channel-outbound";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { describe, expect, it, vi } from "vitest";
 import { noteSlackDraftConversationMessage } from "./draft-message-boundaries.js";
 import { createSlackDraftStream } from "./draft-stream.js";
+import { createSlackProgressContinuation } from "./monitor/message-handler/dispatch-progress-continuation.js";
 
 type DraftStreamParams = Parameters<typeof createSlackDraftStream>[0];
 type DraftSendFn = NonNullable<DraftStreamParams["send"]>;
@@ -87,6 +92,108 @@ describe("createSlackDraftStream", () => {
     await stream.clear();
     expect(remove).not.toHaveBeenCalled();
   });
+
+  it.each(["confirmed", "edit failed", "human reply"] as const)(
+    "transfers only the flushed waiting checklist: %s",
+    async (outcome) => {
+      vi.useFakeTimers();
+      const visible = new Map<string, string>();
+      const adopted: ProgressContinuationReceipt[] = [];
+      let sent = 0;
+      const { stream } = createDraftStreamHarness({
+        accountId: "work",
+        threadTs: "100.000",
+        send: async (_to, text) => {
+          const messageId = `${111 + sent++}.222`;
+          visible.set(messageId, text);
+          return slackDraftSendResult(messageId);
+        },
+        edit: async (_channel, messageId, text) => {
+          if (outcome === "edit failed") {
+            throw new Error("edit response unavailable");
+          }
+          visible.set(messageId, text);
+        },
+      });
+      const waitingText = "1/3 complete: waiting for both workers";
+      const waiting: ChannelProgressDraftCompositorSnapshot = {
+        lines: ["Both workers are running"],
+        plan: [
+          { step: "Parent command", status: "completed" },
+          { step: "Wait for workers", status: "in_progress" },
+          { step: "Summarize results", status: "pending" },
+        ],
+      };
+      try {
+        stream.update({ text: "0/3 complete: parent command", snapshot: { lines: [] } });
+        await stream.flush();
+        stream.update({ text: waitingText, snapshot: waiting });
+        if (outcome === "human reply") {
+          noteSlackDraftConversationMessage({
+            accountId: "work",
+            channelId: "C123",
+            threadTs: "100.000",
+            messageTs: "112.000",
+            userId: "U_HUMAN",
+          });
+        }
+        const continuation = createSlackProgressContinuation({
+          setup: {
+            cfg: TEST_CFG,
+            account: { accountId: "work" },
+            ctx: { botToken: "xoxb-test" },
+            prepared: {},
+            slackMessageMetadata: undefined,
+          },
+          delivery: {
+            streamSession: null,
+            nativeProgressStreamStartPromise: null,
+            nativeProgressStreamThreadTs: undefined,
+            assertProgressCurrent: undefined,
+            streamFailed: false,
+            usedReplyThreadTs: undefined,
+            observedReplyDelivery: false,
+          },
+          draftStream: stream,
+          progressDraft: {
+            markFinalReplyStarted() {},
+            markFinalReplyDelivered() {},
+            getSnapshot: () => waiting,
+            getText: () => waitingText,
+          },
+          progressCard: { resolvePresentation: () => [] },
+          isProgressMode: true,
+          useNativeProgressStreaming: false,
+          settleNativeUpdates: async () => {},
+          onNativeReleased() {},
+        });
+        expect(
+          await continuation.adopt(
+            { text: "Waiting for workers" },
+            {
+              kind: "final",
+              adoptProgressContinuation: async (receipt) => {
+                adopted.push(receipt);
+                return true;
+              },
+            },
+          ),
+        ).toBe(outcome === "confirmed");
+        if (outcome === "confirmed") {
+          expect([...visible]).toEqual([["111.222", waitingText]]);
+          expect(adopted).toMatchObject([
+            { messageId: "111.222", text: waitingText, snapshot: waiting },
+          ]);
+        } else {
+          expect(adopted).toEqual([]);
+          expect([...visible.keys()]).toEqual(["111.222"]);
+        }
+      } finally {
+        await stream.discardPending();
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("joins an in-flight update and declines an ambiguous edit instead of adopting stale content", async () => {
     const attempted = createDeferred<void>();

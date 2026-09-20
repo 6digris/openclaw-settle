@@ -69,8 +69,9 @@ async function syncLiveTaskFlow(
       throw new Error("Live task-flow retry store is no longer current");
     }
   };
+  // The worker mirrors progress fields without changing flow routing or classification.
   const outcome = await runTaskFlowRegistryWorkerMutation(
-    { flowId, admission: context.admission },
+    { flowId, admission: context.admission, readIdentity: "preserved" },
     () =>
       store.syncLiveTaskFlowAsync(
         context,

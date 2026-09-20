@@ -14,8 +14,21 @@ import type { SlackDispatchSetup } from "./dispatch-setup.js";
 import type { SlackStreamingDeliveryRuntime } from "./dispatch-streaming.js";
 
 export function createSlackProgressContinuation(params: {
-  setup: Pick<SlackDispatchSetup, "account" | "cfg" | "ctx" | "prepared" | "slackMessageMetadata">;
-  delivery: SlackStreamingDeliveryRuntime;
+  setup: Pick<SlackDispatchSetup, "cfg" | "slackMessageMetadata"> & {
+    account: Pick<SlackDispatchSetup["account"], "accountId">;
+    ctx: Pick<SlackDispatchSetup["ctx"], "botToken">;
+    prepared: Pick<SlackDispatchSetup["prepared"], "eventScope">;
+  };
+  delivery: Pick<
+    SlackStreamingDeliveryRuntime,
+    | "streamSession"
+    | "nativeProgressStreamStartPromise"
+    | "nativeProgressStreamThreadTs"
+    | "assertProgressCurrent"
+    | "streamFailed"
+    | "usedReplyThreadTs"
+    | "observedReplyDelivery"
+  >;
   draftStream: SlackDraftStream | undefined;
   progressDraft: {
     markFinalReplyStarted: () => void;
@@ -46,6 +59,9 @@ export function createSlackProgressContinuation(params: {
       }
       progressDraft.markFinalReplyStarted();
       if (!useNativeProgressStreaming) {
+        // Sealing discards queued updates, including the parent's waiting checklist.
+        await draftStream?.flush();
+        assertCurrent();
         await draftStream?.seal();
         assertCurrent();
         return draftStream?.progressReceipt();

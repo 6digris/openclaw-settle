@@ -65,7 +65,10 @@ let projectionDirty = false;
 const dirtyFlowIds = new Set<string>();
 const pendingFlowWrites = new Map<
   string,
-  PendingTaskFlowPublication & { completions: Set<Promise<void>> }
+  PendingTaskFlowPublication & {
+    completions: Set<Promise<void>>;
+    readIdentity?: "preserved";
+  }
 >();
 
 function recordFlowProjectionWrite(flowId?: string): void {
@@ -364,7 +367,11 @@ export async function reconcileTaskFlowWorkerReceipts(
 
 /** Worker receipts reconcile durable rows without resetting live task or delivery owners. */
 export async function runTaskFlowRegistryWorkerMutation<T>(
-  context: { flowId: string; admission: OpenClawStateDatabaseReadAdmission },
+  context: {
+    flowId: string;
+    admission: OpenClawStateDatabaseReadAdmission;
+    readIdentity?: "preserved";
+  },
   mutate: () => Promise<T>,
   readCurrent: () => Promise<TaskFlowRecord | undefined>,
 ): Promise<T> {
@@ -375,7 +382,13 @@ export async function runTaskFlowRegistryWorkerMutation<T>(
     completions: new Set<Promise<void>>(),
     lastPublished: flows.get(flowId),
     readers: new Set<{ written: boolean }>(),
+    // Mirroring may preserve a ready identity, never revive an unpublished one.
+    readIdentity: !projectionDirty && !dirtyFlowIds.has(flowId) ? context.readIdentity : undefined,
   };
+  // An ownership-changing writer keeps the whole overlapping batch fenced.
+  if (context.readIdentity !== "preserved") {
+    pending.readIdentity = undefined;
+  }
   const completion = createDeferredCore();
   pending.completions.add(completion.promise);
   pendingFlowWrites.set(flowId, pending);
