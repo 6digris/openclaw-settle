@@ -1,5 +1,6 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "src/skills/workshop/store.test.ts",
   "src/state/onboarding-recommendations.test.ts",
   "src/commands/onboard-recommendations.test.ts",
   "src/wizard/setup.app-recommendations.test.ts",
@@ -244,7 +245,11 @@ export const databaseWorkerCoreTestFiles = [
   "src/tasks/task-registry.async-restore.test.ts",
   "src/tasks/task-registry-agent-events.test.ts",
   "src/tasks/task-registry-agent-events.lineage.test.ts",
+  "src/tasks/task-registry-owner-read.test.ts",
   "src/tasks/task-registry-read.test.ts",
+  "src/tasks/task-registry.maintenance-projection.test.ts",
+  "src/tasks/task-registry.maintenance-acp-authority.test.ts",
+  "src/tasks/context-engine-maintenance-task-owner.test.ts",
   "src/tasks/task-registry-terminal-read.test.ts",
   "src/tasks/task-registry-progress-runtime.test.ts",
   "src/tasks/task-registry-lifecycle.test.ts",
@@ -348,6 +353,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/sandbox/registry.test.ts",
   "src/agents/sandbox/runtime-reservation.test.ts",
   "src/commands/doctor-sandbox-legacy-registry.test.ts",
+  "src/agents/tools/sessions-tool.batch.test.ts",
   "src/agents/subagents/completion/subagent-completion-admission.store.test.ts",
   "src/commands/doctor-db-bloat.worker.test.ts",
   "src/commands/doctor-device-pairing.worker.test.ts",
@@ -411,6 +417,8 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/auth-profiles/store-owner-publication.test.ts",
   "src/agents/auth-profiles/usage.inherited-owner.test.ts",
   "test/helpers/stage-live-auth-profiles.test.ts",
+  "src/agents/embedded-agent-runner/run/failover-retry-controller.inline-auth.worker.test.ts",
+  "src/agents/auth-profiles.markauthprofilefailure.test.ts",
 ];
 
 const databaseWorkerCoreTestFileSet = new Set(databaseWorkerCoreTestFiles);

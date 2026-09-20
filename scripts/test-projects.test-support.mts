@@ -4064,16 +4064,19 @@ export function buildVitestRunPlans(
   }));
   const hasGatewayAggregateTarget = classifiedTargets.some(({ kind }) => kind === "gateway");
   const explicitConfigTargets = classifiedTargets.map(({ relative }) => relative);
+  const databaseWorkerPatterns = uniqueOrdered([
+    ...requestedTargetArgs,
+    ...activeTargetArgs,
+  ]).flatMap((targetArg) => {
+    const relative = toRepoRelativeTarget(targetArg, cwd);
+    return isTestFileTarget(relative) ||
+      isGlobTarget(relative) ||
+      isExistingDirectoryTarget(targetArg, cwd)
+      ? [toScopedIncludePattern(targetArg, cwd)]
+      : [];
+  });
   const impliedDatabaseWorkerTargets = databaseWorkerCoreTestFiles.filter((file) =>
-    [...requestedTargetArgs, ...activeTargetArgs].some((targetArg) => {
-      const relative = toRepoRelativeTarget(targetArg, cwd);
-      return (
-        (isTestFileTarget(relative) ||
-          isGlobTarget(relative) ||
-          isExistingDirectoryTarget(targetArg, cwd)) &&
-        includePatternMatchesAnyFile(toScopedIncludePattern(targetArg, cwd), [file])
-      );
-    }),
+    databaseWorkerPatterns.some((pattern) => includePatternMatchesAnyFile(pattern, [file])),
   );
   const hasPackageFileTarget = classifiedTargets.some(
     ({ kind, relative }) =>

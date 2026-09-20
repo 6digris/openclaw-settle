@@ -49,6 +49,10 @@ import { createTempDirTracker, useAutoCleanupTempDirTracker } from "../helpers/t
 import { resolveWorkflowBash } from "../helpers/workflow-bash.js";
 import { sharedVitestConfig } from "../vitest/vitest.shared.config.ts";
 import {
+  startupCorpusTestFiles,
+  stateStartupCorpusTestFiles,
+} from "../vitest/vitest.startup-corpus-paths.mjs";
+import {
   createUiE2eVitestConfig,
   uiE2eRealGatewayTestFiles,
 } from "../vitest/vitest.ui-e2e.config.ts";
@@ -4861,6 +4865,34 @@ NODE
       TARGET_CONTEXT_REF: "${{ inputs.target_context_ref || github.base_ref || github.ref_name }}",
     });
     expect(job.steps.indexOf(baseline)).toBeLessThan(job.steps.indexOf(run));
+    const survivorProof = job.steps.find(
+      (step: WorkflowStep) => step.name === "Upload sanitized upgrade survivor proof",
+    ) as WorkflowStep;
+    expect(survivorProof).toMatchObject({
+      if: `always() && ${baseline.if}`,
+      uses: UPLOAD_ARTIFACT_V7,
+      with: { "include-hidden-files": true, "if-no-files-found": "warn" },
+    });
+    const proofPaths = String(survivorProof.with?.path).trim().split(/\s+/u);
+    const uploaded = (file: string) => proofPaths.some((pattern) => minimatch(file, pattern));
+    for (const file of [
+      ".artifacts/docker-tests/20260920T000000Z/summary.json",
+      ".artifacts/docker-tests/20260920T000000Z/failures.json",
+      ".artifacts/docker-tests/upgrade-survivor-baseline.123/failure.json",
+      ".artifacts/docker-tests/upgrade-survivor-baseline.123/summary.json",
+    ]) {
+      expect(uploaded(file), file).toBe(true);
+    }
+    for (const file of [
+      ".artifacts/upgrade-survivor/baseline/legacy-operator-baseline-turn.err",
+      ".artifacts/upgrade-survivor/baseline/diagnostics/raw.json",
+      ".artifacts/docker-tests/run/published-upgrade-survivor.log",
+      ".artifacts/docker-tests/20260920T000000Z/baseline-cache/package/summary.json",
+      ".artifacts/docker-tests/20260920T000000Z/baseline-cache/package/failures.json",
+      ".artifacts/docker-tests/upgrade-survivor-baseline.123/private/summary.json",
+    ]) {
+      expect(uploaded(file), file).toBe(false);
+    }
   });
 
   it.each([
@@ -13030,7 +13062,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     55_000,
   );
 
-  it("runs the startup corpus once when a canonical PR admits both complete Node files", () => {
+  it("runs the startup corpus once when a canonical PR admits every complete Node file", () => {
     const revision = "a".repeat(40);
     const shards = createNodeTestShardBundles({
       compactMode: "pull-request",
@@ -13106,10 +13138,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
                 requiresDist: false,
                 runner: "ubuntu-24.04",
                 configs: ["test/vitest/vitest.runtime-config.config.ts"],
-                includePatterns: [
-                  "src/config/config-startup-corpus.test.ts",
-                  "src/config/state-startup-corpus.test.ts",
-                ],
+                includePatterns: startupCorpusTestFiles,
               },
             ],
           },
@@ -13143,10 +13172,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
   );
 
   it("runs the startup corpus once on full canonical main pushes", () => {
-    const files = [
-      "src/config/config-startup-corpus.test.ts",
-      "src/config/state-startup-corpus.test.ts",
-    ];
+    const files = startupCorpusTestFiles;
     const groups = createNodeTestShardBundles({
       compactMode: "push",
       includeReleaseOnlyPluginShards: false,
@@ -13182,16 +13208,14 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
   });
 
   it.each([
-    { eventName: "pull_request", runCheck: true, frozenTarget: false, cpus: 2, slots: 1 },
-    { eventName: "pull_request", frozenTarget: false, cpus: 1, slots: 1 },
-    { eventName: "pull_request", frozenTarget: false, cpus: 8, slots: 2, fail: "1/4" },
-    { eventName: "pull_request", frozenTarget: false, cpus: 32, slots: 5 },
+    { eventName: "pull_request", runCheck: true, frozenTarget: false, splitCorpus: true },
     { eventName: "pull_request", runCheck: false },
     { eventName: "push", runCheck: false },
     { eventName: "push", ref: "refs/heads/release" },
     { eventName: "push", repository: "fixture/openclaw" },
     { eventName: "workflow_dispatch", releaseGate: false },
-    { eventName: "workflow_dispatch", releaseGate: true, frozenTarget: true, cpus: 4, slots: 1 },
+    { eventName: "workflow_dispatch", releaseGate: true, frozenTarget: true, splitCorpus: true },
+    { eventName: "workflow_dispatch", releaseGate: true, frozenTarget: true, splitCorpus: false },
   ] as const)("retains the startup corpus outside full canonical main: %j", (scenario) => {
     const steps: WorkflowStep[] = readCiWorkflow().jobs["checks-fast-core"].steps;
     const selected = steps.filter(
@@ -13207,7 +13231,32 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     );
     expect(selected).toHaveLength(1);
     expect(selected[0]?.run).toContain("src/config/config-startup-corpus.test.ts");
-    if (scenario.cpus !== undefined) {
+    if ("frozenTarget" in scenario) {
+      const directory = tempDirs.make("startup-corpus-command-");
+      const bin = path.join(directory, "bin");
+      const argsPath = path.join(directory, "args");
+      mkdirSync(bin);
+      if (scenario.splitCorpus) {
+        mkdirSync(path.join(directory, "test/vitest"), { recursive: true });
+        writeFileSync(path.join(directory, "test/vitest/vitest.startup-corpus-paths.mjs"), "");
+        mkdirSync(path.join(directory, "src/config"), { recursive: true });
+        for (const file of startupCorpusTestFiles) {
+          writeFileSync(path.join(directory, file), "");
+        }
+      }
+      writeExecutable(path.join(bin, "pnpm"), [
+        "#!/bin/sh",
+        '[ "$*" = "build qaRuntime" ] || exit 1',
+        "mkdir dist || exit 1",
+        "touch dist/.buildstamp",
+      ]);
+      writeExecutable(path.join(bin, "node"), [
+        "#!/bin/sh",
+        'test -f dist/.buildstamp || { echo "runtime not prepared" >&2; exit 1; }',
+        'label="${OPENCLAW_TEST_STARTUP_CORPUS_SHARD:-config}"',
+        'case "$label" in */*) label="${label%/*}-${label#*/}" ;; esac',
+        'printf "%s\\n" "$@" > "$STARTUP_CORPUS_ARGS.$label"',
+      ]);
       const script = expectDefined(selected[0]?.run, "startup corpus command").replace(
         /\$\{\{[\s\S]*?\}\}/gu,
         (expression) =>
@@ -13219,13 +13268,88 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
             }),
           ),
       );
-      assertStartupCorpusCommand(
-        script,
-        tempDirs.make("startup-corpus-command-"),
-        scenario,
-        runWorkflowShellScript,
-      );
+      const result = runWorkflowShellScript(script, {
+        cwd: directory,
+        env: {
+          ...process.env,
+          PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
+          STARTUP_CORPUS_ARGS: argsPath,
+        },
+      });
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      const readArgs = (label: string) =>
+        readFileSync(`${argsPath}.${label.replace("/", "-")}`, "utf8")
+          .trim()
+          .split("\n");
+      const commonArgs = [
+        "scripts/run-vitest.mjs",
+        "run",
+        "--config",
+        "test/vitest/vitest.runtime-config.config.ts",
+        ...(scenario.frozenTarget
+          ? []
+          : [
+              "--reporter",
+              "verbose",
+              "--reporter",
+              "github-actions",
+              "--reporter",
+              "./scripts/lib/vitest-resource-reporter.mts",
+            ]),
+      ];
+      if (scenario.splitCorpus) {
+        expect(readArgs("config")).toEqual([
+          ...commonArgs,
+          "--maxWorkers=4",
+          "src/config/config-startup-corpus.test.ts",
+          ...stateStartupCorpusTestFiles.toSorted(),
+        ]);
+        expect(readdirSync(directory).filter((file) => file.startsWith("args."))).toEqual([
+          "args.config",
+        ]);
+      } else {
+        expect(readArgs("config")).toEqual([
+          ...commonArgs,
+          "src/config/config-startup-corpus.test.ts",
+        ]);
+        for (const shard of ["1/4", "2/4", "3/4", "4/4"]) {
+          expect(readArgs(shard), shard).toEqual([
+            ...commonArgs,
+            "src/config/state-startup-corpus.test.ts",
+          ]);
+        }
+      }
     }
+  });
+
+  it.each([
+    { cpus: 2, slots: 1 },
+    { cpus: 1, slots: 1 },
+    { cpus: 8, slots: 2, fail: "1/4" },
+    { cpus: 32, slots: 5 },
+  ])("bounds legacy frozen startup corpus admission: %j", (scenario) => {
+    const steps: WorkflowStep[] = readCiWorkflow().jobs["checks-fast-core"].steps;
+    const step = steps.find((entry) =>
+      entry.run?.includes("src/config/state-startup-corpus.test.ts"),
+    );
+    const script = expectDefined(step?.run, "startup corpus command").replace(
+      /\$\{\{[\s\S]*?\}\}/gu,
+      (expression) =>
+        String(
+          evaluateWorkflowExpression(expression, {
+            eventName: "workflow_dispatch",
+            repository: "openclaw/openclaw",
+            runAttempt: 1,
+            frozenTarget: true,
+          }),
+        ),
+    );
+    assertStartupCorpusCommand(
+      script,
+      tempDirs.make("startup-corpus-command-"),
+      { ...scenario, frozenTarget: true },
+      runWorkflowShellScript,
+    );
   });
 
   it("runs all baseline ratchets against the exact tested tree", () => {
