@@ -1668,13 +1668,17 @@ describe("CI changed Node test plan", () => {
     expect(fallbackGroups(shards ?? []).flatMap((group) => group.configs)).toContain(config);
   });
 
-  it.each([
-    { name: "precise", createShards: createChangedNodeTestShards },
-    { name: "fallback", createShards: createChangedExtensionFallbackShards },
-  ])(
-    "packs separate Telegram envelopes into serial $name jobs without merging their file scopes",
-    ({ createShards }) => {
-      const result = createShards(["extensions/telegram/src/channel.ts"]);
+  it.each(
+    [
+      { name: "precise", createShards: createChangedNodeTestShards },
+      { name: "fallback", createShards: createChangedExtensionFallbackShards },
+    ].flatMap((entry) =>
+      (["standard", "fast"] as const).map((tier) => Object.assign({}, entry, { tier })),
+    ),
+  )(
+    "packs separate Telegram envelopes into serial $tier $name jobs without merging their file scopes",
+    ({ createShards, tier }) => {
+      const result = createShards(["extensions/telegram/src/channel.ts"], { tier });
       expect(result).not.toBeNull();
       const shards = result ?? [];
       const groups = fallbackGroups(shards);
@@ -1682,7 +1686,16 @@ describe("CI changed Node test plan", () => {
 
       expect(shards.length).toBeLessThan(groups.length);
       expect(shards.every((shard) => shard.planConcurrency === 1)).toBe(true);
-      expect(shards.every((shard) => shard.predictedSeconds! <= 240)).toBe(true);
+      for (const shard of shards) {
+        if (tier === "standard") {
+          expect(shard.predictedSeconds).toBeLessThanOrEqual(240);
+        } else if (shard.predictedSeconds! > 150) {
+          // Existing process envelopes are indivisible at this packing boundary.
+          expect(fallbackGroups([shard])).toHaveLength(1);
+        } else {
+          expect(shard.predictedSeconds).toBeGreaterThan(0);
+        }
+      }
       expect(
         groups.every(
           (group) =>

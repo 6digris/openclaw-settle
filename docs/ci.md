@@ -31,7 +31,7 @@ Control UI CI installs the Chromium revision pinned by Playwright even when the 
 
 In-process Gateway test configs use [exclusive plan admission within existing packed jobs](/ci/capacity#measured-shard-weights).
 
-Changed-extension PR jobs use [measured fallback rates and a 240-second packing budget](/ci/capacity#runner-registration-budget) within the landed 90-row compact, 130-row PR and 70-row push caps.
+Node planning uses explicit [standard and fast tiers](/ci/capacity#planning-tiers). Canonical main pushes and same-repository, non-fork maintainer PRs with `OWNER`, `MEMBER`, or `COLLABORATOR` association receive smaller job budgets and more rows. Standard plans retain the 90-row compact, 130-row PR, and 70-row push caps; fast plans use 120/190/90. A separate fast Node matrix caps active 32-class jobs at 54, with one additional slot reserved for real-Gateway E2E. Runner routing and main's two parity slots remain unchanged; measured indivisible workloads still bound the attainable wall time.
 
 Roomy serial Blacksmith Node jobs use [measured Vitest worker sizing](/ci/capacity#vitest-worker-sizing), with existing hosted, frozen-target, and overlapping-plan limits.
 

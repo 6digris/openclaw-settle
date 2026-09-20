@@ -155,6 +155,7 @@ function evaluateWorkflowExpression(
     frozenTarget?: boolean;
     fileHashes?: Record<string, string>;
     headRepository?: string;
+    headFork?: boolean;
     headSha?: string;
     hostedRunnerProfileContract?: boolean;
     matrix?: Record<string, unknown>;
@@ -245,7 +246,10 @@ function evaluateWorkflowExpression(
                 number: context.pullRequestNumber,
                 head: {
                   sha: context.headSha,
-                  repo: { full_name: context.headRepository ?? context.repository },
+                  repo: {
+                    full_name: context.headRepository ?? context.repository,
+                    fork: context.headFork ?? false,
+                  },
                 },
               },
             }
@@ -4813,7 +4817,25 @@ NODE
       "github.event_name == 'pull_request'",
     );
     expect(workflow.jobs["checks-fast-core"].strategy["max-parallel"]).toBe(12);
-    expect(workflow.jobs["checks-node-core-test-nondist-shard"].strategy["max-parallel"]).toBe(96);
+    for (const [test_tier, limit] of [
+      ["standard", 96],
+      ["fast", 190],
+    ] as const) {
+      expect(
+        evaluateWorkflowExpression(
+          workflow.jobs["checks-node-core-test-nondist-shard"].strategy["max-parallel"],
+          {
+            eventName: "pull_request",
+            runAttempt: 1,
+            repository: "openclaw/openclaw",
+            preflightOutputs: { test_tier },
+          },
+        ),
+      ).toBe(limit);
+    }
+    expect(
+      workflow.jobs["checks-node-core-test-32-shard"].strategy["max-parallel"] + 1,
+    ).toBeLessThanOrEqual(Math.floor(37 * 1.5));
     expect(workflow.jobs["checks-fast-plugin-contracts-shard"].strategy["max-parallel"]).toBe(12);
     expect(workflow.jobs["checks-fast-channel-contracts-shard"].strategy["max-parallel"]).toBe(12);
     expect(workflow.jobs["check-shard"].strategy["max-parallel"]).toBe(12);
@@ -6470,6 +6492,7 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
       );
       expect(JSON.parse(coverage.slice("dedicated-coverage:".length))).toEqual({
         runnerBackend: runnerProfile,
+        tier: "standard",
         dedicatedContractShards: dedicated,
         dedicatedUiE2e: uiE2e,
         dedicatedMaxLinesRatchet: true,
@@ -7007,6 +7030,7 @@ setImmediate(() => {
       "checks-fast-plugin-contracts-shard": "ubuntu-24.04",
       "checks-node-compat": "ubuntu-24.04",
       "checks-node-core-test-nondist-shard": "ubuntu-24.04",
+      "checks-node-core-test-32-shard": "ubuntu-24.04",
       "checks-ui": "ubuntu-24.04",
       "checks-ui-e2e": "ubuntu-24.04",
       "checks-ui-e2e-real-gateway": "ubuntu-24.04",
@@ -7029,6 +7053,7 @@ setImmediate(() => {
       android: "blacksmith-8vcpu-ubuntu-2404",
       "build-artifacts": "blacksmith-16vcpu-ubuntu-2404",
       "checks-node-core-test-nondist-shard": "blacksmith-32vcpu-ubuntu-2404",
+      "checks-node-core-test-32-shard": "blacksmith-32vcpu-ubuntu-2404",
       "checks-ui-e2e": "blacksmith-8vcpu-ubuntu-2404",
       "checks-ui-e2e-real-gateway": "blacksmith-32vcpu-ubuntu-2404",
       "docker-seed-e2e": "blacksmith-16vcpu-ubuntu-2404",
@@ -7705,6 +7730,7 @@ setImmediate(() => {
       "checks-fast-channel-contracts-shard",
       "checks-fast-core",
       "checks-fast-plugin-contracts-shard",
+      "checks-node-core-test-32-shard",
       "checks-node-core-test-nondist-shard",
       "checks-ui",
       "checks-ui-e2e",
@@ -14037,13 +14063,92 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
   );
 
   it.each([
-    ["pull_request", "compact", "blacksmith", 130],
-    ["pull_request", "precise", "github", 130],
-    ["push", "compact", "hybrid", 70],
-    ["workflow_dispatch", "compact", "blacksmith", null],
+    ["pull_request", "OWNER", false, "openclaw/openclaw", "refs/heads/main", "fast"],
+    ["pull_request", "MEMBER", false, "openclaw/openclaw", "refs/heads/main", "fast"],
+    ["pull_request", "COLLABORATOR", false, "openclaw/openclaw", "refs/heads/main", "fast"],
+    ["pull_request", "CONTRIBUTOR", false, "openclaw/openclaw", "refs/heads/main", "standard"],
+    [
+      "pull_request",
+      "FIRST_TIME_CONTRIBUTOR",
+      false,
+      "openclaw/openclaw",
+      "refs/heads/main",
+      "standard",
+    ],
+    ["pull_request", "OWNER", true, "openclaw/openclaw", "refs/heads/main", "standard"],
+    ["pull_request", "OWNER", false, "fork/openclaw", "refs/heads/main", "standard"],
+    ["push", "", false, "openclaw/openclaw", "refs/heads/main", "fast"],
+    ["push", "", false, "openclaw/openclaw", "refs/heads/topic", "standard"],
+    ["workflow_dispatch", "OWNER", false, "openclaw/openclaw", "refs/heads/main", "standard"],
+  ] as const)(
+    "selects the explicit planning tier for %s %s fork=%s head=%s ref=%s",
+    (eventName, authorAssociation, headFork, headRepository, ref, expected) => {
+      const manifest = readCiWorkflow().jobs.preflight.steps.find(
+        (step: WorkflowStep) => step.id === "manifest",
+      );
+      const context = {
+        eventName,
+        runAttempt: 1,
+        authorAssociation,
+        headFork,
+        headRepository,
+        ref,
+        repository: "openclaw/openclaw",
+      };
+      expect(evaluateWorkflowExpression(manifest.env.OPENCLAW_CI_TEST_TIER, context)).toBe(
+        expected,
+      );
+      expect(
+        evaluateWorkflowExpression(manifest.env.OPENCLAW_CI_TEST_TIER, {
+          ...context,
+          repository: "fork/openclaw",
+        }),
+      ).toBe("standard");
+    },
+  );
+
+  it("partitions fast 32-class capacity without omitting rows or their gate", () => {
+    const nodeTestShards = Array.from({ length: 70 }, (_, index) => ({
+      checkName: `tier-row-${index}`,
+      shardName: `tier-row-${index}`,
+      configs: ["test/vitest/vitest.infra.config.ts"],
+      requiresDist: false,
+      runner: index < 60 ? "blacksmith-32vcpu-ubuntu-2404" : "blacksmith-8vcpu-ubuntu-2404",
+    }));
+    const result = runCiManifestFixture({
+      bundledPlanner: true,
+      eventName: "push",
+      nodeTestShards,
+      scopeEnv: { OPENCLAW_CI_TEST_TIER: "fast" },
+    });
+    expect(result.status, result.output).toBe(0);
+    const large = JSON.parse(result.outputs.checks_node_core_32_matrix!).include;
+    const other = JSON.parse(result.outputs.checks_node_core_nondist_matrix!).include;
+    expect(large).toHaveLength(60);
+    expect(other).toHaveLength(10);
+    expect(
+      [...large, ...other].map((row: { check_name: string }) => row.check_name).toSorted(),
+    ).toEqual(nodeTestShards.map((row) => row.checkName).toSorted());
+    expect(result.outputs.run_checks_node_core_32).toBe("true");
+    const workflow = readCiWorkflow();
+    const fastJob = workflow.jobs["checks-node-core-test-32-shard"];
+    expect(fastJob.steps).toEqual(workflow.jobs["checks-node-core-test-nondist-shard"].steps);
+    expect(Math.min(large.length, fastJob.strategy["max-parallel"]) + 1).toBeLessThanOrEqual(55);
+    expect(workflow.jobs["ci-gate"].needs).toContain("checks-node-core-test-32-shard");
+    expect(runCiGateFixture("checks-node-core-test-32-shard=failure|true").status).toBe(1);
+  });
+
+  it.each([
+    ["pull_request", "compact", "blacksmith", 130, "standard"],
+    ["pull_request", "compact", "blacksmith", 190, "fast"],
+    ["pull_request", "precise", "github", 190, "fast"],
+    ["push", "compact", "hybrid", 90, "fast"],
+    ["pull_request", "precise", "github", 130, "standard"],
+    ["push", "compact", "hybrid", 70, "standard"],
+    ["workflow_dispatch", "compact", "blacksmith", null, "standard"],
   ] as const)(
     "bounds the final Node matrix for %s %s plans",
-    (eventName, selection, runnerProfile, limit) => {
+    (eventName, selection, runnerProfile, limit, tier) => {
       for (const count of [limit ?? 130, (limit ?? 130) + 1]) {
         const hasFallback = eventName === "pull_request" && selection === "compact";
         const nodeTestShards = Array.from({ length: count - Number(hasFallback) }, (_, index) => ({
@@ -14073,6 +14178,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
             },
           ],
           runnerProfile,
+          scopeEnv: { OPENCLAW_CI_TEST_TIER: tier },
         });
         if (limit !== null && count > limit) {
           expect(result.status, result.output).toBe(1);
@@ -16788,6 +16894,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       "checks-fast-channel-contracts-shard",
       "checks-node-compat",
       "checks-node-core-test-nondist-shard",
+      "checks-node-core-test-32-shard",
       "check-shard",
       "check-lint-hosted-core-shard",
       "check-test-types-hosted-core-shard",

@@ -14,15 +14,16 @@ availability, Blacksmith control-plane health, and downstream queue drains.
 - Do not assume the scarce resource. Prove whether pressure is runner
   registrations, eligible runner availability, Blacksmith capacity/control
   plane, workflow dependencies, test runtime, or a downstream queue writer.
-- GitHub runner registrations for `openclaw` currently report a 10,000 per
+- GitHub runner registrations for `openclaw` reported a 20,000 per
   5-minute bucket in `actions_runner_registration`. Verify the live bucket
   before each tuning pass because GitHub can change it. The `openclaw`
-  organization shares one bucket.
+  organization shares one bucket. The September 20, 2026 pooled-reader response
+  does not establish organization-wide usage or free physical capacity.
 - Core REST quota does not draw down this bucket. Check
   `actions_runner_registration` separately; core quota can be healthy while
   runner registration is throttled.
 - Use about 60% of the live bucket as the operating target. With the current
-  10,000-registration bucket, keep planned Blacksmith burst load under 6,000
+  20,000-registration bucket, keep planned Blacksmith burst load under 12,000
   registrations per 5 minutes and leave the rest for other repos, retries, and
   burst overlap.
 - Jobs that route, notify, summarize, choose shards, or run short CodeQL quality
@@ -142,11 +143,49 @@ to two active main matrices plus their two pending tips entering the next
 admission wave, not every intermediate merge.
 
 Reject a change unless the org-level worst case stays below about 60% of the
-live bucket. With the current 10,000-registration bucket, keep planned
-Blacksmith burst load under 6,000 registrations per 5 minutes with headroom for
+live bucket. With the current 20,000-registration bucket, keep planned
+Blacksmith burst load under 12,000 registrations per 5 minutes with headroom for
 ClawSweeper, ClawHub, Clownfish, OpenClaw RTT, and Clawbench.
 
-The compact cap is 90 rows; the final Node matrix caps are 70 push and 130 PR rows. With the conservative 80 potentially eligible non-Node jobs, this bounds main at 150 registrations and PRs at 210. The retained four-main/21-PR arrival envelope is `4 × 150 + 21 × 210 = 5,010`, leaving 990 below the 6,000 reference target for adjacent repositories, releases and carryover. Relative to the former 64/120 Node caps, this reserves six additional registrations per push or ten per PR: `4 × 6 + 21 × 10 = 234` per envelope. Compact rows are part of the final Node matrix, so do not count their ten-row increase again. This is a conditional arrival bound, not live organization-wide capacity proof.
+Standard planning retains the 90-row compact cap, 50-row plugin fallback cap,
+and final 70-push/130-PR Node caps. Fast planning uses 120/70/90/190 respectively.
+Count all rows, even when the concurrency limit forces multiple waves. With
+80 potentially eligible non-Node jobs, four fast main admissions and 21 fast PR
+admissions require `4 × 170 + 21 × 270 = 6,350` registrations, leaving 5,650 below
+the current 12,000 operating target. Two fast PRs plus nineteen standard PRs and
+four fast main admissions require `4 × 170 + 2 × 270 + 19 × 210 = 5,210`.
+The historical all-standard envelope remains 5,010. Compact rows are included in
+the final Node caps; never count them twice. These are conditional arrival
+bounds, not live organization-wide capacity proof.
+
+## Planning Tier and Concurrency Guard
+
+- The workflow owns trust classification and passes `fast` or `standard`
+  explicitly to the planner. Fast means a canonical `openclaw/openclaw` main
+  push, or a canonical PR whose head is the same repository, `head.repo.fork` is
+  false, and association is `OWNER`, `MEMBER`, or `COLLABORATOR`. Everything else
+  is standard, including forks, `CONTRIBUTOR`, and manual dispatches. Concealed
+  membership can report `CONTRIBUTOR`; inspect the PR association before claiming
+  fast-tier proof. Never infer trust from tokens or change backend variables.
+- Standard budgets and routing remain unchanged. Fast uses 150s serial compact
+  and plugin budgets, a 240s aggregate budget for existing two-child bins, and a
+  250s hybrid runtime-placement budget including the 100s build reserve. Fast
+  Blacksmith uses the existing file splitter. Preserve inventories, config
+  ownership, process isolation, measured floors, workers, labels, and deadlines.
+- Fast uses a separate 32-class Node matrix with `max-parallel: 54`, plus one
+  reserved real-Gateway job. The 55-job bound is `floor(37 × 1.5)`, derived from
+  the largest single-run overlap in the September 20 six-run main sample.
+  No account-wide Linux ceiling is documented. Total 32-class rows may exceed
+  54; the bound applies to active jobs. Other fast Node rows use concurrency 190;
+  standard retains one matrix at 96. Both matrices must share execution/routing
+  and participate in the aggregate gate. Main retains two non-canceling parity
+  slots; this does not guarantee global provider fairness.
+- Watch one exact-head fast PR and report rows, longest job, wall, and assignment
+  waits per class. Separate dependencies and matrix admission from provider
+  waits. If the provider assignment median exceeds 60s, reduce the fast cap and
+  measure again. Indivisible replay floors still reach 609s for a plugin
+  envelope and 595s for CLI. Price measured hybrid runtime floors before fast
+  packing; smaller budgets do not establish the eight-to-ten-minute objective.
 
 ## Safe Levers
 
@@ -256,11 +295,11 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
   The conservative full-tier non-Node inventory, including Control UI performance, is
   87 rows, or 88 for historical UI targets. Excluding those four hosted rows
   plus all three macOS Swift phases and the always-hosted aggregate gate leaves at
-  most 80 potentially eligible jobs. The enforced Node caps therefore give
+  most 80 potentially eligible jobs. The standard-tier Node caps therefore give
   150 registrations per main run and 210 per PR:
   `4 × 150 + 21 × 210 = 5,010` in the retained peak arrival envelope.
-  The old 19-arrival estimate is obsolete. The remaining 990 below
-  the 6,000 reference target must cover adjacent repositories, releases and
+  The old 19-arrival estimate is obsolete. The historical remaining 990 below
+  the former 6,000 reference target must cover adjacent repositories, releases and
   carryover; the bounded 2026-09-02 census did not prove that upper bound.
   Treat a single PR concurrency trial separately from a global rollout.
   A shared-token quota response does not establish organization-wide usage.
@@ -279,17 +318,17 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
   plugin row, including the five added QA/provider rows, in the burst envelope.
 - Precise and fallback plugin groups retain separate child processes, including process-bounded
   configs. Compatible envelopes, including repeated configs, run one at a time
-  within 240 predicted seconds without a pair-count limit; expanded serial compact
+  within 240 predicted seconds on standard or 150s on fast without a pair-count limit; standard expanded serial compact
   jobs use 210. The rebased 124-envelope inventory emits 50 extension rows and
   125/119/130 PR Node rows on Blacksmith/hybrid/GitHub; push Node rows are
-  57/46/55 and compact PR rows are 77/71/82. These fit the landed 130/70/90
+  57/46/55 and compact PR rows are 77/71/82. These standard-tier observations fit the landed 130/70/90
   PR/push/compact caps without another increase. Runtime preparation stays separate. Each original envelope retains
   its file/process bounds, native shard arguments and worker limits. The complete supplemental boundary list runs in one job
   with four concurrent checks and one full-root focused-rule scan.
 - Measured Blacksmith chat/session, Gateway core-3 and infrastructure storage/state
   outliers reuse the existing file splitter. Preserve serial execution, worker
   pins and complete timing-history floors; no blanket increase in sharding.
-- Blacksmith and hybrid compact bins with multiple ordinary groups request the
+- Standard-tier Blacksmith and hybrid compact bins with multiple ordinary groups request the
   existing 32-vCPU class and two child slots with a 360s aggregate budget.
   Compatible two-slot bins use the time budget without the ten-group cutoff;
   serial bins retain that cutoff. Blacksmith serial bins retain 200/276s, hybrid serial bins retain 210s,
@@ -324,12 +363,12 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
   The canonical shard executor admits two CI children only with at least eight
   available CPUs and 24 GiB actual memory; otherwise it admits one. Inner project
   parallelism stays one and each overlapping child keeps two Vitest workers.
-  The primary GitHub profile remains serial at 210s. Failed-job-only hybrid
+  The standard GitHub profile remains serial at 210s; fast remains serial at 150s. Failed-job-only hybrid
   retries retain the original wider matrix on hosted Ubuntu, clamp to one child,
   and keep two workers per child; they can exceed the eight-minute normal-run
   objective without changing existing deadlines. Fewer jobs must retain native
   elapsed-time, actual memory and cleanup proof; requested labels are not capacity.
-- The whole Blacksmith agent-support group requests `blacksmith-32vcpu-ubuntu-2404`.
+- The standard-tier whole Blacksmith agent-support group requests `blacksmith-32vcpu-ubuntu-2404`.
   Its file inventory and resource-derived worker policy remain unchanged.
 - Numbered Blacksmith tooling bins request the same 32-vCPU class after packing.
   Keep their logical classes, names, file inventories, serial project/file

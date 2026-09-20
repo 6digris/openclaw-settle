@@ -24,6 +24,7 @@ import { listAvailableExtensionIds } from "./changed-extensions.mts";
 import { isTestOnlyPath } from "./changed-path-facts.mjs";
 import {
   createNodeTestShards,
+  type NodeTestPlanTier,
   createSelectedNodeTestShardBundles,
   isPolicyTestOwnedPath,
   packNodeTestGroups,
@@ -66,6 +67,7 @@ type ChangedNodeTestShard = {
 };
 type ChangedExtensionConfigShard = ChangedNodeTestShard & { predictedSeconds: number };
 type CwdOptions = { cwd?: string };
+type TierOptions = { tier?: NodeTestPlanTier };
 
 /** Ordinary UI unit entries retain their unit owner; fixtures and their consumers retain E2E. */
 export function hasUiE2eAffectingChange(changedPaths: string[], options: CwdOptions = {}) {
@@ -539,7 +541,7 @@ export function hasCoreExtensionImpact(changedPaths: string[], options: CwdOptio
  */
 export function createChangedExtensionFallbackShards(
   changedPaths: string[],
-  options: CwdOptions = {},
+  options: CwdOptions & TierOptions = {},
 ): ChangedNodeTestShard[] {
   const cwd = options.cwd ?? process.cwd();
   const shards = hasCoreExtensionImpact(changedPaths, { cwd })
@@ -548,17 +550,17 @@ export function createChangedExtensionFallbackShards(
         { fullConfigInventory: true },
       )
     : createChangedExtensionConfigShardsForPaths(changedPaths, cwd);
-  const jobs = packChangedExtensionConfigShards(shards);
-  if (jobs.length > MAX_CHANGED_EXTENSION_FALLBACK_JOBS) {
-    throw new Error(
-      `changed plugin fallback exceeds ${MAX_CHANGED_EXTENSION_FALLBACK_JOBS} jobs (${jobs.length} planned)`,
-    );
+  const jobs = packChangedExtensionConfigShards(shards, options);
+  const limit = options.tier === "fast" ? 70 : MAX_CHANGED_EXTENSION_FALLBACK_JOBS;
+  if (jobs.length > limit) {
+    throw new Error(`changed plugin fallback exceeds ${limit} jobs (${jobs.length} planned)`);
   }
   return jobs;
 }
 
 function packChangedExtensionConfigShards(
   shards: ChangedExtensionConfigShard[],
+  options: TierOptions = {},
 ): ChangedNodeTestShard[] {
   const nativeWorkerFileCounts = new Map(
     shards.map((shard) => [
@@ -588,7 +590,7 @@ function packChangedExtensionConfigShards(
           entry.requiresDist === shard.requiresDist,
       ) &&
       bin.reduce((seconds, entry) => seconds + entry.predictedSeconds, shard.predictedSeconds) <=
-        CHANGED_EXTENSION_JOB_SECONDS,
+        (options.tier === "fast" ? 150 : CHANGED_EXTENSION_JOB_SECONDS),
     true,
   );
   // Singleton objects keep their full metadata and original relative order.
@@ -623,12 +625,13 @@ function packChangedExtensionConfigShards(
  */
 export function createChangedNodeTestShards(
   changedPaths: string[],
-  options: CwdOptions & {
-    runnerBackend?: string;
-    dedicatedContractShards?: readonly { task: string; includePatterns: readonly string[] }[];
-    dedicatedUiE2e?: boolean;
-    dedicatedMaxLinesRatchet?: boolean;
-  } = {},
+  options: CwdOptions &
+    TierOptions & {
+      runnerBackend?: string;
+      dedicatedContractShards?: readonly { task: string; includePatterns: readonly string[] }[];
+      dedicatedUiE2e?: boolean;
+      dedicatedMaxLinesRatchet?: boolean;
+    } = {},
 ): ChangedNodeTestShard[] | null {
   const cwd = options.cwd ?? process.cwd();
   if (!Array.isArray(changedPaths) || changedPaths.length === 0) {
@@ -727,6 +730,7 @@ export function createChangedNodeTestShards(
     ? path.resolve(cwd) === process.cwd()
       ? createSelectedNodeTestShardBundles(canonicalTargets, {
           runnerBackend: options.runnerBackend,
+          tier: options.tier,
         })
       : null
     : [];
@@ -776,7 +780,10 @@ export function createChangedNodeTestShards(
 
   const shards = [
     ...canonicalShards.map((shard) => Object.assign({}, shard, { configs: [] })),
-    ...packChangedExtensionConfigShards(createChangedExtensionConfigShardsForPaths(livePaths, cwd)),
+    ...packChangedExtensionConfigShards(
+      createChangedExtensionConfigShardsForPaths(livePaths, cwd),
+      options,
+    ),
     // Native browser files run in checks-ui, including precise changed-file plans.
     ...createChangedTargetShards(
       targets.filter((target) => !isUiBrowserTestFile(target)),

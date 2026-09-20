@@ -37,10 +37,19 @@ retain their two-case limit. Each case owns its commands and temporary roots;
 cleanup joins its process tree and callback work before removing those inputs.
 Outer suites and the remaining checkout contract cases stay sequential.
 
-Once admitted, canonical Linux CI permits up to 96 concurrent Node test jobs.
-The manifest separately enforces total-job budgets: 70 Node rows for canonical
-pushes and 130 for canonical PRs, including precise and plugin plans. GitHub
-also caps one job's combined outputs at 1 MiB measured in UTF-16, so preflight
+The [planning tier](/ci/capacity#planning-tiers) separates total rows from active
+jobs. Standard CI retains one Node matrix with 96 concurrent jobs and final
+caps of 70 push rows or 130 PR rows, including precise and plugin plans. Fast CI
+admits 90 push rows or 190 PR rows; its separate 32-class matrix admits at most
+54 active jobs, reserving one additional 32-class slot for real-Gateway E2E.
+Other fast Node rows use a matrix with concurrency 190. Both matrices retain the
+same execution steps, runner routing, and required aggregate-gate coverage.
+Compact descriptors, including dist, are capped at 90 standard or 120 fast;
+plugin fallback is capped at 50 standard or 70 fast. Main retains two
+non-canceling parity slots, independently of the PR tier. These workflow limits
+do not establish provider fairness or an account-wide concurrency guarantee.
+
+GitHub also caps one job's combined outputs at 1 MiB measured in UTF-16, so preflight
 has 524,288 characters for every matrix together. Grouped Node rows list each
 striped test file explicitly. The manifest projects the five fields consumed by
 the shard runner, then uses gzip+base64 (`groups_gzip_base64`) when the target
