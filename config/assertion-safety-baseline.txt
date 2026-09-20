@@ -2570,7 +2570,7 @@ src/fleet/service-support.runtime.ts	1
 src/flows/channel-setup.prompts.ts	2
 src/flows/channel-setup.status.ts	2
 src/flows/channel-setup.ts	7
-src/flows/doctor-core-checks.runtime.ts	3
+src/flows/doctor-core-checks.runtime.ts	2
 src/flows/doctor-core-checks.ts	3
 src/flows/doctor-health-contributions-final.ts	1
 src/flows/doctor-health-contributions.ts	1
@@ -2718,7 +2718,6 @@ src/gateway/server-methods/terminal.ts	6
 src/gateway/server-methods/tools-catalog.ts	2
 src/gateway/server-methods/web.ts	1
 src/gateway/server-methods/wizard.ts	1
-src/gateway/server-methods/workspace-fs.ts	2
 src/gateway/server-node-events.ts	2
 src/gateway/server-plugin-in-process-dispatch.ts	3
 src/gateway/server-plugin-subagent-runtime.ts	1
