@@ -3,7 +3,6 @@ import {
   serializeSidebarEntry,
   type PersistedSidebarRoute,
 } from "../app-navigation.ts";
-import { t } from "../i18n/index.ts";
 import {
   readSessionDragData,
   readSidebarSectionDragData,
@@ -39,9 +38,7 @@ import type { SessionOwnerOption } from "./session-owner-chip.ts";
 export type { SessionOrganizerControllerHost } from "./session-organizer-controller-types.ts";
 
 type SessionOrganizerOperations = typeof import("./session-organizer-operations.runtime.ts");
-type InputDialogOpener = (typeof import("./input-dialog.ts"))["showInputDialog"];
-type SessionGroupDefaultsDialogOpener =
-  (typeof import("./session-group-defaults-dialog.ts"))["showSessionGroupDefaultsDialog"];
+type SessionOrganizerGroupDialogs = typeof import("./session-organizer-group-dialogs.runtime.ts");
 /** Custom session groups, collapse state, and drag-and-drop assignment. */
 export class SessionOrganizerController {
   collapsedSessionSections = loadStoredCollapsedSessionSections();
@@ -410,9 +407,9 @@ export class SessionOrganizerController {
   }
 
   /** A dialog that never opens still owes the operator a visible outcome. */
-  private async loadInputDialog(): Promise<InputDialogOpener | null> {
+  private async loadGroupDialogs(): Promise<SessionOrganizerGroupDialogs | null> {
     try {
-      return (await import("./input-dialog.ts")).showInputDialog;
+      return await import("./session-organizer-group-dialogs.runtime.ts");
     } catch (error) {
       const scope = this.host.sessionData.beginSessionMutation();
       if (scope) {
@@ -432,58 +429,13 @@ export class SessionOrganizerController {
   }
 
   async createSessionGroup(sessions: readonly SidebarRecentSession[] = []): Promise<void> {
-    const showInputDialog = await this.loadInputDialog();
-    await showInputDialog?.({
-      title: t("sessionsView.newGroupTitle"),
-      label: t("sessionsView.newGroupPrompt"),
-      submitLabel: t("sessionsView.newGroupCreate"),
-      requireValue: true,
-      submit: (name) => this.writeSessionGroup(name, sessions),
-    });
-  }
-
-  /**
-   * Replays the failure the mutation already recorded so the dialog can keep the
-   * typed name for a retry. A replaced connection confirmed neither the group nor
-   * the move, so it reports a retryable message too rather than closing on an
-   * outcome that never landed; resubmitting runs against the new connection.
-   */
-  private async writeSessionGroup(
-    name: string,
-    sessions: readonly SidebarRecentSession[],
-  ): Promise<string | null> {
-    const scope = this.host.sessionData.beginSessionMutation();
-    if (!scope) {
-      return t("sessionsView.newGroupFailed");
-    }
-    const operations = await this.loadOperations(scope);
-    if (!operations) {
-      return this.host.sessionData.isSessionMutationScopeCurrent(scope)
-        ? this.sessionGroupFailure()
-        : t("sessionsView.newGroupStale");
-    }
-    const result = await operations.createSessionGroup(this.host, name, sessions, scope);
-    if (result === "failed") {
-      return this.sessionGroupFailure();
-    }
-    return result === "stale" ? t("sessionsView.newGroupStale") : null;
-  }
-
-  private sessionGroupFailure(): string {
-    return this.host.sessionData.sessionMutationError ?? t("sessionsView.newGroupFailed");
+    const dialogs = await this.loadGroupDialogs();
+    await dialogs?.createSessionGroup(this.host, sessions, (scope) => this.loadOperations(scope));
   }
 
   async renameSessionGroupFromMenu(group: string): Promise<void> {
-    const showInputDialog = await this.loadInputDialog();
-    // requireChange holds the submit closed on the name the group already has,
-    // so the only rename that reaches the Gateway is one that changes something.
-    const next = await showInputDialog?.({
-      title: t("sessionsView.renameGroupTitle", { group }),
-      label: t("sessionsView.groupNameLabel"),
-      defaultValue: group,
-      requireValue: true,
-      requireChange: true,
-    });
+    const dialogs = await this.loadGroupDialogs();
+    const next = await dialogs?.promptSessionGroupName(this.host, group);
     if (!next) {
       return;
     }
@@ -523,45 +475,10 @@ export class SessionOrganizerController {
   }
 
   async editSessionGroupDefaults(group: string): Promise<void> {
-    let showDialog: SessionGroupDefaultsDialogOpener;
-    try {
-      showDialog = (await import("./session-group-defaults-dialog.ts"))
-        .showSessionGroupDefaultsDialog;
-    } catch (error) {
-      const scope = this.host.sessionData.beginSessionMutation();
-      if (scope) {
-        this.host.sessionData.publishSessionMutationError(scope, error);
-      }
-      return;
-    }
-    const defaults = this.host.sessionGroupDefaults(group);
-    if (defaults) {
-      await showDialog({
-        group,
-        defaults,
-        listDirectory: (path) => this.host.listSessionGroupFolders(path),
-        inspectRepository: (path) => this.host.inspectSessionGroupRepository(path),
-        submit: async (nextDefaults) => {
-          const scope = this.host.sessionData.beginSessionMutation();
-          if (!scope || !this.host.sessionGroupDefaults(group)) {
-            return t("sessionsView.groupDefaultsStale");
-          }
-          const operations = await this.loadOperations(scope);
-          const result = await operations?.updateSessionGroupDefaults(
-            this.host,
-            group,
-            { cwd: nextDefaults.cwd || null, worktree: nextDefaults.worktree },
-            scope,
-          );
-          return result === "completed"
-            ? null
-            : result === "stale"
-              ? t("sessionsView.groupDefaultsStale")
-              : (this.host.sessionData.sessionMutationError ??
-                t("sessionsView.groupDefaultsFailed"));
-        },
-      });
-    }
+    const dialogs = await this.loadGroupDialogs();
+    await dialogs?.editSessionGroupDefaults(this.host, group, (scope) =>
+      this.loadOperations(scope),
+    );
   }
 
   saveCollapsedSessionSections(sections: ReadonlySet<string>) {

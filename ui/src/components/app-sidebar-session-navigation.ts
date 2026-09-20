@@ -25,6 +25,7 @@ import {
 } from "./app-sidebar-agent-session-rows.ts";
 import { AppSidebarBase } from "./app-sidebar-base.ts";
 import { scheduleSidebarChildSessions } from "./app-sidebar-child-session-data.ts";
+import { collectSidebarChildSessionParents } from "./app-sidebar-child-session-parents.ts";
 import { excludeSessionCatalogRows } from "./app-sidebar-session-catalog-state.ts";
 import {
   adoptedCatalogSessionKeys,
@@ -270,36 +271,15 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
   }
 
   private childSessionParents(): Set<string> {
-    const revalidating = new Set<string>();
-    const pending = [...this.visibleSessionRowsInOrder()];
-    while (pending.length > 0) {
-      const session = pending.shift();
-      if (!session) {
-        continue;
-      }
-      pending.push(...session.children);
-      if (
-        (session.childLoadParentKeys?.length ?? 0) > 0 &&
-        (session.visuallyActive || this.isSessionChildrenExpanded(session))
-      ) {
-        for (const key of session.childLoadParentKeys ?? [session.key]) {
-          revalidating.add(key);
-        }
-      }
-    }
+    const rows = this.visibleSessionRowsInOrder();
     const grouped = this.groupedSessionSource;
-    const homeAgents = grouped
-      ? grouped.agentIds.filter((id) => !grouped.collapsedAgentIds.has(id))
-      : [this.expandedAgentId()];
-    for (const agentId of homeAgents) {
-      const mainRow = this.mainSessionRow(agentId);
-      if (mainRow?.childSessions?.length) {
-        for (const key of this.projectHomeSession(mainRow, agentId).childLoadParentKeys ?? []) {
-          revalidating.add(key);
-        }
-      }
-    }
-    return revalidating;
+    return collectSidebarChildSessionParents(
+      this,
+      rows,
+      grouped
+        ? grouped.agentIds.filter((id) => !grouped.collapsedAgentIds.has(id))
+        : [this.expandedAgentId()],
+    );
   }
 
   setSessionOwnerFilter = (ownerId: string | null, involvingMe = false) =>
