@@ -42,6 +42,7 @@ type StreamMessageOptions = Pick<
   | "connectionEpoch"
   | "assistantAttachmentAuthToken"
   | "resolveArtifactDownload"
+  | "getTurnVideoMessages"
   | "onRequestOpenImage"
   | "onOpenImage"
   | "onAssistantAttachmentLoaded"

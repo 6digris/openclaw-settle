@@ -1,8 +1,8 @@
 import type { ImageLightboxGallery, ImageLightboxItem } from "./image-lightbox.types.ts";
 
 async function decodeImage(item: ImageLightboxItem | null): Promise<ImageLightboxItem | null> {
-  if (!item) {
-    return null;
+  if (!item || item.kind === "video") {
+    return item;
   }
   const image = new Image();
   image.referrerPolicy = "no-referrer";
@@ -16,7 +16,7 @@ async function decodeImage(item: ImageLightboxItem | null): Promise<ImageLightbo
   }
 }
 
-/** The modal owns decoded images and their resource leases until eviction or close. */
+/** The modal owns selected media and image resource leases until eviction or close. */
 export class ImageLightboxGalleryController {
   index = 0;
   current: ImageLightboxItem | undefined;
@@ -143,10 +143,31 @@ export class ImageLightboxGalleryController {
         void image.then((item) => item?.release?.());
       }
     }
+    // Do not prepare hidden players or capture neighbor tickets speculatively.
+    if (this.current?.kind === "video") {
+      return;
+    }
     for (const index of [this.index - 1, this.index + 1]) {
       if (index >= 0 && index < this.count) {
         void this.load(index);
       }
     }
   }
+}
+
+/** Native control internals retarget to video; leave their bottom strip and fullscreen alone. */
+export function canSwipeLightboxVideo(video: HTMLVideoElement | undefined, event: PointerEvent) {
+  const root = video?.getRootNode();
+  if (
+    !video ||
+    document.fullscreenElement ||
+    (root instanceof ShadowRoot && root.fullscreenElement)
+  ) {
+    return false;
+  }
+  if (!event.composedPath().includes(video)) {
+    return true;
+  }
+  const bounds = video.getBoundingClientRect();
+  return event.clientY < bounds.bottom - Math.min(80, bounds.height / 2);
 }
