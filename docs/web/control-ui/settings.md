@@ -135,13 +135,19 @@ Personal theme definitions are saved to your authenticated Gateway profile. Exis
 
 The Appearance panel has the built-in Claw, Knot, Dash, Absolutely, Tide, Beacon, Phosphor, CRT, Manuscript, Rosé, and Miami themes (Claw is default), plus themes contributed by enabled plugins, personal themes saved through the agent, and one browser-local tweakcn import slot. Each theme ships its own self-hosted typeface, loaded only when selected or previewed: Claw uses Instrument Sans, Knot uses Geist, Dash pairs DM Sans with Fraunces for chat prose, Absolutely pairs Space Grotesk with Lora for chat prose, Tide uses IBM Plex Sans, Rosé uses DM Sans, and Miami uses Space Grotesk. Beacon targets WCAG AAA (7:1) contrast with the Atkinson Hyperlegible Next typeface for low vision, bright sunlight, projectors, and low-quality panels. Phosphor and CRT set the entire surface, chat prose included, in JetBrains Mono — Phosphor as green-on-glass, CRT as a white-on-black console with squared corners. Manuscript is the one light-first theme: parchment and iron-gall ink with a lapis accent, set entirely in the Lora serif, with a candlelit dark mode. To import a theme, open the [tweakcn editor](https://tweakcn.com/editor/theme), choose or create a theme, click **Share**, and paste the copied link into Appearance. The importer also accepts `https://tweakcn.com/r/themes/<id>` registry URLs, editor URLs like `https://tweakcn.com/editor/theme?theme=amethyst-haze`, relative `/themes/<id>` paths, raw theme IDs, and default theme names such as `amethyst-haze`.
 
+Every built-in theme includes matching light and dark background artwork across the app canvas. The small, bundled lossless WebP images stay quiet behind content and follow the selected mode, including System. Plugin, personal, and imported palettes use neutral artwork. New-session and chat composers use a lightly translucent surface instead of repeating the image; navigation, menus, and reading cards retain their own surfaces. No external image requests are required. Increased contrast and forced colors hide the artwork and make composers opaque; reduced transparency also makes composers opaque.
+
 Themes imported from tweakcn are stored only in the current browser profile; they are not written to gateway config and do not sync across devices. Replacing the imported theme updates the one local slot; clearing it switches back to Claw if the imported theme was active.
+
+Selecting a **different theme** in Appearance applies its complete default look, clearing the interface and chat font overrides and selecting its own accent palette. You can customize the fonts and accent afterward. Selecting the same theme, reloading, reconnecting, receiving synced preferences, or changing light/dark mode does not reset those customizations. Language, text size, chat display, and other unrelated preferences are unchanged.
 
 The mounted UI keeps a live display-preference snapshot for its connected Gateway. Local changes and same-Gateway browser-tab edits update open composers without a reload. Selecting a different Gateway in another tab does not retarget the current tab. Credentials remain owned by the connection, separate from this display snapshot.
 
-Choose an **Accent color** preset or custom color in Appearance to override the active theme's accent. For an authenticated Gateway profile, the accent precedence is the profile's `ui.accent` preference, the gateway-wide `ui.prefs.accent` setting, the operator-configured `ui.seamColor`, and finally the active theme's default. **Restore default** clears only that profile's preference, leaving the gateway-wide settings unchanged. Connections without an authenticated profile keep the existing gateway-wide preference behavior.
+Choose an **Accent color** preset or custom color in Appearance to override the active theme's accent. For an authenticated Gateway profile, the accent precedence is the profile's `ui.accent` preference, the gateway-wide `ui.prefs.accent` setting, the operator-configured `ui.seamColor`, and finally the active theme's default. A theme selection stores the explicit `"theme"` accent preference, which uses the selected theme's complete palette in both light and dark modes instead of inheriting gateway accent or seam colors. **Restore default** clears only that profile's preference, leaving the gateway-wide settings unchanged. Connections without an authenticated profile keep the existing gateway-wide preference behavior.
 
-The **Typography** block lets you choose an **Interface** face and a separate **Chat prose** face. **Theme default** for Interface and **Match interface** for Chat prose restore the theme’s typography; Dash and Absolutely keep their own serif chat defaults. **System** uses the system sans-serif stack without loading a webfont. Code keeps its monospace stack. Opening either picker loads the self-hosted specimens on demand; startup loads only the active faces. Font overrides follow an authenticated Gateway profile, with a browser-local mirror for instant boot. Without a profile, they stay in that browser and are never written to `openclaw.json`.
+Existing unset and hex accents keep their meaning; upgrades do not migrate or reset saved preferences. Older Control UI readers that do not recognize the profile value `"theme"` fall back to inherited colors. Before downgrading to a Gateway whose `ui.prefs.accent` accepts only hex colors, remove a configured `"theme"` value or replace it with `#RRGGBB`. This adds no database schema version or preference key.
+
+The **Typography** block lets you choose an **Interface** face and a separate **Chat prose** face. **Theme default** for both Interface and Chat prose restore the theme’s typography; Dash and Absolutely keep their own serif chat defaults. **System** uses the system sans-serif stack without loading a webfont. Code keeps its monospace stack. Opening either picker loads the self-hosted specimens on demand; startup loads only the active faces. Font overrides follow an authenticated Gateway profile, with a browser-local mirror for instant boot. Without a profile, they stay in that browser and are never written to `openclaw.json`.
 
 Appearance also has a Text size setting. It applies to chat text, composer text, tool cards, and chat sidebars, and keeps text inputs at least 16px so mobile Safari does not auto-zoom on focus.
 
@@ -269,6 +275,12 @@ update policy, and active or most recent update. **Update now** opens a
 confirmation showing the target and restart impact. Choose **Update and restart**
 to start; canceling leaves the Gateway untouched.
 
+For `dev` git updates, the confirmation, sidebar, and available-update status
+show the installed → target short commit SHAs on a separate line below the commit
+count. **Compare on GitHub** opens a comparison when the tracked upstream is
+a GitHub repository; other installs show plain revisions. This distinguishes
+revisions that share a version number.
+
 After confirmation, one update view shows the ordered phases, current or last
 step details, and verification results for the service, version, plugins,
 channels, and inference. The details area follows new lines until you scroll up.
@@ -321,7 +333,7 @@ On desktop web, the expanded sidebar header places the agent identity beside the
 
 The bottom-left account footer, including the Settings sidebar, shows **Suspending…** while the Gateway prepares or drains work and **Suspended** once suspension is ready. Restart status takes precedence. During reconnect, fresh suspension reports from the Gateway keep that state visible; unexplained disconnects show **Offline**. The suspension indicator clears when the Gateway accepts work again or its last suspension report expires.
 
-Sidebar visibility belongs to the current tab and is not remembered across tabs, windows, or reloads; the sidebar's width is still remembered. A chat session opened in a new browser tab from the sidebar starts with the sidebar collapsed; direct links and bookmarks keep it visible. Press ⌘B to reveal it.
+Sidebar visibility belongs to the current tab and is not remembered across tabs, windows, or reloads; the sidebar's width is still remembered. On desktop, new tabs, direct links, bookmarks, and reloads start with the sidebar expanded. Middle-click or Cmd/Ctrl-click a session to open it in a new tab without changing the original tab. Press ⌘B on Mac or Ctrl+B on Windows/Linux to collapse or expand the sidebar in the current tab.
 
 Pending approvals also contribute an attention chip above the sidebar footer;
 select it to open the owning Approvals page.
@@ -366,6 +378,11 @@ The existing Terminal, Files, and Side chat bindings are unchanged.
 Inside the [macOS app](/platforms/macos), Settings includes a **This Mac** group
 for settings on that Mac. **This Mac** (`/settings/device`) contains app behavior,
 device capabilities, browser login import and cookie sync, and developer tools.
+**Capabilities → Desktop sharing** is enabled by default and makes this Mac's
+existing Screen Sharing service available in **Systems** after pairing approval.
+It is separate from agent **Computer Control** and **Keep computer awake**.
+Changing it reconnects this Mac automatically; it does not change the remote
+Gateway host's desktop setting or enable macOS Screen Sharing.
 **Permissions** (`/settings/device/permissions`) shows macOS permission status
 and actions, location preferences, and active computer presence.
 

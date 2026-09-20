@@ -105,6 +105,8 @@ default. Declining or cancelling preserves the failed update's nonzero exit
 status. JSON, non-interactive, `--yes`, and managed-service handoff invocations do
 not prompt after rollback.
 
+Update completion prints the terminal outcome and a local Markdown report path before exiting, including unexpected failures. Failed runs keep rollback-facing diagnostic JSON within the released 8 KiB limit. That file links a separate artifact containing every individually bounded Doctor finding; the Markdown report also retains the complete inventory. JSON output includes `reportPath`; a report-write failure prints a warning and preserves the update outcome.
+
 After a final interactive update failure, **Diagnose update failure** and
 **Report update failure** are separate choices. Reporting first shows the exact
 sanitized issue body and defaults confirmation to **No**. After confirmation,
@@ -193,18 +195,22 @@ deferred-install activation checks.
 Post-core repair Doctor and `openclaw update finalize` run without a separate
 per-Doctor deadline unless the operator supplies `--timeout`. A fresh post-core
 process receives the operator choice separately from its internal step allowance.
-Older targets retain their existing allowance and deadline behavior. Existing
-install, build, plugin-operation and
-enclosing activation deadlines still apply. An explicit `--timeout <seconds>`
-limits each finalization phase and its child commands. Admission and config phases
-scale with shared SQLite state.
+Older targets retain their existing allowance and deadline behavior.
+
+When `--timeout` is omitted, current CLI and RPC finalization do not add an aggregate
+activation deadline. Explicit operator limits and inherited activation allowances
+still apply; older or unrecognized handoffs retain their existing finite-deadline
+behavior. Independent install, build, plugin-operation, readiness, and cleanup
+bounds still apply. An explicit `--timeout <seconds>` limits each finalization phase
+and its child commands. Admission and config phases scale with shared SQLite state.
+
 Post-plugin config validation and readiness checks use the measured shared and
 agent database sizes after Doctor finishes, including WAL files. Serial plugin
-operations retain individual deadlines within the enclosing activation budget. That
-budget uses the measured database sizes, observed candidate startup, plugin count,
-and the caller's step allowance. Migrated finalization receives the same allowance;
-it does not choose a separate default. Expiry reports `update-activation-timeout`
-and retains ownership until writers settle; it does not authorize rollback or restart.
+operations retain individual deadlines. When an aggregate activation budget is
+present, it uses the measured database sizes, observed candidate startup, plugin
+count, and the caller's step allowance. Migrated finalization preserves explicit or
+inherited allowances. Aggregate expiry reports `update-activation-timeout` and
+retains ownership until writers settle; it does not authorize rollback or restart.
 Use `openclaw update status` and Doctor for recovery guidance.
 
 | Flag                                             | Description                                                                                                                                                                                                                                                                                                                                   |

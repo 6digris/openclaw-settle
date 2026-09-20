@@ -311,6 +311,10 @@ class TalkModeManager internal constructor(
   val statusText: StateFlow<String> = LocaleResolvingStateFlow(status) { it.text.resolveNativeText() }
   val awaitingAgent: StateFlow<Boolean> = LocaleResolvingStateFlow(status) { it.awaitingAgent }
 
+  /** Why Talk last failed, until Talk starts again; relay failures end Talk without any other visible trace. */
+  val failureText: StateFlow<String?> =
+    LocaleResolvingStateFlow(status) { if (it.state == TalkStatusState.TalkFailure) it.text.resolveNativeText() else null }
+
   private fun setStatus(
     text: NativeText,
     state: TalkStatusState = TalkStatusState.Active,
@@ -1004,7 +1008,8 @@ class TalkModeManager internal constructor(
     }
     val activeSession = chatStart?.owner?.sessionKey ?: mainSessionKey.ifBlank { "main" }
     if (sessionKey != null && sessionKey != activeSession) return
-    if (chatStart == null && ttsOnAllResponses && state == "final") {
+    // A live realtime relay owns speech, including gateway-run consult answers.
+    if (chatStart == null && ttsOnAllResponses && state == "final" && realtimeSessionId == null) {
       val text = extractTextFromChatEventMessage(message)
       if (!text.isNullOrBlank()) playTtsForText(text)
     }
@@ -1083,7 +1088,7 @@ class TalkModeManager internal constructor(
         }
       } catch (err: Throwable) {
         if (err is CancellationException) {
-          disableRealtimeModeAndNotifyOwner(generation, nativeText("Off"))
+          disableRealtimeModeAndNotifyOwner(generation, nativeText("Off"), state = TalkStatusState.Off)
           return@launch
         }
         Log.w(tag, "start failed: ${err.message ?: err::class.simpleName}")
@@ -1560,11 +1565,12 @@ class TalkModeManager internal constructor(
   private fun disableRealtimeModeAndNotifyOwner(
     generation: Long,
     status: NativeText,
+    state: TalkStatusState = TalkStatusState.TalkFailure,
   ) {
     val stopped =
       synchronized(realtimeCapturePauseLock) {
         if (generation != startGeneration.get()) return
-        setStatus(status)
+        setStatus(status, state = state)
         stopRealtimeRelay(closeSession = false, preserveStatus = true)
         disableRealtimeModeLocked()
       }
@@ -2716,15 +2722,14 @@ class TalkModeManager internal constructor(
     try {
       ensureConfigLoaded()
       currentCoroutineContext().ensureActive()
-      val prompt = buildPrompt(transcript)
       if (!isConnected()) {
         setStatus(nativeText("Gateway not connected"))
         Log.w(tag, "finalize: gateway not connected")
         return
       }
       val startedAt = System.currentTimeMillis().toDouble() / 1000.0
-      Log.d(tag, "chat.send start sessionKey=$sessionKey chars=${prompt.length}")
-      val ack = sendChat(prompt, sessionKey, target)
+      Log.d(tag, "chat.send start sessionKey=$sessionKey chars=${transcript.length}")
+      val ack = sendChat(transcript, sessionKey, target)
       val runId = ack.runId ?: throw IllegalStateException("chat.send returned no run id")
       Log.d(tag, "chat.send ok runId=$runId status=${ack.status}")
       if (ack.isTerminalFailure) {
@@ -2903,14 +2908,6 @@ class TalkModeManager internal constructor(
       finishingPttJob = null
       true
     }
-
-  private fun buildPrompt(transcript: String): String =
-    listOf(
-      "Talk Mode active. Reply in a concise, spoken tone.",
-      "You may optionally prefix the response with JSON (first line) to set ElevenLabs voice (id or alias), e.g. {\"voice\":\"<id>\",\"once\":true}.",
-      "",
-      transcript,
-    ).joinToString("\n")
 
   private suspend fun sendChat(
     message: String,

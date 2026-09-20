@@ -480,7 +480,7 @@ const enSettings = {
       fallback: "Fallback Model",
       noFallback: "No fallback model",
       selectModel: "Select a model",
-      noModels: "Configure a provider before selecting default models.",
+      noModels: "Configure a chat provider to select a primary, utility, or fallback model.",
       discoveringMore: "Discovering more models…",
       discoverFailed: "More models could not be discovered.",
       retryDiscover: "Retry",
@@ -494,6 +494,31 @@ const enSettings = {
         "Sets the global default for new sessions. Auto starts in fast mode and returns to standard mode after the model's configured interval; On and Off keep that behavior fixed.",
       fastModeDefaultHelp:
         "Uses the selected model's fast-mode policy. Unlike Auto, Default does not enable fast mode by itself.",
+    },
+    installedAgents: {
+      title: "Installed agents",
+      description:
+        "Coding apps on the Gateway computer. Each app manages its own account and permissions. Enabling an app does not sign you in.",
+      status: {
+        installed: "Installed",
+        missing: "Not detected",
+        unverified: "Not verified",
+        signIn: "Sign in required",
+        discovering: "Discovering models…",
+        modelsAvailable: "Models available",
+      },
+      unverifiedHint:
+        "Check this app's custom launch command on the Gateway computer, then check again.",
+      installHint: "Install and sign in to {name} on the Gateway computer, then check again.",
+      disabledHint: "Enable this app to include its models in the picker.",
+      signInHint: "Open {name} on the Gateway computer and check its sign-in, then check again.",
+      discoveryHint:
+        "Open {name} on the Gateway computer and check its connection and sign-in, then check again.",
+      toggle: "Use {name}",
+      check: "Check again",
+      checking: "Checking…",
+      empty: "No supported coding apps are available.",
+      note: "Update installed agents from Control UI",
     },
     readOnly: {
       disconnected: "Connect to the gateway to change model settings.",
@@ -633,6 +658,8 @@ const enSettings = {
       cameraHint: "Allow the agent to capture a photo or short video via the built-in camera.",
       keepAwake: "Keep awake",
       keepAwakeHint: "Keep the screen awake while OpenClaw is active.",
+      keepAwakeComputerHint:
+        "Prevent idle sleep while OpenClaw is running. Manual sleep and locking remain available.",
       healthSummary: "Health summaries",
       healthSummaryHint: "Allow the agent to request a health summary from this device.",
       device: "Device",
@@ -647,6 +674,18 @@ const enSettings = {
       computerControlHint:
         "Starts enabled. After this Mac is paired and macOS access is granted, the paired Gateway can move the pointer, click, and type without per-action confirmation. High risk.",
       computerControlProvider: "Computer Control provider",
+      desktopSharing: "Desktop sharing",
+      desktopSharingHint:
+        "View and control this Mac from Systems. Enabled by default. Requires Screen Sharing in macOS System Settings → General → Sharing. Changes briefly reconnect this Mac; a new capability may need pairing approval.",
+      desktopSharingComputerHint:
+        "View and control this computer from Systems. Enabled by default. Requires an authenticated local VNC server. Changes briefly reconnect this computer; a new capability may need pairing approval.",
+      desktopSharingStatus: "Desktop sharing status",
+      desktopSharingStates: {
+        off: "Off",
+        starting: "Starting",
+        running: "Running",
+        error: "Unavailable",
+      },
       unattendedDesktop: "Keep computer awake",
       unattendedDesktopHint:
         "Keep this Mac awake between jobs while it is connected and hosting. Manual lock and logout are still respected; OpenClaw never unlocks the Mac.",
@@ -664,6 +703,21 @@ const enSettings = {
         "Allow signed tools to drive UI automation via Peekaboo Bridge. Requires Computer Control; otherwise run Peekaboo's own Mac app.",
       browser: "Browser",
       chromeExtension: "Chrome extension",
+      chromeExtensionOnMac: "Chrome on this Mac",
+      chromeExtensionDetected: "Installed",
+      chromeExtensionNotInstalled: "Not installed",
+      chromeExtensionUnknown: "Status unavailable",
+      chromeExtensionChecking: "Checking installation…",
+      chromeExtensionCheckAgain: "Check again",
+      chromeExtensionRepair: "Repair Mac connection",
+      chromeExtensionRepairHint:
+        "The extension is installed. Repair the Mac connection to enable automatic pairing.",
+      chromeExtensionEnableHint:
+        "The extension is installed but not enabled. Open Chrome and approve or enable OpenClaw.",
+      chromeExtensionStatusFailed:
+        "Could not check Chrome installation automatically. You can still run setup. Make sure the OpenClaw Mac app and CLI are up to date.",
+      chromeExtensionStatusUnsupported:
+        "Automatic installation checks require an updated Mac app. Open Chrome to check whether OpenClaw is installed and enabled.",
       chromeExtensionSetup: "Set up Chrome on this Mac",
       chromeExtensionHint:
         "Prepare the OpenClaw extension on this Mac, then approve it in Chrome. This does not install on a remote Gateway.",
@@ -707,6 +761,7 @@ const enSettings = {
         limited: "Limited",
         denied: "Denied",
         notDetermined: "Not determined",
+        notGranted: "Not granted",
         unavailable: "Unavailable",
       },
       permissions: {
@@ -729,10 +784,6 @@ const enSettings = {
           hint: "Use Apple Speech; passive Voice Wake stays on-device.",
         },
         location: { title: "Location", hint: "Share location when requested by the agent." },
-        automation: {
-          title: "Automation (Terminal)",
-          hint: "Control Terminal for automation actions; other apps request access separately.",
-        },
         contacts: { title: "Contacts", hint: "Access contacts when requested by the agent." },
         calendars: {
           title: "Calendars",
@@ -750,9 +801,9 @@ const enSettings = {
       preciseLocationReadOnlyHint: "Manage precise location access in Settings.",
       preciseLocationStatuses: { enabled: "Enabled", disabled: "Disabled" },
       privacy: "Privacy",
-      activePresence: "Active computer presence",
+      activePresence: "System-wide presence detection",
       activePresenceHint:
-        "Share this Mac's idle duration so OpenClaw can identify the Mac you used most recently and route node alerts. Never sends keys, pointer positions, app names, or window titles. Requires Accessibility.",
+        "OpenClaw activity identifies this Mac without extra permissions. Enable this to also detect activity in other apps. Shares only idle duration, never keys, pointer positions, app names, or window titles. Requires Accessibility.",
     },
     deviceTalk: {
       title: "This Mac",
@@ -957,7 +1008,7 @@ const enSettings = {
     appearance: {
       intro: "Theme, chat, and sidebar preferences for this Control UI client.",
       theme: "Theme",
-      chooseTheme: "Choose a theme family.",
+      chooseTheme: "Choosing a different theme resets its fonts and accent colors.",
       themeUnavailable: "{id} is unavailable. Using Claw until the theme becomes available again.",
       typography: "Typography",
       fonts: {
@@ -986,6 +1037,7 @@ const enSettings = {
       accent: "Accent color",
       accentHint: "Choose an accent color for buttons, highlights, and other controls.",
       customAccent: "Custom color",
+      usingThemeAccent: "Using theme accent",
       usingAccent: "Using {value}",
       accents: {
         default: "Theme default",
