@@ -19,7 +19,7 @@ import { containsEnvVarReference } from "./env-substitution.js";
 import { coerceConfig } from "./io.read-helpers.js";
 import { createConfigIncludeOwnershipError } from "./io.write-errors.js";
 import {
-  prepareConfigWriteValues as prepareWriteValues,
+  prepareProjectedConfigWriteValues,
   type ConfigWriteSourceProjectionParams,
 } from "./io.write-values.js";
 import { parseLegacyAgentRoster, projectLegacyAgentRosterEntries } from "./legacy.roster.js";
@@ -34,8 +34,10 @@ import {
 import { projectRuntimeChangesOntoSource } from "./source-value-projection.js";
 import type { OpenClawConfig } from "./types.js";
 
-export function prepareConfigWriteValues(params: Parameters<typeof prepareWriteValues>[0]) {
-  return prepareWriteValues(params, projectAuthoredAgentRosterForWrite);
+export function prepareConfigWriteValues(
+  params: Parameters<typeof prepareProjectedConfigWriteValues>[0],
+) {
+  return prepareProjectedConfigWriteValues(params, projectAuthoredAgentRosterForWrite);
 }
 
 const AGENT_ROSTER_PATHS = [

@@ -3,7 +3,6 @@ import { createConfigRuntimeEnvBase } from "./config-env-vars.js";
 import { restoreEnvVarRefsFromResolved } from "./env-preserve.js";
 import { coerceConfig, resolveConfigForRead } from "./io.read-helpers.js";
 import type { ConfigWriteInputBasis } from "./io.types.js";
-import type { projectAuthoredAgentRosterForWrite as ProjectAuthoredAgentRosterForWrite } from "./io.write-prepare.js";
 import { setConfigResolutionFacts } from "./resolution-facts.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "./types.js";
 
@@ -18,7 +17,7 @@ export type ConfigWriteSourceProjectionParams = {
 };
 
 /** Keep reference identity for persistence separate from values used by physical owners. */
-export function prepareConfigWriteValues(
+export function prepareProjectedConfigWriteValues(
   params: {
     snapshot: ConfigFileSnapshot;
     nextConfig: OpenClawConfig;
@@ -27,7 +26,10 @@ export function prepareConfigWriteValues(
     explicitSetPaths?: readonly (readonly string[])[];
     explicitSetValueSource?: OpenClawConfig;
   },
-  projectAuthoredAgentRosterForWrite: typeof ProjectAuthoredAgentRosterForWrite,
+  projectAuthoredAgentRosterForWrite: (params: {
+    rootAuthoredConfig: unknown;
+    sourceConfigBeforeMigrations?: unknown;
+  }) => unknown,
 ) {
   const { snapshot } = params;
   const source = snapshot.sourceConfigBeforeMigrations ?? snapshot.sourceConfig;
