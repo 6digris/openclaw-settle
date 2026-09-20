@@ -8,6 +8,10 @@ import { registerSecretValueForRedaction } from "../logging/secret-redaction-reg
 import { resetSecretRedactionRegistryForTest } from "../logging/secret-redaction-registry.test-support.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawStateDatabaseByPath } from "../state/openclaw-state-db-cache.js";
+import {
+  isOpenClawStateDatabaseOpen,
+  openOpenClawStateDatabase,
+} from "../state/openclaw-state-db.js";
 import { resolveDebugProxySettings, type DebugProxySettings } from "./env.js";
 import {
   captureHttpExchange,
@@ -17,6 +21,7 @@ import {
   prepareHttpCapture,
   type DebugProxyCaptureRuntimeDeps,
 } from "./runtime.js";
+import { createDebugProxyCaptureReader } from "./store-readonly.js";
 import {
   acquireDebugProxyCaptureStore,
   closeDebugProxyCaptureStore,
@@ -98,6 +103,120 @@ function pendingResponse(chunks: Buffer[]) {
 }
 
 describe("capture store lifecycle", () => {
+  it("keeps live capture across shared database turnover without reviving finalized admission", async () => {
+    const root = stateRoot();
+    vi.stubEnv("OPENCLAW_STATE_DIR", root);
+    const settings = captureSettings(root, "native-turnover");
+    const stream = pendingResponse([Buffer.from("before-turnover")]);
+    const transport = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(stream.response)
+      .mockImplementation(async () => new Response(null, { status: 204 }));
+    const target = { fetch: transport } as unknown as typeof globalThis;
+    const deps = { fetchTarget: target };
+    initializeDebugProxyCapture("fixture", settings, deps);
+    const first = acquireDebugProxyCaptureStore();
+    const savedFetch = target.fetch;
+    let finalized = false;
+    try {
+      const response = await savedFetch("https://example.test/before");
+      await stream.pending;
+      closeOpenClawStateDatabaseByPath(first.store.dbPath);
+      expect(first.store.isClosed).toBe(true);
+      openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: root } });
+
+      expect((await savedFetch("https://example.test/after")).status).toBe(204);
+      stream.controller.enqueue(Buffer.from("-caller-only"));
+      stream.controller.close();
+      expect(await response.text()).toBe("before-turnover-caller-only");
+      await stream.settled;
+
+      let finalizationError: unknown;
+      try {
+        finalizeDebugProxyCapture(settings, deps);
+      } catch (error) {
+        finalizationError = error;
+      }
+      finalized = true;
+      const reader = createDebugProxyCaptureReader({ env: { OPENCLAW_STATE_DIR: root } });
+      const events = reader.getSessionEvents(settings.sessionId, 10);
+      expect(
+        events.map(({ path: requestPath, kind, dataText, status }) => ({
+          path: requestPath,
+          kind,
+          dataText,
+          status,
+        })),
+      ).toEqual([
+        { path: "/after", kind: "response", dataText: "", status: 204 },
+        { path: "/after", kind: "request", dataText: null, status: null },
+        { path: "/before", kind: "response", dataText: "before-turnover", status: 200 },
+        { path: "/before", kind: "request", dataText: null, status: null },
+      ]);
+      expect(finalizationError).toBeUndefined();
+      expect(reader.readBlob(String(events[2]!.dataBlobId))).toBe("before-turnover");
+
+      closeOpenClawStateDatabaseByPath(first.store.dbPath);
+      await savedFetch("https://example.test/after-finalization");
+      expect(isOpenClawStateDatabaseOpen(first.store.dbPath)).toBe(false);
+      expect(reader.getSessionEvents(settings.sessionId, 10)).toEqual(events);
+    } finally {
+      if (!stream.response.bodyUsed) {
+        stream.controller.close();
+        await stream.response.body?.cancel();
+      }
+      if (!finalized) {
+        finalizeDebugProxyCapture(settings, deps);
+      }
+      first.release();
+      closeOpenClawStateDatabaseByPath(first.store.dbPath);
+    }
+  });
+
+  it.each(["finalize", "store-close", "state-root", "file-replacement"] as const)(
+    "does not resume retired capture after %s",
+    async (transition) => {
+      const root = stateRoot();
+      vi.stubEnv("OPENCLAW_STATE_DIR", root);
+      const settings = captureSettings(root, "retired-admission");
+      const target = {
+        fetch: vi.fn<typeof fetch>(async () => new Response(null, { status: 204 })),
+      } as unknown as typeof globalThis;
+      const deps = { fetchTarget: target };
+      initializeDebugProxyCapture("fixture", settings, deps);
+      const first = acquireDebugProxyCaptureStore();
+      const savedFetch = target.fetch;
+      try {
+        closeOpenClawStateDatabaseByPath(first.store.dbPath);
+        if (transition === "finalize") {
+          finalizeDebugProxyCapture(settings, deps);
+        } else if (transition === "store-close") {
+          first.store.close();
+        } else if (transition === "state-root") {
+          vi.stubEnv("OPENCLAW_STATE_DIR", stateRoot());
+        } else {
+          fs.renameSync(first.store.dbPath, `${first.store.dbPath}.retired`);
+        }
+        const reopened = openOpenClawStateDatabase();
+        try {
+          expect((await savedFetch("https://example.test/must-not-capture")).status).toBe(204);
+          const reader = createDebugProxyCaptureReader({
+            env: { OPENCLAW_STATE_DIR: process.env.OPENCLAW_STATE_DIR },
+          });
+          expect(reader.getSessionEvents(settings.sessionId, 10)).toEqual([]);
+          expect(first.store.db.isOpen).toBe(false);
+        } finally {
+          finalizeDebugProxyCapture(settings, deps);
+          closeOpenClawStateDatabaseByPath(reopened.path);
+        }
+      } finally {
+        finalizeDebugProxyCapture(settings, deps);
+        first.release();
+        closeOpenClawStateDatabaseByPath(first.store.dbPath);
+      }
+    },
+  );
+
   it.each(
     (["shared", "legacy"] as const).flatMap((storage) =>
       (["direct", "last-lease"] as const).map((close) => ({ storage, close })),
@@ -342,7 +461,7 @@ describe("capture store lifecycle", () => {
       await stream.pending;
       closeOpenClawStateDatabaseByPath(store.dbPath);
       expect(store.isClosed).toBe(true);
-      expect(() => finalizeDebugProxyCapture(settings, deps)).toThrow(AggregateError);
+      expect(() => finalizeDebugProxyCapture(settings, deps)).not.toThrow();
       expect(() => finalizeDebugProxyCapture(settings, deps)).not.toThrow();
       expect(getStore).toHaveBeenCalledTimes(1);
       expect(store.db.isOpen).toBe(false);

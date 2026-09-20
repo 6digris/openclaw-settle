@@ -155,17 +155,22 @@ async function claimAgentCommandRecoveryOwner(params: {
   return { lease: claim.lease, entry: claim.entry, sessionKey: claim.sessionKey };
 }
 
+export type AgentCommandRecoveryHooks = {
+  restoreAdmittedRecovery?: () => Promise<MainSessionRecoveryPendingTarget | undefined>;
+};
+
 export async function runWithAgentCommandRecoveryOwner<
   TPrepared extends PreparedRecoveryOwnerTarget,
   TResult,
->(params: {
-  lifecycleGeneration: string;
-  mode: "claim" | "reject_uncoordinated";
-  opts: AgentCommandOpts;
-  prepare: (opts: AgentCommandOpts) => Promise<TPrepared>;
-  restoreAdmittedRecovery?: () => Promise<MainSessionRecoveryPendingTarget | undefined>;
-  run: (prepared: TPrepared) => Promise<TResult>;
-}): Promise<TResult> {
+>(
+  params: AgentCommandRecoveryHooks & {
+    lifecycleGeneration: string;
+    mode: "claim" | "reject_uncoordinated";
+    opts: AgentCommandOpts;
+    prepare: (opts: AgentCommandOpts) => Promise<TPrepared>;
+    run: (prepared: TPrepared) => Promise<TResult>;
+  },
+): Promise<TResult> {
   // Gateway may preclaim before dispatch, so every preparation outcome must release ownership.
   let lease = params.opts.mainRestartRecoveryOwnerLease;
   let pendingRecovery: Awaited<ReturnType<typeof releaseMainSessionRecoveryOwner>> = undefined;

@@ -31,7 +31,10 @@ import {
   type AgentCommandAdmissionIngress,
 } from "./agent-command-execution-identity.js";
 import { runLocalAgentCommand } from "./agent-command-local.js";
-import { runWithAgentCommandRecoveryOwner } from "./agent-command-recovery-owner.js";
+import {
+  runWithAgentCommandRecoveryOwner,
+  type AgentCommandRecoveryHooks,
+} from "./agent-command-recovery-owner.js";
 import {
   buildCurrentRunRestartRecoveryClaim,
   prepareCommandHarnessCompletionRecovery,
@@ -66,7 +69,6 @@ import type {
 } from "./command/types.js";
 import { createInternalSessionEffectsCleanup } from "./internal-session-effects.js";
 import { AGENT_LANE_SUBAGENT } from "./lanes.js";
-import type { MainSessionRecoveryPendingTarget } from "./main-session-recovery/main-session-recovery-store.js";
 import { createAgentRunRestartAbortError, isAgentRunDirectAbortReason } from "./run-termination.js";
 import { withAgentPluginRegistry } from "./runtime-plugins.js";
 import { beginForegroundSessionMaintenance } from "./session-maintenance/coordinator.js";
@@ -412,6 +414,7 @@ async function agentCommandInternal(
           runtime,
           opts,
           outboundSession,
+          preparedPlugin: prepared.commandRuntimeContext?.deliveryPlugin,
           sessionEntry,
           sessionStore,
           body,
@@ -638,9 +641,7 @@ async function agentCommandFromIngressInternal(
   opts: AgentCommandGatewayIngressOpts,
   runtime: RuntimeEnv = defaultRuntime,
   deps?: CliDeps,
-  recovery?: {
-    restoreAdmittedRecovery?: () => Promise<MainSessionRecoveryPendingTarget | undefined>;
-  },
+  recovery?: AgentCommandRecoveryHooks,
   runtimeContext?: PreparedAgentCommandRuntimeContext,
 ) {
   if (typeof opts.allowModelOverride !== "boolean") {
@@ -719,9 +720,7 @@ export async function agentCommandFromGatewayIngress(
   opts: AgentCommandGatewayIngressOpts,
   runtime: RuntimeEnv,
   deps: CliDeps | undefined,
-  recovery: {
-    restoreAdmittedRecovery?: () => Promise<MainSessionRecoveryPendingTarget | undefined>;
-  },
+  recovery: AgentCommandRecoveryHooks,
   runtimeContext?: PreparedAgentCommandRuntimeContext,
 ) {
   return await agentCommandFromIngressInternal(opts, runtime, deps, recovery, runtimeContext);

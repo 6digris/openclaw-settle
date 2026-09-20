@@ -19,6 +19,7 @@ import {
   registerDebugProxyFetchPatch,
   reportCapturePersistenceFailure,
   resolveCaptureOwner,
+  resolveCaptureOwnerStore,
   resolveDebugProxyFetchTransport,
   resolveRuntimeDeps,
   uninstallDebugProxyGlobalFetchPatch,
@@ -476,7 +477,11 @@ export function initializeDebugProxyCapture(
   if (!owner) {
     return;
   }
-  owner.store.upsertSession({
+  const store = resolveCaptureOwnerStore(owner);
+  if (!store) {
+    return;
+  }
+  store.upsertSession({
     id: settings.sessionId,
     startedAt: Date.now(),
     mode,
@@ -537,7 +542,7 @@ export function captureHttpExchange(
 function captureOwnedHttpError(params: HttpCaptureErrorParams, owner: CaptureOwner): void {
   try {
     const captureUrl = redactCaptureUrl(params.url);
-    owner.store.recordEvent({
+    resolveCaptureOwnerStore(owner)?.recordEvent({
       ...createHttpCaptureEventBase({
         settings: owner.settings,
         rawUrl: captureUrl,
@@ -560,7 +565,8 @@ function captureOwnedHttpError(params: HttpCaptureErrorParams, owner: CaptureOwn
 }
 
 function captureOwnedHttpExchange(params: HttpCaptureParams, owner: CaptureOwner): void {
-  const { settings, runtime, store } = owner;
+  const { settings, runtime } = owner;
+  let store = owner.store;
   const flowId = params.flowId ?? randomUUID();
   const captureUrl = redactCaptureUrl(params.url);
   const url = new URL(captureUrl);
@@ -582,6 +588,11 @@ function captureOwnedHttpExchange(params: HttpCaptureParams, owner: CaptureOwner
   const responseContentType =
     rawResponseContentType === undefined ? undefined : redactCaptureText(rawResponseContentType);
   try {
+    const currentStore = resolveCaptureOwnerStore(owner);
+    if (!currentStore) {
+      return;
+    }
+    store = currentStore;
     const requestPayload = runtime.persistEventPayload(store, {
       data: redactCapturePayload(requestBody),
       contentType: requestContentType,
@@ -720,7 +731,11 @@ export function captureWsEvent(
   if (!owner) {
     return;
   }
-  const { runtime, store } = owner;
+  const { runtime } = owner;
+  const store = resolveCaptureOwnerStore(owner);
+  if (!store) {
+    return;
+  }
   const captureUrl = redactCaptureUrl(params.url);
   const url = new URL(captureUrl);
   const payload = runtime.persistEventPayload(store, {

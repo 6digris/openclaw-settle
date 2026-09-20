@@ -1,10 +1,9 @@
 import {
   capturePluginLifecycleAuthority,
-  capturePluginRegistryLifecycleEpoch,
   getPluginRecordRegistry,
-  isPluginRegistryLifecycleEpochActive,
 } from "../plugins/registry-lifecycle.js";
-import { getPluginRegistryForContext, requireActivePluginRegistry } from "../plugins/runtime.js";
+import { requireActivePluginRegistry } from "../plugins/runtime.js";
+import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import type { DetachedTaskLifecycleRuntime } from "./detached-task-runtime-contract.js";
 
 export function getRegisteredDetachedTaskLifecycleRuntime():
@@ -13,7 +12,7 @@ export function getRegisteredDetachedTaskLifecycleRuntime():
   return requireActivePluginRegistry().detachedTaskRuntimes[0]?.runtime;
 }
 
-/** Core creation retains its activation; plugin work follows its exact live instance. */
+/** Core creation retains its selected registry lifetime; plugin work follows its live instance. */
 export function captureDetachedTaskRuntimeOwner(): {
   runtime: DetachedTaskLifecycleRuntime | undefined;
   assertCurrent: () => void;
@@ -28,7 +27,11 @@ export function captureDetachedTaskRuntimeOwner(): {
   const authority = record
     ? capturePluginLifecycleAuthority(getPluginRecordRegistry(registry, record), record)
     : undefined;
-  const epoch = registration ? undefined : capturePluginRegistryLifecycleEpoch(registry);
+  const coreAuthority = registration
+    ? undefined
+    : capturePluginLifecycleAuthority(registry, undefined, {
+        scopedRuntime: getPluginRuntimeGatewayRequestScope()?.pluginRegistry === registry,
+      });
   return {
     runtime,
     assertCurrent() {
@@ -42,12 +45,8 @@ export function captureDetachedTaskRuntimeOwner(): {
         ) {
           return;
         }
-      } else if (
-        epoch &&
-        isPluginRegistryLifecycleEpochActive(registry, epoch) &&
-        getPluginRegistryForContext() === registry &&
-        registry.detachedTaskRuntimes[0] === undefined
-      ) {
+      } else if (coreAuthority?.() && registry.detachedTaskRuntimes[0] === undefined) {
+        // Queued worker callbacks borrow their scheduler's context, not this captured owner.
         return;
       }
       throw new Error("Detached task runtime owner changed before task creation settled.");

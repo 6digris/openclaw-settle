@@ -7,6 +7,7 @@ import {
   normalizeThinkLevel,
   normalizeVerboseLevel,
 } from "../../auto-reply/thinking.js";
+import type { ChannelPlugin } from "../../channels/plugins/types.plugin.js";
 import { formatCliCommand } from "../../cli/command-format.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -93,6 +94,8 @@ export function normalizeExplicitOverrideInput(raw: string, kind: "provider" | "
 export type PreparedAgentCommandRuntimeContext = Readonly<{
   config: OpenClawConfig;
   pluginGeneration: PreparedModelRuntimePluginGeneration;
+  /** Channel execution owner selected before entering the prepared model registry. */
+  deliveryPlugin?: ChannelPlugin;
 }>;
 
 export async function prepareAgentCommandExecution(

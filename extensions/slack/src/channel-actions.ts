@@ -64,6 +64,7 @@ export function createSlackActions(
 ): ChannelMessageActionAdapter {
   return {
     providerOwnedReadGates: true,
+    writeAuthorityActions: ["edit"],
     readAuthorityActions: [
       "read",
       "reactions",

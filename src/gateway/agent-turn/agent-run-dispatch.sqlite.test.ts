@@ -5,15 +5,27 @@ import { expect, it, vi } from "vitest";
 import { ErrorCodes } from "../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
+import type { agentCommandFromGatewayIngress } from "../../commands/agent.js";
 import { observeDeviceAuthHostSql } from "../../infra/device-auth-store.sql.test-support.js";
+import type {
+  SqliteWorkerOperations,
+  SqliteWorkerStore,
+} from "../../infra/sqlite-worker-contract.js";
+import * as workerStore from "../../infra/sqlite-worker-store.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import {
-  markPluginRegistryActive,
+  bindPluginRegistryResourceOwner,
+  isPluginRegistryActivated,
   markPluginRegistryRetired,
 } from "../../plugins/registry-lifecycle.js";
-import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
+import {
+  getPluginRegistryForContext,
+  withPluginRuntimeRegistryScope,
+} from "../../plugins/runtime/gateway-request-scope.js";
 import { closeOpenClawStateDatabaseAsync } from "../../state/openclaw-state-db-cache.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
+import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
+import { runOpenClawStateWorkerOperation } from "../../state/openclaw-state-worker-store.js";
 import { captureTaskExecutionOwner } from "../../tasks/task-execution-owner.js";
 import { loadTaskFlowRegistryStateFromSqlite } from "../../tasks/task-flow-registry.store.sqlite.js";
 import { configureTaskRegistryRuntime } from "../../tasks/task-registry.store.js";
@@ -30,13 +42,14 @@ import { createTrackedDispatch } from "./agent-run-dispatch.test-support.js";
 import type { AgentTurnIo } from "./types.js";
 
 const provider = vi.hoisted(() => ({
-  execute: vi.fn<typeof import("../../commands/agent.js").agentCommandFromGatewayIngress>(),
+  execute: vi.fn<typeof agentCommandFromGatewayIngress>(),
 }));
 vi.mock("../../commands/agent.js", () => ({
   agentCommandFromGatewayIngress: provider.execute,
 }));
 
 type HostWrites = { task: number; delivery: number; flow: number };
+type StateWorkerScope = Parameters<Parameters<typeof runOpenClawStateWorkerOperation>[1]>[0];
 
 function workerOperation(message: unknown): string[] {
   if (!isRecord(message) || message.type !== "execute" || !Buffer.isBuffer(message.input)) {
@@ -46,13 +59,14 @@ function workerOperation(message: unknown): string[] {
   return isRecord(command) && typeof command.type === "string" ? [command.type] : [];
 }
 
-it("creates a durable Gateway task before provider entry and settles its exact unstarted receipt", async () => {
+it("creates a queued Gateway task across worker callback scopes and settles its exact receipt", async () => {
   const state = await createOpenClawTestState({
     layout: "state-only",
     prefix: "gateway-dispatch-sqlite-",
   });
-  const registry = createEmptyPluginRegistry();
-  markPluginRegistryActive(registry);
+  const resources = createEmptyPluginRegistry();
+  const registry = bindPluginRegistryResourceOwner({ ...resources }, resources);
+  const schedulerRegistry = createEmptyPluginRegistry();
   try {
     await withPluginRuntimeRegistryScope(registry, async () => {
       resetTaskRegistryForTests({ persist: false });
@@ -111,7 +125,70 @@ it("creates a durable Gateway task before provider entry and settles its exact u
       });
       const emitFinal = vi.fn<AgentTurnIo["emitFinal"]>();
       let execution: ReturnType<typeof dispatchAgentRunFromGateway> | undefined;
+      const schedulerReady = createDeferred<StateWorkerScope>();
+      const releaseScheduler = createDeferred();
+      let schedulerWork: Promise<void> | undefined;
+      let queuedCreation = false;
+      let checkedOutsideCaller = false;
+      const runOperation = workerStore.runSqliteWorkerStoreOperation;
+      const queueOperation = vi
+        .spyOn(workerStore, "runSqliteWorkerStoreOperation")
+        .mockImplementation(
+          <Operations extends SqliteWorkerOperations, T>(
+            store: SqliteWorkerStore<Operations>,
+            operation: (scope: Pick<SqliteWorkerStore<Operations>, "execute">) => T | Promise<T>,
+            stateContext?: Parameters<typeof runOperation>[2],
+            assertCurrent?: Parameters<typeof runOperation>[3],
+            createAdmission?: Parameters<typeof runOperation>[4],
+            requireStateLifecycle?: Parameters<typeof runOperation>[5],
+          ) =>
+            runOperation(
+              store,
+              (scope) =>
+                operation({
+                  execute: async (command, options) => {
+                    if (command.type !== "tasks.createRecord" || queuedCreation) {
+                      return scope.execute(command, options);
+                    }
+                    queuedCreation = true;
+                    const scheduler = await schedulerReady.promise;
+                    // Queue the real write behind another owner so its admission runs
+                    // from the worker reply, not this Gateway dispatch's async frame.
+                    const read = withPluginRuntimeRegistryScope(schedulerRegistry, () =>
+                      scheduler.execute({ type: "tasks.findByRunId", input: { runId } }),
+                    );
+                    const write = scope.execute(command, options);
+                    const [, result] = await Promise.all([read, write]);
+                    return result;
+                  },
+                }),
+              stateContext,
+              (commandType) => {
+                if (
+                  commandType === "tasks.createRecord" &&
+                  getPluginRegistryForContext() !== registry
+                ) {
+                  checkedOutsideCaller = true;
+                }
+                assertCurrent?.(commandType);
+              },
+              createAdmission,
+              requireStateLifecycle,
+            ),
+        );
       try {
+        schedulerWork = withPluginRuntimeRegistryScope(schedulerRegistry, () =>
+          runOpenClawStateWorkerOperation(captureOpenClawStateWorkerContext(), async (scope) => {
+            schedulerReady.resolve(scope);
+            await releaseScheduler.promise;
+          }),
+        );
+        await Promise.race([
+          schedulerReady.promise,
+          schedulerWork.then(() => {
+            throw new Error("Worker scope closed before dispatch");
+          }),
+        ]);
         execution = dispatchAgentRunFromGateway({
           assertCurrent() {
             entry.controller.signal.throwIfAborted();
@@ -143,6 +220,9 @@ it("creates a durable Gateway task before provider entry and settles its exact u
             throw new Error("Gateway dispatch settled before reaching the provider boundary");
           }),
         ]);
+        expect(checkedOutsideCaller).toBe(true);
+        expect(context.logGateway.warn).not.toHaveBeenCalled();
+        expect(isPluginRegistryActivated(registry)).toBe(false);
         expect(observed.tasks).toHaveLength(1);
         const running = observed.tasks[0];
         if (!running) {
@@ -213,6 +293,9 @@ it("creates a durable Gateway task before provider entry and settles its exact u
       } finally {
         releaseProvider.resolve();
         await execution;
+        queueOperation.mockRestore();
+        releaseScheduler.resolve();
+        await schedulerWork;
         hostSql.restore();
         tracker.restore();
         workerMessages.mockRestore();
@@ -224,7 +307,8 @@ it("creates a durable Gateway task before provider entry and settles its exact u
       }
     });
   } finally {
-    markPluginRegistryRetired(registry);
+    markPluginRegistryRetired(resources);
+    markPluginRegistryRetired(schedulerRegistry);
     await state.cleanup();
   }
 });

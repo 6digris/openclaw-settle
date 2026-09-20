@@ -19,7 +19,11 @@ import {
   resetGlobalHookRunner,
 } from "../../plugins/hook-runner-global.js";
 import { addTestHook } from "../../plugins/hooks.test-helpers.js";
+import { PluginInstance } from "../../plugins/plugin-instance.js";
+import { PluginInvocationScope } from "../../plugins/plugin-invocation-scope.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
+import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
+import { createPluginRecord } from "../../plugins/status.test-helpers.js";
 import {
   captureHarnessCompletionRecovery,
   createHarnessCompletionSourceAssertion,
@@ -40,6 +44,98 @@ afterEach(() => {
 });
 
 describe("native completion final-send custody", () => {
+  it.each(["admitted", "override", "retired"] as const)(
+    "keeps %s channel execution ownership across a model registry",
+    async (selection) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        const writes: string[] = [];
+        const createOwner = (label: string) => {
+          const registry = createTestRegistry();
+          const record = createPluginRecord({ id: "matrix", source: `/fixture/${label}.js` });
+          const instance = new PluginInstance("matrix", { record, registry });
+          const plugin = instance.wrap({
+            ...createOutboundTestPlugin({
+              id: "matrix",
+              outbound: {
+                deliveryMode: "direct",
+                sendText: async () => {
+                  throw new Error("message adapter must own the send");
+                },
+              },
+            }),
+            message: {
+              id: "matrix",
+              durableFinal: { capabilities: { text: true } },
+              send: {
+                text: async ({ text, onPlatformSendDispatch, assertDirectAdapterHandoff }) => {
+                  await onPlatformSendDispatch?.();
+                  assertDirectAdapterHandoff?.();
+                  writes.push(`${label}:${text}`);
+                  return {
+                    messageId: `${label}-final`,
+                    receipt: createMessageReceiptFromOutboundResults({
+                      results: [{ channel: "matrix", messageId: `${label}-final` }],
+                      kind: "text",
+                    }),
+                  };
+                },
+              },
+            },
+          } satisfies ChannelPlugin);
+          registry.plugins.push(record);
+          registry.channels.push({ pluginId: "matrix", source: record.source, plugin });
+          return { registry, instance, plugin };
+        };
+        const admitted = createOwner("gateway");
+        const model = createOwner("model");
+        const unrelated = createOwner("unrelated");
+        const invocations = new PluginInvocationScope(model.registry, [
+          admitted.instance,
+          model.instance,
+        ]);
+        setActivePluginRegistry(unrelated.registry);
+        try {
+          if (selection === "retired") {
+            await admitted.instance.dispose();
+          }
+          const delivery = invocations.run(() =>
+            withPluginRuntimeRegistryScope(model.registry, () =>
+              deliverAgentCommandResult({
+                cfg: {},
+                deps: {},
+                runtime: { log: () => {}, error: () => {}, exit: () => {} },
+                opts: {
+                  message: "Continue the admitted parent",
+                  deliver: true,
+                  replyChannel: "matrix",
+                  replyTo: "!owner:example",
+                  accountId: "default",
+                },
+                preparedPlugin: selection === "override" ? model.plugin : admitted.plugin,
+                outboundSession: undefined,
+                sessionEntry: undefined,
+                result: { meta: { durationMs: 1 } },
+                payloads: [{ text: "Both workers completed" }],
+              }),
+            ),
+          );
+          if (selection === "retired") {
+            await expect(delivery).rejects.toThrow("reloaded or disabled");
+            expect(writes).toEqual([]);
+          } else {
+            expect((await delivery).deliverySucceeded).toBe(true);
+            expect(writes).toEqual([
+              `${selection === "override" ? "model" : "gateway"}:Both workers completed`,
+            ]);
+          }
+        } finally {
+          invocations.release();
+          await Promise.all([admitted, model, unrelated].map(({ instance }) => instance.dispose()));
+        }
+      });
+    },
+  );
+
   for (const boundary of [
     "reply hook",
     "adapter preparation",

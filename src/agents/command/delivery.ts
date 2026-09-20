@@ -7,11 +7,7 @@ import {
 } from "../../agents/agent-scope-config.js";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { copyReplyPayloadMetadata, type ReplyPayload } from "../../auto-reply/reply-payload.js";
-import {
-  normalizeReplyPayloadOutcome,
-  type NormalizeReplyOutcome,
-  type NormalizeReplySkipReason,
-} from "../../auto-reply/reply/normalize-reply.js";
+import type { NormalizeReplySkipReason } from "../../auto-reply/reply/normalize-reply.js";
 import { resolvePendingFinalDeliveryCompletion } from "../../auto-reply/reply/pending-final-delivery.js";
 import { createReplyMediaPathNormalizer } from "../../auto-reply/reply/reply-media-paths.runtime.js";
 import { formatBtwTextForExternalDelivery } from "../../auto-reply/reply/reply-payloads-base.js";
@@ -20,8 +16,6 @@ import {
   hasEnabledDeliveryOperation,
   resolveMessagingToolPayloadDedupe,
 } from "../../auto-reply/reply/reply-payloads-dedupe.runtime.js";
-import { resolveResponsePrefixTemplate } from "../../auto-reply/reply/response-prefix-template.js";
-import { createChannelReplyTransform } from "../../channels/message/reply-transform.js";
 import {
   sendDurableMessageBatchCore,
   serializeDurableMessagePayloadOutcomes,
@@ -30,7 +24,6 @@ import {
 import { resolveChannelDefaultAccountId } from "../../channels/plugins/helpers.js";
 import { getChannelPlugin, normalizeChannelId } from "../../channels/plugins/index.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
-import { createReplyPrefixContext } from "../../channels/reply-prefix.js";
 import { formatUnknownChannelMessage } from "../../cli/error-format.js";
 import { createOutboundSendDeps, type CliDeps } from "../../cli/outbound-send-deps.js";
 import type { SessionEntry } from "../../config/sessions.js";
@@ -52,6 +45,7 @@ import {
 } from "../../infra/outbound/payloads.js";
 import type { OutboundSessionContext } from "../../infra/outbound/session-context.js";
 import { hasReplyPayloadContent } from "../../interactive/payload.js";
+import { getPluginValueInstance } from "../../plugins/plugin-instance-scope.js";
 import { type RuntimeEnv, writeRuntimeJson } from "../../runtime.js";
 import { isInternalMessageChannel } from "../../utils/message-channel.js";
 import { hasAnyNonEmptyString as hasNonEmptyStringArray } from "../delivery-evidence-values.js";
@@ -62,6 +56,7 @@ import {
   createAgentCommandDeliveryGuard,
   createRestartOnlyAbortSignal,
 } from "./delivery-authority.js";
+import { normalizeAgentCommandReplyPayloads } from "./delivery-payloads.js";
 import type { AgentCommandOpts } from "./types.js";
 
 type RunResult = Awaited<ReturnType<(typeof import("../embedded-agent.js"))["runEmbeddedAgent"]>>;
@@ -372,8 +367,6 @@ async function normalizeSentMediaUrlsForDelivery(params: {
   return normalizedUrls;
 }
 
-const UNRESOLVED_RESPONSE_PREFIX_VAR_PATTERN = /\{[a-zA-Z][a-zA-Z0-9.]*\}/;
-
 async function filterAlreadyDeliveredReplyPayloads(params: {
   cfg: OpenClawConfig;
   payloads: ReplyPayload[];
@@ -458,95 +451,24 @@ async function filterAlreadyDeliveredReplyPayloads(params: {
   return filteredPayloads;
 }
 
-/** Normalizes reply payloads and media paths before delivery. */
-function normalizeAgentCommandReplyPayloads(params: {
-  cfg: OpenClawConfig;
-  opts: AgentCommandOpts;
-  outboundSession: OutboundSessionContext | undefined;
-  payloads: ReplyPayload[] | undefined;
-  result: RunResult;
-  deliveryChannel?: string;
-  plugin?: ChannelPlugin;
-  accountId?: string;
-  applyChannelTransforms?: boolean;
-  includeRunModelContext?: boolean;
-}): NormalizeReplyOutcome<ReplyPayload[]> {
-  const payloads = params.payloads ?? [];
-  if (payloads.length === 0) {
-    return { kind: "suppress", reason: "empty" };
-  }
-  const channel =
-    params.deliveryChannel && !isInternalMessageChannel(params.deliveryChannel)
-      ? (normalizeChannelId(params.deliveryChannel) ?? params.deliveryChannel)
-      : undefined;
-  if (!channel) {
-    return { kind: "deliver", payload: payloads };
-  }
-  const applyChannelTransforms = params.applyChannelTransforms ?? true;
-  const deliveryPlugin = applyChannelTransforms ? params.plugin : undefined;
-
-  const sessionKey = params.outboundSession?.key ?? params.opts.sessionKey;
-  const agentId =
-    params.outboundSession?.agentId ??
-    resolveSessionAgentId({
-      sessionKey,
-      config: params.cfg,
-    });
-  const replyPrefix = createReplyPrefixContext({
-    cfg: params.cfg,
-    agentId,
-    channel,
-    accountId: params.accountId,
-  });
-  const modelUsed = params.result.meta.agentMeta?.model;
-  const providerUsed = params.result.meta.agentMeta?.provider;
-  if (params.includeRunModelContext !== false && providerUsed && modelUsed) {
-    replyPrefix.onModelSelected({
-      provider: providerUsed,
-      model: modelUsed,
-      thinkLevel: undefined,
-    });
-  }
-  const responsePrefixContext = replyPrefix.responsePrefixContextProvider();
-  const resolvedResponsePrefix = resolveResponsePrefixTemplate(
-    replyPrefix.responsePrefix,
-    responsePrefixContext,
-  );
-  const responsePrefix =
-    params.includeRunModelContext === false &&
-    resolvedResponsePrefix &&
-    UNRESOLVED_RESPONSE_PREFIX_VAR_PATTERN.test(resolvedResponsePrefix)
-      ? undefined
-      : replyPrefix.responsePrefix;
-  const deliveryMessaging = deliveryPlugin?.messaging;
-  const transformReplyPayload = createChannelReplyTransform({
-    messaging: deliveryMessaging,
-    cfg: params.cfg,
-    accountId: params.accountId,
-  });
-
-  const normalizedPayloads: ReplyPayload[] = [];
-  let suppressionReason: NormalizeReplySkipReason | undefined;
-  for (const payload of payloads) {
-    const outcome = normalizeReplyPayloadOutcome(payload, {
-      responsePrefix,
-      applyChannelTransforms,
-      responsePrefixContext,
-      transformReplyPayload,
-    });
-    if (outcome.kind === "deliver") {
-      normalizedPayloads.push(outcome.payload);
-    } else if (suppressionReason === undefined || outcome.reason === "channel_transform") {
-      suppressionReason = outcome.reason;
-    }
-  }
-  return normalizedPayloads.length > 0
-    ? { kind: "deliver", payload: normalizedPayloads }
-    : { kind: "suppress", reason: suppressionReason ?? "empty" };
-}
-
 /** Delivers an agent command result or records why delivery was skipped. */
 export async function deliverAgentCommandResult(
+  params: DeliverAgentCommandResultParams,
+): Promise<AgentCommandDeliveryResult> {
+  const owner = params.preparedPlugin ? getPluginValueInstance(params.preparedPlugin) : undefined;
+  // Planning and durable sending both resolve channel surfaces. Keep those lookups
+  // with the admitted transport owner, not the model's private setup registry.
+  if (!owner) {
+    return await deliverAgentCommandResultWithOwner(params);
+  }
+  return owner.owner
+    ? await owner.runInRegistry(owner.owner.registry, () =>
+        deliverAgentCommandResultWithOwner(params),
+      )
+    : await owner.run(() => deliverAgentCommandResultWithOwner(params));
+}
+
+async function deliverAgentCommandResultWithOwner(
   params: DeliverAgentCommandResultParams,
 ): Promise<AgentCommandDeliveryResult> {
   params.assertDeliveryCurrent?.();

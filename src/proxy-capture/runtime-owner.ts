@@ -1,17 +1,28 @@
 import { writeSync } from "node:fs";
 import { redactRegisteredSecretValues } from "../logging/secret-redaction-registry.js";
+import {
+  openClawStateDatabaseCache,
+  requireOpenClawStateDatabaseIdentity,
+} from "../state/openclaw-state-db-cache.js";
+import type { OpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { resolveEnabledDebugProxySettings, type DebugProxySettings } from "./env.js";
 import { REDACTED_CAPTURE_HEADER_VALUE } from "./header-redaction.js";
 import { registerCaptureStoreFinalizer } from "./store-lifecycle.js";
-import { getDebugProxyCaptureStore, persistEventPayload, safeJsonString } from "./store.sqlite.js";
+import {
+  getDebugProxyCaptureStore,
+  persistEventPayload,
+  safeJsonString,
+  type DebugProxyCaptureStore,
+} from "./store.sqlite.js";
 
 const DEBUG_PROXY_FETCH_PATCH_KEY = Symbol.for("openclaw.debugProxy.fetchPatch");
 
 type DebugProxyCaptureStoreLike = Pick<
-  ReturnType<typeof getDebugProxyCaptureStore>,
+  DebugProxyCaptureStore,
   "upsertSession" | "endSession" | "recordEvent"
 > &
-  Partial<Pick<ReturnType<typeof getDebugProxyCaptureStore>, "close" | "isClosed">>;
+  Partial<Pick<DebugProxyCaptureStore, "close" | "isClosed" | "db">>;
 
 export type DebugProxyCaptureRuntimeDeps = {
   getStore?: () => DebugProxyCaptureStoreLike;
@@ -47,6 +58,7 @@ export type CaptureOwner = {
   errors: unknown[];
   unregister: () => void;
   admission: CaptureAdmission;
+  retiredDatabase?: { database: OpenClawStateDatabase; identityKey: string };
 };
 type CaptureAdmission = { current?: CaptureOwner };
 type CaptureRegistry = {
@@ -161,6 +173,64 @@ function finishCaptureOwner(owner: CaptureOwner): void {
   }
 }
 
+function bindCaptureOwnerStore(owner: CaptureOwner): void {
+  owner.unregister = registerCaptureStoreFinalizer(owner.store, (event) => {
+    if (event.kind === "close") {
+      finishCaptureOwner(owner);
+      return;
+    }
+    // Settle old reads before native retirement, without ending the live
+    // capture session or admitting any replacement connection during close.
+    for (const finish of owner.pending) {
+      finish();
+    }
+    owner.retiredDatabase = {
+      database: event.database,
+      identityKey: requireOpenClawStateDatabaseIdentity(event.database).key,
+    };
+  });
+}
+
+export function resolveCaptureOwnerStore(
+  owner: CaptureOwner,
+): DebugProxyCaptureStoreLike | undefined {
+  const retired = owner.retiredDatabase;
+  if (!owner.active) {
+    return undefined;
+  }
+  if (!retired) {
+    return owner.store;
+  }
+  if (
+    owner.runtime.getStore === getDebugProxyCaptureStore &&
+    resolveOpenClawStateSqlitePath() !== retired.database.path
+  ) {
+    finishCaptureOwner(owner);
+    return undefined;
+  }
+  const current = openClawStateDatabaseCache.getOpenClawStateDatabaseIfOpenAtPath(
+    retired.database.path,
+  );
+  if (!current || current.db === retired.database.db) {
+    return owner.store;
+  }
+  if (requireOpenClawStateDatabaseIdentity(current).key !== retired.identityKey) {
+    finishCaptureOwner(owner);
+    return undefined;
+  }
+  // The canonical owner has already reopened this same file. Capture only
+  // rebinds its wrapper; it never opens a retired database or replays a write.
+  const store = owner.runtime.getStore();
+  if (store.db !== current.db) {
+    return owner.store;
+  }
+  owner.unregister();
+  owner.store = store;
+  owner.retiredDatabase = undefined;
+  bindCaptureOwnerStore(owner);
+  return store;
+}
+
 export function resolveCaptureOwner(
   settings: DebugProxySettings,
   runtime: ReturnType<typeof resolveRuntimeDeps>,
@@ -200,10 +270,7 @@ export function resolveCaptureOwner(
       admission: {},
     };
     owner.admission.current = owner;
-    const retainedOwner = owner;
-    owner.unregister = registerCaptureStoreFinalizer(store, () =>
-      finishCaptureOwner(retainedOwner),
-    );
+    bindCaptureOwnerStore(owner);
     registry.owners.set(key, owner);
   }
   if (options.explicit) {

@@ -538,6 +538,7 @@ export async function finalizeEmbeddedAgentCommand(params: {
       sessionEntry,
       result,
       payloads,
+      preparedPlugin: params.prepared.commandRuntimeContext?.deliveryPlugin,
       assertDeliveryCurrent: () => {
         params.opts.assertSourceCurrent?.();
         params.opts.abortSignal?.throwIfAborted();

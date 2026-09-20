@@ -429,6 +429,9 @@ export async function startAgentRunExecution(params: {
               commandRuntimeContext: {
                 config: prepared.replyDispatchRuntime.config,
                 pluginGeneration: prepared.replyDispatchRuntime.pluginGeneration,
+                ...(params.delivery.deliver && params.delivery.deliveryPlan.plugin
+                  ? { deliveryPlugin: params.delivery.deliveryPlan.plugin }
+                  : {}),
               },
               cronCreatorAuthority: prepared.cronCreatorAuthority,
               ingressOpts: {

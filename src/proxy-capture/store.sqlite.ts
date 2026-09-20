@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { StringDecoder } from "node:string_decoder";
+import { registerNodeSqliteDisposeCallback } from "../infra/kysely-sync-cache-state.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { applyPrivateModeSync } from "../infra/private-mode.js";
 import { resolveSqliteDatabaseFilePaths } from "../infra/sqlite-files.js";
@@ -192,6 +193,7 @@ class DebugProxyCaptureStoreImpl extends DebugProxyCaptureKernel {
   private readonly pathBased?: PathBasedDebugProxyCaptureStore;
   private closed: boolean;
   private closing: boolean;
+  private unregisterDatabaseClose?: () => void;
 
   constructor(
     optionsOrDbPath: DebugProxyCaptureStoreOptions | string = {},
@@ -225,6 +227,13 @@ class DebugProxyCaptureStoreImpl extends DebugProxyCaptureKernel {
     this.closed = false;
     this.closing = false;
     sharedDebugProxyCaptureStates.set(this, { database, env: optionsOrDbPath.env });
+    this.unregisterDatabaseClose = registerNodeSqliteDisposeCallback(database.db, (reason) => {
+      if (reason === "close") {
+        finalizeCaptureStore(this, { kind: "database-retired", database });
+      } else {
+        this.close();
+      }
+    });
   }
 
   close(): void {
@@ -235,6 +244,7 @@ class DebugProxyCaptureStoreImpl extends DebugProxyCaptureKernel {
     const errors: unknown[] = [];
     for (const close of [
       () => finalizeCaptureStore(this),
+      () => this.unregisterDatabaseClose?.(),
       () => this.pathBased?.walMaintenance.close(),
       () => {
         if (this.pathBased && this.db.isOpen) {

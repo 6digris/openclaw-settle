@@ -24,10 +24,7 @@ export async function runSlackSharedProgressScenario(
     buildRun: () => ({ expectReply: true, input: "", matchText: "" }),
   });
   const { run, endpoint, patch } = await prepareSharedProgressFixtureConfig(cfg);
-  const patched = { ...cfg, ...patch };
-  await environment.context.gateway.restartAfterStateMutation(async ({ configPath }) => {
-    await fs.writeFile(configPath, JSON.stringify(patched));
-  });
+  await environment.patchGatewayConfig(patch);
   await environment.context.waitForReady();
   const cursor = environment.getMessageWriteCursor();
   const startedAt = Date.now();

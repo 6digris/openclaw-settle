@@ -296,26 +296,40 @@ function createPreparedTaskProgressContinuation(
         entry.killReconciliation ||
         entry.execution.suppressSessionEffects ||
         entry.suppressAnnounceReason ||
-        entry.collect ||
-        !task ||
+        entry.collect
+      ) {
+        throw new Error("Progress handoff owner was replaced (subagent binding)");
+      }
+      if (!task) {
+        throw new Error("Progress handoff owner was replaced (task unavailable)");
+      }
+      if (
         !sameTaskRunScope(task, row.task) ||
         readTaskBackingInstance(task.detail)?.generation !== row.generation ||
         task.notifyPolicy === "silent" ||
-        !read.hasAuthoritativeTaskBacking(task) ||
+        !read.hasAuthoritativeTaskBacking(task)
+      ) {
+        throw new Error("Progress handoff owner was replaced (task backing)");
+      }
+      if (
         JSON.stringify([
           currentOwner?.agentId,
           currentOwner?.sessionKey,
           currentOwner?.requesterOrigin,
         ]) !== audience ||
-        (params.requesterAgentId && currentOwner?.agentId !== params.requesterAgentId) ||
-        (params.onAdopted
+        (params.requesterAgentId && currentOwner?.agentId !== params.requesterAgentId)
+      ) {
+        throw new Error("Progress handoff owner was replaced (delivery audience)");
+      }
+      if (
+        params.onAdopted
           ? entry.requesterTurnRunId !== params.requesterTurnRunId ||
             entry.requesterTurnYielded !== true
           : entry.requesterSettleWake?.requesterYieldBatch !== true ||
             entry.requesterSettleWake.status !== "pending" ||
-            entry.requesterSettleWake.rearmGeneration !== row.wakeGeneration)
+            entry.requesterSettleWake.rearmGeneration !== row.wakeGeneration
       ) {
-        throw new Error("Progress handoff owner was replaced");
+        throw new Error("Progress handoff owner was replaced (requester yield)");
       }
     }
   };

@@ -1,5 +1,6 @@
 import { createLazyAcpElicitationHandler } from "../../auto-reply/reply/acp-elicitation-handler-lazy.js";
 import { resolveInlineAgentImageAttachments } from "../../auto-reply/reply/agent-turn-attachments.js";
+import type { ChannelPlugin } from "../../channels/plugins/types.plugin.js";
 import { recordAgentRunTerminalOutcome } from "../../channels/turn/agent-run-terminal-outcome.js";
 import type { CliDeps } from "../../cli/deps.types.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
@@ -52,6 +53,7 @@ export async function runAcpAgentCommand(params: {
   runtime: RuntimeEnv;
   opts: AgentCommandOpts;
   outboundSession: PreparedAgentCommandExecution["outboundSession"];
+  preparedPlugin?: ChannelPlugin;
   sessionEntry?: SessionEntry;
   sessionStore?: Record<string, SessionEntry>;
   body: string;
@@ -357,6 +359,7 @@ export async function runAcpAgentCommand(params: {
     sessionEntry,
     result,
     payloads: result.payloads,
+    preparedPlugin: params.preparedPlugin,
     assertDeliveryCurrent: () =>
       assertAgentRunLifecycleGenerationCurrent(params.lifecycleGeneration),
   });

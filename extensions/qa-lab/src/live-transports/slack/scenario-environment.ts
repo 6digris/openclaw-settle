@@ -30,6 +30,7 @@ export type SlackQaScenarioEnvironment = {
     primaryModel: string;
     run: SlackQaScenarioRun;
   }>;
+  patchGatewayConfig: (patch: OpenClawConfig) => Promise<void>;
   context: Omit<SlackQaScenarioContext, "sentTs">;
   gatewayDebugDirPath: string;
   getMessageWriteCursor: () => number;
@@ -74,6 +75,15 @@ export function createSlackQaScenarioEnvironment(params: {
   const prepareFlow = async (
     input: FlowPreparationInput,
   ): Promise<{ slackScenarioContext: SlackQaScenarioEnvironment }> => {
+    const patchGatewayConfig = async (patch: OpenClawConfig, replacePaths?: string[]) => {
+      await patchLiveQaGatewayConfig({
+        gateway: input.gateway,
+        patch,
+        replacePaths,
+        timeoutMs: input.timeoutMs,
+        waitForConfigRestartSettle: input.waitForConfigRestartSettle,
+      });
+    };
     const context = {
       channelId: params.channelId,
       driverClient: params.driverClient,
@@ -93,6 +103,7 @@ export function createSlackQaScenarioEnvironment(params: {
     return {
       slackScenarioContext: {
         channelId: params.channelId,
+        patchGatewayConfig,
         configureScenario: async (implementation: SlackQaScenarioImplementation) => {
           if (!input.primaryModel) {
             throw new Error("Slack QA module flow requires a primary model");
@@ -112,13 +123,10 @@ export function createSlackQaScenarioEnvironment(params: {
             sutAppToken: params.sutAppToken,
             sutBotToken: params.sutBotToken,
           });
-          await patchLiveQaGatewayConfig({
-            gateway: input.gateway,
-            patch: cfg as Record<string, unknown>,
-            replacePaths: resolveSlackQaReplacePaths(params.accountId, params.channelId),
-            timeoutMs: input.timeoutMs,
-            waitForConfigRestartSettle: input.waitForConfigRestartSettle,
-          });
+          await patchGatewayConfig(
+            cfg,
+            resolveSlackQaReplacePaths(params.accountId, params.channelId),
+          );
           const readinessMode =
             run.kind === "approval" || run.kind === "codex-approval" ? "started" : "connected";
           await waitForSlackChannelStable(input.gateway as never, params.accountId, readinessMode);
