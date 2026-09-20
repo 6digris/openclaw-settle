@@ -596,6 +596,7 @@ export const en: TranslationMap & {
       version: "v{version}",
       commitBehind: "{count} commit behind",
       commitsBehind: "{count} commits behind",
+      viewChanges: "Compare on GitHub",
     },
     sidebar: {
       campaignTarget: "{status} · {target}",
@@ -2253,8 +2254,8 @@ export const en: TranslationMap & {
       saving: "Saving…",
       loading: "Checking installed agents…",
       empty:
-        "No models are available from installed agents. Sign in through your agent, then open the picker again.",
-      signIn: "Sign in through the installed agent, then check again.",
+        "No models are available from installed agents. Check the installed app, then open the picker again.",
+      unconfirmed: "Availability not confirmed",
     },
     empty: {
       title: "Recommended installs",
@@ -4233,6 +4234,7 @@ export const en: TranslationMap & {
       removeNamedAttachment: "Remove {name}",
       removeBrowserAnnotation: "Remove browser annotation: {name}",
       addAttachment: "Add attachment",
+      attach: "Attach…",
       attachPhoto: "Photo",
       attachFileOption: "File",
       menu: {

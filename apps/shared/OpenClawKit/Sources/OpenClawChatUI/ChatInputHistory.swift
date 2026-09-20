@@ -1,5 +1,10 @@
 import Foundation
 
+/// Process-local text drafts, without attachments or live transport authority.
+public struct OpenClawChatDraftSnapshot: Sendable {
+    fileprivate let draftsBySession: [String: String]
+}
+
 /// One session's in-memory composer recall state. Native history deliberately
 /// stays process-local; unlike the web UI, it is not persisted across launches.
 struct ChatInputHistory: Equatable, Sendable {
@@ -234,6 +239,26 @@ struct ChatInputHistory: Equatable, Sendable {
 }
 
 extension OpenClawChatViewModel {
+    /// A replacement may restore these drafts only under the same Gateway/account.
+    public func captureDraftSnapshot() -> OpenClawChatDraftSnapshot? {
+        var drafts = self.draftsBySession
+        let key = self.composerSessionKey(for: self.sessionKey)
+        let history = self.inputHistoriesBySession[key] ?? ChatInputHistory()
+        let draft = history.draftForSessionSwitch(currentDraft: self.input)
+        if draft.isEmpty {
+            drafts.removeValue(forKey: key)
+        } else {
+            drafts[key] = draft
+        }
+        return drafts.isEmpty ? nil : OpenClawChatDraftSnapshot(draftsBySession: drafts)
+    }
+
+    func restoreDraftSnapshot(_ snapshot: OpenClawChatDraftSnapshot?) {
+        guard let snapshot else { return }
+        self.draftsBySession = snapshot.draftsBySession
+        self.restoreComposerAfterSessionSwitch()
+    }
+
     func composerSessionKey(for sessionKey: String, agentID: String? = nil) -> String {
         let qualifiedOwner = OpenClawChatSessionKey.agentID(from: sessionKey)
         guard let agentID = qualifiedOwner ?? agentID ??

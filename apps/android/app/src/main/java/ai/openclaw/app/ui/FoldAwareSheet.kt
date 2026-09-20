@@ -3,7 +3,6 @@ package ai.openclaw.app.ui
 import android.app.Activity
 import android.os.IBinder
 import android.view.View
-import androidx.compose.foundation.layout.recalculateWindowInsets
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Modifier
@@ -191,7 +190,7 @@ internal fun Modifier.foldAwareSheet(state: FoldAwareSheetState): Modifier {
     this
       .then(SheetHostElement(state, direction))
       .clipToBounds()
-      .recalculateWindowInsets()
+      // Material owns inset consumption; an outer recalculation defers its anchor measurement.
       .layout { measurable, constraints ->
         val surface = measurable.measure(constraints.copy(minWidth = 0, minHeight = 0))
         layout(constraints.maxWidth, constraints.maxHeight) {

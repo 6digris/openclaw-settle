@@ -23815,6 +23815,7 @@ public struct UpdateAvailable: Codable, Sendable {
     public let currentsha: String?
     public let upstreamref: String?
     public let upstreamsha: String?
+    public let repositoryurl: String?
     public let commitsbehind: Int?
     public let commits: [[String: AnyCodable]]?
 
@@ -23825,6 +23826,7 @@ public struct UpdateAvailable: Codable, Sendable {
         currentsha: String? = nil,
         upstreamref: String? = nil,
         upstreamsha: String? = nil,
+        repositoryurl: String? = nil,
         commitsbehind: Int? = nil,
         commits: [[String: AnyCodable]]? = nil)
     {
@@ -23834,6 +23836,7 @@ public struct UpdateAvailable: Codable, Sendable {
         self.currentsha = currentsha
         self.upstreamref = upstreamref
         self.upstreamsha = upstreamsha
+        self.repositoryurl = repositoryurl
         self.commitsbehind = commitsbehind
         self.commits = commits
     }
@@ -23845,6 +23848,7 @@ public struct UpdateAvailable: Codable, Sendable {
         case currentsha = "currentSha"
         case upstreamref = "upstreamRef"
         case upstreamsha = "upstreamSha"
+        case repositoryurl = "repositoryUrl"
         case commitsbehind = "commitsBehind"
         case commits
     }

@@ -22,7 +22,7 @@ function createHarness() {
         return { card: current ?? null };
       }
       cards.delete(sessionKey);
-      return { card: null };
+      return { card: null, cleared: true };
     }
     const card = {
       sessionKey,

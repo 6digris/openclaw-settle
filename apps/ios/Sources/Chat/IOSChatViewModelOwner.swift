@@ -49,6 +49,9 @@ final class IOSChatViewModelOwner {
         }
         // Recording, staging, and delivery retain their captured route until the owner releases it.
         guard self.viewModel?.isAttachmentOwnerPinned != true else { return }
+        let draftSnapshot = self.ownerID == ownerID && !authorityChanged
+            ? self.viewModel?.captureDraftSnapshot()
+            : nil
         self.viewModel?.detachTransport()
         self.ownerID = ownerID
         self.transportAgentID = agentID
@@ -64,6 +67,7 @@ final class IOSChatViewModelOwner {
             transport: appModel.makeChatTransport(outboxGatewayID: offlineStore?.gatewayID),
             activeAgentId: appModel.chatDeliveryAgentId,
             sessionRoutingContract: appModel.chatSessionRoutingContract,
+            draftSnapshot: draftSnapshot,
             attachmentOwnerIsActive: { [weak voiceNoteRecorder] in
                 voiceNoteRecorder?.ownsPendingChatAttachment == true
             },

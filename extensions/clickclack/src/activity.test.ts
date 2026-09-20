@@ -1,4 +1,5 @@
 // Tests for the durable ClickClack agent-activity publisher (coalescing rules).
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createClickClackActivityPublisher } from "./activity.js";
 import type { ClickClackMessage } from "./types.js";
@@ -103,7 +104,7 @@ describe("createClickClackActivityPublisher", () => {
     expect(updateMessageBody).toHaveBeenLastCalledWith("msg_1", "");
   });
 
-  it("retracts a published commentary row when its prepared replacement is hidden", async () => {
+  it("retracts hidden commentary and reuses its durable row when visibility returns", async () => {
     const { client, createActivityMessage, updateMessageBody } = createClientMock();
     const publisher = createClickClackActivityPublisher({
       client,
@@ -127,7 +128,113 @@ describe("createClickClackActivityPublisher", () => {
     await publisher.finalize();
     expect(updateMessageBody).toHaveBeenLastCalledWith("msg_1", "");
     expect(JSON.stringify(createActivityMessage.mock.calls)).not.toContain("Hidden replacement");
+    publisher.onItemEvent({
+      itemId: "commentary",
+      kind: "preamble",
+      phase: "end",
+      progressText: "Visible replacement",
+    });
+    await publisher.finalize();
+    expect(createActivityMessage).toHaveBeenCalledOnce();
+    expect(updateMessageBody).toHaveBeenLastCalledWith("msg_1", "Visible replacement");
   });
+
+  it("does not post commentary retracted while its first flush is queued", async () => {
+    const { client, createActivityMessage, updateMessageBody } = createClientMock();
+    const publisher = createClickClackActivityPublisher({
+      client,
+      target: { channelId: "chn_1" },
+      turnId: "msg_turn",
+    });
+    publisher.onItemEvent({
+      itemId: "commentary",
+      kind: "commentary",
+      progressText: "Pending progress",
+    });
+    const flushing = publisher.finalize();
+    publisher.onItemEvent({
+      itemId: "commentary",
+      kind: "commentary",
+      progressText: "Suppressed replacement",
+      suppressDurableProgress: true,
+    });
+    await flushing;
+    await publisher.finalize();
+    expect(createActivityMessage).not.toHaveBeenCalled();
+    expect(updateMessageBody).not.toHaveBeenCalled();
+
+    publisher.onItemEvent({
+      itemId: "commentary",
+      kind: "commentary",
+      progressText: "Visible replacement",
+    });
+    await publisher.finalize();
+    expect(createActivityMessage).toHaveBeenCalledOnce();
+    expect(createActivityMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ body: "Visible replacement" }),
+    );
+    expect(updateMessageBody).not.toHaveBeenCalled();
+  });
+
+  it.each(["post", "clear"] as const)(
+    "preserves newer visibility while a commentary %s is in flight",
+    async (write) => {
+      const base = createClientMock();
+      const entered = createDeferred<void>();
+      const release = createDeferred<void>();
+      const client: ActivityClient = {
+        async createActivityMessage(input) {
+          if (write === "post") {
+            entered.resolve();
+            await release.promise;
+          }
+          return base.client.createActivityMessage(input);
+        },
+        async updateMessageBody(messageId, body) {
+          if (write === "clear" && body === "") {
+            entered.resolve();
+            await release.promise;
+          }
+          return base.client.updateMessageBody(messageId, body);
+        },
+      };
+      const publisher = createClickClackActivityPublisher({
+        client,
+        target: { channelId: "chn_1" },
+        turnId: "msg_turn",
+      });
+      const visible = {
+        itemId: "commentary",
+        kind: "commentary",
+        progressText: "Visible progress",
+      };
+      const hidden: Parameters<typeof publisher.onItemEvent>[0] = {
+        ...visible,
+        suppressDurableProgress: true,
+      };
+      publisher.onItemEvent(visible);
+      if (write === "clear") {
+        await publisher.finalize();
+        publisher.onItemEvent(hidden);
+      }
+      const flushing = publisher.finalize();
+      try {
+        await entered.promise;
+        publisher.onItemEvent(
+          write === "post" ? hidden : { ...visible, progressText: "Visible again" },
+        );
+      } finally {
+        release.resolve();
+        await flushing;
+        await publisher.finalize();
+      }
+      expect(base.createActivityMessage).toHaveBeenCalledOnce();
+      expect(base.updateMessageBody).toHaveBeenLastCalledWith(
+        "msg_1",
+        write === "post" ? "" : "Visible again",
+      );
+    },
+  );
 
   it("discards staged commentary without losing its confirmed row or suppressing a later current snapshot", async () => {
     const { client, createActivityMessage, updateMessageBody } = createClientMock();

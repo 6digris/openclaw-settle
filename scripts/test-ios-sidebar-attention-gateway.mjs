@@ -132,6 +132,7 @@ function taskMessage(role, text, id, runId) {
     role,
     content: [{ type: "text", text }],
     timestamp: created + taskScenario.revision,
+    ...(role === "user" ? { idempotencyKey: `${runId}:user` } : {}),
     __openclaw: { id, runId },
   };
 }

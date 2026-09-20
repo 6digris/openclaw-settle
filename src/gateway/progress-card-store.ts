@@ -46,7 +46,7 @@ export type ProgressCardStore = {
       assertCurrent?: () => void;
     },
     agentId?: string,
-  ): Promise<{ card: ProgressCard | null }>;
+  ): Promise<{ card: ProgressCard | null; cleared?: true }>;
 };
 
 export const progressCardStore: ProgressCardStore = {
@@ -94,13 +94,12 @@ export const progressCardStore: ProgressCardStore = {
               (database) => {
                 assertCurrent();
                 const committed = writeSessionProgressCard(database.db, resolved.sessionKey, input);
-                const card = "card" in committed ? committed.card : null;
-                if (input.expectedRevision === undefined || card === null) {
+                if (input.expectedRevision === undefined || "cleared" in committed) {
                   const publish = () =>
                     notifyListeners(progressCardListeners, {
                       sessionKey: identity.canonicalKey,
                       agentId: identity.agentId,
-                      revision: card?.revision ?? null,
+                      revision: "card" in committed ? (committed.card?.revision ?? null) : null,
                     });
                   if (!deferSqlitePostCommitPublication(database.db, publish)) {
                     publish();
@@ -115,6 +114,7 @@ export const progressCardStore: ProgressCardStore = {
         ),
       true,
     );
-    return "card" in result ? result : { card: null };
+    // A refused dismissal can return a null card without having cleared anything.
+    return "card" in result ? result : { card: null, cleared: true };
   },
 };

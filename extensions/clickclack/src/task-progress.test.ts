@@ -63,7 +63,11 @@ function createHarness(options?: { nativeProgress?: boolean; agentActivity?: boo
   }> = [];
   const visible = new Map<string, Map<string, string>>();
   const durable = new Map<string, string>();
-  const reads = { gate: undefined as Promise<void> | undefined, entered: createDeferred<void>() };
+  const reads = {
+    gate: undefined as Promise<void> | undefined,
+    entered: createDeferred<void>(),
+    failures: new Map<string, Error>(),
+  };
   const writes = {
     gate: undefined as Promise<void> | undefined,
     entered: createDeferred<void>(),
@@ -120,6 +124,10 @@ function createHarness(options?: { nativeProgress?: boolean; agentActivity?: boo
     }
     reads.entered.resolve();
     await reads.gate;
+    const failure = reads.failures.get(url.pathname.split("/").at(-1)!);
+    if (failure) {
+      throw failure;
+    }
     return Response.json({ message: sourceMessage });
   });
   const runtime = createPluginRuntimeMock();
@@ -212,12 +220,13 @@ function createHarness(options?: { nativeProgress?: boolean; agentActivity?: boo
     ({ sessionKey: key }) => forSession(key).bound,
   );
   const abort = new AbortController();
+  const errors: unknown[] = [];
   const createObserver = (accountId = account.accountId) =>
     createClickClackTaskProgressObserver({
       runtime,
       account: { ...account, accountId },
       signal: abort.signal,
-      onError: () => {},
+      onError: (error) => errors.push(error),
     });
   const observer = createObserver();
   return {
@@ -225,6 +234,7 @@ function createHarness(options?: { nativeProgress?: boolean; agentActivity?: boo
     observer,
     createObserver,
     subscriptions,
+    errors,
     sources,
     forSession,
     async activateRecovery() {
@@ -306,6 +316,55 @@ describe("ClickClack task-owned progress", () => {
       ]);
       expect([...h.visible.get(sourceMessage.id)!.values()]).toEqual([
         "Background work is continuing",
+      ]);
+    } finally {
+      await h.observer.close();
+    }
+  });
+
+  it("keeps unrelated tasks progressing after a source lookup fails and still retires on observer faults", async () => {
+    const h = createHarness();
+    const unreadable = { ...task(), id: "unreadable-task", runId: "logical-unreadable-task" };
+    const lookupError = new Error("Source message cannot be read");
+    h.sources.set(unreadable.id, {
+      ...h.sources.get("task-1")!,
+      messageId: "unreadable-message",
+    });
+    h.reads.failures.set("unreadable-message", lookupError);
+    h.seed([task()]);
+    try {
+      await h.observer.restore([{ sessionKey, agentId: "main" }]);
+      const continuing = task(2);
+      continuing.progress!.items[0]!.title = "Healthy task continued";
+      await h.update([unreadable, continuing]);
+      expect(h.errors).toEqual([lookupError]);
+      expect([...h.visible.get(sourceMessage.id)!.values()]).toContain("Healthy task continued");
+      expect([...h.durable.values()]).toEqual([expect.stringContaining("Healthy task continued")]);
+
+      const advanced = task(3);
+      advanced.progress!.items[0]!.title = "Healthy task advanced again";
+      await h.update([unreadable, advanced]);
+      expect(h.errors).toEqual([lookupError, lookupError]);
+      expect([...h.visible.keys()]).toEqual([sourceMessage.id]);
+      expect([...h.visible.get(sourceMessage.id)!.values()]).toContain(
+        "Healthy task advanced again",
+      );
+      expect([...h.durable.values()]).toEqual([
+        expect.stringContaining("Healthy task advanced again"),
+      ]);
+
+      const observerError = new Error("Task progress subscription session was replaced");
+      const subscription = [...h.subscriptions][0]!;
+      subscription.onError?.(observerError);
+      await vi.waitFor(() => expect(h.subscriptions.size).toBe(0));
+      await h.observer.close();
+      expect(h.errors).toEqual([lookupError, lookupError, observerError]);
+      expect(h.visible.size).toBe(0);
+      const frameCount = h.frames.length;
+      await h.update([task(4)]);
+      expect(h.frames).toHaveLength(frameCount);
+      expect([...h.durable.values()]).toEqual([
+        expect.stringContaining("Healthy task advanced again"),
       ]);
     } finally {
       await h.observer.close();
@@ -412,7 +471,7 @@ describe("ClickClack task-owned progress", () => {
       await h.observer.restore([{ sessionKey, agentId: "main" }]);
       h.writes.gate = release.promise;
       const suspending = h.update([{ ...retained, execution: { state: "unknown" } }]);
-      const rejected = expect(suspending).rejects.toThrow("Task source was replaced");
+      const rejected = expect(suspending).rejects.toThrow();
       await h.writes.entered.promise;
       h.seed([retained]);
       const resumed = h.reobserve();
@@ -428,25 +487,33 @@ describe("ClickClack task-owned progress", () => {
     }
   });
 
-  it("fences a recovered original message lookup that settles after its task source was replaced", async () => {
-    const h = createHarness();
-    const release = createDeferred<void>();
-    h.reads.gate = release.promise;
-    h.seed([task()]);
-    const restoring = h.observer.restore([{ sessionKey, agentId: "main" }]);
-    const rejected = expect(restoring).rejects.toThrow("Task source was replaced");
-    try {
-      await h.reads.entered.promise;
-      h.seed([task(2, "replacement")]);
-      release.resolve();
-      await rejected;
-      expect(h.frames).toEqual([]);
-      expect(h.durable.size).toBe(0);
-    } finally {
-      release.resolve();
-      await h.observer.close();
-    }
-  });
+  it.each(["resolved", "rejected"] as const)(
+    "fences a %s original message lookup after its task source was replaced",
+    async (outcome) => {
+      const h = createHarness();
+      const release = createDeferred<void>();
+      const lookupError = new Error("Late source lookup failed");
+      h.reads.gate = release.promise;
+      if (outcome === "rejected") {
+        h.reads.failures.set(sourceMessage.id, lookupError);
+      }
+      h.seed([task()]);
+      const restoring = h.observer.restore([{ sessionKey, agentId: "main" }]);
+      const rejected = expect(restoring).rejects.toThrow();
+      try {
+        await h.reads.entered.promise;
+        h.seed([task(2, "replacement")]);
+        release.resolve();
+        await rejected;
+        expect(h.frames).toEqual([]);
+        expect(h.durable.size).toBe(0);
+        expect(h.errors).not.toContain(lookupError);
+      } finally {
+        release.resolve();
+        await h.observer.close();
+      }
+    },
+  );
 
   it.each(["retraction", "execution replacement"] as const)(
     "reoffers blocked native removals on the next unchanged observation during %s",
@@ -469,7 +536,7 @@ describe("ClickClack task-owned progress", () => {
             ? task(2, "execution-2")
             : { ...task(2), progress: { runId: "execution-1", revision: 2, items: [] } };
         const updating = h.update([next]);
-        const rejected = expect(updating).rejects.toThrow("Task source was replaced");
+        const rejected = expect(updating).rejects.toThrow();
         await h.writes.entered.promise;
         const refreshed = h.reobserve();
         release.resolve();
@@ -646,7 +713,7 @@ describe("ClickClack task-owned progress", () => {
           deliveryStatus: "delivered",
         },
       ]);
-      const stale = expect(ending).rejects.toThrow("Task source was replaced");
+      const stale = expect(ending).rejects.toThrow();
       await h.writes.entered.promise;
       h.seed([task(2, "continuing-child")]);
       const continuing = h.reobserve();

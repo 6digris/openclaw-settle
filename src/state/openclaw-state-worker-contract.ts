@@ -52,6 +52,7 @@ import type {
 import type { SessionUpstreamLink } from "../sessions/session-upstream-links.kernel.js";
 import type { DeviceAuthEntry } from "../shared/device-auth.js";
 import type { commitSkillUploadInDatabase } from "../skills/lifecycle/upload-store-commit.js";
+import type * as curator from "../skills/workshop/curator.kernel.js";
 import type { listStoredSkillProposalEventsInDatabase } from "../skills/workshop/store-sqlite-event.js";
 import type { SkillProposalEvent, SkillProposalRecord } from "../skills/workshop/types.js";
 import type { TaskRegistryWorkerOperations } from "../tasks/task-registry.worker-contract.js";
@@ -183,6 +184,11 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
       input: { project: ProjectRegistryIdentity; lease: OpenClawStateLeaseIdentity };
       output: ProjectRegistryRecord | undefined;
     };
+    "skills.curator.read": {
+      input: { skillFiles: readonly string[] };
+      output: ReturnType<typeof curator.readSkillCuratorStateInDatabase>;
+    };
+    "skills.usage.record": { input: curator.PreparedSkillUsage; output: void };
     "workshop.events.list": {
       input: Parameters<typeof listStoredSkillProposalEventsInDatabase>[1];
       output: ReturnType<typeof listStoredSkillProposalEventsInDatabase>;
@@ -213,11 +219,11 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
       output: { value_json: string } | undefined;
     };
     "plugins.deferredMigrations.read": {
-      input: undefined;
+      input: { artifactPreservingReadOnly: boolean };
       output: readonly DeferredPluginMigration[];
     };
     "claws.install-schema-versions": {
-      input: undefined;
+      input: { artifactPreservingReadOnly: boolean };
       output: ClawInstallSchemaVersionRow[] | undefined;
     };
     "config.health.read": { input: { artifactPreserving: boolean }; output: ConfigHealthSnapshot };

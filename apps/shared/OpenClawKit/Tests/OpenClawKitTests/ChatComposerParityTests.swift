@@ -180,12 +180,48 @@ struct ChatComposerStateTests {
         #expect(vm.input == "other draft")
     }
 
+    @Test func `replacement models retain qualified drafts without leaking another agents input`() {
+        let main = OpenClawChatViewModel(
+            sessionKey: "main", transport: ComposerParityTransport(), activeAgentId: "main")
+        main.input = "Main draft"
+        main.switchSession(to: "other")
+        main.input = "Other conversation draft"
+        main.switchSession(to: "main")
+        let mainDrafts = main.captureDraftSnapshot()
+        main.detachTransport()
+
+        let worker = OpenClawChatViewModel(
+            sessionKey: "main", transport: ComposerParityTransport(), activeAgentId: "worker",
+            draftSnapshot: mainDrafts)
+        #expect(worker.input.isEmpty)
+        worker.input = "Worker draft"
+        let workerDrafts = worker.captureDraftSnapshot()
+        worker.detachTransport()
+        main.input = "Late retired edit"
+
+        let replacement = OpenClawChatViewModel(
+            sessionKey: "agent:main:main", transport: ComposerParityTransport(), activeAgentId: "main",
+            draftSnapshot: workerDrafts)
+        defer { replacement.detachTransport() }
+        #expect(replacement.input == "Main draft")
+        replacement.switchSession(to: "other")
+        #expect(replacement.input == "Other conversation draft")
+        replacement.switchSession(to: "agent:worker:main")
+        #expect(replacement.input == "Worker draft")
+    }
+
     @Test func `session switch preserves draft beneath recall and resets recall mode`() {
         let vm = OpenClawChatViewModel(sessionKey: "main", transport: ComposerParityTransport())
         vm.recordSuccessfulInput("older input", sessionKey: "main")
         vm.input = "working draft"
         #expect(vm.recallPreviousInput(caretOnFirstLine: true))
         #expect(vm.input == "older input")
+        let replacement = OpenClawChatViewModel(
+            sessionKey: "main", transport: ComposerParityTransport(),
+            draftSnapshot: vm.captureDraftSnapshot())
+        defer { replacement.detachTransport() }
+        #expect(replacement.input == "working draft")
+        #expect(!replacement.recallNextInput())
 
         vm.switchSession(to: "other")
         vm.switchSession(to: "main")

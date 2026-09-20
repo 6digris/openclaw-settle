@@ -306,10 +306,14 @@ export function executeSharedStateCommand(
     return readDeferredPluginMigrations({
       path: context.databasePath,
       env: getSqliteWorkerStateContext().environment,
+      artifactPreservingReadOnly: command.input.artifactPreservingReadOnly,
     });
   }
   if (command.type === "claws.install-schema-versions") {
-    return withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
+    const read = command.input.artifactPreservingReadOnly
+      ? withExistingOpenClawStateDatabaseArtifactPreservingReadOnly
+      : withExistingOpenClawStateDatabaseReadOnly;
+    return read(
       ({ db, path: pathname }) => {
         assertOpenClawStateDatabaseOwner(db, { pathname });
         return readClawInstallSchemaVersionRows(db);

@@ -1209,6 +1209,29 @@ private final class TimingOutDeviceStatusService: DeviceStatusServicing {
 }
 
 @Suite(.serialized) struct NodeAppModelInvokeTests {
+    @Test @MainActor func `chat agent navigation preserves each owners unsent text`() throws {
+        let appModel = NodeAppModel()
+        appModel.enterScreenshotFixtureMode()
+        let owner = appModel.chatPresentation
+        owner.sync(appModel: appModel)
+        defer { owner.viewModel?.detachTransport() }
+        let main = try #require(owner.viewModel)
+        main.input = "Unsent parent draft"
+
+        appModel.selectedAgentId = "worker"
+        owner.sync(appModel: appModel)
+        let worker = try #require(owner.viewModel)
+        #expect(worker.input.isEmpty)
+        worker.input = "Unsent worker draft"
+
+        appModel.selectedAgentId = nil
+        owner.sync(appModel: appModel)
+        #expect(owner.viewModel?.input == "Unsent parent draft")
+        appModel.selectedAgentId = "worker"
+        owner.sync(appModel: appModel)
+        #expect(owner.viewModel?.input == "Unsent worker draft")
+    }
+
     @Test(arguments: [false, true]) @MainActor
     func `chat account replacement retires pinned questions and preserves attachment cleanup`(
         restoresOriginalAccount: Bool) throws
@@ -1253,6 +1276,7 @@ private final class TimingOutDeviceStatusService: DeviceStatusServicing {
         let replacement = try #require(owner.viewModel)
         #expect(replacement !== original)
         #expect(owner.isCurrent(appModel: appModel))
+        #expect(replacement.input == (restoresOriginalAccount ? "Keep this draft with its attachment" : ""))
         replacement.upsertQuestion(QuestionRecord(
             id: "current-account-question",
             questions: [Question(

@@ -516,6 +516,7 @@ public final class OpenClawChatViewModel {
         transport: any OpenClawChatTransport,
         activeAgentId: String? = nil,
         sessionRoutingContract: String? = nil,
+        draftSnapshot: OpenClawChatDraftSnapshot? = nil,
         attachmentOwnerIsActive: @escaping @MainActor () -> Bool = { false },
         haptics: OpenClawChatHaptics = OpenClawChatHaptics(),
         transcriptCache: (any OpenClawChatTranscriptCache)? = nil,
@@ -572,6 +573,7 @@ public final class OpenClawChatViewModel {
         self.onVerbosePreferenceChanged = onVerbosePreferenceChanged
         self.diagnosticsLog = diagnosticsLog
         self.attachmentOwnerIsActive = attachmentOwnerIsActive
+        self.restoreDraftSnapshot(draftSnapshot)
 
         let transport = self.transport
         self.eventTask = Task { [weak self, transport] in

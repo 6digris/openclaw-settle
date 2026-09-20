@@ -209,7 +209,14 @@ export function createClickClackTaskProgressObserver(params: {
         }
         let turn = state.turns.get(source.messageId);
         if (!turn) {
-          const message = await client.message(source.messageId);
+          let message: ClickClackMessage;
+          try {
+            message = await client.message(source.messageId);
+          } catch (error) {
+            assertCurrent();
+            params.onError(error);
+            continue;
+          }
           assertCurrent();
           if (
             message.id !== source.messageId ||

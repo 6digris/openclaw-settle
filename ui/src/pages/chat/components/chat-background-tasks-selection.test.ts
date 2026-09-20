@@ -302,6 +302,42 @@ describe("background tasks selection and detail state", () => {
     });
   });
 
+  it("does not merge deleted terminal detail into a recreated running task", async () => {
+    const previous = makeTask({
+      id: "reused",
+      status: "completed",
+      updatedAt: 3_000,
+      terminalSummary: "Old completion",
+    });
+    const { host } = createHost({
+      request: (method) =>
+        method === "tasks.get"
+          ? Promise.resolve({ task: { ...previous, prompt: "Old request" } })
+          : Promise.resolve({ tasks: [previous] }),
+    });
+    createBackgroundTasksProps(host);
+    await flushAsync();
+    createBackgroundTasksProps(host).onLoadDetail?.(previous);
+    await flushAsync();
+    expect(createBackgroundTasksProps(host).taskDetails.get(previous.id)?.prompt).toBe(
+      "Old request",
+    );
+
+    handleBackgroundTasksEvent(host, { action: "deleted", taskId: previous.id });
+    handleBackgroundTasksEvent(host, {
+      action: "upserted",
+      task: makeTask({
+        id: previous.id,
+        status: "running",
+        updatedAt: 1_000,
+        lastActivity: "New work",
+      }),
+    });
+    expect(createBackgroundTasksProps(host).tasks).toMatchObject([
+      { id: previous.id, status: "running", updatedAt: 1_000, lastActivity: "New work" },
+    ]);
+  });
+
   it("does not resurrect a task deleted while its detail lookup is pending", async () => {
     const running = makeTask({ id: "task-1" });
     let resolveDetail: ((value: unknown) => void) | undefined;

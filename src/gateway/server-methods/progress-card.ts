@@ -118,7 +118,7 @@ export function createProgressCardHandlers(
           session.agentId,
         );
         assertCurrent();
-        if (params.expectedRevision === undefined || result.card === null) {
+        if (params.expectedRevision === undefined || result.cleared) {
           context.broadcast(
             "progressCard.changed",
             {

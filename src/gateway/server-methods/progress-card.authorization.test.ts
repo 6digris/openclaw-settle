@@ -7,9 +7,16 @@ import {
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { readSessionProgressCard } from "../../session-cards/progress-card-store.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { progressCardStore, type ProgressCardStore } from "../progress-card-store.js";
+import { resolveGatewaySessionDatabase } from "../board-store.js";
+import {
+  onSessionProgressCardChanged,
+  progressCardStore,
+  type ProgressCardStore,
+} from "../progress-card-store.js";
 import { handleGatewayRequest } from "../server-methods.js";
 import {
   resolveSessionMutationAuthorization,
@@ -322,6 +329,149 @@ describe("progress card request authorization", () => {
       });
     },
   );
+
+  it("publishes committed cards and clears without treating refused null clears as changes", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const cfg: OpenClawConfig = {
+        ...rolePolicyConfig(),
+        agents: { ownership: "explicit", entries: { main: {}, work: {} } },
+      };
+      setRuntimeConfigSnapshot(cfg, cfg);
+      const target = { sessionKey: "global", agentId: "work" };
+      const client = { ...roleClient("view", "card-owner"), connId: "card-owner" };
+      await upsertSessionEntryCore(target, {
+        sessionId: "card-publications",
+        updatedAt: 1,
+        visibility: "draft",
+        createdActor: {
+          type: "human",
+          source: "profile",
+          id: client.authenticatedUserProfile!.profileId,
+        },
+      });
+      const database = openOpenClawAgentDatabase(
+        resolveGatewaySessionDatabase(target.sessionKey, target.agentId),
+      );
+      const observed = vi.fn();
+      const unsubscribe = onSessionProgressCardChanged((event) => {
+        observed(
+          event,
+          database.db.isTransaction,
+          readSessionProgressCard(database.path, target.sessionKey),
+        );
+      });
+      const broadcast = vi.fn();
+      const context = {
+        getRuntimeConfig: () => cfg,
+        broadcast,
+        logGateway: { warn: vi.fn() },
+        resolveGatewayContext: (): GatewayRequestContext => context,
+      } as unknown as GatewayRequestContext;
+      const handlers = createProgressCardHandlers();
+      const put = async (input: Record<string, unknown>) => {
+        const respond = vi.fn<RespondFn>();
+        await handleGatewayRequest({
+          req: {
+            type: "req",
+            id: "card-publication",
+            method: "progressCard.put",
+            params: { ...target, ...input },
+          },
+          client,
+          context,
+          respond,
+          isWebchatConnect: () => false,
+          extraHandlers: handlers,
+        });
+        return respond;
+      };
+      try {
+        const absent = await put({ expectedRevision: 1 });
+        expect(absent).toHaveBeenCalledExactlyOnceWith(true, { card: null }, undefined);
+        expect(observed).not.toHaveBeenCalled();
+        expect(broadcast).not.toHaveBeenCalled();
+
+        const written = await put({ plan: [{ step: "Done", status: "completed" }] });
+        expect(written).toHaveBeenCalledExactlyOnceWith(
+          true,
+          { card: expect.objectContaining({ revision: 1 }) },
+          undefined,
+        );
+        const stale = await put({ expectedRevision: 2 });
+        expect(stale).toHaveBeenCalledExactlyOnceWith(
+          true,
+          { card: expect.objectContaining({ revision: 1 }) },
+          undefined,
+        );
+        expect(observed).toHaveBeenCalledOnce();
+        expect(broadcast).toHaveBeenCalledOnce();
+
+        const cleared = await put({ expectedRevision: 1 });
+        expect(cleared).toHaveBeenCalledExactlyOnceWith(true, { card: null }, undefined);
+        const repeated = await put({ expectedRevision: 1 });
+        expect(repeated).toHaveBeenCalledExactlyOnceWith(true, { card: null }, undefined);
+        expect(observed).toHaveBeenCalledTimes(2);
+        expect(broadcast).toHaveBeenCalledTimes(2);
+
+        await put({ markdown: "Next task" });
+        await put({});
+        expect(observed.mock.calls).toEqual([
+          [
+            { ...target, revision: 1 },
+            false,
+            expect.objectContaining({ sessionKey: "global", revision: 1 }),
+          ],
+          [{ ...target, revision: null }, false, null],
+          [
+            { ...target, revision: 3 },
+            false,
+            expect.objectContaining({ sessionKey: "global", revision: 3, markdown: "Next task" }),
+          ],
+          [{ ...target, revision: null }, false, null],
+        ]);
+        expect(broadcast.mock.calls).toEqual(
+          [1, null, 3, null].map((revision) => [
+            "progressCard.changed",
+            { sessionKey: "agent:work:global", revision },
+            { sessionKeys: ["global"], agentId: "work" },
+          ]),
+        );
+        expect(await progressCardStore.get(target.sessionKey, target.agentId)).toBeNull();
+
+        await put({ plan: [{ step: "Ready to dismiss", status: "completed" }] });
+        const beforeRollback = await progressCardStore.get(target.sessionKey, target.agentId);
+        expect(beforeRollback?.revision).toBe(5);
+        observed.mockClear();
+        broadcast.mockClear();
+        // Fail at COMMIT, after the writer has queued its post-commit publication.
+        database.db.exec(`
+          CREATE TABLE progress_card_commit_failure (
+            session_key TEXT REFERENCES session_nodes(session_key) DEFERRABLE INITIALLY DEFERRED
+          );
+          CREATE TEMP TRIGGER reject_progress_card_commit AFTER UPDATE ON session_progress_cards
+          BEGIN
+            INSERT INTO progress_card_commit_failure VALUES ('missing-session');
+          END;
+        `);
+        const rolledBack = await put({ expectedRevision: 5 });
+        expect(rolledBack).toHaveBeenCalledExactlyOnceWith(
+          false,
+          undefined,
+          expect.objectContaining({
+            code: "UNAVAILABLE",
+            message: expect.stringContaining("FOREIGN KEY"),
+          }),
+        );
+        expect(await progressCardStore.get(target.sessionKey, target.agentId)).toEqual(
+          beforeRollback,
+        );
+        expect(observed).not.toHaveBeenCalled();
+        expect(broadcast).not.toHaveBeenCalled();
+      } finally {
+        unsubscribe();
+      }
+    });
+  });
 });
 
 it.each([false, true])(

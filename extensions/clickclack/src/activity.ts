@@ -187,17 +187,17 @@ export function createClickClackActivityPublisher(params: {
       clearTimeout(segment.timer);
       segment.timer = undefined;
     }
-    if (!segment.dirty || !segment.body.trim()) {
+    if (!segment.dirty) {
       return Promise.resolve();
     }
-    const body = segment.body;
     return enqueue(async () => {
       if (!segment.dirty) {
         return;
       }
+      const body = segment.body;
       if (segment.messageId) {
         await params.client.updateMessageBody(segment.messageId, body);
-      } else {
+      } else if (body.trim()) {
         const posted = await postRow("agent_commentary", body);
         segment.messageId = posted.id;
       }
@@ -217,17 +217,7 @@ export function createClickClackActivityPublisher(params: {
     const body = commentaryBody(payload);
     const key = payload.itemId?.trim() || "turn";
     let segment = commentaryByItem.get(key);
-    if (!body.trim()) {
-      if (segment) {
-        clearTimeout(segment.timer);
-        commentaryByItem.delete(key);
-        const retracted = segment;
-        void enqueue(async () => {
-          if (retracted.messageId) {
-            await params.client.updateMessageBody(retracted.messageId, "");
-          }
-        });
-      }
+    if (!segment && !body.trim()) {
       return;
     }
     if (!segment) {
@@ -239,6 +229,10 @@ export function createClickClackActivityPublisher(params: {
     }
     segment.body = body;
     segment.dirty = true;
+    if (!body.trim()) {
+      void flushCommentary(key);
+      return;
+    }
     if (!segment.timer) {
       segment.timer = setTimeout(() => {
         segment.timer = undefined;
