@@ -33,7 +33,7 @@ describe("Agents API native session receipts", () => {
         Response.json({ data: [], has_more: false, last_id: null }),
       );
     });
-    const session = createSession(controller.signal, stream.observe);
+    const session = createSession(controller.signal, (event) => stream.observe(event));
     const submitted = deferred<void>();
     const result = session.run(
       "Fixture prompt",
@@ -112,7 +112,7 @@ describe("Agents API native session receipts", () => {
       idleRequested.resolve();
       return guardedResponse(request.url, await idleReceipt.promise);
     });
-    const session = createSession(controller.signal, stream.observe);
+    const session = createSession(controller.signal, (event) => stream.observe(event));
     const run = session.run(
       "Fixture prompt",
       async () => {},
