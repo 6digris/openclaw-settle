@@ -12,6 +12,7 @@ import { installOpenClawPluginSdkNativeResolver } from "./plugin-sdk-native-reso
 import { getPluginRegistryInspectionResources } from "./registry-inspection-resources.js";
 import type { PluginRecord, PluginRegistry } from "./registry-types.js";
 import { withPluginRegistrationContext } from "./runtime.js";
+import { prepareGatewayContextBindingOwner } from "./runtime/gateway-context-binding-owner.js";
 import {
   bindGatewayContextResolver,
   getGatewayContextResolver,
@@ -297,30 +298,53 @@ export function createLazyPluginRuntime(params: {
     }
     return descriptor;
   };
+  let preparingOwner = true;
   const runtime = new Proxy({} as PluginRuntime, {
-    get: (_target, prop, receiver) => getRuntimeProperty(prop, receiver),
-    set(_target, prop, value, receiver) {
-      return Reflect.set(resolveRuntime(), prop, value, receiver);
+    get: (target, prop, receiver) =>
+      Object.hasOwn(target, prop)
+        ? Reflect.get(target, prop, receiver)
+        : getRuntimeProperty(prop, receiver),
+    set(target, prop, value, receiver) {
+      return Reflect.set(
+        Object.hasOwn(target, prop) ? target : resolveRuntime(),
+        prop,
+        value,
+        receiver,
+      );
     },
-    has(_target, prop) {
-      return Object.hasOwn(LAZY_RUNTIME_PROPERTIES, prop) || Reflect.has(resolveRuntime(), prop);
+    has(target, prop) {
+      return (
+        Object.hasOwn(target, prop) ||
+        Object.hasOwn(LAZY_RUNTIME_PROPERTIES, prop) ||
+        Reflect.has(resolveRuntime(), prop)
+      );
     },
-    ownKeys() {
-      return Object.keys(LAZY_RUNTIME_PROPERTIES);
+    ownKeys(target) {
+      return [...Object.keys(LAZY_RUNTIME_PROPERTIES), ...Reflect.ownKeys(target)];
     },
-    getOwnPropertyDescriptor(_target, prop) {
-      return resolveLazyRuntimeDescriptor(prop);
+    getOwnPropertyDescriptor(target, prop) {
+      return (
+        Reflect.getOwnPropertyDescriptor(target, prop) ??
+        (preparingOwner ? undefined : resolveLazyRuntimeDescriptor(prop))
+      );
     },
-    defineProperty(_target, prop, attributes) {
-      return Reflect.defineProperty(resolveRuntime() as object, prop, attributes);
+    defineProperty(target, prop, attributes) {
+      return Reflect.defineProperty(
+        preparingOwner || Object.hasOwn(target, prop) ? target : resolveRuntime(),
+        prop,
+        attributes,
+      );
     },
-    deleteProperty(_target, prop) {
-      return Reflect.deleteProperty(resolveRuntime() as object, prop);
+    deleteProperty(target, prop) {
+      return Reflect.deleteProperty(Object.hasOwn(target, prop) ? target : resolveRuntime(), prop);
     },
     getPrototypeOf() {
       return Reflect.getPrototypeOf(resolveRuntime() as object);
     },
   });
+  // Reserve this proxy's private owner slot without initializing its broad runtime.
+  prepareGatewayContextBindingOwner(runtime);
+  preparingOwner = false;
   // Injected accessors remain deferred. A plain host facet can carry its owner
   // without reading a lazy runtime surface or initializing broad services.
   const subagent: unknown = params.runtimeOptions

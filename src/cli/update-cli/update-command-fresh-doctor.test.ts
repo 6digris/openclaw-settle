@@ -805,6 +805,37 @@ describe("post-plugin update readiness", () => {
     });
   });
 
+  it.each(["", "{unfinished"])(
+    "preserves a failed readiness child's diagnostic when stdout is %j",
+    async (stdout) => {
+      mocks.runUtf8.mockResolvedValue({
+        ...readinessExit,
+        code: 2,
+        stdout,
+        stderr:
+          "Earlier diagnostic line\n".repeat(100) +
+          "Could not load readiness plugin https://example.test/diagnostic?token=fixture-secret",
+      });
+
+      const result = await completePostCorePluginUpdate(updateOptions);
+
+      expect(result.pluginUpdate).toMatchObject({
+        status: "error",
+        reason: "post-plugin-update-readiness-execution-failed",
+      });
+      const reason = result.pluginUpdate.warnings?.[0]?.reason;
+      expect(reason).toContain("code=2");
+      expect(reason).toContain("stderr:");
+      expect(reason).toContain("Could not load readiness plugin");
+      expect(reason).toContain("token=<redacted>");
+      expect(reason).not.toContain("fixture-secret");
+      expect(reason).not.toContain("/opt/openclaw/dist/index.js");
+      expect(reason?.length).toBeLessThan(600);
+      expect(result.pluginUpdate.doctorLint?.stderrTail).toContain("token=<redacted>");
+      expect(result.pluginUpdate.doctorLint?.stderrTail).not.toContain("fixture-secret");
+    },
+  );
+
   it("returns readiness facts without publishing update history, output, or reports", async () => {
     await withTempHome(async (home) => {
       const run = createUpdateRun({ trigger: "cli" });

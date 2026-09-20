@@ -60,7 +60,7 @@ it("keeps version and injected instance surfaces independent of the broad runtim
     "tasks",
     "modelConfig",
   ]);
-  expect(Reflect.ownKeys(runtime)).toEqual(Object.keys(descriptors));
+  expect(Reflect.ownKeys(runtime)).toEqual(Reflect.ownKeys(descriptors));
   for (const key of Object.keys(descriptors)) {
     expect(key in runtime).toBe(true);
     expect(descriptors[key]).toMatchObject({ configurable: true, enumerable: true });
