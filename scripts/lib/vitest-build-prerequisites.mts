@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { startupCorpusTestFiles } from "../../test/vitest/vitest.startup-corpus-paths.mjs";
 import { fullSuiteVitestShards } from "../../test/vitest/vitest.test-shards.mjs";
 import { runManagedCommand } from "./managed-child-process.mts";
 import { resolveRepoRoot } from "./repo-root.mjs";
@@ -110,6 +111,7 @@ const runtimeConsumers = [
   ...[
     "src/agents/agent-command-local.test.ts",
     "src/agents/simple-completion-runtime.plugin-scope.test.ts",
+    "src/agents/prepared-model-catalog-worker.custody.integration.test.ts",
     "src/agents/prepared-model-catalog-worker.integration.test.ts",
     "src/agents/runtime-plugins.context-engine.integration.test.ts",
   ].map((file) => ({
@@ -142,14 +144,21 @@ const runtimeConsumers = [
     mode: "runtime",
     dir: "src/gateway",
   },
-  ...["src/config/config-startup-corpus.test.ts", "src/config/state-startup-corpus.test.ts"].map(
-    (file) => ({
-      file,
-      configs: ["test/vitest/vitest.runtime-config.config.ts"],
-      mode: "runtime" as const,
-      dir: "src",
-    }),
-  ),
+  {
+    file: "src/gateway/server-methods/models-list.worker-recovery.integration.test.ts",
+    configs: [
+      "test/vitest/vitest.gateway-database-workers.config.ts",
+      "test/vitest/vitest.gateway.config.ts",
+    ],
+    mode: "runtime",
+    dir: "",
+  },
+  ...startupCorpusTestFiles.map((file) => ({
+    file,
+    configs: ["test/vitest/vitest.runtime-config.config.ts"],
+    mode: "runtime" as const,
+    dir: "src",
+  })),
   {
     file: "test/agent-exec-code-mode.live.test.ts",
     configs: ["test/vitest/vitest.live.config.ts"],
@@ -203,6 +212,8 @@ const runtimeConsumers = [
   ...[
     "src/infra/update-candidate-canary.integration.test.ts",
     "src/infra/update-managed-service-handoff-lifecycle.test.ts",
+    "src/infra/update-managed-service-handoff-repair-validating.test.ts",
+    "src/infra/update-managed-service-handoff-repair-verifying.test.ts",
   ].map((file) => ({
     file,
     configs: ["test/vitest/vitest.infra.config.ts"],
@@ -242,8 +253,10 @@ const runtimeConsumers = [
   ...[
     "src/gateway/server.chat-cli-auth.test.ts",
     "src/gateway/server.chat-recovered-output.test.ts",
+    "src/gateway/server.chat.canonical-publication.test.ts",
     "src/gateway/server.cli-watchdog.test.ts",
     "src/gateway/server.codex-failure-recovery.test.ts",
+    "src/gateway/server.message-buffer-caption.test.ts",
     "src/gateway/server.xai-fallback.test.ts",
   ].map((file) => ({
     file,
@@ -268,14 +281,24 @@ const runtimeConsumers = [
   })),
   ...[
     "src/gateway/gateway-active-memory.test.ts",
-    "src/gateway/gateway-auth-recovery.test.ts",
     "src/gateway/gateway-concurrent-streams.test.ts",
+  ].map((file) => ({
+    file,
+    configs: ["test/vitest/vitest.gateway-core.config.ts", "test/vitest/vitest.gateway.config.ts"],
+    mode: "runtime" as const,
+    dir: "src/gateway",
+  })),
+  ...[
+    "src/gateway/gateway-auth-recovery.test.ts",
     "src/gateway/gateway-cron-process-identity.windows.test.ts",
     "src/gateway/gateway-route-model-reuse.test.ts",
     "src/gateway/gateway-ssh-upload-signal.test.ts",
   ].map((file) => ({
     file,
-    configs: ["test/vitest/vitest.gateway-core.config.ts", "test/vitest/vitest.gateway.config.ts"],
+    configs: [
+      "test/vitest/vitest.gateway-database-workers.config.ts",
+      "test/vitest/vitest.gateway.config.ts",
+    ],
     mode: "runtime" as const,
     dir: "src/gateway",
   })),

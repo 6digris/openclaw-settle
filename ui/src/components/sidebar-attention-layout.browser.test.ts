@@ -280,6 +280,9 @@ describe.runIf("__vitest_browser__" in globalThis)("Inbox panel layout", () => {
       expect(
         attention.getBoundingClientRect().left - nativeChrome.getBoundingClientRect().right,
       ).toBe(4);
+      expect(paint()).toEqual({ border: "0px", background: "rgba(0, 0, 0, 0)" });
+      expect(getComputedStyle(inbox).boxShadow).toBe("none");
+      expect(getComputedStyle(inbox).backdropFilter).toBe("none");
       attention.classList.remove("sidebar-attention--floating");
       expect(paint()).toEqual({ border: "0px", background: "rgba(0, 0, 0, 0)" });
       expect(getComputedStyle(inbox).boxShadow).toBe("none");
@@ -457,7 +460,7 @@ describe.runIf("__vitest_browser__" in globalThis)("Inbox panel layout", () => {
         <div class="sidebar-issues-panel__grabber"></div>
         <header class="sidebar-issues-panel__header">
           <div class="sidebar-issues-panel__header-actions">
-            <button class="sidebar-issues-panel__dismiss-shown" type="button">Dismiss shown</button>
+            <button class="sidebar-issues-panel__dismiss-shown" type="button">Dismiss all shown</button>
             <button class="sidebar-brand__icon sidebar-issues-panel__mobile-close" type="button">
               Close
             </button>

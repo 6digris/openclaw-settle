@@ -80,7 +80,7 @@ export const CORE_FIELD_HELP: Record<string, string> = {
   "update.channel":
     'Update channel for git + npm installs ("stable", "extended-stable", "beta", or "dev"). Extended-stable is package-only: installation is foreground-only, with optional read-only startup hints.',
   "update.checkOnStart":
-    "Checks the OpenClaw update endpoint when the gateway starts, including read-only extended-stable hints (default: true). Set false to disable update checks and anonymous update pings.",
+    "Checks for updates when the Gateway starts, including read-only extended-stable hints (default: true). Set false to disable automatic Gateway and headless-node update checks, applies, and anonymous update pings.",
   "update.auto.enabled":
     "Enable background auto-update for stable and beta package installs; extended-stable never auto-applies (default: false).",
   telemetry:
@@ -293,7 +293,7 @@ export const CORE_FIELD_HELP: Record<string, string> = {
   "agents.entries.*.subagents.delegationMode":
     'Per-agent override for sub-agent delegation strength. Omit to use "prefer" in this agent\'s main session and "suggest" elsewhere; explicit "prefer" or "suggest" always wins.',
   "agents.entries.*.contextInjection":
-    "Per-agent override for when workspace bootstrap files are injected into this agent's system prompt. Omit to inherit agents.defaults.contextInjection.",
+    "Per-agent override for workspace bootstrap-file injection in the embedded runtime. Omit to inherit agents.defaults.contextInjection. Does not control CLI-backed prompt preparation.",
   "agents.entries.*.cwd":
     "Working directory for this agent's reply runs. Overrides agents.defaults.cwd but not session-spawned cwd; bootstrap and memory files stay in workspace. Supports ~ and relative paths; a distinct cwd requires an unsandboxed run.",
   "agents.entries.*.bootstrapMaxChars":

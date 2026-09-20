@@ -14,6 +14,7 @@ import { prepareTranscriptRewriteSync } from "../../config/sessions/session-acce
 import {
   readSessionTranscriptContextMessages,
   readSessionTranscriptModelContext,
+  type SessionModelContextLimits,
   validateSessionTranscriptContextAdmission,
   validateSessionTranscriptContextAnchor,
   validateSessionTranscriptContextVersion,
@@ -25,7 +26,7 @@ import {
   resolveSessionTranscriptReadFence,
   withSessionContextAdmission,
 } from "../../config/sessions/session-transcript-read-fence.js";
-import { readSessionTranscriptModelContextAsync } from "../../config/sessions/session-transcript-worker-runtime.js";
+import { readSessionTranscriptModelContextAsync } from "../../config/sessions/session-transcript-read-worker-runtime.js";
 import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
 import type { Message } from "../../llm/types.js";
@@ -245,7 +246,7 @@ export class SessionManager extends SessionManagerBranching {
       cwd?: string;
       admission?: UserTurnTranscriptAdmissionReceipt;
       through?: TranscriptEntryAnchor;
-      limits?: SessionManagerBoundedContextLimits;
+      limits?: SessionModelContextLimits;
     } = {},
   ): SessionManager {
     const context = withSessionContextAdmission(target, options.admission, () =>
@@ -262,7 +263,7 @@ export class SessionManager extends SessionManagerBranching {
       admission?: UserTurnTranscriptAdmissionReceipt;
       signal?: AbortSignal;
       through?: TranscriptEntryAnchor;
-      limits?: SessionManagerBoundedContextLimits;
+      limits?: SessionModelContextLimits;
     } = {},
   ): Promise<SessionManager> {
     const readTarget = { ...target };

@@ -184,6 +184,7 @@ function nodeBuildConfig(
     dts: declarations,
     hooks: createDeclarationBoundaryHooks(config.hooks),
     env,
+    define: { WORKER_DEPLOY_BUILD: "false", ...config.define },
     outExtensions: () => ({ js: ".js", dts: ".d.ts" }),
     fixedExtension: false,
     sourcemap: OUTPUT_SOURCE_MAPS,
@@ -191,10 +192,10 @@ function nodeBuildConfig(
   };
 }
 
-function workerDeployBuildConfig(): UserConfig {
+function workerDeployBuildConfig(entry: Record<string, string>): UserConfig {
   return {
     name: TSDOWN_UNIFIED_CONFIG_GROUP,
-    entry: { "worker/worker": "src/worker/worker-deploy-entry.ts" },
+    entry,
     outDir: "dist",
     dts: false,
     env,
@@ -227,33 +228,17 @@ function workerDeployBuildConfig(): UserConfig {
   };
 }
 
-function workerRsyncReceiverBuildConfig(): UserConfig {
+function workerHelperBuildConfig(
+  entry: Record<string, string>,
+  define?: UserConfig["define"],
+): UserConfig {
   return {
     name: TSDOWN_UNIFIED_CONFIG_GROUP,
-    entry: { "worker/workspace-rsync-receiver": "src/worker/workspace-rsync-receiver.ts" },
+    entry,
     outDir: "dist",
     dts: false,
     env,
-    deps: {
-      alwaysBundle: (id) => !isBuiltin(id),
-      onlyBundle: false,
-    },
-    fixedExtension: false,
-    outExtensions: () => ({ js: ".mjs", dts: ".d.ts" }),
-    outputOptions: { codeSplitting: false },
-    shims: true,
-    sourcemap: OUTPUT_SOURCE_MAPS,
-    inputOptions: (options) => buildInputOptions(options, { bundleAllDependencies: true }),
-  };
-}
-
-function workerGitHubExecLauncherBuildConfig(): UserConfig {
-  return {
-    name: TSDOWN_UNIFIED_CONFIG_GROUP,
-    entry: { "worker/github-exec-launcher": "src/agents/github-exec-launcher.ts" },
-    outDir: "dist",
-    dts: false,
-    env,
+    define,
     deps: {
       alwaysBundle: (id) => !isBuiltin(id),
       onlyBundle: false,
@@ -932,7 +917,19 @@ const configs: UserConfig[] = [
       false,
     ),
   ),
-  workerDeployBuildConfig(),
+  nodeBuildConfig(
+    {
+      name: TSDOWN_UNIFIED_CONFIG_GROUP,
+      entry: { "node-host-launcher-bootstrap": "src/node-host/launcher-bootstrap.ts" },
+      deps: unifiedDeps,
+      outputOptions: { codeSplitting: false },
+    },
+    false,
+  ),
+  workerDeployBuildConfig({ "worker/worker": "src/worker/worker-deploy-entry.ts" }),
+  workerDeployBuildConfig({
+    "worker/image-processor.worker": "src/worker/worker-deploy-image-processor.ts",
+  }),
   { ...createManagedHandoffBuildConfig(), name: TSDOWN_UNIFIED_CONFIG_GROUP, env },
   nodeBuildConfig(
     {
@@ -945,8 +942,16 @@ const configs: UserConfig[] = [
     },
     false,
   ),
-  workerRsyncReceiverBuildConfig(),
-  workerGitHubExecLauncherBuildConfig(),
+  workerHelperBuildConfig({
+    "worker/workspace-rsync-receiver": "src/worker/workspace-rsync-receiver.ts",
+  }),
+  workerHelperBuildConfig({ "worker/github-exec-launcher": "src/agents/github-exec-launcher.ts" }),
+  ...["service-child-relay", "service-child-group-anchor"].map((name) =>
+    workerHelperBuildConfig(
+      { [`worker/${name}`]: `src/process/supervisor/${name}.ts` },
+      { WORKER_DEPLOY_BUILD: "true", SEALED_RUNTIME_BUILD: "true" },
+    ),
+  ),
   ...(TSDOWN_DECLARATIONS
     ? buildUnifiedDeclarationPartitions(unifiedDistEntries).map(({ name, sources }) =>
         nodeBuildConfig(
