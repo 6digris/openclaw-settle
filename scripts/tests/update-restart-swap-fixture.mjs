@@ -48,6 +48,7 @@ export async function createDiskSwap(sourceRoot, base) {
   });
   const files = [
     "infra/package-update-swap",
+    "infra/package-update-swap-retirement",
     "infra/package-update-filesystem",
     "infra/package-update-integrity",
     "infra/package-update-npm-root",

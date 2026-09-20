@@ -22,16 +22,10 @@ import {
   createPackageIntegrityReader,
   type PackageIntegrityFingerprint,
 } from "./package-update-integrity.js";
+import type { PackageActivationOptions } from "./package-update-swap-contract.js";
 import { isSupportedNodeVersion } from "./runtime-guard.js";
 import { resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
-import type { UpdateRecoveryFence } from "./update-run-recovery.js";
 
-export type PackageActivationOptions = {
-  fence: UpdateRecoveryFence;
-  nodeRunner: string;
-  onPrepared: (command: string) => void;
-  onUnavailable?: (message: string) => void;
-};
 export type PackageActivationPreparation = {
   options: PackageActivationOptions;
   liveRoot: string;

@@ -46,8 +46,9 @@ const isSelectedJournal = (file: string) =>
   file.startsWith(`${root}${path.sep}`) &&
   file.endsWith(`${path.sep}operation.sqlite`) &&
   path.dirname(file).endsWith(".control");
-// oxlint-disable-next-line typescript/unbound-method -- called below with the intercepted database receiver.
-const prepare = DatabaseSync.prototype.prepare;
+
+// Capture native methods reflectively; each interception forwards its original receiver.
+const prepare: DatabaseSync["prepare"] = Reflect.get(DatabaseSync.prototype, "prepare");
 DatabaseSync.prototype.prepare = function (sql) {
   const statement = prepare.call(this, sql);
   if (
@@ -55,8 +56,8 @@ DatabaseSync.prototype.prepare = function (sql) {
     ((cut === "schema" && /^create table "package_activation"/iu.test(sql)) ||
       (cut === "inserted" && /^insert into "package_activation"/iu.test(sql)))
   ) {
-    // oxlint-disable-next-line typescript/unbound-method -- the proxy preserves overloads and forwards the original receiver.
-    statement.run = new Proxy(statement.run, {
+    const originalRun: typeof statement.run = Reflect.get(statement, "run");
+    statement.run = new Proxy(originalRun, {
       apply(run, receiver: unknown, args: unknown[]) {
         const result: unknown = Reflect.apply(run, receiver, args);
         interrupt();
@@ -69,8 +70,8 @@ DatabaseSync.prototype.prepare = function (sql) {
     /^update "package_activation" set /iu.test(sql) &&
     sql.includes('"descriptor_json"') === replacement
   ) {
-    // oxlint-disable-next-line typescript/unbound-method -- preserve the native receiver and overloads.
-    statement.run = new Proxy(statement.run, {
+    const originalRun: typeof statement.run = Reflect.get(statement, "run");
+    statement.run = new Proxy(originalRun, {
       apply(run, receiver: unknown, args: unknown[]) {
         const result: unknown = Reflect.apply(run, receiver, args);
         assert(result !== null && typeof result === "object" && "changes" in result);
@@ -85,8 +86,8 @@ DatabaseSync.prototype.prepare = function (sql) {
   }
   return statement;
 };
-// oxlint-disable-next-line typescript/unbound-method -- invoked with the intercepted database receiver.
-const exec = DatabaseSync.prototype.exec;
+
+const exec: DatabaseSync["exec"] = Reflect.get(DatabaseSync.prototype, "exec");
 DatabaseSync.prototype.exec = function (sql) {
   const selectedCommit = updated && isSelectedJournal(this.location() ?? "") && sql === "COMMIT";
   if (selectedCommit && cut.endsWith("before-commit")) {

@@ -1,4 +1,3 @@
-import type { preparePackageActivation } from "./package-update-activation.js";
 import {
   discardPackageUpdateBackup,
   discardPackageLauncherBackup,
@@ -10,7 +9,7 @@ import type { UpdateStepResult } from "./update-runner-types.js";
 
 /** Called only by the verified, cached transaction completion path. */
 export async function retireVerifiedPackageSwap(params: {
-  activation: Awaited<ReturnType<typeof preparePackageActivation>> | undefined;
+  activation: { retire: () => Promise<unknown> } | undefined;
   rootLink: Awaited<ReturnType<typeof createNpmPackageRootLinkLifecycle>> | undefined;
   hadPackage: boolean;
   previousRoot: PackageRootIntegrityFingerprint | undefined;
