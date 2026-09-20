@@ -31,7 +31,7 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import { isIndexedSessionEntry } from "./session-manager-codec.js";
 import {
   prepareCurrentTurnReplayWitness,
-  resolveLoadedCurrentTurnEntryId,
+  resolveCurrentTurnEntryId,
   sessionManagerPrepareCurrentTurnReplay,
 } from "./session-manager-current-turn.js";
 import { generateSessionEntryId } from "./session-manager-id.js";
@@ -305,14 +305,25 @@ export class SessionManagerEntries extends SessionManagerSuffixPersistence {
     return error;
   }
 
-  resolveCurrentTurnEntryId(isInterruptedTail?: (entry: SessionEntry) => boolean): string | null {
+  // SDK v2026.9.5 exposes this synchronous opt-in; internal replay uses async preparation.
+  resolveCurrentTurnEntryId(
+    isInterruptedTail?: (entry: SessionEntry) => boolean,
+    options?: { includeOmittedCustomMessages?: boolean },
+  ): string | null {
     this.assertTranscriptViewAvailable();
-    return resolveLoadedCurrentTurnEntryId({
-      entries: this.byId,
-      parentId: this.appendParentId,
-      remainingAncestors: this.byId.size,
-      isInterruptedTail,
-    });
+    const includeOmitted = options?.includeOmittedCustomMessages === true;
+    return resolveCurrentTurnEntryId(
+      {
+        target: this.persistenceTarget,
+        entries: this.byId,
+        parentId: this.appendParentId,
+        remainingAncestors: includeOmitted
+          ? (this.boundedContextLimits?.maxEvents ?? this.byId.size + this.opaqueParentsById.size)
+          : this.byId.size,
+        isInterruptedTail,
+      },
+      includeOmitted,
+    );
   }
 
   [sessionManagerPrepareCurrentTurnReplay](

@@ -13,7 +13,7 @@ import { SessionTranscriptStorageUnavailableError } from "../../config/sessions/
 import { runWithSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
 import { waitForSessionTranscriptProjection } from "../../config/sessions/session-transcript-reconcile.js";
 import { WorkerTaskPool } from "../../infra/worker-task-pool.js";
-import { SessionManager } from "../../plugin-sdk/agent-sessions.js";
+import { SessionManager, type SessionEntry } from "../../plugin-sdk/agent-sessions.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "../../state/openclaw-agent-db-resources.js";
 import {
@@ -110,6 +110,44 @@ it.each(["canonical", "custom", "shared"])(
     });
   },
 );
+
+it("preserves the shipped SDK omitted-history option for bounded views", async () => {
+  await withOpenClawTestState({ label: "sdk-omitted-history" }, async (state) => {
+    const target = {
+      agentId: "main",
+      sessionId: "sdk-omitted-history",
+      sessionKey: "agent:main:sdk-omitted-history",
+      storePath: path.join(state.agentDir("main"), "openclaw-agent.sqlite"),
+    };
+    await upsertSessionEntryCore(target, { sessionId: target.sessionId, updatedAt: 1 });
+    const source = SessionManager.open(target);
+    const userId = source.appendMessage(makeUserMessage("current SDK user", 1));
+    const activity = {
+      role: "custom" as const,
+      customType: "sdk-activity",
+      content: "Omitted activity for the current user",
+      display: false,
+      excludeFromContext: true as const,
+      timestamp: 2,
+    };
+    const activityId = source.appendMessage(activity);
+    const bounded = SessionManager.openBounded(target, { maxBytes: 4096, maxEvents: 10 });
+    const isActivity = (entry: SessionEntry) =>
+      entry.type === "message" &&
+      entry.message.role === "custom" &&
+      entry.message.customType === "sdk-activity";
+    expect(bounded.getEntry(activityId)).toBeUndefined();
+    expect(bounded.resolveCurrentTurnEntryId(isActivity)).toBe(activityId);
+    expect(
+      bounded.resolveCurrentTurnEntryId(isActivity, { includeOmittedCustomMessages: true }),
+    ).toBe(userId);
+    const unrelatedId = source.appendMessage({ ...activity, customType: "unrelated-activity" });
+    bounded.reloadPersistedTranscript();
+    expect(
+      bounded.resolveCurrentTurnEntryId(isActivity, { includeOmittedCustomMessages: true }),
+    ).toBe(unrelatedId);
+  });
+});
 
 it.each(["file", "incognito"])(
   "pairs current-turn entries with the complete hydrated version and captured prefix in %s storage",

@@ -1,4 +1,6 @@
 import type { SessionTranscriptContextVersion } from "../../config/sessions/session-accessor.sqlite-contract.js";
+import { readTranscriptEventAtSeqSync } from "../../config/sessions/session-accessor.sqlite-read.js";
+import { readActiveTranscriptEntryAnchor } from "../../config/sessions/session-accessor.sqlite-transcript-anchor.js";
 import { isIndexedSessionEntry } from "../../config/sessions/session-entry-codec.js";
 import { walkSessionCurrentTurn } from "../../config/sessions/session-entry-navigation.js";
 import { prepareSessionTranscriptHydration } from "../../config/sessions/session-transcript-hydration.js";
@@ -57,13 +59,22 @@ function omittedCustomMessage(
     : undefined;
 }
 
-export function resolveLoadedCurrentTurnEntryId(view: CurrentTurnView): string | null {
+export function resolveCurrentTurnEntryId(
+  view: CurrentTurnView & { target: SessionManagerPersistenceTarget | undefined },
+  includeOmitted: boolean,
+): string | null {
   const walk = walkSessionCurrentTurn(view.parentId, view.remainingAncestors);
   let next = walk.next();
   while (!next.done) {
-    next = walk.next(
-      traversalEntry(view.entries.get(next.value), next.value, view.isInterruptedTail),
-    );
+    let entry = view.entries.get(next.value);
+    if (!entry && includeOmitted && view.target) {
+      const anchor = readActiveTranscriptEntryAnchor({ ...view.target, entryId: next.value });
+      entry = omittedCustomMessage(
+        anchor ? readTranscriptEventAtSeqSync(view.target, anchor.rawSeq)?.event : undefined,
+        anchor,
+      );
+    }
+    next = walk.next(traversalEntry(entry, next.value, view.isInterruptedTail));
   }
   return next.value;
 }
