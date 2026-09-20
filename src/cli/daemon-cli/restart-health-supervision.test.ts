@@ -161,6 +161,57 @@ describe("restart health supervision", () => {
     },
   );
 
+  it.each(["loaded", "unloaded", "unavailable"] as const)(
+    "does not start health probes after %s supervision exhausts the absolute deadline",
+    async (state) => {
+      const service = makeGatewayService({ status: "stopped" });
+      monotonicClock.nowMs = 1000;
+      vi.mocked(service.isLoaded).mockImplementation(async (args) => {
+        monotonicClock.nowMs += args.timeoutMs ?? 0;
+        if (state === "unavailable") {
+          throw new Error("launchctl unavailable");
+        }
+        return state === "loaded";
+      });
+      vi.mocked(service.readRuntime).mockImplementation(async () => {
+        monotonicClock.nowMs += 5000;
+        return { status: "stopped" };
+      });
+
+      const snapshot = await waitForGatewayHealthyRestart({
+        service,
+        port: 18789,
+        timeoutMs: 10_000,
+        deadlineMs: 3000,
+      });
+      expect(service.isLoaded).toHaveBeenCalledExactlyOnceWith({
+        env: undefined,
+        timeoutMs: 2000,
+      });
+      expect(snapshot).toMatchObject({ healthy: false, waitOutcome: "timeout", elapsedMs: 2000 });
+      expect(service.readRuntime).not.toHaveBeenCalled();
+      expect(inspectPortUsage).not.toHaveBeenCalled();
+      expect(callGateway).not.toHaveBeenCalled();
+      expect(sleep).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves stopped-free failure for a runtime-only diagnostic adapter", async () => {
+    const nativeService = makeGatewayService({ status: "stopped" });
+    vi.mocked(nativeService.isLoaded).mockResolvedValue(true);
+    const service = {
+      readCommand: nativeService.readCommand,
+      readRuntime: nativeService.readRuntime,
+    };
+    const snapshot = await waitForGatewayHealthyRestart({ service, port: 18789 });
+    expect(snapshot).toMatchObject({
+      healthy: false,
+      waitOutcome: "stopped-free",
+      elapsedMs: 12_500,
+    });
+    expect(nativeService.isLoaded).not.toHaveBeenCalled();
+  });
+
   it.each(["preparation", "supervisor"] as const)(
     "preserves abort identity after %s without starting health probes",
     async (stage) => {

@@ -26,6 +26,8 @@ export type OpenClawStateDatabaseReadAdmission = {
   assertCurrent: () => void;
 };
 export type OpenClawStateDatabaseAsyncResource = {
+  /** Shared execution resources close only after accepted owners settle their remaining work. */
+  phase?: "after-resources";
   close: (identity?: DatabasePathIdentity) => Promise<void>;
 };
 
@@ -55,9 +57,19 @@ type SchemaDelegateFactory = (
   params: Parameters<typeof tryCreateGatewaySchemaFenceDelegate>[0],
 ) => ReturnType<typeof tryCreateGatewaySchemaFenceDelegate>;
 
+type AgentSchemaMigration = {
+  agentId: string;
+  path: string;
+  foundVersion: number;
+  supportedVersion: number;
+};
+
 export type OpenClawDatabaseMaintenanceScope = {
   readonly ownsSchemaMaintenance: boolean;
+  assertOwnerCurrent(): void;
   assertAdmission(): void;
+  addAgentSchemaMigrationCheck(check: (migration: AgentSchemaMigration) => void): void;
+  assertAgentSchemaMigration(migration: AgentSchemaMigration): void;
   run<T>(operation: () => T): T;
   track<T>(operation: Promise<T>): Promise<T>;
   own(
@@ -143,12 +155,14 @@ function commonMaintenanceAncestor(
 /** Associate lexical database work with exact resources, never all files beneath a root. */
 export function createOpenClawDatabaseMaintenanceScope(
   createSchemaFenceDelegate?: SchemaDelegateFactory,
+  assertOwnerCurrent?: () => void,
 ): OpenClawDatabaseMaintenanceScope {
   const parent = getOpenClawDatabaseMaintenanceScope();
   const schemaDelegateFactory =
     createSchemaFenceDelegate ??
     (parent?.ownsSchemaMaintenance ? parent.createSchemaFenceDelegate : undefined);
   const pending = new Set<Promise<unknown>>();
+  const schemaMigrationChecks = new Set<(migration: AgentSchemaMigration) => void>();
   const resources = new Map<object, MaintenanceResource>();
   let closed = false;
   let closing: Promise<void> | undefined;
@@ -159,11 +173,28 @@ export function createOpenClawDatabaseMaintenanceScope(
   };
   const scope: OpenClawDatabaseMaintenanceScope = {
     ownsSchemaMaintenance: schemaDelegateFactory !== undefined,
+    assertOwnerCurrent() {
+      parent?.assertOwnerCurrent();
+      assertOwnerCurrent?.();
+    },
     assertAdmission() {
       assertOpen();
+      scope.assertOwnerCurrent();
       const inherited = maintenanceResources.current.getStore();
       if (closing && !(inherited?.scope === scope && inherited.active)) {
         throw new Error("Database maintenance resource admission is closed");
+      }
+    },
+    addAgentSchemaMigrationCheck(check) {
+      scope.assertAdmission();
+      schemaMigrationChecks.add(check);
+    },
+    assertAgentSchemaMigration(migration) {
+      assertOpen();
+      scope.assertOwnerCurrent();
+      parent?.assertAgentSchemaMigration(migration);
+      for (const check of schemaMigrationChecks) {
+        check(migration);
       }
     },
     run(operation) {
@@ -251,6 +282,7 @@ export function createOpenClawDatabaseMaintenanceScope(
               }
             }
           }
+          schemaMigrationChecks.clear();
           closed = true;
         })
         .catch((error: unknown) => {
@@ -467,8 +499,20 @@ export function createOpenClawStateDatabaseAsyncLifecycle() {
           current.queue = closing;
           const errors: unknown[] = [];
           while (current.queue.size) {
-            const batch = [...current.queue];
-            current.queue.clear();
+            const ordinary = [...current.queue].filter(
+              (resource) => resource.phase !== "after-resources",
+            );
+            // Failed owners retain the transports they may need during a canonical retry.
+            if (!ordinary.length && errors.length) {
+              for (const resource of current.queue) {
+                current.retained.add(resource);
+              }
+              break;
+            }
+            const batch = ordinary.length ? ordinary : [...current.queue];
+            for (const resource of batch) {
+              current.queue.delete(resource);
+            }
             await Promise.all(
               batch.map(async (resource) => {
                 try {

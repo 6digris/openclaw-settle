@@ -6,6 +6,7 @@ import { parseGitHubTarget } from "./targets.js";
 const date = "2026-09-13T12:00:00Z";
 const sha = "abcdef0123456789abcdef0123456789abcdef01";
 let sequence = 0;
+
 function target(kind: "issue" | "pull" | "commit" = "issue"): GitHubTarget {
   const repo = "detail-" + ++sequence;
   return kind === "commit"
@@ -29,6 +30,8 @@ function item(overrides: Record<string, unknown> = {}) {
     comments: 0,
     review_comments: 0,
     changed_files: 0,
+    head: { sha, ref: "feature" },
+    base: { sha: "b".repeat(40), ref: "main" },
     ...overrides,
   };
 }
@@ -66,6 +69,16 @@ function commentItem(overrides: Record<string, unknown> = {}) {
 function publicFetch(payload: unknown) {
   return vi
     .fn<typeof fetch>()
+    .mockImplementation(async (url) => {
+      const requestUrl = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      if (requestUrl.endsWith("/check-runs?filter=latest&per_page=100")) {
+        return json({ total_count: 0, check_runs: [] });
+      }
+      if (requestUrl.endsWith("/status?per_page=100")) {
+        return json({ sha, total_count: 0, state: "pending", statuses: [] });
+      }
+      throw new Error("Unexpected request " + requestUrl);
+    })
     .mockResolvedValueOnce(json({ private: false }))
     .mockResolvedValueOnce(json(payload));
 }
@@ -97,6 +110,19 @@ describe("GitHub detail public read boundary", () => {
         bodyTruncated: false,
       });
       expect(first.body).toBe(kind === "commit" ? "Subject\n\nDetails" : item().body);
+      if (kind === "commit") {
+        expect(first.metadata).toEqual([
+          { label: "Additions", value: "+1", tone: "positive" },
+          { label: "Deletions", value: "−1", tone: "negative" },
+        ]);
+      }
+      if (kind === "pull") {
+        expect(first.metadata).toEqual([
+          { label: "Files", value: "0" },
+          { label: "Comments", value: "0" },
+          { label: "Branch", value: "feature → main" },
+        ]);
+      }
       expect(first.url).toBe(
         "https://github.com/octocat/" +
           input.repo +
@@ -105,7 +131,10 @@ describe("GitHub detail public read boundary", () => {
           "/" +
           (kind === "commit" ? sha : "1"),
       );
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock).toHaveBeenCalledTimes(kind === "pull" ? 4 : 2);
+      if (kind !== "pull") {
+        expect(first).not.toHaveProperty("checks");
+      }
       for (const [url, options] of fetchMock.mock.calls) {
         expect(url).toMatch(/^https:\/\/api\.github\.com\/repos\/octocat\//u);
         expect(options?.headers).not.toHaveProperty("Authorization");
@@ -282,7 +311,7 @@ describe("GitHub detail public read boundary", () => {
         (entry) => entry.patchTruncated && (entry.patch?.length ?? 0) <= 16 * 1024,
       ),
     ).toBe(true);
-    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(fetchMock).toHaveBeenCalledTimes(7);
     expect(fetchMock.mock.calls[2]?.[0]).toContain("/issues/1/comments?per_page=20");
     expect(fetchMock.mock.calls[3]?.[0]).toContain(
       "/pulls/1/comments?per_page=20&sort=created&direction=asc",
@@ -291,6 +320,35 @@ describe("GitHub detail public read boundary", () => {
     for (const [, options] of fetchMock.mock.calls) {
       expect(options?.headers).not.toHaveProperty("Authorization");
     }
+  });
+
+  it("keeps truncated GitHub bodies and patches UTF-16 safe at the cut boundary", async () => {
+    const bodyPrefix = "a".repeat(32 * 1024 - 1);
+    const patchPrefix = "p".repeat(16 * 1024 - 1);
+    const fetchMock = publicFetch(
+      item({ body: bodyPrefix + "\u{1F600}tail", changed_files: 1 }),
+    ).mockResolvedValueOnce(json([file({ patch: patchPrefix + "\u{1F600}tail" })]));
+    const detail = await loadGitHubDetail(target("pull"), fetchMock);
+    expect(detail).toMatchObject({
+      body: bodyPrefix,
+      bodyTruncated: true,
+      partial: true,
+      files: [{ patch: patchPrefix, patchTruncated: true }],
+    });
+  });
+
+  it.each([
+    { patch: "", partial: false },
+    { patch: undefined, partial: true },
+  ])("distinguishes empty from unavailable patches (%j)", async ({ patch, partial }) => {
+    const fetchMock = publicFetch(item({ changed_files: 1 })).mockResolvedValueOnce(
+      json([file({ patch })]),
+    );
+    const detail = await loadGitHubDetail(target("pull"), fetchMock);
+    expect(detail).toMatchObject({
+      partial,
+      files: [{ patch, patchTruncated: partial }],
+    });
   });
 
   it("preserves complete nonempty comments and renamed file patches", async () => {

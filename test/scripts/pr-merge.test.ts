@@ -26,7 +26,9 @@ type BodyScenario = {
   previewHead?: string;
   previewQueue?: boolean;
   previewError?: boolean;
+  restPreview?: boolean;
   authorReadError?: boolean;
+  authorReadFault?: "empty" | "malformed" | "wrong-head" | "multiple";
   prAuthor?: string;
   sourceReadError?: boolean;
   configuredTrailer?: boolean;
@@ -131,10 +133,17 @@ function prepareBody(scenario: BodyScenario) {
             }
           : undefined,
       );
-      githubCommits[git(["rev-parse", "HEAD"])] = {
-        name: author?.name ?? "Maintainer",
-        email: author?.email ?? "maintainer@example.com",
-        user: githubAuthor === undefined ? { login: "fixture-human", type: "User" } : githubAuthor,
+      const sha = git(["rev-parse", "HEAD"]);
+      githubCommits[sha] = {
+        sha,
+        commit: {
+          author: {
+            name: author?.name ?? "Maintainer",
+            email: author?.email ?? "maintainer@example.com",
+          },
+        },
+        author:
+          githubAuthor === undefined ? { login: "fixture-human", type: "User" } : githubAuthor,
       };
     }
     if (scenario.refreshMergeAuthor) {
@@ -198,7 +207,15 @@ pr_gh_plain() { [ "$BODY_PREVIEW_ERROR" = false ] || return 1; printf '%s\\n' "$
 pr_gh() {
   if [ "$1" = api ]; then
     [ "$BODY_AUTHOR_READ_ERROR" = false ] || return 1
-    printf '%s\\n' "$BODY_COMMITS" | jq -ce --arg sha "\${2##*/}" '.[$sha]'
+    local sha="\${2#repos/fixture/repo/commits?sha=}"
+    sha="\${sha%&per_page=1}"
+    printf '%s\\n' "$BODY_COMMITS" | jq -c --arg sha "$sha" --arg fault "$BODY_AUTHOR_FAULT" '
+      [.[$sha]] |
+      if $fault == "empty" then []
+      elif $fault == "malformed" then null
+      elif $fault == "wrong-head" then .[0].sha = "${"b".repeat(40)}"
+      elif $fault == "multiple" then . + .
+      else . end'
   else
     printf 'fixture/repo\\n'
   fi
@@ -242,8 +259,10 @@ file=$(prepare_squash_merge_body 123 "$snapshot")
       BODY_WRITE_ERROR: String(scenario.bodyWriteError ?? false),
       BODY_PREVIEW_ERROR: String(scenario.previewError ?? false),
       BODY_AUTHOR_READ_ERROR: String(scenario.authorReadError ?? false),
+      BODY_AUTHOR_FAULT: scenario.authorReadFault ?? "",
       BODY_COMMITS: JSON.stringify(githubCommits),
       BODY_PREVIEW: JSON.stringify({
+        ...(scenario.restPreview ? { transport: "rest" } : {}),
         data: {
           repository: {
             pullRequest: {
@@ -268,6 +287,46 @@ file=$(prepare_squash_merge_body 123 "$snapshot")
 }
 
 describePosix("native squash attribution", () => {
+  it.each([
+    {
+      name: "linked human",
+      user: { login: "contributor", type: "User" },
+      empty: false,
+      keep: true,
+    },
+    { name: "unlinked author", user: null, empty: false, keep: false },
+    { name: "GitHub bot", user: { login: "bot[bot]", type: "Bot" }, empty: false, keep: false },
+    {
+      name: "empty refresh author",
+      user: { login: "contributor", type: "User" },
+      empty: true,
+      keep: false,
+    },
+  ])(
+    "preserves appropriate $name credit when REST has no server squash preview",
+    ({ user, empty, keep }) => {
+      const result = prepareBody({
+        restPreview: true,
+        previewBody: "Reviewed repair",
+        sourceCommits: [
+          {
+            message: "Repair",
+            author: { name: "Contributor", email: "contributor@example.com" },
+            githubAuthor: user,
+            empty,
+          },
+        ],
+      });
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.mergeBody).toBe(
+        keep
+          ? "Reviewed repair\n\nCo-authored-by: Contributor <contributor@example.com>\n"
+          : "Reviewed repair\n",
+      );
+    },
+  );
+
   it("drops the unlinked local author in the #145094 shape and keeps the PR author", () => {
     const humanCredit = "Co-authored-by: Contributor <123+contributor@users.noreply.github.com>";
     const machineCredit = "Co-authored-by: local-agent <local-agent@openclaw.local>";
@@ -1101,6 +1160,10 @@ describePosix("native squash attribution", () => {
     { previewQueue: true },
     { sourceReadError: true },
     { authorReadError: true },
+    { authorReadFault: "empty" },
+    { authorReadFault: "malformed" },
+    { authorReadFault: "wrong-head" },
+    { authorReadFault: "multiple" },
     { bodyWriteError: true },
   ])("refuses before merge when attribution evidence is unavailable: %j", (failure) => {
     for (const overrideBody of [undefined, "Explicit corrected prose"]) {

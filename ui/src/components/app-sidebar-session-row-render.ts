@@ -7,8 +7,6 @@ import type { SessionObserverDigest } from "../../../packages/gateway-protocol/s
 import { normalizeSessionColorValue } from "../../../packages/gateway-protocol/src/session-agent-status.js";
 import type { GatewaySessionRow } from "../api/types.ts";
 import type { NavigationRouteId } from "../app-navigation.ts";
-import { withSidebarNavCollapseIntent } from "../app-session-route-paths.ts";
-import { sessionHasPendingApproval } from "../app/approval-presentation.ts";
 import type { ApplicationContext, ApplicationNavigationOptions } from "../app/context.ts";
 import { resolveControlUiAuthCandidates } from "../app/control-ui-auth.ts";
 import { t } from "../i18n/index.ts";
@@ -60,7 +58,6 @@ export interface SessionListHost {
   readonly connected: boolean;
   readonly sessionData: Pick<
     SessionDataController,
-    | "approvalBadgeSnapshot"
     | "childSessionErrorsByParent"
     | "loadMoreSessionCatalog"
     | "presenceInstanceId"
@@ -305,8 +302,9 @@ function renderSidebarSessionIndicators(
         hasComposerDraft: session.hasComposerDraft === true,
         pullRequest,
         hasApproval:
-          !(team && ownAttention.kind === "approval") &&
-          sessionHasPendingApproval(host.sessionData.approvalBadgeSnapshot(), session.key),
+          ownAttention.kind === "question"
+            ? ownAttention.requests.some((request) => request.kind === "approval")
+            : !team && ownAttention.kind === "approval",
       })}
       ${team ? trail : nothing}
       ${
@@ -370,7 +368,9 @@ export function renderRecentSession(params: {
     team ? "sidebar-recent-session--team" : "",
     color ? "sidebar-recent-session--colored" : "",
     session.isChild ? "sidebar-recent-session--child" : "",
-    team || !subtitle ? "sidebar-recent-session--single-line" : "",
+    team || (!subtitle && !session.channelPresentation)
+      ? "sidebar-recent-session--single-line"
+      : "",
     session.archived ? "sidebar-session--archived" : "",
     session.visuallyActive ? "sidebar-recent-session--active" : "",
     host.selectedSessionKeys.has(session.key) ? "sidebar-recent-session--selected" : "",
@@ -445,7 +445,7 @@ export function renderRecentSession(params: {
       @keydown=${openMenuFromEvent}
     >
       <a
-        href=${withSidebarNavCollapseIntent(host.sidebarSessionHref(session))}
+        href=${host.sidebarSessionHref(session)}
         class="sidebar-recent-session__link"
         draggable="false"
         aria-current=${session.visuallyActive ? "page" : nothing}
@@ -456,6 +456,7 @@ export function renderRecentSession(params: {
         <span class="sidebar-recent-session__text">
           <span class="sidebar-recent-session__title-row"> ${marqueeLabel} </span>
           <span class="sidebar-recent-session__details">
+            ${session.channelPresentation ? html`<span class="sidebar-recent-session__channel" aria-label=${t("sessionHovercard.linkedChannel", { channel: session.channelPresentation.channelLabel })}>${session.channelPresentation.channelLabel}</span>` : nothing}
             ${team ? nothing : renderSidebarSessionSubtitle({ subtitle, narration })}
             ${indicators.content}
           </span>

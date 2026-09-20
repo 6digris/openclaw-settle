@@ -13,6 +13,7 @@ import {
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
   replyRunRegistry,
   type ReplyMessageInjectionTarget,
+  type ReplyOperation,
 } from "../../auto-reply/reply/reply-run-registry.js";
 import { resolveSessionWorkStartError } from "../../config/sessions.js";
 import { SESSION_ROUTING_CHANGED_ERROR_REASON } from "../../config/sessions/main-session.js";
@@ -58,7 +59,7 @@ import {
 } from "./chat-send-pre-admission.js";
 import type { NormalizedChatSendRequest } from "./chat-send-request.js";
 import { captureAdmittedChatSendSessionSettings } from "./chat-send-session-settings.js";
-import { prepareGoalChatSendSession, type PreparedChatSendSession } from "./chat-send-session.js";
+import { prepareChatSendSessionEntry, type PreparedChatSendSession } from "./chat-send-session.js";
 import { createChatSendWorkAdmission } from "./chat-send-work-admission.js";
 import { normalizeOptionalChatText, normalizeUnknownChatText } from "./chat-text-normalization.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
@@ -182,6 +183,7 @@ export async function admitChatSend(params: {
     }
   };
   let admittedSessionId = backingSessionId ?? clientRunId;
+  let expectedActiveReplyOperation: ReplyOperation | undefined;
   let gatewayWorkAdmission: Awaited<ReturnType<typeof beginSessionWorkAdmission>> | undefined;
   let admittedRunAbort: ReturnType<typeof registerChatAbortController> | undefined;
   let restartSafeAdmission: ReturnType<typeof resolveRestartSafeChatAdmission>;
@@ -336,8 +338,10 @@ export async function admitChatSend(params: {
       return;
     }
     admittedSessionId = latestEntry?.sessionId ?? backingSessionId ?? clientRunId;
+    // Retain compaction lineage before attachment/context preparation can outlive this owner.
+    expectedActiveReplyOperation = replyRunRegistry.get(activeRunScopeKey);
     if (request.goalOperation?.action === "start" && !latestEntry && !requestedSessionId) {
-      const prepared = prepareGoalChatSendSession({
+      const prepared = prepareChatSendSessionEntry({
         cfg: latestSession.cfg,
         client,
         agentId,
@@ -668,6 +672,7 @@ export async function admitChatSend(params: {
       activeRunAbort,
       admittedSessionSettings,
       admittedSessionId,
+      ...(expectedActiveReplyOperation ? { expectedActiveReplyOperation } : {}),
       sessionBinding,
       onSessionPrepared,
       initialSessionEntry,

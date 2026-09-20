@@ -1,6 +1,8 @@
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
+import { renderAgentHarnessPreflightUserMessage } from "../../agents/embedded-agent-helpers/user-facing-text.js";
 import { describeFailoverError } from "../../agents/failover-error.js";
 import { renderFailoverCodeUserCopy } from "../../agents/failover/user-copy.js";
+import { DispatchSessionRefreshRequiredError } from "../../auto-reply/reply/dispatch-session-refresh-error.js";
 import { clearAgentRunContext } from "../../infra/agent-run-registry.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
@@ -41,6 +43,20 @@ type PendingDispatchLifecycleError = {
   startedAt: number;
 };
 
+function formatChatSendError(error: unknown): string {
+  if (error instanceof DispatchSessionRefreshRequiredError) {
+    return (
+      "Your message didn't run because the conversation changed. Refresh the conversation, then send it again." +
+      `\n\n${String(error)}`
+    );
+  }
+  return (
+    renderAgentHarnessPreflightUserMessage(error) ??
+    renderFailoverCodeUserCopy(describeFailoverError(error).code) ??
+    String(error)
+  );
+}
+
 /** Finalize a chat.send that throws before detached dispatch owns cleanup. */
 type ChatSendJobAdmission = Pick<
   AdmittedChatSend,
@@ -73,8 +89,7 @@ export async function handleChatSendSetupError(params: {
     params.respond(false, undefined, params.error.error);
     return;
   }
-  const errorMessage =
-    renderFailoverCodeUserCopy(describeFailoverError(params.error).code) ?? String(params.error);
+  const errorMessage = formatChatSendError(params.error);
   const failureDisposition = classifyAcceptedChatSendFailure({
     error: params.error,
     phase: "pre-ack",
@@ -166,7 +181,7 @@ export function createChatSendDispatchErrorLifecycle(params: {
   let publishDispatchError: (() => void) | undefined;
 
   const handleError = async (err: unknown) => {
-    const errorMessage = renderFailoverCodeUserCopy(describeFailoverError(err).code) ?? String(err);
+    const errorMessage = formatChatSendError(err);
     const failureDisposition =
       params.classifyFailure?.(err) ??
       classifyAcceptedChatSendFailure({ error: err, phase: "post-ack" });

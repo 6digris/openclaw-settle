@@ -92,6 +92,26 @@ export class PortaledHovercardController {
     this.returnFocus(trigger);
   };
 
+  renderContents(card: HTMLDivElement, update: () => void): void {
+    const focused = card.contains(document.activeElement) ? document.activeElement : null;
+    update();
+    if (focused && !card.contains(document.activeElement)) {
+      // Live session links can move between sections or disappear after a roster update.
+      const replacement =
+        focused instanceof HTMLAnchorElement
+          ? this.focusables().find(
+              (link) => link instanceof HTMLAnchorElement && link.href === focused.href,
+            )
+          : undefined;
+      if (replacement) {
+        replacement.focus({ preventScroll: true });
+      } else {
+        this.returnFocus(this.trigger);
+        this.focusInside = document.activeElement === this.trigger;
+      }
+    }
+  }
+
   returnFocus(trigger: HTMLElement | null): void {
     this.restoringFocus = true;
     trigger?.focus({ preventScroll: true });
@@ -392,15 +412,20 @@ function positionPortaledHovercard(
   const cardHeight = card.offsetHeight;
   const maxLeft = Math.max(VIEWPORT_PADDING, innerWidth - cardWidth - VIEWPORT_PADDING);
   const maxTop = Math.max(VIEWPORT_PADDING, innerHeight - cardHeight - VIEWPORT_PADDING);
+  const fitsBelow = anchorRect.bottom + CARD_GAP + cardHeight + VIEWPORT_PADDING <= innerHeight;
   if (placement === "horizontal") {
     const fitsRight = anchorRect.right + CARD_GAP + cardWidth + VIEWPORT_PADDING <= innerWidth;
-    const left = fitsRight ? anchorRect.right + CARD_GAP : anchorRect.left - cardWidth - CARD_GAP;
-    card.dataset.side = fitsRight ? "right" : "left";
-    card.style.left = `${Math.min(Math.max(VIEWPORT_PADDING, left), maxLeft)}px`;
-    card.style.top = `${Math.min(Math.max(VIEWPORT_PADDING, anchorRect.top), maxTop)}px`;
-    return;
+    const fitsLeft = anchorRect.left - CARD_GAP - cardWidth >= VIEWPORT_PADDING;
+    const fitsAbove = anchorRect.top - CARD_GAP - cardHeight >= VIEWPORT_PADDING;
+    // Keep the existing clamp when neither axis has room; switch axes only to clear the trigger.
+    if (fitsRight || fitsLeft || (!fitsBelow && !fitsAbove)) {
+      const left = fitsRight ? anchorRect.right + CARD_GAP : anchorRect.left - cardWidth - CARD_GAP;
+      card.dataset.side = fitsRight ? "right" : "left";
+      card.style.left = `${Math.min(Math.max(VIEWPORT_PADDING, left), maxLeft)}px`;
+      card.style.top = `${Math.min(Math.max(VIEWPORT_PADDING, anchorRect.top), maxTop)}px`;
+      return;
+    }
   }
-  const fitsBelow = anchorRect.bottom + CARD_GAP + cardHeight + VIEWPORT_PADDING <= innerHeight;
   const side = fitsBelow ? "bottom" : "top";
   const top = fitsBelow ? anchorRect.bottom + CARD_GAP : anchorRect.top - cardHeight - CARD_GAP;
   card.dataset.side = side;
