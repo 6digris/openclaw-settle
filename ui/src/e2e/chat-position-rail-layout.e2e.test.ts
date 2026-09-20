@@ -11,6 +11,7 @@ import {
 } from "./chat-flow.test-support.ts";
 
 const suite = createChatFlowE2eSuite();
+const POSITION_RAIL_MIN_TRANSCRIPT_HEIGHT = 360;
 
 suite.define(() => {
   it.each([
@@ -83,6 +84,8 @@ suite.define(() => {
           const composer = page.locator(".agent-chat__composer-shell");
           await track.waitFor();
           const markers = marks.locator(".chat-position-rail__marker");
+          const markerForIndex = (index: number) =>
+            marks.locator(`[data-position-marker-id="stable-rail-${index}"]`);
           // Wait for the rail to reflect the visible reader before recording its anchor.
           await expect
             .poll(() =>
@@ -146,9 +149,19 @@ suite.define(() => {
               const tick = element.querySelectorAll(".chat-position-rail__tick")[index]!;
               const positions = [];
               for (let frame = 0; frame < 30; frame++) {
+                const transcript = element.closest<HTMLElement>(".chat-thread")!;
+                const style = getComputedStyle(transcript);
                 positions.push({
                   track: element.getBoundingClientRect().top,
                   tick: tick.getBoundingClientRect().top,
+                  connected: element.isConnected,
+                  display: getComputedStyle(element.closest(".chat-position-rail")!).display,
+                  contentHeight:
+                    transcript.getBoundingClientRect().height -
+                    Number.parseFloat(style.paddingTop) -
+                    Number.parseFloat(style.paddingBottom) -
+                    Number.parseFloat(style.borderTopWidth) -
+                    Number.parseFloat(style.borderBottomWidth),
                 });
                 await new Promise<void>((resolve) => {
                   requestAnimationFrame(() => resolve());
@@ -156,8 +169,20 @@ suite.define(() => {
               }
               return positions;
             }, anchorIndex);
-          const assertAnchor = async (samples: ReturnType<typeof sampleAnchor>) => {
+          const assertAnchor = async (
+            samples: ReturnType<typeof sampleAnchor>,
+            allowShortTranscript = false,
+          ) => {
             for (const position of await samples) {
+              expect(position.connected).toBe(true);
+              if (
+                allowShortTranscript &&
+                position.contentHeight <= POSITION_RAIL_MIN_TRANSCRIPT_HEIGHT
+              ) {
+                expect(position.display).toBe("none");
+                continue;
+              }
+              expect(position.display).toBe("block");
               expect(position.track).toBe(collapsed.top);
               expect(position.tick).toBe(tickTop);
             }
@@ -216,13 +241,46 @@ suite.define(() => {
             await assertAnchor(cancelSamples);
             await gateway.setOnline(false);
             await gateway.closeLatest();
-            for (const text of ["Review the next checkpoint", "Check the supporting notes"]) {
+            await page.locator('.agent-chat__composer-status[data-tone="warn"]').waitFor();
+            const queuedTexts = ["Review the next checkpoint", "Check the supporting notes"];
+            for (const text of queuedTexts) {
               const queueSamples = sampleAnchor();
               await textarea.fill(text);
               await textarea.press("Enter");
               await page.locator(".chat-queue__item", { hasText: text }).waitFor();
-              await assertAnchor(queueSamples);
+              await assertAnchor(queueSamples, true);
             }
+            const shortTranscriptSamples = sampleAnchor();
+            await textarea.fill("Keep the complete review draft available.\n".repeat(12));
+            await track.waitFor({ state: "hidden" });
+            await assertAnchor(shortTranscriptSamples, true);
+            const transcriptContentHeight = () =>
+              page.locator(".chat-thread").evaluate((element) => {
+                const style = getComputedStyle(element);
+                return (
+                  element.getBoundingClientRect().height -
+                  Number.parseFloat(style.paddingTop) -
+                  Number.parseFloat(style.paddingBottom) -
+                  Number.parseFloat(style.borderTopWidth) -
+                  Number.parseFloat(style.borderBottomWidth)
+                );
+              });
+            expect(await transcriptContentHeight()).toBeLessThanOrEqual(
+              POSITION_RAIL_MIN_TRANSCRIPT_HEIGHT,
+            );
+            await textarea.fill("");
+            for (const text of queuedTexts) {
+              await page
+                .locator(".chat-queue__item", { hasText: text })
+                .locator(".chat-queue__remove")
+                .click();
+            }
+            await expect.poll(() => page.locator(".chat-queue__item").count()).toBe(0);
+            await track.waitFor({ state: "visible" });
+            await expect
+              .poll(transcriptContentHeight)
+              .toBeGreaterThan(POSITION_RAIL_MIN_TRANSCRIPT_HEIGHT);
+            await expect.poll(async () => (await bounds()).top).toBe(collapsed.top);
           }
           await expect
             .poll(() =>
@@ -253,7 +311,7 @@ suite.define(() => {
             }
             await expect
               .poll(() =>
-                markers.nth(index).evaluate((element) => {
+                markerForIndex(index).evaluate((element) => {
                   const marker = element.getBoundingClientRect();
                   const scroller = element.closest(".chat-position-rail__marks")!;
                   const viewport = scroller.getBoundingClientRect();
@@ -321,7 +379,9 @@ suite.define(() => {
               )
               .toBe(true);
             await page.locator(".agent-chat__search-bar button").click();
-            await expect.poll(() => markers.count()).toBe(count);
+            await expect
+              .poll(() => markers.first().getAttribute("aria-label"))
+              .toContain(`of ${count}`);
           }
           await page.setViewportSize({ width: 390, height: 844 });
           await track.waitFor({ state: "hidden" });

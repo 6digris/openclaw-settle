@@ -222,6 +222,7 @@ export function readSessionRowInputs(params: {
             }
           : undefined,
       userProfileIdentityById: rowContext.userProfileIdentityById,
+      identityProjection: rowContext.identityProjection,
       configuredAgentIds: params.configuredAgentIds,
       agentId,
       displayName,
@@ -281,6 +282,8 @@ export function readSessionRowInputs(params: {
     presentation: {
       now,
       subagentRuns: rowContext.subagentRuns,
+      projectedAgentRuns: rowContext.projectedAgentRuns,
+      projectedSubagentActivity: rowContext.projectedSubagentActivity,
       activeModel,
       excludedChildKeys: params.excludedChildKeys,
     },
@@ -374,13 +377,22 @@ function channelAvatarRevision(reference: string): string {
 
 /** Profile publications invalidate display facts independently of stored session metadata. */
 function projectSessionRowProfiles(input: ReturnType<typeof readSessionRowInputs>["inputs"]) {
-  const { entry, cfg, userProfileIdentityById, configuredAgentIds } = input;
-  const owner = projectSessionOwner(entry, userProfileIdentityById, cfg, configuredAgentIds);
-  const projected = projectSessionParticipants(entry, userProfileIdentityById, cfg);
-  if (owner?.actor.identity) {
-    projected.delete(JSON.stringify(owner.actor.identity));
-  }
-  const participants = projected.size ? [...projected.values()] : undefined;
+  const { entry, cfg, userProfileIdentityById, configuredAgentIds, identityProjection } = input;
+  const owner = (identityProjection?.owner ?? projectSessionOwner)(
+    entry,
+    userProfileIdentityById,
+    cfg,
+    configuredAgentIds,
+  );
+  const projected = (identityProjection?.participants ?? projectSessionParticipants)(
+    entry,
+    userProfileIdentityById,
+    cfg,
+  );
+  const ownerKey = owner?.actor.identity && JSON.stringify(owner.actor.identity);
+  const participants = [...projected].flatMap(([key, participant]) =>
+    key === ownerKey ? [] : [participant],
+  );
   return {
     createdActor: projectSessionActor(
       entry?.createdActor,
@@ -390,9 +402,13 @@ function projectSessionRowProfiles(input: ReturnType<typeof readSessionRowInputs
     ),
     owner,
     // Keep the released v4 summary stable; expanded identities are additive for newer clients.
-    participants: participants?.slice(0, SESSION_PARTICIPANT_LIMIT),
-    expandedParticipants: participants?.slice(0, MAX_SESSION_PARTICIPANTS),
-    participantCount: participants?.length,
+    participants: participants.length
+      ? participants.slice(0, SESSION_PARTICIPANT_LIMIT)
+      : undefined,
+    expandedParticipants: participants.length
+      ? participants.slice(0, MAX_SESSION_PARTICIPANTS)
+      : undefined,
+    participantCount: participants.length || undefined,
     archivedBy: projectSessionActor(entry?.archivedBy, userProfileIdentityById, cfg),
   };
 }
@@ -598,7 +614,11 @@ export function presentSessionRow(
     key: row.key,
     entry,
     now,
-    rowContext: { subagentRuns },
+    rowContext: {
+      subagentRuns,
+      projectedAgentRuns: options.projectedAgentRuns,
+      projectedSubagentActivity: options.projectedSubagentActivity,
+    },
   });
   Object.assign(row, fields);
   const usage = source.usageByFallbackModel?.get(subagentRun?.model);
@@ -617,12 +637,36 @@ export function presentSessionRow(
   row.estimatedCostUsd =
     source.estimatedCostUsd ??
     asNonNegativeFiniteNumber(source.lightweight ? undefined : usage?.estimatedCostUsd);
-  const children = source.childLinks?.flatMap(({ key, entry: childEntry }) =>
-    !options.excludedChildKeys?.has(key) &&
-    resolveSessionChildOwners({ key, entry: childEntry, now, subagentRuns }).includes(row.key)
-      ? [key]
-      : [],
-  );
+  const children = source.childLinks?.flatMap(({ key, entry: childEntry }) => {
+    if (options.excludedChildKeys?.has(key)) {
+      return [];
+    }
+    const childActive = projectGatewaySessionRunState({
+      key,
+      entry: childEntry,
+      now,
+      rowContext: {
+        subagentRuns,
+        projectedAgentRuns: options.projectedAgentRuns,
+        projectedSubagentActivity: options.projectedSubagentActivity,
+      },
+    }).fields.hasActiveSubagentRun;
+    if (
+      !resolveSessionChildOwners({
+        key,
+        entry: childEntry,
+        now,
+        subagentRuns,
+        hasActiveRun: childActive,
+      }).includes(row.key)
+    ) {
+      return [];
+    }
+    if (childActive) {
+      row.hasActiveSubagentRun = true;
+    }
+    return [key];
+  });
   row.childSessions = children?.length ? children : undefined;
   row.activeModelProvider = options.activeModel?.provider;
   row.activeModel = options.activeModel?.model;

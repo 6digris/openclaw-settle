@@ -205,7 +205,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: public provider-owned asynchronous embedding batch contract.
       // +1: runtime-neutral WebSocket client/server adapter for bundled and external plugins.
       // +1: approved host-owned workspace access runtime entrypoint.
-      155,
+      // +1: passive docked link-reader contracts.
+      // +1: typed decision provider contract.
+      157,
       env,
     ),
     publicExports: readPluginSdkSurfaceBudgetEnv(
@@ -380,7 +382,15 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
       // +4: approved workspace access exports; later stack exports belong to their consumers.
-      4489,
+      // +6: passive link-reader descriptor, metadata, document, preview, and request types.
+      // +1: shared workspace bootstrap file policy.
+      // +2: typed workspace unavailability and its structural classifier.
+      // +13: twelve decision contract types and one prepared plugin secret reader.
+      // +6: shared delivery facts, source-reply detection, argument sanitization, and media comparison.
+      // +1: workspace Memory file client.
+      // +2: prepare admitted input attachments and bind a workspace transfer adapter.
+      // +1: approved host workspace Skill resource reader.
+      4522,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -523,7 +533,14 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
       // +3: approved workspace access callables; later stack exports belong to their consumers.
-      2652,
+      // +1: shared workspace bootstrap file policy.
+      // +1: workspace unavailability classifier.
+      // +1: prepared plugin capability secret reader.
+      // +6: shared delivery facts, source-reply detection, argument sanitization, and media comparison.
+      // +1: workspace Memory file client.
+      // +2: prepare admitted input attachments and bind a workspace transfer adapter.
+      // +1: approved host workspace Skill resource reader.
+      2666,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

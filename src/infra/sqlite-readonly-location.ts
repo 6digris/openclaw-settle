@@ -2,17 +2,13 @@
 import fs, { type BigIntStats } from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { copyFileDescriptorSync } from "@openclaw/fs-safe/advanced";
 import { sameFileIdentity } from "./fs-safe-advanced.js";
-import {
-  openNodeSqliteDatabase,
-  requireNodeSqlite,
-  resolveSqliteFilesystemPath,
-} from "./node-sqlite.js";
+import { openNodeSqliteDatabase } from "./node-sqlite.js";
+import { backupNodeSqliteDatabase } from "./sqlite-backup.js";
 import { setSqliteBusyTimeout } from "./sqlite-busy-timeout.js";
-import {
-  markSqliteInspectionOperation,
-  withSqliteInspectionOperation,
-} from "./sqlite-error-diagnostics.js";
+import { createSqliteLifecycleAggregateError } from "./sqlite-coordinator.js";
+import { withSqliteInspectionOperation } from "./sqlite-error-diagnostics.js";
 import { resolvePrivateSqliteSnapshotStagingRoot } from "./sqlite-private-directory.js";
 import {
   adoptPreparedLocation,
@@ -20,7 +16,10 @@ import {
   removeTempDirectoryAsync,
   retainSnapshotWork,
 } from "./sqlite-readonly-location-cleanup.js";
-import type { PreparedSqliteReadOnlyLocation } from "./sqlite-readonly-location.types.js";
+import type {
+  AsyncPreparedSqliteReadOnlyLocation,
+  PreparedSqliteReadOnlyLocation,
+} from "./sqlite-readonly-location.types.js";
 import {
   readSqliteSchemaHeader,
   readSqliteSchemaHeaderFromSnapshot,
@@ -32,8 +31,9 @@ import {
   waitForSnapshotRetry,
 } from "./sqlite-snapshot-policy.js";
 import {
-  allocateSqliteSnapshotStagingDirectory,
+  createSqliteSnapshotStagingDirectory,
   createSqliteSnapshotStagingDirectorySync,
+  sqliteSnapshotStagingError,
 } from "./sqlite-snapshot-staging.js";
 import {
   withSqliteSourceHandle,
@@ -62,25 +62,6 @@ type SourceSidecars = {
 
 type SourceJournalMode = "empty" | "rollback" | "unknown" | "wal";
 export class SqliteSourceChangedError extends Error {}
-
-function sqliteSnapshotStagingError(tempDir: string, cause: unknown, allocation = false): unknown {
-  markSqliteInspectionOperation(cause, "snapshot");
-  for (let depth = 0, error = cause; depth < 8 && error instanceof Error; depth += 1) {
-    const { code, errcode, path: errorPath }: NodeJS.ErrnoException & { errcode?: unknown } = error;
-    // SQLite FULL and IOERR_WRITE/FSYNC/DIR_FSYNC identify destination writes.
-    if (
-      allocation ||
-      ["ENOSPC", "EDQUOT"].includes(code ?? "") ||
-      (typeof errcode === "number" && [13, 778, 1034, 1290].includes(errcode)) ||
-      `${errorPath ?? ""}${path.sep}`.startsWith(`${tempDir}${path.sep}`)
-    ) {
-      const message = `${cause instanceof Error ? cause.message : String(cause)}${typeof errcode === "number" ? ` (SQLite errcode=${errcode})` : ""}; snapshot staging root ${allocation ? tempDir : path.dirname(tempDir)}: free disk space/quota or set XDG_CACHE_HOME to a writable filesystem`;
-      return new Error(message, { cause });
-    }
-    error = error.cause;
-  }
-  return cause;
-}
 
 function statIfPresent(pathname: string): BigIntStats | undefined {
   try {
@@ -176,29 +157,7 @@ function copyPinnedFile(source: PinnedFile, targetPath: string): void {
   let target: number | undefined;
   try {
     target = fs.openSync(targetPath, "wx", 0o600);
-    const buffer = Buffer.allocUnsafe(COPY_BUFFER_BYTES);
-    let offset = 0;
-    while (true) {
-      const bytesRead = fs.readSync(source.descriptor, buffer, 0, buffer.length, offset);
-      if (bytesRead === 0) {
-        break;
-      }
-      let bytesWritten = 0;
-      while (bytesWritten < bytesRead) {
-        const count = fs.writeSync(
-          target,
-          buffer,
-          bytesWritten,
-          bytesRead - bytesWritten,
-          offset + bytesWritten,
-        );
-        if (count === 0) {
-          throw new Error(`SQLite read-only snapshot copy made no progress: ${targetPath}`);
-        }
-        bytesWritten += count;
-      }
-      offset += bytesRead;
-    }
+    copyFileDescriptorSync(source.descriptor, target);
     fs.fsyncSync(target);
     assertPinnedIdentityUnchanged(source);
   } finally {
@@ -409,20 +368,6 @@ function createStableReadOnlyCopyInTempDirectory(
   }
 }
 
-export async function createSqliteSnapshotStagingDirectory(
-  stagingRoot = resolvePrivateSqliteSnapshotStagingRoot(),
-  allowLegacyWorker = false,
-  signal?: AbortSignal,
-): Promise<string> {
-  signal?.throwIfAborted();
-  try {
-    return await allocateSqliteSnapshotStagingDirectory(stagingRoot, allowLegacyWorker, signal);
-  } catch (error) {
-    signal?.throwIfAborted();
-    throw sqliteSnapshotStagingError(stagingRoot, error, true);
-  }
-}
-
 async function createStableReadOnlyCopy(
   pathname: string,
   journalMode: Exclude<SourceJournalMode, "unknown">,
@@ -446,7 +391,6 @@ export async function createOnlineReadOnlyBackup(
 ): Promise<PreparedSqliteReadOnlyLocation> {
   const tempDir = await createSqliteSnapshotStagingDirectory(stagingRoot, false, signal);
   const snapshotPath = path.join(tempDir, "database.sqlite.partial");
-  const sqlite = requireNodeSqlite();
   try {
     if (process.platform !== "win32") {
       fs.chmodSync(tempDir, 0o700);
@@ -459,7 +403,7 @@ export async function createOnlineReadOnlyBackup(
         `PRAGMA busy_timeout = ${SQLITE_SOURCE_READ_BUSY_TIMEOUT_MS}; PRAGMA trusted_schema = OFF; BEGIN;`,
       );
       source.prepare("PRAGMA schema_version;").get();
-      await retainSnapshotWork(sqlite.backup(source, resolveSqliteFilesystemPath(snapshotPath)));
+      await retainSnapshotWork(backupNodeSqliteDatabase(source, snapshotPath));
       source.exec("ROLLBACK;");
     } finally {
       if (source.isOpen) {
@@ -722,17 +666,34 @@ export async function prepareSqliteReadOnlyLocationSyncFallbackInProcess(
 /** Snapshot the lifecycle owner's already-open native connection. Opening or
  * closing another source descriptor could release its process-wide POSIX locks.
  * Only the private destination is opened/closed here; the source owner retains it. */
+export function prepareSqliteReadOnlyLocationFromOwnedDatabase(
+  database: DatabaseSync,
+  assertCurrent: () => void,
+  signal: AbortSignal | undefined,
+  cleanupMode: "async",
+): Promise<AsyncPreparedSqliteReadOnlyLocation>;
+export function prepareSqliteReadOnlyLocationFromOwnedDatabase(
+  database: DatabaseSync,
+  assertCurrent: () => void,
+  signal?: AbortSignal,
+): Promise<PreparedSqliteReadOnlyLocation>;
 export async function prepareSqliteReadOnlyLocationFromOwnedDatabase(
   database: DatabaseSync,
   assertCurrent: () => void,
   signal?: AbortSignal,
+  cleanupMode?: "async",
 ): Promise<PreparedSqliteReadOnlyLocation> {
   signal?.throwIfAborted();
   assertCurrent();
   if (!database.isOpen || database.isTransaction) {
     throw new Error("SQLite inspection requires an open owner outside a transaction");
   }
-  const directory = await createSqliteSnapshotStagingDirectory(undefined, false, signal);
+  const directory = await createSqliteSnapshotStagingDirectory(
+    undefined,
+    false,
+    signal,
+    cleanupMode === "async",
+  );
   try {
     signal?.throwIfAborted();
     assertCurrent();
@@ -740,14 +701,22 @@ export async function prepareSqliteReadOnlyLocationFromOwnedDatabase(
       throw new Error("SQLite inspection requires an open owner outside a transaction");
     }
     const location = path.join(directory, "database.sqlite.partial");
-    await retainSnapshotWork(
-      requireNodeSqlite().backup(database, resolveSqliteFilesystemPath(location)),
-    );
+    await retainSnapshotWork(backupNodeSqliteDatabase(database, location));
     signal?.throwIfAborted();
     assertCurrent();
     return publishPreparedCopy(directory);
   } catch (error) {
-    await removeTempDirectoryAsync(directory);
+    const errors: unknown[] = [error];
+    const removed = await removeTempDirectoryAsync(directory, (cleanupError) =>
+      errors.push(cleanupError),
+    );
+    if (!removed && cleanupMode === "async") {
+      throw createSqliteLifecycleAggregateError(
+        errors,
+        "Owned SQLite snapshot preparation and cleanup failed",
+        error,
+      );
+    }
     throw error;
   }
 }

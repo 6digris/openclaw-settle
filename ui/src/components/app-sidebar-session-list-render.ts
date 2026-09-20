@@ -49,6 +49,7 @@ type SidebarSessionListHost = SessionListHost & {
   readonly sidebarAgentsMode: "chip" | "roster";
   readonly sessionInvolvingMeFilterActive: boolean;
   loadMoreSidebarSessions(): Promise<void>;
+  projectHomeSession(row: GatewaySessionRow, agentId: string): SidebarRecentSession;
 };
 
 type SessionCatalogRenderSnapshot = {
@@ -296,7 +297,7 @@ export function renderSessionSection(params: {
                 }
                 ${
                   personOwner &&
-                  host.sessionOwnershipVisible &&
+                  host.sessionOwnershipVisibility.filters &&
                   host.sessionOwnerOptions.some((owner) => owner.id === personOwner.id)
                     ? html`<button
                         type="button"
@@ -598,7 +599,7 @@ function renderSessionListBody(params: {
           section.id === "ungrouped" &&
           section.totalRowCount === 0 &&
           !params.nativeSessionsHaveMore &&
-          !host.sessionOwnershipVisible &&
+          !host.sessionOwnershipVisibility.filters &&
           host.sessionsStatusFilter === "active" &&
           host.sessionOrganizer.draggingSessionKey === null
         ) {
@@ -668,7 +669,11 @@ export function renderSessionList(params: {
 }
 
 export function renderSessionListFrame(host: SidebarSessionListHost, body: unknown) {
-  const hiddenMainSessionKey = host.mainSessionRow()?.key;
+  const home = host.sidebarAgentsMode === "roster" ? null : host.mainSessionRow();
+  const loadKeys = home
+    ? host.projectHomeSession(home, host.expandedAgentId()).childLoadParentKeys
+    : [];
+  const homeLoadKeys = loadKeys?.length ? loadKeys : home ? [home.key] : [];
   return html`
     <section
       class="sidebar-sessions ${
@@ -679,7 +684,7 @@ export function renderSessionListFrame(host: SidebarSessionListHost, body: unkno
       @drop=${(event: DragEvent) => host.handleSessionListDrop(event)}
     >
       ${host.sidebarAgentsMode === "roster" ? nothing : renderSessionListToolbar(host)}
-      ${hiddenMainSessionKey ? renderChildSessionLoadError(host, hiddenMainSessionKey) : nothing}
+      ${homeLoadKeys.map((key) => renderChildSessionLoadError(host, key))}
       ${
         host.sessionData.sessionMutationError
           ? html`

@@ -1385,6 +1385,7 @@ describe("scripts/test-projects changed-target routing", () => {
         "test/scripts/openclaw-npm-plugin-recovery-workflow.test.ts",
         "test/scripts/openclaw-npm-resume-run.test.ts",
         "test/scripts/release-candidate-checklist.test.ts",
+        "test/scripts/release-publish-preflight-evidence.test.ts",
         "test/scripts/security-review-workflow.test.ts",
         "test/scripts/verify-stable-main-closeout.test.ts",
         "test/scripts/ci-workflow-guards.test.ts",
@@ -1424,6 +1425,7 @@ describe("scripts/test-projects changed-target routing", () => {
         "test/scripts/plugin-npm-extended-stable-workflow.test.ts",
         "test/scripts/release-beta-verifier.test.ts",
         "test/scripts/release-candidate-checklist.test.ts",
+        "test/scripts/release-clawhub-children.test.ts",
         "test/scripts/release-no-push-workflow.test.ts",
         "test/scripts/release-plan-producer.test.ts",
         "test/scripts/release-publish-draft.test.ts",
@@ -2573,6 +2575,10 @@ describe("scripts/test-projects changed-target routing", () => {
       "test/vitest/vitest.unit-fast.config.ts",
       "src/agents/embedded-agent-runner/run/model-setup.selected-model.test.ts",
     ],
+    [
+      "test/vitest/vitest.unit-fast-isolated.config.ts",
+      "src/state/openclaw-agent-execution-cleanup.test.ts",
+    ],
   ])("preserves whole-owner watch coverage for %s with %s", (config, file) => {
     const [plan] = buildVitestRunPlans(["--watch", config, file]);
     expect(plan).toMatchObject({
@@ -2722,6 +2728,7 @@ describe("scripts/test-projects changed-target routing", () => {
         "src/agents/embedded-agent-runner/run/model-setup.ownership.test.ts",
         "src/agents/embedded-agent-runner/run/model-setup.selected-model.test.ts",
         "src/agents/embedded-agent-runner/run/runtime-preparation.thinking.test.ts",
+        "src/agents/embedded-agent-runner/run/run-attempt-dispatch.owner.test.ts",
       ],
     },
     {
@@ -2785,6 +2792,7 @@ describe("scripts/test-projects changed-target routing", () => {
           "src/agents/embedded-agent-runner/run/model-setup.ownership.test.ts",
           "src/agents/embedded-agent-runner/run/model-setup.selected-model.test.ts",
           "src/agents/embedded-agent-runner/run/runtime-preparation.thinking.test.ts",
+          "src/agents/embedded-agent-runner/run/run-attempt-dispatch.owner.test.ts",
         ],
         watchMode: false,
       },
@@ -3103,6 +3111,7 @@ describe("scripts/test-projects changed-target routing", () => {
           "test/scripts/ci-git-prerequisites.test.ts",
           "test/scripts/ios-release-plan.test.ts",
           "test/scripts/mac-native-fixtures.test.ts",
+          "test/scripts/plugin-npm-publication-readback.test.ts",
         ],
         watchMode: false,
       },
@@ -4900,16 +4909,13 @@ describe("scripts/test-projects changed-target routing", () => {
   });
 
   it("routes forced stateful unit-fast tests to the isolated lane", () => {
-    const plans = buildVitestRunPlans(
-      ["src/system-agent/assistant.configured.test.ts"],
-      process.cwd(),
-    );
-
+    const file = "src/system-agent/assistant.configured.test.ts";
+    const plans = buildVitestRunPlans([file], process.cwd());
     expect(plans).toEqual([
       {
         config: "test/vitest/vitest.unit-fast-isolated.config.ts",
         forwardedArgs: [],
-        includePatterns: ["src/system-agent/assistant.configured.test.ts"],
+        includePatterns: [file],
         watchMode: false,
       },
     ]);

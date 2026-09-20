@@ -7,6 +7,7 @@ import { performance } from "node:perf_hooks";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { isMainThread, threadId } from "node:worker_threads";
 import type { Worker } from "node:worker_threads";
+import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, expect, test, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
@@ -62,7 +63,10 @@ vi.mock("../../logging/subsystem.js", async (importOriginal) => {
       const logger = actual.createSubsystemLogger(name);
       const warn = logger.warn;
       logger.warn = (message, meta) => {
-        if (message === "slow SQLite reclamation Worker operation") {
+        if (
+          message === "slow SQLite reclamation Worker operation" ||
+          message === "SQLite reclamation Worker failed"
+        ) {
           hooks.workerLogAttempts += 1;
           if (hooks.failWorkerLog) {
             throw new Error("synthetic log transport failure");
@@ -186,7 +190,7 @@ test.each(
     ),
   ),
 )(
-  "two synchronous writers progress at reclamation ($operation, rejected: $rejected, alias: $alias)",
+  "two foreground writers progress at reclamation ($operation, rejected: $rejected, alias: $alias)",
   async ({ operation, rejected, alias }) => {
     const { databaseOptions, plan, scopes } = createFixture(alias);
     const workers: Array<{ worker: Worker; id: number }> = [];
@@ -207,13 +211,15 @@ test.each(
     let commitChecks = 0;
     let commitRequested = false;
     let checksDuringWriters = 0;
+    let workerAuthorizationChecked = false;
+    const boardWriteOrder: string[] = [];
     const owner = new AsyncLocalStorage<string>();
     hooks.beforeAuthorization = () =>
       owner.run("transcript-writer", () => {
         commitRequested = true;
         const checksBeforeWriters = commitChecks;
-        // The worker owns BEGIN IMMEDIATE and is waiting for the parent. Both sync
-        // runtimes must service that request before its queued handler can return.
+        // Synchronous writers service the worker's pending authorization request;
+        // asynchronous board writes retain their FIFO place until the worker settles.
         for (const scope of scopes) {
           try {
             if (operation === "entry") {
@@ -222,7 +228,6 @@ test.each(
               continue;
             }
             if (operation === "board") {
-              // First use enters the board's schema transaction before its canonical writer.
               boardAppends.push(
                 board
                   .putWidget({
@@ -232,6 +237,8 @@ test.each(
                   })
                   .then(
                     (snapshot) => {
+                      expect(workerAuthorizationChecked).toBe(true);
+                      boardWriteOrder.push(scope.sessionId);
                       appends.push(snapshot.revision);
                     },
                     (error: unknown) => {
@@ -252,6 +259,14 @@ test.each(
           }
         }
         checksDuringWriters = commitChecks - checksBeforeWriters;
+        if (operation === "board") {
+          const stored = withOpenClawAgentDatabaseReadOnly(
+            ({ db }) =>
+              db.prepare("SELECT name FROM board_widgets WHERE name = 'writer-proof'").all(),
+            databaseOptions,
+          );
+          expect(stored).toEqual({ found: true, value: [] });
+        }
       });
     const reclamation = owner.run("reclamation-owner", () =>
       runSqliteSessionReclamation({
@@ -261,6 +276,9 @@ test.each(
         assertCommitAllowed: () => {
           commitChecks += 1;
           expect(owner.getStore()).toBe("reclamation-owner");
+          if (commitRequested) {
+            workerAuthorizationChecked = true;
+          }
           if (rejected && commitRequested) {
             throw new Error("reclamation owner retired");
           }
@@ -285,7 +303,12 @@ test.each(
     expect(diagnostics).toEqual({ kind: "history-eviction", workerThreadId: workers[0]?.id });
     await closeOpenClawAgentDatabasesAsync();
     expect(workers[0]?.worker.threadId).toBe(-1);
-    expect(checksDuringWriters).toBeGreaterThan(0);
+    if (operation === "board") {
+      expect(checksDuringWriters).toBe(0);
+      expect(boardWriteOrder).toEqual(scopes.map((scope) => scope.sessionId));
+    } else {
+      expect(checksDuringWriters).toBeGreaterThan(0);
+    }
     expect(appendErrors).toEqual([]);
     expect(appends).toEqual(
       operation === "entry"
@@ -834,6 +857,8 @@ test("a synchronous writer reports actual reclamation service time inside its BE
 
 test.each([
   { elapsedMs: 0, rejected: false, failLog: false },
+  { elapsedMs: 0, rejected: true, failLog: false },
+  { elapsedMs: 0, rejected: true, failLog: true },
   { elapsedMs: 1_500, rejected: false, failLog: false },
   { elapsedMs: 1_500, rejected: true, failLog: false },
   { elapsedMs: 1_500, rejected: false, failLog: true },
@@ -851,7 +876,9 @@ test.each([
     const workers: Array<{ worker: Worker; id: number }> = [];
     const observeWorker = (worker: Worker) => workers.push({ worker, id: worker.threadId });
     process.on("worker", observeWorker);
-    const failure = new Error("synthetic reclamation refusal; private plan details");
+    const failure = new Error("synthetic reclamation refusal", {
+      cause: new Error("synthetic storage failure; Authorization: Bearer synthetic-private-token"),
+    });
     let revoked = false;
     let admissions = 0;
     let otherWriterRan = false;
@@ -899,8 +926,10 @@ test.each([
           assert.ok(isRecord(value));
           return value;
         });
-      const slow = records.filter(
-        (record) => record.message === "slow SQLite reclamation Worker operation",
+      const observations = records.filter(
+        (record) =>
+          record.message === "slow SQLite reclamation Worker operation" ||
+          record.message === "SQLite reclamation Worker failed",
       );
       expect(otherWriterRan).toBe(true);
       expect(workers).toHaveLength(1);
@@ -908,11 +937,16 @@ test.each([
       await closeOpenClawAgentDatabasesAsync();
       expect(workers[0]?.worker.threadId).toBe(-1);
       expect(records.some((record) => record["1"] === "slow SQLite session write")).toBe(false);
-      expect(hooks.workerLogAttempts).toBe(elapsedMs > 0 ? 1 : 0);
-      expect(slow).toHaveLength(elapsedMs > 0 && !failLog ? 1 : 0);
-      if (slow[0]) {
-        expect(slow[0]).toMatchObject(trace);
-        expect(slow[0]["1"]).toEqual({
+      expect(hooks.workerLogAttempts).toBe(elapsedMs > 0 || rejected ? 1 : 0);
+      expect(observations).toHaveLength((elapsedMs > 0 || rejected) && !failLog ? 1 : 0);
+      if (observations[0]) {
+        expect(observations[0]).toMatchObject(trace);
+        expect(observations[0].message).toBe(
+          elapsedMs > 0
+            ? "slow SQLite reclamation Worker operation"
+            : "SQLite reclamation Worker failed",
+        );
+        expect(observations[0]["1"]).toEqual({
           pid: process.pid,
           threadId,
           isMainThread,
@@ -920,8 +954,18 @@ test.each([
           workerThreadId: workers[0]?.id,
           elapsedMs,
           outcome: rejected ? "rejected" : "resolved",
-          ...(rejected ? { exitCode: 1 } : {}),
+          ...(rejected
+            ? {
+                exitCode: 1,
+                sessionIdHash: redactIdentifier(plan.sessionId),
+                error: expect.stringContaining(
+                  "synthetic reclamation refusal | synthetic storage failure",
+                ),
+                errorFrame: expect.stringMatching(/^at /),
+              }
+            : {}),
         });
+        expect(JSON.stringify(observations)).not.toContain("synthetic-private-token");
       }
       await expect(
         runExclusiveSqliteSessionWrite(

@@ -24,6 +24,7 @@ import {
   listActiveEmbeddedRunSessionKeys,
 } from "../embedded-agent-runner/active-run-projections.js";
 import { resolveExecDefaults } from "../exec-defaults.js";
+import type { MainSessionRecoveryAdmission } from "./main-session-recovery-admission.js";
 import type { MainSessionRecoveryCapacity } from "./main-session-recovery-capacity.js";
 import {
   getMainSessionRecoveryRetryCount,
@@ -40,10 +41,8 @@ import {
   resumeMainSession,
 } from "./main-session-restart-dispatch.js";
 import {
-  hasCompletionReportUserTail,
-  hasOnlyAnnounceRecoveryRuns,
   markSessionCompletedAfterRecoveryCheckpoint,
-  reconcileInterruptedCompletionReport,
+  reconcileInvalidHarnessCompletion,
 } from "./main-session-restart-recovery-checkpoint.js";
 import { tombstoneMainRestartRecoveryWithNotice } from "./main-session-restart-recovery-failure.js";
 import { readMainSessionReplaySafeCheckpoint } from "./main-session-restart-recovery-replay-safety.js";
@@ -148,31 +147,6 @@ async function completePendingFinalRecoveryWithNotice(
   return completed;
 }
 
-export type ExpectedRestartRecoveryClaim = ExpectedRestartRecoveryTarget & {
-  recoveryRunId: string;
-  recoverySourceRunId: string;
-};
-
-export function loadExpectedRestartRecoveryClaim(params: {
-  expected: ExpectedRestartRecoveryClaim;
-  storePath: string;
-}): SessionEntry | undefined {
-  const exact = loadExactSessionEntry({
-    ...params.expected,
-    readConsistency: "latest",
-    storePath: params.storePath,
-  });
-  const entry = exact?.sessionKey === params.expected.sessionKey ? exact.entry : undefined;
-  return entry?.sessionId === params.expected.sessionId &&
-    entry.status === "running" &&
-    entry.abortedLastRun === true &&
-    normalizeOptionalString(entry.restartRecoveryDeliveryRunId) === params.expected.recoveryRunId &&
-    normalizeOptionalString(entry.restartRecoveryDeliverySourceRunId) ===
-      params.expected.recoverySourceRunId
-    ? entry
-    : undefined;
-}
-
 export function loadExpectedRestartRecoveryTarget(params: {
   expected: ExpectedRestartRecoveryTarget;
   storePath: string;
@@ -186,7 +160,12 @@ export function loadExpectedRestartRecoveryTarget(params: {
   return entry?.sessionId === params.expected.sessionId &&
     entry.status === "running" &&
     entry.abortedLastRun === true &&
-    isMainRestartRecoveryCandidate(entry, params.expected.sessionKey)
+    (params.expected.claim
+      ? normalizeOptionalString(entry.restartRecoveryDeliveryRunId) ===
+          params.expected.claim.runId &&
+        normalizeOptionalString(entry.restartRecoveryDeliverySourceRunId) ===
+          params.expected.claim.sourceRunId
+      : isMainRestartRecoveryCandidate(entry, params.expected.sessionKey))
     ? entry
     : undefined;
 }
@@ -199,9 +178,8 @@ export async function recoverStore(params: {
   storePath: string;
   stateDir?: string;
   handledSessionKeys: Set<string>;
-  expectedClaim?: ExpectedRestartRecoveryClaim;
   expectedTarget?: ExpectedRestartRecoveryTarget;
-  sessionWorkAdmissionHandoffId?: string;
+  recoveryAdmission?: MainSessionRecoveryAdmission;
   activeSessionIds?: Iterable<string>;
   activeSessionKeys?: Iterable<string>;
   lifecycleGeneration?: string;
@@ -230,13 +208,7 @@ export async function recoverStore(params: {
     providedActiveSessionKeys ?? normalizeStringSet(listActiveEmbeddedRunSessionKeys());
   let entries: Array<{ sessionKey: string; entry: SessionEntry }>;
   try {
-    if (params.expectedClaim) {
-      const entry = loadExpectedRestartRecoveryClaim({
-        expected: params.expectedClaim,
-        storePath: params.storePath,
-      });
-      entries = entry ? [{ sessionKey: params.expectedClaim.sessionKey, entry }] : [];
-    } else if (params.expectedTarget) {
+    if (params.expectedTarget) {
       const entry = loadExpectedRestartRecoveryTarget({
         expected: params.expectedTarget,
         storePath: params.storePath,
@@ -276,7 +248,7 @@ export async function recoverStore(params: {
       continue;
     }
     const dispatchTarget = resolveRestartRecoveryDispatchTarget({
-      agentId: (params.expectedClaim ?? params.expectedTarget)?.agentId,
+      agentId: params.expectedTarget?.agentId,
       storeAgentId: params.storeAgentId,
       cfg: params.cfg,
       sessionKey,
@@ -289,9 +261,7 @@ export async function recoverStore(params: {
     const agentId = dispatchTarget.agentId;
     const target = { agentId, sessionKey, storePath: params.storePath };
     const dispatchSessionKey =
-      params.expectedClaim?.canonicalSessionKey ??
-      params.expectedTarget?.canonicalSessionKey ??
-      dispatchTarget.sessionKey;
+      params.expectedTarget?.canonicalSessionKey ?? dispatchTarget.sessionKey;
     if (
       hasCurrentProcessOwner({
         activeSessionIds: resolveActiveSessionIds(),
@@ -433,7 +403,7 @@ export async function recoverStore(params: {
           entry,
           observation: recoveryView.observation,
           recoveryAttempt: recoveryView.nextAttempt,
-          sessionWorkAdmissionHandoffId: params.sessionWorkAdmissionHandoffId,
+          recoveryAdmission: params.recoveryAdmission,
           gatewayRuntime: params.gatewayRuntime,
           ...options,
           lifecycleGeneration: params.lifecycleGeneration,
@@ -569,15 +539,6 @@ export async function recoverStore(params: {
       continue;
     }
 
-    // Completion reports are delivery turns, not human work. Same-process
-    // rotation retains their announce run ids; a full restart can recover the
-    // same fact from the already-persisted user-message provenance.
-    const hasRecoveryRuns = Boolean(entry.restartRecoveryRuns?.length);
-    const completionSource = hasOnlyAnnounceRecoveryRuns(entry)
-      ? "announce_runs"
-      : !hasRecoveryRuns && hasCompletionReportUserTail(messages)
-        ? "transcript"
-        : undefined;
     const harnessCompletion = entry.restartRecoveryHarnessCompletion;
     let recoverableHarnessCompletion: boolean;
     try {
@@ -616,14 +577,13 @@ export async function recoverStore(params: {
       result.failed++;
       continue;
     }
-    if ((completionSource || harnessCompletion) && !recoverableHarnessCompletion) {
+    if (harnessCompletion && !recoverableHarnessCompletion) {
       if (stopped()) {
         return result;
       }
-      const reconciliation = await reconcileInterruptedCompletionReport({
+      const reconciliation = await reconcileInvalidHarnessCompletion({
         ...target,
         entry,
-        source: completionSource ?? "transcript",
       });
       if (reconciliation.outcome === "reconciled") {
         params.handledSessionKeys.add(resumeDedupeKey);

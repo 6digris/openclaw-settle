@@ -10,7 +10,7 @@ import {
   scheduleStaleChunkReload,
 } from "../../../app/stale-chunk-reload.ts";
 import type { ImageLightboxItem } from "../../../components/image-lightbox.types.ts";
-import type { MarkdownRenderOptions } from "../../../components/markdown-render-options.ts";
+import type { MarkdownGitHubContext } from "../../../components/markdown-render-options.ts";
 import type { SessionLinkTarget } from "../../../components/markdown-session-links.ts";
 import { t } from "../../../i18n/index.ts";
 import type { EmbedSandboxMode } from "../../../lib/chat/tool-display.ts";
@@ -37,7 +37,6 @@ import { computeFileMatches } from "./chat-sidebar-file-view.ts";
 import type { FileEditorViewHandle } from "./file-editor-view.ts";
 
 type FileSidebarContent = Extract<SidebarContent, { kind: "file" }>;
-type ChatDetailPanelContent = Exclude<SidebarContent, { kind: "task" }>;
 
 const FILE_WRAP_PREFERENCE_KEY = "openclaw.control.fileView.wrap.v1";
 
@@ -58,7 +57,7 @@ function saveFileWrapPreference(wrap: boolean): void {
 }
 
 class ChatDetailPanel extends OpenClawLightDomElement {
-  @property({ attribute: false }) content: ChatDetailPanelContent | null = null;
+  @property({ attribute: false }) content: SidebarContent | null = null;
   @property({ attribute: false }) fileNavigation: FileSidebarNavigation | null = null;
   @property({ attribute: false }) execNode: string | null = null;
   @property({ attribute: false }) attachmentRuntime: AttachmentSidebarRuntime = {};
@@ -66,7 +65,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
   @property() canvasPluginSurfaceUrl: string | null = null;
   @property() embedSandboxMode: EmbedSandboxMode = "scripts";
   @property({ type: Boolean }) allowExternalEmbedUrls = false;
-  @property({ attribute: false }) githubRepo: MarkdownRenderOptions["githubRepo"] = null;
+  @property({ attribute: false }) githubContext: MarkdownGitHubContext = {};
   @property({ type: Boolean }) embedded = false;
   @property({ attribute: false }) onOpenWorkspaceFile?:
     | ((target: { path: string; line?: number | null }) => void)
@@ -76,7 +75,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
   @property({ attribute: false }) onRevealInWorkspace?: ((path: string) => void) | null = null;
   @property({ attribute: false }) onOpenImage?: ((item: ImageLightboxItem) => void) | null = null;
 
-  @state() private visibleContent: ChatDetailPanelContent | null = null;
+  @state() private visibleContent: SidebarContent | null = null;
   @state() private error: Error | null = null;
   @state() private fileSearchOpen = false;
   @state() private fileWrap = loadFileWrapPreference();
@@ -735,7 +734,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
       canvasPluginSurfaceUrl: this.canvasPluginSurfaceUrl,
       embedSandboxMode: this.embedSandboxMode,
       allowExternalEmbedUrls: this.allowExternalEmbedUrls,
-      githubRepo: this.githubRepo,
+      ...this.githubContext,
       embedded: this.embedded,
       onClose: this.close,
       onOpenImage: this.onOpenImage ?? undefined,

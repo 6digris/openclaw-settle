@@ -1,12 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 import { SqliteCoordinatorError } from "../infra/sqlite-coordinator.js";
+import {
+  isSqliteNativeOpenFailure,
+  withSqliteNativeOpen,
+} from "../infra/sqlite-error-diagnostics.js";
 import { SqliteSchemaVersionError } from "../infra/sqlite-user-version.js";
-import { decodeSqliteWorkerReplyError } from "../infra/sqlite-worker-broker-reply.js";
+import { receiveSqliteWorkerReply } from "../infra/sqlite-worker-broker-reply.js";
+import type { Job } from "../infra/sqlite-worker-broker.types.js";
 import {
   findStartupMaintenanceRequiredError,
   StartupMaintenanceRequiredError,
 } from "../infra/startup-maintenance-required.js";
 import { StateDatabaseCoordinatorContentionError } from "../infra/state-database-coordinator.js";
+import { SkillUploadRequestError } from "../skills/lifecycle/upload-store-error.js";
 import { OpenClawAgentDatabaseMediaMigrationRequiredError } from "./openclaw-agent-db-migration-required.js";
 import { OpenClawStateDatabaseSchemaMigrationRequiredError } from "./openclaw-state-db-schema-migration-required.js";
 import {
@@ -39,21 +45,43 @@ function roundTrip(error: Error): Error {
 }
 
 describe("shared-state worker error transport", () => {
-  it.each([false, true])("preserves RangeError identity with aggregate=%s", (aggregate) => {
-    const original = Object.assign(
-      new RangeError("Synthetic integer cannot be decoded safely", {
-        cause: new Error("Synthetic decoding cause"),
-      }),
-      { code: "ERR_OUT_OF_RANGE" },
-    );
+  it.each([undefined, "SQLITE_IOERR"])(
+    "preserves native-open provenance before lease dispatch (code: %s)",
+    (code) => {
+      const original = Object.assign(new Error("native open refused"), { code });
+      expect(() =>
+        withSqliteNativeOpen(() => {
+          throw original;
+        }),
+      ).toThrow(original);
+
+      const decoded = roundTrip(original);
+      expect(decoded).not.toBe(original);
+      expect(decoded).toMatchObject({ message: original.message });
+      expect("code" in decoded ? decoded.code : undefined).toBe(code);
+      expect(isSqliteNativeOpenFailure(decoded)).toBe(true);
+      expect(hydrateOpenClawStateWorkerError(decoded)).toBe(decoded);
+    },
+  );
+
+  it.each([
+    [RangeError, false],
+    [RangeError, true],
+    [SkillUploadRequestError, false],
+    [SkillUploadRequestError, true],
+  ] as const)("preserves %s identity with aggregate=%s", (ErrorType, aggregate) => {
+    const original = Object.assign(new ErrorType("Synthetic invalid request"), {
+      code: "ERR_OUT_OF_RANGE",
+      cause: new Error("Synthetic decoding cause"),
+    });
     const root = aggregate
       ? new AggregateError([original, original], "Read and cleanup", { cause: original })
       : original;
     const decoded = roundTrip(root);
     const restored = aggregate ? decoded.cause : decoded;
-    expect(restored).toBeInstanceOf(RangeError);
+    expect(restored).toBeInstanceOf(ErrorType);
     expect(restored).toMatchObject({
-      name: "RangeError",
+      name: original.name,
       message: original.message,
       code: original.code,
       cause: { message: "Synthetic decoding cause" },
@@ -72,7 +100,7 @@ describe("shared-state worker error transport", () => {
 
   it.each([
     "OPENCLAW_STATE_LEASE_INVALID_INPUT",
-    "OPENCLAW_STATE_LEASE_TIMEOUT",
+    "OPENCLAW_STATE_LEASE_HELD",
     "OPENCLAW_STATE_LEASE_ABORTED",
     "OPENCLAW_STATE_LEASE_LOST",
     "OPENCLAW_STATE_LEASE_STORAGE_FAILED",
@@ -122,30 +150,55 @@ describe("shared-state worker error transport", () => {
     if (!payload) {
       throw new Error("Expected canonical payload");
     }
-    const failure = decodeSqliteWorkerReplyError(
+    const job: Job = {
+      request: {
+        type: "execute",
+        id: 1,
+        actor: 1,
+        input: new Uint8Array(),
+        stateContext: {
+          environment: { OPENCLAW_STATE_DIR: "/fixture" },
+          coordinatorRuntime: { directory: "/fixture/coordinator", keepAlive: false },
+        },
+      },
+      bytes: 0,
+      resolve: () => undefined,
+      reject: () => undefined,
+      detach: () => undefined,
+    };
+    let failure: unknown;
+    receiveSqliteWorkerReply(
       {
-        request: {
-          type: "execute",
-          id: 1,
-          actor: 1,
-          input: new Uint8Array(),
-          stateContext: {
-            environment: { OPENCLAW_STATE_DIR: "/fixture" },
-            coordinatorRuntime: { directory: "/fixture/coordinator", keepAlive: false },
+        current: job,
+        worker: {
+          postMessage: () => {
+            throw new Error("Unexpected native dispatch");
           },
         },
-        bytes: 0,
-        resolve: () => undefined,
-        reject: () => undefined,
-        detach: () => undefined,
       },
       {
-        name: "SqliteWorkerError",
-        message: "write outcome unknown",
-        code: "outcome-unknown",
-        sharedState: payload,
+        id: 1,
+        ok: false,
+        error: {
+          name: "SqliteWorkerError",
+          message: "write outcome unknown",
+          code: "outcome-unknown",
+          sharedState: payload,
+        },
+      },
+      {
+        fail(error) {
+          throw error;
+        },
+        finish(_job, error) {
+          failure = error;
+        },
+        dispatch() {},
       },
     );
+    if (!(failure instanceof Error)) {
+      throw new Error("Expected the broker to settle the original failure");
+    }
     expect(hydrateOpenClawStateWorkerError(failure)).toBe(failure);
     expect(failure).toMatchObject({ code: "outcome-unknown" });
     expect(findStartupMaintenanceRequiredError(failure)).toBeUndefined();
@@ -409,6 +462,8 @@ describe("shared-state worker error transport", () => {
     for (const error of [
       new Error("ordinary"),
       Object.assign(new Error("range imitation"), { name: "RangeError", code: "ERR_OUT_OF_RANGE" }),
+      Object.assign(new Error("upload imitation"), { name: "SkillUploadRequestError" }),
+      Object.assign(new Error("native open imitation"), { nativeOpen: true, code: "SQLITE_IOERR" }),
       imitation,
       new AggregateError([imitation], "ordinary aggregate"),
       { cause: new OpenClawStateOwnershipError("nested object") },
@@ -487,6 +542,7 @@ describe("shared-state worker error transport", () => {
     { version: 1, root: 0, nodes: [{ ...validNode, cause: { ref: 1 } }] },
     { version: 1, root: 0, nodes: [{ ...validNode, cause: { value: {} } }] },
     { version: 1, root: 0, nodes: [{ ...validNode, code: {} }] },
+    { version: 1, root: 0, nodes: [{ ...validNode, nativeOpen: false }] },
     { version: 1, root: 0, nodes: [{ ...validNode, errcode: -1 }] },
     { version: 1, root: 0, nodes: [{ ...validNode, errcode: 0.5 }] },
     { version: 1, root: 0, nodes: [{ ...validNode, errcode: 2 ** 31 }] },
@@ -504,7 +560,7 @@ describe("shared-state worker error transport", () => {
         {
           type: "state-lease",
           leaseCode: "OPENCLAW_STATE_LEASE_LOST",
-          code: "OPENCLAW_STATE_LEASE_TIMEOUT",
+          code: "OPENCLAW_STATE_LEASE_HELD",
           name: "OpenClawStateLeaseError",
           message: "mismatched lease classification",
         },

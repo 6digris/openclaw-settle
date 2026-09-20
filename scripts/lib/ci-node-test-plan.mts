@@ -71,6 +71,7 @@ export type NodeTestShardGroup = {
   requiresDist: boolean;
   runner: string;
   env?: Record<string, string>;
+  fallbackMaxWorkers?: number;
 };
 
 function compactGroupTimingKey(group: NodeTestShardGroup): string {
@@ -298,6 +299,9 @@ const COMPACT_HYBRID_GROUP_SECONDS_SCALE = 0.87;
 // Split groups above this hosted prediction before packing. Hybrid reuses the
 // hosted-derived splits so retries cannot reunite an oversized hosted group.
 const COMPACT_GITHUB_MAX_PREDICTED_SECONDS = 150;
+// Hosted run 35477045216 timed out after an hour on a 203-file serial stripe;
+// its 196-file sibling took 2867s. Bound admission independently of stale costs.
+const COMPACT_HOSTED_STORAGE_STATE_MAX_FILES = 64;
 // Trusted forks can use the GitHub profile on Blacksmith. Every compact
 // profile must fit the same runner-registration allowance.
 const COMPACT_NODE_TEST_JOB_CAP = 80;
@@ -764,7 +768,20 @@ const PINNED_WORKER_COMPACT_GROUP_RE =
   /^core-tooling(?:-\d+(?:-hosted-\d+)?|-isolated)$|^core-runtime-tui-pty$|^core-runtime-infra-process$|^core-runtime-config$|^core-runtime-media-ui-(?:\d+|support)$|^agentic-cli(?:-process)?$|^agentic-gateway-(?:core-\d+|methods)$/u;
 const PINNED_COMPACT_GROUP_ENV = { OPENCLAW_VITEST_MAX_WORKERS: "2" };
 
-function applyCompactGroupWorkerPins(group: NodeTestShardGroup): NodeTestShardGroup {
+function usesMeasuredCompactWorkers(group: NodeTestShardGroup, runnerBackend: string | undefined) {
+  return (
+    (runnerBackend === undefined || runnerBackend === "blacksmith" || runnerBackend === "hybrid") &&
+    /^agentic-gateway-core-2(?:-hosted-\d+)?$/u.test(group.shard_name)
+  );
+}
+
+function applyCompactGroupWorkerPins(
+  group: NodeTestShardGroup,
+  runnerBackend: string | undefined,
+): NodeTestShardGroup {
+  if (usesMeasuredCompactWorkers(group, runnerBackend)) {
+    return { ...group, fallbackMaxWorkers: 2 };
+  }
   if (!PINNED_WORKER_COMPACT_GROUP_RE.test(group.shard_name)) {
     return group;
   }
@@ -2660,6 +2677,13 @@ function splitOversizedCompactGroup(
   // Hybrid groups must fit both the first-attempt runner and hosted retries;
   // a faster retry estimate must not leave a slow first attempt unsplit.
   const isCliProcess = group.shard_name === "agentic-cli-process";
+  const storageStateFileLimit =
+    runnerBackend === "github" && group.shard_name === "core-runtime-infra-storage-state"
+      ? COMPACT_HOSTED_STORAGE_STATE_MAX_FILES
+      : undefined;
+  const exceedsStorageStateFileLimit =
+    storageStateFileLimit !== undefined &&
+    (group.includePatterns?.length ?? 0) > storageStateFileLimit;
   const measuredProfileSeconds = estimateCompactGroupSeconds(group, runnerBackend);
   const measuredHostedSeconds = estimateCompactGroupSeconds(group, "github");
   const splitTimingPrefix = `${group.shard_name}#selector-`;
@@ -2668,6 +2692,7 @@ function splitOversizedCompactGroup(
   );
   if (
     !isCliProcess &&
+    !exceedsStorageStateFileLimit &&
     !runtimePartition &&
     !hasSplitTimingHistory &&
     Math.max(measuredProfileSeconds, measuredHostedSeconds) <= COMPACT_GITHUB_MAX_PREDICTED_SECONDS
@@ -2802,7 +2827,18 @@ function splitOversizedCompactGroup(
         isCliProcess ? batchWeight : undefined,
       );
     }
-    return runtimePartition ? [runtimePartition.runtimeFiles, ...stripes] : stripes;
+    const partitioned = runtimePartition ? [runtimePartition.runtimeFiles, ...stripes] : stripes;
+    // Preserve prerequisite ownership and the existing weighted stripes. The
+    // family guard prevents cost packing from joining these serial chunks again.
+    return storageStateFileLimit === undefined
+      ? partitioned
+      : partitioned.flatMap((stripeFiles) =>
+          Array.from(
+            { length: Math.ceil(stripeFiles.length / storageStateFileLimit) },
+            (_, index) =>
+              stripeFiles.slice(index * storageStateFileLimit, (index + 1) * storageStateFileLimit),
+          ),
+        );
   };
   let stripes = createStripes(splitSeconds);
   let timingGeneration = createCompactSplitTimingGeneration({
@@ -2811,22 +2847,34 @@ function splitOversizedCompactGroup(
     parentShardName: group.shard_name,
     stripes,
   });
-  const completeBlacksmithSeconds = readCompleteSplitGenerationSeconds(
-    "blacksmith",
-    timingGeneration.selectorKey,
+  // The measured worker cutover changes timing identity, not admission budgets.
+  // Retain the previous two-worker observations as floors until timing refits retire them.
+  const previousWorkerGeneration = usesMeasuredCompactWorkers(group, runnerBackend)
+    ? createCompactSplitTimingGeneration({
+        configs: group.configs,
+        env: { ...group.env, ...PINNED_COMPACT_GROUP_ENV },
+        parentShardName: group.shard_name,
+        stripes,
+      })
+    : undefined;
+  const selectors = [timingGeneration.selectorKey, previousWorkerGeneration?.selectorKey].filter(
+    (selector): selector is string => selector !== undefined,
   );
-  const completeHostedSeconds = readCompleteSplitGenerationSeconds(
-    "github",
-    timingGeneration.selectorKey,
+  const completeBlacksmithSeconds = Math.max(
+    ...selectors.map((selector) => readCompleteSplitGenerationSeconds("blacksmith", selector) ?? 0),
+  );
+  const completeHostedSeconds = Math.max(
+    ...selectors.map((selector) => readCompleteSplitGenerationSeconds("github", selector) ?? 0),
   );
   const completeMeasuredSeconds =
     runnerBackend === "github"
-      ? (completeHostedSeconds ?? 0)
+      ? completeHostedSeconds
       : runnerBackend === "hybrid"
-        ? Math.max(completeBlacksmithSeconds ?? 0, completeHostedSeconds ?? 0)
-        : (completeBlacksmithSeconds ?? 0);
+        ? Math.max(completeBlacksmithSeconds, completeHostedSeconds)
+        : completeBlacksmithSeconds;
   if (
     !runtimePartition &&
+    !exceedsStorageStateFileLimit &&
     Math.max(splitSeconds, completeMeasuredSeconds) <= COMPACT_GITHUB_MAX_PREDICTED_SECONDS
   ) {
     return [{ group, seconds: profileSeconds }];
@@ -2842,11 +2890,19 @@ function splitOversizedCompactGroup(
   }
   const distributedProfileSeconds = Math.max(
     profileSeconds,
-    runnerBackend === "github" ? (completeHostedSeconds ?? 0) : (completeBlacksmithSeconds ?? 0),
+    runnerBackend === "github" ? completeHostedSeconds : completeBlacksmithSeconds,
   );
   if (tailDonation) {
     onHostedToolingTailDonation?.(tailDonation);
   }
+  const previousWorkerTimingKeys = previousWorkerGeneration
+    ? createCompactSplitTimingGeneration({
+        configs: group.configs,
+        env: { ...group.env, ...PINNED_COMPACT_GROUP_ENV },
+        parentShardName: group.shard_name,
+        stripes,
+      }).timingKeys
+    : [];
   return stripes.map((patterns, index) => ({
     group: {
       ...group,
@@ -2857,10 +2913,17 @@ function splitOversizedCompactGroup(
     },
     // Round once at the job boundary; per-child rounding can duplicate a build
     // when many small consumers together still fit one preparation budget.
-    seconds:
+    seconds: Math.max(
       (distributedProfileSeconds *
         patterns.reduce((seconds, file) => seconds + weightForFile(file), 0)) /
-      totalWeight,
+        totalWeight,
+      previousWorkerTimingKeys[index]
+        ? estimateCompactStripeSeconds(
+            { ...group, timing_key: previousWorkerTimingKeys[index] },
+            runnerBackend,
+          )
+        : 0,
+    ),
   }));
 }
 
@@ -3083,15 +3146,18 @@ function createCompactNodeTestShardBundles(
 
   for (const shard of shards) {
     const runner = resolveCiNodeTestRunner(shard);
-    const group = applyCompactGroupWorkerPins({
-      configs: shard.configs,
-      ...(shard.env ? { env: shard.env } : {}),
-      ...(shard.includePatterns ? { includePatterns: shard.includePatterns } : {}),
-      ...(shard.pretestBuildMode ? { pretestBuildMode: shard.pretestBuildMode } : {}),
-      requiresDist: shard.requiresDist,
-      runner,
-      shard_name: shard.shardName,
-    });
+    const group = applyCompactGroupWorkerPins(
+      {
+        configs: shard.configs,
+        ...(shard.env ? { env: shard.env } : {}),
+        ...(shard.includePatterns ? { includePatterns: shard.includePatterns } : {}),
+        ...(shard.pretestBuildMode ? { pretestBuildMode: shard.pretestBuildMode } : {}),
+        requiresDist: shard.requiresDist,
+        runner,
+        shard_name: shard.shardName,
+      },
+      options.runnerBackend,
+    );
     const partitionFiles = group.pretestBuildMode
       ? (group.includePatterns ?? listWholeConfigSplitFiles(group.shard_name))
       : undefined;
@@ -3499,7 +3565,7 @@ function createCompactNodeTestShardBundles(
       continue;
     }
     // Keep packed jobs and their summed time budgets; Gateway boots own the host
-    // serially. Preserve the previous two-worker ceiling inside every child.
+    // serially. Preserve the previous two-worker ceiling during runtime placement.
     job.planConcurrency = 1;
     job.env = { ...job.env, ...PINNED_COMPACT_GROUP_ENV };
   }
@@ -3559,6 +3625,31 @@ function createCompactNodeTestShardBundles(
       };
       rebalanceRuntimeTestJobs(placementJobs, { cost, admits, runnerRank, prepareRecipient });
     }
+  }
+
+  for (const job of compactJobs) {
+    if (
+      job.env?.OPENCLAW_VITEST_MAX_WORKERS !== "2" ||
+      !job.groups.some((group) => usesMeasuredCompactWorkers(group, options.runnerBackend))
+    ) {
+      continue;
+    }
+    // Finish placement before moving the job cap onto every unproven sibling,
+    // including donated runtime groups. The measured core group keeps autosizing.
+    const { OPENCLAW_VITEST_MAX_WORKERS: _workers, ...env } = job.env;
+    job.env = Object.keys(env).length > 0 ? env : undefined;
+    job.groups = job.groups.map((group) =>
+      usesMeasuredCompactWorkers(group, options.runnerBackend)
+        ? group
+        : Object.assign({}, group, {
+            env: {
+              ...group.env,
+              OPENCLAW_VITEST_MAX_WORKERS: String(
+                Math.min(2, Number(group.env?.OPENCLAW_VITEST_MAX_WORKERS ?? 2)),
+              ),
+            },
+          }),
+    );
   }
 
   return compactJobs.toSorted((a, b) => a.checkName.localeCompare(b.checkName));

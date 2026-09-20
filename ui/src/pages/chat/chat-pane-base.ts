@@ -1,5 +1,6 @@
 import { consume } from "@lit/context";
 import { property, state as litState } from "lit/decorators.js";
+import type { ChatWorkContext } from "../../../../packages/gateway-protocol/src/chat-work-context.js";
 import type {
   SessionCatalogHost,
   SessionCatalogSession,
@@ -24,6 +25,7 @@ import {
 } from "../../app/question-prompt.ts";
 import type { PresencePayload } from "../../app/user-profile.ts";
 import type { MarkdownRenderOptions } from "../../components/markdown-render-options.ts";
+import type { SessionPanelToggleSlot } from "../../components/session-panel-toggle-buffer.ts";
 import { SessionProgressCardController } from "../../components/session-progress-card-controller.ts";
 import type {
   BoardCommandEvent,
@@ -49,6 +51,7 @@ import {
   CHAT_TRANSCRIPT_LOADING_CHANGED_EVENT,
 } from "./chat-history-events.ts";
 import { getAcceptedChatHistorySession, getChatHistoryLoadState } from "./chat-history-state.ts";
+import type { PendingSessionPanelToggle } from "./chat-pane-session-panel-toggle.ts";
 import type {
   ChatPaneConnectionScope,
   ChatPageContext,
@@ -153,7 +156,7 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
   @property({ attribute: false }) agentId?: string;
   @property({ attribute: false }) inputRegion: ChatInputRegion = "page";
   @property({ attribute: false }) compact = false;
-  @property({ attribute: false }) workContext?: string;
+  @property({ attribute: false }) workContext?: ChatWorkContext;
   // Route ownership settles after retained-pane preview; dashboard activity follows
   // the pane the user can already see so its warmed runtime paints immediately.
   private visuallyPresentedValue = true;
@@ -427,8 +430,8 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
   protected readonly sessionDiscussionStates = new Map<string, SessionDiscussionState>();
   protected readonly sessionDiscussionOpenUrls = new Map<string, string | null>();
   protected readonly pendingPanelToggleRequests = new Map<
-    "browser" | "desktop" | "terminal",
-    Event
+    SessionPanelToggleSlot,
+    PendingSessionPanelToggle
   >();
   protected readonly sessionDiscussionProbes = new Set<string>();
   protected readonly sessionDiscussionPanels = new Map<
@@ -479,7 +482,6 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
   protected sessionPullRequestsBranch: ControlUiSessionBranch | undefined;
   protected githubRepo: MarkdownRenderOptions["githubRepo"] = null;
   protected sessionPullRequestsStatus: ControlUiSessionPullRequestSnapshot["status"] = "ready";
-  protected sessionPullRequestsExpanded = false;
   protected githubPublication: GitHubPublicationBinding | null = null;
   protected dismissedSessionPullRequestIds: ReadonlySet<string> = new Set();
   protected readonly dismissedWorkspaceConflictRefs = new Map<string, string>();

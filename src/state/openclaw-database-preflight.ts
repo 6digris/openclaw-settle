@@ -35,8 +35,8 @@ import {
 } from "./agent-database-admission.js";
 import { getAgentDatabaseStartupAdmission } from "./agent-database-startup.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
-import { readAgentDatabasePreflightTargets } from "./openclaw-agent-db-registry-listing.js";
 import { isPersistentOpenClawAgentDatabasePath } from "./openclaw-agent-db-registry.js";
+import { readAgentDatabasePreflightTargets } from "./openclaw-agent-db-registry.read.js";
 import type { AgentSchemaInspection } from "./openclaw-agent-schema-inspection.js";
 import {
   preflightAgentDatabasesBounded,
@@ -682,7 +682,27 @@ export async function preflightOpenClawDatabaseSchemas(options: {
           reason: formatErrorMessage(error),
         });
       } finally {
-        await agentSnapshot?.cleanupAsync();
+        if (agentSnapshot) {
+          let failure: { error: unknown } | undefined;
+          try {
+            if (!(await agentSnapshot.cleanupAsync())) {
+              failure = {
+                error: new Error(
+                  `SQLite read-only worker snapshot cleanup failed: ${agentSnapshot.location}`,
+                ),
+              };
+            }
+          } catch (error) {
+            failure = { error };
+          }
+          if (failure && !startup?.recordInspectionFailure(row, inspection, failure.error)) {
+            inspection.indeterminate.push({
+              kind: "agent",
+              path: agentPath,
+              reason: formatErrorMessage(failure.error),
+            });
+          }
+        }
       }
     },
     result,
