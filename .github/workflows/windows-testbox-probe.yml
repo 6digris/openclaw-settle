@@ -52,6 +52,11 @@ on:
         required: false
         default: false
         type: boolean
+      run_winget_prerequisite:
+        description: "Acquire only real fixed-version WinGet portable input; no candidate or matrix"
+        required: false
+        default: false
+        type: boolean
       run_portable_node_recovery:
         description: "Prove real portable Node recovery on disposable Windows VMs (both engines)"
         required: false
@@ -111,7 +116,7 @@ env:
 
 jobs:
   probe:
-    if: ${{ inputs.retained_package_transport == '' && (!inputs.run_winget_acceptance && !inputs.run_portable_node_recovery && !inputs.run_packaged_gateway_147054) }}
+    if: ${{ !inputs.run_winget_prerequisite && (inputs.retained_package_transport == '' && (!inputs.run_winget_acceptance && !inputs.run_portable_node_recovery && !inputs.run_packaged_gateway_147054)) }}
     name: Windows probe
     runs-on: ${{ inputs.runner_label }}
     timeout-minutes: 75
@@ -712,7 +717,7 @@ jobs:
   # Native session qualification must not depend on headless CI or WSL results.
   native-schtasks:
     name: Native Scheduled Task proof
-    if: ${{ inputs.retained_package_transport == '' && (inputs.run_windows_ci && !inputs.run_packaged_gateway_147054) }}
+    if: ${{ !inputs.run_winget_prerequisite && (inputs.retained_package_transport == '' && (inputs.run_windows_ci && !inputs.run_packaged_gateway_147054)) }}
     runs-on: windows-2025
     timeout-minutes: 75
     steps:
@@ -971,7 +976,7 @@ jobs:
 
   winget-acceptance:
     name: Native Winget acceptance (${{ matrix.scenario }})
-    if: ${{ inputs.retained_package_transport == '' && (inputs.run_winget_acceptance && !inputs.run_packaged_gateway_147054) }}
+    if: ${{ !inputs.run_winget_prerequisite && (inputs.retained_package_transport == '' && (inputs.run_winget_acceptance && !inputs.run_packaged_gateway_147054)) }}
     runs-on: windows-2025
     timeout-minutes: 35
     strategy:
@@ -1055,9 +1060,89 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  winget-prerequisite:
+    name: Native WinGet portable prerequisite only
+    if: ${{ inputs.run_winget_prerequisite }}
+    runs-on: windows-2025
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Validate isolated prerequisite request
+        env:
+          TARGET_REF: ${{ inputs.target_ref }}
+          RUN_MATRIX: ${{ inputs.run_winget_acceptance }}
+          RUN_RECOVERY: ${{ inputs.run_portable_node_recovery }}
+          RUN_GATEWAY: ${{ inputs.run_packaged_gateway_147054 }}
+          TRANSPORT: ${{ inputs.retained_package_transport }}
+          KEEPALIVE: ${{ inputs.keepalive_minutes }}
+          RUN_CI: ${{ inputs.run_windows_ci }}
+          RUN_LAUNCHER: ${{ inputs.run_windows_launcher_integration }}
+          STARTUP: ${{ inputs.installed_startup_package }}
+          CPU_DIAGNOSTIC: ${{ inputs.installed_startup_cpu_diagnostic }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          if ($env:TARGET_REF -cne 'dac01337bab5251fec2726f41ec4b199862e9321') { throw 'Requires the reviewed PR112055 head.' }
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Requires a fresh disposable hosted VM.' }
+          if ($env:RUN_CI -eq 'true' -or $env:RUN_LAUNCHER -eq 'true' -or $env:STARTUP -ne '' -or $env:CPU_DIAGNOSTIC -eq 'true') { throw 'Winget qualification is a separate run.' }
+          if ($env:RUN_MATRIX -eq 'true' -or $env:RUN_RECOVERY -eq 'true' -or $env:RUN_GATEWAY -eq 'true' -or $env:TRANSPORT -ne '' -or $env:KEEPALIVE -ne '0') { throw 'Prerequisite-only mode excludes every other job and keepalive.' }
+          $destinations = @($env:GITHUB_WORKSPACE,$env:RUNNER_TEMP,$env:ProgramFiles,$env:TEMP)
+          $driveNames = @($destinations | ForEach-Object { (Split-Path -Path $_ -Qualifier).TrimEnd(':') } | Sort-Object -Unique)
+          foreach ($driveName in $driveNames) {
+            $disk = Get-PSDrive -Name $driveName
+            if ($disk.Free -lt 8GB) { throw "Native setup needs 8 GiB free on destination drive $driveName for checkout, bootstrap, MSI/ZIP and logs." }
+          }
+      - name: Checkout reviewed acceptance harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: harness
+          persist-credentials: false
+          sparse-checkout: scripts/ci/windows-winget-acceptance.ps1
+          sparse-checkout-cone-mode: false
+      - name: Record immutable workflow and harness provenance
+        env:
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          $head = (& git -C harness rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $env:WORKFLOW_SHA -cnotmatch '^[0-9a-f]{40}$' -or $head -cne $env:WORKFLOW_SHA) { throw 'Harness checkout must match the immutable workflow SHA.' }
+          $tree = (& git -C harness rev-parse 'HEAD^{tree}').Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Could not bind harness source tree.' }
+          $proof = Join-Path $env:RUNNER_TEMP 'winget-proof'
+          New-Item -ItemType Directory -Force -Path $proof | Out-Null
+          [ordered]@{
+            workflowSha = $env:WORKFLOW_SHA
+            workflowRef = $env:WORKFLOW_REF
+            harnessHead = $head
+            harnessTree = $tree
+            harnessSha256 = (Get-FileHash ./harness/scripts/ci/windows-winget-acceptance.ps1 -Algorithm SHA256).Hash.ToLowerInvariant()
+            runId = $env:RUN_ID
+            runAttempt = $env:RUN_ATTEMPT
+          } | ConvertTo-Json | Set-Content (Join-Path $proof 'workflow-provenance.json')
+      - name: Acquire real portable prerequisite and clean owned state
+        timeout-minutes: 20
+        env:
+          SCENARIO: non-msi
+          EXPECTED_HEAD: ${{ inputs.target_ref }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          & ./harness/scripts/ci/windows-winget-acceptance.ps1 -Scenario $env:SCENARIO -PrerequisiteOnly -ExpectedHead $env:EXPECTED_HEAD -ProofRoot "$env:RUNNER_TEMP/winget-proof" -WorkRoot "$env:RUNNER_TEMP/winget-owned"
+      - name: Upload native evidence including failed qualification
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: winget-prerequisite-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/winget-proof
+          if-no-files-found: error
+          retention-days: 7
+
   portable-node-recovery:
     name: Portable Node recovery (${{ matrix.engine }})
-    if: ${{ inputs.retained_package_transport == '' && (inputs.run_portable_node_recovery && !inputs.run_packaged_gateway_147054) }}
+    if: ${{ !inputs.run_winget_prerequisite && (inputs.retained_package_transport == '' && (inputs.run_portable_node_recovery && !inputs.run_packaged_gateway_147054)) }}
     runs-on: windows-2025
     timeout-minutes: 20
     strategy:
@@ -1142,7 +1227,7 @@ jobs:
 
   native-git-installer:
     name: Full Windows Git installer and published-driver proof
-    if: ${{ inputs.retained_package_transport == '' && (inputs.run_windows_launcher_integration && !inputs.run_packaged_gateway_147054) }}
+    if: ${{ !inputs.run_winget_prerequisite && (inputs.retained_package_transport == '' && (inputs.run_windows_launcher_integration && !inputs.run_packaged_gateway_147054)) }}
     runs-on: windows-2025
     timeout-minutes: 90
     steps:
@@ -1173,7 +1258,7 @@ jobs:
 
   packaged-gateway-147054:
     name: Packaged Windows Gateway lifecycle PR147054
-    if: ${{ inputs.retained_package_transport == '' && (inputs.run_packaged_gateway_147054) }}
+    if: ${{ !inputs.run_winget_prerequisite && (inputs.retained_package_transport == '' && (inputs.run_packaged_gateway_147054)) }}
     runs-on: windows-2025
     timeout-minutes: 40
     permissions:
@@ -1323,7 +1408,7 @@ jobs:
 
   retained-package-transport-147054:
     name: Transport retained PR147054 tarball only
-    if: ${{ inputs.retained_package_transport != '' }}
+    if: ${{ !inputs.run_winget_prerequisite && (inputs.retained_package_transport != '') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
