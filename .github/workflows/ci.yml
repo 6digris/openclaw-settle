@@ -1239,7 +1239,8 @@ jobs:
         run: |
           node --input-type=module <<'EOF'
           import { appendFileSync } from "node:fs";
-          import { inspectHybridHostedHealth } from "./.ci-harness/scripts/lib/ci-hybrid-hosted-health.mts";
+          // This step runs only for automatic current-revision jobs.
+          import { inspectHybridHostedHealth } from "./scripts/lib/ci-hybrid-hosted-health.mts";
           const health = await inspectHybridHostedHealth({
             repository: process.env.GITHUB_REPOSITORY,
             runId: process.env.GITHUB_RUN_ID,

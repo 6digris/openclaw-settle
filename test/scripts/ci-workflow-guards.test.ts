@@ -4713,6 +4713,42 @@ NODE
       }
     });
 
+    it("runs the hosted health step from the current checkout without a sparse harness helper", () => {
+      const step = readCiWorkflow().jobs.preflight.steps.find(
+        (candidate: WorkflowStep) => candidate.id === "hosted_health",
+      );
+      const root = tempDirs.make("openclaw-hosted-health-step-");
+      const helper = "scripts/lib/ci-hybrid-hosted-health.mts";
+      mkdirSync(path.join(root, "scripts/lib"), { recursive: true });
+      copyFileSync(helper, path.join(root, helper));
+      const output = path.join(root, "output");
+      const summary = path.join(root, "summary");
+      const result = runWorkflowShellScript(step.run, {
+        cwd: root,
+        env: {
+          GITHUB_OUTPUT: output,
+          GITHUB_STEP_SUMMARY: summary,
+          GITHUB_REPOSITORY: "openclaw/openclaw",
+          GITHUB_RUN_ID: "1",
+          // Missing credentials exercise the real fail-closed entry point without network.
+          GH_TOKEN: "",
+        },
+      });
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(readFileSync(output, "utf8")).toBe("healthy=false\n");
+      expect(readFileSync(summary, "utf8")).toContain("hosted-health-unavailable");
+      for (const eventName of ["workflow_dispatch", "push", "pull_request"] as const) {
+        expect(
+          evaluateWorkflowExpression(`\${{ ${step.if} }}`, {
+            eventName,
+            repository: "openclaw/openclaw",
+            runAttempt: 1,
+            runnerBackend: "hybrid",
+          }),
+        ).toBe(eventName !== "workflow_dispatch");
+      }
+    });
+
     it("admits measured checks only with healthy assignment and space inside the existing budget", () => {
       const preflight = readCiWorkflow().jobs.preflight;
       const manifestStep = preflight.steps.find((step: WorkflowStep) => step.id === "manifest");
