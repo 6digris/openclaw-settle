@@ -225,6 +225,19 @@ run_positive_hops() {
   # Check before mock configuration can overwrite evidence from the old updater.
   node "$preservation" assert-hop "$OPENCLAW_CONFIG_PATH" "$ARTIFACT_DIR"
   openclaw config validate --json >"$ARTIFACT_DIR/$lane-first-config-validation.json"
+  # Standalone Doctor needs exclusive state ownership. This fixture has command-level
+  # systemd shims, not the native D-Bus broker used for Doctor's automatic restoration.
+  # Park the verified first-hop service explicitly; do not weaken maintenance admission.
+  systemctl --user stop openclaw-gateway.service \
+    >"$ARTIFACT_DIR/$lane-doctor-service-stop.stdout" \
+    2>"$ARTIFACT_DIR/$lane-doctor-service-stop.stderr" || return "$?"
+  local stopped_status=0
+  systemctl --user is-active openclaw-gateway.service \
+    >"$ARTIFACT_DIR/$lane-doctor-service-state.txt" 2>&1 || stopped_status="$?"
+  if [ "$stopped_status" -ne 3 ]; then
+    echo "standalone Doctor requires a confirmed inactive fixture service (status $stopped_status)" >&2
+    return 1
+  fi
   # Independently check the controlled single-agent requirements before Doctor can write.
   openclaw skills list --agent main --json >"$ARTIFACT_DIR/positive-skills-status.json"
   node "$preservation" bind-repair "$OPENCLAW_CONFIG_PATH" "$ARTIFACT_DIR"
@@ -244,6 +257,12 @@ run_positive_hops() {
     if [ "$preservation_status" -ne 0 ]; then return "$preservation_status"; fi
   done
   node scripts/e2e/lib/release-scenarios/assertions.mjs configure-mock-openai 44212
+  systemctl --user start openclaw-gateway.service \
+    >"$ARTIFACT_DIR/$lane-doctor-service-start.stdout" \
+    2>"$ARTIFACT_DIR/$lane-doctor-service-start.stderr" || return "$?"
+  wait_service_active
+  candidate_pid="$(cat "$OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_PID_FILE")"
+  record_service_state "$ARTIFACT_DIR/$lane-service-after-doctor.txt"
 
   run_update "$lane-second" "$FUTURE_PACKAGE"
   assert_installed_build "$FUTURE_PACKAGE" "$ARTIFACT_DIR/$lane-second-build-info.json"

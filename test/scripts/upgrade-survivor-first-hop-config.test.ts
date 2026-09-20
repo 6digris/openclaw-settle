@@ -1007,6 +1007,11 @@ describe.skipIf(process.platform === "win32")("first-hop preservation shell orde
     "doctor",
     "doctor-exit",
     "doctor-exit-capture",
+    "service-stop",
+    "service-still-active",
+    "service-inspection",
+    "service-start",
+    "second-hop-same-pid",
   ])("stops before masking evidence when %s fails", (failure) => {
     const fixture = makeFixture(false);
     writeSkillStatus(fixture);
@@ -1026,6 +1031,26 @@ describe.skipIf(process.platform === "win32")("first-hop preservation shell orde
         "-c",
         `set -euo pipefail
 doctor_calls=0
+gateway_running=1
+systemctl() {
+  echo "service $2" >> "$ORDER_LOG"
+  case "$2" in
+    stop)
+      if [ "$FAILURE" = service-stop ]; then return 25; fi
+      if [ "$FAILURE" != service-still-active ]; then gateway_running=0; fi
+      ;;
+    is-active)
+      if [ "$FAILURE" = service-inspection ]; then return 4; fi
+      if [ "$gateway_running" = 1 ]; then return 0; else return 3; fi
+      ;;
+    start)
+      if [ "$FAILURE" = service-start ]; then return 26; fi
+      gateway_running=1
+      printf "3\\n" > "$OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_PID_FILE"
+      ;;
+    *) return 99 ;;
+  esac
+}
 setup_lane() { echo setup >> "$ORDER_LOG"; }
 tar() { printf '{"version":"2026.9.5"}'; }
 node() {
@@ -1043,6 +1068,7 @@ openclaw() {
   if [ "$1" = skills ]; then
     cat "$ARTIFACT_DIR/positive-skills-status-input.json"
   elif [ "$1" = doctor ]; then
+    if [ "$gateway_running" != 0 ]; then echo "standalone Doctor requires stopped fixture service" >&2; return 27; fi
     doctor_calls=$((doctor_calls + 1))
     if [ "$doctor_calls" = 1 ]; then
       if [[ "$FAILURE" = repair-exit* ]]; then
@@ -1092,7 +1118,9 @@ run_update() {
       printf '\\n' >> "$FIXTURE_ROOT/first-hop-messages-leaf.json"
     fi
   else
-    printf '3\\n' > "$OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_PID_FILE"
+    if [ "$FAILURE" != second-hop-same-pid ]; then
+      printf '4\\n' > "$OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_PID_FILE"
+    fi
   fi
 }
 assert_installed_build() { :; }
@@ -1133,7 +1161,11 @@ run_positive_hops
           ? 23
           : failure.startsWith("doctor-exit")
             ? 24
-            : 1,
+            : failure === "service-stop"
+              ? 25
+              : failure === "service-start"
+                ? 26
+                : 1,
     );
     const calls = readFileSync(log, "utf8").trim().split("\n");
     const expected = [
@@ -1144,18 +1176,28 @@ run_positive_hops
       "positive-first",
       "preserve assert-hop",
     ];
+    const stopFailed = ["service-stop", "service-still-active", "service-inspection"].includes(
+      failure,
+    );
     if (failure !== "hop") {
-      expected.push(
-        "config validate --json",
-        "skills list --agent main --json",
-        "preserve bind-repair",
-        "doctor --fix --non-interactive",
-      );
-      expected.push("preserve assert-repair");
-      if (!failure.startsWith("repair-")) {
-        expected.push("doctor --fix --non-interactive", "preserve assert-doctor");
-        if (failure === "none") {
-          expected.push("configure", "positive-second", "stop");
+      expected.push("config validate --json", "service stop");
+      if (failure !== "service-stop") expected.push("service is-active");
+      if (!stopFailed) {
+        expected.push(
+          "skills list --agent main --json",
+          "preserve bind-repair",
+          "doctor --fix --non-interactive",
+          "preserve assert-repair",
+        );
+        if (!failure.startsWith("repair-")) {
+          expected.push("doctor --fix --non-interactive", "preserve assert-doctor");
+          if (!failure.startsWith("doctor")) {
+            expected.push("configure", "service start");
+            if (failure !== "service-start") {
+              expected.push("positive-second");
+              if (failure !== "second-hop-same-pid") expected.push("stop");
+            }
+          }
         }
       }
     }
@@ -1166,7 +1208,7 @@ run_positive_hops
         readFileSync(join(fixture.artifacts, `positive-config-after-${phase}.json`), "utf8"),
       ).toBe("retained evidence");
       expect(result.stderr).toContain(`after-${phase} observation could not be saved`);
-    } else if (failure !== "hop") {
+    } else if (failure !== "hop" && !stopFailed) {
       const repair = JSON.parse(
         readFileSync(join(fixture.artifacts, "positive-config-after-repair.json"), "utf8"),
       );
