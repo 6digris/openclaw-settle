@@ -74,6 +74,11 @@ the job's uploaded artifacts.
 | `openclaw-performance`           | Separate workflow: daily/on-demand Kova runtime performance reports with mock-provider, deep-profile, and GPT 5.6 live lanes                                                                                                                                                                             | Scheduled and manual dispatch                      |
 | `docs-external-links`            | Separate workflow: Docs External Link Audit checks external documentation links with lychee and uploads a report; it reports findings without failing, so it never blocks a pull request                                                                                                                 | Scheduled and manual dispatch                      |
 
+`build-artifacts` consumes its runtime and plugin bundles within the same job.
+It restores exact-revision build caches from the trusted warmer, then runs the
+built-runtime checks locally. Other Node and private QA jobs prepare their own
+required runtime instead of waiting for or downloading this job's build.
+
 ### macOS Swift phases
 
 `macos-swift (tests)` builds and runs the app's complete default- and named-profile

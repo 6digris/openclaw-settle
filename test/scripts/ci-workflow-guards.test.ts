@@ -16068,7 +16068,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       stepNames.indexOf("Build dist"),
     );
     expect(stepNames.indexOf("Build dist")).toBeLessThan(
-      stepNames.indexOf("Pack built runtime artifacts"),
+      stepNames.indexOf("Smoke test CLI launcher help"),
     );
     expect(stepNames).not.toContain("Save dist build cache");
     expect(restoreStep.uses).toBe(CACHE_V5);
@@ -16081,10 +16081,6 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(restoreStep.with.path).toContain("packages/*/dist/");
     expect(saveStep.with?.path).toContain("packages/*/dist/");
     expect(restoreStep.with.key).toContain("dist-build-v3-");
-    expect(
-      buildArtifactSteps.find((step: WorkflowStep) => step.name === "Pack built runtime artifacts")
-        .run,
-    ).toContain("packages/*/dist");
     expect(restoreStep.with.path).toContain("extensions/*/src/host/**/.bundle.hash");
     expect(restoreStep.with.path).toContain("extensions/*/src/host/**/*.bundle.js");
     expect(warmerSteps.indexOf(saveStep)).toBeGreaterThan(
