@@ -13,7 +13,6 @@ import {
   UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV,
   writeUpdatePostInstallDoctorResult,
 } from "../../infra/update-doctor-result.js";
-import type { SpawnResult } from "../../process/exec.js";
 import { defaultRuntime } from "../../runtime.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { withEnvAsync } from "../../test-utils/env.js";
@@ -26,7 +25,7 @@ import {
 } from "./update-command-post-update.test-support.js";
 
 const mocks = vi.hoisted(() => ({
-  child: vi.fn<typeof import("../../process/exec.js").runUtf8CommandWithTimeout>(),
+  child: vi.fn<typeof import("../../process/exec.js").runExec>(),
   restart: vi.fn<typeof import("./update-command-service.js").maybeRestartService>(),
   install: vi.fn(),
   stage: vi.fn(),
@@ -82,8 +81,13 @@ vi.mock("../../commands/daemon-install-helpers.js", () => ({
 vi.mock("../../infra/container-environment.js", () => ({ isContainerEnvironment: () => false }));
 vi.mock("../../process/exec.js", async (original) => ({
   ...(await original<typeof import("../../process/exec.js")>()),
-  runUtf8CommandWithTimeout: mocks.child,
-  runExec: vi.fn(async () => ({ stdout: "", stderr: "" })),
+  runExec: vi.fn<typeof import("../../process/exec.js").runExec>((command, args, options) => {
+    if (args[1] === "doctor") {
+      return mocks.child(command, args, options);
+    }
+    expect(args.slice(1)).toEqual(["config", "validate", "--json"]);
+    return Promise.resolve({ stdout: "", stderr: "" });
+  }),
 }));
 vi.mock("./progress.js", () => ({ printResult: vi.fn() }));
 vi.mock("./restart-helper.js", () => ({ prepareRestartScript: vi.fn(async () => null) }));
@@ -205,8 +209,8 @@ describe("update finalization waits for Doctor's config owner", () => {
               const events: string[] = [];
               let committed: string[] | undefined;
               let childCompleted = false;
-              mocks.child.mockImplementation(async (args, options) => {
-                if (typeof options === "number") {
+              mocks.child.mockImplementation(async (_command, args, options) => {
+                if (!options || typeof options === "number") {
                   throw new Error("Doctor must supply its child environment");
                 }
                 expect(args).toContain("doctor");
@@ -249,15 +253,15 @@ describe("update finalization waits for Doctor's config owner", () => {
                   events.push(persisted ? "doctor-committed" : "doctor-refused");
                   committed = await bytes();
                   childCompleted = true;
-                  return {
-                    code: persisted ? 0 : 1,
-                    stdout: "",
-                    stderr: persisted ? "" : "Doctor config write refused",
-                    signal: null,
-                    killed: false,
-                    termination: "exit",
-                    cleanup: "normal",
-                  } satisfies SpawnResult;
+                  if (!persisted) {
+                    throw Object.assign(new Error("Doctor config write refused"), {
+                      failed: true,
+                      exitCode: 1,
+                      stdout: "",
+                      stderr: "Doctor config write refused",
+                    });
+                  }
+                  return { stdout: "", stderr: "" };
                 });
               });
               mocks.restart.mockImplementation(async () => {

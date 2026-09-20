@@ -813,6 +813,8 @@ describe("prepared model catalog worker boundary", () => {
         0,
         { CODEX_HOME: codexHome },
         {
+          // Auth refresh is a passive read; activating the full harness is a separate contract.
+          readOnly: true,
           codexNativeOwner: nativeOwner,
           ...(homeScope ? { codexNativeHomeScope: homeScope } : {}),
         },
