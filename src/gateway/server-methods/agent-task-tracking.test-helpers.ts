@@ -30,7 +30,6 @@ export function mockSpawnedChildSessionEntry(
     entry: { sessionId: "spawned-child-session", updatedAt: Date.now() },
     canonicalKey: childSessionKey,
   });
-  mocks.updateSessionStore.mockResolvedValue(undefined);
   mocks.agentCommand.mockResolvedValue({
     payloads: [{ text: "ok" }],
     meta: { durationMs: 100 },
