@@ -9,6 +9,7 @@ import {
   listNativeHookRelayBridgeSnapshotsInDatabase,
 } from "../agents/harness/native-hook-relay-store.kernel.js";
 import { executeNativeHookRelayMutation } from "../agents/harness/native-hook-relay-store.worker.js";
+import { insertSandboxRegistryRowIfMissingInDatabase } from "../agents/sandbox/registry.kernel.js";
 import { writeSubagentRunValuesInDatabase } from "../agents/subagents/registry/subagent-registry.store.kernel.js";
 import { listRegistryWorktreesInDatabase } from "../agents/worktrees/registry-read.kernel.js";
 import { listAuditEventsInDatabase } from "../audit/audit-event-read.kernel.js";
@@ -55,6 +56,7 @@ import {
 } from "../infra/push-apns-store.js";
 import { readPersistedVapidKeyPairInDatabase } from "../infra/push-web-store.kernel.js";
 import { executeWebPushCommand } from "../infra/push-web-store.worker.js";
+import { isSessionDeliveryCommand } from "../infra/session-delivery-queue.worker-contract.js";
 import { executeSessionDeliveryCommand } from "../infra/session-delivery-queue.worker.js";
 import { createSqliteAuditRecordKernel } from "../infra/sqlite-audit-record.kernel.js";
 import {
@@ -466,21 +468,7 @@ export function executeSharedStateCommand(
   if (command.type === "deliveryQueue.mediaRetentionSnapshot") {
     return loadDeliveryQueueMediaRetentionSnapshotInDatabase(database, command.input);
   }
-  if (
-    command.type === "sessionDelivery.enqueue" ||
-    command.type === "sessionDelivery.enqueueClaimed" ||
-    command.type === "sessionDelivery.releaseClaim" ||
-    command.type === "sessionDelivery.defer" ||
-    command.type === "sessionDelivery.advanceAgentRun" ||
-    command.type === "sessionDelivery.mergePreparedMedia" ||
-    command.type === "sessionDelivery.markAttemptStarted" ||
-    command.type === "sessionDelivery.markSettlement" ||
-    command.type === "sessionDelivery.complete" ||
-    command.type === "sessionDelivery.fail" ||
-    command.type === "sessionDelivery.load" ||
-    command.type === "sessionDelivery.list" ||
-    command.type === "sessionDelivery.moveToFailed"
-  ) {
+  if (isSessionDeliveryCommand(command)) {
     return executeSessionDeliveryCommand(command, database);
   }
   const writeOptions = {
@@ -488,6 +476,13 @@ export function executeSharedStateCommand(
     path: context.databasePath,
     env: getSqliteWorkerStateContext().environment,
   };
+  if (command.type === "sandboxRegistry.insertIfMissing") {
+    return runOpenClawStateWriteTransaction(({ db }) => {
+      requestSqliteWorkerOperationAdmission({ stage: "transaction", facts: undefined });
+      insertSandboxRegistryRowIfMissingInDatabase(db, command.input);
+      requestSqliteWorkerOperationAdmission({ stage: "commit", facts: undefined });
+    }, writeOptions);
+  }
   if (command.type === "deliveryQueue.ack") {
     return executeDeliveryQueueAck(command.input, writeOptions);
   }
