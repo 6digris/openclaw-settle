@@ -305,6 +305,7 @@
 }
 
 .agent-chat__capability-menu-item {
+  flex-shrink: 0;
   --wa-color-text-normal: var(--text);
 
   display: flex;

@@ -29,6 +29,7 @@ import {
 import {
   handleComposerLibrarySelection,
   renderComposerLibraryMenu,
+  renderComposerLibraryAddMenu,
 } from "./chat-composer-library-menu.ts";
 import {
   renderBackRow,
@@ -39,6 +40,7 @@ import {
 export type ChatComposerPlusMenuView =
   | "root"
   | "skills"
+  | "library-add"
   | "connectors"
   | `tools:${string}`
   | `library:${string}`;
@@ -246,7 +248,20 @@ function renderRootView(props: ChatComposerPlusMenuProps) {
 
 function renderSkillView(props: ChatComposerPlusMenuProps) {
   const disabledReason = props.mutationBlockedReason;
-  const rows = props.skillsLoading
+  const library = props.library;
+  const session = library?.result?.session;
+  const selectedCount = session?.selections.length ?? 0;
+  const addable = Boolean(library?.canWrite && session?.attachable.length);
+  const loading = props.skillsLoading || (!props.skills && !props.skillsError);
+  const empty =
+    !loading &&
+    !props.skillsError &&
+    !props.skills?.length &&
+    !selectedCount &&
+    !addable &&
+    (!library || (library.result !== null && !library.loading && !library.busy && !library.error));
+  const grouped = selectedCount > 0 && Boolean(props.skills?.length);
+  const rows = loading
     ? html`<div class="agent-chat__capability-menu-state" role="status">
         ${t("chat.composer.menu.loadingSkills")}
       </div>`
@@ -254,30 +269,49 @@ function renderSkillView(props: ChatComposerPlusMenuProps) {
       ? html`<div class="agent-chat__capability-menu-state" role="alert">
           ${t("chat.composer.menu.skillsLoadFailed")}
         </div>`
-      : !props.skills || props.skills.length === 0
-        ? html`<div class="agent-chat__capability-menu-state">
-            ${t("chat.composer.menu.noSkills")}
-          </div>`
-        : props.skills.map((skill, index) => {
-            const title = skill.missingDeps
-              ? t("chat.composer.menu.depsMissing")
-              : skill.blocked
-                ? t("chat.composer.menu.skillBlocked")
-                : disabledReason;
-            return renderCapabilityToggleRow({
-              value: `skill:${index}`,
-              label: skill.name,
-              checked: skill.enabled,
-              disabled: skill.missingDeps || skill.blocked || disabledReason !== null,
-              title,
-              note:
-                skill.missingDeps || skill.blocked
-                  ? html`<span class="agent-chat__capability-menu-note">${title}</span>`
-                  : nothing,
-            });
+      : props.skills?.map((skill, index) => {
+          const title = skill.missingDeps
+            ? t("chat.composer.menu.depsMissing")
+            : skill.blocked
+              ? t("chat.composer.menu.skillBlocked")
+              : disabledReason;
+          return renderCapabilityToggleRow({
+            value: `skill:${index}`,
+            label: skill.name,
+            checked: skill.enabled,
+            disabled: skill.missingDeps || skill.blocked || disabledReason !== null,
+            title,
+            note:
+              skill.missingDeps || skill.blocked
+                ? html`<span class="agent-chat__capability-menu-note">${title}</span>`
+                : nothing,
           });
+        });
   return html`
-    ${renderBackRow()} ${renderComposerLibraryMenu(props.library)} ${rows} ${menuDivider()}
+    ${renderBackRow()}
+    ${grouped ? html`<div class="agent-chat__capability-menu-state">${t("skillLibrary.library")}</div>` : nothing}
+    ${renderComposerLibraryMenu(library, undefined, !loading)}
+    ${
+      grouped
+        ? html`${menuDivider()}
+            <div class="agent-chat__capability-menu-state">${t("skillLibrary.inventory")}</div>`
+        : nothing
+    }
+    ${rows}
+    ${empty ? html`<div class="agent-chat__capability-menu-state">${t("chat.composer.menu.noSkills")}</div>` : nothing}
+    ${menuDivider()}
+    ${
+      addable
+        ? html`<wa-dropdown-item
+            class="agent-chat__capability-menu-item"
+            value="library-add"
+            ?disabled=${library?.loading || library?.busy}
+          >
+            <span slot="icon" aria-hidden="true">${icons.plus}</span
+            >${t("skillLibrary.session.add")}
+          </wa-dropdown-item>`
+        : nothing
+    }
     <wa-dropdown-item class="agent-chat__capability-menu-item" value="manage-skills">
       ${internalLink(pathForRoute("skills", props.basePath), t("chat.composer.menu.manageSkills"))}
     </wa-dropdown-item>
@@ -470,7 +504,7 @@ function handleMenuSelection(
     changeView(
       props.view.startsWith("tools:")
         ? "connectors"
-        : props.view.startsWith("library:")
+        : props.view === "library-add" || props.view.startsWith("library:")
           ? "skills"
           : "root",
     );
@@ -597,13 +631,15 @@ function renderChatComposerPlusMenuContent(props: ChatComposerPlusMenuProps) {
   const content =
     view === "skills"
       ? renderSkillView(props)
-      : view === "connectors"
-        ? renderConnectorView(props)
-        : view.startsWith("tools:")
-          ? renderToolAccessView(props, view.slice("tools:".length))
-          : view.startsWith("library:")
-            ? renderComposerLibraryMenu(props.library, view.slice("library:".length))
-            : renderRootView(props);
+      : view === "library-add"
+        ? renderComposerLibraryAddMenu(props.library)
+        : view === "connectors"
+          ? renderConnectorView(props)
+          : view.startsWith("tools:")
+            ? renderToolAccessView(props, view.slice("tools:".length))
+            : view.startsWith("library:")
+              ? renderComposerLibraryMenu(props.library, view.slice("library:".length))
+              : renderRootView(props);
   return html`
     <wa-dropdown
       class="agent-chat__attach-menu agent-chat__capability-menu"

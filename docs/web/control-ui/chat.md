@@ -89,7 +89,7 @@ an invalid source folder.
 
 Select **+** beside the chat composer to open attachments and session capabilities in one menu:
 
-- **Skills** enables or disables individual skills for this session.
+- **Skills** enables or disables individual skills for this session. Selected personal or team skills appear by name and owner; open one to view its instructions, use a newer accessible version, or remove it from this chat. **Add skill…** appears when you have write access and your libraries contain skills that are not selected for this chat. Empty library sections and new-session defaults stay out of the picker; selection limits appear only when adding would exceed them. Changes apply to the next message, without replacing an active run’s selected revision.
 - **Connectors** enables or disables configured MCP servers for this session. A **session** tag marks values that differ from the inherited configuration. **Browse connectors** opens the Plugins page on **Discover**.
 - **Web search** enables or disables managed web search plus native OpenAI and Codex search for this session.
 - **Manage plugins** opens the Plugins page.
