@@ -46,6 +46,66 @@ function createContext(root: string) {
 }
 
 describe("config snapshot plugin metadata", () => {
+  it("leaves an absent config without authored provenance or a new file", async () => {
+    const root = tempDirs.make("openclaw-config-absent-authored-");
+    const context = createContext(root);
+    const snapshot = await readConfigFileSnapshotFromContext(context);
+    expect(snapshot).toMatchObject({
+      path: context.configPath,
+      exists: false,
+      raw: null,
+      parsed: {},
+    });
+    expect(snapshot.authoredConfig).toBeUndefined();
+    expect(snapshot.sourceConfig.plugins).toBeUndefined();
+    expect(fs.existsSync(context.configPath)).toBe(false);
+  });
+
+  it.each([
+    { useInclude: false, invalid: false },
+    { useInclude: false, invalid: true },
+    { useInclude: true, invalid: false },
+    { useInclude: true, invalid: true },
+  ])(
+    "pairs authored references with their resolved read (include: $useInclude, invalid: $invalid)",
+    async ({ useInclude, invalid }) => {
+      const root = tempDirs.make("openclaw-config-authored-snapshot-");
+      const context = createContext(root);
+      context.deps.env.PLUGIN_TOKEN = "read-time-token";
+      const plugins = {
+        enabled: false,
+        entries: { retired: { config: { token: "${PLUGIN_TOKEN}" } } },
+      };
+      fs.writeFileSync(path.join(root, "plugins.json"), JSON.stringify(plugins));
+      fs.writeFileSync(
+        context.configPath,
+        JSON.stringify({
+          gateway: { auth: { token: "${PLUGIN_TOKEN}" } },
+          plugins: useInclude ? { $include: "plugins.json" } : plugins,
+          ...(invalid ? { nodeHost: { browserProxy: { enabled: "invalid" } } } : {}),
+        }),
+      );
+
+      const snapshot = await readConfigFileSnapshotFromContext(context);
+      const hash = snapshot.hash;
+      context.deps.env.PLUGIN_TOKEN = "later-token";
+      fs.writeFileSync(path.join(root, "plugins.json"), "{}");
+
+      expect(snapshot.valid).toBe(!invalid);
+      expect(snapshot.authoredConfig?.plugins).toEqual(plugins);
+      expect(snapshot.authoredConfig?.gateway?.auth?.token).toBe("${PLUGIN_TOKEN}");
+      expect(snapshot.sourceConfigBeforeMigrations?.gateway?.auth?.token).toBe("read-time-token");
+      expect(snapshot.sourceConfigBeforeMigrations?.plugins?.entries?.retired?.config).toEqual({
+        token: "read-time-token",
+      });
+      expect(snapshot.parsed).toMatchObject({
+        plugins: useInclude ? { $include: "plugins.json" } : plugins,
+      });
+      expect(snapshot.hash).toBe(hash);
+      expect(snapshot.path).toBe(context.configPath);
+    },
+  );
+
   it.each(["full", "core-only"] as const)(
     "keeps legacy roster channel discovery owned by %s validation",
     async (pluginValidation) => {
@@ -97,40 +157,114 @@ describe("config snapshot plugin metadata", () => {
     },
   );
 
-  it("tracks included-file revisions while deferring executable plugin repair diagnostics", async () => {
-    const root = tempDirs.make("openclaw-config-deferred-doctor-");
-    const context = createContext(root);
-    context.options.pluginValidation = "full";
-    context.deps.env.OPENCLAW_UPDATE_IN_PROGRESS = "1";
-    context.deps.env.OPENCLAW_UPDATE_DEFER_CONFIGURED_PLUGIN_INSTALL_REPAIR = "1";
-    const includedPath = path.join(root, "node-host.json");
-    fs.writeFileSync(includedPath, JSON.stringify({ browserProxy: { enabled: "invalid" } }));
-    fs.writeFileSync(
-      context.configPath,
-      JSON.stringify({
-        nodeHost: { $include: "node-host.json" },
-        channels: { discord: {} },
-        routing: { allowFrom: ["fixture"] },
-      }),
-    );
-    const doctor = vi.spyOn(doctorLegacy, "findDoctorLegacyConfigIssues");
-    const snapshot = await readConfigFileSnapshotFromContext(context);
-    expect(snapshot.valid).toBe(false);
-    expect(snapshot.issues).toEqual(
-      expect.arrayContaining([expect.objectContaining({ path: "nodeHost.browserProxy.enabled" })]),
-    );
-    expect(snapshot.legacyIssues).toEqual(
-      expect.arrayContaining([expect.objectContaining({ path: "routing.allowFrom" })]),
-    );
-    fs.writeFileSync(includedPath, JSON.stringify({ browserProxy: { enabled: "still-invalid" } }));
-    const changed = await readConfigFileSnapshotFromContext(context);
-    expect(changed.raw).toBe(snapshot.raw);
-    expect(changed.hash).not.toBe(snapshot.hash);
-    expect(changed.valid).toBe(false);
-    expect(changed.issues).toEqual(snapshot.issues);
-    expect(changed.legacyIssues).toEqual(snapshot.legacyIssues);
-    expect(doctor).not.toHaveBeenCalled();
-  });
+  it.each([
+    {
+      phase: "deferred target repair",
+      env: {
+        OPENCLAW_UPDATE_IN_PROGRESS: "1",
+        OPENCLAW_UPDATE_DEFER_CONFIGURED_PLUGIN_INSTALL_REPAIR: "1",
+      },
+      deferred: true,
+    },
+    {
+      phase: "shipped writable parent",
+      env: {
+        OPENCLAW_UPDATE_IN_PROGRESS: "1",
+        OPENCLAW_UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE: "1",
+      },
+      deferred: true,
+    },
+    {
+      phase: "post-core overrides explicit deferral",
+      env: {
+        OPENCLAW_UPDATE_IN_PROGRESS: "1",
+        OPENCLAW_UPDATE_DEFER_CONFIGURED_PLUGIN_INSTALL_REPAIR: "1",
+        OPENCLAW_UPDATE_POST_CORE_CONVERGENCE: "1",
+      },
+      deferred: false,
+    },
+    {
+      phase: "post-core overrides shipped-parent deferral",
+      env: {
+        OPENCLAW_UPDATE_IN_PROGRESS: "1",
+        OPENCLAW_UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE: "1",
+        OPENCLAW_UPDATE_POST_CORE_CONVERGENCE: "1",
+      },
+      deferred: false,
+    },
+    {
+      phase: "repair marker outside update",
+      env: { OPENCLAW_UPDATE_DEFER_CONFIGURED_PLUGIN_INSTALL_REPAIR: "1" },
+      deferred: false,
+    },
+    {
+      phase: "update without deferred repair contract",
+      env: { OPENCLAW_UPDATE_IN_PROGRESS: "1" },
+      deferred: false,
+    },
+  ])(
+    "tracks included-file revisions and authored references during $phase",
+    async ({ env, deferred }) => {
+      const root = tempDirs.make("openclaw-config-deferred-doctor-");
+      const context = createContext(root);
+      context.options.pluginValidation = "full";
+      Object.assign(context.deps.env, env, { SNAPSHOT_TOKEN: "read-time-token" });
+      const includedPath = path.join(root, "node-host.json");
+      fs.writeFileSync(includedPath, JSON.stringify({ browserProxy: { enabled: "invalid" } }));
+      fs.writeFileSync(
+        context.configPath,
+        JSON.stringify({
+          nodeHost: { $include: "node-host.json" },
+          gateway: { auth: { token: "${SNAPSHOT_TOKEN}" } },
+          channels: { discord: {} },
+          routing: { allowFrom: ["fixture"] },
+        }),
+      );
+      const doctor = vi.spyOn(doctorLegacy, "findDoctorLegacyConfigIssues");
+      const snapshot = await readConfigFileSnapshotFromContext(context);
+      expect(snapshot.valid).toBe(false);
+      expect(snapshot.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: "nodeHost.browserProxy.enabled" }),
+        ]),
+      );
+      expect(snapshot.legacyIssues).toEqual(
+        expect.arrayContaining([expect.objectContaining({ path: "routing.allowFrom" })]),
+      );
+      expect(snapshot.authoredConfig?.gateway?.auth?.token).toBe("${SNAPSHOT_TOKEN}");
+      expect(snapshot.authoredConfig?.nodeHost?.browserProxy?.enabled).toBe("invalid");
+      expect(snapshot.parsed).toMatchObject({ gateway: { auth: { token: "${SNAPSHOT_TOKEN}" } } });
+      expect(snapshot.sourceConfigBeforeMigrations?.gateway?.auth?.token).toBe("read-time-token");
+      expect(snapshot.sourceConfigBeforeMigrations?.nodeHost?.browserProxy?.enabled).toBe(
+        "invalid",
+      );
+      expect(snapshot.parsed).toMatchObject({ nodeHost: { $include: "node-host.json" } });
+      context.deps.env.SNAPSHOT_TOKEN = "later-token";
+      fs.writeFileSync(
+        includedPath,
+        JSON.stringify({ browserProxy: { enabled: "still-invalid" } }),
+      );
+      const changed = await readConfigFileSnapshotFromContext(context);
+      expect(changed.authoredConfig?.gateway?.auth?.token).toBe("${SNAPSHOT_TOKEN}");
+      expect(changed.authoredConfig?.nodeHost?.browserProxy?.enabled).toBe("still-invalid");
+      expect(snapshot.authoredConfig?.nodeHost?.browserProxy?.enabled).toBe("invalid");
+      expect(changed.raw).toBe(snapshot.raw);
+      expect(changed.hash).not.toBe(snapshot.hash);
+      expect(changed.valid).toBe(false);
+      expect(changed.issues).toEqual(snapshot.issues);
+      expect(changed.legacyIssues).toEqual(snapshot.legacyIssues);
+      expect(changed.parsed).toMatchObject({ gateway: { auth: { token: "${SNAPSHOT_TOKEN}" } } });
+      expect(changed.sourceConfigBeforeMigrations?.gateway?.auth?.token).toBe("later-token");
+      expect(changed.sourceConfigBeforeMigrations?.nodeHost?.browserProxy?.enabled).toBe(
+        "still-invalid",
+      );
+      expect(snapshot.sourceConfigBeforeMigrations?.gateway?.auth?.token).toBe("read-time-token");
+      expect(snapshot.sourceConfigBeforeMigrations?.nodeHost?.browserProxy?.enabled).toBe(
+        "invalid",
+      );
+      expect(doctor.mock.calls.length > 0).toBe(!deferred);
+    },
+  );
 
   it("keeps best-effort core-only materialization independent of plugin metadata", async () => {
     const root = tempDirs.make("openclaw-config-best-effort-metadata-");
@@ -237,6 +371,7 @@ describe("config snapshot plugin metadata", () => {
     const result = await readConfigFileSnapshotWithPluginMetadataFromContext(context);
 
     expect(result.snapshot.valid).toBe(false);
+    expect(result.snapshot.authoredConfig).toBeUndefined();
     expect(result.pluginMetadataSnapshot).toBeUndefined();
     expect(loader).not.toHaveBeenCalled();
   });

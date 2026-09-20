@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TestSpecification } from "vitest/node";
+import type { CiTestTimings } from "../scripts/lib/ci-test-timings-schema.mts";
 import { spawnNodeEvalSync } from "../src/test-utils/node-process.ts";
 import { DEFAULT_VITEST_TEST_TIMEOUT_MS } from "./vitest/vitest.timeouts.ts";
 
@@ -51,7 +52,8 @@ function timingFile(fileSeconds: Record<string, number>, perFileOverheadSeconds 
     compactGroupSeconds: { blacksmith: {}, github: {} },
     runtimePlacementTimings: { blacksmith: [], github: [] },
     repoE2eFileSeconds: {},
-  });
+    toolingFileSeconds: { blacksmith: {}, github: {} },
+  } satisfies CiTestTimings);
 }
 
 function specifications(
@@ -117,8 +119,10 @@ const realGatewayFiles = [
   "chat-project-media.real-gateway",
   "chat-stop-finished-run.real-gateway",
   "chat-thinking-metadata.real-gateway",
+  "chat-tts-supplement.real-gateway",
   "chat-widget-sandbox.real-gateway",
   "command-palette-catalog.real-gateway",
+  "command-palette-search.real-gateway",
   "control-ui-auth-transports",
   "cron-duration-save.real-gateway",
   "desktop-resize.real-gateway",
@@ -130,6 +134,7 @@ const realGatewayFiles = [
   "model-catalog-partial-refresh.real-gateway",
   "model-picker-search.real-gateway",
   "profile-page.real-gateway",
+  "provider-browser-login.real-gateway",
   "quota-reset-status.real-gateway",
   "session-progress-hovercard.real-gateway",
   "usage-sessions-owner-attribution",
@@ -158,7 +163,6 @@ type OwnershipProbe = {
   shards: string[][];
   steps: Array<{ builds: number; closes: number }>;
   admissions: string[];
-  admittedOutput: { path: string; before: string | null; after: string | null };
   rootWorkers: number;
   setupError?: string;
 };
@@ -166,8 +170,6 @@ type OwnershipProbe = {
 function probeOwnership(
   options: {
     prebuilt?: boolean;
-    prebuiltGeneration?: string;
-    preexistingOutput?: boolean;
     filters?: string[];
     cli?: string[];
     project?: string[];
@@ -175,21 +177,11 @@ function probeOwnership(
     skipRealGateway?: boolean;
     available?: boolean;
     initialize?: string[][];
-    failure?: "build" | "provide" | "admission";
+    failure?: "build" | "provide" | "admission" | "preflight";
   } = {},
 ): OwnershipProbe {
   const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "oc-ui-ownership-")));
   tempDirs.push(directory);
-  const admittedRoot = path.join(directory, "admitted-root");
-  const admittedOutput = path.join(admittedRoot, "dist", "control-ui", "index.html");
-  const admittedBytes = "fixture-owned admitted generation";
-  if (options.preexistingOutput) {
-    fs.mkdirSync(path.dirname(admittedOutput), { recursive: true });
-    fs.writeFileSync(admittedOutput, admittedBytes);
-  }
-  const beforeAdmission = fs.existsSync(admittedOutput)
-    ? fs.readFileSync(admittedOutput, "utf8")
-    : null;
   const eventsFile = path.join(directory, "leases.jsonl");
   const admissionsFile = path.join(directory, "admissions.jsonl");
   const resourceFile = path.join(directory, "resources.mjs");
@@ -199,29 +191,12 @@ function probeOwnership(
     import fs from "node:fs";
     export const resolvePlaywrightChromiumExecutablePath = () => "/fixture/chromium";
     export const canRunPlaywrightChromium = () => ${options.available !== false};
+    export const assertUiE2ePreflight = async () => {
+      if (${JSON.stringify(options.failure)} === "preflight") throw new Error("fixture preflight failed");
+    };
     export default function admission(project) {
       fs.appendFileSync(${JSON.stringify(admissionsFile)}, JSON.stringify(project.name) + "\\n");
       if (${JSON.stringify(options.failure)} === "admission") throw new Error("fixture admission failed");
-      const generation = ${JSON.stringify(options.prebuiltGeneration)};
-      if (generation !== undefined) {
-        const output = ${JSON.stringify(admittedOutput)};
-        if (!fs.existsSync(output)) {
-          fs.mkdirSync(${JSON.stringify(path.dirname(admittedOutput))}, { recursive: true });
-          fs.writeFileSync(output, ${JSON.stringify(admittedBytes)});
-        }
-        project.vitest.getRootProject().provide("controlUiE2ePrebuiltGeneration", generation);
-      }
-    }
-    export async function startBuiltControlUiE2eServer(outDir) {
-      const record = (closed) => {
-        if (fs.readFileSync(outDir + "/index.html", "utf8") !== ${JSON.stringify(admittedBytes)}) {
-          throw new Error("admitted output changed before " + (closed ? "close" : "open"));
-        }
-        fs.appendFileSync(${JSON.stringify(eventsFile)}, JSON.stringify({ outDir, closed }) + "\\n");
-      };
-      record(false);
-      if (${JSON.stringify(options.failure)} === "build") throw new Error("fixture preview failed");
-      return { baseUrl: "http://127.0.0.1:12345/", close: async () => record(true) };
     }
     export async function startBundledControlUiE2eServer(outDir) {
       fs.writeFileSync(outDir + "/bundle.html", "fixture");
@@ -241,6 +216,7 @@ function probeOwnership(
       return { ...config, resolve: { ...config.resolve, alias: [
         { find: /^.*\\/control-ui-e2e\\.ts$/, replacement: ${JSON.stringify(resourceFile)} },
         { find: /^.*\\/vitest\\.ui-e2e-prebuilt\\.global-setup\\.ts$/, replacement: ${JSON.stringify(resourceFile)} },
+        { find: /^.*vitest[.]ui-e2e-preflight[.]ts$/, replacement: ${JSON.stringify(resourceFile)} },
         ...(config.resolve?.alias ?? []),
       ] }, test: { ...config.test,
         ...(config.test?.projects ? { projects: config.test.projects.map(instrument) } : {}),
@@ -289,16 +265,10 @@ function probeOwnership(
         const selected = await ctx.globTestSpecifications(selection);
         specs.push(...selected.filter(spec => !specs.some(previous =>
           previous.moduleId === spec.moduleId && previous.project === spec.project)));
-        // Discovery uses the real repository/configuration. Resource acquisition alone
-        // sees the fixture root, so borrowed-output checks cannot depend on checkout dist.
-        const root = ctx.getRootProject();
-        const discoveryRoot = root.config.root;
         try {
-          root.config.root = ${JSON.stringify(admittedRoot)};
           await ctx.initializeGlobalSetup(selected);
           await ctx.initializeGlobalSetup(selected);
         } catch (error) { setupError = error.message; }
-        finally { root.config.root = discoveryRoot; }
         const events = readEvents();
         steps.push({ builds: events.filter(event => !event.closed).length,
           closes: events.filter(event => event.closed).length });
@@ -333,12 +303,6 @@ function probeOwnership(
       ...event, closed: events.filter(other => other.outDir === event.outDir && other.closed).length === 1,
       removed: !fs.existsSync(event.outDir),
     }));
-    report.admittedOutput = {
-      path: ${JSON.stringify(admittedOutput)},
-      before: ${JSON.stringify(beforeAdmission)},
-      after: fs.existsSync(${JSON.stringify(admittedOutput)})
-        ? fs.readFileSync(${JSON.stringify(admittedOutput)}, "utf8") : null,
-    };
     console.log("OWNERSHIP " + JSON.stringify(report));
   `,
     {
@@ -359,6 +323,13 @@ function probeOwnership(
 }
 
 describe("Control UI E2E resource ownership", () => {
+  it("refuses a selected project before acquiring fixtures when environment preflight fails", () => {
+    const result = probeOwnership({ filters: [bundledFile], failure: "preflight" });
+    expect(result.setupError).toBe("fixture preflight failed");
+    expect(result.leases).toEqual([]);
+    expect(result.steps).toEqual([{ builds: 0, closes: 0 }]);
+  });
+
   it.each([
     { filters: [standaloneFile], files: [standaloneFile], leases: 0 },
     ...["control-ui-retained-assets", "service-worker-update"].map((name) => {
@@ -379,7 +350,14 @@ describe("Control UI E2E resource ownership", () => {
       leases: 1,
     },
     { filters: [standaloneFile, bundledFile], files: [standaloneFile, bundledFile], leases: 1 },
-    { filters: ["ui/src/pages/tasks"], files: ["ui/src/pages/tasks/tasks.e2e.test.ts"], leases: 1 },
+    {
+      filters: ["ui/src/pages/tasks"],
+      files: [
+        "ui/src/pages/tasks/tasks-transcript.e2e.test.ts",
+        "ui/src/pages/tasks/tasks.e2e.test.ts",
+      ],
+      leases: 1,
+    },
     {
       include: [standaloneFile, bundledFile],
       files: [standaloneFile, bundledFile],
@@ -577,6 +555,20 @@ describe("Control UI E2E resource ownership", () => {
       }
       expect(result.files.filter((entry) => entry.phase === 1)).toEqual([
         {
+          file: "ui/src/e2e/chat-tts-supplement.real-gateway.e2e.test.ts",
+          project: "ui-e2e-serial-standalone",
+          phase: 1,
+          workers: 1,
+          fileParallelism: false,
+        },
+        {
+          file: "ui/src/e2e/command-palette-search.real-gateway.e2e.test.ts",
+          project: "ui-e2e-serial-standalone",
+          phase: 1,
+          workers: 1,
+          fileParallelism: false,
+        },
+        {
           file: "ui/src/e2e/desktop-resize.real-gateway.e2e.test.ts",
           project: "ui-e2e-serial-standalone",
           phase: 1,
@@ -592,6 +584,13 @@ describe("Control UI E2E resource ownership", () => {
         },
         {
           file: mcpFile,
+          project: "ui-e2e-serial-standalone",
+          phase: 1,
+          workers: 1,
+          fileParallelism: false,
+        },
+        {
+          file: "ui/src/e2e/provider-browser-login.real-gateway.e2e.test.ts",
           project: "ui-e2e-serial-standalone",
           phase: 1,
           workers: 1,
@@ -631,71 +630,6 @@ describe("Control UI E2E resource ownership", () => {
     expect(result.admissions).toHaveLength(3);
     expect(new Set(result.admissions).size).toBe(3);
     expect(result.leases).toEqual([{ outDir: expect.any(String), closed: true, removed: true }]);
-  });
-
-  it.each([false, true])(
-    "leases the admitted prebuilt UI once without rebuilding or deleting it (preexisting=%s)",
-    (preexistingOutput) => {
-      const result = probeOwnership({
-        prebuilt: true,
-        prebuiltGeneration: "b".repeat(64),
-        preexistingOutput,
-        initialize: [[builtGatewayFile], [mcpFile], [qaLabFiles[0]], [qaLabFiles[1]]],
-      });
-      expect(result.setupError).toBeUndefined();
-      expect(result.steps).toEqual([
-        { builds: 0, closes: 0 },
-        { builds: 0, closes: 0 },
-        { builds: 1, closes: 0 },
-        { builds: 1, closes: 0 },
-      ]);
-      expect(result.leases).toEqual([
-        { outDir: path.dirname(result.admittedOutput.path), closed: true, removed: false },
-      ]);
-      expect(result.admittedOutput).toEqual({
-        path: expect.stringContaining(
-          path.join("admitted-root", "dist", "control-ui", "index.html"),
-        ),
-        before: preexistingOutput ? "fixture-owned admitted generation" : null,
-        after: "fixture-owned admitted generation",
-      });
-    },
-  );
-
-  it.each([false, true])(
-    "closes an admitted prebuilt preview after publication failure without deleting the output (preexisting=%s)",
-    (preexistingOutput) => {
-      const result = probeOwnership({
-        prebuilt: true,
-        prebuiltGeneration: "b".repeat(64),
-        preexistingOutput,
-        filters: [qaLabFiles[0]],
-        failure: "provide",
-      });
-      expect(result.setupError).toBe("fixture provide failed");
-      expect(result.leases).toEqual([
-        { outDir: path.dirname(result.admittedOutput.path), closed: true, removed: false },
-      ]);
-      expect(result.admittedOutput).toEqual({
-        path: expect.stringContaining(
-          path.join("admitted-root", "dist", "control-ui", "index.html"),
-        ),
-        before: preexistingOutput ? "fixture-owned admitted generation" : null,
-        after: "fixture-owned admitted generation",
-      });
-      expect(result.contexts.every((context) => context.url === undefined)).toBe(true);
-    },
-  );
-
-  it("rejects an invalid prebuilt generation without building a replacement", () => {
-    const result = probeOwnership({
-      prebuilt: true,
-      prebuiltGeneration: "invalid",
-      filters: [qaLabFiles[0]],
-    });
-    expect(result.setupError).toBe("Prebuilt Control UI preview requires an admitted generation");
-    expect(result.steps).toEqual([{ builds: 0, closes: 0 }]);
-    expect(result.leases).toEqual([]);
   });
 
   it("propagates prebuilt admission failure before acquiring the preview", () => {
@@ -835,7 +769,8 @@ describe("Control UI E2E Vitest sharding", () => {
     ];
     expect(files.length).toBeGreaterThan(0);
     useTimings(committed);
-    const original = await partition(files);
+    const original = await partition(files, 12);
+    expect(original).toHaveLength(12);
     // Validate via the production loader before adding a stale but valid weight.
     const { readUiE2eFileTimings } = await import("../scripts/lib/ci-test-timings.mts");
     const timings = readUiE2eFileTimings();
@@ -849,7 +784,7 @@ describe("Control UI E2E Vitest sharding", () => {
         timings.perFileOverheadSeconds,
       ),
     );
-    expect(await partition(files.toReversed())).toEqual(original);
+    expect(await partition(files.toReversed(), 12)).toEqual(original);
     expect(original.flat().toSorted()).toEqual(files.map((file) => file.moduleId).toSorted());
     expect(new Set(original.flat()).size).toBe(files.length);
   });

@@ -5,6 +5,12 @@ import {
   resolveManagedUnsetPathsForWrite,
 } from "../../../config/config-path-mutation.js";
 import { resolveConfigSnapshotHash, transformConfigFile } from "../../../config/config.js";
+import {
+  getDeferredPluginMigrationConfigFacts,
+  omitDeferredPluginMigrationConfig,
+  preserveDeferredPluginMigrationConfig,
+  setDeferredPluginMigrationConfigFacts,
+} from "../../../config/deferred-plugin-migration-config.js";
 import { createConfigIO } from "../../../config/io.js";
 import { stampConfigWriteMetadata } from "../../../config/io.meta.js";
 import { resolveConfigWidePluginMetadataSnapshot } from "../../../config/io.plugin-metadata.js";
@@ -14,6 +20,7 @@ import { inheritLegacyDefaultAgentId } from "../../../config/legacy.default-agen
 import { findLegacyConfigIssues } from "../../../config/legacy.js";
 import { migratePersistedImplicitMainRoster } from "../../../config/legacy.roster.js";
 import { inspectShippedPluginInstallConfigRecords } from "../../../config/plugin-install-config-migration.js";
+import { copyConfigResolutionFactsThroughRewrite } from "../../../config/resolution-facts.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../../../config/types.js";
 import type { PluginInstallRecord } from "../../../config/types.plugins.js";
 import {
@@ -21,18 +28,21 @@ import {
   validateConfigObjectWithPlugins,
 } from "../../../config/validation.js";
 import { withPluginMetadataSnapshotScope } from "../../../plugins/current-plugin-metadata-snapshot.js";
+import { withDeferredPluginDoctorMigrations } from "../../../plugins/doctor-contract-registry.js";
 import {
   loadInstalledPluginIndexInstallRecordsSync,
   withoutPluginInstallRecords,
 } from "../../../plugins/installed-plugin-index-records.js";
 import type { PluginMetadataSnapshot } from "../../../plugins/plugin-metadata-snapshot.types.js";
 import { isRecord } from "../../../utils.js";
-import { restoreDoctorConfigEnvRefs } from "./config-flow-steps.js";
+import {
+  prepareDoctorConfigReferenceSource,
+  restoreDoctorConfigEnvRefs,
+} from "./config-flow-steps.js";
 import { applyLegacyDoctorMigrations } from "./legacy-config-compat.js";
 import { findDoctorLegacyConfigIssues } from "./legacy-config-issues.js";
 import {
   assertShippedPluginInstallConfigImportCurrent,
-  importShippedPluginInstallConfigForDoctor,
   readShippedPluginInstallConfigImportRecords,
   type ShippedPluginInstallConfigImport,
 } from "./plugin-registry-migration.js";
@@ -42,6 +52,7 @@ type AutomaticConfigRepairPlan = {
   config: OpenClawConfig;
   snapshot: ConfigFileSnapshot;
   changes: string[];
+  writeConfig: OpenClawConfig;
 };
 
 function admitAutomaticConfigRepairSnapshot(snapshot: ConfigFileSnapshot): boolean {
@@ -82,8 +93,8 @@ function planConfigRepair(
   if (!admitAutomaticConfigRepairSnapshot(snapshot)) {
     return null;
   }
-  // The reader also projects legacy ownership and context-budget migrations.
-  // An early write must not accidentally commit that deferred work.
+  // An early write must not persist unrelated ownership, roster, or budget
+  // projections performed by the reader. Only empty-roster initialization is safe.
   let sourceConfig = beforePluginConvergence
     ? (snapshot.sourceConfigBeforeMigrations ?? snapshot.sourceConfig)
     : snapshot.sourceConfig;
@@ -95,8 +106,6 @@ function planConfigRepair(
         isRecord(roster.value) &&
         Object.keys(roster.value).length === 0)
     ) {
-      // Preserve the reader's ordinary empty-roster initialization, but never
-      // admit authored list/default-marker migration or ownership materialization.
       sourceConfig = coerceConfig(
         migratePersistedImplicitMainRoster(sourceConfig, {
           materializeRoles: false,
@@ -105,12 +114,14 @@ function planConfigRepair(
         }).config,
       );
     }
-    // Only default initialization is admitted above. Any other read-time
-    // projection still owns deferred inputs that the writer would retire.
     if (!isDeepStrictEqual(sourceConfig, snapshot.sourceConfig)) {
       return null;
     }
+    // The comparison proved that the original read's surviving facts still apply.
+    copyConfigResolutionFactsThroughRewrite(snapshot.sourceConfig, sourceConfig);
+    inheritLegacyDefaultAgentId(snapshot.sourceConfig, sourceConfig);
   }
+  const deferredPluginMigrations = getDeferredPluginMigrationConfigFacts(snapshot.sourceConfig);
   const sourceRecords = inspectShippedPluginInstallConfigRecords(sourceConfig);
   if (
     sourceRecords.status === "invalid" ||
@@ -132,47 +143,82 @@ function planConfigRepair(
     config: OpenClawConfig,
     run: (metadata?: PluginMetadataSnapshot) => T,
   ): T => {
+    const invoke = (metadata?: PluginMetadataSnapshot) =>
+      deferredPluginMigrations
+        ? withDeferredPluginDoctorMigrations(
+            deferredPluginMigrations.map((pending) => pending.pluginId),
+            () => run(metadata),
+          )
+        : run(metadata);
     if (installRecords === undefined) {
-      return run();
+      return invoke();
     }
     const metadata = resolveConfigWidePluginMetadataSnapshot({
       config,
       installRecords,
       allowCurrent: false,
     });
-    return withPluginMetadataSnapshotScope(metadata, () => run(metadata), { config });
+    return withPluginMetadataSnapshotScope(metadata, () => invoke(metadata), { config });
   };
   const migration = withMetadata(projected, () =>
-    applyLegacyDoctorMigrations(
-      projected,
-      { authoredRaw: snapshot.parsed, resolvedRaw: sourceConfig },
-      { pluginContracts, beforePluginConvergence },
-    ),
+    applyLegacyDoctorMigrations(projected, {
+      sourceConfigBeforeMigrations: snapshot.sourceConfigBeforeMigrations,
+      context: { authoredRaw: snapshot.parsed, resolvedRaw: sourceConfig },
+      pluginContracts,
+      beforePluginConvergence,
+    }),
   );
-  const config = migration.next ?? projected;
-  if (isDeepStrictEqual(config, sourceConfig)) {
-    return null;
-  }
-  const valid = withMetadata(config, (metadata) => {
-    const validated = pluginContracts
-      ? validateConfigObjectWithPlugins(
-          prepareAutomaticConfigRepairWrite(snapshot, config),
-          metadata ? { pluginMetadataSnapshot: metadata } : undefined,
-        ).ok
-      : validateConfigObjectRaw(config).ok;
-    const issues = (pluginContracts ? findDoctorLegacyConfigIssues : findLegacyConfigIssues)(
-      config,
-      config,
-    );
-    return validated && issues.length === 0;
+  const config = preserveDeferredPluginMigrationConfig({
+    sourceConfig: snapshot.sourceConfig,
+    nextConfig: migration.next ?? projected,
+    pending: deferredPluginMigrations ?? [],
   });
-  if (!valid) {
+  if (isDeepStrictEqual(config, snapshot.sourceConfig)) {
     return null;
   }
+  // Migration rebuilds the source object; retain only facts whose values survived.
+  copyConfigResolutionFactsThroughRewrite(snapshot.sourceConfig, config);
+  // Validate, verify, and commit one authored candidate; resolving a moved escaped
+  // reference again would make successful repairs look like unexpected config drift.
+  // Restore the same migration subset in both planning views, including early aliases.
+  // Neither restoration nor core-only selection may discover plugin repair contracts.
+  const writeConfig = restoreDoctorConfigEnvRefs(
+    config,
+    prepareDoctorConfigReferenceSource(snapshot),
+    undefined,
+    { pluginContracts, beforePluginConvergence },
+  );
+  let warnings = snapshot.warnings;
+  const runtimeConfig = withMetadata(config, (metadata) => {
+    const validationConfig = omitDeferredPluginMigrationConfig(config, deferredPluginMigrations);
+    const validated = pluginContracts
+      ? validateConfigObjectWithPlugins(prepareAutomaticConfigRepairWrite(snapshot, writeConfig), {
+          ...(metadata ? { pluginMetadataSnapshot: metadata } : {}),
+          deferredPluginMigrations,
+        })
+      : { ...validateConfigObjectRaw(validationConfig), warnings };
+    warnings = validated.warnings;
+    const issues = (pluginContracts ? findDoctorLegacyConfigIssues : findLegacyConfigIssues)(
+      validationConfig,
+      validationConfig,
+    );
+    return validated.ok && issues.length === 0
+      ? deferredPluginMigrations?.length
+        ? validated.config
+        : config
+      : null;
+  });
+  if (!runtimeConfig) {
+    return null;
+  }
+  copyConfigResolutionFactsThroughRewrite(snapshot.sourceConfig, runtimeConfig);
+  setDeferredPluginMigrationConfigFacts(config, deferredPluginMigrations);
   return {
     config,
+    writeConfig,
     changes: [
       ...migration.changes,
+      ...(migration.warnings ?? []),
       ...(sourceRecords.status === "valid"
         ? ["Removed retired plugins.installs after preserving plugin install records."]
         : []),
@@ -181,8 +227,9 @@ function planConfigRepair(
       ...snapshot,
       sourceConfig: config,
       resolved: config,
-      runtimeConfig: config,
-      config,
+      runtimeConfig,
+      config: runtimeConfig,
+      warnings,
       valid: true,
       issues: [],
       legacyIssues: [],
@@ -193,20 +240,13 @@ function planConfigRepair(
 /** Admits only complete, deterministic single-file legacy migrations. */
 export function planAutomaticConfigRepair(
   snapshot: ConfigFileSnapshot,
-  options?: { installRecords?: Record<string, PluginInstallRecord> },
+  options?: {
+    installRecords?: Record<string, PluginInstallRecord>;
+    /** Preview only; the admitted post-convergence plan must validate plugin contracts. */
+    pluginContracts?: boolean;
+  },
 ): AutomaticConfigRepairPlan | null {
-  return planConfigRepair(snapshot, true, options?.installRecords);
-}
-
-/** Validate the prospective plugin contracts before their records become durable. */
-export async function importAutomaticConfigRepairInstallRecords(snapshot: ConfigFileSnapshot) {
-  return await importShippedPluginInstallConfigForDoctor(snapshot, {
-    validateRecords: (installRecords) => {
-      if (!planAutomaticConfigRepair(snapshot, { installRecords })) {
-        throw new Error("Config cannot be repaired safely with the current plugin inventory.");
-      }
-    },
-  });
+  return planConfigRepair(snapshot, options?.pluginContracts !== false, options?.installRecords);
 }
 
 /**
@@ -226,7 +266,7 @@ export function isStartupConfigRepairResult(
   after: ConfigFileSnapshot,
 ): boolean {
   const plan = planAutomaticConfigRepair(before);
-  const expected = plan ? prepareAutomaticConfigRepairWrite(before, plan.config) : null;
+  const expected = plan ? prepareAutomaticConfigRepairWrite(before, plan.writeConfig) : null;
   return Boolean(
     expected &&
     after.valid &&
@@ -247,20 +287,14 @@ async function writeAutomaticConfigRepair(
 ): Promise<void> {
   await transformConfigFile({
     baseHash: resolveConfigSnapshotHash(snapshot) ?? undefined,
-    // Preflight can commit before the later Doctor health write. Preserve moved
-    // references here, under the same snapshot/hash and read-time environment.
-    transform: (_current, { snapshot: currentSnapshot }, { envSnapshotForRestore }) => {
+    // The original planning pair prepared the authored candidate; current reads fence authority.
+    transform: (_current, { snapshot: currentSnapshot }) => {
       assertShippedPluginInstallConfigImportCurrent(
         currentSnapshot,
         options.pluginInstallConfigImport,
       );
       return {
-        nextConfig: restoreDoctorConfigEnvRefs(
-          plan.config,
-          currentSnapshot,
-          envSnapshotForRestore,
-          { beforePluginConvergence: options.beforePluginConvergence },
-        ),
+        nextConfig: plan.writeConfig,
       };
     },
     afterWrite: { mode: "none", reason: "automatic migration" },
@@ -286,16 +320,10 @@ async function writeAutomaticConfigRepair(
 export async function commitAutomaticConfigRepair(
   plan: AutomaticConfigRepairPlan,
   snapshot: ConfigFileSnapshot,
-  options:
-    | {
-        pluginInstallConfigImport?: ShippedPluginInstallConfigImport;
-        beforePluginConvergence?: false;
-      }
-    | { beforePluginConvergence: true; pluginInstallConfigImport?: never } = {},
+  pluginInstallConfigImport?: ShippedPluginInstallConfigImport,
 ): Promise<void> {
-  const { pluginInstallConfigImport } = options;
   if (!pluginInstallConfigImport) {
-    return await writeAutomaticConfigRepair(plan, snapshot, options);
+    return await writeAutomaticConfigRepair(plan, snapshot);
   }
   const { withPluginLifecycleLease } = await import("../../../plugins/plugin-lifecycle-lease.js");
   await withPluginLifecycleLease({}, async (lease) => {
@@ -313,8 +341,10 @@ export async function commitAutomaticConfigRepair(
   });
 }
 
-/** Keep shipped updater rehearsals usable without consuming deferred migration inputs. */
-export async function repairDoctorConfigBeforePluginConvergence(): Promise<string[]> {
+/** Repair only independent aliases without consuming post-core migration inputs. */
+export async function repairDoctorConfigBeforePluginConvergence(
+  options: { assertCurrent?: () => void } = {},
+): Promise<string[]> {
   const snapshot = await createConfigIO({
     env: process.env,
     observe: false,
@@ -325,8 +355,11 @@ export async function repairDoctorConfigBeforePluginConvergence(): Promise<strin
   if (!plan) {
     return [];
   }
-  // This uses the normal, fully validating atomic writer. A remaining legacy
-  // locator or unrelated invalid value keeps the original source for post-core.
-  await commitAutomaticConfigRepair(plan, snapshot, { beforePluginConvergence: true });
+  // Keep the existing fully validating atomic writer, backup, and refusal path.
+  // No install receipt is admitted and the positional full-mode API is unchanged.
+  await writeAutomaticConfigRepair(plan, snapshot, {
+    beforePluginConvergence: true,
+    assertCurrent: options.assertCurrent,
+  });
   return plan.changes;
 }

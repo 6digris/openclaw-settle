@@ -112,23 +112,21 @@ describe("AppSidebar footer identity menu", () => {
     sidebar.connected = true;
     sidebar.canPairDevice = false;
     sidebar.onNavigate = onNavigate;
-    gatewayHarness.publishEvent("presence", {
-      presence: [
-        {
-          instanceId: "self-instance",
-          user: {
-            id: "self",
-            name: fullName,
-            email: "ada.with.a.deliberately.long.address@example.test",
-            avatarUrl: "/api/users/self/avatar?v=1",
-          },
-        },
-      ],
+    gatewayHarness.publish({
+      selfUser: {
+        id: "self",
+        name: fullName,
+        email: "ada.with.a.deliberately.long.address@example.test",
+        avatarUrl: "/api/users/self/avatar?v=1",
+      },
     });
     await sidebar.updateComplete;
 
     const identity = sidebar.querySelector<HTMLButtonElement>(".sidebar-identity-card");
     expect(identity?.getAttribute("aria-haspopup")).toBe("menu");
+    expect(identity?.getAttribute("aria-expanded")).toBe("false");
+    expect(identity?.getAttribute("aria-label")).toContain(fullName);
+    expect(identity?.querySelector("[title], [data-tooltip], openclaw-tooltip")).toBeNull();
     vi.spyOn(identity!, "getBoundingClientRect").mockReturnValue({
       left: 12,
       right: 224,
@@ -156,7 +154,7 @@ describe("AppSidebar footer identity menu", () => {
     const footerName = identity?.querySelector(".sidebar-identity-card__name");
     const menuName = menu?.querySelector(".sidebar-identity-menu__name");
     expect(footerName?.textContent?.trim()).toBe(fullName);
-    expect(footerName?.getAttribute("title")).toBe(fullName);
+    expect(footerName?.hasAttribute("title")).toBe(false);
     expect(menuName?.textContent?.trim()).toBe(fullName);
     expect(menuName?.getAttribute("title")).toBe(fullName);
     const menuEmail = menu?.querySelector(".sidebar-identity-menu__email");
@@ -236,7 +234,7 @@ describe("AppSidebar footer identity menu", () => {
       );
       sidebar.connected = true;
       sidebar.canPairDevice = false;
-      sidebar.offline = offline;
+      sidebar.connectionStatus = offline ? "reconnecting" : null;
       await sidebar.updateComplete;
 
       const identity = sidebar.querySelector<HTMLButtonElement>(".sidebar-identity-card");

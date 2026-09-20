@@ -37,6 +37,7 @@ const JSON_FIELDS = [
   "repair",
 ] as const;
 export type UpdateRunLedgerOptions = OpenClawStateDatabaseOptions & {
+  busyTimeoutMs?: number;
   redactPaths?: readonly string[];
 };
 
@@ -77,7 +78,9 @@ function boundedJson(input: unknown, maxBytes = JSON_BYTES): string {
       } else {
         // Recovery details are the durable backup receipt, not optional diagnostics.
         const compacted = value.map((item) =>
-          isRecord(item) && item.step !== "task-delivery-recovery"
+          isRecord(item) &&
+          item.step !== "task-delivery-recovery" &&
+          !(typeof item.step === "string" && item.step.startsWith("finalize:doctor-lint:"))
             ? { ...item, detail: undefined, failureFacts: undefined }
             : item,
         );

@@ -48,7 +48,6 @@ import {
   preflightPluginRegistryDoctorMigration,
   type PluginRegistryDoctorMigrationParams,
 } from "./doctor/shared/plugin-registry-migration.js";
-
 type PluginRegistryDoctorRepairParams = Omit<PluginRegistryDoctorMigrationParams, "config"> &
   InstalledPluginIndexRecordStoreOptions & {
     config: OpenClawConfig;
@@ -306,11 +305,12 @@ function removeManagedNpmPackageLockDependency(params: {
 }
 
 /** Removes managed npm packages that shadow current bundled plugins when repair is enabled. */
-export function maybeRepairStaleManagedNpmBundledPlugins(
+export async function maybeRepairStaleManagedNpmBundledPlugins(
   params: PluginRegistryDoctorRepairParams & {
     installRecords?: Record<string, PluginInstallRecord>;
+    beforePersistentEffect?: () => void | Promise<void>;
   },
-): StaleManagedNpmBundledPluginRepairResult | null {
+): Promise<StaleManagedNpmBundledPluginRepairResult | null> {
   const stale = listStaleManagedNpmBundledPlugins(params);
   if (stale.length === 0) {
     return null;
@@ -340,6 +340,7 @@ export function maybeRepairStaleManagedNpmBundledPlugins(
   for (const pluginId of removedPluginIds) {
     installRecords = removePluginInstallRecordFromRecords(installRecords, pluginId);
   }
+  await params.beforePersistentEffect?.();
   for (const plugin of stale) {
     removeManagedNpmDependency(plugin);
   }
@@ -509,10 +510,10 @@ export function pluginRegistryIssueToHealthFinding(
       return {
         checkId: PLUGIN_REGISTRY_CHECK_ID,
         severity: "warning",
-        message: `Registered npm plugin ${issue.packageName} has a broken OpenClaw host link: ${issue.reason}.`,
+        message: `Registered plugin ${issue.packageName} has a broken OpenClaw host link: ${issue.reason}.`,
         path: issue.packageDir,
         target: issue.packageName,
-        fixHint: "Run `openclaw doctor --fix` to relink the installed npm plugin package.",
+        fixHint: "Run `openclaw doctor --fix` to relink the installed plugin package.",
       };
     case "managed-npm-package-unreadable":
       return {
@@ -526,7 +527,7 @@ export function pluginRegistryIssueToHealthFinding(
       return {
         checkId: PLUGIN_REGISTRY_CHECK_ID,
         severity: "warning",
-        message: `Registered npm plugin package could not be inspected: ${issue.reason}.`,
+        message: `Registered plugin package could not be inspected: ${issue.reason}.`,
         path: issue.packageDir,
         fixHint: "Restore access to the package files, then run `openclaw doctor` again.",
       };
@@ -629,7 +630,7 @@ export async function maybeRepairPluginRegistryState(
     ...params,
     config: params.config,
   };
-  const staleManagedNpmBundledPluginRepair = maybeRepairStaleManagedNpmBundledPlugins(params);
+  const staleManagedNpmBundledPluginRepair = await maybeRepairStaleManagedNpmBundledPlugins(params);
   const removedStaleLocalBundledPluginIds =
     await maybeRepairStaleLocalBundledPluginInstallRecords(params);
   await maybeRepairStaleManagedNpmInstallGenerations(params);

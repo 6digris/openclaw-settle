@@ -2,22 +2,89 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { note } from "../../packages/terminal-core/src/note.js";
 import { formatCliCommand } from "../cli/command-format.js";
+import { resolveFutureConfigActionBlock } from "../config/future-version-guard.js";
 import {
   parseConfigJson5,
   recoverConfigFromJsonRootSuffix,
   recoverConfigFromLastKnownGood,
+  type ConfigSnapshotReadMeasure,
 } from "../config/io.js";
-import { resolveCanonicalConfigPath } from "../config/paths.js";
+import { resolveCanonicalConfigPath, resolveIsConfigReadOnly } from "../config/paths.js";
 import { inspectShippedPluginInstallConfigRecords } from "../config/plugin-install-config-migration.js";
 import type { ConfigFileSnapshot } from "../config/types.js";
 import { formatErrorMessage } from "../infra/errors.js";
+import type { PluginMetadataSnapshotScopeRunner } from "../plugins/current-plugin-metadata-snapshot.js";
+import { loadInstalledPluginIndexInstallRecordsSync } from "../plugins/installed-plugin-index-records.js";
 import { resolveHomeDir } from "../utils.js";
-import type { DoctorConfigPreflightPluginSnapshotRead } from "./doctor-config-preflight-plugin-index.js";
-import type { planAutomaticConfigRepair } from "./doctor/shared/automatic-startup-config-repair.js";
+import {
+  shouldSkipPluginValidationForDoctorConfigPreflight,
+  type DoctorConfigPreflightPluginSnapshotRead,
+} from "./doctor-config-preflight-plugin-index.js";
+import { planAutomaticConfigRepair } from "./doctor/shared/automatic-startup-config-repair.js";
+import type { DoctorConfigPreflightOptions } from "./doctor/shared/config-migration-result.js";
+
+export function createDoctorConfigRepairPlanner(params: {
+  options: DoctorConfigPreflightOptions;
+  gatewayStartupCheckpointRequired: boolean;
+  stateMigrationsRequested: boolean;
+  skipLegacyParentConfigWrite: boolean;
+  hasImportedPluginConfig: () => boolean;
+  beforePluginConvergence?: () => boolean;
+  runWithPluginMetadataSnapshot: PluginMetadataSnapshotScopeRunner;
+}) {
+  const planScopedConfigRepair = (snapshot: ConfigFileSnapshot) => {
+    if (params.beforePluginConvergence?.()) {
+      // Recovery selection is a preview, not authority to commit a plugin-owned repair.
+      return planAutomaticConfigRepair(snapshot, { pluginContracts: false });
+    }
+    // Read in the caller's lease cache before entering a retained Doctor metadata scope.
+    const installRecords = params.hasImportedPluginConfig()
+      ? loadInstalledPluginIndexInstallRecordsSync()
+      : undefined;
+    return params.runWithPluginMetadataSnapshot(
+      { config: snapshot.sourceConfig ?? snapshot.config ?? {} },
+      () => planAutomaticConfigRepair(snapshot, { installRecords }),
+    );
+  };
+  const planAdmittedConfigRepair = (
+    snapshot: ConfigFileSnapshot,
+    prepared: ReturnType<typeof planAutomaticConfigRepair> = null,
+  ) =>
+    (params.gatewayStartupCheckpointRequired ||
+      params.options.repairPrefixedConfig === true ||
+      (params.stateMigrationsRequested && params.options.migrateLegacyConfig !== false)) &&
+    !snapshot.valid &&
+    !params.skipLegacyParentConfigWrite &&
+    (params.options.repairPrefixedConfig === true ||
+      !shouldSkipPluginValidationForDoctorConfigPreflight()) &&
+    !resolveIsConfigReadOnly(process.env) &&
+    !resolveFutureConfigActionBlock({ action: "normalize legacy config", snapshot })
+      ? (prepared ?? planScopedConfigRepair(snapshot))
+      : null;
+  return { planScopedConfigRepair, planAdmittedConfigRepair };
+}
+
+export function createDoctorLegacyConfigMigration(params: {
+  enabled: boolean;
+  measure: ConfigSnapshotReadMeasure;
+}): () => Promise<void> {
+  let complete = false;
+  return async () => {
+    if (complete || !params.enabled) {
+      return;
+    }
+    complete = true;
+    const changes = await params.measure("legacy-config-migration", maybeMigrateLegacyConfig);
+    if (changes.length > 0) {
+      note(changes.map((entry) => `- ${entry}`).join("\n"), "Doctor changes");
+    }
+  };
+}
 
 /** Repair active legacy bytes before considering an older backup. */
 export async function prepareDoctorConfigRecovery(params: {
   enabled: boolean;
+  beforePluginConvergence?: boolean;
   snapshotRead: DoctorConfigPreflightPluginSnapshotRead;
   planRepair: (snapshot: ConfigFileSnapshot) => ReturnType<typeof planAutomaticConfigRepair>;
   readSnapshot: () => Promise<DoctorConfigPreflightPluginSnapshotRead>;
@@ -33,6 +100,15 @@ export async function prepareDoctorConfigRecovery(params: {
       typeof snapshot.raw === "string" && parseConfigJson5(snapshot.raw).ok
         ? params.planRepair(snapshot)
         : null;
+    // A core-only preview cannot decide that readable plugin-owned config is unrecoverable.
+    // Leave those source bytes for the post-convergence planner, never select an older backup.
+    if (
+      params.beforePluginConvergence &&
+      typeof snapshot.raw === "string" &&
+      parseConfigJson5(snapshot.raw).ok
+    ) {
+      return { snapshotRead, activeConfigRepair };
+    }
     let configRepaired = false;
     if (!activeConfigRepair && (await recoverConfigFromJsonRootSuffix(snapshot))) {
       note("Removed non-JSON prefix from openclaw.json.", "Config");
@@ -62,7 +138,7 @@ export async function prepareDoctorConfigRecovery(params: {
   return { snapshotRead, activeConfigRepair };
 }
 
-export async function maybeMigrateLegacyConfig(): Promise<string[]> {
+async function maybeMigrateLegacyConfig(): Promise<string[]> {
   const changes: string[] = [];
   const home = resolveHomeDir();
   if (!home) {

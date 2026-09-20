@@ -1,9 +1,11 @@
 import type { HumanMention } from "@openclaw/gateway-protocol";
 import type { MediaKind } from "@openclaw/media-core/constants";
+import type { ChatWorkContext } from "../../../../packages/gateway-protocol/src/chat-work-context.js";
 /**
  * Chat message types for the UI layer.
  */
 import type {
+  AgentActivityItem,
   ChatSendIntent,
   QueueMode,
 } from "../../../../packages/gateway-protocol/src/schema/logs-chat.js";
@@ -23,24 +25,42 @@ export type BrowserAnnotationAttachment = {
   inspectedElement: boolean;
 };
 
+export type ChatSelectionSource = {
+  text: string;
+  messageId?: string;
+  entryId?: string;
+  /** UTF-16 offsets in the source bubble’s concatenated DOM text nodes. */
+  start: number;
+  end: number;
+};
+
+export type ChatSelectionAnnotation = ChatSelectionSource & {
+  comment: string;
+  sessionKey: string;
+};
+
 export type ChatAttachment = {
   id: string;
   dataUrl?: string;
   previewUrl?: string;
   mimeType: string;
+  origin?: "paste" | "file";
   fileName?: string;
   sizeBytes?: number;
   /** UI-local context that must remain coupled to its annotated screenshot. */
   browserAnnotation?: BrowserAnnotationAttachment;
+  selectionAnnotation?: ChatSelectionAnnotation;
 };
 
 // Shared payload contract: draft and outbox storage must not import each other's runtime.
 export type DurableComposerDraftAttachment = {
   blob: Blob;
   mimeType: string;
+  origin?: "paste" | "file";
   fileName?: string;
   sizeBytes?: number;
   browserAnnotation?: BrowserAnnotationAttachment;
+  selectionAnnotation?: ChatSelectionAnnotation;
 };
 
 export type ChatComposerDraftRetry = {
@@ -94,6 +114,8 @@ export type ToolApprovalReview = {
 
 export type ChatQueueItem = {
   id: string;
+  workContext?: ChatWorkContext;
+  workContextUnavailable?: true;
   text: string;
   mentions?: readonly HumanMention[];
   createdAt: number;
@@ -120,6 +142,8 @@ export type ChatQueueItem = {
   sessionId?: string;
   expectedLeafEntryId?: string | null;
   sendState?:
+    // Process-local submission handoff; durable custody remains waiting-idle.
+    | "submitting"
     | "waiting-model"
     | "waiting-idle"
     | "executing-command"
@@ -252,7 +276,7 @@ export type MessageGroup = {
   key: string;
   role: string;
   senderLabel?: string | null;
-  senderSession?: { sessionKey?: string; agentId?: string } | null;
+  senderSession?: { sessionKey?: string; agentId?: string; label?: string } | null;
   sender?: SenderIdentity;
   sourceClients?: MessageClientSource[];
   replyToSender?: SenderIdentity;
@@ -317,6 +341,7 @@ export type MessageContentItem =
         kind: Exclude<MediaKind, "sticker" | "unknown">;
         label: string;
         mimeType?: string;
+        origin?: "paste" | "file";
         isVoiceNote?: boolean;
         artifactId?: string;
         playback?: "native" | "transcode";
@@ -348,7 +373,7 @@ export type NormalizedMessage = {
   timestamp: number;
   id?: string;
   senderLabel?: string | null;
-  senderSession?: { sessionKey?: string; agentId?: string } | null;
+  senderSession?: { sessionKey?: string; agentId?: string; label?: string } | null;
   sender?: SenderIdentity;
   sourceClients?: MessageClientSource[];
   audioAsVoice?: boolean;
@@ -364,6 +389,13 @@ export type NormalizedMessage = {
     | null;
 };
 
+export type ToolOutputMetadata = {
+  source: "provider-response" | "execution";
+  modelInput: "unverified";
+  outcome?: "unknown";
+  captureTruncated?: true;
+};
+
 /** Tool card representation for inline tool call/result rendering */
 export type ToolCard = {
   id: string;
@@ -374,6 +406,11 @@ export type ToolCard = {
   args?: unknown;
   inputText?: string;
   outputText?: string;
+  /** Result identity stays distinct from the assistant call after presentation grouping. */
+  resultMessageId?: string;
+  /** Gateway display projection omitted content; the durable result may still be complete. */
+  outputTruncated?: boolean;
+  toolOutput?: ToolOutputMetadata;
   /** Structured tool result details (e.g. the edit tool's precomputed diff). */
   details?: unknown;
   /** Monotonic edit counts while a live tool call is still receiving input. */
@@ -381,6 +418,8 @@ export type ToolCard = {
   /** Producer-reported process exit code, when the result supplies one. */
   exitCode?: number;
   isError?: boolean;
+  /** Prepared presentation facts; never replace the raw execution fields above. */
+  activity?: AgentActivityItem;
   /** True when the card comes from the live tool stream of the current run. */
   live?: boolean;
   /** True once a result landed, including historical results with empty output. */
@@ -412,7 +451,13 @@ export type ToolCard = {
           originSessionKey?: string;
         };
       }
-    | (BrowserTabTarget & { kind: "browser-tab"; url?: string; title?: string });
+    | (BrowserTabTarget & { kind: "browser-tab"; url: string; title?: string });
 };
 
-export type ToolCardOutcome = "running" | "succeeded" | "failed" | "unknown";
+export type ToolCardOutcome =
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "blocked"
+  | "skipped"
+  | "unknown";

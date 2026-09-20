@@ -19,6 +19,7 @@ import { CONFIG_PATH } from "../config/paths.js";
 import { inspectShippedPluginInstallConfigRecords } from "../config/plugin-install-config-migration.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { callGateway } from "../gateway/call.js";
+import type { PreparedAgentDatabaseMigrationDiscovery } from "../infra/state-migrations.media-persistence-targets.js";
 import { withoutPluginInstallRecords } from "../plugins/installed-plugin-index-records.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { createPluginCapabilityConsentPrompter } from "../wizard/plugin-capability-consent.js";
@@ -26,6 +27,7 @@ import {
   noteDoctorHookConfigWarnings,
   noteImplicitFallbackClobberWarnings,
   noteMcpOriginWarning,
+  noteMediaCliModelWarnings,
   noteMissingDefaultAgentOwner,
   noteOpencodeProviderOverrides,
   noteSandboxOriginProxyWarning,
@@ -40,6 +42,7 @@ import { finalizeDoctorConfigFlow } from "./doctor/finalize-config-flow.js";
 import {
   applyLegacyCompatibilityStep,
   applyUnknownConfigKeyStep,
+  prepareDoctorConfigReferenceSource,
 } from "./doctor/shared/config-flow-steps.js";
 import { prepareDoctorConfigMigrationResult } from "./doctor/shared/config-migration-result.js";
 import {
@@ -111,13 +114,24 @@ async function refreshGatewayAuthStateAfterAuthProfileRepair(): Promise<void> {
  */
 export async function loadAndMaybeMigrateDoctorConfig(params: {
   options: DoctorOptions;
-  /** The health flow imported retired install records and converged migration plugins. */
-  migrationPluginsConverged?: true;
+  agentDatabaseMigrationDiscovery?: PreparedAgentDatabaseMigrationDiscovery;
   confirm: (p: { message: string; initialValue: boolean }) => Promise<boolean>;
   runtime?: RuntimeEnv;
   prompter?: DoctorPrompter;
 }) {
   const shouldRepair = params.options.repair === true || params.options.yes === true;
+  const prompter = params.prompter;
+  const onCapabilityConsent =
+    shouldRepair && prompter
+      ? createPluginCapabilityConsentPrompter({
+          note: async (message, title) => note(message, title),
+          confirm: (confirmation) =>
+            prompter.confirmRuntimeRepair({
+              ...confirmation,
+              requiresInteractiveConfirmation: true,
+            }),
+        })
+      : undefined;
   let preflight = await withProgress(
     {
       label: "Checking OpenClaw state…",
@@ -127,11 +141,15 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     (progress) =>
       runDoctorConfigPreflight({
         observe: false,
+        invocationPurpose: "doctor",
         repairPrefixedConfig: shouldRepair,
         recoverCorruptTargetStore: shouldRepair,
         doctorOnlyStateMigrations: shouldRepair,
-        migrationPluginsConverged: params.migrationPluginsConverged,
+        onCapabilityConsent,
         preparePluginMetadataSnapshot: true,
+        ...(params.agentDatabaseMigrationDiscovery
+          ? { agentDatabaseMigrationDiscovery: params.agentDatabaseMigrationDiscovery }
+          : {}),
         beforeWorkspaceStateMigration: createWorkspaceAliasMigrationRepair(
           params.prompter,
           progress.done,
@@ -166,6 +184,7 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     };
   }
   const { snapshot, baseConfig: baseCfg } = preflight;
+  const referenceSource = prepareDoctorConfigReferenceSource(snapshot);
   const pluginMetadataSnapshotState: DoctorPluginMetadataSnapshotState = {
     current: preflight.pluginMetadataSnapshot,
   };
@@ -174,6 +193,8 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
   const pluginMetadataSnapshotScope = createDoctorPluginMetadataSnapshotScope({
     getBaseSnapshot: () => pluginMetadataSnapshotState.current,
     env: process.env,
+    getDeferredPluginIds: () =>
+      preflight.deferredPluginMigrations?.map((pending) => pending.pluginId) ?? [],
   });
   const runWithPluginMetadataSnapshot = pluginMetadataSnapshotScope.run;
   const invalidatePluginMetadataSnapshot = () => {
@@ -287,6 +308,18 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
       explicitSetPaths.push(["agents", "ownership"]);
     }
   }
+  const { prepareSessionStoreOwnerRecovery } = await import("./doctor-session-store-owner.js");
+  const sessionStoreOwnerRecovery = await prepareSessionStoreOwnerRecovery({
+    config: state.candidate,
+    snapshot,
+    prompter: params.prompter,
+  });
+  applyConfigMutation(sessionStoreOwnerRecovery, {
+    fixHint: `Run "${doctorFixCommand}" to review session-store ownership recovery.`,
+    sanitize: true,
+    emitWarnings: true,
+  });
+
   const { collectBlockedLegacyOpenAICodexProviderPlan } =
     await import("./doctor/shared/legacy-config-migrations.runtime.models.js");
   const blockedCodexProviderPlan = collectBlockedLegacyOpenAICodexProviderPlan(state.candidate);
@@ -386,10 +419,14 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     await import("./doctor/shared/legacy-config-binding-repair.js");
   applyConfigMutation(
     runWithCurrentPluginMetadata(state.candidate, () =>
-      repairUnownedChannelAccountBindings(state.candidate),
+      repairUnownedChannelAccountBindings({
+        config: state.candidate,
+        sourceConfigBeforeMigrations: snapshot.sourceConfigBeforeMigrations,
+      }),
     ),
     {
-      fixHint: `Run "${doctorFixCommand}" to bind channel accounts with a single existing route owner.`,
+      fixHint: `Run "${doctorFixCommand}" to preserve channel account ownership.`,
+      emitWarnings: true,
     },
   );
 
@@ -429,6 +466,12 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
   }
 
   const pluginActivationSourceConfig = state.candidate;
+  const { collectCodexPluginActivationWarnings } =
+    await import("./doctor/shared/codex-plugin-activation-warning.js");
+  emitDoctorNotes({
+    note,
+    warningNotes: collectCodexPluginActivationWarnings(pluginActivationSourceConfig),
+  });
   const { applyPluginAutoEnable } = await import("../config/plugin-auto-enable.js");
   applyConfigMutation(
     runWithCurrentPluginMetadata(state.candidate, () =>
@@ -456,16 +499,27 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     });
   }
 
-  const { collectPluginToolAllowlistWarnings } =
-    await import("./doctor/shared/plugin-tool-allowlist-warnings.js");
+  const [
+    { collectPluginToolAllowlistWarnings },
+    { collectGitHubUpgradeWarnings },
+    { normalizePluginsConfig },
+  ] = await Promise.all([
+    import("./doctor/shared/plugin-tool-allowlist-warnings.js"),
+    import("./doctor/shared/github-preview-upgrade.js"),
+    import("../plugins/config-state.js"),
+  ]);
   const pluginToolAllowlistWarnings = runWithCurrentPluginMetadata(state.candidate, () =>
     collectPluginToolAllowlistWarnings({
       cfg: state.candidate,
       env: process.env,
     }),
   );
-  if (pluginToolAllowlistWarnings.length > 0) {
-    note(sanitizeDoctorNote(pluginToolAllowlistWarnings.join("\n")), "Doctor warnings");
+  const pluginWarnings = [
+    ...pluginToolAllowlistWarnings,
+    ...collectGitHubUpgradeWarnings(normalizePluginsConfig(state.candidate.plugins)),
+  ];
+  if (pluginWarnings.length > 0) {
+    note(sanitizeDoctorNote(pluginWarnings.join("\n")), "Doctor warnings");
   }
 
   const hasConfiguredChannels =
@@ -511,7 +565,6 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
 
   if (shouldRepair) {
     const { runDoctorRepairSequence } = await import("./doctor/repair-sequencing.js");
-    const prompter = params.prompter;
     const repairSequence = await runDoctorRepairSequence({
       state,
       doctorFixCommand,
@@ -519,18 +572,7 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
       blockedCodexProviderPlan,
       pluginMetadataSnapshotState,
       runWithPluginMetadataSnapshot,
-      ...(prompter
-        ? {
-            onCapabilityConsent: createPluginCapabilityConsentPrompter({
-              note: async (message, title) => note(message, title),
-              confirm: (confirmation) =>
-                prompter.confirmRuntimeRepair({
-                  ...confirmation,
-                  requiresInteractiveConfirmation: true,
-                }),
-            }),
-          }
-        : {}),
+      onCapabilityConsent,
     });
     state = repairSequence.state;
     pluginMetadataSnapshotState.current = repairSequence.pluginMetadataSnapshot;
@@ -560,7 +602,6 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
         env: process.env,
         allowExec: params.options.allowExec === true,
         blockedCodexProviderPlan,
-        runWithPluginMetadataSnapshot,
       });
     const previewNotes = await runWithCurrentPluginMetadata(state.candidate, collectPreviewNotes);
     emitDoctorNotes({
@@ -624,8 +665,14 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
   });
   const cfg = finalized.cfg;
   const shouldWriteConfig = finalized.shouldWriteConfig && legacyStep.blocksWrite !== true;
-  const includeWrite = { snapshot, nextConfig: cfg, persistCanonicalAgentRoster, explicitSetPaths };
-  const includeBoundaryWrite = shouldWriteConfig && resolveConfigIncludeWriteBoundary(includeWrite);
+  const includeBoundaryWrite =
+    shouldWriteConfig &&
+    resolveConfigIncludeWriteBoundary({
+      snapshot,
+      nextConfig: cfg,
+      persistCanonicalAgentRoster,
+      explicitSetPaths,
+    });
 
   const configuredOpencodePluginIds = [
     cfg.models?.providers?.opencode || cfg.models?.providers?.["opencode-zen"]
@@ -647,6 +694,7 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
   noteImplicitFallbackClobberWarnings(cfg);
   noteSandboxOriginProxyWarning(cfg);
   noteMcpOriginWarning(cfg);
+  noteMediaCliModelWarnings(cfg);
   noteMissingDefaultAgentOwner(cfg);
 
   const migrationResult = await finalizeMigrationResult({
@@ -663,7 +711,15 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
 
   return {
     ...finalized,
-    sourceConfigForWrite: snapshot.sourceConfig,
+    ...(shouldWriteConfig && sessionStoreOwnerRecovery.changes.length > 0
+      ? {
+          confirmedConfigSource: {
+            path: snapshot.path,
+            hash: snapshot.hash ?? hashConfigRaw(snapshot.raw),
+          },
+        }
+      : {}),
+    ...(referenceSource ? { referenceSource } : {}),
     ...(pluginInstallConfigImport ? { pluginInstallConfigImport } : {}),
     path: snapshot.path ?? CONFIG_PATH,
     shouldWriteConfig,

@@ -2,8 +2,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
-import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import type { GatewayServer } from "../../../src/gateway/server-public.ts";
 import {
   createOpenClawTestState,
@@ -14,6 +13,7 @@ import {
   createOpenClawTestInstance,
   type OpenClawTestInstance,
 } from "../../../test/helpers/openclaw-test-instance.ts";
+import { createRequireRecord } from "../../../test/helpers/record.js";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
 import type { ModelCatalogResult } from "../api/types.ts";
 import { waitForControlUiGatewayReady } from "../test-helpers/control-ui-e2e-readiness.ts";
@@ -44,34 +44,30 @@ const refreshInventoryArgs = [
   "--params",
   JSON.stringify({ agentId: "main", view: "all", refresh: true }),
 ];
-const refreshInventoryForOwner = async (owner: OpenClawTestInstance, commands: unknown[]) => {
-  let result = await owner.cli(refreshInventoryArgs);
-  commands.push({ args: refreshInventoryArgs, ...result });
+async function refreshInventory() {
+  let result = await catalogInstance.cli(refreshInventoryArgs);
   expect(result.code, result.stderr).toBe(0);
-  // A refresh reply can still be pending. Passive reads await publication without
-  // starting a second acquisition or changing the provider fixture mid-flight.
-  await vi.waitFor(
-    async () => {
-      const catalog = JSON.parse(result.stdout) as ModelCatalogResult;
+  let catalog: ModelCatalogResult = JSON.parse(result.stdout);
+  // Refresh can return the previous inventory while discovery continues.
+  await expect
+    .poll(async () => {
       if (catalog.pendingProviders?.length) {
-        const args = [
+        result = await catalogInstance.cli([
           "gateway",
           "call",
           "models.list",
           "--json",
           "--params",
           JSON.stringify({ agentId: "main", view: "all" }),
-        ];
-        result = await owner.cli(args);
-        commands.push({ args, ...result });
+        ]);
         expect(result.code, result.stderr).toBe(0);
+        catalog = JSON.parse(result.stdout);
       }
-      expect((JSON.parse(result.stdout) as ModelCatalogResult).pendingProviders ?? []).toEqual([]);
-    },
-    { interval: 100, timeout: 15_000 },
-  );
+      return catalog.pendingProviders ?? [];
+    })
+    .toEqual([]);
   return result;
-};
+}
 const catalogModels = (id: string) => [
   { id: "anchor", name: "Anchor" },
   { id: "selected", name: "Selected" },
@@ -103,7 +99,6 @@ const catalogSuite = createControlUiE2eSuite({
       name: "agents-catalog-publication",
       env: { OPENCLAW_TEST_MINIMAL_GATEWAY: undefined, VITEST: undefined },
       config: {
-        update: { checkOnStart: false },
         gateway: { controlUi: { enabled: true } },
         agents: {
           defaults: {
@@ -164,7 +159,6 @@ catalogSuite.define(() => {
     url.hash = new URL(browserUrl).hash;
     const frames: unknown[] = [];
     const commands: unknown[] = [];
-    const refreshInventory = () => refreshInventoryForOwner(owner, commands);
     const catalogRequests = new Set<string>();
     const mutations: string[] = [];
     let rejectCatalog = false;
@@ -185,6 +179,7 @@ catalogSuite.define(() => {
     };
     try {
       const initialInventory = await refreshInventory();
+      expect(initialInventory.code, initialInventory.stderr).toBe(0);
       expect(initialInventory.stdout).toContain("inventory-before");
       await catalogSuite.withPage(
         {
@@ -246,13 +241,19 @@ catalogSuite.define(() => {
           await page.goto(url.toString());
           await waitForControlUiGatewayReady(page);
           const editor = page.locator("openclaw-agents-page");
-          const picker = editor.locator(".model-picker__select");
+          const picker = editor.locator(
+            'openclaw-select-picker:has([role="listbox"][aria-label^="Primary model"])',
+          );
           await expect
             .poll(() => picker.locator('[role="option"][data-value="fixture/retiring"]').count())
             .toBe(1);
-          await editor
-            .locator(".agent-identity-editor__fields input[maxlength='64']")
-            .fill("Keep this identity draft");
+          const identityName = editor.locator(
+            ".agent-identity-editor__fields input[maxlength='64']",
+          );
+          // Identity hydration can replace the selection between fill's browser and keyboard steps.
+          await expect.poll(() => identityName.inputValue()).toBe("Assistant");
+          await identityName.fill("Keep this identity draft");
+          expect(await identityName.inputValue()).toBe("Keep this identity draft");
           await picker.locator(".picker-select__trigger").click();
           await picker.locator('[role="option"][data-value="fixture/selected"]').click();
           const fallbackInput = editor.locator("openclaw-multi-select.agent-fallbacks input");
@@ -290,6 +291,8 @@ catalogSuite.define(() => {
 
           inventoryModel = "inventory-after";
           const refreshed = await refreshInventory();
+          commands.push({ args: refreshInventoryArgs, publishedInventory: refreshed });
+          expect(refreshed.code, refreshed.stderr).toBe(0);
           expect(refreshed.stdout).toContain("inventory-after");
           await expect
             .poll(() =>
@@ -379,11 +382,7 @@ catalogSuite.define(() => {
             .toBe(1);
           await error.waitFor({ state: "hidden" });
           expect(await selected()).toBe("fixture/selected");
-          expect(
-            await editor
-              .locator(".agent-identity-editor__fields input[maxlength='64']")
-              .inputValue(),
-          ).toBe("Keep this identity draft");
+          expect(await identityName.inputValue()).toBe("Keep this identity draft");
           expect(
             await editor
               .locator(".multi-select__chip")

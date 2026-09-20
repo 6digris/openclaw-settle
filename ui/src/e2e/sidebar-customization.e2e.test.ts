@@ -14,6 +14,7 @@ import {
   waitForControlUiRoute,
   waitForControlUiSettingsTakeover,
 } from "../test-helpers/control-ui-e2e.ts";
+import { compactCronJobFixture } from "../test-helpers/cron.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createControlUiE2eSuite({
@@ -118,7 +119,10 @@ suite.define(() => {
     try {
       await page.goto(`${suite.server.baseUrl}settings/appearance`);
       await waitForControlUiSettingsTakeover(page);
-      await gateway.waitForRequest("sessions.catalog.list");
+      const labelsRequest = await gateway.waitForRequest("sessions.catalog.list", {
+        match: { metadataOnly: true },
+      });
+      expect(labelsRequest.params).not.toHaveProperty("limitPerHost");
       const sidebarSettings = page.locator("#settings-appearance-sidebar");
       await sidebarSettings.getByRole("heading", { name: "Hidden session sections" }).waitFor();
       const recovery = sidebarSettings.locator(".settings-group", { hasText: "offline-catalog" });
@@ -225,7 +229,7 @@ suite.define(() => {
       );
       await expect
         .poll(() => trimmedTextContents(pinnedItems))
-        .toEqual(["Agents", "Dashboards", "Automations", "Plugins"]);
+        .toEqual(["Agents", "Dashboards", "Systems", "Automations", "Plugins"]);
       // Desktop renders no topbar row: the sidebar owns navigation.
       await expect.poll(() => page.locator(".topbar").isVisible()).toBe(false);
       const shellNav = page.locator(".shell-nav");
@@ -527,11 +531,11 @@ suite.define(() => {
       await tasksItem.click();
       await expect
         .poll(() => trimmedTextContents(pinnedItems))
-        .toEqual(["Agents", "Dashboards", "Automations", "Plugins", "Tasks"]);
+        .toEqual(["Agents", "Dashboards", "Systems", "Automations", "Plugins", "Tasks"]);
       await page.reload();
       await expect
         .poll(() => trimmedTextContents(pinnedItems))
-        .toEqual(["Agents", "Dashboards", "Automations", "Plugins", "Tasks"]);
+        .toEqual(["Agents", "Dashboards", "Systems", "Automations", "Plugins", "Tasks"]);
       // The More menu is transient: closed after reload, unpinned routes inside.
       await expect.poll(() => moreButton.getAttribute("aria-expanded")).toBe("false");
       await moreButton.click();
@@ -553,7 +557,7 @@ suite.define(() => {
       await menu.getByRole("menuitem", { name: "Reset pinned items" }).click();
       await expect
         .poll(() => trimmedTextContents(pinnedItems))
-        .toEqual(["Agents", "Dashboards", "Automations", "Plugins"]);
+        .toEqual(["Agents", "Dashboards", "Systems", "Automations", "Plugins"]);
 
       // The sidebar header search button is the command palette entry point.
       const searchButton = page.locator(".sidebar-brand__search");
@@ -792,7 +796,7 @@ suite.define(() => {
           methodResponses: {
             "cron.list": {
               jobs: [
-                {
+                compactCronJobFixture({
                   id: "release-digest",
                   name: "Release digest",
                   enabled: true,
@@ -806,7 +810,7 @@ suite.define(() => {
                     lastRunStatus: "error",
                     lastError: "Provider request failed",
                   },
-                },
+                }),
               ],
               snapshotRevision: "sidebar-mobile-attention",
               total: 1,

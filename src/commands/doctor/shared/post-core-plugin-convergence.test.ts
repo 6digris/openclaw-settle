@@ -116,6 +116,7 @@ describe("runPostCorePluginConvergence", () => {
         OPENCLAW_UPDATE_POST_CORE_CONVERGENCE: "1",
       },
       prompter: { shouldRepair: true },
+      beforePersistentEffect: expect.any(Function),
     });
     expect(mocks.repairMissingConfiguredPluginInstalls).toHaveBeenCalledWith({
       cfg,
@@ -352,14 +353,12 @@ describe("runPostCorePluginConvergence", () => {
       logger: {},
       onPackageReadError: expect.any(Function),
       beforePersistentApply: expect.any(Function),
-      beforePersistentEffect: expect.any(Function),
     });
     expect(mocks.relinkOpenClawPeerDependenciesInManagedNpmRoot).toHaveBeenNthCalledWith(2, {
       npmRoot: "/tmp/openclaw-state/npm/projects/codex",
       logger: {},
       onPackageReadError: expect.any(Function),
       beforePersistentApply: expect.any(Function),
-      beforePersistentEffect: expect.any(Function),
     });
     expect(result.changes).toEqual([
       "Repaired OpenClaw host peer link(s) for 1 managed npm plugin package(s).",
@@ -446,6 +445,7 @@ describe("runPostCorePluginConvergence", () => {
       },
       installRecords: baseline,
       prompter: { shouldRepair: true },
+      beforePersistentEffect: expect.any(Function),
     });
     expect(mocks.repairMissingConfiguredPluginInstalls).toHaveBeenCalledTimes(1);
     expect(mocks.repairMissingConfiguredPluginInstalls).toHaveBeenCalledWith({
@@ -932,7 +932,7 @@ describe("runPostCorePluginConvergence", () => {
     expect(result.errored).toBe(false);
   });
 
-  it("keeps an unowned package read error visible for startup to block", async () => {
+  it("keeps an unowned package read error visible as a repair warning", async () => {
     const packageDir = "/tmp/openclaw-state/npm/node_modules/untracked";
     mocks.relinkOpenClawPeerDependenciesInManagedNpmRoot.mockImplementation(
       async (params: { onPackageReadError?: (error: unknown, packageDir: string) => void }) => {
@@ -948,8 +948,8 @@ describe("runPostCorePluginConvergence", () => {
 
     expect(result.warnings).toStrictEqual([
       {
-        reason: "Failed to repair managed npm OpenClaw host peer links: EACCES: permission denied",
-        message: "Failed to repair managed npm OpenClaw host peer links: EACCES: permission denied",
+        reason: "Failed to repair installed OpenClaw host peer links: EACCES: permission denied",
+        message: "Failed to repair installed OpenClaw host peer links: EACCES: permission denied",
         guidance: ["Run `openclaw update repair` to retry plugin repair."],
       },
     ]);

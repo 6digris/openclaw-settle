@@ -1,5 +1,9 @@
 import { expect, it } from "vitest";
-import { controlUiSessionUrl, installMockGateway } from "../test-helpers/control-ui-e2e.ts";
+import {
+  clickBoardWidgetControl,
+  controlUiSessionUrl,
+  installMockGateway,
+} from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiSessionRow } from "../test-helpers/control-ui-session-fixtures.ts";
 import { focusChatSidePanel } from "./chat-side-panel.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
@@ -45,33 +49,8 @@ suite.define(() => {
       { serviceWorkers: "block", viewport: { width: 1280, height: 900 } },
       async ({ page, context }) => {
         let requests = 0;
-        let detailsRequests = 0;
-        await context.addInitScript(() => {
-          if (location.hostname !== "status.example") {
-            return;
-          }
-          for (const type of ["pointerdown", "pointerup", "click"]) {
-            document.addEventListener(
-              type,
-              (event) => {
-                const target = event.target;
-                console.info("[website-navigation]", {
-                  type,
-                  target: target instanceof Element ? target.tagName : null,
-                  href: target instanceof HTMLAnchorElement ? target.getAttribute("href") : null,
-                  x: (event as MouseEvent).clientX,
-                  y: (event as MouseEvent).clientY,
-                });
-              },
-              true,
-            );
-          }
-        });
         await context.route("https://status.example/**", (route) => {
           const path = new URL(route.request().url()).pathname;
-          if (path === "/details") {
-            detailsRequests += 1;
-          }
           if (path === "/api/status") {
             requests += 1;
             return route.fulfill({
@@ -95,7 +74,6 @@ suite.define(() => {
           methodResponses: {
             "sessions.list": { count: 1, sessions: [sessionRow], defaults: {}, path: "", ts: 1 },
             "sessions.patch": {},
-            "sessions.describe": { session: sessionRow },
             "sessions.resolve": {
               ok: true,
               key: sessionKey,
@@ -151,7 +129,10 @@ suite.define(() => {
         expect(await content.getByRole("textbox", { name: "Status note" }).inputValue()).toBe(
           "Keep this note",
         );
-        await content.getByRole("button", { name: "Refresh status" }).click();
+        await clickBoardWidgetControl(
+          page,
+          content.getByRole("button", { name: "Refresh status" }),
+        );
         await content.getByText("Status refreshed", { exact: true }).waitFor();
         expect(requests).toBe(2);
         await content.locator("body").evaluate(() => {
@@ -198,17 +179,8 @@ suite.define(() => {
         expect(await content.getByRole("textbox", { name: "Status note" }).inputValue()).toBe(
           "Keep this note",
         );
-        await content.getByRole("link", { name: "View details" }).click();
-        try {
-          await content.getByRole("heading", { name: "Service details" }).waitFor();
-        } catch (error) {
-          console.error("[control-ui-e2e] website navigation", {
-            detailsRequests,
-            frameBounds: await frame.boundingBox({ timeout: 1_000 }).catch(() => null),
-            frameUrls: page.frames().map((currentFrame) => currentFrame.url()),
-          });
-          throw error;
-        }
+        await clickBoardWidgetControl(page, content.getByRole("link", { name: "View details" }));
+        await content.getByRole("heading", { name: "Service details" }).waitFor();
         const opened = context.waitForEvent("page");
         await page.getByRole("link", { name: "Open website", exact: true }).click();
         const separatePage = await opened;

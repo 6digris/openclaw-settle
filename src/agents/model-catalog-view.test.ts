@@ -14,6 +14,7 @@ import {
   createModelCatalogView,
   loadPreparedModelCatalogView,
   prepareModelCatalogView,
+  selectModelCatalogRuntimeEntry,
 } from "./model-catalog-view.js";
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "./model-catalog.types.js";
 import {
@@ -153,7 +154,7 @@ describe("prepared model catalog view", () => {
     expect(view.catalog).toEqual(entries);
   });
 
-  it("includes only configured static identities and preserves committed rows", () => {
+  it("enriches permitted static choices and current metadata while preserving committed rows", () => {
     const committed = { ...row("custom", "vendor/model"), name: "Committed" };
     const cfg: OpenClawConfig = {
       agents: { defaults: { model: "custom/vendor/model", models: { "custom/extra": {} } } },
@@ -171,7 +172,15 @@ describe("prepared model catalog view", () => {
     ).toEqual([committed, row("custom", "extra")]);
     expect(
       prepareModelCatalogView({ ...facts(cfg), snapshot: captured, view: "default" }).catalog,
-    ).toEqual([committed]);
+    ).toEqual([committed, row("custom", "extra")]);
+    expect(
+      prepareModelCatalogView({
+        ...facts(cfg),
+        snapshot: captured,
+        view: "configured",
+        retainedModel: { provider: "custom", model: "model" },
+      }).catalog,
+    ).toEqual([committed, row("custom", "model"), row("custom", "extra")]);
   });
 
   it("uses authored inventory membership with canonical route metadata", () => {
@@ -357,7 +366,7 @@ function nativeRegistry(readiness: () => { accountType: string; authMode: string
 }
 
 describe("prepared native catalog readiness", () => {
-  it("reads prepared native rows without discovering a harness catalog", async () => {
+  it("reads prepared native rows without discovering a harness catalog", () => {
     const cfg: OpenClawConfig = {
       agents: {
         defaults: {
@@ -369,15 +378,55 @@ describe("prepared native catalog readiness", () => {
     const registry = nativeRegistry(() => ({ accountType: "apiKey", authMode: "oauth" }));
     const loadModelCatalog = vi.fn(async () => [nativeEntry]);
     registry.agentHarnesses[0]!.harness.loadModelCatalog = loadModelCatalog;
-    const result = await loadPreparedModelCatalogView({
-      kind: "prepared",
+    const result = prepareModelCatalogView({
       ...facts(cfg),
       snapshot: snapshot([nativeEntry]),
       pluginRegistry: registry,
-      refreshNative: false,
     });
     expect(result.catalog).toEqual([nativeEntry]);
     expect(loadModelCatalog).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: "matching native observation", variants: [nativeEntry], available: true },
+    { name: "cold catalog", variants: [], available: undefined },
+    {
+      name: "another model",
+      variants: [{ ...nativeEntry, id: "other-model" }],
+      available: undefined,
+    },
+    {
+      name: "another runtime",
+      variants: [{ ...nativeEntry, nativeRuntime: "other-native" }],
+      available: undefined,
+    },
+  ])("evaluates configured rows using $name", ({ variants, available }) => {
+    const logical = row("custom", "native-model");
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          models: { "custom/native-model": { agentRuntime: { id: "native-test" } } },
+        },
+      },
+    };
+    const registry = nativeRegistry(() => undefined);
+    delete registry.agentHarnesses[0]!.harness.readModelCatalogReadiness;
+    registry.agentHarnesses[0]!.harness.loadModelCatalog = () => {
+      throw new Error("Projection must not discover native models");
+    };
+    const view = prepareModelCatalogView({
+      ...facts(cfg),
+      snapshot: { entries: [logical], routeVariants: variants },
+      pluginRegistry: registry,
+    });
+    const decision = view.evaluateNative(logical, {
+      ...host,
+      unavailableReason: "missing-auth",
+    });
+    expect(decision.availability).toBe(available);
+    expect(decision.runtimeAuth).toEqual({ id: "native-test", source: "native" });
+    expect(decision.unavailableReason).toBeUndefined();
+    expect(decision.availabilityAuthoritative).toBe(true);
   });
 
   it("observes revoked login and generation without retaining prior readiness", () => {
@@ -448,4 +497,39 @@ describe("prepared native catalog readiness", () => {
     });
     expect(view.evaluateNative(nativeEntry, host, "native-test")).toEqual(host);
   });
+});
+
+describe("runtime capability donors", () => {
+  it.each(["empty", "unrelated", "native-without-window"])(
+    "preserves logical fallback without borrowing native windows (%s)",
+    (scenario) => {
+      const base: ModelCatalogEntry = {
+        provider: "fixture",
+        id: "model",
+        name: "Model",
+        contextWindows: [{ id: "32k", label: "32K", contextWindow: 32_000 }],
+      };
+      const routeVariants: ModelCatalogEntry[] =
+        scenario === "empty"
+          ? []
+          : scenario === "unrelated"
+            ? [{ provider: "fixture", id: "other", name: "Other" }]
+            : [
+                {
+                  provider: "fixture",
+                  id: "model",
+                  name: "Model",
+                  nativeRuntime: "native-fixture",
+                },
+              ];
+      const selected = selectModelCatalogRuntimeEntry({
+        entry: base,
+        routeVariants,
+        runtimeId: scenario === "native-without-window" ? "native-fixture" : "openclaw",
+      });
+      expect(selected.entry.contextWindows).toEqual(
+        scenario === "native-without-window" ? undefined : base.contextWindows,
+      );
+    },
+  );
 });

@@ -26,6 +26,7 @@ export const SIDEBAR_NAV_ROUTES = [
   "cron",
   "tasks",
   "sessions",
+  "systems",
   "activity",
   "meetings",
   "plugins",
@@ -68,7 +69,7 @@ export type SidebarZoneEntry =
 // Keep the highest-value operational destinations visible on first use. Users
 // can still replace this route set through the customize menu.
 export const DEFAULT_SIDEBAR_ENTRIES = (
-  ["agents-home", "dashboards", "cron", "plugins"] as const
+  ["agents-home", "dashboards", "systems", "cron", "plugins"] as const
 ).map((route) => serializeSidebarEntry({ type: "route", route }));
 
 /**
@@ -252,8 +253,17 @@ export function isSettingsNavigationRouteVisible(
   canAdmin: boolean,
   nativeDeviceSettings: NativeDeviceSettingsCapability | null = null,
 ): boolean {
-  if (routeId === "device" || routeId === "device-permissions") {
+  if (routeId === "device") {
     return nativeDeviceSettings !== null;
+  }
+  if (routeId === "device-permissions") {
+    const snapshot = nativeDeviceSettings?.snapshot;
+    return Boolean(
+      snapshot &&
+      (snapshot.permissions.entries.length > 0 ||
+        snapshot.permissions.location ||
+        snapshot.capabilities?.activeComputerPresenceEnabled !== undefined),
+    );
   }
   if (routeId === "updates") {
     return canAdmin || nativeDeviceSettings !== null;
@@ -267,6 +277,9 @@ export function deviceSettingsGroupLabelKey(
   const device = snapshot?.device;
   if (device?.platform === "macos") {
     return "nav.settingsGroupDevice";
+  }
+  if (device?.platform === "linux" || device?.platform === "windows") {
+    return "nav.settingsGroupThisComputer";
   }
   if (device?.platform === "ios") {
     if (device.formFactor === "phone") {
@@ -333,6 +346,7 @@ const NAVIGATION_PRESENTATION: Record<NavigationRouteId, NavigationPresentation>
   channels: navigationPresentation("link", "channels"),
   connection: navigationPresentation("radio", "connection"),
   sessions: navigationPresentation("fileText", "sessions"),
+  systems: navigationPresentation("monitor", "systems"),
   usage: navigationPresentation("coins", "usage"),
   cron: navigationPresentation("calendarClock", "cron"),
   tasks: navigationPresentation("listChecks", "tasks"),

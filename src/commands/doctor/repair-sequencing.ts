@@ -164,7 +164,7 @@ export async function runDoctorRepairSequence(params: {
     applyMutation(mutation);
   }
   applyMutation(maybeRepairBundledPluginLoadPaths(state.candidate, env));
-  const staleManagedNpmBundledPluginRepair = maybeRepairStaleManagedNpmBundledPlugins({
+  const staleManagedNpmBundledPluginRepair = await maybeRepairStaleManagedNpmBundledPlugins({
     config: state.candidate,
     env,
     prompter: { shouldRepair: true },
@@ -206,6 +206,7 @@ export async function runDoctorRepairSequence(params: {
     repairMissingConfiguredPluginInstalls({
       cfg: state.candidate,
       env,
+      repairVersionDrift: true,
       ...(params.onCapabilityConsent ? { onCapabilityConsent: params.onCapabilityConsent } : {}),
       ...(staleManagedNpmBundledPluginRepair
         ? { baselineRecords: staleManagedNpmBundledPluginRepair.installRecords }

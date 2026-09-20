@@ -79,56 +79,6 @@ describe("prepared model catalog worker boundary", () => {
     vi.stubEnv("CODEX_HOME", makeTempDir("openclaw-worker-empty-codex-"));
   });
 
-  it.each([
-    { owner: "configured Gateway", prepareInboundPluginRegistry: true, version: "built" },
-    { owner: "standalone", prepareInboundPluginRegistry: false, version: "v1" },
-  ])("keeps the $owner artifact selection in catalog and auth workers", async (selection) => {
-    const fixture = await createStaticSnapshot(
-      0,
-      {},
-      {
-        builtPluginVersion: "built",
-        prepareInboundPluginRegistry: selection.prepareInboundPluginRegistry,
-      },
-    );
-    await fixture.snapshot.loadFullModelCatalog!();
-    const auth = await loadPreparedModelRuntimeAuth(fixture.snapshot, {
-      providerIds: [PROVIDER_ID],
-    });
-    // The foreground read can return starter rows while cold discovery continues.
-    await expect
-      .poll(() => fixture.snapshot.readFullModelCatalog?.()?.entries, { timeout: 30_000 })
-      .toContainEqual(
-        expect.objectContaining({
-          provider: PROVIDER_ID,
-          id: `plugin-generation-${selection.version}`,
-        }),
-      );
-    expect(auth?.authStore.profiles[EXTERNAL_AUTH_PROFILE_ID]).toMatchObject({
-      access: `${selection.version}:A`,
-    });
-    expect(
-      new Set(
-        fs
-          .readFileSync(path.join(fixture.root, "discovery-artifacts.txt"), "utf8")
-          .trim()
-          .split("\n"),
-      ),
-    ).toEqual(new Set([selection.version]));
-    const captures = readCatalogDiscoveryCaptures(fixture.root);
-    const workerCaptures = captures.filter((capture) => capture.threadId !== threadId);
-    const parentCaptures = captures.filter((capture) => capture.threadId === threadId);
-    expect(workerCaptures.length).toBeGreaterThan(0);
-    expect(parentCaptures.length).toBeGreaterThan(0);
-    expect(captures.every((capture) => fs.existsSync(capture.filename))).toBe(true);
-    fixture.supersede();
-    await waitForWorkers();
-    await expect
-      .poll(() => workerCaptures.filter((capture) => fs.existsSync(capture.filename)))
-      .toEqual([]);
-    expect(parentCaptures.every((capture) => fs.existsSync(capture.filename))).toBe(true);
-  });
-
   it("keeps explicit read-only full inventories discoverable without a runtime registry", async () => {
     const fixture = await createStaticSnapshot(0, {}, { readOnly: true });
     expect(fixture.snapshot.pluginRegistry).toBeUndefined();
@@ -163,8 +113,10 @@ describe("prepared model catalog worker boundary", () => {
       env: fixture.env,
     };
     let current = true;
+    const retirement = new AbortController();
     const supersede = () => {
       current = false;
+      retirement.abort();
     };
     retireAfterTest(supersede);
     const isCurrent = () => current;
@@ -174,6 +126,7 @@ describe("prepared model catalog worker boundary", () => {
           input,
           catalogOwner: preparePublishedModelCatalogOwnerIdentity(input),
           isGenerationCurrent: isCurrent,
+          retirementSignal: retirement.signal,
           isBuildCurrent: isCurrent,
         },
       ],
@@ -793,9 +746,14 @@ describe("prepared model catalog worker boundary", () => {
     expect(loggedOut?.authStore.profiles[EXTERNAL_AUTH_PROFILE_ID]).toBeUndefined();
   });
 
-  it.each([false, true])(
-    "auth-refresh worker request refreshes native login/logout through the declared owner (nativeOwner=%s)",
-    async (nativeOwner) => {
+  it.each([
+    [false, undefined],
+    [true, undefined],
+    [true, "agent"],
+    [true, "user"],
+  ] as const)(
+    "auth-refresh worker request scopes native login/logout to explicit sharing (nativeOwner=%s, homeScope=%s)",
+    async (nativeOwner, homeScope) => {
       // A developer's ambient OpenAI key would count as usable openai auth and
       // mark the route available before the staged Codex login exists.
       vi.stubEnv("OPENAI_API_KEY", undefined);
@@ -807,7 +765,12 @@ describe("prepared model catalog worker boundary", () => {
       const fixture = await createStaticSnapshot(
         0,
         { CODEX_HOME: codexHome },
-        { codexNativeOwner: nativeOwner },
+        {
+          // Auth refresh is a passive read; activating the full harness is a separate contract.
+          readOnly: true,
+          codexNativeOwner: nativeOwner,
+          ...(homeScope ? { codexNativeHomeScope: homeScope } : {}),
+        },
       );
       const nativeCli = createRequire(
         new URL("../../extensions/codex/package.json", import.meta.url),
@@ -843,7 +806,7 @@ describe("prepared model catalog worker boundary", () => {
       const nativeCredential = fs.readFileSync(path.join(codexHome, "auth.json"));
 
       expect((await refreshAuth()).codex).toEqual(
-        nativeOwner ? { source: "native", mode: "api_key" } : undefined,
+        nativeOwner && homeScope === "user" ? { source: "native", mode: "api_key" } : undefined,
       );
       expect(fs.readFileSync(path.join(codexHome, "auth.json"))).toEqual(nativeCredential);
       nativeCommand(["logout"]);
@@ -1032,6 +995,7 @@ describe("prepared model catalog worker boundary", () => {
       } satisfies PreparedModelRuntimeAgentFacts,
       pluginMetadataSnapshot: fixture.pluginMetadataSnapshot,
       isCurrent: fixture.isCurrent,
+      retirementSignal: fixture.retirementSignal,
     });
     const { modelCatalog: catalog } = await worker.loadCatalog();
 

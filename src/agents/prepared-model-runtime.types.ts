@@ -36,6 +36,12 @@ export type PreparedModelCatalogRefreshOptions = {
   changedOnly?: boolean;
 };
 
+export type PreparedNativeModelSelection = {
+  provider: string;
+  modelId: string;
+  runtime: string;
+};
+
 export type PreparedModelRuntimeResourceClaim = { release: () => Promise<void> };
 
 export type PreparedMediaCapabilityProviderSource = Readonly<{
@@ -98,14 +104,27 @@ export type PreparedModelRuntimeSnapshot = Readonly<{
   modelCatalog: ModelCatalogSnapshot;
   /** Returns saved inventory immediately while expired provider catalogs renew separately. */
   readFullModelCatalog?: () => ModelCatalogSnapshot | undefined;
+  /** Reads accepted inventory without scheduling discovery or expiry renewal. */
+  readPublishedModelCatalog?: () => ModelCatalogSnapshot | undefined;
   /** Reads validated executable rows from this owner's accepted provider publication. */
   readPublishedModels?: () => ReadonlyMap<string, readonly Model[]> | undefined;
   /** Builds this generation's full control-plane catalog without replacing turn facts. */
   loadFullModelCatalog?: (
     options?: PreparedModelCatalogRefreshOptions,
   ) => Promise<ModelCatalogSnapshot>;
+  /** Acquires the selected runtime's native facts before host model resolution. */
+  loadNativeModelCatalog?: (
+    selection: PreparedNativeModelSelection,
+  ) => Promise<ModelCatalogSnapshot>;
   /** Full static models for configured refs, resolved once at the lifecycle boundary. */
   configuredRuntimeModels: readonly PreparedConfiguredRuntimeModel[];
+  /** Exact logical IDs precede static equivalence within this policy generation. */
+  findConfiguredRuntimeModel: (
+    provider: string,
+    modelId: string,
+  ) => ProviderRuntimeModel | undefined;
+  /** Supported aliases for this immutable turn generation, separate from catalog metadata. */
+  configuredModelAliases?: readonly Readonly<{ alias: string; provider: string; model: string }>[];
   /** Inline provider projection prepared once for all resolutions owned by this snapshot. */
   inlineProviderModels: readonly InlineModelEntry[];
   createStores: () => PreparedModelRuntimeStores;
@@ -173,6 +192,8 @@ export type PreparedModelRuntimePublicationOptions = {
 
 export type PreparedModelRuntimeRefreshOptions = {
   gatewayLifecycle?: boolean;
+  /** Startup may serve settled agents while the remaining publication continues. */
+  startup?: boolean;
   defaultWorkspaceDir?: string;
   catalogMode?: PreparedModelRuntimeCatalogMode;
   onBuildStats?: (stats: PreparedModelRuntimeBuildStats) => void;
@@ -218,6 +239,8 @@ export type PreparedModelCatalogInventory = {
   discoveryOrigins: readonly { provider: string; profileId?: string }[];
 };
 
+export type PreparedModelCatalogAcquisitionKind = "provider" | "native";
+
 export type PreparedModelCatalogAttempt = {
   source: {
     key: string;
@@ -225,7 +248,7 @@ export type PreparedModelCatalogAttempt = {
     credentials: Readonly<AuthStorageData>;
   };
   /** Undefined records a failure before an individual provider scope starts. */
-  failedProviders: Set<string | undefined>;
+  failedProviders: Record<PreparedModelCatalogAcquisitionKind, Set<string | undefined>>;
 };
 
 export type PreparedModelRuntimeOwner = {
@@ -235,6 +258,9 @@ export type PreparedModelRuntimeOwner = {
   catalogMode: PreparedModelRuntimeCatalogMode;
   provenance: "configured" | "standalone" | "explicit" | "run" | "ephemeral";
   generation: number;
+  generationRetirement?: AbortController;
+  /** First-build auth events need replay only once this owner has begun reading credentials. */
+  authCaptureStarted?: boolean;
   needsRefresh: boolean;
   catalogStale: boolean;
   /** Completed discovery facts; runtime capability projection belongs to each generation. */
@@ -253,6 +279,7 @@ export type PreparedModelRuntimeOwner = {
 };
 
 export type PreparedModelRuntimeReplacement = {
+  degraded?: boolean;
   gateId: PreparedModelRuntimeReplacementGateId;
   promise: Promise<void>;
   resolve: () => void;

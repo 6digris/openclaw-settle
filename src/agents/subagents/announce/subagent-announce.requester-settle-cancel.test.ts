@@ -3,6 +3,7 @@ import { getRuntimeConfig } from "../../../config/config.js";
 import { patchSessionEntryCore } from "../../../config/sessions/session-accessor.js";
 import { peekSystemEvents, resetSystemEventsForTest } from "../../../infra/system-events.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
+import { tasksWithPendingDelivery } from "../../../tasks/task-registry-state.js";
 import {
   cancelTaskById,
   findTaskByRunId,
@@ -12,7 +13,7 @@ import {
 import { killSessionSubagentRuns } from "../registry/subagent-control-kill.js";
 import { useSubagentControlFixture } from "../registry/subagent-control.test-support.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
-import { markSubagentRunPausedAfterYield } from "../registry/subagent-registry-run-manager.js";
+import { markSubagentRunPausedAfterYield } from "../registry/subagent-registry-run-pause.js";
 import { persistSubagentRunsToDiskOrThrow } from "../registry/subagent-registry-state.js";
 import {
   adoptPausedSubagentRunForFollowUp,
@@ -246,6 +247,8 @@ it.each(["batch", "ordinary"] as const)(
       reason: "Operator cancelled this retrieval",
     });
     expect(result).toMatchObject({ found: true, cancelled: true });
+    // Cancellation starts delivery independently; join its claim before redriving.
+    await vi.waitFor(() => expect(tasksWithPendingDelivery.has(task.taskId)).toBe(false));
     // Redrive the public delivery path as well as the immediate cancellation notification.
     await maybeDeliverTaskTerminalUpdate(task.taskId);
     expect(getTaskById(task.taskId)).toMatchObject({

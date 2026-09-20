@@ -2,8 +2,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resolveCommandEnv } from "../process/exec-spawn.js";
-import { withEnvAsync } from "../test-utils/env.js";
 import { npmCommandFailureCases } from "../test-utils/npm-spec-install-test-helpers.js";
 import { createTrackedTempDirs } from "../test-utils/tracked-temp-dirs.js";
 import {
@@ -13,7 +11,6 @@ import {
   resolveNpmSpecMetadata,
   withInstallWorkspace,
 } from "./install-source-utils.js";
-import { buildUpdateRehearsalPathEnv } from "./update-rehearsal-paths.js";
 
 const execFileSyncMock = vi.hoisted(() => vi.fn(() => "/tmp/openclaw-test-global-npmrc\n"));
 const runCommandWithTimeoutMock = vi.fn();
@@ -257,6 +254,60 @@ describe("resolveNpmSpecMetadata", () => {
     });
   });
 
+  describe.each(["example-plugin", "@example/plugin"])("registry selector for %s", (name) => {
+    it.each(["v2", "2", "2.x"])("preserves literal tag %s in both npm view shapes", async (tag) => {
+      const entry = { name, version: "1.0.0" };
+      // npm resolves literal dist-tags before interpreting the selector as a range.
+      for (const payload of [entry, [entry]]) {
+        mockPackCommandResult({ stdout: JSON.stringify(payload) });
+        await expect(resolveNpmSpecMetadata({ spec: `${name}@${tag}` })).resolves.toMatchObject({
+          ok: true,
+          metadata: { name, version: "1.0.0", resolvedSpec: `${name}@1.0.0` },
+        });
+      }
+    });
+
+    it.each(["v2", "2", "2.x"])(
+      "selects the max version when %s is not a literal tag",
+      async (tag) => {
+        mockPackCommandResult({
+          stdout: JSON.stringify([
+            { name, version: "2.9.0" },
+            { name, version: "2.1.0" },
+          ]),
+        });
+        await expect(resolveNpmSpecMetadata({ spec: `${name}@${tag}` })).resolves.toMatchObject({
+          ok: true,
+          metadata: { name, version: "2.9.0", resolvedSpec: `${name}@2.9.0` },
+        });
+      },
+    );
+
+    it.each(["^2", "2.0.0"])(
+      "rejects a singleton outside the non-tag selector %s",
+      async (selector) => {
+        mockPackCommandResult({ stdout: JSON.stringify([{ name, version: "1.0.0" }]) });
+        await expect(
+          resolveNpmSpecMetadata({ spec: `${name}@${selector}` }),
+        ).resolves.toMatchObject({
+          ok: false,
+          category: "metadata-env",
+        });
+      },
+    );
+  });
+
+  it.each([{ entry: [] }, { entry: [null] }, { entry: [42] }])(
+    "rejects an empty or invalid npm view entry list $entry",
+    async ({ entry }) => {
+      mockPackCommandResult({ stdout: JSON.stringify(entry) });
+      await expect(resolveNpmSpecMetadata({ spec: "example-plugin@v2" })).resolves.toMatchObject({
+        ok: false,
+        category: "metadata-env",
+      });
+    },
+  );
+
   it("selects the newest multi-version entry satisfying the requested range", async () => {
     mockPackCommandResult({
       stdout: JSON.stringify([
@@ -399,70 +450,78 @@ describe("resolveNpmSpecMetadata", () => {
 });
 
 describe("packNpmSpecToArchive", () => {
-  it("packs spec and returns archive path using JSON output metadata", async () => {
-    const cwd = await createFixtureDir();
-    const archivePath = path.join(cwd, "openclaw-plugin-1.2.3.tgz");
-    await fs.writeFile(archivePath, "", "utf-8");
-    mockPackCommandResult({
-      stdout: JSON.stringify([
-        {
-          id: "openclaw-plugin@1.2.3",
+  it.each([
+    { workTimeoutMs: undefined, expectedTimeoutMs: 300_000 },
+    { workTimeoutMs: null, expectedTimeoutMs: undefined },
+    { workTimeoutMs: 50, expectedTimeoutMs: 50 },
+  ])(
+    "packs spec with work deadline $workTimeoutMs and retains metadata",
+    async ({ workTimeoutMs, expectedTimeoutMs }) => {
+      const cwd = await createFixtureDir();
+      const archivePath = path.join(cwd, "openclaw-plugin-1.2.3.tgz");
+      await fs.writeFile(archivePath, "", "utf-8");
+      mockPackCommandResult({
+        stdout: JSON.stringify([
+          {
+            id: "openclaw-plugin@1.2.3",
+            name: "openclaw-plugin",
+            version: "1.2.3",
+            filename: "openclaw-plugin-1.2.3.tgz",
+            integrity: "sha512-test-integrity",
+            shasum: "abc123",
+          },
+        ]),
+      });
+
+      const signal = new AbortController().signal;
+      const result = await packNpmSpecToArchive({
+        spec: "openclaw-plugin@1.2.3",
+        timeoutMs: 1000,
+        workTimeoutMs,
+        cwd,
+        signal,
+      });
+
+      expect(result).toEqual({
+        ok: true,
+        archivePath,
+        metadata: {
           name: "openclaw-plugin",
           version: "1.2.3",
-          filename: "openclaw-plugin-1.2.3.tgz",
+          resolvedSpec: "openclaw-plugin@1.2.3",
           integrity: "sha512-test-integrity",
           shasum: "abc123",
         },
-      ]),
-    });
-
-    const signal = new AbortController().signal;
-    const result = await packNpmSpecToArchive({
-      spec: "openclaw-plugin@1.2.3",
-      timeoutMs: 1000,
-      cwd,
-      signal,
-    });
-
-    expect(result).toEqual({
-      ok: true,
-      archivePath,
-      metadata: {
-        name: "openclaw-plugin",
-        version: "1.2.3",
-        resolvedSpec: "openclaw-plugin@1.2.3",
-        integrity: "sha512-test-integrity",
-        shasum: "abc123",
-      },
-    });
-    expect(runCommandWithTimeoutMock).toHaveBeenCalledWith(
-      [
-        "npm",
-        "pack",
-        "openclaw-plugin@1.2.3",
-        "--ignore-scripts",
-        "--json",
-        "--dry-run=false",
-        `--pack-destination=${cwd}`,
-      ],
-      {
-        cwd,
-        timeoutMs: 300_000,
-        signal,
-        killProcessTree: true,
-        env: {
-          COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
-          NPM_CONFIG_IGNORE_SCRIPTS: "true",
-          NPM_CONFIG_BEFORE: "",
-          NPM_CONFIG_MIN_RELEASE_AGE: "",
-          "NPM_CONFIG_MIN-RELEASE-AGE": "",
-          npm_config_before: "",
-          "npm_config_min-release-age": "",
-          npm_config_min_release_age: "0",
+      });
+      expect(runCommandWithTimeoutMock).toHaveBeenCalledWith(
+        [
+          "npm",
+          "pack",
+          "openclaw-plugin@1.2.3",
+          "--ignore-scripts",
+          "--json",
+          "--dry-run=false",
+          `--pack-destination=${cwd}`,
+        ],
+        {
+          cwd,
+          timeoutMs: expectedTimeoutMs,
+          signal,
+          killProcessTree: true,
+          env: {
+            COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
+            NPM_CONFIG_IGNORE_SCRIPTS: "true",
+            NPM_CONFIG_BEFORE: "",
+            NPM_CONFIG_MIN_RELEASE_AGE: "",
+            "NPM_CONFIG_MIN-RELEASE-AGE": "",
+            npm_config_before: "",
+            "npm_config_min-release-age": "",
+            npm_config_min_release_age: "0",
+          },
         },
-      },
-    );
-  });
+      );
+    },
+  );
 
   it("unpacks npm 12 name-keyed pack json output", async () => {
     const cwd = await createFixtureDir();
@@ -686,35 +745,4 @@ describe("resolveNpmPackArchiveMetadata", () => {
       },
     });
   });
-});
-
-it("pins archive metadata children to the private rehearsal cache", async () => {
-  const root = await createFixtureDir();
-  const archivePath = path.join(root, "fixture.tgz");
-  await fs.writeFile(archivePath, "inert fixture");
-  mockPackCommandResult({
-    stdout: JSON.stringify([{ name: "fixture", version: "1.0.0", filename: "fixture.tgz" }]),
-  });
-  await withEnvAsync(
-    {
-      ...buildUpdateRehearsalPathEnv(root),
-      OPENCLAW_UPDATE_IN_PROGRESS: "1",
-      OPENCLAW_SERVICE_REPAIR_POLICY: "external",
-      OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_SERVICE_REPAIR: "0",
-      OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION: "0",
-      OPENCLAW_COMPATIBILITY_HOST_VERSION: undefined,
-      npm_config_cache: "/outside/lower-cache",
-      NPM_CONFIG_CACHE: "/outside/upper-cache",
-    },
-    async () => {
-      expect((await resolveNpmPackArchiveMetadata({ archivePath })).ok).toBe(true);
-      const [argv, options] = runCommandWithTimeoutMock.mock.calls.at(-1)!;
-      expect(argv.slice(0, 2)).toEqual(["npm", "pack"]);
-      const childEnv = resolveCommandEnv({ argv, env: options.env });
-      expect(childEnv.npm_config_cache).toBe(path.join(root, "cache", "npm"));
-      expect(childEnv.NPM_CONFIG_CACHE).toBe(childEnv.npm_config_cache);
-      expect(process.env.npm_config_cache).toBe("/outside/lower-cache");
-      expect(process.env.NPM_CONFIG_CACHE).toBe("/outside/upper-cache");
-    },
-  );
 });
