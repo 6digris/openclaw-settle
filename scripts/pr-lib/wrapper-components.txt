@@ -583,6 +583,8 @@ src/infra/fs-safe-advanced.ts
 src/infra/fs-safe-copy.worker.ts
 src/infra/fs-safe-defaults.ts
 src/infra/fs-safe.ts
+src/infra/gateway-owner-lease.ts
+src/infra/gateway-process-argv.ts
 src/infra/gateway-supervision.ts
 src/infra/git-commit.ts
 src/infra/git-exec.ts
@@ -640,6 +642,7 @@ src/infra/path-case.ts
 src/infra/path-guards.ts
 src/infra/path-safety.ts
 src/infra/plain-object.ts
+src/infra/ports-lsof.ts
 src/infra/ports-netstat.ts
 src/infra/private-mode.ts
 src/infra/private-temp-workspace.ts
@@ -647,6 +650,7 @@ src/infra/process-env.ts
 src/infra/prototype-keys.ts
 src/infra/regular-file.ts
 src/infra/replace-file.ts
+src/infra/restart-stale-pids.ts
 src/infra/runtime-process-entrypoints.ts
 src/infra/runtime-process-url.ts
 src/infra/runtime-worker-url.ts
@@ -656,6 +660,7 @@ src/infra/semver.ts
 src/infra/shell-env.ts
 src/infra/shell-inline-command.ts
 src/infra/shell-wrapper-resolution.ts
+src/infra/spawn-ps.ts
 src/infra/sqlite-audit-record-store.async.ts
 src/infra/sqlite-audit-record-store.ts
 src/infra/sqlite-audit-record.kernel.ts
@@ -735,9 +740,11 @@ src/infra/update-managed-service-handoff-boot.ts
 src/infra/update-managed-service-handoff-cleanup.ts
 src/infra/update-managed-service-handoff-database.ts
 src/infra/update-managed-service-handoff-lease.ts
+src/infra/update-managed-service-handoff-legacy-parent.ts
 src/infra/update-managed-service-handoff-process.ts
 src/infra/update-managed-service-handoff-retained-custody.ts
 src/infra/update-managed-service-handoff-schema.ts
+src/infra/update-managed-service-handoff-scope.ts
 src/infra/update-managed-service-handoff-source-inspection.ts
 src/infra/update-managed-service-handoff-store-repair.ts
 src/infra/update-preflight-details.ts
