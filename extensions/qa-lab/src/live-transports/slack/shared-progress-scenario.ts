@@ -41,6 +41,7 @@ export async function runSlackSharedProgressScenario(
   let cardId: string | undefined;
   let gatePassed = false;
   let terminalAt: number | undefined;
+  let cardTerminalAt: number | undefined;
   let restartCursor: number | undefined;
   const steps = [
     "Run the parent command",
@@ -64,6 +65,13 @@ export async function runSlackSharedProgressScenario(
     revisions.push({ messageId, text, source, elapsedMs: Date.now() - startedAt });
     if (!cardId && steps.every((step) => text.includes(step))) {
       cardId = messageId;
+    }
+    if (
+      messageId === cardId &&
+      cardTerminalAt === undefined &&
+      isSharedProgressTerminalText(text, profile)
+    ) {
+      cardTerminalAt = Date.now();
     }
   };
   try {
@@ -124,7 +132,7 @@ export async function runSlackSharedProgressScenario(
           (row) =>
             row.messageId !== cardId &&
             row.text.includes(
-              `SHARED_PROGRESS_${profile === "cancel" ? "CANCELLED" : "FINAL"} run=${run}`,
+              `SHARED_PROGRESS_${profile === "cancel" ? "INTERRUPTED" : "FINAL"} run=${run}`,
             ),
         ) ??
         (profile === "restart"
@@ -134,10 +142,28 @@ export async function runSlackSharedProgressScenario(
                 row.text.includes(`SHARED_PROGRESS_INTERRUPTED run=${run}`),
             )
           : undefined);
-      if (final && terminalAt === undefined) {
+      const requiredForegroundFinal =
+        profile === "cancel"
+          ? `SHARED_PROGRESS_CANCELLED run=${run}`
+          : profile === "second-turn"
+            ? `SHARED_SECOND_FINAL run=${run}`
+            : undefined;
+      if (
+        final &&
+        terminalAt === undefined &&
+        (!requiredForegroundFinal ||
+          revisions.some(
+            (row) => row.messageId !== cardId && row.text.includes(requiredForegroundFinal),
+          ))
+      ) {
         terminalAt = Date.now();
       }
-      if (terminalAt && Date.now() - terminalAt >= 60000) {
+      // Cancellation can deliver its final before the retained worker card settles.
+      if (
+        terminalAt !== undefined &&
+        cardTerminalAt !== undefined &&
+        Date.now() - Math.max(terminalAt, cardTerminalAt) >= 60000
+      ) {
         break;
       }
       await sleep(500);
@@ -205,6 +231,10 @@ export async function runSlackSharedProgressScenario(
       {
         name: "sixty_second_observation_after_final",
         ok: terminalAt !== undefined && Date.now() - terminalAt >= 60000,
+      },
+      {
+        name: "sixty_second_observation_after_terminal_workers",
+        ok: cardTerminalAt !== undefined && Date.now() - cardTerminalAt >= 60000,
       },
       { name: "lifecycle_gate_completed", ok: profile === "complete" || gatePassed },
     );

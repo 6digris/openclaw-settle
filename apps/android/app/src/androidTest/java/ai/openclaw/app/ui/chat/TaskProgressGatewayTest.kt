@@ -49,7 +49,13 @@ class TaskProgressGatewayTest {
       }
     val context = instrumentation.targetContext
     val device = UiDevice.getInstance(instrumentation)
-    val proofDirectory = File(checkNotNull(context.getExternalFilesDir(null)), "task-progress-$terminal")
+    val proofDirectory =
+      File(
+        requireNotNull(arguments.getString("additionalTestOutputDir")) {
+          "Run this proof through Gradle additional test output collection"
+        },
+        "task-progress-$terminal",
+      )
     check(proofDirectory.isDirectory || proofDirectory.mkdirs())
     val fixture = Fixture(controlUrl.trimEnd('/'))
     assertEquals("agent:main:main", fixture.request("reset", JSONObject()).getString("sessionKey"))
@@ -71,6 +77,12 @@ class TaskProgressGatewayTest {
         connectThroughOnboarding(device, setupCode)
         chatVisible = true
         requireObject(device, By.text("Your research workspace is ready."))
+        val sessionReads = fixture.request("evidence").getJSONArray("requests")
+        val selectedHistory =
+          (0 until sessionReads.length())
+            .map(sessionReads::getJSONObject)
+            .last { it.getString("method") == "chat.history" }
+        assertEquals("Select the fixture parent, not the device Home", "agent:main:main", selectedHistory.optString("sessionKey"))
         editComposer(device, "Show the synthetic worker progress.")
         requireObject(device, By.desc("Send").enabled(true)).click()
         requireObject(device, By.text("Parent yielded; synthetic worker continues."))
@@ -157,7 +169,8 @@ class TaskProgressGatewayTest {
     requireObject(device, By.text("Permissions"))
     requireObject(device, By.text("Continue")).click()
     requireObject(device, By.desc("Show Sidebar")).click()
-    requireObject(device, By.text("Home")).click()
+    requireObject(device, By.text("Recent")).click()
+    requireObject(device, By.text("Synthetic parent")).click()
     requireObject(device, By.desc("Add attachment"))
   }
 

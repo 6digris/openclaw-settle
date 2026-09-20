@@ -94,6 +94,7 @@ export async function runMatrixSharedProgressScenario(
   let cardId: string | undefined;
   let gatePassed = false;
   let finalAt: number | undefined;
+  let cardTerminalAt: number | undefined;
   const record = (event: MatrixQaObservedEvent) => {
     if (seen.has(event.eventId)) {
       return;
@@ -132,6 +133,13 @@ export async function runMatrixSharedProgressScenario(
     revisions.push(revision);
     if (!cardId && steps.every((step) => revision.text.includes(step))) {
       cardId = messageId;
+    }
+    if (
+      messageId === cardId &&
+      cardTerminalAt === undefined &&
+      isSharedProgressTerminalText(revision.text, profile)
+    ) {
+      cardTerminalAt = startedAt + revision.elapsedMs;
     }
   };
   let driverEventId: string | undefined;
@@ -197,7 +205,7 @@ export async function runMatrixSharedProgressScenario(
           (row) =>
             row.messageId !== cardId &&
             row.text.includes(
-              `SHARED_PROGRESS_${profile === "cancel" ? "CANCELLED" : "FINAL"} run=${run}`,
+              `SHARED_PROGRESS_${profile === "cancel" ? "INTERRUPTED" : "FINAL"} run=${run}`,
             ),
         ) ??
         (profile === "restart"
@@ -207,10 +215,28 @@ export async function runMatrixSharedProgressScenario(
                 row.text.includes(`SHARED_PROGRESS_INTERRUPTED run=${run}`),
             )
           : undefined);
-      if (final && finalAt === undefined) {
+      const requiredForegroundFinal =
+        profile === "cancel"
+          ? `SHARED_PROGRESS_CANCELLED run=${run}`
+          : profile === "second-turn"
+            ? `SHARED_SECOND_FINAL run=${run}`
+            : undefined;
+      if (
+        final &&
+        finalAt === undefined &&
+        (!requiredForegroundFinal ||
+          revisions.some(
+            (row) => row.messageId !== cardId && row.text.includes(requiredForegroundFinal),
+          ))
+      ) {
         finalAt = Date.now();
       }
-      if (finalAt !== undefined && Date.now() - finalAt >= 60000) {
+      // Cancellation can deliver its final before the retained worker card settles.
+      if (
+        finalAt !== undefined &&
+        cardTerminalAt !== undefined &&
+        Date.now() - Math.max(finalAt, cardTerminalAt) >= 60000
+      ) {
         break;
       }
     }
@@ -253,6 +279,10 @@ export async function runMatrixSharedProgressScenario(
       {
         name: "sixty_second_observation_after_final",
         ok: finalAt !== undefined && Date.now() - finalAt >= 60000,
+      },
+      {
+        name: "sixty_second_observation_after_terminal_workers",
+        ok: cardTerminalAt !== undefined && Date.now() - cardTerminalAt >= 60000,
       },
       { name: "lifecycle_gate_completed", ok: profile === "complete" || gatePassed },
     );

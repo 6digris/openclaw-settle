@@ -2945,7 +2945,6 @@ fi
           cleanupFunction,
           'emulator_pid=""',
           'fixture_pid=""',
-          "task_progress_started=0",
           "adb_started=0",
           "readiness_failure_latched=0",
           "trap cleanup EXIT",
@@ -2966,6 +2965,60 @@ fi
     );
     expect(earlyCleanup.status, earlyCleanup.stderr).toBe(127);
     expect(fs.existsSync(unexpectedAdb)).toBe(false);
+
+    const finishedRoot = tempRoots.make("openclaw-android-emulator-finished-cleanup-");
+    const finishedBin = path.join(finishedRoot, "bin");
+    const adbTrace = path.join(finishedRoot, "adb.trace");
+    fs.mkdirSync(finishedBin);
+    fs.writeFileSync(
+      path.join(finishedBin, "adb"),
+      `#!/bin/bash
+printf '%s\\n' "$*" >>"$ADB_TRACE"
+case "$*" in
+  "devices -l"|"kill-server") exit 0 ;;
+  *) printf 'instrumented app already uninstalled\\n' >&2; exit 9 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    fs.writeFileSync(path.join(finishedBin, "avdmanager"), "#!/bin/bash\nexit 0\n", {
+      mode: 0o755,
+    });
+    for (const instrumentationStatus of [0, 7]) {
+      fs.writeFileSync(adbTrace, "");
+      const finishedCleanup = spawnSync(
+        "/bin/bash",
+        [
+          "-c",
+          [
+            "set -euo pipefail",
+            cleanupFunction,
+            'emulator_pid=""',
+            'fixture_pid=""',
+            'serial="emulator-5554"',
+            // Reproduce the post-instrumentation state of the former late-pull path.
+            "task_progress_started=1",
+            "adb_started=1",
+            "readiness_failure_latched=0",
+            "trap cleanup EXIT",
+            `exit ${instrumentationStatus}`,
+          ].join("\n"),
+        ],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            ADB_TRACE: adbTrace,
+            AVD_NAME: "synthetic-finished-proof",
+            DIAGNOSTIC_DIR: finishedRoot,
+            PATH: `${finishedBin}${path.delimiter}${process.env.PATH ?? ""}`,
+          },
+          timeout: 5_000,
+        },
+      );
+      expect(finishedCleanup.status, finishedCleanup.stderr).toBe(instrumentationStatus);
+      expect(fs.readFileSync(adbTrace, "utf8")).toBe("devices -l\nkill-server\n");
+    }
 
     const hangingRoot = tempRoots.make("openclaw-android-emulator-hanging-adb-");
     const hangingBin = path.join(hangingRoot, "bin");
@@ -2997,7 +3050,6 @@ fi
           "readiness_failure_latched=0",
           "adb_started=1",
           'fixture_pid=""',
-          "task_progress_started=0",
           "final_cold_boot_observation_seconds=900",
           "emulator_observation_deadline=$((SECONDS + 3))",
           'export AVD_NAME="OpenClaw_Screenshots_API36"',
@@ -3062,6 +3114,14 @@ fi
         name: "android-emulator-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}",
         path: "${{ runner.temp }}/android-emulator-diagnostic",
         "retention-days": 7,
+      },
+    });
+    expect(steps.find((step) => step.name === "Upload Android task progress media")).toMatchObject({
+      if: "always() && inputs.task_progress_proof",
+      uses: "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+      with: {
+        path: "apps/android/app/build/outputs/connected_android_test_additional_output/",
+        "if-no-files-found": "error",
       },
     });
     expect(source).not.toMatch(/\$\{\{\s*secrets\./u);

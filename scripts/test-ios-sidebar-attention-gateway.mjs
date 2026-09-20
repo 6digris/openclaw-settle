@@ -638,8 +638,8 @@ wss.on("connection", (ws) => {
           sessions: [
             {
               key: mainKey,
-              displayName: "Home",
-              label: "Home",
+              displayName: taskScenario ? "Synthetic parent" : "Home",
+              label: taskScenario ? "Synthetic parent" : "Home",
               kind: "direct",
               updatedAt: created,
               totalTokens: 120,
