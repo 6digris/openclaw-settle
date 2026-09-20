@@ -30,14 +30,17 @@ type OpenClawDatabaseQuarantine = {
 
 /** Reading quarantine metadata is best effort; unfinished native cleanup is a separate fact. */
 export class OpenClawQuarantineReadCleanupError extends AggregateError {
-  constructor(errors: unknown[]) {
+  constructor(
+    errors: unknown[],
+    readonly quarantine?: OpenClawDatabaseQuarantine,
+  ) {
     super(errors, "OpenClaw quarantine reader cleanup failed.", { cause: errors[0] });
     this.name = "OpenClawQuarantineReadCleanupError";
   }
 }
 
 // Read admission needs this error without importing schema migrations.
-export function createOpenClawDatabaseVerificationError(
+function createOpenClawDatabaseVerificationError(
   kind: "agent" | "state",
   pathname: string,
   storedError: string | null,
@@ -134,7 +137,7 @@ function withQuarantineWriter<T>(env: NodeJS.ProcessEnv, operation: (db: Databas
 }
 
 /** Read one authoritative quarantine decision without creating the store. */
-export function readOpenClawDatabaseQuarantine(
+function readOpenClawDatabaseQuarantine(
   pathname: string,
   options: { env?: NodeJS.ProcessEnv } = {},
 ): OpenClawDatabaseQuarantine | undefined {
@@ -155,6 +158,7 @@ export function readOpenClawDatabaseQuarantine(
   } catch (closeError) {
     throw new OpenClawQuarantineReadCleanupError(
       "error" in outcome ? [outcome.error, closeError] : [closeError],
+      "value" in outcome ? outcome.value : undefined,
     );
   }
   if ("error" in outcome) {
@@ -171,20 +175,16 @@ export function assertOpenClawStateDatabaseNotQuarantined(
 ): void {
   let quarantineFailure: Error | undefined;
   try {
-    const quarantine = readOpenClawDatabaseQuarantine(pathname, { env });
-    if (quarantine) {
-      quarantineFailure = createOpenClawDatabaseVerificationError(
-        "state",
-        pathname,
-        quarantine.reason,
-      );
-    }
+    quarantineFailure = readOpenClawDatabaseQuarantineFailure("state", pathname, { env });
   } catch (error) {
-    // A broken quarantine store must not brick every state read.
-    // The process latch and daily verifier still cover known damage.
-    if (error instanceof OpenClawQuarantineReadCleanupError) {
-      onNativeCleanupFailure?.(error);
+    if (!(error instanceof OpenClawQuarantineReadCleanupError)) {
+      throw error;
     }
+    onNativeCleanupFailure?.(error);
+    return;
+  }
+  if (quarantineFailure?.cause instanceof OpenClawQuarantineReadCleanupError) {
+    onNativeCleanupFailure?.(quarantineFailure.cause);
   }
   if (quarantineFailure) {
     throw quarantineFailure;
@@ -250,6 +250,37 @@ function readQuarantineDecision(
     }
   }
   return { kind: row.kind, quarantinedAt: row.quarantined_at, reason: row.reason };
+}
+
+/** Runtime opens refuse recorded damage while tolerating a broken quarantine index. */
+export function readOpenClawDatabaseQuarantineFailure(
+  kind: OpenClawDatabaseKind,
+  pathname: string,
+  options: { env?: NodeJS.ProcessEnv } = {},
+): Error | undefined {
+  let quarantine: OpenClawDatabaseQuarantine | undefined;
+  let cleanupFailure: OpenClawQuarantineReadCleanupError | undefined;
+  try {
+    quarantine = readOpenClawDatabaseQuarantine(pathname, options);
+  } catch (error) {
+    // Unreadable metadata stays best effort; unfinished cleanup retains its disposal owner.
+    if (!(error instanceof OpenClawQuarantineReadCleanupError)) {
+      return undefined;
+    }
+    if (!error.quarantine) {
+      throw error;
+    }
+    quarantine = error.quarantine;
+    cleanupFailure = error;
+  }
+  if (!quarantine) {
+    return undefined;
+  }
+  const failure = createOpenClawDatabaseVerificationError(kind, pathname, quarantine.reason);
+  if (cleanupFailure) {
+    failure.cause = cleanupFailure;
+  }
+  return failure;
 }
 
 /** Persist one authoritative quarantine decision. */
