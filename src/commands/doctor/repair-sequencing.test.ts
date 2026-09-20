@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
   repairMissingConfiguredPluginInstalls: vi.fn(),
   repairStaleAgentModelRefs: vi.fn(),
   resolveConfigWidePluginManifestRegistry: vi.fn(),
+  resolveConfigWidePluginMetadataSnapshot: vi.fn(),
   resolveAuthProfileOrder: vi.fn(),
   resolveProviderInstallCatalogEntries: vi.fn(),
   resolveProfileUnusableUntilForDisplay: vi.fn(),
@@ -47,6 +48,7 @@ vi.mock("../../config/plugin-auto-enable.js", () => ({
 
 vi.mock("../../config/io.plugin-metadata.js", () => ({
   resolveConfigWidePluginManifestRegistry: mocks.resolveConfigWidePluginManifestRegistry,
+  resolveConfigWidePluginMetadataSnapshot: mocks.resolveConfigWidePluginMetadataSnapshot,
 }));
 
 vi.mock("../doctor-plugin-host-links.js", () => ({
@@ -273,6 +275,9 @@ describe("doctor repair sequencing", () => {
     mocks.isInstalledPluginEnabled.mockReturnValue(false);
     mocks.loadInstalledPluginIndex.mockReturnValue({ plugins: [] });
     mocks.loadPluginMetadataSnapshot.mockReturnValue(createPluginMetadataSnapshotFixture());
+    mocks.resolveConfigWidePluginMetadataSnapshot.mockReturnValue(
+      createPluginMetadataSnapshotFixture(),
+    );
     mocks.maybeRepairGroupAllowFromFallback.mockImplementation((cfg: OpenClawConfig) => ({
       config: cfg,
       changes: [],

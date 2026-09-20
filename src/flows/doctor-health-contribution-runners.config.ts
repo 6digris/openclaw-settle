@@ -83,6 +83,9 @@ export async function runWriteConfigHealth(
       await import("../commands/doctor/shared/config-flow-steps.js");
     const { assertShippedPluginInstallConfigImportCurrent } =
       await import("../commands/doctor/shared/plugin-registry-migration.js");
+    const { assertInstalledPluginIdRecoveryCurrent } =
+      await import("../commands/doctor/shared/installed-plugin-id-recovery.js");
+    const installedPluginIdRecovery = ctx.configResult.referenceSource?.installedPluginIdRecovery;
     let committed: Awaited<ReturnType<typeof transformConfigFile>>;
     try {
       if (!confirmedConfigSource?.hash) {
@@ -111,16 +114,26 @@ export async function runWriteConfigHealth(
           explicitSetPaths: ctx.configResult.explicitSetPaths,
         });
       const includeWrite = includeBoundary ? includeSnapshot : undefined;
-      const writeConfig = () =>
+      let recoveryConfig = ctx.cfg;
+      const persistConfig = (assertOwned?: () => void) =>
         transformConfigFile({
           baseHash: hash,
-          transform: (_current, { snapshot }) => {
+          transform: async (_current, { snapshot }) => {
+            assertOwned?.();
             authority?.assertCurrent();
             // Revalidate the copied source under the config lock; never import after plugin repair.
             assertShippedPluginInstallConfigImportCurrent(
               snapshot,
               ctx.configResult.pluginInstallConfigImport,
             );
+            recoveryConfig = snapshot.sourceConfig;
+            await assertInstalledPluginIdRecoveryCurrent(
+              recoveryConfig,
+              installedPluginIdRecovery,
+              ctx.env ?? process.env,
+            );
+            authority?.assertCurrent();
+            assertOwned?.();
             if (includeBoundary) {
               const currentBoundary = resolveConfigIncludeWriteBoundary({
                 snapshot,
@@ -143,6 +156,25 @@ export async function runWriteConfigHealth(
           },
           afterWrite: { mode: "auto" },
           writeOptions: {
+            assertCurrent: () => {
+              authority?.assertCurrent();
+              assertOwned?.();
+            },
+            ...(installedPluginIdRecovery?.size
+              ? {
+                  beforeCommit: async () => {
+                    authority?.assertCurrent();
+                    assertOwned?.();
+                    await assertInstalledPluginIdRecoveryCurrent(
+                      recoveryConfig,
+                      installedPluginIdRecovery,
+                      ctx.env ?? process.env,
+                    );
+                    authority?.assertCurrent();
+                    assertOwned?.();
+                  },
+                }
+              : {}),
             expectedConfigPath: path,
             auditOrigin: "doctor",
             allowConfigSizeDrop: ctx.configResult.shouldWriteConfig === true || updateDoctorRun,
@@ -160,6 +192,16 @@ export async function runWriteConfigHealth(
               : {}),
           },
         });
+      const writeConfig = async () => {
+        if (!installedPluginIdRecovery?.size) {
+          return await persistConfig();
+        }
+        const { withPluginLifecycleLease } = await import("../plugins/plugin-lifecycle-lease.js");
+        return await withPluginLifecycleLease(
+          { env: ctx.env ?? process.env, assertCurrent: () => authority?.assertCurrent() },
+          (lease) => persistConfig(() => lease.assertOwned()),
+        );
+      };
       if (includeWrite) {
         const keys = [
           ...new Set(
