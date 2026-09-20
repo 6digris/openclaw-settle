@@ -55,19 +55,24 @@ export function markPackagePostInstallDoctorAdvisory<
   warnings?: UpdateStepResult["warnings"];
   failureFacts?: UpdateStepResult["failureFacts"];
 } {
-  if (result?.failureFacts?.length) {
+  if (result?.status === "error" || result?.failureFacts?.length) {
+    const failureFacts = result.failureFacts?.length
+      ? result.failureFacts
+      : [
+          createUpdateFailureFact({
+            check: "openclaw doctor",
+            code: "doctor-failed",
+            message: "Post-install Doctor reported an error without diagnostic details.",
+          }),
+        ];
     return {
       ...step,
       advisory: undefined,
-      failureFacts: normalizeUpdateFailureFacts([
-        ...result.failureFacts,
-        ...(step.failureFacts ?? []),
-      ]),
+      failureFacts: normalizeUpdateFailureFacts([...failureFacts, ...(step.failureFacts ?? [])]),
     };
   }
   if (
     !result ||
-    result.status === "error" ||
     !isNormalProcessExit(step) ||
     !(
       (step.exitCode === UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE &&

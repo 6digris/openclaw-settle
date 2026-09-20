@@ -13,6 +13,7 @@ import {
 } from "../../infra/update-doctor-result.js";
 import { inspectUpdateRunAbandonment } from "../../infra/update-run-activity.js";
 import { adoptUpdateRun, createUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
+import { isFailedUpdateStep } from "../../infra/update-run-step.js";
 import {
   ABANDONED_UPDATE_RUN_MS,
   UPDATE_RUN_HEARTBEAT_MS,
@@ -67,6 +68,9 @@ it.each([
   { cause: "output-limit", exitCode: 0 },
   { cause: "output-limit", exitCode: UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE },
   { cause: "reported-error", exitCode: 0 },
+  { cause: "reported-error-without-facts", exitCode: 0 },
+  { cause: "reported-error-with-empty-facts", exitCode: 0 },
+  { cause: "reported-error-with-invalid-facts", exitCode: 0 },
 ] as const)(
   "keeps failed Doctor outcome $cause (exit $exitCode) failed through completion and history",
   async ({ cause, exitCode }) => {
@@ -85,18 +89,21 @@ it.each([
       assert(typeof options === "object");
       const resultPath = options.env?.[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV];
       assert(resultPath);
-      await writeUpdatePostInstallDoctorResult({
-        resultPath,
-        result:
-          cause === "reported-error"
-            ? { status: "error", failureFacts }
-            : {
-                ...createDeferredConfiguredPluginRepairDoctorResult([
-                  "Configured repair deferred.",
-                ]),
-                warnings: ["Doctor left a warning."],
-              },
-      });
+      const receipt =
+        cause === "output-limit"
+          ? {
+              ...createDeferredConfiguredPluginRepairDoctorResult(["Configured repair deferred."]),
+              warnings: ["Doctor left a warning."],
+            }
+          : {
+              status: "error",
+              ...(cause === "reported-error" ? { failureFacts } : {}),
+              ...(cause === "reported-error-with-empty-facts" ? { failureFacts: [] } : {}),
+              ...(cause === "reported-error-with-invalid-facts"
+                ? { failureFacts: [{ code: 42 }] }
+                : {}),
+            };
+      await fs.writeFile(resultPath, JSON.stringify(receipt));
       return {
         code: exitCode,
         stdout: "",
@@ -178,6 +185,7 @@ it.each(
     });
 
     assert(step);
+    expect(isFailedUpdateStep(step)).toBe(Boolean(reason));
     const expected = {
       exitCode: advisory ? UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE : 0,
       configChanges: receipt.configChanges,
