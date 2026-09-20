@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import path from "node:path";
 import { expect, it } from "vitest";
 import type { HelloOk } from "../packages/gateway-protocol/src/index.js";
+import { readConfigFileSnapshot } from "../src/config/config.js";
 import type { GatewayClient } from "../src/gateway/client.js";
 import {
   connectGatewayClient,
@@ -180,6 +181,7 @@ it.runIf(process.platform === "linux")(
             "http://127.0.0.1:" + address.port + "/v1",
           );
           const cfg = {
+            talk: { realtime: { provider: "openai", mode: "realtime", appLaunchPolicies: [] } },
             logging: { level: "debug", file: state.path("gateway-proof.log") },
             agents: {
               defaults: {
@@ -236,6 +238,13 @@ it.runIf(process.platform === "linux")(
           ).toMatchObject({ status: "approved" });
           gateway = await start();
           const admin = gateway.client;
+          const loadedAtStartup = await readConfigFileSnapshot();
+          expect(loadedAtStartup.valid).toBe(true);
+          expect(loadedAtStartup.config.talk?.realtime).toMatchObject({
+            provider: "openai",
+            mode: "realtime",
+            appLaunchPolicies: [],
+          });
           const url = "ws://127.0.0.1:" + gateway.port;
           const identity = loadOrCreateDeviceIdentity({ path: state.path("voice-device.sqlite") });
           let hello: HelloOk | undefined;
@@ -470,6 +479,27 @@ it.runIf(process.platform === "linux")(
               },
             }),
           });
+          const loadedAfterPatch = await readConfigFileSnapshot();
+          expect(loadedAfterPatch.valid).toBe(true);
+          expect(loadedAfterPatch.config.talk?.realtime).toMatchObject({
+            provider: "openai",
+            mode: "realtime",
+            appLaunchPolicies: [
+              {
+                id: "proof",
+                agentId: "main",
+                originatingDeviceId: identity.deviceId,
+                nodeId,
+                ...app,
+              },
+            ],
+          });
+          report.configLoading = {
+            provider: "openai",
+            mode: "realtime",
+            startupPolicyCount: 0,
+            postPatchPolicyCount: loadedAfterPatch.config.talk?.realtime?.appLaunchPolicies?.length,
+          };
           const sessionKey = "agent:main:app-proof";
           const invoke = async (
             client: GatewayClient,

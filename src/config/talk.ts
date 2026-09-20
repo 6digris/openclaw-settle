@@ -93,9 +93,10 @@ function normalizeTalkRealtimeConfig(
   }
   const source = value;
   const normalized: TalkRealtimeConfig = {};
-  // The config schema owns policy validation; retain exact identities and explicit empty lists.
+  // Doctor also normalizes authored input before validation. Preserve this field untouched
+  // so the canonical schema, not normalization, diagnoses malformed policy values.
   if (source.appLaunchPolicies !== undefined) {
-    normalized.appLaunchPolicies = source.appLaunchPolicies.map((policy) => ({ ...policy }));
+    normalized.appLaunchPolicies = source.appLaunchPolicies;
   }
 
   const provider = normalizeOptionalString(source.provider);

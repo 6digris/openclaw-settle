@@ -1,6 +1,7 @@
 // Legacy provider-shape migration tests cover doctor repair of old provider config shapes.
 import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../../../config/types.js";
+import { validateConfigObjectRaw } from "../../../config/validation.js";
 import { LEGACY_CONFIG_MIGRATIONS_RUNTIME_TTS } from "./legacy-config-migrations.runtime.tts.js";
 import { normalizeLegacyTalkConfig } from "./legacy-talk-config-normalizer.js";
 
@@ -23,6 +24,34 @@ function migrateLegacyConfig(raw: unknown): {
 }
 
 describe("legacy migrate provider-shaped config", () => {
+  it.each([
+    { name: "null", value: null },
+    { name: "string", value: "not-a-policy-list" },
+    { name: "object", value: { id: "not-a-list" } },
+    { name: "invalid list item", value: [null] },
+  ])(
+    "keeps $name app policies for structured validation during Doctor normalization",
+    ({ value }) => {
+      // Doctor's compatibility owner accepts authored data before schema validation.
+      const raw = {
+        talk: { realtime: { provider: " openai ", mode: "realtime", appLaunchPolicies: value } },
+      };
+      const before = JSON.stringify(raw);
+      const migrated = normalizeLegacyTalkConfig(raw as unknown as OpenClawConfig, []);
+      expect(migrated.talk?.realtime?.appLaunchPolicies).toEqual(value);
+      expect(migrated.talk?.realtime?.provider).toBe("openai");
+      expect(JSON.stringify(raw)).toBe(before);
+      const validation = validateConfigObjectRaw(migrated);
+      expect(validation.ok).toBe(false);
+      if (validation.ok) {
+        throw new Error("Malformed policy was accepted");
+      }
+      expect(
+        validation.issues.some((issue) => issue.path.startsWith("talk.realtime.appLaunchPolicies")),
+      ).toBe(true);
+    },
+  );
+
   const legacyTts = {
     provider: "edge",
     enabled: true,
