@@ -4902,17 +4902,17 @@ describe("scripts/test-projects changed-target routing", () => {
     ]);
   });
 
-  it("routes forced stateful unit-fast tests to the isolated lane", () => {
-    const plans = buildVitestRunPlans(
-      ["src/system-agent/assistant.configured.test.ts"],
-      process.cwd(),
-    );
+  it.each([
+    "src/system-agent/assistant.configured.test.ts",
+    "src/state/openclaw-agent-execution-cleanup.test.ts",
+  ])("routes forced stateful unit-fast test %s to the isolated lane", (file) => {
+    const plans = buildVitestRunPlans([file], process.cwd());
 
     expect(plans).toEqual([
       {
         config: "test/vitest/vitest.unit-fast-isolated.config.ts",
         forwardedArgs: [],
-        includePatterns: ["src/system-agent/assistant.configured.test.ts"],
+        includePatterns: [file],
         watchMode: false,
       },
     ]);

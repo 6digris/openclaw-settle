@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+import { waitForLayoutSettled } from "../pages/chat/chat-layout.browser.test-support.ts";
 import { waitForControlUiRoute } from "../test-helpers/control-ui-e2e.ts";
 import {
   captureNewSessionComposerUiProof,
@@ -58,8 +59,11 @@ suite.define(() => {
           ".new-session-page__triggers .agent-select__trigger, .new-session-page__triggers > span > .new-session-page__trigger",
         );
         await expect.poll(() => selectors.count()).toBe(agentCount + 2);
+        await page.evaluate(() => document.fonts.ready);
         for (const width of [390, 320, 430, 560, 1280]) {
           await page.setViewportSize({ width, height: 900 });
+          // The viewport RPC finishes before the shell's responsive render and container layout.
+          await waitForLayoutSettled(page, ".new-session-page__triggers button");
           await captureNewSessionComposerUiProof(suite, page, `mobile-setup-${width}.png`);
           const layout = await selectors.evaluateAll((buttons) =>
             buttons.map((button) => {

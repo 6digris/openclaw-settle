@@ -283,6 +283,7 @@ export function createExistingAgentSessionStoreTargetResolver(
   params: {
     env?: NodeJS.ProcessEnv;
     registeredDatabases?: readonly { agentId: string; path: string }[];
+    isSameDatabasePath: (left: string, right: string) => boolean;
   },
 ): ExistingAgentSessionStoreTargetResolver {
   let configuredOwners: Set<string> | undefined;
@@ -323,6 +324,7 @@ function resolveExistingAgentSessionStoreTargets(
     env?: NodeJS.ProcessEnv;
     excludeStorePath?: string;
     registeredDatabases?: readonly { agentId: string; path: string }[];
+    isSameDatabasePath?: (left: string, right: string) => boolean;
   },
   isConfiguredTarget?: (agentId: string) => boolean,
 ): SessionStoreTarget[] {
@@ -359,6 +361,7 @@ function resolveExistingAgentSessionStoreTargets(
       defaultAgentId,
       env,
       registeredDatabases: params.registeredDatabases,
+      isSameDatabasePath: params.isSameDatabasePath,
     });
     if (!resolvedTarget.shared && !isSelectedTarget()) {
       return [];

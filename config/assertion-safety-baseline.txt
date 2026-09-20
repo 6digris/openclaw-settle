@@ -700,7 +700,7 @@ extensions/memory-core/src/cli-runtime-common.ts	2
 extensions/memory-core/src/cli-status.runtime.ts	2
 extensions/memory-core/src/cli.ts	1
 extensions/memory-core/src/concept-vocabulary.ts	1
-extensions/memory-core/src/dreaming-phases.ts	2
+extensions/memory-core/src/dreaming-phases.ts	1
 extensions/memory-core/src/dreaming.ts	1
 extensions/memory-core/src/memory/embeddings.ts	2
 extensions/memory-core/src/memory/hybrid.ts	1
@@ -722,7 +722,7 @@ extensions/memory-core/src/session-backfill-lifecycle.ts	2
 extensions/memory-core/src/session-backfill.ts	1
 extensions/memory-core/src/session-ingestion.ts	2
 extensions/memory-core/src/session-reset-recall-metadata.ts	3
-extensions/memory-core/src/short-term-promotion-apply.ts	4
+extensions/memory-core/src/short-term-promotion-apply.ts	2
 extensions/memory-core/src/short-term-promotion-memory-write.ts	2
 extensions/memory-core/src/short-term-promotion-record.ts	1
 extensions/memory-core/src/short-term-promotion-rehydrate.ts	1
@@ -1914,7 +1914,7 @@ src/agents/tools-effective-inventory-build.ts	2
 src/agents/tools-effective-inventory.ts	4
 src/agents/tools/agent-step.ts	2
 src/agents/tools/agents-wait-tool.ts	1
-src/agents/tools/ask-user-tool-normalization.ts	3
+src/agents/tools/ask-user-tool-normalization.ts	1
 src/agents/tools/ask-user-tool.ts	8
 src/agents/tools/automations-tool-name.ts	1
 src/agents/tools/chat-history-text.ts	3
@@ -2681,7 +2681,7 @@ src/gateway/server-methods/config.ts	7
 src/gateway/server-methods/cron.ts	14
 src/gateway/server-methods/device-scope-upgrade.ts	2
 src/gateway/server-methods/devices.ts	4
-src/gateway/server-methods/doctor.ts	5
+src/gateway/server-methods/doctor.ts	3
 src/gateway/server-methods/exec-approval.ts	2
 src/gateway/server-methods/exec-approvals.ts	2
 src/gateway/server-methods/mcp-app.ts	1

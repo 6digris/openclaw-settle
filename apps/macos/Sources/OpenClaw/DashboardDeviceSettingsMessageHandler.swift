@@ -49,6 +49,7 @@ final class DashboardDeviceSettingsMessageHandler: NSObject, WKScriptMessageHand
             self?.refresh()
         }
         self.observeBrowserChanges()
+        self.refresh()
     }
 
     func stopObserving() {
@@ -158,6 +159,8 @@ final class DashboardDeviceSettingsMessageHandler: NSObject, WKScriptMessageHand
 
     func refresh(refreshAvailability: Bool = false) {
         guard !self.observers.isEmpty else { return }
+        self.owner?.webView.configuration.preferences.setValue(
+            AppStateStore.shared.debugPaneEnabled, forKey: "developerExtrasEnabled")
         self.refreshTask?.cancel()
         self.refreshTask = Task { [weak self] in
             guard !Task.isCancelled, let self else { return }

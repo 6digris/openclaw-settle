@@ -58,6 +58,22 @@ Native host writers, Gateway lifecycle ownership, and source-handle
 preparation retain their existing owners. Schemas, retention, and update behavior
 are unchanged.
 
+Outbound queue enqueue writes execute in the shared-state worker. The host captures
+canonical JSON custody and its state context before waiting, while the existing
+transaction owner preserves namespace conflicts, exact preparation comparisons,
+and atomic media-stage consumption. A complete enqueue result remains authoritative
+through later worker cleanup. Recorded transaction rollback preserves ordinary
+media cleanup and best-effort live sending. When execution may have occurred but no publication
+result is available, recovery retains queue custody and staged media; best-effort
+sending does not fall back to an independent live send. Native settlement alone
+is not evidence that a rejected command did not commit. Random insertion without
+a media stage retains its single-statement boundary; a rejected statement without
+authoritative nonpublication evidence remains an unconfirmed outcome. Recovery
+owns terminal audit publication while custody is retained. Media preparation and
+callbacks stay on the host. Media stage creation, cancellation, pruning, stable
+preparation checkpoints, and other queue mutations retain their existing owners.
+Schemas, retention, and update behavior are unchanged.
+
 Managed outgoing image metadata lookups and cleanup inventories read through the
 shared-state worker, retaining their writable, creating database-open behavior.
 Typed columns, ordering, cleanup claims, and original-media references are unchanged.
@@ -548,7 +564,23 @@ owners migrate together.
 Fleet registry reads use a separate read-only worker and remain noncreating;
 listing cells does not join Gateway writable lifecycle admission. The existing
 read owner retains inherited snapshot and disposable-source scopes until the
-worker closes. Ordinary fixed reads observe independently committed database
+task acknowledges native reader cleanup. Fixed reads share two execution workers
+with the existing pending-task and captured-input byte limits. Each task opens
+and closes its own reader; on Node only execution is reused, never a database connection
+or an earlier result. A completed reply retains its worker slot until acceptance.
+On Bun, every successful task also retires its worker because closing a reader
+can retain native statements; the same task and worker bounds still apply.
+The parent selects SQLite through the existing library owner before starting workers,
+so replacement workers inherit the completed process-wide selection.
+Failed replies and cancelled tasks retire their exact worker without stopping
+unrelated reads. Whole-cache close drains accepted resources, including any remaining
+avatar settlement reads, before retiring the shared pool. A failed resource drain
+retains that pool for canonical cleanup retry. Path-specific close drains only
+operations admitted for that database.
+A best-effort quarantine read preserves the domain result, but unconfirmed
+quarantine reader cleanup also requires worker retirement before source release.
+Its original failures remain available if that retirement fails.
+Ordinary fixed reads observe independently committed database
 state, even when an unrelated cached native cursor still sees an older snapshot.
 The cached writer stays open and retained through read settlement; its captured
 physical identity is checked before and after the reader opens and on result
@@ -563,6 +595,11 @@ awaits token retirement before removing copied bytes; failed close and unacknowl
 cleanup retain custody. Allocation uses the existing reclamation rules.
 After acknowledged staging-process exit, the same inspector and exclusive token
 locks reconcile retirement before a replacement session releases the retained bytes.
+Artifact-preserving fixed reads over a cached native source also use that token
+owner when no source-exclusion or canonical-mutation scope is active. They retain
+the original source connection and backup owner, recheck authority around awaited
+preparation, and join token cleanup before releasing the source borrow. This moves
+token SQLite work, not the native backup or the reader's callback SQL.
 Generic composite callbacks, source-exclusion and canonical-mutation preparation,
 and already-open native source backups retain their existing snapshot owner.
 These preparation paths can still execute main-thread SQLite. The published SDK
@@ -578,7 +615,7 @@ Cell mutations inside an operation retain its original worker scope and check
 the matching lease owner and expiry in the same transaction as the mutation.
 That scope spans lease acquisition through final renewal and release. Failed
 read cleanup remains registered for canonical retry; source snapshots and pins
-stay owned until worker termination is acknowledged. Maintenance scopes join
+stay owned until task cleanup, including required worker termination, is acknowledged. Maintenance scopes join
 admitted reads before their resource, reference, and handle cleanup phases.
 A cached reader records shared maintenance ownership only after the worker enters
 its schema-validated query callback, including when that query later fails.
