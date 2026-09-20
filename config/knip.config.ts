@@ -104,6 +104,8 @@ const repositoryScriptEntries = [
   "scripts/e2e/lib/run-with-pty.mjs!",
   "scripts/e2e/lib/sandbox-browser-sidecar/scenario.mjs!",
   "scripts/e2e/lib/session-cold-storage/client.mjs!",
+  // The documented shared-progress QA flow launches its provider directly.
+  "scripts/e2e/lib/shared-progress/provider.mjs!",
   // systemd-sealed-service-definition.sh executes these via Node stdin and a container path.
   "scripts/e2e/lib/systemd-sealed-service-definition/file-mount.mjs!",
   "scripts/e2e/lib/systemd-sealed-service-definition/paired-mounts.mjs!",

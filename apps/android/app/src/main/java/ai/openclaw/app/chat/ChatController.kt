@@ -7227,7 +7227,7 @@ class ChatController internal constructor(
       val previousProgress = existing?.progress
       val nextProgress = summary.progress
       if (!terminal && previousProgress != null && nextProgress != null &&
-        existing?.runId == summary.runId && previousProgress.revision > nextProgress.revision
+        existing.runId == summary.runId && previousProgress.revision > nextProgress.revision
       ) return@synchronized
       val lastActivity = summary.lastActivity?.trim()?.takeIf(String::isNotEmpty)
       val fallback =

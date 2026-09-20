@@ -409,9 +409,13 @@ struct BackgroundTasksScreen: View {
             guard let route else { throw CancellationError() }
             let tasks = try await MobileBackgroundTaskList.load { status, limit in
                 let params = MobileBackgroundTasksListParams(agentId: self.agentID, status: status, limit: limit)
+                let payload = try JSONEncoder().encode(params)
+                guard let paramsJSON = String(bytes: payload, encoding: .utf8) else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
                 let data = try await self.appModel.operatorSession.request(
                     method: "tasks.list",
-                    paramsJSON: String(decoding: JSONEncoder().encode(params), as: UTF8.self),
+                    paramsJSON: paramsJSON,
                     timeoutSeconds: 12,
                     ifCurrentRoute: route)
                 return try JSONDecoder().decode(MobileBackgroundTasksEnvelope.self, from: data).tasks

@@ -2139,6 +2139,11 @@ describe("mobile release authority", () => {
               required: boolean;
               type: string;
             };
+            task_progress_proof: {
+              default: boolean;
+              required: boolean;
+              type: string;
+            };
           };
         };
       };
@@ -2179,6 +2184,18 @@ describe("mobile release authority", () => {
     const artifactIndex = steps.findIndex(
       (step) => step.name === "Upload Android emulator diagnostic",
     );
+    const proofCheckoutIndex = steps.findIndex(
+      (step) => step.name === "Checkout exact product for task progress proof",
+    );
+    const proofIdentityIndex = steps.findIndex(
+      (step) => step.name === "Verify task progress source identity",
+    );
+    const proofSetupIndex = steps.findIndex(
+      (step) => step.name === "Setup task progress Node environment",
+    );
+    const proofBuildIndex = steps.findIndex(
+      (step) => step.name === "Prepare task progress debug apps",
+    );
 
     expect(workflow.name).toBe("Android Emulator Diagnostic");
     expect(workflow["run-name"]).toBe(
@@ -2189,6 +2206,11 @@ describe("mobile release authority", () => {
       description: "Exact lowercase 40-character commit SHA to diagnose",
       required: true,
       type: "string",
+    });
+    expect(workflow.on.workflow_dispatch.inputs.task_progress_proof).toMatchObject({
+      default: false,
+      required: false,
+      type: "boolean",
     });
     expect(workflow.permissions).toEqual({ contents: "read" });
     expect(Object.keys(workflow.jobs)).toEqual(["validate-target", "diagnose"]);
@@ -2212,12 +2234,33 @@ describe("mobile release authority", () => {
     expect(headIndex).toBe(checkoutIndex + 1);
     expect(parityIndex).toBe(headIndex + 1);
     expect(initializeIndex).toBe(0);
-    expect(trustedCheckoutIndex).toBe(initializeIndex + 1);
+    expect(trustedCheckoutIndex).toBeGreaterThan(initializeIndex);
     expect(setupIndex).toBe(trustedCheckoutIndex + 1);
-    expect(toolingIndex).toBe(setupIndex + 1);
+    expect(toolingIndex).toBeGreaterThan(setupIndex);
     expect(kvmIndex).toBe(toolingIndex + 1);
     expect(diagnosticIndex).toBe(kvmIndex + 1);
     expect(artifactIndex).toBe(diagnosticIndex + 1);
+    expect(proofCheckoutIndex).toBeGreaterThan(initializeIndex);
+    expect(proofIdentityIndex).toBeGreaterThan(proofCheckoutIndex);
+    expect(proofSetupIndex).toBeGreaterThan(proofIdentityIndex);
+    expect(proofBuildIndex).toBeGreaterThan(setupIndex);
+    expect(diagnosticIndex).toBeGreaterThan(proofBuildIndex);
+    for (const index of [
+      proofCheckoutIndex,
+      proofIdentityIndex,
+      proofSetupIndex,
+      proofBuildIndex,
+    ]) {
+      expect(steps[index]?.if).toBe("inputs.task_progress_proof");
+    }
+    expect(steps[proofCheckoutIndex]?.with).toMatchObject({
+      ref: "${{ inputs.target_sha }}",
+      "persist-credentials": false,
+    });
+    expect(steps[proofIdentityIndex]?.env).toEqual({
+      TARGET_SHA: "${{ inputs.target_sha }}",
+    });
+    expect(steps[proofIdentityIndex]?.run).toBe('test "$(git rev-parse HEAD)" = "$TARGET_SHA"');
     expect(validationSteps[validateIndex]?.env).toEqual({
       TARGET_SHA: "${{ inputs.target_sha }}",
     });
@@ -2865,6 +2908,8 @@ fi
           cleanupFunction,
           "readiness_failure_latched=0",
           "adb_started=1",
+          'fixture_pid=""',
+          "task_progress_started=0",
           "final_cold_boot_observation_seconds=900",
           "emulator_observation_deadline=$((SECONDS + 3))",
           'export AVD_NAME="OpenClaw_Screenshots_API36"',
@@ -2933,7 +2978,7 @@ fi
     });
     expect(source).not.toMatch(/\$\{\{\s*secrets\./u);
     expect(source).not.toContain("environment:");
-    expect(source).not.toMatch(/\b(?:pnpm|gradle|fastlane)\b/iu);
+    expect(source).not.toMatch(/\bfastlane\b/iu);
     expect(source).not.toMatch(/apps-signing|MATCH_PASSWORD|GOOGLE_PLAY|upload-and-record/iu);
   });
 

@@ -208,6 +208,12 @@ extension OpenClawChatViewModel {
         }
     }
 
+    struct ModelPatchTarget: Hashable {
+        let canonicalSessionKey: String
+        let agentID: String?
+        let sessionRoutingContract: String?
+    }
+
     func currentModelPatchTarget() -> ModelPatchTarget {
         let session = self.currentSessionSnapshot()
         return self.modelPatchTarget(
@@ -215,6 +221,31 @@ extension OpenClawChatViewModel {
             canonicalSessionKey: self.currentSessionEntry()?.key,
             agentID: session.deliveryAgentID,
             sessionRoutingContract: session.sessionRoutingContract)
+    }
+
+    func sessionSettingsPatchTarget(
+        in sessionKey: String,
+        canonicalSessionKey: String?,
+        agentID: String?,
+        sessionRoutingContract: String?) -> ModelPatchTarget
+    {
+        if canonicalSessionKey == nil,
+           agentID == nil,
+           sessionRoutingContract == nil,
+           sessionKey == self.sessionKey
+        {
+            let session = self.currentSessionSnapshot()
+            return self.modelPatchTarget(
+                sessionKey: session.key,
+                canonicalSessionKey: self.currentSessionEntry()?.key,
+                agentID: session.deliveryAgentID,
+                sessionRoutingContract: session.sessionRoutingContract)
+        }
+        return self.modelPatchTarget(
+            sessionKey: sessionKey,
+            canonicalSessionKey: canonicalSessionKey,
+            agentID: agentID,
+            sessionRoutingContract: sessionRoutingContract)
     }
 
     /// Model coordination uses the immutable gateway route, never a presentation alias such as `main`.

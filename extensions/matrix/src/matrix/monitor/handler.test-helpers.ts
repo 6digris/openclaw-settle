@@ -1,6 +1,7 @@
 // Matrix helper module supports handler helpers behavior.
 import {
   buildChannelInboundEventContext,
+  type ChannelInboundEventRunnerParams,
   type PreparedInboundReply,
 } from "openclaw/plugin-sdk/channel-inbound";
 import type { RuntimeLogger } from "openclaw/plugin-sdk/plugin-runtime";
@@ -218,64 +219,60 @@ export function createMatrixHandlerTestHarness(
         dispatchResult,
       };
     });
-  const defaultRun = vi.fn(
-    async (
-      params: Parameters<MatrixMonitorHandlerParams["core"]["channel"]["inbound"]["run"]>[0],
-    ) => {
-      const input = await params.adapter.ingest(params.raw);
-      if (!input) {
-        return { admission: { kind: "drop" as const, reason: "ingest-null" }, dispatched: false };
-      }
-      const eventClass = (await params.adapter.classify?.(input)) ?? {
-        kind: "message" as const,
-        canStartAgentTurn: true,
-      };
-      const preflightResult = await params.adapter.preflight?.(input, eventClass);
-      const preflight =
-        preflightResult && "kind" in preflightResult
-          ? { admission: preflightResult }
-          : (preflightResult ?? {});
-      const turn = await params.adapter.resolveTurn(input, eventClass, preflight);
-      if (!("route" in turn) || !("delivery" in turn)) {
-        throw new Error("expected assembled Matrix channel turn plan");
-      }
-      return await runPrepared({
-        channel: turn.channel,
-        accountId: turn.accountId,
-        routeSessionKey: turn.route.sessionKey,
-        storePath: "/tmp/matrix-sessions.json",
-        ctxPayload: turn.ctxPayload,
-        recordInboundSession,
-        afterRecord: turn.afterRecord,
-        record: turn.record,
-        history: turn.history,
-        admission: turn.admission,
-        botLoopProtection: turn.botLoopProtection,
-        runDispatch: async () =>
-          await dispatchInboundMessageWithBufferedDispatcher({
-            ctx: turn.ctxPayload,
-            cfg: turn.cfg,
-            dispatcherOptions: {
-              ...turn.dispatcherOptions,
-              // Core resolves the plan's prepared payload before any delivery branch
-              // reads it; a harness that skips that step tests a different pipeline.
-              deliver: async (
-                payload: Parameters<typeof turn.delivery.deliver>[0],
-                info: Parameters<typeof turn.delivery.deliver>[1],
-              ) => {
-                const prepared = turn.delivery.preparePayload
-                  ? await turn.delivery.preparePayload(payload, info)
-                  : payload;
-                return prepared === null ? undefined : await turn.delivery.deliver(prepared, info);
-              },
-              onError: turn.delivery.onError,
+  const defaultRun = vi.fn(async (params: ChannelInboundEventRunnerParams<unknown, unknown>) => {
+    const input = await params.adapter.ingest(params.raw);
+    if (!input) {
+      return { admission: { kind: "drop" as const, reason: "ingest-null" }, dispatched: false };
+    }
+    const eventClass = (await params.adapter.classify?.(input)) ?? {
+      kind: "message" as const,
+      canStartAgentTurn: true,
+    };
+    const preflightResult = await params.adapter.preflight?.(input, eventClass);
+    const preflight =
+      preflightResult && "kind" in preflightResult
+        ? { admission: preflightResult }
+        : (preflightResult ?? {});
+    const turn = await params.adapter.resolveTurn(input, eventClass, preflight);
+    if (!("route" in turn) || !("delivery" in turn)) {
+      throw new Error("expected assembled Matrix channel turn plan");
+    }
+    return await runPrepared({
+      channel: turn.channel,
+      accountId: turn.accountId,
+      routeSessionKey: turn.route.sessionKey,
+      storePath: "/tmp/matrix-sessions.json",
+      ctxPayload: turn.ctxPayload,
+      recordInboundSession,
+      afterRecord: turn.afterRecord,
+      record: turn.record,
+      history: turn.history,
+      admission: turn.admission,
+      botLoopProtection: turn.botLoopProtection,
+      runDispatch: async () =>
+        await dispatchInboundMessageWithBufferedDispatcher({
+          ctx: turn.ctxPayload,
+          cfg: turn.cfg,
+          dispatcherOptions: {
+            ...turn.dispatcherOptions,
+            // Core resolves the plan's prepared payload before any delivery branch
+            // reads it; a harness that skips that step tests a different pipeline.
+            deliver: async (
+              payload: Parameters<typeof turn.delivery.deliver>[0],
+              info: Parameters<typeof turn.delivery.deliver>[1],
+            ) => {
+              const prepared = turn.delivery.preparePayload
+                ? await turn.delivery.preparePayload(payload, info)
+                : payload;
+              return prepared === null ? undefined : await turn.delivery.deliver(prepared, info);
             },
-            replyOptions: turn.replyOptions,
-            replyResolver: turn.replyResolver,
-          }),
-      });
-    },
-  );
+            onError: turn.delivery.onError,
+          },
+          replyOptions: turn.replyOptions,
+          replyResolver: turn.replyResolver,
+        }),
+    });
+  });
   const run = options.runChannelInboundEvent ?? defaultRun;
   const dmPolicy = options.dmPolicy ?? "open";
   const allowFrom = options.allowFrom ?? (dmPolicy === "open" ? ["*"] : []);

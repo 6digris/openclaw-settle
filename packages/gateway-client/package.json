@@ -67,6 +67,7 @@
   "dependencies": {
     "@openclaw/gateway-protocol": "workspace:*",
     "ipaddr.js": "2.5.0",
+    "typebox": "1.3.30",
     "ws": "8.21.3"
   },
   "devDependencies": {

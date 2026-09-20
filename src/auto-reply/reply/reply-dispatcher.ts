@@ -730,14 +730,15 @@ export function createReplyDispatcherWithTyping(
     onCleanup,
     ...dispatcherOptions
   } = options;
-  const resolvedOnReplyStart = onReplyStart ?? typingCallbacks?.onReplyStart;
-  const resolvedOnIdle = onIdle ?? typingCallbacks?.onIdle;
-  const resolvedOnCleanup = onCleanup ?? typingCallbacks?.onCleanup;
   let typingController: TypingController | undefined;
   const notifyTypingIdle = async () => {
     try {
       typingController?.markDispatchIdle();
-      await resolvedOnIdle?.();
+      if (onIdle) {
+        await onIdle();
+      } else {
+        typingCallbacks?.onIdle?.();
+      }
     } catch {
       // Typing notifications remain best effort; required settlement must still run.
     }
@@ -758,8 +759,8 @@ export function createReplyDispatcherWithTyping(
   return {
     dispatcher,
     replyOptions: {
-      onReplyStart: resolvedOnReplyStart,
-      onTypingCleanup: resolvedOnCleanup,
+      onReplyStart: onReplyStart ?? typingCallbacks?.onReplyStart,
+      onTypingCleanup: onCleanup ?? typingCallbacks?.onCleanup,
       onTypingController: (typing) => {
         typingController = typing;
       },

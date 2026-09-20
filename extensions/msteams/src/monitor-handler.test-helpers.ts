@@ -1,6 +1,7 @@
 // Msteams helper module supports monitor handler helpers behavior.
 import {
   buildChannelInboundEventContext,
+  type ChannelInboundEventRunnerParams,
   type PreparedInboundReply,
 } from "openclaw/plugin-sdk/channel-inbound";
 import { createTestInboundDebounceFlush } from "openclaw/plugin-sdk/channel-test-helpers";
@@ -68,7 +69,7 @@ export function installMSTeamsTestRuntime(options: MSTeamsTestRuntimeOptions = {
       dispatchResult,
     };
   });
-  const run = vi.fn(async (params: Parameters<PluginRuntime["channel"]["inbound"]["run"]>[0]) => {
+  const run = vi.fn(async (params: ChannelInboundEventRunnerParams<unknown, unknown>) => {
     const input = await params.adapter.ingest(params.raw);
     if (!input) {
       return { admission: { kind: "drop" as const, reason: "ingest-null" }, dispatched: false };

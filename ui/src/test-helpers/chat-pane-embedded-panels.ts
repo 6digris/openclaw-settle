@@ -142,9 +142,10 @@ export function createReviewFixture(taskFields: Partial<TaskSummary> = {}, resto
     });
   if (!restoreLayout) {
     createBackgroundTasksProps(state, { presented: false });
-    state.backgroundTasksState!.tasks = [task];
-    state.backgroundTasksState!.loadedClient = state.client;
-    state.backgroundTasksState!.taskDetails.set(task.id, task);
+    const backgroundTasks = state.backgroundTasksState!;
+    backgroundTasks.projection.applySnapshot(backgroundTasks.projection.beginSnapshot(), [task]);
+    backgroundTasks.loadedClient = state.client;
+    backgroundTasks.taskDetails.set(task.id, task);
   }
   onTestFinished(async () => {
     file.resolve(null);

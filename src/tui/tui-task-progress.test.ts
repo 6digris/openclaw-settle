@@ -120,6 +120,29 @@ describe("TUI task progress", () => {
     expect(view.render()).not.toContain("[completed]");
     view.upsert(
       child({
+        execution: { state: "finished" },
+        progress: {
+          runId: "resumed-execution",
+          revision: 6,
+          items: [
+            {
+              itemId: "resumed-command",
+              phase: "end",
+              kind: "tool",
+              title: "Verify repair",
+              status: "completed",
+              progressText: "Regression passed; parent delivery is pending",
+            },
+          ],
+        },
+      }),
+    );
+    expect(view.render()).toContain("Investigate [finished]");
+    expect(view.render()).toContain("Verify repair [completed]");
+    expect(view.render()).toContain("Regression passed; parent delivery is pending");
+    expect(view.render()).not.toContain("Investigate [completed]");
+    view.upsert(
+      child({
         status: "completed",
         execution: { state: "finished" },
         progress: undefined,

@@ -66,7 +66,7 @@ type BackgroundTasksState = BackgroundTaskObservations & {
   statusRowId: string;
   subagentActivityExpiryAt: number | null;
   subagentActivityExpiryTimer: number | null;
-  tasks: TaskSummary[] | null;
+  readonly tasks: TaskSummary[] | null;
   taskDetails: Map<string, TaskSummary>;
   taskDetailErrors: Map<string, string>;
   taskDetailRequests: Map<string, symbol>;

@@ -18,11 +18,7 @@ const TERMINAL_STATUSES = ["completed", "failed", "cancelled", "timed_out"] as c
 function taskLines(task: TaskSummary): string[] {
   const active = isActiveTask(task);
   const execution = task.execution?.state;
-  const status = active
-    ? execution === "running" || execution === "waiting" || execution === "queued"
-      ? execution
-      : "unknown"
-    : task.status;
+  const status = active ? (execution ?? "unknown") : task.status;
   const lines = [`${task.title || task.taskId} [${status}]`];
   if (active && status !== "unknown") {
     for (const item of task.progress?.items ?? []) {

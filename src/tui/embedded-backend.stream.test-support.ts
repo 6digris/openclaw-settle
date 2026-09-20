@@ -5,8 +5,11 @@ import {
   INTERNAL_RUNTIME_CONTEXT_END,
 } from "../agents/internal-runtime-context.js";
 import { recordTaskActivityEvent, flushTaskActivity } from "../tasks/task-registry-activity.js";
-import { markTaskTerminalById } from "../tasks/task-registry.js";
-import { createTaskFixture, withTaskRegistryTempDir } from "../tasks/task-registry.test-support.js";
+import {
+  createTaskFixture,
+  finishTaskFixture,
+  withTaskRegistryTempDir,
+} from "../tasks/task-registry.test-support.js";
 import type { EmbeddedTuiBackend } from "./embedded-backend.js";
 import { createTuiTaskProgressController } from "./tui-task-progress.js";
 
@@ -84,7 +87,7 @@ export function registerEmbeddedBackendStreamTests({
         });
         flushTaskActivity(task.taskId);
         await vi.waitFor(() => expect(render()).toContain("Post-yield child output"));
-        markTaskTerminalById({
+        finishTaskFixture({
           taskId: task.taskId,
           status: "cancelled",
           endedAt: Date.now(),

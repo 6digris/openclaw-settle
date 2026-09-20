@@ -1,15 +1,16 @@
 import {
-  validateTaskSummary,
-  validateTasksCancelResult,
-  validateTasksGetResult,
-  validateTasksListResult,
-  validateTasksRecoveryResult,
+  TaskSummarySchema,
+  TasksCancelResultSchema,
+  TasksGetResultSchema,
+  TasksListResultSchema,
+  TasksRecoveryResultSchema,
   type TaskSummary as ProtocolTaskSummary,
   type TasksCancelResult,
   type TasksRecoveryResult,
 } from "@openclaw/gateway-protocol";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { Value } from "typebox/value";
 
 export type TaskStatus = ProtocolTaskSummary["status"];
 export type TaskSummary = Omit<ProtocolTaskSummary, "taskId"> & { taskId: string };
@@ -23,8 +24,9 @@ export type CoalescedTaskEvent =
 
 type TaskSnapshotProvenance = "snapshot" | "event" | "detail";
 
+// Browser-shared validation must interpret schemas: compiled validators probe eval under CSP.
 export function normalizeTaskSummary(value: unknown): TaskSummary | null {
-  if (!validateTaskSummary(value)) {
+  if (!Value.Check(TaskSummarySchema, value)) {
     return null;
   }
   const id = value.id.trim();
@@ -167,7 +169,7 @@ export function mergeTaskLists(...lists: readonly (readonly TaskSummary[])[]): T
 export function normalizeTasksListResult(
   value: unknown,
 ): { tasks: TaskSummary[]; nextCursor?: string } | null {
-  if (!validateTasksListResult(value)) {
+  if (!Value.Check(TasksListResultSchema, value)) {
     return null;
   }
   return {
@@ -179,13 +181,13 @@ export function normalizeTasksListResult(
 }
 
 export function normalizeTasksGetResult(value: unknown): TaskSummary | null {
-  return validateTasksGetResult(value) ? normalizeTaskSummary(value.task) : null;
+  return Value.Check(TasksGetResultSchema, value) ? normalizeTaskSummary(value.task) : null;
 }
 
 export function normalizeTasksCancelResult(
   value: unknown,
 ): (Omit<TasksCancelResult, "task"> & { task?: TaskSummary }) | null {
-  if (!validateTasksCancelResult(value)) {
+  if (!Value.Check(TasksCancelResultSchema, value)) {
     return null;
   }
   const reason = normalizeOptionalString(value.reason);
@@ -203,7 +205,7 @@ export function normalizeTasksRecoveryResult(value: unknown):
       results: Array<Omit<TasksRecoveryResult["results"][number], "task"> & { task?: TaskSummary }>;
     })
   | null {
-  if (!validateTasksRecoveryResult(value)) {
+  if (!Value.Check(TasksRecoveryResultSchema, value)) {
     return null;
   }
   return {

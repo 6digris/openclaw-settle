@@ -55,7 +55,11 @@ class TaskProgressGatewayTest {
     assertEquals("agent:main:main", fixture.request("reset", JSONObject()).getString("sessionKey"))
     val setupCode =
       Base64.getUrlEncoder().withoutPadding().encodeToString(
-        JSONObject().put("url", gatewayUrl).put("token", "synthetic-attention-token").toString().toByteArray(Charsets.UTF_8),
+        JSONObject()
+          .put("url", gatewayUrl)
+          .put("token", "synthetic-attention-token")
+          .toString()
+          .toByteArray(Charsets.UTF_8),
       )
     val intent =
       Intent(context, MainActivity::class.java)
@@ -127,15 +131,21 @@ class TaskProgressGatewayTest {
       } catch (failure: Throwable) {
         // Onboarding fields can contain setup credentials; retain UI diagnostics only after leaving those screens.
         runCatching {
-          if (chatVisible) capture(device, proofDirectory, "failure", fixture)
-          else File(proofDirectory, "failure-gateway.json").writeText(fixture.request("evidence").toString(2))
+          if (chatVisible) {
+            capture(device, proofDirectory, "failure", fixture)
+          } else {
+            File(proofDirectory, "failure-gateway.json").writeText(fixture.request("evidence").toString(2))
+          }
         }.exceptionOrNull()?.let(failure::addSuppressed)
         throw failure
       }
     }
   }
 
-  private fun connectThroughOnboarding(device: UiDevice, setupCode: String) {
+  private fun connectThroughOnboarding(
+    device: UiDevice,
+    setupCode: String,
+  ) {
     requireObject(device, By.text("Continue")).click()
     requireObject(device, By.text("Scan QR or setup code")).click()
     requireObject(device, By.text("Enter setup code")).click()
@@ -151,7 +161,10 @@ class TaskProgressGatewayTest {
     requireObject(device, By.desc("Add attachment"))
   }
 
-  private fun editComposer(device: UiDevice, text: String) {
+  private fun editComposer(
+    device: UiDevice,
+    text: String,
+  ) {
     val composer = requireObject(device, By.clazz("android.widget.EditText").enabled(true))
     composer.click()
     composer.text = text
@@ -165,7 +178,10 @@ class TaskProgressGatewayTest {
     device.waitForIdle()
   }
 
-  private fun assertDraft(device: UiDevice, draft: String) {
+  private fun assertDraft(
+    device: UiDevice,
+    draft: String,
+  ) {
     val composer = requireObject(device, By.clazz("android.widget.EditText").enabled(true))
     assertEquals("Gateway task updates must preserve the editable draft", draft, composer.text)
     requireObject(device, By.desc("Send").enabled(true))
@@ -223,18 +239,30 @@ class TaskProgressGatewayTest {
     assertFalse("Legacy text must not make prepared-progress proof pass", task.has("lastActivity"))
   }
 
-  private fun requireObject(device: UiDevice, selector: BySelector): UiObject2 =
-    checkNotNull(device.wait(Until.findObject(selector), 15000)) { "Native Gateway proof could not find $selector" }
+  private fun requireObject(
+    device: UiDevice,
+    selector: BySelector,
+  ): UiObject2 = checkNotNull(device.wait(Until.findObject(selector), 15000)) { "Native Gateway proof could not find $selector" }
 
-  private fun capture(device: UiDevice, directory: File, stage: String, fixture: Fixture) {
+  private fun capture(
+    device: UiDevice,
+    directory: File,
+    stage: String,
+    fixture: Fixture,
+  ) {
     device.waitForIdle()
     assertTrue("Could not capture native $stage screenshot", device.takeScreenshot(File(directory, "android-$stage.png")))
     device.dumpWindowHierarchy(File(directory, "android-$stage.xml"))
     File(directory, "android-$stage-gateway.json").writeText(fixture.request("evidence").toString(2))
   }
 
-  private class Fixture(private val controlUrl: String) {
-    fun request(action: String, body: JSONObject? = null): JSONObject {
+  private class Fixture(
+    private val controlUrl: String,
+  ) {
+    fun request(
+      action: String,
+      body: JSONObject? = null,
+    ): JSONObject {
       val connection = URI("$controlUrl/task-progress/$action").toURL().openConnection() as HttpURLConnection
       try {
         connection.connectTimeout = 5000

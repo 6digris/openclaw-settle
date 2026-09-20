@@ -197,7 +197,10 @@ private struct ChatSubagentActivityRow: View {
                     .textSelection(.enabled)
                     .padding(.leading, 35)
             }
-            if (!self.isDesktopLayout || self.expanded), let progress = self.activity.progress, !progress.items.isEmpty {
+            if !self.isDesktopLayout || self.expanded,
+               let progress = self.activity.progress,
+               !progress.items.isEmpty
+            {
                 OpenClawTaskProgressView(progress: progress)
                     .padding(.leading, 35)
             }

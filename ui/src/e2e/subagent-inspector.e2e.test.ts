@@ -73,6 +73,7 @@ suite.define(() => {
         },
       });
       await page.goto(`${suite.server.baseUrl}chat`);
+      const parentTranscript = page.locator(".chat-main .chat-thread-inner");
       const notice = page.locator('[data-subagent-task-id="continuing-child"]');
       await notice.click();
       const inspector = page.locator("[data-task-detail-panel]");
@@ -100,7 +101,9 @@ suite.define(() => {
           content: [{ type: "text", text: "Working on the separate question." }],
         },
       });
-      await page.getByText("Working on the separate question.", { exact: true }).waitFor();
+      await parentTranscript
+        .getByText("Working on the separate question.", { exact: true })
+        .waitFor();
       await notice.waitFor({ state: "visible" });
       expect(await notice.count()).toBe(1);
       expect(await inspector.getByText("Review child evidence", { exact: true }).count()).toBe(1);
@@ -152,7 +155,8 @@ suite.define(() => {
       });
       await inspector.getByRole("button", { name: "Stop Review child evidence" }).click();
       expect((await gateway.waitForRequest("tasks.cancel")).params).toEqual({ taskId: task.id });
-      await inspector.getByText("Child review cancelled", { exact: true }).waitFor();
+      const terminalSummary = inspector.locator(".chat-task-feed__now");
+      await expect.poll(() => terminalSummary.textContent()).toContain("Child review cancelled");
       await gateway.emitGatewayEvent("task", { action: "upserted", task });
       expect(
         await inspector.getByRole("button", { name: "Stop Review child evidence" }).count(),
@@ -165,8 +169,10 @@ suite.define(() => {
         sessionKey,
         text: "The separate parent answer is ready.",
       });
-      await page.getByText("The separate parent answer is ready.", { exact: true }).waitFor();
-      expect(await inspector.getByText("Child review cancelled", { exact: true }).count()).toBe(1);
+      await parentTranscript
+        .getByText("The separate parent answer is ready.", { exact: true })
+        .waitFor();
+      expect(await terminalSummary.textContent()).toContain("Child review cancelled");
     });
   });
 

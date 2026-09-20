@@ -1,7 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import { z } from "zod";
+import { readQaJsonResponse } from "../../ignored-response-body.js";
 
 const SharedProgressRequestsSchema = z.array(
   z.object({
@@ -34,8 +36,18 @@ export async function prepareSharedProgressFixtureConfig(cfg: OpenClawConfig) {
       "Shared-progress proof needs an absolute asset root, unique SP-run and explicit loopback provider URL",
     );
   }
-  const health = await fetch(new URL("health", endpoint), { signal: AbortSignal.timeout(5000) });
-  if (!health.ok || (await health.json()).fixture !== "shared-progress-v1") {
+  const { response, release } = await fetchWithSsrFGuard({
+    url: new URL("health", endpoint).href,
+    policy: { allowPrivateNetwork: true },
+    timeoutMs: 5000,
+    auditContext: "qa-lab-shared-progress-health",
+  });
+  const health = await readQaJsonResponse<{ fixture?: unknown }>(
+    response,
+    release,
+    "Shared-progress provider health",
+  );
+  if (health.fixture !== "shared-progress-v1") {
     throw new Error("The owned deterministic shared-progress provider is not ready");
   }
   const rootPatchText = await fs.readFile(path.join(root, "root-config.json"), "utf8");
@@ -90,13 +102,18 @@ export async function prepareSharedProgressFixtureConfig(cfg: OpenClawConfig) {
 }
 
 export async function sharedProgressWorkersAreHolding(endpoint: URL, run: string) {
-  const response = await fetch(new URL("debug/requests", endpoint), {
-    signal: AbortSignal.timeout(5000),
+  const { response, release } = await fetchWithSsrFGuard({
+    url: new URL("debug/requests", endpoint).href,
+    policy: { allowPrivateNetwork: true },
+    timeoutMs: 5000,
+    auditContext: "qa-lab-shared-progress-requests",
   });
-  if (!response.ok) {
-    throw new Error("Provider decision evidence unavailable");
-  }
-  const requests = SharedProgressRequestsSchema.parse(await response.json());
+  const payload = await readQaJsonResponse<unknown>(
+    response,
+    release,
+    "Provider decision evidence unavailable",
+  );
+  const requests = SharedProgressRequestsSchema.parse(payload);
   return [
     ["parent-yield", "sessions_yield"],
     ["Maple-hold", "exec"],
