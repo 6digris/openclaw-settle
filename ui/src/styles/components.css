@@ -1493,7 +1493,7 @@ openclaw-toast-host[data-toast-placement="shell"]
   color: var(--text-strong);
 }
 
-/* Rich notifications share the toast lifecycle, with content above a separate action row. */
+/* Keep destination and message together; attribution and action share a quieter footer. */
 .app-toast--notification {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1529,16 +1529,31 @@ openclaw-toast-host[data-toast-placement="shell"]
   max-height: none;
   overflow: hidden;
   color: var(--text);
+  font-size: var(--control-ui-text-md);
+}
+
+.app-toast__footer {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  min-width: 0;
+  margin-top: var(--space-2);
+}
+
+.app-toast__attribution {
+  /* Wrap the footer before a long action can erase the sender and mention label. */
+  flex: 1 1 14em;
+  min-width: 0;
   font-size: var(--control-ui-text-sm);
 }
 
 .app-toast--notification .app-toast__action {
-  grid-column: 1 / -1;
-  grid-row: 3;
-  justify-self: end;
   max-width: 100%;
   min-height: 28px;
-  margin-top: var(--space-1);
+  margin-inline-start: auto;
   padding: var(--space-1) var(--space-3);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
@@ -1588,12 +1603,17 @@ openclaw-toast-host[data-toast-placement="shell"]
 
 .mention-toast__sender-line {
   color: var(--muted);
-  font-size: var(--control-ui-text-xs);
+  font-size: var(--control-ui-text-sm);
+  white-space: nowrap;
 }
 
 .mention-toast__sender {
-  max-width: 55%;
-  color: var(--text-strong);
+  flex: 0 1 auto;
+  color: var(--text);
+}
+
+.mention-toast__reason {
+  flex: none;
 }
 
 .mention-toast__name,
@@ -1606,7 +1626,6 @@ openclaw-toast-host[data-toast-placement="shell"]
 
 .mention-toast__excerpt {
   display: block;
-  margin-top: var(--space-1);
 }
 
 .mention-toast__avatar {

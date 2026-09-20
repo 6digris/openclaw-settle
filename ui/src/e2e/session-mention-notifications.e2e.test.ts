@@ -118,20 +118,38 @@ suite.define(() => {
         for (const gateway of gateways) await deliver(gateway);
         const toast = page.locator(".app-toast--notification");
         await expectBrowser(toast).toBeVisible();
-        await toast.hover();
+        await toast.hover({ position: { x: 6, y: 6 } });
         await expectBrowser(pages[1].locator(".app-toast--notification")).toHaveCount(0);
         const other = pages[2].locator(".app-toast--notification");
         await expectBrowser(other).toBeVisible();
         await other.getByRole("button", { name: "View session" }).focus();
         await expectBrowser(toast).toContainText("mentioned you");
-        await expectBrowser(toast).toContainText(arrival.excerpt!);
+        await expectBrowser(toast.locator(".app-toast__message")).toHaveText(arrival.excerpt!);
+        await expectBrowser(toast.locator(".app-toast__footer")).toContainText(
+          "Alex mentioned you",
+        );
         await expectBrowser(toast.locator(".app-toast__dismiss svg")).toHaveCount(1);
         expect(await toast.locator(".app-toast__dismiss").innerText()).toBe("");
+        await toast.evaluate(async (element) => {
+          await Promise.all(element.getAnimations().map((animation) => animation.finished));
+        });
         const bounds = await toast.boundingBox();
         expect(bounds!.x).toBeGreaterThan(800);
         const message = await toast.locator(".app-toast__message").boundingBox();
         const action = await toast.getByRole("button", { name: "View session" }).boundingBox();
-        expect(action!.y).toBeGreaterThanOrEqual(message!.y + message!.height);
+        const title = await toast.locator(".app-toast__title").boundingBox();
+        const attribution = await toast.locator(".app-toast__attribution").boundingBox();
+        const dismiss = await toast.locator(".app-toast__dismiss").boundingBox();
+        expect(action!.y - (message!.y + message!.height)).toBeGreaterThanOrEqual(8);
+        expect(message!.y - (title!.y + title!.height)).toBeLessThanOrEqual(8);
+        expect(Math.abs(title!.x - message!.x)).toBeLessThan(1);
+        expect(Math.abs(attribution!.x - message!.x)).toBeLessThan(1);
+        expect(Math.abs(action!.x + action!.width - dismiss!.x - dismiss!.width)).toBeLessThan(1);
+        console.info("mention notification hierarchy", {
+          height: bounds!.height,
+          contentGap: message!.y - title!.y - title!.height,
+          footerGap: action!.y - message!.y - message!.height,
+        });
         await captureUiProof(suite, page, "02-after-desktop-dark.png");
         await toast.getByRole("button", { name: "Dismiss", exact: true }).click();
         await expectBrowser(toast).toHaveCount(0);
@@ -169,7 +187,7 @@ suite.define(() => {
           await deliver(gateway, item);
           const toast = page.locator(".app-toast--notification");
           await expectBrowser(toast).toBeVisible();
-          await toast.getByRole("button", { name: "View session" }).focus();
+          await toast.hover({ position: { x: 6, y: 6 } });
           await expectBrowser(toast).toContainText("mentioned you");
           const layout = await toast.evaluate((element) => {
             const box = element.getBoundingClientRect();

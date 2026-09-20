@@ -20,6 +20,8 @@ export type ToastOptions = {
   message: string | TemplateResult;
   /** A heading gives notifications a compact card with a separate action row. */
   title?: string;
+  /** Secondary context beside the action, below a titled notification's message. */
+  attribution?: TemplateResult;
   /** Retire transient notifications when their owning view or access changes. */
   signal?: AbortSignal;
   /** Positions a compact toast at the top center of the owning surface. */
@@ -233,6 +235,19 @@ class OpenClawToastHost extends OpenClawLightDomContentsElement {
       return nothing;
     }
     const anchorRect = resolveToastAnchorRect(toast.anchor);
+    const action =
+      toast.actionLabel && toast.onAction
+        ? html`<button
+            type="button"
+            class="app-toast__action"
+            @click=${() => {
+              this.dismiss("action");
+              toast.onAction?.();
+            }}
+          >
+            ${toast.actionLabel}
+          </button>`
+        : nothing;
     return html`
       <div
         class="app-toast ${toast.title ? "app-toast--notification" : ""} ${anchorRect ? "app-toast--anchored" : toast.placement === "bottom" ? "app-toast--bottom" : ""}"
@@ -287,20 +302,12 @@ class OpenClawToastHost extends OpenClawLightDomContentsElement {
           }</span
         >
         ${
-          toast.actionLabel && toast.onAction
-            ? html`
-                <button
-                  type="button"
-                  class="app-toast__action"
-                  @click=${() => {
-                    this.dismiss("action");
-                    toast.onAction?.();
-                  }}
-                >
-                  ${toast.actionLabel}
-                </button>
-              `
-            : nothing
+          toast.title && (toast.attribution || action !== nothing)
+            ? html`<div class="app-toast__footer">
+                ${toast.attribution ? html`<div class="app-toast__attribution">${toast.attribution}</div>` : nothing}
+                ${action}
+              </div>`
+            : action
         }
         <button
           type="button"

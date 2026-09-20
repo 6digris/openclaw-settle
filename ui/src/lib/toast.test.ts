@@ -1,5 +1,6 @@
 /* @vitest-environment jsdom */
 
+import { html } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import "../components/modal-dialog.ts";
 import { moveToastToNavDrawer, restoreToastFromNavDrawer } from "../app/navigation-surface.ts";
@@ -478,7 +479,8 @@ describe("shared toast", () => {
     const onDismiss = vi.fn();
     showToast({
       title: "Design review",
-      message: "Alice mentioned you",
+      message: "Please review the spacing.",
+      attribution: html`<span>Alice mentioned you</span>`,
       actionLabel: "View session",
       onAction: vi.fn(),
       durationMs: 5_000,
@@ -486,6 +488,12 @@ describe("shared toast", () => {
     });
     await host.updateComplete;
     expect(host.querySelector(".app-toast__title")?.textContent).toBe("Design review");
+    expect(host.querySelector(".app-toast__message")?.textContent?.trim()).toBe(
+      "Please review the spacing.",
+    );
+    const footer = host.querySelector(".app-toast__footer")!;
+    expect(footer.textContent).toContain("Alice mentioned you");
+    expect(footer.contains(host.querySelector(".app-toast__action"))).toBe(true);
     expect(host.querySelector(".app-toast__dismiss svg")).not.toBeNull();
     expect(host.querySelector(".app-toast__dismiss")?.textContent?.trim()).toBe("");
     await vi.advanceTimersByTimeAsync(4_999);
