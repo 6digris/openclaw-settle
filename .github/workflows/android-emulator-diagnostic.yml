@@ -179,15 +179,7 @@ jobs:
             --no-daemon --max-workers=2 \
             "-PopenclawBuildCommit=$TARGET_SHA" \
             "-PopenclawBuildTimestamp=$build_timestamp" \
-            :app:assemblePlayDebug :app:assemblePlayDebugAndroidTest \
-            :app:testPlayDebugUnitTest \
-            --tests ai.openclaw.app.ui.ScreenTypographyLayoutTest.textSizeReachesRealChatAndReturnsToUnchangedDefault \
-            --tests ai.openclaw.app.ui.chat.ChatComposerLayoutTest \
-            --tests ai.openclaw.app.ui.FoldAwareSheetTest \
-            :app:testThirdPartyDebugUnitTest \
-            --tests ai.openclaw.app.ui.ScreenTypographyLayoutTest.textSizeReachesRealChatAndReturnsToUnchangedDefault \
-            --tests ai.openclaw.app.ui.chat.ChatComposerLayoutTest \
-            --tests ai.openclaw.app.ui.FoldAwareSheetTest
+            :app:assemblePlayDebug :app:assemblePlayDebugAndroidTest
 
       - name: Prepare trusted Linux Android tooling
         shell: bash
@@ -773,6 +765,30 @@ jobs:
 
           fail_after_readiness_timeout \
             "Timed out waiting for Android emulator boot completion" "$serial"
+
+      - name: Run task progress model regressions
+        if: >-
+          !cancelled() && inputs.task_progress_proof &&
+          steps.task-progress-build.outcome == 'success'
+        env:
+          JAVA_HOME: ${{ steps.android-toolchain.outputs.gradle-java-home }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          TASK_PROGRESS_BUILD_TIMESTAMP: ${{ steps.task-progress-build.outputs.timestamp }}
+        run: |
+          set -euo pipefail
+          export PATH="$JAVA_HOME/bin:$PATH"
+          node --import ./scripts/tsx.mjs scripts/run-android-gradle.mts \
+            --no-daemon --max-workers=2 \
+            "-PopenclawBuildCommit=$TARGET_SHA" \
+            "-PopenclawBuildTimestamp=$TASK_PROGRESS_BUILD_TIMESTAMP" \
+            :app:testPlayDebugUnitTest \
+            --tests ai.openclaw.app.ui.ScreenTypographyLayoutTest.textSizeReachesRealChatAndReturnsToUnchangedDefault \
+            --tests ai.openclaw.app.ui.chat.ChatComposerLayoutTest \
+            --tests ai.openclaw.app.ui.FoldAwareSheetTest \
+            :app:testThirdPartyDebugUnitTest \
+            --tests ai.openclaw.app.ui.ScreenTypographyLayoutTest.textSizeReachesRealChatAndReturnsToUnchangedDefault \
+            --tests ai.openclaw.app.ui.chat.ChatComposerLayoutTest \
+            --tests ai.openclaw.app.ui.FoldAwareSheetTest
 
       - name: Upload Android emulator diagnostic
         if: always()

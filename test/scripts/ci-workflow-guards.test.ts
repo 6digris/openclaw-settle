@@ -179,6 +179,7 @@ function evaluateWorkflowExpression(
     >;
     targetContextRef?: string;
     targetRef?: string;
+    taskProgressProof?: boolean;
     useGithubHostedRunners?: boolean;
     workflow?: string;
     workflowSha?: string;
@@ -258,6 +259,7 @@ function evaluateWorkflowExpression(
       target_context_ref: context.targetContextRef ?? "",
       target_ref: context.targetRef ?? "",
       use_github_hosted_runners: context.useGithubHostedRunners ?? false,
+      task_progress_proof: context.taskProgressProof ?? false,
     },
     env: context.env ?? {},
     matrix: context.matrix ?? {},
@@ -3325,6 +3327,46 @@ NODE
         }),
       ).toBe(expected);
       expect(step["continue-on-error"]).toBeUndefined();
+    },
+  );
+
+  it.each([
+    { build: "success", enabled: true, cancelled: false, expected: true },
+    { build: "failure", enabled: true, cancelled: false, expected: false },
+    { build: "success", enabled: false, cancelled: false, expected: false },
+    { build: "success", enabled: true, cancelled: true, expected: false },
+  ] as const)(
+    "keeps Android native proof independent without swallowing model-test failures ($build, enabled=$enabled, cancelled=$cancelled)",
+    ({ build, enabled, cancelled, expected }) => {
+      const steps: WorkflowStep[] = parse(
+        readFileSync(".github/workflows/android-emulator-diagnostic.yml", "utf8"),
+      ).jobs.diagnose.steps;
+      const nativeIndex = steps.findIndex((step) => step.name === "Run phone emulator diagnostic");
+      const modelIndex = steps.findIndex(
+        (step) => step.name === "Run task progress model regressions",
+      );
+      const compile = expectDefined(
+        steps.find((step) => step.id === "task-progress-build"),
+        "task progress APK build",
+      );
+      const model = expectDefined(steps[modelIndex], "independent model regressions");
+      expect(nativeIndex).toBeGreaterThan(steps.indexOf(compile));
+      expect(modelIndex).toBeGreaterThan(nativeIndex);
+      expect(compile.run).not.toContain("UnitTest");
+      expect(
+        evaluateWorkflowExpression(`\${{ ${model.if} }}`, {
+          eventName: "workflow_dispatch",
+          repository: "openclaw/openclaw",
+          runAttempt: 1,
+          failed: true,
+          cancelled,
+          taskProgressProof: enabled,
+          steps: { "task-progress-build": { outputs: {}, outcome: build } },
+        }),
+      ).toBe(expected);
+      expect(model["continue-on-error"]).toBeUndefined();
+      expect(model.run).toContain(":app:testPlayDebugUnitTest");
+      expect(model.run).toContain(":app:testThirdPartyDebugUnitTest");
     },
   );
 

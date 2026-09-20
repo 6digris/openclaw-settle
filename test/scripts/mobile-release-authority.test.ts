@@ -2242,7 +2242,7 @@ describe("mobile release authority", () => {
     expect(toolingIndex).toBeGreaterThan(setupIndex);
     expect(kvmIndex).toBe(toolingIndex + 1);
     expect(diagnosticIndex).toBe(kvmIndex + 1);
-    expect(artifactIndex).toBe(diagnosticIndex + 1);
+    expect(artifactIndex).toBeGreaterThan(diagnosticIndex);
     expect(proofCheckoutIndex).toBeGreaterThan(initializeIndex);
     expect(proofIdentityIndex).toBeGreaterThan(proofCheckoutIndex);
     expect(proofSetupIndex).toBeGreaterThan(proofIdentityIndex);

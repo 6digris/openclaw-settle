@@ -194,6 +194,17 @@ without it receive the earlier response shapes, without either added field;
 existing execution, summary, message, and cursor fields remain unchanged.
 This negotiation does not change task access or cancellation authority.
 
+The projection carries a `runId`, a `revision`, and up to 64 prepared public
+activity items. It describes the current execution generation and can be absent
+when activity is unavailable, including after a restart. Missing activity is not
+proof that a command or task succeeded.
+
+A parent's yielded or final chat event does not settle its delegated tasks.
+Keep consuming their task updates independently. Task `status`, `execution.state`,
+and `deliveryStatus` describe different facts: execution can be finished while
+task settlement or final delivery is still pending. Worker updates also do not
+rewrite the parent's authored checklist.
+
 Bundled task views advertise this capability. External clients should opt in
 only after their validators accept these fields; a Gateway upgrade does not
 require older closed-schema readers to upgrade. Internal task consumers retain
