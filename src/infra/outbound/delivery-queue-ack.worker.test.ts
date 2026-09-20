@@ -67,7 +67,7 @@ describe("outbound acknowledgement worker", () => {
         `Delivery platform claim was lost: ${id}`,
       );
       expect(await loadPendingDelivery(id, stateDir)).toMatchObject({ producerClaimId: claimId });
-      await ackDelivery(id, stateDir);
+      await ackDelivery(id, stateDir, { expectedPlatformSendAttemptId: claimId });
       expect(await loadPendingDelivery(id, stateDir)).toBeNull();
     },
   );
