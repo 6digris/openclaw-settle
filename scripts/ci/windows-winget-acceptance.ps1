@@ -263,14 +263,30 @@ try {
     $officialSignature = Get-AuthenticodeSignature -LiteralPath $officialExe
     Assert-Proof ($officialSignature.Status -eq 'Valid' -and $officialSignature.SignerCertificate.Subject -match 'O=Microsoft Corporation') 'Official WinGet payload signature is invalid.'
     $proof.bootstrap = @{ version='v1.29.290'; moduleVersion=$module.Version.ToString(); moduleUrl=$moduleUrl; moduleSha512=$moduleHash; bundleUrl=$bundleUrl; bundleSha256=$bundleHash; payloadSha256=(Get-FileHash $officialExe).Hash; signatureStatus=$officialSignature.Status.ToString(); signer=$officialSignature.SignerCertificate.Subject; signerThumbprint=$officialSignature.SignerCertificate.Thumbprint }
+    # The hosted image can retain a provisioned stub whose registration repair fails
+    # before the requested release is considered (0x80073CF1). Deploy the verified
+    # full release natively first; never register that image stub or edit its metadata.
+    $dependencyUrl = 'https://github.com/microsoft/winget-cli/releases/download/v1.29.290/DesktopAppInstaller_Dependencies.zip'
+    $dependencyArchive = Join-Path $bootstrapRoot 'dependencies.zip'
+    Invoke-WebRequest $dependencyUrl -OutFile $dependencyArchive
+    $dependencyHash = (Get-FileHash $dependencyArchive).Hash
+    Assert-Proof ($dependencyHash -ceq '50C377516749002DCDDA9C8E52F26E8E2EA73D52131CE96FFD082DCF60CA6677') 'Official WinGet dependency archive hash mismatch.'
+    $dependencyRoot = Join-Path $bootstrapRoot 'dependencies'
+    Expand-Archive $dependencyArchive -DestinationPath $dependencyRoot
+    $proof.bootstrap.dependencyUrl = $dependencyUrl
+    $proof.bootstrap.dependencySha256 = $dependencyHash
+    $proof.bootstrap.imageRegistration = @(Get-AppxPackage -Name Microsoft.DesktopAppInstaller | Select-Object PackageFullName, Version, Architecture, InstallLocation, SignatureKind)
     $bootstrapScript = Join-Path $bootstrapRoot 'repair.ps1'
     @'
-param([string]$ModulePath)
+param([string]$ModulePath,[string]$Payload,[string]$DependencyRoot)
 $ErrorActionPreference = 'Stop'
 Import-Module $ModulePath -Force
+$dependencies = @(Get-ChildItem -LiteralPath (Join-Path $DependencyRoot 'x64') -File | Where-Object { $_.Extension -in @('.appx','.msix') } | ForEach-Object FullName)
+if ($dependencies.Count -eq 0) { throw 'Official x64 dependency payloads absent.' }
+Add-AppxPackage -Path $Payload -DependencyPath $dependencies -ForceUpdateFromAnyVersion -ForceApplicationShutdown -ErrorAction Stop
 Repair-WinGetPackageManager -Version 1.29.290 -AllUsers -ErrorAction Stop
 '@ | Set-Content $bootstrapScript
-    Assert-Proof ((Invoke-Native (Join-Path $PSHOME 'pwsh.exe') @('-NoProfile','-NonInteractive','-File',$bootstrapScript,'-ModulePath',(Join-Path $moduleRoot 'Microsoft.WinGet.Client.psd1')) 'winget-fixed-bootstrap') -eq 0) 'Fixed-version WinGet repair failed; no image-version fallback.'
+    Assert-Proof ((Invoke-Native (Join-Path $PSHOME 'pwsh.exe') @('-NoProfile','-NonInteractive','-File',$bootstrapScript,'-ModulePath',(Join-Path $moduleRoot 'Microsoft.WinGet.Client.psd1'),'-Payload',$applicationPath,'-DependencyRoot',$dependencyRoot) 'winget-fixed-bootstrap') -eq 0) 'Fixed-version WinGet repair failed; no image-version fallback.'
     $winget = (Get-Command winget -CommandType Application -ErrorAction Stop).Source
     $wingetVersion = @(& $winget --version)
     Assert-Proof ($LASTEXITCODE -eq 0 -and ($wingetVersion -join "`n").Trim() -ceq 'v1.29.290') 'Winget alias is not the fixed released version.'
