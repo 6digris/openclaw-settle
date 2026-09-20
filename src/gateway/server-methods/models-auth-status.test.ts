@@ -4,6 +4,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { MAX_DATE_TIMESTAMP_MS } from "@openclaw/normalization-core/number-coercion";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { validateModelsAuthSetApiKeyResult } from "../../../packages/gateway-protocol/src/index.js";
 import type { AuthHealthSummary } from "../../agents/auth-health.js";
 import {
   replaceRuntimeAuthProfileStoreSnapshots,
@@ -50,7 +51,8 @@ const mocks = vi.hoisted(() => ({
   }),
   listProfilesForProvider: vi.fn((): string[] => []),
   removeModelAuthCredentials: vi.fn(async () => {}),
-  saveModelProviderApiKey: vi.fn(async () => "openrouter:manual"),
+  saveModelProviderApiKey:
+    vi.fn<typeof import("../../commands/models/auth-api-key.js").saveModelProviderApiKey>(),
   setAuthProfileOrder: vi.fn(async (): Promise<AuthProfileStore | null> => ({
     version: 1,
     profiles: {},
@@ -135,6 +137,7 @@ vi.mock("../server-model-catalog-auth.js", () => ({
   readPreparedCatalog: mocks.readPreparedCatalog,
 }));
 
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { modelsAuthOrderHandlers } from "./models-auth-order.js";
 import { clearModelAuthStatusUsageCache } from "./models-auth-status-usage-cache.js";
 import {
@@ -335,7 +338,7 @@ function resetAuthStatusMocks(): void {
   );
   mocks.listProfilesForProvider.mockReturnValue([]);
   mocks.removeModelAuthCredentials.mockResolvedValue();
-  mocks.saveModelProviderApiKey.mockResolvedValue("openrouter:manual");
+  mocks.saveModelProviderApiKey.mockResolvedValue({ profileId: "openrouter:manual" });
   mocks.setAuthProfileOrder.mockResolvedValue({ version: 1, profiles: {} });
   mocks.buildAuthHealthSummary.mockReturnValue({
     now: 0,
@@ -544,10 +547,7 @@ describe("models.authStatus", () => {
   });
 
   it("does not wait for full catalog discovery during auth status refresh", async () => {
-    let releaseDiscovery!: () => void;
-    const discovery = new Promise<void>((resolve) => {
-      releaseDiscovery = resolve;
-    });
+    const { promise: discovery, resolve: releaseDiscovery } = createDeferred();
     mocks.loadDeferredCatalog.mockImplementation(async (_context, agentId, options) => {
       const deferredOptions = requireRecord(options);
       if (deferredOptions.refreshFullCatalog !== false) {
@@ -1756,10 +1756,7 @@ describe("models.authStatus", () => {
       expect(warmed.providers[0]?.usage?.windows[0]?.usedPercent).toBe(10);
     });
 
-    let releaseRefresh: (() => void) | undefined;
-    const refreshBlocked = new Promise<void>((resolve) => {
-      releaseRefresh = resolve;
-    });
+    const { promise: refreshBlocked, resolve: releaseRefresh } = createDeferred();
     now.mockReturnValue(61_000);
     mocks.loadProviderUsageSummary.mockImplementationOnce(async () => {
       await refreshBlocked;
@@ -1806,10 +1803,7 @@ describe("models.authStatus", () => {
       expect(warmed.providers[0]?.usage?.windows[0]?.usedPercent).toBe(10);
     });
 
-    let releaseRefresh: (() => void) | undefined;
-    const refreshBlocked = new Promise<void>((resolve) => {
-      releaseRefresh = resolve;
-    });
+    const { promise: refreshBlocked, resolve: releaseRefresh } = createDeferred();
     mocks.loadProviderUsageSummary.mockImplementationOnce(async () => {
       await refreshBlocked;
       return emptyUsageSummary();
@@ -2408,35 +2402,54 @@ describe("models.authSetApiKey", () => {
     resetAuthStatusMocks();
   });
 
-  it.each([false, true])("reports a saved key when refresh fails: %s", async (refreshFails) => {
-    const config = { agents: { list: [{ id: "main", default: true }, { id: "writer" }] } };
-    mocks.getRuntimeConfig.mockReturnValue(config);
-    mocks.listAgentIds.mockReturnValue(["main", "writer"]);
-    if (refreshFails) {
-      mocks.refreshActiveProviderAuthRuntimeSnapshot.mockRejectedValueOnce(
-        new Error("refresh failed"),
-      );
-    }
-    const opts = createOptions({ provider: "OpenRouter", apiKey: "test-key", agentId: "Writer" });
-
-    await setApiKeyHandler(opts);
-
-    expect(mocks.saveModelProviderApiKey).toHaveBeenCalledWith({
-      config,
-      provider: "openrouter",
-      apiKey: "test-key",
-      agentDir: "/tmp/agent-writer",
-    });
-    expect(firstRespondCall(opts)).toEqual([
-      true,
-      {
-        provider: "openrouter",
+  it.each([
+    { refreshFails: false, configWarning: undefined },
+    { refreshFails: true, configWarning: undefined },
+    { refreshFails: false, configWarning: "Provider settings were saved but not applied." },
+    { refreshFails: true, configWarning: "Provider settings were saved but not applied." },
+  ])(
+    "reports a saved key with application and refresh warnings: %j",
+    async ({ refreshFails, configWarning }) => {
+      const config = { agents: { list: [{ id: "main", default: true }, { id: "writer" }] } };
+      mocks.getRuntimeConfig.mockReturnValue(config);
+      mocks.listAgentIds.mockReturnValue(["main", "writer"]);
+      mocks.saveModelProviderApiKey.mockResolvedValueOnce({
         profileId: "openrouter:manual",
-        ...(refreshFails ? { warning: expect.stringContaining("openclaw gateway restart") } : {}),
-      },
-      undefined,
-    ]);
-  });
+        warning: configWarning,
+      });
+      if (refreshFails) {
+        mocks.refreshActiveProviderAuthRuntimeSnapshot.mockRejectedValueOnce(
+          new Error("refresh failed"),
+        );
+      }
+      const opts = createOptions({ provider: "OpenRouter", apiKey: "test-key", agentId: "Writer" });
+
+      await setApiKeyHandler(opts);
+
+      expect(validateModelsAuthSetApiKeyResult(firstRespondCall(opts)?.[1])).toBe(true);
+      expect(mocks.saveModelProviderApiKey).toHaveBeenCalledWith({
+        config,
+        provider: "openrouter",
+        apiKey: "test-key",
+        agentDir: "/tmp/agent-writer",
+      });
+      expect(firstRespondCall(opts)).toEqual([
+        true,
+        {
+          provider: "openrouter",
+          profileId: "openrouter:manual",
+          ...(refreshFails || configWarning ? { warning: expect.any(String) } : {}),
+        },
+        undefined,
+      ]);
+      if (configWarning) {
+        expect(firstRespondCall(opts)?.[1]?.warning).toContain(configWarning);
+      }
+      if (refreshFails) {
+        expect(firstRespondCall(opts)?.[1]?.warning).toContain("openclaw gateway restart");
+      }
+    },
+  );
 
   it.each([
     { provider: "", apiKey: "test-key" },

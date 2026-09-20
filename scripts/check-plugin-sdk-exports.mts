@@ -41,6 +41,7 @@ const FORBIDDEN_PUBLIC_PROTOCOL_REGISTRY_RE = /\bdeclare\s+const\s+ProtocolSchem
 const RELATIVE_DECLARATION_SPECIFIER_RE = /\b(?:from|import)\s*(?:\(\s*)?["']([^"']+)["']/gu;
 const requiredSubpathExports: Record<string, string[]> = {
   "diagnostic-flags": ["isDiagnosticFlagEnabled"],
+  "diagnostic-runtime": ["areDiagnosticsEnabledForProcess", "createSubsystemLogger"],
   "secret-input-runtime": [
     "assertPluginCapabilitySecretAvailable",
     "coerceSecretRef",
@@ -110,7 +111,12 @@ type RequireNever<T extends never> = T;
 type RequireTrue<T extends true> = T;
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends
   (<T>() => T extends B ? 1 : 2) ? true : false;
-type PrivateQueueContextKeys = "deliveryQueueStateContext" | "supervisorMode" | "env";
+type PrivateQueueContextKeys =
+  | "conversationDeliveryTarget"
+  | "deliveryQueueStateContext"
+  | "databaseAgentId"
+  | "supervisorMode"
+  | "env";
 type SendParams = Parameters<typeof sendDurableMessageBatch>[0];
 type KeysOfUnion<T> = T extends unknown ? keyof T : never;
 // Database context stays private even when public aliases derive from core types.
