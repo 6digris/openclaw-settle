@@ -25,6 +25,7 @@ import type {
   SessionTargetInventoryWorkerInput,
   SessionIdentityEvidenceWorkerInput,
   SessionMembersWorkerInput,
+  SessionProjectionStatusWorkerInput,
   SessionModelContextWorkerInput,
   SessionSqliteTargetWorkerInput,
   SessionRowPresenceWorkerInput,
@@ -103,6 +104,7 @@ serveWorkerTasks(
       | SessionTranscriptHistoryWorkerInput
       | SessionRowPresenceWorkerInput
       | SessionMembersWorkerInput
+      | SessionProjectionStatusWorkerInput
       | SessionUsageCacheWorkerInput
       | SessionBranchSummaryWorkerInput
       | UsageCostWorkerInput;
@@ -204,6 +206,35 @@ serveWorkerTasks(
         const { readSessionBranchSummariesInWorker } =
           await import("./session-accessor.sqlite-branches.js");
         return { ok: true, value: readSessionBranchSummariesInWorker(request.request) };
+      }
+      if (request.kind === "projection-status") {
+        const { withOpenClawAgentDatabaseReadOnly } =
+          await import("../../state/openclaw-agent-db-readonly.js");
+        const { runSqliteDeferredTransactionSync } =
+          await import("../../infra/sqlite-transaction.js");
+        const {
+          hasSessionsNeedingTranscriptIndexReconcile,
+          hasOrphanedTranscriptIndexRows,
+          sessionTranscriptIndexNeedsReconcile,
+        } = await import("./session-transcript-index.js");
+        return {
+          ok: true,
+          ...(await withHistoryDatabase(request.database, () => {
+            const result = withOpenClawAgentDatabaseReadOnly(
+              ({ db }) =>
+                runSqliteDeferredTransactionSync(db, () =>
+                  request.sessionId !== undefined
+                    ? sessionTranscriptIndexNeedsReconcile(db, request.sessionId)
+                    : hasSessionsNeedingTranscriptIndexReconcile(db) ||
+                      hasOrphanedTranscriptIndexRows(db),
+                ),
+              { ...request.database, env: request.env },
+            );
+            return result.found
+              ? result.value
+              : request.sessionId === undefined && result.reason === "schema-missing";
+          })),
+        };
       }
       if (request.kind === "session-members") {
         const { withOpenClawAgentDatabaseReadOnly } =

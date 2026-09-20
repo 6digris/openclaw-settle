@@ -103,6 +103,13 @@ export type SessionRowPresenceWorkerInput = {
   scope: SessionAccessScope & { databaseAgentId: string };
 };
 
+export type SessionProjectionStatusWorkerInput = {
+  kind: "projection-status";
+  database: { agentId: string; path: string };
+  env: NodeJS.ProcessEnv;
+  sessionId?: string;
+};
+
 export type SessionMembersWorkerInput = {
   kind: "session-members";
   database: { agentId: string; path: string };
@@ -157,6 +164,7 @@ export type SessionTranscriptWorkerValues = {
   "branch-summaries": SessionBranchSummaryReadResult;
   "history-page": SessionHistoryWorkerResult;
   "session-row-presence": boolean;
+  "projection-status": boolean;
   "session-members": SessionMember[];
   "session-entry-list": SessionEntryListWorkerResult;
   "session-target-inventory": SessionStoreTargetInventoryResult;

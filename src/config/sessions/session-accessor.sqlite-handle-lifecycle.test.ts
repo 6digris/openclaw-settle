@@ -339,7 +339,8 @@ describe("SQLite session handle lifecycle", () => {
     startSessionTranscriptIndexReconcile(databaseOptions);
     try {
       const ready = waitForSessionTranscriptProjection(scope);
-      expect(closeOpenClawAgentDatabaseByPath(database.path)).toBe(true);
+      closeCachedOpenClawAgentDatabase(database);
+      expect(database.db.isOpen).toBe(false);
       await ready;
       expect(
         readSessionTranscriptMessageEventPage(scope, { maxMessages: 0, offset: 0 }).totalMessages,

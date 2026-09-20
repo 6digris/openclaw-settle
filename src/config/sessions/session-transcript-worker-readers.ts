@@ -10,6 +10,7 @@ import type {
   SessionEntryListWorkerInput,
   SessionEntryListWorkerResult,
   SessionRowPresenceWorkerInput,
+  SessionProjectionStatusWorkerInput,
   SessionMembersWorkerInput,
   SessionUsageCacheWorkerInput,
   SessionTranscriptHydrationWorkerInput,
@@ -19,6 +20,7 @@ export type SessionHistoryWorkerRequestRunner = <TResult>(
   prepare: () =>
     | Omit<SessionTranscriptHistoryWorkerInput, "database">
     | Omit<SessionRowPresenceWorkerInput, "database">
+    | Omit<SessionProjectionStatusWorkerInput, "database">
     | Omit<SessionEntryListWorkerInput, "database">
     | Omit<SessionIdentityEvidenceWorkerInput, "database">
     | Omit<SessionMembersWorkerInput, "database">
@@ -134,6 +136,19 @@ export function createSessionHistoryWorkerReaders(runRequest: SessionHistoryWork
             );
           }
           return value.evidence;
+        },
+      ),
+    readProjectionStatus: async (
+      input: Omit<SessionProjectionStatusWorkerInput, "kind" | "database">,
+    ) =>
+      await runRequest(
+        () => ({ kind: "projection-status", ...input }),
+        JSON.stringify(input).length * 2,
+        (value) => {
+          if (typeof value !== "boolean") {
+            throw new Error("Session history worker returned history instead of projection status");
+          }
+          return value;
         },
       ),
     readEntryPresence: async (scope: SessionRowPresenceWorkerInput["scope"]) =>

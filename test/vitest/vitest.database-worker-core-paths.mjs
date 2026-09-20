@@ -11,6 +11,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/harness/selection.test.ts",
   "src/agents/cli-runner/prepare.test.ts",
   "src/agents/cli-runner/prepare.durable-context.test.ts",
+  "src/agents/embedded-agent-runner/run-orchestrator.projection.test.ts",
   "src/agents/embedded-agent-runner/run.prepared-harness-source-delivery.integration.test.ts",
   "src/agents/embedded-agent-runner/run.shared-integration.test.ts",
   "src/auto-reply/dispatch.block-streaming-recovery.test.ts",

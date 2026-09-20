@@ -156,6 +156,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
           unwrapSessionTranscriptWorkerReply<
             | "history-page"
             | "session-row-presence"
+            | "projection-status"
             | "session-members"
             | "session-entry-list"
             | "session-target-inventory"

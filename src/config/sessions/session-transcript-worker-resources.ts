@@ -34,6 +34,7 @@ import type {
   SessionTargetInventoryWorkerInput,
   SessionIdentityEvidenceWorkerInput,
   SessionMembersWorkerInput,
+  SessionProjectionStatusWorkerInput,
   SessionRowPresenceWorkerInput,
   SessionTranscriptHistoryWorkerInput,
   SessionTranscriptHydrationWorkerInput,
@@ -46,6 +47,7 @@ export const historyPages = new WorkerTaskPool<
   | SessionTranscriptHistoryWorkerInput
   | SessionRowPresenceWorkerInput
   | SessionMembersWorkerInput
+  | SessionProjectionStatusWorkerInput
   | SessionEntryListWorkerInput
   | SessionTargetInventoryWorkerInput
   | SessionIdentityEvidenceWorkerInput
@@ -55,6 +57,7 @@ export const historyPages = new WorkerTaskPool<
     | "history-page"
     | "session-row-presence"
     | "session-members"
+    | "projection-status"
     | "session-entry-list"
     | "session-target-inventory"
     | "session-identity-evidence"
@@ -362,6 +365,7 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
             | "history-page"
             | "session-row-presence"
             | "session-members"
+            | "projection-status"
             | "session-entry-list"
             | "session-target-inventory"
             | "session-identity-evidence"
