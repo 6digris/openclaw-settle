@@ -4,10 +4,10 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { Result } from "@openclaw/normalization-core/result";
 import { readSessionTranscriptBoundedActiveContextCore } from "../../config/sessions/session-accessor.sqlite-active-context.js";
 import type {
+  SessionTranscriptContextVersion,
   SessionTranscriptWriteScope,
   TranscriptAppendRefusal,
 } from "../../config/sessions/session-accessor.sqlite-contract.js";
-import type { SessionTranscriptContextVersion } from "../../config/sessions/session-accessor.sqlite-contract.js";
 import {
   ensureSessionEntryInTransaction,
   type InitialSessionEntryCommit,
