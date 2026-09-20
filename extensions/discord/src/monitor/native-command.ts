@@ -368,8 +368,7 @@ async function dispatchDiscordCommandInteraction(params: {
     return (
       routeState.effectiveRoute.matchedBy === "binding.channel" ||
       routeState.boundSessionKey != null ||
-      routeState.configuredBinding != null ||
-      routeState.configuredRoute != null
+      routeState.configuredBinding != null
     );
   };
   if (channelConfig?.enabled === false && !(await canBypassConfiguredAcpGuildGuards())) {

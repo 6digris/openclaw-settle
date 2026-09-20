@@ -243,7 +243,7 @@ process.exitCode = await new Promise((resolve, reject) => {
   );
 
   it.each(["wrapper", "root package preloads"])(
-    "keeps %s and raw tsx children off disk caches without changing other cache settings",
+    "keeps %s and descendants off disk caches without changing other cache settings",
     async (entrypoint) => {
       await withShimFixture(TSX_SHIM_WRAPPERS[0], async (fixture) => {
         const { fixtureRoot, implementationPath, wrapperPath, runNode } = fixture;
@@ -287,22 +287,36 @@ fs.readdirSync = function (directory, ...args) {
             key === "TMPDIR" || key === "TEMP" ? tempRoot : path.join(fixtureRoot, key),
           ]),
         );
-        const childPath = path.join(fixtureRoot, "child.mts");
-        const snapshotSource = `
+        const childPath = path.join(fixtureRoot, "child.mjs");
+        const environmentSnapshot = `
+  env: Object.fromEntries(${JSON.stringify(Object.keys(preservedEnv))}.map(key => [key, process.env[key]])),
+  tsxDisableCache: process.env.TSX_DISABLE_CACHE,
+`;
+        const transformedSnapshotSource = `
 enum Transformed { Value = "transformed" }
 console.log(JSON.stringify({
   transformed: Transformed.Value,
   args: process.argv.slice(2),
   cwd: process.cwd(),
-  env: Object.fromEntries(${JSON.stringify(Object.keys(preservedEnv))}.map(key => [key, process.env[key]])),
+${environmentSnapshot}
 }));
 `;
-        writeFileSync(childPath, `${snapshotSource}\nprocess.exitCode = 17;\n`);
+        writeFileSync(
+          childPath,
+          `console.log(JSON.stringify({
+  transformed: null,
+  args: process.argv.slice(2),
+  cwd: process.cwd(),
+${environmentSnapshot}
+}));
+process.exitCode = 17;
+`,
+        );
         writeFileSync(
           implementationPath,
-          `${snapshotSource}
+          `${transformedSnapshotSource}
 import { spawnSync } from "node:child_process";
-const child = spawnSync(process.execPath, ["--import", "tsx", ${JSON.stringify(childPath)}, ...process.argv.slice(2)], { stdio: "inherit" });
+const child = spawnSync(process.execPath, [${JSON.stringify(childPath)}, ...process.argv.slice(2)], { stdio: "inherit" });
 if (child.error) throw child.error;
 process.exitCode = child.status ?? 1;
 `,
@@ -346,14 +360,22 @@ process.exitCode = child.status ?? 1;
                 .trim()
                 .split("\n")
                 .map((line) => JSON.parse(line)),
-            ).toEqual(
-              Array.from({ length: 2 }, () => ({
+            ).toEqual([
+              {
                 transformed: "transformed",
                 args: ["argument with spaces", "--proof"],
                 cwd: process.cwd(),
                 env: preservedEnv,
-              })),
-            );
+                tsxDisableCache: "1",
+              },
+              {
+                transformed: null,
+                args: ["argument with spaces", "--proof"],
+                cwd: process.cwd(),
+                env: preservedEnv,
+                tsxDisableCache: "1",
+              },
+            ]);
             if (entrypoint === "wrapper") {
               expect(result.stderr.trim().split("\n").at(-1)).toBe("[test] FAILED (exit 17)");
             }

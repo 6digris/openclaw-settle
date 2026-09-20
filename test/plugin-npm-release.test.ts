@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { collectClawHubPublishablePluginPackages } from "../scripts/lib/plugin-clawhub-release.ts";
 import {
   collectChangedExtensionIdsFromPaths,
-  collectPluginReleaseDependencyFreshnessErrors,
+  collectPluginReleaseDependencyFreshnessWarnings,
   collectPluginNpmGitRangeSelection,
   collectPluginReleasePlan,
   collectPluginReleaseVersionFloorErrors,
@@ -20,6 +20,7 @@ import {
   parsePluginReleaseSelectionMode,
   resolveChangedPublishablePluginPackages,
   resolveSelectedPublishablePluginPackages,
+  warnPluginReleaseDependencyFreshness,
   type PublishablePluginPackage,
 } from "../scripts/lib/plugin-npm-release.ts";
 import { writePublishablePluginFixture } from "./helpers/publishable-plugin-fixture.js";
@@ -47,6 +48,7 @@ const tempDirs: string[] = [];
 
 afterEach(() => {
   childProcessMock.execFileSyncOverride = undefined;
+  vi.restoreAllMocks();
   cleanupTempDirs(tempDirs);
 });
 
@@ -416,7 +418,7 @@ describe("collectPluginReleaseVersionFloorErrors", () => {
   });
 });
 
-describe("collectPluginReleaseDependencyFreshnessErrors", () => {
+describe("collectPluginReleaseDependencyFreshnessWarnings", () => {
   const plugin: PublishablePluginPackage = {
     extensionId: "codex",
     packageDir: "extensions/codex",
@@ -432,15 +434,15 @@ describe("collectPluginReleaseDependencyFreshnessErrors", () => {
     ],
   };
 
-  it("rejects release dependencies older than the npm latest dist-tag", () => {
-    expect(collectPluginReleaseDependencyFreshnessErrors([plugin], () => "0.142.5")).toEqual([
-      '@openclaw/codex@2026.6.11: @openai/codex must match npm latest for release; found "0.139.0", latest is "0.142.5".',
+  it("reports release dependencies older than the npm latest dist-tag", () => {
+    expect(collectPluginReleaseDependencyFreshnessWarnings([plugin], () => "0.142.5")).toEqual([
+      '@openclaw/codex@2026.6.11: @openai/codex pinned "0.139.0", npm latest is "0.142.5". Freshness is advisory; retain the release-validated pin.',
     ]);
   });
 
   it("accepts release dependencies matching the npm latest dist-tag", () => {
     expect(
-      collectPluginReleaseDependencyFreshnessErrors(
+      collectPluginReleaseDependencyFreshnessWarnings(
         [
           {
             ...plugin,
@@ -457,17 +459,17 @@ describe("collectPluginReleaseDependencyFreshnessErrors", () => {
     ).toEqual([]);
   });
 
-  it("fails closed when npm latest cannot be resolved", () => {
+  it("reports unavailable npm latest as advisory", () => {
     expect(
-      collectPluginReleaseDependencyFreshnessErrors([plugin], () => {
+      collectPluginReleaseDependencyFreshnessWarnings([plugin], () => {
         throw new Error("registry unavailable");
       }),
     ).toEqual([
-      "@openclaw/codex@2026.6.11: could not resolve npm latest for @openai/codex: registry unavailable",
+      '@openclaw/codex@2026.6.11: could not resolve npm latest for @openai/codex (pinned "0.139.0"); freshness is advisory: registry unavailable',
     ]);
   });
 
-  it("fails closed when the npm latest lookup times out", () => {
+  it("reports npm latest lookup timeouts as advisory", () => {
     childProcessMock.execFileSyncOverride = ((
       command: string,
       args?: readonly string[],
@@ -489,13 +491,54 @@ describe("collectPluginReleaseDependencyFreshnessErrors", () => {
       throw Object.assign(new Error("spawnSync npm ETIMEDOUT"), { code: "ETIMEDOUT" });
     }) as unknown as ExecFileSync;
 
-    expect(collectPluginReleaseDependencyFreshnessErrors([plugin])).toEqual([
-      "@openclaw/codex@2026.6.11: could not resolve npm latest for @openai/codex: npm view timed out after 60000ms.",
+    expect(collectPluginReleaseDependencyFreshnessWarnings([plugin])).toEqual([
+      '@openclaw/codex@2026.6.11: could not resolve npm latest for @openai/codex (pinned "0.139.0"); freshness is advisory: npm view timed out after 60000ms.',
     ]);
+  });
+
+  it("logs advisory warnings without blocking the caller", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warnings = warnPluginReleaseDependencyFreshness(
+      [plugin],
+      "release check",
+      () => "0.142.5",
+    );
+
+    expect(warnings).toHaveLength(1);
+    expect(warn).toHaveBeenCalledExactlyOnceWith(`release check: warning: ${warnings[0]}`);
   });
 });
 
 describe("collectPluginReleasePlan", () => {
+  it("keeps a publish candidate when npm latest moved after validation", () => {
+    const repoDir = makeTempRepoRoot(tempDirs, "openclaw-plugin-npm-release-");
+    writePublishablePluginFixture(repoDir, {
+      version: "2026.8.33",
+      publishTo: "npm",
+      dependency: { packageName: "demo-runtime", version: "1.2.3", requireLatest: true },
+    });
+    childProcessMock.execFileSyncOverride = ((command: string, args?: readonly string[]) => {
+      expect(command).toBe("npm");
+      if (args?.[2] === "dist-tags.latest") {
+        return JSON.stringify("1.2.4");
+      }
+      throw new Error("version not published");
+    }) as unknown as ExecFileSync;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const plan = collectPluginReleasePlan({ rootDir: repoDir });
+
+    expect(plan.candidates.map((candidate) => candidate.packageName)).toEqual([
+      "@openclaw/demo-plugin",
+    ]);
+    expect(plan.warnings).toEqual([
+      '@openclaw/demo-plugin@2026.8.33: demo-runtime pinned "1.2.3", npm latest is "1.2.4". Freshness is advisory; retain the release-validated pin.',
+    ]);
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      `Plugin NPM release plan: warning: ${plan.warnings[0]}`,
+    );
+  });
+
   it("fails closed when the published-version lookup times out", () => {
     const repoDir = makeTempRepoRoot(tempDirs, "openclaw-plugin-npm-release-");
     writePublishablePluginFixture(repoDir, {

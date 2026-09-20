@@ -298,23 +298,23 @@ export async function ackDelivery(
       deleteDeliveryQueueEntry(OUTBOUND_DELIVERY_QUEUE_NAME, id, stateDir);
     }
   };
-  if (options && "expectedPlatformSendAttemptId" in options) {
-    const settled = transitionOwnedDeliveryQueueEntry(
-      {
-        queueName: OUTBOUND_DELIVERY_QUEUE_NAME,
-        id,
-        stateDir,
-        platformSendAttemptId: options.expectedPlatformSendAttemptId ?? null,
-      },
-      (entry) => settle(entry as QueuedDelivery),
-    );
-    if (!settled) {
-      throw lostPlatformClaim(id);
-    }
-  } else {
-    settle(
-      loadDeliveryQueueEntry(OUTBOUND_DELIVERY_QUEUE_NAME, id, stateDir) as QueuedDelivery | null,
-    );
+  // A claimless caller has no owner to assert, so an unclaimed row settles and an
+  // already-missing row is a no-op; either way it must never touch a live claim.
+  const ownsPlatformAttempt = options && "expectedPlatformSendAttemptId" in options;
+  const settled = transitionOwnedDeliveryQueueEntry(
+    {
+      queueName: OUTBOUND_DELIVERY_QUEUE_NAME,
+      id,
+      stateDir,
+      platformSendAttemptId: ownsPlatformAttempt
+        ? (options.expectedPlatformSendAttemptId ?? null)
+        : null,
+      allowMissingEntry: !ownsPlatformAttempt,
+    },
+    (entry) => settle(entry as QueuedDelivery),
+  );
+  if (!settled) {
+    throw lostPlatformClaim(id);
   }
   if (!options?.retainSpoolArtifacts) {
     await releaseSpoolArtifacts(spoolPaths, stateDir);

@@ -38,6 +38,8 @@ export function transitionOwnedDeliveryQueueEntry(
     id: string;
     stateDir?: string;
     platformSendAttemptId: string | null;
+    /** A caller with no owner of its own treats an already-settled row as a no-op. */
+    allowMissingEntry?: boolean;
   },
   transition: (entry: DeliveryQueueEntryState) => void,
 ): boolean {
@@ -49,7 +51,7 @@ export function transitionOwnedDeliveryQueueEntry(
     () => {
       const entry = loadDeliveryQueueEntry(params.queueName, params.id, params.stateDir);
       if (!entry) {
-        return false;
+        return params.allowMissingEntry === true;
       }
       if (
         params.platformSendAttemptId === null
