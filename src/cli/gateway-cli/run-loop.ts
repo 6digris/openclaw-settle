@@ -102,6 +102,7 @@ export async function runGatewayLoop(params: {
     { includeLinuxOpenClawGatewayServiceMarker: true },
   );
   const supervisorMode = supervisor?.kind ?? null;
+  const restartDecision = eagerLifecycleRuntime.resolveGatewayRestartDecision();
   let lock = await acquireGatewayLock({
     port: params.lockPort,
     listenerMode: supervisorMode ? "supervised" : "foreground",
@@ -479,6 +480,7 @@ export async function runGatewayLoop(params: {
     }
 
     const respawnOptions = {
+      decision: restartDecision,
       env: createGatewayRestartTraceHandoffEnv(captureGatewayRestartTraceHandoff()),
     };
     const isStandaloneUpdate = Boolean(foregroundHandoff) || (isUpdateRestart && !supervisorMode);
@@ -589,6 +591,7 @@ export async function runGatewayLoop(params: {
   };
   const {
     nativeStopBudget,
+    restartTimeoutMs,
     timeoutMs: acceptedShutdownTimeoutMs,
     reserveMs: RESTART_CLOSE_REPLY_DRAIN_SHUTDOWN_RESERVE_MS,
     cleanupDeadline,
@@ -697,6 +700,7 @@ export async function runGatewayLoop(params: {
     const { action, restartIntent } = acceptedRequest;
     logShutdownBudget("shutdown");
     const isRestart = action !== "stop";
+    const restartWithoutSupervisor = action === "restart" && restartDecision.mode === "disabled";
     const acceptedStartupOperations = startupOperations;
     if (acceptedRequest.action === "stop") {
       // A queued restart still needs startup's close handle. Only an effective
@@ -719,7 +723,7 @@ export async function runGatewayLoop(params: {
       }
       shutdownDeadline = performance.now() + forceExitMs;
       forceExitTimer = setTimeout(() => {
-        const cleanExit = nativeStopBudget && !shutdownFailure;
+        const cleanExit = nativeStopBudget && !restartWithoutSupervisor && !shutdownFailure;
         gatewayLog.warn(
           `shutdown deadline reached; abandoning unfinished cleanup and active work before ${action}; last observed: ${lastDrainCounts}; exiting ${cleanExit ? "cleanly" : "with incomplete cleanup"}`,
         );
@@ -780,12 +784,7 @@ export async function runGatewayLoop(params: {
       if (!isRestart) {
         armForceExitTimer(acceptedShutdownTimeoutMs);
       } else if (restartDrainTimeoutMs !== undefined && !getManagedUpdateOwner()) {
-        armForceExitTimer(
-          restartDrainTimeoutMs +
-            (nativeStopBudget
-              ? RESTART_CLOSE_REPLY_DRAIN_SHUTDOWN_RESERVE_MS
-              : SHUTDOWN_TIMEOUT_MS),
-        );
+        armForceExitTimer(restartTimeoutMs(restartDrainTimeoutMs, restartWithoutSupervisor));
       }
 
       const drainTimeoutMs = isRestart
@@ -849,8 +848,10 @@ export async function runGatewayLoop(params: {
         if (isRestart && !forceExitTimer) {
           armForceExitTimer(
             nativeStopBudget
-              ? Math.max(0, (restartDrainDeadlineAt ?? Date.now()) - Date.now()) +
-                  RESTART_CLOSE_REPLY_DRAIN_SHUTDOWN_RESERVE_MS
+              ? restartTimeoutMs(
+                  Math.max(0, (restartDrainDeadlineAt ?? Date.now()) - Date.now()),
+                  restartWithoutSupervisor,
+                )
               : SHUTDOWN_TIMEOUT_MS,
           );
         }

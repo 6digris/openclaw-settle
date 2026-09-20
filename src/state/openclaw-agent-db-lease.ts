@@ -25,6 +25,7 @@ import {
   assertAgentDeletionPathFence,
   prepareAgentDeletionPathFence,
 } from "./agent-deletion-journal.js";
+import type { OpenClawAgentDatabaseValidation } from "./openclaw-agent-db-validation-cache.js";
 import {
   readOpenClawAgentIntegrityVerification,
   markOpenClawAgentIntegrityClean,
@@ -416,6 +417,7 @@ export function prepareOpenClawAgentDatabaseWorkerLease(
   leaseId: string,
 ): {
   receipt: OpenClawAgentDatabaseWorkerLeaseReceipt;
+  validation?: OpenClawAgentDatabaseValidation;
   claim(onVerification?: OpenClawAgentIntegrityVerificationReceiver): string;
 } {
   const database = {

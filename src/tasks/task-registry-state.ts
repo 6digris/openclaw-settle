@@ -49,8 +49,7 @@ import {
   addRelatedSessionKeyIndex,
   deleteRelatedSessionKeyIndex,
   getTaskRegistryProcessState,
-  taskIdsInScope,
-  matchesScope,
+  selectTaskRegistryScopes,
   captureTaskRegistryPublicationRollback,
   recordTaskRegistryPublication,
   recordTaskRegistryProjectionWrite,
@@ -478,13 +477,15 @@ function markTaskRegistryProjectionRestored(): void {
 
 function installSnapshot(
   snapshot: TaskRegistryStoreSnapshot,
-  scope?: TaskRegistryMutationScope,
+  scope?: TaskRegistryMutationScope | readonly TaskRegistryMutationScope[],
   invalidateWorkerReads = true,
   recordWrites: ReadonlyMap<string, TaskRecord> | "refresh" | false = "refresh",
 ): void {
-  for (const taskId of taskIdsInScope(scope)) {
+  const scopes = scope && ("taskId" in scope ? [scope] : scope);
+  const { matches, taskIds } = selectTaskRegistryScopes(scopes);
+  for (const taskId of taskIds) {
     const current = tasks.get(taskId);
-    if (current && (!scope || matchesScope(current, scope)) && !snapshot.tasks.has(taskId)) {
+    if (current && matches(current) && !snapshot.tasks.has(taskId)) {
       if (recordWrites) {
         recordTaskRegistryProjectionWrite(recordWrites, taskId, true);
       }
@@ -494,7 +495,7 @@ function installSnapshot(
     }
   }
   for (const [taskId, record] of snapshot.tasks) {
-    if (scope && !matchesScope(record, scope)) {
+    if (!matches(record)) {
       continue;
     }
     const current = tasks.get(taskId);
@@ -563,11 +564,18 @@ function refreshUnderCustody(): void {
     return;
   }
   const store = getTaskRegistryStore();
-  const snapshots = !refresh
-    ? []
-    : projection.dirty || !store.loadMutationSnapshot
-      ? [{ snapshot: store.loadSnapshot(), scope: undefined }]
-      : [...dirtyScopes].map((scope) => ({ snapshot: store.loadMutationSnapshot!(scope), scope }));
+  const scopes =
+    projection.dirty || !store.loadMutationSnapshot
+      ? undefined
+      : [
+          ...new Map(
+            [...dirtyScopes].map((scope) => [
+              JSON.stringify([scope.taskId, scope.runId, scope.childSessionKey]),
+              scope,
+            ]),
+          ).values(),
+        ];
+  const snapshot = refresh && (scopes ? store.loadMutationSnapshot!(scopes) : store.loadSnapshot());
   // Keep transaction-local writes reversible even when no projection refresh is needed.
   const previous = database?.db.isTransaction
     ? {
@@ -579,12 +587,10 @@ function refreshUnderCustody(): void {
   // Only commit supersedes held reads; rollback may restore a cache older than their snapshot.
   const publication = {
     stage() {
-      if (!refresh) {
+      if (!snapshot) {
         return;
       }
-      for (const { snapshot, scope } of snapshots) {
-        installSnapshot(snapshot, scope, true, false);
-      }
+      installSnapshot(snapshot, scopes, true, false);
       projection.dirty = false;
       dirtyScopes.clear();
       for (const pending of pendingMutations) {

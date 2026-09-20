@@ -20,6 +20,7 @@ import { resolveCronJobsStorePathFromConfig, saveCronStore } from "../cron/store
 import { clearHealthChecksForTest } from "../flows/health-check-registry.js";
 import type { HealthCheckContext } from "../flows/health-checks.js";
 import { requestDevicePairing } from "../infra/device-pairing.js";
+import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { createSkillProposalEvent } from "../skills/workshop/plugin-hooks.js";
 import { appendSkillProposalEvent } from "../skills/workshop/store-sqlite-event.js";
 import { importLegacySkillProposal } from "../skills/workshop/store.js";
@@ -912,7 +913,8 @@ describe("doctor lint state isolation", () => {
     const databasePath = resolveOpenClawStateSqlitePath(process.env);
     await closeOpenClawStateDatabaseByPathAsync(databasePath);
     const lock = new DatabaseSync(databasePath);
-    lock.exec("BEGIN IMMEDIATE");
+    // Initialize WAL artifacts before hashing; Windows rejects raw reads under a write lock.
+    lock.exec("BEGIN IMMEDIATE; ROLLBACK");
     const before = snapshotDoctorLintSqliteFamily(databasePath);
     let resolvedToken: string | undefined;
     mocks.resolveDoctorContributionHealthChecks.mockResolvedValue([
@@ -923,7 +925,7 @@ describe("doctor lint state isolation", () => {
         async detect() {
           const privateDatabasePath = resolveOpenClawStateSqlitePath(process.env);
           expect(privateDatabasePath).not.toBe(databasePath);
-          const competingWriter = new DatabaseSync(privateDatabasePath);
+          const competingWriter = openNodeSqliteDatabase(privateDatabasePath);
           competingWriter.exec("BEGIN IMMEDIATE");
           const signal = AbortSignal.timeout(250);
           const releaseWriter = () => {
@@ -950,6 +952,7 @@ describe("doctor lint state isolation", () => {
 
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     try {
+      lock.exec("BEGIN IMMEDIATE");
       const exitCode = await runDoctorLintCli(runtime, {
         json: true,
         onlyIds: ["core/doctor/runtime-tool-schemas"],
@@ -969,12 +972,15 @@ describe("doctor lint state isolation", () => {
           },
         ],
       });
+      lock.exec("ROLLBACK");
       expect(exitCode).toBe(0);
       expect(resolvedToken).toBeUndefined();
       expect(snapshotDoctorLintSqliteFamily(databasePath)).toEqual(before);
     } finally {
       stdout.mockRestore();
-      lock.exec("ROLLBACK");
+      if (lock.isTransaction) {
+        lock.exec("ROLLBACK");
+      }
       lock.close();
       await closeOpenClawStateDatabaseByPathAsync(databasePath);
       fs.rmSync(rootDir, { recursive: true, force: true });

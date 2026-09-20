@@ -110,6 +110,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/startup-local-cli-pairing.test.ts",
   "src/gateway/test-helpers.acquisition.test.ts",
   "src/gateway/tool-resolution.cron-capture.test.ts",
+  "src/gateway/tui-session-description-wire.test.ts",
   "src/gateway/worker-environments/local-workspace-projection.test.ts",
   "src/gateway/worker-environments/prepared-pool-local-project.test.ts",
   "src/gateway/worker-environments/provider-crabbox-runtime-preflight.test.ts",

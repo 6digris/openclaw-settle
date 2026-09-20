@@ -12586,7 +12586,10 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       tempDirs.make("ci-preflight-dependencies-"),
       testNodeExecPath,
     );
-    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(
+      result.status,
+      `${result.error?.message ?? ""}\n${result.stdout}\n${result.stderr}`,
+    ).toBe(0);
     expect(manifest).toContain("run_node=true\n");
     expect(manifest).toContain("run_windows=true\n");
   });
@@ -13979,14 +13982,14 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
   );
 
   it.each([
-    ["pull_request", "compact", "blacksmith", 120],
-    ["pull_request", "precise", "github", 120],
-    ["push", "compact", "hybrid", 64],
+    ["pull_request", "compact", "blacksmith", 130],
+    ["pull_request", "precise", "github", 130],
+    ["push", "compact", "hybrid", 70],
     ["workflow_dispatch", "compact", "blacksmith", null],
   ] as const)(
     "bounds the final Node matrix for %s %s plans",
     (eventName, selection, runnerProfile, limit) => {
-      for (const count of [limit ?? 120, (limit ?? 120) + 1]) {
+      for (const count of [limit ?? 130, (limit ?? 130) + 1]) {
         const hasFallback = eventName === "pull_request" && selection === "compact";
         const nodeTestShards = Array.from({ length: count - Number(hasFallback) }, (_, index) => ({
           checkName: `node-admission-${index}`,

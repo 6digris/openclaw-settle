@@ -1,7 +1,6 @@
 // Gateway run loop tests cover foreground gateway lifecycle and restart behavior.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import {
@@ -34,6 +33,7 @@ import {
   expectRestartCloseCall,
   originalPlatformDescriptor,
   registerUpdateRespawnProgressTests,
+  registerGatewayRestartOwnershipTests,
   type UpdateRespawnResultFixture,
   setPlatform,
   shutdownBudgetCases,
@@ -43,6 +43,7 @@ import {
 } from "./run-loop.test-support.js";
 
 const closeLogTempDirs = useAutoCleanupTempDirTracker(afterEach);
+const { readCgroup } = vi.hoisted(() => ({ readCgroup: vi.fn() }));
 
 const spawnProcess = vi.hoisted(() => vi.fn<typeof import("node:child_process").spawn>());
 vi.mock("node:child_process", async () => {
@@ -61,7 +62,7 @@ vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>();
   // Foreground fixtures must not inherit the CI runner's systemd service or filesystem timing.
   const readFile = (...args: Parameters<typeof actual.readFile>) =>
-    args[0] === "/proc/self/cgroup" ? Promise.resolve("0::/\n") : actual.readFile(...args);
+    args[0] === "/proc/self/cgroup" ? readCgroup() : actual.readFile(...args);
   return { ...actual, readFile, default: { ...actual, readFile } };
 });
 
@@ -300,7 +301,8 @@ vi.mock("../../infra/gateway-suspend-coordinator.js", () => ({
     resetGatewaySuspendCoordinatorForLifecycleRestart(),
 }));
 
-vi.mock("../../infra/process-respawn.js", () => ({
+vi.mock("../../infra/process-respawn.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../infra/process-respawn.js")>()),
   respawnGatewayProcessForUpdate: (opts?: { env?: NodeJS.ProcessEnv }) =>
     respawnGatewayProcessForUpdate(opts),
   restartGatewayProcessWithFreshPid: (opts?: { env?: NodeJS.ProcessEnv }) =>
@@ -462,6 +464,7 @@ beforeEach(async () => {
     release: vi.fn(async () => {}),
   }));
   setPlatform("linux");
+  readCgroup.mockReset().mockResolvedValue("0::/\n");
   systemctl.mockReset().mockResolvedValue({
     code: 0,
     stdout: "LoadState=loaded\nTimeoutStopUSec=5min 30s",
@@ -473,8 +476,8 @@ beforeEach(async () => {
     assertCurrent();
     return { execute: hostedStopExecute, dispose: hostedStopDispose };
   });
-  supervisorEnvSnapshot = captureEnv([...SUPERVISOR_HINT_ENV_VARS]);
-  for (const key of SUPERVISOR_HINT_ENV_VARS) {
+  supervisorEnvSnapshot = captureEnv([...SUPERVISOR_HINT_ENV_VARS, "OPENCLAW_NO_RESPAWN"]);
+  for (const key of [...SUPERVISOR_HINT_ENV_VARS, "OPENCLAW_NO_RESPAWN"]) {
     deleteTestEnvValue(key);
   }
 
@@ -2186,56 +2189,24 @@ describe("runGatewayLoop", () => {
     });
   });
 
-  it.each(["completed", "unconfirmed"] as const)(
-    "passes the remaining forced restart budget and reports %s cleanup before process exit",
-    async (outcome) => {
-      setPlatform("linux");
-      vi.stubEnv("OPENCLAW_SYSTEMD_UNIT", "openclaw-gateway.service");
-      vi.stubEnv("OPENCLAW_SUPERVISOR_MODE", "external");
-      consumeGatewayRestartIntentPayloadSync.mockReturnValueOnce({ force: true });
-      systemctl.mockResolvedValue({
-        code: 0,
-        stdout: "LoadState=loaded\nTimeoutStopUSec=90s",
-        stderr: "",
-      });
-      await withIsolatedSignals(async ({ captureSignal }) => {
-        let cleanupDeadline: number | undefined;
-        const close = vi.fn<GatewayCloseFn>(async () => {
-          cleanupDeadline = getProcessCleanupBudget()?.deadline;
-          await new Promise<void>((resolve, reject) => {
-            if (outcome === "completed") {
-              setTimeout(resolve, 6_000);
-            } else {
-              setTimeout(() => {
-                setImmediate(() => reject(new Error("service child extinction unconfirmed")));
-              }, cleanupDeadline! - performance.now());
-            }
-          });
-        });
-        const { start, started } = createSignaledStart(close);
-        const { runtime, exited } = createRuntimeWithExitSignal();
-        await runLoopWithStart({ start, runtime });
-        await waitForStart(started);
-        const { getProcessCleanupBudget } =
-          await import("../../process/supervisor/cleanup-budget.js");
-        vi.useFakeTimers();
-        const clock = vi.spyOn(performance, "now").mockReturnValue(1_000);
-        try {
-          captureSignal("SIGTERM")();
-          await vi.advanceTimersByTimeAsync(5_000);
-          expect(close).toHaveBeenCalledOnce();
-          expect(runtime.exit).not.toHaveBeenCalled();
-          await vi.advanceTimersByTimeAsync(outcome === "completed" ? 1_000 : 5_001);
-          await expect(exited).resolves.toBe(outcome === "completed" ? 0 : 1);
-          expect(cleanupDeadline).toBe(10_000);
-          expect(start).toHaveBeenCalledOnce();
-        } finally {
-          clock.mockRestore();
-          vi.useRealTimers();
-        }
-      });
-    },
-  );
+  registerGatewayRestartOwnershipTests({
+    consumeGatewayRestartIntentPayloadSync,
+    readCgroup,
+    systemctl,
+    consumeGatewayRestartIntent,
+    runLoopWithStart,
+    acquireGatewayLock,
+    gatewayLog,
+    managedUpdateSuccessorOwner,
+    isForegroundUpdateHandoff,
+    completeForegroundUpdateHandoffAfterClose,
+    respawnGatewayProcessForUpdate,
+    cancelManagedServiceUpdateHandoff,
+    requestManagedServiceUpdateHandoffPark,
+    waitForGatewayHealthyRestart,
+    restartGatewayProcessWithFreshPid,
+    commitManagedServiceUpdateHandoff,
+  });
 
   it("restarts after SIGUSR2 even when drain times out, and resets runtime state for the new iteration", async () => {
     vi.clearAllMocks();
