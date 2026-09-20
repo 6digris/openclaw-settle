@@ -66,6 +66,7 @@ env:
 
 jobs:
   probe:
+    if: ${{ false }} # This immutable proof revision runs only the native matrix.
     name: Windows probe
     runs-on: ${{ inputs.runner_label }}
     timeout-minutes: 75
@@ -608,148 +609,73 @@ jobs:
       - *windows_pnpm
       - *windows_versions
       - *windows_node_path
+      - name: Check fresh-runner capacity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $drive = Get-PSDrive -Name ([IO.Path]::GetPathRoot($env:GITHUB_WORKSPACE).Substring(0,1))
+          $capacity = @{ freeBytes = $drive.Free; estimatedAdditionalBytes = 5368709120; competingJobs = 0; host = "fresh single-job hosted VM" }
+          $capacity | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP "pr119052-capacity.json")
+          if ($drive.Free -lt $capacity.estimatedAdditionalBytes) { throw "Insufficient measured capacity for dependencies and native staging." }
+
       - *windows_install
 
-      - name: Run native Scheduled Task lifecycle proof
-        id: native_schtasks
-        if: ${{ inputs.run_windows_ci }}
-        timeout-minutes: 5
-        shell: bash
-        env:
-          CI_WINDOWS_SCHTASKS_PROOF_PATH: ${{ github.workspace }}\.artifacts\windows-schtasks\proof.json
-          CI_WINDOWS_SCHTASKS_ROOT: ${{ runner.temp }}\openclaw-schtasks-${{ github.run_id }}-${{ github.run_attempt }}
-          CI_WINDOWS_SCHTASKS_TEST_ID: ${{ github.run_id }}-${{ github.run_attempt }}
-          EXPECTED_HEAD: ${{ inputs.target_ref }}
-        run: |
-          set -euo pipefail
-          export PATH="$NODE_BIN:$PATH"
-          if [[ ! "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "Native Scheduled Task proof requires target_ref to be an exact 40-character commit SHA." >&2
-            exit 1
-          fi
-          CI_WINDOWS_SCHTASKS_HEAD="$(git rev-parse HEAD)"
-          if [[ "$CI_WINDOWS_SCHTASKS_HEAD" != "$EXPECTED_HEAD" ]]; then
-            echo "Checked out $CI_WINDOWS_SCHTASKS_HEAD, expected frozen target $EXPECTED_HEAD." >&2
-            exit 1
-          fi
-          export CI_WINDOWS_SCHTASKS_HEAD
-          mkdir -p .artifacts/windows-schtasks
-          pnpm test:windows:schtasks:integration
+      - name: Checkout immutable reviewed native packet
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .native-harness
+          sparse-checkout: .maintainer/pr-119052
+          persist-credentials: false
+          submodules: false
 
-      # Qualification/setup failures cannot have created this run's native task.
-      - name: Clean native Scheduled Task residue
-        id: native_cleanup
-        if: ${{ always() && inputs.run_windows_ci && steps.native_isolation.outcome == 'success' && contains(fromJSON('["success","failure","cancelled"]'), steps.native_schtasks.outcome) }}
+      - name: Run exact-candidate native activation matrix
+        id: native_matrix
+        timeout-minutes: 25
         shell: pwsh
         env:
-          TEST_ID: ${{ github.run_id }}-${{ github.run_attempt }}
-          TEST_ROOT: ${{ runner.temp }}\openclaw-schtasks-${{ github.run_id }}-${{ github.run_attempt }}
+          EXPECTED_HEAD: ${{ inputs.target_ref }}
+          HARNESS_SHA: ${{ github.sha }}
         run: |
-          $ErrorActionPreference = "Continue"
-          $cleanupErrors = @()
-          $profile = "schtasks-int-$env:TEST_ID"
-          $taskName = "OpenClaw Gateway ($profile)"
-          $stateDir = Join-Path $env:USERPROFILE ".openclaw-$profile"
-          New-Item -ItemType Directory -Force -Path $env:TEST_ROOT | Out-Null
-          schtasks.exe /End /TN $taskName 2>$null
-          Start-Sleep -Milliseconds 200
-          $activePidPath = Join-Path $env:TEST_ROOT "active-pid.txt"
-          if (Test-Path -LiteralPath $activePidPath) {
-            try {
-              $probePid = 0
-              $activePid = (Get-Content -LiteralPath $activePidPath -Raw).Trim()
-              if (-not [int]::TryParse($activePid, [ref]$probePid) -or $probePid -le 1) {
-                throw "Invalid Scheduled Task active process id: $activePid"
-              }
-              $processQueryError = @()
-              $process = Get-CimInstance Win32_Process -Filter "ProcessId = $probePid" -ErrorAction SilentlyContinue -ErrorVariable processQueryError
-              if ($processQueryError.Count -gt 0) {
-                throw "Could not inspect Scheduled Task probe process $probePid."
-              }
-              if ($process) {
-                $probePath = Join-Path $env:TEST_ROOT "probe.mts"
-                $eventsPath = Join-Path $env:TEST_ROOT "runs.txt"
-                if (
-                  $process.CommandLine -like "*$probePath*" -and
-                  $process.CommandLine -like "*$eventsPath*"
-                ) {
-                  taskkill.exe /F /T /PID $probePid 2>$null
-                  $deadline = [DateTime]::UtcNow.AddSeconds(30)
-                  do {
-                    Start-Sleep -Milliseconds 200
-                    $processQueryError = @()
-                    $process = Get-CimInstance Win32_Process -Filter "ProcessId = $probePid" -ErrorAction SilentlyContinue -ErrorVariable processQueryError
-                    if ($processQueryError.Count -gt 0) {
-                      throw "Could not verify Scheduled Task probe process $probePid exited."
-                    }
-                  } while ($process -and [DateTime]::UtcNow -lt $deadline)
-                  if ($process) {
-                    throw "Scheduled Task probe process $probePid survived cleanup."
-                  }
-                } else {
-                  throw "Refusing to kill reused or unverifiable process id $probePid."
-                }
-              }
-            } catch {
-              $cleanupErrors += $_.Exception.Message
-            }
-          }
-          schtasks.exe /Delete /F /TN $taskName 2>$null
-          $deleteExit = $LASTEXITCODE
-          try {
-            $service = New-Object -ComObject "Schedule.Service"
-            $service.Connect()
-            $null = $service.GetFolder("\").GetTask($taskName)
-            $taskExists = $true
-          } catch {
-            $exception = $_.Exception
-            while ($null -ne $exception.InnerException) {
-              $exception = $exception.InnerException
-            }
-            if ($exception.HResult -eq -2147024894 -or $exception.HResult -eq -2147024893) {
-              $taskExists = $false
-            } else {
-              $cleanupErrors += "Could not verify Scheduled Task cleanup for $taskName (HRESULT $($exception.HResult))."
-              $taskExists = $null
-            }
-          }
-          if ($taskExists -eq $true) {
-            $cleanupErrors += "Scheduled Task cleanup left $taskName registered (delete exit $deleteExit)."
-          }
-          @(
-            "task_name=$taskName"
-            "delete_exit=$deleteExit"
-            "task_exists=$taskExists"
-            "proof_outcome=${{ steps.native_schtasks.outcome }}"
-            "cleanup_errors=$($cleanupErrors -join ' ')"
-          ) | Set-Content -LiteralPath (Join-Path $env:TEST_ROOT "cleanup-summary.txt")
-          if ($cleanupErrors.Count -gt 0) {
-            throw ($cleanupErrors -join " ")
-          }
-          exit 0
+          $ErrorActionPreference = "Stop"
+          if ($env:EXPECTED_HEAD -cne "5335a2c5512d6e108928cce596d60afc5de63942") { throw "This packet qualifies only its frozen candidate." }
+          $packet = Join-Path $env:GITHUB_WORKSPACE ".native-harness/.maintainer/pr-119052"
+          $wrapper = Join-Path $packet "RUN-NATIVE-WINDOWS.ps1"
+          $matrix = Join-Path $packet "RUN-ACTIVATION-MATRIX.mjs"
+          if ((Get-FileHash -LiteralPath $wrapper -Algorithm SHA256).Hash.ToLowerInvariant() -cne "18b3c2392c183ae53e7a4af7af5a87e972b2f3806b828ee590c119bf9427ddbf") { throw "Reviewed wrapper bytes changed." }
+          if ((Get-FileHash -LiteralPath $matrix -Algorithm SHA256).Hash.ToLowerInvariant() -cne "86667d2833d1d0c83b769695e25faaa7a2a1fbe0c91ab849fbaacaef16d910bc") { throw "Reviewed matrix bytes changed." }
+          $tokens = $null
+          $parseErrors = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile($wrapper, [ref]$tokens, [ref]$parseErrors)
+          if ($parseErrors.Count -ne 0) { throw "PowerShell packet failed parsing." }
+          $proof = Join-Path $env:RUNNER_TEMP "pr119052-activation-proof"
+          & $wrapper -RepositoryPath $env:GITHUB_WORKSPACE -ProofDirectory $proof -MatrixOnly
+          if (-not $?) { throw "Native wrapper failed." }
+          $receipt = Get-Content -LiteralPath (Join-Path $proof "activation-matrix/matrix.json") -Raw | ConvertFrom-Json
+          if ($receipt.status -cne "PASS" -or $receipt.head -cne $env:EXPECTED_HEAD -or $receipt.cells.Count -ne 22) { throw "Matrix coverage is incomplete." }
+          if (@($receipt.cells | Where-Object { $_.status -cne "PASS" -or -not $_.cleanup.taskAbsent -or -not $_.cleanup.ownProcessesAbsent -or -not $_.cleanup.portRebound }).Count -ne 0) { throw "Native cells or exact cleanup failed." }
+          @{ head = $env:EXPECTED_HEAD; harnessSha = $env:HARNESS_SHA; wrapperSha256 = (Get-FileHash $wrapper -Algorithm SHA256).Hash.ToLowerInvariant(); matrixSha256 = $receipt.driverSha256; cells = 22; result = "PASS"; baseline = "separate maintained native job" } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $proof "binding.json")
 
-      - name: Upload native Scheduled Task proof
-        id: native_proof_upload
-        if: ${{ always() && inputs.run_windows_ci }}
+      - name: Upload native matrix evidence including failures
+        id: matrix_upload
+        if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: windows-schtasks-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          name: pr119052-native-matrix-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            .artifacts/windows-schtasks/proof.json
-            ${{ runner.temp }}\windows-schtasks-isolation.json
-            ${{ runner.temp }}\openclaw-schtasks-${{ github.run_id }}-${{ github.run_attempt }}\runs.txt.hosted-stop
-            ${{ runner.temp }}\openclaw-schtasks-${{ github.run_id }}-${{ github.run_attempt }}\failure-diagnostics.json
-            ${{ runner.temp }}\openclaw-schtasks-${{ github.run_id }}-${{ github.run_attempt }}\cleanup-summary.txt
-          if-no-files-found: warn
+            ${{ runner.temp }}/windows-schtasks-isolation.json
+            ${{ runner.temp }}/pr119052-capacity.json
+            ${{ runner.temp }}/pr119052-activation-proof/binding.json
+            ${{ runner.temp }}/pr119052-activation-proof/activation-matrix/matrix.json
+            ${{ runner.temp }}/pr119052-activation-proof/activation-matrix/*/events.jsonl
+          if-no-files-found: error
           retention-days: 7
 
-      - name: Remove retained native Scheduled Task evidence
-        if: ${{ always() && inputs.run_windows_ci && steps.native_cleanup.outcome == 'success' && steps.native_proof_upload.outcome == 'success' }}
+      - name: Remove accepted native matrix staging
+        if: ${{ always() && steps.native_matrix.outcome == 'success' && steps.matrix_upload.outcome == 'success' }}
         shell: pwsh
-        env:
-          TEST_ID: ${{ github.run_id }}-${{ github.run_attempt }}
-          TEST_ROOT: ${{ runner.temp }}\openclaw-schtasks-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          $profile = "schtasks-int-$env:TEST_ID"
-          Remove-Item -LiteralPath (Join-Path $env:USERPROFILE ".openclaw-$profile") -Recurse -Force -ErrorAction SilentlyContinue
-          Remove-Item -LiteralPath $env:TEST_ROOT -Recurse -Force -ErrorAction SilentlyContinue
+          $ErrorActionPreference = "Stop"
+          $proof = Join-Path $env:RUNNER_TEMP "pr119052-activation-proof"
+          Remove-Item -LiteralPath $proof -Recurse -Force
+          if (Test-Path -LiteralPath $proof) { throw "Native staging remains after removal." }

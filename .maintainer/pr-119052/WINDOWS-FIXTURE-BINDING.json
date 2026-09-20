@@ -1,0 +1,29 @@
+{
+  "candidateHead": "5335a2c5512d6e108928cce596d60afc5de63942",
+  "candidateTree": "d4cb9524d7620934e85e6732793363720105a4f0",
+  "sourceHashes": {
+    "src/daemon/schtasks-control.ts": "6cc585bf85087910106845a57887c7d8578762ecfa4976f86628d9d36d903f2c",
+    "src/daemon/schtasks-process.ts": "fab68483b29047f31c9be999cfd23bc6b3f175a662b8f465305e8b712e92d791",
+    "src/daemon/schtasks-runtime.ts": "1f32ce16173631dd0ba3402cdb31f9b5d1accd8aa09387b6c3ff28b6cc92b16d",
+    "src/daemon/schtasks.activation.test.ts": "cc4dede99a069ba751c4aad3d7c10c5e7b3fca6c236a3dcce884d1f04855bfea",
+    "src/daemon/schtasks.install.test.ts": "44a5656eb2f55b7c21b90d00b11658c6f05f0779facdf6f0d8f84c10d4b9ec30",
+    "src/daemon/schtasks.startup-fallback.test-support.ts": "e5acb1a6665b1b0039254f6cd7b713c214bd8949a1206b72963925b64b36337d",
+    "src/daemon/schtasks.startup-fallback.test.ts": "2906c02fbfc6f89cac3e1640ed8389a9aabb7b16afc0ea2358892ce4d1a9fe85",
+    "src/daemon/schtasks.stop.test-support.ts": "70006336f5f67e212e95a281e121fdacfc9a08a279e5191a3366d8b50cf4aa37",
+    "src/daemon/schtasks.stop.test.ts": "711302458694b970808e2ecfb0a2dc82e3b5b77f08d04646dacfd3a7183e109b"
+  },
+  "driverHashes": {
+    "scripts/run-vitest.mjs": "c3590ff935f53512a6faf3455da5e02f914fc9cbf94c5fdc962d40fbe7f5a459",
+    "scripts/run-vitest.mts": "4e4853a6bbdf78fd7112d20aa081945de8fdff68ede204dc69dd1f2febca3774",
+    "scripts/lib/vitest-worker-declarations.mts": "07782e0942d446bb59b4bbeefb66206f355fbf0892a8fded02be8493be91c98b",
+    "test/vitest/vitest.e2e.config.ts": "00f37a93c2f4505a627c9e21edab7ed20c0cbaa8339e5e3d99f296b0604c2f48",
+    "src/daemon/schtasks.integration.e2e.test.ts": "f32030e9d99e95fcc9f1ea0f50517165a4641763ee66ce669a953bd618294a75",
+    "src/daemon/schtasks-native-entrypoints.test-support.ts": "f8e90fbb2041cd459b4566dc757b1b3d0a938f6d42e83e00063689cee3b439c6",
+    "src/daemon/schtasks.task-supervisor.native-test-support.ts": "9c835c5fec80b6f2feca6a3d1afb7006cbc1767e04f9bf4b6aa745af4d0b037e",
+    "src/daemon/schtasks.integration-observation.test-support.ts": "8a89795b3144624b194134fc28e50131675d0f49ee5de47aa31209599ff48fd2",
+    "src/daemon/schtasks.integration.test-helpers.ts": "54b7bc6d438eea542e16dae13449eba8f27035515ff5f03d6a7debe671de53a8"
+  },
+  "packetHashes": {
+    "RUN-ACTIVATION-MATRIX.mjs": "86667d2833d1d0c83b769695e25faaa7a2a1fbe0c91ab849fbaacaef16d910bc"
+  }
+}
