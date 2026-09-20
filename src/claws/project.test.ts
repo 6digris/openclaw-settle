@@ -90,10 +90,10 @@ describe("Claw projects", () => {
   });
 
   it("refuses to publish and removes staging when a completed file fails to close", async () => {
+    const nativeConfig = getFsSafeNativeConfig();
     const outputDirectory = tempDirs.make("openclaw-claw-close-failure-");
     const output = join(outputDirectory, "claw.tgz");
     const closeError = Object.assign(new Error("staged file close failed"), { code: "EIO" });
-    const nativeConfig = getFsSafeNativeConfig();
     const open = fs.open;
     let closeAttempts = 0;
     vi.spyOn(fs, "open").mockImplementation(async (...args) => {
@@ -112,7 +112,6 @@ describe("Claw projects", () => {
       return handle;
     });
     try {
-      // Shared workers may retain an explicit mode, which takes precedence over env.
       configureFsSafeNative({ mode: "off" });
       await expect(
         buildClawProject(join(process.cwd(), "test", "fixtures", "claws", "project-v1"), output),
