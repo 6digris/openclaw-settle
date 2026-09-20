@@ -4,6 +4,7 @@ import path from "node:path";
 import { withTempHome } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAccountListHelpers } from "../../channels/plugins/account-helpers.js";
+import type { runPostCorePluginConvergence } from "../../commands/doctor/shared/post-core-plugin-convergence.js";
 import { replaceConfigFile } from "../../config/config.js";
 import {
   createConfigIO,
@@ -61,7 +62,14 @@ vi.mock("../../plugins/update-cohort.js", () => ({
   },
 }));
 vi.mock("../../commands/doctor/shared/post-core-plugin-convergence.js", () => ({
-  runPostCorePluginConvergence: async () => ({
+  runPostCorePluginConvergence: async ({
+    cfg,
+  }: Parameters<typeof runPostCorePluginConvergence>[0]): ReturnType<
+    typeof runPostCorePluginConvergence
+  > => ({
+    config: cfg,
+    configChanges: [],
+    installedPluginIdRecovery: new Map(),
     changes: [],
     warnings: [],
     installRecords: {},
