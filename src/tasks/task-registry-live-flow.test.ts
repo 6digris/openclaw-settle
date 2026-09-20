@@ -18,7 +18,7 @@ import {
 } from "./task-flow-registry.js";
 import type { TaskFlowRecord } from "./task-flow-registry.types.js";
 import { publishTaskRecordAfterAtomicStore } from "./task-registry-publication.js";
-import { getTaskById } from "./task-registry-query.js";
+import { getTaskById, listTaskRecordPage } from "./task-registry-query.js";
 import { markTaskTerminalById, updateTaskNotifyPolicyById } from "./task-registry-record-api.js";
 import {
   ensureTaskRegistryReadyAsync,
@@ -26,7 +26,7 @@ import {
   runTaskRegistryWorkerMutation,
   tasks,
 } from "./task-registry-state.js";
-import { configureTaskRegistryRuntime } from "./task-registry.store.js";
+import { configureTaskRegistryRuntime, type TaskRegistryStore } from "./task-registry.store.js";
 import type { TaskRecord } from "./task-registry.types.js";
 import { resolveTaskCleanupAfter } from "./task-retention.js";
 import {
@@ -111,6 +111,213 @@ function replay() {
 async function drainRetry() {
   await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
 }
+
+function holdProjectionReads(store: TaskRegistryStore) {
+  const readSnapshot = store.loadMutationSnapshotAsync.bind(store);
+  const blocked: Array<ReturnType<typeof createDeferred<void>>> = [];
+  const reads: Promise<unknown>[] = [];
+  let released = false;
+  const read = vi.spyOn(store, "loadMutationSnapshotAsync").mockImplementation((...args) => {
+    const release = createDeferred();
+    const result = Promise.all([readSnapshot(...args), release.promise]).then(
+      ([snapshot]) => snapshot,
+    );
+    reads.push(result);
+    if (released) {
+      release.resolve();
+    } else {
+      blocked.push(release);
+    }
+    return result;
+  });
+  return {
+    blocked,
+    read,
+    async releaseAll() {
+      released = true;
+      for (const release of blocked.splice(0)) {
+        release.resolve();
+      }
+      await Promise.allSettled(reads);
+    },
+  };
+}
+
+it("serves concurrent task pages without exhausting retries on unchanged pending rows", async () => {
+  const { store, context } = await fixture();
+  const readSnapshot = store.loadMutationSnapshotAsync.bind(store);
+  const releasePublication = createDeferred();
+  const publication = runTaskRegistryWorkerMutation(
+    {
+      scope: { taskId: task.taskId, flowId: flow.flowId },
+      admission: context.admission,
+      readIdentity: "preserved",
+      publicationRecords: () => new Map(),
+    },
+    () => releasePublication.promise,
+    () => readSnapshot(context),
+  );
+  const held = holdProjectionReads(store);
+  const write = vi.spyOn(store, "upsertTaskWithDeliveryState");
+  const pages = Promise.allSettled(
+    Array.from({ length: 4 }, () => listTaskRecordPage({ offset: 0, limit: 10 })),
+  );
+  try {
+    await setImmediate();
+    // Each round lets one reader install before its peers finish the same snapshot.
+    // Shared preparation settles every reader in the first round.
+    for (let round = 0; round < 3; round += 1) {
+      const [first, ...peers] = held.blocked.splice(0);
+      first?.resolve();
+      await setImmediate();
+      for (const peer of peers) {
+        peer.resolve();
+      }
+      await setImmediate();
+    }
+    await held.releaseAll();
+    expect(await pages).toMatchObject(
+      Array.from({ length: 4 }, () => ({
+        status: "fulfilled",
+        value: { ok: true, value: { tasks: [{ taskId: task.taskId, status: "succeeded" }] } },
+      })),
+    );
+    expect(write).not.toHaveBeenCalled();
+    expect(held.read).toHaveBeenCalledOnce();
+  } finally {
+    await held.releaseAll();
+    await pages;
+    releasePublication.resolve();
+    await publication;
+  }
+});
+
+it("synchronizes a live flow on its first retry while a task page refreshes the same rows", async () => {
+  const { store, flows, context } = await fixture();
+  vi.spyOn(flows, "upsertFlow").mockImplementationOnce(() => {
+    throw new Error("Controlled initial flow refusal");
+  });
+  expect(replay()?.status).toBe("succeeded");
+  const readSnapshot = store.loadMutationSnapshotAsync.bind(store);
+  const releasePublication = createDeferred();
+  const publication = runTaskRegistryWorkerMutation(
+    {
+      scope: { taskId: task.taskId, flowId: flow.flowId },
+      admission: context.admission,
+      readIdentity: "preserved",
+      publicationRecords: () => new Map(),
+    },
+    () => releasePublication.promise,
+    () => readSnapshot(context),
+  );
+  const held = holdProjectionReads(store);
+  const write = vi.spyOn(store, "upsertTaskWithDeliveryState");
+  const sync = vi.spyOn(store, "syncLiveTaskFlowAsync");
+  const page = listTaskRecordPage({ offset: 0, limit: 10 });
+  const settledPage = Promise.allSettled([page]);
+  try {
+    await setImmediate();
+    await vi.advanceTimersByTimeAsync(1_000);
+    held.blocked.shift()?.resolve();
+    await setImmediate();
+    await held.releaseAll();
+    expect(await page).toMatchObject({
+      ok: true,
+      value: { tasks: [{ taskId: task.taskId }] },
+    });
+    await drainRetry();
+    expect(flows.loadSnapshot().flows.get(flow.flowId)).toMatchObject({
+      revision: 5,
+      status: "blocked",
+      blockedTaskId: task.taskId,
+      blockedSummary: "Old summary",
+    });
+    expect(sync).toHaveBeenCalledOnce();
+    expect(write).not.toHaveBeenCalled();
+    expect(held.read).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await drainRetry();
+    expect(sync).toHaveBeenCalledOnce();
+  } finally {
+    await held.releaseAll();
+    await settledPage;
+    releasePublication.resolve();
+    await publication;
+    await drainRetry();
+  }
+});
+
+it.each(["read failure", "store replacement"] as const)(
+  "settles joined task pages after a shared %s and permits a fresh read",
+  async (outcome) => {
+    const { store, context } = await fixture();
+    const readSnapshot = store.loadMutationSnapshotAsync.bind(store);
+    const releasePublication = createDeferred();
+    const publication = runTaskRegistryWorkerMutation(
+      {
+        scope: { taskId: task.taskId, flowId: flow.flowId },
+        admission: context.admission,
+        readIdentity: "preserved",
+        publicationRecords: () => new Map(),
+      },
+      () => releasePublication.promise,
+      () => readSnapshot(context),
+    );
+    const releaseRead = createDeferred();
+    const failure = new Error("Controlled projection read failure");
+    const read = vi
+      .spyOn(store, "loadMutationSnapshotAsync")
+      .mockImplementation(async (...args) => {
+        const snapshot = await readSnapshot(...args);
+        await releaseRead.promise;
+        if (outcome === "read failure") {
+          throw failure;
+        }
+        return snapshot;
+      });
+    const pages = Promise.allSettled(
+      Array.from({ length: 2 }, () => listTaskRecordPage({ offset: 0, limit: 10 })),
+    );
+    try {
+      await setImmediate();
+      if (outcome === "store replacement") {
+        configureTaskRegistryRuntime({ store: createInMemoryTaskRegistryStore() });
+      }
+      releaseRead.resolve();
+      const results = await pages;
+      expect(results).toMatchObject([{ status: "rejected" }, { status: "rejected" }]);
+      if (outcome === "read failure") {
+        expect(results).toEqual([
+          { status: "rejected", reason: failure },
+          { status: "rejected", reason: failure },
+        ]);
+      } else {
+        expect(results).toMatchObject(
+          Array.from({ length: 2 }, () => ({
+            status: "rejected",
+            reason: { message: "Task registry read owner is no longer current." },
+          })),
+        );
+      }
+      expect(read).toHaveBeenCalledOnce();
+      read.mockRestore();
+      configureTaskRegistryRuntime({ store });
+      const freshRead = vi.spyOn(store, "loadMutationSnapshotAsync");
+      expect(await listTaskRecordPage({ offset: 0, limit: 10 })).toMatchObject({
+        ok: true,
+        value: { tasks: [{ taskId: task.taskId }] },
+      });
+      expect(freshRead).toHaveBeenCalledOnce();
+    } finally {
+      releaseRead.resolve();
+      await pages;
+      read.mockRestore();
+      configureTaskRegistryRuntime({ store });
+      releasePublication.resolve();
+      await publication;
+    }
+  },
+);
 
 it("retains the existing next retry delay after settled storage contention", async () => {
   const { store, flows } = await fixture();

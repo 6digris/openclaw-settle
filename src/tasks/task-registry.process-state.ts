@@ -6,6 +6,7 @@ import type { TaskSummary } from "../../packages/gateway-protocol/src/schema/tas
 import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
 import type { GetReplyOptions } from "../auto-reply/get-reply-options.types.js";
 import type { OpenClawStateDatabaseReadAdmission } from "../state/openclaw-state-db-async-lifecycle.js";
+import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
 import type { TaskAgentEventTarget } from "./task-registry-agent-event-target.js";
 import {
@@ -15,6 +16,7 @@ import {
   isEquivalentTaskRecord,
   listTasksFromIndex,
 } from "./task-registry-records.js";
+import type { TaskRegistryStore } from "./task-registry.store.js";
 import type {
   TaskRegistryMutationScope,
   TaskRegistryObserverEvent,
@@ -141,6 +143,12 @@ type TaskRegistryProcessState = {
     mutationDepth: number;
     pending: Set<PendingTaskRegistryMutation>;
     readTail?: Promise<void>;
+    preparation?: {
+      context: OpenClawStateWorkerContext;
+      store: TaskRegistryStore;
+      epoch: number;
+      promise: Promise<number | undefined>;
+    };
     dirtyScopes: Set<TaskRegistryMutationScope>;
   };
 };
