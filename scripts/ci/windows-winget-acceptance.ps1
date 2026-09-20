@@ -1,7 +1,7 @@
 # PR112055 native proof: no substituted Winget, MSI metadata, Node, or Check-Node.
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][ValidateSet('healthy','stale-msi','failed-repair','unsupported-node','non-msi')][string]$Scenario,
+    [Parameter(Mandatory)][ValidateSet('healthy','stale-msi','failed-repair','unsupported-node','non-msi','all-providers-unusable')][string]$Scenario,
     [Parameter(Mandatory)][string]$CandidateRoot,
     [Parameter(Mandatory)][string]$ExpectedHead,
     [Parameter(Mandatory)][string]$ProofRoot,
@@ -24,10 +24,13 @@ $setupStarted = $false
 $transcriptStarted = $false
 $blockerHandle = $null
 $runtime = $null
+$privateNodeRoot = $null
+$privateNodeOwned = $false
+$privateBlockerHandle = $null
 $msiLoggingState = $null
 $msiLoggingRestoreFailed = $false
 $started = Get-Date
-$global:WingetProofTrace = [ordered]@{ install=@(); repair=@(); checkCount=0 }
+$global:WingetProofTrace = [ordered]@{ install=@(); repair=@(); checkCount=0; repaired=0; fallback=0; providers=@(); totalFailure=0 }
 function Assert-Proof([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
 }
@@ -132,7 +135,7 @@ console.log(JSON.stringify(out));
 }
 try {
     Assert-Proof ($env:RUNNER_ENVIRONMENT -eq 'github-hosted' -and $env:RUNNER_OS -eq 'Windows') 'Only a fresh disposable GitHub-hosted Windows VM is authorized.'
-    Assert-Proof ($ExpectedHead -ceq 'b8ce99722588cb034ae2ce314eb7aad0cf993554') 'Unexpected candidate.'
+    Assert-Proof ($ExpectedHead -ceq 'dac01337bab5251fec2726f41ec4b199862e9321') 'Unexpected candidate.'
     Assert-Proof (-not (Test-Path -LiteralPath $WorkRoot)) 'Owned staging already exists.'
     $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     $proof.host = @{ administrator=$admin; interactive=[Environment]::UserInteractive; sessionId=(Get-Process -Id $PID).SessionId; image=$env:ImageVersion; powershell=$PSVersionTable.PSVersion.ToString(); freeBytes=(Get-PSDrive C).Free }
@@ -152,7 +155,7 @@ try {
     $installer = Join-Path $CandidateRoot 'scripts/install.ps1'
     $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
     $proof.installerSha256 = $hash
-    Assert-Proof ($hash -ceq 'ff804defa8658a5a1ffdd2c1c5cc6a9b5ef992e87454e38aeb907fc511d15771') 'Installer bytes differ from reviewed candidate.'
+    Assert-Proof ($hash -ceq '87406a49babeff0c18ff6b0a97c0428c87265baee5b16017e91aadef42e4a1c3') 'Installer bytes differ from reviewed candidate.'
     New-Item -ItemType Directory -Path $WorkRoot | Out-Null
     $setupStarted = $true
     Start-Transcript -Path (Join-Path $ProofRoot 'transcript.log') | Out-Null
@@ -167,10 +170,19 @@ try {
         Remove-OwnedMsi $entry.PSChildName 'remove-image-node'
     }
     foreach ($scope in @('Machine','User','Process')) {
-        $clean = @($originalPaths[$scope] -split ';' | Where-Object { $_ -and -not (Test-Path -LiteralPath (Join-Path $_ 'node.exe')) }) -join ';'
+        # Keep the native fixture's fallback ownership bounded to private Node.
+        # Optional package managers are absent from this fixture's PATH; their
+        # guarded product paths remain covered by focused source regressions.
+        $clean = @($originalPaths[$scope] -split ';' | Where-Object {
+            $_ -and -not (Test-Path -LiteralPath (Join-Path $_ 'node.exe')) -and
+            -not (Test-Path -LiteralPath (Join-Path $_ 'choco.exe')) -and
+            -not (Test-Path -LiteralPath (Join-Path $_ 'scoop.ps1')) -and
+            -not (Test-Path -LiteralPath (Join-Path $_ 'scoop.cmd'))
+        }) -join ';'
         [Environment]::SetEnvironmentVariable('Path',$clean,$scope)
     }
     Assert-Proof (-not (Get-Command node -CommandType Application -ErrorAction SilentlyContinue)) 'Foreign Node is still discoverable.'
+    Assert-Proof (-not (Get-Command choco,scoop -ErrorAction SilentlyContinue)) 'Optional provider remains discoverable outside the private-fallback fixture.'
     if (-not (Get-Command winget -CommandType Application -ErrorAction SilentlyContinue)) {
         Install-Module Microsoft.WinGet.Client -Repository PSGallery -Scope CurrentUser -Force
         Import-Module Microsoft.WinGet.Client
@@ -210,6 +222,15 @@ try {
     }
     . $installer -DryRun -NoOnboard
     $DryRun = $false
+    $privateNodeRoot = Get-PortableNodeRoot
+    Assert-Proof (-not (Test-Path -LiteralPath $privateNodeRoot)) 'Preexisting private Node is not task-owned.'
+    $privateNodeOwned = $true
+    if ($Scenario -eq 'all-providers-unusable') {
+        # A real filesystem obstruction refuses private runtime publication;
+        # leave download, checksum, extraction and Check-Node untouched.
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $privateNodeRoot) | Out-Null
+        $privateBlockerHandle = [IO.File]::Open($privateNodeRoot,[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+    }
     # These read-only debugger observers preserve command resolution, arguments,
     # native HRESULTs and real Check-Node. They do not replace a function or return.
     $lines = Get-Content -LiteralPath $installer
@@ -224,6 +245,19 @@ try {
     $tokens = $null; $parseErrors = $null
     $ast = [Management.Automation.Language.Parser]::ParseFile($installer,[ref]$tokens,[ref]$parseErrors)
     Assert-Proof ($parseErrors.Count -eq 0) 'Candidate parse failed.'
+    $installNode = $ast.Find({param($a) $a -is [Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq 'Install-Node'},$false)
+    $repairSuccessSite = @($installNode.Body.FindAll({param($a) $a -is [Management.Automation.Language.CommandAst] -and $a.Extent.Text -ceq 'Write-Host "[OK] Node.js repaired via winget" -ForegroundColor Green'},$false))
+    $fallbackSite = @($installNode.Body.FindAll({param($a) $a -is [Management.Automation.Language.CommandAst] -and $a.Extent.Text -ceq 'Install-PortableNode'},$false))
+    $failureSite = @($installNode.Body.FindAll({param($a) $a -is [Management.Automation.Language.ReturnStatementAst] -and $a.Extent.Text -ceq 'return $false'},$false))
+    $portableSuccessSite = @($installNode.Body.FindAll({param($a) $a -is [Management.Automation.Language.IfStatementAst] -and $a.Extent.Text -match '^if \(Check-Node\)'},$false))
+    Assert-Proof ($repairSuccessSite.Count -eq 1 -and $fallbackSite.Count -eq 1 -and $failureSite.Count -eq 1 -and $portableSuccessSite.Count -eq 1) 'Expected exact repair/fallback/failure observation sites.'
+    $portableReturn = @($portableSuccessSite[0].FindAll({param($a) $a -is [Management.Automation.Language.ReturnStatementAst] -and $a.Extent.Text -ceq 'return $true'},$false))
+    Assert-Proof ($portableReturn.Count -eq 1) 'Expected one validated portable success return.'
+    $breakpoints += Set-PSBreakpoint -Script $installer -Line $repairSuccessSite[0].Extent.StartLineNumber -Action { $global:WingetProofTrace.repaired++ }
+    $breakpoints += Set-PSBreakpoint -Script $installer -Line $fallbackSite[0].Extent.StartLineNumber -Action { $global:WingetProofTrace.fallback++ }
+    $breakpoints += Set-PSBreakpoint -Script $installer -Line $portableReturn[0].Extent.StartLineNumber -Action { $global:WingetProofTrace.providers += 'private-node' }
+    $breakpoints += Set-PSBreakpoint -Script $installer -Line $failureSite[0].Extent.StartLineNumber -Action { $global:WingetProofTrace.totalFailure++ }
+
     $main = $ast.Find({param($a) $a -is [Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq 'Main'},$false)
     $boundary = @($main.Body.EndBlock.Statements | Where-Object { $_.Extent.Text -ceq '$finalGitDir = $null' })
     Assert-Proof ($boundary.Count -eq 1) 'Exact Main Node-gate boundary not found.'
@@ -263,7 +297,7 @@ try {
             $portableOwned = $true
             $arguments = @('install') + $selection + @('--accept-package-agreements','--silent','--location',(Join-Path $WorkRoot 'portable'))
         } else { $ownedProduct = $proof.manifest.productCode }
-        if ($Scenario -in @('stale-msi','failed-repair')) {
+        if ($Scenario -in @('stale-msi','failed-repair','all-providers-unusable')) {
             # Winget deletes its downloaded MSI after install. Native repair then
             # fails with 1706/1603 when missing files need that source (run35471472032).
             # Establish a genuinely repairable product with the vendor installer;
@@ -325,7 +359,7 @@ try {
         $proof.nodeBeforeSha256 = (Get-FileHash $runtime).Hash
         if ($Scenario -ne 'healthy') {
             Move-Item -LiteralPath $runtime -Destination (Join-Path $WorkRoot 'original-node.exe')
-            if ($Scenario -eq 'failed-repair') {
+            if ($Scenario -in @('failed-repair','all-providers-unusable')) {
                 # Real filesystem fault: MSI cannot replace a directory at the
                 # executable path. Keep a held child to prevent recursive removal.
                 New-Item -ItemType Directory -Path $runtime | Out-Null
@@ -333,11 +367,11 @@ try {
             }
             Assert-Proof (-not (Check-Node)) 'Stale setup still discovers a usable foreign runtime.'
         }
-        $global:WingetProofTrace.install=@(); $global:WingetProofTrace.repair=@(); $global:WingetProofTrace.checkCount=0
+        $global:WingetProofTrace.install=@(); $global:WingetProofTrace.repair=@(); $global:WingetProofTrace.checkCount=0; $global:WingetProofTrace.repaired=0; $global:WingetProofTrace.fallback=0; $global:WingetProofTrace.providers=@(); $global:WingetProofTrace.totalFailure=0
         $global:WingetProofMainReached = $false
         $script:InstallExitCode = 0
         $gate = [scriptblock]::Create($prefix + "`n`$global:WingetProofMainReached = `$true")
-        if ($Scenario -in @('stale-msi','failed-repair')) {
+        if ($Scenario -in @('stale-msi','failed-repair','all-providers-unusable')) {
             Assert-Proof ((Get-FileHash -LiteralPath $msiPath -Algorithm SHA256).Hash -ceq $msiSha256) 'Retained MSI source changed before repair.'
             Enable-MsiRepairDiagnostics
         }
@@ -347,18 +381,34 @@ try {
         $proof.installExit = $script:InstallExitCode
         $proof.trace = $global:WingetProofTrace
         if ($Scenario -eq 'healthy') {
-            Assert-Proof ($proof.mainReached -and $proof.trace.install.Count -eq 0 -and $proof.trace.repair.Count -eq 0) 'Healthy Main gate invoked installation/repair or failed.'
+            Assert-Proof ($proof.mainReached -and $proof.trace.install.Count -eq 0 -and $proof.trace.repair.Count -eq 0 -and $proof.trace.fallback -eq 0 -and $proof.trace.repaired -eq 0 -and $proof.trace.totalFailure -eq 0) 'Healthy Main gate invoked installation/repair or failed.'
+            $proof.outcome = 'healthy-noop'
         } else {
             Assert-Proof ($proof.trace.install.Count -eq 1 -and $proof.trace.install[0] -eq -1978335189) 'Native install did not reproduce stale HRESULT 0x8A15002B; not repair acceptance.'
             Assert-Proof ($proof.trace.repair.Count -eq 1) 'Expected exactly one real Winget repair.'
             if ($Scenario -eq 'stale-msi') {
                 Assert-Proof ($proof.trace.repair[0] -eq 0 -and $proof.mainReached -and $proof.installExit -eq 0) 'Real MSI repair or final Main Node gate failed.'
+                Assert-Proof ($proof.trace.repaired -eq 1 -and $proof.trace.fallback -eq 0 -and $proof.trace.totalFailure -eq 0) 'Repair success was replaced by fallback or total failure.'
+                $proof.outcome = 'winget-repaired'
                 Assert-Proof ($proof.trace.checkCount -ge 4) 'Final Main Node recheck not observed.'
                 $proof.after = Get-RuntimeFacts $runtime 'runtime-after'
                 Assert-Proof ((Check-Node) -and $proof.after.text -and $proof.after.blob -and $proof.after.json) 'Repaired native Node/SQLite checks failed.'
             } else {
-                Assert-Proof ($proof.trace.repair[0] -ne 0 -and -not $proof.mainReached -and $proof.installExit -ne 0) 'Failed/unsupported real repair was accepted.'
-                Assert-Proof (-not (Check-Node)) 'Negative control unexpectedly left a healthy runtime.'
+                Assert-Proof ($proof.trace.repair[0] -ne 0 -and $proof.trace.repaired -eq 0) 'Failed/unsupported real repair was reported as repaired.'
+                Assert-Proof ($proof.trace.fallback -eq 1) 'Failed repair did not reach the guarded private fallback.'
+                if ($Scenario -ne 'all-providers-unusable') {
+                    Assert-Proof $proof.mainReached 'Expected genuine validated fallback after failed/unsupported repair.'
+                    Assert-Proof ($proof.installExit -eq 0 -and $proof.trace.providers.Count -eq 1 -and $proof.trace.providers[0] -ceq 'private-node' -and $proof.trace.totalFailure -eq 0) 'Main advanced without validated fallback success.'
+                    $fallbackRuntime = (Get-Command node -CommandType Application -ErrorAction Stop).Source
+                    Assert-Proof ([IO.Path]::GetFullPath($fallbackRuntime) -ieq [IO.Path]::GetFullPath((Join-Path $privateNodeRoot 'node.exe'))) 'Fallback runtime is outside the task-owned private installation.'
+                    $proof.after = Get-RuntimeFacts $fallbackRuntime 'runtime-after-fallback'
+                    Assert-Proof ((Check-Node) -and $proof.after.text -and $proof.after.blob -and $proof.after.json) 'Fallback runtime failed real Node/SQLite validation.'
+                    $proof.outcome = 'validated-private-fallback'
+                } else {
+                    Assert-Proof (-not $proof.mainReached -and $proof.installExit -ne 0 -and $proof.trace.providers.Count -eq 0 -and $proof.trace.totalFailure -eq 1 -and -not (Check-Node)) 'Total provider failure did not stop Main truthfully.'
+                    Assert-Proof ($null -ne $privateBlockerHandle -and -not $privateBlockerHandle.SafeFileHandle.IsClosed -and (Test-Path -LiteralPath $privateNodeRoot -PathType Leaf)) 'Total-failure filesystem obstruction did not remain active.'
+                    $proof.outcome = 'all-providers-unusable'
+                }
             }
         }
     }
@@ -382,12 +432,13 @@ try {
     }
     if ($breakpoints.Count) { $breakpoints | Remove-PSBreakpoint }
     if ($blockerHandle) { $blockerHandle.Dispose() }
+    if ($privateBlockerHandle) { $privateBlockerHandle.Dispose() }
     # Independent cleanup steps: a failed native uninstall must not skip policy
     # restoration or other task-owned removals. Never turn failure into acceptance.
     $cleanupFailed = $false
     $cleanupSteps = @(
         @{ name='filesystem-blocker'; action={
-            if ($runtime -and (Test-Path -LiteralPath $runtime -PathType Container) -and $Scenario -eq 'failed-repair') { Remove-Item -LiteralPath $runtime -Recurse -Force }
+            if ($runtime -and (Test-Path -LiteralPath $runtime -PathType Container) -and $Scenario -in @('failed-repair','all-providers-unusable')) { Remove-Item -LiteralPath $runtime -Recurse -Force }
         } },
         @{ name='owned-msi'; action={
             if ($ownedProduct) { Remove-OwnedMsi $ownedProduct 'cleanup-owned-msi' }
@@ -408,6 +459,10 @@ try {
                 Assert-Proof ($code -eq 0) 'Portable native cleanup failed.'
                 Assert-Proof (-not (Test-Path -LiteralPath $portableRegistryPath)) 'Portable registration remains.'
             }
+        } },
+        @{ name='owned-private-node'; action={
+            if ($privateNodeOwned -and (Test-Path -LiteralPath $privateNodeRoot)) { Remove-Item -LiteralPath $privateNodeRoot -Recurse -Force }
+            if ($privateNodeOwned) { Assert-Proof (-not (Test-Path -LiteralPath $privateNodeRoot)) 'Task-owned private fallback survived cleanup.' }
         } },
         @{ name='local-manifest-setting'; action={
             if ($localManifestsEnabled) {

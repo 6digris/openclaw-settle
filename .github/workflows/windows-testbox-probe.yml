@@ -978,7 +978,7 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        scenario: [healthy, stale-msi, failed-repair, unsupported-node, non-msi]
+        scenario: [healthy, stale-msi, failed-repair, unsupported-node, non-msi, all-providers-unusable]
     defaults:
       run:
         shell: pwsh
@@ -992,7 +992,7 @@ jobs:
           CPU_DIAGNOSTIC: ${{ inputs.installed_startup_cpu_diagnostic }}
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: |
-          if ($env:TARGET_REF -cne 'b8ce99722588cb034ae2ce314eb7aad0cf993554') { throw 'Requires the reviewed PR112055 head.' }
+          if ($env:TARGET_REF -cne 'dac01337bab5251fec2726f41ec4b199862e9321') { throw 'Requires the reviewed PR112055 head.' }
           if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Requires a fresh disposable hosted VM.' }
           if ($env:RUN_CI -eq 'true' -or $env:RUN_LAUNCHER -eq 'true' -or $env:STARTUP -ne '' -or $env:CPU_DIAGNOSTIC -eq 'true') { throw 'Winget qualification is a separate run.' }
           $destinations = @($env:GITHUB_WORKSPACE,$env:RUNNER_TEMP,$env:ProgramFiles,$env:TEMP)
