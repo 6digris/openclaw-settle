@@ -38,7 +38,6 @@ import {
   SESSION_PULL_REQUESTS_SUBSCRIBE_METHOD,
   sessionPullRequestsForGateway,
 } from "../../lib/session-pull-requests.ts";
-import { resolveSessionRenamePatch, resolveSessionRenameValue } from "../../lib/session-rename.ts";
 import type { SessionsGroupBy } from "../../lib/sessions/grouping.ts";
 import {
   SESSIONS_PAGE_DEFAULT_LIMIT,
@@ -69,9 +68,11 @@ import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
 import { runControlUiPluginAction } from "../../plugins/control-ui-actions.ts";
+import { sessionPageAccessReasons } from "./access.ts";
 import { sessionAgentIdentityById, sessionAgentIds } from "./agent-scope.ts";
 import { prepareArchiveOutcome } from "./archive-outcome.ts";
 import { rememberSessionCustomGroup, sessionCategoryNames } from "./custom-groups.ts";
+import { SessionPageInputDialogs } from "./input-dialogs.ts";
 import { buildSessionsListQuery } from "./list-query.ts";
 import { loadStoredGroupBy, saveStoredGroupBy } from "./page-state.ts";
 import type { SessionsRouteData } from "./route.ts";
@@ -90,9 +91,6 @@ type SessionsPageRequestScope = {
 };
 
 type SessionsPageMutationResult = "completed" | "failed" | "stale";
-
-/** Type-only, so the dialog itself stays behind its lazy boundary. */
-type InputDialogOpener = (typeof import("../../components/input-dialog.ts"))["showInputDialog"];
 
 type SessionDeleteRow = Pick<
   GatewaySessionRow,
@@ -280,7 +278,7 @@ class SessionsPage extends OpenClawLightDomElement {
     this.invalidatePageWork();
     // Dialogs mount on document.body, so navigating away would otherwise leave
     // one over the destination, still submitting against this detached page.
-    this.dialogLifecycle?.abort();
+    this.inputDialogs.close();
     super.disconnectedCallback();
   }
 
@@ -352,15 +350,6 @@ class SessionsPage extends OpenClawLightDomElement {
     );
   }
 
-  private mutationDisabledReason(request: {
-    method: string;
-    params?: unknown;
-    requiredScope?: "operator.write" | "operator.admin";
-  }): string | undefined {
-    const access = readSessionMethodAccess(this.context?.gateway.snapshot, request);
-    return access.allowed ? undefined : access.reason;
-  }
-
   private requireMutationAccess(
     scope: SessionsPageRequestScope,
     request: {
@@ -375,24 +364,6 @@ class SessionsPage extends OpenClawLightDomElement {
     }
     this.error = access.reason;
     return false;
-  }
-
-  private selectedDeleteDisabledReason(): string | undefined {
-    const rowsByKey = new Map(this.result?.sessions.map((row) => [row.key, row]) ?? []);
-    for (const key of this.selectedKeys) {
-      const row = rowsByKey.get(key);
-      const reason = this.mutationDisabledReason({
-        method: "sessions.delete",
-        params: {
-          key,
-          ...(row?.archived === true ? { archivedOnly: true } : {}),
-        },
-      });
-      if (reason) {
-        return reason;
-      }
-    }
-    return undefined;
   }
 
   private applyRouteData() {
@@ -1034,38 +1005,9 @@ class SessionsPage extends OpenClawLightDomElement {
     void this.patchSession(key, { category });
   }
 
-  /** Only one dialog is open at a time; disconnect closes whichever it is. */
-  private dialogLifecycle: AbortController | null = null;
-
-  private async withDialogLifecycle<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
-    // A second open while one is live must not take ownership. showInputDialog
-    // drops the reentrant request anyway, and if it installed its own controller
-    // it would clear this field on the way out, leaving the dialog that is
-    // actually on screen with nothing for disconnect to abort.
-    const active = this.dialogLifecycle;
-    if (active) {
-      return run(active.signal);
-    }
-    const lifecycle = new AbortController();
-    this.dialogLifecycle = lifecycle;
-    try {
-      return await run(lifecycle.signal);
-    } finally {
-      if (this.dialogLifecycle === lifecycle) {
-        this.dialogLifecycle = null;
-      }
-    }
-  }
-
-  /** A dialog that never opens still owes the operator a visible outcome. */
-  private async loadInputDialog(): Promise<InputDialogOpener | null> {
-    try {
-      return (await import("../../components/input-dialog.ts")).showInputDialog;
-    } catch (error) {
-      this.error = formatUiError(error);
-      return null;
-    }
-  }
+  private readonly inputDialogs = new SessionPageInputDialogs((message) => {
+    this.error = message;
+  });
 
   private async requestNewCategory(sessionKey?: string) {
     // Capture before loading the dialog: its key may belong to a replacement
@@ -1075,17 +1017,7 @@ class SessionsPage extends OpenClawLightDomElement {
       this.error = t("common.refresh");
       return;
     }
-    await this.withDialogLifecycle(async (signal) => {
-      const showInputDialog = await this.loadInputDialog();
-      await showInputDialog?.({
-        signal,
-        title: t("sessionsView.newGroupTitle"),
-        label: t("sessionsView.newGroupPrompt"),
-        submitLabel: t("sessionsView.newGroupCreate"),
-        requireValue: true,
-        submit: (name) => this.writeNewCategory(name, session),
-      });
-    });
+    await this.inputDialogs.newCategory((name) => this.writeNewCategory(name, session));
   }
 
   /**
@@ -1129,22 +1061,11 @@ class SessionsPage extends OpenClawLightDomElement {
       this.error = t("sessionsView.actionRequiresConnection");
       return;
     }
-    const initialValue = resolveSessionRenameValue(row);
     const requestSignal = this.pluginActionLifetime.signal;
-    const value = await this.withDialogLifecycle(async (signal) => {
-      const showInputDialog = await this.loadInputDialog();
-      return (
-        (await showInputDialog?.({
-          signal: AbortSignal.any([signal, requestSignal]),
-          title: t("sessionsView.renameSessionPrompt"),
-          defaultValue: initialValue,
-        })) ?? null
-      );
-    });
-    if (value === null || !this.isRequestScopeCurrent(scope)) {
+    const patch = await this.inputDialogs.rename(row, requestSignal);
+    if (!this.isRequestScopeCurrent(scope)) {
       return;
     }
-    const patch = resolveSessionRenamePatch(value, initialValue, row.label);
     if (patch) {
       await this.patchSession(row.key, patch, scope, row.sessionId);
     }
@@ -1683,31 +1604,11 @@ class SessionsPage extends OpenClawLightDomElement {
           checkpointLoadingKey: this.checkpointLoadingKey,
           checkpointBusyKey: this.checkpointBusyKey,
           checkpointErrorByKey: this.checkpointErrorByKey,
-          patchWriteDisabledReason: this.mutationDisabledReason({
-            method: "sessions.patch",
-            params: { key: "", label: null },
-          }),
-          patchAdminDisabledReason: this.mutationDisabledReason({
-            method: "sessions.patch",
-            params: { key: "", thinkingLevel: null },
-          }),
-          groupWriteDisabledReason: this.mutationDisabledReason({
-            method: "sessions.groups.put",
-            requiredScope: "operator.write",
-          }),
-          deleteArchivedDisabledReason: this.mutationDisabledReason({
-            method: "sessions.delete",
-            params: { key: "", archivedOnly: true, deleteTranscript: true },
-          }),
-          checkpointBranchDisabledReason: this.mutationDisabledReason({
-            method: "sessions.compaction.branch",
-            requiredScope: "operator.write",
-          }),
-          checkpointRestoreDisabledReason: this.mutationDisabledReason({
-            method: "sessions.compaction.restore",
-            requiredScope: "operator.admin",
-          }),
-          deleteSelectedDisabledReason: this.selectedDeleteDisabledReason(),
+          ...sessionPageAccessReasons(
+            context.gateway.snapshot,
+            this.result?.sessions ?? [],
+            this.selectedKeys,
+          ),
           onFiltersChange: (next) => this.updateFilters(next),
           onClearFilters: () => {
             this.activeMinutes = "";
