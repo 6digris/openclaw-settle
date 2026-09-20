@@ -34,6 +34,7 @@ import {
   releaseWorkflowJobNeeds as jobNeeds,
 } from "../helpers/release-workflow-timeouts.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+import { createPnpmArchiveFixture } from "./setup-pnpm-archive.test-support.js";
 
 const PACKAGE_ACCEPTANCE_WORKFLOW = ".github/workflows/package-acceptance.yml";
 const LIVE_E2E_WORKFLOW = ".github/workflows/openclaw-live-and-e2e-checks-reusable.yml";
@@ -200,6 +201,7 @@ const frozenAdmissionClosure = [
   "scripts/lib/docker-e2e-scenarios.mts",
   "scripts/lib/official-external-channel-catalog.json",
   "scripts/lib/upgrade-survivor-policy.mjs",
+  "scripts/lib/upgrade-survivor-scenarios.json",
   "scripts/lib/release-version.mjs",
   "scripts/lib/frozen-target-compat.sh",
   "scripts/resolve-frozen-codex-live-suite.mjs",
@@ -420,6 +422,15 @@ function reconstructAdmissionEvaluations(record: {
   });
 }
 
+function currentSurvivorScenarioFiles() {
+  return Object.fromEntries(
+    [
+      "scripts/e2e/lib/upgrade-survivor/assertions.mjs",
+      "scripts/lib/upgrade-survivor-scenarios.json",
+    ].map((path) => [path, readFileSync(path, "utf8")]),
+  );
+}
+
 function packageAdmissionBaselineFixture(
   inputs: Record<string, string | boolean | number>,
   failRegistry = false,
@@ -435,10 +446,7 @@ function packageAdmissionBaselineFixture(
     },
     {
       "package.json": '{"type":"module","version":"2026.9.9"}',
-      "scripts/e2e/lib/upgrade-survivor/assertions.mjs": readFileSync(
-        "scripts/e2e/lib/upgrade-survivor/assertions.mjs",
-        "utf8",
-      ),
+      ...currentSurvivorScenarioFiles(),
     },
     {},
     ["scripts/resolve-upgrade-survivor-baselines.mts", "scripts/lib/release-upgrade-baseline.mjs"],
@@ -984,6 +992,7 @@ describe("frozen admission workflow barriers", () => {
           "scripts/runtime-postbuild.mts",
           "src/cli/update-cli/update-command-plugin-preflight.ts",
           "scripts/e2e/lib/upgrade-survivor/assertions.mjs",
+          "scripts/lib/upgrade-survivor-scenarios.json",
           "extensions/codex/package.json",
         ].map((path) => [path, readFileSync(path, "utf8")]),
       );
@@ -1056,10 +1065,7 @@ describe("frozen admission workflow barriers", () => {
         },
         {
           "package.json": '{"type":"module","version":"2026.9.9"}',
-          "scripts/e2e/lib/upgrade-survivor/assertions.mjs": readFileSync(
-            "scripts/e2e/lib/upgrade-survivor/assertions.mjs",
-            "utf8",
-          ),
+          ...currentSurvivorScenarioFiles(),
         },
         { ADMISSION_BASELINES_RESOLVED: "true" },
       );
@@ -1742,12 +1748,7 @@ describe("frozen admission workflow barriers", () => {
       entry.file,
       entry.job,
       { ...common, ...entry.multiline },
-      {
-        "scripts/e2e/lib/upgrade-survivor/assertions.mjs": readFileSync(
-          "scripts/e2e/lib/upgrade-survivor/assertions.mjs",
-          "utf8",
-        ),
-      },
+      currentSurvivorScenarioFiles(),
       { ADMISSION_STAGE: "known-source", ADMISSION_BASELINES_RESOLVED: "true" },
     );
     const multilinePlan = fixture.selection();
@@ -2074,12 +2075,7 @@ describe("frozen admission workflow barriers", () => {
           include_live_suites: false,
           published_upgrade_survivor_baseline: "openclaw@latest",
         },
-        {
-          "scripts/e2e/lib/upgrade-survivor/assertions.mjs": readFileSync(
-            "scripts/e2e/lib/upgrade-survivor/assertions.mjs",
-            "utf8",
-          ),
-        },
+        currentSurvivorScenarioFiles(),
       );
       f.selection();
       const bin = join(f.root, "acquisition-bin");
@@ -2124,9 +2120,10 @@ describe("frozen admission workflow barriers", () => {
   );
 
   it.each(["published-upgrade-survivor", "update-migration"])(
-    "acquires the selected mobile-pairing blob before expanded %s admission",
+    "acquires selected upgrade metadata before expanded %s admission",
     (lane) => {
       const path = "src/gateway/node-command-policy.ts";
+      const scenarioCatalog = "scripts/lib/upgrade-survivor-scenarios.json";
       const inputs = {
         docker_lanes: lane,
         include_release_path_suites: false,
@@ -2143,15 +2140,13 @@ describe("frozen admission workflow barriers", () => {
         {
           "package.json": '{"type":"module","version":"2026.9.2"}',
           [path]: readFileSync(path, "utf8"),
-          "scripts/e2e/lib/upgrade-survivor/assertions.mjs": readFileSync(
-            "scripts/e2e/lib/upgrade-survivor/assertions.mjs",
-            "utf8",
-          ),
+          ...currentSurvivorScenarioFiles(),
         },
         { ADMISSION_BASELINES_RESOLVED: "true" },
       );
       const planned = fixture.selection();
       expect(planned.sourcePaths).toContain(path);
+      expect(planned.sourcePaths).toContain(scenarioCatalog);
       const origin = join(fixture.root, "origin.git");
       fixture.git("clone", "--bare", "--no-hardlinks", fixture.target, origin);
       fixture.git("-C", origin, "config", "uploadpack.allowFilter", "true");
@@ -2159,7 +2154,17 @@ describe("frozen admission workflow barriers", () => {
       fixture.git("config", "remote.origin.promisor", "true");
       fixture.git("config", "remote.origin.partialclonefilter", "blob:none");
       const oid = fixture.git("rev-parse", `${fixture.sha}:${path}`);
+      const scenarioCatalogOid = fixture.git("rev-parse", `${fixture.sha}:${scenarioCatalog}`);
       unlinkSync(join(fixture.target, ".git", "objects", oid.slice(0, 2), oid.slice(2)));
+      unlinkSync(
+        join(
+          fixture.target,
+          ".git",
+          "objects",
+          scenarioCatalogOid.slice(0, 2),
+          scenarioCatalogOid.slice(2),
+        ),
+      );
 
       const unavailable = fixture.admit();
       expect(unavailable.status).not.toBe(0);
@@ -2171,14 +2176,16 @@ describe("frozen admission workflow barriers", () => {
       const gitPath = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
       writeFileSync(
         join(acquisitionBin, "git"),
-        `#!/bin/sh\nif [ "$#" = 5 ] && [ "$3" = cat-file ] && [ "$4" = blob ] && [ "$5" = '${oid}' ]; then printf '%s\\n' "$5" >> '${requested}'; fi\nexec '${gitPath}' "$@"\n`,
+        `#!/bin/sh\nif [ "$#" = 5 ] && [ "$3" = cat-file ] && [ "$4" = blob ]; then printf '%s\\n' "$5" >> '${requested}'; fi\nexec '${gitPath}' "$@"\n`,
         { mode: 0o755 },
       );
       const acquired = fixture.run("Acquire selected contract objects", {
         PATH: `${acquisitionBin}:${process.env.PATH}`,
       });
       expect(acquired.status, acquired.stderr).toBe(0);
-      expect(readFileSync(requested, "utf8")).toBe(`${oid}\n`);
+      expect(readFileSync(requested, "utf8").trim().split("\n")).toEqual(
+        expect.arrayContaining([oid, scenarioCatalogOid]),
+      );
       const admitted = fixture.admit();
       expect(admitted.status, admitted.stderr).toBe(0);
       const record = JSON.parse(readFileSync(join(fixture.root, "frozen-admission.json"), "utf8"));
@@ -2214,6 +2221,70 @@ describe("frozen admission workflow barriers", () => {
       }
     },
   );
+
+  it("acquires a sparse selected typed-onboarding assertion helper before admission", () => {
+    const helper = "scripts/e2e/lib/release-assertion-files.mjs";
+    const scenario = "scripts/e2e/lib/release-typed-onboarding/scenario.sh";
+    const fixture = frozenWorkflowFixture(
+      PACKAGE_ACCEPTANCE_WORKFLOW,
+      "resolve_package",
+      {
+        source: "ref",
+        suite_profile: "custom",
+        docker_lanes: "release-typed-onboarding",
+        allow_frozen_target_scenario_omissions: true,
+      },
+      {
+        [helper]: readFileSync(helper, "utf8"),
+        [scenario]: readFileSync(scenario, "utf8"),
+      },
+      { ADMISSION_STAGE: "known-source" },
+      [
+        "scripts/e2e/lib/release-scenarios/assertions.mjs",
+        "scripts/e2e/lib/release-assertion-files.mjs",
+        "scripts/e2e/lib/fixtures/mock-openai-config.mjs",
+      ],
+    );
+    const planned = fixture.run("Plan known package source admission");
+    expect(planned.status, planned.stderr).toBe(0);
+    expect(fixture.selection().sourcePaths).toContain(helper);
+
+    const origin = join(fixture.root, "origin.git");
+    fixture.git("clone", "--bare", "--no-hardlinks", fixture.target, origin);
+    fixture.git("-C", origin, "config", "uploadpack.allowFilter", "true");
+    fixture.git("remote", "add", "origin", pathToFileURL(origin).href);
+    fixture.git("config", "remote.origin.promisor", "true");
+    fixture.git("config", "remote.origin.partialclonefilter", "blob:none");
+    const oid = fixture.git("rev-parse", `${fixture.sha}:${helper}`);
+    unlinkSync(join(fixture.target, ".git", "objects", oid.slice(0, 2), oid.slice(2)));
+
+    const unavailable = fixture.admit({}, "Admit known package source before packing");
+    expect(unavailable.status).not.toBe(0);
+    expect(unavailable.stderr).toContain("unable to read selected source");
+    const acquisitionBin = join(fixture.root, "typed-onboarding-acquisition-bin");
+    const requested = join(fixture.root, "typed-onboarding-requested-blob");
+    mkdirSync(acquisitionBin);
+    const gitPath = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+    writeFileSync(
+      join(acquisitionBin, "git"),
+      `#!/bin/sh\nif [ "$#" = 5 ] && [ "$3" = cat-file ] && [ "$4" = blob ] && [ "$5" = '${oid}' ]; then printf '%s\\n' "$5" >> '${requested}'; fi\nexec '${gitPath}' "$@"\n`,
+      { mode: 0o755 },
+    );
+    const acquired = fixture.run("Acquire known package contract objects", {
+      PATH: `${acquisitionBin}:${process.env.PATH}`,
+    });
+    expect(acquired.status, acquired.stderr).toBe(0);
+    expect(readFileSync(requested, "utf8")).toBe(`${oid}\n`);
+
+    const admitted = fixture.admit({}, "Admit known package source before packing");
+    expect(admitted.status, admitted.stderr).toBe(0);
+    const record = JSON.parse(
+      readFileSync(join(fixture.root, "frozen-admission-known-source.json"), "utf8"),
+    );
+    expect(
+      reconstructAdmissionEvaluations(record).flatMap((entry) => entry.sources.selected),
+    ).toEqual(expect.arrayContaining([expect.objectContaining({ path: helper, oid })]));
+  });
 
   it("blocks a known package source before packing and admits a different exact acquired package source", () => {
     const known = frozenWorkflowFixture(
@@ -2398,12 +2469,7 @@ describe("frozen admission workflow barriers", () => {
         published_upgrade_survivor_baseline: "openclaw@latest",
         allow_frozen_target_scenario_omissions: false,
       },
-      {
-        "scripts/e2e/lib/upgrade-survivor/assertions.mjs": readFileSync(
-          "scripts/e2e/lib/upgrade-survivor/assertions.mjs",
-          "utf8",
-        ),
-      },
+      currentSurvivorScenarioFiles(),
     );
     expect(f.selection().obligations).toContainEqual(
       expect.objectContaining({ kind: "upgrade-baselines" }),
@@ -3053,6 +3119,11 @@ function runReleaseChecksShellStep(
   workdir = tempDirs.make("release-checks-shell-step-"),
 ) {
   const step = workflowStep(workflowJob(RELEASE_CHECKS_WORKFLOW, "resolve_target"), stepName);
+  mkdirSync(join(workdir, "workflow", "scripts"), { recursive: true });
+  copyFileSync(
+    "scripts/release-context-contains.sh",
+    join(workdir, "workflow", "scripts", "release-context-contains.sh"),
+  );
   const outputPath = resolve(workdir, "github-output");
   writeFileSync(outputPath, "", "utf8");
   const result = spawnSync("bash", ["-c", step.run ?? ""], {
@@ -3060,6 +3131,7 @@ function runReleaseChecksShellStep(
     encoding: "utf8",
     env: {
       ...env,
+      GITHUB_WORKSPACE: workdir,
       GITHUB_OUTPUT: outputPath,
       PATH: process.env.PATH,
     },
@@ -3221,6 +3293,7 @@ function runFocusedLiveSuiteValidation(suiteId: string, overrides: Record<string
     workflowJob(LIVE_E2E_WORKFLOW, "validate_selected_ref"),
     "Validate focused live suite filter",
   );
+  const runnerTemp = tempDirs.make("focused-live-suite-");
   return spawnSync("bash", ["-c", step.run ?? ""], {
     encoding: "utf8",
     env: {
@@ -3232,6 +3305,7 @@ function runFocusedLiveSuiteValidation(suiteId: string, overrides: Record<string
       LIVE_MODELS_ONLY: "false",
       LIVE_MODEL_PROVIDERS: "",
       ADMISSION_TOOLING_ROOT: resolve("."),
+      RUNNER_TEMP: runnerTemp,
       ...overrides,
     },
   });
@@ -4004,7 +4078,7 @@ function runOpenClawNpmTrustedRefGuard(overrides: Record<string, string>) {
 
 function runPluginNpmPreflightToolingGuard(overrides: Record<string, string>) {
   const job = workflowJob(PLUGIN_NPM_RELEASE_WORKFLOW, "preview_plugins_npm");
-  const script = workflowStep(job, "Verify trusted preflight tooling identity").run;
+  const script = workflowStep(job, "Verify trusted preflight or recovery tooling identity").run;
   if (!script) {
     throw new Error("Expected plugin npm preflight tooling identity guard");
   }
@@ -4109,6 +4183,10 @@ case "$2" in
     exit 0
     ;;
   */actions/runs/*/attempts/*)
+    printf '%s\\n' "$MOCK_QUALIFIED_RUN"
+    exit 0
+    ;;
+  */actions/runs/"\${MOCK_QUALIFIED_RUN_ID:-}")
     printf '%s\\n' "$MOCK_QUALIFIED_RUN"
     exit 0
     ;;
@@ -4250,6 +4328,7 @@ globalThis.fetch = async (url) => {
     NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
     MOCK_QUALIFIED_ARCHIVE: archivePath,
     MOCK_QUALIFIED_ARTIFACT: JSON.stringify(artifactMetadata),
+    MOCK_QUALIFIED_RUN_ID: runId,
     MOCK_QUALIFIED_RUN: JSON.stringify({
       id: Number(runId),
       run_attempt: 1,
@@ -5317,7 +5396,7 @@ const fs=require("node:fs");fs.writeFileSync("install-proof.json",JSON.stringify
   it("runs plugin npm preflight trust from the exact workflow tooling checkout", () => {
     const job = workflowJob(PLUGIN_NPM_RELEASE_WORKFLOW, "preview_plugins_npm");
     const checkout = workflowStep(job, "Checkout trusted planning tooling");
-    const identity = workflowStep(job, "Verify trusted preflight tooling identity");
+    const identity = workflowStep(job, "Verify trusted preflight or recovery tooling identity");
     const target = workflowStep(job, "Validate ref is on a trusted publish branch");
 
     expect(checkout.if).toBeUndefined();
@@ -5339,7 +5418,9 @@ const fs=require("node:fs");fs.writeFileSync("install-proof.json",JSON.stringify
       );
       expect(planner["working-directory"]).toBeUndefined();
     }
-    expect(identity.if).toBe("github.event_name == 'workflow_dispatch' && inputs.preflight_only");
+    expect(identity.if).toBe(
+      "github.event_name == 'workflow_dispatch' && (inputs.preflight_only || (inputs.npm_dist_tag == 'extended-stable' && github.ref == 'refs/heads/main'))",
+    );
     expect(identity.env).toMatchObject({
       GH_TOKEN: "${{ github.token }}",
       WORKFLOW_FULL_REF: "${{ github.ref }}",
@@ -7279,9 +7360,62 @@ NODE
     expect(setupPnpmAction).toContain(
       "if: ${{ inputs.cache-mode != 'off' && runner.os != 'Windows' }}",
     );
-    expect(setupPnpmAction).toContain(
-      "key: pnpm-store-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles(inputs.package-manager-file) }}-${{ hashFiles(inputs.lockfile-path) }}",
+    const action = parse(setupPnpmAction) as { runs: { steps: WorkflowStep[] } };
+    const setup = { steps: action.runs.steps };
+    const pin = workflowStep(setup, "Validate pnpm setup inputs");
+    const cache = workflowStep(setup, "Restore pnpm store cache");
+    const root = tempDirs.make("pnpm-cache-key-");
+    const manifest = join(root, "selected-package.json");
+    const lockfile = join(root, "selected-lock.yaml");
+    const output = join(root, "outputs");
+    writeFileSync(manifest, JSON.stringify({ packageManager: packageJson.packageManager }));
+    writeFileSync(lockfile, "lockfileVersion: '9.0'\n");
+    const resolved = spawnSync("bash", ["-eu", "-c", pin.run ?? ""], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        CACHE_MODE: "restore",
+        PACKAGE_MANAGER_FILE: manifest,
+        REQUESTED_NODE_VERSION: "",
+        GITHUB_ACTION_PATH: resolve(dirname(SETUP_PNPM_STORE_CACHE_ACTION)),
+        GITHUB_OUTPUT: output,
+      },
+    });
+    expect(resolved.status, resolved.stderr).toBe(0);
+    const outputs = Object.fromEntries(
+      readFileSync(output, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => line.split("=")),
     );
+    expect(outputs["package-manager"]).toBe(packageJson.packageManager);
+    for (const runner of [
+      { os: "Linux", arch: "X64" },
+      { os: "macOS", arch: "ARM64" },
+    ]) {
+      const lockHash = createHash("sha256").update(readFileSync(lockfile)).digest("hex");
+      const key = cache.with?.key?.replace(/\$\{\{\s*(.*?)\s*\}\}/gu, (_, expression: string) =>
+        String(
+          runInNewContext(expression.replace(/\.([\w-]+)/gu, '["$1"]'), {
+            runner,
+            inputs: {
+              "node-version": "24.x",
+              "lockfile-path": lockfile,
+              "package-manager-file": manifest,
+            },
+            steps: { "setup-pnpm": { outputs } },
+            hashFiles: (file: string) => {
+              expect(file).toBe(lockfile);
+              return lockHash;
+            },
+          }),
+        ),
+      );
+      expect(key).toContain(`-${runner.os}-${runner.arch}-24.x-`);
+      expect(key).toContain(outputs["package-manager"]);
+      expect(key?.endsWith(`-${lockHash}`)).toBe(true);
+    }
     expect(setupPnpmAction).not.toContain("pnpm/action-setup");
     expect(setupPnpmAction).not.toContain("shasum");
     expect(setupPnpmAction).not.toContain("PNPM_VERSION_INPUT");
@@ -7321,60 +7455,40 @@ NODE
     }
   });
 
-  it("retries pnpm store path resolution after a transient executable download failure", () => {
-    const action = parse(readFileSync(SETUP_PNPM_STORE_CACHE_ACTION, "utf8")) as {
-      runs: { steps: WorkflowStep[] };
-    };
-    const step = action.runs.steps.find(
-      (candidate) => candidate.name === "Resolve pnpm store path",
-    );
-    expect(step?.run).toBeDefined();
-
-    const root = tempDirs.make("pnpm-store-path-retry-");
-    const binDir = join(root, "bin");
-    const attemptsPath = join(root, "attempts");
-    const sleepPath = join(root, "sleeps");
-    const outputPath = join(root, "output");
-    const storePath = join(root, "store");
-    mkdirSync(binDir, { recursive: true });
-    writeFileSync(
-      join(binDir, "pnpm"),
-      `#!/bin/sh
-attempts=$(cat "$MOCK_ATTEMPTS" 2>/dev/null || printf 0)
-attempts=$((attempts + 1))
-printf '%s' "$attempts" > "$MOCK_ATTEMPTS"
-if [ "$attempts" -lt 3 ]; then
-  printf 'transient pnpm download failure\\n' >&2
-  exit 1
-fi
-printf '%s\\n' "$MOCK_STORE_PATH"
-`,
-      { mode: 0o755 },
-    );
-    writeFileSync(
-      join(binDir, "sleep"),
-      `#!/bin/sh
-printf '%s\\n' "$1" >> "$MOCK_SLEEPS"
-`,
-      { mode: 0o755 },
-    );
-
-    const result = spawnSync("bash", ["-c", step?.run ?? ""], {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        GITHUB_OUTPUT: outputPath,
-        MOCK_ATTEMPTS: attemptsPath,
-        MOCK_SLEEPS: sleepPath,
-        MOCK_STORE_PATH: storePath,
-        PATH: `${binDir}:${process.env.PATH ?? ""}`,
-      },
-    });
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(readFileSync(attemptsPath, "utf8")).toBe("3");
-    expect(readFileSync(sleepPath, "utf8")).toBe("5\n10\n");
-    expect(readFileSync(outputPath, "utf8")).toContain(`path=${storePath}`);
+  it("bootstraps from store, image, then registry while authenticating each archive", () => {
+    const f = createPnpmArchiveFixture(tempDirs);
+    const archives = readdirSync(f.registry);
+    for (const name of archives) {
+      copyFileSync(join(f.registry, name), join(f.image, name));
+    }
+    for (const source of ["image", "store", "registry"]) {
+      if (source === "store") {
+        for (const name of archives) {
+          writeFileSync(join(f.image, name), "corrupt image");
+        }
+      } else if (source === "registry") {
+        for (const name of archives) {
+          writeFileSync(join(f.store, "toolchain", name), "corrupt store");
+        }
+      }
+      const result = f.run();
+      expect(result.status, result.stderr).toBe(0);
+      const root = join(result.stdout.trim(), "v1/pnpm/12.4.0");
+      expect(readFileSync(join(root, "pnpm"), "utf8")).toBe("wrapper-fixture\n");
+      expect(readFileSync(join(root, "node_modules/@pnpm/exe.linux-x64/pnpm"), "utf8")).toBe(
+        "native-fixture\n",
+      );
+      expect(JSON.parse(readFileSync(join(root, ".corepack"), "utf8")).hash).toBe(
+        f.spec.split("+")[1],
+      );
+      expect(existsSync(f.calls)).toBe(source === "registry");
+      for (const name of archives) {
+        expect(readFileSync(join(f.store, "toolchain", name))).toEqual(
+          readFileSync(join(f.registry, name)),
+        );
+      }
+    }
+    expect(readFileSync(f.calls, "utf8").trim().split("\n")).toHaveLength(2);
   });
 
   it("runs trusted npm preflight pnpm commands from the tooling checkout", () => {
@@ -7473,53 +7587,18 @@ test "$package_manager" = "pnpm@12.1.0"
     expect(hydratePnpm.run).toContain('mkdir -p "$preferred_pnpm_store" 2>/dev/null');
     expect(hydratePnpm.run).toContain('[ -w "$preferred_pnpm_store" ]');
     expect(hydratePnpm.run).toContain(
-      'pnpm_cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/openclaw/pnpm"',
-    );
-    expect(hydratePnpm.run).toContain('pnpm_install_root="$pnpm_cache_root/install"');
-    expect(hydratePnpm.run).toContain('export PNPM_CONFIG_STORE_DIR="$pnpm_cache_root/store"');
-    expect(hydratePnpm.run).toContain(
-      'export PNPM_CONFIG_MODULES_DIR="$pnpm_install_root/node_modules"',
+      'export PNPM_CONFIG_STORE_DIR="$GITHUB_WORKSPACE/.cache/openclaw-pnpm-store"',
     );
     expect(hydratePnpm.run).toContain('export PNPM_CONFIG_PACKAGE_IMPORT_METHOD="hardlink"');
-    expect(hydratePnpm.run).toContain(
-      'export PNPM_CONFIG_VIRTUAL_STORE_DIR="$pnpm_install_root/virtual-store"',
-    );
     expect(hydratePnpm.run).toContain('echo "PNPM_CONFIG_STORE_DIR=$PNPM_CONFIG_STORE_DIR"');
-    expect(hydratePnpm.run).toContain('echo "PNPM_CONFIG_MODULES_DIR=$PNPM_CONFIG_MODULES_DIR"');
-    expect(hydratePnpm.run).toContain('echo "CRABBOX_PNPM_MODULES_DIR=$PNPM_CONFIG_MODULES_DIR"');
     expect(hydratePnpm.run).toContain(
       'echo "PNPM_CONFIG_PACKAGE_IMPORT_METHOD=${PNPM_CONFIG_PACKAGE_IMPORT_METHOD:-}"',
     );
-    expect(hydratePnpm.run).toContain(
-      'echo "PNPM_CONFIG_VIRTUAL_STORE_DIR=$PNPM_CONFIG_VIRTUAL_STORE_DIR"',
-    );
     expect(hydratePnpm.run).toContain('} >> "$GITHUB_ENV"');
-    expect(hydratePnpm.run).toContain("prepare_crabbox_pnpm_dirs");
-    expect(hydratePnpm.run).toContain(
-      'case "${PNPM_CONFIG_MODULES_DIR:?}" in "$pnpm_install_root"/*)',
-    );
-    expect(hydratePnpm.run).toContain(
-      'case "${PNPM_CONFIG_VIRTUAL_STORE_DIR:?}" in "$pnpm_install_root"/*)',
-    );
-    expect(hydratePnpm.run).toContain('rm -rf -- "$pnpm_install_root"');
-    expect(hydratePnpm.run).toContain('mkdir -p "$pnpm_install_root" "$PNPM_CONFIG_STORE_DIR"');
-    expect(hydratePnpm.run).toContain(
-      'mkdir -p "$PNPM_CONFIG_MODULES_DIR" "$PNPM_CONFIG_VIRTUAL_STORE_DIR"',
-    );
-    expect(hydratePnpm.run).toContain(
-      '"$(stat -c %d "$PNPM_CONFIG_STORE_DIR")" != "$(stat -c %d "$PNPM_CONFIG_MODULES_DIR")"',
-    );
-    expect(hydratePnpm.run).toContain(
-      "Fallback pnpm store and modules directories must share a filesystem",
-    );
     expect(hydratePnpm.run).toContain(
       "append_pnpm_option_arg PNPM_CONFIG_PACKAGE_IMPORT_METHOD package-import-method",
     );
     expect(hydratePnpm.run).toContain("Refusing unsafe pnpm directory");
-    expect(hydratePnpm.run).not.toContain('rm -rf -- "${PNPM_CONFIG_MODULES_DIR:?}"');
-    expect(hydratePnpm.run).toContain(
-      '[ "$(readlink node_modules)" = "${PNPM_CONFIG_MODULES_DIR:-}" ]',
-    );
     expect(hydratePnpm.run).toContain("pnpm_install_artifacts_ready");
     expect(hydratePnpm.run).toContain("run_pnpm_install || run_pnpm_install");
     expect(hydratePnpm.run).toContain('setsid pnpm "${install_args[@]}"');
@@ -7527,9 +7606,6 @@ test "$package_manager" = "pnpm@12.1.0"
     expect(hydratePnpm.run).toContain("https://github.com/pnpm/pnpm/issues/12297");
     expect(hydratePnpm.run).toContain('kill -TERM -- "-$pnpm_pid"');
     expect(hydratePnpm.run).toContain('kill -KILL -- "-$pnpm_pid"');
-    expect(hydratePnpm.run).toContain('test -s "$PNPM_CONFIG_MODULES_DIR/.modules.yaml"');
-    expect(hydratePnpm.run).toContain('test -x "$PNPM_CONFIG_MODULES_DIR/.bin/oxfmt"');
-    expect(hydratePnpm.run).toContain('test -f "$PNPM_CONFIG_MODULES_DIR/typescript/package.json"');
     expect(workflowStep(hydrate, "Fetch main ref").run).toContain(
       "timeout --signal=TERM --kill-after=10s 30s git",
     );
@@ -7571,7 +7647,6 @@ test "$package_manager" = "pnpm@12.1.0"
     const markCrabboxReady = workflowStep(hydrate, "Mark Crabbox ready").run;
     expect(markCrabboxReady).toContain("COREPACK_HOME");
     expect(markCrabboxReady).toContain("OPENCLAW_CRABBOX_DOCKER_AVAILABLE");
-    expect(markCrabboxReady).toContain("CRABBOX_PNPM_MODULES_DIR");
     expect(markCrabboxReady).toContain("PNPM_CONFIG_PACKAGE_IMPORT_METHOD");
     expect(markCrabboxReady).not.toContain("PNPM_CONFIG_MODULES_DIR");
     expect(markCrabboxReady).not.toContain("PNPM_CONFIG_VIRTUAL_STORE_DIR");
@@ -8017,6 +8092,7 @@ test "$package_manager" = "pnpm@12.1.0"
     });
     expectTextToIncludeAll(buildPrivateQa.run, [
       "pnpm build qaRuntime",
+      "test -f dist/plugin-sdk/qa-channel-protocol.js",
       "test -f dist/plugin-sdk/qa-runtime.js",
       "test -f dist/extensions/qa-lab/runtime-api.js",
     ]);
@@ -8423,6 +8499,23 @@ test "$package_manager" = "pnpm@12.1.0"
     expect(
       calls.filter(({ args }) => args.some((value) => value.endsWith("/runs/101"))),
     ).toHaveLength(60);
+  });
+
+  it("reports a child startup failure immediately without reposting", () => {
+    const child = fullReleaseChild("artifact-candidate");
+    const { calls, result } = runFullReleaseChildDispatch(child, {
+      MOCK_GH_CONCLUSION: "startup_failure",
+      MOCK_GH_DISPATCH_OUTPUT: "https://github.com/openclaw/openclaw/actions/runs/101",
+      MOCK_GH_RUN_TITLES: JSON.stringify([child.runName]),
+      MOCK_GH_STATUSES: '["completed"]',
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("before any jobs started (startup_failure)");
+    expect(calls.filter(({ args }) => args[0] === "workflow")).toHaveLength(1);
+    expect(
+      calls.filter(({ args }) => args.some((value) => value.endsWith("/runs/101"))),
+    ).toHaveLength(1);
   });
 
   it("refuses an immutable child mismatch immediately without reposting", () => {
@@ -9119,6 +9212,9 @@ describe("package artifact reuse", () => {
       expect(jobNeeds(job)).toEqual(["resolve_target", "evidence_reuse"]);
     }
     expect(jobNeeds(qualify)).toEqual(["resolve_target", "prepare_npm_package"]);
+    expect(qualify.if).toBe(
+      "${{ always() && needs.resolve_target.result == 'success' && inputs.rerun_group == 'all' && needs.prepare_npm_package.result == 'success' }}",
+    );
     expect(qualify.env?.ARTIFACT_RUN_ID).toBe("${{ needs.prepare_npm_package.outputs.run_id }}");
     expect(workflowStepById(prepare, "bundle").env?.ARTIFACT_OUTPUT).toBe("raw");
     expect(qualify.env?.ARTIFACT_OUTPUT).toBe("receipt");
@@ -9697,6 +9793,14 @@ describe("package artifact reuse", () => {
     },
   );
 
+  it("fails focused live suite validation when Docker matrix planning fails", () => {
+    const result = runFocusedLiveSuiteValidation("openshell-e2e", {
+      ADMISSION_TOOLING_ROOT: resolve(tempDirs.make("missing-admission-tooling-"), "missing"),
+    });
+
+    expect(result.status).not.toBe(0);
+  });
+
   it("accepts the OpenCode Go aggregate for its stable smoke lane", () => {
     const result = runFocusedLiveSuiteValidation("native-live-src-gateway-profiles-opencode-go", {
       RELEASE_TEST_PROFILE: "stable",
@@ -9859,6 +9963,14 @@ describe("package artifact reuse", () => {
         "${{ inputs.use_github_hosted_runners && 'ubuntu-24.04' || 'blacksmith-32vcpu-ubuntu-2404' }}",
       );
     }
+    const repoE2eHarnessCheckout = workflowStep(
+      workflowJob(".github/workflows/openclaw-repo-e2e-reusable.yml", "build"),
+      "Checkout trusted artifact harness",
+    );
+    expect(repoE2eHarnessCheckout.with).toMatchObject({
+      "sparse-checkout": "/package.json\n/scripts/\n/src/shared/non-packaged-plugin-dirs.ts\n",
+      "sparse-checkout-cone-mode": false,
+    });
     expect(workflow).toContain("suite_id: native-live-src-gateway-core");
     expect(workflow).toContain("suite_id: native-live-src-gateway-backends");
     expect(workflow).toContain(
@@ -9870,6 +9982,9 @@ describe("package artifact reuse", () => {
     expect(workflow).toContain("suite_id: native-live-src-infra");
     expect(workflow).toContain(
       "command: OPENCLAW_LIVE_APNS_REACHABILITY=1 OPENCLAW_LIVE_SESSION_EVENT_WAKE=1 node .release-harness/scripts/test-live-shard.mjs native-live-src-infra",
+    );
+    expect(workflow).toContain(
+      "command: OPENCLAW_LIVE_CODEX_NODE_EXEC_TIMEOUT=1 node .release-harness/scripts/test-live-shard.mjs native-live-test",
     );
     expect(workflow).toContain("suite_id: native-live-src-gateway-profiles-anthropic-smoke");
     expect(workflow).toContain("OPENCLAW_LIVE_GATEWAY_SETUP_TIMEOUT_MS=300000");
@@ -10653,12 +10768,12 @@ printf '%s\\n' "$DEEPSEEK_API_KEY" "$DEEPINFRA_API_KEY"`,
     },
   );
 
-  it.each([
-    ["stable", "2026.8.1"],
-    ["full", "2026.8.1"],
-    ["stable", "2026.9.1"],
-    ["full", "2026.9.1"],
-  ])("waives only Telegram integration lanes for approved %s %s", (profile, version) => {
+  it.each(
+    ["2026.8.1", "2026.9.1", "2026.9.5"].flatMap((version) => [
+      ["stable", version],
+      ["full", version],
+    ]),
+  )("waives only reviewed integration lanes for approved %s %s", (profile, version) => {
     const options = { telegramWaiver: `${version}-owner-approved`, version };
     const direct = runReleaseChecksInputValidation(profile, "false", "all", "false", "", options);
     const umbrella = runFullReleaseInputValidation(profile, "false", options);
@@ -10667,6 +10782,8 @@ printf '%s\\n' "$DEEPSEEK_API_KEY" "$DEEPINFRA_API_KEY"`,
     const output = readFileSync(direct.outputPath, "utf8");
     expect(output).toContain(`telegram_waiver=${version}-owner-approved`);
     expect(output).toContain("qa_live_telegram_enabled=false");
+    expect(output).toContain(`qa_live_matrix_enabled=${version !== "2026.9.5"}`);
+    expect(output).toContain("qa_live_buzz_enabled=true");
     expect(output).toContain("run_release_soak=true");
     expect(output).toContain("skip_package_telegram_e2e=false");
   });
@@ -11915,12 +12032,9 @@ printf '%s\\n' "$DEEPSEEK_API_KEY" "$DEEPINFRA_API_KEY"`,
     expect(eligibility.env?.TRUSTED_REPOSITORY_URL).toBe(
       "https://github.com/${{ github.repository }}.git",
     );
-    expect(eligibility.run).toContain('context_repo="$(mktemp -d)"');
-    expect(eligibility.run).toContain("git init --bare --quiet");
-    expect(eligibility.run).toContain("--filter=blob:none");
-    expect(eligibility.run).toContain("FETCH_HEAD^{commit}");
-    expect(eligibility.run).not.toContain("git checkout");
-    expect(eligibility.run).not.toContain("git worktree");
+    expect(resolveStepNames.indexOf("Checkout trusted workflow helper")).toBeLessThan(
+      resolveStepNames.indexOf("Validate trusted QA tooling eligibility"),
+    );
 
     for (const contextRef of [
       "release/2026.8.1",
@@ -11936,8 +12050,9 @@ printf '%s\\n' "$DEEPSEEK_API_KEY" "$DEEPINFRA_API_KEY"`,
         TARGET_REF: targetSha,
       });
       expect(result.status, `${contextRef}: ${result.stderr}`).toBe(0);
-      expect(output, contextRef).toContain(
-        `normalized_ref=${contextRef.replace(/^refs\/(heads|tags)\//u, "")}\n`,
+      const normalizedRef = contextRef.replace(/^refs\/(heads|tags)\//u, "");
+      expect(output, contextRef).toBe(
+        `fetch_ref=refs/${normalizedRef.startsWith("v") ? "tags" : "heads"}/${normalizedRef}\n`,
       );
     }
 
@@ -11994,9 +12109,7 @@ printf '%s\\n' "$DEEPSEEK_API_KEY" "$DEEPINFRA_API_KEY"`,
       const { output, result } = runReleaseChecksShellStep(
         "Validate trusted QA tooling eligibility",
         {
-          CONTEXT_KIND: contextKind,
           CONTEXT_FETCH_REF: fetchRef,
-          CONTEXT_REF: fetchRef.replace(/^refs\/(heads|tags)\//u, ""),
           TARGET_REF: targetRef,
           TRUSTED_REPOSITORY_URL: fixture.repoUrl,
         },
@@ -13837,7 +13950,28 @@ printf '%s\\n' "$DEEPSEEK_API_KEY" "$DEEPINFRA_API_KEY"`,
     expect(appendProofIndex).toBeGreaterThan(verifyReleaseIndex);
     expect(finalizeJob.needs).toEqual(["publish", "publish_docker", "approve_github_release"]);
     expect(finalizeJob.if).toContain("needs.publish_docker.result == 'success'");
-    expect(finalizeRelease.run).toContain('gh release edit "${RELEASE_TAG}"');
+    expect(finalizeJob.if).toContain("inputs.prepared_plugins == ''");
+    expect(finalizeJob.if).toContain("needs.approve_github_release.result == 'success'");
+    expect(finalizeRelease.env).toMatchObject({
+      RELEASE_TAG: "${{ inputs.tag }}",
+      SOURCE_SHA: "${{ needs.publish.outputs.source_sha }}",
+      RELEASE_NPM_DIST_TAG: "${{ inputs.npm_dist_tag }}",
+    });
+    expect(finalizeRelease.run).toContain("node scripts/linux-app-channel.mjs finalize-core");
+    expect(finalizeRelease.run).toContain(
+      '--tag "$RELEASE_TAG" --source-sha "$SOURCE_SHA" --latest "$expected_latest"',
+    );
+    expect(finalizeRelease.run).toContain('--tooling-sha "$GITHUB_WORKFLOW_SHA"');
+    expect(finalizeRelease.run).toContain(
+      '--workflow-ref "$GITHUB_REF_NAME" --workflow-full-ref "$GITHUB_REF"',
+    );
+    expect(finalizeRelease.run).toContain(
+      '--release-publish-run-id "$GITHUB_RUN_ID" --release-publish-run-attempt "$GITHUB_RUN_ATTEMPT"',
+    );
+    expect(finalizeRelease.run).toContain(
+      '--release-publish-ref "$GITHUB_REF_NAME" --release-publish-full-ref "$GITHUB_REF"',
+    );
+    expect(finalizeRelease.run).not.toContain("gh release edit");
   });
 
   it("loads the strict release validator from the isolated trusted tooling bundle", () => {
@@ -13856,6 +13990,7 @@ printf '%s\\n' "$DEEPSEEK_API_KEY" "$DEEPINFRA_API_KEY"`,
       "scripts/lib/release-version.mjs",
       "scripts/lib/record-shared.mjs",
       "scripts/lib/upgrade-survivor-policy.mjs",
+      "scripts/lib/upgrade-survivor-scenarios.json",
     ]) {
       copyFileSync(source, join(root, source.replace(/^scripts\//u, "")));
     }

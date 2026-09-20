@@ -132,6 +132,60 @@ function completeRepair(fixture: Fixture) {
   return result;
 }
 
+const skillNames = [
+  "first-hop-unavailable",
+  "first-hop-absent",
+  "first-hop-healthy",
+  "first-hop-filtered",
+  "first-hop-platform",
+  "first-hop-disabled",
+];
+function writeSkillStatus(fixture: Fixture) {
+  const report = {
+    skills: skillNames.map((name) => ({
+      name,
+      source: "openclaw-extra",
+      bundled: false,
+      eligible: name === "first-hop-healthy",
+      disabled: name === "first-hop-disabled",
+      blockedByAllowlist: false,
+      blockedByAgentFilter: name === "first-hop-filtered",
+      missing: {
+        bins: [],
+        anyBins: [],
+        env: [],
+        config:
+          name === "first-hop-healthy" ? [] : ["skills.entries.first-hop-unavailable.config.ready"],
+        os:
+          name === "first-hop-platform" ? [process.platform === "win32" ? "darwin" : "win32"] : [],
+      },
+    })),
+  };
+  writeFileSync(join(fixture.artifacts, "positive-skills-status.json"), JSON.stringify(report));
+  return report;
+}
+
+function makeSkillFixture(bind = true) {
+  const fixture = makeFixture(false);
+  expectSuccess(run(fixture, "seed-skills"));
+  expectSuccess(run(fixture, "seed", targetVersion));
+  prepareHop(fixture);
+  expectSuccess(run(fixture, "assert-hop"));
+  writeSkillStatus(fixture);
+  if (bind) {
+    expectSuccess(run(fixture, "bind-repair"));
+  }
+  return fixture;
+}
+
+function disableFixtureSkills(fixture: Fixture) {
+  const config = JSON.parse(readFileSync(fixture.config, "utf8"));
+  for (const key of ["first-hop-unavailable", "first-hop-absent"]) {
+    config.skills.entries[key] = { ...config.skills.entries[key], enabled: false };
+  }
+  writeFileSync(fixture.config, JSON.stringify(config));
+}
+
 describe("packaged first-hop config preservation assertions", () => {
   it("adds admitted references without replacing the positive lane config, then accepts a converged Doctor", () => {
     const fixture = makeFixture();
@@ -676,6 +730,27 @@ describe("packaged first-hop config preservation assertions", () => {
     expectSuccess(run(fixture, "assert-hop"));
   });
 
+  it.skipIf(process.platform === "win32").each([
+    ["hop", "openclaw.json"],
+    ["hop", "openclaw.json.pre-update"],
+    ["repair", "openclaw.json"],
+    ["repair", "openclaw.json.pre-update"],
+  ])("rejects %s permission widening on %s and retains the observation", (phase, name) => {
+    const fixture = makeFixture();
+    prepareHop(fixture);
+    if (phase === "repair") {
+      expectSuccess(run(fixture, "assert-hop"));
+      rewriteRoot(fixture, targetVersion, true, true);
+      doctorOutput(fixture, "Doctor complete.\n", "repair");
+    }
+    chmodSync(join(fixture.root, name), 0o644);
+    expectFailure(run(fixture, `assert-${phase}`), `config permissions changed: ${name}`);
+    const observation = JSON.parse(
+      readFileSync(join(fixture.artifacts, `positive-config-after-${phase}.json`), "utf8"),
+    );
+    expect(observation.files[name].mode).toBe(0o644);
+  });
+
   it("preserves unrotated permissions and requires canonical permissions after rotation", () => {
     for (const rotated of [false, true]) {
       const fixture = makeFixture(false);
@@ -838,6 +913,11 @@ describe.skipIf(process.platform === "win32")("first-hop preservation shell orde
     "doctor-exit-capture",
   ])("stops before masking evidence when %s fails", (failure) => {
     const fixture = makeFixture(false);
+    writeSkillStatus(fixture);
+    copyFileSync(
+      join(fixture.artifacts, "positive-skills-status.json"),
+      join(fixture.artifacts, "positive-skills-status-input.json"),
+    );
     const positive = readFileSync(laneScript, "utf8").match(
       /^run_positive_hops\(\) \{[\s\S]*?^\}/mu,
     )?.[0];
@@ -864,7 +944,9 @@ node() {
 }
 openclaw() {
   echo "$*" >> "$ORDER_LOG"
-  if [ "$1" = doctor ]; then
+  if [ "$1" = skills ]; then
+    cat "$ARTIFACT_DIR/positive-skills-status-input.json"
+  elif [ "$1" = doctor ]; then
     doctor_calls=$((doctor_calls + 1))
     if [ "$doctor_calls" = 1 ]; then
       if [[ "$FAILURE" = repair-exit* ]]; then
@@ -882,6 +964,9 @@ openclaw() {
           const cfg = JSON.parse(fs.readFileSync(file, "utf8"));
           cfg.agents = { ...cfg.agents, entries: { main: {} } };
           cfg.plugins = { entries: { openai: { enabled: true } } };
+          for (const key of ["first-hop-unavailable", "first-hop-absent"]) {
+            cfg.skills.entries[key] = { ...cfg.skills.entries[key], enabled: false };
+          }
           fs.writeFileSync(file, JSON.stringify(cfg));
         '
       fi
@@ -957,13 +1042,19 @@ run_positive_hops
     const calls = readFileSync(log, "utf8").trim().split("\n");
     const expected = [
       "setup",
+      "preserve seed-skills",
       "preserve seed",
       "config validate --json",
       "positive-first",
       "preserve assert-hop",
     ];
     if (failure !== "hop") {
-      expected.push("config validate --json", "doctor --fix --non-interactive");
+      expected.push(
+        "config validate --json",
+        "skills list --agent main --json",
+        "preserve bind-repair",
+        "doctor --fix --non-interactive",
+      );
       expected.push("preserve assert-repair");
       if (!failure.startsWith("repair-")) {
         expected.push("doctor --fix --non-interactive", "preserve assert-doctor");
@@ -995,5 +1086,194 @@ run_positive_hops
         expect(fresh.files["openclaw.json"].raw).toBe(readFileSync(fixture.config, "utf8"));
       }
     }
+  });
+});
+
+describe("phase-specific skill repair oracle", () => {
+  it("accepts only the independently expected unavailable skill disables during repair", () => {
+    const fixture = makeSkillFixture();
+    rewriteRoot(fixture, targetVersion, true, true);
+    disableFixtureSkills(fixture);
+    // A second write may put a valid partial/full repair in the backup ring.
+    rewriteRoot(fixture, targetVersion, true, true);
+    doctorOutput(fixture, "Doctor complete.\n", "repair");
+    expectSuccess(run(fixture, "assert-repair"));
+    expect(JSON.parse(readFileSync(fixture.config, "utf8")).skills.entries).toStrictEqual({
+      "first-hop-unavailable": {
+        config: { ready: false, marker: "retain-authored" },
+        enabled: false,
+      },
+      "first-hop-disabled": { enabled: false },
+      "first-hop-absent": { enabled: false },
+    });
+    doctorOutput(fixture);
+    expectSuccess(run(fixture, "assert-doctor"));
+  });
+
+  it.each([
+    "unknown",
+    "healthy",
+    "filtered",
+    "platform",
+    "enabling",
+    "entry-field",
+    "load",
+    "missing-disable",
+    "include",
+    "backup",
+  ])("rejects %s even alongside a legitimate repair and retains the rejected bytes", (damage) => {
+    const fixture = makeSkillFixture();
+    rewriteRoot(fixture, targetVersion, true, true);
+    disableFixtureSkills(fixture);
+    const config = JSON.parse(readFileSync(fixture.config, "utf8"));
+    if (["unknown", "healthy", "filtered", "platform"].includes(damage)) {
+      config.skills.entries[`first-hop-${damage}`] = { enabled: false };
+    } else if (damage === "enabling") {
+      config.skills.entries["first-hop-disabled"].enabled = true;
+    } else if (damage === "entry-field") {
+      config.skills.entries["first-hop-unavailable"].config.marker = "changed";
+    } else if (damage === "load") {
+      config.skills.load.extraDirs = [];
+    } else if (damage === "missing-disable") {
+      delete config.skills.entries["first-hop-absent"];
+    }
+    writeFileSync(fixture.config, JSON.stringify(config));
+    const file =
+      damage === "include"
+        ? "first-hop-messages-leaf.json"
+        : damage === "backup"
+          ? "openclaw.json.bak.first-hop-manual"
+          : "openclaw.json";
+    if (damage === "include" || damage === "backup") {
+      writeFileSync(join(fixture.root, file), "{}\n");
+    }
+    const raw = readFileSync(join(fixture.root, file), "utf8");
+    doctorOutput(fixture, "- Disabled first-hop-unknown\nDoctor complete.\n", "repair");
+    expectFailure(
+      run(fixture, "assert-repair"),
+      file === "openclaw.json"
+        ? "root config changed outside permitted metadata"
+        : `file changed: ${file}`,
+    );
+    const observation = JSON.parse(
+      readFileSync(join(fixture.artifacts, "positive-config-after-repair.json"), "utf8"),
+    );
+    expect(observation.files[file].raw).toBe(raw);
+    expect(observation).not.toHaveProperty("activationPhase");
+  });
+
+  it.each(["hop", "fresh"])("does not allow a skill change during %s", (phase) => {
+    const fixture = makeFixture(false);
+    expectSuccess(run(fixture, "seed-skills"));
+    expectSuccess(run(fixture, "seed", targetVersion));
+    prepareHop(fixture);
+    if (phase === "hop") {
+      disableFixtureSkills(fixture);
+      expectFailure(run(fixture, "assert-hop"), "root config changed outside permitted metadata");
+    } else {
+      expectSuccess(run(fixture, "assert-hop"));
+      writeSkillStatus(fixture);
+      expectSuccess(run(fixture, "bind-repair"));
+      rewriteRoot(fixture, targetVersion, true, true);
+      disableFixtureSkills(fixture);
+      doctorOutput(fixture, "Doctor complete.\n", "repair");
+      expectSuccess(run(fixture, "assert-repair"));
+      const config = JSON.parse(readFileSync(fixture.config, "utf8"));
+      config.skills.entries["first-hop-unavailable"].enabled = true;
+      writeFileSync(fixture.config, JSON.stringify(config));
+      doctorOutput(fixture);
+      expectFailure(
+        run(fixture, "assert-doctor"),
+        "fresh Doctor changed converged config or backup bytes/identity",
+      );
+    }
+  });
+
+  it.each(["keys", "status", "files", "phase", "missing"])(
+    "rejects a forged %s repair expectation",
+    (damage) => {
+      const fixture = makeSkillFixture();
+      const file = join(fixture.artifacts, "positive-skills-before-repair.json");
+      const binding = JSON.parse(readFileSync(file, "utf8"));
+      if (damage === "keys") {
+        binding.keys.push("first-hop-healthy");
+      }
+      if (damage === "status") {
+        binding.report.skills[0].eligible = true;
+      }
+      if (damage === "files") {
+        binding.files["openclaw.json"].raw = "{}";
+      }
+      if (damage === "phase") {
+        binding.kind = "after-repair";
+      }
+      if (damage === "missing") {
+        unlinkSync(file);
+      } else {
+        writeFileSync(file, JSON.stringify(binding));
+      }
+      rewriteRoot(fixture, targetVersion, true, true);
+      disableFixtureSkills(fixture);
+      doctorOutput(fixture, "Doctor complete.\n", "repair");
+      expectFailure(
+        run(fixture, "assert-repair"),
+        damage === "status"
+          ? "skill status disagrees"
+          : damage === "missing"
+            ? "input read/write failed"
+            : "skill repair binding changed",
+      );
+      expect(existsSync(join(fixture.artifacts, "positive-config-after-repair.json"))).toBe(true);
+    },
+  );
+
+  it.each(["healthy", "filtered", "platform", "allowlist", "unknown", "duplicate"])(
+    "refuses %s status as repair authority",
+    (damage) => {
+      const fixture = makeSkillFixture(false);
+      const report = writeSkillStatus(fixture);
+      const unavailable = report.skills[0];
+      if (!unavailable) {
+        throw new Error("missing unavailable skill fixture");
+      }
+      if (damage === "healthy") {
+        unavailable.eligible = true;
+      }
+      if (damage === "filtered") {
+        unavailable.blockedByAgentFilter = true;
+      }
+      if (damage === "platform") {
+        unavailable.missing.os = ["other"];
+      }
+      if (damage === "allowlist") {
+        unavailable.blockedByAllowlist = true;
+      }
+      if (damage === "unknown") {
+        report.skills.push({ ...unavailable, name: "unexpected" });
+      }
+      if (damage === "duplicate") {
+        report.skills.push(unavailable);
+      }
+      writeFileSync(join(fixture.artifacts, "positive-skills-status.json"), JSON.stringify(report));
+      expectFailure(
+        run(fixture, "bind-repair"),
+        damage === "unknown"
+          ? "unexpected unfiltered skill status"
+          : damage === "duplicate"
+            ? "duplicate skill status"
+            : "skill status disagrees",
+      );
+      expect(existsSync(join(fixture.artifacts, "positive-skills-before-repair.json"))).toBe(false);
+    },
+  );
+
+  it("refuses late binding and cannot overwrite an earlier binding", () => {
+    const fixture = makeSkillFixture();
+    const file = join(fixture.artifacts, "positive-skills-before-repair.json");
+    const raw = readFileSync(file, "utf8");
+    expectFailure(run(fixture, "bind-repair"), "input read/write failed");
+    disableFixtureSkills(fixture);
+    expectFailure(run(fixture, "bind-repair"), "skills must be bound before standalone repair");
+    expect(readFileSync(file, "utf8")).toBe(raw);
   });
 });

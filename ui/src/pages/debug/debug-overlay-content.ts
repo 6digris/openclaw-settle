@@ -10,6 +10,7 @@ import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
 import { renderDebugOverlaySectionLoading } from "./debug-overlay-loading.ts";
 import {
   DEBUG_OVERLAY_SECTIONS,
+  renderDebugOverlayWidget,
   type DebugOverlaySectionDescriptor,
   type DebugOverlayStatusSample,
   type DebugOverlayStatusSnapshot,
@@ -25,6 +26,7 @@ type SectionState =
 
 class DebugOverlayContent extends OpenClawLightDomElement {
   @property({ attribute: false }) context?: ApplicationContext;
+  @property({ type: Boolean }) minimized = false;
   @litState() private sections = new Map<string, SectionState>();
 
   private requestController: AbortController | null = null;
@@ -84,7 +86,10 @@ class DebugOverlayContent extends OpenClawLightDomElement {
     const controller = new AbortController();
     this.requestController?.abort();
     this.requestController = controller;
-    const requests = DEBUG_OVERLAY_SECTIONS.map(async (section): Promise<void> => {
+    const sections = this.minimized
+      ? DEBUG_OVERLAY_SECTIONS.filter((section) => section.id === "status")
+      : DEBUG_OVERLAY_SECTIONS;
+    const requests = sections.map(async (section): Promise<void> => {
       try {
         const value = await section.load({ client, gateway }, controller.signal);
         this.updateSection(generation, section.id, { status: "ready", value });
@@ -134,6 +139,17 @@ class DebugOverlayContent extends OpenClawLightDomElement {
   }
 
   override render() {
+    if (this.minimized) {
+      const state = this.sections.get("status") ?? { status: "loading" };
+      if (state.status !== "ready") {
+        return html`<div class="debug-overlay__compact-loading" role="status">
+          ${t(state.status === "loading" ? "common.loading" : "debug.overlay.unavailable")}
+        </div>`;
+      }
+      // SAFETY: The status descriptor pairs system.info with its measured round trip.
+      const snapshot = state.value as DebugOverlayStatusSnapshot;
+      return renderDebugOverlayWidget(snapshot, this.statusHistory);
+    }
     return html`${DEBUG_OVERLAY_SECTIONS.map((section) => this.renderSection(section))}`;
   }
 }

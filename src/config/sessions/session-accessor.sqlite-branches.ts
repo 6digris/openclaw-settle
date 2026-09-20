@@ -1,9 +1,6 @@
-import { asOptionalRecord as asRecord } from "@openclaw/normalization-core/record-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
-import { executeSqliteQueryTakeFirstSync } from "../../infra/kysely-sync.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
-import { extractAssistantPhaseText } from "../../shared/chat-message-content.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
   readOpenClawAgentDatabaseIdentity,
@@ -15,15 +12,17 @@ import {
   type OpenClawAgentReadOnlyDatabase,
 } from "../../state/openclaw-agent-db-readonly.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "../../state/openclaw-agent-db-resources.js";
-import type { TranscriptEvent } from "./session-accessor.sqlite-contract.js";
+import { readSessionBranchSummaries } from "./session-accessor.sqlite-branch-summaries.js";
 import { readSessionEntryRow } from "./session-accessor.sqlite-entry-store.js";
-import { loadTranscriptEventsFromDatabase } from "./session-accessor.sqlite-read.js";
 import {
-  getSessionKysely,
   normalizeSqliteSessionKey,
   resolveSqliteScope,
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
+import {
+  readSessionTranscriptHotWatermark,
+  type SessionTranscriptWatermark,
+} from "./session-accessor.sqlite-transcript-watermark.js";
 import type {
   SessionBranchListParams,
   SessionBranchListResult,
@@ -31,21 +30,13 @@ import type {
 } from "./session-accessor.types.js";
 import { readRestoredSessionTranscript } from "./session-cold-storage-read.js";
 import { assertSessionTranscriptHot } from "./session-cold-storage-state.js";
-import {
-  isSessionTranscriptLeafControl,
-  scanSessionTranscriptTree,
-  type SessionTranscriptTree,
-} from "./transcript-tree.js";
 
-const BRANCH_HEADLINE_MAX_CHARS = 120;
 const SESSION_BRANCH_CACHE_MAX_ENTRIES = 32;
 
-type SessionBranchWatermark = { generation: string | null; maxSeq: number | null };
-type SessionBranchCacheEntry = SessionBranchWatermark & {
+type SessionBranchCacheEntry = SessionTranscriptWatermark & {
   branches: SessionBranchSummary[];
   identity: OpenClawAgentDatabaseIdentity;
 };
-type SessionBranchPathSummary = Pick<SessionBranchSummary, "headline" | "messageCount">;
 
 export type SessionBranchSummaryReadRequest = {
   database: { agentId: string; path: string };
@@ -55,7 +46,7 @@ export type SessionBranchSummaryReadRequest = {
   lifecycleRevision?: string;
 };
 export type SessionBranchSummaryReadResult =
-  | ({ status: "ok"; branches: SessionBranchSummary[] } & SessionBranchWatermark)
+  | ({ status: "ok"; branches: SessionBranchSummary[] } & SessionTranscriptWatermark)
   | { status: "missing-session" | "failed" };
 
 // Host and worker isolates share this policy, each retaining only their compact derived results.
@@ -72,7 +63,7 @@ function cloneSessionBranchSummaries(branches: readonly SessionBranchSummary[]) 
 function readCachedSessionBranchSummaries(
   database: OpenClawAgentReadOnlyDatabase,
   sessionId: string,
-  watermark: SessionBranchWatermark,
+  watermark: SessionTranscriptWatermark,
 ): SessionBranchSummary[] | undefined {
   const cacheKey = sessionBranchCacheKey(database.path, sessionId);
   const cached = sessionBranchCache.get(cacheKey);
@@ -92,7 +83,7 @@ function readCachedSessionBranchSummaries(
 function cacheSessionBranchSummaries(
   database: OpenClawAgentReadOnlyDatabase,
   sessionId: string,
-  snapshot: SessionBranchWatermark & { branches: SessionBranchSummary[] },
+  snapshot: SessionTranscriptWatermark & { branches: SessionBranchSummary[] },
 ): void {
   const cacheKey = sessionBranchCacheKey(database.path, sessionId);
   sessionBranchCache.delete(cacheKey);
@@ -103,28 +94,6 @@ function cacheSessionBranchSummaries(
     identity: readOpenClawAgentDatabaseIdentity(database).identity,
   });
   pruneMapToMaxSize(sessionBranchCache, SESSION_BRANCH_CACHE_MAX_ENTRIES);
-}
-
-function readSessionBranchWatermark(
-  database: Pick<OpenClawAgentReadOnlyDatabase, "db">,
-  sessionId: string,
-): SessionBranchWatermark {
-  const db = getSessionKysely(database.db);
-  const maxSeq = executeSqliteQueryTakeFirstSync(
-    database.db,
-    db
-      .selectFrom("transcript_events")
-      .select((eb) => eb.fn.max<number>("seq").as("max_seq"))
-      .where("session_id", "=", sessionId),
-  )?.max_seq;
-  const generation = executeSqliteQueryTakeFirstSync(
-    database.db,
-    db
-      .selectFrom("transcript_rewrite_watermarks")
-      .select("generation")
-      .where("session_id", "=", sessionId),
-  )?.generation;
-  return { generation: generation ?? null, maxSeq: maxSeq ?? null };
 }
 
 function readSessionBranchSnapshot(
@@ -157,11 +126,9 @@ function readSessionBranchSnapshot(
       }
       assertSessionTranscriptHot(database.db, expected.sessionId);
       // The watermark and rows must describe the same snapshot, even when a peer appends.
-      const watermark = readSessionBranchWatermark(database, expected.sessionId);
+      const watermark = readSessionTranscriptHotWatermark(database, expected.sessionId);
       const cached = readCachedSessionBranchSummaries(database, expected.sessionId, watermark);
-      const branches =
-        cached ??
-        summarizeSessionBranches(loadTranscriptEventsFromDatabase(database, expected.sessionId));
+      const branches = cached ?? readSessionBranchSummaries(database, expected.sessionId);
       if (!cached) {
         cacheSessionBranchSummaries(database, expected.sessionId, { ...watermark, branches });
       }
@@ -234,7 +201,7 @@ export async function listSessionBranches(
         { ...params, agentId: resolved.agentId, sessionId: selected.sessionId },
         async (): Promise<SessionBranchListResult> => {
           assertCurrent();
-          const watermark = readSessionBranchWatermark(database, selected.sessionId);
+          const watermark = readSessionTranscriptHotWatermark(database, selected.sessionId);
           const cached = readCachedSessionBranchSummaries(database, selected.sessionId, watermark);
           let snapshot: SessionBranchSummaryReadResult;
           if (cached) {
@@ -282,113 +249,4 @@ export async function listSessionBranches(
   } catch {
     return { status: "failed" };
   }
-}
-
-function summarizeSessionBranches(events: readonly TranscriptEvent[]): SessionBranchSummary[] {
-  const tree = scanSessionTranscriptTree(events);
-  const pathSummaries = new Map<string, SessionBranchPathSummary>();
-  return (
-    sessionBranchTipNodes(tree)
-      .toSorted(
-        (left, right) =>
-          Number(right.id === tree.leafId) - Number(left.id === tree.leafId) ||
-          right.index - left.index,
-      )
-      // SAFETY: scanSessionTranscriptTree inserts every returned node into byId.
-      .map((node) => summarizeSessionBranch(tree, tree.byId.get(node.id)!, pathSummaries))
-  );
-}
-
-export function sessionBranchTipNodes(tree: SessionTranscriptTree<TranscriptEvent>) {
-  const referencedParents = new Set(
-    tree.nodes.flatMap((node) =>
-      isSessionTranscriptLeafControl(node.entry) || node.parentId === null ? [] : [node.parentId],
-    ),
-  );
-  return tree.nodes.filter(
-    (node) =>
-      !isSessionTranscriptLeafControl(node.entry) &&
-      (node.id === tree.leafId || !referencedParents.has(node.id)),
-  );
-}
-
-function summarizeSessionBranch(
-  tree: SessionTranscriptTree<TranscriptEvent>,
-  leaf: SessionTranscriptTree<TranscriptEvent>["nodes"][number],
-  summaries: Map<string, SessionBranchPathSummary>,
-): SessionBranchSummary {
-  const uncachedPath: typeof tree.nodes = [];
-  const seen = new Set<string>();
-  let current = leaf;
-  // Stop at the first cached ancestor so every shared prefix is summarized once.
-  // A cycle still produces the empty summary returned by the path selector.
-  while (!summaries.has(current.id)) {
-    if (seen.has(current.id)) {
-      uncachedPath.length = 0;
-      break;
-    }
-    seen.add(current.id);
-    uncachedPath.push(current);
-    const parent = current.parentId === null ? undefined : tree.byId.get(current.parentId);
-    if (!parent) {
-      break;
-    }
-    current = parent;
-  }
-
-  let summary = summaries.get(current.id);
-  for (const node of uncachedPath.toReversed()) {
-    const record = asRecord(node.entry);
-    const headline = record?.type === "message" ? extractHeadlineText(record.message) : undefined;
-    summary = {
-      headline: headline ?? summary?.headline ?? "",
-      messageCount: (summary?.messageCount ?? 0) + (record?.type === "message" ? 1 : 0),
-    };
-    summaries.set(node.id, summary);
-  }
-
-  const timestamp = asRecord(leaf.entry)?.timestamp;
-  return {
-    leafEntryId: leaf.id,
-    headline: truncateBranchHeadline(summary?.headline ?? ""),
-    messageCount: summary?.messageCount ?? 0,
-    ...(typeof timestamp === "string" && timestamp.trim() ? { updatedAt: timestamp } : {}),
-    active: tree.leafId === leaf.id,
-  };
-}
-
-function extractHeadlineText(messageValue: unknown): string | undefined {
-  const message = asRecord(messageValue);
-  if (message?.role !== "user" && message?.role !== "assistant") {
-    return undefined;
-  }
-  const text =
-    message.role === "assistant"
-      ? extractAssistantPhaseText(message)
-      : extractEditorText(message.content ?? message.text);
-  const normalized = text?.replace(/\s+/g, " ").trim();
-  return normalized || undefined;
-}
-
-function truncateBranchHeadline(value: string): string {
-  const characters = Array.from(value);
-  return characters.length <= BRANCH_HEADLINE_MAX_CHARS
-    ? value
-    : `${characters.slice(0, BRANCH_HEADLINE_MAX_CHARS - 1).join("")}…`;
-}
-
-export function extractEditorText(content: unknown): string | undefined {
-  if (typeof content === "string") {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return undefined;
-  }
-  const text = content
-    .flatMap((block) => {
-      const record = asRecord(block);
-      return record?.type === "text" && typeof record.text === "string" ? [record.text] : [];
-    })
-    .join("");
-  return text || undefined;
 }

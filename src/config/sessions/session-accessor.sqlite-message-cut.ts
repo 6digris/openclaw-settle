@@ -8,11 +8,7 @@ import {
   runOpenClawAgentWriteTransaction,
   type OpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
-import {
-  extractEditorText,
-  invalidateSessionBranchCache,
-  sessionBranchTipNodes,
-} from "./session-accessor.sqlite-branches.js";
+import { invalidateSessionBranchCache } from "./session-accessor.sqlite-branches.js";
 import type { TranscriptEvent } from "./session-accessor.sqlite-contract.js";
 import {
   collectSessionEntryLookupKeys,
@@ -40,6 +36,7 @@ import type {
 import { findSessionTranscriptHeader } from "./session-entry-codec.js";
 import { buildSessionCreationStamp } from "./session-entry-provenance.js";
 import { inheritSessionSelection } from "./session-entry-selection.js";
+import { extractEditorText } from "./session-message-cut-content.js";
 import {
   markSessionTranscriptIndexDirtyInTransaction,
   reconcileSessionTranscriptIndexInTransaction,
@@ -51,6 +48,7 @@ import {
   isSessionTranscriptLeafControl,
   scanSessionTranscriptTree,
   selectSessionTranscriptTreePathNodes,
+  selectSessionTranscriptTreeTipNodes,
 } from "./transcript-tree.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 import { MIN_READABLE_SESSION_VERSION } from "./version.js";
@@ -71,13 +69,6 @@ type SessionTranscriptMutationResult =
 
 type SessionTranscriptMutationMode = "fork" | "rewind" | "switch";
 type SessionEntryExpectedState = Pick<SessionEntry, "lifecycleRevision" | "sessionId">;
-
-/** Resolves the active branch leaf from the same transcript tree used by branch listing. */
-export function resolveSessionTranscriptActiveLeafEntryId(
-  events: readonly TranscriptEvent[],
-): string | undefined {
-  return scanSessionTranscriptTree(events).leafId ?? undefined;
-}
 
 export async function rewindSessionToMessage(
   params: SessionMessageCutMutationParams,
@@ -166,6 +157,7 @@ async function mutateSqliteSessionAtMessage(
           entryId: params.entryId,
           canonicalSourceKey,
           creation: params.creation,
+          forkWorkspace: params.forkWorkspace,
           mode,
           expectedState: preparedExpectedState,
           repositoryWorkspaceId: params.repositoryWorkspaceId,
@@ -205,6 +197,7 @@ function mutateSqliteSessionAtMessageInTransaction(
   params: {
     canonicalSourceKey: string;
     creation?: SessionMessageCutMutationParams["creation"];
+    forkWorkspace?: SessionMessageCutMutationParams["forkWorkspace"];
     entryId: string;
     expectedState: SessionEntryExpectedState | undefined;
     mode: SessionTranscriptMutationMode;
@@ -308,6 +301,7 @@ function mutateSqliteSessionAtMessageInTransaction(
           : undefined,
       nextSessionId,
     }),
+    ...(params.mode === "fork" ? params.forkWorkspace : {}),
     ...(params.mode === "fork" && params.creation
       ? buildSessionCreationStamp(params.creation)
       : {}),
@@ -345,7 +339,7 @@ function validateBranchTip(
   if (isSessionTranscriptLeafControl(target.entry)) {
     return "not-branch-tip";
   }
-  if (!sessionBranchTipNodes(tree).some((node) => node.id === entryId)) {
+  if (!selectSessionTranscriptTreeTipNodes(tree).some((node) => node.id === entryId)) {
     return "not-branch-tip";
   }
   return tree.leafId === entryId ? "already-active" : undefined;
@@ -486,7 +480,15 @@ function extractEditorMediaRefs(
   }
   const refs = media.flatMap((entry) => {
     const record = asRecord(entry);
-    const mediaPath = typeof record?.path === "string" ? record.path.trim() : "";
+    const mediaUrl = typeof record?.url === "string" ? record.url.trim() : undefined;
+    const mediaPath =
+      mediaUrl === undefined
+        ? typeof record?.path === "string"
+          ? record.path.trim()
+          : ""
+        : /^media:\/\//i.test(mediaUrl)
+          ? mediaUrl
+          : "";
     const contentType = record?.contentType;
     return mediaPath && typeof contentType === "string" && contentType.startsWith("image/")
       ? [{ path: mediaPath, contentType }]

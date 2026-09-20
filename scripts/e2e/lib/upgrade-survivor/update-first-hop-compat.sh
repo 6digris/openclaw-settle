@@ -195,6 +195,7 @@ run_positive_hops() {
   local preservation=scripts/e2e/lib/upgrade-survivor/first-hop-config-preservation.mjs
   local candidate_version
   candidate_version="$(tar -xOf "$CANDIDATE_PACKAGE" package/package.json | node -pe 'JSON.parse(require("node:fs").readFileSync(0, "utf8")).version')"
+  node "$preservation" seed-skills "$OPENCLAW_CONFIG_PATH" "$ARTIFACT_DIR"
   node "$preservation" seed "$OPENCLAW_CONFIG_PATH" "$ARTIFACT_DIR" "$candidate_version"
   openclaw config validate --json >"$ARTIFACT_DIR/$lane-config-admission.json"
   local first_pid
@@ -224,6 +225,9 @@ run_positive_hops() {
   # Check before mock configuration can overwrite evidence from the old updater.
   node "$preservation" assert-hop "$OPENCLAW_CONFIG_PATH" "$ARTIFACT_DIR"
   openclaw config validate --json >"$ARTIFACT_DIR/$lane-first-config-validation.json"
+  # Independently check the controlled single-agent requirements before Doctor can write.
+  openclaw skills list --agent main --json >"$ARTIFACT_DIR/positive-skills-status.json"
+  node "$preservation" bind-repair "$OPENCLAW_CONFIG_PATH" "$ARTIFACT_DIR"
   local command phase doctor_status preservation_status
   for command in assert-repair assert-doctor; do
     phase=repair

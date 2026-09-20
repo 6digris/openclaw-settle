@@ -14,23 +14,26 @@ import {
   cloneTaskRecord,
   cloneTaskRecordForObserver,
   applyTaskRecordPatch,
+  isEquivalentTaskRecord,
 } from "./task-registry-records.js";
 import {
   withTaskRegistryMutation,
   syncFlowFromTaskAfterTaskMutation,
-  addOwnerKeyIndex,
-  addParentFlowIdIndex,
-  addRelatedSessionKeyIndex,
   bumpTaskRegistryRevision,
-  deleteOwnerKeyIndex,
-  deleteParentFlowIdIndex,
-  deleteRelatedSessionKeyIndex,
   emitTaskRegistryObserverEvent,
   taskRegistryLog,
-  rebuildRunIdIndex,
   taskDeliveryStates,
   tasks,
 } from "./task-registry-state.js";
+import {
+  addOwnerKeyIndex,
+  deleteOwnerKeyIndex,
+  addParentFlowIdIndex,
+  deleteParentFlowIdIndex,
+  addRelatedSessionKeyIndex,
+  deleteRelatedSessionKeyIndex,
+  rebuildRunIdIndex,
+} from "./task-registry.process-state.js";
 import { tryPersistTaskDeliveryStateUpsert, tryPersistTaskUpsert } from "./task-registry.store.js";
 import {
   isTerminalTaskStatus,
@@ -106,32 +109,35 @@ export function updateTask(taskId: string, patch: Partial<TaskRecord>): TaskReco
       const parentFlowIndexChanged = current.parentFlowId?.trim() !== next.parentFlowId?.trim();
       ensureLinkedTaskFlowRegistryReady(current);
       ensureLinkedTaskFlowRegistryReady(next);
-      if (becomesTerminal) {
-        flushTaskActivity(taskId);
+      if (!isTerminalTaskStatus(current.status) || !isEquivalentTaskRecord(current, next)) {
+        if (becomesTerminal) {
+          flushTaskActivity(taskId);
+        }
+        // Persist before mutating memory. If the store rejects the write, keep the
+        // in-memory mirror at the durable value and report that no mutation applied.
+        if (!tryPersistTaskUpsert(next, "update")) {
+          return null;
+        }
+        tasks.set(taskId, next);
+        bumpTaskRegistryRevision();
+        if (becomesTerminal) {
+          clearTaskActivity(taskId);
+        }
+        if (patch.runId && patch.runId !== current.runId) {
+          rebuildRunIdIndex();
+        }
+        if (sessionIndexChanged) {
+          deleteOwnerKeyIndex(taskId, current);
+          addOwnerKeyIndex(taskId, next);
+          deleteRelatedSessionKeyIndex(taskId, current);
+          addRelatedSessionKeyIndex(taskId, next);
+        }
+        if (parentFlowIndexChanged) {
+          deleteParentFlowIdIndex(taskId, current);
+          addParentFlowIdIndex(taskId, next);
+        }
       }
-      // Persist before mutating memory. If the store rejects the write, keep the
-      // in-memory mirror at the durable value and report that no mutation applied.
-      if (!tryPersistTaskUpsert(next, "update")) {
-        return null;
-      }
-      tasks.set(taskId, next);
-      bumpTaskRegistryRevision();
-      if (becomesTerminal) {
-        clearTaskActivity(taskId);
-      }
-      if (patch.runId && patch.runId !== current.runId) {
-        rebuildRunIdIndex();
-      }
-      if (sessionIndexChanged) {
-        deleteOwnerKeyIndex(taskId, current);
-        addOwnerKeyIndex(taskId, next);
-        deleteRelatedSessionKeyIndex(taskId, current);
-        addRelatedSessionKeyIndex(taskId, next);
-      }
-      if (parentFlowIndexChanged) {
-        deleteParentFlowIdIndex(taskId, current);
-        addParentFlowIdIndex(taskId, next);
-      }
+      // Storage no-ops still repair linked flows and retry failed observer publications.
       syncFlowFromTaskAfterTaskMutation(next, "update");
       try {
         syncManagedFlowCancellationFromTask(next);

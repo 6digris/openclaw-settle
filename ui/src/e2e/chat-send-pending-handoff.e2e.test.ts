@@ -1,4 +1,5 @@
 // Control UI E2E tests cover the pending-send bubble handoff to authoritative history.
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
@@ -222,6 +223,183 @@ function isHealthyImageFrame(frame: FrameSample): boolean {
 }
 
 suite.define(() => {
+  it("retires only the local user when older history arrives beside a pending assistant fallback", async () => {
+    const proofDir = process.env.OPENCLAW_UI_E2E_ARTIFACT_DIR?.trim()
+      ? suite.artifactDir
+      : undefined;
+    const sessionId = "pending-assistant-visual-session";
+    const prompt = "land PR";
+    const fallback = "The PR has landed. Its final response is awaiting history.";
+    await suite.withPage(
+      { locale: "en-US", serviceWorkers: "block", viewport: { width: 1280, height: 900 } },
+      async ({ page }) => {
+        const captureProof = async (filename: string) => {
+          if (proofDir) {
+            await page.screenshot({ path: path.join(proofDir, filename) });
+          }
+        };
+        const ready = {
+          role: "assistant",
+          content: [{ type: "text", text: "The PR is ready to land." }],
+          timestamp: Date.now() - 20_000,
+          __openclaw: { id: "ready-to-land", seq: 119 },
+        };
+        const gateway = await installMockGateway(page, {
+          agentModel: "openai/gpt-5.5",
+          presenceUsers: [],
+          sessions: [{ key: "main", sessionId, label: "Pending assistant recovery" }],
+          historyMessages: [ready],
+        });
+        await page.goto(`${suite.server.baseUrl}chat`);
+        await page.getByText("The PR is ready to land.", { exact: true }).waitFor();
+        await gateway.deferNext("chat.send");
+        await page.getByRole("textbox", { name: "Chat composer", exact: true }).fill(prompt);
+        await page.getByRole("button", { name: "Send message", exact: true }).click();
+        const send = await gateway.waitForRequest("chat.send");
+        const runId = (send.params as { idempotencyKey: string }).idempotencyKey;
+        expect(runId).toBeTruthy();
+        // The sequence-bearing ACK retires the outbox without its transcript
+        // payload. Older history must retire the remaining local display copy.
+        await gateway.resolveDeferred("chat.send", { runId, status: "started", messageSeq: 120 });
+        const canonicalUser = {
+          role: "user",
+          content: [{ type: "text", text: prompt }],
+          timestamp: Date.now() - 10_000,
+          __openclaw: { id: "canonical-land-request", seq: 120, idempotencyKey: `${runId}:user` },
+        };
+        const tail = {
+          role: "assistant",
+          content: [{ type: "text", text: "All checks passed. Finishing the landing." }],
+          timestamp: Date.now() - 1000,
+          __openclaw: { id: "landing-checks", seq: 200 },
+        };
+        const session = {
+          key: "main",
+          sessionId,
+          hasActiveRun: false,
+          activeRunIds: [],
+          status: "done",
+        };
+        const latestPage = {
+          sessionId,
+          sessionInfo: session,
+          messages: [tail],
+          hasMore: true,
+          nextOffset: 80,
+          totalMessages: 200,
+          thinkingLevel: null,
+          inputReceipts: [],
+        };
+        await gateway.setMethodResponse("chat.history", {
+          cases: [
+            {
+              match: { offset: 80 },
+              response: {
+                sessionId,
+                sessionInfo: session,
+                messages: [ready, canonicalUser],
+                hasMore: false,
+                totalMessages: 200,
+                thinkingLevel: null,
+              },
+            },
+            { match: {}, response: latestPage },
+          ],
+        });
+        await gateway.deferNext("chat.history", { offset: 80 });
+        await gateway.emitGatewayEvent("chat", {
+          sessionKey: "main",
+          runId,
+          state: "delta",
+          message: { role: "assistant", content: [{ type: "text", text: fallback }] },
+        });
+        await page.locator(".chat-bubble").getByText(fallback, { exact: true }).waitFor();
+        // The terminal protocol permits omission of the final message; the UI
+        // materializes its already-received assistant stream in that case.
+        await gateway.emitGatewayEvent("chat", { sessionKey: "main", runId, state: "final" });
+        const pane = page.locator('openclaw-chat-pane[aria-hidden="false"]');
+        const readQualification = () =>
+          pane.evaluate((element) => {
+            const state = (
+              element as HTMLElement & { state: { chatMessages: Array<Record<string, unknown>> } }
+            ).state;
+            return state.chatMessages.map((message) => ({
+              role: message.role,
+              content: message.content,
+              metadata: message["__openclaw"],
+              fallback: message.openclawStreamFallback,
+            }));
+          });
+        await expect.poll(readQualification).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              role: "user",
+              metadata: { idempotencyKey: `${runId}:user` },
+            }),
+            expect.objectContaining({ role: "assistant", fallback: expect.any(Object) }),
+          ]),
+        );
+        await page
+          .getByText("All checks passed. Finishing the landing.", { exact: true })
+          .waitFor();
+        const before = await readQualification();
+        const pendingUser = before.find((message) => message.role === "user");
+        const pendingAssistant = before.find(
+          (message) => message.role === "assistant" && message.fallback,
+        );
+        expect(pendingUser?.metadata).toEqual({ idempotencyKey: `${runId}:user` });
+        expect(pendingAssistant?.metadata).toBeUndefined();
+        expect(before.indexOf(pendingAssistant!)).toBe(before.indexOf(pendingUser!) + 1);
+        await waitForChatScrollIdle(page);
+        await captureProof("pending-assistant-before-history.png");
+
+        const thread = pane.locator(".chat-thread");
+        await thread.hover();
+        await page.mouse.wheel(0, -1_000_000);
+        await gateway.waitForRequest("chat.history", { match: { offset: 80 } });
+        await gateway.resolveDeferred("chat.history");
+        await waitForChatScrollIdle(page);
+        if (
+          (await pane.locator('.chat-bubble[data-entry-id="canonical-land-request"]').count()) === 0
+        ) {
+          await page.mouse.wheel(0, -1_000_000);
+        }
+        await pane.locator('.chat-bubble[data-entry-id="canonical-land-request"]').waitFor();
+        await waitForChatScrollIdle(page);
+        const after = await readQualification();
+        const userCount = await pane
+          .locator(".chat-bubble")
+          .getByText(prompt, { exact: true })
+          .count();
+        const fallbackCount = await pane
+          .locator(".chat-bubble")
+          .getByText(fallback, { exact: true })
+          .count();
+        await captureProof("pending-assistant-after-history.png");
+        if (proofDir) {
+          await writeFile(
+            path.join(proofDir, "pending-assistant-proof.json"),
+            JSON.stringify(
+              {
+                before,
+                after,
+                userCount,
+                fallbackCount,
+                sends: (await gateway.getRequests("chat.send")).length,
+              },
+              null,
+              2,
+            ) + "\n",
+          );
+        }
+        expect(userCount).toBe(1);
+        expect(fallbackCount).toBe(1);
+        expect(after.filter((message) => message.role === "user")).toHaveLength(1);
+        expect(await gateway.getRequests("chat.send")).toHaveLength(1);
+      },
+    );
+  });
+
   it("does not recreate a consumed prompt outside the visible history page after reconnect", async () => {
     const proofDir = process.env.OPENCLAW_UI_E2E_ARTIFACT_DIR?.trim()
       ? suite.artifactDir

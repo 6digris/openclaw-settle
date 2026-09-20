@@ -1,7 +1,7 @@
 // Render contract between the transcript projection and the per-session
 // virtualizer host owned by ChatTranscriptController.
 import type { TemplateResult } from "lit";
-import type { AssistantMessageExpansionState } from "../chat-thread.ts";
+import type { AssistantMessageExpansionState } from "../chat-message-recovery.ts";
 import type { ChatSessionScrollPosition } from "../scroll.ts";
 import type { ChatPositionIndex } from "./chat-position-projection.ts";
 import type { TranscriptAnnouncement } from "./chat-transcript-announcement.ts";
@@ -18,6 +18,8 @@ export type ChatTranscriptPendingScrollOffset = {
 export type TranscriptCallbacks = {
   onViewportResize?: () => void;
   onReaderScroll?: (towardEnd?: boolean) => void;
+  /** The pane owns reader intent; geometry-only follow must honor that policy. */
+  canFollowEnd?: () => boolean;
 };
 
 export const CHAT_TRANSCRIPT_ESTIMATED_ROW_PX = 120;

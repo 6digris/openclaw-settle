@@ -1,9 +1,7 @@
 import path from "node:path";
-import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { hashConfigRaw } from "../../config/io.read-helpers.js";
 import { resolveConfigPath } from "../../config/paths.js";
 import { resolveGatewayInstallEntrypoint } from "../../daemon/gateway-entrypoint.js";
-import { createLowDiskSpaceWarning } from "../../infra/disk-space.js";
 import {
   markPackagePostInstallDoctorAdvisory,
   runGlobalPackageUpdateSteps,
@@ -38,7 +36,6 @@ import {
   type UpdateStepResult,
 } from "../../infra/update-runner.js";
 import { runCommandWithTimeout, runUtf8CommandWithTimeout } from "../../process/exec.js";
-import { defaultRuntime } from "../../runtime.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { CLI_NAME } from "../cli-name.js";
 import { createUpdateProgress } from "./progress.js";
@@ -163,7 +160,10 @@ export async function runPackageUpdateDoctor(params: PackageDoctorOptions) {
   const configSnapshot = params.onConfigSnapshot
     ? await readUpdateConfigSnapshot(resolveConfigPath(doctorEnv))
     : undefined;
-  const runDoctor = (executor?: UpdateCommandChildGrant, beforeInput?: (pid: number) => void) => {
+  const runDoctor = (
+    executor?: UpdateCommandChildGrant,
+    beforeInput?: (pid: number, argv?: readonly string[]) => void,
+  ) => {
     context?.assertRequesterCurrent();
     const input: UpdateDoctorInput | undefined =
       context && executor
@@ -213,9 +213,9 @@ export async function runPackageUpdateDoctor(params: PackageDoctorOptions) {
   };
   const doctorStep = context
     ? await withUpdateCommandExecutorChild(context.executorFence, params.root, (grant, bindChild) =>
-        runDoctor(grant, (pid) => {
+        runDoctor(grant, (pid, argv) => {
           context.assertRequesterCurrent();
-          bindChild(pid);
+          bindChild(pid, argv);
         }),
       )
     : await runDoctor();
@@ -342,7 +342,6 @@ export type PackageInstallUpdateParams = {
   timeoutMs: number;
   startedAt: number;
   progress: ReturnType<typeof createUpdateProgress>["progress"];
-  jsonMode: boolean;
   managedServiceEnv?: NodeJS.ProcessEnv;
   invocationCwd?: string;
   honorPackageRoot?: boolean;
@@ -351,6 +350,7 @@ export type PackageInstallUpdateParams = {
   installTarget?: ResolvedGlobalInstallTarget;
   validateCandidate: (root: string) => Promise<UpdateStepResult[]>;
   beforeActivate: () => Promise<void>;
+  assertCurrent?: () => void;
   onTransaction: (transaction: PackageUpdateTransaction) => void;
   onConfigSnapshot?: PackageDoctorOptions["onConfigSnapshot"];
   getDoctorContext?: PackageDoctorOptions["getDoctorContext"];
@@ -403,8 +403,8 @@ export async function stagePackageInstallUpdate(
   if ("result" in ready) {
     throw new UpdatePreMutationError(
       ready.result.reason ?? "package-staging-failed",
-      ready.result.steps.find((step) => step.exitCode !== 0)?.stderrTail ??
-        "Package staging did not produce a target runtime.",
+      ready.result.failedStep?.stderrTail ?? "Package staging did not produce a target runtime.",
+      { failureFacts: ready.result.failedStep?.failureFacts },
     );
   }
   return {
@@ -463,18 +463,6 @@ export async function runPackageInstallUpdate(
 
   const before = pkgRoot ? await readPackageUpdateIdentity(pkgRoot) : { version: null };
 
-  const diskWarning = createLowDiskSpaceWarning({
-    targetPath: pkgRoot ? path.dirname(pkgRoot) : params.root,
-    purpose: "global package update",
-  });
-  if (diskWarning) {
-    if (params.jsonMode) {
-      defaultRuntime.error(`Warning: ${diskWarning}`);
-    } else {
-      defaultRuntime.log(theme.warn(diskWarning));
-    }
-  }
-
   const packageUpdate = await runGlobalPackageUpdateSteps({
     localOverrides: {
       reapply: params.reapplyLocalOverrides === true,
@@ -485,6 +473,7 @@ export async function runPackageInstallUpdate(
     },
     validateCandidate: params.validateCandidate,
     beforeActivate: params.beforeActivate,
+    assertCurrent: params.assertCurrent,
     onTransaction: params.onTransaction,
     installTarget,
     installSpec,
@@ -528,6 +517,7 @@ export async function runPackageInstallUpdate(
       ...(afterBuildId ? { buildId: afterBuildId } : {}),
     },
     steps: packageUpdate.steps,
+    failedStep: packageUpdate.failedStep ?? undefined,
     recovery: packageUpdate.recovery,
     localOverrides: packageUpdate.localOverrides,
     durationMs: Date.now() - params.startedAt,

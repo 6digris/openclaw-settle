@@ -11,6 +11,119 @@ const MANUAL = `${ROOT}.bak.first-hop-manual`;
 const BEFORE = "positive-config-before.json";
 const AFTER_HOP = "positive-config-after-hop.json";
 const AFTER_REPAIR = "positive-config-after-repair.json";
+const SKILL_DIR = "first-hop-skills";
+const SKILL_BINDING = "positive-skills-before-repair.json";
+const SKILL_STATUS = "positive-skills-status.json";
+const unavailableSkills = ["first-hop-unavailable", "first-hop-absent"];
+const fixtureSkills = [
+  ...unavailableSkills,
+  "first-hop-healthy",
+  "first-hop-filtered",
+  "first-hop-platform",
+  "first-hop-disabled",
+];
+const skillFilter = fixtureSkills.filter((name) => name !== "first-hop-filtered");
+const missingConfig = "skills.entries.first-hop-unavailable.config.ready";
+
+function skillSource(name) {
+  const metadata =
+    name === "first-hop-healthy"
+      ? {}
+      : {
+          requires: { config: [missingConfig] },
+          ...(name === "first-hop-platform"
+            ? { os: [process.platform === "win32" ? "darwin" : "win32"] }
+            : {}),
+        };
+  return `---\nname: ${name}\ndescription: Synthetic first-hop preservation control.\nmetadata: ${JSON.stringify({ openclaw: metadata })}\n---\nSynthetic fixture; no actions.\n`;
+}
+
+function skillFixtureConfig(root) {
+  return {
+    load: { extraDirs: [path.join(root, SKILL_DIR)] },
+    entries: {
+      "first-hop-unavailable": { config: { ready: false, marker: "retain-authored" } },
+      "first-hop-disabled": { enabled: false },
+    },
+  };
+}
+
+function hasSkillFixture(before) {
+  return Object.hasOwn(before.files, `${SKILL_DIR}/${fixtureSkills[0]}/SKILL.md`);
+}
+
+function assertSkillFixture(before, root) {
+  const config = JSON.parse(before.files[ROOT].raw);
+  requireProof(
+    isDeepStrictEqual(config.skills, skillFixtureConfig(root)) &&
+      isDeepStrictEqual(config.agents?.defaults?.skills, skillFilter) &&
+      !config.agents?.list &&
+      (!config.agents?.entries || isDeepStrictEqual(config.agents.entries, { main: {} })),
+    "skill fixture config is not the controlled single-agent source",
+  );
+  for (const name of fixtureSkills) {
+    requireProof(
+      before.files[`${SKILL_DIR}/${name}/SKILL.md`]?.raw === skillSource(name),
+      "skill fixture source changed",
+    );
+  }
+}
+
+function assertSkillStatus(report) {
+  requireProof(Array.isArray(report.skills), "missing pre-repair skill status");
+  const names = report.skills.map((skill) => skill.name);
+  requireProof(new Set(names).size === names.length, "duplicate skill status");
+  for (const name of fixtureSkills) {
+    const skill = report.skills.find((entry) => entry.name === name);
+    const platform = name === "first-hop-platform";
+    const healthy = name === "first-hop-healthy";
+    requireProof(
+      skill &&
+        skill.source === "openclaw-extra" &&
+        skill.bundled === false &&
+        skill.eligible === healthy &&
+        skill.disabled === (name === "first-hop-disabled") &&
+        skill.blockedByAllowlist === false &&
+        skill.blockedByAgentFilter === (name === "first-hop-filtered") &&
+        isDeepStrictEqual(skill.missing, {
+          bins: [],
+          anyBins: [],
+          env: [],
+          config: healthy ? [] : [missingConfig],
+          os: platform ? [process.platform === "win32" ? "darwin" : "win32"] : [],
+        }),
+      "skill status disagrees with independent fixture requirements",
+    );
+  }
+  // The fixture has one agent and an explicit filter. Unknown discoveries never authorize writes.
+  requireProof(
+    report.skills.every(
+      (skill) => fixtureSkills.includes(skill.name) || skill.blockedByAgentFilter === true,
+    ),
+    "unexpected unfiltered skill status",
+  );
+}
+
+function repairSkillKeys(artifacts, before, afterHop, root) {
+  if (!hasSkillFixture(before)) {
+    requireProof(
+      !fs.existsSync(path.join(artifacts, SKILL_BINDING)),
+      "unexpected skill repair binding",
+    );
+    return [];
+  }
+  assertSkillFixture(before, root);
+  const binding = readJson(artifacts, SKILL_BINDING);
+  requireProof(
+    binding.kind === "before-standalone-repair" &&
+      isDeepStrictEqual(binding.keys, unavailableSkills) &&
+      isDeepStrictEqual(binding.files, afterHop.files),
+    "skill repair binding changed",
+  );
+  assertSkillStatus(binding.report);
+  // These keys are source-owned, not inferred from Doctor output or the after-config.
+  return unavailableSkills;
+}
 const ring = Array.from({ length: 5 }, (_, index) => `${ROOT}.bak${index ? `.${index}` : ""}`);
 const references = {
   responsePrefix: "${UPGRADE_SURVIVOR_PREFIX}",
@@ -67,6 +180,30 @@ function capture(root) {
   for (const required of [ROOT, PARENT, LEAF, MANUAL]) {
     requireProof(names.includes(required), `missing fixture file: ${required}`);
   }
+  if (fs.existsSync(path.join(root, SKILL_DIR))) {
+    const stat = fs.lstatSync(path.join(root, SKILL_DIR));
+    requireProof(
+      stat.isDirectory() && !stat.isSymbolicLink(),
+      "skill fixture is not an owned directory",
+    );
+    requireProof(
+      isDeepStrictEqual(
+        fs.readdirSync(path.join(root, SKILL_DIR)).toSorted(),
+        fixtureSkills.toSorted(),
+      ),
+      "skill fixture inventory changed",
+    );
+    for (const name of fixtureSkills) {
+      const dir = path.join(root, SKILL_DIR, name);
+      requireProof(
+        fs.lstatSync(dir).isDirectory() &&
+          !fs.lstatSync(dir).isSymbolicLink() &&
+          isDeepStrictEqual(fs.readdirSync(dir), ["SKILL.md"]),
+        "skill fixture directory changed",
+      );
+      names.push(`${SKILL_DIR}/${name}/SKILL.md`);
+    }
+  }
   return Object.fromEntries(names.toSorted().map((name) => [name, readFile(root, name)]));
 }
 
@@ -88,7 +225,7 @@ function needsCanonicalRoster(config) {
   );
 }
 
-function assertRoot(raw, before, targetVersion) {
+function assertRoot(raw, before, targetVersion, skillKeys = [], requireDisables = false) {
   let actual;
   try {
     actual = JSON.parse(raw);
@@ -96,6 +233,11 @@ function assertRoot(raw, before, targetVersion) {
     throw new Error(`invalid JSON: ${ROOT}`);
   }
   const expected = JSON.parse(before.files[ROOT].raw);
+  for (const key of skillKeys) {
+    if (requireDisables || actual.skills?.entries?.[key]?.enabled === false) {
+      expected.skills.entries[key] = { ...expected.skills.entries[key], enabled: false };
+    }
+  }
   // legacy.roster.ts persists only this implicit roster; existing defaults remain authored.
   // Do not extend this exception to included, explicit or legacy rosters.
   if (needsCanonicalRoster(expected) && isDeepStrictEqual(actual.agents?.entries, { main: {} })) {
@@ -154,12 +296,18 @@ function assertRoot(raw, before, targetVersion) {
   return actual;
 }
 
-function assertBackups(files, previous, before) {
+function assertBackups(files, previous, before, skillKeys = []) {
   sameFile(files[MANUAL], before.files[MANUAL], MANUAL);
   requireProof(
     files[`${ROOT}.pre-update`]?.raw === before.files[ROOT].raw,
     "pre-update snapshot lost original root bytes",
   );
+  for (const name of [ROOT, `${ROOT}.pre-update`]) {
+    requireProof(
+      files[name].mode === before.files[ROOT].mode,
+      `config permissions changed: ${name}`,
+    );
+  }
   // backup-rotation.ts renames surviving history and tightens its mode to 0600.
   // Without a surviving original, five writes and wholesale replacement are indistinguishable.
   const witnessed = ring.some((name) =>
@@ -190,7 +338,7 @@ function assertBackups(files, previous, before) {
         return files[name].raw === previous[ROOT].raw;
       }
       try {
-        assertRoot(files[name].raw, before, before.targetVersion);
+        assertRoot(files[name].raw, before, before.targetVersion, skillKeys);
         return true;
       } catch {
         return false;
@@ -245,15 +393,22 @@ function assertDoctor(artifacts, phase, observation) {
   );
 }
 
-function assertRepair(artifacts, before, observation) {
+function assertRepair(artifacts, before, observation, root) {
   requireProof(observation.kind === "after-repair-observation", "missing after-repair observation");
   assertDoctor(artifacts, "repair", observation);
   const afterHop = readJson(artifacts, AFTER_HOP);
   requireProof(afterHop.kind === "after-hop-observation", "missing after-hop observation");
   // Observations can contain rejected state; revalidate before using a backup baseline.
   const afterHopConfig = assertHop(afterHop.files, before);
-  const config = assertRoot(observation.files[ROOT].raw, before, before.targetVersion);
-  assertBackups(observation.files, afterHop.files, before);
+  const skillKeys = repairSkillKeys(artifacts, before, afterHop, root);
+  const config = assertRoot(
+    observation.files[ROOT].raw,
+    before,
+    before.targetVersion,
+    skillKeys,
+    true,
+  );
+  assertBackups(observation.files, afterHop.files, before, skillKeys);
   requireProof(
     !before.activateOpenai || config.plugins?.entries?.openai?.enabled === true,
     "required fixture OpenAI activation missing",
@@ -309,15 +464,61 @@ function observePhase(root, artifacts, phase, doctorExit, validate) {
 
 try {
   requireProof(
-    ["seed", "assert-hop", "assert-repair", "assert-doctor"].includes(command) &&
+    ["seed-skills", "bind-repair", "seed", "assert-hop", "assert-repair", "assert-doctor"].includes(
+      command,
+    ) &&
       configArgument &&
       artifactArgument,
-    "expected seed|assert-hop|assert-repair|assert-doctor CONFIG ARTIFACT_DIR [TARGET_VERSION|DOCTOR_EXIT]",
+    "expected seed-skills|bind-repair|seed|assert-hop|assert-repair|assert-doctor CONFIG ARTIFACT_DIR [TARGET_VERSION|DOCTOR_EXIT]",
   );
   const root = fs.realpathSync(path.dirname(configArgument));
   const artifacts = fs.realpathSync(artifactArgument);
   requireProof(path.basename(configArgument) === ROOT, "unexpected config filename");
-  if (command === "seed") {
+  if (command === "seed-skills") {
+    requireProof(
+      !fs.existsSync(path.join(artifacts, BEFORE)),
+      "skills must be seeded before the config baseline",
+    );
+    const config = readJson(root, ROOT);
+    requireProof(
+      config.skills === undefined &&
+        config.agents?.defaults?.skills === undefined &&
+        !config.agents?.list &&
+        (!config.agents?.entries || isDeepStrictEqual(config.agents.entries, { main: {} })),
+      "skill fixture would replace authored config",
+    );
+    fs.mkdirSync(path.join(root, SKILL_DIR));
+    for (const name of fixtureSkills) {
+      const dir = path.join(root, SKILL_DIR, name);
+      fs.mkdirSync(dir);
+      fs.writeFileSync(path.join(dir, "SKILL.md"), skillSource(name), { flag: "wx", mode: 0o600 });
+    }
+    config.skills = skillFixtureConfig(root);
+    config.agents = {
+      ...config.agents,
+      defaults: { ...config.agents?.defaults, skills: skillFilter },
+    };
+    fs.writeFileSync(configArgument, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  } else if (command === "bind-repair") {
+    const before = readJson(artifacts, BEFORE);
+    const afterHop = readJson(artifacts, AFTER_HOP);
+    requireProof(afterHop.kind === "after-hop-observation", "missing after-hop observation");
+    assertHop(afterHop.files, before);
+    assertSkillFixture(before, root);
+    requireProof(
+      !fs.existsSync(path.join(artifacts, AFTER_REPAIR)) &&
+        isDeepStrictEqual(capture(root), afterHop.files),
+      "skills must be bound before standalone repair",
+    );
+    const report = readJson(artifacts, SKILL_STATUS);
+    assertSkillStatus(report);
+    writeJson(artifacts, SKILL_BINDING, {
+      kind: "before-standalone-repair",
+      keys: unavailableSkills,
+      files: afterHop.files,
+      report,
+    });
+  } else if (command === "seed") {
     requireProof(
       extra && /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?$/.test(extra),
       "missing target version",
@@ -374,11 +575,11 @@ try {
         return null;
       }
       if (phase === "repair") {
-        return assertRepair(artifacts, before, observation);
+        return assertRepair(artifacts, before, observation, root);
       }
       assertDoctor(artifacts, "fresh", observation);
       const repaired = readJson(artifacts, AFTER_REPAIR);
-      const validated = assertRepair(artifacts, before, repaired);
+      const validated = assertRepair(artifacts, before, repaired, root);
       requireProof(
         isDeepStrictEqual(observation.files, repaired.files),
         "fresh Doctor changed converged config or backup bytes/identity",

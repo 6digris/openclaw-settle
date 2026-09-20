@@ -139,10 +139,10 @@ it("retains quiet admitted execution in listing, admission count, and requester 
     expect
       .soft(
         buildSubagentList({ cfg: getRuntimeConfig(), runs: [entry], recentMinutes: 30 }).active.map(
-          (row) => row.runId,
+          (row) => ({ runId: row.runId, execution: row.execution.state }),
         ),
       )
-      .toEqual([entry.runId]);
+      .toEqual([{ runId: entry.runId, execution: "running" }]);
     // A persisted completed sibling already owns an unfrozen settle outbox.
     addSubagentRunForTests({
       runId: "settled-sibling",
@@ -227,11 +227,19 @@ it("retains an exact queued collector reservation without calling it executor-li
   expect
     .soft(
       buildSubagentList({ cfg: getRuntimeConfig(), runs: [entry], recentMinutes: 30 }).active.map(
-        (row) => row.status,
+        (row) => ({ status: row.status, execution: row.execution.state }),
       ),
     )
-    .toEqual(["queued"]);
+    .toEqual([{ status: "queued", execution: "queued" }]);
+  const captured = buildSubagentRunReadIndexFromRuns({
+    runs: new Map([[projected.runId, projected]]),
+    inMemoryRuns: [entry],
+    now: olderThanCutoff,
+  });
   expect(removeQueuedSwarmRun(entry.runId)).toBe(true);
+  expect(captured.countActiveDescendantRuns(parent)).toBe(0);
+  expect(captured.countPendingDescendantRuns(parent)).toBe(0);
+  expect(captured.hasDescendantRunAwaitingSettle(parent)).toBe(false);
   expect(isSubagentRunQueued(entry)).toBe(false);
   expect(countActiveRunsForSession(parent, { collect: true })).toBe(0);
   expect(hasDescendantRunAwaitingSettle(parent)).toBe(false);

@@ -45,6 +45,8 @@ const enDebug = {
     overlay: {
       title: en.debug.overlay.title,
       eyebrow: en.debug.overlay.eyebrow,
+      minimize: en.debug.overlay.minimize,
+      expand: en.debug.overlay.expand,
       open: "Open overlay",
       openWithShortcut: "Open overlay · {shortcut}",
       unavailable: "Unavailable",
@@ -54,6 +56,9 @@ const enDebug = {
       events: en.debug.overlay.events,
       cpu: en.debug.overlay.cpu,
       memory: en.debug.overlay.memory,
+      ping: "Ping",
+      pingMs: "{value} ms",
+      pingDescription: "Round-trip time for the Gateway diagnostics request",
       disk: "Disk",
       memoryMb: "{value} MB",
       loopShort: "loop {value}",

@@ -8,6 +8,8 @@ import type { SessionsListResult } from "../../api/types.ts";
 import type { ApplicationGateway } from "../../app/gateway.ts";
 import {
   collectGatewayStatusSamples,
+  renderGatewayCpuVital,
+  renderGatewayMemoryVital,
   renderGatewayVitals,
   type GatewayStatusSample,
   type GatewayStatusSnapshot,
@@ -52,11 +54,34 @@ function defineDebugOverlaySection<T>(
 }
 
 export type DebugOverlayStatusSnapshot = GatewayStatusSnapshot & {
+  pingMs: number;
   disks?: SystemInfoResult["disks"];
   uptimeMs?: number;
 };
 
 export type DebugOverlayStatusSample = GatewayStatusSample<DebugOverlayStatusSnapshot>;
+
+function formatPingMs(value: number): string {
+  return t("debug.overlay.pingMs", { value: String(Math.round(value)) });
+}
+
+export function renderDebugOverlayWidget(
+  status: DebugOverlayStatusSnapshot,
+  history: readonly DebugOverlayStatusSample[],
+): TemplateResult {
+  return html`<div class="debug-overlay__widget">
+    ${renderGatewayCpuVital(status, history)}
+    <openclaw-sparkline
+      class="gateway-vital gateway-vital--ping"
+      title=${t("debug.overlay.pingDescription")}
+      .label=${t("debug.overlay.ping")}
+      .samples=${collectGatewayStatusSamples(history, (sample) => sample.pingMs)}
+      .format=${formatPingMs}
+      .floorMax=${20}
+    ></openclaw-sparkline>
+    ${renderGatewayMemoryVital(status, history)}
+  </div>`;
+}
 
 function renderLanes(diagnostics: CommandLaneDiagnostics): TemplateResult {
   return html`
@@ -172,8 +197,11 @@ export const DEBUG_OVERLAY_SECTIONS: readonly DebugOverlaySectionDescriptor[] = 
   }),
   defineDebugOverlaySection({
     ...DEBUG_OVERLAY_SECTION_HEADERS.status,
-    load: (context, signal) =>
-      context.client.request<SystemInfoResult>("system.info", {}, { signal }),
+    load: async (context, signal): Promise<DebugOverlayStatusSnapshot> => {
+      const startedAt = performance.now();
+      const status = await context.client.request<SystemInfoResult>("system.info", {}, { signal });
+      return { ...status, pingMs: performance.now() - startedAt };
+    },
     render: renderStatus,
   }),
   defineDebugOverlaySection({
