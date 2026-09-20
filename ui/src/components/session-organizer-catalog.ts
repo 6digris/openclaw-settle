@@ -18,15 +18,16 @@ import {
 import type { SessionOrganizerControllerHost } from "./session-organizer-controller.ts";
 
 export type SessionGroupActionHost = SessionActionHost & {
-  knownSessionGroups(): string[];
+  knownSessionGroups(agentId?: string): string[];
 };
 
 export async function rememberSessionGroup(
   host: SessionGroupActionHost,
   name: string,
   scope: SidebarSessionMutationScope,
+  agentId = scope.selectedAgentId,
 ): Promise<SidebarSessionMutationResult> {
-  const groups = host.knownSessionGroups();
+  const groups = host.knownSessionGroups(agentId);
   if (groups.includes(name)) {
     return "completed";
   }
@@ -42,7 +43,7 @@ export async function rememberSessionGroup(
     return "failed";
   }
   try {
-    const written = await scope.sessions.groupsPut([...groups, name]);
+    const written = await scope.sessions.groupsPut([name], undefined, agentId, true);
     // The catalog owns the authoritative stale signal; the mutation scope adds
     // its own. Either one retiring means no confirmed entry to assign against.
     return written === "completed" && host.sessionData.isSessionMutationScopeCurrent(scope)
@@ -75,7 +76,7 @@ export async function renameSessionGroup(
     return false;
   }
   try {
-    const outcome = await scope.sessions.groupsRename(group, next);
+    const outcome = await scope.sessions.groupsRename(group, next, scope.selectedAgentId);
     return outcome === "completed" && host.sessionData.isSessionMutationScopeCurrent(scope);
   } catch (error) {
     host.sessionData.publishSessionMutationError(scope, error);
@@ -120,7 +121,7 @@ export async function deleteSessionGroup(
     return false;
   }
   try {
-    const outcome = await scope.sessions.groupsDelete(group);
+    const outcome = await scope.sessions.groupsDelete(group, scope.selectedAgentId);
     return outcome === "completed" && host.sessionData.isSessionMutationScopeCurrent(scope);
   } catch (error) {
     host.sessionData.publishSessionMutationError(scope, error);
@@ -146,7 +147,7 @@ export async function updateSessionGroupDefaults(
     return "failed";
   }
   try {
-    const outcome = await scope.sessions.groupsUpdate(group, defaults);
+    const outcome = await scope.sessions.groupsUpdate(group, defaults, scope.selectedAgentId);
     return outcome === "completed" && host.sessionData.isSessionMutationScopeCurrent(scope)
       ? "completed"
       : "stale";
@@ -180,7 +181,7 @@ export async function reorderSidebarSection(
   try {
     // knownSessionGroups() is the full discovered set (gateway catalog plus
     // row-discovered categories), so normalize only prunes deleted groups.
-    const knownGroups = host.knownSessionGroups();
+    const knownGroups = host.knownSessionGroups(scope.selectedAgentId);
     const knownCatalogIds = host.knownSessionCatalogIds();
     const next = moveSessionSection(
       normalizeSessionSectionOrder(host.knownSectionOrder(), knownGroups, knownCatalogIds),
@@ -193,7 +194,7 @@ export async function reorderSidebarSection(
     );
     // No capability gate: the gateway serves this UI from its own dist, so a
     // newer UI never talks to an older gateway's closed put schema outside dev.
-    await scope.sessions.groupsPut(nextGroups, next);
+    await scope.sessions.groupsPut(nextGroups, next, scope.selectedAgentId);
     if (!host.sessionData.isSessionMutationScopeCurrent(scope)) {
       return;
     }

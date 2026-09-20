@@ -402,6 +402,7 @@ class ChatControllerCommandControlsTest {
     runTest {
       val (controller, requests) =
         chatControllerTestSetup {
+          gatewayAdvertisesCapability = { it == AGENT_SCOPED_SESSION_GROUPS_CAPABILITY }
           respond("sessions.list", """{"sessions":[]}""")
           respond("sessions.delete", """{"deleted":true}""")
         }
@@ -528,65 +529,143 @@ class ChatControllerCommandControlsTest {
     }
 
   @Test
-  fun renameSessionGroupPatchesEveryMemberIncludingArchivedOnlyOnes() =
+  fun oldGatewayRejectsCategoryWritesButKeepsOrdinarySessionActions() =
     runTest {
-      val (controller, requests) =
-        chatControllerTestSetup {
-          respond("sessions.list") { paramsJson ->
-            if (paramsJson.orEmpty().contains("\"archived\":true")) {
-              """{"sessions":[{"key":"agent:main:active","category":"Work"},{"key":"agent:main:archived","category":" Work "}]}"""
-            } else {
-              """{"sessions":[{"key":"agent:main:active","category":"Work"},{"key":"agent:main:other","category":"Play"}]}"""
-            }
-          }
-        }
-
-      controller.refreshSessions(limit = 100)
-      advanceUntilIdle()
-      requests.clear()
-
-      controller.renameSessionGroup(from = "Work", to = "Focus")
-
-      // Membership enumeration sends the explicit high bound (absent limit is
-      // capped at 100 rows server-side) across active + archived rows.
-      val lists = requests.filter { it.first == "sessions.list" }.map { it.second.orEmpty() }
-      assertEquals(2, lists.count { it.contains("\"limit\":10000") })
-      assertEquals(1, lists.count { it.contains("\"archived\":true") })
-
-      val patches = requests.filter { it.first == "sessions.patch" }.map { it.second.orEmpty() }
-      assertEquals(2, patches.size)
-      assertTrue(patches.any { it.contains("\"key\":\"agent:main:active\"") && it.contains("\"category\":\"Focus\"") })
-      assertTrue(patches.any { it.contains("\"key\":\"agent:main:archived\"") && it.contains("\"category\":\"Focus\"") })
-      // Group enumeration must not replace the requested display window.
-      assertEquals(JsonPrimitive(100), json.parseToJsonElement(lists.last()).jsonObject["limit"])
+      val requests = mutableListOf<Pair<String, String?>>()
+      val controller =
+        ChatController(
+          scope = this,
+          commandOutbox = createChatCommandOutbox(),
+          cacheScope = { ChatCacheScope("gateway-test", 1L) },
+          gatewayAdvertisesCapability = { false },
+          json = json,
+          requestGateway = { method, params ->
+            requests += method to params
+            emptyChatGatewayResponse(method)
+          },
+        )
+      val route = requireNotNull(controller.captureSessionGroupRoute("research"))
+      assertFalse(controller.moveSessionToGroup(route, "agent:research:row", "Existing"))
+      assertFalse(controller.patchSession("agent:research:row", category = "New"))
+      assertFalse(controller.patchSession("agent:research:row", clearCategory = true))
+      assertTrue(requests.none { it.first == "sessions.patch" })
+      assertTrue(controller.patchSession("agent:research:row", pinned = true))
+      assertEquals(1, requests.count { it.first == "sessions.patch" })
     }
 
   @Test
-  fun dissolveSessionGroupClearsCategoriesBestEffort() =
+  fun queuedCategoryPatchRechecksCapabilityBeforeEnqueue() =
     runTest {
-      var patchCount = 0
-      val (controller, requests) =
-        chatControllerTestSetup {
-          respond("sessions.list") { paramsJson ->
-            if (paramsJson.orEmpty().contains("\"archived\":true")) {
-              """{"sessions":[{"key":"agent:main:archived","category":"Work"}]}"""
-            } else {
-              """{"sessions":[{"key":"agent:main:a","category":"Work"},{"key":"agent:main:b","category":"Work"}]}"""
+      var supported = true
+      val entered = CompletableDeferred<Unit>()
+      val release = CompletableDeferred<Unit>()
+      val sent = mutableListOf<String>()
+      val owner = ChatCacheScope("gateway-test", 1L)
+      val controller =
+        ChatController(
+          scope = this,
+          commandOutbox = createChatCommandOutbox(),
+          cacheScope = { owner },
+          gatewayAdvertisesCapability = { supported },
+          json = json,
+          requestGateway = { _, _ -> error("category writes must retain their lease") },
+          captureRequestLease = { captured ->
+            GatewaySession.RequestLease(endpointStableId = requireNotNull(captured).gatewayId) { method, _, _, enqueue ->
+              entered.complete(Unit)
+              release.await()
+              enqueue { sent += method }
+              "{}"
             }
-          }
-          respond("sessions.patch") { paramsJson ->
-            patchCount += 1
-            if (patchCount == 1) throw RuntimeException("offline") else "{}"
-          }
-        }
+          },
+        )
+      val route = requireNotNull(controller.captureSessionGroupRoute("research"))
+      val mutation = async { controller.moveSessionToGroup(route, "agent:research:row", "Work") }
+      entered.await()
+      supported = false
+      release.complete(Unit)
+      assertFalse(mutation.await())
+      assertTrue(sent.isEmpty())
+    }
 
-      controller.dissolveSessionGroup("Work")
+  @Test
+  fun groupRenameUsesCapturedOwnerAndGatewayCatalogInsteadOfMemberPatchLoops() =
+    runTest {
+      val requests = mutableListOf<Pair<String, String?>>()
+      val controller =
+        ChatController(
+          scope = this,
+          commandOutbox = createChatCommandOutbox(),
+          cacheScope = { ChatCacheScope("gateway-test", 1L) },
+          gatewayAdvertisesCapability = { it == AGENT_SCOPED_SESSION_GROUPS_CAPABILITY },
+          json = json,
+          requestGateway = { method, params ->
+            requests += method to params
+            if (method == "sessions.groups.list") """{"groups":[{"name":"Focus","position":0}]}""" else emptyChatGatewayResponse(method)
+          },
+        )
+      val route = requireNotNull(controller.captureSessionGroupRoute("research"))
+      assertTrue(controller.renameSessionGroup(route, "Work", "Focus"))
+      val rename = json.parseToJsonElement(requests.first { it.first == "sessions.groups.rename" }.second!!).jsonObject
+      assertEquals(JsonPrimitive("research"), rename["agentId"])
+      assertEquals(JsonPrimitive("Work"), rename["name"])
+      assertFalse(requests.any { it.first == "sessions.patch" || it.first == "sessions.list" })
+    }
 
-      // One failed member patch must not abandon the remaining members.
-      val patches = requests.filter { it.first == "sessions.patch" }.map { it.second.orEmpty() }
-      assertEquals(3, patches.size)
-      assertTrue(patches.all { it.contains("\"category\":null") })
-      assertEquals("offline", controller.errorText.value)
+  @Test
+  fun newGroupForCapturedRowCannotPatchReplacementGatewayAfterAppendAcknowledgment() =
+    runTest {
+      var current = ChatCacheScope("gateway-a", 1L)
+      val appended = CompletableDeferred<String>()
+      val requests = mutableListOf<String>()
+      val controller =
+        ChatController(
+          scope = this,
+          commandOutbox = createChatCommandOutbox(),
+          cacheScope = { current },
+          gatewayAdvertisesCapability = { true },
+          json = json,
+          requestGateway = { _, _ -> error("must use captured lease") },
+          captureRequestLease = { captured ->
+            GatewaySession.RequestLease(
+              endpointStableId = captured!!.gatewayId,
+              isCurrentImpl = { captured == current },
+            ) { method, _, _, enqueue ->
+              enqueue {}
+              requests += method
+              appended.await()
+            }
+          },
+        )
+      val route = requireNotNull(controller.captureSessionGroupRoute("alpha"))
+      val create = async { controller.createSessionGroup(route, "Work", sessionKey = "agent:alpha:row") }
+      runCurrent()
+      current = ChatCacheScope("gateway-b", 2L)
+      appended.complete("""{"groups":[{"name":"Work","position":0}]}""")
+      assertFalse(create.await())
+      assertEquals(listOf("sessions.groups.put"), requests)
+      assertEquals(emptyList<String>(), controller.sessionGroupCatalog.value.names)
+    }
+
+  @Test
+  fun groupDeleteFailureDoesNotFallBackToPerMemberPatches() =
+    runTest {
+      val requests = mutableListOf<String>()
+      val controller =
+        ChatController(
+          scope = this,
+          commandOutbox = createChatCommandOutbox(),
+          cacheScope = { ChatCacheScope("gateway-test", 1L) },
+          gatewayAdvertisesCapability = { true },
+          json = json,
+          requestGateway = { method, _ ->
+            requests += method
+            error("permission denied")
+          },
+        )
+      val route = requireNotNull(controller.captureSessionGroupRoute("main"))
+      assertFalse(controller.dissolveSessionGroup(route, "Work"))
+      assertEquals(listOf("sessions.groups.delete"), requests)
+      assertEquals("permission denied", controller.sessionGroupCatalog.value.error)
     }
 
   @Test

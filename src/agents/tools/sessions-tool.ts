@@ -189,7 +189,7 @@ const SessionsToolSchema = Type.Object(
     names: Type.Optional(
       Type.Array(Type.String(), {
         description:
-          "group_set: full replacement of the ordered group catalog. Array order becomes sidebar order; new names are created; empty groups left out are deleted. Dropping a group that still has member sessions is rejected — remove it with group_delete first. Never moves sessions. To reorder, pass the complete current list in the new order.",
+          "group_set: full replacement of this agent’s ordered group catalog. Array order becomes sidebar order; new names are created; empty groups left out are deleted. Dropping a group that still has member sessions is rejected — remove it with group_delete first. Never moves sessions. To reorder, pass the complete current list in the new order.",
       }),
     ),
     name: Type.Optional(
@@ -348,7 +348,7 @@ export function createSessionsTool(opts: SessionsToolOptions = {}): AnyAgentTool
     label: "Sessions",
     name: "sessions",
     description:
-      "cloud_profiles lists configured cloud profiles; pass profileId for their OS and machine choices. Session settings, ownership, reset, delete, and custom sidebar groups: patch label/icon/group/status, pin, archive/restore, model/thinking override. patch with group files sessions into a group; targets applies the same patch to up to 100 visible sessions; group_list shows the catalog; group_set replaces the whole ordered catalog; group_rename/group_delete change one group everywhere. assign_owner hands responsibility to a human or agent; reset/delete visible sessions.",
+      "cloud_profiles lists configured cloud profiles; pass profileId for their OS and machine choices. Session settings, ownership, reset, delete, and custom sidebar groups: patch label/icon/group/status, pin, archive/restore, model/thinking override. patch with group files sessions into a group; targets applies the same patch to up to 100 visible sessions; group_list shows this agent’s catalog; group_set replaces its ordered catalog; group_rename/group_delete affect only this agent’s group. assign_owner hands responsibility to a human or agent; reset/delete visible sessions.",
     parameters: SessionsToolSchema,
     execute: async (_toolCallId, rawArgs) => {
       const params = rawArgs as Record<string, unknown>;
@@ -450,9 +450,6 @@ export function createSessionsTool(opts: SessionsToolOptions = {}): AnyAgentTool
       if (action === "cloud_profiles") {
         return await listSessionCloudProfiles(params, gatewayRequest);
       }
-      if (action === "group_list") {
-        return jsonResult(await callGateway("sessions.groups.list", {}));
-      }
       if (action === "assign_owner") {
         const ownerType = readToolStringParam(params, "ownerType", { required: true });
         const ownerId = normalizeOptionalString(
@@ -486,23 +483,39 @@ export function createSessionsTool(opts: SessionsToolOptions = {}): AnyAgentTool
           },
         });
       }
-      // Group catalog is global by contract. Owner-only tool gating protects mutations.
-      if (action === "group_set") {
-        const names = readGroupNames(params.names);
-        return jsonResult(await callGateway("sessions.groups.put", { names }));
-      }
-      if (action === "group_rename") {
+      if (
+        action === "group_list" ||
+        action === "group_set" ||
+        action === "group_rename" ||
+        action === "group_delete"
+      ) {
+        const groupParams: Record<string, unknown> =
+          action === "group_list"
+            ? {}
+            : action === "group_set"
+              ? { names: readGroupNames(params.names) }
+              : action === "group_rename"
+                ? { name: readGroupName(params.name, "name"), to: readGroupName(params.to, "to") }
+                : { name: readGroupName(params.name, "name") };
+        const context = resolveSessionToolContext(opts);
+        const agentId = resolveSessionAgentId({
+          config: context.cfg,
+          sessionKey: context.effectiveRequesterKey,
+          agentId: opts.requesterAgentIdOverride,
+        });
+        const method =
+          action === "group_list"
+            ? "sessions.groups.list"
+            : action === "group_set"
+              ? "sessions.groups.put"
+              : action === "group_rename"
+                ? "sessions.groups.rename"
+                : "sessions.groups.delete";
         return jsonResult(
-          await callGateway("sessions.groups.rename", {
-            name: readGroupName(params.name, "name"),
-            to: readGroupName(params.to, "to"),
-          }),
-        );
-      }
-      if (action === "group_delete") {
-        return jsonResult(
-          await callGateway("sessions.groups.delete", {
-            name: readGroupName(params.name, "name"),
+          await gatewayRequest({
+            method,
+            params: { ...groupParams, agentId },
+            agentToolCaller: { agentId, sessionKey: context.effectiveRequesterKey },
           }),
         );
       }

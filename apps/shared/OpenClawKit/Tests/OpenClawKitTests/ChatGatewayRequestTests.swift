@@ -478,6 +478,79 @@ struct ChatGatewayRequestTests {
         #expect(delete.params["name"]?.value as? String == "Personal")
     }
 
+    @Test func `all group requests carry the captured owner without changing result contracts`() {
+        let requests = [
+            OpenClawChatGatewayRequests.sessionGroupsList(agentID: "research"),
+            OpenClawChatGatewayRequests.sessionGroupsPut(names: ["Work"], agentID: "research", append: true),
+            OpenClawChatGatewayRequests.sessionGroupsRename(name: "Work", to: "Lab", agentID: "research"),
+            OpenClawChatGatewayRequests.sessionGroupsDelete(name: "Work", agentID: "research"),
+            OpenClawChatGatewayRequests.sessionGroupsDefaultsList(agentID: "research"),
+            OpenClawChatGatewayRequests.sessionGroupsDefaultsSet(
+                name: "Work", agentID: "research", cwd: "/repo", worktree: false),
+        ]
+        for request in requests {
+            #expect(request.params["agentId"]?.value as? String == "research")
+        }
+        #expect(requests[1].params["append"]?.value as? Bool == true)
+        #expect(requests[4].method == "sessions.groups.defaults")
+        #expect(requests[5].method == "sessions.groups.update")
+        #expect(requests[5].params["worktree"]?.value as? Bool == false)
+    }
+
+    @Test func `only legacy append carries the import receipt`() {
+        let create = OpenClawChatGatewayRequests.sessionGroupsPut(names: ["Work"], agentID: "main", append: true)
+        let reorder = OpenClawChatGatewayRequests.sessionGroupsPut(
+            names: ["Work"], agentID: "main", importID: "ignored")
+        let legacy = OpenClawChatGatewayRequests.sessionGroupsPut(
+            names: ["Work"], agentID: "main", append: true, importID: "receipt-1")
+        #expect(create.params["importId"] == nil)
+        #expect(reorder.params["importId"] == nil)
+        #expect(legacy.params["importId"]?.value as? String == "receipt-1")
+        #expect(legacy.params["append"]?.value as? Bool == true)
+    }
+
+    private actor GroupRequestRecorder {
+        var requests: [OpenClawChatGatewayRequest] = []
+        var fails = false
+
+        func failRequests() { self.fails = true }
+
+        func send(_ request: OpenClawChatGatewayRequest) throws -> Data {
+            self.requests.append(request)
+            if self.fails { throw URLError(.cannotConnectToHost) }
+            return Data(#"{"ok":true,"groups":[{"name":"Work","position":0}],"updatedSessions":0}"#.utf8)
+        }
+    }
+
+    @Test func `group lease binds canonical owner and never retries a failed scoped write globally`() async throws {
+        let recorder = GroupRequestRecorder()
+        let lease = try OpenClawChatSessionGroupsRouteLease(
+            agentID: " Research ", supportsAgentScope: true,
+            request: { try await recorder.send($0) })
+        _ = try await lease.listGroups()
+        _ = try await lease.appendGroups(names: ["Work"])
+        await recorder.failRequests()
+        await #expect(throws: URLError.self) { try await lease.deleteGroup(name: "Work") }
+        let requests = await recorder.requests
+        #expect(lease.agentID == "research")
+        #expect(requests.count == 3)
+        #expect(requests.allSatisfy { $0.params["agentId"]?.value as? String == "research" })
+        #expect(requests[1].params["append"]?.value as? Bool == true)
+    }
+
+    @Test func `old Gateway and wildcard group owners fail before dispatch`() async {
+        let recorder = GroupRequestRecorder()
+        #expect(throws: OpenClawChatSessionGroupsError.self) {
+            try OpenClawChatSessionGroupsRouteLease(
+                agentID: "research", supportsAgentScope: false, request: { try await recorder.send($0) })
+        }
+        #expect(throws: OpenClawChatSessionGroupsError.self) {
+            try OpenClawChatSessionGroupsRouteLease(
+                agentID: "*", supportsAgentScope: true, request: { try await recorder.send($0) })
+        }
+        #expect(await recorder.requests.isEmpty)
+    }
+
     private actor MutationRequestRecorder {
         var requests: [OpenClawChatGatewayRequest] = []
 
@@ -497,6 +570,7 @@ struct ChatGatewayRequestTests {
                     policy: .scopeBareKeysToSelectedAgent)
             },
             unreadAckContract: true,
+            agentScopedGroups: true,
             request: { await recorder.send($0) })
         try await lease.patchSession(
             key: "work",
@@ -539,6 +613,40 @@ struct ChatGatewayRequestTests {
             "key": AnyCodable("agent:reviewer:work"),
             "deleteTranscript": AnyCodable(true),
         ])
+    }
+
+    @Test func oldGatewayCategoryActionsFailBeforeDispatchWhilePinningStillWorks() async throws {
+        let recorder = MutationRequestRecorder()
+        let lease = OpenClawChatSessionMutationRouteLease(
+            sessionTarget: { OpenClawChatSessionTarget(sessionKey: $0, agentID: "research") },
+            unreadAckContract: true,
+            agentScopedGroups: false,
+            request: { await recorder.send($0) })
+        for category in ["Existing", nil] as [String?] {
+            await #expect(throws: OpenClawChatSessionGroupsError.self) {
+                try await lease.patchSession(
+                    key: "work", label: nil, category: .some(category),
+                    pinned: nil, archived: nil, unread: nil)
+            }
+        }
+        #expect(await recorder.requests.isEmpty)
+        try await lease.patchSession(
+            key: "work", label: nil, category: nil, pinned: true, archived: nil, unread: nil)
+        #expect(await recorder.requests.count == 1)
+    }
+
+    @Test func unknownGroupCapabilityCannotDispatchCategoryChanges() async {
+        let recorder = MutationRequestRecorder()
+        let lease = OpenClawChatSessionMutationRouteLease(
+            sessionTarget: { OpenClawChatSessionTarget(sessionKey: $0, agentID: "research") },
+            unreadAckContract: true,
+            request: { await recorder.send($0) })
+        await #expect(throws: OpenClawChatTransportSendError.self) {
+            try await lease.patchSession(
+                key: "work", label: nil, category: .some("New"),
+                pinned: nil, archived: nil, unread: nil)
+        }
+        #expect(await recorder.requests.isEmpty)
     }
 
     @Test func `unknown captured read capability only blocks read mutations`() async throws {
@@ -744,6 +852,17 @@ struct ChatGatewayRequestTests {
 }
 
 struct ChatGatewayPayloadCodecTests {
+    @Test func `group capability is read from the existing hello capabilities field`() throws {
+        let data = Data("""
+        {"type":"hello-ok","protocol":4,"server":{},
+         "features":{"capabilities":["sessions.groups.agent-scoped"]},
+         "snapshot":{"presence":[],"health":{},"stateVersion":{"presence":0,"health":0},"uptimeMs":0},
+         "auth":{},"policy":{}}
+        """.utf8)
+        let hello = try JSONDecoder().decode(HelloOk.self, from: data)
+        #expect(hello.supportsServerCapability(.agentScopedSessionGroups))
+    }
+
     @Test func `published catalog hello enables direct session model choices`() throws {
         let data = Data("""
         {"type":"hello-ok","protocol":4,"server":{},

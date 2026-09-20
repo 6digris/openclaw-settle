@@ -85,8 +85,9 @@ export function subscribeBootRecordPersistence({
         scope,
         profileId: gateway.snapshot.selfUser?.id ?? null,
         agents: agentsList,
-        groups: [...sessions.state.groupSettings],
-        sectionOrder: [...sessions.state.sectionOrder],
+        // Boot record v2 has no group owner; only the live scoped catalog supplies groups.
+        groups: [],
+        sectionOrder: [],
       });
     }
   };

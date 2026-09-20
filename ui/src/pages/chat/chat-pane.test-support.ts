@@ -347,6 +347,13 @@ export function createSessionCapabilityFixture(
     createSessionRowProvenance(),
   );
   return {
+    groupsSnapshot: () => ({
+      settings: overrides.state?.groups?.map((name, position) => ({ name, position })) ?? [],
+      sectionOrder: [],
+      generation: 0,
+      status: "ready",
+    }),
+    groupsLoad: async () => [],
     deletionState: () => undefined,
     archiveVisibility: archiveState.visibility,
     beginArchive: archiveState.beginPending,

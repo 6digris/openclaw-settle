@@ -168,6 +168,12 @@ describe("new-session catalog target", () => {
     const state = { groupSettings: [] as Array<{ name: string; position: number }> };
     const sessions = {
       state,
+      groupsSnapshot: () => ({
+        settings: state.groupSettings,
+        sectionOrder: [],
+        generation: 1,
+        status: "ready",
+      }),
       groupsGeneration: () => 1,
       groupsStatus: () => "ready",
     } as unknown as SessionCapability;

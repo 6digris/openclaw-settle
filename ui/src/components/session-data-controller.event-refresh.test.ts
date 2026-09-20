@@ -248,7 +248,7 @@ describe("filtered sidebar session event refresh", () => {
       expect(load).not.toHaveBeenCalled();
       disconnectHost();
       bootstrap.setForegroundPane({}, { sessionKey: "agent:main:pending", client, ready: true });
-      await bootstrap.run(context.sessions.groupsLoad, async () => {});
+      await bootstrap.run("session-groups:main", async () => {});
       expect(load).toHaveBeenCalledOnce();
     } finally {
       replacement.hostDisconnected();

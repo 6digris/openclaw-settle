@@ -52,7 +52,7 @@ class ClientDatabasesTest {
       createV2Fixture(context.getDatabasePath(names.legacy).path)
 
       withCleanDatabases(names, setOf("gateway-test")) { databases ->
-        assertEquals(3, databases.gatewayCacheDatabase().userVersion())
+        assertEquals(4, databases.gatewayCacheDatabase().userVersion())
         assertEquals(1, databases.clientStateDatabase().userVersion())
 
         val rows = databases.commandOutbox().load("gateway-test").associateBy { it.id }
@@ -144,6 +144,45 @@ class ClientDatabasesTest {
       withCleanDatabases(names) { reopened ->
         assertTrue(reopened.transcriptCache().loadTranscript("gateway-a", "main", "main").isEmpty())
         assertEquals(listOf("preserve me"), reopened.commandOutbox().load("gateway-a").map { it.text })
+      }
+    }
+
+  @Test
+  fun legacyGroupImportClaimSurvivesRestartAndCannotMoveToAnotherOwner() =
+    runTest {
+      val names = databaseNames()
+      val owner = LegacySessionGroupOwner("gateway-a", "profile-a", "default-agent")
+      var importId: String? = null
+      withDatabases(names) { first ->
+        importId = requireNotNull(first.claimLegacySessionGroupImport(owner))
+        assertEquals(importId, first.claimLegacySessionGroupImport(owner))
+        assertEquals(importId, UUID.fromString(importId).toString())
+      }
+      withCleanDatabases(names) { reopened ->
+        assertEquals(importId, reopened.claimLegacySessionGroupImport(owner))
+        assertNull(reopened.claimLegacySessionGroupImport(owner.copy(gatewayId = "gateway-b")))
+        assertNull(reopened.claimLegacySessionGroupImport(owner.copy(profileId = "profile-b")))
+        assertNull(reopened.claimLegacySessionGroupImport(owner.copy(agentId = "research")))
+        assertEquals(importId, reopened.claimLegacySessionGroupImport(owner))
+      }
+    }
+
+  @Test
+  fun versionThreeCacheUpgradePreservesTranscriptAndAddsOwnedGroups() =
+    runTest {
+      val names = databaseNames()
+      val context = RuntimeEnvironment.getApplication()
+      withDatabases(names) { first -> seedGateway(first, "gateway-a", "keep offline") }
+      SQLiteDatabase.openDatabase(context.getDatabasePath(names.cache).path, null, SQLiteDatabase.OPEN_READWRITE).use {
+        it.execSQL("DROP TABLE cached_session_groups")
+        it.execSQL("DELETE FROM room_master_table")
+        it.version = 3
+      }
+      withCleanDatabases(names) { reopened ->
+        assertEquals(listOf("keep offline"), reopened.transcriptCache().loadTranscript("gateway-a", "main", "main").map { it.content.single().text })
+        reopened.transcriptCache().saveSessionGroups("gateway-a", "main", "owned-catalog")
+        assertEquals("owned-catalog", reopened.transcriptCache().loadSessionGroups("gateway-a", "main"))
+        assertEquals(null, reopened.transcriptCache().loadSessionGroups("gateway-a", "research"))
       }
     }
 

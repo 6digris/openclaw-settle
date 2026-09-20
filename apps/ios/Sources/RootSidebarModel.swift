@@ -523,6 +523,7 @@ final class RootSidebarModel {
         appModel: NodeAppModel,
         allowCachedFallback: Bool = true) async -> RosterLoadResult
     {
+        await appModel.refreshSessionGroups()
         do {
             return try await .success(appModel.loadChatSessionRoster(
                 limit: Self.sessionLimit,

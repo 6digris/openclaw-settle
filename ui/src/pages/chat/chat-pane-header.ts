@@ -41,6 +41,7 @@ import { ChatPaneDiscussion } from "./chat-pane-discussion.ts";
 import { sidebarPanelDefinitions } from "./chat-pane-embedded-panels.ts";
 import { resolveChatPaneDesktopTarget, resolveChatPanePlacement } from "./chat-pane-placement.ts";
 import { readChatSessionActionAccess } from "./chat-session-action-access.ts";
+import { resolveChatAgentId } from "./chat-state-route.ts";
 import { renderBackgroundTasksToggle } from "./components/chat-background-tasks-render.ts";
 import type { BackgroundTasksProps } from "./components/chat-background-tasks.types.ts";
 import { isChatRunWorking } from "./components/chat-composer.ts";
@@ -485,8 +486,10 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
     const key = this.state?.sessionKey ?? "";
     const result = this.state?.sessionsResult;
     const knownGroups = collectKnownSessionGroups(
-      this.context.sessions?.state?.groups ?? [],
-      this.context.sessions?.state?.result?.sessions ?? [],
+      this.context.sessions
+        ?.groupsSnapshot(this.state ? resolveChatAgentId(this.state) : row?.agentId)
+        .settings.map((group) => group.name) ?? [],
+      row ? [row] : [],
     );
     const showOwnerChip = (result?.owners?.length ?? 0) >= 2 || (row?.participantCount ?? 0) > 0;
     const personActivity = this.personActivityRouting();
@@ -653,6 +656,9 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
       onCancelRename: () => this.cancelHeaderRename(),
       onMenuOpenChange: (open) => {
         if (open && row) {
+          void this.context.sessions.groupsLoad(
+            this.state ? resolveChatAgentId(this.state) : row.agentId,
+          );
           void this.loadHeaderMenuData(row, agentWorkspace, workspaceGit);
         }
       },

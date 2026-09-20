@@ -159,7 +159,11 @@ export class SessionDataController implements ReactiveController, SessionCatalog
       )
       .watch(
         () => this.context?.agentSelection,
-        (agentSelection, notify) => agentSelection.subscribe(notify),
+        (agentSelection, notify) =>
+          agentSelection.subscribe(() => {
+            this.synchronizeSessionScope();
+            notify();
+          }),
         () => this.synchronizeSessionScope(),
       )
       .watch(
@@ -294,6 +298,8 @@ export class SessionDataController implements ReactiveController, SessionCatalog
     this.sessionCatalogRefreshStatus = createPanelRefreshStatus();
 
     if (agentChanged || catalogAgentChanged) {
+      this.invalidateSessionMutations();
+      this.host.dismissTransientMenus();
       // Catalog cursors and rows belong to the selected agent, not just its host.
       this.sessionCatalogs = [];
       this.sessionCatalogPageDepths.clear();
@@ -410,9 +416,14 @@ export class SessionDataController implements ReactiveController, SessionCatalog
     }
     this.updateSessions(sessions);
     if (this.context?.gateway.snapshot.phase === "connected") {
-      void this.context.connectionBootstrap.run(sessions.groupsLoad, () => sessions.groupsLoad(), {
-        background: true,
-      });
+      const agentId = this.host.selectedAgentIdForSessions();
+      void this.context.connectionBootstrap.run(
+        "session-groups:" + agentId,
+        () => sessions.groupsLoad(agentId),
+        {
+          background: true,
+        },
+      );
       if (sourceChanged && hasSidebarListFilter(this.host)) {
         void this.scheduleSidebarSessions();
       }
@@ -736,7 +747,8 @@ export class SessionDataController implements ReactiveController, SessionCatalog
     this.requestSessionDataUpdate();
   }
 
-  beginSessionMutation(): SidebarSessionMutationScope | null {
+  beginSessionMutation(agentId?: string): SidebarSessionMutationScope | null {
+    this.synchronizeSessionScope();
     const context = this.context;
     if (!context || !this.host.connected) {
       return null;
@@ -754,12 +766,13 @@ export class SessionDataController implements ReactiveController, SessionCatalog
       gateway,
       sessions: context.sessions,
       client,
-      selectedAgentId: this.host.selectedAgentIdForSessions(),
+      selectedAgentId: agentId ?? this.host.selectedAgentIdForSessions(),
       signal: this.sessionMutationAbortController.signal,
     };
   }
 
   isSessionMutationScopeCurrent(scope: SidebarSessionMutationScope): boolean {
+    this.synchronizeSessionScope();
     const context = this.context;
     const gateway = context?.gateway;
     return (

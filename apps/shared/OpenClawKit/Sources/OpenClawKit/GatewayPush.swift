@@ -1,6 +1,7 @@
 import OpenClawProtocol
 
 public enum GatewayServerCapability: String, CaseIterable, Sendable {
+    case agentScopedSessionGroups = "sessions.groups.agent-scoped"
     case chatSendRoutingContract = "chat-send-routing-contract"
     case sessionScopedChatMetadata = "session-scoped-chat-metadata"
     case publishedModelCatalog = "published-model-catalog"

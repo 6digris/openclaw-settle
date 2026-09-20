@@ -274,36 +274,57 @@ public enum OpenClawChatGatewayRequests {
             timeoutMs: timeoutMs)
     }
 
-    public static func sessionGroupsList() -> OpenClawChatGatewayRequest {
-        OpenClawChatGatewayRequest(
-            method: "sessions.groups.list",
-            timeoutMs: self.defaultTimeoutMs)
+    public static func sessionGroupsList(agentID: String? = nil) -> OpenClawChatGatewayRequest {
+        var params: [String: AnyCodable] = [:]
+        self.add(agentID, to: &params, key: "agentId")
+        return OpenClawChatGatewayRequest(
+            method: "sessions.groups.list", params: params, timeoutMs: self.defaultTimeoutMs)
     }
 
-    public static func sessionGroupsPut(names: [String]) -> OpenClawChatGatewayRequest {
-        OpenClawChatGatewayRequest(
-            method: "sessions.groups.put",
-            params: ["names": AnyCodable(names)],
-            timeoutMs: self.mutationTimeoutMs)
+    public static func sessionGroupsPut(
+        names: [String], agentID: String? = nil, append: Bool = false,
+        importID: String? = nil) -> OpenClawChatGatewayRequest
+    {
+        var params = ["names": AnyCodable(names)]
+        self.add(agentID, to: &params, key: "agentId")
+        if append {
+            params["append"] = AnyCodable(true)
+            self.add(importID, to: &params, key: "importId")
+        }
+        return OpenClawChatGatewayRequest(
+            method: "sessions.groups.put", params: params, timeoutMs: self.mutationTimeoutMs)
     }
 
     public static func sessionGroupsRename(
-        name: String,
-        to: String) -> OpenClawChatGatewayRequest
+        name: String, to: String, agentID: String? = nil) -> OpenClawChatGatewayRequest
     {
-        OpenClawChatGatewayRequest(
-            method: "sessions.groups.rename",
-            params: [
-                "name": AnyCodable(name),
-                "to": AnyCodable(to),
-            ],
-            timeoutMs: self.mutationTimeoutMs)
+        var params = ["name": AnyCodable(name), "to": AnyCodable(to)]
+        self.add(agentID, to: &params, key: "agentId")
+        return OpenClawChatGatewayRequest(
+            method: "sessions.groups.rename", params: params, timeoutMs: self.mutationTimeoutMs)
     }
 
-    public static func sessionGroupsDelete(name: String) -> OpenClawChatGatewayRequest {
+    public static func sessionGroupsDelete(name: String, agentID: String? = nil) -> OpenClawChatGatewayRequest {
+        var params = ["name": AnyCodable(name)]
+        self.add(agentID, to: &params, key: "agentId")
+        return OpenClawChatGatewayRequest(
+            method: "sessions.groups.delete", params: params, timeoutMs: self.mutationTimeoutMs)
+    }
+
+    public static func sessionGroupsDefaultsList(agentID: String) -> OpenClawChatGatewayRequest {
         OpenClawChatGatewayRequest(
-            method: "sessions.groups.delete",
-            params: ["name": AnyCodable(name)],
+            method: "sessions.groups.defaults",
+            params: ["agentId": AnyCodable(agentID)], timeoutMs: self.defaultTimeoutMs)
+    }
+
+    public static func sessionGroupsDefaultsSet(
+        name: String, agentID: String, cwd: String?, worktree: Bool) -> OpenClawChatGatewayRequest
+    {
+        OpenClawChatGatewayRequest(
+            method: "sessions.groups.update",
+            params: ["agentId": AnyCodable(agentID), "name": AnyCodable(name),
+                     "cwd": cwd.map(AnyCodable.init) ?? AnyCodable(NSNull()),
+                     "worktree": AnyCodable(worktree)],
             timeoutMs: self.mutationTimeoutMs)
     }
 

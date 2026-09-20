@@ -25,6 +25,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -77,14 +79,21 @@ internal interface ClientStateControlDao {
 
 /** Disposable gateway-derived projections. Schema mismatches and corruption rebuild this file. */
 @Database(
-  entities = [CachedSessionEntity::class, CachedMessageEntity::class, CachedGatewayOwnerEntity::class],
-  version = 3,
+  entities = [CachedSessionEntity::class, CachedMessageEntity::class, CachedGatewayOwnerEntity::class, CachedSessionGroupsEntity::class],
+  version = 4,
   exportSchema = true,
 )
 internal abstract class GatewayCacheDatabase : RoomDatabase() {
   abstract fun dao(): ChatCacheDao
 
   companion object {
+    internal val MIGRATION_3_4 =
+      object : Migration(3, 4) {
+        override suspend fun migrate(connection: SQLiteConnection) {
+          connection.execSQL("CREATE TABLE IF NOT EXISTS cached_session_groups (gatewayId TEXT NOT NULL, agentId TEXT NOT NULL, catalogJson TEXT NOT NULL, PRIMARY KEY(gatewayId, agentId))")
+        }
+      }
+
     suspend fun open(
       context: Context,
       name: String = GATEWAY_CACHE_DB_NAME,
@@ -94,6 +103,7 @@ internal abstract class GatewayCacheDatabase : RoomDatabase() {
       fun build(): GatewayCacheDatabase =
         Room
           .databaseBuilder(appContext, GatewayCacheDatabase::class.java, name)
+          .addMigrations(MIGRATION_3_4)
           // Cache rows are gateway-owned projections. A missing migration means rebuild, and
           // dropAllTables also removes obsolete cache tables left by older formats.
           .fallbackToDestructiveMigration(true)
@@ -558,6 +568,24 @@ internal class AndroidClientDatabases private constructor(
 
   fun commandOutbox(): ChatCommandOutbox = commandOutbox
 
+  /** Claims one durable destination and receipt ID before sending any legacy group mutation. */
+  internal suspend fun claimLegacySessionGroupImport(owner: LegacySessionGroupOwner): String? {
+    val state = ready().clientState
+    val key = "session-groups-legacy-import-owner"
+    return state.withWriteTransaction {
+      val existing = state.controlDao().metadataValue(key)
+      val claim =
+        if (existing == null) {
+          LegacySessionGroupImport(owner, UUID.randomUUID().toString()).also {
+            state.controlDao().upsertMetadata(ClientStateMetadataEntity(key, Json.encodeToString(it)))
+          }
+        } else {
+          Json.decodeFromString<LegacySessionGroupImport>(existing)
+        }
+      claim.importId.takeIf { claim.owner == owner && it.isNotBlank() }
+    }
+  }
+
   suspend fun stageGatewayRemoval(gatewayId: String) = ready().stageGatewayRemoval(gatewayId)
 
   suspend fun cancelGatewayRemoval(gatewayId: String) = ready().cancelGatewayRemoval(gatewayId)
@@ -588,6 +616,17 @@ internal class AndroidClientDatabases private constructor(
 private class DeferredChatTranscriptCache(
   private val ready: suspend () -> OpenedAndroidClientDatabases,
 ) : ChatTranscriptCache {
+  override suspend fun loadSessionGroups(
+    gatewayId: String,
+    agentId: String,
+  ): String? = ready().transcriptCache.loadSessionGroups(gatewayId, agentId)
+
+  override suspend fun saveSessionGroups(
+    gatewayId: String,
+    agentId: String,
+    catalogJson: String,
+  ) = ready().transcriptCache.saveSessionGroups(gatewayId, agentId, catalogJson)
+
   override suspend fun loadLastDefaultAgentId(gatewayId: String): String? = ready().transcriptCache.loadLastDefaultAgentId(gatewayId)
 
   override suspend fun saveLastDefaultAgentId(

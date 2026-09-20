@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { performance } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
 import { expect, test, vi } from "vitest";
+import * as sessionAccessor from "../config/sessions/session-accessor.js";
 import { loadSessionEntry, upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import * as sqliteIntegrity from "../infra/sqlite-integrity.js";
@@ -45,9 +46,9 @@ test.each([false, true])(
         },
       };
       const parse = vi.spyOn(JSON, "parse");
-      const readTargets = () => {
+      const readTargets = (agentId: string) => {
         parse.mockClear();
-        const targets = resolveSessionGroupMutationTargetsByName(config);
+        const targets = resolveSessionGroupMutationTargetsByName(config, agentId);
         expect(
           parse.mock.calls.filter(
             ([json]) => json.includes('"skillsSnapshot"') || json.includes('"systemPromptReport"'),
@@ -62,14 +63,11 @@ test.each([false, true])(
         if (cold) {
           closeOpenClawAgentDatabasesForTest();
         }
-        expect(readTargets()).toEqual(new Map([["Shared work", scopes]]));
+        expect(readTargets("main")).toEqual(new Map([["Shared work", [scopes[0]]]]));
+        expect(readTargets("research")).toEqual(new Map([["Shared work", [scopes[1]]]]));
         await upsertSessionEntryCore(scopes[0], { ...entry, category: "Renamed" });
-        expect(readTargets()).toEqual(
-          new Map([
-            ["Renamed", [scopes[0]]],
-            ["Shared work", [scopes[1]]],
-          ]),
-        );
+        expect(readTargets("main")).toEqual(new Map([["Renamed", [scopes[0]]]]));
+        expect(readTargets("research")).toEqual(new Map([["Shared work", [scopes[1]]]]));
         const database = openOpenClawAgentDatabase(scopes[0]);
         const external = new DatabaseSync(database.path);
         try {
@@ -81,12 +79,8 @@ test.each([false, true])(
         } finally {
           external.close();
         }
-        expect(readTargets()).toEqual(
-          new Map([
-            ["External", [scopes[0]]],
-            ["Shared work", [scopes[1]]],
-          ]),
-        );
+        expect(readTargets("main")).toEqual(new Map([["External", [scopes[0]]]]));
+        expect(readTargets("research")).toEqual(new Map([["Shared work", [scopes[1]]]]));
         parse.mockRestore();
         expect(loadSessionEntry(scopes[0])).toMatchObject({
           skillsSnapshot: entry.skillsSnapshot,
@@ -101,7 +95,7 @@ test.each([false, true])(
   },
 );
 
-test("discovers groups across more than the handle cap without writable database maintenance", async () => {
+test("reads each selected owner in a fleet beyond the handle cap without scanning other owners or writable maintenance", async () => {
   await withStateDirEnv("openclaw-session-group-readonly-", async ({ stateDir }) => {
     setStateDirEnv(fs.realpathSync(stateDir));
     closeOpenClawAgentDatabasesForTest();
@@ -125,6 +119,7 @@ test("discovers groups across more than the handle cap without writable database
     }
     closeOpenClawAgentDatabasesForTest();
 
+    const listEntries = vi.spyOn(sessionAccessor, "listSessionEntriesReadOnly");
     const integritySpy = vi.spyOn(sqliteIntegrity, "assertSqliteIntegrity");
     const claimSpy = vi.spyOn(agentDatabaseLeases, "claimOpenClawAgentDatabaseLease");
     const releaseSpy = vi.spyOn(agentDatabaseLeases, "releaseOpenClawAgentDatabaseLease");
@@ -134,7 +129,17 @@ test("discovers groups across more than the handle cap without writable database
       let targets: ReturnType<typeof resolveSessionGroupMutationTargetsByName> | undefined;
       const startedAt = performance.now();
       try {
-        targets = resolveSessionGroupMutationTargetsByName(config);
+        for (const agentId of agentIds) {
+          listEntries.mockClear();
+          targets = resolveSessionGroupMutationTargetsByName(config, agentId);
+          expect(targets.get("Shared work")).toEqual([
+            { agentId, sessionKey: `agent:${agentId}:main` },
+          ]);
+          expect(listEntries).toHaveBeenCalledOnce();
+          expect(listEntries).toHaveBeenCalledWith(
+            expect.objectContaining({ agentId, projection: "list", clone: false }),
+          );
+        }
       } finally {
         console.info(
           JSON.stringify({
@@ -153,9 +158,7 @@ test("discovers groups across more than the handle cap without writable database
         );
       }
 
-      expect(targets?.get("Shared work")).toEqual(
-        agentIds.map((agentId) => ({ agentId, sessionKey: `agent:${agentId}:main` })),
-      );
+      expect(targets?.get("Shared work")).toHaveLength(1);
       expect(integritySpy.mock.calls.length).toBe(0);
       expect(claimSpy.mock.calls.length).toBe(0);
       expect(releaseSpy.mock.calls.length).toBe(0);
@@ -166,6 +169,7 @@ test("discovers groups across more than the handle cap without writable database
       ).toEqual([]);
       expect(listOpenClawAgentDatabasesForTest()).toEqual([]);
     } finally {
+      listEntries.mockRestore();
       integritySpy.mockRestore();
       claimSpy.mockRestore();
       releaseSpy.mockRestore();

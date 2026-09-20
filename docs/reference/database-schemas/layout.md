@@ -15,6 +15,17 @@ title: "Database layout"
 
 The task registry uses the shared state database. Runtime trajectory events live with their sessions in the per-agent database or a configured shared session SQLite store.
 
+### Agent-owned session groups
+
+Custom group catalogs live in shared `agent_session_groups`, keyed by logical
+agent ID and group name. This includes separate owners sharing one physical
+session database. Defaults and positions belong to that same owner; scoped
+section order and the one-time migration receipt live in `config_machine_state`.
+Session `category` metadata remains membership, not the catalog. Retired owners
+retain catalog data without creating a new agent database. See
+[state schema 18](/reference/database-schemas/state-schema-history#state-schema-18)
+for migration, readiness, and older-updater compatibility.
+
 ### Activity session recaps
 
 [Activity](/web/control-ui/settings#activity-tab) stores one optional `activitySummary` object in the existing `session_nodes.entry_json` session metadata. This is a reconstructible cache; the transcript remains canonical. The [approved persistence design](https://github.com/openclaw/openclaw/issues/147383) adds no SQL table, column, or database schema-version change. Current and `v2026.9.4` metadata serializers preserve unknown optional fields; unknown recap payload versions are treated as cache misses.

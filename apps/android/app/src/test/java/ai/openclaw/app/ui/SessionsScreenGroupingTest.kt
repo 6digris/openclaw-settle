@@ -4,6 +4,7 @@ import ai.openclaw.app.chat.ChatSessionAgentStatus
 import ai.openclaw.app.chat.ChatSessionEntry
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SessionsScreenGroupingTest {
@@ -213,8 +214,12 @@ class SessionsScreenGroupingTest {
   }
 
   @Test
-  fun knownGroupsAloneDoNotCreateSectionsWithoutSessions() {
-    assertEquals(emptyList<SessionSection>(), groupSessionEntries(emptyList(), knownGroups = listOf("Beta")))
+  fun ownedEmptyGroupsRemainVisibleWithoutSessions() {
+    assertEquals(listOf("Beta"), groupSessionEntries(emptyList(), knownGroups = listOf("Beta")).map { it.title })
+    val tree = buildSessionTreeSections(emptyList(), knownGroups = listOf("Beta"))
+    assertEquals(listOf("Beta"), tree.map { it.title })
+    assertTrue(tree.single().isCategory)
+    assertTrue(tree.single().entries.isEmpty())
   }
 
   @Test

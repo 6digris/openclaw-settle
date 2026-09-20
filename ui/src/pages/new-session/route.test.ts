@@ -58,7 +58,10 @@ function createContext(params: {
 describe("new-session route catalog target", () => {
   it("does not apply group defaults from a retired connection", async () => {
     const context = {
+      gateway: { snapshot: { assistantAgentId: "main" } },
       sessions: {
+        captureConnectionScope: () => ({ client: {}, epoch: 1 }),
+        isConnectionScopeCurrent: () => true,
         state: {
           groupSettings: [
             { name: "Client", position: 0, cwd: "/gateway-a/client", worktree: true },
@@ -79,7 +82,10 @@ describe("new-session route catalog target", () => {
 
   it("marks a deleted group target missing", async () => {
     const context = {
+      gateway: { snapshot: { assistantAgentId: "main" } },
       sessions: {
+        captureConnectionScope: () => ({ client: {}, epoch: 1 }),
+        isConnectionScopeCurrent: () => true,
         state: { groupSettings: [] },
         groupsLoad: vi.fn(async () => []),
         groupsGeneration: vi.fn(() => 1),

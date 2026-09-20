@@ -25,6 +25,7 @@ import {
   stateCheckpointOptions,
   startupCheckpointOptions,
 } from "./doctor-config-preflight.state-migration.test-helpers.js";
+import { migrateDoctorSessionGroups } from "./doctor-session-groups.js";
 
 const maybeRepairPluginOpenClawHostLinks = getMaybeRepairPluginOpenClawHostLinksMock();
 const {
@@ -100,6 +101,9 @@ describe("runDoctorConfigPreflight state migration", () => {
   });
 
   it("measures current-checkpoint plugin verification stages", async () => {
+    // A build checkpoint is not the group migration receipt. Seed a genuinely
+    // completed catalog for this repeat-startup measurement fixture.
+    await migrateDoctorSessionGroups({ gateway: { mode: "local", port: 19091 } });
     const measuredStages: string[] = [];
     const measure: ConfigSnapshotReadMeasure = async (name, run) => {
       measuredStages.push(name);

@@ -439,10 +439,15 @@ public struct OpenClawChatSessionMutationRouteLease: Sendable {
     public init(
         sessionTarget: @escaping @Sendable (String) -> OpenClawChatSessionTarget,
         unreadAckContract: Bool?,
+        agentScopedGroups: Bool? = nil,
         request: @escaping @Sendable (OpenClawChatGatewayRequest) async throws -> Data)
     {
         self.init(
             patchTarget: { requested, expectedID, expectedUnreadAt, label, category, color, pinned, archived, unread in
+                if category != nil {
+                    guard let agentScopedGroups else { throw OpenClawChatTransportSendError.notDispatched }
+                    guard agentScopedGroups else { throw OpenClawChatSessionGroupsError.upgradeRequired }
+                }
                 guard unread != false || unreadAckContract != nil else {
                     throw OpenClawChatTransportSendError.notDispatched
                 }
@@ -501,15 +506,23 @@ public struct OpenClawChatSessionMutationRouteLease: Sendable {
     }
 }
 
-/// One physical gateway connection captured while a group catalog is shown.
-/// Group replacement submits the complete catalog, so list and mutations must
-/// never retarget independently when the selected gateway changes.
+/// One agent and physical Gateway connection captured while a catalog is shown.
+/// List, append, replacement, and member mutations must never retarget independently
+/// when the selected Gateway or agent changes.
 public struct OpenClawChatSessionGroupsRouteLease: Sendable {
     public typealias ListGroups = @Sendable () async throws -> OpenClawChatSessionGroupsResponse?
     public typealias PutGroups = @Sendable ([String]) async throws -> OpenClawChatSessionGroupsMutationResponse
     public typealias RenameGroup = @Sendable (String, String) async throws -> OpenClawChatSessionGroupsMutationResponse
     public typealias DeleteGroup = @Sendable (String) async throws -> OpenClawChatSessionGroupsMutationResponse
 
+    public typealias ImportGroups = @Sendable (
+        [String], String) async throws -> OpenClawChatSessionGroupsMutationResponse
+    public typealias ImportProfileID = @Sendable () async throws -> String
+
+    public let agentID: String?
+    private let appendGroupsImpl: PutGroups?
+    private let importGroupsImpl: ImportGroups?
+    private let importProfileIDImpl: ImportProfileID?
     private let listGroupsImpl: ListGroups
     private let putGroupsImpl: PutGroups
     private let renameGroupImpl: RenameGroup
@@ -519,8 +532,16 @@ public struct OpenClawChatSessionGroupsRouteLease: Sendable {
         listGroups: @escaping ListGroups,
         putGroups: @escaping PutGroups,
         renameGroup: @escaping RenameGroup,
-        deleteGroup: @escaping DeleteGroup)
+        deleteGroup: @escaping DeleteGroup,
+        agentID: String? = nil,
+        appendGroups: PutGroups? = nil,
+        importGroups: ImportGroups? = nil,
+        importProfileID: ImportProfileID? = nil)
     {
+        self.agentID = agentID
+        self.appendGroupsImpl = appendGroups
+        self.importGroupsImpl = importGroups
+        self.importProfileIDImpl = importProfileID
         self.listGroupsImpl = listGroups
         self.putGroupsImpl = putGroups
         self.renameGroupImpl = renameGroup
@@ -533,6 +554,24 @@ public struct OpenClawChatSessionGroupsRouteLease: Sendable {
 
     public func putGroups(names: [String]) async throws -> OpenClawChatSessionGroupsMutationResponse {
         try await self.putGroupsImpl(names)
+    }
+
+    public func appendGroups(names: [String]) async throws -> OpenClawChatSessionGroupsMutationResponse {
+        guard let appendGroupsImpl else { throw OpenClawChatSessionGroupsError.upgradeRequired }
+        return try await appendGroupsImpl(names)
+    }
+
+    /// Legacy migration alone uses receipts. Ordinary create remains a fresh append.
+    public func importGroups(
+        names: [String], importID: String) async throws -> OpenClawChatSessionGroupsMutationResponse
+    {
+        guard let importGroupsImpl else { throw OpenClawChatSessionGroupsError.upgradeRequired }
+        return try await importGroupsImpl(names, importID)
+    }
+
+    public func importProfileID() async throws -> String {
+        guard let importProfileIDImpl else { throw OpenClawChatSessionGroupsError.upgradeRequired }
+        return try await importProfileIDImpl()
     }
 
     public func renameGroup(name: String, to: String) async throws -> OpenClawChatSessionGroupsMutationResponse {
@@ -898,6 +937,7 @@ public protocol OpenClawChatTransport: Sendable {
     func renameSessionGroup(name: String, to: String) async throws -> OpenClawChatSessionGroupsMutationResponse
     func deleteSessionGroup(name: String) async throws -> OpenClawChatSessionGroupsMutationResponse
     func acquireSessionGroupsRouteLease() async -> OpenClawChatSessionGroupsRouteLease?
+    func acquireSessionGroupsRouteLease(agentID: String) async throws -> OpenClawChatSessionGroupsRouteLease
     // Keep optional patch fields aligned with the writer; protocol requirements cannot declare their defaults.
     // swiftlint:disable:next function_parameter_count
     func patchSession(
@@ -1100,6 +1140,7 @@ extension OpenClawChatTransport {
         let transport = self
         return OpenClawChatSessionMutationRouteLease(
             patchSession: { key, expectedSessionID, _, label, category, color, pinned, archived, unread in
+                guard category == nil else { throw OpenClawChatSessionGroupsError.upgradeRequired }
                 try await transport.patchSession(
                     key: key,
                     expectedSessionID: expectedSessionID,
@@ -1113,6 +1154,12 @@ extension OpenClawChatTransport {
             deleteSession: { key in
                 try await transport.deleteSession(key: key)
             })
+    }
+
+    /// Legacy conformers keep compiling, but cannot silently service a scoped
+    /// request through their unowned global catalog.
+    public func acquireSessionGroupsRouteLease(agentID _: String) async throws -> OpenClawChatSessionGroupsRouteLease {
+        throw OpenClawChatSessionGroupsError.upgradeRequired
     }
 
     public func acquireSessionGroupsRouteLease() async -> OpenClawChatSessionGroupsRouteLease? {

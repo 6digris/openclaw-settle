@@ -58,7 +58,7 @@ describe("committed category patch effects", () => {
     );
     expect(emitSessionsChanged).toHaveBeenCalledWith(
       patch.context,
-      { reason: "groups" },
+      { reason: "groups", agentId: "main" },
       { catalogOnly: true },
     );
     expect(sessionLog.warn).toHaveBeenCalledWith(
@@ -85,5 +85,56 @@ describe("committed category patch effects", () => {
     await publishSessionPatchEffects({ ...params(), targets: [] });
     expect(ensureSessionGroupRegistered).not.toHaveBeenCalled();
     expect(emitSessionsChanged).not.toHaveBeenCalled();
+  });
+  it("registers each committed logical owner once and publishes only those catalogs", async () => {
+    vi.mocked(ensureSessionGroupRegistered).mockReturnValue(true);
+    const patch = params();
+    patch.targets = ["alpha", "beta", "alpha"].map((agentId, index) => ({
+      accessChanged: false,
+      entry: { sessionId: "saved-" + index, updatedAt: 1, category: "Travel" },
+      target: {
+        canonicalKey: "agent:" + agentId + ":travel-" + index,
+        targetAgentId: agentId,
+        fullPatch: { key: "agent:" + agentId + ":travel-" + index, category: "Travel" },
+      },
+    }));
+    await publishSessionPatchEffects(patch);
+    expect(vi.mocked(ensureSessionGroupRegistered).mock.calls).toEqual([
+      ["alpha", "Travel"],
+      ["beta", "Travel"],
+    ]);
+    expect(
+      vi.mocked(emitSessionsChanged).mock.calls.filter(([, event]) => event.reason === "groups"),
+    ).toEqual([
+      [patch.context, { reason: "groups", agentId: "alpha" }, { catalogOnly: true }],
+      [patch.context, { reason: "groups", agentId: "beta" }, { catalogOnly: true }],
+    ]);
+  });
+
+  it("continues registration for another committed owner after a catalog failure", async () => {
+    vi.mocked(ensureSessionGroupRegistered).mockImplementation((agentId) => {
+      if (agentId === "main") {
+        throw new Error("main catalog unavailable");
+      }
+      return true;
+    });
+    const patch = params();
+    patch.targets.push({
+      accessChanged: false,
+      entry: { sessionId: "beta", updatedAt: 1, category: "Travel" },
+      target: {
+        canonicalKey: "agent:beta:travel",
+        targetAgentId: "beta",
+        fullPatch: { key: "agent:beta:travel", category: "Travel" },
+      },
+    });
+    await publishSessionPatchEffects(patch);
+    expect(ensureSessionGroupRegistered).toHaveBeenCalledWith("main", "Travel");
+    expect(ensureSessionGroupRegistered).toHaveBeenCalledWith("beta", "Travel");
+    expect(emitSessionsChanged).toHaveBeenCalledWith(
+      patch.context,
+      { reason: "groups", agentId: "beta" },
+      { catalogOnly: true },
+    );
   });
 });

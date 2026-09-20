@@ -29,6 +29,8 @@ const DATE_BUCKET_ORDER = ["today", "yesterday", "week", "older", UNGROUPED_ID] 
 
 export type SessionRowGroup = {
   id: string;
+  agentId?: string;
+  category?: string | null;
   rows: GatewaySessionRow[];
 };
 
@@ -187,8 +189,34 @@ export function groupSessionRows(params: {
   rows: readonly GatewaySessionRow[];
   mode: SessionsGroupBy;
   knownCategories?: readonly string[];
+  categoryAgentId?: string;
   now?: number;
 }): SessionRowGroup[] {
+  if (params.mode === "category" && params.categoryAgentId !== undefined) {
+    const owners = new Map<string, GatewaySessionRow[]>();
+    if (params.categoryAgentId && params.categoryAgentId !== "*") {
+      owners.set(params.categoryAgentId, []);
+    }
+    for (const row of params.rows) {
+      const agentId =
+        parseAgentSessionKey(row.key)?.agentId ?? row.agentId ?? params.categoryAgentId;
+      const rows = owners.get(agentId) ?? [];
+      rows.push(row);
+      owners.set(agentId, rows);
+    }
+    return [...owners].flatMap(([agentId, rows]) =>
+      groupSessionRows({
+        rows,
+        mode: "category",
+        knownCategories: agentId === params.categoryAgentId ? params.knownCategories : [],
+      }).map((group) => ({
+        rows: group.rows,
+        id: JSON.stringify([agentId, group.id]),
+        agentId,
+        category: group.id || null,
+      })),
+    );
+  }
   const now = params.now ?? Date.now();
   const groupId =
     params.mode === "date"

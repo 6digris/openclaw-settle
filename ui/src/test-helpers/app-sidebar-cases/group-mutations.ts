@@ -29,7 +29,9 @@ function dispatchDragEvent(
 }
 
 describe("AppSidebar group mutation collapsed state", () => {
-  const COLLAPSED_STORAGE_KEY = "openclaw:sidebar:sessions:collapsed-sections";
+  const COLLAPSED_STORAGE_KEY =
+    "openclaw:sidebar:sessions:collapsed-sections:owner:" +
+    JSON.stringify(["ws://gateway.test", null, "main"]);
   let restoreDialogPolyfill: () => void;
 
   beforeEach(() => {
@@ -135,7 +137,9 @@ describe("AppSidebar group mutation collapsed state", () => {
       groupsRename: () => Promise.reject(new Error("rename failed")),
     });
     await renameGroupThroughDialog(sidebar, "Beta");
-    await waitForFast(() => expect(harness.groupsRename).toHaveBeenCalledWith("Alpha", "Beta"));
+    await waitForFast(() =>
+      expect(harness.groupsRename).toHaveBeenCalledWith("Alpha", "Beta", "main"),
+    );
     await Promise.resolve();
     await Promise.resolve();
 
@@ -147,7 +151,9 @@ describe("AppSidebar group mutation collapsed state", () => {
       groupsRename: () => Promise.resolve("completed"),
     });
     await renameGroupThroughDialog(sidebar, "Beta");
-    await waitForFast(() => expect(harness.groupsRename).toHaveBeenCalledWith("Alpha", "Beta"));
+    await waitForFast(() =>
+      expect(harness.groupsRename).toHaveBeenCalledWith("Alpha", "Beta", "main"),
+    );
     await Promise.resolve();
     await Promise.resolve();
 
@@ -165,7 +171,9 @@ describe("AppSidebar group mutation collapsed state", () => {
       groupsRename: () => rename,
     });
     await renameGroupThroughDialog(sidebar, "Beta");
-    await waitForFast(() => expect(harness.groupsRename).toHaveBeenCalledWith("Alpha", "Beta"));
+    await waitForFast(() =>
+      expect(harness.groupsRename).toHaveBeenCalledWith("Alpha", "Beta", "main"),
+    );
 
     gatewayHarness.publish({ phase: "stopped" });
     gatewayHarness.publish({ phase: "connected" });
@@ -181,7 +189,7 @@ describe("AppSidebar group mutation collapsed state", () => {
       groupsDelete: () => Promise.reject(new Error("delete failed")),
     });
     await deleteGroupThroughConfirm(sidebar);
-    await waitForFast(() => expect(harness.groupsDelete).toHaveBeenCalledWith("Alpha"));
+    await waitForFast(() => expect(harness.groupsDelete).toHaveBeenCalledWith("Alpha", "main"));
     await Promise.resolve();
     await Promise.resolve();
 
@@ -193,7 +201,7 @@ describe("AppSidebar group mutation collapsed state", () => {
       groupsDelete: () => Promise.resolve("completed"),
     });
     await deleteGroupThroughConfirm(sidebar);
-    await waitForFast(() => expect(harness.groupsDelete).toHaveBeenCalledWith("Alpha"));
+    await waitForFast(() => expect(harness.groupsDelete).toHaveBeenCalledWith("Alpha", "main"));
     await Promise.resolve();
     await Promise.resolve();
 
@@ -435,6 +443,7 @@ describe("AppSidebar group section ordering", () => {
       expect(harness.groupsPut).toHaveBeenCalledWith(
         ["Alpha", "Beta"],
         ["category:Alpha", "ungrouped", "groups", "category:Beta", "work"],
+        "main",
       ),
     );
   });
@@ -448,6 +457,7 @@ describe("AppSidebar group section ordering", () => {
       expect(harness.groupsPut).toHaveBeenCalledWith(
         ["Beta", "Alpha"],
         ["category:Beta", "ungrouped", "groups", "category:Alpha", "work"],
+        "main",
       ),
     );
   });
@@ -463,6 +473,7 @@ describe("AppSidebar group section ordering", () => {
       expect(harness.groupsPut).toHaveBeenCalledWith(
         ["Beta", "Alpha"],
         ["category:Beta", "ungrouped", "groups", "category:Alpha", "work"],
+        "main",
       ),
     );
     await Promise.resolve();

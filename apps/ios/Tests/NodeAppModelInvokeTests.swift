@@ -3139,6 +3139,8 @@ private final class TimingOutDeviceStatusService: DeviceStatusServicing {
         let sentinelKey = "watch-reset-unrelated-\(UUID().uuidString)"
         let previousQueue = defaults.object(forKey: queueKey)
         let previousMetadata = defaults.object(forKey: metadataKey)
+        let previousGroups = defaults.object(forKey: SessionGroupStore.defaultsKey)
+        defaults.set(["Legacy"], forKey: SessionGroupStore.defaultsKey)
         defaults.set("malformed old queue", forKey: queueKey)
         defaults.set(Data("{}".utf8), forKey: metadataKey)
         defaults.set("keep", forKey: sentinelKey)
@@ -3147,6 +3149,7 @@ private final class TimingOutDeviceStatusService: DeviceStatusServicing {
             reachedRemoval = true
             #expect(defaults.object(forKey: queueKey) == nil)
             #expect(defaults.object(forKey: metadataKey) == nil)
+            #expect(defaults.object(forKey: SessionGroupStore.defaultsKey) == nil)
             #expect(defaults.string(forKey: sentinelKey) == "keep")
             throw CocoaError(.fileWriteUnknown)
         }
@@ -3154,6 +3157,7 @@ private final class TimingOutDeviceStatusService: DeviceStatusServicing {
             appModel.testRemoveAllChatDatabaseFilesHandler = nil
             defaults.set(previousQueue, forKey: queueKey)
             defaults.set(previousMetadata, forKey: metadataKey)
+            defaults.set(previousGroups, forKey: SessionGroupStore.defaultsKey)
             defaults.removeObject(forKey: sentinelKey)
         }
 

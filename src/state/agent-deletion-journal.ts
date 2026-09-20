@@ -22,10 +22,11 @@ import {
   resolveOpenClawRegisteredAgentDatabasePath,
   resolveOpenClawStateSqlitePath,
 } from "./openclaw-state-db.paths.js";
+import { sessionGroupSectionOrderKey } from "./session-group-ownership.js";
 
 type AgentDeletionDatabase = Pick<
   OpenClawStateKyselyDatabase,
-  "agent_databases" | "agent_deletion_journal"
+  "agent_databases" | "agent_deletion_journal" | "agent_session_groups" | "config_machine_state"
 >;
 
 type AgentDeletionPathFenceSnapshot = {
@@ -531,6 +532,18 @@ export function completeAgentDeletionJournalInDatabase(
   // partial cleanup, and remove it only when this exact deletion owner completes.
   if (completed) {
     deleteAgentProvenanceForAgent(database.db, id);
+    // Group ownership follows the same successful purge boundary. Failed/partial
+    // cleanup retains the catalog; the completing owner retires only this agent.
+    executeSqliteQuerySync(
+      database.db,
+      db.deleteFrom("agent_session_groups").where("agent_id", "=", id),
+    );
+    executeSqliteQuerySync(
+      database.db,
+      db
+        .deleteFrom("config_machine_state")
+        .where("state_key", "=", sessionGroupSectionOrderKey(id)),
+    );
   }
   return completed;
 }

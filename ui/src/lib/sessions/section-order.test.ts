@@ -8,7 +8,7 @@ describe("gateway-owned sidebar section order", () => {
     const sectionOrder = ["catalog:codex", "work", "category:Beta", "ungrouped", "category:Alpha"];
     const request = vi.fn(async (method: string, params: unknown) => {
       if (method === "sessions.groups.put") {
-        expect(params).toEqual({ names: ["Beta", "Alpha"], sectionOrder });
+        expect(params).toEqual({ agentId: "main", names: ["Beta", "Alpha"], sectionOrder });
         return {
           ok: true,
           groups: [
@@ -19,7 +19,7 @@ describe("gateway-owned sidebar section order", () => {
         };
       }
       if (method === "sessions.groups.list") {
-        expect(params).toEqual({});
+        expect(params).toEqual({ agentId: "main" });
         return {
           groups: [
             { name: "Beta", position: 0 },
@@ -29,7 +29,7 @@ describe("gateway-owned sidebar section order", () => {
         };
       }
       if (method === "sessions.groups.defaults") {
-        expect(params).toEqual({});
+        expect(params).toEqual({ agentId: "main" });
         return { defaults: [] };
       }
       throw new Error(`Unexpected request: ${method}`);

@@ -182,6 +182,13 @@ export function createManagedSessions(overrides: Partial<SessionCapability> = {}
       groupSettings: [],
       sectionOrder: [],
     },
+    groupsSnapshot: () => ({
+      settings: overrides.state?.groups?.map((name, position) => ({ name, position })) ?? [],
+      sectionOrder: [],
+      generation: 0,
+      status: "ready",
+    }),
+    groupsLoad: vi.fn(async () => []),
     list: vi.fn(async () => null),
     listSnapshot,
     subscribeList,

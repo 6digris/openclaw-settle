@@ -17126,7 +17126,19 @@ public struct SessionsGoalMutationResult: Codable, Sendable {
     }
 }
 
-public struct SessionsGroupsDefaultsParams: Codable, Sendable {}
+public struct SessionsGroupsDefaultsParams: Codable, Sendable {
+    public let agentid: String?
+
+    public init(
+        agentid: String? = nil)
+    {
+        self.agentid = agentid
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case agentid = "agentId"
+    }
+}
 
 public struct SessionsGroupsDefaultsResult: Codable, Sendable {
     public let defaults: [SessionGroupDefaults]
@@ -17139,16 +17151,36 @@ public struct SessionsGroupsDefaultsResult: Codable, Sendable {
 }
 
 public struct SessionsGroupsDeleteParams: Codable, Sendable {
+    public let agentid: String?
     public let name: String
 
     public init(
+        agentid: String? = nil,
         name: String)
     {
+        self.agentid = agentid
         self.name = name
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case agentid = "agentId"
+        case name
     }
 }
 
-public struct SessionsGroupsListParams: Codable, Sendable {}
+public struct SessionsGroupsListParams: Codable, Sendable {
+    public let agentid: String?
+
+    public init(
+        agentid: String? = nil)
+    {
+        self.agentid = agentid
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case agentid = "agentId"
+    }
+}
 
 public struct SessionsGroupsListResult: Codable, Sendable {
     public let groups: [SessionGroup]
@@ -17195,49 +17227,80 @@ public struct SessionsGroupsMutationResult: Codable, Sendable {
 }
 
 public struct SessionsGroupsPutParams: Codable, Sendable {
+    public let agentid: String?
+    public let append: Bool?
+    public let importid: String?
     public let names: [String]
     public let sectionorder: [String]?
 
     public init(
+        agentid: String? = nil,
+        append: Bool? = nil,
+        importid: String? = nil,
         names: [String],
         sectionorder: [String]? = nil)
     {
+        self.agentid = agentid
+        self.append = append
+        self.importid = importid
         self.names = names
         self.sectionorder = sectionorder
     }
 
     private enum CodingKeys: String, CodingKey {
+        case agentid = "agentId"
+        case append
+        case importid = "importId"
         case names
         case sectionorder = "sectionOrder"
     }
 }
 
 public struct SessionsGroupsRenameParams: Codable, Sendable {
+    public let agentid: String?
     public let name: String
     public let to: String
 
     public init(
+        agentid: String? = nil,
         name: String,
         to: String)
     {
+        self.agentid = agentid
         self.name = name
         self.to = to
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case agentid = "agentId"
+        case name
+        case to
     }
 }
 
 public struct SessionsGroupsUpdateParams: Codable, Sendable {
+    public let agentid: String?
     public let name: String
     public let cwd: AnyCodable
     public let worktree: Bool
 
     public init(
+        agentid: String? = nil,
         name: String,
         cwd: AnyCodable,
         worktree: Bool)
     {
+        self.agentid = agentid
         self.name = name
         self.cwd = cwd
         self.worktree = worktree
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case agentid = "agentId"
+        case name
+        case cwd
+        case worktree
     }
 }
 

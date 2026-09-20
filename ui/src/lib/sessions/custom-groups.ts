@@ -2,6 +2,7 @@
 // Catalog storage and member updates live on the gateway (sessions.groups.*);
 // the SessionCapability mirrors the catalog into state.groups.
 
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { moveArrayEntry } from "../array-order.ts";
 
 const BUILT_IN_SESSION_SECTION_IDS = new Set(["ungrouped", "groups", "work"]);
@@ -20,7 +21,7 @@ export function readSessionCustomGroups(payload: unknown): SessionGroupSettings[
   }
   return groups.flatMap((entry, index) => {
     const group = entry as Record<string, unknown> | null;
-    const name = typeof group?.name === "string" ? group.name.trim() : "";
+    const name = normalizeOptionalString(group?.name);
     if (!name) {
       return [];
     }
@@ -41,22 +42,28 @@ export function mergeSessionGroupDefaults(
   payload: unknown,
 ): SessionGroupSettings[] {
   const values = (payload as { defaults?: unknown } | null)?.defaults;
-  const defaults = new Map<string, { cwd?: string; worktree?: boolean }>();
+  const defaults = new Map<string, Record<string, unknown> | null>();
   if (Array.isArray(values)) {
     for (const value of values) {
       const record = value as Record<string, unknown> | null;
-      const name = typeof record?.name === "string" ? record.name.trim() : "";
-      if (!name) {
-        continue;
+      const name = normalizeOptionalString(record?.name);
+      if (name) {
+        defaults.set(name, record);
       }
-      const cwd = typeof record?.cwd === "string" ? record.cwd.trim() : "";
-      defaults.set(name, {
-        ...(cwd ? { cwd } : {}),
-        ...(typeof record?.worktree === "boolean" ? { worktree: record.worktree } : {}),
-      });
     }
   }
-  return groups.map((group) => ({ ...group, ...defaults.get(group.name) }));
+  return groups.map(({ name, position }) => {
+    const record = defaults.get(name);
+    const group: SessionGroupSettings = { name, position };
+    const cwd = normalizeOptionalString(record?.cwd);
+    if (cwd) {
+      group.cwd = cwd;
+    }
+    if (typeof record?.worktree === "boolean") {
+      group.worktree = record.worktree;
+    }
+    return group;
+  });
 }
 
 export function readSidebarSectionOrder(payload: unknown): string[] {
@@ -83,15 +90,10 @@ export function normalizeSessionSectionOrderTokens(value: unknown): string[] | n
     const catalogName = trimmed.startsWith("catalog:")
       ? trimmed.slice("catalog:".length).trim()
       : "";
-    if (catalogName) {
-      const catalogSectionId = `catalog:${catalogName}`;
-      if (!normalized.includes(catalogSectionId)) {
-        normalized.push(catalogSectionId);
-      }
-      continue;
-    }
     let token: string | null = null;
-    if (BUILT_IN_SESSION_SECTION_IDS.has(trimmed)) {
+    if (catalogName) {
+      token = `catalog:${catalogName}`;
+    } else if (BUILT_IN_SESSION_SECTION_IDS.has(trimmed)) {
       token = trimmed;
     } else if (trimmed.startsWith("category:")) {
       const name = trimmed.slice("category:".length).trim();

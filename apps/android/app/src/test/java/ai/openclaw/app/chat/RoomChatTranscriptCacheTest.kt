@@ -43,6 +43,35 @@ class RoomChatTranscriptCacheTest {
   private val store = RoomChatTranscriptCache(database = database)
 
   @Test
+  fun groupCatalogCacheKeepsSameNamesIndependentAcrossOwnersAndPurgesGateway() =
+    runTest {
+      store.saveSessionGroups("gateway-a", "alpha", "alpha-catalog")
+      store.saveSessionGroups("gateway-a", "beta", "beta-catalog")
+      store.saveSessionGroups("gateway-b", "alpha", "other-gateway-catalog")
+      assertEquals("alpha-catalog", store.loadSessionGroups("gateway-a", "alpha"))
+      assertEquals("beta-catalog", store.loadSessionGroups("gateway-a", "beta"))
+      store.clearGateway("gateway-a")
+      assertEquals(null, store.loadSessionGroups("gateway-a", "alpha"))
+      assertEquals(null, store.loadSessionGroups("gateway-a", "beta"))
+      assertEquals("other-gateway-catalog", store.loadSessionGroups("gateway-b", "alpha"))
+    }
+
+  @Test
+  fun controllerRestoresOnlySelectedAgentsCatalogOffline() =
+    runTest {
+      store.saveSessionGroups("gateway-test", "alpha", """{"groups":[{"name":"Alpha empty","position":0}]}""")
+      store.saveSessionGroups("gateway-test", "beta", """{"groups":[{"name":"Beta empty","position":0}]}""")
+      val controller = createChatController(transcriptCache = store) { _, _ -> error("offline") }
+      controller.load("agent:alpha:main")
+      advanceUntilIdle()
+      assertEquals(listOf("Alpha empty"), controller.sessionGroupCatalog.value.names)
+      controller.load("agent:beta:main")
+      assertEquals(emptyList<String>(), controller.sessionGroupCatalog.value.names)
+      advanceUntilIdle()
+      assertEquals(listOf("Beta empty"), controller.sessionGroupCatalog.value.names)
+    }
+
+  @Test
   fun completedWorkKeepsExplicitAnswersAndUnresolvedErrorsAfterOfflineReload() =
     runTest {
       val controller =
@@ -126,6 +155,7 @@ class RoomChatTranscriptCacheTest {
   private fun CoroutineScope.cachedController(
     healthStarted: CompletableDeferred<Unit>? = null,
     releaseHealth: CompletableDeferred<Unit>? = null,
+    beforeSessionListReply: () -> Unit = {},
   ): ChatController {
     var historyRequests = 0
     var healthRequests = 0
@@ -148,6 +178,7 @@ class RoomChatTranscriptCacheTest {
         }
 
         "sessions.list" -> {
+          beforeSessionListReply()
           """{"sessions":[{"key":"main"},{"key":"other"}]}"""
         }
 
@@ -309,10 +340,17 @@ class RoomChatTranscriptCacheTest {
   @Test
   fun queuedTranscriptWriteSurvivesSwitchToADifferentSession() =
     runTest {
-      val controller = cachedController()
-      // Hold the session-list Room operation while it owns the cache mutation queue.
-      // Later reads can proceed, but transcript writes must wait across the session switch.
-      deferNextDatabaseOperation = true
+      var holdSessionWrite = true
+      val controller =
+        cachedController(beforeSessionListReply = {
+          if (holdSessionWrite) {
+            holdSessionWrite = false
+            deferNextDatabaseOperation = true
+          }
+        })
+      // Arm at the session-list reply, after the independent group-catalog cache read.
+      // Hold the Room write while it owns the cache mutation queue; transcript writes
+      // must wait across the session switch while later reads remain available.
       controller.refreshSessions()
       runCurrent()
       val releaseSessionWrite = requireNotNull(deferredDatabaseOperation)

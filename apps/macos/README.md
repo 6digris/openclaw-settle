@@ -200,3 +200,18 @@ Use for local dev only; keep off for release builds.
 - `CODESIGN_TIMESTAMP=off` (offline debug)
 - `DISABLE_LIBRARY_VALIDATION=1` (dev-only Sparkle workaround)
 - `SKIP_TEAM_ID_CHECK=1` (bypass audit)
+
+## Agent-owned session groups
+
+Native group catalogs are owned by the connected Gateway and selected agent.
+Group requests and open editors retain the captured connection and agent; a
+late response cannot become the next agent's catalog. New groups use atomic
+append, not a client read/replace cycle. Rename/delete run on the Gateway,
+including archived members outside the native recency window.
+
+The Gateway must advertise `sessions.groups.agent-scoped` in its hello
+capabilities. On older Gateways, group management reports that an update is
+required; chat, session lists, and non-group actions remain available. Native
+clients do not retry scoped failures against the legacy global catalog. Older
+native binaries cannot provide scoped catalogs; current multi-agent Gateways
+reject ambiguous unscoped group requests instead of selecting a default owner.

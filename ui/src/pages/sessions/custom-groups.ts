@@ -18,6 +18,7 @@ type SessionGroupWriteResult = "completed" | "failed" | "stale";
 
 export async function rememberSessionCustomGroup(options: {
   name: string;
+  agentId: string;
   knownCategories: readonly string[];
   sessions: GroupMutationSessions | undefined;
   isCurrent: () => boolean;
@@ -27,10 +28,15 @@ export async function rememberSessionCustomGroup(options: {
     return "completed";
   }
   try {
-    const written = await options.sessions.groupsPut([
-      ...(options.sessions.state.groups ?? []),
-      options.name,
-    ]);
+    if (!options.isCurrent()) {
+      return "stale";
+    }
+    const written = await options.sessions.groupsPut(
+      [options.name],
+      undefined,
+      options.agentId,
+      true,
+    );
     // A replaced connection owns neither this catalog entry nor anything a
     // caller would key off it, so the write is reported as stale, not done. The
     // catalog owns the authoritative signal; the caller's scope adds its own, so

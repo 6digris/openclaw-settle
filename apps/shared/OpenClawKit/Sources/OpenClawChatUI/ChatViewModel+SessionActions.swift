@@ -211,16 +211,18 @@ extension OpenClawChatViewModel {
         return routeLease
     }
 
-    public func fetchSessionGroups() async throws -> [OpenClawChatSessionGroup] {
-        let routeLease = try await self.sessionGroupsRouteLease()
+    public func fetchSessionGroups(agentID: String? = nil) async throws -> [OpenClawChatSessionGroup] {
+        let routeLease = try await self.sessionGroupsRouteLease(agentID: agentID)
         return try await self.fetchSessionGroups(using: routeLease)
     }
 
-    func sessionGroupsRouteLease() async throws -> OpenClawChatSessionGroupsRouteLease {
-        guard let routeLease = await self.transport.acquireSessionGroupsRouteLease() else {
-            throw OpenClawChatTransportSendError.notDispatched
+    func sessionGroupsRouteLease(agentID: String? = nil) async throws -> OpenClawChatSessionGroupsRouteLease {
+        guard let owner = agentID ?? self.selectedAgentID else {
+            throw OpenClawChatSessionGroupsError.missingAgent
         }
-        return routeLease
+        // The transport and owner are values captured before the first await.
+        let transport = self.transport
+        return try await transport.acquireSessionGroupsRouteLease(agentID: owner)
     }
 
     func fetchSessionGroups(
@@ -239,14 +241,8 @@ extension OpenClawChatViewModel {
     {
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return try await self.fetchSessionGroups(using: routeLease) }
-        // Read-modify-write matches web group creation (app-sidebar-session-groups,
-        // custom-groups); the gateway has no atomic add/CAS. A concurrent edit can
-        // lose catalog names/order only — session categories are untouched by
-        // sessions.groups.put, so memberships survive. Accepted tradeoff until the
-        // gateway grows a revisioned groups API.
-        let current = try await self.fetchSessionGroups(using: routeLease)
-        let response = try await routeLease.putGroups(names: current.map(\.name) + [name])
-        self.sessionGroupsRevision += 1
+        let response = try await routeLease.appendGroups(names: [name])
+        if routeLease.agentID == self.selectedAgentID { self.sessionGroupsRevision += 1 }
         return response.groups
     }
 
@@ -259,8 +255,10 @@ extension OpenClawChatViewModel {
         let nextName = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !nextName.isEmpty else { return try await self.fetchSessionGroups(using: routeLease) }
         let response = try await routeLease.renameGroup(name: name, to: nextName)
-        self.sessionGroupsRevision += 1
-        self.refreshSessions(limit: Self.sessionListFetchLimit)
+        if routeLease.agentID == self.selectedAgentID {
+            self.sessionGroupsRevision += 1
+            self.refreshSessions(limit: Self.sessionListFetchLimit)
+        }
         return response.groups
     }
 
@@ -270,8 +268,10 @@ extension OpenClawChatViewModel {
         using routeLease: OpenClawChatSessionGroupsRouteLease) async throws -> [OpenClawChatSessionGroup]
     {
         let response = try await routeLease.deleteGroup(name: name)
-        self.sessionGroupsRevision += 1
-        self.refreshSessions(limit: Self.sessionListFetchLimit)
+        if routeLease.agentID == self.selectedAgentID {
+            self.sessionGroupsRevision += 1
+            self.refreshSessions(limit: Self.sessionListFetchLimit)
+        }
         return response.groups
     }
 

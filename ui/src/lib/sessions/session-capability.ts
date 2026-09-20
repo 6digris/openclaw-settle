@@ -62,6 +62,12 @@ type SessionDeletionFact = {
 
 export type SessionGroupMutationResult = "completed" | "stale";
 export type SessionGroupDefaultsStatus = "idle" | "loading" | "ready" | "unavailable";
+export type SessionGroupSnapshot = {
+  settings: readonly SessionGroupSettings[];
+  sectionOrder: readonly string[];
+  generation: number;
+  status: SessionGroupDefaultsStatus;
+};
 
 export type SessionListOptions = {
   agentId?: string;
@@ -341,27 +347,31 @@ export type SessionCapability = {
     options?: { agentId?: string | null },
   ) => Promise<SessionsBranchesSwitchResult>;
   /** Loads one connection-owned group catalog; null means the attempt retired or failed. */
-  groupsLoad: () => Promise<readonly SessionGroupSettings[] | null>;
+  groupsSnapshot: (agentId?: string) => SessionGroupSnapshot;
+  groupsLoad: (agentId?: string) => Promise<readonly SessionGroupSettings[] | null>;
   /** Generation of the catalog/defaults snapshot used by group-target routes. */
-  groupsGeneration: () => number;
+  groupsGeneration: (agentId?: string) => number;
   /** Whether group defaults are current enough for a group-target route. */
-  groupsStatus: () => SessionGroupDefaultsStatus;
+  groupsStatus: (agentId?: string) => SessionGroupDefaultsStatus;
   /** Invalidates the connection-owned group catalog before an explicit route retry. */
-  groupsInvalidate: () => void;
+  groupsInvalidate: (agentId?: string) => void;
   /** Replaces the group catalog; stale means the initiating connection retired. */
   groupsPut: (
     names: readonly string[],
     sectionOrder?: readonly string[],
+    agentId?: string,
+    append?: boolean,
   ) => Promise<SessionGroupMutationResult>;
   /** Renames a group; stale means the initiating connection retired before reconciliation. */
-  groupsRename: (from: string, to: string) => Promise<SessionGroupMutationResult>;
+  groupsRename: (from: string, to: string, agentId?: string) => Promise<SessionGroupMutationResult>;
   /** Updates the New Session defaults for one group. */
   groupsUpdate: (
     name: string,
     defaults: { cwd: string | null; worktree: boolean },
+    agentId?: string,
   ) => Promise<SessionGroupMutationResult>;
   /** Deletes a group; stale means the initiating connection retired before reconciliation. */
-  groupsDelete: (name: string) => Promise<SessionGroupMutationResult>;
+  groupsDelete: (name: string, agentId?: string) => Promise<SessionGroupMutationResult>;
   subscribeCreated: (listener: (key: string) => void) => () => void;
   subscribe: (listener: (state: SessionState) => void) => () => void;
   dispose: () => void;

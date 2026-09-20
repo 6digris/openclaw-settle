@@ -137,6 +137,15 @@ extension OpenClawChatViewModel {
     }
 
     private func handleSessionsChangedEvent(_ change: OpenClawChatSessionsChangedEvent) {
+        // Group-catalog mutations from any client arrive as reason "groups"
+        // (mirrors web ui/src/lib/sessions); bump the revision so views keyed
+        // on it refetch. Rename/delete also rewrite member sessions' category.
+        if change.reason == "groups" {
+            guard change.agentId?.lowercased() == self.selectedAgentID else { return }
+            self.sessionGroupsRevision += 1
+            self.requestSessionsRefresh()
+            return
+        }
         // Broad subscribers see every agent's canonical global row. Gate
         // ownership before the shared-key projection can replace local state.
         let eventSessionKey = change.sessionKey ?? change.session?.key
@@ -156,14 +165,6 @@ extension OpenClawChatViewModel {
         }
 
         self.applySessionChangeProjection(change, ownedSwarmActivityNote: ownedSwarmActivityNote)
-        // Group-catalog mutations from any client arrive as reason "groups"
-        // (mirrors web ui/src/lib/sessions); bump the revision so views keyed
-        // on it refetch. Rename/delete also rewrite member sessions' category.
-        if change.reason == "groups" {
-            self.sessionGroupsRevision += 1
-            self.requestSessionsRefresh()
-            return
-        }
         if change.reason == "rewind" || change.reason == "branch-switch" {
             guard let sessionKey = change.sessionKey,
                   self.matchesCurrentSessionKey(

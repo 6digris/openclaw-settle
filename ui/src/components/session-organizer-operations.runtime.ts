@@ -482,9 +482,15 @@ export async function createSessionGroup(
     host.sessionData.publishSessionMutationError(scope, t("common.refresh"));
     return "failed";
   }
-  const remembered = await rememberSessionGroup(host, name, scope);
-  if (remembered !== "completed") {
-    return remembered;
+  const agentIds =
+    sessions.length > 0
+      ? [...new Set(sessions.map((session) => sessionRowAgentId(session, scope)))]
+      : [scope.selectedAgentId];
+  for (const agentId of agentIds) {
+    const remembered = await rememberSessionGroup(host, name, scope, agentId);
+    if (remembered !== "completed") {
+      return remembered;
+    }
   }
   // The Gateway checks the identities captured with the action. A bounded
   // roster can page them out or replace a key, so it cannot authorize the move.
@@ -512,8 +518,9 @@ export async function assignSessionCategory(
   if (!host.sessionData.isSessionMutationScopeCurrent(scope)) {
     return;
   }
-  const catalogChanged = Boolean(category && !host.knownSessionGroups().includes(category));
-  if (category && (await rememberSessionGroup(host, category, scope)) !== "completed") {
+  const agentId = sessionRowAgentId(session, scope);
+  const catalogChanged = Boolean(category && !host.knownSessionGroups(agentId).includes(category));
+  if (category && (await rememberSessionGroup(host, category, scope, agentId)) !== "completed") {
     return;
   }
   const currentSession = options.resolveSession ? options.resolveSession() : session;

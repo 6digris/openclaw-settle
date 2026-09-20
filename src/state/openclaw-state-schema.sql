@@ -1892,9 +1892,8 @@ CREATE TABLE IF NOT EXISTS user_preferences (
   PRIMARY KEY (profile_id, pref_key)
 ) STRICT;
 
--- Gateway-owned custom session group catalog (names + display order).
--- Membership stays on each session entry's category field; this table only
--- owns which groups exist and how operator UIs order them.
+-- Inert migration source. Retained for the published 2026.9.2 updater
+-- until its deferred schema-publication contract can be retired. No runtime writes.
 CREATE TABLE IF NOT EXISTS session_groups (
   name TEXT NOT NULL PRIMARY KEY,
   position INTEGER NOT NULL,
@@ -1902,6 +1901,19 @@ CREATE TABLE IF NOT EXISTS session_groups (
   cwd TEXT,
   worktree INTEGER
 ) STRICT;
+
+-- One catalog per logical agent, including agents sharing a physical session store.
+CREATE TABLE IF NOT EXISTS agent_session_groups (
+  agent_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  cwd TEXT,
+  worktree INTEGER,
+  PRIMARY KEY (agent_id, name)
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_agent_session_groups_order
+  ON agent_session_groups(agent_id, position, name);
 
 -- Gateway-owned durable cloud worker lifecycle. Provider-specific execution
 -- stays in plugins; this table records only core reconciliation facts.

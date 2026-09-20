@@ -125,12 +125,34 @@ struct IOSGatewayChatTransport: OpenClawChatGatewayTransport {
         let unreadAckContract = await gateway.supportsServerCapability(
             .sessionUnreadAckContract,
             ifCurrentRoute: route)
+        let agentScopedGroups = await gateway.supportsServerCapability(
+            .agentScopedSessionGroups,
+            ifCurrentRoute: route)
         let transport = self
         return OpenClawChatSessionMutationRouteLease(
             sessionTarget: { transport.sessionTarget(for: $0) },
             unreadAckContract: unreadAckContract,
+            agentScopedGroups: agentScopedGroups,
             request: { request in
                 try await transport.requestSessionMutation(request, ifCurrentRoute: route)
+            })
+    }
+
+    func acquireSessionGroupsRouteLease() async -> OpenClawChatSessionGroupsRouteLease? {
+        guard let agentID = self.globalAgentId else { return nil }
+        return try? await self.acquireSessionGroupsRouteLease(agentID: agentID)
+    }
+
+    func acquireSessionGroupsRouteLease(agentID: String) async throws -> OpenClawChatSessionGroupsRouteLease {
+        guard let route = await self.currentSessionMutationRoute(),
+              let supported = await self.gateway.supportsServerCapability(
+                  .agentScopedSessionGroups, ifCurrentRoute: route)
+        else { throw OpenClawChatTransportSendError.notDispatched }
+        return try OpenClawChatSessionGroupsRouteLease(
+            agentID: agentID,
+            supportsAgentScope: supported,
+            request: { request in
+                try await self.requestSessionMutation(request, ifCurrentRoute: route)
             })
     }
 

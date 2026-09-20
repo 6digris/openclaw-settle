@@ -119,6 +119,7 @@ struct CommandSessionRow: View {
 }
 
 struct CommandSessionActions {
+    var scopeID: String? = nil
     let rename: (String?) -> Void
     let moveToGroup: (String?) -> Void
     let setColor: (String?) -> Void
@@ -143,6 +144,7 @@ struct CommandSessionActionsModifier: ViewModifier {
     let canDelete: Bool
     let actions: CommandSessionActions
 
+    @State private var editorActions: CommandSessionActions?
     @State private var editor: Editor?
     @State private var draftText = ""
     @State private var confirmsDelete = false
@@ -254,6 +256,7 @@ struct CommandSessionActionsModifier: ViewModifier {
                 }
             }
             self.actionButton("New Group…", systemImage: "folder.badge.plus") {
+                self.editorActions = self.actions
                 self.draftText = ""
                 self.editor = .newGroup
             }
@@ -311,6 +314,7 @@ struct CommandSessionActionsModifier: ViewModifier {
     }
 
     private func beginRename() {
+        self.editorActions = self.actions
         self.draftText = self.normalized(self.session.label)
             ?? self.normalized(self.session.displayName)
             ?? ""
@@ -319,15 +323,18 @@ struct CommandSessionActionsModifier: ViewModifier {
 
     private func commitEditor() {
         let value = self.normalized(self.draftText)
+        let actions = self.editorActions ?? self.actions
+        guard actions.scopeID == self.actions.scopeID else {
+            self.editor = nil
+            return
+        }
         switch self.editor {
         case .rename:
-            self.actions.rename(value)
+            actions.rename(value)
         case .newGroup:
             if let value {
-                // Web parity: only prompt-created groups join the stored list,
-                // so they survive as empty sections after members leave.
-                SessionGroupStore.remember(value)
-                self.actions.moveToGroup(value)
+                // sessions.patch registers the committed category with its Gateway owner.
+                actions.moveToGroup(value)
             }
         case nil:
             break

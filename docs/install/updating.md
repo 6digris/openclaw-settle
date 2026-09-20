@@ -17,6 +17,22 @@ Before a significant update, [create a verified backup](#before-updating-create-
 Automatic config copies and migration recovery originals are not a full-state
 backup.
 
+## Agent-owned session group migration
+
+State schema 18 separates custom session group catalogs by agent. The normal
+Doctor/startup migration preserves group defaults and order, including explicitly
+disabled worktrees, without changing session contents or activity timestamps.
+Groups used by multiple agents become independent; empty legacy groups belong
+to the configured ambient/system agent.
+
+Create the usual verified full-state backup before upgrading and stop older
+writers. If a required session source is missing or unreadable, Doctor identifies
+it and leaves group cutover incomplete; restore access to that source and rerun
+`openclaw doctor --fix`. Do not delete the old catalog or lower schema markers.
+The existing 2026.9.2 updater publication grace still applies. See
+[state schema 18](/reference/database-schemas/state-schema-history#state-schema-18)
+for the atomic receipt, recovery snapshot, and rollback limits.
+
 ## Recommended: `openclaw update`
 
 Detects your install type (npm, pnpm, Bun, or git), checks the new version while

@@ -34,7 +34,7 @@ export function buildDraftSubmissionCreateParams(
     permissionMode: draft.permission.value,
     visibility: options.visibility ?? draft.visibility,
     catalogId: snapshot.data?.catalogId,
-    category: gateway.resolvedGroupCategory(),
+    category: gateway.resolvedGroupCategory(place.agentId),
   });
 }
 

@@ -572,12 +572,8 @@ struct RootSidebar: View {
             sections: remainingSections)
     }
 
-    private var sessionCategories: [String] {
-        CommandSessionGrouping.categories(from: self.model.sessions, knownGroups: SessionGroupStore.load())
-    }
-
     private var sessionGroups: [OpenClawChatSessionGroup] {
-        self.sessionCategories.enumerated().map { offset, name in
+        self.appModel.sessionGroupNames.enumerated().map { offset, name in
             OpenClawChatSessionGroup(name: name, position: offset)
         }
     }
@@ -675,7 +671,7 @@ struct RootSidebar: View {
             }
             .commandSessionActions(
                 session: session,
-                categories: self.sessionCategories,
+                categories: self.appModel.sessionGroupNames(for: session, in: self.model.sessions),
                 isEnabled: self.appModel.isOperatorGatewayConnected,
                 canArchive: ChatSessionSidebarModel.canArchiveSession(
                     session,
@@ -684,6 +680,7 @@ struct RootSidebar: View {
                     key: session.key,
                     mainSessionKey: self.resolvedMainSessionKey),
                 actions: CommandSessionActions(
+                    scopeID: self.appModel.chatViewModelIdentityID,
                     rename: { self.patchSession(session, label: .some($0)) },
                     moveToGroup: { self.patchSession(session, category: .some($0)) },
                     setColor: { self.patchSession(session, color: .some($0)) },
@@ -817,9 +814,13 @@ struct RootSidebar: View {
         archived: Bool? = nil,
         unread: Bool? = nil)
     {
+        let baseTransport = self.appModel.makeChatTransport(
+            outboxGatewayID: self.appModel.chatTranscriptCacheGatewayID)
+        let transport = session.agentId.flatMap { baseTransport.scoped(toAgentID: $0) } ?? baseTransport
+        let scopeID = self.appModel.chatViewModelIdentityID
         Task {
             do {
-                try await self.appModel.makeChatTransport().patchSession(
+                try await transport.patchSession(
                     key: session.key,
                     expectedSessionID: archived == nil ? nil : session.sessionId,
                     label: label,
@@ -828,11 +829,13 @@ struct RootSidebar: View {
                     pinned: pinned,
                     archived: archived,
                     unread: unread)
+                guard scopeID == self.appModel.chatViewModelIdentityID else { return }
                 if archived == true, session.key == self.appModel.chatSessionKey {
                     self.appModel.focusChatSession(nil)
                 }
                 await self.model.refreshSessions(appModel: self.appModel)
             } catch {
+                guard scopeID == self.appModel.chatViewModelIdentityID else { return }
                 self.model.reportSessionError(error)
             }
         }

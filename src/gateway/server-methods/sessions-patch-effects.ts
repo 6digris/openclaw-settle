@@ -69,24 +69,27 @@ export async function publishSessionPatchEffects(params: {
   }
 
   const category = params.category;
-  if (params.targets.length > 0 && typeof category === "string" && category.trim()) {
-    // A first-use category is a group-catalog mutation: clients reload the
-    // catalog only on reason "groups" (the sessions.groups.* siblings emit it).
-    let catalogChanged: boolean;
-    try {
-      catalogChanged = ensureSessionGroupRegistered(category);
-    } catch (error) {
-      // The session category is already durable. Preserve that outcome and the
-      // existing same-category patch recovery instead of asking clients to undo it.
-      sessionLog.warn(
-        `sessions.patch: category ${JSON.stringify(category)} was saved, but group registration failed; retry the same category assignment to repair the catalog: ${formatErrorMessage(error)}`,
-      );
-      // Registration may have committed before cleanup failed. Reload the catalog
-      // on uncertain outcomes too, without invalidating unrelated session rows.
-      catalogChanged = true;
-    }
-    if (catalogChanged) {
-      emitSessionsChanged(params.context, { reason: "groups" }, { catalogOnly: true });
+  if (typeof category === "string" && category.trim()) {
+    // Each successfully committed row owns its catalog registration. A batch
+    // may span agents without joining their equal-name groups.
+    for (const agentId of new Set(params.targets.map(({ target }) => target.targetAgentId))) {
+      let catalogChanged: boolean;
+      try {
+        catalogChanged = ensureSessionGroupRegistered(agentId, category);
+      } catch (error) {
+        sessionLog.warn(
+          "sessions.patch: category " +
+            JSON.stringify(category) +
+            " was saved, but group registration failed; retry the same category assignment to repair the catalog: " +
+            formatErrorMessage(error),
+        );
+        // A cleanup failure may follow a committed registration. Keep the saved
+        // session outcome and invalidate only the affected catalog.
+        catalogChanged = true;
+      }
+      if (catalogChanged) {
+        emitSessionsChanged(params.context, { reason: "groups", agentId }, { catalogOnly: true });
+      }
     }
   }
   if (params.callerCanManageCron && archivedSessionKeys.size > 0) {

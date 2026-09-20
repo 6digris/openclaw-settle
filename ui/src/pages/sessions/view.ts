@@ -81,6 +81,9 @@ export type SessionsProps = TranscriptSearchProps & {
   /** Multi-identity gateways only; hides the Person mode elsewhere. */
   personGroupingAvailable: boolean;
   knownCategories: string[];
+  categoryAgentId?: string;
+  categoriesForAgent?: (agentId: string) => string[];
+  onLoadCategories?: (agentId: string) => void;
   page: number;
   pageSize: number;
   selectedKeys: Set<string>;
@@ -531,6 +534,12 @@ function groupModeLabel(mode: SessionsGroupBy): string {
 
 function sessionGroupLabel(group: SessionRowGroup, props: SessionsProps): string {
   const { id } = group;
+  if (group.category !== undefined) {
+    const name = group.category ?? t("sessionsView.ungrouped");
+    return props.categoryAgentId === "*" || !props.categoryAgentId
+      ? group.agentId + " / " + name
+      : name;
+  }
   if (props.groupBy === "date") {
     const labels: Record<string, string> = {
       today: "sessionsView.dateToday",
@@ -569,7 +578,7 @@ function setDropTargetActive(event: DragEvent, active: boolean) {
   );
 }
 
-function categoryDropHandlers(props: SessionsProps, category: string | null) {
+function categoryDropHandlers(props: SessionsProps, category: string | null, agentId?: string) {
   if (props.groupBy !== "category" || props.groupWriteDisabledReason) {
     return { dragover: nothing, dragleave: nothing, drop: nothing } as const;
   }
@@ -594,7 +603,7 @@ function categoryDropHandlers(props: SessionsProps, category: string | null) {
       event.preventDefault();
       setDropTargetActive(event, false);
       const key = event.dataTransfer?.getData(SESSION_DRAG_MIME);
-      if (key) {
+      if (key && (!agentId || (parseAgentSessionKey(key)?.agentId ?? props.agentId) === agentId)) {
         props.onAssignCategory(key, category);
       }
     },
@@ -607,7 +616,11 @@ function renderGroupHeaderRow(group: SessionRowGroup, props: SessionsProps) {
     group.rows.length === 1
       ? t("sessionsView.groupRowCountOne", { count: "1" })
       : t("sessionsView.groupRowCount", { count: String(group.rows.length) });
-  const drop = categoryDropHandlers(props, group.id === UNGROUPED_ID ? null : group.id);
+  const drop = categoryDropHandlers(
+    props,
+    group.category !== undefined ? group.category : group.id === UNGROUPED_ID ? null : group.id,
+    group.agentId,
+  );
   return html`
     <tr
       class="session-group-row"
@@ -628,7 +641,8 @@ function renderGroupHeaderRow(group: SessionRowGroup, props: SessionsProps) {
 
 function renderCategoryCell(row: GatewaySessionRow, props: SessionsProps) {
   const current = normalizeOptionalString(row.category) ?? "";
-  const options = [...props.knownCategories];
+  const agentId = parseAgentSessionKey(row.key)?.agentId ?? row.agentId ?? props.agentId;
+  const options = [...(props.categoriesForAgent?.(agentId) ?? props.knownCategories)];
   if (current && !options.includes(current)) {
     options.push(current);
   }
@@ -639,6 +653,7 @@ function renderCategoryCell(row: GatewaySessionRow, props: SessionsProps) {
         title=${props.groupWriteDisabledReason ?? nothing}
         aria-label=${t("sessionsView.moveToGroup")}
         class="session-group-select"
+        @focus=${() => props.onLoadCategories?.(agentId)}
         @change=${(e: Event) => {
           if (props.groupWriteDisabledReason) {
             return;
@@ -759,6 +774,7 @@ export function renderSessions(props: SessionsProps) {
           rows: sorted,
           mode: props.groupBy,
           knownCategories: props.knownCategories,
+          categoryAgentId: props.categoryAgentId,
         })
       : null;
   const displayRows = groups ? groups.flatMap((group) => group.rows) : sorted;
@@ -1254,7 +1270,11 @@ function renderRows(row: GatewaySessionRow, props: SessionsProps) {
     : t("sessionsView.showSessionDetails", { count: keyCellTitle });
   const categoryMode = props.groupBy === "category";
   // Dropping on a row targets that row's group so the whole section area accepts drops.
-  const rowDrop = categoryDropHandlers(props, normalizeOptionalString(row.category) ?? null);
+  const rowDrop = categoryDropHandlers(
+    props,
+    normalizeOptionalString(row.category) ?? null,
+    parseAgentSessionKey(row.key)?.agentId ?? row.agentId ?? props.agentId,
+  );
   const openMenuFromEvent = (event: MouseEvent | KeyboardEvent) =>
     handleContextMenuEvent(
       event,

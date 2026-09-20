@@ -1076,6 +1076,11 @@ seed_legacy_operator_gateway() {
   start_gateway
   node scripts/e2e/lib/upgrade-survivor/assertions.mjs seed-legacy-operator-gateway
   node scripts/e2e/lib/upgrade-survivor/assertions.mjs legacy-operator-turn baseline
+  if [ "${OPENCLAW_UPGRADE_SURVIVOR_SESSION_GROUPS:-0}" = "1" ]; then
+    # Exercise the published session creation route before taking the Gateway down.
+    openclaw gateway call sessions.create --params '{"key":"agent:ops:group-baseline"}' --json \
+      >"$ARTIFACT_ROOT/session-group-baseline-create.json"
+  fi
   stop_gateway
 }
 
@@ -2296,6 +2301,10 @@ if [ "$SCENARIO" = "recovery-cleanup" ]; then
 fi
 run_plugin_fixture_phase configure-plugin-registry configure_plugin_registry
 if [ "$SCENARIO" = "legacy-operator-state" ]; then
+  if [ "${OPENCLAW_UPGRADE_SURVIVOR_SESSION_GROUPS:-0}" = "1" ]; then
+    phase seed-session-group-catalog node scripts/e2e/lib/upgrade-survivor/session-group-catalog.mjs \
+      seed "$OPENCLAW_STATE_DIR" "$ARTIFACT_ROOT" "$(package_root)"
+  fi
   phase prepare-schema-expectation prepare_schema_expectation
   phase capture-backup-rollback capture_backup_rollback
   if [ "$UPDATE_RESTART_MODE" = "auto-auth" ]; then
@@ -2315,6 +2324,10 @@ if [ "$SCENARIO" = "legacy-operator-state" ] && [ "$UPDATE_RESTART_MODE" = "manu
     seed "$(package_root)" "$CANDIDATE_SPEC"
 fi
 phase update-candidate update_candidate_for_install_mode
+if [ "${OPENCLAW_UPGRADE_SURVIVOR_SESSION_GROUPS:-0}" = "1" ]; then
+  # Read native rows before a candidate CLI/Gateway probe could conceal a missing Doctor hook.
+  phase assert-session-group-catalog node scripts/e2e/lib/upgrade-survivor/session-group-catalog.mjs assert "$ARTIFACT_ROOT"
+fi
 if [ "$SCENARIO" = "legacy-operator-state" ] && [ "$UPDATE_RESTART_MODE" = "manual" ] &&
   { [ "${baseline_version:-}" = "2026.9.3" ] || [ "${baseline_version:-}" = "2026.9.4" ]; }; then
   # Native read-only inspection precedes every candidate CLI/Gateway probe.

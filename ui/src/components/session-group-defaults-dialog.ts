@@ -23,6 +23,7 @@ export type SessionGroupDefaults = { cwd: string; worktree: boolean };
 
 type Options = {
   group: string;
+  signal?: AbortSignal;
   defaults: SessionGroupDefaults;
   listDirectory: (path?: string) => Promise<FsListDirResult>;
   inspectRepository: (path?: string) => Promise<WorktreeRepositoryStatus>;
@@ -32,11 +33,12 @@ type Options = {
 let active = false;
 
 export function showSessionGroupDefaultsDialog(options: Options): Promise<void> {
-  if (active) {
+  if (active || options.signal?.aborted) {
     return Promise.resolve();
   }
   active = true;
-  return withPromiseModalHost<void>(undefined, ({ host, render, finish: settle }) => {
+  const abort = { signal: options.signal, value: undefined };
+  const modal = withPromiseModalHost<void>(abort, ({ host, render, finish: settle }) => {
     let cwd = options.defaults.cwd;
     let worktree = false;
     let repositoryStatus: WorktreeRepositoryStatus | "checking" = "checking";
@@ -47,11 +49,12 @@ export function showSessionGroupDefaultsDialog(options: Options): Promise<void> 
     const browser = new PlaceBrowserState(options.listDirectory, paint);
 
     const finish = () => {
+      options.signal?.removeEventListener("abort", finish);
       browser.reset();
       repositoryRequestToken += 1;
       settle();
-      active = false;
     };
+    options.signal?.addEventListener("abort", finish, { once: true });
 
     const handleSubmit = async (event: Event) => {
       event.preventDefault();
@@ -440,5 +443,8 @@ export function showSessionGroupDefaultsDialog(options: Options): Promise<void> 
     }
 
     void inspectRepository(true);
+  });
+  return modal.finally(() => {
+    active = false;
   });
 }

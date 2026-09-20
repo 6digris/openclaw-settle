@@ -29,6 +29,54 @@ Doctor completes recognized schema-1 databases that predate the audit ledger bef
 | 15      | Conversation bindings use exact target keys; redundant agent/session projections removed                                                                                                                                                                                                                                        | Unreleased          |
 | 16      | Skill Workshop ownership moves from workspace/provenance columns to per-agent directory containment                                                                                                                                                                                                                             | Unreleased          |
 | 17      | Prepared worker lifecycle facts and one-use node workspace bindings                                                                                                                                                                                                                                                             | Unreleased          |
+| 18      | Agent-qualified session group catalogs and atomic ownership cutover                                                                                                                                                                                                                                                             | Unreleased          |
+
+### State schema 18
+
+Schema 18 makes custom session groups agent-owned. The shared
+`agent_session_groups` table has primary key `(agent_id, name)`; equal names
+under different agents have independent defaults and display positions.
+Section order uses `config_machine_state` keys
+`sidebar.sectionOrder.agent:<canonicalAgentId>`. Session membership remains
+in session metadata; agent schema 21 is unchanged.
+
+The same Doctor migration runs during approved startup preparation before group
+readiness. It inventories configured, registered, retired, fixed/shared, and
+legacy session sources through their existing discovery owners. SQLite reads
+project only keys and categories; no transcript or saved-prompt data is loaded.
+A legacy group used by several logical agents becomes an independent row for
+each. Empty groups move to the configured ambient/system agent, not an implicit
+`main`. Category references absent from the old catalog are preserved as groups
+with no defaults. Missing or unreadable required sources prevent cutover rather
+than being treated as empty. Session JSON and activity timestamps are unchanged.
+
+One shared-state transaction publishes all owned rows, scoped orders, and the
+`sessionGroups.agentOwnedCatalog` completion receipt. A schema-only open does
+not certify group readiness. Fresh installs use the same owner with an empty
+inventory. Interrupted transactions roll back; rerunning Doctor after a commit
+uses the receipt and never restores deleted groups or overwrites newer catalogs.
+The migration retains a verified shared-database snapshot under
+`backups/session-group-migration` before a nonempty cutover. This snapshot is
+for recovery on the compatible build, not a substitute for a coordinated
+pre-upgrade backup for binary rollback.
+
+Successful agent deletion removes only that agent's catalog and scoped order in
+the existing deletion-completion transaction, alongside provenance retirement.
+Failed or partial purge retains both; stale deletion owners cannot remove a
+recreated agent's catalog. The migration receipt and legacy global sources are
+not changed by agent deletion.
+
+The old `session_groups` table and `sidebar.sectionOrder` key remain inert
+migration sources. Current runtime does not read, dual-write, or reimport them.
+Their shape remains intact for the published 2026.9.2 updater while the existing
+[schema-publication owner](/reference/database-schemas/versioning#schema-bumps-and-older-updaters)
+defers the numeric fence for trailing ledger reads. No new timer or immediate
+publication override is introduced. Retiring this source requires a future
+versioned migration after the supported updater contract no longer admits
+2026.9.2 trailing readers; it is not deleted merely because one update ends.
+After publication, older global-catalog writers refuse schema 18. Stop older
+writers before cutover; rollback requires the matching pre-upgrade backup and
+build, never lowering version markers.
 
 ### State schema 17
 

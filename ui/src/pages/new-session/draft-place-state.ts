@@ -492,6 +492,14 @@ export class DraftPlaceState {
     if (normalizeAgentId(agentId) === normalizeAgentId(this.agentIdValue)) {
       return;
     }
+    if (snapshot.data?.group) {
+      // A group-target draft changes owner through the route loader, which must
+      // resolve that owner’s catalog/defaults before a submission is possible.
+      snapshot.context?.navigate("new-session", {
+        search: newSessionSearch(normalizeAgentId(agentId), { group: snapshot.data.group }),
+      });
+      return;
+    }
     this.agentIdValue = normalizeAgentId(agentId);
     this.modelControl.reset();
     this.callbacks.onError(null);

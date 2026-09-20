@@ -432,3 +432,41 @@ Automatic wake/reconnect hardening:
 7. Validate background expectations:
    - repro in foreground first
    - then test background transitions and confirm reconnect on return
+
+## Agent-owned session groups
+
+Native group catalogs are owned by the connected Gateway and selected agent.
+Group requests and open editors retain the captured connection and agent; a
+late response cannot become the next agent's catalog. New groups use atomic
+append, not a client read/replace cycle. Rename/delete run on the Gateway,
+including archived members outside the native recency window.
+
+The Gateway must advertise `sessions.groups.agent-scoped` in its hello
+capabilities. On older Gateways, group management reports that an update is
+required; chat, session lists, and non-group actions remain available. Native
+clients do not retry scoped failures against the legacy global catalog. Older
+native binaries cannot provide scoped catalogs; current multi-agent Gateways
+reject ambiguous unscoped group requests instead of selecting a default owner.
+
+iOS's shipped `openclaw:sessions:custom-groups` preference is import input
+only. Before its first append, the existing `client-state.sqlite` owner commits
+a stable import ID and a digest binding the original Gateway, authenticated
+`users.self` profile, and configured default agent. The additive
+`client-state-session-group-import-v10` migration stores one installation-wide
+claim, not another group catalog. No new database or JSON file is created.
+
+Retries send the same `importId`; the Gateway receipt remembers consumed names
+even after a user deletes a group, while accepting names added to the pending
+source. The app clears only an acknowledged, unchanged source on the captured
+authenticated route. Profile-less connections, unavailable local state, changed
+destinations, and interrupted imports retain the source and do not prevent
+reading the current agent's canonical catalog. The claim survives acknowledgement
+and Gateway removal as a non-identifying digest plus import ID, so old
+preferences cannot be reassigned accidentally. An explicit full app-state reset
+removes it with the client database. Older native builds ignore this additive
+claim and cannot provide receipt-safe migration; do not downgrade to finish a
+pending import. Ordinary New Group actions omit `importId`.
+
+The live group list is an in-memory scoped Gateway projection. Offline session
+categories still come from the existing scoped roster cache; legacy unowned
+names are never shown as another agent's empty groups.

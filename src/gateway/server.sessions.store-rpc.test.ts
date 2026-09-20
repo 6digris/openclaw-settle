@@ -6,6 +6,7 @@ import { expect, test, vi } from "vitest";
  * Gateway session store RPC tests.
  */
 import * as sessionDirs from "../agents/session-dirs.js";
+import { migrateDoctorSessionGroups } from "../commands/doctor-session-groups.js";
 import { loadSessionEntry } from "../config/sessions/session-accessor.js";
 import type { CronJob } from "../cron/types.js";
 import { withEnvAsync } from "../test-utils/env.js";
@@ -750,6 +751,10 @@ test("sessions.list hides phantom agent store placeholder rows", async () => {
 
 test("write-scoped operators manage chat organization but not admin session settings", async () => {
   const { storePath } = await createSessionStoreDir();
+  await migrateDoctorSessionGroups(
+    (await getGatewayConfigModule()).getRuntimeConfig(),
+    process.env,
+  );
   const now = Date.now();
   await writeSessionStore({
     entries: {
@@ -806,7 +811,7 @@ test("write-scoped operators manage chat organization but not admin session sett
     const groupsAfterPatch = await rpcReq<{
       groups: Array<{ name: string; position: number }>;
       sectionOrder: string[];
-    }>(ws, "sessions.groups.list", {});
+    }>(ws, "sessions.groups.list", { agentId: "main" });
     expect(groupsAfterPatch.ok).toBe(true);
     expect(groupsAfterPatch.payload?.groups).toContainEqual({ name: "Travel", position: 0 });
     expect(groupsAfterPatch.payload?.sectionOrder).toEqual([]);
@@ -816,6 +821,7 @@ test("write-scoped operators manage chat organization but not admin session sett
       groups: Array<{ name: string }>;
       sectionOrder: string[];
     }>(ws, "sessions.groups.put", {
+      agentId: "main",
       names: ["Someday", "Travel"],
       sectionOrder: ["work", "category:Travel", "category:Missing", "ungrouped"],
     });
@@ -828,6 +834,7 @@ test("write-scoped operators manage chat organization but not admin session sett
       ok: true;
       defaults: Array<{ name: string; cwd?: string; worktree?: boolean }>;
     }>(ws, "sessions.groups.update", {
+      agentId: "main",
       name: "Travel",
       cwd: defaultAgentWorkspace,
       worktree: true,
@@ -842,7 +849,7 @@ test("write-scoped operators manage chat organization but not admin session sett
       ok: true;
       sectionOrder: string[];
       updatedSessions?: number;
-    }>(ws, "sessions.groups.rename", { name: "Travel", to: "Trips" });
+    }>(ws, "sessions.groups.rename", { agentId: "main", name: "Travel", to: "Trips" });
     expect(renamedGroup.ok).toBe(true);
     expect(renamedGroup.payload?.updatedSessions).toBe(1);
     expect(renamedGroup.payload?.sectionOrder).toEqual(["work", "category:Trips", "ungrouped"]);
@@ -858,7 +865,7 @@ test("write-scoped operators manage chat organization but not admin session sett
       ok: true;
       sectionOrder: string[];
       updatedSessions?: number;
-    }>(ws, "sessions.groups.delete", { name: "Trips" });
+    }>(ws, "sessions.groups.delete", { agentId: "main", name: "Trips" });
     expect(deletedGroup.ok).toBe(true);
     expect(deletedGroup.payload?.updatedSessions).toBe(1);
     expect(deletedGroup.payload?.sectionOrder).toEqual(["work", "ungrouped"]);
@@ -1050,4 +1057,118 @@ test("archiving a session disables cron jobs bound to it", async () => {
   );
   expect(writeScopedArchive.ok).toBe(true);
   expect(update).not.toHaveBeenCalled();
+});
+
+test("group RPCs isolate equal names, defaults, members and empty catalogs across agents", async () => {
+  const { dir } = await createSessionStoreDir();
+  const storeTemplate = path.join(dir, "agents", "{agentId}", "sessions", "sessions.json");
+  testState.sessionStorePath = storeTemplate;
+  testState.agentsConfig = {
+    ownership: "explicit",
+    entries: { alpha: {}, beta: {} },
+    defaults: { systemAgent: { agentId: "alpha" } },
+  };
+  const now = Date.now();
+  for (const agentId of ["alpha", "beta"]) {
+    await writeSessionStore({
+      agentId,
+      storePath: storeTemplate.replace("{agentId}", agentId),
+      entries: {
+        ["agent:" + agentId + ":member"]: { sessionId: agentId + "-member", updatedAt: now },
+      },
+    });
+  }
+  const groupConfig = await getGatewayConfigModule();
+  groupConfig.clearRuntimeConfigSnapshot();
+  await migrateDoctorSessionGroups(groupConfig.getRuntimeConfig(), process.env);
+  const { ws } = await openClient({
+    scopes: ["operator.read", "operator.write", "operator.admin"],
+  });
+  type Catalog = { groups: Array<{ name: string; position: number }>; sectionOrder: string[] };
+  try {
+    for (const agentId of ["alpha", "beta"]) {
+      const put = await rpcReq<Catalog>(ws, "sessions.groups.put", {
+        agentId,
+        names: ["Shared", "Empty"],
+        sectionOrder:
+          agentId === "alpha" ? ["category:Empty", "category:Shared"] : ["work", "category:Shared"],
+      });
+      expect(put.ok, JSON.stringify(put)).toBe(true);
+      const patch = await rpcReq(ws, "sessions.patch", {
+        agentId,
+        key: "agent:" + agentId + ":member",
+        category: "Shared",
+      });
+      expect(patch.ok, JSON.stringify(patch)).toBe(true);
+      const defaults = await rpcReq(ws, "sessions.groups.update", {
+        agentId,
+        name: "Shared",
+        cwd: "/repos/" + agentId,
+        worktree: agentId === "alpha",
+      });
+      expect(defaults.ok, JSON.stringify(defaults)).toBe(true);
+    }
+    const ambiguous = await rpcReq(ws, "sessions.groups.list", {});
+    expect(ambiguous.ok).toBe(false);
+    expect(ambiguous.error).toMatchObject({ code: "INVALID_REQUEST" });
+    const unknown = await rpcReq(ws, "sessions.groups.delete", {
+      agentId: "unknown",
+      name: "Shared",
+    });
+    expect(unknown.ok).toBe(false);
+    const alphaBefore = await rpcReq<Catalog>(ws, "sessions.groups.list", { agentId: "alpha" });
+    const alphaDefaults = await rpcReq(ws, "sessions.groups.defaults", { agentId: "alpha" });
+    const renamed = await rpcReq<{ updatedSessions: number }>(ws, "sessions.groups.rename", {
+      agentId: "beta",
+      name: "Shared",
+      to: "Beta renamed",
+    });
+    expect(renamed.ok, JSON.stringify(renamed)).toBe(true);
+    expect(renamed.payload?.updatedSessions).toBe(1);
+    expect(
+      loadSessionEntry({
+        agentId: "alpha",
+        storePath: storeTemplate.replace("{agentId}", "alpha"),
+        sessionKey: "agent:alpha:member",
+      })?.category,
+    ).toBe("Shared");
+    expect(
+      loadSessionEntry({
+        agentId: "beta",
+        storePath: storeTemplate.replace("{agentId}", "beta"),
+        sessionKey: "agent:beta:member",
+      })?.category,
+    ).toBe("Beta renamed");
+    const deleted = await rpcReq<{ updatedSessions: number }>(ws, "sessions.groups.delete", {
+      agentId: "beta",
+      name: "Beta renamed",
+    });
+    expect(deleted.ok, JSON.stringify(deleted)).toBe(true);
+    expect(deleted.payload?.updatedSessions).toBe(1);
+    const emptied = await rpcReq<Catalog>(ws, "sessions.groups.put", {
+      agentId: "beta",
+      names: [],
+      sectionOrder: [],
+    });
+    expect(emptied.ok).toBe(true);
+    expect(emptied.payload).toEqual({ ok: true, groups: [], sectionOrder: [] });
+    const alphaAfter = await rpcReq<Catalog>(ws, "sessions.groups.list", { agentId: "alpha" });
+    expect(alphaAfter.payload).toEqual(alphaBefore.payload);
+    expect(alphaAfter.payload?.groups).toEqual([
+      { name: "Shared", position: 0 },
+      { name: "Empty", position: 1 },
+    ]);
+    expect((await rpcReq(ws, "sessions.groups.defaults", { agentId: "alpha" })).payload).toEqual(
+      alphaDefaults.payload,
+    );
+    expect(
+      loadSessionEntry({
+        agentId: "alpha",
+        storePath: storeTemplate.replace("{agentId}", "alpha"),
+        sessionKey: "agent:alpha:member",
+      })?.category,
+    ).toBe("Shared");
+  } finally {
+    ws.close();
+  }
 });

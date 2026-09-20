@@ -221,8 +221,14 @@ export class DraftGatewayState {
     return this.preferences.loading || this.identityPreferences?.mode === "loading";
   }
 
-  resolvedGroupCategory(): string | undefined {
+  resolvedGroupCategory(agentId: string): string | undefined {
     const snapshot = this.read();
+    if (
+      !snapshot.data?.agentId ||
+      normalizeAgentId(agentId) !== normalizeAgentId(snapshot.data.agentId)
+    ) {
+      return undefined;
+    }
     return isGatewayMethodAdvertised(
       snapshot.context?.gateway.snapshot ?? {},
       "sessions.groups.defaults",
@@ -357,7 +363,7 @@ export class DraftGatewayState {
     if (this.catalogRetryingValue) {
       return;
     }
-    if (data?.group && context?.sessions.groupsStatus() === "loading") {
+    if (data?.group && context?.sessions.groupsStatus(data?.agentId) === "loading") {
       globalThis.clearTimeout(this.catalogRetryTimer);
       this.catalogRetryTimer = undefined;
       return;
@@ -387,13 +393,14 @@ export class DraftGatewayState {
       if (
         this.catalogRetryScope !== retryScope ||
         !this.gatewayConnectedValue ||
-        (current.data?.group && current.context?.sessions.groupsStatus() === "loading") ||
+        (current.data?.group &&
+          current.context?.sessions.groupsStatus(current.data?.agentId) === "loading") ||
         !catalog.isRoutePending(current.data, current.context?.sessions)
       ) {
         return;
       }
       if (current.data?.group) {
-        current.context?.sessions.groupsInvalidate();
+        current.context?.sessions.groupsInvalidate(current.data?.agentId);
       }
       const revalidation = current.context?.revalidate("new-session");
       if (!revalidation) {
@@ -410,7 +417,7 @@ export class DraftGatewayState {
     const { context, data } = this.read();
     if (
       !this.gatewayConnectedValue ||
-      (data?.group && context?.sessions.groupsStatus() === "loading") ||
+      (data?.group && context?.sessions.groupsStatus(data?.agentId) === "loading") ||
       (!data?.startTerminal && !catalog.isRoutePending(data, context?.sessions))
     ) {
       return;
@@ -420,7 +427,7 @@ export class DraftGatewayState {
       return;
     }
     if (data?.group) {
-      context?.sessions.groupsInvalidate();
+      context?.sessions.groupsInvalidate(data?.agentId);
     }
     const revalidation = context?.revalidate("new-session");
     if (!revalidation) {

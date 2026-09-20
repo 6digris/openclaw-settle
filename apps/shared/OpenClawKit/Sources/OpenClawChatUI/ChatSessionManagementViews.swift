@@ -155,12 +155,18 @@ struct ChatSessionInspectorSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var displayedSession: OpenClawChatSessionEntry
     @State private var groups: [OpenClawChatSessionGroup] = []
+    @State private var groupRouteLease: OpenClawChatSessionGroupsRouteLease?
+    @State private var groupMutationRouteLease: OpenClawChatSessionMutationRouteLease?
+    private let groupOwnerID: String?
+    @State private var groupTransport: any OpenClawChatTransport
     @State private var isMutatingGroup = false
     @State private var errorText: String?
 
     init(viewModel: OpenClawChatViewModel, session: OpenClawChatSessionEntry) {
         self.viewModel = viewModel
         self.session = session
+        self.groupOwnerID = session.agentId ?? OpenClawChatSessionKey.agentID(from: session.key) ?? viewModel.selectedAgentID
+        _groupTransport = State(initialValue: viewModel.transport)
         _displayedSession = State(initialValue: session)
     }
 
@@ -255,8 +261,22 @@ struct ChatSessionInspectorSheet: View {
             // the inspector is open refreshes the picker instead of going stale.
             .task(id: self.viewModel.sessionGroupsRevision) {
                 do {
-                    self.groups = try await self.viewModel.fetchSessionGroups()
+                    guard let owner = self.groupOwnerID else { throw OpenClawChatSessionGroupsError.missingAgent }
+                    let lease: OpenClawChatSessionGroupsRouteLease
+                    if let existing = self.groupRouteLease {
+                        lease = existing
+                    } else {
+                        lease = try await self.groupTransport.acquireSessionGroupsRouteLease(agentID: owner)
+                        self.groupRouteLease = lease
+                    }
+                    if self.groupMutationRouteLease == nil {
+                        self.groupMutationRouteLease = await self.groupTransport.acquireSessionMutationRouteLease()
+                    }
+                    let groups = try await self.viewModel.fetchSessionGroups(using: lease)
+                    guard !Task.isCancelled else { return }
+                    self.groups = groups
                 } catch {
+                    guard !Task.isCancelled else { return }
                     self.errorText = error.localizedDescription
                 }
             }
@@ -285,10 +305,20 @@ struct ChatSessionInspectorSheet: View {
                 Task {
                     defer { self.isMutatingGroup = false }
                     do {
-                        try await self.viewModel.setSessionGroup(
+                        guard let lease = self.groupMutationRouteLease else {
+                            throw OpenClawChatTransportSendError.notDispatched
+                        }
+                        try await lease.patchSession(
                             key: target.key,
-                            group: nextGroup,
-                            agentID: target.agentId)
+                            agentID: self.groupOwnerID,
+                            label: nil,
+                            category: .some(nextGroup),
+                            pinned: nil,
+                            archived: nil,
+                            unread: nil)
+                        if self.groupOwnerID == self.viewModel.selectedAgentID {
+                            self.viewModel.refreshSessions()
+                        }
                         self.errorText = nil
                     } catch {
                         self.displayedSession.category = previous
@@ -359,9 +389,17 @@ struct ChatSessionGroupsSheet: View {
     @State private var renameText = ""
     @State private var deleteTarget: OpenClawChatSessionGroup?
     @State private var routeLease: OpenClawChatSessionGroupsRouteLease?
+    @State private var ownerAgentID: String?
+    @State private var groupTransport: any OpenClawChatTransport
     @State private var isLoading = true
     @State private var isMutating = false
     @State private var errorText: String?
+
+    init(viewModel: OpenClawChatViewModel) {
+        self.viewModel = viewModel
+        _ownerAgentID = State(initialValue: viewModel.selectedAgentID)
+        _groupTransport = State(initialValue: viewModel.transport)
+    }
 
     var body: some View {
         NavigationStack {
@@ -473,12 +511,23 @@ struct ChatSessionGroupsSheet: View {
         self.isLoading = true
         defer { self.isLoading = false }
         do {
-            let routeLease = try await self.viewModel.sessionGroupsRouteLease()
+            guard let ownerAgentID = self.ownerAgentID else {
+                throw OpenClawChatSessionGroupsError.missingAgent
+            }
+            let routeLease: OpenClawChatSessionGroupsRouteLease
+            if let existing = self.routeLease {
+                routeLease = existing
+            } else {
+                routeLease = try await self.groupTransport.acquireSessionGroupsRouteLease(agentID: ownerAgentID)
+                self.routeLease = routeLease
+            }
+            let groups = try await self.viewModel.fetchSessionGroups(using: routeLease)
+            guard !Task.isCancelled else { return }
             self.routeLease = routeLease
-            self.groups = try await self.viewModel.fetchSessionGroups(using: routeLease)
+            self.groups = groups
             self.errorText = nil
         } catch {
-            self.routeLease = nil
+            guard !Task.isCancelled else { return }
             self.errorText = error.localizedDescription
         }
     }

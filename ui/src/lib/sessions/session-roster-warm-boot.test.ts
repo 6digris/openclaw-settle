@@ -204,7 +204,8 @@ describe("session capability warm roster", () => {
   it("publishes groups synchronously, then the cached roster without a connection or canonical revision", async () => {
     const cached = createDeferred<SessionRosterRecord | null>();
     const h = harness({ cached: cached.promise });
-    expect(h.sessions.state.groups).toEqual(["Work"]);
+    // The v1 roster has no group owner; its rows may hydrate, its catalog may not.
+    expect(h.sessions.state.groups).toEqual([]);
     expect(h.sessions.state.result).toBeNull();
     let settled = false;
     void h.sessions.whenCachedRosterSettled().then(() => {

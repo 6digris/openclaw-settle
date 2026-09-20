@@ -21,6 +21,32 @@ OpenClaw Android is the officially released Google Play app. It connects to an O
 
 - Open the folder `apps/android`.
 
+## Agent-owned groups
+
+Thread groups come from the connected Gateway and belong to one agent. Creating a
+group appends it atomically; rename and delete run on the Gateway, including members
+outside the visible thread window. A dialog keeps the agent and connection that
+opened it. Switching agents cannot apply its result to the newly selected agent.
+Empty groups remain visible, and the last acknowledged catalog is cached in the
+existing SQLite Gateway cache for offline browsing. Offline group edits are not
+queued or represented as successful local changes.
+
+On the first compatible connection, the old device-global custom group names are
+appended only to the configured default agent, not each visited agent. The source
+is cleared only after acknowledgment on the same Gateway connection, profile, and
+default owner, and only if the source names have not changed. Before the first
+import mutation, Android durably pins that destination and one import receipt ID.
+Retries and additional source names reuse that ID: the Gateway consumes each name
+once, so a lost acknowledgment followed by a retry cannot resurrect a deleted
+group. Failed or ambiguous requests cannot seed another Gateway, profile, or agent.
+They retain the source for reconciliation when the original destination reconnects,
+without blocking reads of the selected agent's canonical catalog.
+
+Group management requires the `sessions.groups.agent-scoped` hello capability.
+Older Gateways keep chat, native session roles, and existing per-thread categories;
+Android displays an update message instead of calling an unsafe global group API
+or falling back after a permission, network, or server error.
+
 ## Session colors
 
 Long-press a row on the **Threads** page and choose **Color**, then select a swatch or **Default** to clear it. The eight colors are red, blue, green, yellow, purple, orange, pink, and cyan. Colored sessions show a narrow leading stripe in the sidebar and Threads page, plus a colored ring around the agent avatar in the open chat header. Unset colors add no indicator. Colors sync through the Gateway and remain visible in the local session cache while offline.

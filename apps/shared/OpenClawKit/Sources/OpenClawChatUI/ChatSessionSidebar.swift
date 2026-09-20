@@ -22,6 +22,8 @@ struct ChatSessionSidebar: View {
     @State private var sessionPendingRename: OpenClawChatSessionEntry?
     @State private var renameText = ""
     @State private var groups: [OpenClawChatSessionGroup] = []
+    @State private var groupsOwnerID: String?
+    @State private var groupsModelID: ObjectIdentifier?
     @State private var groupRefreshNonce = 0
     @State private var groupLoadFailed = false
     @State private var inspectedSession: OpenClawChatSessionEntry?
@@ -41,7 +43,8 @@ struct ChatSessionSidebar: View {
             currentSessionKey: self.viewModel.sessionKey,
             mainSessionKey: self.viewModel.selectedAgentMainSessionKey,
             activeAgentID: self.viewModel.selectedAgentID,
-            groups: self.groups,
+            groups: self.groupsOwnerID == self.viewModel.selectedAgentID &&
+                self.groupsModelID == ObjectIdentifier(self.viewModel) ? self.groups : [],
             query: self.query,
             sessionRoutingContract: self.viewModel.agentCatalog?.sessionRoutingContract ??
                 self.viewModel.sessionRoutingContract)
@@ -128,12 +131,19 @@ struct ChatSessionSidebar: View {
             await self.previews.refresh(previewRequest, cache: cache)
         }
         .task(id: self.groupRefreshID) {
+            let refreshID = self.groupRefreshID
+            let owner = self.viewModel.selectedAgentID
             self.viewModel.refreshSessions(limit: 200)
             do {
-                let groups = try await self.viewModel.fetchSessionGroups()
+                let groups = try await self.viewModel.fetchSessionGroups(agentID: owner)
+                guard !Task.isCancelled, refreshID == self.groupRefreshID else { return }
+                self.groupsOwnerID = owner
+                self.groupsModelID = ObjectIdentifier(self.viewModel)
                 self.groups = groups
                 self.groupLoadFailed = false
             } catch {
+                guard !Task.isCancelled, refreshID == self.groupRefreshID else { return }
+                self.groups = []
                 self.groupLoadFailed = true
             }
         }
@@ -378,7 +388,9 @@ struct ChatSessionSidebar: View {
     private var groupRefreshID: String {
         let categories = self.viewModel.sessions.compactMap(\.category).sorted().joined(separator: "|")
         let revision = self.viewModel.sessionGroupsRevision
-        return "\(self.viewModel.healthOK)|\(categories)|\(revision)|\(self.groupRefreshNonce)"
+        let owner = self.viewModel.selectedAgentID ?? ""
+        let model = ObjectIdentifier(self.viewModel)
+        return "\(owner)|\(model)|\(self.viewModel.healthOK)|\(categories)|\(revision)|\(self.groupRefreshNonce)"
     }
 
     private var deleteDialogTitle: String {

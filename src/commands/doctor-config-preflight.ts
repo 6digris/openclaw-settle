@@ -17,9 +17,16 @@ import type {
 } from "../infra/state-migrations.types.js";
 import { resolveInstalledPluginIndexPolicyHash } from "../plugins/installed-plugin-index-policy.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
-import { withArtifactPreservingStateReads } from "../state/openclaw-state-db-readonly.js";
+import {
+  withArtifactPreservingStateReads,
+  withExistingOpenClawStateDatabaseReadOnly,
+} from "../state/openclaw-state-db-readonly.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { assertOpenClawStateWriteAllowedAtPath } from "../state/openclaw-state-ownership.js";
+import {
+  isSessionGroupCatalogReady,
+  hasLegacySessionGroupClassification,
+} from "../state/session-group-readiness.js";
 import { noteDoctorConfigPreflightIssues } from "./doctor-config-analysis.js";
 import { resolveMigrationCheckpointIdentity } from "./doctor-config-preflight-checkpoint.js";
 import {
@@ -47,7 +54,10 @@ import {
 import { withDoctorConfigPreflightWorkerScope } from "./doctor-config-preflight-worker-scope.js";
 import * as cronMigration from "./doctor-config-preflight.cron.js";
 import { maybeRepairPluginOpenClawHostLinks } from "./doctor-plugin-host-links.js";
-import { throwStartupMigrationGuardRejected } from "./doctor-startup-migration-refusal.js";
+import {
+  throwStartupMigrationGuardRejected,
+  throwStartupMigrationRefusal,
+} from "./doctor-startup-migration-refusal.js";
 import { noteStaleUpdateRuns } from "./doctor-update-run.js";
 import type { CronCodexRuntimePolicyTarget } from "./doctor/cron/store-migration.js";
 import {
@@ -99,7 +109,6 @@ async function runDoctorConfigPreflightOperation(
       recoverOrphanedSidecars: !gatewayStartupCheckpointRequired,
     });
   }
-  await noteStaleUpdateRuns(options);
   const measurePreflightStep = <T>(name: string, run: () => T | Promise<T>) =>
     measureDoctorConfigPreflightStep(name, run, options.measure);
   const migrationCheckpointRequired =
@@ -128,6 +137,7 @@ async function runDoctorConfigPreflightOperation(
   let postSessionPluginMigration: PreparedPostSessionPluginMigration | undefined;
   let postSessionPluginMigrationPlanBound = false;
   let doctorMediaPersistenceAttempted = false;
+  let groupMigrationSourcesPrepared = false;
   let configSnapshotRead: Awaited<ReturnType<typeof readStartupMigrationSnapshot>> | undefined;
   let pluginInstallConfigImport: ShippedPluginInstallConfigImport | undefined;
   const pluginMigrations = createDoctorPluginMigrationPreparation({
@@ -242,7 +252,11 @@ async function runDoctorConfigPreflightOperation(
         includePluginMetadata:
           Boolean(migrationCheckpoint) || options.preparePluginMetadataSnapshot === true,
         measure: options.measure,
-        observe: gatewayStartupCheckpointRequired ? false : options.observe,
+        observe:
+          gatewayStartupCheckpointRequired ||
+          (stateMigrationsRequested && !groupMigrationSourcesPrepared)
+            ? false
+            : options.observe,
         preparePluginMetadataSnapshot: options.preparePluginMetadataSnapshot === true,
         skipPluginValidation: shouldSkipPluginValidationForDoctorConfigPreflight(),
         prepareSnapshot: getSnapshotPreparation(options.doctorOnlyStateMigrations === true),
@@ -370,6 +384,43 @@ async function runDoctorConfigPreflightOperation(
     if (gatewayStartupCheckpointRequired && !freshConfigGuardAllowed) {
       throwStartupMigrationGuardRejected();
     }
+    const groupMigrationInput = resolveStateMigrationConfigInput({ snapshot, baseConfig });
+    const pendingGroupClassification =
+      stateMigrationsRequested &&
+      stateMigrationsAllowed &&
+      freshConfigGuardAllowed &&
+      withExistingOpenClawStateDatabaseReadOnly(
+        ({ db }) => !isSessionGroupCatalogReady(db) && hasLegacySessionGroupClassification(db),
+        { env: startupMigrationEnv },
+      );
+    if (pendingGroupClassification && !groupMigrationInput?.cfg) {
+      // A partially invalid unrelated setting is not permission to erase missing
+      // registry evidence during Doctor's independent media repair pass.
+      const { assertSessionGroupMigrationSourcesAvailable } =
+        await import("./doctor-session-groups.js");
+      assertSessionGroupMigrationSourcesAvailable(
+        groupMigrationInput?.cfg ?? baseConfig,
+        startupMigrationEnv,
+      );
+    }
+    if (pendingGroupClassification && groupMigrationInput?.cfg) {
+      // Preserve legacy membership and the pre-schema recovery image before
+      // schema/plugin/agent maintenance can consume either migration source.
+      const { migrateDoctorSessionGroups } = await import("./doctor-session-groups.js");
+      const groupMigrationConfig = groupMigrationInput.cfg;
+      if (gatewayStartupCheckpointRequired) {
+        await ensureStartupMigrationLease();
+      }
+      noteStartupStateMigrationResult(
+        await measurePreflightStep("session-group-ownership", () =>
+          migrateDoctorSessionGroups(groupMigrationConfig, startupMigrationEnv),
+        ),
+      );
+    }
+    groupMigrationSourcesPrepared = true;
+    // Ledger reconciliation can open a writer; it follows source verification and
+    // cutover instead of advancing the schema before the recovery snapshot.
+    await noteStaleUpdateRuns(options);
     if (
       options.doctorOnlyStateMigrations === true &&
       stateDirMigrations &&
@@ -630,6 +681,42 @@ async function runDoctorConfigPreflightOperation(
           migrateLegacyMediaPersistence({ env: process.env }),
         ),
       );
+    }
+    if (
+      gatewayStartupCheckpointRequired &&
+      stateMigrationsRequested &&
+      stateMigrationsAllowed &&
+      freshConfigGuardAllowed &&
+      stateMigrationInput?.cfg
+    ) {
+      // Schema readiness and a build checkpoint alone do not prove catalog cutover.
+      // This cheap receipt check also covers pristine and already-checkpointed startup;
+      // the Doctor owner inventories sources only when its own completion is absent.
+      const groupCatalogReady = withExistingOpenClawStateDatabaseReadOnly(
+        ({ db }) => isSessionGroupCatalogReady(db),
+        { env: startupMigrationEnv },
+      );
+      if (!groupCatalogReady) {
+        await ensureStartupMigrationLease();
+        if (options.beforeStateMigrations && !(await options.beforeStateMigrations(snapshot))) {
+          throwStartupMigrationGuardRejected();
+        }
+        startupMigrationLease?.heartbeat();
+        const { migrateDoctorSessionGroups } = await import("./doctor-session-groups.js");
+        const groupMigrationConfig = stateMigrationInput.cfg;
+        try {
+          noteStartupStateMigrationResult(
+            await measurePreflightStep("session-group-ownership", () =>
+              migrateDoctorSessionGroups(groupMigrationConfig, startupMigrationEnv),
+            ),
+          );
+        } catch (error) {
+          throwStartupMigrationRefusal(
+            `Session group ownership migration could not finish: ${String(error)}. Run openclaw doctor --fix after repairing the named source.`,
+            error,
+          );
+        }
+      }
     }
     // State migrations must consume retired locators before the config write removes them.
     // Unsafe migration failures throw; advisory findings must not strand repairable config.

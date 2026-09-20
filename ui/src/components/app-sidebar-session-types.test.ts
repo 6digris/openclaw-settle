@@ -10,6 +10,7 @@ import {
   loadStoredSidebarSessionOwnerFilter,
   loadStoredSidebarSessionsShowPreview,
   setStoredSessionCatalogHidden,
+  storeCollapsedSessionSections,
   storeSidebarSessionSortMode,
   storeSidebarSessionStatusFilter,
   storeSidebarSessionOwnerFilter,
@@ -142,6 +143,23 @@ describe("sidebar session sort preference", () => {
 });
 
 describe("collapsed sidebar sections preference", () => {
+  it("isolates same-name groups while preserving shared built-in and plugin preferences", () => {
+    const key = "openclaw:sidebar:sessions:collapsed-sections";
+    localStorage.setItem(key, JSON.stringify(["online", "category:Legacy"]));
+    expect([...loadStoredCollapsedSessionSections("alpha")]).toEqual(["online"]);
+    storeCollapsedSessionSections(new Set(["work", "category:Shared"]), "alpha");
+    expect([...loadStoredCollapsedSessionSections("alpha")]).toEqual(["work", "category:Shared"]);
+    expect([...loadStoredCollapsedSessionSections("beta")]).toEqual(["work"]);
+    storeCollapsedSessionSections(new Set(["online", "catalog:codex"]), "beta");
+    expect([...loadStoredCollapsedSessionSections("alpha")]).toEqual([
+      "online",
+      "catalog:codex",
+      "category:Shared",
+    ]);
+    expect([...loadStoredCollapsedSessionSections("beta")]).toEqual(["online", "catalog:codex"]);
+    expect(JSON.parse(localStorage.getItem(key)!)).toEqual(["online", "catalog:codex"]);
+  });
+
   it("defaults Coding to compact while Online remains expanded", () => {
     expect([...loadStoredCollapsedSessionSections()]).toEqual(["work"]);
   });

@@ -14,6 +14,7 @@ import { openExternalUrlSafe } from "../lib/open-external-url.ts";
 import { readSessionMethodAccess } from "../lib/session-method-access.ts";
 import { categoryClearReturnsToGroups } from "../lib/sessions/grouping.ts";
 import {
+  parseAgentSessionKey,
   canArchiveSessionRow,
   canDeleteSessionRows,
   resolveUiConfiguredMainKey,
@@ -210,6 +211,12 @@ export function renderSidebarSessionMenuForController(controller: SidebarMenusCo
     return nothing;
   }
   const context = host.sessionDataContext;
+  if (menu.scope === undefined) {
+    menu.scope = host.sessionData.beginSessionMutation(
+      parseAgentSessionKey(menu.session.key)?.agentId ?? menu.session.agentId,
+    );
+  }
+  const { scope } = menu;
   const pluginActionSignal = controller.pluginActionLifetime.signal;
   const currentSession = host.findSidebarSessionByKey(menu.session.key);
   // Read again at dispatch: session updates can arrive before the menu rerenders.
@@ -298,7 +305,7 @@ export function renderSidebarSessionMenuForController(controller: SidebarMenusCo
         .archiveAllowed=${archiveAllowed}
         .deleteAllowed=${deleteAllowed}
         .cloudWorkerStopAllowed=${cloudWorkerStopAllowed}
-        .groups=${host.knownSessionGroups()}
+        .groups=${host.knownSessionGroups(parseAgentSessionKey(session.key)?.agentId ?? session.agentId)}
         .currentOwner=${session.owner?.actor ?? null}
         .work=${batchRows ? null : controller.sessionMenuWork}
         .pluginActions=${
@@ -312,6 +319,11 @@ export function renderSidebarSessionMenuForController(controller: SidebarMenusCo
           }
         }}
         .onAction=${(action: SessionMenuAction) => {
+          // The shared menu closes before dispatch. Validate its captured owner,
+          // not the visibility state that normal activation already cleared.
+          if (!scope || !host.sessionData.isSessionMutationScopeCurrent(scope)) {
+            return;
+          }
           if (batchRows) {
             void host.sessionOrganizer.runBatchSessionAction(action, batchRows, allUnread);
             return;
@@ -425,7 +437,12 @@ export function renderSidebarSessionGroupMenuForController(controller: SidebarMe
   if (!menu) {
     return nothing;
   }
-  const groupDefaultsStatus = host.sessionDataContext?.sessions.groupsStatus() ?? "idle";
+  const scope = controller.sessionGroupMenuScope;
+  if (!scope || !host.sessionData.isSessionMutationScopeCurrent(scope)) {
+    return nothing;
+  }
+  const groupDefaultsStatus =
+    host.sessionDataContext?.sessions.groupsStatus(scope.selectedAgentId) ?? "idle";
   const groupActionAccess = {
     "group-defaults": readSessionMethodAccess(host.sessionDataContext?.gateway.snapshot, {
       method: "sessions.groups.update",
@@ -462,12 +479,18 @@ export function renderSidebarSessionGroupMenuForController(controller: SidebarMe
       }),
     ),
     onAction: (action, group) => {
+      if (
+        controller.sessionGroupMenu !== menu ||
+        !host.sessionData.isSessionMutationScopeCurrent(scope)
+      ) {
+        return;
+      }
       controller.closeSessionGroupMenu({ restoreFocus: true });
       switch (action) {
         case "group-defaults":
           if (groupDefaultsStatus === "unavailable") {
-            host.sessionDataContext?.sessions.groupsInvalidate();
-            void host.sessionDataContext?.sessions.groupsLoad();
+            host.sessionDataContext?.sessions.groupsInvalidate(scope.selectedAgentId);
+            void host.sessionDataContext?.sessions.groupsLoad(scope.selectedAgentId);
             break;
           }
           void host.sessionOrganizer.editSessionGroupDefaults(group);

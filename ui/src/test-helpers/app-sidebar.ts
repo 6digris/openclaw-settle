@@ -19,6 +19,7 @@ import type { ExecApprovalRequest } from "../app/exec-approval.ts";
 import type { ApplicationOverlays } from "../app/overlays-types.ts";
 import type { AppSidebarSessionNavigationElement } from "../components/app-sidebar-session-navigation.ts";
 import type { SessionDataController } from "../components/session-data-controller.ts";
+import type { SessionMenuAction } from "../components/session-menu.ts";
 import type { SessionOrganizerController } from "../components/session-organizer-controller.ts";
 import type { ContextualSidebar } from "../components/sidebar-context-state.ts";
 import type { AgentIdentityCapability } from "../lib/agents/identity.ts";
@@ -110,7 +111,7 @@ export type SidebarLifecycleState = HTMLElement & {
 export type TestSessionMenu = HTMLElement & {
   forkDisabled: boolean;
   forkFromLastCompleted: boolean;
-  onAction: (action: { kind: "fork" }) => void;
+  onAction: (action: SessionMenuAction) => void;
   selectionCount: number;
   readonly updateComplete: Promise<boolean>;
 };
@@ -357,7 +358,19 @@ export function createSessionsHarness(agentId: string, keys: string[]) {
       }
       notify();
     },
-    groupsLoad: () => Promise.resolve(),
+    groupsSnapshot: (owner = agentId) => ({
+      settings:
+        owner === state.agentId
+          ? state.groups.map(
+              (name, position) =>
+                state.groupSettings.find((group) => group.name === name) ?? { name, position },
+            )
+          : [],
+      sectionOrder: owner === state.agentId ? state.sectionOrder : [],
+      generation: 0,
+      status: "ready",
+    }),
+    groupsLoad: () => Promise.resolve([]),
     groupsGeneration: () => 0,
     groupsStatus: () => "ready",
     groupsInvalidate: () => undefined,

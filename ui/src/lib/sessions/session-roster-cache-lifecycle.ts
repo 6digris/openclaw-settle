@@ -91,9 +91,9 @@ export function createSessionRosterCacheLifecycle(
         agentId: state.agentId,
         query: host.query(),
         result: state.result,
-        groups: state.groups,
-        groupSettings: state.groupSettings,
-        sectionOrder: state.sectionOrder,
+        groups: [],
+        groupSettings: [],
+        sectionOrder: [],
       });
     },
     dispose() {

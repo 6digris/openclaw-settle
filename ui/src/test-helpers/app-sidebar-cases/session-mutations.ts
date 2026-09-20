@@ -102,6 +102,17 @@ describe("AppSidebar session mutation feedback", () => {
     link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, altKey: true }));
   }
 
+  it("rejects an old row menu after a same-client reconnect before dispatch", async () => {
+    const { gateway, harness, sidebar } = await mountMutationHarness();
+    const menu = await openSessionMenu(sidebar, "agent:main:a");
+    const dispatch = menu.onAction;
+    gateway.publish({ phase: "reconnecting" });
+    gateway.publish({ phase: "connected" });
+    await sidebar.updateComplete;
+    dispatch({ kind: "toggle-unread" });
+    expect(harness.patch).not.toHaveBeenCalled();
+  });
+
   async function mountToastHost() {
     const host = document.createElement("openclaw-toast-host");
     document.body.append(host);

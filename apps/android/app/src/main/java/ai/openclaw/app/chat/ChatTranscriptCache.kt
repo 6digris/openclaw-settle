@@ -64,6 +64,17 @@ private data class CachedMessagePayload(
  * session-list window so its transcript remains available offline.
  */
 interface ChatTranscriptCache {
+  suspend fun loadSessionGroups(
+    gatewayId: String,
+    agentId: String,
+  ): String? = null
+
+  suspend fun saveSessionGroups(
+    gatewayId: String,
+    agentId: String,
+    catalogJson: String,
+  ) {}
+
   suspend fun loadLastDefaultAgentId(gatewayId: String): String?
 
   suspend fun saveLastDefaultAgentId(
@@ -146,8 +157,27 @@ internal data class CachedGatewayOwnerEntity(
   val agentId: String,
 )
 
+@Entity(tableName = "cached_session_groups", primaryKeys = ["gatewayId", "agentId"])
+internal data class CachedSessionGroupsEntity(
+  val gatewayId: String,
+  val agentId: String,
+  val catalogJson: String,
+)
+
 @Dao
 internal interface ChatCacheDao {
+  @Query("SELECT catalogJson FROM cached_session_groups WHERE gatewayId = :gatewayId AND agentId = :agentId")
+  suspend fun sessionGroups(
+    gatewayId: String,
+    agentId: String,
+  ): String?
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsertSessionGroups(row: CachedSessionGroupsEntity)
+
+  @Query("DELETE FROM cached_session_groups WHERE gatewayId = :gatewayId")
+  suspend fun deleteSessionGroups(gatewayId: String)
+
   @Query("SELECT agentId FROM cached_gateway_owners WHERE gatewayId = :gatewayId")
   suspend fun lastDefaultAgentId(gatewayId: String): String?
 
@@ -276,6 +306,19 @@ class RoomChatTranscriptCache internal constructor(
   private val cachedPayloadSerializer = CachedMessagePayload.serializer()
   private val cachedContentSerializer = ListSerializer(CachedMessageContent.serializer())
   private val legacyTextPartsSerializer = ListSerializer(String.serializer())
+
+  override suspend fun loadSessionGroups(
+    gatewayId: String,
+    agentId: String,
+  ): String? = database.dao().sessionGroups(gatewayId, agentId)
+
+  override suspend fun saveSessionGroups(
+    gatewayId: String,
+    agentId: String,
+    catalogJson: String,
+  ) {
+    database.dao().upsertSessionGroups(CachedSessionGroupsEntity(gatewayId, agentId, catalogJson))
+  }
 
   override suspend fun loadLastDefaultAgentId(gatewayId: String): String? {
     val gateway = scopedGatewayId(gatewayId) ?: return null
@@ -533,6 +576,7 @@ class RoomChatTranscriptCache internal constructor(
       dao.deleteMessages(gateway)
       dao.deleteSessionsForGateway(gateway)
       dao.deleteGatewayOwner(gateway)
+      dao.deleteSessionGroups(gateway)
     }
   }
 

@@ -172,7 +172,7 @@ describe("createSessionCapability", () => {
     sessions.dispose();
   });
 
-  it("keeps the legacy group catalog probe one-shot without feature metadata", async () => {
+  it("reports unavailable groups and permits explicit retry without falling back to an unscoped method", async () => {
     const request = vi.fn(async () => {
       throw new Error("unknown method");
     });
@@ -181,9 +181,11 @@ describe("createSessionCapability", () => {
     const sessions = createTestSessionCapability(gateway);
 
     await sessions.groupsLoad();
+    expect(sessions.groupsStatus()).toBe("unavailable");
     await sessions.groupsLoad();
 
-    expect(request).toHaveBeenCalledOnce();
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenLastCalledWith("sessions.groups.list", { agentId: "main" });
     sessions.dispose();
   });
 
@@ -342,8 +344,10 @@ describe("createSessionCapability", () => {
     },
   );
 
-  it("does not probe for a group catalog when the method is explicitly absent", async () => {
-    const request = vi.fn();
+  it("fails visibly on a missing shipped-core group method instead of pretending the catalog is empty", async () => {
+    const request = vi.fn(async () => {
+      throw new Error("unknown method");
+    });
     const client = { request } as unknown as GatewayBrowserClient;
     const { gateway } = createGatewayHarness(client, []);
     const sessions = createTestSessionCapability(gateway);
@@ -351,7 +355,9 @@ describe("createSessionCapability", () => {
     await sessions.groupsLoad();
     await sessions.groupsLoad();
 
-    expect(request).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenLastCalledWith("sessions.groups.list", { agentId: "main" });
+    expect(sessions.groupsStatus()).toBe("unavailable");
     expect(sessions.state.groups).toEqual([]);
     sessions.dispose();
   });
@@ -376,7 +382,11 @@ describe("createSessionCapability", () => {
 
     const firstLoad = sessions.groupsLoad();
     await waitForFast(() => expect(groupsCalls).toBe(1));
-    emitEvent({ type: "event", event: "sessions.changed", payload: { reason: "groups" } });
+    emitEvent({
+      type: "event",
+      event: "sessions.changed",
+      payload: { reason: "groups", agentId: "main" },
+    });
     await waitForFast(() => expect(groupsCalls).toBe(2));
     currentGroups.resolve({ groups: [{ name: "Current" }] });
     await waitForFast(() => expect(sessions.state.groups).toEqual(["Current"]));

@@ -191,8 +191,12 @@ export abstract class ChatPaneSessionMenu extends ChatPaneContext {
         sidebarSessionStatusFilter: () => "active",
         knownSessionGroups: () =>
           collectKnownSessionGroups(
-            scope.sessions.state.groups,
-            scope.sessions.state.result?.sessions ?? [],
+            scope.sessions
+              .groupsSnapshot(scope.selectedAgentId)
+              .settings.map((group) => group.name),
+            (scope.sessions.state.result?.sessions ?? []).filter(
+              (candidate) => candidate.key === row.key,
+            ),
           ),
       };
       switch (action.kind) {
@@ -381,7 +385,7 @@ export abstract class ChatPaneSessionMenu extends ChatPaneContext {
       gateway,
       sessions: this.context.sessions,
       client,
-      selectedAgentId: this.context.agentSelection.state.selectedId ?? "main",
+      selectedAgentId: this.state ? resolveChatAgentId(this.state) : "",
       signal: this.headerSessionMutationAbortController.signal,
     };
   }

@@ -339,7 +339,7 @@ private final class SessionActionTransport: @unchecked Sendable, OpenClawChatTra
         await self.state.recordPatch(key, expectedSessionID: expectedSessionID)
     }
 
-    func acquireSessionGroupsRouteLease() async -> OpenClawChatSessionGroupsRouteLease? {
+    func acquireSessionGroupsRouteLease(agentID: String) async throws -> OpenClawChatSessionGroupsRouteLease {
         let state = self.state
         return OpenClawChatSessionGroupsRouteLease(
             listGroups: {
@@ -361,6 +361,16 @@ private final class SessionActionTransport: @unchecked Sendable, OpenClawChatTra
             },
             deleteGroup: { _ in
                 OpenClawChatSessionGroupsMutationResponse(ok: true, groups: [], updatedSessions: nil)
+            },
+            agentID: agentID,
+            appendGroups: { names in
+                await state.recordGroupPut(names)
+                return OpenClawChatSessionGroupsMutationResponse(
+                    ok: true,
+                    groups: (["Existing"] + names).enumerated().map {
+                        OpenClawChatSessionGroup(name: $0.element, position: $0.offset)
+                    },
+                    updatedSessions: nil)
             })
     }
 
@@ -558,28 +568,41 @@ struct ChatViewModelSessionActionTests {
         #expect(await transport.patchIdentities().map(\.expectedSessionID) == ["session-durable"])
     }
 
-    @Test func `group create lists and replaces through one captured route lease`() async throws {
+    @Test func `group create atomically appends through one captured owned route lease`() async throws {
         let transport = SessionActionTransport()
-        let viewModel = OpenClawChatViewModel(sessionKey: "main", transport: transport)
-        let lease = try await viewModel.sessionGroupsRouteLease()
+        let viewModel = OpenClawChatViewModel(sessionKey: "agent:main:main", transport: transport)
+        let lease = try await viewModel.sessionGroupsRouteLease(agentID: "main")
 
         let groups = try await viewModel.createSessionGroup(named: "New", using: lease)
 
         #expect(groups.map(\.name) == ["Existing", "New"])
-        #expect(await transport.groupPuts() == [["Existing", "New"]])
+        #expect(await transport.groupPuts() == [["New"]])
+        #expect(lease.agentID == "main")
         // Catalog-only mutations must bump the revision so sidebar group fetches
         // keyed on it refetch instead of staying stale until reconnect.
         #expect(viewModel.sessionGroupsRevision == 1)
     }
 
+    @Test func `captured group lease does not adopt a subsequently selected agent`() async throws {
+        let transport = SessionActionTransport()
+        let viewModel = OpenClawChatViewModel(sessionKey: "agent:main:main", transport: transport)
+        let lease = try await viewModel.sessionGroupsRouteLease()
+        viewModel.switchSession(to: "agent:research:main")
+        _ = try await viewModel.createSessionGroup(named: "Main only", using: lease)
+        #expect(lease.agentID == "main")
+        #expect(viewModel.sessionGroupsRevision == 0)
+        #expect(await transport.groupPuts() == [["Main only"]])
+    }
+
     @Test func `remote group mutations bump the catalog revision`() async {
         let transport = SessionActionTransport()
         let viewModel = await MainActor.run {
-            OpenClawChatViewModel(sessionKey: "main", transport: transport)
+            OpenClawChatViewModel(sessionKey: "agent:main:main", transport: transport)
         }
 
         await MainActor.run {
-            viewModel.handleTransportEvent(.sessionsChanged(.init(sessionKey: nil, reason: "groups")))
+            viewModel.handleTransportEvent(.sessionsChanged(.init(sessionKey: nil, agentId: "research", reason: "groups")))
+            viewModel.handleTransportEvent(.sessionsChanged(.init(sessionKey: nil, agentId: "main", reason: "groups")))
             viewModel.handleTransportEvent(.sessionsChanged(.init(sessionKey: nil, reason: "unrelated")))
         }
 

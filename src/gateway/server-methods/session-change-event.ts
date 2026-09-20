@@ -215,7 +215,7 @@ export function emitSessionsChanged(
             sessionKey: payload.sessionKey,
             ...(payload.agentId ? { agentId: payload.agentId } : {}),
           }
-        : { all: true, scope: "sessions" },
+        : { all: true, scope: payload.agentId ? { agentId: payload.agentId } : "sessions" },
     );
   }
   // Only a committed producer may certify unchanged access; unknown changes stay conservative.

@@ -37,10 +37,10 @@ describe("sessions tool responses", () => {
     await tool.execute("delete", { action: "group_delete", name: "Later" });
 
     expect(gatewayMocks.callGateway.mock.calls).toEqual([
-      [{ method: "sessions.groups.list", params: {} }],
-      [{ method: "sessions.groups.put", params: { names: ["Now", "Later"] } }],
-      [{ method: "sessions.groups.rename", params: { name: "Now", to: "Next" } }],
-      [{ method: "sessions.groups.delete", params: { name: "Later" } }],
+      [{ method: "sessions.groups.list", params: { agentId: "main" } }],
+      [{ method: "sessions.groups.put", params: { agentId: "main", names: ["Now", "Later"] } }],
+      [{ method: "sessions.groups.rename", params: { agentId: "main", name: "Now", to: "Next" } }],
+      [{ method: "sessions.groups.delete", params: { agentId: "main", name: "Later" } }],
     ]);
     await expect(tool.execute("set-missing", { action: "group_set" })).rejects.toThrow(
       "names required",

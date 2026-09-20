@@ -199,6 +199,9 @@ class ChatController internal constructor(
       }
     },
   private val transcriptCache: ChatTranscriptCache? = null,
+  private val legacySessionGroupNames: () -> List<String> = { emptyList() },
+  private val acknowledgeLegacySessionGroupNames: (List<String>) -> Unit = {},
+  private val claimLegacySessionGroupImport: suspend (LegacySessionGroupOwner) -> String? = { null },
   private val cacheScope: () -> ChatCacheScope? = { null },
   private val currentDefaultAgentId: () -> String? = { "main" },
   private val currentDefaultAgentRevision: () -> Long = { 0L },
@@ -227,6 +230,9 @@ class ChatController internal constructor(
     session: GatewaySession,
     json: Json,
     transcriptCache: ChatTranscriptCache? = null,
+    legacySessionGroupNames: () -> List<String> = { emptyList() },
+    acknowledgeLegacySessionGroupNames: (List<String>) -> Unit = {},
+    claimLegacySessionGroupImport: suspend (LegacySessionGroupOwner) -> String? = { null },
     cacheScope: () -> ChatCacheScope? = { null },
     currentDefaultAgentId: () -> String? = { "main" },
     currentDefaultAgentRevision: () -> Long = { 0L },
@@ -253,6 +259,9 @@ class ChatController internal constructor(
       session.captureRequestLease(gatewayScope?.gatewayId)
     },
     transcriptCache = transcriptCache,
+    legacySessionGroupNames = legacySessionGroupNames,
+    acknowledgeLegacySessionGroupNames = acknowledgeLegacySessionGroupNames,
+    claimLegacySessionGroupImport = claimLegacySessionGroupImport,
     cacheScope = cacheScope,
     currentDefaultAgentId = currentDefaultAgentId,
     currentDefaultAgentRevision = currentDefaultAgentRevision,
@@ -1054,6 +1063,7 @@ class ChatController internal constructor(
   }
 
   private fun refreshConnectedGateway() {
+    refreshSessionGroups()
     refreshProgressCard()
     refreshQuestions()
     refreshHistoryForRecovery(forceHealth = true)
@@ -1127,6 +1137,8 @@ class ChatController internal constructor(
 
   /** Restores the selected gateway's local state without waiting for transport availability. */
   suspend fun restoreSelectedGatewayOfflineState() {
+    sessionGroups.select()
+    sessionGroups.restoreOffline()
     val cacheReady = CompletableDeferred<Unit>()
     refreshCommands()
     refreshHistoryForRecovery(forceHealth = true, cacheReady = cacheReady)
@@ -1149,6 +1161,7 @@ class ChatController internal constructor(
     clearStores: suspend (String) -> Unit,
   ) {
     val gateway = gatewayId.trim().takeIf { it.isNotEmpty() } ?: return
+    sessionGroups.clearGateway(gateway)
     synchronized(gatewayScopeApplyLock) {
       lastSelectedChatSessionByOwner.keys.removeAll { it.gatewayStableId == gateway }
     }
@@ -1228,6 +1241,7 @@ class ChatController internal constructor(
     lastVerifiedDefaultAgentId = verifiedAgentId
     val verifiedGatewayId = currentCacheScope()?.gatewayId
     lastVerifiedDefaultAgentGatewayId = verifiedGatewayId
+    refreshSessionGroups()
     composerDefaultAgentOwnerMutable.value =
       verifiedGatewayId?.let { gatewayId -> GatewayDefaultAgentOwner(gatewayId, verifiedAgentId) }
     if (verifiedGatewayId != null) {
@@ -1301,10 +1315,11 @@ class ChatController internal constructor(
     limit: Int? = null,
     archived: Boolean = false,
   ) {
+    refreshSessionGroups()
     scope.launch { fetchSessions(limit = limit, archived = archived) }
   }
 
-  suspend fun patchSession(
+  internal suspend fun patchSession(
     key: String,
     ownerAgentId: String? = null,
     expectedSessionId: String? = null,
@@ -1318,6 +1333,7 @@ class ChatController internal constructor(
     archived: Boolean? = null,
     unread: Boolean? = null,
     unreadExpectation: ChatSessionUnreadExpectation? = null,
+    groupRoute: ChatSessionGroupRoute? = null,
   ): Boolean {
     val sessionKey = key.trim().takeIf { it.isNotEmpty() } ?: return false
     val requestCacheScope = currentCacheScope()
@@ -1342,6 +1358,19 @@ class ChatController internal constructor(
       return false
     }
     try {
+      val categoryRoute =
+        if (category != null || clearCategory) {
+          val route =
+            groupRoute ?: sessionGroups.capture(capturedOwnerAgentId)
+              ?: throw GatewayRequestNotEnqueued("Select a verified agent before managing groups.")
+          if (route.gatewayScope != requestCacheScope || route.agentId != capturedOwnerAgentId) {
+            throw GatewayRequestNotEnqueued("Group owner changed; reopen the action.")
+          }
+          sessionGroups.requireCurrent(route)
+          route
+        } else {
+          null
+        }
       val params =
         buildJsonObject {
           put("key", JsonPrimitive(sessionKey))
@@ -1387,8 +1416,11 @@ class ChatController internal constructor(
                 ?.takeIf { it.key == sessionKey && (it.observedSessionId == null || it.observedSessionId == lifecycleSessionId) }
             active to remembered
           }
-        val lease = captureRequestLease(requestCacheScope) ?: throw GatewayRequestNotEnqueued("not connected")
-        lease.request("sessions.patch", params.toString(), 10 * 60_000L)
+        val lease = categoryRoute?.lease ?: captureRequestLease(requestCacheScope) ?: throw GatewayRequestNotEnqueued("not connected")
+        lease.request("sessions.patch", params.toString(), 10 * 60_000L, withEnqueue = { enqueue ->
+          categoryRoute?.let(sessionGroups::requireCurrent)
+          enqueue()
+        })
         lease.commitIfCurrent {
           synchronized(gatewayScopeApplyLock) {
             // ACK retirement belongs to the captured choice, even after an agent switch.
@@ -1413,7 +1445,18 @@ class ChatController internal constructor(
           }
         }
       } else {
-        requestGateway("sessions.patch", params.toString())
+        val route = categoryRoute ?: groupRoute
+        if (route == null) {
+          requestGateway("sessions.patch", params.toString())
+        } else {
+          if (route.gatewayScope != requestCacheScope || route.agentId != capturedOwnerAgentId) {
+            throw GatewayRequestNotEnqueued("Group owner changed; reopen the action.")
+          }
+          route.lease.request("sessions.patch", params.toString(), withEnqueue = { enqueue ->
+            categoryRoute?.let(sessionGroups::requireCurrent)
+            enqueue()
+          })
+        }
       }
       fetchSessionsForCurrentWindow()
       return true
@@ -1423,81 +1466,66 @@ class ChatController internal constructor(
     }
   }
 
-  /** Renames a session group everywhere: every member session moves to the new category. */
-  suspend fun renameSessionGroup(
+  private val sessionGroups by lazy {
+    ChatSessionGroups(
+      json = json,
+      currentScope = ::currentCacheScope,
+      currentAgentId = { resolveAgentIdForSessionKey(_sessionKey.value) },
+      defaultAgentId = currentDefaultAgentId,
+      supportsScopedGroups = { gatewayAdvertisesCapability(AGENT_SCOPED_SESSION_GROUPS_CAPABILITY) == true },
+      captureLease = captureRequestLease,
+      legacyNames = legacySessionGroupNames,
+      acknowledgeLegacyNames = acknowledgeLegacySessionGroupNames,
+      claimLegacyImport = claimLegacySessionGroupImport,
+      onMembersChanged = ::refreshSessionsForCurrentWindow,
+      cache = transcriptCache,
+    )
+  }
+
+  internal val sessionGroupCatalog: StateFlow<ChatSessionGroupCatalog>
+    get() = sessionGroups.catalog
+
+  internal fun captureSessionGroupRoute(agentId: String?): ChatSessionGroupRoute? = sessionGroups.capture(agentId)
+
+  internal fun refreshSessionGroups() {
+    sessionGroups.select()
+    val route = sessionGroups.capture(resolveAgentIdForSessionKey(_sessionKey.value))
+    scope.launch {
+      sessionGroups.restoreOffline()
+      if (route != null) sessionGroups.refresh(route)
+    }
+  }
+
+  internal suspend fun createSessionGroup(
+    route: ChatSessionGroupRoute,
+    name: String,
+    sessionKey: String? = null,
+  ): Boolean {
+    if (!sessionGroups.create(route, name)) return false
+    if (sessionKey == null) return true
+    if (!sessionGroups.routeIsCurrent(route)) return false
+    return patchSession(sessionKey, ownerAgentId = route.agentId, category = name.trim(), groupRoute = route)
+  }
+
+  internal suspend fun moveSessionToGroup(
+    route: ChatSessionGroupRoute,
+    sessionKey: String,
+    category: String?,
+  ): Boolean {
+    if (!sessionGroups.routeIsCurrent(route)) return false
+    return patchSession(sessionKey, ownerAgentId = route.agentId, category = category, clearCategory = category == null, groupRoute = route)
+  }
+
+  internal suspend fun renameSessionGroup(
+    route: ChatSessionGroupRoute,
     from: String,
     to: String,
-  ) {
-    val fromName = from.trim().takeIf { it.isNotEmpty() } ?: return
-    val toName = to.trim().takeIf { it.isNotEmpty() } ?: return
-    patchSessionGroupMembers(group = fromName, category = toName)
-  }
+  ): Boolean = sessionGroups.rename(route, from, to)
 
-  /** Deletes a session group: member sessions are kept and move back to Ungrouped. */
-  suspend fun dissolveSessionGroup(group: String) {
-    val groupName = group.trim().takeIf { it.isNotEmpty() } ?: return
-    patchSessionGroupMembers(group = groupName, category = null)
-  }
-
-  private suspend fun patchSessionGroupMembers(
+  internal suspend fun dissolveSessionGroup(
+    route: ChatSessionGroupRoute,
     group: String,
-    category: String?,
-  ) {
-    try {
-      val ownerAgentId = resolveAgentIdForSessionKey(_sessionKey.value) ?: return
-      var firstError: Throwable? = null
-      for (member in listSessionGroupMembers(group, ownerAgentId)) {
-        try {
-          val params =
-            buildJsonObject {
-              put("key", JsonPrimitive(member.key))
-              put("agentId", JsonPrimitive(ownerAgentId))
-              put("category", category?.let(::JsonPrimitive) ?: JsonNull)
-            }
-          requestGateway("sessions.patch", params.toString())
-        } catch (err: CancellationException) {
-          throw err
-        } catch (err: Throwable) {
-          // Best-effort: one failed member patch must not strand the rest of the group.
-          if (firstError == null) firstError = err
-        }
-      }
-      firstError?.let { updateErrorText(it.message) }
-      fetchSessionsForCurrentWindow()
-    } catch (err: CancellationException) {
-      throw err
-    } catch (err: Throwable) {
-      updateErrorText(err.message)
-    }
-  }
-
-  /**
-   * Enumerates every session assigned to the group. The UI session list is windowed
-   * (limited, archived either-or), so group mutations must not derive membership from
-   * it. An absent limit is capped at 100 rows server-side, so both queries send an
-   * explicit high bound; sessions.list filters archived rows either-or, hence two calls.
-   */
-  private suspend fun listSessionGroupMembers(
-    group: String,
-    ownerAgentId: String,
-  ): List<ChatSessionEntry> {
-    val members = LinkedHashMap<String, ChatSessionEntry>()
-    for (archived in listOf(false, true)) {
-      val params =
-        buildJsonObject {
-          put("includeGlobal", JsonPrimitive(true))
-          put("includeUnknown", JsonPrimitive(false))
-          put("agentId", JsonPrimitive(ownerAgentId))
-          put("limit", JsonPrimitive(GROUP_MEMBER_FETCH_LIMIT))
-          if (archived) put("archived", JsonPrimitive(true))
-        }
-      val rows = parseSessions(requestGateway("sessions.list", params.toString())).sessions
-      for (row in rows) {
-        if (row.category?.trim() == group && !members.containsKey(row.key)) members[row.key] = row
-      }
-    }
-    return members.values.toList()
-  }
+  ): Boolean = sessionGroups.delete(route, group)
 
   internal suspend fun deleteSession(
     key: String,
@@ -3260,7 +3288,10 @@ class ChatController internal constructor(
         restorePendingRunProjectionsForCurrentOwner()
         generation to changed
       }
-    if (selectionChanged) refreshProgressCard()
+    if (selectionChanged) {
+      refreshProgressCard()
+      refreshSessionGroups()
+    }
     return generation
   }
 
@@ -6562,6 +6593,7 @@ class ChatController internal constructor(
     val swarmKind = swarmKindElement.asStringOrNull()?.trim()
     if (swarmEvent && (swarmKind == "phase" || swarmKind == "log")) return
     val reason = payload["reason"].asStringOrNull()
+    if (reason == "groups" && sessionGroups.changed(payload["agentId"].asStringOrNull())) refreshSessionGroups()
     if (isSessionSettingsMutation(payload)) {
       val session = eventSessionObject(payload)
       val key = payload["sessionKey"].asStringOrNull() ?: session?.get("key").asStringOrNull()
@@ -8456,8 +8488,6 @@ private enum class ChatMetadataLoadState {
   Loaded,
 }
 
-// Group mutations enumerate whole stores; far past any realistic session count.
-private const val GROUP_MEMBER_FETCH_LIMIT = 10_000
 private const val FULL_MESSAGE_TEXT_MAX_CHARS = 1_000_000
 
 internal fun isCurrentHistoryLoad(

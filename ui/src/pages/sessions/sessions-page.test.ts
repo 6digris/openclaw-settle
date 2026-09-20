@@ -720,7 +720,7 @@ describe("sessions page lifecycle", () => {
 
     await page.rememberCustomGroup(name);
 
-    expect(groupsPut).toHaveBeenCalledWith([name]);
+    expect(groupsPut).toHaveBeenCalledWith([name], undefined, "main", true);
     expect(page.error).toBe("group name exceeds 512 characters");
   });
 

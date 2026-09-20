@@ -1,7 +1,6 @@
 import { getSafeLocalStorage } from "../../local-storage.ts";
 import { formatUiError } from "../format-error.ts";
-import { isGatewayMethodAdvertised } from "../gateway-methods.ts";
-import { readSessionMethodAccess } from "../session-method-access.ts";
+import { canCallGatewayMethod } from "../gateway-methods.ts";
 import {
   readSessionCustomGroups,
   readSidebarSectionOrder,
@@ -12,379 +11,357 @@ import type {
   SessionConnectionOwner,
   SessionConnectionScope,
   SessionGateway,
-  SessionGroupDefaultsStatus,
+  SessionGroupSnapshot,
   SessionGroupMutationResult,
   SessionState,
 } from "./session-capability.ts";
+import { normalizeAgentId } from "./session-key.ts";
 
-type SessionGroupCatalogHost = {
+export type SessionGroupCatalogHost = {
   connection: SessionConnectionOwner;
   snapshot: () => SessionGateway["snapshot"];
+  selectedAgentId: () => string | null;
+  gatewayIdentity: () => string;
+  gatewayUrl: () => string;
   readState: () => SessionState;
   publish: (state: SessionState, errorSource?: "session-observer" | "operation") => void;
-  refreshRows: () => Promise<void>;
+  refreshRows: (agentId: string) => Promise<unknown>;
   retryDelayMs: (error: unknown) => number | null;
 };
 
+type SessionGroupAction = "put" | "rename" | "delete" | "update";
+
+type Entry = SessionGroupSnapshot & {
+  loaded: boolean;
+  mutation: number;
+  pending: Promise<readonly SessionGroupSettings[] | null> | null;
+  retry: ReturnType<typeof globalThis.setTimeout> | null;
+};
 const LEGACY_GROUPS_STORAGE_KEY = "openclaw:sessions:custom-groups";
-const GROUPS_LIST_METHOD = "sessions.groups.list";
-const GROUPS_DEFAULTS_METHOD = "sessions.groups.defaults";
+const EMPTY: SessionGroupSnapshot = {
+  settings: [],
+  sectionOrder: [],
+  generation: 0,
+  status: "idle",
+};
 
-function readLegacyStoredGroups(): string[] {
-  try {
-    const parsed: unknown = JSON.parse(
-      getSafeLocalStorage()?.getItem(LEGACY_GROUPS_STORAGE_KEY) ?? "[]",
-    );
-    return Array.isArray(parsed)
-      ? [
-          ...new Set(
-            parsed
-              .filter((name): name is string => typeof name === "string")
-              .map((name) => name.trim())
-              .filter(Boolean),
-          ),
-        ]
-      : [];
-  } catch {
-    return [];
-  }
-}
-
+/** One connection owns independent catalogs. Session rows and browser snapshots never seed them. */
 export function createSessionGroupCatalog(host: SessionGroupCatalogHost) {
-  let loadedEpoch = -1;
-  let loadGeneration = 0;
-  let catalogGeneration = 0;
-  let defaultsStatus: SessionGroupDefaultsStatus = "idle";
-  let pendingLoad: Promise<readonly SessionGroupSettings[] | null> | null = null;
-  let retryTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
-
-  const clearRetry = () => {
-    if (retryTimer !== null) {
-      clearTimeout(retryTimer);
-      retryTimer = null;
-    }
+  const entries = new Map<string, Entry>();
+  let connection: SessionConnectionScope | null = null;
+  let generation = 0;
+  let profileId = host.snapshot().selfUser?.id;
+  let gatewayIdentity = host.gatewayIdentity();
+  let disposed = false;
+  let legacyImport: Promise<void> | null = null;
+  const owner = (agentId = host.selectedAgentId() ?? host.snapshot().assistantAgentId ?? "") => {
+    const value = agentId.trim();
+    return value && value !== "*" ? normalizeAgentId(value) : "";
   };
-
-  const invalidate = () => {
-    loadedEpoch = -1;
-    loadGeneration += 1;
-    catalogGeneration += 1;
-    pendingLoad = null;
-    clearRetry();
-    defaultsStatus = "loading";
-    // Every invalidation publishes its generation, including back-to-back
-    // events while the previous reload is still pending.
-    host.publish({ ...host.readState() });
+  let selected = owner();
+  const clearRetry = (entry: Entry) => {
+    if (entry.retry !== null) {
+      clearTimeout(entry.retry);
+    }
+    entry.retry = null;
   };
-
-  const dispose = () => {
-    loadedEpoch = -1;
-    loadGeneration += 1;
-    pendingLoad = null;
-    clearRetry();
+  const retire = (entry: Entry, status: "idle" | "loading" = "idle") => {
+    clearRetry(entry);
+    entry.generation = ++generation;
+    // Catalog events retire reads, not an in-flight writer's valid acknowledgement.
+    if (status === "idle") {
+      entry.mutation += 1;
+    }
+    entry.pending = null;
+    entry.loaded = false;
+    entry.status = status;
   };
-
-  const publishCatalog = (
-    groupSettings: readonly SessionGroupSettings[],
-    sectionOrder: readonly string[],
-    status: SessionGroupDefaultsStatus,
-  ) => {
-    const state = host.readState();
-    const groups = groupSettings.map((group) => group.name);
-    const groupsUnchanged =
-      groups.length === state.groups.length &&
-      groups.every((group, i) => group === state.groups[i]);
-    const orderUnchanged =
-      sectionOrder.length === state.sectionOrder.length &&
-      sectionOrder.every((sectionId, i) => sectionId === state.sectionOrder[i]);
-    const settingsUnchanged =
-      groupSettings.length === state.groupSettings.length &&
-      groupSettings.every((group, index) => {
-        const current = state.groupSettings[index];
-        return (
-          current?.name === group.name &&
-          current.position === group.position &&
-          current.cwd === group.cwd &&
-          current.worktree === group.worktree
-        );
-      });
-    const statusChanged = defaultsStatus !== status;
-    defaultsStatus = status;
-    if (!groupsUnchanged || !settingsUnchanged || !orderUnchanged || statusChanged) {
-      host.publish({
-        ...state,
-        groups: [...groups],
-        groupSettings: [...groupSettings],
-        sectionOrder: [...sectionOrder],
-      });
+  const reset = () => {
+    for (const entry of entries.values()) {
+      retire(entry);
     }
+    entries.clear();
+    legacyImport = null;
+    connection = host.connection.capture();
+    profileId = host.snapshot().selfUser?.id;
+    gatewayIdentity = host.gatewayIdentity();
   };
-
-  const finishMutationFailure = (current: boolean, error: unknown): SessionGroupMutationResult => {
-    if (!current) {
-      return "stale";
+  const synchronize = () => {
+    if (
+      (connection ? host.connection.isCurrent(connection) : !host.connection.capture()) &&
+      profileId === host.snapshot().selfUser?.id &&
+      gatewayIdentity === host.gatewayIdentity()
+    ) {
+      return;
     }
-    host.publish({ ...host.readState(), error: formatUiError(error) }, "operation");
-    throw error;
+    reset();
   };
-
-  const finishLoadFailure = (
-    scope: SessionConnectionScope,
-    generation: number,
-    error: unknown,
-    retry: boolean,
-  ) => {
-    if (!host.connection.isCurrent(scope) || generation !== loadGeneration) {
-      return null;
+  const entryFor = (agentId: string): Entry => {
+    let entry = entries.get(agentId);
+    if (!entry) {
+      entry = {
+        ...EMPTY,
+        generation: ++generation,
+        loaded: false,
+        mutation: 0,
+        pending: null,
+        retry: null,
+      };
+      entries.set(agentId, entry);
     }
-    if (defaultsStatus !== "unavailable") {
-      defaultsStatus = "unavailable";
-      host.publish({ ...host.readState() });
-    }
-    if (!retry) {
-      return null;
-    }
-    loadedEpoch = -1;
-    const delay = host.retryDelayMs(error);
-    if (delay !== null) {
-      retryTimer = setTimeout(() => {
-        retryTimer = null;
-        if (host.connection.isCurrent(scope) && generation === loadGeneration) {
-          void load();
-        }
-      }, delay);
-    }
-    return null;
+    return entry;
   };
+  const notify = () => {
+    const agentId = owner();
+    const entry = entries.get(agentId) ?? EMPTY;
+    host.publish({
+      ...host.readState(),
+      groups: entry.settings.map((group) => group.name),
+      groupSettings: entry.settings,
+      sectionOrder: entry.sectionOrder,
+    });
+  };
+  const snapshot = (agentId?: string): SessionGroupSnapshot => {
+    synchronize();
+    if (disposed || !connection) {
+      return EMPTY;
+    }
+    const id = owner(agentId);
+    return id ? entryFor(id) : EMPTY;
+  };
+  const select = () => {
+    synchronize();
+    const next = owner();
+    if (selected !== next) {
+      // A -> B -> A retires the first A request, not merely its rendered rows.
+      const previous = entries.get(selected);
+      if (previous) {
+        retire(previous);
+      }
+      selected = next;
+    }
+    notify();
+  };
+  const invalidate = (agentId?: string) => {
+    synchronize();
+    const id = owner(agentId);
+    if (id) {
+      retire(entryFor(id), "loading");
+    }
+    notify();
+  };
+  const ownsEntry = (scope: SessionConnectionScope, id: string, entry: Entry) =>
+    !disposed &&
+    host.connection.isCurrent(scope) &&
+    profileId === host.snapshot().selfUser?.id &&
+    gatewayIdentity === host.gatewayIdentity() &&
+    entries.get(id) === entry;
+  const current = (scope: SessionConnectionScope, id: string, entry: Entry, revision: number) =>
+    ownsEntry(scope, id, entry) && entry.generation === revision;
 
-  const loadAttempt = async (
-    scope: SessionConnectionScope,
-    generation: number,
-    advertised: boolean | null,
-  ) => {
+  // Migration is optional background work. An unavailable or uncertain write
+  // must never hold the selected agent's canonical read hostage.
+  const importLegacy = (scope: SessionConnectionScope) => {
     try {
-      const listed = await scope.client.request(GROUPS_LIST_METHOD, {});
-      if (!host.connection.isCurrent(scope) || generation !== loadGeneration) {
-        return null;
+      if (legacyImport || !getSafeLocalStorage()?.getItem(LEGACY_GROUPS_STORAGE_KEY)) {
+        return;
       }
-      let settings = readSessionCustomGroups(listed);
-      let sectionOrder = readSidebarSectionOrder(listed);
-      // Browser-local catalogs predate the gateway store and migrate exactly once.
-      const legacy = readLegacyStoredGroups();
-      if (
-        legacy.length > 0 &&
-        readSessionMethodAccess(host.snapshot(), {
-          method: "sessions.groups.put",
-          requiredScope: "operator.write",
-        }).allowed
-      ) {
-        if (settings.length === 0) {
-          const put = await scope.client.request("sessions.groups.put", { names: legacy });
-          if (!host.connection.isCurrent(scope) || generation !== loadGeneration) {
-            return null;
-          }
-          settings = readSessionCustomGroups(put);
-          sectionOrder = readSidebarSectionOrder(put);
-        }
-        try {
-          getSafeLocalStorage()?.removeItem(LEGACY_GROUPS_STORAGE_KEY);
-        } catch {
-          // The gateway catalog is canonical even when browser cleanup fails.
-        }
+    } catch {
+      return;
+    }
+    const capturedProfileId = host.snapshot().selfUser?.id ?? null;
+    const capturedGateway = host.gatewayIdentity();
+    const agentId = owner(host.snapshot().assistantAgentId ?? "");
+    const settleImport = () => {
+      if (legacyImport === task) {
+        legacyImport = null;
       }
-      const defaultsAllowed =
-        isGatewayMethodAdvertised(host.snapshot(), GROUPS_DEFAULTS_METHOD) === true &&
-        readSessionMethodAccess(host.snapshot(), {
-          method: GROUPS_DEFAULTS_METHOD,
-          requiredScope: "operator.write",
-        }).allowed;
-      if (!defaultsAllowed) {
-        publishCatalog(settings, sectionOrder, "ready");
-        return settings;
-      }
-      // The path-free catalog is independently useful to the sidebar. Defaults
-      // readiness only gates group-target routes and must not erase those names.
-      publishCatalog(settings, sectionOrder, "loading");
+    };
+    const task = import("./session-group-operations.ts")
+      .then(({ importLegacySessionGroupsForCatalog }) =>
+        importLegacySessionGroupsForCatalog({
+          host,
+          scope,
+          owner,
+          profileId: capturedProfileId,
+          gatewayIdentity: capturedGateway,
+          agentId,
+          isDisposed: () => disposed,
+          onImported: (importedAgentId) => {
+            settleImport();
+            if (entries.has(importedAgentId)) {
+              invalidate(importedAgentId);
+              void load(importedAgentId);
+            }
+          },
+        }),
+      )
+      .then(settleImport, settleImport);
+    legacyImport = task;
+  };
+
+  const load = async (agentId?: string): Promise<readonly SessionGroupSettings[] | null> => {
+    synchronize();
+    const id = owner(agentId);
+    const scope = host.connection.capture();
+    if (!scope || !id || disposed) {
+      return null;
+    }
+    const entry = entryFor(id);
+    if (entry.loaded) {
+      return entry.pending ?? (entry.status === "ready" ? entry.settings : null);
+    }
+    clearRetry(entry);
+    entry.loaded = true;
+    entry.status = "loading";
+    const revision = entry.generation;
+    notify();
+    const task = (async () => {
       try {
-        const defaults = await scope.client.request(GROUPS_DEFAULTS_METHOD, {});
-        if (!host.connection.isCurrent(scope) || generation !== loadGeneration) {
+        importLegacy(scope);
+        if (!current(scope, id, entry, revision)) {
           return null;
         }
-        settings = mergeSessionGroupDefaults(settings, defaults);
+        const listed = await scope.client.request("sessions.groups.list", { agentId: id });
+        if (!current(scope, id, entry, revision)) {
+          return null;
+        }
+        entry.settings = readSessionCustomGroups(listed);
+        entry.sectionOrder = readSidebarSectionOrder(listed);
+        const defaultsAllowed = canCallGatewayMethod(
+          host.snapshot(),
+          "sessions.groups.defaults",
+          "operator.write",
+        );
+        if (defaultsAllowed) {
+          notify();
+          const defaults = await scope.client.request("sessions.groups.defaults", { agentId: id });
+          if (!current(scope, id, entry, revision)) {
+            return null;
+          }
+          entry.settings = mergeSessionGroupDefaults(entry.settings, defaults);
+        }
+        entry.status = "ready";
+        notify();
+        return entry.settings;
       } catch (error) {
-        return finishLoadFailure(scope, generation, error, true);
+        if (!current(scope, id, entry, revision)) {
+          return null;
+        }
+        entry.status = "unavailable";
+        notify();
+        entry.loaded = false;
+        const delay = host.retryDelayMs(error);
+        if (delay !== null) {
+          entry.retry = setTimeout(() => {
+            entry.retry = null;
+            if (current(scope, id, entry, revision)) {
+              void load(id);
+            }
+          }, delay);
+        }
+        return null;
       }
-      publishCatalog(settings, sectionOrder, "ready");
-      return settings;
-    } catch (error) {
-      // Gateways without feature metadata retain the legacy one-shot probe.
-      return finishLoadFailure(scope, generation, error, advertised === true);
-    }
-  };
-
-  /** Group consumers may probe once per connection; explicitly absent features never probe. */
-  const load = async (): Promise<readonly SessionGroupSettings[] | null> => {
-    const scope = host.connection.capture();
-    if (!scope) {
-      return null;
-    }
-    if (loadedEpoch === scope.epoch) {
-      return pendingLoad ?? host.readState().groupSettings;
-    }
-    const advertised = isGatewayMethodAdvertised(host.snapshot(), GROUPS_LIST_METHOD);
-    clearRetry();
-    const generation = ++loadGeneration;
-    loadedEpoch = scope.epoch;
-    if (defaultsStatus !== "loading") {
-      defaultsStatus = "loading";
-      host.publish({ ...host.readState() });
-    }
-    if (advertised === false) {
-      publishCatalog([], [], "ready");
-      return [];
-    }
-    const promise = loadAttempt(scope, generation, advertised)
+    })()
       .then((result) => {
-        // Another invalidation can join the same admitted bootstrap task.
-        // Its completion must include the current catalog generation.
-        return host.connection.isCurrent(scope) && generation !== loadGeneration ? load() : result;
+        // Event invalidation while admitted bootstrap work is pending owns a new read.
+        return !disposed &&
+          host.connection.isCurrent(scope) &&
+          entries.get(id) === entry &&
+          entry.generation !== revision &&
+          entry.status === "loading"
+          ? load(id)
+          : result;
       })
       .finally(() => {
-        if (pendingLoad === promise) {
-          pendingLoad = null;
+        if (entry.pending === task) {
+          entry.pending = null;
         }
       });
-    pendingLoad = promise;
-    return promise;
+    entry.pending = task;
+    return task;
   };
 
-  const publishPathFreeMutation = (
-    groupSettings: readonly SessionGroupSettings[],
-    sectionOrder: readonly string[],
-  ) => {
-    // Catalog mutations do not carry authoritative defaults. Retire any older
-    // defaults read and keep group routes blocked until a fresh read completes.
-    invalidate();
-    publishCatalog(groupSettings, sectionOrder, "loading");
-    void load();
-  };
-
-  const put = async (
-    names: readonly string[],
-    sectionOrder?: readonly string[],
+  const mutate = async (
+    agentId: string | undefined,
+    action: SessionGroupAction,
+    params: Record<string, unknown>,
   ): Promise<SessionGroupMutationResult> => {
+    synchronize();
+    const id = owner(agentId);
     const scope = host.connection.capture();
-    if (!scope) {
+    if (!scope || !id || disposed) {
       return "stale";
     }
+    const entry = entryFor(id);
+    const mutation = ++entry.mutation;
+    const isCurrent = () => ownsEntry(scope, id, entry) && entry.mutation === mutation;
     try {
-      const result = await scope.client.request("sessions.groups.put", {
-        names: [...names],
-        ...(sectionOrder === undefined ? {} : { sectionOrder: [...sectionOrder] }),
+      // Caller-owned UI intent is checked synchronously before this call. Do not
+      // insert an await before the transport admits the captured owner's request.
+      const result = await scope.client.request("sessions.groups." + action, {
+        ...params,
+        agentId: id,
       });
-      if (!host.connection.isCurrent(scope)) {
+      if (!isCurrent()) {
         return "stale";
       }
-      publishPathFreeMutation(
-        mergeSessionGroupDefaults(readSessionCustomGroups(result), {
-          defaults: host.readState().groupSettings,
-        }),
-        readSidebarSectionOrder(result),
-      );
+      invalidate(id);
+      if (action === "update") {
+        entry.settings = mergeSessionGroupDefaults(entry.settings, result);
+        entry.status = "ready";
+        entry.loaded = true;
+        notify();
+      } else {
+        entry.settings = readSessionCustomGroups(result);
+        entry.sectionOrder = readSidebarSectionOrder(result);
+        notify();
+        void load(id);
+        if (action !== "put") {
+          void host.refreshRows(id);
+        }
+      }
       return "completed";
     } catch (error) {
-      return finishMutationFailure(host.connection.isCurrent(scope), error);
-    }
-  };
-
-  const rename = async (from: string, to: string): Promise<SessionGroupMutationResult> => {
-    const scope = host.connection.capture();
-    if (!scope) {
-      return "stale";
-    }
-    try {
-      const result = await scope.client.request("sessions.groups.rename", { name: from, to });
-      if (!host.connection.isCurrent(scope)) {
+      if (!isCurrent()) {
         return "stale";
       }
-      const current = host.readState().groupSettings;
-      const targetExists = current.some((group) => group.name === to);
-      const renamedDefaults = current.flatMap((group) =>
-        group.name === from ? (targetExists ? [] : [{ ...group, name: to }]) : [group],
-      );
-      publishPathFreeMutation(
-        mergeSessionGroupDefaults(readSessionCustomGroups(result), { defaults: renamedDefaults }),
-        readSidebarSectionOrder(result),
-      );
-      // Mutation response commits before a background member-row reconciliation.
-      void host.refreshRows();
-      return "completed";
-    } catch (error) {
-      return finishMutationFailure(host.connection.isCurrent(scope), error);
-    }
-  };
-
-  const remove = async (name: string): Promise<SessionGroupMutationResult> => {
-    const scope = host.connection.capture();
-    if (!scope) {
-      return "stale";
-    }
-    try {
-      const result = await scope.client.request("sessions.groups.delete", { name });
-      if (!host.connection.isCurrent(scope)) {
-        return "stale";
-      }
-      publishPathFreeMutation(
-        mergeSessionGroupDefaults(readSessionCustomGroups(result), {
-          defaults: host.readState().groupSettings,
-        }),
-        readSidebarSectionOrder(result),
-      );
-      void host.refreshRows();
-      return "completed";
-    } catch (error) {
-      return finishMutationFailure(host.connection.isCurrent(scope), error);
-    }
-  };
-
-  const update = async (
-    name: string,
-    defaults: { cwd: string | null; worktree: boolean },
-  ): Promise<SessionGroupMutationResult> => {
-    const scope = host.connection.capture();
-    if (!scope) {
-      return "stale";
-    }
-    try {
-      const result = await scope.client.request("sessions.groups.update", { name, ...defaults });
-      if (!host.connection.isCurrent(scope)) {
-        return "stale";
-      }
-      const state = host.readState();
-      const pathFreeGroups = state.groupSettings.map(({ name: groupName, position }) => ({
-        name: groupName,
-        position,
-      }));
-      publishCatalog(
-        mergeSessionGroupDefaults(pathFreeGroups, result),
-        state.sectionOrder,
-        "ready",
-      );
-      return "completed";
-    } catch (error) {
-      return finishMutationFailure(host.connection.isCurrent(scope), error);
+      host.publish({ ...host.readState(), error: formatUiError(error) }, "operation");
+      throw error;
     }
   };
 
   return {
-    delete: remove,
-    dispose,
-    generation: () => catalogGeneration,
+    observed: (agentId: string) => entries.has(owner(agentId)),
+    snapshot,
+    select,
+    reset: () => {
+      reset();
+      notify();
+    },
+    dispose: () => {
+      disposed = true;
+      reset();
+    },
+    generation: (agentId?: string) => snapshot(agentId).generation,
+    status: (agentId?: string) => snapshot(agentId).status,
     invalidate,
     load,
-    put,
-    rename,
-    status: () => defaultsStatus,
-    update,
+    put: (
+      names: readonly string[],
+      sectionOrder?: readonly string[],
+      agentId?: string,
+      append = false,
+    ) =>
+      mutate(agentId, "put", {
+        names: [...names],
+        ...(sectionOrder === undefined ? {} : { sectionOrder: [...sectionOrder] }),
+        ...(append ? { append: true } : {}),
+      }),
+    rename: (from: string, to: string, agentId?: string) =>
+      mutate(agentId, "rename", { name: from, to }),
+    delete: (name: string, agentId?: string) => mutate(agentId, "delete", { name }),
+    update: (name: string, defaults: { cwd: string | null; worktree: boolean }, agentId?: string) =>
+      mutate(agentId, "update", { name, ...defaults }),
   };
 }

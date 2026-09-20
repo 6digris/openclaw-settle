@@ -541,8 +541,10 @@ export const SessionsAssignOwnerResultSchema = closedObject({
   owner: SessionOwnerSchema,
 });
 
-/** Lists the gateway-owned custom session group catalog (names + order). */
-export const SessionsGroupsListParamsSchema = closedObject({});
+/** Lists one agent-owned custom session group catalog (names + order). */
+export const SessionsGroupsListParamsSchema = closedObject({
+  agentId: Type.Optional(NonEmptyString),
+});
 
 /** One custom session group catalog entry. */
 export const SessionGroupSchema = closedObject({
@@ -566,7 +568,9 @@ export const SessionsGroupsListResultSchema = closedObject({
 });
 
 /** Reads the New Session defaults for the custom group catalog. */
-export const SessionsGroupsDefaultsParamsSchema = closedObject({});
+export const SessionsGroupsDefaultsParamsSchema = closedObject({
+  agentId: Type.Optional(NonEmptyString),
+});
 
 /** Write-scoped group defaults, kept separate from the read-scoped catalog. */
 export const SessionsGroupsDefaultsResultSchema = closedObject({
@@ -575,18 +579,23 @@ export const SessionsGroupsDefaultsResultSchema = closedObject({
 
 /** Replaces the ordered group catalog; creates listed names, keeps member categories untouched. */
 export const SessionsGroupsPutParamsSchema = closedObject({
+  agentId: Type.Optional(NonEmptyString),
+  append: Type.Optional(Type.Boolean()),
+  importId: Type.Optional(Type.String({ minLength: 1, maxLength: 128, pattern: "\\S" })),
   names: Type.Array(SessionLabelString),
   sectionOrder: Type.Optional(Type.Array(SidebarSectionIdString)),
 });
 
 /** Renames a group and repoints every member session's category. */
 export const SessionsGroupsRenameParamsSchema = closedObject({
+  agentId: Type.Optional(NonEmptyString),
   name: SessionLabelString,
   to: SessionLabelString,
 });
 
 /** Updates the New Session defaults owned by one custom group. */
 export const SessionsGroupsUpdateParamsSchema = closedObject({
+  agentId: Type.Optional(NonEmptyString),
   name: SessionLabelString,
   cwd: Type.Union([NonEmptyString, Type.Null()]),
   worktree: Type.Boolean(),
@@ -599,7 +608,10 @@ export const SessionsGroupsUpdateResultSchema = closedObject({
 });
 
 /** Deletes a group and clears every member session's category. */
-export const SessionsGroupsDeleteParamsSchema = closedObject({ name: SessionLabelString });
+export const SessionsGroupsDeleteParamsSchema = closedObject({
+  agentId: Type.Optional(NonEmptyString),
+  name: SessionLabelString,
+});
 
 /** Result for group catalog mutations, with member sessions updated where applicable. */
 export const SessionsGroupsMutationResultSchema = closedObject({

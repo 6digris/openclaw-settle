@@ -46,6 +46,7 @@ struct OpenClawTypographyTests {
         #expect(support.contains(".font(OpenClawType.subheadSemiBold)"))
         #expect(commandCenter.contains("Toggle(isOn: self.$showArchived)"))
         #expect(commandCenter.contains("Text(\"Show Archived\")"))
+        #expect(commandCenter.contains("Label(\"New Group\", systemImage: \"folder.badge.plus\")"))
         #expect(commandCenter.contains(".font(OpenClawType.captionMedium)"))
     }
 

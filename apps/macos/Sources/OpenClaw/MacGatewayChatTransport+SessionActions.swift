@@ -34,31 +34,25 @@ extension MacGatewayChatTransport {
     }
 
     func acquireSessionGroupsRouteLease() async -> OpenClawChatSessionGroupsRouteLease? {
-        guard let serverLease = await self.connection.captureServerLease() else { return nil }
-        guard await self.currentOutboxGatewayMatchesConnection() else { return nil }
-        let request: @Sendable (OpenClawChatGatewayRequest) async throws -> Data = { request in
-            try await self.connection.request(
-                method: request.method,
-                params: request.params,
-                timeoutMs: request.timeoutMs,
-                ifCurrentServerLease: serverLease)
-        }
-        return OpenClawChatSessionGroupsRouteLease(
-            listGroups: {
-                let data = try await request(OpenClawChatGatewayRequests.sessionGroupsList())
-                return try JSONDecoder().decode(OpenClawChatSessionGroupsResponse.self, from: data)
-            },
-            putGroups: { names in
-                let data = try await request(OpenClawChatGatewayRequests.sessionGroupsPut(names: names))
-                return try JSONDecoder().decode(OpenClawChatSessionGroupsMutationResponse.self, from: data)
-            },
-            renameGroup: { name, to in
-                let data = try await request(OpenClawChatGatewayRequests.sessionGroupsRename(name: name, to: to))
-                return try JSONDecoder().decode(OpenClawChatSessionGroupsMutationResponse.self, from: data)
-            },
-            deleteGroup: { name in
-                let data = try await request(OpenClawChatGatewayRequests.sessionGroupsDelete(name: name))
-                return try JSONDecoder().decode(OpenClawChatSessionGroupsMutationResponse.self, from: data)
+        guard let agentID = self.chatGatewayAgentID else { return nil }
+        return try? await self.acquireSessionGroupsRouteLease(agentID: agentID)
+    }
+
+    func acquireSessionGroupsRouteLease(agentID: String) async throws -> OpenClawChatSessionGroupsRouteLease {
+        guard let serverLease = await self.connection.captureServerLease(),
+              await self.currentOutboxGatewayMatchesConnection(),
+              let supported = await self.connection.supportsServerCapability(
+                  .agentScopedSessionGroups, ifCurrentServerLease: serverLease)
+        else { throw OpenClawChatTransportSendError.notDispatched }
+        return try OpenClawChatSessionGroupsRouteLease(
+            agentID: agentID,
+            supportsAgentScope: supported,
+            request: { request in
+                try await self.connection.request(
+                    method: request.method,
+                    params: request.params,
+                    timeoutMs: request.timeoutMs,
+                    ifCurrentServerLease: serverLease)
             })
     }
 
@@ -68,10 +62,14 @@ extension MacGatewayChatTransport {
         let unreadAckContract = await self.connection.supportsServerCapability(
             .sessionUnreadAckContract,
             ifCurrentServerLease: serverLease)
+        let agentScopedGroups = await self.connection.supportsServerCapability(
+            .agentScopedSessionGroups,
+            ifCurrentServerLease: serverLease)
         let transport = self
         return OpenClawChatSessionMutationRouteLease(
             sessionTarget: { transport.sessionTarget(for: $0) },
             unreadAckContract: unreadAckContract,
+            agentScopedGroups: agentScopedGroups,
             request: { request in
                 try await self.connection.request(
                     method: request.method,

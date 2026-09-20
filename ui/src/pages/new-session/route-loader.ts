@@ -17,18 +17,25 @@ export async function load(
   }
   const requestedLocation = newSessionLocationFromSearch(search);
   const requestedAgentId = requestedLocation.agentId.trim();
+  const groupAgentId = requestedAgentId || context.gateway.snapshot.assistantAgentId || "";
+  const groupConnection = requestedLocation.group
+    ? context.sessions.captureConnectionScope()
+    : null;
   let groupCwd = "";
   let groupWorktree = false;
   let groupStatus: NewSessionRouteData["groupStatus"];
   let groupCatalogGeneration: number | undefined;
   let groupDefaultsStatus: NewSessionRouteData["groupDefaultsStatus"];
   if (requestedLocation.group) {
-    const startedGeneration = context.sessions.groupsGeneration();
-    const settings = await context.sessions.groupsLoad();
-    groupCatalogGeneration = context.sessions.groupsGeneration();
-    groupDefaultsStatus = context.sessions.groupsStatus();
+    const startedGeneration = context.sessions.groupsGeneration(groupAgentId);
+    const settings = await context.sessions.groupsLoad(groupAgentId);
+    groupCatalogGeneration = context.sessions.groupsGeneration(groupAgentId);
+    groupDefaultsStatus = context.sessions.groupsStatus(groupAgentId);
     const currentSettings =
-      startedGeneration === groupCatalogGeneration && groupDefaultsStatus === "ready"
+      groupConnection &&
+      context.sessions.isConnectionScopeCurrent(groupConnection) &&
+      startedGeneration === groupCatalogGeneration &&
+      groupDefaultsStatus === "ready"
         ? settings
         : null;
     const group = currentSettings?.find((candidate) => candidate.name === requestedLocation.group);
@@ -39,6 +46,7 @@ export async function load(
   if (!requestedLocation.catalogId) {
     return {
       ...requestedLocation,
+      agentId: requestedLocation.group ? groupAgentId : requestedLocation.agentId,
       requestedAgentId,
       groupStatus,
       groupCwd,

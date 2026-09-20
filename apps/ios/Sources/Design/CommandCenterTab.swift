@@ -400,12 +400,14 @@ struct CommandCenterTab: View {
                             .buttonStyle(.plain)
                             .commandSessionActions(
                                 session: session,
-                                categories: self.sessionCategories,
+                                categories: self.appModel.sessionGroupNames(
+                                    for: session, in: self.effectiveRecentChatSessions),
                                 isEnabled: self.sessionControlsAvailable,
                                 canArchive: ChatSessionSidebarModel.canArchiveSession(
                                     session,
                                     mainSessionKey: self.appModel.defaultChatSessionKey),
                                 actions: CommandSessionActions(
+                                    scopeID: self.appModel.chatViewModelIdentityID,
                                     rename: { self.patchSession(session, label: .some($0)) },
                                     moveToGroup: { self.patchSession(session, category: .some($0)) },
                                     setColor: { self.patchSession(session, color: .some($0)) },
@@ -518,12 +520,6 @@ struct CommandCenterTab: View {
         self.effectiveRecentChatSessions.count > self.recentSessionPreviewSessions.count
     }
 
-    private var sessionCategories: [String] {
-        CommandSessionGrouping.categories(
-            from: self.effectiveRecentChatSessions,
-            knownGroups: SessionGroupStore.load())
-    }
-
     private var effectiveDefaultChatSessionEntry: OpenClawChatSessionEntry? {
         let sessions = self.dashboardModel.sessions
         let mainKey = ChatSessionSidebarModel.selectedSessionKey(
@@ -573,6 +569,7 @@ struct CommandCenterTab: View {
         unread: Bool? = nil)
     {
         self.performSessionMutation { transport in
+            let transport = session.agentId.flatMap { transport.scoped(toAgentID: $0) } ?? transport
             try await transport.patchSession(
                 key: session.key,
                 expectedSessionID: archived == nil ? nil : session.sessionId,
@@ -623,14 +620,18 @@ struct CommandCenterTab: View {
         resetActiveSessionKey: String? = nil,
         _ operation: @escaping (any OpenClawChatTransport) async throws -> Void)
     {
+        let transport = self.appModel.makeChatTransport(outboxGatewayID: self.appModel.chatTranscriptCacheGatewayID)
+        let scopeID = self.appModel.chatViewModelIdentityID
         Task {
             do {
-                try await operation(self.appModel.makeChatTransport())
+                try await operation(transport)
+                guard scopeID == self.appModel.chatViewModelIdentityID else { return }
                 if resetActiveSessionKey == self.appModel.chatSessionKey {
                     self.appModel.focusChatSession(nil)
                 }
                 await self.dashboardModel.refreshSessions(appModel: self.appModel)
             } catch {
+                guard scopeID == self.appModel.chatViewModelIdentityID else { return }
                 self.dashboardModel.reportSessionError(error)
             }
         }
@@ -833,14 +834,13 @@ struct CommandSessionsScreen: View {
         case create
     }
 
-    /// Group mutations need the full session store, not a recency window.
-    private static let groupMemberFetchLimit = 10000
-
     @State private var sessions: [OpenClawChatSessionEntry] = []
     @State private var isLoading = false
     @State private var loadErrorText: String?
     @State private var showArchived = false
-    @State private var knownGroups = SessionGroupStore.load()
+    private var knownGroups: [String] { self.appModel.sessionGroupNames }
+    @State private var groupOperationScope: SessionGroupStore.Scope?
+    @State private var groupOperationTransport: (any OpenClawChatTransport)?
     @State private var groupEditor: GroupEditor?
     @State private var groupDraftText = ""
     @State private var groupPendingDelete: String?
@@ -951,6 +951,14 @@ struct CommandSessionsScreen: View {
                             .controlSize(.small)
                     }
                     if self.sessionControlsAvailable {
+                        Button {
+                            self.captureGroupOperation()
+                            self.groupDraftText = ""
+                            self.groupEditor = .create
+                        } label: {
+                            Label("New Group", systemImage: "folder.badge.plus")
+                                .font(OpenClawType.captionMedium)
+                        }
                         Toggle(isOn: self.$showArchived) {
                             Text("Show Archived")
                                 .font(OpenClawType.captionMedium)
@@ -970,7 +978,8 @@ struct CommandSessionsScreen: View {
                         detail: .verbatim(loadErrorText))
                         .padding(.horizontal, 10)
                         .padding(.bottom, 10)
-                } else if self.visibleSessions.isEmpty {
+                }
+                if self.visibleSessions.isEmpty && self.knownGroups.isEmpty {
                     CommandEmptyStateRow(
                         icon: self.appModel
                             .isCommandSessionListAvailable ? "bubble.left.and.text.bubble.right.fill" : "wifi.slash",
@@ -1018,6 +1027,8 @@ struct CommandSessionsScreen: View {
 
     private var visibleSessions: [OpenClawChatSessionEntry] {
         self.sessions
+            .filter { ChatSessionSidebarModel.isSessionInActiveAgentScope(
+                key: $0.key, agentID: $0.agentId, activeAgentID: self.appModel.chatDeliveryAgentId) }
             .filter { CommandCenterTab.isRecentChatSession(
                 $0.key,
                 defaultSessionKey: self.appModel.defaultChatSessionKey) }
@@ -1028,10 +1039,6 @@ struct CommandSessionsScreen: View {
 
     private var sessionSections: [CommandSessionSection] {
         CommandSessionGrouping.sections(from: self.visibleSessions, knownGroups: self.knownGroups)
-    }
-
-    private var sessionCategories: [String] {
-        CommandSessionGrouping.categories(from: self.sessions, knownGroups: self.knownGroups)
     }
 
     private var sessionControlsAvailable: Bool {
@@ -1077,6 +1084,7 @@ struct CommandSessionsScreen: View {
     @ViewBuilder
     private func groupMenu(for group: String) -> some View {
         Button {
+            self.captureGroupOperation()
             self.groupDraftText = group
             self.groupEditor = .rename(group)
         } label: {
@@ -1084,6 +1092,7 @@ struct CommandSessionsScreen: View {
                 .font(OpenClawType.subhead)
         }
         Button {
+            self.captureGroupOperation()
             self.groupDraftText = ""
             self.groupEditor = .create
         } label: {
@@ -1091,6 +1100,7 @@ struct CommandSessionsScreen: View {
                 .font(OpenClawType.subhead)
         }
         Button(role: .destructive) {
+            self.captureGroupOperation()
             self.groupPendingDelete = group
         } label: {
             Label("Delete Group…", systemImage: "trash")
@@ -1116,72 +1126,55 @@ struct CommandSessionsScreen: View {
             set: { if !$0 { self.groupPendingDelete = nil } })
     }
 
+    private func captureGroupOperation() {
+        self.groupOperationScope = self.appModel.sessionGroupScope
+        self.groupOperationTransport = self.appModel.makeChatTransport(
+            outboxGatewayID: self.groupOperationScope?.gatewayID)
+    }
+
     private func commitGroupEditor() {
         let editor = self.groupEditor
         self.groupEditor = nil
         let name = self.groupDraftText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
-        switch editor {
-        case let .rename(group):
-            guard name != group else { return }
-            self.updateStoredGroups { SessionGroupStore.renaming($0, from: group, to: name) }
-            self.patchGroupMembers(group, category: name)
-        case .create:
-            // Header-created groups start empty: stored-list only, no patches.
-            self.updateStoredGroups { SessionGroupStore.adding($0, name) }
-        case nil:
-            break
+        self.performGroupMutation { lease in
+            switch editor {
+            case let .rename(group):
+                _ = try await lease.renameGroup(name: group, to: name)
+            case .create:
+                _ = try await lease.appendGroups(names: [name])
+            case nil:
+                break
+            }
         }
     }
 
     private func deleteGroup(_ group: String) {
         self.groupPendingDelete = nil
-        self.updateStoredGroups { SessionGroupStore.removing($0, group) }
-        self.patchGroupMembers(group, category: nil)
+        self.performGroupMutation { lease in
+            _ = try await lease.deleteGroup(name: group)
+        }
     }
 
-    private func updateStoredGroups(_ transform: ([String]) -> [String]) {
-        let updated = transform(SessionGroupStore.load())
-        SessionGroupStore.save(updated)
-        self.knownGroups = updated
-    }
-
-    /// Reassigns (or clears, when `category` is nil) every member of `group`.
-    private func patchGroupMembers(_ group: String, category: String?) {
-        self.performMutation { transport in
-            // Enumerate every member, not the windowed visible list: archived
-            // members must follow a rename so restores land in the new group.
-            // The gateway defaults an absent `limit` to 100 rows, so ask for
-            // an explicitly high limit to cover the whole store.
-            let active = try await transport.listSessions(
-                limit: Self.groupMemberFetchLimit,
-                archived: false)
-            let archived = try await transport.listSessions(
-                limit: Self.groupMemberFetchLimit,
-                archived: true)
-            let members = CommandSessionGrouping.members(
-                of: group,
-                in: [active.sessions, archived.sessions])
-            // Best effort: one failed patch must not abandon the rest of the
-            // group; the first error still surfaces via performMutation.
-            var firstError: (any Error)?
-            for member in members {
-                do {
-                    try await transport.patchSession(
-                        key: member.key,
-                        expectedSessionID: nil,
-                        label: nil,
-                        category: .some(category),
-                        color: nil,
-                        pinned: nil,
-                        archived: nil,
-                        unread: nil)
-                } catch {
-                    firstError = firstError ?? error
-                }
-            }
-            if let firstError {
-                throw firstError
+    private func performGroupMutation(
+        _ operation: @escaping (OpenClawChatSessionGroupsRouteLease) async throws -> Void)
+    {
+        guard let scope = self.groupOperationScope, let transport = self.groupOperationTransport else {
+            self.loadErrorText = OpenClawChatSessionGroupsError.missingAgent.localizedDescription
+            return
+        }
+        Task {
+            do {
+                // A dialog never changes its Gateway/agent when the foreground switches.
+                guard self.appModel.sessionGroupScope == scope else { throw CancellationError() }
+                let lease = try await transport.acquireSessionGroupsRouteLease(agentID: scope.agentID)
+                guard self.appModel.sessionGroupScope == scope else { throw CancellationError() }
+                try await operation(lease)
+                guard self.appModel.sessionGroupScope == scope else { return }
+                await self.refreshSessions()
+            } catch {
+                guard self.appModel.sessionGroupScope == scope else { return }
+                self.loadErrorText = error.localizedDescription
             }
         }
     }
@@ -1198,13 +1191,14 @@ struct CommandSessionsScreen: View {
         .buttonStyle(.plain)
         .commandSessionActions(
             session: session,
-            categories: self.sessionCategories,
+            categories: self.appModel.sessionGroupNames(for: session, in: self.sessions),
             isArchived: session.archived == true,
             isEnabled: self.sessionControlsAvailable,
             canArchive: ChatSessionSidebarModel.canArchiveSession(
                 session,
                 mainSessionKey: self.appModel.defaultChatSessionKey),
             actions: CommandSessionActions(
+                scopeID: self.appModel.chatViewModelIdentityID,
                 rename: { self.patchSession(session, label: .some($0)) },
                 moveToGroup: { self.patchSession(session, category: .some($0)) },
                 setColor: { self.patchSession(session, color: .some($0)) },
@@ -1235,6 +1229,7 @@ struct CommandSessionsScreen: View {
         unread: Bool? = nil)
     {
         self.performMutation { transport in
+            let transport = session.agentId.flatMap { transport.scoped(toAgentID: $0) } ?? transport
             try await transport.patchSession(
                 key: session.key,
                 expectedSessionID: archived == nil ? nil : session.sessionId,
@@ -1286,26 +1281,30 @@ struct CommandSessionsScreen: View {
         resetActiveSessionKey: String? = nil,
         _ operation: @escaping (any OpenClawChatTransport) async throws -> Void)
     {
+        let transport = self.appModel.makeChatTransport(outboxGatewayID: self.appModel.chatTranscriptCacheGatewayID)
+        let scopeID = self.appModel.chatViewModelIdentityID
         Task {
             do {
-                try await operation(self.appModel.makeChatTransport())
+                try await operation(transport)
+                guard scopeID == self.appModel.chatViewModelIdentityID else { return }
                 if resetActiveSessionKey == self.appModel.chatSessionKey {
                     self.appModel.focusChatSession(nil)
                 }
                 await self.refreshSessions()
             } catch {
+                guard scopeID == self.appModel.chatViewModelIdentityID else { return }
                 self.loadErrorText = error.localizedDescription
             }
         }
     }
 
     private func refreshSessions() async {
-        // Pick up groups stored by other surfaces (for example the per-session
-        // New Group editor) alongside the fresh session list.
-        self.knownGroups = SessionGroupStore.load()
         let requestsArchived = self.showArchived
         let sourceGatewayID = self.appModel.chatTranscriptCacheGatewayID
         let sourceAgentID = self.appModel.chatDeliveryAgentId
+        await self.appModel.refreshSessionGroups()
+        guard !Task.isCancelled, sourceGatewayID == self.appModel.chatTranscriptCacheGatewayID,
+              sourceAgentID == self.appModel.chatDeliveryAgentId else { return }
         self.isLoading = true
         self.loadErrorText = nil
         defer { self.isLoading = false }
@@ -1314,10 +1313,15 @@ struct CommandSessionsScreen: View {
             let roster = try await self.appModel.loadChatSessionRoster(
                 limit: CommandCenterTab.recentSessionsFetchLimit,
                 archived: requestsArchived)
-            guard requestsArchived == self.showArchived else { return }
+            guard requestsArchived == self.showArchived,
+                  sourceGatewayID == self.appModel.chatTranscriptCacheGatewayID,
+                  sourceAgentID == self.appModel.chatDeliveryAgentId, !Task.isCancelled else { return }
             self.sessions = roster.sessions
+            self.loadErrorText = self.appModel.sessionGroupStore.errorText
         } catch {
-            guard requestsArchived == self.showArchived else { return }
+            guard requestsArchived == self.showArchived,
+                  sourceGatewayID == self.appModel.chatTranscriptCacheGatewayID,
+                  sourceAgentID == self.appModel.chatDeliveryAgentId, !Task.isCancelled else { return }
             self.sessions = requestsArchived ? [] : await self.appModel.loadCachedChatSessions(
                 gatewayID: sourceGatewayID,
                 agentID: sourceAgentID)

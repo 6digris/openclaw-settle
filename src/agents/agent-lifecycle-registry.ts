@@ -24,9 +24,11 @@ import type {
   OpenClawStateDatabase,
   OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db-contract.js";
+import { withExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { withOpenClawStateLease } from "../state/openclaw-state-lease.js";
+import { assertSessionGroupMigrationSafeForDeletion } from "../state/session-group-readiness.js";
 import { resolveAgentConfig } from "./agent-scope-config.js";
 
 export class AgentDeletionAuthorityRollbackError extends AggregateError {}
@@ -80,6 +82,12 @@ export function withAgentDeletion<T>(
     options.path ?? resolveOpenClawStateSqlitePath(options.env ?? process.env),
   );
   const stateOptions = { ...options, path: statePath, env: { ...(options.env ?? process.env) } };
+  // Deletion can erase the only legacy membership evidence. Admission precedes
+  // the lease opener, which could otherwise publish the new schema first.
+  withExistingOpenClawStateDatabaseReadOnly(
+    ({ db }) => assertSessionGroupMigrationSafeForDeletion(db),
+    stateOptions,
+  );
   return withOpenClawStateLease(
     {
       scope: "core:agent-deletion",
@@ -104,6 +112,7 @@ export function withAgentDeletion<T>(
           const operationId = crypto.randomUUID();
           const journal = runOpenClawStateWriteTransaction((database) => {
             lease.assertOwnedInTransaction(database.db);
+            assertSessionGroupMigrationSafeForDeletion(database.db);
             return beginAgentDeletionJournal(
               { ...entry, agentId: id, operationId, deleteFiles: entry.deleteFiles !== false },
               stateOptions,

@@ -301,10 +301,12 @@ class SecurePrefs(
   private val _modelRecents = MutableStateFlow(loadChatModelRefs(chatModelRecentsKey))
   val modelRecents: StateFlow<List<String>> = _modelRecents
 
-  // Custom session group names the user created locally; assigned groups also
-  // persist server-side via the session category field (mirrors web localStorage).
-  private val _sessionCustomGroups = MutableStateFlow(loadChatModelRefs(sessionCustomGroupsKey))
-  val sessionCustomGroups: StateFlow<List<String>> = _sessionCustomGroups
+  // Migration source only. New group edits belong to the scoped Gateway catalog.
+  internal fun legacySessionGroupNames(): List<String> = loadChatModelRefs(sessionCustomGroupsKey)
+
+  internal fun acknowledgeLegacySessionGroupNames(names: List<String>) {
+    if (legacySessionGroupNames() == names) plainPrefs.edit(commit = true) { remove(sessionCustomGroupsKey) }
+  }
 
   private val _sidebarPageOrder = MutableStateFlow(loadSidebarPageOrder())
   val sidebarPageOrder: StateFlow<List<String>> = _sidebarPageOrder
@@ -1151,12 +1153,6 @@ class SecurePrefs(
     val next = (listOf(trimmed) + _modelRecents.value.filterNot { it == trimmed }).take(maxChatModelRecents)
     persistChatModelRefs(chatModelRecentsKey, next)
     _modelRecents.value = next
-  }
-
-  fun setSessionCustomGroups(groups: List<String>) {
-    val sanitized = groups.map(String::trim).filter { it.isNotEmpty() }.distinct()
-    persistChatModelRefs(sessionCustomGroupsKey, sanitized)
-    _sessionCustomGroups.value = sanitized
   }
 
   fun setSidebarPageOrder(pageIds: List<String>) {

@@ -68,15 +68,14 @@ function groupRouteNeedsRevalidation(
   if (!groupName) {
     return false;
   }
-  const generation = sessions.groupsGeneration();
-  const status = sessions.groupsStatus();
+  const { generation, status, settings } = sessions.groupsSnapshot(data?.agentId);
   if (data?.groupCatalogGeneration !== generation || data.groupDefaultsStatus !== status) {
     return true;
   }
   if (status !== "ready") {
     return false;
   }
-  const current = sessions.state.groupSettings.find((group) => group.name === groupName);
+  const current = settings.find((group) => group.name === groupName);
   return current
     ? data.groupStatus !== "resolved" ||
         (data.groupCwd ?? "") !== (current.cwd ?? "") ||
@@ -88,11 +87,12 @@ function groupRouteCatalogKey(
   data: NewSessionRouteData | undefined,
   sessions: SessionCapability,
 ): string {
-  const current = sessions.state.groupSettings.find((group) => group.name === data?.group);
+  const { generation, status, settings } = sessions.groupsSnapshot(data?.agentId);
+  const current = settings.find((group) => group.name === data?.group);
   return JSON.stringify([
     data?.group ?? "",
-    sessions.groupsGeneration(),
-    sessions.groupsStatus(),
+    generation,
+    status,
     Boolean(current),
     current?.cwd ?? "",
     current?.worktree === true,

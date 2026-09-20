@@ -191,6 +191,7 @@ describe("AppSidebar section reordering", () => {
       expect(harness.groupsPut).toHaveBeenCalledWith(
         ["Gamma", "Alpha", "Beta"],
         ["category:Gamma", "category:Alpha", "category:Beta", "ungrouped", "groups", "work"],
+        "main",
       ),
     );
   });
@@ -207,7 +208,7 @@ describe("AppSidebar section reordering", () => {
     dispatchDragEvent(threadsSection, "drop", dataTransfer);
 
     await waitForFast(() =>
-      expect(harness.groupsPut).toHaveBeenCalledWith([], ["work", "ungrouped", "groups"]),
+      expect(harness.groupsPut).toHaveBeenCalledWith([], ["work", "ungrouped", "groups"], "main"),
     );
   });
 
@@ -255,6 +256,7 @@ describe("AppSidebar section reordering", () => {
       expect(harness.groupsPut).toHaveBeenCalledWith(
         [],
         ["work", "ungrouped", "groups", "catalog:codex"],
+        "main",
       ),
     );
   });
@@ -274,6 +276,7 @@ describe("AppSidebar section reordering", () => {
       expect(harness.groupsPut).toHaveBeenCalledWith(
         [],
         ["ungrouped", "groups", "catalog:codex", "work"],
+        "main",
       ),
     );
   });

@@ -137,10 +137,11 @@ export function prepareStateDatabaseSchemaRepair(
   };
 }
 
+const PRE_AGENT_GROUP_TABLES = [...LAZY_ADDITIVE_STATE_TABLES, "agent_session_groups"] as const;
 const STATE_V6_ADDITIVE_TABLES = [
   // v6-v12 databases may predate this former same-version lazy table.
   "gateway_origin_device_tokens",
-  ...LAZY_ADDITIVE_STATE_TABLES,
+  ...PRE_AGENT_GROUP_TABLES,
   "worker_session_tool_operations",
   "worker_turn_tool_authorities",
 ] as const;
@@ -172,10 +173,11 @@ const STATE_MIGRATION_ALLOWED_MISSING_TABLES = {
   10: STATE_V6_ADDITIVE_TABLES,
   11: STATE_V6_ADDITIVE_TABLES,
   12: STATE_V6_ADDITIVE_TABLES,
-  13: LAZY_ADDITIVE_STATE_TABLES,
-  14: LAZY_ADDITIVE_STATE_TABLES,
-  15: LAZY_ADDITIVE_STATE_TABLES,
-  16: LAZY_ADDITIVE_STATE_TABLES,
+  13: PRE_AGENT_GROUP_TABLES,
+  14: PRE_AGENT_GROUP_TABLES,
+  15: PRE_AGENT_GROUP_TABLES,
+  16: PRE_AGENT_GROUP_TABLES,
+  17: PRE_AGENT_GROUP_TABLES,
 } as const satisfies Record<number, readonly string[]>;
 type OpenClawStateMigrationVersion = keyof typeof STATE_MIGRATION_ALLOWED_MISSING_TABLES;
 
@@ -264,7 +266,7 @@ export const openClawStateMigrationAssertions = new Map<
   number,
   (database: DatabaseSync, options: { pathname: string }) => void
 >(
-  ([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] as const).map(
+  ([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17] as const).map(
     (version) =>
       [
         version,

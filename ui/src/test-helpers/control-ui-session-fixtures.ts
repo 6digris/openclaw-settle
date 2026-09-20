@@ -344,7 +344,7 @@ export function createControlUiSessionFixtures(
     response: unknown,
     params: unknown,
     options: {
-      renames: readonly { from: string; to: string | null }[];
+      renames: readonly { from: string; to: string | null; agentId?: string }[];
       archiveFiltering: boolean;
     },
   ): unknown {
@@ -366,7 +366,12 @@ export function createControlUiSessionFixtures(
       // rewrites member categories server-side before the next sessions.list.
       let category = typeof next.category === "string" ? next.category : undefined;
       for (const rename of options.renames) {
-        if (category === rename.from) {
+        const agentId =
+          typeof next.key === "string" ? /^agent:([^:]+):/u.exec(next.key)?.[1] : undefined;
+        if (
+          category === rename.from &&
+          (!rename.agentId || (agentId ?? next.agentId) === rename.agentId)
+        ) {
           category = rename.to ?? undefined;
         }
       }

@@ -87,6 +87,7 @@ type SessionsPageRequestScope = {
   gateway: ApplicationContext["gateway"];
   sessions: ApplicationContext["sessions"];
   client: GatewayBrowserClient;
+  agentId: string;
 };
 
 type SessionsPageMutationResult = "completed" | "failed" | "stale";
@@ -173,6 +174,10 @@ class SessionsPage extends OpenClawLightDomElement {
     this.requestUpdate();
   });
   private readonly subscriptions = new SubscriptionsController(this)
+    .watch(
+      () => this.context?.sessions,
+      (sessions, notify) => sessions.subscribe(notify),
+    )
     .watch(
       () => this.context?.agentIdentity,
       (agentIdentity, notify) => agentIdentity.subscribe(notify),
@@ -335,6 +340,7 @@ class SessionsPage extends OpenClawLightDomElement {
       gateway,
       sessions: context.sessions,
       client,
+      agentId: context.agentSelection.state.scopeId ?? "",
     };
   }
 
@@ -507,6 +513,10 @@ class SessionsPage extends OpenClawLightDomElement {
       this.applyListSnapshot(binding, snapshot);
     };
     this.unsubscribeList = sessions.subscribeList(query, apply);
+    const groupAgentId = context.agentSelection.state.scopeId;
+    if (groupAgentId) {
+      void sessions.groupsLoad(groupAgentId);
+    }
     const snapshot = sessions.listSnapshot(query);
     apply(snapshot);
     if (refreshMissing && (!snapshot.result || snapshot.loading)) {
@@ -980,8 +990,22 @@ class SessionsPage extends OpenClawLightDomElement {
     }
   }
 
-  private knownCategories(): string[] {
-    return sessionCategoryNames(this.result, this.context?.sessions.state.groups ?? []);
+  private knownCategories(agentId = this.context?.agentSelection.state.scopeId ?? ""): string[] {
+    const result = this.result
+      ? {
+          ...this.result,
+          sessions: this.result.sessions.filter(
+            (row) =>
+              (parseAgentSessionKey(row.key)?.agentId ??
+                row.agentId ??
+                this.context?.agentSelection.state.scopeId) === agentId,
+          ),
+        }
+      : null;
+    return sessionCategoryNames(
+      result,
+      this.context?.sessions.groupsSnapshot(agentId).settings.map((group) => group.name) ?? [],
+    );
   }
 
   private setGroupBy(mode: SessionsGroupBy) {
@@ -993,6 +1017,7 @@ class SessionsPage extends OpenClawLightDomElement {
   private async rememberCustomGroup(
     name: string,
     scope: SessionsPageRequestScope | null = this.captureRequestScope(),
+    agentId = scope?.agentId ?? "",
   ): Promise<SessionsPageMutationResult> {
     if (!scope) {
       return "stale";
@@ -1007,7 +1032,8 @@ class SessionsPage extends OpenClawLightDomElement {
     }
     return rememberSessionCustomGroup({
       name,
-      knownCategories: this.knownCategories(),
+      agentId,
+      knownCategories: this.knownCategories(agentId),
       sessions: scope.sessions,
       isCurrent: () => this.isRequestScopeCurrent(scope),
       onError: (message) => {
@@ -1028,9 +1054,7 @@ class SessionsPage extends OpenClawLightDomElement {
     if (current === category) {
       return;
     }
-    if (category) {
-      void this.rememberCustomGroup(category);
-    }
+    // Category patches register the committed row in its owning catalog.
     void this.patchSession(key, { category });
   }
 
@@ -1075,6 +1099,20 @@ class SessionsPage extends OpenClawLightDomElement {
       this.error = t("common.refresh");
       return;
     }
+    const scope = this.captureRequestScope();
+    if (!scope) {
+      return;
+    }
+    const agentId = session
+      ? (parseAgentSessionKey(session.key)?.agentId ??
+        session.agentId ??
+        this.sessionAgentId(session.key, scope.context) ??
+        scope.agentId)
+      : scope.agentId;
+    if (!agentId || agentId === "*") {
+      this.error = t("agents.selectTitle");
+      return;
+    }
     await this.withDialogLifecycle(async (signal) => {
       const showInputDialog = await this.loadInputDialog();
       await showInputDialog?.({
@@ -1083,7 +1121,7 @@ class SessionsPage extends OpenClawLightDomElement {
         label: t("sessionsView.newGroupPrompt"),
         submitLabel: t("sessionsView.newGroupCreate"),
         requireValue: true,
-        submit: (name) => this.writeNewCategory(name, session),
+        submit: (name) => this.writeNewCategory(name, session, scope, agentId),
       });
     });
   }
@@ -1095,14 +1133,15 @@ class SessionsPage extends OpenClawLightDomElement {
    */
   private async writeNewCategory(
     name: string,
-    session?: GatewaySessionRow,
+    session: GatewaySessionRow | undefined,
+    scope: SessionsPageRequestScope,
+    agentId: string,
   ): Promise<string | null> {
     this.error = null;
-    const scope = this.captureRequestScope();
-    if (!scope) {
+    if (!this.isRequestScopeCurrent(scope)) {
       return t("sessionsView.newGroupFailed");
     }
-    const remembered = await this.rememberCustomGroup(name, scope);
+    const remembered = await this.rememberCustomGroup(name, scope, agentId);
     if (remembered !== "completed") {
       return remembered === "failed"
         ? (this.error ?? t("sessionsView.newGroupFailed"))
@@ -1449,6 +1488,13 @@ class SessionsPage extends OpenClawLightDomElement {
       return;
     }
     this.sessionMenu = { key: row.key, sessionId: row.sessionId, ...position };
+    const agentId =
+      parseAgentSessionKey(row.key)?.agentId ??
+      row.agentId ??
+      (this.context && this.sessionAgentId(row.key, this.context));
+    if (agentId) {
+      void this.context?.sessions.groupsLoad(agentId).then(() => this.requestUpdate());
+    }
     this.sessionMenuTrigger = trigger;
     this.loadSessionMenuWork(row);
   }
@@ -1515,7 +1561,11 @@ class SessionsPage extends OpenClawLightDomElement {
       menu,
       trigger: this.sessionMenuTrigger,
       disabled: this.loading,
-      groups: this.knownCategories(),
+      groups: this.knownCategories(
+        parseAgentSessionKey(row.key)?.agentId ??
+          row.agentId ??
+          (this.context ? this.sessionAgentId(menu.key, this.context) : ""),
+      ),
       work: this.sessionMenuWork,
       onClose: () => this.closeSessionMenu(),
       onAction: (action: SessionMenuAction) => {
@@ -1674,6 +1724,11 @@ class SessionsPage extends OpenClawLightDomElement {
           groupBy: personGroupingAvailable || this.groupBy !== "person" ? this.groupBy : "none",
           personGroupingAvailable,
           knownCategories: this.knownCategories(),
+          categoryAgentId: context.agentSelection.state.scopeId ?? "*",
+          categoriesForAgent: (agentId) => this.knownCategories(agentId),
+          onLoadCategories: (agentId) => {
+            void context.sessions.groupsLoad(agentId).then(() => this.requestUpdate());
+          },
           page: this.page,
           pageSize: this.pageSize,
           selectedKeys: this.selectedKeys,

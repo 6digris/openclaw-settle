@@ -1021,6 +1021,7 @@ const unresolvedMigrationStepLayout = [
   ["legacy-main-session-keys", "final", "automatic"],
   ["acp-session-metadata", "final", "doctor-agent"],
   ["agent-dir", "final", "agent"],
+  ["session-groups", "final", "all"],
   ["plugin-doctor-post-session-state", "final", "doctor"],
 ] as const satisfies ReadonlyArray<
   readonly [
@@ -1133,6 +1134,7 @@ function createStateSchemaMigrationStep(params: {
   env: NodeJS.ProcessEnv;
   mode: LegacyStateMigrationMode;
   requiredness: PreparedLegacyStateMigrationStep["requiredness"];
+  sessionConfig?: OpenClawConfig;
 }): LegacyStateMigrationStep {
   const stateEnv = { ...params.env, OPENCLAW_STATE_DIR: params.stateDir };
   const database: LegacyStateMigrationEndpoint = {
@@ -1146,10 +1148,23 @@ function createStateSchemaMigrationStep(params: {
     target: [database],
     requiredness: params.requiredness,
     reversibility: "checkpoint-required",
-    run: () =>
-      params.mode === "doctor"
-        ? repairOpenClawStateDatabaseSchema({ env: stateEnv })
-        : repairOpenClawStateDatabaseSchemaIfNeeded({ env: stateEnv }),
+    run: async () => {
+      let groups: MigrationMessages = { changes: [], warnings: [] };
+      if (params.sessionConfig) {
+        const migration = await import("../commands/doctor-session-groups.js");
+        if (migration.hasPendingLegacySessionGroupCatalog(stateEnv)) {
+          groups = await migration.migrateDoctorSessionGroups(params.sessionConfig, stateEnv);
+        }
+      }
+      const schema =
+        params.mode === "doctor"
+          ? repairOpenClawStateDatabaseSchema({ env: stateEnv })
+          : repairOpenClawStateDatabaseSchemaIfNeeded({ env: stateEnv });
+      return {
+        changes: [...groups.changes, ...schema.changes],
+        warnings: [...groups.warnings, ...schema.warnings],
+      };
+    },
   };
 }
 
@@ -1646,6 +1661,7 @@ function buildLegacyStateMigrationSteps(
       detected.sessions.hasLegacy,
       pathEndpoints(detected.sessions.targetDir, detected.sessions.targetStorePath),
     ],
+    "session-groups": [[stateDatabase, ...canonicalSessionStores], "conditional", [stateDatabase]],
     "legacy-main-session-keys": [canonicalSessionStores, "conditional", canonicalSessionStores],
     "acp-session-metadata": [
       legacySessionStores,
@@ -1963,6 +1979,16 @@ function buildLegacyStateMigrationSteps(
   if (!params.skipAgentScopedMigrations || env.OPENCLAW_AGENT_DIR) {
     finalSteps.push(finalStep("agent-dir", () => migrateLegacyAgentDir(detected, now)));
   }
+  finalSteps.push({
+    ...finalStep("session-groups", async () => {
+      const { migrateDoctorSessionGroups } = await import("../commands/doctor-session-groups.js");
+      return migrateDoctorSessionGroups(params.sessionConfig ?? params.config, {
+        ...env,
+        OPENCLAW_STATE_DIR: stateDir,
+      });
+    }),
+    runWithoutFileDetection: true,
+  });
   if (
     isDoctor &&
     plannedPostSessionPluginDescriptor &&
@@ -1994,6 +2020,7 @@ function buildLegacyStateMigrationSteps(
       stateDir,
       env,
       mode: params.mode,
+      sessionConfig: params.sessionConfig ?? params.config,
       requiredness: detected.stateSchema.hasLegacy ? "required" : "conditional",
     }),
     createPluginInstallIndexStep({
@@ -3204,6 +3231,7 @@ async function executeLegacyStateMigrations(
     stateDir,
     env,
     mode,
+    sessionConfig: params.cfg,
     requiredness: "conditional",
   });
   const configMachineStateStep = createConfigMachineStateStep({
@@ -3218,11 +3246,14 @@ async function executeLegacyStateMigrations(
     configIncludedPaths,
     stateDir,
     env,
-    run: () => {
+    run: async () => {
       try {
         agentDatabaseTargets = hasCustomAgentDirOverride(env)
           ? []
           : resolveConfiguredAgentDatabaseTargets(params.cfg, { env: stateEnv });
+        const { assertSessionGroupMigrationSourcesAvailable } =
+          await import("../commands/doctor-session-groups.js");
+        assertSessionGroupMigrationSourcesAvailable(params.cfg, stateEnv);
         return { changes: [], warnings: [] };
       } catch (error) {
         if (mode === "automatic") {
@@ -3278,6 +3309,7 @@ async function executeLegacyStateMigrations(
         env,
         mode,
         requiredness: "required",
+        sessionConfig: params.cfg,
       });
     }
   } catch {

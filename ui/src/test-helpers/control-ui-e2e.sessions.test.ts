@@ -917,3 +917,46 @@ it.for([
     );
   },
 );
+
+it("preserves group import receipts across deletion and reload while normal append can recreate", async ({
+  connect,
+}) => {
+  const scenario = { sessionGroupsByAgent: { main: [], research: [] } };
+  const first = await connect(scenario);
+  const params = { agentId: "main", append: true, importId: "legacy-source", names: ["Legacy"] };
+  expect((await first.request("sessions.groups.put", params)).payload).toMatchObject({
+    groups: [{ name: "Legacy", position: 0 }],
+  });
+  await first.request("sessions.groups.delete", { agentId: "main", name: "Legacy" });
+  const reloaded = await connect(scenario);
+  expect((await reloaded.request("sessions.groups.put", params)).payload).toMatchObject({
+    groups: [],
+  });
+  expect(
+    (await reloaded.request("sessions.groups.put", { ...params, names: ["Legacy", "Added"] }))
+      .payload,
+  ).toMatchObject({ groups: [{ name: "Added", position: 0 }] });
+  expect(
+    (await reloaded.request("sessions.groups.put", { ...params, agentId: "research" })).ok,
+  ).toBe(false);
+  expect(
+    (await reloaded.request("sessions.groups.list", { agentId: "research" })).payload,
+  ).toMatchObject({ groups: [] });
+  expect((await reloaded.request("sessions.groups.put", { ...params, append: false })).ok).toBe(
+    false,
+  );
+  expect(
+    (
+      await reloaded.request("sessions.groups.put", {
+        agentId: "main",
+        append: true,
+        names: ["Legacy"],
+      })
+    ).payload,
+  ).toMatchObject({
+    groups: [
+      { name: "Added", position: 0 },
+      { name: "Legacy", position: 1 },
+    ],
+  });
+});

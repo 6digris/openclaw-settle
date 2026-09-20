@@ -94,20 +94,6 @@ enum CommandSessionGrouping {
             .sorted(by: self.categoryComesBefore)
     }
 
-    /// Union of the active and archived enumerations, deduped by key. Group
-    /// mutations must patch archived members too so restores land back in the
-    /// renamed group instead of the stale one.
-    static func members(
-        of group: String,
-        in lists: [[OpenClawChatSessionEntry]]) -> [OpenClawChatSessionEntry]
-    {
-        guard let target = self.normalizedCategory(group) else { return [] }
-        var seen = Set<String>()
-        return lists.flatMap(\.self).filter { entry in
-            self.normalizedCategory(entry.category) == target && seen.insert(entry.key).inserted
-        }
-    }
-
     static func activityTimestamp(_ entry: OpenClawChatSessionEntry) -> Double {
         entry.lastActivityAt ?? entry.updatedAt ?? 0
     }

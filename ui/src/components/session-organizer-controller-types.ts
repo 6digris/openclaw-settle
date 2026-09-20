@@ -28,10 +28,11 @@ export interface SessionOrganizerControllerHost extends ReactiveControllerHost {
   sessionsStatusFilter: SidebarSessionStatusFilter;
   clearSessionSelection(): void;
   findSidebarSessionByKey(sessionKey: string): SidebarRecentSession | undefined;
-  knownSessionGroups(): string[];
+  knownSessionGroups(agentId?: string): string[];
+  sessionGroupPresentationOwner(): string;
   listSessionGroupFolders(path?: string): Promise<FsListDirResult>;
   inspectSessionGroupRepository(path?: string): Promise<WorktreeRepositoryStatus>;
-  sessionGroupDefaults(name: string): { cwd: string; worktree: boolean } | null;
+  sessionGroupDefaults(name: string, agentId?: string): { cwd: string; worktree: boolean } | null;
   knownSessionCatalogIds(): string[];
   knownSectionOrder(): string[];
   pruneSidebarSessionEntry(key: string): void;

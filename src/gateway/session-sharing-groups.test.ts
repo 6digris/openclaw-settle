@@ -1,7 +1,12 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { trackSqliteStatementExecutions } from "../../test/helpers/sqlite-statement-execution-counter.js";
+import { withAgentDeletion } from "../agents/agent-lifecycle-registry.js";
+import { migrateDoctorSessionGroups } from "../commands/doctor-session-groups.js";
 import { loadSessionEntry, upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { recordAgentProvenance } from "../state/agent-provenance.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   getOpenClawAgentDatabaseIfOpen,
@@ -10,6 +15,7 @@ import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { flushPendingSessionsChangedEvents } from "./server-methods/session-change-event.js";
 import { sessionGroupHandlers } from "./server-methods/sessions-groups.js";
 import type { GatewayRequestContext, RespondFn } from "./server-methods/types.js";
+import * as workspaceContainment from "./server-methods/workspace-path-containment.js";
 import {
   listSessionGroupDefaults,
   listSessionGroups,
@@ -32,8 +38,9 @@ afterEach(async () => {
 describe("session sharing group mutations", () => {
   it("reuses group membership metadata and immediately observes changed member permissions", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      await migrateDoctorSessionGroups({});
       const cfg = {};
-      putSessionGroups({ cfg, names: ["Projects", "Personal"] });
+      putSessionGroups({ agentId: "main", cfg, names: ["Projects", "Personal"] });
       const scope = { agentId: "main", sessionKey: "agent:main:restricted-group-member" };
       await upsertSessionEntryCore(scope, {
         sessionId: "restricted-group-member",
@@ -51,7 +58,7 @@ describe("session sharing group mutations", () => {
         const responses: Parameters<RespondFn>[] = [];
         await sessionGroupHandlers["sessions.groups.defaults"]!({
           req: { type: "req", id: "group-defaults-test", method: "sessions.groups.defaults" },
-          params: {},
+          params: { agentId: "main" },
           client: viewer,
           context,
           isWebchatConnect: () => true,
@@ -96,7 +103,8 @@ describe("session sharing group mutations", () => {
     "refreshes groups after %s rejects changed member authority",
     async (action) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
-        putSessionGroups({ cfg: {}, names: ["Old"] });
+        await migrateDoctorSessionGroups({});
+        putSessionGroups({ agentId: "main", cfg: {}, names: ["Old"] });
         const sessionKey = "agent:main:changed-group-authority";
         await upsertSessionEntryCore(
           { agentId: "main", sessionKey },
@@ -120,7 +128,7 @@ describe("session sharing group mutations", () => {
         } as unknown as GatewayRequestContext;
         await expect(
           sessionGroupHandlers[`sessions.groups.${action}`]?.({
-            params: { name: "Old", ...(action === "rename" ? { to: "New" } : {}) },
+            params: { agentId: "main", name: "Old", ...(action === "rename" ? { to: "New" } : {}) },
             context,
             respond,
             sessionMutationAuthorization: {
@@ -140,10 +148,10 @@ describe("session sharing group mutations", () => {
         });
         expect(respond).not.toHaveBeenCalled();
         expect(loadSessionEntry({ agentId: "main", sessionKey })?.category).toBe("Old");
-        expect(listSessionGroups()).toContainEqual({ name: "Old", position: 0 });
+        expect(listSessionGroups("main")).toContainEqual({ name: "Old", position: 0 });
         expect(broadcastToConnIds).toHaveBeenCalledWith(
           "sessions.changed",
-          expect.objectContaining({ reason: "groups" }),
+          expect.objectContaining({ reason: "groups", agentId: "main" }),
           new Set(["group-observer"]),
           expect.any(Object),
         );
@@ -152,7 +160,8 @@ describe("session sharing group mutations", () => {
   );
   it("refuses restricted group drops at put admission while allowing retained groups", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
-      putSessionGroups({ cfg: {}, names: ["Projects"] });
+      await migrateDoctorSessionGroups({});
+      putSessionGroups({ agentId: "main", cfg: {}, names: ["Projects"] });
       await upsertSessionEntryCore(
         { agentId: "main", sessionKey: "agent:main:restricted-put-member" },
         {
@@ -170,7 +179,7 @@ describe("session sharing group mutations", () => {
         resolveSessionMutationAuthorization({
           client: viewer,
           method: "sessions.groups.put",
-          requestParams: { names: [] },
+          requestParams: { agentId: "main", names: [] },
           context,
         }).error,
       ).not.toBeNull();
@@ -178,7 +187,7 @@ describe("session sharing group mutations", () => {
         resolveSessionMutationAuthorization({
           client: viewer,
           method: "sessions.groups.put",
-          requestParams: { names: [" Projects "] },
+          requestParams: { agentId: "main", names: [" Projects "] },
           context,
         }).error,
       ).toBeNull();
@@ -187,7 +196,8 @@ describe("session sharing group mutations", () => {
 
   it("rechecks late group members before committing a put drop", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
-      const groups = putSessionGroups({ cfg: {}, names: ["Race"] });
+      await migrateDoctorSessionGroups({});
+      const groups = putSessionGroups({ agentId: "main", cfg: {}, names: ["Race"] });
       const viewer = roleClient("none", "put-viewer");
       const context = {
         getRuntimeConfig: () => rolePolicyConfig(),
@@ -196,7 +206,7 @@ describe("session sharing group mutations", () => {
       const authorization = resolveSessionMutationAuthorization({
         client: viewer,
         method: "sessions.groups.put",
-        requestParams: { names: [] },
+        requestParams: { agentId: "main", names: [] },
         context,
       });
       expect(authorization).toMatchObject({ error: null, authorization: expect.any(Object) });
@@ -214,21 +224,22 @@ describe("session sharing group mutations", () => {
 
       await expect(
         sessionGroupHandlers["sessions.groups.put"]?.({
-          params: { names: [] },
+          params: { agentId: "main", names: [] },
           client: viewer,
           context,
           sessionMutationAuthorization: authorization.authorization,
           respond: () => undefined,
         } as never),
       ).rejects.toBeInstanceOf(SessionMutationAuthorizationChangedError);
-      expect(listSessionGroups()).toEqual(groups);
+      expect(listSessionGroups("main")).toEqual(groups);
     });
   });
 
   it("rechecks group members before committing a defaults update", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
-      putSessionGroups({ cfg: {}, names: ["Race"] });
-      updateSessionGroupDefaults("Race", { cwd: "/repos/race", worktree: true });
+      await migrateDoctorSessionGroups({});
+      putSessionGroups({ agentId: "main", cfg: {}, names: ["Race"] });
+      updateSessionGroupDefaults("main", "Race", { cwd: "/repos/race", worktree: true });
       const viewer = client({ user: "viewer@example.com" });
       const context = {
         getRuntimeConfig: () => ({}),
@@ -237,7 +248,7 @@ describe("session sharing group mutations", () => {
       const authorization = resolveSessionMutationAuthorization({
         client: viewer,
         method: "sessions.groups.update",
-        requestParams: { name: " Race ", cwd: null, worktree: false },
+        requestParams: { agentId: "main", name: " Race ", cwd: null, worktree: false },
         context,
       });
       expect(authorization.error).toBeNull();
@@ -255,14 +266,14 @@ describe("session sharing group mutations", () => {
 
       await expect(
         sessionGroupHandlers["sessions.groups.update"]?.({
-          params: { name: " Race ", cwd: null, worktree: false },
+          params: { agentId: "main", name: " Race ", cwd: null, worktree: false },
           client: viewer,
           context,
           sessionMutationAuthorization: authorization.authorization,
           respond: () => undefined,
         } as never),
       ).rejects.toBeInstanceOf(SessionMutationAuthorizationChangedError);
-      expect(listSessionGroupDefaults()).toEqual([
+      expect(listSessionGroupDefaults("main")).toEqual([
         { name: "Race", cwd: "/repos/race", worktree: true },
       ]);
     });
@@ -270,9 +281,10 @@ describe("session sharing group mutations", () => {
 
   it("filters group defaults and blocks updates for sessions the caller cannot mutate", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
-      putSessionGroups({ cfg: {}, names: ["Projects", "Personal"] });
-      updateSessionGroupDefaults("Projects", { cwd: "/repos/projects", worktree: true });
-      updateSessionGroupDefaults("Personal", { cwd: "/repos/personal", worktree: false });
+      await migrateDoctorSessionGroups({});
+      putSessionGroups({ agentId: "main", cfg: {}, names: ["Projects", "Personal"] });
+      updateSessionGroupDefaults("main", "Projects", { cwd: "/repos/projects", worktree: true });
+      updateSessionGroupDefaults("main", "Personal", { cwd: "/repos/personal", worktree: false });
       await upsertSessionEntryCore(
         { agentId: "main", sessionKey: "agent:main:restricted-project" },
         {
@@ -293,14 +305,14 @@ describe("session sharing group mutations", () => {
         resolveSessionMutationAuthorization({
           client: viewer,
           method: "sessions.groups.update",
-          requestParams: { name: "Projects", cwd: null, worktree: false },
+          requestParams: { agentId: "main", name: "Projects", cwd: null, worktree: false },
           context,
         }).error,
       ).toMatchObject({ details: { code: "SESSION_PARTICIPATION_REQUIRED" } });
 
       const responses: Parameters<RespondFn>[] = [];
       await sessionGroupHandlers["sessions.groups.defaults"]?.({
-        params: {},
+        params: { agentId: "main" },
         client: viewer,
         context,
         respond: (...response: Parameters<RespondFn>) => responses.push(response),
@@ -316,13 +328,13 @@ describe("session sharing group mutations", () => {
       const personalAuthorization = resolveSessionMutationAuthorization({
         client: viewer,
         method: "sessions.groups.update",
-        requestParams: { name: "Personal", cwd: null, worktree: false },
+        requestParams: { agentId: "main", name: "Personal", cwd: null, worktree: false },
         context,
       });
       expect(personalAuthorization.error).toBeNull();
       const updateResponses: Parameters<RespondFn>[] = [];
       await sessionGroupHandlers["sessions.groups.update"]?.({
-        params: { name: "Personal", cwd: null, worktree: false },
+        params: { agentId: "main", name: "Personal", cwd: null, worktree: false },
         client: viewer,
         context,
         sessionMutationAuthorization: personalAuthorization.authorization,
@@ -333,4 +345,232 @@ describe("session sharing group mutations", () => {
       ]);
     });
   });
+  it("does not let alpha's restricted same-name member hide or block beta's defaults", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      await migrateDoctorSessionGroups({});
+      const cfg = { agents: { ownership: "explicit" as const, entries: { alpha: {}, beta: {} } } };
+      for (const agentId of ["alpha", "beta"]) {
+        putSessionGroups({ cfg, agentId, names: ["Shared"] });
+        updateSessionGroupDefaults(agentId, "Shared", {
+          cwd: "/repos/" + agentId,
+          worktree: agentId === "alpha",
+        });
+      }
+      await upsertSessionEntryCore(
+        { agentId: "alpha", sessionKey: "agent:alpha:restricted" },
+        {
+          sessionId: "alpha-restricted",
+          updatedAt: 1,
+          category: "Shared",
+          visibility: "read-only",
+          createdActor: { type: "human", source: "profile", id: "owner@example.com" },
+        },
+      );
+      const viewer = client({ user: "viewer@example.com" });
+      const context = {
+        getRuntimeConfig: () => cfg,
+        getSessionEventSubscriberConnIds: () => new Set<string>(),
+      } as unknown as GatewayRequestContext;
+      for (const agentId of ["alpha", "beta"]) {
+        const respond = vi.fn();
+        await sessionGroupHandlers["sessions.groups.defaults"]!({
+          params: { agentId },
+          client: viewer,
+          context,
+          respond,
+        } as never);
+        expect(respond).toHaveBeenCalledWith(
+          true,
+          {
+            defaults:
+              agentId === "alpha" ? [] : [{ name: "Shared", cwd: "/repos/beta", worktree: false }],
+          },
+          undefined,
+        );
+      }
+      const requestParams = { agentId: "beta", name: "Shared", cwd: null, worktree: false };
+      const authorization = resolveSessionMutationAuthorization({
+        client: viewer,
+        method: "sessions.groups.update",
+        requestParams,
+        context,
+      });
+      expect(authorization.error).toBeNull();
+      const respond = vi.fn();
+      await sessionGroupHandlers["sessions.groups.update"]!({
+        params: requestParams,
+        client: viewer,
+        context,
+        respond,
+        sessionMutationAuthorization: authorization.authorization,
+      } as never);
+      expect(respond).toHaveBeenCalledWith(
+        true,
+        { ok: true, defaults: [{ name: "Shared", worktree: false }] },
+        undefined,
+      );
+      expect(listSessionGroupDefaults("alpha")).toEqual([
+        { name: "Shared", cwd: "/repos/alpha", worktree: true },
+      ]);
+      expect(
+        loadSessionEntry({ agentId: "alpha", sessionKey: "agent:alpha:restricted" })?.category,
+      ).toBe("Shared");
+    });
+  });
+
+  it("authorizes an append without treating omitted restricted groups as removals", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      await migrateDoctorSessionGroups({});
+      const cfg = rolePolicyConfig();
+      putSessionGroups({ cfg, agentId: "main", names: ["Restricted"] });
+      await upsertSessionEntryCore(
+        { agentId: "main", sessionKey: "agent:main:restricted-append" },
+        {
+          sessionId: "restricted-append",
+          updatedAt: 1,
+          category: "Restricted",
+          visibility: "read-only",
+          createdActor: { type: "human", source: "profile", id: "owner@example.com" },
+        },
+      );
+      const viewer = roleClient("none", "append-viewer");
+      const context = {
+        getRuntimeConfig: () => cfg,
+        getSessionEventSubscriberConnIds: () => new Set<string>(),
+      } as unknown as GatewayRequestContext;
+      const params = { agentId: "main", names: ["New"], append: true };
+      const authorization = resolveSessionMutationAuthorization({
+        client: viewer,
+        method: "sessions.groups.put",
+        requestParams: params,
+        context,
+      });
+      expect(authorization.error).toBeNull();
+      const respond = vi.fn();
+      await sessionGroupHandlers["sessions.groups.put"]!({
+        params,
+        client: viewer,
+        context,
+        respond,
+        sessionMutationAuthorization: authorization.authorization,
+      } as never);
+      expect(respond).toHaveBeenCalledWith(
+        true,
+        {
+          ok: true,
+          groups: [
+            { name: "Restricted", position: 0 },
+            { name: "New", position: 1 },
+          ],
+          sectionOrder: [],
+        },
+        undefined,
+      );
+      expect(
+        loadSessionEntry({ agentId: "main", sessionKey: "agent:main:restricted-append" })?.category,
+      ).toBe("Restricted");
+    });
+  });
+  it.each(["deletion", "recreated-same-id", "stale-workspace"] as const)(
+    "rejects a defaults update after %s during real workspace resolution",
+    async (change) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+        let cfg: OpenClawConfig = {
+          agents: {
+            ownership: "explicit",
+            entries: {
+              alpha: { workspace: state.path("alpha-workspace") },
+              beta: { workspace: state.workspaceDir },
+            },
+          },
+        };
+        await migrateDoctorSessionGroups(cfg);
+        for (const agentId of ["alpha", "beta"]) {
+          putSessionGroups({ cfg, agentId, names: ["Shared"] });
+          updateSessionGroupDefaults(agentId, "Shared", {
+            cwd: "/repos/" + agentId,
+            worktree: false,
+          });
+        }
+        recordAgentProvenance("beta", { createdVia: "operator" }, { nowMs: 1 });
+        const before = listSessionGroupDefaults("beta");
+        const original = workspaceContainment.resolveWorkspacePathContainment;
+        const entered = createDeferred<Awaited<ReturnType<typeof original>>>();
+        const release = createDeferred();
+        const containment = vi
+          .spyOn(workspaceContainment, "resolveWorkspacePathContainment")
+          .mockImplementation(async (...args) => {
+            const resolved = await original(...args);
+            entered.resolve(resolved);
+            await release.promise;
+            return resolved;
+          });
+        const respond = vi.fn();
+        const context = {
+          getRuntimeConfig: () => cfg,
+          getSessionEventSubscriberConnIds: () => new Set<string>(),
+        } as unknown as GatewayRequestContext;
+        const pending = sessionGroupHandlers["sessions.groups.update"]!({
+          params: { agentId: "beta", name: "Shared", cwd: state.workspaceDir, worktree: true },
+          client: client({ user: "viewer@example.com" }),
+          context,
+          respond,
+        } as never);
+        try {
+          expect(await entered.promise).not.toBeNull();
+          if (change === "deletion") {
+            await withAgentDeletion("beta", async (begin) => {
+              const deletion = begin({
+                agentId: "beta",
+                agentDir: state.agentDir("beta"),
+                workspaceDir: state.workspaceDir,
+                sessionsDir: state.sessionsDir("beta"),
+              });
+              try {
+                release.resolve(undefined);
+                await expect(pending).rejects.toBeInstanceOf(
+                  SessionMutationAuthorizationChangedError,
+                );
+              } finally {
+                deletion.rollback();
+              }
+            });
+          } else if (change === "recreated-same-id") {
+            // The roster and id are unchanged, but the durable lifecycle owner is new.
+            recordAgentProvenance("beta", { createdVia: "operator" }, { nowMs: 2 });
+            release.resolve(undefined);
+            await expect(pending).rejects.toBeInstanceOf(SessionMutationAuthorizationChangedError);
+          } else {
+            cfg = {
+              agents: {
+                ownership: "explicit",
+                entries: {
+                  alpha: { workspace: state.path("alpha-workspace") },
+                  beta: { workspace: state.path("replacement-workspace") },
+                },
+              },
+            };
+            release.resolve(undefined);
+            await pending;
+            expect(respond).toHaveBeenCalledWith(
+              false,
+              undefined,
+              expect.objectContaining({ message: expect.stringContaining("operator.admin") }),
+            );
+          }
+          if (change !== "stale-workspace") {
+            expect(respond).not.toHaveBeenCalled();
+          }
+          expect(listSessionGroupDefaults("beta")).toEqual(before);
+          expect(listSessionGroupDefaults("alpha")).toEqual([
+            { name: "Shared", cwd: "/repos/alpha", worktree: false },
+          ]);
+        } finally {
+          release.resolve(undefined);
+          await Promise.resolve(pending).catch(() => undefined);
+          containment.mockRestore();
+        }
+      });
+    },
+  );
 });

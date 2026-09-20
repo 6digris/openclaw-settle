@@ -1,9 +1,11 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { DEFAULT_AGENT_ID } from "../routing/session-key.js";
 import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
 import { resolveAuthorizedBoardViewTicketClaims } from "./board-view-ticket.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
+import { resolveRequestedSessionGroupAgentId } from "./session-group-scope.js";
 import {
   listSessionGroups,
   normalizeGroupNames,
@@ -63,13 +65,26 @@ function readSessionSharingStringParam(params: unknown, key: string): string | u
   return normalizeOptionalString((params as Record<string, unknown>)[key]);
 }
 
+function groupAgentForRequest(cfg: OpenClawConfig, requestParams: unknown): string | undefined {
+  if (
+    !isRecord(requestParams) ||
+    (requestParams.agentId !== undefined && typeof requestParams.agentId !== "string")
+  ) {
+    return undefined;
+  }
+  const scope = resolveRequestedSessionGroupAgentId(cfg, requestParams.agentId);
+  return scope.ok ? scope.agentId : undefined;
+}
+
 function resolveSessionGroupMutationTargets(params: {
   getCfg: () => OpenClawConfig;
   requestParams: unknown;
 }): SessionMutationTarget[] | undefined {
-  const groupName = readSessionSharingStringParam(params.requestParams, "name");
-  return groupName
-    ? (resolveSessionGroupMutationTargetsByName(params.getCfg()).get(groupName) ?? [])
+  const cfg = params.getCfg();
+  const agentId = groupAgentForRequest(cfg, params.requestParams);
+  const name = readSessionSharingStringParam(params.requestParams, "name");
+  return agentId && name
+    ? (resolveSessionGroupMutationTargetsByName(cfg, agentId).get(name) ?? [])
     : undefined;
 }
 
@@ -77,21 +92,27 @@ function resolveSessionGroupsPutMutationTargets(
   getCfg: () => OpenClawConfig,
   requestParams: unknown,
 ): SessionMutationTarget[] | undefined {
-  const names =
-    requestParams && typeof requestParams === "object" && "names" in requestParams
-      ? requestParams.names
-      : undefined;
-  if (!Array.isArray(names)) {
+  if (!isRecord(requestParams) || !Array.isArray(requestParams.names)) {
     return undefined;
   }
-  const requested = new Set(normalizeGroupNames(names.filter((name) => typeof name === "string")));
-  const dropped = listSessionGroups()
-    .map((group) => group.name)
-    .filter((name) => !requested.has(name));
-  if (dropped.length === 0) {
+  const cfg = getCfg();
+  const agentId = groupAgentForRequest(cfg, requestParams);
+  if (!agentId) {
+    return undefined;
+  }
+  if (requestParams.append === true) {
     return [];
   }
-  const byName = resolveSessionGroupMutationTargetsByName(getCfg());
+  const requested = new Set(
+    normalizeGroupNames(requestParams.names.filter((name) => typeof name === "string")),
+  );
+  const dropped = listSessionGroups(agentId)
+    .map((g) => g.name)
+    .filter((name) => !requested.has(name));
+  if (!dropped.length) {
+    return [];
+  }
+  const byName = resolveSessionGroupMutationTargetsByName(cfg, agentId);
   return dropped.flatMap((name) => byName.get(name) ?? []);
 }
 

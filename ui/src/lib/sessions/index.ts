@@ -70,9 +70,9 @@ export function createSessionCapability(
     loading: false,
     error: null,
     deletedSessions: [],
-    groups: cacheOptions.bootRecord?.groups.map((group) => group.name) ?? [],
-    groupSettings: cacheOptions.bootRecord?.groups ?? [],
-    sectionOrder: cacheOptions.bootRecord?.sectionOrder ?? [],
+    groups: [],
+    groupSettings: [],
+    sectionOrder: [],
   };
   let presentation: SessionCapability["presentation"] = { result: null, agentId: null };
   let reconnectListRevision: number | null = null;
@@ -264,10 +264,14 @@ export function createSessionCapability(
 
   const groups = createSessionGroupCatalog({
     connection,
+    selectedAgentId: () => agentSelection.state.selectedId,
+    gatewayUrl: () => gateway.connection?.gatewayUrl ?? "",
+    gatewayIdentity: () =>
+      JSON.stringify([gateway.connection?.gatewayUrl, gateway.connectionRevision]),
     snapshot: () => gateway.snapshot,
     readState: () => state,
     publish,
-    refreshRows: () => roster.refresh({ ...roster.lastOptions(), force: true }),
+    refreshRows: (agentId) => roster.reconcileMutation(agentId),
     retryDelayMs: sessionRetryDelayMs,
   });
 
@@ -480,7 +484,7 @@ export function createSessionCapability(
       sessionEventSubscription.reset();
       sessionEventSubscriptionError = null;
       retireOperationConnection(previousClient);
-      groups.invalidate();
+      groups.reset();
       swarmActivity.clear();
       mutations.retireConnection();
       pullRequestSummaries.clear();
@@ -512,6 +516,7 @@ export function createSessionCapability(
       hydratedClient = scope.client;
       hydratedSelfUserId = selfUserId;
       if (!hydrateConnection) {
+        groups.reset();
         // Identity updates refresh the current roster without displacing queued picker intent.
         roster.scheduleEvent();
         return;
@@ -539,6 +544,10 @@ export function createSessionCapability(
   });
 
   const stopSelection = subscribeAgentSelection(agentSelection, (nextAgentId, foreground) => {
+    groups.select();
+    if (nextAgentId) {
+      void background("session-groups:" + nextAgentId, () => groups.load(nextAgentId));
+    }
     retirePresentation();
     notifySubscribers();
     // Selection publishes before Gateway hydration. A new connection bootstraps
@@ -602,9 +611,13 @@ export function createSessionCapability(
     }
     const eventReason = payload?.reason;
     const payloadAgentId = payload?.agentId;
-    if (eventReason === "groups") {
-      groups.invalidate();
-      void background(groups.load, () => groups.load());
+    if (eventReason === "groups" && typeof payloadAgentId === "string") {
+      const consumed = groups.observed(payloadAgentId);
+      groups.invalidate(payloadAgentId);
+      // Refresh only catalogs already consumed, never every roster agent.
+      if (consumed || payloadAgentId === agentSelection.state.selectedId) {
+        void background("session-groups:" + payloadAgentId, () => groups.load(payloadAgentId));
+      }
     }
     if (event.event === "session.message" && !runEnded) {
       return;
@@ -678,6 +691,7 @@ export function createSessionCapability(
     deleteMany: deletions.deleteMany,
     deletionState: deletions.deletionState,
     reset: mutations.reset,
+    groupsSnapshot: groups.snapshot,
     groupsLoad: groups.load,
     groupsGeneration: groups.generation,
     groupsStatus: groups.status,

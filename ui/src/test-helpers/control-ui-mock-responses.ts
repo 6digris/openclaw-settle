@@ -7,7 +7,7 @@ export function createControlUiMockResponses(
     methodResponses: Record<string, unknown>;
     defaultAgentId: string;
     sessions: Pick<ReturnType<typeof createControlUiSessionFixtures>, "list" | "listResponse">;
-    groupRenames: () => readonly { from: string; to: string | null }[];
+    groupRenames: () => readonly { from: string; to: string | null; agentId?: string }[];
   },
   isRecord: (value: unknown) => value is Record<string, unknown>,
 ) {

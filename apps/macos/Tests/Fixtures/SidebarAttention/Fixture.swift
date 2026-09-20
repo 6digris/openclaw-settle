@@ -89,6 +89,12 @@ private actor SidebarFixtureTransport: OpenClawChatTransport {
         """.utf8))
     }
 
+    func acquireSessionGroupsRouteLease(agentID: String) async throws -> OpenClawChatSessionGroupsRouteLease {
+        try OpenClawChatSessionGroupsRouteLease(agentID: agentID, supportsAgentScope: true) { _ in
+            Data(#"{"ok":true,"groups":[{"name":"Projects","position":0}]}"#.utf8)
+        }
+    }
+
     func listSessionGroups() async throws -> OpenClawChatSessionGroupsResponse? {
         try JSONDecoder().decode(
             OpenClawChatSessionGroupsResponse.self,

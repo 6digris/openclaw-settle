@@ -177,8 +177,13 @@ class SidebarShellLogicTest {
     assertEquals(listOf("pinned"), presentation.pinned.map(ChatSessionEntry::key))
     assertEquals(8, recentKeys.size)
     assertEquals(setOf("session-10", "session-9", "session-8", "session-7", "session-6", "session-5", "session-4", "session-3"), recentKeys.toSet())
-    assertEquals(listOf("Work", "Ungrouped"), presentation.recentSections.map { it.title })
-    assertTrue(presentation.recentSections.all { it.entries.isNotEmpty() })
+    assertEquals(listOf("Personal", "Work", "Ungrouped"), presentation.recentSections.map { it.title })
+    assertTrue(
+      presentation.recentSections
+        .first()
+        .entries
+        .isEmpty(),
+    )
     assertTrue(presentation.canExpandRecent)
   }
 

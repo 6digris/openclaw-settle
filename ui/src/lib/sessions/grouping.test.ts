@@ -642,6 +642,29 @@ describe("groupSessionRows", () => {
     expect(groups[3]?.rows.map((r) => r.key)).toEqual(["c"]);
   });
 
+  it("keeps equal category names separate by agent in the all-agent Sessions table", () => {
+    const groups = groupSessionRows({
+      rows: [
+        row({ key: "agent:alpha:one", category: "Shared" }),
+        row({ key: "agent:beta:two", category: "Shared" }),
+      ],
+      mode: "category",
+      categoryAgentId: "*",
+    });
+    expect(
+      groups
+        .filter((group) => group.category === "Shared")
+        .map((group) => ({
+          id: group.id,
+          agentId: group.agentId,
+          keys: group.rows.map((session) => session.key),
+        })),
+    ).toEqual([
+      { id: JSON.stringify(["alpha", "Shared"]), agentId: "alpha", keys: ["agent:alpha:one"] },
+      { id: JSON.stringify(["beta", "Shared"]), agentId: "beta", keys: ["agent:beta:two"] },
+    ]);
+  });
+
   it("groups channel sessions alphabetically with unparseable keys last", () => {
     const rows = [
       row({ key: "agent:main:telegram:direct:1" }),

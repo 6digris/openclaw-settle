@@ -2,8 +2,10 @@ package ai.openclaw.app.ui
 
 import ai.openclaw.app.MainViewModel
 import ai.openclaw.app.chat.ChatSessionEntry
+import ai.openclaw.app.chat.ChatSessionGroupRoute
 import ai.openclaw.app.chat.isSessionRunActive
 import ai.openclaw.app.i18n.nativeString
+import ai.openclaw.app.resolveAgentIdFromMainSessionKey
 import ai.openclaw.app.ui.design.ClawEmptyState
 import ai.openclaw.app.ui.design.ClawLoadingState
 import ai.openclaw.app.ui.design.ClawPlainIconButton
@@ -114,9 +116,10 @@ internal fun SessionsScreen(
   var deleteSessionTarget by
     rememberSaveable(stateSaver = SessionActionTargetSaver) { mutableStateOf<SessionActionTarget?>(null) }
   var searchText by rememberSaveable { mutableStateOf("") }
-  var renameGroupName by rememberSaveable { mutableStateOf<String?>(null) }
-  var deleteGroupName by rememberSaveable { mutableStateOf<String?>(null) }
-  var newGroupDialogVisible by rememberSaveable { mutableStateOf(false) }
+  var renameGroupTarget by remember { mutableStateOf<Pair<ChatSessionGroupRoute, String>?>(null) }
+  var deleteGroupTarget by remember { mutableStateOf<Pair<ChatSessionGroupRoute, String>?>(null) }
+  var newGroupRoute by remember { mutableStateOf<ChatSessionGroupRoute?>(null) }
+  var groupSessionRoute by remember { mutableStateOf<ChatSessionGroupRoute?>(null) }
   val searchState =
     rememberSessionBrowserSearchState(
       viewModel = viewModel,
@@ -132,7 +135,11 @@ internal fun SessionsScreen(
       recentFirst = recentFirst,
     )
   val nextAttentionExpiry = nextSessionStatusExpiry(visibleSessions, sessionStatusNowMs)
-  val storedGroups by viewModel.sessionCustomGroups.collectAsState()
+  val groupCatalog by viewModel.sessionGroupCatalog.collectAsState()
+  val sessionOwnerAgentId by viewModel.chatSessionOwnerAgentId.collectAsState()
+  val defaultAgentId by viewModel.gatewayDefaultAgentId.collectAsState()
+  val groupAgentId = resolveAgentIdFromMainSessionKey(chatSessionKey) ?: sessionOwnerAgentId ?: defaultAgentId
+  val storedGroups = groupCatalog.names.takeIf { groupCatalog.gatewayId == activeGatewayStableId && groupCatalog.agentId == groupAgentId }.orEmpty()
   val sections =
     buildSessionTreeSections(
       entries = visibleSessions,
@@ -153,7 +160,7 @@ internal fun SessionsScreen(
     deleteSessionTarget = deleteSessionTarget?.takeIf { it.matchesGateway(activeGatewayStableId) }
   }
 
-  LaunchedEffect(isConnected, filter) {
+  LaunchedEffect(isConnected, filter, groupAgentId) {
     if (isConnected) {
       viewModel.refreshChatSessions(limit = 200, archived = filter == SessionFilter.Archived)
     }
@@ -301,7 +308,11 @@ internal fun SessionsScreen(
         Text(text = if (compactLayout) nativeString("Layout: Compact") else nativeString("Layout: Detailed"), style = ClawTheme.type.caption, color = ClawTheme.colors.textSubtle)
       }
 
-      if (visibleSessions.isEmpty()) {
+      groupCatalog.error?.let { message ->
+        item { Text(text = message, style = ClawTheme.type.caption, color = ClawTheme.colors.danger) }
+      }
+
+      if (visibleSessions.isEmpty() && (storedGroups.isEmpty() || searchText.isNotBlank())) {
         item {
           Box(
             modifier = Modifier.fillParentMaxHeight(0.56f).fillMaxWidth(),
@@ -337,9 +348,9 @@ internal fun SessionsScreen(
               if (section.isCategory) {
                 SessionGroupHeader(
                   title = title,
-                  onRename = { renameGroupName = title },
-                  onNewGroup = { newGroupDialogVisible = true },
-                  onDelete = { deleteGroupName = title },
+                  onRename = { renameGroupTarget = viewModel.captureChatSessionGroupRoute(groupAgentId)?.let { it to title } },
+                  onNewGroup = { newGroupRoute = viewModel.captureChatSessionGroupRoute(groupAgentId) },
+                  onDelete = { deleteGroupTarget = viewModel.captureChatSessionGroupRoute(groupAgentId)?.let { it to title } },
                 )
               } else {
                 Text(
@@ -372,7 +383,7 @@ internal fun SessionsScreen(
               active = active,
               compact = compactLayout,
               archived = session.archived == true,
-              categories = categories,
+              categories = categories.takeIf { (resolveAgentIdFromMainSessionKey(session.key) ?: session.ownerAgentId) == groupAgentId }.orEmpty(),
               depth = treeEntry.depth,
               hasChildren = treeEntry.hasChildren,
               expanded = session.key !in collapsedSessionKeys,
@@ -425,14 +436,17 @@ internal fun SessionsScreen(
                 }
               },
               onMoveToGroup = { category ->
-                coroutineScope.launch {
-                  viewModel.patchChatSession(key = session.key, ownerAgentId = session.ownerAgentId, category = category)
+                viewModel.captureChatSessionGroupRoute(resolveAgentIdFromMainSessionKey(session.key) ?: session.ownerAgentId)?.let { route ->
+                  coroutineScope.launch { viewModel.moveChatSessionToGroup(route, session.key, category) }
                 }
               },
-              onNewGroup = { groupSessionTarget = session.toActionTarget(activeGatewayStableId) },
+              onNewGroup = {
+                groupSessionRoute = viewModel.captureChatSessionGroupRoute(resolveAgentIdFromMainSessionKey(session.key) ?: session.ownerAgentId)
+                if (groupSessionRoute != null) groupSessionTarget = session.toActionTarget(activeGatewayStableId)
+              },
               onRemoveFromGroup = {
-                coroutineScope.launch {
-                  viewModel.patchChatSession(key = session.key, ownerAgentId = session.ownerAgentId, clearCategory = true)
+                viewModel.captureChatSessionGroupRoute(resolveAgentIdFromMainSessionKey(session.key) ?: session.ownerAgentId)?.let { route ->
+                  coroutineScope.launch { viewModel.moveChatSessionToGroup(route, session.key, null) }
                 }
               },
               onSetArchived = { archived ->
@@ -488,66 +502,65 @@ internal fun SessionsScreen(
       onConfirm = { value ->
         groupSessionTarget = null
         if (!session.matchesGateway(activeGatewayStableId)) return@SessionTextDialog
-        // Remember the name so the group survives locally even if the patch later empties it.
-        viewModel.addChatSessionGroup(value)
+        val route = groupSessionRoute ?: return@SessionTextDialog
         coroutineScope.launch {
-          viewModel.patchChatSession(key = session.key, ownerAgentId = session.ownerAgentId, category = value.trim())
+          viewModel.addChatSessionGroup(route, value, sessionKey = session.key)
         }
       },
     )
   }
 
-  renameGroupName?.let { group ->
+  renameGroupTarget?.let { (route, group) ->
     SessionTextDialog(
       title = nativeString("Rename group"),
       stateKey = "group-rename:$group",
       initialValue = group,
       confirmLabel = nativeString("Rename"),
       allowEmpty = false,
-      onDismiss = { renameGroupName = null },
+      onDismiss = { renameGroupTarget = null },
       onConfirm = { value ->
-        renameGroupName = null
+        renameGroupTarget = null
         val next = value.trim()
         if (next.isNotEmpty() && next != group) {
-          coroutineScope.launch { viewModel.renameChatSessionGroup(from = group, to = next) }
+          coroutineScope.launch { viewModel.renameChatSessionGroup(route, from = group, to = next) }
         }
       },
     )
   }
 
-  if (newGroupDialogVisible) {
+  newGroupRoute?.let { route ->
     SessionTextDialog(
       title = nativeString("New group"),
       stateKey = "group-new",
       initialValue = "",
       confirmLabel = nativeString("Create"),
       allowEmpty = false,
-      onDismiss = { newGroupDialogVisible = false },
+      onDismiss = { newGroupRoute = null },
       onConfirm = { value ->
-        newGroupDialogVisible = false
-        viewModel.addChatSessionGroup(value)
+        newGroupRoute = null
+        coroutineScope.launch { viewModel.addChatSessionGroup(route, value) }
       },
     )
   }
 
-  deleteGroupName?.let { group ->
+  deleteGroupTarget?.let { (route, group) ->
     AppAlertDialog(
-      onDismissRequest = { deleteGroupName = null },
+      onDismissRequest = { deleteGroupTarget = null },
       containerColor = ClawTheme.colors.surfaceRaised,
       title = { Text(nativeString("Delete group?"), style = ClawTheme.type.section, color = ClawTheme.colors.text) },
       text = { Text(nativeString("Threads in \"\$group\" are kept and move back to Ungrouped.", group), style = ClawTheme.type.body, color = ClawTheme.colors.textMuted) },
       confirmButton = {
         TextButton(
           onClick = {
-            deleteGroupName = null
-            coroutineScope.launch { viewModel.deleteChatSessionGroup(group) }
+            deleteGroupTarget = null
+            coroutineScope.launch { viewModel.deleteChatSessionGroup(route, group) }
           },
         ) {
           Text(nativeString("Delete"), color = ClawTheme.colors.danger)
         }
       },
       dismissButton = {
-        TextButton(onClick = { deleteGroupName = null }) {
+        TextButton(onClick = { deleteGroupTarget = null }) {
           Text(nativeString("Cancel"))
         }
       },
@@ -1221,7 +1234,6 @@ internal fun buildSessionTreeSections(
   currentSessionKey: String = "",
   nowMs: Long = System.currentTimeMillis(),
 ): List<SessionTreeSection> {
-  if (entries.isEmpty()) return emptyList()
   val entriesByKey = entries.associateBy { it.key }
   val candidateParents =
     buildMap {
@@ -1367,7 +1379,6 @@ internal fun groupSessionEntries(
   entries: List<ChatSessionEntry>,
   knownGroups: List<String> = emptyList(),
 ): List<SessionSection> {
-  if (entries.isEmpty()) return emptyList()
   val pinned = entries.filter { it.pinned == true }
   val remaining = entries.filterNot { it.pinned == true }
   val populated = remaining.filter { !it.category.isNullOrBlank() }.groupBy { it.category.orEmpty().trim() }

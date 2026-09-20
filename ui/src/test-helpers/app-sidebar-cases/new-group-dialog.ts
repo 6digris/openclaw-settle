@@ -35,7 +35,7 @@ describe("AppSidebar new group dialog", () => {
       await submitInputDialog("  Projects  ");
 
       await waitForFast(() => expect(harness.patchMany).toHaveBeenCalledOnce());
-      expect(harness.groupsPut).toHaveBeenCalledWith(["Projects"]);
+      expect(harness.groupsPut).toHaveBeenCalledWith(["Projects"], undefined, "main", true);
       expect(harness.patchMany).toHaveBeenCalledWith(
         [
           { key: "agent:main:a", agentId: "main", expectedSessionId: "session:agent:main:a" },

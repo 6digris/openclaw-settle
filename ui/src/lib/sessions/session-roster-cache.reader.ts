@@ -288,9 +288,10 @@ export async function hydrateSessionRoster(
     ...host.readState(),
     result: record.result,
     agentId: record.agentId,
-    groups: record.groups,
-    groupSettings: record.groupSettings,
-    sectionOrder: record.sectionOrder,
+    // Version 1 groups have no owner. Preserve the roster, not its ambiguous catalog.
+    groups: [],
+    groupSettings: [],
+    sectionOrder: [],
     resultCached: true,
   });
 }

@@ -162,7 +162,11 @@ describe("sessions.changed coalescing", () => {
     onTestFinished(unsubscribe);
     const initialAccessRevision = readGatewayAccessRevision();
 
-    await emitAndSettleLeading(context, { reason: "groups" }, { catalogOnly: true });
+    await emitAndSettleLeading(
+      context,
+      { reason: "groups", agentId: "beta" },
+      { catalogOnly: true },
+    );
 
     expect(changed).not.toHaveBeenCalled();
     expect(mocks.invalidate).not.toHaveBeenCalled();
@@ -170,17 +174,36 @@ describe("sessions.changed coalescing", () => {
     expect(readGatewayAccessRevision()).toBe(initialAccessRevision);
     expect(context.broadcastToConnIds).toHaveBeenCalledWith(
       "sessions.changed",
-      expect.objectContaining({ reason: "groups" }),
+      expect.objectContaining({ reason: "groups", agentId: "beta" }),
       expect.any(Set),
       expect.any(Object),
     );
 
     // Rename/delete use the same public reason but can change member rows.
-    await emitAndSettleLeading(context, { reason: "groups" });
-    expect(changed).toHaveBeenCalledWith({ all: true, scope: "sessions" });
+    await emitAndSettleLeading(context, { reason: "groups", agentId: "beta" });
+    expect(changed).toHaveBeenCalledWith({ all: true, scope: { agentId: "beta" } });
     expect(mocks.invalidate).toHaveBeenCalledOnce();
     expect(context.mentionInbox?.invalidate).toHaveBeenCalledOnce();
     expect(readGatewayAccessRevision()).toBe(initialAccessRevision + 1);
+  });
+
+  it("does not coalesce different owners' catalog invalidations into one agent", async () => {
+    const context = createContext();
+    await emitAndSettleLeading(
+      context,
+      { reason: "groups", agentId: "alpha" },
+      { catalogOnly: true },
+    );
+    emitSessionsChanged(context, { reason: "groups", agentId: "alpha" }, { catalogOnly: true });
+    emitSessionsChanged(context, { reason: "groups", agentId: "beta" }, { catalogOnly: true });
+    await flushPendingSessionsChangedEvents();
+    const owners = vi
+      .mocked(context.broadcastToConnIds)
+      .mock.calls.filter(([event]) => event === "sessions.changed")
+      .map(([, payload]) => (payload as { agentId?: string }).agentId);
+    expect(owners).toContain("alpha");
+    expect(owners).toContain("beta");
+    expect(owners).not.toContain(undefined);
   });
 
   it("publishes the latest placement through coalesced unrelated mutations and clears it explicitly", async () => {

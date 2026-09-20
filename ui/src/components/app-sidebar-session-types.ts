@@ -253,6 +253,7 @@ export function rowDemandsVisibility(
 }
 
 export type SidebarSessionMenuState = {
+  scope: SidebarSessionMutationScope | null | undefined;
   session: SidebarRecentSession;
   x: number;
   y: number;
@@ -408,19 +409,26 @@ export function loadStoredSidebarSessionSortMode(): SidebarSessionSortMode {
   return stored === "updated" || stored === "people" ? stored : "created";
 }
 
-export function loadStoredCollapsedSessionSections(): ReadonlySet<string> {
+function readStoredSectionIds(key: string, fallback = "[]"): string[] {
+  const value: unknown = JSON.parse(getSafeLocalStorage()?.getItem(key) ?? fallback);
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string" && Boolean(entry))
+    : [];
+}
+
+export function loadStoredCollapsedSessionSections(owner?: string): ReadonlySet<string> {
   try {
-    const raw = getSafeLocalStorage()?.getItem(SIDEBAR_SESSION_COLLAPSED_SECTIONS_STORAGE_KEY);
-    if (raw == null) {
-      // First run: Coding stays muted while Online preserves its expanded
-      // default until the user explicitly collapses it.
-      return new Set(["work"]);
-    }
-    const parsed: unknown = JSON.parse(raw);
+    // First run keeps Coding compact; Online stays expanded.
+    const shared = readStoredSectionIds(SIDEBAR_SESSION_COLLAPSED_SECTIONS_STORAGE_KEY, '["work"]');
     return new Set(
-      Array.isArray(parsed)
-        ? parsed.flatMap((value) => (typeof value === "string" && value ? [value] : []))
-        : [],
+      owner
+        ? [
+            ...shared.filter((value) => !isCustomGroupSection(value)),
+            ...readStoredSectionIds(
+              SIDEBAR_SESSION_COLLAPSED_SECTIONS_STORAGE_KEY + ":owner:" + owner,
+            ).filter(isCustomGroupSection),
+          ]
+        : shared,
     );
   } catch {
     return new Set(["work"]);
@@ -429,14 +437,7 @@ export function loadStoredCollapsedSessionSections(): ReadonlySet<string> {
 
 export function loadStoredHiddenSessionCatalogIds(): ReadonlySet<string> {
   try {
-    const parsed: unknown = JSON.parse(
-      getSafeLocalStorage()?.getItem(SIDEBAR_HIDDEN_SESSION_CATALOGS_STORAGE_KEY) ?? "[]",
-    );
-    return new Set(
-      Array.isArray(parsed)
-        ? parsed.flatMap((value) => (typeof value === "string" && value ? [value] : []))
-        : [],
-    );
+    return new Set(readStoredSectionIds(SIDEBAR_HIDDEN_SESSION_CATALOGS_STORAGE_KEY));
   } catch {
     return new Set();
   }
@@ -513,11 +514,23 @@ export function storeSidebarSessionSortMode(
   return resolved;
 }
 
-export function storeCollapsedSessionSections(sections: ReadonlySet<string>) {
-  getSafeLocalStorage()?.setItem(
+const isCustomGroupSection = (value: string) => value.startsWith("category:");
+
+export function storeCollapsedSessionSections(sections: ReadonlySet<string>, owner?: string) {
+  const storage = getSafeLocalStorage();
+  const names = [...sections];
+  // Built-in and plugin sections keep their existing browser-wide preference.
+  // Only custom group names belong to a gateway/profile/agent catalog.
+  storage?.setItem(
     SIDEBAR_SESSION_COLLAPSED_SECTIONS_STORAGE_KEY,
-    JSON.stringify([...sections]),
+    JSON.stringify(owner ? names.filter((value) => !isCustomGroupSection(value)) : names),
   );
+  if (owner) {
+    storage?.setItem(
+      SIDEBAR_SESSION_COLLAPSED_SECTIONS_STORAGE_KEY + ":owner:" + owner,
+      JSON.stringify(names.filter(isCustomGroupSection)),
+    );
+  }
 }
 
 function storeHiddenSessionCatalogIds(ids: ReadonlySet<string>) {

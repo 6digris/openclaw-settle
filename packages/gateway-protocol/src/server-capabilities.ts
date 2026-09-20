@@ -15,6 +15,7 @@ export const GATEWAY_SERVER_CAPS = {
   SESSION_SCOPED_CHAT_METADATA: "session-scoped-chat-metadata",
   SESSION_SCOPED_MODEL_CATALOG: "session-scoped-model-catalog",
   SESSION_UNREAD_ACK_CONTRACT: "session-unread-ack-contract",
+  SESSION_GROUPS_AGENT_SCOPED: "sessions.groups.agent-scoped",
   SESSION_GOAL_START: "session-goal-start-v1",
   SESSION_SETTINGS_CONTRACT: "session-settings-contract",
   SESSION_SETTINGS_CAS: "session-settings-cas-v1",

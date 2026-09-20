@@ -58,7 +58,7 @@ describe("sessions page new group", () => {
 
     await page.requestNewCategory(SESSION_KEY);
 
-    expect(sessions.groupsPut).toHaveBeenCalledWith(["Client work"]);
+    expect(sessions.groupsPut).toHaveBeenCalledWith(["Client work"], undefined, "main", true);
     expect(sessions.patch).toHaveBeenCalledOnce();
     expect(vi.mocked(sessions.patch).mock.invocationCallOrder[0]).toBeGreaterThan(
       vi.mocked(sessions.groupsPut).mock.invocationCallOrder[0]!,
@@ -242,7 +242,7 @@ describe("sessions page new group", () => {
   it("creates an empty group without a selected row", async () => {
     const { page, sessions, submitMessages } = await mountGroupsPage(async () => "completed");
     await page.requestNewCategory();
-    expect(sessions.groupsPut).toHaveBeenCalledWith(["Client work"]);
+    expect(sessions.groupsPut).toHaveBeenCalledWith(["Client work"], undefined, "main", true);
     expect(sessions.patch).not.toHaveBeenCalled();
     expect(submitMessages).toEqual([null]);
   });

@@ -42,6 +42,15 @@ describe("session group catalog readers", () => {
     ]);
   });
 
+  it("replaces stale defaults with the authoritative owner snapshot", () => {
+    expect(
+      mergeSessionGroupDefaults(
+        [{ name: "Shared", position: 0, cwd: "/retired", worktree: true }],
+        { defaults: [{ name: "Shared", worktree: false }] },
+      ),
+    ).toEqual([{ name: "Shared", position: 0, worktree: false }]);
+  });
+
   it("reads normalized section order", () => {
     expect(
       readSidebarSectionOrder({

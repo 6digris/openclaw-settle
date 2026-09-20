@@ -18,6 +18,8 @@ import ai.openclaw.app.chat.ChatQuestionDraft
 import ai.openclaw.app.chat.ChatQuestionPrompt
 import ai.openclaw.app.chat.ChatSessionDeletion
 import ai.openclaw.app.chat.ChatSessionEntry
+import ai.openclaw.app.chat.ChatSessionGroupCatalog
+import ai.openclaw.app.chat.ChatSessionGroupRoute
 import ai.openclaw.app.chat.ChatSwarmGroup
 import ai.openclaw.app.chat.ChatThinkingLevelSelection
 import ai.openclaw.app.chat.ChatTranscriptAnchorState
@@ -2249,6 +2251,9 @@ class NodeRuntime private constructor(
           session = operatorSession,
           json = json,
           transcriptCache = chatTranscriptCache,
+          legacySessionGroupNames = prefs::legacySessionGroupNames,
+          acknowledgeLegacySessionGroupNames = prefs::acknowledgeLegacySessionGroupNames,
+          claimLegacySessionGroupImport = clientDatabases::claimLegacySessionGroupImport,
           cacheScope = ::chatCacheScope,
           currentDefaultAgentId = { gatewayDefaultAgentId.value },
           currentDefaultAgentRevision = gatewayDefaultAgentRevision::get,
@@ -3256,6 +3261,7 @@ class NodeRuntime private constructor(
   val chatQuestions: StateFlow<List<ChatQuestionPrompt>> = chat.questions
   val chatProgressCard: StateFlow<ChatProgressCard?> = chat.progressCard
   val chatSessions: StateFlow<List<ChatSessionEntry>> = chat.sessions
+  internal val sessionGroupCatalog: StateFlow<ChatSessionGroupCatalog> = chat.sessionGroupCatalog
   val chatSwarmGroups: StateFlow<List<ChatSwarmGroup>> = chat.swarmGroups
   val chatSessionBranches: StateFlow<List<SessionBranch>> = chat.sessionBranches
   val chatSessionBranchesLoading: StateFlow<Boolean> = chat.sessionBranchesLoading
@@ -5789,16 +5795,30 @@ class NodeRuntime private constructor(
     )
   }
 
-  suspend fun renameChatSessionGroup(
+  internal fun captureChatSessionGroupRoute(agentId: String?): ChatSessionGroupRoute? = chat.captureSessionGroupRoute(agentId)
+
+  internal suspend fun addChatSessionGroup(
+    route: ChatSessionGroupRoute,
+    name: String,
+    sessionKey: String? = null,
+  ): Boolean = chat.createSessionGroup(route, name, sessionKey)
+
+  internal suspend fun moveChatSessionToGroup(
+    route: ChatSessionGroupRoute,
+    sessionKey: String,
+    category: String?,
+  ): Boolean = chat.moveSessionToGroup(route, sessionKey, category)
+
+  internal suspend fun renameChatSessionGroup(
+    route: ChatSessionGroupRoute,
     from: String,
     to: String,
-  ) {
-    chat.renameSessionGroup(from = from, to = to)
-  }
+  ): Boolean = chat.renameSessionGroup(route, from, to)
 
-  suspend fun dissolveChatSessionGroup(group: String) {
-    chat.dissolveSessionGroup(group)
-  }
+  internal suspend fun dissolveChatSessionGroup(
+    route: ChatSessionGroupRoute,
+    group: String,
+  ): Boolean = chat.dissolveSessionGroup(route, group)
 
   internal suspend fun deleteChatSession(
     key: String,

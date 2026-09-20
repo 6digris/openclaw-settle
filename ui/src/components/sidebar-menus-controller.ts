@@ -23,6 +23,7 @@ import type {
   SidebarRecentSession,
   SidebarSessionGroupMenuState,
   SidebarSessionMenuState,
+  SidebarSessionMutationScope,
 } from "./app-sidebar-session-types.ts";
 import { fetchSessionMenuWork } from "./session-menu-work.ts";
 import type { SessionMenuWork } from "./session-menu.ts";
@@ -74,6 +75,7 @@ export class SidebarMenusController implements ReactiveController, SidebarMenusC
   sessionMenuTrigger: HTMLElement | null = null;
   private sessionMenuWorkVersion = 0;
   sessionGroupMenuTrigger: HTMLElement | null = null;
+  sessionGroupMenuScope: SidebarSessionMutationScope | null = null;
   sessionSortMenuTrigger: HTMLElement | null = null;
   catalogViewMenuTrigger: HTMLElement | null = null;
   agentMenuTrigger: HTMLElement | null = null;
@@ -263,7 +265,16 @@ export class SidebarMenusController implements ReactiveController, SidebarMenusC
     this.loadMenuRenderer();
     this.dismissTransientMenus();
     this.sessionMenuTrigger = trigger;
-    this.updateState("sessionMenu", { session, x, y });
+    const agentId = parseAgentSessionKey(session.key)?.agentId ?? session.agentId;
+    this.updateState("sessionMenu", {
+      session,
+      x,
+      y,
+      scope: undefined,
+    });
+    if (agentId) {
+      void this.host.sessionDataContext?.sessions.groupsLoad(agentId);
+    }
     this.loadSessionMenuWork(session);
   }
 
@@ -329,6 +340,7 @@ export class SidebarMenusController implements ReactiveController, SidebarMenusC
     this.loadMenuRenderer();
     this.dismissTransientMenus();
     this.sessionGroupMenuTrigger = trigger;
+    this.sessionGroupMenuScope = this.host.sessionData.beginSessionMutation();
     this.updateState("sessionGroupMenu", {
       group,
       x: Math.max(8, Math.min(x, window.innerWidth - menuWidth - 8)),
@@ -339,6 +351,7 @@ export class SidebarMenusController implements ReactiveController, SidebarMenusC
   closeSessionGroupMenu(options: { restoreFocus?: boolean } = {}) {
     const trigger = this.sessionGroupMenuTrigger;
     this.sessionGroupMenuTrigger = null;
+    this.sessionGroupMenuScope = null;
     this.updateState("sessionGroupMenu", null);
     if (options.restoreFocus) {
       trigger?.focus();

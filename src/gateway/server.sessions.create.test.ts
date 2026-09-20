@@ -26,6 +26,7 @@ import {
 } from "../agents/worktrees/registry.js";
 import { managedWorktrees } from "../agents/worktrees/service.js";
 import { persistReplySessionEntry } from "../auto-reply/reply/session-entry-persistence.js";
+import { migrateDoctorSessionGroups } from "../commands/doctor-session-groups.js";
 import { getRuntimeConfig } from "../config/io.js";
 import { loadCombinedSessionStoreForGatewayCore } from "../config/sessions/combined-store-gateway.js";
 import {
@@ -363,6 +364,10 @@ async function createPersonalAccountSessionFixture() {
 
 test("sessions.create assigns and registers its requested group", async () => {
   const { storePath } = await createSessionStoreDir();
+  await migrateDoctorSessionGroups(
+    (await getGatewayConfigModule()).getRuntimeConfig(),
+    process.env,
+  );
   const broadcastToConnIds = vi.fn();
 
   const created = await directSessionReq<{ key: string }>(
@@ -382,12 +387,12 @@ test("sessions.create assigns and registers its requested group", async () => {
   expect(created.ok).toBe(true);
   const key = requireNonEmptyString(created.payload?.key, "grouped session key");
   expect(loadSessionEntry({ sessionKey: key, storePath })?.category).toBe("Client work");
-  expect(listSessionGroups().map((group) => group.name)).toContain("Client work");
+  expect(listSessionGroups("main").map((group) => group.name)).toContain("Client work");
   expect(broadcastToConnIds).toHaveBeenCalledWith(
     "sessions.changed",
-    expect.objectContaining({ reason: "groups" }),
+    expect.objectContaining({ reason: "groups", agentId: "main" }),
     new Set(["conn-1"]),
-    { dropIfSlow: true },
+    { agentId: "main", dropIfSlow: true },
   );
 });
 
@@ -1102,6 +1107,33 @@ test("operator role agent allowlists protect creation without blocking existing 
   expect(existingPatch.ok).toBe(true);
 });
 
+test("sessions.create registers the committed category when adopting without a category override", async () => {
+  const { storePath } = await createSessionStoreDir();
+  await migrateDoctorSessionGroups(
+    (await getGatewayConfigModule()).getRuntimeConfig(),
+    process.env,
+  );
+  const key = "agent:main:dashboard:legacy-category-adoption";
+  await writeSessionStore({
+    entries: {
+      [key]: sessionStoreEntry("legacy-category-adoption", { category: "Existing category" }),
+    },
+  });
+  // Cases share the catalog while using distinct session stores. Preserve prior groups.
+  const groupsBefore = listSessionGroups("main");
+  expect(groupsBefore.map(({ name }) => name)).not.toContain("Existing category");
+  const adopted = await directSessionReq("sessions.create", { agentId: "main", key });
+  expect(adopted.ok, JSON.stringify(adopted.error)).toBe(true);
+  expect(loadSessionEntry({ sessionKey: key, storePath })?.category).toBe("Existing category");
+  expect(listSessionGroups("main")).toEqual([
+    ...groupsBefore,
+    {
+      name: "Existing category",
+      position: Math.max(-1, ...groupsBefore.map(({ position }) => position)) + 1,
+    },
+  ]);
+});
+
 test("sessions.create carries keyed adoption authorization through the durable commit", async () => {
   const { storePath } = await createSessionStoreDir();
   const key = "agent:main:dashboard:categorized-adoption";
@@ -1241,6 +1273,10 @@ test("sessions.create revalidates parent participation before committing a fork 
 
 test("sessions.create registers a category only after the session commit succeeds", async () => {
   await createSessionStoreDir();
+  await migrateDoctorSessionGroups(
+    (await getGatewayConfigModule()).getRuntimeConfig(),
+    process.env,
+  );
   const category = "Deferred category";
   let validations = 0;
 
@@ -1265,7 +1301,7 @@ test("sessions.create registers a category only after the session commit succeed
   );
 
   expect(failed.ok).toBe(false);
-  expect(listSessionGroups().map((group) => group.name)).not.toContain(category);
+  expect(listSessionGroups("main").map((group) => group.name)).not.toContain(category);
 
   const broadcastToConnIds = vi.fn();
   const created = await directSessionReq(
@@ -1280,7 +1316,7 @@ test("sessions.create registers a category only after the session commit succeed
   );
 
   expect(created.ok).toBe(true);
-  expect(listSessionGroups().filter((group) => group.name === category)).toHaveLength(1);
+  expect(listSessionGroups("main").filter((group) => group.name === category)).toHaveLength(1);
   expect(
     broadcastToConnIds.mock.calls.filter(([, payload]) => payload?.reason === "groups"),
   ).toHaveLength(1);

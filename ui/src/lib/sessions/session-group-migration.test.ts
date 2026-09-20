@@ -11,6 +11,7 @@ import type { SessionGateway } from "./session-capability.ts";
 function createGateway(request: ReturnType<typeof vi.fn>, scopes: string[]): SessionGateway {
   const client = { request } as unknown as GatewayBrowserClient;
   return {
+    connection: { gatewayUrl: "wss://first.example/gateway" },
     snapshot: {
       client,
       phase: "connected",
@@ -35,6 +36,7 @@ function createGatewayHarness(request: ReturnType<typeof vi.fn>, scopes: string[
   const events = new Set<(event: GatewayEventFrame) => void>();
   return {
     gateway: {
+      connection: gateway.connection,
       get snapshot() {
         return snapshot;
       },
@@ -93,12 +95,12 @@ describe("legacy session group migration", () => {
         harness.emitEvent({
           type: "event",
           event: "sessions.changed",
-          payload: { reason: "groups" },
+          payload: { reason: "groups", agentId: "main" },
         });
       try {
         invalidate();
         await vi.waitFor(() => expect(reads).toBe(1));
-        const completion = bootstrap.run(sessions.groupsLoad, async () => {});
+        const completion = bootstrap.run("session-groups:main", async () => {});
         invalidate();
         if (boundary === "disconnected") {
           harness.publish(false);
@@ -136,7 +138,7 @@ describe("legacy session group migration", () => {
     await sessions.groupsLoad();
 
     expect(request).toHaveBeenCalledOnce();
-    expect(request).toHaveBeenCalledWith("sessions.groups.list", {});
+    expect(request).toHaveBeenCalledWith("sessions.groups.list", { agentId: "main" });
     expect(localStorage.getItem("openclaw:sessions:custom-groups")).toBe(
       JSON.stringify(["Research"]),
     );
@@ -148,10 +150,10 @@ describe("legacy session group migration", () => {
     localStorage.setItem("openclaw:sessions:custom-groups", JSON.stringify(["Research"]));
     const request = vi.fn(async (method: string) => {
       if (method === "sessions.groups.list") {
-        return { groups: [] };
+        return { groups: [{ name: "Research" }] };
       }
       if (method === "sessions.groups.put") {
-        return { groups: [{ name: "Research" }] };
+        return { ok: true, groups: [{ name: "Research" }] };
       }
       if (method === "sessions.groups.defaults") {
         return { defaults: [{ name: "Research" }] };
@@ -162,9 +164,18 @@ describe("legacy session group migration", () => {
 
     await sessions.groupsLoad();
 
-    expect(request).toHaveBeenCalledWith("sessions.groups.put", { names: ["Research"] });
+    await vi.waitFor(() =>
+      expect(request).toHaveBeenCalledWith("sessions.groups.put", {
+        agentId: "main",
+        names: ["Research"],
+        append: true,
+        importId: expect.any(String),
+      }),
+    );
     expect(sessions.state.groups).toEqual(["Research"]);
-    expect(localStorage.getItem("openclaw:sessions:custom-groups")).toBeNull();
+    await vi.waitFor(() =>
+      expect(localStorage.getItem("openclaw:sessions:custom-groups")).toBeNull(),
+    );
     sessions.dispose();
   });
 });
@@ -283,7 +294,9 @@ describe("session group catalog loading", () => {
     const sessions = createTestSessionCapability(createGateway(request, ["operator.write"]));
 
     const backgroundLoad = sessions.groupsLoad();
-    await vi.waitFor(() => expect(request).toHaveBeenCalledWith("sessions.groups.defaults", {}));
+    await vi.waitFor(() =>
+      expect(request).toHaveBeenCalledWith("sessions.groups.defaults", { agentId: "main" }),
+    );
     let joined = false;
     const routeLoad = sessions.groupsLoad().then(() => {
       joined = true;

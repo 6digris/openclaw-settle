@@ -124,6 +124,7 @@ struct IOSGatewayChatTransportTests {
 
     private func withSessionTransport(
         unreadAckAdvertisement: Bool? = true,
+        agentScopedGroups: Bool = false,
         _ run: (IOSGatewayChatTransport, RequestRecorder) async throws -> Void) async throws
     {
         let recorder = RequestRecorder()
@@ -148,8 +149,9 @@ struct IOSGatewayChatTransportTests {
                 let hello = GatewayWebSocketTestSupport.connectOkData(
                     id: socket.snapshotConnectRequestID() ?? "connect",
                     methods: ["agents.list", "sessions.patch", "sessions.delete", "sessions.create"],
-                    capabilities: unreadAckAdvertisement == true ? ["session-unread-ack-contract"] : [])
-                guard unreadAckAdvertisement == nil else { return .data(hello) }
+                    capabilities: (unreadAckAdvertisement == true ? ["session-unread-ack-contract"] : []) +
+                        (agentScopedGroups ? ["sessions.groups.agent-scoped"] : []))
+                guard unreadAckAdvertisement == nil, !agentScopedGroups else { return .data(hello) }
                 var frame = try #require(JSONSerialization.jsonObject(with: hello) as? [String: Any])
                 var payload = try #require(frame["payload"] as? [String: Any])
                 var features = try #require(payload["features"] as? [String: Any])
@@ -602,6 +604,32 @@ struct IOSGatewayChatTransportTests {
                 #expect(requests.allSatisfy { $0.params["expectedMarkedUnreadAt"] == nil })
             }
             #expect(requests.dropFirst(2).allSatisfy { $0.params["unread"]?.value as? Bool == false })
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func categoryRowsUseTheCapturedGroupCapability(supported: Bool) async throws {
+        try await self.withSessionTransport(agentScopedGroups: supported) { transport, recorder in
+            for category in ["Existing", nil] as [String?] {
+                if supported {
+                    try await transport.patchSession(key: "global", category: .some(category))
+                } else {
+                    await #expect(throws: OpenClawChatSessionGroupsError.self) {
+                        try await transport.patchSession(key: "global", category: .some(category))
+                    }
+                }
+            }
+            try await transport.patchSession(key: "global", pinned: true)
+            let requests = await recorder.all()
+            #expect(requests.count == (supported ? 3 : 1))
+            #expect(requests.allSatisfy { $0.params["agentId"]?.value as? String == "reviewer" })
+            #expect(requests.last?.params["pinned"]?.value as? Bool == true)
+            if supported {
+                #expect(requests[0].params["category"]?.value as? String == "Existing")
+                #expect(requests[1].params["category"]?.value is NSNull)
+            } else {
+                #expect(requests.allSatisfy { $0.params["category"] == nil })
+            }
         }
     }
 

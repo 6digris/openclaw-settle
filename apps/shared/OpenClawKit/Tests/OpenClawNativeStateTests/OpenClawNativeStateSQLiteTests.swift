@@ -8,6 +8,29 @@ import Darwin.membership
 
 struct OpenClawNativeStateSQLiteTests {
     @Test
+    func `agent group schema eighteen remains readable but newer schemas are fenced`() throws {
+        try self.withDatabase { database in
+            try database.ensureCanonicalTable(.deviceIdentities)
+            try database.execute("""
+            CREATE TABLE schema_meta (
+              meta_key TEXT NOT NULL PRIMARY KEY,
+              role TEXT NOT NULL,
+              schema_version INTEGER NOT NULL
+            ) STRICT;
+            INSERT INTO schema_meta (meta_key, role, schema_version)
+            VALUES ('primary', 'global', 18);
+            PRAGMA user_version = 18;
+            """)
+            try database.ensureCanonicalTable(.deviceIdentities)
+            #expect(try database.scalarInt64("PRAGMA user_version") == 18)
+            try database.execute("UPDATE schema_meta SET schema_version = 19; PRAGMA user_version = 19;")
+            #expect(throws: OpenClawNativeStateError.self) {
+                try database.ensureCanonicalTable(.deviceIdentities)
+            }
+        }
+    }
+
+    @Test
     func `version zero composes exact canonical tables`() throws {
         try self.withDatabase { database in
             try database.withImmediateTransaction {

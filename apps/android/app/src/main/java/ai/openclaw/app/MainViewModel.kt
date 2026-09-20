@@ -12,6 +12,8 @@ import ai.openclaw.app.chat.ChatProgressCard
 import ai.openclaw.app.chat.ChatQuestionDraft
 import ai.openclaw.app.chat.ChatQuestionPrompt
 import ai.openclaw.app.chat.ChatSessionEntry
+import ai.openclaw.app.chat.ChatSessionGroupCatalog
+import ai.openclaw.app.chat.ChatSessionGroupRoute
 import ai.openclaw.app.chat.ChatSwarmGroup
 import ai.openclaw.app.chat.ChatThinkingLevelSelection
 import ai.openclaw.app.chat.ChatTranscriptAnchorState
@@ -543,7 +545,8 @@ class MainViewModel private constructor(
   val modelAuthProviders: StateFlow<List<GatewayModelProviderSummary>> = runtimeState(initial = emptyList()) { it.modelAuthProviders }
   val modelFavorites: StateFlow<List<String>> = prefs.modelFavorites
   val modelRecents: StateFlow<List<String>> = prefs.modelRecents
-  val sessionCustomGroups: StateFlow<List<String>> = prefs.sessionCustomGroups
+  internal val sessionGroupCatalog: StateFlow<ChatSessionGroupCatalog> =
+    runtimeState(initial = ChatSessionGroupCatalog()) { it.sessionGroupCatalog }
   val sidebarPageOrder: StateFlow<List<String>> = prefs.sidebarPageOrder
   val sidebarVisiblePages: StateFlow<List<String>> = prefs.sidebarVisiblePages
   val sessionCatalogAvailable: StateFlow<Boolean> =
@@ -1735,27 +1738,30 @@ class MainViewModel private constructor(
     }
   }
 
-  /** Remembers a custom session group locally so it renders as an empty section. */
-  fun addChatSessionGroup(name: String) {
-    val trimmed = name.trim()
-    if (trimmed.isEmpty()) return
-    prefs.setSessionCustomGroups(prefs.sessionCustomGroups.value + trimmed)
-  }
+  internal fun captureChatSessionGroupRoute(agentId: String?): ChatSessionGroupRoute? = ensureRuntime().captureChatSessionGroupRoute(agentId)
 
-  suspend fun renameChatSessionGroup(
+  internal suspend fun addChatSessionGroup(
+    route: ChatSessionGroupRoute,
+    name: String,
+    sessionKey: String? = null,
+  ): Boolean = ensureRuntime().addChatSessionGroup(route, name, sessionKey)
+
+  internal suspend fun moveChatSessionToGroup(
+    route: ChatSessionGroupRoute,
+    sessionKey: String,
+    category: String?,
+  ): Boolean = ensureRuntime().moveChatSessionToGroup(route, sessionKey, category)
+
+  internal suspend fun renameChatSessionGroup(
+    route: ChatSessionGroupRoute,
     from: String,
     to: String,
-  ) {
-    val stored = prefs.sessionCustomGroups.value
-    // Web semantics: replace a stored name in place, otherwise remember the new name.
-    prefs.setSessionCustomGroups(if (from in stored) stored.map { if (it == from) to else it } else stored + to)
-    ensureRuntime().renameChatSessionGroup(from = from, to = to)
-  }
+  ): Boolean = ensureRuntime().renameChatSessionGroup(route, from, to)
 
-  suspend fun deleteChatSessionGroup(group: String) {
-    prefs.setSessionCustomGroups(prefs.sessionCustomGroups.value.filterNot { it == group })
-    ensureRuntime().dissolveChatSessionGroup(group)
-  }
+  internal suspend fun deleteChatSessionGroup(
+    route: ChatSessionGroupRoute,
+    group: String,
+  ): Boolean = ensureRuntime().dissolveChatSessionGroup(route, group)
 
   suspend fun forkChatSession(
     parentKey: String,

@@ -50,6 +50,12 @@ function createBrowser(
       state: {
         groupSettings: [{ name: "Client", cwd: "/workspace/client", worktree: false }],
       },
+      groupsSnapshot: () => ({
+        settings: [{ name: "Client", position: 0, cwd: "/workspace/client", worktree: false }],
+        sectionOrder: [],
+        generation: 1,
+        status: "ready",
+      }),
       groupsGeneration: () => 1,
       groupsStatus: () => "ready",
     },

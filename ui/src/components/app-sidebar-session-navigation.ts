@@ -15,6 +15,7 @@ import {
   sessionNavigationTarget,
 } from "../lib/sessions/route-navigation.ts";
 import {
+  parseAgentSessionKey,
   normalizeAgentId,
   resolveUiDefaultAgentId,
   resolveUiSessionRowAgentId,
@@ -656,14 +657,30 @@ export class AppSidebarSessionNavigationElement extends AppSidebarBase {
     });
   }
 
-  knownSessionGroups(): string[] {
+  sessionGroupPresentationOwner(): string {
+    return JSON.stringify([
+      this.context?.gateway.connection.gatewayUrl,
+      this.context?.gateway.snapshot.selfUser?.id,
+      this.sidebarAgentsMode === "roster" ? "roster" : this.selectedAgentIdForSessions(),
+    ]);
+  }
+
+  knownSessionGroups(agentId = this.selectedAgentIdForSessions()): string[] {
     return collectKnownSidebarSessionGroups(
-      this.context?.sessions.state.groups ?? [],
-      this.sessionData.sessionsResult?.sessions ?? [],
+      this.context?.sessions.groupsSnapshot(agentId).settings.map((group) => group.name) ?? [],
+      (this.sessionData.sessionsResult?.sessions ?? []).filter(
+        (row) =>
+          (parseAgentSessionKey(row.key)?.agentId ??
+            row.agentId ??
+            this.sessionData.sessionsAgentId) === agentId,
+      ),
     );
   }
 
-  readonly knownSectionOrder = () => [...(this.context?.sessions.state.sectionOrder ?? [])];
+  readonly knownSectionOrder = () => [
+    ...(this.context?.sessions.groupsSnapshot(this.selectedAgentIdForSessions()).sectionOrder ??
+      []),
+  ];
 
   knownSessionCatalogIds(): string[] {
     return collectKnownSidebarSessionCatalogIds({

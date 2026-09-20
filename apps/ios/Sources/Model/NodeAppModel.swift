@@ -748,6 +748,7 @@ final class NodeAppModel {
 
     /// Chat and the persistent sidebar consume the same Gateway-scoped request lifecycle.
     let chatPresentation = IOSChatViewModelOwner()
+    let sessionGroupStore = SessionGroupStore()
     /// Request admission only; the connection controller owns the later handoff.
     var isGatewayPickerRequestInFlight = false
 
@@ -793,6 +794,16 @@ final class NodeAppModel {
         let cache = clientDatabases.store(gatewayID: gatewayID)
         self.chatTranscriptCachesByGatewayID[gatewayKey] = cache
         return cache
+    }
+
+    func claimLegacySessionGroupImport(
+        gatewayID: String, profileID: String, agentID: String) throws -> String
+    {
+        guard gatewayID == self.chatTranscriptCacheGatewayID,
+              self.makeChatOfflineStore() != nil, let clientDatabases
+        else { throw OpenClawChatSessionGroupImportError.unavailable }
+        return try clientDatabases.claimLegacySessionGroupImport(
+            gatewayID: gatewayID, profileID: profileID, agentID: agentID)
     }
 
     var hasVerifiedChatOfflineRoutingIdentity: Bool {
@@ -1002,6 +1013,7 @@ final class NodeAppModel {
     private func removeAllChatDatabaseFiles() throws {
         // Full reset owns both stores. Retire old text before deleting its hash receipts.
         WatchMessageLegacyDefaults.removeAll(.standard)
+        UserDefaults.standard.removeObject(forKey: SessionGroupStore.defaultsKey)
         #if DEBUG
         if let testRemoveAllChatDatabaseFilesHandler {
             try testRemoveAllChatDatabaseFilesHandler()

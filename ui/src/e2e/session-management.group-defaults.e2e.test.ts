@@ -384,7 +384,7 @@ suite.define(() => {
       const groupListsBeforeInvalidation = (await gateway.getRequests("sessions.groups.list"))
         .length;
       await gateway.deferNext("sessions.groups.list");
-      await gateway.emitGatewayEvent("sessions.changed", { reason: "groups" });
+      await gateway.emitGatewayEvent("sessions.changed", { reason: "groups", agentId: "main" });
       await gateway.waitForRequest("sessions.groups.list", { after: groupListsBeforeInvalidation });
       await expect.poll(() => start.isDisabled()).toBe(true);
       await expect

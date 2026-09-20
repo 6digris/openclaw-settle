@@ -224,7 +224,7 @@ internal fun sidebarSessionPresentation(
   val visibleRecent = if (expanded) recent else recent.take(SIDEBAR_SESSION_LIMIT)
   return SidebarSessionPresentation(
     pinned = pinned,
-    recentSections = groupSessionEntries(visibleRecent, knownGroups).filter { it.entries.isNotEmpty() },
+    recentSections = groupSessionEntries(visibleRecent, knownGroups),
     canExpandRecent = recent.size > SIDEBAR_SESSION_LIMIT,
   )
 }
@@ -451,7 +451,7 @@ internal fun OpenClawSidebar(
   val scrollState = rememberScrollState()
   val rowHost = remember { SidebarRowHost() }
   val agentPicker = agentPickerState(agents, selectedAgentId)
-  val storedGroups by viewModel.sessionCustomGroups.collectAsState()
+  val groupCatalog by viewModel.sessionGroupCatalog.collectAsState()
   val questions by viewModel.chatQuestions.collectAsState()
   val approvalInbox by viewModel.execApprovalInbox.collectAsState()
   val defaultAgentId by viewModel.gatewayDefaultAgentId.collectAsState()
@@ -502,7 +502,7 @@ internal fun OpenClawSidebar(
   val recentPresentation =
     sidebarSessionPresentation(
       sessions = sessions,
-      knownGroups = storedGroups,
+      knownGroups = groupCatalog.names.takeIf { groupCatalog.gatewayId == gatewayStableId && groupCatalog.agentId == (selectedAgentId ?: defaultAgentId) }.orEmpty(),
       expanded = sessionsExpanded,
       excludedSessionKeys = catalogSessionKeys,
     )

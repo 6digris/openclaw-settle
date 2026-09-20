@@ -12,9 +12,14 @@ import {
   validateSessionsGroupsRenameParams,
   validateSessionsGroupsUpdateParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import {
+  captureAgentLifecycleBinding,
+  matchesAgentLifecycleBinding,
+} from "../../agents/agent-lifecycle-registry.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { ADMIN_SCOPE } from "../method-scopes.js";
 import { filterMutableSessionGroupRecords } from "../session-group-defaults-access.js";
+import { resolveRequestedSessionGroupAgentId } from "../session-group-scope.js";
 import {
   deleteSessionGroup,
   listSessionGroupDefaults,
@@ -29,23 +34,54 @@ import {
 } from "../session-groups.js";
 import { SessionMutationAuthorizationChangedError } from "../session-sharing.js";
 import { emitSessionsChanged } from "./session-change-event.js";
-import type { GatewayRequestHandlers } from "./types.js";
+import type { GatewayRequestContext, GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 import {
   isWorkspacePathContainmentCurrent,
   resolveWorkspacePathContainment,
 } from "./workspace-path-containment.js";
 
+function captureGroupAgentGuard(
+  context: Pick<GatewayRequestContext, "getRuntimeConfig">,
+  agentId: string,
+  assertAuthority?: () => void,
+): () => void {
+  const binding = captureAgentLifecycleBinding(context.getRuntimeConfig(), agentId);
+  const changed = () =>
+    new SessionMutationAuthorizationChangedError(
+      errorShape(
+        ErrorCodes.INVALID_REQUEST,
+        "Session group agent changed; reload the catalog and retry.",
+      ),
+    );
+  if (!binding) {
+    throw changed();
+  }
+  return () => {
+    assertAuthority?.();
+    if (!matchesAgentLifecycleBinding(context.getRuntimeConfig(), binding)) {
+      throw changed();
+    }
+  };
+}
+
 export const sessionGroupHandlers: GatewayRequestHandlers = {
-  "sessions.groups.list": async ({ params, respond }) => {
+  "sessions.groups.list": async ({ params, respond, context }) => {
     if (
       !assertValidParams(params, validateSessionsGroupsListParams, "sessions.groups.list", respond)
     ) {
       return;
     }
+    const scope = resolveRequestedSessionGroupAgentId(context.getRuntimeConfig(), params.agentId);
+    if (!scope.ok) {
+      respond(false, undefined, scope.error);
+      return;
+    }
+    const agentId = scope.agentId;
+
     respond(
       true,
-      { groups: listSessionGroups(), sectionOrder: listSidebarSectionOrder() },
+      { groups: listSessionGroups(agentId), sectionOrder: listSidebarSectionOrder(agentId) },
       undefined,
     );
   },
@@ -60,10 +96,18 @@ export const sessionGroupHandlers: GatewayRequestHandlers = {
     ) {
       return;
     }
+    const scope = resolveRequestedSessionGroupAgentId(context.getRuntimeConfig(), params.agentId);
+    if (!scope.ok) {
+      respond(false, undefined, scope.error);
+      return;
+    }
+    const agentId = scope.agentId;
+
     const defaults = filterMutableSessionGroupRecords({
       cfg: context.getRuntimeConfig(),
+      agentId,
       client,
-      records: listSessionGroupDefaults(),
+      records: listSessionGroupDefaults(agentId),
     });
     respond(true, { defaults }, undefined);
   },
@@ -73,17 +117,52 @@ export const sessionGroupHandlers: GatewayRequestHandlers = {
     ) {
       return;
     }
+    const scope = resolveRequestedSessionGroupAgentId(context.getRuntimeConfig(), params.agentId);
+    if (!scope.ok) {
+      respond(false, undefined, scope.error);
+      return;
+    }
+    const agentId = scope.agentId;
+    const assertCurrent = captureGroupAgentGuard(
+      context,
+      agentId,
+      sessionMutationAuthorization?.assertCurrent,
+    );
+
+    if (params.importId !== undefined && params.append !== true) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "importId requires append:true"),
+      );
+      return;
+    }
+    if (params.append && params.sectionOrder !== undefined) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "append cannot replace sectionOrder"),
+      );
+      return;
+    }
     try {
       const groups = putSessionGroups({
         cfg: context.getRuntimeConfig(),
+        agentId,
         names: params.names,
+        append: params.append,
+        importId: params.importId,
         sectionOrder: params.sectionOrder,
-        assertCurrent: sessionMutationAuthorization?.assertCurrent,
+        assertCurrent,
         assertTargetCurrent: sessionMutationAuthorization?.assertTargetCurrent,
       });
-      respond(true, { ok: true, groups, sectionOrder: listSidebarSectionOrder() }, undefined);
+      respond(
+        true,
+        { ok: true, groups, sectionOrder: listSidebarSectionOrder(agentId) },
+        undefined,
+      );
       // Catalog-only changes still need to reach other open clients.
-      emitSessionsChanged(context, { reason: "groups" });
+      emitSessionsChanged(context, { reason: "groups", agentId }, { catalogOnly: true });
     } catch (error) {
       if (error instanceof SessionMutationAuthorizationChangedError) {
         throw error;
@@ -106,12 +185,25 @@ export const sessionGroupHandlers: GatewayRequestHandlers = {
     ) {
       return;
     }
+    const scope = resolveRequestedSessionGroupAgentId(context.getRuntimeConfig(), params.agentId);
+    if (!scope.ok) {
+      respond(false, undefined, scope.error);
+      return;
+    }
+    const agentId = scope.agentId;
+    const assertCurrent = captureGroupAgentGuard(
+      context,
+      agentId,
+      sessionMutationAuthorization?.assertCurrent,
+    );
+
     try {
       const result = await renameSessionGroup({
         cfg: context.getRuntimeConfig(),
+        agentId,
         name: params.name,
         to: params.to,
-        assertCurrent: sessionMutationAuthorization?.assertCurrent,
+        assertCurrent,
         assertTargetCurrent: sessionMutationAuthorization?.assertTargetCurrent,
       });
       respond(true, { ok: true, ...result }, undefined);
@@ -126,7 +218,7 @@ export const sessionGroupHandlers: GatewayRequestHandlers = {
       respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatErrorMessage(error)));
     } finally {
       // Interrupted sweeps can retain catalog entries and committed member moves.
-      emitSessionsChanged(context, { reason: "groups" });
+      emitSessionsChanged(context, { reason: "groups", agentId });
     }
   },
   "sessions.groups.update": async ({
@@ -146,6 +238,18 @@ export const sessionGroupHandlers: GatewayRequestHandlers = {
     ) {
       return;
     }
+    const scope = resolveRequestedSessionGroupAgentId(context.getRuntimeConfig(), params.agentId);
+    if (!scope.ok) {
+      respond(false, undefined, scope.error);
+      return;
+    }
+    const agentId = scope.agentId;
+    const assertCurrent = captureGroupAgentGuard(
+      context,
+      agentId,
+      sessionMutationAuthorization?.assertCurrent,
+    );
+
     if (params.cwd && !path.isAbsolute(params.cwd)) {
       respond(
         false,
@@ -180,18 +284,25 @@ export const sessionGroupHandlers: GatewayRequestHandlers = {
       }
       cwd = containment.path;
     }
-    sessionMutationAuthorization?.assertCurrent();
+    assertCurrent();
     if (sessionMutationAuthorization) {
       const currentTargets =
-        resolveSessionGroupMutationTargetsByName(context.getRuntimeConfig()).get(name) ?? [];
+        resolveSessionGroupMutationTargetsByName(context.getRuntimeConfig(), agentId).get(name) ??
+        [];
       for (const target of currentTargets) {
         sessionMutationAuthorization.assertTargetCurrent(target);
       }
     }
-    const defaults = updateSessionGroupDefaults(name, {
-      cwd,
-      worktree: params.worktree,
-    });
+    const defaults = updateSessionGroupDefaults(
+      agentId,
+      name,
+      {
+        cwd,
+        worktree: params.worktree,
+      },
+      process.env,
+      assertCurrent,
+    );
     if (!defaults) {
       respond(
         false,
@@ -206,13 +317,14 @@ export const sessionGroupHandlers: GatewayRequestHandlers = {
         ok: true,
         defaults: filterMutableSessionGroupRecords({
           cfg: context.getRuntimeConfig(),
+          agentId,
           client,
           records: defaults,
         }),
       },
       undefined,
     );
-    emitSessionsChanged(context, { reason: "groups" });
+    emitSessionsChanged(context, { reason: "groups", agentId }, { catalogOnly: true });
   },
   "sessions.groups.delete": async ({ params, respond, context, sessionMutationAuthorization }) => {
     if (
@@ -225,11 +337,24 @@ export const sessionGroupHandlers: GatewayRequestHandlers = {
     ) {
       return;
     }
+    const scope = resolveRequestedSessionGroupAgentId(context.getRuntimeConfig(), params.agentId);
+    if (!scope.ok) {
+      respond(false, undefined, scope.error);
+      return;
+    }
+    const agentId = scope.agentId;
+    const assertCurrent = captureGroupAgentGuard(
+      context,
+      agentId,
+      sessionMutationAuthorization?.assertCurrent,
+    );
+
     try {
       const result = await deleteSessionGroup({
         cfg: context.getRuntimeConfig(),
+        agentId,
         name: params.name,
-        assertCurrent: sessionMutationAuthorization?.assertCurrent,
+        assertCurrent,
         assertTargetCurrent: sessionMutationAuthorization?.assertTargetCurrent,
       });
       respond(true, { ok: true, ...result }, undefined);
@@ -239,7 +364,7 @@ export const sessionGroupHandlers: GatewayRequestHandlers = {
       }
       respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatErrorMessage(error)));
     } finally {
-      emitSessionsChanged(context, { reason: "groups" });
+      emitSessionsChanged(context, { reason: "groups", agentId });
     }
   },
 };

@@ -25,7 +25,11 @@ import { seedInstalledPluginIndex } from "../plugins/test-helpers/installed-plug
 import { readConfigMachineState } from "../state/config-machine-state.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../state/openclaw-agent-db.generated.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseForTest,
+  openOpenClawStateDatabase,
+} from "../state/openclaw-state-db.js";
+import { isSessionGroupCatalogReady } from "../state/session-group-readiness.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
 import { prepareDoctorContext } from "./doctor-config-flow.test-support.js";
@@ -209,6 +213,22 @@ describe("runDoctorConfigPreflight", () => {
       });
     },
   );
+
+  it("publishes group ownership readiness on pristine startup and preserves it on the next preflight", async () => {
+    await withDoctorConfigPreflightHome(async (home) => {
+      await writeOpenClawConfig(home, { gateway: { mode: "local" }, plugins: { enabled: false } });
+      await runDoctorConfigPreflight(startupCheckpointOptions);
+      const db = openOpenClawStateDatabase().db;
+      expect(isSessionGroupCatalogReady(db)).toBe(true);
+      db.prepare(
+        "INSERT INTO agent_session_groups VALUES ('main', 'Empty', 0, 123, NULL, 0)",
+      ).run();
+      await runDoctorConfigPreflight(startupCheckpointOptions);
+      expect(
+        db.prepare("SELECT name, worktree FROM agent_session_groups WHERE agent_id='main'").all(),
+      ).toEqual([{ name: "Empty", worktree: 0 }]);
+    });
+  });
 
   it("preserves retired state locators before committing the startup config migration", async () => {
     await withDoctorConfigPreflightHome(async (home) => {
