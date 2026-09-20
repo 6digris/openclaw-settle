@@ -105,11 +105,14 @@ let failedRun: UpdateRunRecord;
 let latestRun: UpdateRunRecord;
 const validateDoctor = vi.fn<() => Promise<UpdateRepairValidation>>();
 
-function validate(savedFailure = failure()) {
+function validate(
+  savedFailure = failure(),
+  env: NodeJS.ProcessEnv = { OPENCLAW_STATE_DIR: "/fixture/state" },
+) {
   return validateTriageUpdateResolution({
     failure: savedFailure,
     installRoot: "/fixture/openclaw",
-    env: { OPENCLAW_STATE_DIR: "/fixture/state" },
+    env,
     signal: new AbortController().signal,
     validateDoctor,
   });
@@ -277,31 +280,40 @@ describe("saved update failure resolution", () => {
     expect(latestRun.status).toBe("skipped");
   });
 
-  it.each(["before verification", "during verification"])(
-    "does not certify pending plugin migrations %s despite updater completion",
-    async (when) => {
-      const pending = [
-        {
-          pluginId: "codex",
-          reason: "The plugin has not reported completion of its retained state migration.",
-          command: "openclaw doctor --fix",
-          requiresStateMigration: true as const,
-        },
-      ];
-      if (when === "before verification") {
+  it.each(
+    ["before verification", "during verification"].flatMap((when) =>
+      ["idle", "update", "convergence"].map((mode) => ({ when, mode })),
+    ),
+  )("does not certify pending plugin migrations $when in $mode context", async ({ when, mode }) => {
+    const pending = [
+      {
+        pluginId: "codex",
+        reason: "The plugin has not reported completion of its retained state migration.",
+        command: "openclaw doctor --fix",
+        requiresStateMigration: true as const,
+      },
+    ];
+    if (when === "before verification") {
+      vi.mocked(readDeferredPluginMigrations).mockReturnValue(pending);
+    } else {
+      vi.mocked(verifyPreviousGatewayForUpdate).mockImplementationOnce(async () => {
         vi.mocked(readDeferredPluginMigrations).mockReturnValue(pending);
-      } else {
-        vi.mocked(verifyPreviousGatewayForUpdate).mockImplementationOnce(async () => {
-          vi.mocked(readDeferredPluginMigrations).mockReturnValue(pending);
-          return true;
-        });
-      }
-      expect(await validate()).toMatchObject({
-        ok: false,
-        summary: expect.stringContaining('Plugin "codex" state migration is pending'),
+        return true;
       });
-    },
-  );
+    }
+    const result = await validate(failure(), {
+      OPENCLAW_STATE_DIR: "/fixture/state",
+      ...(mode === "update" ? { OPENCLAW_UPDATE_IN_PROGRESS: "1" } : {}),
+      ...(mode === "convergence" ? { OPENCLAW_UPDATE_POST_CORE_CONVERGENCE: "1" } : {}),
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      summary: expect.stringContaining('Plugin "codex" state migration is pending'),
+    });
+    expect(result.summary.includes("Let the current update or repair finish.")).toBe(
+      mode !== "idle",
+    );
+  });
 
   it.each([false, true])(
     "keeps mixed plugin installation failures unresolved after Doctor is clean (completed update: %s)",
