@@ -3,6 +3,7 @@ import { mergeGatewayServiceEnv } from "../../daemon/service-env-merge.js";
 import { assertGatewayServiceUpdateCurrent } from "../../daemon/service-update-authority.js";
 import type { GatewayService } from "../../daemon/service.js";
 import { resolveSystemdServiceName } from "../../daemon/systemd-service-files.js";
+import { GatewayRestartPreparationError } from "../../infra/restart-intent-error.js";
 import {
   clearGatewayRestartIntentSync,
   type GatewayRestartIntent,
@@ -15,7 +16,6 @@ export function createServiceRestartIntent(params: {
   serviceNoun: string;
   service: GatewayService;
   intent?: GatewayRestartIntent;
-  warn: (message: string) => void;
 }) {
   let recorded = false;
   let env = process.env;
@@ -32,6 +32,9 @@ export function createServiceRestartIntent(params: {
         try {
           const command = await params.service.readCommand(process.env, { requireEffective: true });
           assertGatewayServiceUpdateCurrent();
+          if (!command) {
+            throw new GatewayRestartPreparationError("service-command");
+          }
           env = mergeGatewayServiceEnv(process.env, command);
           service =
             process.platform === "linux"
@@ -41,26 +44,24 @@ export function createServiceRestartIntent(params: {
                 }
               : { kind: "launchd", name: resolveLaunchAgentLabel(process.env) };
         } catch {
-          params.warn(
-            "Could not verify the serving Gateway owner; using native service status for restart intent.",
-          );
+          assertGatewayServiceUpdateCurrent();
+          throw new GatewayRestartPreparationError("service-command");
         }
       }
       assertGatewayServiceUpdateCurrent();
       const options = {
         env,
-        targetPid: runtime?.pid,
         reason: "gateway.restart",
         ...(params.intent ? { intent: params.intent } : {}),
       };
-      recorded = nativeService
+      recorded = service
         ? writeGatewayServiceRestartIntentSync({
             ...options,
             service,
+            nativeStopped: runtime?.status === "stopped" && runtime.pid === undefined,
             assertCurrent: assertGatewayServiceUpdateCurrent,
-            warn: params.warn,
           })
-        : writeGatewayRestartIntentSync(options);
+        : writeGatewayRestartIntentSync({ ...options, targetPid: runtime?.pid });
     },
     clear: () => {
       if (recorded) {

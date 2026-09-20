@@ -10,12 +10,14 @@ import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { OPENCLAW_STATE_SCHEMA_SQL } from "../state/openclaw-state-schema.js";
-import { readGatewayOwnerLeaseFromDatabase } from "./gateway-owner-lease.js";
+import { readGatewayOwnerLease, readGatewayOwnerLeaseFromDatabase } from "./gateway-owner-lease.js";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "./kysely-sync.js";
+import { GatewayRestartPreparationError } from "./restart-intent-error.js";
+import { tryAcquireGatewayLifecycleCleanupCoordinator } from "./state-database-coordinator.js";
 
 const GATEWAY_RESTART_INTENT_KEY = "gateway-restart";
 const GATEWAY_RESTART_INTENT_TTL_MS = 60_000;
@@ -79,23 +81,40 @@ export type GatewayRestartIntentService = {
 /** Native service control keeps its selected service; resolve its serving process at admission. */
 export function writeGatewayServiceRestartIntentSync(opts: {
   env?: NodeJS.ProcessEnv;
-  targetPid?: number;
-  service?: GatewayRestartIntentService;
+  service: GatewayRestartIntentService;
+  nativeStopped: boolean;
   intent?: GatewayRestartIntent;
   reason?: string;
   assertCurrent: () => void;
-  warn: (message: string) => void;
 }): boolean {
-  let ownershipUnverified = false;
+  if (opts.nativeStopped) {
+    try {
+      // A stopped wrapper can still have a serving child or an unpublished startup owner.
+      const exclusion = tryAcquireGatewayLifecycleCleanupCoordinator({
+        databasePath: resolveOpenClawStateSqlitePath(opts.env),
+      });
+      if (exclusion) {
+        try {
+          const owner = readGatewayOwnerLease({ env: opts.env, current: true });
+          opts.assertCurrent();
+          if (!owner || owner.state === "dead") {
+            return false;
+          }
+        } finally {
+          // The successor must be able to acquire its lifecycle coordinator during startup.
+          exclusion.release();
+        }
+      }
+    } catch {
+      opts.assertCurrent();
+      throw new GatewayRestartPreparationError("serving-owner");
+    }
+  }
   const written = writeGatewayRestartIntentForTargetSync(
     opts,
     (db) => {
-      if (!opts.service) {
-        return opts.targetPid;
-      }
       try {
         const owner = readGatewayOwnerLeaseFromDatabase(db);
-        ownershipUnverified = owner?.state === "unknown";
         const supervisor = owner?.supervisor;
         if (
           owner?.state === "live" &&
@@ -110,16 +129,14 @@ export function writeGatewayServiceRestartIntentSync(opts: {
           return owner.pid;
         }
       } catch {
-        ownershipUnverified = true;
+        throw new GatewayRestartPreparationError("serving-owner");
       }
-      return opts.targetPid;
+      throw new GatewayRestartPreparationError("serving-owner");
     },
     opts.assertCurrent,
   );
-  if (ownershipUnverified) {
-    opts.warn(
-      "Could not verify the serving Gateway owner; using native service status for restart intent.",
-    );
+  if (!written) {
+    throw new GatewayRestartPreparationError("intent-recording");
   }
   return written;
 }
@@ -188,6 +205,9 @@ function writeGatewayRestartIntentForTargetSync(
   } catch (err) {
     // Revoked native control authority must not become a best-effort storage warning.
     assertCurrent?.();
+    if (err instanceof GatewayRestartPreparationError) {
+      throw err;
+    }
     restartLog.warn(`failed to write gateway restart intent: ${String(err)}`);
     return false;
   }
