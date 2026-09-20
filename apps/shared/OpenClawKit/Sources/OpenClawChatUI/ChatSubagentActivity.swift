@@ -101,7 +101,7 @@ struct ChatSubagentActivityState: Equatable, Sendable {
         {
             previous?.snippet
         } else {
-            fallbackSnippet ?? previous?.snippet
+            fallbackSnippet ?? (previous?.progress != nil && progress == nil ? nil : previous?.snippet)
         }
         let endedAt = Self.timestampMilliseconds(task.endedat)
         let terminalObservedAt: Double? = if status.isWorking {

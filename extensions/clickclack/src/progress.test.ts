@@ -201,7 +201,25 @@ describe("ClickClack native agent progress", () => {
   it("retracts an existing commentary line without replacing it with a placeholder", async () => {
     vi.useFakeTimers();
     try {
-      const publishEphemeral = vi.fn().mockResolvedValue(undefined);
+      const visible = new Map<string, { text: string; finalized: boolean }>();
+      const publishEphemeral = vi.fn(async (request: { payload?: Record<string, unknown> }) => {
+        const frame = request.payload as {
+          op: string;
+          line?: { id: string; text: string };
+        };
+        if (frame.op === "clear") {
+          visible.clear();
+        } else if (frame.line) {
+          const prior = visible.get(frame.line.id);
+          const text = frame.line.text || prior?.text;
+          if (text) {
+            visible.set(frame.line.id, {
+              text,
+              finalized: frame.op === "finalize" || (prior?.finalized ?? false),
+            });
+          }
+        }
+      });
       const publisher = createClickClackAgentProgressPublisher({
         client: { publishEphemeral },
         target: { workspaceId: "ws_1", channelId: "chn_1" },
@@ -217,22 +235,32 @@ describe("ClickClack native agent progress", () => {
       });
       await vi.advanceTimersByTimeAsync(100);
       publisher.onItemEvent({
+        itemId: "survivor",
+        kind: "tool",
+        title: "Completed inspection",
+        phase: "end",
+        status: "completed",
+      });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(visible.get("item:preamble_1")?.text).toBe("Temporary note");
+      publisher.onItemEvent({
         itemId: "preamble_1",
         kind: "preamble",
         progressText: "",
       });
       await vi.advanceTimersByTimeAsync(100);
-      await publisher.finalize();
+      expect([...visible]).toEqual([
+        ["turn", { text: "Agent is responding", finalized: false }],
+        ["item:survivor", { text: "Completed inspection", finalized: true }],
+      ]);
 
       expect(publishEphemeral.mock.calls[1]?.[0].payload).toMatchObject({
         op: "append",
         line: { id: "item:preamble_1", text: "Temporary note" },
       });
-      expect(publishEphemeral.mock.calls[2]?.[0].payload).toMatchObject({
-        op: "update",
-        line: { id: "item:preamble_1", text: "" },
-      });
-      expect(publishEphemeral.mock.calls[3]?.[0].payload).toMatchObject({ op: "clear" });
+      await publisher.finalize();
+      expect(publishEphemeral.mock.calls.at(-1)?.[0].payload).toMatchObject({ op: "clear" });
+      expect(visible.size).toBe(0);
     } finally {
       vi.useRealTimers();
     }
@@ -310,6 +338,47 @@ describe("ClickClack native agent progress", () => {
       expect(publishEphemeral.mock.calls[1]?.[0].payload).toMatchObject({ op: "clear" });
     } finally {
       releaseFirstRequest();
+      await vi.runAllTimersAsync();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not replay retracted-turn survivors after the finalization grace expires", async () => {
+    vi.useFakeTimers();
+    let releaseClear!: () => void;
+    try {
+      const clear = new Promise<void>((resolve) => {
+        releaseClear = resolve;
+      });
+      const publishEphemeral = vi.fn().mockResolvedValue(undefined);
+      const publisher = createClickClackAgentProgressPublisher({
+        client: { publishEphemeral },
+        target: { workspaceId: "ws_1", channelId: "chn_1" },
+        turnId: "msg_1",
+      });
+      publisher.start();
+      publisher.onItemEvent({ itemId: "removed", kind: "tool", title: "Remove this" });
+      publisher.onItemEvent({ itemId: "survivor", kind: "tool", title: "Keep until finalized" });
+      await publisher.flush();
+      publishEphemeral.mockImplementationOnce(() => clear);
+      const retracted = publisher.publishItem(
+        { itemId: "removed", kind: "tool", hideFromChannelProgress: true },
+        () => {},
+      );
+      await vi.advanceTimersByTimeAsync(100);
+      expect(publishEphemeral.mock.calls.at(-1)?.[0].payload).toMatchObject({ op: "clear" });
+      const finalized = publisher.finalize();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await finalized;
+      const count = publishEphemeral.mock.calls.length;
+      releaseClear();
+      await publisher.flush();
+      expect(await retracted).toBe("failed");
+      expect(
+        publishEphemeral.mock.calls.slice(count).map(([request]) => request.payload.op),
+      ).toEqual(["clear"]);
+    } finally {
+      releaseClear();
       await vi.runAllTimersAsync();
       vi.useRealTimers();
     }

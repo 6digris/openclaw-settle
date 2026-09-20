@@ -102,17 +102,47 @@ describe("shared task projection", () => {
     expect(projection.tasks?.[0]?.progress?.runId).toBe("restarted-host");
   });
 
-  it("does not inherit transient progress when a current snapshot omits it", () => {
+  it("retires equal-clock event activity without letting stale reads erase live activity", () => {
     const projection = new TaskProjection();
+    const retired = task("child", { execution: { state: "unknown" } });
     projection.applySnapshot(projection.beginSnapshot(), [
       task("child", { progress: progress(3), lastActivity: "Inspecting" }),
     ]);
-    projection.applySnapshot(projection.beginSnapshot(), [
-      task("child", { execution: { state: "unknown" } }),
-    ]);
-    expect(projection.tasks?.[0]).not.toHaveProperty("progress");
-    expect(projection.tasks?.[0]).not.toHaveProperty("lastActivity");
-    expect(projection.tasks?.[0]?.execution?.state).toBe("unknown");
+    projection.applySnapshot(projection.beginSnapshot(), [retired]);
+    expect(projection.tasks).toEqual([retired]);
+
+    const live = task("child", {
+      execution: {
+        state: "running",
+        lastActivityAt: 200,
+        currentTool: { name: "read", startedAt: 200 },
+      },
+      progress: progress(4),
+      lastActivity: "Inspecting current work",
+    });
+    projection.applyEvent({ action: "upserted", task: live });
+    projection.applyEvent({
+      action: "upserted",
+      task: newestTaskSnapshot(live, retired, "detail"),
+    });
+    expect(projection.tasks).toEqual([live]);
+    projection.applySnapshot(projection.beginSnapshot(), [retired]);
+    expect(projection.tasks).toEqual([live]);
+
+    const token = projection.beginSnapshot();
+    projection.applyEvent({ action: "upserted", task: live });
+    projection.applyEvent({ action: "upserted", task: retired });
+    expect(projection.tasks).toEqual([retired]);
+    projection.applySnapshot(token, [live]);
+    expect(projection.tasks).toEqual([retired]);
+
+    const detailedRetirement = newestTaskSnapshot(
+      retired,
+      { ...live, prompt: "Authorized task input" },
+      "detail",
+    );
+    projection.applyEvent({ action: "upserted", task: detailedRetirement });
+    expect(projection.tasks).toEqual([{ ...retired, prompt: "Authorized task input" }]);
   });
 
   it("retains real observer events when the initial read fails", () => {

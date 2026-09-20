@@ -126,6 +126,16 @@ export function newestTaskSnapshot(
       return select(incoming.progress.revision > current.progress.revision ? incoming : current);
     }
   }
+  // An event can retire runtime activity without advancing the durable clock.
+  // Detail reads may enrich that authoritative row, but cannot revive its activity.
+  const authoritative = provenance === "event" ? incoming : current;
+  if (
+    provenance !== "snapshot" &&
+    authoritative.execution?.state === "unknown" &&
+    !authoritative.progress
+  ) {
+    return select(authoritative);
+  }
   const currentActivityAt = taskTimestampMs(current.execution?.lastActivityAt);
   const incomingActivityAt = taskTimestampMs(incoming.execution?.lastActivityAt);
   if (incomingActivityAt !== currentActivityAt) {

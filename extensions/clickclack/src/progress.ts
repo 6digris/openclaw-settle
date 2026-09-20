@@ -166,10 +166,25 @@ export function createClickClackAgentProgressPublisher(params: {
   let started = false;
   let cleared = false;
   const seenLines = new Set<string>();
-  // A failed HTTP request may already have published. Re-offer that identity as
-  // an update, never a blind duplicate append; a pre-dispatch fence failure has no such claim.
-  const attemptedLines = new Set<string>();
+  // ClickClack upserts all content-bearing line operations by ID, including
+  // unknown updates. Keep attempted content so an ACK-lost write is safe to re-offer.
+  const retainedLines = new Map<string, ProgressLineFrame>();
+  let rebuildPending = false;
+  let discardedLineGeneration = 0;
   const resolveLineId = createLineIdResolver();
+
+  const publishFrame = async (
+    payload: ProgressFrame,
+    assertCurrent?: () => void,
+  ): Promise<void> => {
+    assertCurrent?.();
+    await params.client.publishEphemeral({
+      ...params.target,
+      type: "agent.progress",
+      payload: { turn_id: params.turnId, seq: ++sequence, ...payload },
+    });
+    assertCurrent?.();
+  };
 
   const drain = (): Promise<void> => {
     if (drainPromise) {
@@ -187,29 +202,40 @@ export function createClickClackAgentProgressPublisher(params: {
         try {
           frame.assertCurrent?.();
           const payload = frame.payload;
-          const op =
-            payload.op !== "clear" && payload.op !== "finalize" && payload.line.text
-              ? attemptedLines.has(payload.line.id)
-                ? "update"
-                : "append"
-              : payload.op;
-          if (payload.op !== "clear" && payload.line.text) {
-            attemptedLines.add(payload.line.id);
-          }
-          await params.client.publishEphemeral({
-            ...params.target,
-            type: "agent.progress",
-            payload: {
-              turn_id: params.turnId,
-              seq: ++sequence,
-              ...payload,
-              op,
-            },
-          });
           if (payload.op === "clear") {
-            attemptedLines.clear();
-          } else if (!payload.line.text) {
-            attemptedLines.delete(payload.line.id);
+            retainedLines.clear();
+            rebuildPending = true;
+            await publishFrame(payload, frame.assertCurrent);
+            rebuildPending = false;
+          } else {
+            const prior = retainedLines.get(payload.line.id);
+            const op = payload.op === "finalize" ? "finalize" : prior ? "update" : "append";
+            if (payload.line.text) {
+              retainedLines.set(payload.line.id, {
+                op: payload.op === "finalize" || prior?.op === "finalize" ? "finalize" : "update",
+                line: payload.line,
+              });
+            } else {
+              retainedLines.delete(payload.line.id);
+              // Empty updates retain prior text in ClickClack. Clear the turn
+              // and restore its surviving lines to actually retract one item.
+              rebuildPending = true;
+            }
+            if (rebuildPending) {
+              const generation = discardedLineGeneration;
+              await publishFrame({ op: "clear" }, frame.assertCurrent);
+              for (const retained of retainedLines.values()) {
+                if (generation !== discardedLineGeneration) {
+                  throw new Error("ClickClack progress finalization grace expired");
+                }
+                await publishFrame(retained, frame.assertCurrent);
+              }
+              // A failed or superseded clear/replay remains pending; the next
+              // current observation reconciles it before acknowledging any item.
+              rebuildPending = false;
+            } else {
+              await publishFrame({ ...payload, op }, frame.assertCurrent);
+            }
           }
           frame.settle?.("delivered");
         } catch (error) {
@@ -244,6 +270,7 @@ export function createClickClackAgentProgressPublisher(params: {
   };
 
   const discardQueuedLines = (): void => {
+    discardedLineGeneration += 1;
     for (const frame of queuedLines.values()) {
       frame.settle?.("failed");
     }

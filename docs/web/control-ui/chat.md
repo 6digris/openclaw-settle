@@ -35,8 +35,8 @@ button deletes the comment. Hover, keyboard-focus, or click the composer's comme
 count to open its preview. Deleting one comment keeps the remaining list open;
 Escape, a click outside, or moving the pointer away dismisses it. The count's
 **Remove all comments** action clears pending comments in one click and returns
-focus to the composer. **Undo** in the removal notification restores them. The
-clear action appears on hover or keyboard focus and stays visible on touch.
+focus to the composer without showing a notification. Cleared comments cannot
+be undone. The clear action appears on hover or keyboard focus and stays visible on touch.
 Clearing pending comments preserves ordinary attachments, the message draft,
 and comments already sent in the conversation.
 Archiving another split pane leaves the current comment editor and keyboard focus in place.
@@ -121,6 +121,18 @@ shortcodes, and unknown names stay literal. Existing messages are not rewritten.
 You can still paste emoji or use your operating system’s emoji keyboard; there
 is no separate emoji picker in the composer.
 
+## JSON in chat
+
+Completed JSON objects and arrays in assistant messages and code fences share a
+**Tree** view with expandable nested values and a **Raw** view of the original
+source. **Copy** copies the source in either view, preserving duplicate keys,
+large numbers, and escape sequences. Raw keeps the usual long-code preview,
+reveal control, and word wrapping.
+
+Unfinished streaming fences, invalid JSON, and JSON beyond the tree rendering
+budget stay readable as source. User-message fences and passive previews remain
+plain code without interactive controls.
+
 ## Chat behavior
 
 When you send a message, the model picker keeps your selected model visible with
@@ -192,7 +204,7 @@ Worktree creation waits up to 30 seconds for a title, then proceeds while naming
 finishes in the background. A late title still updates the session without
 renaming its existing Git branch. Concurrent naming requests share the same work;
 if that request fails, a waiting dashboard request retries once. If both model
-routes fail, the session uses a readable title derived from the first message.
+routes fail, the session uses a two-word crustacean-themed name.
 
 Collapsed tool rows keep the tool label visible and truncate long summaries with an ellipsis. Tool and subagent activity rows use the same text size and weight. Running subagents show **Subagent** beside an animated indicator; terminal rows show **Subagent finished**, **Subagent failed**, or **Subagent cancelled**. Subagent previews and their hover text flatten Markdown into a single plain-text line, including unfinished emphasis in live updates. Open the subagent details for a compact activity feed with formatted assistant text, grouped tool calls, and timestamps. Expand a tool row to inspect each command, path, or query. The panel shows current progress above the feed; finished tasks show their outcome and duration. **Show earlier** loads history without moving the entry you were reading. New activity follows the bottom only while you are already there.
 
@@ -299,9 +311,12 @@ Run-error banners offer **Refresh** to reload the conversation without resending
 
 ### ClawHub recommendation cards
 
-Ask about a capability, such as “Can you install WhatsApp?”, to let the agent find
-an official plugin or skill on ClawHub. When the `message` tool is available, it
-can present up to three matching cards in the conversation.
+Ask to find or install a plugin or skill, such as “Find the WhatsApp plugin”, to
+let the agent search ClawHub. The agent uses available tools and skills first;
+it suggests cards for explicit discovery or installation requests, or when a
+needed capability is missing. Routine tasks, tool errors, and permission fixes
+do not call for a catalog search. When the `message` tool is available, it can
+present up to three matching cards in the conversation.
 
 If you use the `coding` tool profile, include `"message"` in `tools.alsoAllow`
 (for example, `tools: { profile: "coding", alsoAllow: ["message"] }`). Existing
@@ -514,8 +529,14 @@ higher threshold, and a second reopen keeps it open for that visit and task.
 See [Task progress cards](/tools/progress-card#where-the-card-appears) for gesture thresholds,
 manual-choice scope, and reset behavior.
 
-Streaming output and layout adjustments keep reading mode intact. Scroll back to
-the end or select **Latest** to resume following the conversation.
+Streaming output and layout adjustments keep reading mode intact. A message from
+another participant pauses following and preserves your current position, even
+when you were at the end. Typing indicators do not move the transcript. Sending
+a message from this pane resumes following your response; a send from another
+browser, including one signed in as you, does not count as a local send. Scroll
+back to the end or select **Latest** to resume following explicitly. Assistant
+text stays visible as it streams and becomes saved history, without a reply
+entry fade or slide.
 
 Completed replies can show a compact **Sources** strip when their web links match
 recorded `web_search` or `web_fetch` results from the same run. Select a title and

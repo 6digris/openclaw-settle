@@ -60,7 +60,7 @@ struct ChatSubagentActivityTests {
         state.upsert(
             self.task(id: "active", status: "running", updatedAt: 1000, executionState: execution),
             nowMilliseconds: 1000)
-        state.removeExpired(nowMilliseconds: 120000)
+        state.removeExpired(nowMilliseconds: 120_000)
         let activity = try #require(state.presentation().rows.first)
         #expect(activity.status.isWorking)
         #expect(activity.isExecuting == (execution == "running"))
@@ -96,7 +96,8 @@ struct ChatSubagentActivityTests {
 
     @Test func `prepared task progress retracts resets and preserves unknown command outcomes`() throws {
         func snapshot(
-            runID: String = "child", revision: Int, items: [[String: Any]], lastActivityAt: Int = 1000) throws -> TaskSummary
+            runID: String = "child", revision: Int, items: [[String: Any]],
+            lastActivityAt: Int = 1000) throws -> TaskSummary
         {
             let data = try JSONSerialization.data(withJSONObject: [
                 "id": "task", "runId": "logical", "status": "running", "runtime": "subagent", "updatedAt": 1000,
@@ -125,8 +126,8 @@ struct ChatSubagentActivityTests {
             "progressText": "Hidden commentary", "suppressChannelProgress": true,
         ]
         var state = ChatSubagentActivityState()
-        state.upsert(
-            try snapshot(revision: 4, items: [visible, hidden, commentary, reasoning, hiddenCommentary]),
+        try state.upsert(
+            snapshot(revision: 4, items: [visible, hidden, commentary, reasoning, hiddenCommentary]),
             nowMilliseconds: 1000)
         let progress = try #require(state.presentation().rows.first?.progress)
         #expect(progress.items.compactMap(\.progressDisplayText) == [
@@ -134,22 +135,30 @@ struct ChatSubagentActivityTests {
         ])
         #expect(progress.items.first?.status == nil)
 
-        state.upsert(try snapshot(revision: 5, items: []), nowMilliseconds: 1001)
-        state.upsert(try snapshot(revision: 4, items: [visible]), nowMilliseconds: 1002)
+        try state.upsert(snapshot(revision: 5, items: []), nowMilliseconds: 1001)
+        try state.upsert(snapshot(revision: 4, items: [visible]), nowMilliseconds: 1002)
         #expect(state.presentation().rows.first?.progress?.items == [])
 
-        state.upsert(
-            try snapshot(runID: "replacement", revision: 6, items: [visible], lastActivityAt: 500),
+        try state.upsert(
+            snapshot(runID: "replacement", revision: 6, items: [visible], lastActivityAt: 500),
             nowMilliseconds: 1003)
-        state.upsert(try snapshot(revision: 5, items: []), nowMilliseconds: 1004)
+        try state.upsert(snapshot(revision: 5, items: []), nowMilliseconds: 1004)
         #expect(state.presentation().rows.first?.progress?.runId == "replacement")
         #expect(state.presentation().rows.first?.progress?.revision == 6)
         state.removeAll()
-        state.upsert(try snapshot(runID: "restored", revision: 0, items: [visible]), nowMilliseconds: 1005)
+        state.upsert(
+            self.task(id: "task", status: "running", lastActivity: "Retired public activity", updatedAt: 1000),
+            nowMilliseconds: 1005)
+        try state.upsert(snapshot(runID: "restored", revision: 0, items: [visible]), nowMilliseconds: 1005)
         #expect(state.presentation().rows.first?.progress?.runId == "restored")
         #expect(state.presentation().rows.first?.progress?.revision == 0)
-        state.upsert(self.task(id: "task", status: "running", updatedAt: 2000), nowMilliseconds: 2000)
-        #expect(state.presentation().rows.first?.progress == nil)
+        state.upsert(
+            self.task(id: "task", status: "running", updatedAt: 1000, executionState: "unknown"),
+            nowMilliseconds: 1006)
+        let retired = try #require(state.presentation().rows.first)
+        #expect(retired.progress == nil)
+        #expect(retired.snippet == nil)
+        #expect(retired.executionState == "unknown")
     }
 
     private func task(

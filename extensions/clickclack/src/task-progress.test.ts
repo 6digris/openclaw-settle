@@ -71,7 +71,9 @@ function createHarness(options?: { nativeProgress?: boolean; agentActivity?: boo
   const writes = {
     gate: undefined as Promise<void> | undefined,
     entered: createDeferred<void>(),
-    failItemOnce: false,
+    failItemOnce: false as false | "before" | "after",
+    failClearOnce: false as false | "before" | "after",
+    failReplayOnce: false,
   };
   vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : input);
@@ -87,19 +89,38 @@ function createHarness(options?: { nativeProgress?: boolean; agentActivity?: boo
         await gate;
       }
       frames.push(frame);
+      const failure =
+        frame.op === "clear"
+          ? writes.failClearOnce
+          : frame.line?.id !== "turn"
+            ? writes.failItemOnce
+            : false;
+      if (frame.op === "clear") {
+        writes.failClearOnce = false;
+      } else if (frame.line?.id !== "turn") {
+        writes.failItemOnce = false;
+      }
+      if (failure === "before") {
+        throw new Error("Native request failed before publication");
+      }
       if (frame.op === "clear") {
         visible.delete(frame.turn_id);
+        if (writes.failReplayOnce) {
+          writes.failReplayOnce = false;
+          writes.failItemOnce = "after";
+        }
       } else if (frame.line) {
         const lines = visible.get(frame.turn_id) ?? new Map<string, string>();
-        if (frame.line.text && (frame.op !== "update" || lines.has(frame.line.id))) {
-          lines.set(frame.line.id, frame.line.text);
-        } else {
-          lines.delete(frame.line.id);
+        // ClickClack's maintained updateAgentProgress reducer upserts unknown
+        // IDs and retains prior text on empty updates; only clear removes it.
+        // openclaw/clickclack@05eca831 apps/web/src/lib/chat/agent-progress.ts
+        const text = frame.line.text || lines.get(frame.line.id);
+        if (text) {
+          lines.set(frame.line.id, text);
+          visible.set(frame.turn_id, lines);
         }
-        visible.set(frame.turn_id, lines);
       }
-      if (writes.failItemOnce && frame.line && frame.line.id !== "turn") {
-        writes.failItemOnce = false;
+      if (failure === "after") {
         throw new Error("Native acknowledgement was lost after publication");
       }
       return new Response(null, { status: 204 });
@@ -559,14 +580,115 @@ describe("ClickClack task-owned progress", () => {
 
   it("does not acknowledge an ambiguous native write or retry it as a duplicate append", async () => {
     const h = createHarness({ agentActivity: false });
-    h.writes.failItemOnce = true;
+    h.writes.failItemOnce = "after";
     h.seed([task()]);
     try {
       await h.observer.restore([{ sessionKey, agentId: "main" }]);
+      expect(h.errors).toHaveLength(1);
+      expect([...h.visible.get(sourceMessage.id)!.values()]).toContain("Inspect execution-1");
       await h.reobserve();
       const items = h.frames.filter((frame) => frame.line?.text === "Inspect execution-1");
       expect(items.map((frame) => frame.op)).toEqual(["append", "update"]);
       expect([...h.visible.get(sourceMessage.id)!.values()]).toContain("Inspect execution-1");
+      await h.reobserve();
+      expect(h.frames.filter((frame) => frame.line?.text === "Inspect execution-1")).toEqual(items);
+    } finally {
+      await h.observer.close();
+    }
+  });
+
+  it("recovers an initial native write that failed before publication through the registered observer", async () => {
+    const h = createHarness({ agentActivity: false });
+    h.writes.failItemOnce = "before";
+    h.seed([task()]);
+    try {
+      await h.observer.restore([{ sessionKey, agentId: "main" }]);
+      expect(h.errors).toHaveLength(1);
+      expect([...h.visible.get(sourceMessage.id)!.values()]).not.toContain("Inspect execution-1");
+      await h.reobserve();
+      const items = h.frames.filter((frame) => frame.line?.text === "Inspect execution-1");
+      expect(items.map((frame) => frame.op)).toEqual(["append", "update"]);
+      expect([...h.visible.get(sourceMessage.id)!.values()]).toEqual([
+        "Background work is continuing",
+        "Inspect execution-1",
+      ]);
+      await h.reobserve();
+      expect(h.frames.filter((frame) => frame.line?.text === "Inspect execution-1")).toEqual(items);
+    } finally {
+      await h.observer.close();
+    }
+  });
+
+  it.each(["before", "after"] as const)(
+    "reoffers a native retraction after clear fails %s publication without losing surviving items",
+    async (failure) => {
+      const h = createHarness({ agentActivity: false });
+      const initial = task();
+      const survivor = {
+        itemId: "second",
+        kind: "tool",
+        phase: "update" as const,
+        title: "Surviving item",
+      };
+      initial.progress!.items.push(survivor);
+      h.seed([initial]);
+      try {
+        await h.observer.restore([{ sessionKey, agentId: "main" }]);
+        h.writes.failClearOnce = failure;
+        const next = task(2);
+        next.progress!.items = [survivor];
+        await h.update([next]);
+        expect(h.errors).toHaveLength(1);
+        if (failure === "before") {
+          expect([...h.visible.get(sourceMessage.id)!.values()]).toContain("Inspect execution-1");
+        } else {
+          expect(h.visible.has(sourceMessage.id)).toBe(false);
+        }
+        await h.reobserve();
+        expect([...h.visible.get(sourceMessage.id)!.values()]).toEqual([
+          "Background work is continuing",
+          "Surviving item",
+        ]);
+        const items = h.frames.filter((frame) => frame.line?.id !== "turn");
+        await h.reobserve();
+        expect(h.frames.filter((frame) => frame.line?.id !== "turn")).toEqual(items);
+        await h.update([{ ...next, status: "completed", progress: undefined }]);
+        expect(h.visible.has(sourceMessage.id)).toBe(false);
+      } finally {
+        await h.observer.close();
+      }
+    },
+  );
+
+  it("does not acknowledge a partial native reconstruction after a survivor acknowledgement is lost", async () => {
+    const h = createHarness({ agentActivity: false });
+    const initial = task();
+    const survivors = [
+      { itemId: "second", kind: "tool", phase: "update" as const, title: "First surviving item" },
+      { itemId: "third", kind: "tool", phase: "update" as const, title: "Second surviving item" },
+    ];
+    initial.progress!.items.push(...survivors);
+    h.seed([initial]);
+    try {
+      await h.observer.restore([{ sessionKey, agentId: "main" }]);
+      h.writes.failReplayOnce = true;
+      const next = task(2);
+      next.progress!.items = survivors;
+      await h.update([next]);
+      expect(h.errors).toHaveLength(1);
+      expect([...h.visible.get(sourceMessage.id)!.values()]).toEqual([
+        "Background work is continuing",
+        "First surviving item",
+      ]);
+      await h.reobserve();
+      expect([...h.visible.get(sourceMessage.id)!.values()]).toEqual([
+        "Background work is continuing",
+        "First surviving item",
+        "Second surviving item",
+      ]);
+      const items = h.frames.filter((frame) => frame.line?.id !== "turn");
+      await h.reobserve();
+      expect(h.frames.filter((frame) => frame.line?.id !== "turn")).toEqual(items);
     } finally {
       await h.observer.close();
     }

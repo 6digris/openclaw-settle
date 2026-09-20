@@ -3,7 +3,7 @@ import { Worker } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import { ErrorCodes } from "../../../packages/gateway-protocol/src/index.js";
-import { createDeferred } from "../../../test/helpers/promise.js";
+import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import type { agentCommandFromGatewayIngress } from "../../commands/agent.js";
 import { observeDeviceAuthHostSql } from "../../infra/device-auth-store.sql.test-support.js";
@@ -28,7 +28,12 @@ import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-wo
 import { runOpenClawStateWorkerOperation } from "../../state/openclaw-state-worker-store.js";
 import { captureTaskExecutionOwner } from "../../tasks/task-execution-owner.js";
 import { loadTaskFlowRegistryStateFromSqlite } from "../../tasks/task-flow-registry.store.sqlite.js";
-import { configureTaskRegistryRuntime } from "../../tasks/task-registry.store.js";
+import { requestTasks } from "../../tasks/task-registry-read.test-support.js";
+import { taskDeliveryStates, tasks } from "../../tasks/task-registry-state.js";
+import {
+  configureTaskRegistryRuntime,
+  getTaskRegistryStore,
+} from "../../tasks/task-registry.store.js";
 import { loadTaskRegistryStateFromSqlite } from "../../tasks/task-registry.store.sqlite.js";
 import type { TaskRecord } from "../../tasks/task-registry.types.js";
 import { getTaskRunOwner } from "../../tasks/task-run-owner.js";
@@ -118,6 +123,23 @@ it.each([
         const releaseProvider = createDeferred();
         const allowActivation = createDeferred();
         const providerStarted = createDeferred();
+        const terminalCommitted = createDeferred();
+        const releaseSettlement = createDeferred();
+        const store = getTaskRegistryStore();
+        const mutate = store.runInitialMutationAsync.bind(store);
+        const settlement = vi
+          .spyOn(store, "runInitialMutationAsync")
+          .mockImplementation(async (...args) => {
+            const result = await mutate(...args);
+            if (
+              args[1].type === "tasks.finalizeActive" ||
+              args[1].type === "tasks.settleUnstarted"
+            ) {
+              terminalCommitted.resolve();
+              await releaseSettlement.promise;
+            }
+            return result;
+          });
         const failure = new Error("Synthetic provider preparation failure");
         provider.execute.mockImplementation(async (options) => {
           const snapshot = loadTaskRegistryStateFromSqlite();
@@ -146,7 +168,7 @@ it.each([
           .spyOn(workerStore, "runSqliteWorkerStoreOperation")
           .mockImplementation(
             <Operations extends SqliteWorkerOperations, T>(
-              store: SqliteWorkerStore<Operations>,
+              sqliteStore: SqliteWorkerStore<Operations>,
               operation: (scope: Pick<SqliteWorkerStore<Operations>, "execute">) => T | Promise<T>,
               stateContext?: Parameters<typeof runOperation>[2],
               assertCurrent?: Parameters<typeof runOperation>[3],
@@ -154,7 +176,7 @@ it.each([
               requireStateLifecycle?: Parameters<typeof runOperation>[5],
             ) =>
               runOperation(
-                store,
+                sqliteStore,
                 (scope) =>
                   operation({
                     execute: async (command, options) => {
@@ -215,6 +237,8 @@ it.each([
             ingressOpts: {
               message: task.task,
               sessionKey,
+              channel: "webchat",
+              to: sessionKey,
               allowModelOverride: false,
             },
             runId,
@@ -273,11 +297,68 @@ it.each([
               throw new Error("Gateway dispatch settled before the provider could activate");
             }),
           ]);
+          const beforeTerminal = loadTaskRegistryStateFromSqlite();
+          expect(beforeTerminal.deliveryStates.get(running.taskId)?.requesterOrigin).toMatchObject({
+            channel: "webchat",
+            to: sessionKey,
+          });
           const beforeSettlement = { ...tracker.counts };
           const beforeSettlementSql = hostSql.counts();
           releaseProvider.resolve();
-          await execution;
+          await withTestTimeout(
+            Promise.race([
+              terminalCommitted.promise,
+              execution.then(() => {
+                throw new Error("Gateway dispatch settled before the terminal publication hold");
+              }),
+            ]),
+            5_000,
+            "Terminal worker committed before publication",
+          );
           expect(hostSql.counts()).toEqual(beforeSettlementSql);
+          expect(emitFinal).not.toHaveBeenCalled();
+          const durable = loadTaskRegistryStateFromSqlite();
+          expect(durable.tasks.get(running.taskId)).toEqual({
+            ...beforeTerminal.tasks.get(running.taskId),
+            status: "failed",
+            error: failure.message,
+            terminalSummary: failure.message,
+            endedAt: expect.any(Number),
+            lastEventAt: expect.any(Number),
+            cleanupAfter: expect.any(Number),
+          });
+          expect(durable.deliveryStates).toEqual(beforeTerminal.deliveryStates);
+          const respond = vi.fn();
+          await withTestTimeout(
+            requestTasks(sessionKey, respond),
+            5_000,
+            "Registered task list reads committed terminal state before publication",
+          );
+          expect(respond).toHaveBeenCalledOnce();
+          expect(respond.mock.calls[0]).toMatchObject([
+            true,
+            {
+              tasks: [
+                {
+                  id: running.taskId,
+                  runId,
+                  ownerKey: sessionKey,
+                  childSessionKey: sessionKey,
+                  status: "failed",
+                  error: failure.message,
+                  terminalSummary: failure.message,
+                  deliveryStatus: "not_applicable",
+                },
+              ],
+            },
+          ]);
+          expect(tasks.get(running.taskId)).toEqual(durable.tasks.get(running.taskId));
+          expect(taskDeliveryStates).toEqual(durable.deliveryStates);
+          expect(emitFinal).not.toHaveBeenCalled();
+          const afterReadSql = hostSql.counts();
+          releaseSettlement.resolve();
+          await execution;
+          expect(hostSql.counts()).toEqual(afterReadSql);
           console.info("Gateway task host SQL", {
             creation: creationSql,
             beforeSettlement: beforeSettlementSql,
@@ -323,10 +404,12 @@ it.each([
         } finally {
           allowActivation.resolve();
           releaseProvider.resolve();
+          releaseSettlement.resolve();
           await execution;
           queueOperation.mockRestore();
           releaseScheduler.resolve();
           await schedulerWork;
+          settlement.mockRestore();
           hostSql.restore();
           tracker.restore();
           workerMessages.mockRestore();
