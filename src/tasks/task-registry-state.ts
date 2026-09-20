@@ -27,7 +27,7 @@ import {
   withPendingTaskRegistryEvents,
 } from "./task-registry-listener-state.js";
 import { createTaskRegistryProjectionPreparation } from "./task-registry-projection-prepare.js";
-import { listTasksFromIndex, normalizeTaskTimestamps } from "./task-registry-records.js";
+import { listTasksFromIndex, normalizeTaskRecord } from "./task-registry-records.js";
 import { createAsyncRegistryRestore, createSyncRegistryReader } from "./task-registry-restore.js";
 import type { TaskRegistryRestoreResult } from "./task-registry-restore.worker.js";
 import {
@@ -271,6 +271,22 @@ function restoreTaskRegistryOnce() {
     }
     installRestoredTaskRegistrySnapshot(restored);
     taskRegistryRestoreState = { status: "ready", admission: reader.admission };
+    const installed = taskRegistryRestoreState;
+    const database = openClawStateDatabaseCache.getOpenClawStateDatabaseIfOpenAtPath(databasePath);
+    if (database?.db.isTransaction) {
+      stageSqliteTransactionState(database.db, {
+        stage() {},
+        commit() {},
+        rollback() {
+          if (taskRegistryRestoreState === installed) {
+            // An enclosing rollback also undoes the identifier repair performed by restore.
+            taskRegistryRestoreState = { status: "uninitialized", admission: reader.admission };
+            projection.dirty = true;
+            bumpTaskRegistryRevision();
+          }
+        },
+      });
+    }
     markTaskRegistryProjectionRestored();
     for (const task of settledTasks) {
       const flowId = task.parentFlowId?.trim();
@@ -482,7 +498,7 @@ function installSnapshot(
       continue;
     }
     const current = tasks.get(taskId);
-    const next = normalizeTaskTimestamps(record);
+    const next = normalizeTaskRecord(record);
     if (!isDeepStrictEqual(current, next)) {
       tasks.set(taskId, next);
       if (recordWrites) {

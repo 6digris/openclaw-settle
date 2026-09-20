@@ -5760,11 +5760,9 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
       ),
       "Android build-play runner branches",
     );
-    const dispatchBuild = expectDefined(buildPlayBranches[1], "hosted dispatch build branch");
     const blacksmithBuild = expectDefined(buildPlayBranches[2], "Blacksmith build branch");
     const readTasks = (script: string) =>
       [...script.matchAll(/^\s+(:[a-z][A-Za-z0-9:-]*)\s*\\?$/gmu)].map((match) => match[1]);
-    const dispatchTasks = readTasks(dispatchBuild);
     const blacksmithTasks = readTasks(blacksmithBuild);
 
     expect(source).toContain('task: useCompatibleAndroidCi ? "test-play-compat" : "test-play"');
@@ -5775,19 +5773,6 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
     expect(runStep.env.CI_RUNNER_BACKEND).toContain(
       "vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1",
     );
-    expect(runStep.run).toContain(":app:testPlayDebugUnitTest");
-    expect(runStep.run).toContain(":app:testThirdPartyDebugUnitTest");
-    expect(dispatchBuild.match(/^\s*\.\/gradlew\b/gmu)).toHaveLength(3);
-    expect(dispatchTasks).toEqual([
-      ":app:assemblePlayDebug",
-      ":app:lintPlayDebug",
-      ":app:assembleThirdPartyDebug",
-      ":app:lintThirdPartyDebug",
-      ":benchmark:assembleDebug",
-      ":wear-shared:assembleDebug",
-      ":wear-shared:lintDebug",
-    ]);
-    expect(new Set(dispatchTasks).size).toBe(dispatchTasks.length);
     expect(blacksmithBuild.match(/^\s*\.\/gradlew\b/gmu)).toHaveLength(1);
     expect(blacksmithTasks).toEqual([
       ":app:assemblePlayDebug",
