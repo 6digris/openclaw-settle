@@ -105,11 +105,14 @@ let failedRun: UpdateRunRecord;
 let latestRun: UpdateRunRecord;
 const validateDoctor = vi.fn<() => Promise<UpdateRepairValidation>>();
 
-function validate(savedFailure = failure()) {
+function validate(
+  savedFailure = failure(),
+  env: NodeJS.ProcessEnv = { OPENCLAW_STATE_DIR: "/fixture/state" },
+) {
   return validateTriageUpdateResolution({
     failure: savedFailure,
     installRoot: "/fixture/openclaw",
-    env: { OPENCLAW_STATE_DIR: "/fixture/state" },
+    env,
     signal: new AbortController().signal,
     validateDoctor,
   });
@@ -299,6 +302,23 @@ describe("saved update failure resolution", () => {
       expect(await validate()).toMatchObject({
         ok: false,
         summary: expect.stringContaining('Plugin "codex" state migration is pending'),
+      });
+    },
+  );
+
+  it.each(["OPENCLAW_UPDATE_IN_PROGRESS", "OPENCLAW_UPDATE_POST_CORE_CONVERGENCE"])(
+    "keeps pending migration guidance within the current update (%s)",
+    async (marker) => {
+      vi.mocked(readDeferredPluginMigrations).mockReturnValue([
+        {
+          pluginId: "fixture-plugin",
+          reason: "Package repair deferred.",
+          command: "openclaw update repair",
+        },
+      ]);
+      expect(await validate(failure(), { [marker]: "1" })).toMatchObject({
+        ok: false,
+        summary: expect.stringContaining("Let the current update or repair finish."),
       });
     },
   );
