@@ -6,22 +6,29 @@ import {
 import type { PluginApprovalRequestPayload } from "../../infra/plugin-approvals.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { invalidateGatewayDeviceRevocation } from "../device-revocation.js";
 import { ExecApprovalManager } from "../exec-approval-manager.js";
 import * as operatorApprovalStore from "../operator-approval-store.async.js";
 import { listTerminalOperatorApprovals } from "../operator-approval-store.js";
 import { createApprovalHandlers } from "./approval.js";
-import { createClient, getOperatorApproval, invoke } from "./approval.test-support.js";
+import {
+  createApprovalInvocation,
+  createClient,
+  getOperatorApproval,
+} from "./approval.test-support.js";
 
 afterEach(() => vi.restoreAllMocks());
 
 it.each([
-  { method: "approval.get" as const, opaqueGuard: false },
-  { method: "approval.resolve" as const, opaqueGuard: false },
-  { method: "approval.get" as const, opaqueGuard: true },
-  { method: "approval.resolve" as const, opaqueGuard: true },
-])(
-  "keeps $method storage compatible with opaqueGuard=$opaqueGuard",
-  async ({ method, opaqueGuard }) => {
+  { method: "approval.get", opaqueGuard: false, requestState: "current" },
+  { method: "approval.resolve", opaqueGuard: false, requestState: "current" },
+  { method: "approval.get", opaqueGuard: true, requestState: "current" },
+  { method: "approval.resolve", opaqueGuard: true, requestState: "current" },
+  { method: "approval.resolve", opaqueGuard: false, requestState: "revoked-before-entry" },
+  { method: "approval.resolve", opaqueGuard: false, requestState: "transport-retired" },
+] as const)(
+  "honors $requestState custody for $method (opaqueGuard=$opaqueGuard)",
+  async ({ method, opaqueGuard, requestState }) => {
     await withOpenClawTestState({ label: "approval-request-custody" }, async (state) => {
       const databaseOptions = { env: state.env };
       openOpenClawStateDatabase(databaseOptions);
@@ -37,6 +44,10 @@ it.each([
       const record = exec.create({ command: "echo fixture" }, 600_000, "request-custody");
       record.approvalReviewerDeviceIds = ["reviewer"];
       const decision = exec.register(record, 600_000);
+      let settled = false;
+      void decision.then(() => {
+        settled = true;
+      });
       const handlers = createApprovalHandlers({
         execApprovalManager: exec,
         pluginApprovalManager: plugin,
@@ -53,16 +64,53 @@ it.each([
         });
       }
       try {
-        const response = await invoke({
+        const client = createClient({ deviceId: "reviewer" });
+        const connection = new AbortController();
+        if (requestState === "transport-retired") {
+          client.connectionSignal = connection.signal;
+        }
+        const invocation = createApprovalInvocation({
           handlers,
           method,
           body: {
             id: record.id,
             ...(method === "approval.resolve" ? { kind: "exec", decision: "allow-once" } : {}),
           },
-          client: createClient({ deviceId: "reviewer" }),
+          client,
           ...(opaqueGuard ? { sessionMutationCommitGuard: commitGuard } : {}),
         });
+        const before =
+          requestState === "revoked-before-entry"
+            ? getOperatorApproval({ id: record.id, databaseOptions })
+            : undefined;
+        if (requestState === "revoked-before-entry") {
+          expect(before).toMatchObject({
+            status: "pending",
+            decision: null,
+            resolvedAtMs: null,
+            terminalReason: null,
+            resolver: null,
+          });
+          invalidateGatewayDeviceRevocation(invocation.context, "reviewer", "operator");
+        } else if (requestState === "transport-retired") {
+          connection.abort();
+          expect(client.connectionSignal?.aborted).toBe(true);
+        }
+        const response = await invocation.invoke();
+        if (requestState === "revoked-before-entry") {
+          expect(response).toMatchObject({
+            ok: false,
+            error: { message: "approval not found" },
+          });
+          expect(getOperatorApproval({ id: record.id, databaseOptions })).toEqual(before);
+          expect(exec.getLiveSnapshot(record.id)).toBe(record);
+          expect(record.resolvedAtMs).toBeUndefined();
+          expect(settled).toBe(false);
+          expect(invocation.context.approvalEvents?.publishResolved).not.toHaveBeenCalled();
+          expect(invocation.context.broadcast).not.toHaveBeenCalled();
+          expect(invocation.context.broadcastToConnIds).not.toHaveBeenCalled();
+          return;
+        }
         const expectedStatus = method === "approval.resolve" ? "allowed" : "pending";
         expect(response).toMatchObject({
           ok: true,
