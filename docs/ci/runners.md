@@ -23,6 +23,11 @@ Runner choice follows contributor trust, not whether a pull request came from a 
 
 The table lists default placement. On eligible hybrid first attempts, the [hosted budget](/ci/capacity#bounded-hybrid-hosted-offload) can move `security-fast`, all three `checks-ui` rows, and only the browser-extension E2E row to `ubuntu-24.04`; the default Blacksmith routes apply when optional admission is closed.
 
+Eligible hybrid first attempts can also move five measured check rows to hosted
+Ubuntu under the [assignment guard](#hybrid-hosted-assignment-guard). Their normal
+16-class placement remains the fallback; compact Node jobs, plugin test envelopes,
+UI E2E, builds, lint, and the central test-types row keep their existing routes.
+
 The automatic iOS smoke, full-manual build phases, and screenshot shards always use GitHub-hosted `macos-26`. Repeated first attempts left the Blacksmith macOS jobs unassigned while other CI completed. In [run 33616182173](https://github.com/openclaw/openclaw/actions/runs/33616182173), the hosted retry assigned all three waiting Mac jobs within eight seconds; the Debug/simulator job passed in 15m31s. Starting on that verified image removes the wait-before-retry path. The Xcode pin, ordinary pnpm-store cache, and matrix caps are unchanged; complete native evidence remains required for full manual qualification.
 
 The Node test planner marks only shards that run the real native grep fixture.
@@ -152,6 +157,66 @@ The repository variable `OPENCLAW_CI_RUNNER_BACKEND` controls the runner backend
 
 Configurable heavy lanes are `build-artifacts` and `android`. The macOS Swift, iOS build, and screenshot jobs always use `macos-26`. The focused `macos-node` lane uses the existing GitHub-hosted `macos-15` image in hybrid mode, with the same test inventory and two-worker limit. `openclaw/ci-gate` always uses `ubuntu-24.04`: its Bash-only result aggregation needs no checkout or dependency setup. This removes one Blacksmith registration from previously eligible runs without adding jobs or changing the required check. Hosted runner assignment can still delay completion. Trusted automatic hybrid first-attempt `preflight` requests the existing 16-class after three nearby hosted preflights remained unassigned while their Blacksmith security jobs completed. Hybrid retries, manual dispatches, untrusted and noncanonical contexts, and the `github` override stay hosted. Unset or `blacksmith` keeps the existing 4-class route. Logical planner profile, cache trust, steps and the 20-minute deadline remain unchanged; actual assignment and completion still require CI proof. `security-fast` uses Blacksmith only on eligible hybrid first attempts when the [hosted budget](/ci/capacity#bounded-hybrid-hosted-offload) cannot admit optional work, and stays hosted outside `hybrid`. It waits for preflight to count the selected hosted rows, and still executes after a preflight failure unless the workflow is canceled. Security hooks use pinned installed packages and local hook definitions, so they no longer initialize remote Git repositories. Budget two control-job registrations per eligible hybrid first attempt when optional hosted admission is closed, one when admitted, and one per normal Blacksmith run; both jobs are already reserved in the conservative registration ceiling. The `github` override remains unchanged. Hybrid sends the compact Node matrix, up to 80 compact rows plus separately appended plugin fallback rows, thirteen-row `checks-ui-e2e` matrix for targets with the named-project contract, the `checks-ui-e2e-real-gateway` lane that shares its serial Chromium workload, four-row QA Smoke matrix on canonical automatic runs (six rows for manual dispatches), the two-part Windows matrix, `checks-ui`, `check-lint`, `check-test-types`, the two `check-test-types-core-*` rows, `check-dependencies`, `check-additional-extension-package-boundary`, `check-additional-runtime-topology-architecture`, and `report-plugin-sdk-api-diff` to Blacksmith on attempt 1. Eligible two-child ordinary compact rows request `blacksmith-32vcpu-ubuntu-2404`; bins containing the full `agentic-cli` group retain `blacksmith-16vcpu-ubuntu-2404` after planning. Other compact-small rows retain `blacksmith-4vcpu-ubuntu-2404`, compact-large rows retain `blacksmith-8vcpu-ubuntu-2404`, and the planner's measured small queue-tail promotions retain their 8-vCPU labels. Within that set, `checks-ui` and only the browser-extension E2E row move to hosted Ubuntu when preflight admits at most five optional rows below the 45-row hosted limit. Every other configurable `ci.yml` lane stays hosted in hybrid, including the core-lint jobs, the remaining lint/check rows, docs, and Python skills. Separate Opengrep workflows remain GitHub-hosted.
 
+### Hybrid hosted assignment guard
+
+Preflight owns a per-run `hybrid_hosted_checks` decision for these five rows:
+
+| Check                                            | Blacksmith duration | Slack to run end | Predicted hosted duration |
+| ------------------------------------------------ | ------------------: | ---------------: | ------------------------: |
+| `check-dependencies`                             |            3.66 min |        11.80 min |                  5.12 min |
+| `check-test-types-core-1`                        |            4.51 min |        10.97 min |                  6.31 min |
+| `check-test-types-core-2`                        |            4.10 min |        11.45 min |                  5.74 min |
+| `check-additional-extension-package-boundary`    |            3.21 min |        12.22 min |                  4.49 min |
+| `check-additional-runtime-topology-architecture` |            2.16 min |        13.15 min |                  3.02 min |
+
+These are medians from six successful September 20 main runs, ending with
+`35520044205`. Skipped jobs are excluded. Each individual sample fits the
+conservative rule `1.4 × duration + 3 minutes <= slack`; the narrowest remaining
+margin is 47 seconds. The 16-class and hosted Ubuntu both delivered four CPUs in
+the provider probe. Eight-CPU test groups instead need the measured 2.7 multiplier
+and remain on Blacksmith. Lint, central test types, and artifact packing fail the
+strict slack rule in at least one sample. Preflight stays on Blacksmith because
+all downstream work depends on it. Docs, i18n, and security reevaluation already
+use hosted capacity; the security-fast and UI budget decisions remain unchanged.
+
+After the existing optional admission, the five checks consume only space left
+inside the existing 45-hosted-row limit. Only current automatic canonical hybrid
+first attempts with trusted contributors qualify. No coverage, planner profile,
+worker limit, timeout, cache writer, or repository variable changes. Hosted checks
+use their existing ordinary store-cache setup; Blacksmith fallback retains exact
+dependency-cache eligibility. The worst-case registration ceiling is unchanged.
+
+`scripts/lib/ci-hybrid-hosted-health.mts` reads recent CI assignment evidence using
+preflight's read-only Actions permission. It makes at most four API requests within
+one ten-second deadline: the newest ten canonical main push runs, then the first hundred jobs from
+at most three recent running or completed eligible attempts. Main evidence avoids
+new PR arrivals crowding out jobs that have actually reached assignment. It samples
+only known hosted jobs whose
+sole dependency is preflight. Assignment wait starts at the later of job creation
+and successful preflight completion, so dependency delay is not queue pressure.
+Evidence is bound to the run attempt and must be fresh within thirty minutes.
+A queued or assigned sample waiting at least three minutes, missing usable
+assigned evidence, malformed data, or an API failure leaves the five checks on
+Blacksmith for this run. The step emits a warning and summary with the reason,
+sample count, and maximum wait. It never changes the repository backend variable.
+
+This is a prospective admission guard, not migration of already queued jobs.
+A wave beginning after the snapshot can still delay admitted hosted work, and
+existing hosted jobs (including the aggregate gate) remain exposed. Investigate
+the recorded wait before retrying; a failed-job-only retry cannot recompute
+preflight's decision and retains the existing hosted retry policy. For sustained
+hosted incidents, an operator can set `OPENCLAW_CI_RUNNER_BACKEND=blacksmith` for
+future runs, recording the previous value and restoring it after recovery. That
+existing switch does not move already allocated jobs or the always-hosted lanes.
+
+The modeled six-run job-envelope wall remains 16m18s median (15m32s–16m54s),
+measured from first job creation through the aggregate gate. This excludes the new
+health-read overhead and is a prediction, not a latency guarantee. Five admitted
+rows save a median 17.64 Blacksmith minutes, about $0.56 at the 16-class list rate
+of $0.032/minute before billing rounding. A PR selecting the same checks has the
+same modeled saving; scoped PRs vary. Native PR evidence must establish actual
+hosted setup, assignment, and completion times before landing.
+
 Hybrid is the normal degraded-capacity mode. If Blacksmith is down: rerun the failed or stuck heavy job; it lands on hosted automatically. During a full Blacksmith outage, record whether `OPENCLAW_CI_RUNNER_BACKEND` is set and its current value, then enable the `github` circuit breaker:
 
 ```bash
@@ -204,7 +269,7 @@ Delete the variable only if it was previously unset; deletion selects the defaul
 gh variable delete OPENCLAW_CI_RUNNER_BACKEND --repo openclaw/openclaw
 ```
 
-`ci.yml` does not probe Blacksmith or mutate this variable. Hybrid fallback is per job and activates only when a coordinator reruns the workflow or selected failed jobs.
+`ci.yml` does not probe Blacksmith or mutate this variable. Blacksmith-to-hosted fallback remains per job on retries; the assignment guard above independently keeps newly eligible checks on Blacksmith when hosted evidence is unhealthy.
 
 ## Related
 

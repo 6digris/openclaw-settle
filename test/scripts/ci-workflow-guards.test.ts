@@ -3137,7 +3137,7 @@ NODE
     expect(changedScopeStep.run).toContain(
       'node scripts/ci-changed-scope.mjs --base "$BASE" --head "$HEAD_SHA"',
     );
-    expect(workflow.jobs.preflight.permissions).toEqual({ contents: "read" });
+    expect(workflow.jobs.preflight.permissions).toEqual({ contents: "read", actions: "read" });
     expect(workflow.jobs.preflight.outputs.run_ios_screenshots).toBe(
       "${{ steps.changed_scope.outputs.run_ios_screenshots }}",
     );
@@ -4713,6 +4713,58 @@ NODE
       }
     });
 
+    it("admits measured checks only with healthy assignment and space inside the existing budget", () => {
+      const preflight = readCiWorkflow().jobs.preflight;
+      const manifestStep = preflight.steps.find((step: WorkflowStep) => step.id === "manifest");
+      expect(manifestStep.env.OPENCLAW_CI_HOSTED_HEALTHY).toBe(
+        "${{ steps.hosted_health.outputs.healthy }}",
+      );
+      expect(preflight.outputs.hybrid_hosted_checks).toBe(
+        "${{ steps.manifest.outputs.hybrid_hosted_checks }}",
+      );
+      const baseline = manifestWithHostedNodeRows(0);
+      const originalBase = Number(baseline.outputs.hybrid_hosted_base_rows);
+      for (const healthy of ["true", "false", ""]) {
+        for (const baseRows of [35, 36, 40, 41, 45, 46]) {
+          const manifest = manifestWithHostedNodeRows(baseRows - originalBase, {
+            scopeEnv: { OPENCLAW_CI_HOSTED_HEALTHY: healthy },
+          });
+          expect(manifest.status, manifest.output).toBe(0);
+          const admitted = healthy === "true" && baseRows === 35;
+          expect(manifest.outputs.hybrid_hosted_checks).toBe(String(admitted));
+          const hosted = emittedHostedRows(manifest.outputs);
+          const withoutChecks = emittedHostedRows({
+            ...manifest.outputs,
+            hybrid_hosted_checks: "false",
+          });
+          expect(Number(manifest.outputs.hybrid_hosted_total_rows)).toBe(hosted.length);
+          expect(hosted.length - withoutChecks.length).toBe(admitted ? 5 : 0);
+          expect(
+            hosted.filter((name) => name === "check-test-types-hosted-core-shard"),
+          ).toHaveLength(admitted ? 2 : 0);
+          for (const name of ["check-shard", "check-additional-shard"]) {
+            expect(
+              hosted.filter((row) => row === name).length -
+                withoutChecks.filter((row) => row === name).length,
+            ).toBe(admitted ? (name === "check-shard" ? 1 : 2) : 0);
+          }
+          // The old UI/security decision remains independent of the new check admission.
+          expect(manifest.outputs.hybrid_hosted_offload).toBe(String(baseRows <= 40));
+          for (const name of [
+            "build-artifacts",
+            "checks-node-core-test-nondist-shard",
+            "qa-smoke-ci-profile",
+            "checks-ui-e2e-real-gateway",
+            "android",
+          ]) {
+            expect(hosted.filter((row) => row === name)).toEqual(
+              withoutChecks.filter((row) => row === name),
+            );
+          }
+        }
+      }
+    });
+
     it.each([
       {
         label: "same-repo PR",
@@ -4773,9 +4825,13 @@ NODE
     ])(
       "leaves $label routing outside optional offload admission",
       ({ label: _label, ...options }) => {
-        const manifest = manifestWithHostedNodeRows(0, options);
+        const manifest = manifestWithHostedNodeRows(0, {
+          ...options,
+          scopeEnv: { OPENCLAW_CI_HOSTED_HEALTHY: "true", ...options.scopeEnv },
+        });
         expect(manifest.status, manifest.output).toBe(0);
         expect(manifest.outputs.hybrid_hosted_offload).toBe("false");
+        expect(manifest.outputs.hybrid_hosted_checks).toBe("false");
       },
     );
 
