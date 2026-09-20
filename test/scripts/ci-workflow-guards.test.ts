@@ -25,7 +25,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { minimatch } from "minimatch";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import * as qaEvidence from "../../extensions/qa-lab/api.js";
+import * as qaEvidence from "../../extensions/qa-lab/test-api.js";
 import {
   detectChangedScope,
   detectNodeFastScope,

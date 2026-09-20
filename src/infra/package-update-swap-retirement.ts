@@ -60,7 +60,7 @@ export async function retireVerifiedPackageSwap(params: {
     rootLink && packageBackedUp ? await rootLink.retire(assertRetirementCurrent) : null;
   assertRetirementCurrent();
   if (linkRetention) {
-    return { ...step(1, null, linkRetention), name: "global install backup retention" };
+    return { ...step(1, null, linkRetention), name: "package-backup-retention" };
   }
   if (hadPackage && previousRoot?.kind !== "link") {
     const message = await discardPackageUpdateBackup(
@@ -87,7 +87,7 @@ export async function retireVerifiedPackageSwap(params: {
   if (messages.length) {
     return {
       ...step(1, null, messages.join("\n")),
-      name: "global install backup retention",
+      name: "package-backup-retention",
       // Only this verified obsolete-resource path qualifies the warning.
       // Recovery refusal and unclassified link outcomes remain hard.
       advisory: {

@@ -951,7 +951,7 @@ describe("package activation custody and surviving completion", () => {
           timeoutMs: 5000,
           activation: { fence, nodeRunner: process.execPath, onPrepared: () => {} },
           runStep: async ({ name, argv, cwd }) => {
-            if (name !== "global update") {
+            if (name !== "package-install") {
               throw new Error(`unexpected package-manager leaf ${name}`);
             }
             const prefix = argv[argv.indexOf("--prefix") + 1];

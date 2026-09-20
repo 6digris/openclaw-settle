@@ -469,7 +469,7 @@ export async function swapStagedPackageInstall(
                 null,
                 "Package transaction retirement has started; automatic rollback is no longer available.",
               ),
-              name: "global install rollback",
+              name: "package-rollback",
               activePackageRoot,
             });
           }
@@ -484,7 +484,7 @@ export async function swapStagedPackageInstall(
               assertCurrent();
               return {
                 ...step(1, null, formatErrorMessage(error)),
-                name: "global install rollback",
+                name: "package-rollback",
                 activePackageRoot,
                 ...(error instanceof NativePackageRollbackError ? { reason: error.reason } : {}),
               };
@@ -498,7 +498,7 @@ export async function swapStagedPackageInstall(
                   : null,
                 messages.join("\n") || null,
               ),
-              name: "global install rollback",
+              name: "package-rollback",
               activePackageRoot,
               command: `restore ${backupRoot} -> ${targetSwapRoot}`,
               durationMs: Date.now() - rollbackStartedAt,
@@ -524,7 +524,7 @@ export async function swapStagedPackageInstall(
                 null,
                 `Installation recovery is unverified; inspect the installation and backups in ${targetLayout.globalRoot} before restarting.`,
               ),
-              name: "global install backup retention",
+              name: "package-backup-retention",
             };
           }
           // Seal automatic rollback once retirement begins, but retain the actual

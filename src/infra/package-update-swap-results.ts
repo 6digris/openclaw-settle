@@ -21,7 +21,7 @@ export function createPackageSwapResults(
     stderrTail: string | null,
     code = "swap-failed",
   ): UpdateStepResult => ({
-    name: "global install swap",
+    name: "package-swap",
     command: `swap ${params.stage.packageRoot} -> ${targetPackageRoot ?? "unknown root"}`,
     cwd: targetLayout?.globalRoot ?? params.stage.prefix,
     durationMs: Date.now() - startedAt,
