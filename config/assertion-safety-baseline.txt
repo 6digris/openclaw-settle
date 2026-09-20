@@ -2859,7 +2859,7 @@ src/infra/fetch.ts	7
 src/infra/file-lock-manager.ts	1
 src/infra/file-lock-sync.ts	1
 src/infra/fs-safe-remove.ts	4
-src/infra/gateway-lock.ts	4
+src/infra/gateway-lock.ts	3
 src/infra/gateway-processes.ts	1
 src/infra/gemini-auth.ts	1
 src/infra/git-commit.ts	1

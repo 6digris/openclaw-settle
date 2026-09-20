@@ -86,6 +86,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/cli/update-cli/update-command-plugins.degradation.test.ts",
   "src/cli/update-cli/update-config-provenance.integration.test.ts",
   "src/cli/update-cli/update-load-path-finalization.integration.test.ts",
+  "src/cli/update-cli/update-repair-history.test.ts",
   "src/commands/auth-choice.test.ts",
   "src/commands/models/auth.test.ts",
   "src/flows/doctor-health.fleet-preflight.test.ts",
