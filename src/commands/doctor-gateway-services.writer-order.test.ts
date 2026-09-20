@@ -2,7 +2,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as configModule from "../config/config.js";
 import { readConfigFileSnapshot, type ConfigFileSnapshot } from "../config/config.js";
+import { ConfigWritePostCommitError } from "../config/io.write-errors.js";
 import { isDefaultInstallIdentity } from "../config/paths.js";
 import { writeOpenClawConfig } from "../config/test-helpers.js";
 import { runWriteConfigHealth } from "../flows/doctor-health-contribution-runners.config.js";
@@ -10,8 +12,8 @@ import { runGatewayServicesHealth } from "../flows/doctor-health-contribution-ru
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { VERSION } from "../version.js";
-import { prepareDoctorContext } from "./doctor-config-flow.test-support.js";
 import { withDoctorConfigPreflightHome } from "./doctor-config-preflight.test-support.js";
+import { prepareWriterContext } from "./doctor-gateway-services.writer-order.test-support.js";
 
 const service = vi.hoisted(() => ({
   readCommand: vi.fn(),
@@ -21,21 +23,8 @@ const service = vi.hoisted(() => ({
   buildPlan: vi.fn(),
 }));
 
-// Package repairs and platform effects are outside this fixture. Config planning,
-// validation, the registered gateway runner, and atomic config writes remain real.
-vi.mock("./doctor/repair-sequencing.js", () => ({
-  runDoctorRepairSequence: async (
-    params: Parameters<typeof import("./doctor/repair-sequencing.js").runDoctorRepairSequence>[0],
-  ) => ({
-    state: params.state,
-    changeNotes: [],
-    configChangeNotes: [],
-    warningNotes: [],
-    installedPluginIdRecovery: new Map(),
-    authProfilesRepaired: false,
-    modelRetirementRepairRan: false,
-  }),
-}));
+// Start at the config-flow output contract. Snapshot validation, the registered
+// gateway runner, and atomic config writes remain real; native effects are mocked.
 vi.mock("./doctor-gateway-services.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./doctor-gateway-services.js")>()),
   maybeScanExtraGatewayServices: vi.fn(),
@@ -80,7 +69,7 @@ describe("Doctor gateway config writer ordering", () => {
     closeOpenClawStateDatabaseForTest();
   });
 
-  it.each(["success", "validation-refusal", "service-failure"])(
+  it.each(["success", "validation-refusal", "service-failure", "post-commit-failure"])(
     "uses Doctor's persisted baseline through service repair (%s)",
     async (outcome) => {
       await withDoctorConfigPreflightHome(async (home) => {
@@ -119,7 +108,7 @@ describe("Doctor gateway config writer ordering", () => {
               plugins: { enabled: false },
             });
             expect(isDefaultInstallIdentity()).toBe(true);
-            const ctx = await prepareDoctorContext(configPath);
+            const ctx = await prepareWriterContext(configPath);
             ctx.cfg = { ...ctx.cfg, gateway: { ...ctx.cfg.gateway, port: 19090 } };
             await withEnvAsync({ BROWSER_BIN: "/opt/example/browser-first" }, async () => {
               expect(await runWriteConfigHealth(ctx, { runPostWriteRepairs: false })).toBe(true);
@@ -151,6 +140,36 @@ describe("Doctor gateway config writer ordering", () => {
             }
             const candidateBeforeService = ctx.cfg;
             ctx.prompter.confirmRuntimeRepair = async () => true;
+            if (outcome === "post-commit-failure") {
+              const actualTransform = configModule.transformConfigFile;
+              const failure = new ConfigWritePostCommitError({
+                configPath,
+                rollbackStatus: "not-restored",
+                cause: new Error("fixture post-write failure"),
+              });
+              vi.spyOn(configModule, "transformConfigFile").mockImplementationOnce(
+                async (...args) => {
+                  await actualTransform(...args);
+                  throw failure;
+                },
+              );
+              await expect(runGatewayServicesHealth(ctx)).rejects.toBe(failure);
+              expect(ctx.configWriteError).toBe(failure);
+              expect(service.install).not.toHaveBeenCalled();
+              expect(service.stage).not.toHaveBeenCalled();
+              expect(service.restart).not.toHaveBeenCalled();
+              const committed = await fs.readFile(configPath, "utf8");
+              const backup = await fs.readFile(`${configPath}.bak`, "utf8");
+              expect(JSON.parse(committed).gateway.auth.token).toBe("recovered-fixture-token");
+              // A later contribution must not retry a context whose publication failed.
+              ctx.cfg = { ...ctx.cfg, gateway: { ...ctx.cfg.gateway, port: 19092 } };
+              await expect(runWriteConfigHealth(ctx, { runPostWriteRepairs: false })).rejects.toBe(
+                failure,
+              );
+              expect(await fs.readFile(configPath, "utf8")).toBe(committed);
+              expect(await fs.readFile(`${configPath}.bak`, "utf8")).toBe(backup);
+              return;
+            }
             await withEnvAsync({ BROWSER_BIN: "/opt/example/browser-service" }, async () => {
               await runGatewayServicesHealth(ctx);
             });
@@ -240,12 +259,12 @@ describe("Doctor gateway config writer ordering", () => {
           const originalBytes = await fs.readFile(configPath, "utf8");
           const preUpdatePath = `${configPath}.pre-update`;
           await fs.writeFile(preUpdatePath, originalBytes);
-          const ctx = await prepareDoctorContext(configPath);
+          const ctx = await prepareWriterContext(configPath);
           expect(ctx.configResult.sourceLastTouchedVersion).toBe("2026.5.16-beta.4");
           const initialBaseline = ctx.cfgForPersistence;
           ctx.cfg = { ...ctx.cfg, gateway: { ...ctx.cfg.gateway, port: 19090 } };
 
-          expect(await runWriteConfigHealth(ctx, { runPostWriteRepairs: false })).toBe(true);
+          await runWriteConfigHealth(ctx, { runPostWriteRepairs: false });
 
           const committedBytes = await fs.readFile(configPath, "utf8");
           expect(JSON.parse(committedBytes)).toMatchObject({
@@ -262,7 +281,7 @@ describe("Doctor gateway config writer ordering", () => {
           expect(await fs.readFile(`${configPath}.bak`, "utf8")).toBe(originalBytes);
           expect(await fs.readFile(preUpdatePath, "utf8")).toBe(originalBytes);
 
-          expect(await runWriteConfigHealth(ctx, { runPostWriteRepairs: false })).toBe(true);
+          await runWriteConfigHealth(ctx, { runPostWriteRepairs: false });
           expect(await fs.readFile(configPath, "utf8")).toBe(committedBytes);
           expect(await fs.readFile(`${configPath}.bak`, "utf8")).toBe(originalBytes);
           expect(await fs.readFile(preUpdatePath, "utf8")).toBe(originalBytes);
@@ -311,9 +330,9 @@ describe("Doctor gateway config writer ordering", () => {
           await fs.writeFile(`${includePath}.bak`, JSON.stringify({ enabled: false }));
           const originalBytes = await fs.readFile(configPath, "utf8");
           expect(isDefaultInstallIdentity()).toBe(true);
-          const ctx = await prepareDoctorContext(configPath);
+          const ctx = await prepareWriterContext(configPath);
           ctx.cfg = { ...ctx.cfg, gateway: { ...ctx.cfg.gateway, port: 19090 } };
-          expect(await runWriteConfigHealth(ctx, { runPostWriteRepairs: false })).toBe(true);
+          await runWriteConfigHealth(ctx, { runPostWriteRepairs: false });
           expect(await fs.readFile(`${configPath}.bak`, "utf8")).toBe(originalBytes);
           const persistedBaseline = ctx.cfgForPersistence;
           const retainedPaths = [

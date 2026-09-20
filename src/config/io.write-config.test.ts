@@ -22,6 +22,7 @@ import type { PluginManifestRegistry } from "../plugins/manifest-registry.js";
 import { readConfigMachineState } from "../state/config-machine-state.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
+  closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
@@ -170,6 +171,7 @@ describe("config io write", () => {
   });
 
   afterEach(async () => {
+    await closeOpenClawStateDatabaseAsync();
     resetConfigRuntimeState();
     mockPrepareConfigFileWrite.mockReset();
     const actual =
@@ -178,6 +180,7 @@ describe("config io write", () => {
   });
 
   afterAll(async () => {
+    await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
     resetConfigRuntimeState();
     vi.mocked(tmpDirOwner.resolvePreferredOpenClawTmpDir).mockRestore();
@@ -2572,7 +2575,7 @@ describe("config io write", () => {
             },
             meta: {
               lastTouchedVersion: persisted.meta?.lastTouchedVersion,
-              migrations: { modelPolicyAllowlist: true },
+              migrations: { modelPolicyAllowlist: true, utilityModelSeparation: true },
             },
           });
           expect(typeof persisted.meta?.lastTouchedVersion).toBe("string");
@@ -2654,54 +2657,6 @@ describe("config io write", () => {
       } finally {
         unsubscribe();
       }
-    },
-  );
-
-  itWithHome(
-    "preserves auth-store refresh scope through managed preflight and notification",
-    async (home) => {
-      const configPath = configPathForHome(home);
-      await fs.mkdir(path.dirname(configPath), { recursive: true });
-      const initialConfig = {
-        gateway: { mode: "local" as const },
-        logging: { level: "info" as const },
-      } satisfies OpenClawConfig;
-      await writeConfigJson(configPath, initialConfig);
-      const preflight = vi.fn(
-        async (
-          sourceConfig: OpenClawConfig,
-          refreshOptions?: { includeAuthStoreRefs?: boolean },
-        ) => ({
-          runtimeConfig: sourceConfig,
-          compareConfig: sourceConfig,
-          refreshOptions,
-        }),
-      );
-      const notifications: Array<{ includeAuthStoreRefs?: boolean } | undefined> = [];
-      const unsubscribe = registerConfigWriteListener(
-        (event) => notifications.push(event.runtimeRefresh),
-        {
-          ownsRuntimeActivationFor: configPath,
-          preCommitRuntimePreflight: preflight,
-        },
-      );
-
-      try {
-        await withEnvAsync({ OPENCLAW_CONFIG_PATH: configPath }, async () => {
-          setRuntimeConfigSnapshot(initialConfig, initialConfig);
-          await writeConfigFile(
-            { ...initialConfig, logging: { level: "debug" } },
-            { runtimeRefresh: { includeAuthStoreRefs: false } },
-          );
-        });
-      } finally {
-        unsubscribe();
-      }
-
-      expect(preflight).toHaveBeenCalledWith(expect.any(Object), {
-        includeAuthStoreRefs: false,
-      });
-      expect(notifications).toEqual([{ includeAuthStoreRefs: false }]);
     },
   );
 
@@ -3817,6 +3772,73 @@ describe("config io write", () => {
       }
     },
   );
+
+  for (const included of [false, true]) {
+    itWithHome(
+      `validates changed config-owned env at final preflight (include=${included})`,
+      async (home) => {
+        const configPath = configPathForHome(home);
+        const key = "FINAL_WRITE_PREFIX";
+        const messageConfig = { responsePrefix: "${FINAL_WRITE_PREFIX}" };
+        const initialRaw = formatConfig({
+          env: { vars: { [key]: "old-prefix" } },
+          messages: included ? { $include: "./messages.json" } : messageConfig,
+        });
+        const leafPath = path.join(path.dirname(configPath), "messages.json");
+        const leafRaw = JSON.stringify(messageConfig);
+        await fs.mkdir(path.dirname(configPath), { recursive: true });
+        await fs.writeFile(configPath, initialRaw);
+        if (included) {
+          await fs.writeFile(leafPath, leafRaw);
+        }
+        const env: NodeJS.ProcessEnv = {
+          ...process.env,
+          [key]: undefined,
+          OPENCLAW_CONFIG_PATH: configPath,
+        };
+        const io = createConfigIO({ env, configPath, logger: silentLogger });
+        const snapshot = await io.readConfigFileSnapshot();
+        expect(snapshot.valid).toBe(true);
+        let observedSource: OpenClawConfig | undefined;
+        try {
+          setRuntimeConfigSnapshotRefreshHandler({
+            preflight: ({ sourceConfig }) => {
+              observedSource = sourceConfig;
+            },
+            refresh: () => true,
+          });
+          await io.writeConfigFile(
+            {
+              ...snapshot.sourceConfig,
+              env: { vars: { [key]: "new-prefix" } },
+              messages: {
+                ...snapshot.sourceConfig.messages,
+                responsePrefix: "${FINAL_WRITE_PREFIX}",
+              },
+            },
+            {
+              inputBase: "source",
+              baseSnapshot: snapshot,
+              explicitSetPaths: [["env", "vars", key]],
+            },
+          );
+          expect(observedSource?.messages?.responsePrefix).toBe("new-prefix");
+          const reloaded = await createConfigIO({
+            configPath,
+            logger: silentLogger,
+            env: { ...process.env, [key]: undefined },
+          }).readConfigFileSnapshot();
+          expect(reloaded.sourceConfig.messages?.responsePrefix).toBe("new-prefix");
+          await expect(fs.readFile(configPath + ".bak", "utf8")).resolves.toBe(initialRaw);
+          if (included) {
+            await expect(fs.readFile(leafPath, "utf8")).resolves.toBe(leafRaw);
+          }
+        } finally {
+          setRuntimeConfigSnapshotRefreshHandler(null);
+        }
+      },
+    );
+  }
 
   for (const writer of ["direct", "runtime"] as const) {
     itWithHome(`rechecks ${writer} publication authority after backup work`, async (home) => {

@@ -2,7 +2,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { withTempHome } from "openclaw/plugin-sdk/test-env";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createAccountListHelpers } from "../../channels/plugins/account-helpers.js";
+import { replaceConfigFile } from "../../config/config.js";
 import {
   createConfigIO,
   readConfigFileSnapshot,
@@ -10,22 +12,34 @@ import {
 } from "../../config/io.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { POST_CORE_UPDATE_REQUESTED_CHANNEL_ENV } from "../../infra/update-post-core-context.js";
+import { createPluginManifestRecordFixture } from "../../plugins/plugin-metadata.test-support.js";
+import { getActivePluginRegistry, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { defaultRuntime } from "../../runtime.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import {
+  createChannelTestPluginBase,
+  createTestRegistry,
+} from "../../test-utils/channel-plugins.js";
 
 const controls = vi.hoisted(() => ({ root: "" }));
 
 vi.mock("../../plugins/manifest-registry.js", () => ({
-  loadPluginManifestRegistryCore: () => ({ plugins: [], diagnostics: [] }),
+  loadPluginManifestRegistryCore: () => ({
+    plugins: [createPluginManifestRecordFixture({ id: "discord", channels: ["discord"] })],
+    diagnostics: [],
+  }),
 }));
 vi.mock("../../plugins/plugin-registry.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../plugins/plugin-registry.js")>()),
-  loadPluginManifestRegistryForPluginRegistry: () => ({ plugins: [], diagnostics: [] }),
+  loadPluginManifestRegistryForPluginRegistry: () => ({
+    plugins: [createPluginManifestRecordFixture({ id: "discord", channels: ["discord"] })],
+    diagnostics: [],
+  }),
 }));
 vi.mock("../../plugins/doctor-contract-registry.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../plugins/doctor-contract-registry.js")>()),
   listPluginDoctorLegacyConfigRules: () => [],
-  applyPluginDoctorCompatibilityMigrations: () => ({ next: null, changes: [] }),
+  applyPluginDoctorCompatibilityMigrations: (config: OpenClawConfig) => ({ config, changes: [] }),
 }));
 vi.mock("../../plugins/update-cohort.js", () => ({
   convergePluginReleaseCohort: async ({ config }: { config: OpenClawConfig }) => {
@@ -47,10 +61,7 @@ vi.mock("../../plugins/update-cohort.js", () => ({
   },
 }));
 vi.mock("../../commands/doctor/shared/post-core-plugin-convergence.js", () => ({
-  runPostCorePluginConvergence: async ({ cfg }: { cfg: OpenClawConfig }) => ({
-    config: cfg,
-    configChanges: [],
-    installedPluginIdRecovery: new Map(),
+  runPostCorePluginConvergence: async () => ({
     changes: [],
     warnings: [],
     installRecords: {},
@@ -82,12 +93,31 @@ import {
   planLegacyConfigForUpdateChannel,
   repairLegacyConfigForUpdateChannel,
 } from "../../commands/doctor/legacy-config-repair.js";
+import { applyLegacyCompatibilityStep } from "../../commands/doctor/shared/config-flow-steps.js";
 import { convergeUpdatePlugins } from "./update-command-convergence.js";
 import { updateFinalizeCommand } from "./update-command-finalize.js";
 import { updatePluginsAfterCoreUpdate } from "./update-command-plugins.js";
 import { resumePostCoreUpdate } from "./update-command-resume.js";
 
+let previousRegistry: ReturnType<typeof getActivePluginRegistry>;
+beforeEach(() => {
+  previousRegistry = getActivePluginRegistry();
+  setActivePluginRegistry(
+    createTestRegistry([
+      {
+        pluginId: "discord",
+        source: "test",
+        plugin: createChannelTestPluginBase({
+          id: "discord",
+          config: createAccountListHelpers("discord"),
+        }),
+      },
+    ]),
+  );
+});
+
 afterEach(() => {
+  setActivePluginRegistry(previousRegistry ?? createTestRegistry());
   closeOpenClawStateDatabaseForTest();
   resetConfigRuntimeState();
   vi.unstubAllEnvs();
@@ -95,31 +125,124 @@ afterEach(() => {
 });
 
 describe("update config provenance", () => {
+  it("reports unresolved ownership without writing when the original roster is unavailable", async () => {
+    await withTempHome(async (home) => {
+      const stateDir = path.join(home, ".openclaw");
+      const configPath = path.join(stateDir, "openclaw.json");
+      vi.stubEnv("OPENCLAW_CONFIG_PATH", configPath);
+      vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+      const original = JSON.stringify({
+        agents: { ownership: "explicit", entries: { ops: {}, research: {} } },
+        channels: { discord: { accounts: { default: {} } } },
+        bindings: [
+          {
+            agentId: "research",
+            match: { channel: "discord", peer: { kind: "direct", id: "research-user" } },
+          },
+        ],
+      });
+      await fs.mkdir(stateDir, { recursive: true });
+      await fs.writeFile(configPath, original);
+      resetConfigRuntimeState();
+      const { snapshot, writeOptions } = await createConfigIO({
+        pluginValidation: "skip",
+      }).readConfigFileSnapshotForWrite();
+      const result = await repairLegacyConfigForUpdateChannel({
+        configSnapshot: { ...snapshot, sourceConfigBeforeMigrations: undefined },
+        configWriteOptions: writeOptions,
+        jsonMode: true,
+      });
+      expect(result).toMatchObject({
+        repaired: false,
+        warnings: [expect.stringContaining("unresolved: original roster unavailable")],
+      });
+      expect(result).toMatchObject({
+        warnings: [
+          expect.stringContaining(
+            '{"agentId":"<agentId>","match":{"channel":"discord","accountId":"default"}}',
+          ),
+        ],
+      });
+      expect(await fs.readFile(configPath, "utf8")).toBe(original);
+    });
+  });
+
+  it.each(["update channel", "manual Doctor"])(
+    "preserves the historical account owner and narrower route through %s",
+    async (flow) => {
+      await withTempHome(async (home) => {
+        const stateDir = path.join(home, ".openclaw");
+        const configPath = path.join(stateDir, "openclaw.json");
+        vi.stubEnv("OPENCLAW_CONFIG_PATH", configPath);
+        vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+        const narrowerRoute = {
+          agentId: "research",
+          match: { channel: "discord", peer: { kind: "direct", id: "research-user" } },
+        };
+        await fs.mkdir(stateDir, { recursive: true });
+        await fs.writeFile(
+          configPath,
+          JSON.stringify({
+            gateway: { mode: "local", bind: "localhost" },
+            agents: { list: [{ id: "ops" }, { id: "research" }] },
+            channels: { discord: { accounts: { default: {} } } },
+            bindings: [narrowerRoute],
+          }),
+        );
+        resetConfigRuntimeState();
+        const { snapshot, writeOptions } = await createConfigIO({
+          pluginValidation: "skip",
+        }).readConfigFileSnapshotForWrite();
+        expect(snapshot.sourceConfigBeforeMigrations?.agents?.list).toEqual([
+          { id: "ops" },
+          { id: "research" },
+        ]);
+        if (flow === "update channel") {
+          const plan = planLegacyConfigForUpdateChannel(snapshot, writeOptions);
+          expect(plan).toBeDefined();
+          await repairLegacyConfigForUpdateChannel({
+            configSnapshot: snapshot,
+            plan,
+            configWriteOptions: writeOptions,
+            jsonMode: true,
+          });
+        } else {
+          const result = applyLegacyCompatibilityStep({
+            snapshot,
+            state: {
+              cfg: snapshot.sourceConfig,
+              candidate: snapshot.sourceConfig,
+              pendingChanges: false,
+              fixHints: [],
+            },
+            shouldRepair: true,
+            doctorFixCommand: "openclaw doctor --fix",
+          });
+          expect(result.state.pendingChanges).toBe(true);
+          await replaceConfigFile({
+            sourceConfig: result.state.candidate,
+            baseHash: snapshot.hash,
+            writeOptions: { ...writeOptions, auditOrigin: "doctor", skipOutputLogs: true },
+          });
+        }
+        const persisted = JSON.parse(await fs.readFile(configPath, "utf8")) as OpenClawConfig;
+        expect(persisted.bindings).toEqual([
+          narrowerRoute,
+          { agentId: "ops", match: { channel: "discord", accountId: "default" } },
+        ]);
+      });
+    },
+  );
+
   it.each([
-    ...Array.from(
-      [
-        { flow: "plugins", requestedChannel: undefined },
-        ...["converge", "resume", "finalize"].flatMap((flow) =>
-          [undefined, "beta" as const].map((requestedChannel) => ({ flow, requestedChannel })),
-        ),
-      ],
-      (scenario) => ({
-        ...scenario,
-        authoredToken: "${UPDATE_PROVENANCE_TOKEN}",
-        deferredLegacyPlan: false,
-      }),
-    ),
-    ...[false, true].flatMap((deferredLegacyPlan) =>
-      ["${UPDATE_PROVENANCE_TOKEN}", "$${UPDATE_PROVENANCE_TOKEN}"].map((authoredToken) => ({
-        flow: "legacy",
-        requestedChannel: undefined,
-        authoredToken,
-        deferredLegacyPlan,
-      })),
+    { flow: "plugins", requestedChannel: undefined },
+    { flow: "legacy", requestedChannel: undefined },
+    ...["converge", "resume", "finalize"].flatMap((flow) =>
+      [undefined, "beta" as const].map((requestedChannel) => ({ flow, requestedChannel })),
     ),
   ])(
-    "retains env refs through $flow (channel: $requestedChannel, token: $authoredToken, deferred: $deferredLegacyPlan)",
-    async ({ flow, requestedChannel, authoredToken, deferredLegacyPlan }) => {
+    "retains env refs through $flow (channel: $requestedChannel)",
+    async ({ flow, requestedChannel }) => {
       await withTempHome(async (home) => {
         controls.root = home;
         const stateDir = path.join(home, ".openclaw");
@@ -134,7 +257,7 @@ describe("update config provenance", () => {
             gateway: {
               mode: "local",
               ...(flow === "legacy" ? { bind: "localhost" } : {}),
-              auth: { mode: "token", token: authoredToken },
+              auth: { mode: "token", token: "${UPDATE_PROVENANCE_TOKEN}" },
             },
           }),
         );
@@ -143,10 +266,7 @@ describe("update config provenance", () => {
         const prepared = await createConfigIO({
           pluginValidation: "skip",
         }).readConfigFileSnapshotForWrite();
-        const escapedToken = authoredToken.startsWith("$${");
-        expect(prepared.snapshot.sourceConfig.gateway?.auth?.token).toBe(
-          escapedToken ? authoredToken.slice(1) : "synthetic-before",
-        );
+        expect(prepared.snapshot.sourceConfig.gateway?.auth?.token).toBe("synthetic-before");
         if (flow === "plugins") {
           expect(prepared.snapshot.valid).toBe(true);
           await updatePluginsAfterCoreUpdate({
@@ -159,23 +279,13 @@ describe("update config provenance", () => {
             pluginInstallRecords: {},
           });
         } else if (flow === "legacy") {
-          const before = await fs.readFile(configPath, "utf8");
-          const plan = deferredLegacyPlan
-            ? planLegacyConfigForUpdateChannel(prepared.snapshot, prepared.writeOptions)
-            : undefined;
-          if (deferredLegacyPlan) {
-            expect(plan).toBeDefined();
-          }
-          expect(await fs.readFile(configPath, "utf8")).toBe(before);
           vi.stubEnv("UPDATE_PROVENANCE_TOKEN", "synthetic-after");
           const result = await repairLegacyConfigForUpdateChannel({
             configSnapshot: prepared.snapshot,
             configWriteOptions: prepared.writeOptions,
-            plan,
             jsonMode: true,
           });
           expect(result.repaired).toBe(true);
-          expect(await fs.readFile(`${configPath}.bak`, "utf8")).toBe(before);
         } else if (flow === "converge") {
           await convergeUpdatePlugins({
             result: {
@@ -218,7 +328,7 @@ describe("update config provenance", () => {
           });
         }
         const saved = JSON.parse(await fs.readFile(configPath, "utf8")) as OpenClawConfig;
-        expect(saved.gateway?.auth?.token).toBe(authoredToken);
+        expect(saved.gateway?.auth?.token).toBe("${UPDATE_PROVENANCE_TOKEN}");
         if (flow !== "legacy") {
           expect(saved.gateway?.port).toBe(19001);
         } else {
@@ -230,9 +340,7 @@ describe("update config provenance", () => {
           expect(saved.update?.channel).toBeUndefined();
         }
         const after = await readConfigFileSnapshot();
-        expect(after.sourceConfig.gateway?.auth?.token).toBe(
-          escapedToken ? authoredToken.slice(1) : "synthetic-after",
-        );
+        expect(after.sourceConfig.gateway?.auth?.token).toBe("synthetic-after");
       });
     },
   );

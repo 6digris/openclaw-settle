@@ -919,6 +919,75 @@ describe("restoreEnvVarRefs with edited arrays", () => {
 });
 
 describe("restoreEnvVarRefsFromResolved", () => {
+  it.each([{ explicit: [["0", "token"]] }, { explicit: [["0"]] }])(
+    "keeps explicit escaped activation on its uniquely retained owner ($explicit)",
+    ({ explicit }) => {
+      const authored = [{ id: "drop" }, { id: "keep", token: "$${TOKEN}", untouched: "$${OTHER}" }];
+      const resolved = [{ id: "drop" }, { id: "keep", token: "${TOKEN}", untouched: "${OTHER}" }];
+      const incoming = [{ id: "keep", token: "prefix-${TOKEN}", untouched: "$${OTHER}" }];
+      expect(restoreEnvVarRefsFromResolved(incoming, authored, resolved, explicit)).toEqual(
+        incoming,
+      );
+    },
+  );
+
+  it.each([
+    {
+      label: "different key",
+      incoming: [{ id: "keep", moved: "${TOKEN}" }],
+      explicit: [["0", "moved"]],
+    },
+    {
+      label: "different owner",
+      incoming: [{ id: "other", token: "${TOKEN}" }],
+      explicit: [["0", "token"]],
+    },
+    {
+      label: "wrong path",
+      incoming: [{ id: "keep", token: "prefix-${TOKEN}" }],
+      explicit: [["0", "other"]],
+    },
+    {
+      label: "unrelated escaped leaf",
+      incoming: [{ id: "keep", token: "${TOKEN}", untouched: "prefix-${OTHER}" }],
+      explicit: [["0", "token"]],
+    },
+  ])("rejects explicit escaped activation with $label", ({ incoming, explicit }) => {
+    expectEnvRefArrayMutationError(() =>
+      restoreEnvVarRefsFromResolved(
+        incoming,
+        [{ id: "drop" }, { id: "keep", token: "$${TOKEN}", untouched: "$${OTHER}" }],
+        [{ id: "drop" }, { id: "keep", token: "${TOKEN}", untouched: "${OTHER}" }],
+        explicit,
+      ),
+    );
+  });
+
+  it("rejects explicit escaped activation across duplicate owners or scalar moves", () => {
+    expectEnvRefArrayMutationError(() =>
+      restoreEnvVarRefsFromResolved(
+        [{ id: "duplicate", token: "prefix-${TOKEN}" }],
+        [
+          { id: "duplicate", token: "$${TOKEN}" },
+          { id: "duplicate", token: "$${TOKEN}" },
+        ],
+        [
+          { id: "duplicate", token: "${TOKEN}" },
+          { id: "duplicate", token: "${TOKEN}" },
+        ],
+        [["0", "token"]],
+      ),
+    );
+    expectEnvRefArrayMutationError(() =>
+      restoreEnvVarRefsFromResolved(
+        ["${TOKEN}", "secret"],
+        ["${TOKEN}", "$${TOKEN}"],
+        ["secret", "${TOKEN}"],
+        [[]],
+      ),
+    );
+  });
+
   it("uses the original resolved leaves without matching same-valued sibling literals", () => {
     const authored = {
       value: "prefix-${TOKEN}",

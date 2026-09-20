@@ -5,6 +5,7 @@ import type {
   CronListParams,
   CronRunLogEntry as ProtocolCronRunLogEntry,
   CronRunsParams,
+  ErrorShape,
   SessionsFilesListResult as ProtocolSessionsFilesListResult,
 } from "../../../packages/gateway-protocol/src/index.js";
 import type {
@@ -192,6 +193,7 @@ export type NostrStatus = {
 type ConfigSnapshotIssue = { path: string; message: string };
 
 export type ConfigSnapshot = {
+  writeError?: ErrorShape;
   path?: string | null;
   exists?: boolean | null;
   raw?: string | null;
@@ -277,6 +279,7 @@ export type SessionsBranchesSwitchResult =
 
 export type SessionsPatchResult = SessionsPatchResultBase<{
   sessionId: string;
+  category?: GatewaySessionRow["category"];
   updatedAt?: number;
   createdAt?: number;
   pinnedAt?: number;
@@ -284,7 +287,10 @@ export type SessionsPatchResult = SessionsPatchResultBase<{
   lastActivityAt?: number;
   lastInteractionAt?: number;
   permissionMode?: GatewaySessionRow["permissionMode"];
+  modelOverrideSource?: GatewayWireSessionsPatchResult["entry"]["modelOverrideSource"];
+  boardPresentation?: GatewaySessionRow["boardPresentation"];
   archivedAt?: number;
+  archivedBy?: GatewaySessionRow["archivedBy"];
   archiveReason?: SessionEntryArchiveReason;
   /** Present only while an explicit mark-unread marker owns the row. */
   markedUnreadAt?: number;
@@ -356,7 +362,7 @@ export type {
   SkillStatusEntry,
   SkillStatusReport,
 } from "../../../src/skills/discovery/status.types.js";
-export type { ClawHubSkillStatusLink as SkillClawHubLink } from "../../../src/skills/lifecycle/clawhub-status.js";
+export type { ClawHubSkillStatusLink as SkillClawHubLink } from "../../../src/skills/lifecycle/workspace-types.js";
 
 export type StatusSummary = Record<string, unknown>;
 

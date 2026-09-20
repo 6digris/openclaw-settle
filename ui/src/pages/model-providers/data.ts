@@ -33,7 +33,7 @@ type ModelProviderAuthSummary = {
 type ModelProviderLocalCost = {
   totalCost: number;
   totalTokens: number;
-  sessionCount: number;
+  messageCount: number;
 };
 
 export type ModelProviderLogoutTarget = {
@@ -377,14 +377,14 @@ export function buildModelProviderCards(input: ModelProviderCardsInput): ModelPr
     const addition: ModelProviderLocalCost = {
       totalCost: entry.totals.totalCost,
       totalTokens: entry.totals.totalTokens,
-      sessionCount: entry.count,
+      messageCount: entry.count,
     };
     const current = draft.card.localCost;
     draft.card.localCost = current
       ? {
           totalCost: current.totalCost + addition.totalCost,
           totalTokens: current.totalTokens + addition.totalTokens,
-          sessionCount: current.sessionCount + addition.sessionCount,
+          messageCount: current.messageCount + addition.messageCount,
         }
       : addition;
   }
@@ -421,6 +421,8 @@ export type DefaultModelSelection = {
   fallbacks: string[];
   /** null = automatic/unset; empty string = explicitly disabled. */
   utilityModel: string | null;
+  /** Unset or null disables decisions globally. */
+  decisionModel?: string | null;
 };
 
 export type ModelPickerEntry = ModelCatalogEntry & { selectionRef?: string };
@@ -521,6 +523,9 @@ export function readModelProviderConfig(config: Record<string, unknown> | null):
       primary,
       fallbacks,
       utilityModel: typeof defaults?.utilityModel === "string" ? defaults.utilityModel : null,
+      ...(typeof defaults?.decisionModel === "string"
+        ? { decisionModel: defaults.decisionModel }
+        : {}),
     },
   };
 }

@@ -11,6 +11,11 @@ import {
   createPluginManifestRecordFixture as createPluginManifestRecord,
   createPluginMetadataSnapshotFixture as createPluginMetadataSnapshot,
 } from "../plugins/plugin-metadata.test-support.js";
+import {
+  readConfigCliSnapshotWithMetadata,
+  type ConfigCliSnapshotReader,
+  type ConfigCliWriter,
+} from "./config-cli.snapshot.test-support.js";
 import type { ConfigSetDryRunResult } from "./config-set-dryrun.js";
 import { applyCliProfileEnv } from "./profile.js";
 
@@ -29,18 +34,8 @@ const { defaultRuntime, resetRuntimeCapture, mockRuntimeModule } = await vi.hois
  * but before runtime defaults), so runtime defaults don't leak into the written config.
  */
 
-const mockReadConfigFileSnapshot =
-  vi.fn<(options?: { observe?: boolean }) => Promise<ConfigFileSnapshot>>();
-const mockWriteConfigFile = vi.fn<
-  (
-    cfg: OpenClawConfig,
-    options?: {
-      auditOrigin?: "cli";
-      unsetPaths?: string[][];
-      explicitSetPaths?: string[][];
-    },
-  ) => Promise<void>
->(async () => {});
+const mockReadConfigFileSnapshot = vi.fn<ConfigCliSnapshotReader>();
+const mockWriteConfigFile = vi.fn<ConfigCliWriter>(async () => {});
 const mockResolveSecretRefValue = vi.fn();
 const mockCheckTouchedTextModelRefs = vi.fn();
 const mockReadBestEffortRuntimeConfigSchema = vi.fn();
@@ -96,22 +91,12 @@ vi.mock("../config/config.js", () => ({
     mockReadConfigFileSnapshot(...args),
   readConfigFileSnapshotWithPluginMetadata: async (
     ...args: Parameters<typeof mockReadConfigFileSnapshot>
-  ) => ({
-    snapshot: await mockReadConfigFileSnapshot(...args),
-    pluginMetadataSnapshot: createPluginMetadataSnapshot(),
-  }),
+  ) => readConfigCliSnapshotWithMetadata(mockReadConfigFileSnapshot, ...args),
   readConfigFileSnapshotForWrite: async () => ({
     snapshot: await mockReadConfigFileSnapshot(),
     writeOptions: {},
   }),
-  writeConfigFile: (
-    cfg: OpenClawConfig,
-    options?: {
-      auditOrigin?: "cli";
-      unsetPaths?: string[][];
-      explicitSetPaths?: string[][];
-    },
-  ) => mockWriteConfigFile(cfg, options),
+  writeConfigFile: (...args: Parameters<ConfigCliWriter>) => mockWriteConfigFile(...args),
   replaceConfigFile: (params: {
     sourceConfig: OpenClawConfig;
     writeOptions?: {
@@ -463,17 +448,11 @@ function firstWrittenConfig(): OpenClawConfig {
   return written as OpenClawConfig;
 }
 
-function firstWriteConfigOptions():
-  | { auditOrigin?: "cli"; unsetPaths?: string[][]; explicitSetPaths?: string[][] }
-  | undefined {
+function firstWriteConfigOptions(): Parameters<ConfigCliWriter>[1] {
   return mockWriteConfigFile.mock.calls[0]?.[1];
 }
 
-function requireWriteOptions(): {
-  auditOrigin?: "cli";
-  unsetPaths?: string[][];
-  explicitSetPaths?: string[][];
-} {
+function requireWriteOptions(): NonNullable<Parameters<ConfigCliWriter>[1]> {
   const options = firstWriteConfigOptions();
   if (!options) {
     throw new Error("expected write options");
@@ -751,6 +730,8 @@ describe("config cli", () => {
         "google/gemini-3.1-pro-preview": { alias: "gemini" },
       });
       expect(mockCheckTouchedTextModelRefs).toHaveBeenCalledWith({
+        env: expect.any(Object),
+        previousEnv: expect.any(Object),
         config: written,
         previousConfig: expect.any(Object),
         touchedPaths: [["agents", "defaults", "model", "primary"]],
@@ -797,6 +778,8 @@ describe("config cli", () => {
         primary: "${MODEL_REF}",
       });
       expect(mockCheckTouchedTextModelRefs).toHaveBeenCalledWith({
+        env: expect.any(Object),
+        previousEnv: expect.any(Object),
         config: expect.objectContaining({
           agents: expect.objectContaining({
             defaults: expect.objectContaining({ model: { primary: "${MODEL_REF}" } }),
@@ -1646,7 +1629,10 @@ describe("config cli", () => {
 
       await runConfigCommand(["config", "validate"]);
 
-      expect(mockReadConfigFileSnapshot).toHaveBeenCalledWith({ observe: false });
+      expect(mockReadConfigFileSnapshot).toHaveBeenCalledWith({
+        observe: false,
+        prepareValidation: "strict",
+      });
     });
 
     it("prints success and exits 0 when config is valid", async () => {
@@ -4824,6 +4810,8 @@ describe("config cli", () => {
 
       expect(mockWriteConfigFile).not.toHaveBeenCalled();
       expect(mockCheckTouchedTextModelRefs).toHaveBeenCalledWith({
+        env: expect.any(Object),
+        previousEnv: expect.any(Object),
         config: {
           agents: { defaults: { model: { fallbacks: ["backup"] } } },
         },

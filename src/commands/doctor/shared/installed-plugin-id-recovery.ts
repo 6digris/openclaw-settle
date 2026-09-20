@@ -1,4 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
+import {
+  getDeferredPluginMigrationConfigFacts,
+  setDeferredPluginMigrationConfigFacts,
+} from "../../../config/deferred-plugin-migration-config.js";
 import { resolveConfigWidePluginMetadataSnapshot } from "../../../config/io.plugin-metadata.js";
 import { ConfigMutationConflictError } from "../../../config/mutation-conflict.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
@@ -135,6 +139,10 @@ export async function recoverInstalledPluginConfigIds(
     if (migrated !== nextConfig) {
       recovery.set(legacyId, owner);
       changes.push(`Moved installed plugin config "${legacyId}" to "${owner.pluginId}".`);
+      setDeferredPluginMigrationConfigFacts(
+        migrated,
+        getDeferredPluginMigrationConfigFacts(nextConfig),
+      );
       nextConfig = migrated;
     }
   }

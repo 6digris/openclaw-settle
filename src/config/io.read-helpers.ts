@@ -12,6 +12,7 @@ import { resolveRequiredHomeDir } from "../infra/home-dir.js";
 import { parseJsonWithJson5Fallback } from "../utils/parse-json-compat.js";
 import {
   applyConfigEnvVars,
+  cloneEnvWithPlatformSemantics,
   createConfigRuntimeEnvBase,
   getPublishedConfigRuntimeEnvState,
 } from "./config-env-vars.js";
@@ -56,47 +57,6 @@ export function hasConfigMeta(value: unknown): boolean {
 export function resolveGatewayMode(value: unknown): string | null {
   const gateway = asOptionalRecord(asOptionalRecord(value)?.gateway);
   return normalizeNullableString(gateway?.mode);
-}
-
-export function visitConfigValueTree(
-  value: unknown,
-  visit: (candidate: unknown, path: readonly string[]) => boolean,
-  rootPath: readonly string[] = [],
-): void {
-  type Frame = { kind: "leave" } | { kind: "visit"; value: unknown; key?: string };
-  const currentPath = [...rootPath];
-  const pending: Frame[] = [{ kind: "visit", value }];
-  while (pending.length > 0) {
-    const frame = pending.pop()!;
-    if (frame.kind === "leave") {
-      currentPath.pop();
-      continue;
-    }
-    if (frame.key !== undefined) {
-      currentPath.push(frame.key);
-      pending.push({ kind: "leave" });
-    }
-    if (!visit(frame.value, currentPath)) {
-      continue;
-    }
-    const entries =
-      Array.isArray(frame.value) || isRecord(frame.value) ? Object.entries(frame.value) : [];
-    for (let index = entries.length - 1; index >= 0; index -= 1) {
-      const [key, child] = entries[index]!;
-      pending.push({ kind: "visit", key, value: child });
-    }
-  }
-}
-
-export function rejectConfigNonFiniteNumbers(value: unknown): void {
-  visitConfigValueTree(value, (candidate) => {
-    if (typeof candidate === "number") {
-      if (!Number.isFinite(candidate)) {
-        throw new Error(`Value must be a finite number, got ${String(candidate)}`);
-      }
-    }
-    return true;
-  });
 }
 
 export function containsConfigIncludeDirective(value: unknown): boolean {
@@ -312,7 +272,7 @@ export function resolveConfigForRead(
   });
   return {
     resolvedConfigRaw,
-    envSnapshotForRestore: { ...env } as Record<string, string | undefined>,
+    envSnapshotForRestore: cloneEnvWithPlatformSemantics(env),
     envWarnings,
     resolutionFacts: createConfigResolutionFacts(
       envWarnings,
@@ -323,9 +283,7 @@ export function resolveConfigForRead(
   };
 }
 
-export function snapshotEnv(env: NodeJS.ProcessEnv): Record<string, string | undefined> {
-  return { ...env };
-}
+export { snapshotEnv, restoreEnvChangesIfUnchanged } from "./config-env-vars.js";
 
 export function replaceEnvSnapshot(
   env: NodeJS.ProcessEnv,
@@ -358,23 +316,4 @@ export function createManagedRuntimeEnvBase(
     ownedEnv: getPublishedConfigRuntimeEnvState().ownedEnv,
     preservedKeys: GATEWAY_CONFIG_SELECTION_ENV_KEYS,
   });
-}
-
-export function restoreEnvChangesIfUnchanged(params: {
-  env: NodeJS.ProcessEnv;
-  before: Record<string, string | undefined>;
-  after: Record<string, string | undefined>;
-}): void {
-  const keys = new Set([...Object.keys(params.before), ...Object.keys(params.after)]);
-  for (const key of keys) {
-    if (params.before[key] === params.after[key] || params.env[key] !== params.after[key]) {
-      continue;
-    }
-    const previous = params.before[key];
-    if (previous === undefined) {
-      delete params.env[key];
-    } else {
-      params.env[key] = previous;
-    }
-  }
 }

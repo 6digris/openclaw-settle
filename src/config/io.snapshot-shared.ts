@@ -1,3 +1,5 @@
+import type { DeferredPluginMigration } from "../infra/deferred-plugin-migrations.js";
+import { setDeferredPluginMigrationConfigFacts } from "./deferred-plugin-migration-config.js";
 import { observeConfigSnapshot } from "./io.observe.js";
 import type { NormalizedConfigIoDeps, ReadConfigFileSnapshotInternalResult } from "./io.types.js";
 import { asResolvedSourceConfig, asRuntimeConfig } from "./materialize.js";
@@ -24,11 +26,13 @@ export function createConfigFileSnapshot(params: {
   warnings: ConfigFileSnapshot["warnings"];
   legacyIssues: LegacyConfigIssue[];
   resolutionFacts?: ConfigResolutionFacts;
+  deferredPluginMigrations?: readonly DeferredPluginMigration[];
 }): ConfigFileSnapshot {
   const sourceConfigBeforeMigrations = params.sourceConfigBeforeMigrations
     ? asResolvedSourceConfig(params.sourceConfigBeforeMigrations)
     : undefined;
   const sourceConfig = asResolvedSourceConfig(params.sourceConfig);
+  setDeferredPluginMigrationConfigFacts(sourceConfig, params.deferredPluginMigrations);
   const runtimeConfig = asRuntimeConfig(params.runtimeConfig);
   if (params.resolutionFacts !== undefined) {
     setConfigResolutionFacts(sourceConfigBeforeMigrations, params.resolutionFacts);
