@@ -168,7 +168,7 @@ export function createSessionRowProjectionFixture(params: {
       const now = options?.now ?? Date.now();
       const row = presentSessionRow(record.materialized, {
         now,
-        subagentRuns: rowContext.subagentRuns.atTime(now),
+        subagentRuns: options?.subagentRuns ?? rowContext.subagentRuns.atTime(now),
         activeModel: record.fallbackModel,
         excludedChildKeys: options?.excludedChildKeys,
       });
@@ -200,6 +200,10 @@ export function createSessionRowProjectionFixture(params: {
     },
     isCurrent: (row) => rows.get(id(row))?.generation === row.generation,
     selectEntries,
+    listCreatedActors: () =>
+      selectEntries({ sortBy: null }).flatMap((row) =>
+        row.entry.createdActor ? [row.entry.createdActor] : [],
+      ),
     snapshot: (query, options) => {
       const record = describe(query);
       return record

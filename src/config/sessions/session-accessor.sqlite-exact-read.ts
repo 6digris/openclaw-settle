@@ -1,5 +1,7 @@
+import { expectDefined } from "@openclaw/normalization-core/expect";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import { iterateSqliteQuerySync } from "../../infra/kysely-sync.js";
+import { SessionMetadataUnavailableError } from "../../state/openclaw-agent-db-read-error.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
   openOpenClawAgentDatabase,
@@ -189,6 +191,19 @@ export function loadExactSessionEntryReadOnly(
   })[0];
 }
 
+/** Probe the selected store without rerouting an incognito-shaped key to ephemeral state. */
+export function loadExactSessionEntryFromStoreReadOnly(
+  scope: SessionEntryReadScope & { storePath: string },
+): ExactSessionEntry | undefined {
+  const options = toDatabaseOptions(resolveSqliteScope({ ...scope, sessionKey: "" }));
+  return loadExactSessionEntryCandidates({
+    readSource: { ...options, path: resolveOpenClawAgentSqlitePath(options) },
+    projection: scope.projection,
+    readOnly: true,
+    sessionKeys: [scope.sessionKey],
+  })[0];
+}
+
 /** Read requested keys through synchronous store/projection groups. */
 export type ExactSessionEntryBatchScope = Omit<SessionEntryReadScope, "sessionKey"> & {
   sessionKeys: readonly string[];
@@ -196,7 +211,7 @@ export type ExactSessionEntryBatchScope = Omit<SessionEntryReadScope, "sessionKe
 };
 
 function groupExactSessionEntryReadRequests(scopes: readonly ExactSessionEntryBatchScope[]) {
-  const results: Array<Result<ExactSessionEntry[], unknown>> = scopes.map(() => ok([]));
+  const results: Array<Result<ExactSessionEntry[], unknown> | undefined> = [];
   const targetCache: SessionSqliteTargetResolutionCache = new Map();
   const groups = new Map<
     string,
@@ -210,6 +225,7 @@ function groupExactSessionEntryReadRequests(scopes: readonly ExactSessionEntryBa
     const sessionKeys = scope.sessionKeys.map((key) => key.trim()).filter(Boolean);
     const [sessionKey] = sessionKeys;
     if (!sessionKey) {
+      results[index] = ok([]);
       continue;
     }
     try {
@@ -235,7 +251,7 @@ export function loadExactSessionEntryCandidatesReadOnlyBatch(
   const { groups, results } = groupExactSessionEntryReadRequests(scopes);
   for (const group of groups.values()) {
     try {
-      withOpenClawAgentDatabaseReadOnly(
+      const read = withOpenClawAgentDatabaseReadOnly(
         (database) =>
           readWithCanonicalSessionAdmission(database, () => {
             // Admission failures affect this store; an invalid requested row must not
@@ -257,11 +273,19 @@ export function loadExactSessionEntryCandidatesReadOnlyBatch(
           }),
         group.options,
       );
+      if (!read.found) {
+        if (read.reason !== "database-missing") {
+          throw new SessionMetadataUnavailableError(read.reason);
+        }
+        for (const { index } of group.requests) {
+          results[index] = ok([]);
+        }
+      }
     } catch (error) {
       for (const { index } of group.requests) {
         results[index] = err(error);
       }
     }
   }
-  return results;
+  return scopes.map((_, index) => expectDefined(results[index], "exact session batch read result"));
 }

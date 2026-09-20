@@ -48,12 +48,9 @@ final class DashboardManager {
     @ObservationIgnored private var profileRemovalTasks: [String: (id: UUID, task: Task<Void, Error>)] = [:]
     @ObservationIgnored private let observesGatewayChanges: Bool
     @ObservationIgnored private let automaticGatewayProfileRefreshEnabled: Bool
+    @ObservationIgnored private var gatewayCatalogEntries: [DashboardGatewayEntry] = []
     private(set) var gatewayEntries: [DashboardGatewayEntry] = []
     private(set) var frontmostDashboardTarget: DashboardGatewayTarget?
-
-    var hasVisibleWindows: Bool {
-        self.dashboardControllers().contains { $0.controller.isWindowOpen }
-    }
 
     @ObservationIgnored private var gatewayRefreshObservers: [NSObjectProtocol] = []
     #if DEBUG
@@ -598,6 +595,8 @@ final class DashboardManager {
         for controller in controllers {
             controller.closeDashboard()
         }
+        // Auxiliary owners were removed before their close callbacks could project health.
+        self.publishGatewaySnapshots()
         synchronizeProfileObservations()
         self.frontmostDashboardTarget = nil
     }
@@ -741,13 +740,18 @@ final class DashboardManager {
             }
             observation?.needsRefresh = false
         }
-        self.gatewayEntries = entries
+        self.gatewayCatalogEntries = entries
         self.profileCredentialsNeedRefresh = false
-        if let controller, let snapshot = snapshot(for: mainTarget) {
+        self.publishGatewaySnapshots()
+    }
+
+    private func publishGatewaySnapshots() {
+        self.gatewayEntries = self.applyingDashboardHealth(to: self.gatewayCatalogEntries)
+        if let controller, let snapshot = snapshot(for: mainTarget), controller.gatewaySnapshot != snapshot {
             controller.updateGatewaySnapshot(snapshot)
         }
         for instance in self.auxiliaryWindows.values {
-            if let snapshot = snapshot(for: instance.target) {
+            if let snapshot = snapshot(for: instance.target), instance.controller.gatewaySnapshot != snapshot {
                 instance.controller.updateGatewaySnapshot(snapshot)
             }
         }
@@ -1112,6 +1116,10 @@ extension DashboardManager {
                 await self?.openBackgroundSession(
                     completion, target: target, sourceURL: sourceURL)
             }
+        }
+        controller.onGatewayHealthChanged = { [weak self, weak controller] in
+            guard let self, let controller, self.target(for: controller) != nil else { return }
+            self.publishGatewaySnapshots()
         }
         controller.onClosed = { [weak self, weak controller] in
             guard let self, let controller else { return }

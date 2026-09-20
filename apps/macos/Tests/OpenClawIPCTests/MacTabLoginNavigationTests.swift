@@ -135,7 +135,7 @@ struct MacTabLoginNavigationTests {
         return await new Promise(resolve => {
           addEventListener('message', e => resolve(e.data), {once:true});
           const frame = document.createElement('iframe');
-          frame.srcdoc = '<script>webkit.messageHandlers.openclawBrowser.postMessage({type:"open",tabId:"untrusted",url:"https://example.test",sessionKey:""}).then(r=>parent.postMessage(r,"*"))<\/script>';
+          frame.srcdoc = '<script>webkit.messageHandlers.openclawBrowser.postMessage({type:"open",tabId:"untrusted",url:"https://example.test",sessionKey:""}).then(r=>parent.postMessage(r,"*"))</script>';
           document.body.append(frame);
         });
         """, arguments: [:], in: nil, contentWorld: .page)

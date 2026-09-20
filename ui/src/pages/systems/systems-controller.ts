@@ -1,7 +1,6 @@
 import type { SystemInfoResult } from "@openclaw/gateway-protocol";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { NodeListNode } from "../../../../src/shared/node-list-types.js";
-import type { RouteId } from "../../app-route-paths.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { gatewayPresentationScope } from "../../app/gateway-presentation-scope.ts";
 import { hasOperatorReadAccess } from "../../app/operator-access.ts";
@@ -15,6 +14,9 @@ import {
   type SystemsInventoryRow,
 } from "./systems-data.ts";
 
+export type SystemsSortMode = "name" | "online-first" | "offline-first";
+export type SystemsStatusFilter = "all" | "online" | "offline";
+
 /** The route cache owns selection; the mounted page owns active reads and subscriptions. */
 export class SystemsController {
   readonly scope;
@@ -22,6 +24,8 @@ export class SystemsController {
   rows: SystemsInventoryRow[] = [];
   selectedId: string | null = null;
   query = "";
+  sortMode: SystemsSortMode = "online-first";
+  statusFilter: SystemsStatusFilter = "all";
   showStats = true;
   showDetails = false;
   loading = false;
@@ -36,7 +40,7 @@ export class SystemsController {
   private presented = false;
   private refreshQueued = false;
 
-  constructor(readonly context: ApplicationContext<RouteId>) {
+  constructor(readonly context: ApplicationContext) {
     this.scope = gatewayPresentationScope(context.gateway);
     this.lifecycle = createGatewayConnectionLifecycle(context.gateway.snapshot);
   }
@@ -94,6 +98,16 @@ export class SystemsController {
 
   search(query: string): void {
     this.query = query;
+    this.notify();
+  }
+
+  setSortMode(mode: SystemsSortMode): void {
+    this.sortMode = mode;
+    this.notify();
+  }
+
+  setStatusFilter(filter: SystemsStatusFilter): void {
+    this.statusFilter = filter;
     this.notify();
   }
 
