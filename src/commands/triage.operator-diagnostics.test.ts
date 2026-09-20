@@ -32,7 +32,7 @@ export async function runUpdateRepairLoop(params){
       `
 import {registerHooks} from 'node:module';
 registerHooks({load(url,context,next){
- if(/doctor-lint\\.(ts|js)$/.test(url))return {format:'module',shortCircuit:true,source:'export const collectDoctorFindings=async()=>[];'};
+ if(url.endsWith('/commands/doctor-lint.ts')||url.endsWith('/commands/doctor-lint.js'))return {format:'module',shortCircuit:true,source:'export const collectDoctorFindings=async()=>[];'};
  if(/update-repair-agent\\.(ts|js)$/.test(url))return {format:'module',shortCircuit:true,source:${JSON.stringify(repairCode)}};
  return next(url,context);
 }});

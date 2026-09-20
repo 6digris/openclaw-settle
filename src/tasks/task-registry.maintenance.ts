@@ -77,6 +77,10 @@ import {
   type TaskRegistryMaintenanceReader,
 } from "./task-registry-maintenance-snapshot.js";
 import { prepareTaskRegistryRead } from "./task-registry-read.js";
+import {
+  collectTaskRestartBlockers,
+  isTaskRestartBlocker,
+} from "./task-registry-restart-blockers.js";
 import { withTaskRegistryMutation } from "./task-registry-state.js";
 import {
   configureTaskAuditTaskProvider,
@@ -97,7 +101,7 @@ import {
 import type { TaskRecord, TaskRegistrySummary, TaskStatus } from "./task-registry.types.js";
 import type { ActiveTaskRestartBlocker } from "./task-restart-blocker.js";
 import { resolveEffectiveTaskCleanupAfter, resolveTaskCleanupAfter } from "./task-retention.js";
-import { readTriageTaskDetail, triageTaskExecutionPhase } from "./triage-task.js";
+import { readTriageTaskDetail } from "./triage-task.js";
 export { CRON_HISTORY_KEEP_PER_JOB } from "./cron-history-retention.js";
 
 const log = createSubsystemLogger("tasks/task-registry-maintenance");
@@ -757,55 +761,12 @@ export async function getInspectableTaskStatusSummaryReadOnly(): Promise<TaskSta
 
 configureTaskAuditTaskProvider(reconcileInspectableTasks);
 
-function isTaskRestartBlocker(task: TaskRecord): task is TaskRecord & {
-  status: ActiveTaskRestartBlocker["status"];
-} {
-  // A task that is merely queued has not started user work yet; durable queued
-  // work can survive a gateway restart and should not indefinitely block one.
-  // Likewise, stale records that still say "running" but already have endedAt
-  // are registry inconsistencies, not live restart blockers.
-  return task.status === "running" && !task.endedAt;
-}
-
 export function getInspectableActiveTaskRestartBlockers(): ActiveTaskRestartBlocker[] {
   taskRegistryMaintenanceRuntime.ensureTaskRegistryReady();
   // Reconciliation can retire a blocker, never revive a non-blocker. Select first
   // so frequent restart polls do not clone and sort retained terminal history.
   const candidates = taskRegistryMaintenanceRuntime.listTaskRecords(isTaskRestartBlocker);
-  const blockers: ActiveTaskRestartBlocker[] = [];
-  for (const task of reconcileTaskRecordsForOperatorInspection(candidates)) {
-    if (!isTaskRestartBlocker(task)) {
-      continue;
-    }
-    // Retained repair history is not evidence of live work. Unknown or ended
-    // backing stays unconfirmed without delaying a restart or rewriting the row.
-    if (
-      task.runtime === "cli" &&
-      task.taskKind === "triage_repair" &&
-      !triageTaskExecutionPhase(task)
-    ) {
-      continue;
-    }
-    const blocker: ActiveTaskRestartBlocker = {
-      taskId: task.taskId,
-      status: task.status,
-      runtime: task.runtime,
-    };
-    if (task.taskKind) {
-      blocker.taskKind = task.taskKind;
-    }
-    if (task.runId) {
-      blocker.runId = task.runId;
-    }
-    if (task.label) {
-      blocker.label = task.label;
-    }
-    if (task.task) {
-      blocker.title = task.task;
-    }
-    blockers.push(blocker);
-  }
-  return blockers;
+  return collectTaskRestartBlockers(reconcileTaskRecordsForOperatorInspection(candidates));
 }
 
 export function getInspectableTaskRegistrySummary(
