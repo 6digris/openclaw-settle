@@ -53,6 +53,7 @@ async function finalizeMigratedUpdate(): Promise<void> {
     process.stdout.write(
       JSON.stringify({
         executorDelegation: "pid-start-v1",
+        retainedOwnerBinding: true,
         doctorConfigWrites: "pid-start-v1",
         state: OPENCLAW_STATE_SCHEMA_VERSION,
         agent: OPENCLAW_AGENT_SCHEMA_VERSION,
@@ -243,7 +244,13 @@ async function runDelegatedDoctor(input: UpdateDoctorInput): Promise<void> {
             ? { workspaceSuggestions: input.workspaceSuggestions }
             : {}),
         },
-        { inputHash: input.configInputHash, assertCurrent },
+        {
+          inputHash: input.configInputHash,
+          assertCurrent,
+          ...(input.postCoreSchemaRepair === true
+            ? { postCoreSchemaRepair: { runId: input.runId, assertCurrent } }
+            : {}),
+        },
       );
     },
   );

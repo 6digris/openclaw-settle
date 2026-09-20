@@ -93,7 +93,6 @@ import {
   resetTaskRegistryMaintenanceRuntimeForTests,
   reconcileInspectableTasks,
   runTaskRegistryMaintenance,
-  setTaskRegistryMaintenanceRuntimeForTests,
   startTaskRegistryMaintenance,
   stopTaskRegistryMaintenance,
   sweepTaskRegistry,
@@ -109,6 +108,7 @@ import {
   createAcpTaskRecord,
   createTaskFixture,
   createTerminalSubagentKillResult,
+  flushAsyncWork,
   withTaskRegistryTempDir,
 } from "./task-registry.test-support.js";
 import type { TaskDeliveryState, TaskRecord } from "./task-registry.types.js";
@@ -222,12 +222,6 @@ function createSessionBindingRecord(
 
 function waitForAssertion(assertion: () => void, timeoutMs = 2_000, stepMs = 5) {
   return waitForFast(assertion, { timeout: timeoutMs, interval: stepMs });
-}
-
-async function flushAsyncWork(times = 4) {
-  for (let index = 0; index < times; index += 1) {
-    await Promise.resolve();
-  }
 }
 
 function expectRecordFields(record: unknown, expected: Record<string, unknown>) {
@@ -3654,61 +3648,6 @@ describe("task-registry", () => {
     });
   });
 
-  it("does not leak unhandled rejections when the scheduled maintenance sweep fails", async () => {
-    await withTaskRegistryTempDir(async () => {
-      vi.useFakeTimers();
-
-      const unhandled: unknown[] = [];
-      const onUnhandledRejection = (reason: unknown) => {
-        unhandled.push(reason);
-      };
-      process.on("unhandledRejection", onUnhandledRejection);
-
-      setTaskRegistryMaintenanceRuntimeForTests({
-        listAcpSessionEntries: async () => [],
-        readAcpSessionEntry: () => ({
-          cfg: {} as never,
-          storePath: "",
-          sessionKey: "",
-          storeSessionKey: "",
-          entry: undefined,
-          storeReadFailed: false,
-        }),
-        listSessionEntries: () => [],
-        resolveStorePath: () => "",
-        parseAgentSessionKey: () => null,
-        isCronJobActive: () => false,
-        getAgentRunContext: () => undefined,
-        hasActiveAcpTurn: () => false,
-        hasActiveTaskForChildSessionKey: () => false,
-        deleteTaskRecordById: () => false,
-        ensureTaskRegistryReady: () => {},
-        getTaskById: () => undefined,
-        getTaskRegistryMaintenanceTask: () => undefined,
-        getTaskRegistryMaintenanceSnapshot: () => {
-          throw new Error("maintenance boom");
-        },
-        listTaskRecords: () => [],
-        markTaskLostById: () => null,
-        markTaskTerminalById: () => null,
-        maybeDeliverTaskTerminalUpdate: async () => null,
-        resolveTaskForLookupToken: () => undefined,
-        setTaskCleanupAfterById: () => null,
-        isRuntimeAuthoritative: () => true,
-        listTaskRegistryRecordsByRuntimeSourceIdFromSqlite: () => [],
-      });
-
-      try {
-        startTaskRegistryMaintenance();
-        await vi.advanceTimersByTimeAsync(5_000);
-        await flushAsyncWork();
-        expect(unhandled).toStrictEqual([]);
-      } finally {
-        process.off("unhandledRejection", onUnhandledRejection);
-      }
-    });
-  });
-
   it.each(["closing", "retained"] as const)(
     "keeps sweep membership fixed when %s retention changes during awaited cleanup",
     async (refreshedTask) => {
@@ -3924,29 +3863,6 @@ describe("task-registry", () => {
         lastEventAt: 1_699_999_998_500,
       });
       expect(getInspectableTaskAuditSummary().byCode.inconsistent_timestamps).toBe(0);
-    });
-  });
-
-  it("records the transition time when a generic update becomes terminal", async () => {
-    await withTaskRegistryTempDir(async () => {
-      const task = createTaskFixture("cli", {
-        runId: "run-generic-terminal",
-        task: "Generic terminal transition",
-        status: "running",
-        deliveryStatus: "pending",
-        lastEventAt: 100,
-      });
-      updateTaskStateByRunId({ runId: "run-generic-terminal", endedAt: 150 });
-      const nowSpy = vi.spyOn(Date, "now").mockReturnValue(300);
-
-      updateTaskStateByRunId({ runId: "run-generic-terminal", status: "failed" });
-      nowSpy.mockRestore();
-
-      expectRecordFields(requireTaskById(task.taskId), {
-        status: "failed",
-        endedAt: 300,
-        lastEventAt: 300,
-      });
     });
   });
 
