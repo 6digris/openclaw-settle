@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { runtimeProcessEntrypoints } from "../infra/runtime-process-entrypoints.js";
+import { captureRuntimeWorkerSource } from "../infra/runtime-worker-generation.js";
 import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { SQLITE_IDLE_HANDLE_TTL_MS } from "../infra/sqlite-handle-lifecycle.js";
 import type { SqliteWorkerAdmissionCleanup } from "../infra/sqlite-worker-broker.types.js";
@@ -47,11 +48,12 @@ type DomainScope = Pick<SqliteWorkerStore<OpenClawStateWorkerOperations>, "execu
 
 const log = createSubsystemLogger("state/worker");
 const SHARED_STATE_WORKER_IDLE_INSPECT_MS = 60_000;
+const moduleUrl = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sharedStateStore);
 
 function createSharedStateWorkerOwner() {
-  const moduleUrl = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sharedStateStore);
   type IdleTimer = ReturnType<typeof setTimeout> & { unref?: () => void };
   type Entry = {
+    source: ReturnType<typeof captureRuntimeWorkerSource>;
     context: OpenClawStateWorkerContext;
     opening: Promise<Store | undefined>;
     openingAdmission: { assertCurrent?: () => void; refusal?: { error: unknown } };
@@ -341,19 +343,13 @@ function createSharedStateWorkerOwner() {
   return {
     close,
     retainOperation,
-    openCleanup(databasePath: string, context: SqliteWorkerStateContext, assertOwned: () => void) {
-      return openSharedStateSqliteWorkerStore<OpenClawStateWorkerCleanupOperations>(
-        { moduleUrl, databasePath, existingOnly: true },
-        context,
-        assertOwned,
-      );
-    },
     async open(
       context: OpenClawStateWorkerContext,
       existingOnly = false,
       assertCurrent?: () => void,
     ): Promise<Store | undefined> {
       const { admission } = context;
+      const source = captureRuntimeWorkerSource(moduleUrl);
       const assertAdmission = () => {
         admission.assertCurrent();
         assertCurrent?.();
@@ -368,7 +364,8 @@ function createSharedStateWorkerOwner() {
         for (const candidate of stores) {
           if (
             matches(candidate, admission.identity) &&
-            candidate.context.existingSchemaPath !== context.existingSchemaPath
+            (candidate.context.existingSchemaPath !== context.existingSchemaPath ||
+              candidate.source.moduleUrl.href !== source.moduleUrl.href)
           ) {
             await retire(candidate);
             assertAdmission();
@@ -439,6 +436,7 @@ function createSharedStateWorkerOwner() {
           }
         };
         const admitted: Entry = {
+          source,
           context,
           openingAdmission,
           existingOnly,
@@ -447,7 +445,7 @@ function createSharedStateWorkerOwner() {
           opening: runInDetachedAsyncContext(() =>
             openSharedStateSqliteWorkerStore<StoreOperations>(
               {
-                moduleUrl,
+                ...source,
                 databasePath: admission.databasePath,
                 existingOnly,
               },
@@ -556,7 +554,11 @@ export function openOpenClawStateWorkerCleanupStore(
   context: SqliteWorkerStateContext,
   assertOwned: () => void,
 ) {
-  return owner().openCleanup(databasePath, context, assertOwned);
+  return openSharedStateSqliteWorkerStore<OpenClawStateWorkerCleanupOperations>(
+    { ...captureRuntimeWorkerSource(moduleUrl), databasePath, existingOnly: true },
+    context,
+    assertOwned,
+  );
 }
 
 export async function executeOpenClawStateWorker<Key extends keyof OpenClawStateWorkerOperations>(
@@ -675,10 +677,7 @@ async function inspectAdmittedOpenClawStateDatabase(
     try {
       context.admission.assertCurrent();
       return await runWithOpenClawStateWorkerStore(store, context, (scope) =>
-        scope.execute({
-          type: "database.generationMatches",
-          input: command.input,
-        }),
+        scope.execute(command),
       );
     } finally {
       releaseOperation();

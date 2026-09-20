@@ -6,6 +6,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { serialize } from "node:v8";
 import { INCOGNITO_AGENT_SQLITE_BASENAME } from "../state/openclaw-agent-db.paths.js";
 import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "../state/openclaw-state-db-contract.js";
+import { runtimeProcessEntrypoints } from "./runtime-process-entrypoints.js";
+import { resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
 import type {
   PreparedSqliteWorkerOpen,
   SqliteWorkerStoreOptions,
@@ -59,8 +61,12 @@ export function captureSqliteWorkerOpen(
     throw new Error("Owned SQLite Worker admission requires an existing physical identity");
   }
   assertOpening?.();
+  const carrier = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sqliteStore);
+  const carrierUrl = options.runtimeGeneration?.resolve(carrier) ?? carrier;
   return {
     ...native,
+    runtimeGeneration: options.runtimeGeneration,
+    carrierUrl,
     createAdmission:
       createAdmission && inCaller ? (operation) => inCaller(createAdmission, operation) : undefined,
     assertCurrent: assertOpening,
