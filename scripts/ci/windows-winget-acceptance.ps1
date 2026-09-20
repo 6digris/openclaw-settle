@@ -247,7 +247,8 @@ try {
     try {
         $reader = [IO.StreamReader]::new($bundleZip.GetEntry('AppxMetadata/AppxBundleManifest.xml').Open())
         try { [xml]$bundleManifest = $reader.ReadToEnd() } finally { $reader.Dispose() }
-        $application = @($bundleManifest.Bundle.Packages.Package | Where-Object { $_.Architecture -eq 'x64' -and $_.Type -eq 'application' })
+        # The official bundle also carries an x64 stub; only the full payload owns winget.exe.
+        $application = @($bundleManifest.Bundle.Packages.Package | Where-Object { $_.Architecture -eq 'x64' -and $_.Type -eq 'application' -and $_.GetAttribute('IsStub') -ne 'true' })
         Assert-Proof ($application.Count -eq 1) 'Official bundle has no unique x64 application.'
         $applicationPath = Join-Path $bootstrapRoot 'application.msix'
         [IO.Compression.ZipFileExtensions]::ExtractToFile($bundleZip.GetEntry($application[0].FileName),$applicationPath)
