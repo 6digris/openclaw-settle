@@ -123,7 +123,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/worker-environments/provider-crabbox-runtime-preflight.test.ts",
   "src/gateway/worker-environments/workspace-result-ref-mutation.test.ts",
   "src/gateway/worker-environments/workspace-result-repository.test.ts",
-];
+].toSorted();
 
 // Canonical file ownership for the non-isolated Gateway server Vitest project.
 export const gatewayServerBackedHttpTestFiles = [
