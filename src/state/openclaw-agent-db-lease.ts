@@ -25,6 +25,7 @@ import {
   assertAgentDeletionPathFence,
   prepareAgentDeletionPathFence,
 } from "./agent-deletion-journal.js";
+import { getOpenClawDatabaseMaintenanceScope } from "./openclaw-state-db-async-lifecycle.js";
 import {
   openClawStateDatabaseCache,
   requireOpenClawStateDatabaseIdentity,
@@ -69,6 +70,7 @@ export class OpenClawAgentDatabaseLeaseActiveError extends Error {
 const maintenanceAuthority = new AsyncLocalStorage<{
   authority: OpenClawStateLeaseContext;
   databasePath: string;
+  assertScopeCurrent?: () => void;
 }>();
 
 const maintenanceHandles = resolveGlobalSingleton(
@@ -91,6 +93,7 @@ export function registerAgentDatabaseMaintenanceAccess(database: DatabaseSync): 
       throw new Error("Agent database belongs to another maintenance mutation scope.");
     }
     assertMutation();
+    owner.assertScopeCurrent?.();
     owner.authority.assertOwned();
   };
   assertCurrent();
@@ -111,7 +114,15 @@ export function runWithAgentDatabaseMaintenanceAuthority<T>(
   databasePath: string,
   run: () => Promise<T>,
 ): Promise<T> {
-  return maintenanceAuthority.run({ authority, databasePath: path.resolve(databasePath) }, run);
+  const scope = getOpenClawDatabaseMaintenanceScope();
+  return maintenanceAuthority.run(
+    {
+      authority,
+      databasePath: path.resolve(databasePath),
+      assertScopeCurrent: scope ? () => scope.assertAdmission() : undefined,
+    },
+    run,
+  );
 }
 
 /** Revalidate the held lease, including immediately before committing a versioned rebuild. */
@@ -125,10 +136,12 @@ export function assertAgentDatabaseMaintenanceAuthority(
     );
   }
   authority.assertOwned();
+  maintenanceAuthority.getStore()?.assertScopeCurrent?.();
 }
 
 /** Revalidate a maintenance owner when present, without requiring ordinary opens to hold one. */
 export function assertAgentDatabaseMaintenanceAuthorityIfPresent(): void {
+  maintenanceAuthority.getStore()?.assertScopeCurrent?.();
   maintenanceAuthority.getStore()?.authority.assertOwned();
 }
 

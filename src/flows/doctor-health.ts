@@ -45,18 +45,39 @@ export async function runDoctorHealthFlow(
   writeAuthority?: UpdateDoctorWriteAuthority,
   databasePreflight?: DoctorDatabasePreflight,
 ) {
+  let preparedPreflight = databasePreflight;
+  if (process.env.OPENCLAW_UPDATE_IN_PROGRESS === "1" && !writeAuthority?.postCoreSchemaRepair) {
+    const { guardUpdateDoctorSchemaUpgrade, rehearseDeferredUpdateDoctorSchema } =
+      await import("../commands/doctor-update-schema-guard.js");
+    preparedPreflight =
+      (await guardUpdateDoctorSchemaUpgrade({
+        schemas: preparedPreflight,
+        runtime,
+        json: options.json,
+      })) ?? preparedPreflight;
+    if (preparedPreflight?.updateSchemaRehearsal) {
+      await rehearseDeferredUpdateDoctorSchema(preparedPreflight, runtime);
+      return;
+    }
+  }
   const resultPath = process.env[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV]?.trim();
   return resultPath
     ? captureUpdateDoctorConfigWrites(
         resolveConfigPath(),
         (capture) =>
-          runDoctorHealthFlowWithResult(runtime, options, databasePreflight, {
-            resultPath,
-            capture,
-          }),
+          runDoctorHealthFlowWithResult(
+            runtime,
+            options,
+            preparedPreflight,
+            {
+              resultPath,
+              capture,
+            },
+            writeAuthority,
+          ),
         writeAuthority,
       )
-    : runDoctorHealthFlowWithResult(runtime, options, databasePreflight);
+    : runDoctorHealthFlowWithResult(runtime, options, preparedPreflight, undefined, writeAuthority);
 }
 
 async function runDoctorHealthFlowWithResult(
@@ -64,6 +85,7 @@ async function runDoctorHealthFlowWithResult(
   options: DoctorOptions,
   databasePreflight: DoctorDatabasePreflight | undefined,
   updateResult?: { resultPath: string; capture: DoctorConfigCapture },
+  writeAuthority?: UpdateDoctorWriteAuthority,
 ) {
   const effectiveRuntime = runtime ?? (await import("../runtime.js")).defaultRuntime;
   // Config loading can initialize SQLite-backed state before integrity runs.
@@ -91,7 +113,12 @@ async function runDoctorHealthFlowWithResult(
   let doctorResult: UpdatePostInstallDoctorResult = { status: "error" };
   try {
     const { beginDoctorMaintenance } = await import("../commands/doctor-maintenance.js");
-    maintenance = await beginDoctorMaintenance({ options, root, runtime: effectiveRuntime });
+    maintenance = await beginDoctorMaintenance({
+      options,
+      root,
+      runtime: effectiveRuntime,
+      assertCurrent: writeAuthority?.assertCurrent,
+    });
     const runChecks = async () => {
       const { createDoctorPrompter } = await import("../commands/doctor-prompter.js");
       const { prepareDoctorDatabasePreflight } =
@@ -127,6 +154,7 @@ async function runDoctorHealthFlowWithResult(
         schemas,
         runtime: effectiveRuntime,
         json: options.json,
+        postCoreSchemaRepair: writeAuthority?.postCoreSchemaRepair,
       });
 
       if (maintenance && (options.repair === true || options.yes === true)) {

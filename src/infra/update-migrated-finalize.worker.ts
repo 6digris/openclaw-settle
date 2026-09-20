@@ -244,7 +244,13 @@ async function runDelegatedDoctor(input: UpdateDoctorInput): Promise<void> {
             ? { workspaceSuggestions: input.workspaceSuggestions }
             : {}),
         },
-        { inputHash: input.configInputHash, assertCurrent },
+        {
+          inputHash: input.configInputHash,
+          assertCurrent,
+          ...(input.postCoreSchemaRepair === true
+            ? { postCoreSchemaRepair: { runId: input.runId, assertCurrent } }
+            : {}),
+        },
       );
     },
   );
