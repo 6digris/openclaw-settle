@@ -57,11 +57,8 @@ export async function triageAfterFailure(
     error: scrubDoctorErrorMessage(
       redactSupportString(failure.error, redaction, { maxLength: 800 }),
     ),
-    // Protocol identities are exact or unavailable, never truncated lookalikes.
-    expectedVersion:
-      failure.expectedVersion && failure.expectedVersion.length <= 100
-        ? failure.expectedVersion
-        : undefined,
+    // Preserve identity fields exactly; protocol admission rejects unrepresentable values.
+    // Dropping an invalid expected version would silently accept any running version.
   };
   const previousShell = process.env.OPENCLAW_SHELL;
   process.env.OPENCLAW_SHELL = "exec";

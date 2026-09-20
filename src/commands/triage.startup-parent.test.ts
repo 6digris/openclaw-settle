@@ -30,6 +30,8 @@ it.each([
   "wrong-root",
   "wrong-request",
   "replaced-boot",
+  "overlong-expected-version",
+  "empty-expected-version",
 ])(
   "checks original startup %s after native join without changing original output",
   async (mode) => {
@@ -94,9 +96,14 @@ it.each([
       error: "original listener failure",
       gateway: "verify-running" as const,
       installationRoot: root,
-      expectedVersion: "2026.9.11",
+      expectedVersion:
+        mode === "overlong-expected-version"
+          ? "v".repeat(101)
+          : mode === "empty-expected-version"
+            ? ""
+            : "2026.9.11",
     };
-    mocks.join.mockImplementation(async () => {
+    mocks.join.mockImplementation(async ({ failure: request }) => {
       healthy = mode !== "no-effect" && mode !== "forged-success";
       if (mode === "replaced-boot") {
         boot = "replacement-boot";
@@ -109,7 +116,7 @@ it.each([
           kind: failure.kind,
           phase: failure.phase,
           gateway: failure.gateway,
-          expectedVersion: mode === "wrong-request" ? "restored-old" : failure.expectedVersion,
+          expectedVersion: mode === "wrong-request" ? "restored-old" : request.expectedVersion,
         },
         attempted: true,
         agentExitCode: 0,

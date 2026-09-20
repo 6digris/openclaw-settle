@@ -130,6 +130,8 @@ Targeted automatic Codex repair requires an owned stdio app-server process. Unix
 
 The fixing agent receives the original failure and a verification goal: check the intended installation with `openclaw health --json` and `openclaw status --all` or `openclaw gateway status --deep`, confirm the expected running version after an update when known, and verify the original symptom. A PID, valid config, or successful repair command alone does not prove recovery. The report must include changes, verification evidence, and any remaining blocker.
 
+For foreground automatic startup recovery, the original parent independently repeats the startup health checks against the captured configuration, authentication, port, and expected version when supplied. A passing result confirms those endpoint checks, not the requested build or managed service installation. Gateway activation remains unconfirmed; the update owner retains its separate installation, activation, and rollback checks as well as the original failure result and exit status. An expected version that cannot be represented by the repair protocol is rejected, not discarded.
+
 Skipped or blocked updates, capability approval refusals, ownership and schema refusals, startup failures with unconfirmed cleanup, existing-Gateway lock conflicts, external supervisors, and commands already running inside a fixing agent do not trigger another automatic agent. Automatic triage honors `--no-restart` and leaves intentionally stopped services stopped. Termination signals cancel foreground triage. Diagnostics and agent output go to stderr. The original failure result and exit status remain unchanged, even if the agent reports success.
 
 When upgrading from an older managed-update helper, a leftover transient claim is
