@@ -247,7 +247,11 @@ const rootEntries = [
   // OpenGrep rule tests read these as static source inputs; they are never executed.
   "security/opengrep/rules/ghsa-82g8-464f-2mv7/skill-env.js!",
   "security/opengrep/rules/ghsa-82g8-464f-2mv7/skill-env.ts!",
+  "security/opengrep/rules/ghsa-fv94-qvg8-xqpw/ssh-sandbox-upload.js!",
+  "security/opengrep/rules/ghsa-fv94-qvg8-xqpw/ssh-sandbox-upload.ts!",
   "openclaw.mjs!",
+  // update-command-node-runtime-resolution loads this package-root module by absolute URL.
+  "node-runtime-recovery.mjs!",
   "src/index.ts!",
   "src/entry.ts!",
   // Built as the official image's Docker HEALTHCHECK entrypoint.
@@ -271,6 +275,7 @@ const rootEntries = [
   "scripts/release-plan-producer-core.mts!",
   "scripts/release-plan-producer.mts!",
   "scripts/full-release-publication-observations.mts!",
+  "scripts/release-verify-publish.ts!",
   // Spawned by the agent concurrency benchmark; no static import edge exists.
   "scripts/bench-agent-concurrency-worker.ts!",
   // Spawned by the durable task registry churn benchmark in a fresh GC-enabled process.
