@@ -18,7 +18,10 @@ import { configIncludeOwnsAgentRosterValues } from "./agent-roster-provenance.js
 import { containsEnvVarReference } from "./env-substitution.js";
 import { coerceConfig } from "./io.read-helpers.js";
 import { createConfigIncludeOwnershipError } from "./io.write-errors.js";
-import type { ConfigWriteSourceProjectionParams } from "./io.write-values.js";
+import {
+  prepareConfigWriteValues as prepareWriteValues,
+  type ConfigWriteSourceProjectionParams,
+} from "./io.write-values.js";
 import { parseLegacyAgentRoster, projectLegacyAgentRosterEntries } from "./legacy.roster.js";
 import { createMergePatch } from "./merge-patch.js";
 import { normalizeAgentModelMapForConfig, normalizeAgentModelRefForConfig } from "./model-input.js";
@@ -31,7 +34,9 @@ import {
 import { projectRuntimeChangesOntoSource } from "./source-value-projection.js";
 import type { OpenClawConfig } from "./types.js";
 
-export { prepareConfigWriteValues } from "./io.write-values.js";
+export function prepareConfigWriteValues(params: Parameters<typeof prepareWriteValues>[0]) {
+  return prepareWriteValues(params, projectAuthoredAgentRosterForWrite);
+}
 
 const AGENT_ROSTER_PATHS = [
   ["agents", "entries"],
