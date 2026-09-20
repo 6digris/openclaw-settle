@@ -42,6 +42,49 @@ describe("session group catalog readers", () => {
     ]);
   });
 
+  it("replaces prior defaults without changing catalog metadata or inputs", () => {
+    const groups = Object.freeze([
+      Object.freeze({ name: "Client", position: 4, cwd: "/old/client", worktree: true }),
+      Object.freeze({ name: "Local", position: 1, cwd: "/old/local", worktree: true }),
+      Object.freeze({ name: "Missing", position: 8, cwd: "/old/missing", worktree: true }),
+    ]);
+    const payload = Object.freeze({
+      defaults: Object.freeze([
+        Object.freeze({ name: "Client", worktree: false }),
+        Object.freeze({ name: "Local", cwd: "/repos/local" }),
+      ]),
+    });
+
+    expect(mergeSessionGroupDefaults(groups, payload)).toStrictEqual([
+      { name: "Client", position: 4, worktree: false },
+      { name: "Local", position: 1, cwd: "/repos/local" },
+      { name: "Missing", position: 8 },
+    ]);
+  });
+
+  it.each([
+    { label: "absent defaults", payload: {} },
+    { label: "null defaults", payload: { defaults: null } },
+    { label: "non-array defaults", payload: { defaults: {} } },
+    { label: "omitted fields", payload: { defaults: [{ name: "Client" }] } },
+    {
+      label: "null fields",
+      payload: { defaults: [{ name: "Client", cwd: null, worktree: null }] },
+    },
+    {
+      label: "malformed fields",
+      payload: { defaults: [{ name: "Client", cwd: 42, worktree: "false" }] },
+    },
+    { label: "malformed records", payload: { defaults: [null, { name: 42 }] } },
+  ])("clears prior defaults for $label", ({ payload }) => {
+    expect(
+      mergeSessionGroupDefaults(
+        [{ name: "Client", position: 4, cwd: "/old/client", worktree: true }],
+        payload,
+      ),
+    ).toStrictEqual([{ name: "Client", position: 4 }]);
+  });
+
   it("reads normalized section order", () => {
     expect(
       readSidebarSectionOrder({
