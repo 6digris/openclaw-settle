@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { getSlackQaMessageWriteCursor, readSlackQaMessageWrites } from "./slack-live.capture.js";
+import {
+  getSlackQaMessageWriteCursor,
+  readSlackQaAcceptedWrites,
+  readSlackQaMessageWrites,
+} from "./slack-live.capture.js";
 
 function buildMessageRequest(params: {
   channel?: string;
@@ -143,5 +147,62 @@ describe("Slack QA debug capture", () => {
         store,
       }),
     ).resolves.toEqual([expect.objectContaining({ text: "NEXT" })]);
+  });
+
+  it("separates accepted native mutations from rejected writes and visual evidence", () => {
+    const methods = [
+      "chat.delete",
+      "reactions.add",
+      "reactions.remove",
+      "files.completeUploadExternal",
+      "files.delete",
+    ];
+    const events = methods.flatMap((method, index) => [
+      {
+        ...buildResponse(
+          method,
+          true,
+          method === "files.completeUploadExternal"
+            ? { files: [{ id: "F_NEW", url_private: "private-url" }] }
+            : {},
+        ),
+        id: index * 2 + 2,
+      },
+      {
+        id: index * 2 + 1,
+        ...buildMessageRequest({ flowId: method, method, text: "", ts: "2.000000" }),
+        dataText: new URLSearchParams({
+          channel: "C123",
+          ts: "2.000000",
+          thread_ts: "1.000000",
+          name: "eyes",
+          file: "F_DELETED",
+        }).toString(),
+      },
+    ]);
+    events.push(
+      { ...buildResponse("rejected", false), id: 12 },
+      { id: 11, ...buildMessageRequest({ flowId: "rejected", method: "reactions.add", text: "" }) },
+    );
+    const writes = readSlackQaAcceptedWrites({
+      afterRequestEventId: 0,
+      sessionId: "qa-slack",
+      store: { getSessionEvents: () => events.toReversed(), readBlob: () => null },
+    });
+    expect(writes.map((write) => [write.method, write.evidence])).toEqual(
+      methods.map((method) => [method, "api-accepted"]),
+    );
+    expect(writes.find((write) => write.method === "reactions.add")).toMatchObject({
+      messageId: "2.000000",
+      emoji: "eyes",
+    });
+    expect(writes.find((write) => write.method === "files.completeUploadExternal")).toMatchObject({
+      fileIds: ["F_NEW"],
+      threadId: "1.000000",
+    });
+    expect(writes.find((write) => write.method === "files.delete")).toMatchObject({
+      fileIds: ["F_DELETED"],
+    });
+    expect(JSON.stringify(writes)).not.toContain("private-url");
   });
 });

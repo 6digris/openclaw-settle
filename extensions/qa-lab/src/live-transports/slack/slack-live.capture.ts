@@ -9,6 +9,25 @@ const SLACK_QA_CAPTURE_SETTLE_TIMEOUT_MS = 5_000;
 const SLACK_QA_MESSAGE_TEXT_MAX_CHARS = 2_048;
 const SLACK_QA_BLOCK_TEXT_MAX_ITEMS = 64;
 const SLACK_QA_MESSAGE_WRITE_METHODS = new Set(["chat.postMessage", "chat.update"]);
+const SLACK_QA_NATIVE_WRITE_METHODS = new Set([
+  ...SLACK_QA_MESSAGE_WRITE_METHODS,
+  "chat.delete",
+  "reactions.add",
+  "reactions.remove",
+  "files.completeUploadExternal",
+  "files.delete",
+]);
+
+export type SlackAcceptedWrite = {
+  evidence: "api-accepted";
+  requestEventId: number;
+  method: string;
+  channelId?: string;
+  messageId?: string;
+  threadId?: string;
+  emoji?: string;
+  fileIds?: string[];
+};
 
 function readSlackQaCapturePayload(
   store: DebugProxyCaptureReader,
@@ -193,4 +212,69 @@ export async function readSlackQaMessageWrites(params: {
     }
     await sleep(Math.min(25, Math.max(1, deadline - Date.now())));
   }
+}
+
+export function getSlackQaNativeWriteCursor(params: {
+  sessionId: string;
+  store: DebugProxyCaptureReader;
+}): number {
+  return readSlackQaCaptureEvents(params).reduce(
+    (cursor, event) => (typeof event.id === "number" ? Math.max(cursor, event.id) : cursor),
+    0,
+  );
+}
+
+/** Successful Gateway Web API writes, not Socket Mode delivery or visual evidence. */
+export function readSlackQaAcceptedWrites(params: {
+  afterRequestEventId: number;
+  sessionId: string;
+  store: DebugProxyCaptureReader;
+}): SlackAcceptedWrite[] {
+  const events = readSlackQaCaptureEvents(params);
+  const responses = new Map<string, Record<string, unknown>>();
+  for (const event of events) {
+    const response = parseSuccessfulSlackCaptureResponse(params.store, event);
+    if (response && typeof event.flowId === "string") {
+      responses.set(event.flowId, response);
+    }
+  }
+  return events.toReversed().flatMap((event) => {
+    const method = readSlackQaMethod(event);
+    if (
+      !method ||
+      !SLACK_QA_NATIVE_WRITE_METHODS.has(method) ||
+      typeof event.id !== "number" ||
+      event.id <= params.afterRequestEventId ||
+      typeof event.flowId !== "string"
+    ) {
+      return [];
+    }
+    const response = responses.get(event.flowId);
+    const payload = readSlackQaCapturePayload(params.store, event);
+    const request = payload ? parseSlackQaCaptureObject(payload) : undefined;
+    if (!response || !request) {
+      return [];
+    }
+    const uploaded = Array.isArray(response.files) ? response.files : [];
+    const fileIds = uploaded.flatMap((file: unknown) =>
+      file && typeof file === "object" && "id" in file && typeof file.id === "string"
+        ? [file.id]
+        : [],
+    );
+    if (method === "files.delete" && typeof request.file === "string") {
+      fileIds.push(request.file);
+    }
+    return [
+      {
+        evidence: "api-accepted" as const,
+        requestEventId: event.id,
+        method,
+        channelId: truncateSlackQaText(response.channel ?? request.channel ?? request.channel_id),
+        messageId: truncateSlackQaText(response.ts ?? request.ts ?? request.timestamp),
+        threadId: truncateSlackQaText(request.thread_ts),
+        emoji: truncateSlackQaText(request.name),
+        ...(fileIds.length ? { fileIds } : {}),
+      },
+    ];
+  });
 }
