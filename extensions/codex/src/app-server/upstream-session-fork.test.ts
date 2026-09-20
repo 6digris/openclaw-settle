@@ -51,7 +51,7 @@ const boundary = {
   lastRetainedTurnId: "turn-1",
 } as const;
 
-vi.mock("openclaw/plugin-sdk/session-catalog", async (importOriginal) => ({
+vi.mock("../../../../src/sessions/session-upstream-links.js", async (importOriginal) => ({
   ...(await importOriginal()),
   deleteSessionUpstreamLink: linkMocks.delete,
   upsertSessionUpstreamLink: linkMocks.upsert,

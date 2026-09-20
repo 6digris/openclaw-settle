@@ -207,7 +207,7 @@ export function createNativeSessionBindingLeases<TRecord extends NativeSessionBi
   };
 }
 
-export type NativeSessionBindingLease = { token: string; expiresAt: number };
+type NativeSessionBindingLease = { token: string; expiresAt: number };
 
 export type NativeSessionBindingRecord = { lease?: NativeSessionBindingLease };
 

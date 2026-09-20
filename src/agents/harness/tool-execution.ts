@@ -32,7 +32,7 @@ export function createAgentHarnessToolExecutionBoundaryRegistry() {
   const states = new Map<string, ToolExecutionBoundaryState>();
 
   return {
-    consume(toolCallId: string): AgentHarnessToolExecutionSnapshot | undefined {
+    consume(this: void, toolCallId: string): AgentHarnessToolExecutionSnapshot | undefined {
       const state = states.get(toolCallId);
       states.delete(toolCallId);
       if (state) {

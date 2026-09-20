@@ -33,7 +33,7 @@ export function createNativeSessionInitializationOwner<TStore, TIdentity, TBindi
 
   return {
     /** Capture cleanup ownership before any potentially committing binding or link write. */
-    prepare(params: {
+    prepare(this: void, params: {
       initialization: SessionInitialization;
       bindingStore: TStore;
       identity: TIdentity;
@@ -102,6 +102,7 @@ export function createNativeSessionInitializationOwner<TStore, TIdentity, TBindi
     },
 
     getRollback(
+      this: void,
       store: TStore,
       params: { initialization?: SessionInitialization },
       identity: TIdentity,
