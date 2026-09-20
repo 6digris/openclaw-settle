@@ -57,11 +57,16 @@ export async function guardUpdateDoctorSchemaUpgrade(options: {
   schemas?: DoctorDatabasePreflight;
   runtime?: RuntimeEnv;
   json?: boolean;
+  statePublicationOnly?: boolean;
 }): Promise<DoctorDatabasePreflight | undefined> {
   if (process.env.OPENCLAW_UPDATE_IN_PROGRESS !== "1") {
     return undefined;
   }
-  const schemas = options.schemas ?? (await prepareDoctorDatabasePreflight());
+  const schemas =
+    options.schemas ??
+    (await prepareDoctorDatabasePreflight(
+      options.statePublicationOnly ? { scope: "state" } : undefined,
+    ));
   if (!schemas.pendingMigrations?.length) {
     return schemas;
   }
@@ -74,8 +79,8 @@ export async function guardUpdateDoctorSchemaUpgrade(options: {
   if (!updater) {
     return schemas;
   }
-  const blockedMigrations = schemas.pendingMigrations.filter(
-    (database) => database.kind === "agent" || !updater.canDeferStateSchema,
+  const blockedMigrations = schemas.pendingMigrations.filter((database) =>
+    database.kind === "agent" ? !options.statePublicationOnly : !updater.canDeferStateSchema,
   );
   if (blockedMigrations.length === 0) {
     return schemas;

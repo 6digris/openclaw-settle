@@ -116,6 +116,7 @@ describe("runPostCorePluginConvergence", () => {
         OPENCLAW_UPDATE_POST_CORE_CONVERGENCE: "1",
       },
       prompter: { shouldRepair: true },
+      beforePersistentEffect: expect.any(Function),
     });
     expect(mocks.repairMissingConfiguredPluginInstalls).toHaveBeenCalledWith({
       cfg,
@@ -444,6 +445,7 @@ describe("runPostCorePluginConvergence", () => {
       },
       installRecords: baseline,
       prompter: { shouldRepair: true },
+      beforePersistentEffect: expect.any(Function),
     });
     expect(mocks.repairMissingConfiguredPluginInstalls).toHaveBeenCalledTimes(1);
     expect(mocks.repairMissingConfiguredPluginInstalls).toHaveBeenCalledWith({

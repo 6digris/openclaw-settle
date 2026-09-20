@@ -1,4 +1,7 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
 import { inspectPluginMigrationAvailability } from "./plugin-migration-availability.js";
 const m = vi.hoisted(() => ({
   plugin: {} as Record<string, unknown>,
@@ -39,7 +42,10 @@ vi.mock("../../../plugins/manifest-owner-policy.js", () => ({
   isActivatedManifestOwner: () => m.active,
   passesManifestOwnerBasePolicy: () => m.policy,
 }));
-vi.mock("../../../plugins/payload-verification.js", () => ({ isPayloadMissing: () => false }));
+vi.mock("../../../plugins/payload-verification.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../plugins/payload-verification.js")>()),
+  isPayloadMissing: () => false,
+}));
 vi.mock("../../../plugins/plugin-cache.js", () => ({
   createPluginCache: () => ({}),
   withPluginCache: (_: unknown, run: () => unknown) => run(),
@@ -158,3 +164,52 @@ it("allows an available active retained-only required owner to attempt its migra
   expect(result.requiredPluginIds).toEqual(["owner"]);
   expect(result.pending).toEqual([]);
 });
+
+const retainedPayloadDirs = useAutoCleanupTempDirTracker(afterEach);
+it.each([false, true])(
+  "verifies a retained bundled payload before admitting migration (present=%s)",
+  async (present) => {
+    const rootDir = retainedPayloadDirs.make("openclaw-retained-payload-");
+    const marker = path.join(rootDir, "executed");
+    fs.writeFileSync(
+      path.join(rootDir, "package.json"),
+      JSON.stringify({ name: "@example/owner", main: "index.cjs" }),
+    );
+    if (present) {
+      fs.writeFileSync(
+        path.join(rootDir, "index.cjs"),
+        `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "executed");`,
+      );
+    }
+    m.selected = false;
+    m.bundled = true;
+    m.plugin = {
+      id: "owner",
+      origin: "bundled",
+      channels: [],
+      rootDir,
+      doctorContract: { stateMigrations: true },
+    };
+    const result = await inspectPluginMigrationAvailability({
+      cfg: {},
+      env: {},
+      installRecords: {},
+      retainedPluginIds: ["owner"],
+      deferInstallation: false,
+      verifyRetainedPayloads: true,
+    });
+    expect(result.requiredPluginIds).toEqual(["owner"]);
+    if (present) {
+      expect(result.pending).toEqual([]);
+    } else {
+      expect(result.pending).toEqual([
+        expect.objectContaining({
+          pluginId: "owner",
+          requiresStateMigration: true,
+          reason: expect.stringContaining("missing-main-entry"),
+        }),
+      ]);
+    }
+    expect(fs.existsSync(marker)).toBe(false);
+  },
+);

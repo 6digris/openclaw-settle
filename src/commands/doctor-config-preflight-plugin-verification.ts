@@ -105,6 +105,7 @@ export async function runDoctorPluginConvergence(params: {
       ...params,
       installRecords: plan.installRecords,
       deferInstallation: false,
+      verifyRetainedPayloads: true,
     });
     return { quarantinedPlugins: [], migrationInspection, deferredPlugins: pending };
   }

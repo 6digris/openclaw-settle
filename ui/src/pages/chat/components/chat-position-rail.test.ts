@@ -31,7 +31,7 @@ describe("conversation position rail", () => {
   beforeEach(installTranscriptDomMocks);
   afterEach(resetTranscriptTestDom);
 
-  it.each(["resize", "focus", "focus-resize", "pointer", "reader"] as const)(
+  it.each(["resize", "resize-jump", "end", "focus", "focus-resize", "pointer", "reader"] as const)(
     "keeps the reader's rail position through %s updates",
     async (scenario) => {
       vi.stubGlobal(
@@ -44,16 +44,21 @@ describe("conversation position rail", () => {
       );
       const transcript = createTestTranscript();
       const container = document.body.appendChild(document.createElement("div"));
-      const activeMessage = vi.fn(() => "message-79");
+      const settlesAtEnd = scenario === "end";
+      const count = settlesAtEnd ? 5 : 80;
+      const startsAtTop = settlesAtEnd || scenario === "resize-jump";
+      const activeMessage = vi.fn((): string =>
+        scenario === "resize-jump" ? "message-0" : settlesAtEnd ? "message-2" : "message-79",
+      );
       const positions = {
-        markers: Array.from({ length: 80 }, (_, index) => ({
+        markers: Array.from({ length: count }, (_, index) => ({
           id: `message-${index}`,
           anchorId: `message-${index}`,
           role: "user" as const,
           message: message(`message-${index}`, "user", `Checkpoint ${index}`, index + 1),
         })),
         markerIdsByMessageId: new Map(
-          Array.from({ length: 80 }, (_, index) => [`message-${index}`, `message-${index}`]),
+          Array.from({ length: count }, (_, index) => [`message-${index}`, `message-${index}`]),
         ),
       };
       render(
@@ -73,12 +78,13 @@ describe("conversation position rail", () => {
       const marks = container.querySelector<HTMLElement>(".chat-position-rail__marks")!;
       const marker = (index: number) =>
         marks.querySelector<HTMLButtonElement>(`[data-position-marker-id="message-${index}"]`)!;
-      let height = 597;
-      let marksHeight = 283;
+      let height = settlesAtEnd ? 668 : 597;
+      let scrollHeight = settlesAtEnd ? 700 : 8912;
+      let marksHeight = settlesAtEnd ? 60 : 283;
       let railOffset = 0;
       Object.defineProperties(root, {
         clientHeight: { configurable: true, get: () => height },
-        scrollHeight: { configurable: true, value: 8912 },
+        scrollHeight: { configurable: true, get: () => scrollHeight },
       });
       Object.defineProperties(marks, {
         clientHeight: { configurable: true, get: () => marksHeight },
@@ -86,11 +92,11 @@ describe("conversation position rail", () => {
           configurable: true,
           get: () => railOffset,
           set: (value: number) => {
-            railOffset = Math.max(0, Math.min(value, 960 - marksHeight));
+            railOffset = Math.max(0, Math.min(value, count * 12 - marksHeight));
           },
         },
       });
-      root.scrollTop = 8315;
+      root.scrollTop = startsAtTop ? 0 : 8315;
       const flush = async () => {
         marks.dispatchEvent(new Event("scroll"));
         await new Promise<void>((resolve) => {
@@ -99,9 +105,35 @@ describe("conversation position rail", () => {
       };
       try {
         await flush();
-        expect(marks.scrollTop).toBe(677);
+        expect(marks.scrollTop).toBe(startsAtTop ? 0 : 677);
         expect(marks.querySelectorAll(".chat-position-rail__marker").length).toBeLessThan(50);
-        if (scenario === "resize") {
+        if (scenario === "end") {
+          // Initial row measurements settle at the end before later composer growth.
+          height = 552;
+          scrollHeight = 552;
+          activeMessage.mockReturnValue("message-4");
+          await flush();
+          expect(marks.scrollTop).toBe(0);
+          height = 452;
+          scrollHeight = 486;
+          root.scrollTop = 34;
+          marksHeight = 47;
+          await flush();
+          expect(marker(4).getAttribute("aria-current")).toBe("true");
+          expect(marks.scrollTop).toBe(0);
+        } else if (scenario === "resize-jump") {
+          // Initial end navigation can share the frame that reveals the composer.
+          height = 554;
+          marksHeight = 240;
+          root.scrollTop = 8358;
+          activeMessage.mockReturnValue("message-79");
+          await flush();
+          expect(marker(79).getAttribute("aria-current")).toBe("true");
+          expect(Number.parseFloat(marker(79).style.top)).toBeGreaterThanOrEqual(marks.scrollTop);
+          expect(Number.parseFloat(marker(79).style.top) + 12).toBeLessThanOrEqual(
+            marks.scrollTop + marks.clientHeight,
+          );
+        } else if (scenario === "resize") {
           height = 554;
           marksHeight = 240;
           activeMessage.mockReturnValue("message-76");

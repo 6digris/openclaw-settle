@@ -110,6 +110,7 @@ const runtimeConsumers = [
   ...[
     "src/agents/agent-command-local.test.ts",
     "src/agents/simple-completion-runtime.plugin-scope.test.ts",
+    "src/agents/prepared-model-catalog-worker.custody.integration.test.ts",
     "src/agents/prepared-model-catalog-worker.integration.test.ts",
     "src/agents/runtime-plugins.context-engine.integration.test.ts",
   ].map((file) => ({

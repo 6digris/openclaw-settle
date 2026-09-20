@@ -15,12 +15,17 @@ vi.mock("../plugins/loader-runtime-load.js", () => {
 });
 
 it("preserves ordered scoped tasks and their exact delivery rows", async () => {
-  const [tasks, { OPENCLAW_STATE_SCHEMA_SQL }, { runSqliteImmediateTransactionSync }] =
-    await Promise.all([
-      import("./task-registry.store.kernel.js"),
-      import("../state/openclaw-state-schema.js"),
-      import("../infra/sqlite-transaction.js"),
-    ]);
+  const [
+    tasks,
+    { OPENCLAW_STATE_SCHEMA_SQL },
+    { runSqliteImmediateTransactionSync },
+    { ensureAdditiveStateColumns },
+  ] = await Promise.all([
+    import("./task-registry.store.kernel.js"),
+    import("../state/openclaw-state-schema.js"),
+    import("../infra/sqlite-transaction.js"),
+    import("../state/openclaw-state-db-schema-additive.js"),
+  ]);
   const db = new DatabaseSync(":memory:");
   const record = (taskId: string, patch: Partial<TaskRecord> = {}): TaskRecord => ({
     taskId,
@@ -37,13 +42,13 @@ it("preserves ordered scoped tasks and their exact delivery rows", async () => {
   });
   const direct = record("direct", { createdAt: 50 });
   const runFirst = record("run\0first", {
-    runId: " shared-run ",
-    childSessionKey: " shared-child ",
+    runId: "shared-run",
+    childSessionKey: "shared-child",
   });
   const runSecond = record("run-second", { runId: "shared-run", createdAt: 200 });
   const literalEscape = record("run\\u0000first", { runId: "shared-run" });
-  const child = record("child", { childSessionKey: " shared-child " });
-  const unrelated = record("unrelated", { runId: " ", childSessionKey: " " });
+  const child = record("child", { childSessionKey: "shared-child" });
+  const unrelated = record("unrelated");
   const broad = Array.from({ length: 64 }, (_, index) =>
     record(`broad-${String(index).padStart(3, "0")}`, { runId: "broad-run" }),
   );
@@ -77,7 +82,11 @@ it("preserves ordered scoped tasks and their exact delivery rows", async () => {
         tasks.upsertTaskWithDeliveryStateInDatabase(
           { db },
           {
-            task,
+            task: {
+              ...task,
+              runId: task.runId ? ` ${task.runId} ` : " ",
+              childSessionKey: task.childSessionKey ? ` ${task.childSessionKey} ` : " ",
+            },
             ...(task === child
               ? {}
               : {
@@ -87,6 +96,28 @@ it("preserves ordered scoped tasks and their exact delivery rows", async () => {
         );
       }
     });
+    expect(tasks.readTaskRecord(db, runFirst.taskId)).toEqual(runFirst);
+    // Simulate rows persisted by an older writer, including identifiers that become NULL.
+    db.prepare("UPDATE task_runs SET run_id = ?, child_session_key = ? WHERE task_id = ?").run(
+      "\t shared-run \r\n",
+      "\u00a0 shared-child \ufeff",
+      runFirst.taskId,
+    );
+    db.prepare("UPDATE task_runs SET run_id = '', child_session_key = ? WHERE task_id = ?").run(
+      "\t\n\u00a0 ",
+      unrelated.taskId,
+    );
+    runSqliteImmediateTransactionSync(db, () => ensureAdditiveStateColumns(db, "repair"));
+    expect(
+      db
+        .prepare("SELECT run_id, child_session_key FROM task_runs WHERE task_id = ?")
+        .get(runFirst.taskId),
+    ).toEqual({ run_id: "shared-run", child_session_key: "shared-child" });
+    expect(
+      db
+        .prepare("SELECT run_id, child_session_key FROM task_runs WHERE task_id = ?")
+        .get(unrelated.taskId),
+    ).toEqual({ run_id: null, child_session_key: null });
     for (const { scope, expected } of cases) {
       prepare.mockClear();
       const snapshot = tasks.readTaskRegistryMutationSnapshotInDatabase(db, scope);
@@ -99,20 +130,18 @@ it("preserves ordered scoped tasks and their exact delivery rows", async () => {
             left.taskId < right.taskId ? -1 : left.taskId > right.taskId ? 1 : 0,
           ),
       );
-      if (!scope.runId?.trim() && !scope.childSessionKey?.trim()) {
-        const taskQueries = prepare.mock.calls
-          .map(([query]) => query)
-          .filter((query) => query.includes('from "task_runs"'));
-        expect(taskQueries.length).toBeGreaterThan(0);
-        for (const query of taskQueries) {
-          const plan = db
-            .prepare(`EXPLAIN QUERY PLAN ${query}`)
-            .all()
-            .map((row) => row.detail)
-            .join("\n");
-          expect(plan).toContain("SEARCH task_runs USING INDEX");
-          expect(plan).not.toContain("SCAN task_runs");
-        }
+      const taskQueries = prepare.mock.calls
+        .map(([query]) => query)
+        .filter((query) => query.includes('from "task_runs"'));
+      expect(taskQueries.length).toBeGreaterThan(0);
+      for (const query of taskQueries) {
+        const plan = db
+          .prepare(`EXPLAIN QUERY PLAN ${query}`)
+          .all()
+          .map((row) => row.detail)
+          .join("\n");
+        expect(plan).toContain("SEARCH task_runs USING INDEX");
+        expect(plan).not.toContain("SCAN task_runs");
       }
     }
   } finally {

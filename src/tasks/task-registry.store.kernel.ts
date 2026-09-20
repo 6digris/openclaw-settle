@@ -25,7 +25,7 @@ import { readTaskFlowViewRecordInDatabase } from "./task-flow-registry.store.ker
 import {
   compareTasksForRunIdLookup,
   getTaskRelatedSessionIndexKeys,
-  normalizeTaskTimestamps,
+  normalizeTaskRecord,
 } from "./task-registry-records.js";
 import { parseDeliveryContextJson, parseSqliteJsonValue } from "./task-registry.sqlite.shared.js";
 import type {
@@ -158,7 +158,7 @@ function rowToTaskRecord(row: TaskRegistryRow): TaskRecord {
   // System tasks intentionally have no requester session; ownerKey is the lookup anchor.
   const requesterSessionKey =
     scopeKind === "system" ? "" : row.requester_session_key?.trim() || row.owner_key;
-  return normalizeTaskTimestamps({
+  return normalizeTaskRecord({
     taskId: row.task_id,
     runtime: parseTaskRuntime(row.runtime),
     ...(row.task_kind ? { taskKind: row.task_kind } : {}),
@@ -207,7 +207,7 @@ type BoundTaskRecord = Insertable<TaskRunsTable>;
 
 /** Canonically serializes a task before an outer transaction acquires the write lock. */
 export function bindTaskRecord(record: TaskRecord): BoundTaskRecord {
-  const normalized = normalizeTaskTimestamps(record);
+  const normalized = normalizeTaskRecord(record);
   return {
     task_id: normalized.taskId,
     runtime: normalized.runtime,
@@ -611,15 +611,13 @@ export function readTaskRegistryMutationSnapshotInDatabase(
     const runId = scope.runId?.trim();
     const childSessionKey = scope.childSessionKey?.trim();
     const selected = kysely.selectFrom("task_runs").where((eb) => {
-      // Null-bound trim predicates would force even a task-ID-only lookup to scan all rows.
+      // Restore repairs legacy identifiers before scoped reads; every selector stays indexed.
       const matches = [eb("task_id", "=", scope.taskId)];
       if (runId) {
-        matches.push(eb(eb.fn<string>("trim", [eb.ref("run_id")]), "=", runId));
+        matches.push(eb("run_id", "=", runId));
       }
       if (childSessionKey) {
-        matches.push(
-          eb(eb.fn<string>("trim", [eb.ref("child_session_key")]), "=", childSessionKey),
-        );
+        matches.push(eb("child_session_key", "=", childSessionKey));
       }
       return eb.or(matches);
     });

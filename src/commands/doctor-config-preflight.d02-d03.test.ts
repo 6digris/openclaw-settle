@@ -450,6 +450,9 @@ it.each([true, false])(
     expect(f.deferred).not.toHaveBeenCalled();
     if (!required) {
       expect(m.postCore).not.toHaveBeenCalled();
+      expect(m.inspect).toHaveBeenCalledWith(
+        expect.objectContaining({ verifyRetainedPayloads: true }),
+      );
     }
   },
 );

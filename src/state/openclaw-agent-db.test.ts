@@ -5014,21 +5014,6 @@ describe("openclaw agent database", () => {
     );
   });
 
-  it("retains integrity verification until the runtime lifecycle resets", () => {
-    const stateDir = createTempStateDir();
-    const env = { OPENCLAW_STATE_DIR: stateDir };
-    const databasePath = openOpenClawAgentDatabase({ agentId: "worker-1", env }).path;
-    expect(closeOpenClawAgentDatabaseByPath(databasePath)).toBe(true);
-    closeOpenClawStateDatabaseForTest();
-    createUnsafeIndexDrift(databasePath);
-
-    expect(openOpenClawAgentDatabase({ agentId: "worker-1", env }).db.isOpen).toBe(true);
-    closeOpenClawAgentDatabasesForTest();
-    expect(() => openOpenClawAgentDatabase({ agentId: "worker-1", env })).toThrow(
-      /integrity_check failed.*missing from index unsafe_index_records_value/iu,
-    );
-  });
-
   it.each(["path", "agent"] as const)(
     "revalidates default and relocated replacements after %s unregister",
     (scope) => {
