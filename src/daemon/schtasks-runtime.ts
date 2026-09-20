@@ -116,20 +116,32 @@ export async function waitForScheduledTaskRunningEvidence(
   options?: { settleAfterRun?: boolean; assertCurrent?: () => void },
 ): Promise<boolean> {
   const deadline = Date.now() + SCHEDULED_TASK_FALLBACK_TIMEOUT_MS;
+  const settlingDeadline = deadline + SCHEDULED_TASK_FALLBACK_TIMEOUT_MS;
+  let runningSince: number | undefined;
   let previousRunningSignature: string | undefined;
   while (true) {
     options?.assertCurrent?.();
     const probe = probeScheduledTaskState(resolveTaskName(env));
+    const now = Date.now();
     // Only Scheduler supervision, not an old Startup process, proves takeover.
     const running = probe.status === "found" && probe.state === 4;
     const signature = running ? (probe.lastRunTime ?? "running") : undefined;
     if (running && !options?.settleAfterRun) {
       return true;
     }
-    if (Date.now() >= deadline) {
-      // /Run is merely an accepted request. Observe its full startup window so
-      // transient Queued/Running followed by failure cannot become success.
-      return running && signature === previousRunningSignature;
+    if (!running || signature !== previousRunningSignature) {
+      runningSince = undefined;
+    }
+    if (running && runningSince === undefined && now < deadline) {
+      runningSince = now;
+    }
+    // /Run is merely an accepted request. A late start still needs a full,
+    // continuous settling interval; a new run cannot extend the startup deadline.
+    if (runningSince !== undefined && now - runningSince >= SCHEDULED_TASK_FALLBACK_TIMEOUT_MS) {
+      return true;
+    }
+    if (now >= settlingDeadline || (now >= deadline && runningSince === undefined)) {
+      return false;
     }
     previousRunningSignature = signature;
     await sleep(SCHEDULED_TASK_FALLBACK_POLL_MS);

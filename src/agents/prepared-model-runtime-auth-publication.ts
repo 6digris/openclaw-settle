@@ -54,6 +54,7 @@ function partitionAuthMutationOwners(
 export class PreparedModelRuntimeAuthPublicationOwner {
   readonly #events: (readonly PreparedModelRuntimeOwner[])[] = [];
   #transaction: PreparedModelRuntimeAuthTransaction | undefined;
+  #drainTail: Promise<void> = Promise.resolve();
 
   enqueue(
     invalidatedOwners: readonly PreparedModelRuntimeOwner[],
@@ -116,6 +117,12 @@ export class PreparedModelRuntimeAuthPublicationOwner {
     }
     this.clearOwnerGates(transaction);
     return transaction;
+  }
+
+  releaseAdopted(gateId: PreparedModelRuntimeReplacementGateId): void {
+    if (this.#transaction?.adoptedBy === gateId) {
+      this.#transaction.adoptedBy = undefined;
+    }
   }
 
   resolve(
@@ -220,25 +227,33 @@ export class PreparedModelRuntimeAuthPublicationOwner {
   async drain(params: {
     owners: Map<string, PreparedModelRuntimeOwner>;
     publish: (
-      entries: Array<{
-        owner: PreparedModelRuntimeOwner;
-        input: PreparedModelRuntimeOwner["input"];
-      }>,
+      owners: PreparedModelRuntimeOwner[],
       includeCredentialProviders: boolean,
     ) => Promise<void>;
     publishOwners: (owners: readonly PreparedModelRuntimeOwner[]) => void;
     commit?: () => void;
     onOwnerFailure?: (error: unknown) => void;
   }): Promise<void> {
+    const pending = this.#drainTail.then(() => this.drainNow(params));
+    this.#drainTail = pending.then(
+      () => undefined,
+      () => undefined,
+    );
+    await pending;
+  }
+
+  private async drainNow(
+    params: Parameters<PreparedModelRuntimeAuthPublicationOwner["drain"]>[0],
+  ): Promise<void> {
     while (this.#events.length > 0) {
       const components = partitionAuthMutationOwners(this.#events.splice(0));
       for (const componentOwners of components) {
-        const entries = componentOwners.flatMap((owner) =>
-          params.owners.get(ownerKey(owner.input)) === owner ? [{ owner, input: owner.input }] : [],
+        const owners = componentOwners.filter(
+          (owner) => params.owners.get(ownerKey(owner.input)) === owner,
         );
         try {
-          if (entries.length > 0) {
-            await params.publish(entries, this.#transaction?.profileSetChanged === true);
+          if (owners.length > 0) {
+            await params.publish(owners, this.#transaction?.profileSetChanged === true);
           }
           const transaction = this.#transaction;
           if (transaction) {

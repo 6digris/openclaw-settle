@@ -5,6 +5,7 @@
  */
 import type { AgentToolResult } from "../../agents/runtime/index.js";
 import type { MessageActionAuthorization } from "../../gateway/message-action-turn-capability.js";
+import { assertOutboundHandoffCurrent } from "../../infra/outbound/deliver-handoff.js";
 import {
   prepareMessageActionWriteAuthority,
   withMessageActionWriteAuthority,
@@ -187,9 +188,14 @@ export function isScheduledMessageWriteAction(
 }
 
 type ScheduledMessageActionAccess = {
-  kind: "trusted-operator" | "account";
   assertCurrent: () => void;
-};
+} & (
+  | { kind: "trusted-operator" }
+  | {
+      kind: "account";
+      channelRequester?: NonNullable<MessageActionAuthorization["scheduled"]>["channelRequester"];
+    }
+);
 
 /** Validates a live scheduled grant's scope; each action consumer owns admission. */
 function resolveScheduledMessageActionAccess(params: {
@@ -202,15 +208,31 @@ function resolveScheduledMessageActionAccess(params: {
   if (!authority) {
     return undefined;
   }
-  authority.assertCurrent();
+  const assertCurrent = authority.assertSourceCurrent ?? authority.assertCurrent;
+  assertCurrent();
   const policy = authority.policy;
   if (policy.mode === "trusted") {
-    return { kind: "trusted-operator", assertCurrent: authority.assertCurrent };
+    return { kind: "trusted-operator", assertCurrent };
   }
   if (!params.accountId || normalizeAccountId(params.accountId) !== policy.ownerAccountId) {
     throw new Error(
       `Scheduled ${params.channel}:${params.action} cannot use another creator account.`,
     );
+  }
+  if (params.action === "channel-edit" && normalizeMessageChannel(params.channel) === "discord") {
+    const requester = authority.channelRequester;
+    if (!requester) {
+      throw new Error(
+        "This account-bound automation needs fresh Discord requester authorization for channel-edit. " +
+          "From its original Discord conversation and account, edit it with an explicit toolsAllow cap including message, or recreate it there.",
+      );
+    }
+    if (requester.channel !== "discord" || requester.accountId !== policy.ownerAccountId) {
+      throw new Error(
+        "Scheduled Discord channel-edit requires its authenticated requester account and channel.",
+      );
+    }
+    return { kind: "account", channelRequester: requester, assertCurrent };
   }
   const origin = policy.ownerOrigin;
   if (
@@ -222,7 +244,7 @@ function resolveScheduledMessageActionAccess(params: {
       `Scheduled ${params.channel}:${params.action} requires matching recorded creator origin.`,
     );
   }
-  return { kind: "account", assertCurrent: authority.assertCurrent };
+  return { kind: "account", assertCurrent };
 }
 
 function resolveMessageActionReadEnforcement(params: {
@@ -520,15 +542,6 @@ function prepareScheduledMessageWriteContext(
   if (!policy || !ctx.messageActionAuthorization?.scheduled) {
     return undefined;
   }
-  if (
-    policy === "provider" &&
-    prepared.enforcement.kind === "provider-owned" &&
-    prepared.enforcement.pluginTrust === "bundled" &&
-    !prepared.plugin.actions?.writeAuthorityActions?.includes(action)
-  ) {
-    // Retain existing bundled provider admission until its adapter opts into this fence.
-    return undefined;
-  }
   const accountId =
     ctx.accountId ?? resolveChannelDefaultAccountId({ plugin: prepared.plugin, cfg: ctx.cfg });
   const access = resolveScheduledMessageActionAccess({
@@ -540,7 +553,8 @@ function prepareScheduledMessageWriteContext(
   if (!access) {
     return undefined;
   }
-  if (policy === "operator" && access.kind !== "trusted-operator") {
+  const channelRequester = access.kind === "account" ? access.channelRequester : undefined;
+  if (policy === "operator" && access.kind !== "trusted-operator" && !channelRequester) {
     throw new Error(
       `Scheduled ${ctx.channel}:${action} requires a job authorized by an operator. Account jobs cannot inherit operator administration.`,
     );
@@ -557,7 +571,14 @@ function prepareScheduledMessageWriteContext(
     context: {
       ...prepared.actionContext,
       accountId,
-      senderIsOwner: policy === "operator" ? true : prepared.actionContext.senderIsOwner,
+      ...(channelRequester
+        ? {
+            requesterAccountId: channelRequester.accountId,
+            requesterSenderId: channelRequester.senderId,
+            senderIsOwner: false,
+            toolContext: undefined,
+          }
+        : { senderIsOwner: policy === "operator" ? true : prepared.actionContext.senderIsOwner }),
       conversationReadOrigin:
         policy === "operator"
           ? prepared.actionContext.conversationReadOrigin
@@ -702,7 +723,7 @@ export async function dispatchChannelMessageAction(
       ) {
         return null;
       }
-      authorizedActionContext.assertDirectAdapterHandoff?.();
+      assertOutboundHandoffCurrent(authorizedActionContext.assertDirectAdapterHandoff);
       prepared.assertReadAuthorityCurrent?.();
       if (typeof match === "function") {
         prepared.assertAliasAuthorityCurrent();

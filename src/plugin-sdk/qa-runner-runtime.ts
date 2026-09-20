@@ -163,13 +163,15 @@ type QaRunnerTransportAdapterDefinition = {
     timeoutMs?: number;
     pollIntervalMs?: number;
   }) => Promise<void>;
-  buildAgentDelivery: (params: { target: string }) => {
+  buildAgentDelivery: (params: { target: string; threadId?: string }) => {
     channel: string;
     to?: string;
     replyChannel: string;
     replyTo: string;
+    threadId?: string;
   };
   createRuntimeEnvPatch?: () => NodeJS.ProcessEnv;
+  createRuntimePreloads?: () => readonly string[];
   prepareFlow?: (
     input: QaRunnerTransportFlowPreparationInput,
   ) => Promise<Record<string, unknown> | void>;

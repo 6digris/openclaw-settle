@@ -118,7 +118,6 @@ const {
   installScheduledTask,
   isScheduledTaskInstalled,
   readScheduledTaskRuntime,
-  readWindowsStartupFallbackRuntimeForUpdate,
   restartScheduledTask,
   resolveTaskScriptPath,
   stopScheduledTask,
@@ -128,8 +127,12 @@ const {
 const { runScheduledTaskOrThrow } = await import("./schtasks-control.js");
 const { decodeWindowsLauncherScript } = await import("../infra/windows-launcher-encoding.js");
 
-const { launchFallbackTaskScript, removeStartupEntries, resolveFallbackRuntime } =
-  await import("./schtasks-runtime.js");
+const {
+  launchFallbackTaskScript,
+  removeStartupEntries,
+  resolveFallbackRuntime,
+  readWindowsStartupFallbackRuntimeForUpdate,
+} = await import("./schtasks-runtime.js");
 
 const { createMockGatewayService } = await import("./service.test-helpers.js");
 

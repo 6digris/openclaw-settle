@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { resolveGatewayServiceProbeHosts } from "./gateway-service-probe-hosts.js";
 import { formatLine } from "./output.js";
@@ -6,6 +8,7 @@ import {
   readScheduledTaskCommand,
   resolveTaskName,
   resolveTaskScriptPath,
+  writeTaskXmlTempFile,
 } from "./schtasks-layout.js";
 import {
   describeUnverifiedPortListeners,
@@ -99,24 +102,25 @@ async function readPreLaunchTaskPids(
         }
       }
     }
-    if (port) {
-      const installedArguments = command.programArguments;
-      if (snapshot && installedArguments?.length) {
-        if (manageGatewayPort) {
-          for (const pid of findInstalledGatewayChildPids(snapshot, port, installedArguments)) {
-            pids.add(pid);
-          }
+    const installedArguments = command.programArguments;
+    if (snapshot && installedArguments?.length) {
+      if (port && manageGatewayPort) {
+        for (const pid of findInstalledGatewayChildPids(snapshot, port, installedArguments)) {
+          pids.add(pid);
         }
-        const candidates = manageGatewayPort
-          ? [installedArguments, [...installedArguments, WINDOWS_TASK_SUPERVISOR_FLAG]]
-          : [installedArguments];
-        const matchesProcess = manageGatewayPort ? () => true : isNodeHostArgv;
-        // A stopped task can leave multiple exact children or its supervisor alive.
-        // A preferred-PID query alone cannot establish that direct fallback is safe.
-        for (const argv of candidates) {
-          for (const pid of findInstalledProcessPids(snapshot, port, argv, matchesProcess)) {
-            pids.add(pid);
-          }
+      }
+      const candidates = manageGatewayPort
+        ? [installedArguments, [...installedArguments, WINDOWS_TASK_SUPERVISOR_FLAG]]
+        : [installedArguments];
+      const matchesProcess = manageGatewayPort ? () => true : isNodeHostArgv;
+      // A stopped task can leave multiple exact children or its supervisor alive.
+      // A preferred-PID query alone cannot establish that direct fallback is safe.
+      // Node commands may use a default port or inherit it from their environment;
+      // any exact installed argv match blocks duplication, regardless of port.
+      const matchPort = manageGatewayPort ? port : null;
+      for (const argv of candidates) {
+        for (const pid of findInstalledProcessPids(snapshot, matchPort, argv, matchesProcess)) {
+          pids.add(pid);
         }
       }
     }
@@ -178,7 +182,7 @@ export async function runScheduledTaskOrThrow(params: {
     }
   }
   throw new Error(
-    `Scheduled Task ${params.taskName} did not start within ${SCHEDULED_TASK_FALLBACK_TIMEOUT_MS / 1000}s after schtasks /Run; refusing a direct fallback because the queued task could still start.`,
+    `Scheduled Task ${params.taskName} did not sustain Running for ${SCHEDULED_TASK_FALLBACK_TIMEOUT_MS / 1000}s after schtasks /Run; refusing a direct fallback because the queued task could still start.`,
   );
 }
 
@@ -191,6 +195,63 @@ function parseScheduledTaskXmlEnabled(output: string): boolean | null {
   const enabled = /<Enabled>\s*(true|false)\s*<\/Enabled>/iu.exec(settings)?.[1];
   // Task Scheduler's schema defaults a missing Settings.Enabled value to true.
   return enabled === undefined ? true : enabled.toLowerCase() === "true";
+}
+
+export function setScheduledTaskXmlEnabled(xml: string, enabled: boolean): string {
+  if (parseScheduledTaskXmlEnabled(xml) === null) {
+    throw new Error("Scheduled Task enabled state could not be inspected.");
+  }
+  return xml.replace(
+    /(<Settings(?:\s[^>]*)?>)([\s\S]*?)(<\/Settings>)/iu,
+    (_match, open: string, body: string, close: string) => {
+      const value = `<Enabled>${enabled}</Enabled>`;
+      const field = /<Enabled>\s*(true|false)\s*<\/Enabled>/iu;
+      return `${open}${field.test(body) ? body.replace(field, value) : `${value}${body}`}${close}`;
+    },
+  );
+}
+
+export async function readScheduledTaskDefinition(env: GatewayServiceEnv): Promise<string> {
+  const result = await execSchtasks(["/Query", "/TN", resolveTaskName(env), "/XML"]);
+  const xml = result.stdout.replace(/^\uFEFF/u, "").replaceAll(String.fromCharCode(0), "");
+  if (result.code !== 0 || !/<Task[\s>]/u.test(xml)) {
+    throw new Error("Scheduled Task definition could not be inspected.");
+  }
+  return xml;
+}
+
+export async function restoreScheduledTaskDefinition(params: {
+  env: GatewayServiceEnv;
+  xml: string;
+  beforeWrite: () => Promise<void>;
+  assertCurrent: () => void;
+}): Promise<void> {
+  const current = await readScheduledTaskDefinition(params.env);
+  const enabled = parseScheduledTaskXmlEnabled(current);
+  if (enabled === null) {
+    throw new Error("Scheduled Task enabled state could not be preserved.");
+  }
+  const temporary = await writeTaskXmlTempFile(setScheduledTaskXmlEnabled(params.xml, enabled));
+  try {
+    await params.beforeWrite();
+    if ((await readScheduledTaskDefinition(params.env)) !== current) {
+      throw new Error("Scheduled Task changed before restoration.");
+    }
+    params.assertCurrent();
+    const result = await execSchtasks([
+      "/Create",
+      "/F",
+      "/TN",
+      resolveTaskName(params.env),
+      "/XML",
+      temporary,
+    ]);
+    if (result.code !== 0) {
+      throw new Error("Scheduled Task definition could not be restored.");
+    }
+  } finally {
+    await fs.rm(path.dirname(temporary), { recursive: true, force: true });
+  }
 }
 
 async function changeScheduledTaskEnabledState(params: {

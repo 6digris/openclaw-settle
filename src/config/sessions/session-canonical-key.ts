@@ -55,7 +55,11 @@ type CanonicalSessionDatabase = Pick<
 >;
 const mainKeyReaders = new WeakMap<DatabaseSync, () => { main_key: string } | undefined>();
 
-type ReaderAdmission = { mainKey: string; physicalValidation?: OpenClawAgentDatabaseValidation };
+type ReaderAdmission = {
+  mainKey: string;
+  canonicalReady: boolean;
+  physicalValidation?: OpenClawAgentDatabaseValidation;
+};
 const readerAdmissions = resolveGlobalSingleton(
   Symbol.for("openclaw.canonicalSessionReaderAdmissions"),
   () => new WeakMap<DatabaseSync, { proof?: ReaderAdmission }>(),
@@ -303,20 +307,6 @@ export function assertCanonicalSqliteSessionKeysCurrent(
   return validateCanonicalSqliteSessionKeys(database, mainKey, collectMetadata).metadata;
 }
 
-/** Adopt a worker's complete validation only inside its caller's unchanged read admission. */
-export function adoptCanonicalSessionReadAdmission(
-  database: { agentId: string; db: DatabaseSync; path: string },
-  mainKey: string,
-): boolean {
-  if (readCanonicalSessionMainKey(database) !== mainKey) {
-    return false;
-  }
-  const physicalValidation = getOpenClawAgentDatabaseValidation(database);
-  markOpenClawAgentCanonicalValidation(database);
-  rememberReaderAdmission(database.db, { mainKey, physicalValidation });
-  return true;
-}
-
 /** Validate the root's database and key together within its synchronous writer transaction. */
 export function assertCanonicalSqliteSessionRootWrite(
   database: { agentId: string; db: DatabaseSync },
@@ -344,10 +334,15 @@ function validateCanonicalSqliteSessionKeys(
     ? getOpenClawAgentDatabaseValidation({ ...database, path: pathname })
     : undefined;
   const storedMainKey = readCanonicalSessionMainKey(database);
+  const canonicalReady = hasOpenClawAgentCanonicalValidation(database);
   const admitted = readerAdmissions.get(database.db)?.proof;
   // Preserve admitted-reader parsing for raw metadata edits; new handles and
   // policy/owner changes must cross canonical admission again. Rows are never cached here.
-  if (admitted?.mainKey === storedMainKey && admitted.physicalValidation === physicalValidation) {
+  if (
+    admitted?.mainKey === storedMainKey &&
+    admitted.physicalValidation === physicalValidation &&
+    admitted.canonicalReady === canonicalReady
+  ) {
     return { validatedMainKey: storedMainKey };
   }
   const readScope = canonicalReadScope.current;
@@ -358,10 +353,14 @@ function validateCanonicalSqliteSessionKeys(
     throw readScope.snapshotRequired;
   }
   const remember = () =>
-    rememberReaderAdmission(database.db, { mainKey: storedMainKey, physicalValidation });
+    rememberReaderAdmission(database.db, {
+      mainKey: storedMainKey,
+      physicalValidation,
+      canonicalReady: hasOpenClawAgentCanonicalValidation(database),
+    });
   if (incremental) {
     const inMemory = typeof identity?.identity === "symbol";
-    if (!inMemory && !hasOpenClawAgentCanonicalValidation(database)) {
+    if (!inMemory && !canonicalReady) {
       // A copied clean projection is not first-admission proof for an unknown file.
       deferCanonicalSessionValidation(database);
       const metadata: ValidatedSessionMetadata | undefined = collectMetadata

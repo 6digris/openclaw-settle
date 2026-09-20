@@ -38,6 +38,7 @@ import {
   shouldSplitExtensionTestProcesses,
   splitExtensionTestJobTargets,
 } from "./extension-test-plan.mts";
+import { isExclusiveCiTestConfig } from "./local-check-runtime.mts";
 import { buildPluginSdkEntrySources, publicPluginSdkEntrypoints } from "./plugin-sdk-entries.mts";
 import {
   resolveVitestPretestBuildMode,
@@ -111,7 +112,12 @@ const fullNodeTestShards = createNodeTestShards({
 });
 const configsRequiringCanonicalMetadata = new Set(
   fullNodeTestShards
-    .filter((shard) => shard.env || shard.shardName.startsWith("core-tooling"))
+    .filter(
+      (shard) =>
+        shard.env ||
+        shard.shardName.startsWith("core-tooling") ||
+        shard.configs.some(isExclusiveCiTestConfig),
+    )
     .flatMap((shard) => shard.configs),
 );
 const splitNodeTestConfigs = new Set(
@@ -629,13 +635,15 @@ export function createChangedNodeTestShards(
     return null;
   }
 
-  // Packing changes can move every compact child. Observe the complete plan on
+  // Packing changes and their policy guard need the complete compact plan on
   // Blacksmith while preserving hosted targeting and its registration footprint.
   if (
     options.runnerBackend !== "github" &&
     changedPaths.some(
       (file) =>
-        file === "config/ci-test-timings.json" || file === "scripts/lib/ci-node-test-plan.mts",
+        file === "config/ci-test-timings.json" ||
+        file === "scripts/lib/ci-node-test-plan.mts" ||
+        file === "test/scripts/ci-node-test-plan.test.ts",
     )
   ) {
     return null;
@@ -767,7 +775,7 @@ export function createChangedNodeTestShards(
     .map(({ target }) => target);
 
   const shards = [
-    ...canonicalShards.map((shard) => ({ ...shard, configs: [] })),
+    ...canonicalShards.map((shard) => Object.assign({}, shard, { configs: [] })),
     ...packChangedExtensionConfigShards(createChangedExtensionConfigShardsForPaths(livePaths, cwd)),
     // Native browser files run in checks-ui, including precise changed-file plans.
     ...createChangedTargetShards(

@@ -24,7 +24,7 @@ and what the automatic resume looks like.
 | Conversation history           | Per-agent SQLite database                          | Untouched; sessions continue from the stored transcript                 |
 | Accepted Control UI follow-ups | Per-agent SQLite pending inputs and browser outbox | Matching interrupted inputs are re-admitted when the browser reconnects |
 | Interrupted main-session turn  | Per-agent SQLite session row and transcript        | Automatically resumed or reconciled a few seconds after startup         |
-| Subagent runs                  | SQLite (shared state database)                     | Registry restored on boot; interrupted runs resumed                     |
+| Subagent runs                  | SQLite (shared state database)                     | Interrupted runs settle; the parent decides how to continue             |
 | Background tasks               | SQLite (shared state database)                     | Reconciled on boot; orphaned runs recovered or marked lost              |
 | Queued outbound deliveries     | SQLite delivery queue                              | Drained after restart; undelivered replies are retried                  |
 | Scheduled (cron) jobs          | SQLite cron store                                  | Schedules persist; the scheduler re-arms on boot                        |
@@ -127,11 +127,69 @@ On Linux, the systemd unit must use `KillMode=mixed` so the initial stop signal
 reaches only the Gateway. Systemd still kills remaining child processes when the
 Gateway exits or its stop deadline expires. Older `KillMode=control-group` units
 signal child runtimes immediately, which can interrupt a turn before drain finishes.
+The spawn broker stays available while its Gateway connection is alive, even if
+it receives the stop signal too, so cleanup can still launch commands and observe
+child exits. This does not protect other child runtimes; `KillMode=mixed` remains
+required.
 After upgrading, run `openclaw gateway install --force` for the same profile to
 rewrite and restart the managed unit. Ordinary updates leave existing Linux
 service definitions unchanged. Doctor reports incompatible effective settings.
 Operator-owned drop-ins must be inspected and updated separately because reinstalling
 the base unit preserves them. See [Linux services](/platforms/linux).
+
+### Systemd stop deadlines
+
+At startup, the Gateway reads its running systemd unit's effective
+`TimeoutStopUSec`, including drop-ins. It logs the source and reconciled stop
+budget at startup and again when shutdown begins. Active-work drain uses at most
+315 seconds, with 10 seconds reserved for final chat writes and server cleanup
+and another 5 seconds before systemd's deadline. A unit with the default
+90-second stop timeout therefore gets a 75-second drain and an 85-second Gateway
+shutdown deadline. A shorter supervisor timeout also caps requested restart waits.
+The drained work, ordering, and interruption behavior stay the same.
+
+Service-child cleanup uses the remaining Gateway shutdown budget, leaving time
+for final exit bookkeeping. A forced restart skips active-work drain but retains
+the 10-second cleanup reserve; it does not start a fresh 85-second wait. Ordinary
+cancellation keeps its five-second grace before forced termination. During
+shutdown, a relay that needs forced termination after its owned processes are
+confirmed gone produces a warning. Completed cleanup leaves the Gateway's exit
+status at zero; an unconfirmed process cleanup boundary still reports failure.
+
+The process's cgroup selects the system or user manager, independently of the
+account running the Gateway or its restart owner. This also covers hand-written
+system units with `User=openclaw` and externally managed deployments. Reading
+the system unit's timeout does not require sudo or notification support.
+
+If the unit cannot be inspected, the Gateway warns with the manager, unit, and
+failure reason and uses systemd's 90-second default as a conservative fallback.
+An explicitly unlimited timeout keeps the normal Gateway budget. The startup reading is retained for that
+process; restart the Gateway after changing its unit settings.
+
+An already-installed old unit benefits from the clamp as soon as the new Gateway
+starts, without a service rewrite. This leaves time for orderly shutdown instead
+of spending the entire stop window in drain. Work that cannot settle still uses
+the existing interruption and recovery path; the shorter budget cannot guarantee
+that arbitrary cleanup completes. CLI installs and guided Doctor service repairs
+render `TimeoutStopSec=330` from the same policy as the Gateway. Doctor reports
+an effective stop timeout below that requirement. Operator-owned drop-ins remain
+the operator's responsibility.
+
+For hand-written system units, allow at least **drain + 15 seconds**. With the
+current maximum drain, create
+`/etc/systemd/system/openclaw-gateway.service.d/stop-timeout.conf`:
+
+```ini
+[Service]
+TimeoutStopSec=330
+```
+
+Run `sudo systemctl daemon-reload` and verify with
+`systemctl show openclaw-gateway.service -p TimeoutStopUSec`. Restart through your
+service's deployment owner to refresh the Gateway's startup reading. For a user
+unit, use `systemctl --user edit openclaw-gateway.service` and the corresponding
+`--user` reload/show commands. Retain `KillMode=mixed` as described above; a longer
+timeout does not protect children from `KillMode=control-group`'s initial signal.
 
 Replies to pending node commands remain accepted during the drain, including
 worker cleanup started by shutdown. Each reply must still match its live
@@ -225,8 +283,7 @@ candidate recognizes the existing update marker and, once the managed process is
 running, uses the five-minute startup watchdog instead of the standalone
 60-second deadline. Migration, listener, and health transitions do not reset this
 bound. The old updater's subprocess timeout also remains in force. An exhausted
-wait reports the last observed startup phase. Standalone restart deadlines are
-unchanged.
+wait reports the last observed startup phase. Standalone restarts use the [progress-gated readiness wait](/cli/gateway/restart-and-supervision#restart-the-gateway).
 Verification facts and measured downtime are retained in the
 [update run report](/cli/update#run-history-and-reports).
 
@@ -479,18 +536,19 @@ approval handles are not revived.
 ### Subagents
 
 Subagent runs are persisted in the shared SQLite state database, so the
-subagent registry survives the process. On boot the registry is restored and
-interrupted subagent sessions are resumed with their original task context.
+subagent registry survives the process. On boot, interrupted child runs settle
+through their normal completion path. They are not automatically relaunched.
+The parent receives the interruption outcome and owns finishing the user's task.
+It can inspect retained child history, continue that child with `sessions_send`,
+or spawn a replacement after checking that the old execution has stopped.
+Existing cleanup and retention settings still apply.
 
-Resumption notices use the requester's outbound channel when one exists.
-Control UI sessions and internal wakes observe recovery through session state;
-they do not enqueue outbound notices. Previously saved internal notice obligations
-are settled when the registry resumes, without sending or replaying the task.
-
-If a parent yielded while waiting for children, recovery first resumes the
-interrupted children. Their saved completion batch follows replacement run IDs,
-so the parent receives its follow-up after the batch settles, including when some
-children finished before the restart.
+If a parent yielded while waiting for children, its saved batch collects both
+completed and interrupted results and wakes the parent once the batch settles.
+A parent already working on those results resumes through ordinary main-session
+recovery. A child result or an `announce:` run identifier does not make unfinished
+parent work disposable. The recovery turn explains the restart and tells the
+parent to check current state and uncertain effects before continuing.
 
 A completed child may still owe its requester a final follow-up. If that
 follow-up is waiting to retry or is interrupted by restart, the saved
@@ -504,14 +562,6 @@ Recovery reconciles an expired cancellation's retained marker before retrying
 its requester wake, preserving the original cleanup record. Live child cancellation
 can wake a waiting requester while normal cleanup reconciliation completes.
 A delayed cancellation callback cannot reopen completed cleanup.
-
-Two safety valves apply:
-
-- Runs whose recorded interruption is more than 2 hours old are finalized instead
-  of resumed. A long-running task interrupted moments ago remains eligible.
-  Total task age is not the interruption age.
-- A session that repeatedly fails to recover is tombstoned as wedged so
-  recovery cannot loop forever.
 
 ### Background tasks
 
@@ -606,7 +656,7 @@ channels.start --params '{"channel":"<id>"}'`
   [Prometheus](/gateway/prometheus) as `openclaw_session_recovery_total` and
   `openclaw_session_recovery_age_seconds`.
 - **Logs:** recovery decisions are logged under the
-  `main-session-restart-recovery` and `subagent-interrupted-resume`
+  `main-session-restart-recovery` and `agents/subagent-registry`
   subsystems.
 - **Reply hooks:** resumed turns run currently loaded `before_agent_reply`
   hooks under the normal user-trigger rules. Automatically delivered replies
@@ -629,7 +679,7 @@ Use the session transcript and recorded delivery outcome to verify completion.
 ## What is not resumed
 
 - Sessions excluded from main-session recovery because another owner already
-  handles them: subagent sessions (subagent recovery), cron sessions (the
+  handles them: subagent sessions (settled back to their parent), cron sessions (the
   scheduler re-runs on schedule), and ACP-managed sessions (the connected IDE
   or client owns the resume).
 - Work that was never admitted: messages arriving during the drain window are

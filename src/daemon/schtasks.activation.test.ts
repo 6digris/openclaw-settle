@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -512,6 +513,22 @@ describe("Scheduled Task activation provenance", () => {
       expected: "scheduled-task",
     },
     {
+      name: "late transient Scheduler run must not establish activation",
+      cim: "healthy",
+      scheduler: "late-transient",
+      process: "none",
+      kind: "gateway",
+      expected: "refuse",
+    },
+    {
+      name: "late healthy Scheduler run receives its complete settling interval",
+      cim: "healthy",
+      scheduler: "late-healthy",
+      process: "none",
+      kind: "gateway",
+      expected: "scheduled-task",
+    },
+    {
       name: "old node host without Scheduler activation",
       cim: "healthy",
       scheduler: "never",
@@ -585,6 +602,16 @@ describe("Scheduled Task activation provenance", () => {
         } else if (hasRun()) {
           if (scenario.scheduler === "healthy") {
             snapshot = { ...runningTaskSnapshot(), lastRunTime: "2026-09-17T09:00:00.0000000Z" };
+          } else if (
+            scenario.scheduler === "late-transient" ||
+            scenario.scheduler === "late-healthy"
+          ) {
+            snapshot =
+              timeState.now < 14_750
+                ? { ...notYetRunTaskSnapshot(), state: 2 }
+                : scenario.scheduler === "late-transient" && timeState.now >= 15_250
+                  ? { ...cleanExitTaskSnapshot(), lastRunResult: 1 }
+                  : { ...runningTaskSnapshot(), lastRunTime: "2026-09-17T09:00:00.0000000Z" };
           } else if (scenario.scheduler === "transient") {
             snapshot =
               timeState.now < 750
@@ -609,6 +636,88 @@ describe("Scheduled Task activation provenance", () => {
         if (scenario.expected === "scheduled-task") {
           expect(spawn).not.toHaveBeenCalled();
         }
+      }
+      if (scenario.scheduler === "late-healthy") {
+        expect(timeState.now).toBeGreaterThanOrEqual(29_750);
+        expect(timeState.now).toBeLessThanOrEqual(30_000);
+      }
+      expectNoGatewayTermination();
+    });
+  });
+
+  it.each([
+    {
+      name: "live default-port node",
+      running: false,
+      present: true,
+      port: undefined,
+      expected: "refuse",
+    },
+    {
+      name: "live node with inherited CLI port",
+      running: false,
+      present: true,
+      port: "18789",
+      expected: "refuse",
+    },
+    {
+      name: "empty default-port ownership scan",
+      running: false,
+      present: false,
+      port: undefined,
+      expected: "direct-fallback",
+    },
+    {
+      name: "supervised default-port node",
+      running: true,
+      present: true,
+      port: undefined,
+      expected: "scheduled-task",
+    },
+  ])("handles a portless node command: $name", async ({ running, present, port, expected }) => {
+    await withWindowsEnv("openclaw-node-default-port-", async ({ env: gatewayEnv }) => {
+      const env = makeNodeServiceEnv(gatewayEnv);
+      if (port) {
+        env.OPENCLAW_GATEWAY_PORT = port;
+      } else {
+        delete env.OPENCLAW_GATEWAY_PORT;
+      }
+      await writeNodeScript(env);
+      const scriptPath = resolveTaskScriptPath(env);
+      const commandLine = '"C:\\bin\\openclaw.cmd" node run --host 127.0.0.1';
+      await fs.writeFile(
+        scriptPath,
+        ["@echo off", 'set "OPENCLAW_SERVICE_KIND=node"', commandLine, ""].join("\r\n"),
+        "utf8",
+      );
+      spawnSync.mockImplementation((command, args) =>
+        command === getWindowsPowerShellExePath() && args?.includes(NODE_PROCESS_QUERY)
+          ? makeSpawnSyncResult({
+              stdout: JSON.stringify([
+                { ProcessId: 9999, CommandLine: "powershell.exe" },
+                ...(present ? [{ ProcessId: 4242, CommandLine: commandLine }] : []),
+              ]),
+            })
+          : makeSpawnSyncResult(),
+      );
+      taskProbe.mockReturnValue({
+        status: 0,
+        stdout: JSON.stringify(running ? runningTaskSnapshot() : notYetRunTaskSnapshot()),
+      });
+      const activation = runScheduledTaskOrThrow({
+        taskName: "OpenClaw Node",
+        env,
+        scriptPath,
+      });
+      if (expected === "refuse") {
+        await expect(activation).rejects.toThrow("refusing a direct fallback");
+      } else {
+        await expect(activation).resolves.toBe(expected);
+      }
+      if (expected === "direct-fallback") {
+        expect(spawn).toHaveBeenCalledOnce();
+      } else {
+        expect(spawn).not.toHaveBeenCalled();
       }
       expectNoGatewayTermination();
     });
