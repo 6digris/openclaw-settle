@@ -18,7 +18,6 @@ import {
   settleTriageTaskFromSqlite,
   deleteTaskAndDeliveryStateFromSqlite,
   loadTaskRegistryStateFromSqlite,
-  repairLegacyTaskIdentifiersInSqlite,
   loadTaskRegistryMutationStateFromSqlite,
   upsertTaskWithDeliveryStateToSqlite,
   upsertTaskDeliveryStateToSqlite,
@@ -123,7 +122,6 @@ const defaultTaskRegistryStore: TaskRegistryStore = {
       scope.execute({ type: "flows.syncMirroredTask", input: params }),
     );
   },
-  repairLegacyIdentifiers: repairLegacyTaskIdentifiersInSqlite,
   matchesTaskIdentity: matchesTaskIdentityFromSqlite,
   settleTriageTask: settleTriageTaskFromSqlite,
   loadSnapshot: loadTaskRegistryStateFromSqlite,

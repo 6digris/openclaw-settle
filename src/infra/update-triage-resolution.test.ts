@@ -105,11 +105,14 @@ let failedRun: UpdateRunRecord;
 let latestRun: UpdateRunRecord;
 const validateDoctor = vi.fn<() => Promise<UpdateRepairValidation>>();
 
-function validate(savedFailure = failure(), env: NodeJS.ProcessEnv = {}) {
+function validate(
+  savedFailure = failure(),
+  env: NodeJS.ProcessEnv = { OPENCLAW_STATE_DIR: "/fixture/state" },
+) {
   return validateTriageUpdateResolution({
     failure: savedFailure,
     installRoot: "/fixture/openclaw",
-    env: { OPENCLAW_STATE_DIR: "/fixture/state", ...env },
+    env,
     signal: new AbortController().signal,
     validateDoctor,
   });
@@ -279,11 +282,13 @@ describe("saved update failure resolution", () => {
 
   it.each(
     ["before verification", "during verification"].flatMap((when) =>
-      [false, true].map((updating) => ({ when, updating })),
+      [false, "OPENCLAW_UPDATE_IN_PROGRESS", "OPENCLAW_UPDATE_POST_CORE_CONVERGENCE"].map(
+        (marker) => ({ when, marker }),
+      ),
     ),
   )(
-    "does not certify pending plugin migrations $when despite updater completion (updating: $updating)",
-    async ({ when, updating }) => {
+    "does not certify pending plugin migrations $when despite updater completion (marker: $marker)",
+    async ({ when, marker }) => {
       const pending = [
         {
           pluginId: "codex",
@@ -301,13 +306,45 @@ describe("saved update failure resolution", () => {
         });
       }
       const result = await validate(failure(), {
-        OPENCLAW_UPDATE_IN_PROGRESS: updating ? "1" : "0",
+        OPENCLAW_STATE_DIR: "/fixture/state",
+        ...(marker ? { [String(marker)]: "1" } : { OPENCLAW_UPDATE_IN_PROGRESS: "0" }),
       });
       expect(result).toMatchObject({
         ok: false,
         summary: expect.stringContaining('Plugin "codex" state migration is pending'),
       });
-      expect(result.summary.includes("Let the current update or repair finish.")).toBe(updating);
+      expect(result.summary.includes("Let the current update or repair finish.")).toBe(
+        Boolean(marker),
+      );
+    },
+  );
+
+  it.each(["OPENCLAW_UPDATE_IN_PROGRESS", "OPENCLAW_UPDATE_POST_CORE_CONVERGENCE"])(
+    "preserves the caller's %s context in pending migration guidance",
+    async (marker) => {
+      vi.mocked(readDeferredPluginMigrations).mockReturnValue([
+        {
+          pluginId: "fixture-plugin",
+          reason: "Package repair deferred.",
+          command: "openclaw update repair",
+        },
+      ]);
+      const result = await validateTriageUpdateResolution({
+        failure: failure(),
+        installRoot: "/fixture/openclaw",
+        env: { OPENCLAW_STATE_DIR: "/fixture/state", [marker]: "1" },
+        signal: new AbortController().signal,
+        validateDoctor,
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        summary: expect.stringContaining("Let the current update or repair finish."),
+      });
+      expect(result.summary).toContain(
+        'If this warning remains afterward, run "openclaw update repair"',
+      );
+      expect(result.stopReason).toBe(result.summary);
     },
   );
 
