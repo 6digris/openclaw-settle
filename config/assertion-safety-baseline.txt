@@ -209,7 +209,7 @@ extensions/codex/src/app-server/tool-abort-terminal-reason.ts	1
 extensions/codex/src/app-server/tool-progress-normalization.ts	1
 extensions/codex/src/app-server/transcript-history-projection.ts	1
 extensions/codex/src/app-server/transcript-mirror-attestation.ts	2
-extensions/codex/src/app-server/transcript-mirror.ts	4
+extensions/codex/src/app-server/transcript-mirror.ts	1
 extensions/codex/src/app-server/transport-stdio.ts	1
 extensions/codex/src/app-server/upstream-fork-boundary.ts	1
 extensions/codex/src/app-server/usage-limit-error.ts	2
@@ -2551,7 +2551,7 @@ src/cron/store/quarantine.ts	1
 src/cron/store/row-codec.ts	3
 src/cron/task-run-detail.ts	2
 src/daemon/arg-split.ts	2
-src/daemon/launchd-install.ts	6
+src/daemon/launchd-install.ts	4
 src/daemon/launchd-lifecycle.ts	4
 src/daemon/launchd-service-files.ts	1
 src/daemon/launchd-stop.ts	2
@@ -2834,7 +2834,7 @@ src/infra/control-ui-assets.ts	1
 src/infra/delivery-queue-sqlite-bound.ts	2
 src/infra/delivery-queue-sqlite.types.ts	1
 src/infra/delivery-recovery.shared.ts	4
-src/infra/device-pairing-store.ts	5
+src/infra/device-pairing-store.ts	4
 src/infra/diagnostic-event-listener-presence.ts	3
 src/infra/diagnostic-events.ts	13
 src/infra/diagnostic-model-request.ts	1
