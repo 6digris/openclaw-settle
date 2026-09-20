@@ -504,6 +504,9 @@ export function renderGroupedMessage(
       {
         ...opts,
         role: normalizedRole,
+        // Keep the ordered-media DOM stable when text arrives, without applying
+        // the forwarded text clamp to an image-only reply.
+        isForwarded: opts.isForwarded && Boolean(bodyMarkdown),
         assistantMessageDisclosure: disclosure ? { ...disclosure, markdown: text } : undefined,
       },
       markdownRenderOptions,
