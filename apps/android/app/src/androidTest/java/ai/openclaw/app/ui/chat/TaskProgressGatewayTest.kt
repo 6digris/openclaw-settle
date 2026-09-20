@@ -70,12 +70,18 @@ class TaskProgressGatewayTest {
     val intent =
       Intent(context, MainActivity::class.java)
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-    var chatVisible = false
+    var onboardingFinished = false
     ActivityScenario.launch<MainActivity>(intent).use {
       try {
         // The caller clears only this proof emulator's debug app before launch. No screenshot-mode extras or preference seeding.
         connectThroughOnboarding(device, setupCode)
-        chatVisible = true
+        onboardingFinished = true
+        requireObject(device, By.desc("Show Sidebar")).click()
+        requireObject(device, By.text("Pages")).click()
+        requireObject(device, By.text("Recent")).click()
+        capture(device, proofDirectory, "00-parent-session-picker", fixture)
+        requireObject(device, By.text("Synthetic parent")).click()
+        requireObject(device, By.desc("Add attachment"))
         requireObject(device, By.text("Your research workspace is ready."))
         val sessionReads = fixture.request("evidence").getJSONArray("requests")
         val selectedHistory =
@@ -143,7 +149,7 @@ class TaskProgressGatewayTest {
       } catch (failure: Throwable) {
         // Onboarding fields can contain setup credentials; retain UI diagnostics only after leaving those screens.
         runCatching {
-          if (chatVisible) {
+          if (onboardingFinished) {
             capture(device, proofDirectory, "failure", fixture)
           } else {
             File(proofDirectory, "failure-gateway.json").writeText(fixture.request("evidence").toString(2))
@@ -168,10 +174,7 @@ class TaskProgressGatewayTest {
     requireObject(device, By.text("Continue")).click()
     requireObject(device, By.text("Permissions"))
     requireObject(device, By.text("Continue")).click()
-    requireObject(device, By.desc("Show Sidebar")).click()
-    requireObject(device, By.text("Recent")).click()
-    requireObject(device, By.text("Synthetic parent")).click()
-    requireObject(device, By.desc("Add attachment"))
+    requireObject(device, By.desc("Show Sidebar"))
   }
 
   private fun editComposer(

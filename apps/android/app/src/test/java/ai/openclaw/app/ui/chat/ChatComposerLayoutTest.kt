@@ -5235,17 +5235,16 @@ class ChatComposerLayoutTest {
       composeRule.onNodeWithText(nativeString("Gateway offline")).assertDoesNotExist()
       composeRule.onNodeWithText(nativeString("Chat not ready")).assertDoesNotExist()
       composeRule.runOnUiThread { model.disconnect() }
+      val offlineHint =
+        hasText(nativeString("Gateway offline")) and
+          hasAnySibling(hasText(nativeString("Use the recovery options below to reconnect.")))
       composeRule.waitUntil {
         composeRule.runOnIdle {
           !model.gatewayConnectionDisplay.value.isConnected && !model.isConnected.value &&
             !model.chatHealthOk.value && model.chatMessages.value.isEmpty()
-        }
+        } && composeRule.onAllNodes(offlineHint).fetchSemanticsNodes().isNotEmpty()
       }
-      composeRule
-        .onNode(
-          hasText(nativeString("Gateway offline")) and
-            hasAnySibling(hasText(nativeString("Use the recovery options below to reconnect."))),
-        ).assertIsDisplayed()
+      composeRule.onNode(offlineHint).assertIsDisplayed()
       composeRule.onNodeWithText(nativeString("Use the recovery options below to reconnect.")).assertIsDisplayed()
       composeRule.onNodeWithText(nativeString("Chat not ready")).assertDoesNotExist()
     }
