@@ -6,6 +6,7 @@ import {
   closeGatewayDeviceRevocation,
   invalidateGatewayDeviceRevocation,
   retainGatewayDeviceRevocation,
+  readGatewayDeviceSourceAuthority,
 } from "./device-revocation.js";
 
 describe("Gateway device revocation", () => {
@@ -117,21 +118,31 @@ describe("Gateway device revocation", () => {
 
   it("transfers the same caller through a queued commit guard", () => {
     const context = {};
+    let requestCurrent = true;
+    let authenticated = true;
     const request = captureGatewayDeviceRevocation(
       context,
       { deviceId: "device", role: "operator" },
-      () => true,
+      () => authenticated,
     );
     const guard = bindGatewayDeviceRevocation(() => {
-      if (!request.isCurrent()) {
+      if (!requestCurrent || !request.isCurrent()) {
         throw new Error("revoked");
       }
     }, request.isCurrent);
     const releaseQueue = expectDefined(retainGatewayDeviceRevocation(guard), "queue hold");
+    const source = expectDefined(readGatewayDeviceSourceAuthority(guard), "original auth guard");
     request.release();
     expect(guard).not.toThrow();
+    requestCurrent = false;
+    expect(guard).toThrow("revoked");
+    expect(source()).toBe(true);
+    authenticated = false;
+    expect(source()).toBe(false);
+    authenticated = true;
     invalidateGatewayDeviceRevocation(context, "device", "operator");
     expect(guard).toThrow("revoked");
+    expect(source()).toBe(false);
     releaseQueue();
     expect(() => retainGatewayDeviceRevocation(guard)).toThrow("no longer active");
   });
