@@ -1,4 +1,4 @@
-name: Windows Testbox Probe
+name: Windows Released Driver Await Diagnostic
 
 on:
   workflow_dispatch:
@@ -1122,7 +1122,7 @@ jobs:
           retention-days: 7
 
   native-git-installer:
-    name: Full Windows Git installer and published-driver proof
+    name: Released-driver promise lifetime diagnostic
     if: ${{ inputs.run_windows_launcher_integration || inputs.run_windows_git_installer_only }}
     runs-on: windows-2025
     timeout-minutes: 90
@@ -1141,10 +1141,11 @@ jobs:
           RUN_WINGET: ${{ inputs.run_winget_acceptance }}
         run: |
           if ($env:RUN_WINDOWS_CI -ne 'true' -or $env:RUN_PORTABLE -eq 'true' -or $env:RUN_WINGET -eq 'true') { throw 'Full Git proof requires the isolated launcher plus Windows-CI selection.' }
-          & ./scripts/ci/prove-windows-git-install.ps1 -CandidateRoot $env:GITHUB_WORKSPACE -ExpectedHead $env:EXPECTED_HEAD -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'full-git-install-evidence') -ProofCase $env:PROOF_CASE
+          $traceReleasedDriverAwait = $env:PROOF_CASE -eq 'published-driver'
+          & ./scripts/ci/prove-windows-git-install.ps1 -CandidateRoot $env:GITHUB_WORKSPACE -ExpectedHead $env:EXPECTED_HEAD -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'full-git-install-evidence') -ProofCase $env:PROOF_CASE -TraceReleasedDriverAwait:$traceReleasedDriverAwait
           $result = Get-Content (Join-Path $env:RUNNER_TEMP 'full-git-install-evidence/result.json') -Raw | ConvertFrom-Json
           $expectedCases = if ($env:PROOF_CASE -eq 'all') { 4 } elseif ($env:PROOF_CASE -eq 'published-driver') { 2 } else { throw 'Invalid installer proof selection.' }
-          if ($result.result -cne 'passed' -or $result.sourceSha -cne $env:EXPECTED_HEAD -or $result.selection -cne $env:PROOF_CASE -or $result.cases.Count -ne $expectedCases -or $result.cleanup -cne 'restored-and-removed') { throw 'Installer acceptance did not execute every selected case.' }
+          if ([bool]$result.diagnosticOnly -ne $traceReleasedDriverAwait -or $result.result -cne 'passed' -or $result.sourceSha -cne $env:EXPECTED_HEAD -or $result.selection -cne $env:PROOF_CASE -or $result.cases.Count -ne $expectedCases -or $result.cleanup -cne 'restored-and-removed') { throw 'Installer acceptance did not execute every selected case.' }
       - name: Upload full installer evidence including failures
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

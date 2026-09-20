@@ -4,9 +4,11 @@ param(
     [Parameter(Mandatory = $true)][string]$CandidateRoot,
     [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedHead,
     [Parameter(Mandatory = $true)][string]$EvidenceRoot,
-    [ValidateSet('all', 'published-driver')][string]$ProofCase = 'all'
+    [ValidateSet('all', 'published-driver')][string]$ProofCase = 'all',
+    [switch]$TraceReleasedDriverAwait
 )
 $ErrorActionPreference = 'Stop'
+if ($TraceReleasedDriverAwait -and $ProofCase -ne 'published-driver') { throw 'Await diagnostics require the isolated published-driver case.' }
 if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows' -or $PSVersionTable.PSVersion.Major -lt 7) {
     throw 'Full installer proof requires PowerShell7 on a disposable GitHub-hosted Windows VM.'
 }
@@ -21,7 +23,7 @@ $node = (Get-Command node -CommandType Application | Select-Object -First 1).Sou
 $engine = (Get-Process -Id $PID).Path
 New-Item -ItemType Directory -Force -Path $EvidenceRoot | Out-Null
 $root = Join-Path $env:RUNNER_TEMP ('openclaw-git-install-proof-' + [guid]::NewGuid().ToString('N'))
-$names = @('USERPROFILE', 'OPENCLAW_HOME', 'OPENCLAW_STATE_DIR', 'OPENCLAW_CONFIG_PATH', 'OPENCLAW_GIT_DIR', 'OPENCLAW_UPDATE_DEV_TARGET_REF', 'APPDATA', 'LOCALAPPDATA', 'NPM_CONFIG_PREFIX', 'npm_config_prefix', 'Path', 'TEMP', 'TMP')
+$names = @('USERPROFILE', 'OPENCLAW_HOME', 'OPENCLAW_STATE_DIR', 'OPENCLAW_CONFIG_PATH', 'OPENCLAW_GIT_DIR', 'OPENCLAW_UPDATE_DEV_TARGET_REF', 'APPDATA', 'LOCALAPPDATA', 'NPM_CONFIG_PREFIX', 'npm_config_prefix', 'Path', 'TEMP', 'TMP', 'OPENCLAW_PROOF_TRACE_ENTRY', 'OPENCLAW_PROOF_TRACE_OUTPUT')
 $saved = @{}
 foreach ($name in $names) { $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
@@ -30,6 +32,7 @@ $proof = [ordered]@{
     result = 'failed'; sourceSha = $head; workflowSha = $env:PROOF_WORKFLOW_SHA
     installerSha256 = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
     runId = $env:GITHUB_RUN_ID; runAttempt = $env:GITHUB_RUN_ATTEMPT
+    diagnosticOnly = [bool]$TraceReleasedDriverAwait
     baseline = 'openclaw@2026.9.5'; selection = $ProofCase; cases = @(); commands = @(); cleanup = 'pending'
 }
 function Invoke-ProofCommand {
@@ -159,7 +162,19 @@ try {
     $proof.baselineGateway.stoppedBeforeUpdate = $true
     # CLI timeout is per step; this aggregate budget includes fetch, install, build,
     # Doctor and finalization, and remains below the workflow's 90-minute limit.
-    Invoke-ProofCommand -Name 'published-driver-update' -File $node -Arguments @($driver, 'update', '--channel', 'dev', '--yes', '--json', '--no-restart', '--timeout', '1200') -Seconds 3600
+    $driverArgs = @($driver, 'update', '--channel', 'dev', '--yes', '--json', '--no-restart', '--timeout', '1200')
+    if ($TraceReleasedDriverAwait) {
+        $env:OPENCLAW_PROOF_TRACE_ENTRY = $driver
+        $env:OPENCLAW_PROOF_TRACE_OUTPUT = Join-Path $EvidenceRoot 'released-driver-await'
+        $driverArgs = @('--require', (Join-Path $CandidateRoot 'scripts/ci/trace-released-driver-await.cjs')) + $driverArgs
+    }
+    try {
+        Invoke-ProofCommand -Name 'published-driver-update' -File $node -Arguments $driverArgs -Seconds 3600
+    } finally {
+        foreach ($traceName in @('OPENCLAW_PROOF_TRACE_ENTRY', 'OPENCLAW_PROOF_TRACE_OUTPUT')) {
+            [Environment]::SetEnvironmentVariable($traceName, $saved[$traceName], 'Process')
+        }
+    }
     Assert-CandidateHead
     $proof.cases += 'published2026.9.5 driver to exact candidate after owned Gateway stopped'
     $entry = Join-Path $CandidateRoot 'dist/entry.js'
