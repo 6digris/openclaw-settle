@@ -696,7 +696,6 @@ function redactTranscriptStructuredValue(
     }
     if (next.humanMentions !== source.humanMentions) {
       delete next.humanMentions;
-      delete next.everyoneMentionProfileIds;
     }
   }
   if (location === "root" && source.role === "user" && next && next.content !== source.content) {
@@ -705,7 +704,6 @@ function redactTranscriptStructuredValue(
       // UTF-16 selections cannot retain their binding after storage redacts the content.
       const retained = { ...metadata };
       delete retained.humanMentions;
-      delete retained.everyoneMentionProfileIds;
       next["__openclaw"] = retained;
     }
   }

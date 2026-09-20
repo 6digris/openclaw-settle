@@ -13,6 +13,7 @@ import {
 } from "../../sessions/user-turn-transcript.js";
 import type { UserTurnOriginalInputCommit } from "../../sessions/user-turn-transcript.types.js";
 import { extractTextFromChatContent } from "../../shared/chat-content.js";
+import type { MentionAudienceIdentity } from "../mention-inbox-audience-store.js";
 import type { MentionInbox } from "../mention-inbox.types.js";
 import { loadSessionEntry } from "../session-utils.js";
 import { formatForLog } from "../ws-log.js";
@@ -61,7 +62,7 @@ export function createGatewayChatUserTurnController(params: {
       ? undefined
       : gatewayClientSenderFields(params.client).sender;
   const senderProfileId = params.client?.authenticatedUserProfile?.profileId;
-  const selectedMentions = request.mentions;
+  const selectedMentions = request.mentions ? structuredClone(request.mentions) : undefined;
   const mentionInbox = params.mentionInbox;
   const sourceId = buildRunUserTurnIdempotencyKey(session.clientRunId);
   const sourceClients =
@@ -75,9 +76,6 @@ export function createGatewayChatUserTurnController(params: {
     text: request.rawMessage,
     ...(request.workContext ? { workContext: request.workContext } : {}),
     ...(request.mentions ? { mentions: request.mentions } : {}),
-    ...(request.everyoneMentionProfileIds
-      ? { everyoneMentionProfileIds: request.everyoneMentionProfileIds }
-      : {}),
     timestamp: session.now,
     idempotencyKey: sourceId,
     ...(request.p.replyToId ? { replyToId: request.p.replyToId } : {}),
@@ -111,27 +109,71 @@ export function createGatewayChatUserTurnController(params: {
           : {}),
       }))
     : Promise.resolve(baseInput);
+  // Audience bytes never enter the message, hook input, pending-input JSON or transcript.
+  const audienceRecipients = request.everyoneRecipients
+    ? [...request.everyoneRecipients]
+    : undefined;
+  const pendingInputRequestFingerprint =
+    sender?.id && !request.goalOperation
+      ? createHash("sha256")
+          .update(
+            stableStringify([
+              {
+                ...request.p,
+                sessionId: admission.sessionBinding.sessionId,
+                expectedLeafEntryId: undefined,
+              },
+              sender.identity ?? sender.id,
+              hasGatewayAdminScope(params.client),
+            ]),
+          )
+          .digest("hex")
+      : undefined;
+  let audienceIdentity: MentionAudienceIdentity | undefined;
+  const bindAudience = () => {
+    if (
+      !audienceIdentity &&
+      audienceRecipients &&
+      senderProfileId &&
+      pendingInputRequestFingerprint
+    ) {
+      admission.assertWorkAdmissionCurrent();
+      const current = loadSessionEntry(session.sessionKey, {
+        ...session.sessionLoadOptions,
+        clone: false,
+      });
+      if (!current.entry || current.entry.sessionId !== admission.sessionBinding.sessionId) {
+        throw new Error("Mention audience has no current admitted session");
+      }
+      audienceIdentity = {
+        agentId: session.agentId,
+        sessionKey: session.sessionKey,
+        sessionId: current.entry.sessionId,
+        sourceId,
+        senderProfileId,
+        requestFingerprint: pendingInputRequestFingerprint,
+        storePath: current.storePath,
+      };
+    }
+    return audienceIdentity;
+  };
+  const retainAudience = (source: { recovered: boolean }) => {
+    const identity = bindAudience();
+    if (!identity || !audienceRecipients || !mentionInbox) {
+      return;
+    }
+    mentionInbox.retainEveryoneAudience(params.client, identity, {
+      recipients: audienceRecipients,
+      recovered: source.recovered,
+      assertCurrent: () => {
+        admission.assertWorkAdmissionCurrent();
+        params.assertOriginalInputCommit?.();
+      },
+    });
+  };
   let contextFreeCommand = false;
   const recorder: UserTurnTranscriptRecorder = createUserTurnTranscriptRecorder({
-    ...(sender?.id && !request.goalOperation
-      ? {
-          // Attribution and submitted bytes survive reconnect; display names, leaf
-          // cursors and generated media paths are not immutable request identity.
-          pendingInputRequestFingerprint: createHash("sha256")
-            .update(
-              stableStringify([
-                {
-                  ...request.p,
-                  sessionId: admission.sessionBinding.sessionId,
-                  expectedLeafEntryId: undefined,
-                },
-                sender.identity ?? sender.id,
-                hasGatewayAdminScope(params.client),
-              ]),
-            )
-            .digest("hex"),
-        }
-      : {}),
+    ...(pendingInputRequestFingerprint ? { pendingInputRequestFingerprint } : {}),
     ...(request.goalOperation
       ? {
           sessionTurnMutation: {
@@ -143,6 +185,7 @@ export function createGatewayChatUserTurnController(params: {
         }
       : {}),
     input: baseInput,
+    ...(audienceRecipients ? { preparePendingInputSourceCustody: retainAudience } : {}),
     resolveInput: () => inputPromise,
     target: () => {
       // Retain only the current binding; transcript writers recheck it at commit.
@@ -199,6 +242,11 @@ export function createGatewayChatUserTurnController(params: {
     ...(selectedMentions && senderProfileId && mentionInbox
       ? {
           onOriginalInputCommitted: ({ message, anchor }: UserTurnOriginalInputCommit) => {
+            // New-session input has no pending queue to survive: bind once after its
+            // actual SID is committed, still under the original live admission.
+            if (!session.entry && audienceRecipients) {
+              retainAudience({ recovered: false });
+            }
             const stored = message["__openclaw"]?.humanMentions;
             const text =
               extractTextFromChatContent(message.content, {
@@ -226,7 +274,6 @@ export function createGatewayChatUserTurnController(params: {
               params.warn(
                 "Human mentions skipped because the committed text no longer contains the selected tokens.",
               );
-              return;
             }
             mentionInbox.recordCommittedInput({
               sourceId,
@@ -243,12 +290,18 @@ export function createGatewayChatUserTurnController(params: {
               recipientProfileIds: [
                 ...new Set(
                   retained.flatMap((mention) =>
-                    "profileId" in mention
-                      ? [mention.profileId]
-                      : (message["__openclaw"]?.everyoneMentionProfileIds ?? []),
+                    "profileId" in mention ? [mention.profileId] : [],
                   ),
                 ),
               ],
+              ...(audienceIdentity
+                ? {
+                    everyoneAudience: {
+                      identity: audienceIdentity,
+                      retained: retained.some((mention) => "kind" in mention),
+                    },
+                  }
+                : {}),
               excerpt: redactSensitiveText(text),
             });
           },

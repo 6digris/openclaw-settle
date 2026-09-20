@@ -40,7 +40,7 @@ function optionLabel(option: MentionOption): string {
   return "profileId" in option ? option.displayName : "@everyone";
 }
 
-type MentionTarget = { start: number; end: number; query: string };
+type MentionTarget = { start: number; end: number; query: string; allowEveryone: boolean };
 type MentionSearch =
   | { kind: "loading" }
   | { kind: "ready"; result: UsersMentionableResult }
@@ -72,7 +72,9 @@ function findMentionTarget(value: string, caret: number): MentionTarget | null {
   while (end < value.length && /[\p{L}\p{N}\p{M}_.-]/u.test(value[end] ?? "")) {
     end += 1;
   }
-  return { start, end, query };
+  // A second bare @ is for adding people; an explicit search may still choose everyone.
+  const allowEveryone = query.trim().length > 0 || value.indexOf("@") === value.lastIndexOf("@");
+  return { start, end, query, allowEveryone };
 }
 
 /** One bounded suggestion lifecycle shared by existing- and new-session composers. */
@@ -136,7 +138,11 @@ export class HumanMentionMenu {
       }
       return;
     }
-    if (this.target?.start === target.start && this.target.query === target.query) {
+    if (
+      this.target?.start === target.start &&
+      this.target.query === target.query &&
+      this.target.allowEveryone === target.allowEveryone
+    ) {
       return;
     }
     if (this.target?.start !== target.start) {
@@ -153,7 +159,12 @@ export class HumanMentionMenu {
     }
     const { users, everyone } = this.search.result;
     // People stay first so opening the picker does not default to a broad ping.
-    return [...users, ...(everyone ? [{ kind: "everyone" as const, ...everyone }] : [])];
+    return [
+      ...users,
+      ...(everyone && this.target?.allowEveryone
+        ? [{ kind: "everyone" as const, ...everyone }]
+        : []),
+    ];
   }
 
   private showResults(result: UsersMentionableResult) {
@@ -378,7 +389,7 @@ export class HumanMentionMenu {
                             identity: { type: "profile", id: person.profileId },
                             profileAvatarUrl: person.avatarUrl,
                           })
-                        : icons.users,
+                        : html`<span class="mention-everyone-icon">${icons.users}</span>`,
                     iconHidden: true,
                     name: optionLabel(person),
                     description,

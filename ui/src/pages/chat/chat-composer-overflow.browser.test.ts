@@ -60,6 +60,65 @@ describe("composer overflow presentation", () => {
     return container.querySelector<HTMLElement>(".chat-attachments-preview")!;
   }
 
+  it.each([
+    [390, "ltr"],
+    [390, "rtl"],
+    [1440, "ltr"],
+    [1440, "rtl"],
+  ] as const)(
+    "centers all selected-everyone controls on one row at %ipx in %s",
+    async (width, dir) => {
+      // The app can load mobile surface rules after the lazy context-strip stylesheet.
+      styles.textContent = [
+        baseStyles,
+        composerStyles,
+        contextStripStyles,
+        goalStyles,
+        composerSurfaceStyles,
+      ].join("\n");
+      await page.viewport(width, 900);
+      container.className = "";
+      container.dir = dir;
+      container.style.width = `${Math.min(width - 32, 760)}px`;
+      render(
+        renderChatComposer(
+          createComposerProps({
+            draft: "@everyone review this",
+            mentions: [{ kind: "everyone", start: 0, end: 9 }],
+          }),
+        ),
+        container,
+      );
+      await afterLayout();
+      const strip = container.querySelector<HTMLElement>('.composer-context-strip[role="status"]')!;
+      const selectors = [
+        ".composer-context-strip__label-text",
+        ".composer-context-strip__label svg",
+        ".composer-context-strip__person-name",
+        ".composer-context-strip__person svg",
+        ".composer-context-strip__dismiss svg",
+      ];
+      const boxes = selectors.map((selector) =>
+        strip.querySelector(selector)!.getBoundingClientRect(),
+      );
+      const centers = boxes.map((box) => box.top + box.height / 2);
+      expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(0.5);
+      for (const box of boxes) {
+        expect(box.left).toBeGreaterThanOrEqual(strip.getBoundingClientRect().left);
+        expect(box.right).toBeLessThanOrEqual(strip.getBoundingClientRect().right);
+      }
+      const glyph = strip
+        .querySelector(".composer-context-strip__person svg")!
+        .getBoundingClientRect();
+      expect(glyph.width).toBe(glyph.height);
+      const badge = strip.querySelector<HTMLElement>(".mention-everyone-icon")!;
+      const badgeStyle = getComputedStyle(badge);
+      expect(badgeStyle.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
+      expect(Number.parseFloat(badgeStyle.borderRadius)).toBeGreaterThan(0);
+      expect(glyph.height).toBeLessThan(badge.getBoundingClientRect().height);
+    },
+  );
+
   it.each([390, 1440])(
     "keeps long reply context and its dismiss control inside the composer at %ipx",
     async (width) => {

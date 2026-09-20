@@ -4,6 +4,29 @@
   border-radius: 50%;
 }
 
+.mention-everyone-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-full);
+  color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+.mention-menu .mention-everyone-icon {
+  width: 22px;
+  height: 22px;
+}
+
+:is(.mention-menu, .composer-context-strip) .mention-everyone-icon svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
 .mention-menu__retry {
   margin: 8px;
 }

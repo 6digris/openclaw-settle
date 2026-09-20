@@ -48,7 +48,6 @@ export type PersistedUserTurnMessage = Extract<AgentMessage, { role: "user" }> &
   provenance?: InputProvenance;
   __openclaw?: Record<string, unknown> & {
     humanMentions?: readonly HumanMention[];
-    everyoneMentionProfileIds?: readonly string[];
   };
 };
 
@@ -58,8 +57,6 @@ export type UserTurnInput = Pick<PersistedUserTurnMessage, "display" | "excludeF
   workContext?: AttachedChatWorkContext;
   /** Explicit human selections bound to UTF-16 offsets in text. */
   mentions?: readonly HumanMention[];
-  /** Admission-owned broadcast snapshot; queued/replayed input never expands it again. */
-  everyoneMentionProfileIds?: readonly string[];
   media?: readonly PersistedUserTurnMediaInput[] | null;
   /** Restart-safe native image placement; model-visible prompt bytes remain separate. */
   mediaImageLayout?: {
@@ -192,6 +189,8 @@ type UserTurnInputResolver = () => UserTurnInput | undefined | Promise<UserTurnI
 export type CreateUserTurnTranscriptRecorderParams = {
   /** Authenticated input identity independent of prepared media paths. */
   pendingInputRequestFingerprint?: string;
+  /** Private ingress custody never enters pending message JSON or transcript metadata. */
+  preparePendingInputSourceCustody?: (source: { recovered: boolean }) => void;
   trackInputCompletion?: boolean;
   /** Exact admitted source recorders consumed by this collected transcript message. */
   pendingInputSources?: readonly UserTurnTranscriptRecorder[];

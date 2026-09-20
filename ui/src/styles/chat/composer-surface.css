@@ -1146,12 +1146,6 @@
     --chat-composer-send-size: var(--chat-mobile-row-plus-target-size);
   }
 
-  .agent-chat__input--mobile-toolbar svg {
-    width: var(--chat-mobile-row-icon-size);
-    height: var(--chat-mobile-row-icon-size);
-    stroke-width: var(--chat-mobile-row-icon-stroke);
-  }
-
   .agent-chat__input--mobile-toolbar .agent-chat__composer-footer {
     justify-content: space-between;
     gap: 0;
@@ -1207,12 +1201,13 @@
     justify-content: center;
   }
 
-  /* Row icons share one optical tier; role tokens below express the deliberate
-     exceptions for Plus, quiet state indicators, and Mic. */
+  /* Size only toolbar icons: context strips and picker rows own their glyph slots.
+     Role tokens below express exceptions for Plus, quiet state indicators, and Mic. */
   .agent-chat__input--mobile-toolbar .agent-chat__composer-footer svg {
     width: var(--chat-mobile-row-icon-size);
     height: var(--chat-mobile-row-icon-size);
     color: var(--muted);
+    stroke-width: var(--chat-mobile-row-icon-stroke);
   }
 
   .agent-chat__input--mobile-toolbar

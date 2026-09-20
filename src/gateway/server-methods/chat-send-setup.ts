@@ -114,7 +114,7 @@ export async function prepareAndAdmitChatSend(
         respond(false, undefined, recipients.error);
         return undefined;
       }
-      normalizedRequest.value.everyoneMentionProfileIds = recipients.value;
+      normalizedRequest.value.everyoneRecipients = recipients.value;
     }
   }
   const shouldAdmit = await runChatSendPreAdmission({

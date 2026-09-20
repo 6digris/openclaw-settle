@@ -5,6 +5,7 @@ import type {
   UsersMentionableParams,
   UsersMentionableResult,
 } from "../../packages/gateway-protocol/src/index.js";
+import type { MentionAudienceIdentity } from "./mention-inbox-audience-store.js";
 import type { GatewayClient } from "./server-methods/client-types.js";
 
 export type MentionCommittedInput = {
@@ -17,6 +18,8 @@ export type MentionCommittedInput = {
   senderProfileId: string;
   recipientProfileIds: readonly string[];
   excerpt?: string;
+  /** Exact private source custody; only a retained everyone token permits its fanout. */
+  everyoneAudience?: { identity: MentionAudienceIdentity; retained: boolean };
 };
 
 /** Keep the Gateway context independent of its context-consuming Inbox implementation. */
@@ -37,6 +40,11 @@ export type MentionInbox = {
     client: GatewayClient | null,
     input: UsersMentionableParams,
   ) => Result<readonly string[], ErrorShape>;
+  retainEveryoneAudience: (
+    client: GatewayClient | null,
+    identity: MentionAudienceIdentity,
+    options: { recipients: readonly string[]; recovered: boolean; assertCurrent: () => void },
+  ) => void;
   list: (client: GatewayClient | null) => Result<MentionsListResult, ErrorShape>;
   dismiss: (
     client: GatewayClient | null,

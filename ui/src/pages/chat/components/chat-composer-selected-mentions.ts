@@ -5,6 +5,7 @@ import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
 import type { HumanMention } from "../../../lib/chat/chat-types.ts";
 import "../../../styles/chat/composer-context-strip.css";
+import "../../../styles/chat/mention-menu.css";
 import { renderChatAuthorAvatar } from "./chat-author-avatar.ts";
 
 class MentionOverflowDirective extends AsyncDirective {
@@ -123,7 +124,7 @@ export function renderSelectedHumanMentions(
                   identity: { type: "profile", id: person.profileId },
                   profileAvatarUrl: avatarUrls?.get(person.profileId),
                 })
-              : html`<span class="composer-context-strip__icon">${icons.users}</span>`
+              : html`<span class="mention-everyone-icon">${icons.users}</span>`
           }
           <bdi class="composer-context-strip__person-name"
             >${person.name}${index < people.length - 1 ? "," : ""}</bdi

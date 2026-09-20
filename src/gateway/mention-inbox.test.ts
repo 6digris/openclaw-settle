@@ -3,6 +3,7 @@ import { StatementSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { validateMentionsListResult } from "../../packages/gateway-protocol/src/index.js";
+import { loadSessionEntry } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { emitSessionIdentityMutation } from "../sessions/session-lifecycle-events.js";
 import {
@@ -32,7 +33,6 @@ import {
 } from "./mention-inbox.test-support.js";
 import { invalidateOperatorRolePolicy } from "./operator-role-policy.js";
 import { identifiedClient, soloClient } from "./server-methods/sessions-sharing.test-support.js";
-import { resolveSessionSharingTarget } from "./session-sharing.js";
 
 // Frozen v2026.9.3-v2026.9.5 source contract, deliberately independent of candidate constants.
 const legacyReference = z.string().min(1).max(256);
@@ -148,8 +148,8 @@ describe("temporary human mention Inbox", () => {
       expect(f.push).not.toHaveBeenCalled();
       expect(read(restarted, identifiedClient(joined.id, "Joined later")).items).toEqual([]);
       expect(read(restarted, f.bobClient).items).toEqual([]);
-      const target = resolveSessionSharingTarget({ cfg: {}, sessionKey: SESSION_KEY });
-      expect(target?.entry.profileInvolvement?.profiles[joined.id]).toBeUndefined();
+      const entry = loadSessionEntry({ agentId: "main", sessionKey: SESSION_KEY });
+      expect(entry?.profileInvolvement?.profiles[joined.id]).toBeUndefined();
       expect(
         readWithLegacySourceContract()
           .sources.flatMap((source) => source.recipients)

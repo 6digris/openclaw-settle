@@ -494,13 +494,12 @@ describe("transcript metadata projection", () => {
       content: "@everyone review",
       __openclaw: {
         humanMentions,
-        everyoneMentionProfileIds: ["offline-person", "another-person"],
       },
     };
     expect(projectChatDisplayMessages([message])).toEqual([
       { role: "user", content: message.content, __openclaw: { humanMentions } },
     ]);
-    expect(message.__openclaw.everyoneMentionProfileIds).toHaveLength(2);
+    expect(message["__openclaw"]).toEqual({ humanMentions });
   });
 
   it("keeps display metadata while omitting oversized upstream prompt metadata", () => {

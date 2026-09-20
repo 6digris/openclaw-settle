@@ -53,7 +53,7 @@ describe("human mention directory", () => {
     await withInbox(async (f) => {
       f.aliceClient.connect.scopes = ["operator.read", "operator.write"];
       f.clients.splice(f.clients.indexOf(f.carolClient), 1);
-      for (const query of ["", "every", "EVERYONE"]) {
+      for (const query of ["", "ev", "every", "yon", "EVERYONE"]) {
         expect(
           await f.call("users.mentionable", { sessionKey: SESSION_KEY, query }, f.aliceClient),
         ).toMatchObject({ ok: true, payload: { everyone: { recipientCount: 2 } } });

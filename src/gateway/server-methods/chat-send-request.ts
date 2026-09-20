@@ -73,7 +73,7 @@ export type NormalizedChatSendRequest = {
   requestIdentity: string;
   mentions?: HumanMention[];
   /** Server-selected broadcast recipients; never accepted from RPC input. */
-  everyoneMentionProfileIds?: readonly string[];
+  everyoneRecipients?: readonly string[];
   workContext?: AttachedChatWorkContext;
   reconnectResumeRequested: boolean;
 };

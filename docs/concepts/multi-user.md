@@ -167,7 +167,7 @@ In a normal Control UI chat, type `@` and search by a person's display name (inc
 
 ### Notify everyone with access
 
-Select **@everyone** from the same picker to notify all known human profiles that can read the session, including people who are offline. The picker shows the current recipient count, and **Will notify** identifies the selection as **Everyone with access**. Individual people appear first so opening the picker does not default to a broadcast.
+Select **@everyone** from the same picker to notify all known human profiles that can read the session, including people who are offline. The picker shows the current recipient count, and **Will notify** identifies the selection as **Everyone with access**. Individual people appear first so opening the picker does not default to a broadcast. The everyone option appears for a lone bare `@`, or for a matching search such as `@ev` or `@yon`. A second bare `@` offers individual people instead.
 
 This is an explicit selection, not text matching: typing or pasting `@everyone` without selecting it never sends a ping. Editing the selected token removes the selection. The sender is excluded, agents are not recipients, and direct mentions combined with `@everyone` notify each person only once. It does not grant session access or override anyone's notification preferences.
 

@@ -114,7 +114,13 @@ function composerFixture(
   const textarea = container.querySelector<HTMLTextAreaElement>("textarea")!;
   const edit = (
     next: string,
-    options: { start?: number; end?: number; inputType?: string; data?: string | null } = {},
+    options: {
+      start?: number;
+      end?: number;
+      caret?: number;
+      inputType?: string;
+      data?: string | null;
+    } = {},
   ) => {
     const inputType = options.inputType ?? "insertText";
     textarea.setSelectionRange(
@@ -125,7 +131,7 @@ function composerFixture(
       new InputEvent("beforeinput", { bubbles: true, inputType, data: options.data ?? next }),
     );
     textarea.value = next;
-    textarea.setSelectionRange(next.length, next.length);
+    textarea.setSelectionRange(options.caret ?? next.length, options.caret ?? next.length);
     textarea.dispatchEvent(
       new InputEvent("input", { bubbles: true, inputType, data: options.data ?? next }),
     );
@@ -243,6 +249,54 @@ describe.each(["chat", "new-session"] as const)("%s human mentions", (kind) => {
       expect(view.send).toHaveBeenCalledWith({ draft: "@everyone ", mentions: [] });
     },
   );
+
+  it.each([
+    ["@", true],
+    ["Review @", true],
+    ["@Alex @", false],
+    ["reader@example.test @", false],
+    ["@Alex @ev", true],
+    ["@Alex @yon", true],
+    ["@Alex @EVERY", true],
+  ] as const)("offers everyone for %j only when intentional", async (draft, offered) => {
+    const view = composerFixture(kind);
+    view.request.mockResolvedValue({ ...people, everyone: { recipientCount: 24 } });
+    view.edit(draft);
+    await vi.advanceTimersByTimeAsync(150);
+    const options = [...view.container.querySelectorAll('[role="option"]')];
+    expect(options.some((option) => option.textContent?.includes("@everyone"))).toBe(offered);
+    expect(options.filter((option) => option.textContent?.includes("Alex"))).toHaveLength(2);
+  });
+
+  it("reconciles everyone against the whole draft when an identical query is cached", async () => {
+    const view = composerFixture(kind);
+    view.request.mockResolvedValue({ ...people, everyone: { recipientCount: 24 } });
+    view.edit("@", { caret: 1 });
+    await vi.advanceTimersByTimeAsync(150);
+    view.key("End");
+    view.edit("@ later @", { caret: 1 });
+    expect(view.container.querySelectorAll('[role="option"]')).toHaveLength(2);
+    expect(
+      view.container.querySelector('[role="option"][aria-selected="true"]')?.textContent,
+    ).toContain("Alex");
+    view.edit("@ later", { caret: 1 });
+    expect(view.container.querySelectorAll('[role="option"]')).toHaveLength(3);
+    expect(view.request).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps server-side substring person matches without offering everyone", async () => {
+    const view = composerFixture(kind);
+    view.request.mockResolvedValue({
+      users: [{ profileId: "peter", displayName: "Peter Steinberger", online: false }],
+      truncated: false,
+    });
+    view.edit("@einb");
+    await vi.advanceTimersByTimeAsync(150);
+    expect(view.container.querySelectorAll('[role="option"]')).toHaveLength(1);
+    expect(view.container.textContent).not.toContain("@everyone");
+    view.key("Enter");
+    expect(view.value().mentions).toEqual([{ profileId: "peter", start: 0, end: 18 }]);
+  });
 
   it("selects a broadcast-only result without inventing a profile", async () => {
     const view = composerFixture(kind);

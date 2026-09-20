@@ -7,7 +7,6 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import { registerAgentSessionLoopTestLifecycle } from "../../agents/sessions/agent-session-loop-correctness.test-support.js";
 import type { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
 import { replyRunRegistry } from "../../auto-reply/reply/reply-run-registry.js";
-import { getRuntimeConfig } from "../../config/config.js";
 import {
   appendTranscriptMessageSync,
   listSessionPendingInputs,
@@ -31,268 +30,23 @@ import {
 } from "../../sessions/user-turn-transcript.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { ensureSessionPendingInputsSchema } from "../../state/openclaw-agent-pending-inputs-schema.js";
-import { ensureProfileForEmail, setDisplayName } from "../../state/user-profiles.js";
-import { createMentionInbox } from "../mention-inbox.js";
+import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { dispatchInboundMessageMock, installGatewayTestHooks } from "../test-helpers.js";
 import { getTestPluginRegistry } from "../test-helpers.plugin-registry.js";
 import { createWorkerSessionPlacementStore } from "../worker-environments/placement-store.js";
 import { useBrowserFollowupFixture } from "./chat-send-pending-inputs.test-support.js";
-import type { GatewayClient, RespondFn } from "./types.js";
+import {
+  createPendingMentionFixture,
+  registerChatSendPendingMentionTests,
+} from "./chat-send-pending-mentions.test-support.js";
+import type { RespondFn } from "./types.js";
 installGatewayTestHooks();
 registerAgentSessionLoopTestLifecycle();
 const createBrowserFollowupFixture = useBrowserFollowupFixture();
 
 describe("ordinary chat input admission", () => {
-  async function createMentionFixture(
-    options: { active?: boolean; preserveContent?: boolean } = {},
-  ) {
-    const fixture = await createBrowserFollowupFixture({ preserveContent: true, ...options });
-    const profiles = ["Alice", "Bob", "Carol"].map((name) => {
-      const profile = ensureProfileForEmail(`${name.toLowerCase()}@mentions.example.test`);
-      setDisplayName(profile.id, name);
-      return { profileId: profile.id, displayName: name, hasAvatar: false, updatedAt: 1 };
-    });
-    const [alice, bob, carol] = profiles;
-    if (!alice || !bob || !carol) {
-      throw new Error("Mention test profiles were not created");
-    }
-    fixture.client.authenticatedUserProfile = alice;
-    const bobClient = { ...fixture.client, connId: "bob-one", authenticatedUserProfile: bob };
-    const carolClient = { ...fixture.client, connId: "carol", authenticatedUserProfile: carol };
-    const inbox = createMentionInbox({
-      gatewayInstanceId: "chat-mention-commit-test",
-      getRuntimeConfig,
-      getClients: () => [fixture.client, bobClient, carolClient],
-      broadcastToConnIds: vi.fn(),
-    });
-    fixture.context.mentionInbox = inbox;
-    fixture.params.message = "@Bob could you review this?";
-    fixture.params.mentions = [{ profileId: bob.profileId, start: 0, end: 4 }];
-    const read = (client: GatewayClient = bobClient) => {
-      const result = inbox.list(client);
-      if (!result.ok) {
-        throw new Error(result.error.message);
-      }
-      return result.value.items;
-    };
-    return {
-      ...fixture,
-      bobClient,
-      carolClient,
-      inbox,
-      read,
-      cleanup: async () => {
-        inbox.dispose();
-        await fixture.cleanup();
-      },
-    };
-  }
-
-  it.each([false, true])(
-    "commits an explicit everyone snapshot once (queued: %s)",
-    async (active) => {
-      const fixture = await createMentionFixture({ active });
-      fixture.params.message = "@everyone @Bob review this";
-      fixture.params.mentions = [
-        { kind: "everyone", start: 0, end: 9 },
-        { profileId: fixture.bobClient.authenticatedUserProfile.profileId, start: 10, end: 14 },
-      ];
-      const offline = ensureProfileForEmail("offline-broadcast@mentions.example.test");
-      const offlineClient = {
-        ...fixture.bobClient,
-        connId: "offline-broadcast",
-        authenticatedUserProfile: {
-          profileId: offline.id,
-          displayName: "Offline",
-          hasAvatar: false,
-          updatedAt: 1,
-        },
-      };
-      try {
-        const ack = await fixture.send(vi.fn<RespondFn>(), {
-          expectedProfileId: fixture.client.authenticatedUserProfile!.profileId,
-        });
-        expect(ack).toHaveBeenCalledWith(
-          true,
-          expect.objectContaining({ status: "started" }),
-          undefined,
-          expect.anything(),
-        );
-        if (active) expect(fixture.read()).toEqual([]);
-        const late = ensureProfileForEmail("late-broadcast@mentions.example.test");
-        const recorder = await fixture.dispatchedRecorder;
-        const committed = await recorder.persistApproved();
-        expect(fixture.read()).toHaveLength(1);
-        expect(fixture.read(fixture.carolClient)).toHaveLength(1);
-        expect(fixture.read(offlineClient)).toHaveLength(1);
-        expect(fixture.read(fixture.client)).toEqual([]);
-        const snapshot = (committed?.message ?? recorder.getPersistedMessage?.())?.["__openclaw"]
-          ?.everyoneMentionProfileIds;
-        expect(snapshot).toContain(offline.id);
-        expect(snapshot).not.toContain(late.id);
-        const id = fixture.read()[0]!.id;
-        fixture.inbox.dismiss(fixture.bobClient, [id]);
-        await fixture.send();
-        await recorder.persistApproved();
-        expect(fixture.read()).toEqual([]);
-        expect(
-          fixture.read({
-            ...offlineClient,
-            authenticatedUserProfile: {
-              ...offlineClient.authenticatedUserProfile,
-              profileId: late.id,
-            },
-          }),
-        ).toEqual([]);
-        expect(dispatchInboundMessageMock).toHaveBeenCalledTimes(1);
-      } finally {
-        await fixture.cleanup();
-      }
-    },
-  );
-
-  it("keeps typed everyone inert through the registered chat.send entrypoint", async () => {
-    const fixture = await createMentionFixture({ active: false });
-    fixture.params.message = "@everyone review this";
-    delete fixture.params.mentions;
-    try {
-      await fixture.send();
-      await fixture.finishDispatch();
-      expect(fixture.read()).toEqual([]);
-      expect(fixture.read(fixture.carolClient)).toEqual([]);
-    } finally {
-      await fixture.cleanup();
-    }
-  });
-
-  it("rechecks access at everyone commit", async () => {
-    const fixture = await createMentionFixture();
-    fixture.params.message = "@everyone review this";
-    fixture.params.mentions = [{ kind: "everyone", start: 0, end: 9 }];
-    try {
-      await fixture.send();
-      const entry = loadSessionEntry(fixture.scope);
-      if (!entry) throw new Error("Missing fixture session");
-      replaceSessionEntrySync(fixture.scope, {
-        ...entry,
-        visibility: "draft",
-        createdActor: {
-          type: "human",
-          source: "profile",
-          id: fixture.client.authenticatedUserProfile!.profileId,
-        },
-      });
-      const recorder = await fixture.dispatchedRecorder;
-      await recorder.persistApproved();
-      expect(fixture.read()).toEqual([]);
-      expect(fixture.read(fixture.carolClient)).toEqual([]);
-    } finally {
-      await fixture.cleanup();
-    }
-  });
-
-  it("creates recipient-only mentions at original message commit, never at the queued ACK", async () => {
-    const fixture = await createMentionFixture();
-    try {
-      const ack = await fixture.send();
-      expect(ack).toHaveBeenCalledWith(
-        true,
-        expect.objectContaining({ status: "started" }),
-        undefined,
-        expect.anything(),
-      );
-      expect(fixture.read()).toEqual([]);
-      const recorder = await fixture.dispatchedRecorder;
-      const committed = await recorder.persistApproved();
-      expect(committed?.appended).toBe(true);
-      expect(fixture.read()).toMatchObject([
-        {
-          messageId: committed?.messageId,
-          senderProfileId: fixture.client.authenticatedUserProfile?.profileId,
-          excerpt: fixture.params.message,
-        },
-      ]);
-      expect(fixture.read(fixture.client)).toEqual([]);
-      expect(fixture.read(fixture.carolClient)).toEqual([]);
-      const id = fixture.read()[0]?.id;
-      expect(id).toBeDefined();
-      fixture.inbox.dismiss(fixture.bobClient, id ? [id] : []);
-      await recorder.persistApproved();
-      await fixture.send();
-      expect(fixture.read()).toEqual([]);
-    } finally {
-      await fixture.cleanup();
-    }
-  });
-
-  it("includes an idle first commit in the Inbox before ACK without waiting for the agent", async () => {
-    const fixture = await createMentionFixture({ active: false });
-    let atAck = 0;
-    try {
-      const ack = await fixture.send(
-        vi.fn((ok) => {
-          if (ok) {
-            atAck = fixture.read().length;
-          }
-        }),
-      );
-      expect(ack).toHaveBeenCalledWith(
-        true,
-        expect.objectContaining({ status: "started", messageSeq: 2 }),
-        undefined,
-        expect.anything(),
-      );
-      expect(atAck).toBe(1);
-      await fixture.finishDispatch();
-      expect(fixture.read()).toHaveLength(1);
-    } finally {
-      await fixture.cleanup();
-    }
-  });
-
-  it.each([false, true])(
-    "does not notify when approval replaces the selected token (everyone: %s)",
-    async (everyone) => {
-      const fixture = await createMentionFixture({ preserveContent: false });
-      if (everyone) {
-        fixture.params.message = "@everyone review this";
-        fixture.params.mentions = [{ kind: "everyone", start: 0, end: 9 }];
-      }
-      try {
-        await fixture.send();
-        const recorder = await fixture.dispatchedRecorder;
-        const committed = await recorder.persistApproved();
-        expect(committed?.message.content).toBe(fixture.approvedContent);
-        expect(committed?.message["__openclaw"]?.humanMentions).toBeUndefined();
-        expect(committed?.message["__openclaw"]?.everyoneMentionProfileIds).toBeUndefined();
-        expect(fixture.read()).toEqual([]);
-      } finally {
-        await fixture.cleanup();
-      }
-    },
-  );
-
-  it("rejects changed recipients on a same-ID retry while preserving the queued original", async () => {
-    const fixture = await createMentionFixture();
-    try {
-      await fixture.send();
-      fixture.params.mentions = [
-        { profileId: fixture.carolClient.authenticatedUserProfile.profileId, start: 0, end: 4 },
-      ];
-      const replay = await fixture.send();
-      expect(replay).toHaveBeenCalledWith(
-        false,
-        undefined,
-        expect.objectContaining({ message: expect.stringMatching(/different|conflict|reused/i) }),
-      );
-      const recorder = await fixture.dispatchedRecorder;
-      await recorder.persistApproved();
-      expect(fixture.read()).toHaveLength(1);
-      expect(fixture.read(fixture.carolClient)).toEqual([]);
-    } finally {
-      await fixture.cleanup();
-    }
-  });
+  const createMentionFixture = createPendingMentionFixture(createBrowserFollowupFixture);
+  registerChatSendPendingMentionTests(createBrowserFollowupFixture);
 
   it("retains pending-input custody while retrying a transient post-ACK projection failure", async () => {
     const fixture = await createBrowserFollowupFixture({ transientProjectionFailures: 1 });

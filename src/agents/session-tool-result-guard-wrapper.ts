@@ -165,9 +165,6 @@ export function guardSessionManager(
         preparedMessage["__openclaw"].humanMentions = structuredClone(
           preparedMessage["__openclaw"].humanMentions,
         );
-        preparedMessage["__openclaw"].everyoneMentionProfileIds = structuredClone(
-          preparedMessage["__openclaw"].everyoneMentionProfileIds,
-        );
       }
       const next = runAgentHarnessBeforeMessageWriteHook({
         message,
