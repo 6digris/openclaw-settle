@@ -383,7 +383,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-emulator -version >"$DIAGNOSTIC_DIR/emulator-version.txt" 2>&1
+emulator -no-window -no-audio -version >"$DIAGNOSTIC_DIR/emulator-version.txt" 2>&1
 capture_accel_check
 sdkmanager --list_installed >"$DIAGNOSTIC_DIR/sdk-packages.txt" 2>&1
 avdmanager list device >"$DIAGNOSTIC_DIR/avd-devices.txt" 2>&1

@@ -3056,7 +3056,17 @@ fi`,
       executable(
         "emulator",
         `
-if [[ "$1" == -version || "$1" == -accel-check ]]; then printf 'emulator fixture\\n'; exit 0; fi
+if [[ " $* " == *" -version "* ]]; then
+  printf 'version %s\\n' "$*" >>"$TRACE"
+  if [[ " $* " != *" -no-window "* || "$MODE" == version-failed ]]; then
+    printf 'qemu-system-x86_64: error while loading shared libraries: libpulse.so.0: cannot open shared object file\\n' >&2
+    exit 127
+  fi
+  printf 'Android emulator version fixture (build_id fixture)\\n'
+  printf 'version-stderr-sentinel\\n' >&2
+  exit 0
+fi
+if [[ "$1" == -accel-check ]]; then printf 'emulator fixture\\n'; exit 0; fi
 if [[ -f "$STATE/pid" ]] && kill -0 "$(cat "$STATE/pid")" 2>/dev/null; then
   echo 'previous emulator still running' >&2; exit 98
 fi
@@ -3131,7 +3141,13 @@ fi`,
       expect(outcome.trace.split("\n").filter((line) => line.startsWith("launch "))).toHaveLength(
         factors.length,
       );
+      expect(outcome.trace.split("\n").filter((line) => line.startsWith("version "))).toEqual(
+        factors.map(() => "version -no-window -no-audio -version"),
+      );
       for (const factor of factors) {
+        expect(
+          fs.readFileSync(path.join(outcome.diagnostic, factor, "emulator-version.txt"), "utf8"),
+        ).toBe("Android emulator version fixture (build_id fixture)\nversion-stderr-sentinel\n");
         const result = fs.readFileSync(path.join(outcome.diagnostic, factor, "result.txt"), "utf8");
         expect(result).toContain("boot_completed=1");
         expect(result).toContain(
@@ -3149,6 +3165,17 @@ fi`,
         );
       }
     }
+    const versionFailure = await exercise("phone-then-wear", "version-failed");
+    expect(versionFailure.result.code).toBe(127);
+    expect(versionFailure.trace).not.toMatch(/avdmanager create|launch /u);
+    expect(fs.existsSync(path.join(versionFailure.diagnostic, "wear"))).toBe(false);
+    expect(
+      fs.readFileSync(path.join(versionFailure.diagnostic, "phone/emulator-version.txt"), "utf8"),
+    ).toContain("libpulse.so.0");
+    expect(
+      fs.readFileSync(path.join(versionFailure.diagnostic, "phone/process-status.log"), "utf8"),
+    ).toContain("exit_status=127");
+    expect(fs.existsSync(path.join(versionFailure.diagnostic, "phone/result.txt"))).toBe(false);
     for (const mode of ["late-adb", "late-boot", "no-adb"]) {
       const outcome = await exercise("wear", mode);
       expect(outcome.result.code, outcome.result.stderr).toBe(1);
