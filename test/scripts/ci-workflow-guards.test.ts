@@ -10963,7 +10963,7 @@ server.listen(0, "127.0.0.1", () => {
         ref: "${{ github.workflow_sha }}",
         path: ".ci-harness",
         "sparse-checkout":
-          "/.github/actions/\n/scripts/lib/release-context.mjs\n/scripts/lib/release-version.mjs\n",
+          "/.github/actions/\n/scripts/lib/pnpm-lockfile-documents.mjs\n/scripts/lib/release-context.mjs\n/scripts/lib/release-version.mjs\n",
         "sparse-checkout-cone-mode": false,
         "persist-credentials": false,
       },
