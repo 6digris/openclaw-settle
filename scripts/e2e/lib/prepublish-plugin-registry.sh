@@ -85,7 +85,7 @@ NODE
 
   mkdir -p "$registry_root"
   local port_file="$registry_root/port" log_file="$registry_root/server.log"
-  local dist_tags="beta=$candidate_version"
+  local dist_tags="${OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIST_TAGS:-beta=$candidate_version}"
   if [[ "$candidate_version" =~ -(alpha|beta)\.[1-9][0-9]*$ ]]; then
     dist_tags="latest=0.0.0,$dist_tags"
   fi

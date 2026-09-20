@@ -125,6 +125,8 @@ jobs:
       prepare_only: true
       emit_candidate_evidence: true
       release_soak: ${{ fromJSON(inputs.request_json).releaseSoak }}
+      published_upgrade_survivor_baseline: ${{ fromJSON(inputs.request_json).upgradeSurvivorBaselines[0] }}
+      published_upgrade_survivor_baselines: ${{ join(fromJSON(inputs.request_json).upgradeSurvivorBaselines, ',') }}
       include_repo_e2e: false
       include_release_path_suites: false
       include_openwebui: false

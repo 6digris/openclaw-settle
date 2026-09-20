@@ -255,8 +255,13 @@ export function resolveUpgradeSurvivorConfigSteps(
 ): ConfigStep[] {
   const validateStep = sharedRecipe.at(-1);
   const updateChannel =
-    configuredUpdateChannel || (scenario === "prerelease-plugin-registry" ? "beta" : "stable");
-  if (updateChannel !== "stable" && updateChannel !== "beta") {
+    configuredUpdateChannel ||
+    (scenario === "prerelease-plugin-registry" ? "beta" : "extended-stable");
+  if (
+    updateChannel !== "stable" &&
+    updateChannel !== "beta" &&
+    updateChannel !== "extended-stable"
+  ) {
     throw new Error(`invalid upgrade survivor update channel: ${updateChannel}`);
   }
   const sharedSteps = sharedRecipe.slice(0, -1).map((step) => {

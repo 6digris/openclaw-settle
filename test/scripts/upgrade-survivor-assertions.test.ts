@@ -1071,6 +1071,7 @@ process.stdout.write(sessionDir + "\\n");
 
   it.each([
     ["base", undefined, "stable", "beta"],
+    ["base", "extended-stable", "extended-stable", "stable"],
     ["base", "beta", "beta", "stable"],
     ["prerelease-plugin-registry", undefined, "beta", "stable"],
   ])(

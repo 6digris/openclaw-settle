@@ -150,8 +150,9 @@ describe("upgrade survivor config recipe command resolution", () => {
   });
 
   it.each([
-    ["base", undefined, "stable"],
+    ["base", undefined, "extended-stable"],
     ["base", "beta", "beta"],
+    ["base", "extended-stable", "extended-stable"],
     ["prerelease-plugin-registry", undefined, "beta"],
   ])(
     "keeps the %s scenario on the %s override update channel",

@@ -16,6 +16,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
+import { fetchNpmPackageTargetStatus } from "../../src/infra/update-check-package-target.js";
 import { createBoundedChildOutput } from "../helpers/bounded-child-output.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
@@ -752,7 +753,6 @@ ${command}
       encoding: "utf8",
     });
     expect(packed.status, packed.stderr).toBe(0);
-
     const child = spawn(
       process.execPath,
       [
@@ -794,6 +794,86 @@ ${command}
       expect(metadata.versions["2026.7.1-beta.3"].dist.tarball).toBe(
         `http://192.0.2.2:${port}/openclaw/-/openclaw.tgz`,
       );
+    } finally {
+      if (child.exitCode === null) {
+        child.kill();
+        await new Promise((resolve) => {
+          child.once("close", resolve);
+        });
+      }
+    }
+  });
+
+  it("serves candidate manifests for dist-tag and exact-version update checks", async () => {
+    const root = autoCleanupTempDirs.make("openclaw-core-npm-fixture-target-");
+    const packageDir = path.join(root, "package");
+    const priorPackageDir = path.join(root, "prior", "package");
+    const portFile = path.join(root, "port");
+    const tarballPath = path.join(root, "openclaw.tgz");
+    const priorTarballPath = path.join(root, "openclaw-prior.tgz");
+    mkdirSync(packageDir);
+    mkdirSync(priorPackageDir, { recursive: true });
+    writeJson(path.join(packageDir, "package.json"), {
+      name: "openclaw",
+      version: "2026.8.33",
+      engines: { node: ">=22.12.0" },
+      openclaw: { schemaVersions: { state: 15 } },
+    });
+    const packed = spawnSync("tar", ["-czf", tarballPath, "-C", root, "package"], {
+      encoding: "utf8",
+    });
+    expect(packed.status, packed.stderr).toBe(0);
+    writeJson(path.join(priorPackageDir, "package.json"), {
+      name: "openclaw",
+      version: "2026.8.32",
+      engines: { node: ">=20" },
+    });
+    const packedPrior = spawnSync(
+      "tar",
+      ["-czf", priorTarballPath, "-C", path.join(root, "prior"), "package"],
+      { encoding: "utf8" },
+    );
+    expect(packedPrior.status, packedPrior.stderr).toBe(0);
+
+    const child = spawn(
+      process.execPath,
+      [
+        "scripts/e2e/lib/plugins/npm-registry-server.mjs",
+        portFile,
+        "openclaw",
+        "2026.8.32",
+        priorTarballPath,
+        "openclaw",
+        "2026.8.33",
+        tarballPath,
+      ],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          OPENCLAW_NPM_REGISTRY_DIST_TAGS: "latest=2026.8.32,extended-stable=2026.8.33",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+
+    try {
+      const port = await waitForPortFile(portFile);
+      for (const { target, version, nodeEngine } of [
+        { target: "extended-stable", version: "2026.8.33", nodeEngine: ">=22.12.0" },
+        { target: "2026.8.33", version: "2026.8.33", nodeEngine: ">=22.12.0" },
+        { target: "latest", version: "2026.8.32", nodeEngine: ">=20" },
+      ]) {
+        const status = await fetchNpmPackageTargetStatus({
+          target,
+          registryUrl: `http://127.0.0.1:${port}/`,
+        });
+        expect(status).toMatchObject({
+          target,
+          version,
+          nodeEngine,
+        });
+      }
     } finally {
       if (child.exitCode === null) {
         child.kill();

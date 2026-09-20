@@ -19,6 +19,71 @@ function run(...args: string[]) {
 
 describe("upgrade survivor config parking", () => {
   it.each([
+    {
+      name: "updates a frozen tarball through its persisted channel",
+      candidateKind: "tarball",
+      candidateSpec: "/tmp/openclaw-current.tgz",
+      updateChannel: "extended-stable",
+      expectedArgs: "openclaw update --channel extended-stable --yes --json --no-restart",
+      expectedPackageSpec: true,
+    },
+    {
+      name: "preserves an explicitly selected npm candidate",
+      candidateKind: "npm",
+      candidateSpec: "openclaw@2026.8.33",
+      updateChannel: "stable",
+      expectedArgs: "openclaw update --tag openclaw@2026.8.33 --yes --json --no-restart",
+      expectedPackageSpec: false,
+    },
+  ])(
+    "$name",
+    ({ candidateKind, candidateSpec, updateChannel, expectedArgs, expectedPackageSpec }) => {
+      const root = tempDirs.make("openclaw-update-channel-");
+      const source = readFileSync(PUBLISHED_RUNNER_PATH, "utf8");
+      const start = source.indexOf("\ncandidate_update_spec() {");
+      const end = source.indexOf("\nassert_root_managed_vps_cli_usable()", start);
+      const argsLog = path.join(root, "args.log");
+      const result = spawnSync(
+        "bash",
+        [
+          "-c",
+          `set -euo pipefail
+${source.slice(start + 1, end)}
+openclaw_e2e_maybe_timeout() { shift; printf '%s\\n' "$*" >"$ARGS_LOG"; printf '{"status":"ok"}'; }
+read_installed_version() { printf '2026.8.33\\n'; }
+node() {
+  if [[ "\${1:-}" == scripts/e2e/lib/upgrade-survivor/assertions.mjs ]]; then
+    [[ "\${2:-}" == assert-successful-update-json ]]
+    return
+  fi
+  command node "$@"
+}
+baseline_spec=openclaw@2026.8.2
+baseline_version=2026.8.2
+SCENARIO=base
+CANDIDATE_KIND=${candidateKind}
+CANDIDATE_SPEC=${candidateSpec}
+candidate_version=2026.8.33
+UPDATE_RESTART_MODE=manual
+ROOT_MANAGED_VPS=0
+COMMAND_TIMEOUT=10s
+UPDATE_JSON=${JSON.stringify(path.join(root, "update.json"))}
+UPDATE_ERR=${JSON.stringify(path.join(root, "update.err"))}
+ARTIFACT_ROOT=${JSON.stringify(root)}
+update_repair_required=0
+OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL=${updateChannel}
+update_candidate
+grep -q -- ${JSON.stringify(expectedArgs)} "$ARGS_LOG"
+grep -q -- ${JSON.stringify(expectedArgs)} "$ARTIFACT_ROOT/update-command.args"
+${expectedPackageSpec ? "grep -q -- 'OPENCLAW_UPDATE_PACKAGE_SPEC=openclaw' \"$ARGS_LOG\"" : "! grep -q -- 'OPENCLAW_UPDATE_PACKAGE_SPEC=openclaw' \"$ARGS_LOG\""}`,
+        ],
+        { env: { ...process.env, ARGS_LOG: argsLog } },
+      );
+      expect(result.status, result.stderr.toString()).toBe(0);
+    },
+  );
+
+  it.each([
     { registry: false, installStatus: 0, stopStatus: 0, activeStatus: 3 },
     { registry: true, installStatus: 0, stopStatus: 0, activeStatus: 3 },
     { registry: false, installStatus: 23, stopStatus: 0, activeStatus: 3 },

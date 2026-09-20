@@ -220,6 +220,48 @@ test "$(npm view @openclaw/brave-plugin version)" = "$FIXTURE_VERSION"
     },
   );
 
+  it("serves a caller-selected extended-stable candidate", () => {
+    const version = "2026.8.33";
+    const root = tempDirs.make("openclaw-extended-stable-registry-shell-");
+    const registryRoot = join(root, "registry");
+    const tarball = createTarball(root, root, "openclaw", "openclaw.tgz", version);
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        `
+set -euo pipefail
+source "$HELPER"
+registry_pid=""
+cleanup() {
+  if [ -n "$registry_pid" ]; then
+    kill "$registry_pid" >/dev/null 2>&1 || true
+    wait "$registry_pid" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+export OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIST_TAGS="extended-stable=$VERSION"
+openclaw_prepublish_plugin_registry_start \
+  "" "" "$VERSION" "" "$REGISTRY_ROOT" registry_pid \
+  openclaw "$VERSION" "$TARBALL"
+test "$(npm view openclaw@extended-stable version)" = "$VERSION"
+`,
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          HELPER: SCRIPT,
+          REGISTRY_ROOT: registryRoot,
+          TARBALL: tarball,
+          VERSION: version,
+        },
+      },
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+  });
+
   it("is valid Bash", () => {
     const result = spawnSync("bash", ["-n", SCRIPT], { encoding: "utf8" });
     expect(result.status, result.stderr).toBe(0);

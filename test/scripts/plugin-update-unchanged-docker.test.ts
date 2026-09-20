@@ -15,6 +15,7 @@ import {
 } from "../../src/state/openclaw-state-db.js";
 
 const PLUGIN_UPDATE_SCENARIO_SCRIPT = "scripts/e2e/lib/plugin-update/unchanged-scenario.sh";
+const PLUGIN_UPDATE_CONSENT_SCENARIO_SCRIPT = "scripts/e2e/lib/plugin-update/consent-scenario.mjs";
 const CORRUPT_UPDATE_SCENARIO_SCRIPT = "scripts/e2e/lib/plugin-update/corrupt-update-scenario.sh";
 const PLUGIN_UPDATE_PROBE_SCRIPT = "scripts/e2e/lib/plugin-update/probe.mjs";
 const PLUGIN_UPDATE_REGISTRY_SCRIPT = "scripts/e2e/lib/plugin-update/registry-server.mjs";
@@ -273,6 +274,17 @@ describe("plugin update unchanged Docker E2E", () => {
     expect(script).not.toContain('kill "$registry_pid"');
   });
 
+  it("uses same-schema beta-channel core fixtures for plugin consent", () => {
+    const script = readFileSync(PLUGIN_UPDATE_CONSENT_SCENARIO_SCRIPT, "utf8");
+
+    expect(script).toContain("packFutureUpdateFixture");
+    expect(script).toContain(
+      '["update", "--channel", "beta", "--tag", deniedCoreTarball, "--yes", "--json"]',
+    );
+    expect(script).toContain('"--channel",\n        "beta",\n        "--tag",');
+    expect(script).not.toContain('["update", "--tag", coreTarball');
+  });
+
   it("bounds corrupt plugin update commands and prints diagnostics on hangs", () => {
     const script = readFileSync(CORRUPT_UPDATE_SCENARIO_SCRIPT, "utf8");
 
@@ -291,10 +303,10 @@ describe("plugin update unchanged Docker E2E", () => {
     );
     expect(
       script.match(/openclaw_e2e_maybe_timeout "\$\{update_timeout_seconds\}s" \\/gu)?.length,
-    ).toBe(2);
+    ).toBe(1);
     expect(script).toContain("--channel beta");
-    expect(script.match(/--timeout "\$update_step_timeout_seconds"/g)).toHaveLength(2);
-    expect(script).toContain("OPENCLAW_UPDATE_POST_CORE=1");
+    expect(script.match(/--timeout "\$update_step_timeout_seconds"/g)).toHaveLength(1);
+    expect(script).not.toContain("OPENCLAW_UPDATE_POST_CORE=1");
     expect(script).not.toContain(
       'node "$entry" update --channel beta --tag "${OPENCLAW_CURRENT_PACKAGE_TGZ',
     );
@@ -302,11 +314,11 @@ describe("plugin update unchanged Docker E2E", () => {
       "openclaw update failed or timed out after ${update_timeout_seconds}s",
     );
     expect(script).toContain(
-      "updated OpenClaw entry failed or timed out after ${update_timeout_seconds}s",
+      'NPM_CONFIG_REGISTRY="${OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_URL:-https://registry.npmjs.org/}"',
     );
-    expect(script.match(/openclaw_e2e_print_log \/tmp\/openclaw-update-corrupt-/g)).toHaveLength(8);
+    expect(script.match(/openclaw_e2e_print_log \/tmp\/openclaw-update-corrupt-/g)).toHaveLength(5);
     expect(script).not.toContain("cat /tmp/openclaw-update-corrupt-");
-    expect(script.match(/assert-corrupt-policy-preserved/g)).toHaveLength(2);
+    expect(script.match(/assert-corrupt-policy-preserved/g)).toHaveLength(1);
   });
 
   it.each([

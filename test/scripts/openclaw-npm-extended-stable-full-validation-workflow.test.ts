@@ -7,8 +7,11 @@ const fullValidationPath = ".github/workflows/full-release-validation.yml";
 const releaseChecksPath = ".github/workflows/openclaw-release-checks.yml";
 
 type Step = { env?: Record<string, string>; name?: string; run?: string };
-type Job = { steps?: Step[] };
-type Workflow = { jobs?: Record<string, Job> };
+type Job = { steps?: Step[]; with?: Record<string, string> };
+type Workflow = {
+  jobs?: Record<string, Job>;
+  on?: { workflow_dispatch?: { inputs?: Record<string, unknown> } };
+};
 
 function workflow(path: string): Workflow {
   return parse(readFileSync(path, "utf8")) as Workflow;
@@ -48,6 +51,37 @@ function runReleaseChecksTrustedRefGuard(workflowRef: string): ReturnType<typeof
 }
 
 describe("extended-stable Full Release Validation workflow", () => {
+  it("pins and propagates the last compatible 2026.8 baseline", () => {
+    const baseline = "openclaw@2026.8.2";
+    const fullValidation = readFileSync(fullValidationPath, "utf8");
+    expect(fullValidation.match(/openclaw@latest/gu)).toBeNull();
+    expect(fullValidation.match(new RegExp(baseline.replaceAll(".", "\\."), "gu"))).toHaveLength(2);
+
+    for (const phase of ["release_checks_independent", "release_checks_candidate"]) {
+      const dispatch = workflow(fullValidationPath).jobs?.[phase]?.steps?.find((candidate) =>
+        candidate.name?.startsWith("Dispatch release checks"),
+      );
+      expect(dispatch?.env?.CANDIDATE_UPGRADE_SURVIVOR_BASELINE).toContain(
+        "candidate_request_json",
+      );
+      expect(dispatch?.run).toContain(
+        '-f published_upgrade_survivor_baseline="$CANDIDATE_UPGRADE_SURVIVOR_BASELINE"',
+      );
+      expect(dispatch?.run).toContain(
+        '-f published_upgrade_survivor_baselines="$CANDIDATE_UPGRADE_SURVIVOR_BASELINES"',
+      );
+    }
+
+    const releaseChecks = workflow(releaseChecksPath);
+    expect(releaseChecks.on?.workflow_dispatch?.inputs).toHaveProperty(
+      "published_upgrade_survivor_baseline",
+    );
+    expect(releaseChecks.jobs?.package_acceptance_release_checks?.with).toMatchObject({
+      published_upgrade_survivor_baseline: "${{ inputs.published_upgrade_survivor_baseline }}",
+      published_upgrade_survivor_baselines: "${{ inputs.published_upgrade_survivor_baselines }}",
+    });
+  });
+
   it("passes frozen target context to both plugin prerelease phases", () => {
     const phases = [
       {

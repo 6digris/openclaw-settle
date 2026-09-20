@@ -2757,6 +2757,20 @@ docker_e2e_docker_run_cmd run demo
     expect(publishedRunner).toContain(
       'registry_args+=("@openclaw/brave-plugin" "$candidate_version" "$tarball")',
     );
+    expect(publishedRunner).toContain(
+      'registry_args+=("openclaw" "$candidate_version" "$CANDIDATE_SPEC")',
+    );
+    expect(publishedRunner).toContain(
+      'OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIST_TAGS="${OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL}=$candidate_version"',
+    );
+    expect(runner).toContain(
+      '-e OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL="$CANDIDATE_UPDATE_CHANNEL"',
+    );
+    expect(runner).toContain('CANDIDATE_UPDATE_CHANNEL="stable"');
+    expect(runner).toContain('CANDIDATE_UPDATE_CHANNEL="extended-stable"');
+    expect(publishedRunner).toContain(
+      'OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL="${OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL:-stable}"',
+    );
     expect(publishedRunner).toContain('"$clawhub_security_mode"');
     expect(publishedRunner.indexOf("phase assert-prepublish-requests node")).toBeLessThan(
       publishedRunner.indexOf("phase doctor run_doctor"),
@@ -4244,6 +4258,7 @@ COMMAND_TIMEOUT=900s
 ROOT_MANAGED_VPS=0
 UPDATE_RESTART_MODE=auto-auth
 SCENARIO=base
+OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL=extended-stable
 update_repair_required=1
 baseline_spec=openclaw@2026.4.15
 candidate_version=2026.8.1

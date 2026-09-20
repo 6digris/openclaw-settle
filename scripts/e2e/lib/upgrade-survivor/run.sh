@@ -72,7 +72,7 @@ BASELINE_RAW="${OPENCLAW_UPGRADE_SURVIVOR_BASELINE:?missing OPENCLAW_UPGRADE_SUR
 CANDIDATE_KIND="${OPENCLAW_UPGRADE_SURVIVOR_CANDIDATE_KIND:-tarball}"
 CANDIDATE_SPEC="${OPENCLAW_UPGRADE_SURVIVOR_CANDIDATE_SPEC:-${OPENCLAW_CURRENT_PACKAGE_TGZ:-}}"
 UPDATE_RESTART_MODE="${OPENCLAW_UPGRADE_SURVIVOR_UPDATE_RESTART_MODE:-manual}"
-OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL="stable"
+OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL="${OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL:-stable}"
 if [ "$SCENARIO" = "prerelease-plugin-registry" ] ||
   { [ "$UPDATE_RESTART_MODE" = "auto-auth" ] &&
     [ -n "${OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR:-}" ] &&
@@ -494,6 +494,11 @@ configure_plugin_registry() {
   local tarball="$fixture_root/openclaw-brave-plugin-${candidate_version}.tgz"
   local registry_args=()
 
+  if [ "$OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL" = "extended-stable" ] &&
+    [ "$CANDIDATE_KIND" = "tarball" ]; then
+    registry_args+=("openclaw" "$candidate_version" "$CANDIDATE_SPEC")
+  fi
+
   if configured_plugin_installs_enabled; then
     mkdir -p "$package_dir"
     FIXTURE_PACKAGE_DIR="$package_dir" FIXTURE_PACKAGE_VERSION="$candidate_version" node <<'NODE'
@@ -558,7 +563,8 @@ NODE
     [ -n "${OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR:-}" ] || return 0
   fi
 
-  openclaw_prepublish_plugin_registry_start \
+  OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIST_TAGS="${OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL}=$candidate_version" \
+    openclaw_prepublish_plugin_registry_start \
     "${OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR:-}" \
     "${OPENCLAW_DOCKER_E2E_SELECTED_SHA:-}" \
     "$candidate_version" \
@@ -965,6 +971,11 @@ resolve_candidate_version() {
 }
 
 candidate_update_spec() {
+  if [ "$OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL" = "extended-stable" ] &&
+    [ "$CANDIDATE_KIND" = "tarball" ]; then
+    printf '%s\n' "$OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL"
+    return 0
+  fi
   if [ "$CANDIDATE_KIND" != "tarball" ]; then
     printf '%s\n' "$CANDIDATE_SPEC"
     return 0
@@ -1005,6 +1016,10 @@ update_candidate() {
     previous_systemctl_lines="$(wc -l <"$SYSTEMCTL_SHIM_LOG")"
   fi
   local update_args=(update --tag "$update_spec" --yes --json)
+  if [ "$OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL" = "extended-stable" ] &&
+    [ "$CANDIDATE_KIND" = "tarball" ]; then
+    update_args=(update --channel extended-stable --yes --json)
+  fi
   local update_env=(
     env
     -u OPENCLAW_GATEWAY_TOKEN
@@ -1021,6 +1036,14 @@ update_candidate() {
   if [ "$ROOT_MANAGED_VPS" != "1" ]; then
     update_env+=(OPENCLAW_ALLOW_ROOT=1)
   fi
+  if [ "$OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL" = "extended-stable" ] &&
+    [ "$CANDIDATE_KIND" = "tarball" ]; then
+    # Resolve through the release fixture registry without turning its tarball
+    # path into an explicit tag that extended-stable intentionally rejects.
+    update_env+=(OPENCLAW_UPDATE_PACKAGE_SPEC=openclaw)
+  fi
+  printf '%q ' openclaw "${update_args[@]}" >"$ARTIFACT_ROOT/update-command.args"
+  printf '\n' >>"$ARTIFACT_ROOT/update-command.args"
   update_env+=(
     "OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT=$observation_root"
     "NODE_OPTIONS=${NODE_OPTIONS:+$NODE_OPTIONS }--import=$PWD/scripts/e2e/lib/upgrade-survivor/diagnostics.mjs"

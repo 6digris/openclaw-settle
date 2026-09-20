@@ -276,7 +276,7 @@ jobs:
             --arg toolingSha "$GITHUB_SHA" \
             --arg releaseProfile "$RELEASE_PROFILE" \
             --argjson releaseSoak "$RELEASE_SOAK" \
-            --arg upgradeSurvivorBaseline "openclaw@latest" \
+            --arg upgradeSurvivorBaseline "openclaw@2026.8.2" \
             --arg upgradeSurvivorBaselines "" \
             --arg upgradeSurvivorScenarios "$UPGRADE_SURVIVOR_SCENARIOS" \
             --argjson allowFrozenTargetScenarioOmissions "$ALLOW_FROZEN_TARGET_SCENARIO_OMISSIONS" \
@@ -995,6 +995,8 @@ jobs:
                 -f skip_package_telegram_e2e="$SKIP_PACKAGE_TELEGRAM_E2E"
                 -f telegram_waiver="$TELEGRAM_WAIVER"
                 -f rerun_group="$RERUN_GROUP"
+                -f published_upgrade_survivor_baseline="$CANDIDATE_UPGRADE_SURVIVOR_BASELINE"
+                -f published_upgrade_survivor_baselines="$CANDIDATE_UPGRADE_SURVIVOR_BASELINES"
               )
               if [[ -n "${TARGET_CONTEXT_REF// }" ]]; then
                 args+=(-f target_context_ref="$TARGET_CONTEXT_REF")
@@ -1161,6 +1163,8 @@ jobs:
           PACKAGE_ACCEPTANCE_PACKAGE_SPEC: ${{ inputs.package_acceptance_package_spec }}
           CODEX_PLUGIN_SPEC: ${{ inputs.codex_plugin_spec }}
           CANDIDATE_ARTIFACT_JSON: ""
+          CANDIDATE_UPGRADE_SURVIVOR_BASELINE: ${{ fromJSON(needs.resolve_target.outputs.candidate_request_json).upgradeSurvivorBaselines[0] }}
+          CANDIDATE_UPGRADE_SURVIVOR_BASELINES: ${{ join(fromJSON(needs.resolve_target.outputs.candidate_request_json).upgradeSurvivorBaselines, ',') }}
           SKIP_PACKAGE_TELEGRAM_E2E: ${{ inputs.skip_package_telegram_e2e }}
           TELEGRAM_WAIVER: ${{ inputs.telegram_waiver }}
         run: *full_release_child_dispatch
@@ -1200,6 +1204,8 @@ jobs:
           PACKAGE_ACCEPTANCE_PACKAGE_SPEC: ${{ inputs.package_acceptance_package_spec }}
           CODEX_PLUGIN_SPEC: ${{ inputs.codex_plugin_spec }}
           CANDIDATE_ARTIFACT_JSON: ${{ needs.resolve_target.outputs.release_candidate_artifact_required == 'true' && needs.candidate_acquisition.outputs.candidate_artifact_json || '' }}
+          CANDIDATE_UPGRADE_SURVIVOR_BASELINE: ${{ fromJSON(needs.resolve_target.outputs.candidate_request_json).upgradeSurvivorBaselines[0] }}
+          CANDIDATE_UPGRADE_SURVIVOR_BASELINES: ${{ join(fromJSON(needs.resolve_target.outputs.candidate_request_json).upgradeSurvivorBaselines, ',') }}
           SKIP_PACKAGE_TELEGRAM_E2E: ${{ inputs.skip_package_telegram_e2e }}
           TELEGRAM_WAIVER: ${{ inputs.telegram_waiver }}
         run: *full_release_child_dispatch
@@ -1364,7 +1370,7 @@ jobs:
           CANDIDATE_ACQUISITION_RESULT: ${{ needs.candidate_acquisition.result }}
           CANDIDATE_EVIDENCE_JSON: ${{ needs.candidate_acquisition.outputs.binding_json }}
           CANDIDATE_RELEASE_SOAK: ${{ inputs.run_release_soak || inputs.release_profile == 'stable' || inputs.release_profile == 'full' }}
-          CANDIDATE_UPGRADE_SURVIVOR_BASELINE: openclaw@latest
+          CANDIDATE_UPGRADE_SURVIVOR_BASELINE: openclaw@2026.8.2
           CANDIDATE_UPGRADE_SURVIVOR_BASELINES: ""
           CANDIDATE_UPGRADE_SURVIVOR_SCENARIOS: ${{ (inputs.run_release_soak || inputs.release_profile == 'stable' || inputs.release_profile == 'full') && 'reported-issues' || '' }}
           CANDIDATE_ALLOW_FROZEN_TARGET_SCENARIO_OMISSIONS: ${{ inputs.target_context_ref != '' }}

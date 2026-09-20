@@ -101,6 +101,17 @@ for (let index = 0; index < packageArgs.length; index += 3) {
   packages.set(packageName, existing);
 }
 
+const versionMetadataFor = (entry, version, versionEntry, baseUrl) => ({
+  ...versionEntry.manifest,
+  name: entry.packageName,
+  version,
+  dist: {
+    integrity: versionEntry.integrity,
+    shasum: versionEntry.shasum,
+    tarball: `${baseUrl}/${entry.encodedPackageName}/-/${versionEntry.tarballName}`,
+  },
+});
+
 const metadataFor = (entry, baseUrl) => ({
   name: entry.packageName,
   "dist-tags": {
@@ -110,16 +121,7 @@ const metadataFor = (entry, baseUrl) => ({
   versions: Object.fromEntries(
     [...entry.versions.entries()].map(([version, versionEntry]) => [
       version,
-      {
-        ...versionEntry.manifest,
-        name: entry.packageName,
-        version,
-        dist: {
-          integrity: versionEntry.integrity,
-          shasum: versionEntry.shasum,
-          tarball: `${baseUrl}/${entry.encodedPackageName}/-/${versionEntry.tarballName}`,
-        },
-      },
+      versionMetadataFor(entry, version, versionEntry, baseUrl),
     ]),
   ),
 });
@@ -135,6 +137,31 @@ function decodePackagePath(pathname) {
 function findPackageForPath(pathname) {
   const packageName = decodePackagePath(pathname);
   return packageName === undefined ? undefined : packages.get(packageName);
+}
+
+function findPackageTargetForPath(pathname) {
+  const decodedPath = decodePackagePath(pathname);
+  if (decodedPath === undefined) {
+    return undefined;
+  }
+  for (const entry of packages.values()) {
+    const prefix = `${entry.packageName}/`;
+    if (!decodedPath.startsWith(prefix)) {
+      continue;
+    }
+    const target = decodedPath.slice(prefix.length);
+    if (!target || target.includes("/")) {
+      continue;
+    }
+    const version = entry.versions.has(target)
+      ? target
+      : (distTagOverrides.get(target) ?? (target === "latest" ? entry.latestVersion : undefined));
+    const versionEntry = version ? entry.versions.get(version) : undefined;
+    if (versionEntry) {
+      return { entry, version, versionEntry };
+    }
+  }
+  return undefined;
 }
 
 function findTarballForPath(pathname) {
@@ -253,6 +280,24 @@ async function handleRequest(request, response) {
   if (packageEntry) {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(`${JSON.stringify(metadataFor(packageEntry, baseUrl))}\n`);
+    return;
+  }
+
+  // Update checks fetch dist-tag and exact-version manifests directly instead
+  // of reading the package document. Keep those requests on candidate bytes.
+  const packageTarget = findPackageTargetForPath(url.pathname);
+  if (packageTarget) {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      `${JSON.stringify(
+        versionMetadataFor(
+          packageTarget.entry,
+          packageTarget.version,
+          packageTarget.versionEntry,
+          baseUrl,
+        ),
+      )}\n`,
+    );
     return;
   }
 

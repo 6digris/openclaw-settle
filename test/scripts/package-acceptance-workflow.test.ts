@@ -795,6 +795,8 @@ exit 0
   const stepValues: Record<string, string> = {
     ALLOW_UNRELEASED_CHANGELOG: "false",
     CANDIDATE_ARTIFACT_JSON: "",
+    CANDIDATE_UPGRADE_SURVIVOR_BASELINE: "openclaw@2026.8.2",
+    CANDIDATE_UPGRADE_SURVIVOR_BASELINES: "",
     CHILD_WORKFLOW_KIND: child.kind,
     CHILD_WORKFLOW_REF: "main",
     CODEX_PLUGIN_SPEC: "",
@@ -3711,7 +3713,7 @@ printf 'core_failed=%s\n' "$failed"
       CANDIDATE_RELEASE_SOAK:
         "${{ inputs.run_release_soak || inputs.release_profile == 'stable' || inputs.release_profile == 'full' }}",
       CANDIDATE_SHARED_IMAGE_POLICY: "no-push-artifact",
-      CANDIDATE_UPGRADE_SURVIVOR_BASELINE: "openclaw@latest",
+      CANDIDATE_UPGRADE_SURVIVOR_BASELINE: "openclaw@2026.8.2",
       CANDIDATE_UPGRADE_SURVIVOR_BASELINES: "",
       CANDIDATE_UPGRADE_SURVIVOR_SCENARIOS:
         "${{ (inputs.run_release_soak || inputs.release_profile == 'stable' || inputs.release_profile == 'full') && 'reported-issues' || '' }}",
@@ -4228,6 +4230,10 @@ describe("package artifact reuse", () => {
       enable_prepublish_plugin_registry: true,
       emit_candidate_evidence: true,
       prepare_only: true,
+      published_upgrade_survivor_baseline:
+        "${{ fromJSON(inputs.request_json).upgradeSurvivorBaselines[0] }}",
+      published_upgrade_survivor_baselines:
+        "${{ join(fromJSON(inputs.request_json).upgradeSurvivorBaselines, ',') }}",
       release_soak: "${{ fromJSON(inputs.request_json).releaseSoak }}",
       shared_image_policy: "${{ fromJSON(inputs.request_json).sharedImagePolicy }}",
     });
@@ -5936,7 +5942,12 @@ printf '%s\\n' "$DEEPSEEK_API_KEY" "$DEEPINFRA_API_KEY"`,
       "plugin-update",
       "plugin-binding-command-escape",
     ]);
-    expect(packageAcceptanceJob.with?.published_upgrade_survivor_baselines).toBeUndefined();
+    expect(packageAcceptanceJob.with?.published_upgrade_survivor_baseline).toBe(
+      "${{ inputs.published_upgrade_survivor_baseline }}",
+    );
+    expect(packageAcceptanceJob.with?.published_upgrade_survivor_baselines).toBe(
+      "${{ inputs.published_upgrade_survivor_baselines }}",
+    );
     expect(workflow).toContain(
       "published_upgrade_survivor_scenarios: ${{ needs.resolve_target.outputs.run_release_soak == 'true' && 'reported-issues' || '' }}",
     );
