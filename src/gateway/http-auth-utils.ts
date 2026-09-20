@@ -11,7 +11,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { verifyDeviceToken } from "../infra/device-pairing-tokens.js";
 import { listDevicePairing } from "../infra/device-pairing.js";
 import { verifyPairingToken } from "../infra/pairing-token.js";
-import { roleScopesAllow } from "../shared/operator-scope-compat.js";
+import { applyOperatorRoleScopeCeiling } from "../shared/operator-scope-compat.js";
 import { getUserProfileListItem } from "../state/user-profiles.js";
 import type { AuthRateLimiter } from "./auth-rate-limit.js";
 import {
@@ -145,16 +145,12 @@ function usesSharedSecretHttpAuth(auth: SharedSecretGatewayAuth | undefined): bo
   return auth?.mode === "token" || auth?.mode === "password";
 }
 
-export function applyHttpOperatorRoleScopeCeiling<Scope extends string>(
-  scopes: Scope[],
+export function applyHttpOperatorRoleScopeCeiling(
+  scopes: string[],
   auth: Pick<AuthorizedGatewayHttpRequest, "operatorRolePolicy"> | undefined,
-): Scope[] {
+): string[] {
   const allowedScopes = auth?.operatorRolePolicy?.scopes;
-  return allowedScopes
-    ? scopes.filter((scope) =>
-        roleScopesAllow({ role: "operator", requestedScopes: [scope], allowedScopes }),
-      )
-    : scopes;
+  return allowedScopes ? applyOperatorRoleScopeCeiling(scopes, allowedScopes) : scopes;
 }
 
 function shouldTrustDeclaredHttpOperatorScopes(

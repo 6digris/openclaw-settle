@@ -1,12 +1,49 @@
 // Role scope checks preserve operator implications and role-prefix boundaries.
 import { describe, expect, it } from "vitest";
 import {
+  applyOperatorRoleScopeCeiling,
   resolveMissingRequestedScope,
   resolveScopeOutsideRequestedRoles,
   roleScopesAllow,
 } from "./operator-scope-compat.js";
 
 describe("roleScopesAllow", () => {
+  it.each([
+    ["operator.read", "operator.sessions.read", true],
+    ["operator.read", "operator.sessions.write", false],
+    ["operator.write", "operator.sessions.write", true],
+    ["operator.sessions.write", "operator.sessions.read", true],
+    ["operator.sessions.read", "operator.read", false],
+    ["operator.sessions.write", "operator.write", false],
+    ["operator.sessions.write", "operator.admin", false],
+    ["operator.sessions.write", "operator.approvals", false],
+  ])(
+    "checks grant %s against %s without broadening session authority",
+    (grant, requested, allowed) => {
+      expect(
+        roleScopesAllow({ role: "operator", requestedScopes: [requested], allowedScopes: [grant] }),
+      ).toBe(allowed);
+    },
+  );
+
+  it("derives an explicitly selected session ceiling from existing grants without inventing write access", () => {
+    expect(
+      applyOperatorRoleScopeCeiling(
+        ["operator.read", "operator.write"],
+        ["operator.sessions.write"],
+      ),
+    ).toEqual(["operator.sessions.write"]);
+    expect(applyOperatorRoleScopeCeiling(["operator.admin"], ["operator.sessions.read"])).toEqual([
+      "operator.sessions.read",
+    ]);
+    expect(applyOperatorRoleScopeCeiling(["operator.read"], ["operator.sessions.write"])).toEqual([
+      "operator.sessions.read",
+    ]);
+    expect(applyOperatorRoleScopeCeiling([], ["operator.sessions.write"])).toEqual([]);
+    expect(applyOperatorRoleScopeCeiling(["operator.write"], ["operator.write"])).toEqual([
+      "operator.write",
+    ]);
+  });
   it.each([
     { requestedScopes: [], allowedScopes: [] },
     { requestedScopes: ["", " \t"], allowedScopes: [] },
