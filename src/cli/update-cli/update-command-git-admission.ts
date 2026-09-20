@@ -5,7 +5,7 @@ import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-version
 import { UpdatePreMutationError, type UpdateCommandOptions } from "./shared.js";
 import type { PreManagedServiceStop } from "./update-command-service.js";
 
-type BeforeGitMutation = NonNullable<UpdateRunnerOptions["beforeGitMutation"]>;
+type BeforeGitMutation = UpdateRunnerOptions["beforeGitMutation"];
 
 export function recordInspectedGitTarget(
   run: UpdateCommandOptions["run"],
@@ -62,7 +62,5 @@ export function createBeforeGitMutation(params: {
         env: params.updateRun.env,
       });
     }
-    // Finalization owns the backed-up service rewrite and activation after Doctor.
-    return { allowGatewayServiceRepair: false, allowGatewayActivation: false };
   };
 }

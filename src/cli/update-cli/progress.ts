@@ -18,7 +18,7 @@ import type {
   UpdateStepAdvisory,
   UpdateStepProgress,
   UpdateStepResult,
-} from "../../infra/update-runner.js";
+} from "../../infra/update-runner-types.js";
 import { defaultRuntime } from "../../runtime.js";
 import type { UpdateCommandOptions } from "./shared.js";
 

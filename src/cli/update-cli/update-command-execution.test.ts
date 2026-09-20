@@ -619,10 +619,7 @@ describe("mutable update execution", () => {
           await params.inspectGitTarget(target);
           events.push("git");
           expect(mocks.serviceStopped).toBe(false);
-          expect(await params.beforeGitMutation(target)).toEqual({
-            allowGatewayServiceRepair: false,
-            allowGatewayActivation: false,
-          });
+          expect(await params.beforeGitMutation(target)).toBeUndefined();
           return { ...successfulUpdate, mode: "git" };
         },
       );

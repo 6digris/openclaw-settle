@@ -1,7 +1,7 @@
 import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { recordUpdateRunStep } from "../../infra/update-run-ledger.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import { appendPluginUpdateWarnings } from "./update-command-plugins-internals.js";
 import { runUpdateCommandRepair } from "./update-command-repair.js";

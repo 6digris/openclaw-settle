@@ -8,7 +8,7 @@ import { stampConfigWriteMetadata } from "../../config/io.meta.js";
 import type { CallGatewayOptions } from "../../gateway/call.js";
 import { gatewayHealthResponse } from "../../gateway/health-response.test-support.js";
 import { getUpdateRun } from "../../infra/update-run-ledger.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { captureEnv } from "../../test-utils/env.js";
 import * as runtimeUtils from "../../utils.js";
 import { VERSION } from "../../version.js";

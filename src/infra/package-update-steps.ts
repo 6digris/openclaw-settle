@@ -5,6 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { validRange } from "semver";
 import { LEGACY_PACKAGE_INSTALL_GUARD_RELATIVE_PATH } from "../../scripts/lib/package-lifecycle-marker.mjs";
+import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import { UPDATE_GLOBAL_PERMISSION_REASON } from "../shared/update-outcome.js";
 import { resolveBunGlobalInstallOwner } from "./detect-package-manager.js";
 import { formatErrorMessage } from "./errors.js";
@@ -34,14 +35,11 @@ import {
   type PackageUpdateTransaction,
   type StagedPackageInstall,
 } from "./package-update-swap.js";
-import { missingPackageVerificationStep } from "./package-update-verification-step.js";
-import { trimLogTail } from "./restart-sentinel.js";
 import {
-  PACKAGE_POST_INSTALL_DOCTOR_ADVISORY,
-  normalizeUpdatePostInstallDoctorWarnings,
-  UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE,
-  type UpdatePostInstallDoctorResult,
-} from "./update-doctor-result.js";
+  missingPackageVerificationStep,
+  runPackagePostInstallVerification,
+  type PackagePostInstallVerifier,
+} from "./package-update-verification-step.js";
 import { createUpdateFailureFact } from "./update-failure-facts.js";
 import {
   createFreeBsdPkgOwnershipInspection,
@@ -84,88 +82,6 @@ type PackageUpdateStepsResult = {
 };
 
 const NPM_PACK_QUIET_FLAGS = ["--json", "--loglevel=error"] as const;
-
-function isNormalProcessExit(step: {
-  signal?: NodeJS.Signals | null;
-  killed?: boolean;
-  termination?: "exit" | "timeout" | "no-output-timeout" | "signal";
-}): boolean {
-  return (
-    step.termination !== "timeout" &&
-    step.termination !== "no-output-timeout" &&
-    step.termination !== "signal" &&
-    step.killed !== true &&
-    (step.signal === undefined || step.signal === null)
-  );
-}
-
-export function markPackagePostInstallDoctorAdvisory<
-  T extends {
-    exitCode: number | null;
-    stderrTail?: string | null;
-    signal?: NodeJS.Signals | null;
-    killed?: boolean;
-    termination?: "exit" | "timeout" | "no-output-timeout" | "signal";
-    advisory?: UpdateStepResult["advisory"];
-  },
->(
-  step: T,
-  result: UpdatePostInstallDoctorResult | null,
-): T & {
-  advisory?: UpdateStepResult["advisory"];
-  warnings?: UpdateStepResult["warnings"];
-  failureFacts?: UpdateStepResult["failureFacts"];
-} {
-  if (step.exitCode !== 0 && result?.failureFacts?.length) {
-    return { ...step, failureFacts: result.failureFacts };
-  }
-  if (
-    !result ||
-    result.status === "error" ||
-    !isNormalProcessExit(step) ||
-    !(
-      (step.exitCode === UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE &&
-        result.status === "advisory") ||
-      (step.exitCode === 0 && result.warnings?.length)
-    )
-  ) {
-    return step;
-  }
-  const repairGuidance = "Run openclaw doctor --fix to finish deferred repairs.";
-  const deferredWarnings =
-    result.status === "advisory"
-      ? normalizeUpdatePostInstallDoctorWarnings(result.advisory.details).map(
-          (detail) => `${detail}\n${repairGuidance}`,
-        )
-      : [];
-  const advisoryTail = [
-    step.stderrTail,
-    ...(result.status === "advisory" ? result.advisory.details : []),
-    ...(result.warnings ?? []),
-    PACKAGE_POST_INSTALL_DOCTOR_ADVISORY.message,
-  ]
-    .filter((line): line is string => Boolean(line?.trim()))
-    .join("\n");
-  return {
-    ...step,
-    warnings: [
-      ...new Set([
-        ...normalizeUpdatePostInstallDoctorWarnings(result.warnings ?? []),
-        ...deferredWarnings,
-      ]),
-    ].slice(0, 32),
-    advisory: {
-      ...PACKAGE_POST_INSTALL_DOCTOR_ADVISORY,
-      message: [
-        ...(result.warnings ?? []),
-        ...(result.status === "advisory" ? result.advisory.details : []),
-        PACKAGE_POST_INSTALL_DOCTOR_ADVISORY.message,
-        repairGuidance,
-      ].join("\n"),
-    },
-    stderrTail: trimLogTail(advisoryTail) ?? step.stderrTail,
-  };
-}
 
 function isUnambiguousNpmPrefixGlobalRoot(globalRoot: string | null): boolean {
   const trimmed = globalRoot?.trim();
@@ -535,7 +451,7 @@ export async function runGlobalPackageUpdateSteps(params: {
   timeoutMs: number;
   env?: NodeJS.ProcessEnv;
   installCwd?: string;
-  postVerifyStep?: (packageRoot: string) => Promise<UpdateStepResult | null>;
+  postVerifyStep?: PackagePostInstallVerifier;
   validateCandidate?: (packageRoot: string) => Promise<UpdateStepResult[]>;
   beforeActivate?: () => Promise<void>;
   assertCurrent?: () => void;
@@ -565,6 +481,7 @@ export async function runGlobalPackageUpdateSteps(params: {
   const initialRecovery = await verifyPackageUpdateRecovery(originalPackageRoot);
   let liveTreeMutated = false;
   let committed = false;
+  let cleanupUncertain = false;
   let packageRollbackVerified: boolean | undefined;
   const steps: UpdateStepResult[] = [];
   const cleanupStage = async (): Promise<UpdateStepResult | null> => {
@@ -1161,15 +1078,12 @@ export async function runGlobalPackageUpdateSteps(params: {
         }
       }
 
-      if (!stagedInstall && !failedVerification) {
-        const postVerifyStep = activePackageRoot
-          ? ((await params.postVerifyStep?.(activePackageRoot)) ?? null)
-          : null;
-        if (postVerifyStep) {
-          steps.push(postVerifyStep);
-        } else if (params.postVerifyStep) {
-          steps.push(missingPackageVerificationStep(activePackageRoot ?? process.cwd()));
-        }
+      if (!stagedInstall && !failedVerification && params.postVerifyStep) {
+        steps.push(
+          activePackageRoot
+            ? await runPackagePostInstallVerification(activePackageRoot, params.postVerifyStep)
+            : missingPackageVerificationStep(process.cwd()),
+        );
       }
       if (failedVerification && stagedInstall) {
         afterVersion = await readPackageVersionIfPresent(activePackageRoot);
@@ -1198,6 +1112,10 @@ export async function runGlobalPackageUpdateSteps(params: {
         : { serviceRestartSafe: false, reason: "runtime-verification-failed" },
     };
   } catch (error) {
+    cleanupUncertain = hasCommandProcessCleanupError(error);
+    if (cleanupUncertain) {
+      throw error;
+    }
     if (error instanceof PackageUpdateActivationError) {
       throw error.cause;
     }
@@ -1220,11 +1138,13 @@ export async function runGlobalPackageUpdateSteps(params: {
     );
     return await packageUpdateFailure(failedStep, [...steps, failedStep]);
   } finally {
-    // Normal returns already disposed or retained their exact stage. Exceptional
-    // activation/service causes still clean safely without replacing their cause.
-    await cleanupStage();
-    if (packedInstallDir) {
-      await removePackageUpdatePath(packedInstallDir);
+    if (!cleanupUncertain) {
+      // Normal returns already disposed or retained their exact stage. Exceptional
+      // activation/service causes still clean safely without replacing their cause.
+      await cleanupStage();
+      if (packedInstallDir) {
+        await removePackageUpdatePath(packedInstallDir);
+      }
     }
   }
 }

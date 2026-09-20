@@ -12,7 +12,7 @@ import {
   renderUpdateRunReport,
   updateRunReportInputFromResult,
 } from "../../infra/update-run-report.js";
-import { runGatewayUpdate } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import * as processRunner from "../../process/exec.js";
 import { defaultRuntime } from "../../runtime.js";
 import { isReportableUpdateRun } from "../../shared/update-outcome.js";
@@ -239,18 +239,16 @@ it.each(["missing", "invalid"])(
   },
 );
 
-it("keeps the Git runner's untouched container result out of failure reports", async () => {
+it("keeps the CLI's untouched container result out of failure reports", async () => {
   vi.spyOn(container, "isContainerEnvironment").mockReturnValue(true);
-  const result = await runGatewayUpdate({
-    cwd: root,
-    argv1: path.join(root, "openclaw.mjs"),
-    runCommand: processRunner.runCommandWithTimeout,
-  });
+  await expect(updateCommand({ json: true, yes: true })).rejects.toMatchObject({ code: 0 });
+  expect(output).toHaveLength(1);
+  const result = output[0] as UpdateRunResult;
   expect(result).toMatchObject({
     status: "skipped",
     mode: "unknown",
     reason: "container-image-install",
-    steps: [],
+    steps: [expect.objectContaining({ exitCode: 0 })],
   });
   expect(result.recovery).toBeUndefined();
   expect(renderUpdateRunReport(updateRunReportInputFromResult(result)).markdown).toContain(

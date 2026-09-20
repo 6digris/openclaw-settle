@@ -278,7 +278,7 @@ describe("runGlobalPackageUpdateSteps", () => {
           expect(result.failedStep).toBeNull();
           expect(result.activePackageRoot).toBe(packageRoot);
           expect(result.afterVersion).toBe(SOURCE_VERSION);
-          expect(postVerifyStep).toHaveBeenCalledWith(packageRoot);
+          expect(postVerifyStep).toHaveBeenCalledWith(packageRoot, expect.any(Array));
           await expect(fs.realpath(packageRoot)).resolves.toBe(checkoutRoot);
           if (manager === "npm") {
             expect(result.steps.map((step) => step.name)).toEqual([

@@ -1,7 +1,7 @@
 // Builds restart sentinel payloads for update handoff reporting.
 import { formatDoctorNonInteractiveHint, type RestartSentinelPayload } from "./restart-sentinel.js";
 import { isUpdateGatewayReadinessPending } from "./update-run-step.js";
-import type { UpdateRunResult } from "./update-runner.js";
+import type { UpdateRunResult } from "./update-runner-types.js";
 
 export type ForegroundUpdateOrigin = {
   owner: string;

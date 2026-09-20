@@ -14,7 +14,7 @@ import {
   type PreUpdateConfigRestoreInput,
 } from "../../infra/update-post-core-context.js";
 import { recordPostCoreUpdateEvidence } from "../../infra/update-run-interruption.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { loadInstalledPluginIndexInstallRecords } from "../../plugins/installed-plugin-index-records.js";
 import { readPersistedInstalledPluginIndex } from "../../plugins/installed-plugin-index-store.js";
 import { withPluginLifecycleLease } from "../../plugins/plugin-lifecycle-lease.js";

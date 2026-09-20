@@ -266,7 +266,7 @@ describe("runGlobalPackageUpdateSteps", () => {
           "global install swap",
           "candidate validation",
         ]);
-        expect(postVerifyStep).toHaveBeenCalledWith(packageRoot);
+        expect(postVerifyStep).toHaveBeenCalledWith(packageRoot, expect.any(Array));
         expect(result.recovery).toEqual({ serviceRestartSafe: true, version: installedVersion });
         await expect(
           fs.readFile(path.join(packageRoot, "package.json"), "utf8"),
