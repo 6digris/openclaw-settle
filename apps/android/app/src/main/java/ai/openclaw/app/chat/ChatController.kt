@@ -7198,9 +7198,7 @@ class ChatController internal constructor(
         return
       }
 
-      "upserted" -> {
-        Unit
-      }
+      "upserted" -> {}
 
       else -> {
         return
