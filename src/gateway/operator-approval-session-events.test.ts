@@ -10,11 +10,8 @@ import {
 } from "../state/openclaw-state-db.js";
 import { ExecApprovalManager, type ExecApprovalRecord } from "./exec-approval-manager.js";
 import { createOperatorApprovalSessionEventRuntime } from "./operator-approval-session-events.js";
-import {
-  insertOperatorApproval,
-  resolveOperatorApproval,
-  type OperatorApprovalRecord,
-} from "./operator-approval-store.js";
+import { insertOperatorApproval, resolveOperatorApproval } from "./operator-approval-store.js";
+import type { OperatorApprovalRecord } from "./operator-approval-store.types.js";
 import type { GatewayBroadcastToConnIdsFn } from "./server-broadcast-types.js";
 import { createSessionMessageSubscriberRegistry } from "./server-chat-state.js";
 import type { GatewayClient } from "./server-methods/types.js";

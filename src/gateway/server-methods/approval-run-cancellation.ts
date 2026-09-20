@@ -1,7 +1,7 @@
 import type { AgentRunDelegatedAuthority } from "../../infra/agent-run-registry.js";
 // Settles run-bound approvals when a run stops or its tool permissions change.
 import type { ExecApprovalManager, ExecApprovalRecord } from "../exec-approval-manager.js";
-import type { OperatorApprovalRecord } from "../operator-approval-store.js";
+import type { OperatorApprovalRecord } from "../operator-approval-store.types.js";
 import {
   sameWorkerSessionTurnClaim,
   type WorkerSessionTurnClaim,

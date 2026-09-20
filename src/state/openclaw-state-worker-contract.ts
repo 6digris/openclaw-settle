@@ -23,6 +23,7 @@ import type {
   ManagedImageRecord,
   ManagedImageRecordEntry,
 } from "../gateway/managed-image-record-store.types.js";
+import type { OperatorApprovalWorkerOperations } from "../gateway/operator-approval-store.worker-contract.js";
 import type { DeferredPluginMigration } from "../infra/deferred-plugin-migrations.js";
 import type { DeliveryQueueWorkerOperations } from "../infra/delivery-queue.worker-contract.js";
 import type * as deviceAuth from "../infra/device-auth-store.kernel.js";
@@ -72,7 +73,8 @@ import type { UserPreferenceWorkerOperations } from "./user-preferences.types.js
 import type { UserProfileWorkerOperations } from "./user-profiles.worker.js";
 
 /** Commands share one physical shared-state actor; bindings belong to commands, not open input. */
-export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
+export type OpenClawStateWorkerOperations = OperatorApprovalWorkerOperations &
+  WebPushWorkerOperations &
   AuditWriterOperations &
   NativeHookRelayStoreWorkerOperations &
   TelemetryWorkerOperations &

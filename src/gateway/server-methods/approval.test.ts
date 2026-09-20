@@ -2,7 +2,6 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type ApprovalHistoryResult,
@@ -10,6 +9,7 @@ import {
   validateApprovalHistoryResult,
   validateApprovalResolveResult,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ExecApprovalForwarder } from "../../infra/exec-approval-forwarder.js";
@@ -24,7 +24,7 @@ import {
 } from "../../infra/plugin-approvals.js";
 import type { SystemAgentApprovalRequestPayload } from "../../infra/system-agent-approvals.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseByPath } from "../../state/openclaw-state-db-cache.js";
+import { closeOpenClawStateDatabaseByPathAsync } from "../../state/openclaw-state-db-cache.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
 import {
   closeOpenClawStateDatabaseForTest,
@@ -37,19 +37,23 @@ import { withEnvAsync } from "../../test-utils/env.js";
 import { ExecApprovalManager } from "../exec-approval-manager.js";
 import { createTestApprovalManager } from "../exec-approval-manager.test-support.js";
 import type { ExecApprovalManagerOptions } from "../exec-approval-manager.types.js";
-import { getOperatorApprovalDetailed, insertOperatorApproval } from "../operator-approval-store.js";
-
-function getOperatorApproval(params: Parameters<typeof getOperatorApprovalDetailed>[0]) {
-  const result = getOperatorApprovalDetailed(params);
-  return result.outcome === "found" ? result.record : null;
-}
-import { createDeferred } from "../../../test/helpers/promise.js";
+import { insertOperatorApproval } from "../operator-approval-store.js";
 import {
   cancelAgentRuntimeBoundApprovals,
   cancelUnboundRunApprovals,
   cancelWorkerTurnClaimBoundApprovals,
 } from "./approval-run-cancellation.js";
 import { createApprovalHandlers } from "./approval.js";
+import {
+  approvalFromResult,
+  createApprovalInvocation,
+  createClient,
+  createContext,
+  expectSuccessfulApprovalResponses,
+  getOperatorApproval,
+  invoke,
+  mockApprovalLookupTime,
+} from "./approval.test-support.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
 const prepareApprovalChannelCustodyMock = vi.hoisted(() => vi.fn());
@@ -163,8 +167,7 @@ function registerExec(
   if (params.expiresAtMs !== undefined) {
     record.expiresAtMs = params.expiresAtMs;
   }
-  const decision = manager.register(record, 600_000);
-  return { record, decision };
+  return { record, decision: manager.register(record, 600_000) };
 }
 
 function registerPlugin(
@@ -219,77 +222,8 @@ function registerSystemAgent(
   return { record, decision };
 }
 
-function createClient(params: {
-  scopes?: string[];
-  deviceId?: string;
-  internal?: boolean;
-  connId?: string;
-}): GatewayRequestHandlerOptions["client"] {
-  return {
-    connId: params.connId ?? (params.deviceId ? `conn-${params.deviceId}` : "conn-no-device"),
-    connect: {
-      client: { id: "approval-test", displayName: "Approval Test" },
-      scopes: params.scopes ?? ["operator.approvals"],
-      ...(params.deviceId ? { device: { id: params.deviceId } } : {}),
-    },
-    ...(params.internal ? { internal: { approvalRuntime: true } } : {}),
-  } as unknown as GatewayRequestHandlerOptions["client"];
-}
-
-function createContext(
-  controlUiBasePath?: string,
-  approvalWebPushDelivery?: GatewayRequestHandlerOptions["context"]["approvalWebPushDelivery"],
-) {
-  return {
-    broadcast: vi.fn(),
-    broadcastToConnIds: vi.fn(),
-    approvalEvents: {
-      publishRequested: vi.fn(() => 0),
-      publishResolved: vi.fn(),
-    },
-    getApprovalClientConnIds: vi.fn(() => new Set(["approval-client"])),
-    getRuntimeConfig: () => ({ gateway: { controlUi: { basePath: controlUiBasePath } } }),
-    approvalWebPushDelivery,
-    logGateway: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
-  } as unknown as GatewayRequestHandlerOptions["context"];
-}
-
-async function invoke(params: {
-  handlers: ReturnType<typeof createApprovalHandlers>;
-  method: "approval.get" | "approval.history" | "approval.resolve";
-  body: Record<string, unknown>;
-  client: GatewayRequestHandlerOptions["client"];
-  context?: GatewayRequestHandlerOptions["context"];
-}) {
-  const respond = vi.fn();
-  const context = params.context ?? createContext();
-  await expectDefined(
-    params.handlers[params.method],
-    "params.handlers[params.method] test invariant",
-  )({
-    req: { id: "req-1", type: "req", method: params.method, params: params.body },
-    params: params.body,
-    client: params.client,
-    context,
-    isWebchatConnect: () => false,
-    respond,
-  });
-  const response = respond.mock.calls[0];
-  if (!response) {
-    throw new Error("approval handler did not respond");
-  }
-  return { ok: response[0], result: response[1], error: response[2], context };
-}
-
-function approvalFromResult(result: unknown) {
-  if (!result || typeof result !== "object" || !("approval" in result)) {
-    throw new Error("missing approval response");
-  }
-  return (result as { approval: Record<string, unknown> }).approval;
-}
-
 describe("unified approval handlers", () => {
-  afterEach(() => {
+  afterEach(async () => {
     vi.restoreAllMocks();
     for (const manager of managersForCleanup.splice(0)) {
       for (const record of manager.listPendingRecords()) {
@@ -298,8 +232,10 @@ describe("unified approval handlers", () => {
     }
     closeOpenClawAgentDatabasesForTest();
     for (const dir of tempDirs.splice(0)) {
-      closeOpenClawStateDatabaseByPath(resolveOpenClawStateSqlitePath({ OPENCLAW_STATE_DIR: dir }));
-      closeOpenClawStateDatabaseByPath(path.join(dir, "state.sqlite"));
+      await closeOpenClawStateDatabaseByPathAsync(
+        resolveOpenClawStateSqlitePath({ OPENCLAW_STATE_DIR: dir }),
+      );
+      await closeOpenClawStateDatabaseByPathAsync(path.join(dir, "state.sqlite"));
       fs.rmSync(dir, { force: true, recursive: true });
     }
   });
@@ -532,14 +468,15 @@ describe("unified approval handlers", () => {
         authenticatedUserProfile: {
           profileId: profile.id,
           displayName: null,
+          avatarRevision: "1",
           hasAvatar: false,
           updatedAt: 1,
         },
-      } as GatewayRequestHandlerOptions["client"];
+      } satisfies ReturnType<typeof createClient>;
       const ownerClient = {
         ...createClient({ deviceId: "reviewer" }),
         internal: { operatorRoleActor: { kind: "system" } },
-      } as GatewayRequestHandlerOptions["client"];
+      } satisfies ReturnType<typeof createClient>;
       const handlers = createApprovalHandlers({
         execApprovalManager: managers.exec,
         pluginApprovalManager: managers.plugin,
@@ -1151,6 +1088,7 @@ describe("unified approval handlers", () => {
       databaseOptions,
     });
     now.mockReturnValue(2_000);
+    mockApprovalLookupTime(2_000);
 
     const response = await invoke({
       handlers,
@@ -1486,7 +1424,15 @@ describe("unified approval handlers", () => {
     const managers = createManagers(databaseOptions);
     const pending = registerExec(managers.exec, { id: "exec-slow-resolution-forwarder" });
     const { promise: forwarderPending, resolve: releaseForwarder } = createDeferred();
-    const handleResolved = vi.fn(() => forwarderPending);
+    const forwarderEntered = createDeferred();
+    let forwarderFinished = false;
+    void forwarderPending.then(() => {
+      forwarderFinished = true;
+    });
+    const handleResolved = vi.fn(() => {
+      forwarderEntered.resolve();
+      return forwarderPending;
+    });
     const forwarder = {
       handleRequested: vi.fn(async () => false),
       handleResolved,
@@ -1500,29 +1446,23 @@ describe("unified approval handlers", () => {
       forwarder,
       databaseOptions,
     });
-    const respond = vi.fn();
-    const handler = expectDefined(
-      handlers["approval.resolve"],
-      'handlers["approval.resolve"] test invariant',
-    )({
-      req: {
-        id: "req-slow-forwarder",
-        type: "req",
-        method: "approval.resolve",
-        params: { id: pending.record.id, kind: "exec", decision: "deny" },
-      },
-      params: { id: pending.record.id, kind: "exec", decision: "deny" },
+    const invocation = createApprovalInvocation({
+      handlers,
+      method: "approval.resolve",
+      body: { id: pending.record.id, kind: "exec", decision: "deny" },
       client: createClient({ deviceId: "reviewer" }),
-      context: createContext(),
-      isWebchatConnect: () => false,
-      respond,
     });
+    const { respond } = invocation;
     let handlerFinished = false;
-    const handlerCompletion = Promise.resolve(handler).then(() => {
+    const handlerCompletion = invocation.invoke().then(() => {
       handlerFinished = true;
     });
 
     try {
+      await Promise.race([
+        forwarderEntered.promise,
+        handlerCompletion.then(() => forwarderEntered.promise),
+      ]);
       await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 500 });
       expect(respond.mock.calls[0]?.[1]).toMatchObject({
         applied: true,
@@ -1530,10 +1470,11 @@ describe("unified approval handlers", () => {
       });
       await vi.waitFor(() => expect(handleResolved).toHaveBeenCalledTimes(1));
       await vi.waitFor(() => expect(handlerFinished).toBe(true), { timeout: 500 });
+      expect(forwarderFinished).toBe(false);
     } finally {
       releaseForwarder();
+      await handlerCompletion;
     }
-    await handlerCompletion;
   });
 
   it("continues plugin forwarding when the resolved-event broadcast fails", async () => {
@@ -1664,6 +1605,7 @@ describe("unified approval handlers", () => {
         context,
       }),
     ]);
+    expectSuccessfulApprovalResponses([first, second], context);
     expect([first.result, second.result]).toEqual([
       expect.objectContaining({
         applied: true,
@@ -1886,9 +1828,9 @@ describe("unified approval handlers", () => {
       pluginApprovalManager: managers.plugin,
       databaseOptions,
     });
-    // The lookup observes pending immediately before the deadline; force-deny's
-    // store transaction reaches the exact deadline and must reconcile expiry.
-    now.mockReturnValueOnce(1_999).mockReturnValue(2_000);
+    // The worker lookup observes pending before the native verdict reaches the deadline.
+    mockApprovalLookupTime(1_999);
+    now.mockReturnValue(2_000);
 
     const response = await invoke({
       handlers,

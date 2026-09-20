@@ -15,7 +15,7 @@ import type {
   OperatorApprovalStatus,
   OperatorApprovalTerminalReason,
   ResolveOperatorApprovalResult,
-} from "./operator-approval-store.js";
+} from "./operator-approval-store.types.js";
 
 // Node replay distinguishes a trusted auto-review verdict from an operator decision.
 export type ExecApprovalResolutionSource = "operator" | "auto-review";

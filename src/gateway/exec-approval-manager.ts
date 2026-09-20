@@ -24,14 +24,16 @@ import {
   forceDenyOperatorApproval,
   insertOperatorApproval,
   resolveOperatorApproval,
-  type ForceDenyOperatorApprovalResult,
-  type OperatorApprovalKind,
-  type OperatorApprovalRecord,
-  type OperatorApprovalResolver,
-  type OperatorApprovalSource,
-  type OperatorApprovalTerminalReason,
-  type ResolveOperatorApprovalResult,
 } from "./operator-approval-store.js";
+import type {
+  ForceDenyOperatorApprovalResult,
+  OperatorApprovalKind,
+  OperatorApprovalRecord,
+  OperatorApprovalResolver,
+  OperatorApprovalSource,
+  OperatorApprovalTerminalReason,
+  ResolveOperatorApprovalResult,
+} from "./operator-approval-store.types.js";
 
 export { EXEC_APPROVAL_RESOLVED_ENTRY_GRACE_MS } from "./exec-approval-lifecycle.js";
 export type {

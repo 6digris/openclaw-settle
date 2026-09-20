@@ -37,6 +37,23 @@ import {
   mintCronStandingGrantLocked,
   type CronStandingGrantMintSpec,
 } from "./operator-approval-standing-grants.js";
+import type {
+  ForceDenyOperatorApprovalResult,
+  GetOperatorApprovalInput,
+  GetOperatorApprovalResult,
+  ListTerminalOperatorApprovalsInput,
+  ListTerminalOperatorApprovalsResult,
+  OperatorApprovalDecision,
+  OperatorApprovalKind,
+  OperatorApprovalRecord,
+  OperatorApprovalRequester,
+  OperatorApprovalResolver,
+  OperatorApprovalResolverKind,
+  OperatorApprovalSource,
+  OperatorApprovalStatus,
+  OperatorApprovalTerminalReason,
+  ResolveOperatorApprovalResult,
+} from "./operator-approval-store.types.js";
 
 const OPERATOR_APPROVAL_TERMINAL_RETENTION_MS = 30 * 24 * 60 * 60_000;
 const OPERATOR_APPROVAL_RECEIPT_SUMMARY_MAX_ROWS = 128;
@@ -46,60 +63,6 @@ const OPERATOR_APPROVAL_PENDING_SCAN_PAGE_SIZE = 256;
 const OPERATOR_APPROVAL_MAX_LIST_LIMIT = 1_001;
 const OPERATOR_APPROVAL_HISTORY_DEFAULT_LIMIT = 50;
 const OPERATOR_APPROVAL_HISTORY_MAX_LIMIT = 100;
-
-export type OperatorApprovalKind = "exec" | "plugin" | "system-agent";
-export type OperatorApprovalStatus = "pending" | "allowed" | "denied" | "expired" | "cancelled";
-type OperatorApprovalDecision = "allow-once" | "allow-always" | "deny";
-export type OperatorApprovalTerminalReason =
-  | "user"
-  | "timeout"
-  | "malformed-verdict"
-  | "no-route"
-  | "run-aborted"
-  | "gateway-restart"
-  | "storage-corrupt";
-type OperatorApprovalResolverKind = "device" | "channel" | "runtime" | "system";
-type OperatorApprovalRequester = {
-  deviceId: string | null;
-  clientId: string | null;
-  deviceTokenAuth: boolean;
-};
-
-export type OperatorApprovalSource = {
-  agentId: string | null;
-  sessionKey: string | null;
-  sessionId: string | null;
-  runId: string | null;
-  toolCallId: string | null;
-  toolName: string | null;
-};
-
-export type OperatorApprovalResolver = {
-  kind: OperatorApprovalResolverKind;
-  id: string | null;
-};
-
-export type OperatorApprovalRecord = {
-  id: string;
-  resolutionRef: string;
-  kind: OperatorApprovalKind;
-  status: OperatorApprovalStatus;
-  presentation: ApprovalPresentation;
-  requester: OperatorApprovalRequester;
-  reviewerDeviceIds: string[];
-  source: OperatorApprovalSource;
-  audienceSessionKeys: string[];
-  runtimeEpoch: string;
-  createdAtMs: number;
-  expiresAtMs: number;
-  updatedAtMs: number;
-  decision: OperatorApprovalDecision | null;
-  terminalReason: OperatorApprovalTerminalReason | null;
-  resolvedAtMs: number | null;
-  resolver: OperatorApprovalResolver | null;
-  consumedAtMs: number | null;
-  consumedBy: string | null;
-};
 
 type NewOperatorApproval = {
   id: string;
@@ -119,31 +82,6 @@ type InsertOperatorApprovalResult =
   | { outcome: "inserted"; record: OperatorApprovalRecord }
   | { outcome: "existing"; record: OperatorApprovalRecord }
   | { outcome: "conflict" };
-
-type GetOperatorApprovalResult =
-  | { outcome: "found"; record: OperatorApprovalRecord }
-  | { outcome: "not-found" }
-  | { outcome: "corrupt"; id?: string };
-
-export type ResolveOperatorApprovalResult =
-  | { outcome: "resolved"; record: OperatorApprovalRecord }
-  | { outcome: "expired"; record: OperatorApprovalRecord }
-  | {
-      outcome: "already-resolved";
-      retry: "same" | "conflict";
-      record: OperatorApprovalRecord;
-    }
-  | { outcome: "decision-not-allowed"; record: OperatorApprovalRecord }
-  | { outcome: "not-found" }
-  | { outcome: "corrupt" };
-
-export type ForceDenyOperatorApprovalResult =
-  | { outcome: "denied"; record: OperatorApprovalRecord }
-  | { outcome: "expired"; record: OperatorApprovalRecord }
-  | { outcome: "not-due"; record: OperatorApprovalRecord }
-  | { outcome: "already-terminal"; record: OperatorApprovalRecord }
-  | { outcome: "not-found" }
-  | { outcome: "corrupt" };
 
 type ConsumeOperatorApprovalResult =
   | { outcome: "consumed"; record: OperatorApprovalRecord }
@@ -175,11 +113,6 @@ export class OperatorApprovalHistoryCursorError extends Error {
     this.name = "OperatorApprovalHistoryCursorError";
   }
 }
-
-type ListTerminalOperatorApprovalsResult = {
-  records: OperatorApprovalRecord[];
-  nextCursor?: string;
-};
 
 type OperatorApprovalReceiptContext = {
   contextId: string;
@@ -297,7 +230,7 @@ function requireString(value: string, label: string): string {
   return normalized;
 }
 
-function requireApprovalId(value: string): string {
+export function requireApprovalId(value: string): string {
   if (!isWellFormedApprovalId(value)) {
     throw new Error("operator approval id must be non-empty, well-formed Unicode, and not . or ..");
   }
@@ -308,7 +241,7 @@ function encodeOperatorApprovalHistoryCursor(cursor: OperatorApprovalHistoryCurs
   return Buffer.from(JSON.stringify({ v: 1, ...cursor }), "utf8").toString("base64url");
 }
 
-function decodeOperatorApprovalHistoryCursor(raw: string): OperatorApprovalHistoryCursor {
+export function decodeOperatorApprovalHistoryCursor(raw: string): OperatorApprovalHistoryCursor {
   try {
     const bytes = Buffer.from(raw, "base64url");
     if (bytes.toString("base64url") !== raw) {
@@ -1467,12 +1400,9 @@ export function insertOperatorApproval(params: {
   }, params.databaseOptions);
 }
 
-export function getOperatorApprovalDetailed(params: {
-  id: string;
-  allowTransportRef?: boolean;
-  nowMs?: number;
-  databaseOptions?: OpenClawStateDatabaseOptions;
-}): GetOperatorApprovalResult {
+export function getOperatorApprovalDetailed(
+  params: GetOperatorApprovalInput & { databaseOptions?: OpenClawStateDatabaseOptions },
+): GetOperatorApprovalResult {
   const locator = requireApprovalId(params.id);
   return runOpenClawStateWriteTransaction((database) => {
     const nowMs = params.nowMs ?? Date.now();
@@ -1586,11 +1516,7 @@ export function listPendingOperatorApprovals(
 }
 
 export function listTerminalOperatorApprovals(
-  params: {
-    cursor?: string;
-    limit?: number;
-    kind?: OperatorApprovalKind;
-    nowMs?: number;
+  params: ListTerminalOperatorApprovalsInput & {
     databaseOptions?: OpenClawStateDatabaseOptions;
   } = {},
 ): ListTerminalOperatorApprovalsResult {

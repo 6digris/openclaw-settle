@@ -38,6 +38,7 @@ import {
   listManagedImageRecordEntriesInDatabase,
   listManagedImageOriginalMediaIdsInDatabase,
 } from "../gateway/managed-image-record-store.kernel.js";
+import { executeOperatorApprovalCommand } from "../gateway/operator-approval-store.worker.js";
 import { registerSessionGroupInDatabase } from "../gateway/session-group-registration.kernel.js";
 import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
 import {
@@ -401,7 +402,15 @@ export function executeSharedStateCommand(
   if (command.type === "transcripts.append") {
     return appendTranscriptInWorker(command.input, { database, path: context.databasePath });
   }
+  const databaseOptions = () => ({
+    database,
+    path: context.databasePath,
+    env: getSqliteWorkerStateContext().environment,
+  });
   switch (command.type) {
+    case "operatorApproval.getDetailed":
+    case "operatorApproval.history":
+      return executeOperatorApprovalCommand(command, databaseOptions());
     case "transcripts.sessionEntries":
     case "transcripts.matches":
     case "transcripts.session":
@@ -446,11 +455,7 @@ export function executeSharedStateCommand(
     command.type === "nativeHookRelay.deleteOwned" ||
     command.type === "nativeHookRelay.prune"
   ) {
-    return executeNativeHookRelayMutation(command, {
-      database,
-      path: context.databasePath,
-      env: getSqliteWorkerStateContext().environment,
-    });
+    return executeNativeHookRelayMutation(command, databaseOptions());
   }
   if (command.type === "sessionUpstream.listWatched") {
     return listWatchedSessionUpstreamLinksInDatabase(database.db);
@@ -476,11 +481,7 @@ export function executeSharedStateCommand(
   if (isSessionDeliveryCommand(command)) {
     return executeSessionDeliveryCommand(command, database);
   }
-  const writeOptions = {
-    database,
-    path: context.databasePath,
-    env: getSqliteWorkerStateContext().environment,
-  };
+  const writeOptions = databaseOptions();
   if (command.type === "sessionGroups.register") {
     return registerSessionGroupInDatabase(database, command.input.name, writeOptions.env);
   }

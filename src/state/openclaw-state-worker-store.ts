@@ -32,6 +32,10 @@ import {
 import type { OpenClawStateLeaseContext } from "./openclaw-state-lease-context.js";
 import type { OpenClawStateLeaseIdentity } from "./openclaw-state-lease-store.js";
 import { withOpenClawStateLeaseWorkerAdmission } from "./openclaw-state-lease-worker-owner.js";
+import {
+  createOpenClawStateWorkerCleanupError,
+  joinOpenClawStateWorkerCleanup,
+} from "./openclaw-state-worker-cleanup.js";
 import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
 import type {
   OpenClawStateWorkerOperations,
@@ -300,12 +304,6 @@ function createSharedStateWorkerOwner() {
     current.pending = pending;
     return retainActorSettlement(current, pending);
   };
-  const joinActorRetirement = async (attempt: ActorRetirement): Promise<void> => {
-    if (!attempt.pending) {
-      throw new Error("Shared-state actor cleanup is pending; close the database before reopening");
-    }
-    await attempt.pending;
-  };
   async function close(identity?: DatabasePathIdentity): Promise<void> {
     for (const entry of stores.values()) {
       if (matches(entry, identity)) {
@@ -376,7 +374,7 @@ function createSharedStateWorkerOwner() {
         }
         for (const attempt of retiringActors.values()) {
           if (attempt.identity.key === admission.identity.key) {
-            await joinActorRetirement(attempt);
+            await joinOpenClawStateWorkerCleanup(attempt.pending);
             assertAdmission();
           }
         }
@@ -386,15 +384,13 @@ function createSharedStateWorkerOwner() {
             retiringEntry.context.maintenanceScope === context.maintenanceScope
           ) {
             if (!attempt.pending) {
-              throw new Error(
-                "Shared-state SQLite cleanup is pending; close the database before reopening",
-              );
+              throw createOpenClawStateWorkerCleanupError();
             }
             try {
               await attempt.pending;
             } catch (error) {
               if (retiring.get(retiringEntry) === attempt) {
-                throw error;
+                throw createOpenClawStateWorkerCleanupError({ cause: error });
               }
             }
             assertAdmission();
@@ -511,7 +507,7 @@ function createSharedStateWorkerOwner() {
       if (actor && actorRetirement) {
         actorRetirement.entries.add(entry);
         forget(entry);
-        await joinActorRetirement(actorRetirement);
+        await joinOpenClawStateWorkerCleanup(actorRetirement.pending);
         return this.open(context, existingOnly, assertCurrent);
       }
       if (!isSqliteWorkerStoreAvailable(store) && !hasActiveActorOperations(entry)) {

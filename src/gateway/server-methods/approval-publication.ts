@@ -11,7 +11,7 @@ import type {
 } from "../../infra/plugin-approvals.js";
 import type { SystemAgentApprovalRequestPayload } from "../../infra/system-agent-approvals.js";
 import type { ExecApprovalRecord } from "../exec-approval-manager.js";
-import type { OperatorApprovalRecord } from "../operator-approval-store.js";
+import type { OperatorApprovalRecord } from "../operator-approval-store.types.js";
 import { broadcastApprovalResolvedEvent } from "./approval-shared.js";
 import type { GatewayRequestContext } from "./types.js";
 

@@ -1350,6 +1350,18 @@ runtimes discard late discovery results. Registration's alias bootstrap, tab
 mutations, and the final synchronous ownership check before closing a browser
 target retain their existing owners.
 
+Operator approval point lookups use the shared-state worker for owner-bound Gateway
+requests, and terminal history runs there as well. Point lookup keeps its existing
+write transaction: it can expire a pending approval or deny a corrupt row, and its
+request-owned authority remains current through commit and final consumption. Opaque
+in-process request guards retain their synchronous native lookup boundary. Approval
+RPC readers recheck access after storage settles before publishing or reconciling a
+local waiter. Worker infrastructure failures preserve pending
+approvals; ordinary socket disconnects do not cancel accepted lookups or history.
+History retains its cursor, ordering, and retention rules. Registration, decision
+resolution, one-use consumption, pending replay, and receipt projection retain
+their existing owners. Database schemas and stored records are unchanged.
+
 ### Preserve the data and concurrency contracts
 
 Doctor's local device-token inventory executes in the shared-state worker. The

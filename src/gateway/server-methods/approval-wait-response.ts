@@ -1,6 +1,6 @@
 import type { ExecApprovalDecision } from "../../infra/exec-approvals.js";
 import type { ExecApprovalRecord } from "../exec-approval-manager.js";
-import type { OperatorApprovalTerminalReason } from "../operator-approval-store.js";
+import type { OperatorApprovalTerminalReason } from "../operator-approval-store.types.js";
 
 export type WaitReasonResolver<TPayload> = (
   snapshot: ExecApprovalRecord<TPayload>,

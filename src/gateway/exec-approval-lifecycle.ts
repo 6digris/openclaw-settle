@@ -18,7 +18,7 @@ import type {
   OperatorApprovalResolver,
   OperatorApprovalStatus,
   OperatorApprovalTerminalReason,
-} from "./operator-approval-store.js";
+} from "./operator-approval-store.types.js";
 
 // Node ask-fallback replay uses the same grace anchor as manager binding retention.
 export const EXEC_APPROVAL_RESOLVED_ENTRY_GRACE_MS = 15_000;
@@ -376,6 +376,11 @@ export abstract class ExecApprovalLifecycle<TPayload> {
       this.expireDue(recordId);
     }
     return entry.record;
+  }
+
+  /** Check a prepared lookup binding without expiring or projecting its decision. */
+  hasRegisteredRecord(record: Pick<ExecApprovalRecord<TPayload>, "id">): boolean {
+    return !this.retired && this.pending.get(record.id)?.record === record;
   }
 
   /** Reads a live local binding without entering durable storage or mutating expiry. */

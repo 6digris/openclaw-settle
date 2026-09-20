@@ -1,5 +1,5 @@
 import type { ApprovalSnapshot } from "../../packages/gateway-protocol/src/index.js";
-import type { OperatorApprovalRecord } from "./operator-approval-store.js";
+import type { OperatorApprovalRecord } from "./operator-approval-store.types.js";
 
 /** Project one durable row into the reviewer-safe public approval shape. */
 export function projectOperatorApprovalSnapshot(

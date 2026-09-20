@@ -17,8 +17,8 @@ import { projectOperatorApprovalSnapshot } from "./operator-approval-snapshot.js
 import {
   expireDueOperatorApprovals,
   listPendingOperatorApprovals,
-  type OperatorApprovalRecord,
 } from "./operator-approval-store.js";
+import type { OperatorApprovalRecord } from "./operator-approval-store.types.js";
 import type { GatewayBroadcastToConnIdsFn } from "./server-broadcast-types.js";
 import type { SessionMessageSubscriberRegistry } from "./server-chat-state.js";
 import type { GatewayClient } from "./server-methods/types.js";
