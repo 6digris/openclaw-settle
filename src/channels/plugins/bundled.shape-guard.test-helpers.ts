@@ -1,10 +1,11 @@
 import fs from "node:fs";
 import { createRequire } from "node:module";
-import os from "node:os";
 import path from "node:path";
-import { vi } from "vitest";
+import { afterEach, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 
 const requireModule = createRequire(import.meta.url);
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 export function mockChannelPluginModuleLoader(): void {
   vi.doMock("./module-loader.js", async (importOriginal) => {
@@ -18,7 +19,7 @@ export function mockChannelPluginModuleLoader(): void {
 }
 
 export function makeBundledEsmFixtureRoot(prefix: string): string {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const root = tempDirs.make(prefix);
   fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}\n');
   return root;
 }
