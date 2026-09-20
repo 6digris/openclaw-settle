@@ -1,5 +1,8 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "test/loopback-ask-user-telegram-channel.test.ts",
+  "test/slack-outbound-permanent-rejection-loopback.test.ts",
+  "test/telegram-outbound-permanent-rejection-loopback.test.ts",
   "src/agents/worktrees/empty-source.test.ts",
   "src/agents/worktrees/registry-read.test.ts",
   "src/agents/worktrees/service-branches.test.ts",
@@ -98,7 +101,6 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/tools/media-generate-tool.donor-resources.test.ts",
   "src/agents/tools/media-generate-tool.resources.test.ts",
   "src/agents/embedded-agent-runner/context-engine-maintenance.lifecycle.test.ts",
-  "src/agents/subagents/registry/subagent-registry-recovery-acceptance.test.ts",
   "src/agents/subagents/registry/subagent-registry-task-replacement.test.ts",
   "src/tasks/task-registry-session-index.test.ts",
   "src/tasks/task-registry.store.test.ts",
@@ -130,6 +132,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/commands/doctor/auth-alias-import-recovery.test.ts",
   "src/commands/doctor/auth-alias-preservation.test.ts",
   "src/commands/doctor/shared/missing-configured-plugin-install.test.ts",
+  "src/commands/doctor/shared/missing-configured-plugin-install.dependency-health.test.ts",
   "src/plugins/registry-refresh.test.ts",
   "src/plugins/loader.trust-diagnostics.test.ts",
   "src/plugins/loader.runtime-registry.test.ts",
@@ -184,6 +187,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/commands/doctor-device-pairing.worker.test.ts",
   "src/commands/doctor-device-pairing.test.ts",
   "src/commands/doctor-maintenance.worker.test.ts",
+  "src/commands/doctor-lint.crabbox.test.ts",
   "src/fleet/doctor.runtime.test.ts",
   "src/fleet/registry.test.ts",
   "src/fleet/registry-read.test.ts",

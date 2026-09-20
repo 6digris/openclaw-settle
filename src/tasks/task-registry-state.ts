@@ -716,7 +716,6 @@ export async function runTaskRegistryWorkerMutation<T>(
         recoverPublication: recovery?.recover,
         taskRowsWritten: context.taskRowsWritten?.(),
       });
-      recovery?.bindExpected(pending.publication?.records.get(scope.taskId));
       assertOwner();
       await context.beforeObservers?.(assertOwner);
       assertOwner();

@@ -383,12 +383,17 @@ export function recordTaskRegistryProjectionWrite(
         ? "snapshot"
         : "refresh";
   for (const pending of indexState.projection.pending) {
+    const publication = pending.publication;
     const recovery = pending.recoveryWitness;
     if (recovery && kind !== "delivery" && kind !== "refresh") {
       if (taskId === undefined) {
         recovery.replaced = true;
+        for (const id of publication?.records.keys() ?? []) {
+          publication?.invalidated.add(id);
+        }
       } else if (taskId === pending.scope.taskId) {
         recovery.writtenTaskIds.add(taskId);
+        publication?.invalidated.add(taskId);
       }
     }
     const witness = pending.readWitness;
@@ -404,7 +409,6 @@ export function recordTaskRegistryProjectionWrite(
         witness.writtenTaskIds.add(taskId);
       }
     }
-    const publication = pending.publication;
     if (!publication || kind === "delivery") {
       continue;
     }

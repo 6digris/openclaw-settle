@@ -18,6 +18,7 @@ import {
   readConfigHealthSnapshotInDatabase,
 } from "../config/io.health-state.kernel.js";
 import { loadMutableCronStoreInWorker } from "../cron/store/load.worker.js";
+import { proposeCronRunRecoveryInWorker } from "../cron/store/run-recovery.worker.js";
 import { executeCronStoreSaveCommand } from "../cron/store/save.worker.js";
 import {
   acquireFleetCellOperationInDatabase,
@@ -37,6 +38,7 @@ import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migration
 import { countFailedDeliveryQueueEntriesInDatabase } from "../infra/delivery-queue-sqlite.kernel.js";
 import * as deviceAuth from "../infra/device-auth-store.kernel.js";
 import { executeDeliveryQueueAck } from "../infra/outbound/delivery-queue-ack.worker.js";
+import { executeDeliveryQueueEnqueue } from "../infra/outbound/delivery-queue-enqueue.worker.js";
 import { executePromotionCommand } from "../infra/promotions-feed.worker.js";
 import {
   readApnsRegistrationFromDatabase,
@@ -96,6 +98,7 @@ import {
 import { ensureAgentProvenanceSchema } from "./agent-provenance.schema.js";
 import { recordBackupRunInDatabase } from "./backup-run-records.kernel.js";
 import { readConfigMachineState } from "./config-machine-state.js";
+import { executeAgentDatabaseCleanupCommand } from "./openclaw-agent-execution-cleanup.worker.js";
 import type { OpenClawStateDatabase } from "./openclaw-state-db-contract.js";
 import { assertOpenClawStateDatabaseOwner } from "./openclaw-state-db-maintenance.js";
 import {
@@ -109,12 +112,15 @@ import { assertOpenClawStateLeaseWorkerOwnedInTransaction } from "./openclaw-sta
 import type {
   OpenClawStateWorkerOperations,
   OpenClawStateWorkerInspectionOperations,
+  OpenClawStateWorkerCleanupOperations,
 } from "./openclaw-state-worker-contract.js";
 import { readUserModelAuthProfile } from "./user-model-accounts.js";
 import { executeUserPreferenceCommand } from "./user-preferences.worker.js";
 import { executeUserProfileCommand } from "./user-profiles.worker.js";
 
-type Operations = OpenClawStateWorkerOperations & OpenClawStateWorkerInspectionOperations;
+type Operations = OpenClawStateWorkerOperations &
+  OpenClawStateWorkerInspectionOperations &
+  OpenClawStateWorkerCleanupOperations;
 
 export function executeSharedStateCommand(
   command: Exclude<
@@ -125,6 +131,13 @@ export function executeSharedStateCommand(
   open: () => OpenClawStateDatabase,
   hasNativeDatabase: boolean,
 ): Operations[keyof Operations]["output"] {
+  if (command.type === "agentDatabases.releaseExitedLease") {
+    return executeAgentDatabaseCleanupCommand(
+      command,
+      open(),
+      getSqliteWorkerStateContext().environment,
+    );
+  }
   if (command.type === "audit.events.list") {
     return listAuditEventsInDatabase(open().db, command.input);
   }
@@ -413,6 +426,9 @@ export function executeSharedStateCommand(
   if (command.type === "cron.loadMutable") {
     return loadMutableCronStoreInWorker(database, command.input.storeKey);
   }
+  if (command.type === "cron.proposeRunRecovery") {
+    return proposeCronRunRecoveryInWorker(database, command.input);
+  }
   if (command.type === "cron.save" || command.type === "cron.saveChanges") {
     return executeCronStoreSaveCommand(command, database);
   }
@@ -446,6 +462,9 @@ export function executeSharedStateCommand(
   }
   if (command.type === "skillUploads.commit") {
     return commitSkillUploadInDatabase(command.input, writeOptions);
+  }
+  if (command.type === "deliveryQueue.enqueue") {
+    return executeDeliveryQueueEnqueue(command.input, writeOptions);
   }
   if (
     command.type === "deviceAuth.store" ||
