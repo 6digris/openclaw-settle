@@ -33,6 +33,7 @@ import { registerPluginSubagentRunFromGateway } from "./agent-task-tracking.js";
 import {
   mockSpawnedChildSessionEntry,
   spyDetachedCreateRunningTaskRun,
+  withPluginSubagentTestState,
 } from "./agent-task-tracking.test-helpers.js";
 import { registerNativeSubagentTaskTrackingTests } from "./agent.native-subagent-task-tracking.test-utils.js";
 import { registerAgentTaskCancellationTests } from "./agent.task-cancellation.test-utils.js";
@@ -326,9 +327,7 @@ describe("gateway agent handler", () => {
   });
 
   it("registers host-owned requester lineage for plugin subagent completion", async () => {
-    await withTestDir({ prefix: "openclaw-gateway-plugin-subagent-requester-" }, async (root) => {
-      useTestStateDir(root);
-      resetSubagentRegistryForTests({ persist: false });
+    await withPluginSubagentTestState("openclaw-gateway-plugin-subagent-requester-", async () => {
       const childSessionKey = "agent:work:subagent:plugin-completion";
       const requester = {
         sessionKey: "agent:main:telegram:direct:123",
@@ -945,11 +944,9 @@ describe("gateway agent handler", () => {
   });
 
   it("still adopts the paused owner for a default follow-up after a requester-bound sibling", async () => {
-    await withTestDir(
-      { prefix: "openclaw-gateway-plugin-subagent-mixed-delivery-" },
-      async (root) => {
-        useTestStateDir(root);
-        resetSubagentRegistryForTests({ persist: false });
+    await withPluginSubagentTestState(
+      "openclaw-gateway-plugin-subagent-mixed-delivery-",
+      async () => {
         const childSessionKey = "agent:work:subagent:plugin-yield-mixed-delivery";
         const originalRequester = "agent:main:telegram:direct:777";
         const cfg = {
@@ -3299,10 +3296,8 @@ describe("gateway agent handler", () => {
     });
 
     it("does not affect plugin-subagent tracking for confirmed ACP conditions", async () => {
-      await withTestDir({ prefix: "openclaw-gateway-acp-plugin-subagent-" }, async (root) => {
-        useTestStateDir(root);
+      await withPluginSubagentTestState("openclaw-gateway-acp-plugin-subagent-", async () => {
         resetAgentTaskRegistryForTests();
-        resetSubagentRegistryForTests({ persist: false });
         const childSessionKey = "agent:main:acp:plugin-child";
         const runId = "acp-plugin-subagent-run";
         mockSpawnedChildSessionEntry(childSessionKey);
