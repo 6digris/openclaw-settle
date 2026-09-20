@@ -30,8 +30,8 @@ import { bindSessionRowProjection } from "../session-row-projection-access.js";
 import type { SessionRowProjection } from "../session-row-projection.js";
 import type { GatewaySessionRow } from "../session-utils.types.js";
 import {
-  flushScheduledDispatchStep,
   setDateOnlyFakeClockActive,
+  waitForAcceptedRunDispatch,
   waitForAssertion,
 } from "./agent-clock.test-helpers.js";
 import { agentIdentityHandlers } from "./agent-identity.js";
@@ -494,29 +494,6 @@ export function expectRespondError(
   expect(mockCallArg(mock)).toBe(false);
   expect(mockCallArg(mock, 0, 1)).toBeUndefined();
   return expectRecordFields(mockCallArg(mock, 0, 2), expected);
-}
-
-async function waitForAcceptedRunDispatch(params: {
-  respond: ReturnType<typeof vi.fn>;
-  commandCallCount: number;
-}) {
-  const { respond } = params;
-  const accepted = respond.mock.calls.some(([ok, payload]) => {
-    return ok === true && (payload as { status?: string } | undefined)?.status === "accepted";
-  });
-  if (!accepted) {
-    return;
-  }
-  const respondCallCount = respond.mock.calls.length;
-  for (let attempt = 0; attempt < 50; attempt++) {
-    await flushScheduledDispatchStep();
-    if (
-      mocks.agentCommand.mock.calls.length > params.commandCallCount ||
-      respond.mock.calls.length > respondCallCount
-    ) {
-      return;
-    }
-  }
 }
 
 export function mockMainSessionEntry(
@@ -1020,6 +997,7 @@ export async function invokeAgent(
   },
 ) {
   const respond = options?.respond ?? vi.fn();
+  const initialRespondCallCount = respond.mock.calls.length;
   const commandCallCount = mocks.agentCommand.mock.calls.length;
   // Most cases only need to cross the accepted-ack timer; keep tests that own
   // timer semantics on their explicit clock while avoiding a real sleep here.
@@ -1040,7 +1018,11 @@ export async function invokeAgent(
       },
     );
     if (options?.flushDispatch !== false) {
-      await waitForAcceptedRunDispatch({ respond, commandCallCount });
+      await waitForAcceptedRunDispatch({
+        respond,
+        initialRespondCallCount,
+        hasDispatched: () => mocks.agentCommand.mock.calls.length > commandCallCount,
+      });
     }
   } finally {
     if (ownsDispatchTimers) {
