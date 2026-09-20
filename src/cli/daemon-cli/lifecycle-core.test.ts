@@ -1,5 +1,5 @@
 // Daemon lifecycle core tests cover service lifecycle transitions and platform adapters.
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { GatewayServiceControlArgs } from "../../daemon/service-types.js";
 import type { GatewayService } from "../../daemon/service.js";
@@ -80,10 +80,8 @@ vi.mock("./lifecycle-audit.js", () => ({
   },
 }));
 
-let runServiceRestart: typeof import("./lifecycle-core.js").runServiceRestart;
-let runServiceStart: typeof import("./lifecycle-core.js").runServiceStart;
-let runServiceStop: typeof import("./lifecycle-core.js").runServiceStop;
-let runServiceUninstall: typeof import("./lifecycle-core.js").runServiceUninstall;
+const { runServiceRestart, runServiceStart, runServiceStop, runServiceUninstall } =
+  await import("./lifecycle-core.js");
 
 // oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- Test helper lets assertions ascribe logged JSON shape.
 function readJsonLog<T extends object>() {
@@ -142,11 +140,6 @@ function expectUnsupportedServiceCheckFailure() {
 }
 
 describe("runServiceRestart token drift", () => {
-  beforeAll(async () => {
-    ({ runServiceRestart, runServiceStart, runServiceStop, runServiceUninstall } =
-      await import("./lifecycle-core.js"));
-  });
-
   afterEach(() => {
     vi.restoreAllMocks();
   });

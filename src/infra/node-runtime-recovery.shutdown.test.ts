@@ -1,5 +1,5 @@
 import { ChildProcess, type SpawnOptions } from "node:child_process";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi, type MockInstance } from "vitest";
 import { runRespawnedChild } from "../../node-runtime-recovery.mjs";
 
 const spawn = vi.hoisted(() =>
@@ -11,13 +11,15 @@ vi.mock("node:child_process", async (importOriginal) => ({
 }));
 
 let child: ChildProcess;
+let kill: MockInstance<ChildProcess["kill"]>;
+let exit: MockInstance<typeof process.exit>;
 let detach: (() => void) | undefined;
 beforeEach(() => {
   vi.useFakeTimers();
   child = new ChildProcess();
-  vi.spyOn(child, "kill").mockReturnValue(true);
+  kill = vi.spyOn(child, "kill").mockReturnValue(true);
   spawn.mockReturnValue(child);
-  vi.spyOn(process, "exit").mockImplementation(vi.fn<typeof process.exit>());
+  exit = vi.spyOn(process, "exit").mockImplementation(vi.fn<typeof process.exit>());
   vi.spyOn(process, "kill").mockReturnValue(true);
 });
 afterEach(() => {
@@ -51,19 +53,19 @@ it.each([
     const signal = process.listeners("SIGTERM").find((listener) => !previous.has(listener));
     expect(signal).toBeDefined();
     signal!("SIGTERM");
-    expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
+    expect(kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
     // Reserve the final two seconds for escalation; all earlier time belongs to the child.
     vi.advanceTimersByTime(nativeBudgetMs - 2_001);
-    expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(kill).toHaveBeenCalledTimes(1);
     signal!("SIGTERM");
-    expect(child.kill).toHaveBeenCalledTimes(2);
+    expect(kill).toHaveBeenCalledTimes(2);
     vi.advanceTimersByTime(1);
-    expect(child.kill).toHaveBeenCalledTimes(3);
+    expect(kill).toHaveBeenCalledTimes(3);
     vi.advanceTimersByTime(1_000);
-    expect(child.kill).toHaveBeenLastCalledWith(platform === "win32" ? "SIGTERM" : "SIGKILL");
-    expect(process.exit).not.toHaveBeenCalled();
+    expect(kill).toHaveBeenLastCalledWith(platform === "win32" ? "SIGTERM" : "SIGKILL");
+    expect(exit).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1_000);
-    expect(process.exit).toHaveBeenCalledExactlyOnceWith(1);
+    expect(exit).toHaveBeenCalledExactlyOnceWith(1);
   },
 );
 
@@ -77,7 +79,7 @@ it("removes the shutdown deadline when the child exits cooperatively", () => {
   vi.advanceTimersByTime(3_000);
   child.emit("exit", 0, null);
   vi.advanceTimersByTime(330_000);
-  expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
-  expect(process.exit).toHaveBeenCalledExactlyOnceWith(0);
+  expect(kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
+  expect(exit).toHaveBeenCalledExactlyOnceWith(0);
   expect(process.listeners("SIGTERM")).toEqual([...previous]);
 });

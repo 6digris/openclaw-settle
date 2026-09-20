@@ -20,7 +20,7 @@ export function createServiceRestartIntent(params: {
   let recorded = false;
   let env = process.env;
   return {
-    async prepare() {
+    prepare: async () => {
       if (params.serviceNoun !== "Gateway" || recorded) {
         return;
       }
@@ -62,7 +62,7 @@ export function createServiceRestartIntent(params: {
           })
         : writeGatewayRestartIntentSync(options);
     },
-    clear() {
+    clear: () => {
       if (recorded) {
         assertGatewayServiceUpdateCurrent();
         clearGatewayRestartIntentSync(env);

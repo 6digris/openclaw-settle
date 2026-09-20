@@ -1,5 +1,5 @@
 import { hostname } from "node:os";
-import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { withGatewayServiceUpdateAuthority } from "../../daemon/service-update-authority.js";
 import {
@@ -34,7 +34,7 @@ vi.mock("./lifecycle-audit.js", () => ({
 }));
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-let runServiceRestart: typeof import("./lifecycle-core.js").runServiceRestart;
+const { runServiceRestart } = await import("./lifecycle-core.js");
 
 function beforeIntentWriteAdmission(operation: () => void) {
   const write = existingWrites.runExistingOpenClawStateWriteTransaction;
@@ -78,10 +78,6 @@ function publishServingOwner(
     now,
   );
 }
-
-beforeAll(async () => {
-  ({ runServiceRestart } = await import("./lifecycle-core.js"));
-});
 
 beforeEach(() => {
   resetLifecycleRuntimeLogs();
