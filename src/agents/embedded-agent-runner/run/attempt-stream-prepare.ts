@@ -252,7 +252,7 @@ function prepareStream(
   // Terminal callbacks run after queue construction; keep the queue in this
   // phase so active-run clearing and subscription teardown share one owner.
   let deferredLifecycleOwner: EmbeddedAttemptDeferredLifecycleOwner | undefined;
-  const subscription = subscribeEmbeddedAgentSession({
+  const streamSubscription = subscribeEmbeddedAgentSession({
     session: input.activeSession,
     onModelUsage: input.onModelUsage,
     runId: attempt.runId,
@@ -340,7 +340,8 @@ function prepareStream(
     trustedLocalMediaToolNames: input.trustedLocalMediaToolNames,
     internalEvents: attempt.internalEvents,
   });
-  const unsubscribe = admission.bindStreamUnsubscribe(subscription.unsubscribe);
+  const unsubscribe = admission.bindStreamUnsubscribe(streamSubscription.unsubscribe);
+  const subscription = { ...streamSubscription, unsubscribe };
   toolMetasForTerminal = subscription.toolMetas;
 
   const toolSearchCatalogExecutor: ToolSearchCatalogToolExecutor = async (toolParams) => {
@@ -677,7 +678,7 @@ function prepareStream(
   }
 
   return {
-    subscription: { ...subscription, unsubscribe },
+    subscription,
     queueHandle,
     deferredLifecycleOwner,
     toolSearchCatalogExecutor,
