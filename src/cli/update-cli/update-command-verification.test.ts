@@ -100,7 +100,10 @@ describe("update readiness generation", () => {
         onVerified,
       }),
     ).rejects.toBe(reason);
-    expect(service.isLoaded).toHaveBeenCalledOnce();
+    expect(service.isLoaded).toHaveBeenCalledExactlyOnceWith({
+      env: {},
+      timeoutMs: 5_000,
+    });
     expect(onVerified).not.toHaveBeenCalled();
     expect(recordUpdateRunVerification).not.toHaveBeenCalled();
   });
