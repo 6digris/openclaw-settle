@@ -760,6 +760,92 @@ describe("channel detail", () => {
 });
 
 describe("channel display selectors", () => {
+  it.each([
+    {
+      name: "the default account reports a running transport",
+      status: { configured: true },
+      accounts: [{ accountId: "default", configured: true, running: true }],
+      running: true,
+      connected: null,
+      hubStatus: "Running",
+    },
+    {
+      name: "the default account reports a connected transport",
+      status: { configured: true },
+      accounts: [{ accountId: "default", configured: true, connected: true }],
+      running: null,
+      connected: true,
+      hubStatus: "Running",
+    },
+    {
+      name: "a nondefault account owns the live transport",
+      status: { configured: true },
+      accounts: [
+        { accountId: "default", configured: true, running: false },
+        { accountId: "work", configured: true, running: true },
+      ],
+      running: true,
+      connected: null,
+      hubStatus: "Running",
+    },
+    {
+      name: "explicit channel runtime facts override account facts",
+      status: { configured: true, running: false, connected: false },
+      accounts: [{ accountId: "default", configured: true, running: true, connected: true }],
+      running: false,
+      connected: false,
+      hubStatus: "Configured",
+    },
+    {
+      name: "only the channel running fact is explicit",
+      status: { configured: true, running: false },
+      accounts: [{ accountId: "default", configured: true, running: true, connected: true }],
+      running: false,
+      connected: true,
+      hubStatus: "Running",
+    },
+    {
+      name: "account false values leave the channel runtime unknown",
+      status: { configured: true },
+      accounts: [{ accountId: "default", configured: true, running: false, connected: false }],
+      running: null,
+      connected: null,
+      hubStatus: "Configured",
+    },
+    {
+      name: "disabled channels stay outside the connected channel list",
+      status: { configured: false },
+      accounts: [{ accountId: "default", configured: false, running: false, connected: false }],
+      running: null,
+      connected: null,
+      hubStatus: null,
+    },
+  ])(
+    "renders plugin account runtime when $name",
+    ({ status, accounts, running, connected, hubStatus }) => {
+      const props = createProps({
+        ts: 1,
+        channelOrder: ["guildchat"],
+        channelLabels: { guildchat: "Guild Chat" },
+        channels: { guildchat: status },
+        channelAccounts: { guildchat: accounts },
+        channelDefaultAccountId: { guildchat: "default" },
+      });
+      const container = document.createElement("div");
+      render(renderChannels(props), container);
+
+      expect(
+        container.querySelector("button.channels-item .settings-status")?.textContent?.trim() ??
+          null,
+      ).toBe(hubStatus);
+      expect(resolveChannelDisplayState("guildchat", props)).toMatchObject({
+        running,
+        connected,
+        defaultAccount: { accountId: "default" },
+      });
+    },
+  );
+
   it("returns the channel summary configured flag when present", () => {
     const props = createProps({
       ts: Date.now(),
