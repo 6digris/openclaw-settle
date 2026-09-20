@@ -28,6 +28,9 @@ $runtime = $null
 $privateNodeRoot = $null
 $privateNodeOwned = $false
 $privateBlockerHandle = $null
+$operatorStateRoot = $null
+$runtimeSentinelOwned = $false
+$operatorStatePrevious = $env:OPENCLAW_STATE_DIR
 $msiLoggingState = $null
 $msiLoggingRestoreFailed = $false
 $started = Get-Date
@@ -133,6 +136,74 @@ console.log(JSON.stringify(out));
     $facts = ($output -join "`n") | ConvertFrom-Json
     $facts | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $ProofRoot "$Name.json")
     return $facts
+}
+# Observe only stable public identity fields, not incidental MSI bookkeeping.
+# These comparisons supplement real command/runtime assertions; they cannot
+# manufacture a native outcome or qualify a prerequisite as candidate acceptance.
+function Get-PreservationFile([string]$Path) {
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        return [ordered]@{ kind='file'; sha256=(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash }
+    }
+    if (Test-Path -LiteralPath $Path -PathType Container) { return [ordered]@{ kind='directory'; sha256=$null } }
+    return [ordered]@{ kind='missing'; sha256=$null }
+}
+function Get-PreservationState {
+    $packages = @(Get-NodeRegistration)
+    if (Test-Path -LiteralPath $portableRegistryPath) { $packages += Get-ItemProperty -LiteralPath $portableRegistryPath }
+    $identities = @($packages | Sort-Object PSPath -Unique | Select-Object PSPath,PSChildName,DisplayName,DisplayVersion,InstallLocation,WindowsInstaller,UninstallString,WinGetPackageIdentifier,WinGetSourceIdentifier,WinGetInstallerType)
+    $runtimeDirectory = Split-Path -Parent $runtime
+    $companions = [ordered]@{}
+    foreach ($name in @('npm.cmd','npx.cmd','node_modules/npm/package.json','pr112055-operator-sentinel.txt')) {
+        $companions[$name] = Get-PreservationFile (Join-Path $runtimeDirectory $name)
+    }
+    $operatorFiles = [ordered]@{}
+    foreach ($name in @('openclaw.json','workspace/USER.md')) {
+        $operatorFiles[$name] = Get-PreservationFile (Join-Path $operatorStateRoot $name)
+    }
+    return [ordered]@{
+        runtime=(Get-PreservationFile $runtime)
+        original=(Get-PreservationFile (Join-Path $WorkRoot 'original-node.exe'))
+        packages=$identities
+        companions=$companions
+        operatorFiles=$operatorFiles
+    }
+}
+function Assert-Preservation($Pristine, $BeforeGate, $After, [string]$Case) {
+    Assert-Proof ($Case -in @('healthy','stale-msi','failed-repair','unsupported-node','non-msi','all-providers-unusable')) 'Unknown preservation case.'
+    Assert-Proof ($null -ne $Pristine -and $null -ne $BeforeGate -and $null -ne $After) 'Missing preservation snapshots.'
+    Assert-Proof ($Pristine.runtime.kind -ceq 'file' -and $Pristine.runtime.sha256 -match '^[A-Fa-f0-9]{64}$') 'Pristine runtime bytes were not captured.'
+    $expectedPackages = if ($Case -eq 'unsupported-node') { 0 } else { 1 }
+    Assert-Proof (@($Pristine.packages).Count -eq $expectedPackages) 'Unexpected preservation baseline package count.'
+    foreach ($field in @('packages','companions','operatorFiles')) {
+        $expected = ConvertTo-Json -InputObject $Pristine[$field] -Depth 8 -Compress
+        Assert-Proof ((ConvertTo-Json -InputObject $BeforeGate[$field] -Depth 8 -Compress) -ceq $expected) "Fixture changed preserved $field before candidate execution."
+        Assert-Proof ((ConvertTo-Json -InputObject $After[$field] -Depth 8 -Compress) -ceq $expected) "Candidate changed preserved $field."
+    }
+    foreach ($name in @('npm.cmd','npx.cmd','node_modules/npm/package.json','pr112055-operator-sentinel.txt')) {
+        Assert-Proof ($Pristine.companions[$name].kind -ceq 'file') "Runtime companion/sentinel is absent: $name."
+    }
+    foreach ($name in @('openclaw.json','workspace/USER.md')) {
+        Assert-Proof ($Pristine.operatorFiles[$name].kind -ceq 'file') "Operator sentinel is absent: $name."
+    }
+    $expectedRuntime = if ($Case -in @('healthy','stale-msi','unsupported-node')) { $Pristine.runtime } else { $BeforeGate.runtime }
+    Assert-Proof ((ConvertTo-Json -InputObject $After.runtime -Compress) -ceq (ConvertTo-Json -InputObject $expectedRuntime -Compress)) 'Original runtime bytes/state changed unexpectedly.'
+    if ($Case -notin @('healthy','unsupported-node')) {
+        Assert-Proof ($BeforeGate.original.kind -ceq 'file' -and $BeforeGate.original.sha256 -ceq $Pristine.runtime.sha256) 'Owned original runtime backup differs from pristine bytes.'
+    }
+    Assert-Proof ((ConvertTo-Json -InputObject $After.original -Compress) -ceq (ConvertTo-Json -InputObject $BeforeGate.original -Compress)) 'Owned original runtime backup changed.'
+}
+function Initialize-PreservationState {
+    $script:operatorStateRoot = Join-Path $WorkRoot 'operator-state'
+    Assert-Proof (-not (Test-Path -LiteralPath $operatorStateRoot)) 'Operator-state fixture already exists.'
+    New-Item -ItemType Directory -Path (Join-Path $operatorStateRoot 'workspace') | Out-Null
+    '{"agents":{"defaults":{"workspace":"./workspace"}}}' | Set-Content -LiteralPath (Join-Path $operatorStateRoot 'openclaw.json')
+    'Owned native bootstrap preservation sentinel' | Set-Content -LiteralPath (Join-Path $operatorStateRoot 'workspace/USER.md')
+    $env:OPENCLAW_STATE_DIR = $operatorStateRoot
+    $sentinel = Join-Path (Split-Path -Parent $runtime) 'pr112055-operator-sentinel.txt'
+    Assert-Proof (-not (Test-Path -LiteralPath $sentinel)) 'Runtime sentinel already exists.'
+    $script:runtimeSentinelOwned = $true
+    'Owned runtime-adjacent preservation sentinel' | Set-Content -LiteralPath $sentinel
+    $proof.preservation = [ordered]@{ scope='Node-bootstrap runtime, package identity, npm companions and task-owned operator state; not full OpenClaw upgrade'; pristine=(Get-PreservationState); beforeGate=$null; after=$null; result='unqualified' }
 }
 function Initialize-PublicPortableNode {
     Assert-Proof (-not (Test-Path -LiteralPath $portableRegistryPath)) 'Preexisting public-source portable registration is not task-owned.'
@@ -400,6 +471,8 @@ try {
             Expand-Archive (Join-Path $WorkRoot $file) -DestinationPath $WorkRoot
             $runtime = Join-Path $WorkRoot "node-v$version-win-x64/node.exe"
             $proof.unsupported = Get-RuntimeFacts $runtime 'unsupported-runtime'
+            Initialize-PreservationState
+            $proof.preservation.beforeGate = Get-PreservationState
             Assert-Proof (-not (Check-Node -NodePath $runtime)) 'Unsupported real Node was accepted.'
             Assert-Proof ($global:WingetProofTrace.install.Count -eq 0 -and $global:WingetProofTrace.repair.Count -eq 0) 'Unsupported-version gate unexpectedly installed/repaired.'
         } else {
@@ -446,6 +519,7 @@ try {
             $proof.before = Get-RuntimeFacts $runtime 'runtime-before'
             Assert-Proof (Check-Node -NodePath $runtime) 'Pinned native package fails existing runtime gate.'
             $proof.nodeBeforeSha256 = (Get-FileHash $runtime).Hash
+            Initialize-PreservationState
             if ($Scenario -ne 'healthy') {
                 Move-Item -LiteralPath $runtime -Destination (Join-Path $WorkRoot 'original-node.exe')
                 if ($Scenario -in @('failed-repair','all-providers-unusable')) {
@@ -456,6 +530,7 @@ try {
                 }
                 Assert-Proof (-not (Check-Node)) 'Stale setup still discovers a usable foreign runtime.'
             }
+            $proof.preservation.beforeGate = Get-PreservationState
             $global:WingetProofTrace.install=@(); $global:WingetProofTrace.repair=@(); $global:WingetProofTrace.checkCount=0; $global:WingetProofTrace.repaired=0; $global:WingetProofTrace.fallback=0; $global:WingetProofTrace.providers=@(); $global:WingetProofTrace.totalFailure=0
             $global:WingetProofMainReached = $false
             $script:InstallExitCode = 0
@@ -501,6 +576,11 @@ try {
                 }
             }
         }
+    }
+    if (-not $PrerequisiteOnly) {
+        $proof.preservation.after = Get-PreservationState
+        Assert-Preservation $proof.preservation.pristine $proof.preservation.beforeGate $proof.preservation.after $Scenario
+        $proof.preservation.result = 'passed'
     }
     $proof.result = 'passed'
 } catch {
@@ -559,6 +639,13 @@ try {
                 Assert-Proof ((Invoke-Native $winget @('settings','--disable','LocalManifestFiles') 'disable-local-manifests') -eq 0) 'Could not disable task-enabled local manifests.'
             }
         } },
+        @{ name='operator-sentinel'; action={
+            if ($runtimeSentinelOwned -and $runtime) {
+                $sentinel = Join-Path (Split-Path -Parent $runtime) 'pr112055-operator-sentinel.txt'
+                if (Test-Path -LiteralPath $sentinel) { Remove-Item -LiteralPath $sentinel -Force }
+                Assert-Proof (-not (Test-Path -LiteralPath $sentinel)) 'Runtime sentinel survived cleanup.'
+            }
+        } },
         @{ name='owned-staging'; action={
             if ($portableOwned) { Assert-Proof (-not (Test-Path -LiteralPath $portableRegistryPath)) 'Retain staging for failed portable unregister; host teardown remains required.' }
             if ($setupStarted -and (Test-Path -LiteralPath $WorkRoot)) { Remove-Item -LiteralPath $WorkRoot -Recurse -Force }
@@ -573,6 +660,7 @@ try {
         }
     }
     $proof.cleanup = if ($cleanupFailed) { 'failed' } else { 'verified' }
+    $env:OPENCLAW_STATE_DIR = $operatorStatePrevious
     foreach ($scope in $originalPaths.Keys) { [Environment]::SetEnvironmentVariable('Path',$originalPaths[$scope],$scope) }
     if ($transcriptStarted) { Stop-Transcript | Out-Null }
     # Keep only this fresh VM's diagnostic logs for native command/HRESULT audit.
