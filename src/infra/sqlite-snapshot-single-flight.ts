@@ -21,8 +21,15 @@ const snapshotFlights = resolveGlobalSingleton(
   () => new Map<string, SnapshotFlight>(),
 );
 
-async function waitForFlight<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  signal?.throwIfAborted();
+async function waitForFlight<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined,
+  onAbort: () => void,
+): Promise<T> {
+  if (signal?.aborted) {
+    onAbort();
+    signal.throwIfAborted();
+  }
   if (!signal) {
     return promise;
   }
@@ -30,6 +37,7 @@ async function waitForFlight<T>(promise: Promise<T>, signal?: AbortSignal): Prom
     const release = () => signal.removeEventListener("abort", abort);
     const abort = () => {
       release();
+      onAbort();
       reject(signal.reason instanceof Error ? signal.reason : new Error("SQLite snapshot aborted"));
     };
     signal.addEventListener("abort", abort, { once: true });
@@ -205,19 +213,28 @@ export async function prepareSingleFlightSqliteSnapshot(
   }
   lifecycle?.trackProducer?.(flight.settled);
   flight.waiters += 1;
+  let waiting = true;
+  const finishWaiter = () => {
+    if (!waiting) {
+      return;
+    }
+    waiting = false;
+    flight.waiters -= 1;
+    if (flight.waiters === 0) {
+      flight.finishWaiters();
+    }
+    cleanupUnleasedFlight(key, flight);
+  };
   let outcome: { value: PreparedSqliteReadOnlyLocation } | { error: unknown };
   try {
-    const base = await waitForFlight(flight.promise, signal);
+    // Abort admission synchronously, before a queued producer can allocate bytes.
+    const base = await waitForFlight(flight.promise, signal, finishWaiter);
     signal?.throwIfAborted();
     outcome = { value: leaseFlight(key, flight, base) };
   } catch (error) {
     outcome = { error };
   }
-  flight.waiters -= 1;
-  if (flight.waiters === 0) {
-    flight.finishWaiters();
-  }
-  cleanupUnleasedFlight(key, flight);
+  finishWaiter();
   if (flight.waiters === 0 && flight.leases === 0 && !lifecycle?.trackProducer) {
     // A standalone last caller is the cleanup owner. Only an explicit
     // enclosing lifecycle may take custody and let that caller detach.

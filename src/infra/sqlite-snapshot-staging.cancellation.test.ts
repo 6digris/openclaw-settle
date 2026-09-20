@@ -133,12 +133,16 @@ function fixture(count = 3, payloadBytes = 4096) {
   vi.spyOn(workerUrls, "resolveRuntimeWorkerUrl").mockReturnValue(pathToFileURL(harness));
   let watcher: fs.FSWatcher;
   let timer: ReturnType<typeof setTimeout>;
+  let gatePoll: ReturnType<typeof setInterval>;
   const entered = new Promise<{ claimedRoot: string; file: string }>((resolve, reject) => {
-    watcher = fs.watch(root, () => {
+    const readEntered = () => {
       if (fs.existsSync(marker)) {
         resolve(JSON.parse(fs.readFileSync(marker, "utf8")));
       }
-    });
+    };
+    watcher = fs.watch(root, readEntered);
+    // Native directory notifications can be coalesced; the atomic marker owns readiness.
+    gatePoll = setInterval(readEntered, 25);
     watcher.once("error", reject);
     timer = setTimeout(
       () =>
@@ -152,6 +156,7 @@ function fixture(count = 3, payloadBytes = 4096) {
   }).finally(() => {
     watcher.close();
     clearTimeout(timer);
+    clearInterval(gatePoll);
   });
   const release = () => {
     if (gate.isTransaction) {
@@ -176,6 +181,7 @@ function fixture(count = 3, payloadBytes = 4096) {
       gate.close();
       watcher.close();
       clearTimeout(timer);
+      clearInterval(gatePoll);
     },
   };
 }
