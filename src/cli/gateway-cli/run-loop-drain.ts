@@ -63,27 +63,27 @@ export async function drainGatewayActiveWork({
         reportDrainSnapshot(initialSnapshot);
         if (restartIntent?.force) {
           logger.warn("forced restart requested; skipping active work drain");
-          return;
-        }
-
-        const remainingDrainTimeoutMs =
-          restartDrainDeadlineAt === undefined
-            ? undefined
-            : Math.max(0, restartDrainDeadlineAt - Date.now());
-        const drain = await waitForGatewayActiveWork(remainingDrainTimeoutMs, {
-          onSnapshot: reportDrainSnapshot,
-        });
-        if (drain.drained) {
-          if (!initialSnapshot.idle) {
-            logger.info("all active work drained");
+        } else {
+          const remainingDrainTimeoutMs =
+            restartDrainDeadlineAt === undefined
+              ? undefined
+              : Math.max(0, restartDrainDeadlineAt - Date.now());
+          const drain = await waitForGatewayActiveWork(remainingDrainTimeoutMs, {
+            onSnapshot: reportDrainSnapshot,
+          });
+          if (drain.drained) {
+            if (!initialSnapshot.idle) {
+              logger.info("all active work drained");
+            }
+            return;
           }
-          return;
+          drainTimedOut = true;
+          logger.warn(
+            `active-work drain timeout reached; proceeding with restart: ${formatDrainCounts(drain.snapshot)}`,
+          );
         }
-        drainTimedOut = true;
+        // Connection work can retain cron cleanup; cancel before close joins it.
         runtime.abortActiveCronTaskRuns("Gateway restarting.");
-        logger.warn(
-          `active-work drain timeout reached; proceeding with restart: ${formatDrainCounts(drain.snapshot)}`,
-        );
       },
       () => [
         ["activeWork", activeWorkAtDrainStart],

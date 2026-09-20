@@ -4860,6 +4860,34 @@ NODE
       TARGET_CONTEXT_REF: "${{ inputs.target_context_ref || github.base_ref || github.ref_name }}",
     });
     expect(job.steps.indexOf(baseline)).toBeLessThan(job.steps.indexOf(run));
+    const survivorProof = job.steps.find(
+      (step: WorkflowStep) => step.name === "Upload sanitized upgrade survivor proof",
+    ) as WorkflowStep;
+    expect(survivorProof).toMatchObject({
+      if: `always() && ${baseline.if}`,
+      uses: UPLOAD_ARTIFACT_V7,
+      with: { "include-hidden-files": true, "if-no-files-found": "warn" },
+    });
+    const proofPaths = String(survivorProof.with?.path).trim().split(/\s+/u);
+    const uploaded = (file: string) => proofPaths.some((pattern) => minimatch(file, pattern));
+    for (const file of [
+      ".artifacts/docker-tests/20260920T000000Z/summary.json",
+      ".artifacts/docker-tests/20260920T000000Z/failures.json",
+      ".artifacts/docker-tests/upgrade-survivor-baseline.123/failure.json",
+      ".artifacts/docker-tests/upgrade-survivor-baseline.123/summary.json",
+    ]) {
+      expect(uploaded(file), file).toBe(true);
+    }
+    for (const file of [
+      ".artifacts/upgrade-survivor/baseline/legacy-operator-baseline-turn.err",
+      ".artifacts/upgrade-survivor/baseline/diagnostics/raw.json",
+      ".artifacts/docker-tests/run/published-upgrade-survivor.log",
+      ".artifacts/docker-tests/20260920T000000Z/baseline-cache/package/summary.json",
+      ".artifacts/docker-tests/20260920T000000Z/baseline-cache/package/failures.json",
+      ".artifacts/docker-tests/upgrade-survivor-baseline.123/private/summary.json",
+    ]) {
+      expect(uploaded(file), file).toBe(false);
+    }
   });
 
   it.each([

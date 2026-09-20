@@ -19,7 +19,10 @@ import {
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import { hasAuthoritativeTaskBacking } from "./task-backing-authority.js";
-import { finishTaskMutation, retainTaskMutationFlowEffects } from "./task-executor-create.async.js";
+import {
+  finishTaskMutation,
+  retainTaskMutationFlowEffects,
+} from "./task-executor-mutation-effects.async.js";
 import { getTaskFlowRegistryStore } from "./task-flow-registry.store.js";
 import { clearTaskActivity, flushTaskActivity } from "./task-registry-activity.js";
 import { recoverTaskAgentEventPublication } from "./task-registry-agent-event-commit.js";
