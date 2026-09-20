@@ -63,6 +63,77 @@ it("does not spawn Doctor when the installed runtime has no entrypoint", async (
   expect(spawn).not.toHaveBeenCalled();
 });
 
+it.each([
+  { cause: "output-limit", exitCode: 0 },
+  { cause: "output-limit", exitCode: UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE },
+  { cause: "reported-error", exitCode: 0 },
+] as const)(
+  "keeps failed Doctor outcome $cause (exit $exitCode) failed through completion and history",
+  async ({ cause, exitCode }) => {
+    const { root, env } = await createDoctorFixture();
+    const outputLimitExceeded = cause === "output-limit";
+    const failureFacts = [
+      {
+        check: "config",
+        code: "invalid-config",
+        message: "Doctor reported invalid configuration.",
+      },
+    ];
+    const { runId } = createUpdateRun({ trigger: "cli" }, { env });
+    const onStepComplete = vi.fn();
+    vi.spyOn(processRunner, "runCommandWithTimeout").mockImplementation(async (_argv, options) => {
+      assert(typeof options === "object");
+      const resultPath = options.env?.[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV];
+      assert(resultPath);
+      await writeUpdatePostInstallDoctorResult({
+        resultPath,
+        result:
+          cause === "reported-error"
+            ? { status: "error", failureFacts }
+            : {
+                ...createDeferredConfiguredPluginRepairDoctorResult([
+                  "Configured repair deferred.",
+                ]),
+                warnings: ["Doctor left a warning."],
+              },
+      });
+      return {
+        code: exitCode,
+        stdout: "",
+        stderr: outputLimitExceeded ? "Doctor output exceeded its capture limit." : "",
+        signal: null,
+        killed: false,
+        outputLimitExceeded,
+        termination: "exit",
+      };
+    });
+
+    const step = await runPackageUpdateDoctor({
+      root,
+      timeoutMs: 1_000,
+      managedServiceEnv: env,
+      progress: createUpdateRunProgress({ runId, env }, { onStepComplete }),
+    });
+
+    expect(step).toMatchObject({ exitCode, outputLimitExceeded });
+    if (cause === "reported-error") {
+      expect(step?.failureFacts).toEqual(expect.arrayContaining(failureFacts));
+    }
+    expect(step?.advisory).toBeUndefined();
+    expect(onStepComplete).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ exitCode, outputLimitExceeded, advisory: undefined }),
+      expect.objectContaining({ runId }),
+    );
+    expect(
+      getUpdateRun(runId, { env })?.steps.find((entry) => entry.step === "openclaw doctor"),
+    ).toMatchObject({
+      step: "openclaw doctor",
+      status: "failed",
+      exitCode,
+    });
+  },
+);
+
 it.each(
   ([undefined, "include-ownership", "requester-revoked"] as const).flatMap((reason) =>
     [false, true].map((advisory) => ({ reason, advisory })),
@@ -108,7 +179,7 @@ it.each(
 
     assert(step);
     const expected = {
-      exitCode: reason ? 1 : advisory ? UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE : 0,
+      exitCode: advisory ? UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE : 0,
       configChanges: receipt.configChanges,
       ...(reason
         ? { stderrTail: expect.stringContaining(`agents. ${reason}: Config writer refused.`) }
@@ -122,6 +193,11 @@ it.each(
     expect(steps).toEqual([step]);
     expect(step.configWriteRefusal).toEqual(receipt.configWriteRefusal);
     expect(step.advisory).toEqual(expectedAdvisory);
+    if (reason) {
+      expect(step.failureFacts).toEqual(
+        expect.arrayContaining([expect.objectContaining({ check: "config", code: reason })]),
+      );
+    }
     expect(onStepComplete).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
         ...expected,
@@ -342,10 +418,22 @@ it("completes Doctor as failed when config attribution cannot read the settled o
   expect(error).toMatchObject({ code: "EISDIR" });
   expect(onConfigSnapshot).not.toHaveBeenCalled();
   expect(onStepComplete).toHaveBeenCalledExactlyOnceWith(
-    expect.objectContaining({ name: "openclaw doctor", exitCode: 1, advisory: undefined }),
+    expect.objectContaining({
+      name: "openclaw doctor",
+      exitCode: UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE,
+      advisory: undefined,
+    }),
   );
-  expect(steps).toEqual([expect.objectContaining({ name: "openclaw doctor", exitCode: 1 })]);
+  expect(steps).toEqual([
+    expect.objectContaining({
+      name: "openclaw doctor",
+      exitCode: UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE,
+    }),
+  ]);
   expect(steps[0]?.advisory).toBeUndefined();
+  expect(steps[0]?.failureFacts).toEqual(
+    expect.arrayContaining([expect.objectContaining({ code: "EISDIR" })]),
+  );
 });
 
 it("still refreshes the run ledger for a step that spawns no Doctor", async () => {

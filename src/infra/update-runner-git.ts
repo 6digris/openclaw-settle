@@ -6,6 +6,7 @@ import { getUpdateDoctorConfigFailureReason } from "./update-doctor-config.js";
 import { createUpdateErrorFact } from "./update-failure-facts.js";
 import { readBuiltGatewayBuildId, verifyGitUpdateRecovery } from "./update-git-runtime.js";
 import { UpdateRequesterRevokedError } from "./update-requester-authority.js";
+import { isFailedUpdateStep } from "./update-run-step.js";
 import { runStep } from "./update-runner-command.js";
 import { gitCleanCheckArgs } from "./update-runner-git-commands.js";
 import {
@@ -135,7 +136,7 @@ export async function updateGitCheckout(params: {
   });
   const appendRecoveryStep = async (name: string, argv: string[]) => {
     const result = await runStep(recoveryStep(name, argv, gitRoot));
-    return result.exitCode === 0;
+    return !isFailedUpdateStep(result);
   };
   const verifyRollbackHead = async () => {
     if (!beforeSha) {
@@ -151,7 +152,7 @@ export async function updateGitCheckout(params: {
       totalSteps: 1,
       results: steps,
     });
-    const verified = result.exitCode === 0 && result.stdoutTail?.trim() === beforeSha;
+    const verified = !isFailedUpdateStep(result) && result.stdoutTail?.trim() === beforeSha;
     result.exitCode = verified ? 0 : 1;
     if (!verified) {
       result.stderrTail = `expected ${beforeSha}, found ${result.stdoutTail?.trim() || "unreadable HEAD"}`;
@@ -305,7 +306,7 @@ export async function updateGitCheckout(params: {
   };
   const runRequiredStep = async (name: string, argv: string[], reason: string) => {
     const result = await runStep(workStep(name, argv, gitRoot));
-    if (result.exitCode === 0) {
+    if (!isFailedUpdateStep(result)) {
       return null;
     }
     return mutationPrepared ? rollbackError(reason) : buildError(reason);
@@ -313,7 +314,7 @@ export async function updateGitCheckout(params: {
   const { result: statusCheck, dirty } = await runGitCleanCheckStep(
     step("clean check", gitCleanCheckArgs(gitRoot), gitRoot),
   );
-  if (statusCheck.exitCode !== 0) {
+  if (isFailedUpdateStep(statusCheck)) {
     return buildError(dirty ? "dirty" : "clean-check-failed");
   }
   const checkSourceUnchanged = async () => {
@@ -510,7 +511,7 @@ export async function updateGitCheckout(params: {
         gitRoot,
       );
       const upstreamStep = await runGitUpstreamStep(upstreamOptions);
-      if (upstreamStep.exitCode !== 0 && !upstreamStep.advisory) {
+      if (isFailedUpdateStep(upstreamStep)) {
         return await rollbackError("checkout-failed");
       }
     }
@@ -558,7 +559,7 @@ export async function updateGitCheckout(params: {
         stateMigrationStarted = false;
         return await rollbackError("doctor-entry-missing");
       }
-      if (doctorStep.exitCode !== 0 && !doctorStep.advisory) {
+      if (isFailedUpdateStep(doctorStep)) {
         return await rollbackError(
           getUpdateDoctorConfigFailureReason(doctorStep.configWriteRefusal) ?? "doctor-failed",
         );
@@ -580,7 +581,7 @@ export async function updateGitCheckout(params: {
     const afterShaStep = await runStep(
       step("git rev-parse HEAD (after)", ["git", "-C", gitRoot, "rev-parse", "HEAD"], gitRoot),
     );
-    if (afterShaStep.exitCode !== 0) {
+    if (isFailedUpdateStep(afterShaStep)) {
       return await rollbackError("head-verification-failed");
     }
     if (afterShaStep.stdoutTail?.trim() !== preflight.candidateSha) {

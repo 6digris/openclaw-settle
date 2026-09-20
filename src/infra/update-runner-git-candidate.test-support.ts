@@ -144,6 +144,8 @@ export const runtimeImports = [
 
 export type VirtualStoreLayout =
   | "node_modules/.pnpm"
+  | "node_modules/.cache/jiti"
+  | "node_modules/.vite/deps"
   | ".pnpm"
   | "cache/deps"
   | "../store"
@@ -258,6 +260,8 @@ export function registerGitActivationDoctorOutcomeTests(
     ["config-refused", "repair-requires-config-change"],
     ["requester-revoked", "requester-revoked"],
     ["doctor-error", "doctor-failed"],
+    ["doctor-zero-exit-timeout", "doctor-failed"],
+    ["doctor-zero-exit-output-limit", "doctor-failed"],
     ["doctor-throw", "unexpected-error"],
     ["cleanup-uncertain", undefined],
     ["missing", "doctor-entry-missing"],
@@ -300,7 +304,9 @@ export function registerGitActivationDoctorOutcomeTests(
           command: "candidate doctor",
           cwd: doctorRoot,
           durationMs: 1,
-          exitCode: outcome === "success" ? 0 : 1,
+          exitCode: outcome === "success" || outcome.startsWith("doctor-zero-exit-") ? 0 : 1,
+          ...(outcome === "doctor-zero-exit-timeout" ? { termination: "timeout" as const } : {}),
+          ...(outcome === "doctor-zero-exit-output-limit" ? { outputLimitExceeded: true } : {}),
           configChanges,
           ...(outcome === "config-refused"
             ? {

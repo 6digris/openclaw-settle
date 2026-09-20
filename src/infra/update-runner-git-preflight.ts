@@ -12,6 +12,7 @@ import {
   managerScriptArgs,
   resolveUpdateBuildManager,
 } from "./update-package-manager.js";
+import { isFailedUpdateStep } from "./update-run-step.js";
 import { runStep } from "./update-runner-command.js";
 import { cleanupGitPreflight } from "./update-runner-git-cleanup.js";
 import {
@@ -126,13 +127,13 @@ async function resetPreflightCandidateWorktree(
       worktreeDir,
     ),
   );
-  if (resetStep.exitCode !== 0) {
+  if (isFailedUpdateStep(resetStep)) {
     return false;
   }
   const cleanStep = await runStep(
     step(`preflight clean (${shortSha})`, ["git", "-C", worktreeDir, "clean", "-fdx"], worktreeDir),
   );
-  return cleanStep.exitCode === 0;
+  return !isFailedUpdateStep(cleanStep);
 }
 
 async function resolveExplicitTarget(params: {
@@ -148,7 +149,7 @@ async function resolveExplicitTarget(params: {
       const remoteStep = await runStep(
         params.step("git remote", ["git", "-C", params.gitRoot, "remote"], params.gitRoot),
       );
-      if (remoteStep.exitCode !== 0) {
+      if (isFailedUpdateStep(remoteStep)) {
         return null;
       }
       const remotes = normalizeStringEntries((remoteStep.stdoutTail ?? "").split("\n"));
@@ -161,7 +162,7 @@ async function resolveExplicitTarget(params: {
             params.gitRoot,
           ),
         );
-        if (fetchStep.exitCode === 0) {
+        if (!isFailedUpdateStep(fetchStep)) {
           fetchedTag = true;
           break;
         }
@@ -178,7 +179,7 @@ async function resolveExplicitTarget(params: {
       ),
     );
     const sha = shaStep.stdoutTail?.trim();
-    if (shaStep.exitCode === 0 && sha) {
+    if (!isFailedUpdateStep(shaStep) && sha) {
       return sha;
     }
   }
@@ -216,7 +217,7 @@ async function resolveUpstreamCandidates(params: {
     const remoteStep = await runStep(
       params.step("git remote", ["git", "-C", params.gitRoot, "remote"], params.gitRoot),
     );
-    if (remoteStep.exitCode !== 0) {
+    if (isFailedUpdateStep(remoteStep)) {
       return { status: "error", reason: "preflight-remote-failed" };
     }
     remoteBranchRefs = normalizeStringEntries((remoteStep.stdoutTail ?? "").split("\n")).map(
@@ -237,7 +238,7 @@ async function resolveUpstreamCandidates(params: {
           params.gitRoot,
         ),
       );
-      if (upstreamStep.exitCode !== 0) {
+      if (isFailedUpdateStep(upstreamStep)) {
         continue;
       }
       sawResolvableUpstreamRef = true;
@@ -251,12 +252,12 @@ async function resolveUpstreamCandidates(params: {
       ),
     );
     const sha = shaStep.stdoutTail?.trim();
-    if (shaStep.exitCode === 0 && sha) {
+    if (!isFailedUpdateStep(shaStep) && sha) {
       upstreamSha = sha;
       selectedDevUpstream = /^refs\/remotes\/(.+)$/u.exec(resolvedUpstreamRef)?.[1] ?? null;
       break;
     }
-    if (shaStep.exitCode === 0) {
+    if (!isFailedUpdateStep(shaStep)) {
       sawResolvableUpstreamRef = true;
     }
   }
@@ -279,7 +280,7 @@ async function resolveUpstreamCandidates(params: {
       params.gitRoot,
     ),
   );
-  if (revListStep.exitCode !== 0) {
+  if (isFailedUpdateStep(revListStep)) {
     return { status: "error", reason: "preflight-revlist-failed" };
   }
   const candidates = normalizeStringEntries((revListStep.stdoutTail ?? "").split("\n"));
@@ -347,7 +348,7 @@ async function testPreflightCandidate(params: {
   ) => {
     const check = factory(`preflight ${name} (${shortSha})`, argv, params.worktreeDir, env);
     const result = await runStep(check);
-    return result.exitCode === 0 ? null : result;
+    return isFailedUpdateStep(result) ? result : null;
   };
   const checkout = await runCandidateCheck("checkout", [
     "git",
@@ -577,7 +578,7 @@ export async function runGitCandidatePreflight(params: {
           params.gitRoot,
         ),
       );
-      if (ancestryStep.exitCode !== 0) {
+      if (isFailedUpdateStep(ancestryStep)) {
         return { status: "error", reason: "tracked-upstream-invalid" };
       }
     }
@@ -599,7 +600,7 @@ export async function runGitCandidatePreflight(params: {
   if (params.beforeGitStaging) {
     const admission = await params.beforeGitStaging();
     params.steps.push(admission.step);
-    if (admission.step.exitCode !== 0) {
+    if (isFailedUpdateStep(admission.step)) {
       return { status: "error", reason: admission.failureReason };
     }
   }
@@ -634,7 +635,7 @@ export async function runGitCandidatePreflight(params: {
         params.gitRoot,
       ),
     );
-    if (worktreeStep.exitCode !== 0) {
+    if (isFailedUpdateStep(worktreeStep)) {
       return {
         status: "error",
         reason:

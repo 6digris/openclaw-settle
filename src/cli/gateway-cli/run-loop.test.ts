@@ -21,6 +21,7 @@ import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveGlobalMap } from "../../shared/global-singleton.js";
 import { captureEnv, deleteTestEnvValue } from "../../test-utils/env.js";
 import type { GatewayRestartSnapshot } from "../daemon-cli/restart-health.js";
+import { registerHostedUpdateStopTests } from "./run-loop-hosted-stop.test-support.js";
 import { registerGatewayRequestTests } from "./run-loop-request.test-support.js";
 import { registerUpdateRespawnTests } from "./run-loop-update-respawn.test-support.js";
 import {
@@ -741,6 +742,19 @@ describe("runGatewayLoop", () => {
       });
     },
   );
+
+  registerHostedUpdateStopTests({
+    captureForegroundUpdateHandoffStop,
+    isForegroundUpdateHandoff,
+    completeForegroundUpdateHandoffAfterClose,
+    hostedStopPrepare,
+    hostedStopExecute,
+    hostedStopDispose,
+    createSignaledLoopHarness,
+    managedUpdateSuccessorOwner,
+    respawnGatewayProcessForUpdate,
+    isGatewayWorkAdmissionClosed: () => gatewayWorkAdmissionActual.isGatewayWorkAdmissionClosed(),
+  });
 
   it("joins a self-waiting native client on SIGTERM without reopening closed kernel storage", async () => {
     await withIsolatedSignals(async ({ captureSignal }) => {
@@ -3628,6 +3642,7 @@ describe("runGatewayLoop", () => {
     acquireGatewayLock,
     completeForegroundUpdateHandoffAfterClose,
     captureForegroundUpdateHandoffStop,
+    hostedStopPrepare,
     killProcessTree,
     flushLogger,
     gatewayLog,

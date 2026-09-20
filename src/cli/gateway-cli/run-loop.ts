@@ -38,7 +38,7 @@ import type { RuntimeEnv } from "../../runtime.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { formatCliCommand } from "../command-format.js";
 import { createGatewayHostLifecycle } from "./host-lifecycle.js";
-import { drainGatewayActiveWork } from "./run-loop-drain.js";
+import { drainGatewayActiveWork, resolveRestartDrainTimeoutMs } from "./run-loop-drain.js";
 import * as loopLogs from "./run-loop-log-flush.js";
 import {
   isUpdateProcessRestartReason,
@@ -59,7 +59,6 @@ import {
 import { GatewayUpdateSuccessor } from "./update-successor.js";
 const gatewayLog = createSubsystemLogger("gateway");
 const LAUNCHD_SUPERVISED_RESTART_EXIT_DELAY_MS = 1500;
-const DEFAULT_RESTART_DRAIN_TIMEOUT_MS = 300_000;
 const HARD_EXIT_WATCHDOG_GRACE_MS = 2_000;
 
 type ShutdownFailure = { step: string; error: unknown };
@@ -177,30 +176,27 @@ export async function runGatewayLoop(params: {
     initialOutcome: "update" | "restore" = "update",
     hostStopOwner?: ReturnType<typeof createGatewayHostLifecycle>,
   ): Promise<void> => {
-    if (foregroundUpdateClosed) {
-      await cleanupSnapshotOperations();
-      await loopLogs.flushGatewayLogsBeforeExit(gatewayLog);
-      await updateSuccessor.exit(code, exitProcess);
-      return;
-    }
     if (hostStopOwner && hostLifecycle !== hostStopOwner) {
       return;
     }
     let ownerToCommit = initialOwner;
     let commitOutcome = initialOutcome;
     // Graceful signal/restart paths call process.exit(), which skips beforeExit.
-    await eagerLifecycleRuntime
-      .stopGatewayManagedProviderLocalServices()
-      .catch((error: unknown) => {
-        gatewayLog.warn(`managed local service shutdown failed: ${formatErrorMessage(error)}`);
-      });
-    await cleanupSnapshotOperations();
-    if (hostStopOwner && hostLifecycle !== hostStopOwner) {
-      return;
+    if (!foregroundUpdateClosed) {
+      await eagerLifecycleRuntime
+        .stopGatewayManagedProviderLocalServices()
+        .catch((error: unknown) => {
+          gatewayLog.warn(`managed local service shutdown failed: ${formatErrorMessage(error)}`);
+        });
     }
+    await cleanupSnapshotOperations();
     await loopLogs.flushGatewayLogsBeforeExit(gatewayLog);
     for (;;) {
       if (hostStopOwner && hostLifecycle !== hostStopOwner) {
+        return;
+      }
+      if (foregroundUpdateClosed) {
+        await updateSuccessor.exit(code, exitProcess);
         return;
       }
       const owner = getManagedUpdateOwner();
@@ -382,7 +378,9 @@ export async function runGatewayLoop(params: {
       if (!forcedExitStarted && activeRestartRequest === restartRequest) {
         activeRestartRequest = null;
         if (updateSuccessor.stopRequested) {
-          return exitProcessAfterLogFlush(0);
+          return restartRequest?.hostedStop
+            ? handleHostedStopAfterServerClose(restartRequest.hostedStop, undefined)
+            : exitProcessAfterLogFlush(0);
         }
         shuttingDown = false;
         restartResolver?.();
@@ -464,6 +462,9 @@ export async function runGatewayLoop(params: {
         foregroundUpdateClosed = true;
         forceActiveRestartExit?.();
         const completed = await updateSuccessor.completeForegroundHandoffAfterClose(expectedOwner);
+        if (updateSuccessor.stopRequested && activeRestartRequest.hostedStop) {
+          return handleHostedStopAfterServerClose(activeRestartRequest.hostedStop, undefined);
+        }
         if (!completed.respawn) {
           gatewayLog.error(
             "foreground update did not authorize a fresh Gateway; leaving it stopped for recovery",
@@ -615,21 +616,6 @@ export async function runGatewayLoop(params: {
     }, acceptedShutdownTimeoutMs);
     pendingStartupForceExitTimer.unref?.();
   };
-  const resolveRestartDrainTimeoutMs = (
-    restartIntent?: GatewayRestartIntent,
-  ): number | undefined => {
-    if (restartIntent?.force) {
-      return 0;
-    }
-    if (typeof restartIntent?.waitMs === "number" && Number.isFinite(restartIntent.waitMs)) {
-      return restartIntent.waitMs > 0 ? Math.floor(restartIntent.waitMs) : undefined;
-    }
-    try {
-      return eagerLifecycleRuntime.resolveGatewayRestartDeferralTimeoutMs();
-    } catch {
-      return DEFAULT_RESTART_DRAIN_TIMEOUT_MS;
-    }
-  };
   const markRestartDraining = (reason: GatewayDrainReason) => {
     if (restartDrainingMarked) {
       return;
@@ -645,6 +631,7 @@ export async function runGatewayLoop(params: {
     owner: ReturnType<typeof createGatewayHostLifecycle>,
     shutdownFailure: ShutdownFailure | undefined,
   ) => {
+    await updateSuccessor.waitForStopSettlement();
     if (hostLifecycle !== owner) {
       return;
     }
@@ -768,7 +755,7 @@ export async function runGatewayLoop(params: {
         | "restart-after-exit"
         | undefined;
       const requestedRestartDrainTimeoutMs = isRestart
-        ? resolveRestartDrainTimeoutMs(restartIntent)
+        ? resolveRestartDrainTimeoutMs(restartIntent, eagerLifecycleRuntime)
         : 0;
       const restartDrainTimeoutMs = nativeStopBudget
         ? Math.min(
@@ -890,7 +877,9 @@ export async function runGatewayLoop(params: {
         }
         if (action === "restart") {
           try {
-            await hostLifecycle?.retire();
+            if (!acceptedRequest.hostedStop) {
+              await hostLifecycle?.retire();
+            }
             if (shutdownFailure) {
               if (installationReplacement && supervisorMode && !getManagedUpdateOwner()) {
                 writeStabilityBundle(
@@ -993,8 +982,9 @@ export async function runGatewayLoop(params: {
             clearPendingStartupForceExitTimer();
             forceActiveRestartExit?.();
           },
-          onPark: (successorOwner) => request("restart", signal, "update.run", { successorOwner }),
-          onSettled: () => request("stop", signal),
+          onPark: (successorOwner) =>
+            request("restart", signal, "update.run", { successorOwner }, hostedStop),
+          onSettled: () => request("stop", signal, undefined, undefined, hostedStop),
         },
       ) ||
       foregroundUpdateClosed
@@ -1108,14 +1098,14 @@ export async function runGatewayLoop(params: {
     // Debug-level: every accepted signal is announced by request()'s
     // "received <signal>; ..." line, so an info pre-log would double up.
     gatewayLog.debug("signal SIGTERM received");
-    if (foregroundUpdateClosed) {
-      updateSuccessor.stop("SIGTERM");
-      return;
-    }
     if (terminalHostedStop && terminalHostedStop === hostLifecycle) {
       // Kernel cleanup is already joined. A native stop signal belongs to this
       // terminal continuation, not to restart-intent storage in the closed kernel.
       terminalHostedStop.notifyStopSignal();
+      return;
+    }
+    if (foregroundUpdateClosed) {
+      updateSuccessor.stop("SIGTERM");
       return;
     }
     void (async () => {

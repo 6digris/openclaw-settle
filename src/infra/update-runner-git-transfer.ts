@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { hasErrnoCode } from "./errno.js";
 import { readLocalFileSafely } from "./fs-safe.js";
+import { isFailedUpdateStep } from "./update-run-step.js";
 import { runStep } from "./update-runner-command.js";
 import { classifyPartialCloneGitFailure } from "./update-runner-git-target.js";
 import type { RunStepOptions, UpdateStepResult } from "./update-runner-types.js";
@@ -78,12 +79,7 @@ export async function prepareGitCandidateTransfer(params: {
     });
     // A process may exit zero after handling the output-limit termination signal.
     // Its captured object list is still incomplete and must never be admitted.
-    return result.exitCode === 0 &&
-      !result.killed &&
-      !result.signal &&
-      (!result.termination || result.termination === "exit")
-      ? stdout.trim()
-      : undefined;
+    return !isFailedUpdateStep(result) && !result.signal ? stdout.trim() : undefined;
   };
   const upstreamSha = upstreamRef
     ? await runGit("git pin update upstream", ["rev-parse", upstreamRef])
@@ -222,7 +218,7 @@ export async function prepareGitCandidateTransfer(params: {
         argv: ["git", "-C", target.cwd, "index-pack", "--stdin", `--keep=${keepMessage}`],
         runCommand: (argv, options) => target.runCommand(argv, { ...options, input: pack }),
       });
-      if (imported.exitCode !== 0) {
+      if (isFailedUpdateStep(imported)) {
         return false;
       }
       if (!upstreamRef || !upstreamSha) {
@@ -233,7 +229,7 @@ export async function prepareGitCandidateTransfer(params: {
         name: "git import admitted upstream",
         argv: ["git", "-C", target.cwd, "update-ref", upstreamRef, upstreamSha],
       });
-      return tracked.exitCode === 0;
+      return !isFailedUpdateStep(tracked);
     },
     async cleanup(target: RunStepOptions): Promise<void> {
       try {

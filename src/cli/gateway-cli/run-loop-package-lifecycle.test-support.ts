@@ -7,7 +7,6 @@ import { createServer } from "node:net";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, it, vi } from "vitest";
-import { createDeferred } from "../../../test/helpers/promise.js";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { withTimeout } from "../../infra/fs-safe.js";
 import type { GatewayRestartIntent } from "../../infra/restart-intent.js";
@@ -16,6 +15,7 @@ import { resolveTestNodeExecPath } from "../../test-utils/node-process.js";
 import {
   gateFixtureHandoffPublication,
   observeFixtureHelper,
+  startPackageLifecycleStopFixture,
 } from "./run-loop-package-helper.test-support.js";
 import type { UpdateRespawnFixtures } from "./run-loop.test-support.js";
 
@@ -30,10 +30,11 @@ export function registerPackageLifecycleStopTests(fixtures: UpdateRespawnFixture
     { signal: "SIGINT", uncertain: false, closeFailure: false, phase: "completion" },
     { signal: "SIGINT", uncertain: false, closeFailure: false, phase: "preparing" },
     { signal: "SIGTERM", uncertain: false, closeFailure: false, phase: "pre-transfer" },
+    { signal: "hosted Gateway stop", uncertain: false, closeFailure: false, phase: "staging" },
   ] as const)(
     "joins pre-park package lifecycle before $signal (phase=$phase, uncertain=$uncertain, closeFailure=$closeFailure)",
     async ({ signal, uncertain, closeFailure, phase }) => {
-      const completionRootChanged = phase === "completion";
+      const hosted = signal === "hosted Gateway stop";
       fixtures.setPlatform(fixtures.originalPlatformDescriptor!.value);
       const dirs = createTempDirTracker();
       // The runner removes its TMPDIR after failure; unresolved ownership evidence
@@ -194,23 +195,18 @@ export function registerPackageLifecycleStopTests(fixtures: UpdateRespawnFixture
                     throw new Error("fixture Gateway close failed");
                   }
                 });
-                const { start, started } = fixtures.createSignaledStart(close);
-                const { runtime, exited } = fixtures.createRuntimeWithExitSignal();
-                let released = false,
-                  earlyExit = false;
-                const originalExit = runtime.exit.getMockImplementation()!;
-                runtime.exit.mockImplementation((code) => {
-                  earlyExit ||= !released;
-                  originalExit(code);
+                let released = false;
+                const stop = await startPackageLifecycleStopFixture({
+                  fixtures,
+                  control,
+                  signal,
+                  close,
+                  lockPort: address.port,
+                  isReleased: () => released,
+                  isServing: () => server.listening,
+                  captureSignal,
                 });
-                const waitingStop = createDeferred();
-                fixtures.gatewayLog.info.mockImplementation((message) => {
-                  if (String(message).includes("stopping after foreground update settlement")) {
-                    waitingStop.resolve();
-                  }
-                });
-                await fixtures.runLoopWithStart({ start, runtime, lockPort: address.port });
-                await fixtures.waitForStart(started);
+                const { runtime, exited, requestStop } = stop;
                 const temporary = await import("../../infra/tmp-openclaw-dir.js");
                 const temporarySpy = vi
                   .spyOn(temporary, "resolvePreferredOpenClawTmpDir")
@@ -237,7 +233,7 @@ export function registerPackageLifecycleStopTests(fixtures: UpdateRespawnFixture
                 fixtures.completeForegroundUpdateHandoffAfterClose.mockImplementation(
                   handoff.completeForegroundUpdateHandoffAfterClose,
                 );
-                if (completionRootChanged) {
+                if (phase === "completion") {
                   const emptyCoordinator = path.join(home, "different-empty-coordinator");
                   await fs.mkdir(emptyCoordinator);
                   fixtures.completeForegroundUpdateHandoffAfterClose.mockImplementationOnce(
@@ -345,10 +341,9 @@ export function registerPackageLifecycleStopTests(fixtures: UpdateRespawnFixture
                       (error: unknown) => ({ error }),
                     );
                     await withTimeout(preparing.entered, 15000);
-                    captureSignal(signal)();
-                    await Promise.race([waitingStop.promise, exited]);
+                    await requestStop();
                     expect(
-                      earlyExit,
+                      stop.earlyExit,
                       "Stop exited while its helper preparation remained pending",
                     ).toBe(false);
                     expect(admission.isGatewayRestartDraining()).toBe(true);
@@ -371,10 +366,14 @@ export function registerPackageLifecycleStopTests(fixtures: UpdateRespawnFixture
                     throw new Error("helper did not start");
                   }
                   expect(prepared.handoffId).toBe(identity.handoffId);
+                  if (hosted) {
+                    stop.observeHelper(prepared.pid);
+                  }
                   if (phase === "pre-transfer") {
-                    captureSignal(signal)();
-                    await Promise.race([waitingStop.promise, exited]);
-                    expect(earlyExit, "Stop exited before its ready helper settled").toBe(false);
+                    await requestStop();
+                    expect(stop.earlyExit, "Stop exited before its ready helper settled").toBe(
+                      false,
+                    );
                     expect(admission.isGatewayRestartDraining()).toBe(true);
                     expect(await handoff.transferManagedServiceUpdateHandoff(identity)).toBe(false);
                     expect(runtime.exit).not.toHaveBeenCalled();
@@ -437,16 +436,17 @@ export function registerPackageLifecycleStopTests(fixtures: UpdateRespawnFixture
                     ),
                   ).toBe("pending candidate lifecycle\n");
                   expect(handoff.claimManagedServiceUpdateHandoff(identity)).toBe(true);
-                  captureSignal(signal)();
                   // Observe the real Stop owner's wait or the regression's premature exit.
-                  await Promise.race([waitingStop.promise, exited]);
+                  await requestStop();
                   expect(
-                    earlyExit,
+                    stop.earlyExit,
                     `Stop exited before the held package lifecycle and helper settled. Helper log:\n${await fs.readFile(prepared.logPath, "utf8")}`,
                   ).toBe(false);
                   expect(admission.isGatewayRestartDraining()).toBe(true);
                   expect(admission.isGatewayWorkAdmissionClosed()).toBe(true);
-                  if (!uncertain && !closeFailure && !completionRootChanged) {
+                  if (hosted) {
+                    await stop.expectHostedPending();
+                  } else if (!uncertain && !closeFailure && phase !== "completion") {
                     const persistedReads =
                       fixtures.consumeGatewayRestartIntentPayloadSync.mock.calls.length;
                     fixtures.consumeGatewayRestartIntentPayloadSync.mockReturnValueOnce({
@@ -560,7 +560,7 @@ export function registerPackageLifecycleStopTests(fixtures: UpdateRespawnFixture
                   await expect
                     .poll(() => runtime.exit.mock.calls.length, { timeout: 15000 })
                     .toBe(1);
-                  if (completionRootChanged) {
+                  if (phase === "completion") {
                     const outcome = JSON.parse(
                       await fs.readFile(path.join(control, "outcome.json"), "utf8"),
                     );
@@ -569,6 +569,9 @@ export function registerPackageLifecycleStopTests(fixtures: UpdateRespawnFixture
                   expect(runtime.exit).toHaveBeenCalledWith(closeFailure ? 1 : 0);
                   expect(close).toHaveBeenCalledOnce();
                   expect(fixtures.respawnGatewayProcessForUpdate).not.toHaveBeenCalled();
+                  if (hosted) {
+                    stop.expectHostedCompleted();
+                  }
                 };
                 try {
                   await runScenario();

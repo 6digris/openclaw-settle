@@ -297,7 +297,7 @@ it.each([
         expect(onStepComplete).toHaveBeenCalledExactlyOnceWith(
           expect.objectContaining({
             name: "openclaw doctor",
-            exitCode: 1,
+            exitCode,
             advisory: undefined,
             configChanges: receipt.configChanges,
             failureFacts: expect.arrayContaining([
@@ -308,7 +308,7 @@ it.each([
         expect(steps).toEqual([
           expect.objectContaining({
             name: "openclaw doctor",
-            exitCode: 1,
+            exitCode,
             configChanges: receipt.configChanges,
             stderrTail: expect.stringContaining("requester-revoked"),
           }),

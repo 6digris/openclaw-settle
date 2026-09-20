@@ -24,7 +24,13 @@ describe("retained package update transactions", () => {
   it.each([
     "already current",
     "wrong target",
+    "install timed out",
+    "install killed",
+    "install output exceeded",
+    "fallback install timed out",
     "validation rejected",
+    "validation timed out",
+    "validation output exceeded",
     "activation rejected",
     "backup failed",
     "activation failed",
@@ -38,6 +44,8 @@ describe("retained package update transactions", () => {
   ] as const)(
     "keeps the original serving through validation and retains recovery until %s",
     async (outcome) => {
+      const failedInstall =
+        outcome.startsWith("install ") || outcome === "fallback install timed out";
       await withTestDir({ prefix: "openclaw-package-transaction-" }, async (base) => {
         const prefix = path.join(base, "prefix");
         const globalRoot = path.join(prefix, "lib", "node_modules");
@@ -117,7 +125,21 @@ describe("retained package update transactions", () => {
             await fs.mkdir(path.join(stagePrefix, "bin"), { recursive: true });
             stageLauncher = path.join(stagePrefix, "bin", "openclaw");
             await fs.writeFile(stageLauncher, "new launcher\n");
-            return { name, command: argv.join(" "), cwd: stagePrefix, durationMs: 0, exitCode: 0 };
+            return {
+              name,
+              command: argv.join(" "),
+              cwd: stagePrefix,
+              durationMs: 0,
+              exitCode:
+                outcome === "fallback install timed out" && name === "global update" ? 1 : 0,
+              termination:
+                outcome === "install timed out" ||
+                (outcome === "fallback install timed out" && name !== "global update")
+                  ? "timeout"
+                  : "exit",
+              killed: outcome === "install killed",
+              outputLimitExceeded: outcome === "install output exceeded",
+            };
           },
           validateCandidate: async (candidateRoot) => {
             phases.push("validate");
@@ -134,6 +156,8 @@ describe("retained package update transactions", () => {
                 cwd: candidateRoot,
                 durationMs: 1,
                 exitCode: outcome === "validation rejected" ? 1 : 0,
+                termination: outcome === "validation timed out" ? "timeout" : "exit",
+                outputLimitExceeded: outcome === "validation output exceeded",
               },
             ];
           },
@@ -219,7 +243,7 @@ describe("retained package update transactions", () => {
           assert(failedDoctor);
           expect(failedDoctor).toMatchObject({
             name: "openclaw doctor",
-            exitCode: 1,
+            exitCode: doctorReceipt.exitCode,
             configChanges: doctorReceipt.configChanges,
           });
           expect(failedDoctor.configWriteRefusal).toEqual(doctorReceipt.configWriteRefusal);
@@ -262,10 +286,17 @@ describe("retained package update transactions", () => {
           }
           expect(result.afterVersion).toBe("1.0.0");
           await expect(fs.readFile(launcher, "utf8")).resolves.toBe("old launcher\n");
-        } else if (outcome === "validation rejected") {
-          expect(phases).toEqual(["validate"]);
+        } else if (failedInstall || outcome.startsWith("validation ")) {
+          expect(phases).toEqual(failedInstall ? [] : ["validate"]);
           expect(transaction).toBeUndefined();
-          expect(result.failedStep).not.toBeNull();
+          expect(result.failedStep).toMatchObject({
+            name: failedInstall
+              ? outcome === "fallback install timed out"
+                ? "global update (omit optional)"
+                : "global update"
+              : "candidate canary",
+            exitCode: outcome === "validation rejected" ? 1 : 0,
+          });
           expect(result.recovery).toEqual({ serviceRestartSafe: true, version: "1.0.0" });
           await expect(
             fs.readFile(path.join(packageRoot, "package.json"), "utf8"),

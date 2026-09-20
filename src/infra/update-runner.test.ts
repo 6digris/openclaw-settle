@@ -1205,9 +1205,9 @@ describe("updateGitCheckout", () => {
     );
   });
 
-  it.each([false, true])(
-    "finishes with a recorded warning when upstream setup fails after creating local main (interrupted=%s)",
-    async (interrupted) => {
+  it.each(["missing", "signal", "output-limit-zero", "output-limit-nonzero"] as const)(
+    "classifies failed upstream setup after creating local main (%s)",
+    async (failure) => {
       await setupGitPackageManagerFixture();
 
       const selectedSha = "upstream123";
@@ -1254,13 +1254,22 @@ describe("updateGitCheckout", () => {
           return { stdout: "", stderr: "", code: 1 };
         }
         if (key === `git -C ${tempDir} branch --set-upstream-to origin/main main`) {
-          if (interrupted) {
+          if (failure === "signal") {
             return {
               stdout: "",
               stderr: "interrupted",
               code: 143,
               signal: "SIGTERM" as const,
               termination: "signal" as const,
+            };
+          }
+          if (failure.startsWith("output-limit-")) {
+            return {
+              stdout: "",
+              stderr: "Upstream command output exceeded its capture limit.",
+              code: failure === "output-limit-zero" ? 0 : 1,
+              outputLimitExceeded: true,
+              termination: "exit" as const,
             };
           }
           return { stdout: "", stderr: "requested upstream does not exist", code: 1 };
@@ -1275,7 +1284,7 @@ describe("updateGitCheckout", () => {
         progress: { onStepComplete },
       });
 
-      if (interrupted) {
+      if (failure !== "missing") {
         expect(result.status).toBe("error");
         expect(result.reason).toBe("checkout-failed");
         expect(

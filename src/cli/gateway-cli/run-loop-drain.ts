@@ -11,6 +11,23 @@ import { formatDrainCounts, formatShutdownReason } from "./run-loop-shutdown-for
 
 const RESTART_DRAIN_STILL_PENDING_WARN_MS = 30_000;
 
+export function resolveRestartDrainTimeoutMs(
+  restartIntent: GatewayRunSignalRequest["restartIntent"],
+  runtime: Pick<typeof import("./lifecycle.runtime.js"), "resolveGatewayRestartDeferralTimeoutMs">,
+): number | undefined {
+  if (restartIntent?.force) {
+    return 0;
+  }
+  if (typeof restartIntent?.waitMs === "number" && Number.isFinite(restartIntent.waitMs)) {
+    return restartIntent.waitMs > 0 ? Math.floor(restartIntent.waitMs) : undefined;
+  }
+  try {
+    return runtime.resolveGatewayRestartDeferralTimeoutMs();
+  } catch {
+    return 300_000;
+  }
+}
+
 export async function drainGatewayActiveWork({
   request,
   restartIntent,

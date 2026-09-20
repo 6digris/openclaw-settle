@@ -13,6 +13,7 @@ type GatewayStart = Parameters<typeof import("./run-loop.js").runGatewayLoop>[0]
 type ExitRuntime = { log: Mock; error: Mock; exit: Mock<(code: number) => void> };
 export type UpdateRespawnFixtures = {
   spawnProcess: Mock<typeof import("node:child_process").spawn>;
+  hostedStopPrepare: Mock<typeof import("../../daemon/hosted-stop.js").prepareHostedGatewayStop>;
   waitForGatewayActiveWork: Mock<
     typeof import("../../infra/gateway-active-work.js").waitForGatewayActiveWork
   >;
@@ -38,11 +39,7 @@ export type UpdateRespawnFixtures = {
       handoffSpawned?: Promise<boolean>;
     }
   >;
-  withIsolatedSignals: (
-    run: (helpers: {
-      captureSignal: (signal: "SIGTERM" | "SIGINT" | "SIGUSR2") => () => void;
-    }) => Promise<void>,
-  ) => Promise<void>;
+  withIsolatedSignals: typeof withIsolatedSignals;
   createSignaledStart: (close: GatewayServer["close"]) => {
     start: Mock<GatewayStart>;
     started: Promise<void>;
@@ -51,12 +48,17 @@ export type UpdateRespawnFixtures = {
   runLoopWithStart: (params: {
     start: Mock<GatewayStart>;
     runtime: ExitRuntime;
+    ownsProcessLifecycle?: boolean;
     lockPort?: number;
     completeBoot?: (completion: GatewayBootLifecycleCompletion) => void;
   }) => Promise<unknown>;
   waitForStart: (started: Promise<void>) => Promise<void>;
   waitForLoopCondition: (predicate: () => boolean, message: string) => Promise<void>;
-  createSignaledLoopHarness: () => Promise<{
+  createSignaledLoopHarness: (
+    exitCallOrder?: string[],
+    ownsProcessLifecycle?: boolean,
+  ) => Promise<{
+    close: Mock<GatewayServer["close"]>;
     start: Mock<GatewayStart>;
     runtime: ExitRuntime;
     exited: Promise<number>;

@@ -23,6 +23,7 @@ export type PackagePostInstallVerifier = (
 function isNormalProcessExit(step: {
   signal?: NodeJS.Signals | null;
   killed?: boolean;
+  outputLimitExceeded?: boolean;
   termination?: "exit" | "timeout" | "no-output-timeout" | "signal";
 }): boolean {
   return (
@@ -30,6 +31,7 @@ function isNormalProcessExit(step: {
     step.termination !== "no-output-timeout" &&
     step.termination !== "signal" &&
     step.killed !== true &&
+    step.outputLimitExceeded !== true &&
     (step.signal === undefined || step.signal === null)
   );
 }
@@ -40,8 +42,10 @@ export function markPackagePostInstallDoctorAdvisory<
     stderrTail?: string | null;
     signal?: NodeJS.Signals | null;
     killed?: boolean;
+    outputLimitExceeded?: boolean;
     termination?: "exit" | "timeout" | "no-output-timeout" | "signal";
     advisory?: UpdateStepResult["advisory"];
+    failureFacts?: UpdateStepResult["failureFacts"];
   },
 >(
   step: T,
@@ -51,8 +55,15 @@ export function markPackagePostInstallDoctorAdvisory<
   warnings?: UpdateStepResult["warnings"];
   failureFacts?: UpdateStepResult["failureFacts"];
 } {
-  if (step.exitCode !== 0 && result?.failureFacts?.length) {
-    return { ...step, failureFacts: result.failureFacts };
+  if (result?.failureFacts?.length) {
+    return {
+      ...step,
+      advisory: undefined,
+      failureFacts: normalizeUpdateFailureFacts([
+        ...result.failureFacts,
+        ...(step.failureFacts ?? []),
+      ]),
+    };
   }
   if (
     !result ||
@@ -136,7 +147,6 @@ export function failedPackageVerificationStep(
   const errorFact = createUpdateErrorFact(recorded.name, error);
   const failedStep: UpdateStepResult = {
     ...recorded,
-    exitCode: 1,
     stderrTail: trimLogTail(
       errorFact.message && !recorded.stderrTail?.includes(errorFact.message)
         ? [recorded.stderrTail, errorFact.message].filter(Boolean).join("\n")

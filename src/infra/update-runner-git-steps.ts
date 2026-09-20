@@ -1,4 +1,5 @@
 import { quoteCliArg, quotePowerShellArg } from "../cli/quote-cli-arg.js";
+import { isFailedUpdateStep } from "./update-run-step.js";
 import { runStep } from "./update-runner-command.js";
 import type { RunStepOptions } from "./update-runner-types.js";
 
@@ -8,7 +9,7 @@ export async function runGitCleanCheckStep(options: RunStepOptions) {
     ...options,
     progress: { ...options.progress, onStepComplete: undefined },
   });
-  const dirty = result.exitCode === 0 && Boolean(result.stdoutTail?.trim());
+  const dirty = !isFailedUpdateStep(result) && Boolean(result.stdoutTail?.trim());
   if (dirty) {
     result.exitCode = 1;
     result.stderrTail = "This checkout has local changes. Installation has not started.";
@@ -32,6 +33,7 @@ export async function runGitUpstreamStep(options: RunStepOptions) {
     upstreamStep.exitCode !== 0 &&
     !upstreamStep.signal &&
     !upstreamStep.killed &&
+    !upstreamStep.outputLimitExceeded &&
     (!upstreamStep.termination || upstreamStep.termination === "exit") &&
     upstreamStep.exitCode !== 130 &&
     upstreamStep.exitCode !== 143

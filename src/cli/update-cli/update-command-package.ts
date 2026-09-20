@@ -22,6 +22,10 @@ import {
   UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV,
   type UpdatePostInstallDoctorResult,
 } from "../../infra/update-doctor-result.js";
+import {
+  createUpdateFailureFact,
+  normalizeUpdateFailureFacts,
+} from "../../infra/update-failure-facts.js";
 import { readBuiltGatewayBuildId } from "../../infra/update-git-runtime.js";
 import {
   createGlobalInstallEnv,
@@ -194,7 +198,6 @@ export async function runPackageUpdateDoctor(params: PackageDoctorOptions) {
             ...(configWriteRefusal
               ? {
                   configWriteRefusal,
-                  exitCode: 1,
                   stderrTail: formatUpdateDoctorConfigWriteRefusal(configWriteRefusal),
                 }
               : {}),
@@ -202,6 +205,17 @@ export async function runPackageUpdateDoctor(params: PackageDoctorOptions) {
           doctorResult,
         ),
       );
+      if (configWriteRefusal) {
+        doctorStep.failureFacts = normalizeUpdateFailureFacts([
+          createUpdateFailureFact({
+            check: "config",
+            code: configWriteRefusal.reason,
+            message: formatUpdateDoctorConfigWriteRefusal(configWriteRefusal),
+          }),
+          ...(doctorStep.failureFacts ?? []),
+        ]);
+        delete doctorStep.advisory;
+      }
       if (configSnapshot) {
         // Only the child writer can attribute bytes to Doctor; a later read may contain an operator save.
         const { hash } = await readUpdateConfigSnapshot(configSnapshot.path);
@@ -246,10 +260,12 @@ export async function runPackageUpdateDoctor(params: PackageDoctorOptions) {
         stderrTail: doctorStep.stderrTail,
         signal: doctorStep.signal,
         killed: doctorStep.killed,
+        outputLimitExceeded: doctorStep.outputLimitExceeded,
         termination: doctorStep.termination,
         advisory: doctorStep.advisory,
         warnings: doctorStep.warnings,
         failureFacts: doctorStep.failureFacts,
+        doctorLintFindings: doctorStep.doctorLintFindings,
         configChanges: doctorStep.configChanges,
         configWriteRefusal: doctorStep.configWriteRefusal,
       });

@@ -227,7 +227,7 @@ export class GatewayUpdateSuccessor {
       );
       return true;
     }
-    if (action !== "stop" || (signal !== "SIGINT" && signal !== "SIGTERM")) {
+    if (action !== "stop" || signal === "SIGUSR2") {
       return false;
     }
     if (!foregroundActive && !this.waitingForStop) {
@@ -241,7 +241,7 @@ export class GatewayUpdateSuccessor {
       this.retainForegroundStop(owner, params.onSettled);
       params.beforeWait();
     }
-    this.stop(signal);
+    this.stop(signal === "SIGINT" ? "SIGINT" : "SIGTERM");
     return true;
   }
 
@@ -286,10 +286,14 @@ export class GatewayUpdateSuccessor {
     await this.closed;
   }
 
-  async exit(code: number, exitProcess: (code: number) => void): Promise<void> {
+  async waitForStopSettlement(): Promise<void> {
     if (this.stopRequested) {
       await this.foregroundStop?.confirmed.promise;
     }
+  }
+
+  async exit(code: number, exitProcess: (code: number) => void): Promise<void> {
+    await this.waitForStopSettlement();
     const exitCode = code === 0 && !this.stopRequested && !this.running ? 1 : code;
     if (exitCode !== code) {
       this.logger.error("fresh Gateway stopped before handoff completed; check its startup logs");
