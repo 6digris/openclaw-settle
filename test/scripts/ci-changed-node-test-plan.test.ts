@@ -23,8 +23,10 @@ import { encodeNodeTestGroups } from "../../scripts/lib/ci-node-test-groups-code
 import {
   createNodeTestShardBundles,
   createSelectedNodeTestShardBundles,
+  type CompactNodeTestShard,
 } from "../../scripts/lib/ci-node-test-plan.mts";
 import { refitTestTimings } from "../../scripts/lib/ci-test-timings-refit.mts";
+import * as testTimings from "../../scripts/lib/ci-test-timings.mts";
 import {
   listExtensionTestFilesForRoots,
   resolveExtensionTestConfig,
@@ -42,6 +44,7 @@ import {
   databaseWorkerExtensionTestRoots,
 } from "../vitest/vitest.extension-database-workers-paths.mjs";
 import { isGatewayServerTestFile } from "../vitest/vitest.gateway-server-paths.mjs";
+import { startupCorpusTestFiles } from "../vitest/vitest.startup-corpus-paths.mjs";
 import { boundaryTestFiles } from "../vitest/vitest.unit-paths.mjs";
 
 const CODEX_TEST_PROCESS_FILE_LIMIT = 12;
@@ -366,11 +369,18 @@ describe("CI changed Node test plan", () => {
         "src/agents/embedded-agent-runner/run.incomplete-turn.classification.test.ts",
         "src/agents/embedded-agent-runner/run.overflow-compaction.test.ts",
       ];
-      const full = createNodeTestShardBundles({
-        compactMode: "pull-request",
-        runnerBackend,
-        includeReleaseOnlyPluginShards: false,
-      });
+      // Precise plans inherit templates before whole-plan runtime relocation.
+      const placement = vi.spyOn(testTimings, "readRuntimePlacementTimings").mockReturnValue([]);
+      let full: CompactNodeTestShard[];
+      try {
+        full = createNodeTestShardBundles({
+          compactMode: "pull-request",
+          runnerBackend,
+          includeReleaseOnlyPluginShards: false,
+        });
+      } finally {
+        placement.mockRestore();
+      }
       for (const targets of [[yieldTest], [...siblings, yieldTest]]) {
         const shards = createChangedNodeTestShards(targets, { runnerBackend });
         expect(shards).not.toBeNull();
@@ -1208,10 +1218,7 @@ describe("CI changed Node test plan", () => {
 
   describe("documentation targeting", () => {
     it("keeps the complete two-job corpus plan beside a documentation page", () => {
-      const targets = [
-        "src/config/config-startup-corpus.test.ts",
-        "src/config/state-startup-corpus.test.ts",
-      ];
+      const targets = startupCorpusTestFiles;
       const before = createChangedNodeTestShards(targets);
       expect(before).toHaveLength(2);
       expect(before?.flatMap((shard) => shard.targets ?? [])).toEqual(targets);
