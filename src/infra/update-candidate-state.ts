@@ -57,7 +57,7 @@ export const UpdateCandidateStateSnapshotSchema = z.object({
 type StateInput = { stateDir: string; config: OpenClawConfig; env?: NodeJS.ProcessEnv };
 type CandidateStateDatabase = Pick<
   DB,
-  "agent_databases" | "agent_database_leases" | "state_leases"
+  "agent_databases" | "agent_database_leases" | "state_leases" | "migration_sources"
 >;
 
 /** Older inspection workers report only the published version; agent stores never defer it. */
@@ -597,6 +597,11 @@ export async function snapshotUpdateCandidateState(
   const admittedDatabases = new Set(input.databaseInventory);
   const sourceRoot = path.resolve(input.stateDir);
   const shared = path.join(sourceRoot, "state", "openclaw.sqlite");
+  const { root } = await import("@openclaw/fs-safe");
+  const { detectLegacyExecApprovals, DOCTOR_CLAIM_SUFFIX, MAX_LEGACY_EXEC_APPROVALS_BYTES } =
+    await import("./state-migrations.exec-approvals.js");
+  const { resolveLegacyMigrationSourceKey } = await import("./state-migrations.receipts.js");
+  const { sourcePath: legacySourcePath } = detectLegacyExecApprovals({ stateDir: sourceRoot });
   const targetPath = (source: string) =>
     path.join(
       resolveUpdateCandidateStatePath(sourceRoot, input.targetStateDir, path.dirname(source)),
@@ -631,6 +636,28 @@ export async function snapshotUpdateCandidateState(
                 transform: (db: DatabaseSync) => {
                   contentVersion = readStateSchemaContentVersion(db);
                   const queries = getNodeSqliteKysely<CandidateStateDatabase>(db);
+                  // Receipt identity includes the absolute legacy path. Preserve
+                  // its authority over the same copied bytes after projection.
+                  if (tableExists(db, "migration_sources")) {
+                    executeSqliteQuerySync(
+                      db,
+                      queries
+                        .updateTable("migration_sources")
+                        .set({
+                          source_key: resolveLegacyMigrationSourceKey(
+                            "exec-approvals-json",
+                            targetPath(legacySourcePath),
+                          ),
+                          source_path: targetPath(legacySourcePath),
+                        })
+                        .where(
+                          "source_key",
+                          "=",
+                          resolveLegacyMigrationSourceKey("exec-approvals-json", legacySourcePath),
+                        )
+                        .where("migration_kind", "=", "legacy-exec-approvals-json"),
+                    );
+                  }
                   // Source process leases cannot own the independently opened rehearsal copy.
                   for (const table of ["agent_database_leases", "state_leases"] as const) {
                     if (tableExists(db, table)) {
@@ -691,11 +718,7 @@ export async function snapshotUpdateCandidateState(
   }
   // Doctor must rehearse the same retired policy inputs as activation. Copy
   // bytes, never links: the migration may claim or archive only private files.
-  const { root } = await import("@openclaw/fs-safe");
-  const { detectLegacyExecApprovals, DOCTOR_CLAIM_SUFFIX, MAX_LEGACY_EXEC_APPROVALS_BYTES } =
-    await import("./state-migrations.exec-approvals.js");
-  const { sourcePath } = detectLegacyExecApprovals({ stateDir: sourceRoot });
-  for (const source of [sourcePath, `${sourcePath}${DOCTOR_CLAIM_SUFFIX}`]) {
+  for (const source of [legacySourcePath, `${legacySourcePath}${DOCTOR_CLAIM_SUFFIX}`]) {
     // lstat keeps broken links visible to the same refusal as ordinary links.
     const exists = await fs.lstat(source).then(
       () => true,

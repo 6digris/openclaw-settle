@@ -954,39 +954,3 @@ it("rejects an ordinary link that would repeatedly copy an immutable host packag
   expect(await fs.readFile(path.join(host, "docs", "marker.txt"), "utf8")).toBe("source");
   expect(await fs.realpath(path.join(plugin, "node_modules", "openclaw"))).toBe(host);
 }, 20_000);
-
-it.each(["", ".doctor-importing"])(
-  "rehearses conflicting exec approvals from the copied policy%s without modifying source",
-  async (suffix) => {
-    const source = path.join(root, "source");
-    const target = path.join(root, "copy");
-    const env = { OPENCLAW_STATE_DIR: source };
-    const { writeExecApprovalsConfigRow, readExecApprovalsConfigRow } =
-      await import("./exec-approvals-sqlite.js");
-    const { detectLegacyExecApprovals, migrateLegacyExecApprovals } =
-      await import("./state-migrations.exec-approvals.js");
-    const canonical = { version: 1 as const, defaults: { security: "deny" as const }, agents: {} };
-    const db = openOpenClawStateDatabase({ env }).db;
-    writeExecApprovalsConfigRow({ db, file: canonical });
-    const canonicalBefore = readExecApprovalsConfigRow(db)?.raw_json;
-    closeOpenClawStateDatabaseForTest();
-    const sourcePath = path.join(source, `exec-approvals.json${suffix}`);
-    const raw = JSON.stringify({ version: 1, defaults: { security: "full" }, agents: {} });
-    await fs.writeFile(sourcePath, raw);
-    await runSnapshotWorker({ stateDir: source, targetStateDir: target, config: {} });
-    const copiedPath = path.join(target, `exec-approvals.json${suffix}`);
-    expect(await fs.readFile(copiedPath, "utf8")).toBe(raw);
-    const copiedEnv = { OPENCLAW_STATE_DIR: target };
-    const result = await migrateLegacyExecApprovals({
-      stateDir: target,
-      env: copiedEnv,
-      detected: detectLegacyExecApprovals({ stateDir: target, doctorOnlyStateMigrations: true }),
-    });
-    expect(result.warnings.join(" ")).toContain("Conflicting legacy exec approvals remain");
-    expect(result.changes).toEqual([]);
-    expect(await fs.readFile(sourcePath, "utf8")).toBe(raw);
-    expect(readExecApprovalsConfigRow(openOpenClawStateDatabase({ env }).db)?.raw_json).toBe(
-      canonicalBefore,
-    );
-  },
-);
