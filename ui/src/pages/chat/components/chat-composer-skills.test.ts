@@ -156,12 +156,72 @@ describe("composer skills presentation", () => {
     const { host } = mount(props);
     expect(host.textContent).not.toContain(t("chat.composer.menu.noSkills"));
     expect(host.querySelectorAll('[role="status"]')).toHaveLength(1);
+    expect(host.querySelector('[role="status"]')?.textContent?.trim()).toBe("");
+    expect(host.querySelectorAll(".skeleton")).toHaveLength(2);
+    expect(host.querySelector('[role="status"]')?.getAttribute("aria-label")).toBe(
+      t("common.loading"),
+    );
     if (props.skills?.length) {
       expect(host.textContent).toContain("weather");
     }
     if (props.library.result?.session?.selections.length) {
       expect(host.textContent).toContain("release-notes · Alice");
     }
+  });
+
+  it.each([
+    {
+      name: "cached library refresh",
+      view: "skills" as const,
+      loading: true,
+      busy: false,
+      cleared: false,
+    },
+    {
+      name: "reading or updating a pin",
+      view: `library:${alice.entry.skillId}` as const,
+      loading: false,
+      busy: true,
+      cleared: false,
+    },
+    {
+      name: "adding a skill",
+      view: "library-add" as const,
+      loading: false,
+      busy: true,
+      cleared: false,
+    },
+    {
+      name: "post-mutation reload",
+      view: "skills" as const,
+      loading: true,
+      busy: true,
+      cleared: true,
+    },
+  ])(
+    "does not replace known content or add placeholders during $name",
+    ({ view, loading, busy, cleared }) => {
+      const state = withPin();
+      state.loading = loading;
+      state.busy = busy;
+      if (cleared) {
+        state.result = null;
+      }
+      const { host } = mount({ skills: [ordinary], library: state }, view);
+      expect(host.querySelector(".skeleton")).toBeNull();
+      expect(host.textContent).not.toMatch(/Loading/u);
+      expect(host.querySelector("wa-dropdown")?.getAttribute("aria-busy")).toBe("true");
+      if (!cleared) {
+        expect(host.textContent).toContain("release-notes");
+      }
+    },
+  );
+
+  it("keeps the ordinary catalog visible during a refresh", () => {
+    const { host, item } = mount({ skills: [ordinary], skillsLoading: true });
+    expect(item("skill:0")).not.toBeNull();
+    expect(host.querySelector(".skeleton")).toBeNull();
+    expect(host.textContent).not.toMatch(/Loading/u);
   });
 
   it.each([false, true])(

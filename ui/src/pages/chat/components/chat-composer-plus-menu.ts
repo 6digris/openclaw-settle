@@ -34,6 +34,7 @@ import {
 import {
   renderBackRow,
   renderCapabilityToggleRow,
+  renderCapabilitySkeletonRows,
   menuDivider,
 } from "./chat-composer-menu-rows.ts";
 
@@ -252,7 +253,7 @@ function renderSkillView(props: ChatComposerPlusMenuProps) {
   const session = library?.result?.session;
   const selectedCount = session?.selections.length ?? 0;
   const addable = Boolean(library?.canWrite && session?.attachable.length);
-  const loading = props.skillsLoading || (!props.skills && !props.skillsError);
+  const loading = props.skills === null && !props.skillsError;
   const empty =
     !loading &&
     !props.skillsError &&
@@ -262,9 +263,7 @@ function renderSkillView(props: ChatComposerPlusMenuProps) {
     (!library || (library.result !== null && !library.loading && !library.busy && !library.error));
   const grouped = selectedCount > 0 && Boolean(props.skills?.length);
   const rows = loading
-    ? html`<div class="agent-chat__capability-menu-state" role="status">
-        ${t("chat.composer.menu.loadingSkills")}
-      </div>`
+    ? renderCapabilitySkeletonRows()
     : props.skillsError
       ? html`<div class="agent-chat__capability-menu-state" role="alert">
           ${t("chat.composer.menu.skillsLoadFailed")}
@@ -628,6 +627,10 @@ function handleMenuSelection(
 function renderChatComposerPlusMenuContent(props: ChatComposerPlusMenuProps) {
   const hasOverrides = countSessionToolOverrides(props.toolOverrides) > 0;
   const view = props.showCapabilities ? props.view : "root";
+  const skillsView = view === "skills" || view === "library-add" || view.startsWith("library:");
+  const skillsBusy =
+    skillsView &&
+    (props.library?.loading || props.library?.busy || (view === "skills" && props.skillsLoading));
   const content =
     view === "skills"
       ? renderSkillView(props)
@@ -660,6 +663,7 @@ function renderChatComposerPlusMenuContent(props: ChatComposerPlusMenuProps) {
         }
       }}
       data-view=${view}
+      aria-busy=${skillsBusy ? "true" : nothing}
     >
       ${renderChatAttachmentMenuTrigger(props.disabled, hasOverrides)} ${content}
     </wa-dropdown>

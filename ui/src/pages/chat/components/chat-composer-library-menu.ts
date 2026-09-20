@@ -4,7 +4,7 @@ import { t } from "../../../i18n/index.ts";
 import { registerSkillLibraryEnglish } from "../../../i18n/locales/en-skill-library.ts";
 import { registerSkillsBrowserEnglish } from "../../../i18n/locales/en-skills-browser.ts";
 import type { ComposerLibraryProps } from "../composer-library-session.ts";
-import { renderBackRow } from "./chat-composer-menu-rows.ts";
+import { renderBackRow, renderCapabilitySkeletonRows } from "./chat-composer-menu-rows.ts";
 
 registerSkillsBrowserEnglish();
 registerSkillLibraryEnglish();
@@ -12,10 +12,8 @@ registerSkillLibraryEnglish();
 function renderLibraryStatus(library: ComposerLibraryProps, showLoading = true) {
   return html`
     ${
-      showLoading && (library.loading || library.busy)
-        ? html`<div class="agent-chat__capability-menu-state" role="status">
-            ${t("common.loading")}
-          </div>`
+      showLoading && library.loading && !library.result && !library.busy
+        ? renderCapabilitySkeletonRows()
         : nothing
     }
     ${
