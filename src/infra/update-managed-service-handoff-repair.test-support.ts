@@ -180,13 +180,18 @@ export async function managedRepairUpdaterScript(params: {
     }
     const repair = await runUpdateCommandRepair({
       root: ${JSON.stringify(installRoot)},
-      candidateRoot: ${JSON.stringify(candidate)},
       env: run.env,
       run,
       phase: ${JSON.stringify(params.phase)},
       onEvent: (event) => process.stderr.write("repair-boundary: " + event.type +
         (event.type === "turn-finished" ? " summary=" + JSON.stringify(event.summary) : "") + "\\n"),
-      result: { status: "error", mode: "npm", reason: "candidate-validation-failed", steps: [], durationMs: 0 },
+      ${
+        params.phase === "validating"
+          ? `candidateRoot: ${JSON.stringify(candidate)}, mode: "npm",
+      validation: { status: "error", reason: "runtime-verification-failed", phase: "runtime",
+        steps: [], durationMs: 0, logTail: ["Repair effects pending."] },`
+          : `result: { status: "error", mode: "npm", reason: "candidate-validation-failed", steps: [], durationMs: 0 },`
+      }
       validate: async () => {
         const ok = fs.existsSync(${JSON.stringify(path.join(candidate, "repair-second-exec.txt"))}) &&
           fs.existsSync(${JSON.stringify(path.join(candidate, "repair-second-write.txt"))});

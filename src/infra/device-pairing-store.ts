@@ -28,7 +28,6 @@ import { bindCloudWorkerSetupCompletion } from "./device-pairing-cloud-worker.js
 import {
   invalidateDevicePairingStoreCache,
   readCachedDevicePairingStoreState,
-  type DevicePairingStoreValidityToken,
 } from "./device-pairing-store-cache.js";
 import type {
   DeviceAuthToken,
@@ -46,7 +45,6 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "./kysely-sync.js";
-import { readSqliteDataVersion } from "./node-sqlite.js";
 import { clearApnsRegistrationFromDatabase } from "./push-apns-store-transaction.js";
 
 const DEVICE_BOOTSTRAP_TOKEN_COLUMNS_WITHOUT_SETUP = [
@@ -85,34 +83,23 @@ function resolveDevicePairingStateDbOptions(baseDir?: string): OpenClawStateData
   return baseDir ? { env: { ...process.env, OPENCLAW_STATE_DIR: baseDir } } : {};
 }
 
-function readTotalChanges(database: DatabaseSync): number {
-  const row = database.prepare("SELECT total_changes() AS value").get() as { value?: unknown };
-  if (typeof row.value !== "number") {
-    throw new Error("SQLite did not return a numeric total_changes() value");
-  }
-  return row.value;
-}
-
-function readDevicePairingStoreValidityToken(
-  database: DatabaseSync,
-): DevicePairingStoreValidityToken {
-  return {
-    dataVersion: readSqliteDataVersion(database),
-    totalChanges: readTotalChanges(database),
-  };
-}
-
 function runDevicePairingStoreMutation<T>(
   baseDir: string | undefined,
   mutate: (database: OpenClawStateDatabase) => DevicePairingStoreMutation<T>,
 ): T {
   const databaseOptions = resolveDevicePairingStateDbOptions(baseDir);
   const database = openOpenClawStateDatabase(databaseOptions);
-  const result = runOpenClawStateWriteTransaction(mutate, { ...databaseOptions, database });
-  if (result.mutated) {
-    invalidateDevicePairingStoreCache(database);
-  }
-  return result.value;
+  return runOpenClawStateWriteTransaction(
+    (transactionDatabase) => {
+      const result = mutate(transactionDatabase);
+      // Invalidate before commit observers or fallible post-commit cleanup can run.
+      if (result.mutated) {
+        invalidateDevicePairingStoreCache(transactionDatabase);
+      }
+      return result.value;
+    },
+    { ...databaseOptions, database },
+  );
 }
 
 // Read-back allowlist for the approved_via column. The Record type forces
@@ -350,10 +337,8 @@ export function loadDevicePairingStoreState(baseDir?: string): DevicePairingStor
 export function loadDevicePairingStoreStateFromDatabase(
   database: OpenClawStateDatabase,
 ): DevicePairingStoreState {
-  return readCachedDevicePairingStoreState(
-    database,
-    readDevicePairingStoreValidityToken(database.db),
-    () => readDevicePairingStoreStateFromDatabase(database.db),
+  return readCachedDevicePairingStoreState(database, () =>
+    readDevicePairingStoreStateFromDatabase(database.db),
   );
 }
 
