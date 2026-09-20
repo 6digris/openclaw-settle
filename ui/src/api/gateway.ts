@@ -482,6 +482,7 @@ export class GatewayBrowserClient {
           caps: [
             "agent-kind",
             "approvals",
+            "task-progress",
             "task-suggestions",
             "terminal-offset-seq",
             "terminal-session-metadata",

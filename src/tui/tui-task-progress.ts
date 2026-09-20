@@ -29,7 +29,7 @@ function taskLines(task: TaskSummary): string[] {
       if (item.hideFromChannelProgress || item.suppressChannelProgress) {
         continue;
       }
-      const itemStatus = item.status ?? (item.phase === "end" ? "completed" : "running");
+      const itemStatus = item.status ?? (item.phase === "end" ? "unknown" : "running");
       const detail = item.progressText || item.summary || item.meta || item.error;
       lines.push(`  ${item.title} [${itemStatus}]${detail ? ` — ${detail}` : ""}`);
     }

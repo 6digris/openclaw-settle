@@ -26,6 +26,7 @@ import { createExpectedProfileBinding } from "../../expected-profile.js";
 import { bindWebSocketRequestMutationAuthority } from "../../server-methods/session-mutation-guards.js";
 import type { GatewayRequestEntry } from "../../server-request-entry.js";
 import { classifyGatewayStaleInstall } from "../../stale-install.js";
+import { presentTaskPayload } from "../../task-wire-presentation.js";
 import { formatForLog, logWs } from "../../ws-log.js";
 import {
   invalidateGatewayPolicyClient,
@@ -152,7 +153,13 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
         try {
           let responseOk = ok;
           let responseError = error;
-          let sendResult = sendResponse({ type: "res", id: req.id, ok, payload, error });
+          let sendResult = sendResponse({
+            type: "res",
+            id: req.id,
+            ok,
+            payload: ok ? presentTaskPayload(req.method, payload, client.connect.caps) : payload,
+            error,
+          });
           if (sendResult.kind === "serialization") {
             const detail = formatForLog(sendResult.error);
             logGateway.error(`response serialization failed method=${req.method}: ${detail}`);

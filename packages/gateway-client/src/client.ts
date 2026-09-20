@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ClientRequest, IncomingMessage } from "node:http";
 import {
+  GATEWAY_CLIENT_CAPS,
   GATEWAY_CLIENT_MODES,
   GATEWAY_CLIENT_NAMES,
   type GatewayClientMode,
@@ -33,6 +34,10 @@ import {
   type GatewayClientDeviceAuthStorage,
   type MaybePromise,
 } from "./client-device-auth.js";
+import {
+  resolveLegacyNodePlatform,
+  shouldNegotiateLegacyNodeProtocol,
+} from "./client-node-protocol.js";
 import { readUpgradeErrorBody } from "./client-upgrade-error.js";
 import {
   buildGatewayConnectAuth,
@@ -230,17 +235,6 @@ export type GatewayClientConnectionMetadata = {
 const FORCE_STOP_TERMINATE_GRACE_MS = 250;
 const STOP_AND_WAIT_TIMEOUT_MS = 1_000;
 const MAX_SUPPRESSED_TRANSIENT_PRE_HELLO_CLEAN_CLOSES = 1;
-
-function resolveLegacyNodePlatform(platform: string): string | undefined {
-  switch (platform) {
-    case "macos":
-      return "darwin";
-    case "windows":
-      return "win32";
-    default:
-      return undefined;
-  }
-}
 
 type PendingStop = {
   ws: WebSocket;
@@ -705,7 +699,7 @@ export class GatewayClient {
       role === "node" &&
       clientMode === GATEWAY_CLIENT_MODES.NODE &&
       clientId === GATEWAY_CLIENT_NAMES.NODE_HOST;
-    const negotiatesNodeProtocol = this.shouldNegotiateLegacyNodeProtocol();
+    const negotiatesNodeProtocol = shouldNegotiateLegacyNodeProtocol(this.opts);
     const useLegacyNodeProtocolEnvelope =
       isBuiltInNodeHost &&
       (this.useLegacyNodeProtocolEnvelope ||
@@ -752,7 +746,11 @@ export class GatewayClient {
           instanceId: this.opts.instanceId,
         },
         ...resolveModelCatalogConnect({
-          caps: Array.isArray(this.opts.caps) ? this.opts.caps : [],
+          caps: Array.isArray(this.opts.caps)
+            ? this.opts.caps
+            : role === "operator"
+              ? [GATEWAY_CLIENT_CAPS.TASK_PROGRESS]
+              : [],
           modelCatalog: useLegacyNodeProtocolEnvelope ? undefined : this.opts.modelCatalog,
           serverCapabilities: params.serverCapabilities,
         }),
@@ -787,24 +785,10 @@ export class GatewayClient {
     };
   }
 
-  private shouldNegotiateLegacyNodeProtocol(): boolean {
-    if (
-      this.opts.role !== "node" ||
-      this.opts.mode !== GATEWAY_CLIENT_MODES.NODE ||
-      this.opts.clientName !== GATEWAY_CLIENT_NAMES.NODE_HOST
-    ) {
-      return false;
-    }
-    return (
-      (this.opts.minProtocol ?? MIN_NODE_PROTOCOL_VERSION) === MIN_NODE_PROTOCOL_VERSION &&
-      (this.opts.maxProtocol ?? PROTOCOL_VERSION) === PROTOCOL_VERSION
-    );
-  }
-
   private shouldRetryWithLegacyNodeProtocol(error: GatewayProtocolRequestError): boolean {
     if (
       this.useLegacyNodeProtocolEnvelope ||
-      !this.shouldNegotiateLegacyNodeProtocol() ||
+      !shouldNegotiateLegacyNodeProtocol(this.opts) ||
       !(error instanceof GatewayClientRequestError)
     ) {
       return false;
@@ -822,7 +806,7 @@ export class GatewayClient {
   private shouldRetryWithCurrentNodeProtocol(error: GatewayProtocolRequestError): boolean {
     if (
       !this.useLegacyNodeProtocolEnvelope ||
-      !this.shouldNegotiateLegacyNodeProtocol() ||
+      !shouldNegotiateLegacyNodeProtocol(this.opts) ||
       !(error instanceof GatewayClientRequestError)
     ) {
       return false;
@@ -945,7 +929,7 @@ export class GatewayClient {
   private completeConnectHello(helloOk: HelloOk): void {
     const reconnectWithCurrentNodeProtocol =
       this.useLegacyNodeProtocolEnvelope &&
-      this.shouldNegotiateLegacyNodeProtocol() &&
+      shouldNegotiateLegacyNodeProtocol(this.opts) &&
       helloOk.protocol > MIN_NODE_PROTOCOL_VERSION;
     if (reconnectWithCurrentNodeProtocol) {
       this.useLegacyNodeProtocolEnvelope = false;

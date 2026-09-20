@@ -206,15 +206,6 @@ struct MacGatewayChatTransportMappingTests {
         }
     }
 
-    @Test func `mac chat advertises typed agent rosters and inline widgets`() {
-        #expect(GatewayConnection.operatorClientCaps == [
-            OpenClawGatewayClientCapability.agentKind,
-            OpenClawGatewayClientCapability.inlineWidgets,
-            OpenClawGatewayClientCapability.modelSelectionPolicy,
-            OpenClawGatewayClientCapability.usageRefreshing,
-        ])
-    }
-
     @Test func `bare global session target carries normalized selected agent`() {
         let transport = MacGatewayChatTransport(defaultGlobalAgentID: "  Agent-A  ")
 

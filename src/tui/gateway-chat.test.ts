@@ -195,7 +195,6 @@ describe("GatewayChatClient", () => {
       expect(constructedOptions).toHaveLength(1);
       expect(constructedOptions[0]).toMatchObject({
         clientName: "openclaw-tui",
-        caps: ["agent-kind", "plugin-approvals", "task-suggestions", "tool-events"],
         mode: "ui",
         scopes: ["operator.admin", "operator.read", "operator.write", "operator.approvals"],
         preauthHandshakeTimeoutMs: 30_000,

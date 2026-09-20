@@ -212,6 +212,7 @@ export class GatewayChatClient implements TuiBackend {
       caps: [
         GATEWAY_CLIENT_CAPS.AGENT_KIND,
         GATEWAY_CLIENT_CAPS.PLUGIN_APPROVALS,
+        GATEWAY_CLIENT_CAPS.TASK_PROGRESS,
         GATEWAY_CLIENT_CAPS.TASK_SUGGESTIONS,
         GATEWAY_CLIENT_CAPS.TOOL_EVENTS,
       ],

@@ -415,6 +415,7 @@ private func waitUntil(
             OpenClawGatewayClientCapability.agentKind,
             OpenClawGatewayClientCapability.inlineWidgets,
             OpenClawGatewayClientCapability.modelSelectionPolicy,
+            "task-progress",
         ])
 
         #expect(withApprovalScope.scopes.contains("operator.approvals"))

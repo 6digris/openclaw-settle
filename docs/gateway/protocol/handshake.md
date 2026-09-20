@@ -252,6 +252,10 @@ Operator clients may advertise optional capabilities in `connect.params.caps`:
 
 - `tool-events`: accepts structured tool lifecycle events.
 - `inline-widgets`: can render hosted inline widget tool results.
+- `task-progress`: accepts prepared `TaskSummary.progress` in task replies and
+  upsert events, and `activity` in `tasks.history` replies. Without this
+  capability, the Gateway omits those fields for closed-schema compatibility.
+  See [Task ledger RPCs](/gateway/protocol/ledgers#task-ledger-rpcs).
 
 Client capabilities describe the connected client, not authorization. Agent tools may declare required capabilities; the Gateway omits those tools unless every requirement appears in the originating client's `caps`. Channel-originated runs have no Gateway client capabilities, so capability-gated tools are unavailable even when tool policy explicitly allows them.
 

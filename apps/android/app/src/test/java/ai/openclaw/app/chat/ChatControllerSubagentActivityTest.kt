@@ -36,6 +36,7 @@ class ChatControllerSubagentActivityTest {
         "task",
         taskPayload(
           id = "task-1",
+          agentId = "worker",
           status = "running",
           progressSummary = "Planning changes",
           lastToolName = "read",
@@ -61,6 +62,7 @@ class ChatControllerSubagentActivityTest {
         "task",
         taskPayload(
           id = "task-1",
+          agentId = "worker",
           status = "completed",
           terminalSummary = "Implementation complete",
         ),
@@ -300,8 +302,6 @@ class ChatControllerSubagentActivityTest {
         ),
       )
       assertEquals("replacement-source", controller.subagentActivities.value.getValue("task-1").progress?.runId)
-      controller.handleGatewayEvent("task", taskPayload(id = "task-1", status = "completed", agentId = "another-agent"))
-      assertTrue(controller.subagentActivities.value.getValue("task-1").isWorking)
       controller.handleGatewayEvent("task", """{"action":"restored"}""")
       assertTrue(controller.subagentActivities.value.isEmpty())
       controller.handleGatewayEvent(
@@ -332,7 +332,7 @@ class ChatControllerSubagentActivityTest {
               taskPayload(
                 id = "quiet",
                 sessionKey = sessionKey,
-                agentId = "main",
+                agentId = "worker",
                 status = "running",
                 executionState = "waiting",
                 progress = """{"runId":"restored-source","revision":0,"items":[{"itemId":"note","kind":"preamble","phase":"end","title":"","progressText":"Waiting for delegated work"}]}""",

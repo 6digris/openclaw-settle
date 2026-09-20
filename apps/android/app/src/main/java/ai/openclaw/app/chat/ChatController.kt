@@ -7211,8 +7211,7 @@ class ChatController internal constructor(
 
   private fun isCurrentSubagentTask(task: BackgroundTask): Boolean =
     task.runtime == "subagent" &&
-      task.sessionKey != null && sameOutboxSession(task.sessionKey, _sessionKey.value) &&
-      (task.agentId == null || task.agentId == resolveAgentIdForSessionKey(_sessionKey.value))
+      task.sessionKey != null && sameOutboxSession(task.sessionKey, _sessionKey.value)
 
   private fun applySubagentActivity(summary: BackgroundTask) {
     if (!isCurrentSubagentTask(summary)) return

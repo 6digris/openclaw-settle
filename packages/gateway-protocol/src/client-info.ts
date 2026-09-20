@@ -87,6 +87,7 @@ export const GATEWAY_CLIENT_CAPS = {
   SESSION_SCOPED_EVENTS: "session-scoped-events",
   SKILL_CURATOR_LIVE_INVENTORY: "skill-curator-live-inventory",
   PLUGIN_APPROVALS: "plugin-approvals",
+  TASK_PROGRESS: "task-progress",
   TASK_SUGGESTIONS: "task-suggestions",
   TERMINAL_OFFSET_SEQ: "terminal-offset-seq",
   TERMINAL_SESSION_METADATA: "terminal-session-metadata",

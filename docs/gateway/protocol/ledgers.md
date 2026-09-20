@@ -186,3 +186,15 @@ return sanitized task summaries, not raw runtime state.
 terminal summary, and sanitized error text. `agentId` identifies the agent
 executing the task; `sessionKey` and `ownerKey` preserve requester and control
 context.
+
+Advertise `task-progress` in `connect.params.caps` to receive the bounded,
+prepared `TaskSummary.progress` projection in task RPC replies and upsert events.
+The same capability enables `activity` in `tasks.history` replies. Clients
+without it receive the earlier response shapes, without either added field;
+existing execution, summary, message, and cursor fields remain unchanged.
+This negotiation does not change task access or cancellation authority.
+
+Bundled task views advertise this capability. External clients should opt in
+only after their validators accept these fields; a Gateway upgrade does not
+require older closed-schema readers to upgrade. Internal task consumers retain
+the prepared projection independently of WebSocket negotiation.

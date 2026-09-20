@@ -25,8 +25,10 @@ import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createPresenceRecipientProjection } from "./presence-projection.js";
 import { createGatewayBroadcaster } from "./server-broadcast.js";
 import { createGatewayConnectionState } from "./server-connection-state.js";
+import { MAX_BUFFERED_BYTES } from "./server-constants.js";
 import { GatewayClientRegistry } from "./server/client-registry.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
+import { releasedTaskValidators } from "./task-wire-v2026-9-5.test-support.js";
 
 const warnSpy = vi.hoisted(() => vi.fn());
 
@@ -82,6 +84,189 @@ afterEach(() => {
 });
 
 describe("broadcast serialization failures", () => {
+  it.each([false, true])(
+    "isolates alternating task capability bytes at the same sequence/profile (modern first: %s)",
+    (modernFirst) => {
+      const peers = Array.from({ length: 4 }, (_, index) => {
+        const peer = makeClient(`task-reader-${index}`);
+        peer.client.connect.caps = (index % 2 === 0) === modernFirst ? ["task-progress"] : [];
+        peer.client.preparedRecipientProfileId = "same-profile";
+        return peer;
+      });
+      const executionToJSON = vi.fn(() => ({ state: "running" }));
+      const progressToJSON = vi.fn(() => ({
+        runId: "run",
+        revision: 1,
+        items: [{ itemId: "command", kind: "tool", title: "Build", phase: "start" }],
+      }));
+      const task = {
+        id: "task",
+        status: "running",
+        execution: { toJSON: executionToJSON },
+        progressSummary: "Keep the released progress summary",
+        progress: { toJSON: progressToJSON },
+      };
+      const source = { action: "upserted", task };
+      const internal: unknown[] = [];
+      const { broadcast } = createGatewayBroadcaster({
+        clients: new GatewayClientRegistry(peers.map(({ client }) => client)),
+        onBroadcast: (_event, payload) => internal.push(payload),
+      });
+      broadcast("task", source);
+
+      // Shared fields serialize once per variant, not once per peer; the rich
+      // progress is never serialized for legacy-only consumers.
+      expect(executionToJSON).toHaveBeenCalledTimes(2);
+      expect(progressToJSON).toHaveBeenCalledTimes(1);
+      expect(internal).toEqual([source]);
+      expect(internal[0]).toBe(source);
+      for (const peer of peers) {
+        const modern = peer.client.connect.caps?.includes("task-progress");
+        const expectedTask = {
+          id: "task",
+          status: "running",
+          execution: { state: "running" },
+          progressSummary: "Keep the released progress summary",
+          ...(modern ? { progress: progressToJSON.mock.results[0]?.value } : {}),
+        };
+        expect(peer.socket.send.mock.calls[0]?.[0]).toBe(
+          JSON.stringify({
+            type: "event",
+            event: "task",
+            payload: { action: "upserted", task: expectedTask },
+            seq: 1,
+            recipientProfileId: "same-profile",
+          }),
+        );
+        const delivered = JSON.parse(peer.socket.send.mock.calls[0]![0]);
+        expect(releasedTaskValidators.summary.Check(delivered.payload.task)).toBe(!modern);
+      }
+
+      for (const [index, payload] of [
+        { action: "upserted", task: { id: "task", status: "completed", result: "Done" } },
+        { action: "deleted", taskId: "task" },
+        { action: "restored" },
+      ].entries()) {
+        broadcast("task", payload);
+        for (const peer of peers) {
+          expect(peer.socket.send.mock.calls[index + 1]?.[0]).toBe(
+            JSON.stringify({
+              type: "event",
+              event: "task",
+              payload,
+              seq: index + 2,
+              recipientProfileId: "same-profile",
+            }),
+          );
+        }
+      }
+    },
+  );
+
+  it("does not prepare task variants before recipient authorization", () => {
+    const peers = [makeClient("legacy"), makeClient("modern")];
+    peers[1]!.client.connect.caps = ["task-progress"];
+    const toJSON = vi.fn(() => ({ runId: "run", revision: 1, items: [] }));
+    const clients = new GatewayClientRegistry(peers.map(({ client }) => client));
+    const { broadcast } = createGatewayBroadcaster({
+      clients,
+      canReceiveSessionEvent: () => false,
+    });
+    const payload = {
+      action: "upserted",
+      task: { id: "hidden", status: "running", progress: { toJSON } },
+    };
+    broadcast("task", payload, { sessionKeys: ["agent:main:hidden"] });
+    for (const peer of peers) {
+      peer.client.connect.scopes = [];
+    }
+    broadcast("task", payload);
+    const empty = createGatewayBroadcaster({ clients: new GatewayClientRegistry() });
+    empty.broadcast("task", payload);
+    expect(toJSON).not.toHaveBeenCalled();
+    for (const peer of peers) {
+      expect(peer.socket.send).not.toHaveBeenCalled();
+    }
+    broadcast("tick", {});
+    for (const peer of peers) {
+      expect(peer.socket.frames).toEqual([{ event: "tick", seq: 1 }]);
+    }
+  });
+
+  it("keeps task serialization failures and dropped frames out of delivered sequences", () => {
+    warnSpy.mockClear();
+    const legacy = makeClient("legacy");
+    const modern = makeClient("modern");
+    modern.client.connect.caps = ["task-progress"];
+    const clients = new GatewayClientRegistry([legacy.client]);
+    const { broadcast } = createGatewayBroadcaster({ clients });
+    const progressToJSON = vi.fn(() => ({ runId: "run", revision: 1, items: [] }));
+    const payload = {
+      action: "upserted",
+      task: { id: "task", status: "running", progress: { toJSON: progressToJSON } },
+    };
+    broadcast("task", payload);
+    expect(progressToJSON).not.toHaveBeenCalled();
+    clients.add(modern.client);
+    broadcast("task", { ...payload, task: { ...payload.task, result: 1n } });
+    expect(warnSpy).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining("broadcast serialization failed for event task"),
+    );
+    expect(legacy.socket.frames).toEqual([{ event: "task", seq: 1 }]);
+    expect(modern.socket.send).not.toHaveBeenCalled();
+    legacy.socket.bufferedAmount = MAX_BUFFERED_BYTES + 1;
+    broadcast("task", payload, { dropIfSlow: true });
+    legacy.socket.bufferedAmount = 0;
+    broadcast("task", payload);
+    expect(legacy.socket.frames).toEqual([
+      { event: "task", seq: 1 },
+      { event: "task", seq: 3 },
+    ]);
+    expect(modern.socket.frames).toEqual([
+      { event: "task", seq: 1 },
+      { event: "task", seq: 2 },
+    ]);
+    const received = JSON.parse(legacy.socket.send.mock.calls[1]![0]);
+    expect(releasedTaskValidators.summary.Check(received.payload.task)).toBe(true);
+    expect(progressToJSON).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps task variants local across reentrant targeted publications", () => {
+    const legacy = makeClient("legacy");
+    const modern = makeClient("modern");
+    modern.client.connect.caps = ["task-progress"];
+    const { broadcast, broadcastToConnIds } = createGatewayBroadcaster({
+      clients: new GatewayClientRegistry([legacy.client, modern.client]),
+    });
+    const progress = { runId: "run", revision: 1, items: [] };
+    const outer = { action: "upserted", task: { id: "outer", status: "running", progress } };
+    const inner = { action: "upserted", task: { id: "inner", status: "running", progress } };
+    legacy.socket.send.mockImplementationOnce(() => {
+      broadcastToConnIds("task", inner, new Set(["legacy", "modern"]));
+    });
+    broadcast("task", outer);
+    const delivered = (peer: { socket: RecordingSocket }) =>
+      peer.socket.send.mock.calls.map(([frame]) => JSON.parse(frame));
+    expect(delivered(legacy)).toEqual([
+      {
+        type: "event",
+        event: "task",
+        payload: { action: "upserted", task: { id: "outer", status: "running" } },
+        seq: 1,
+      },
+      {
+        type: "event",
+        event: "task",
+        payload: { action: "upserted", task: { id: "inner", status: "running" } },
+        seq: 2,
+      },
+    ]);
+    expect(delivered(modern)).toEqual([
+      { type: "event", event: "task", payload: inner, seq: 1 },
+      { type: "event", event: "task", payload: outer, seq: 2 },
+    ]);
+  });
+
   it("keeps recipient session permissions separate at the same sequence and profile", () => {
     const first = makeClient("first");
     const second = makeClient("second");

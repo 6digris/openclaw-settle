@@ -106,6 +106,7 @@ export const TaskSummarySchema = closedObject({
   execution: Type.Optional(withSince("2026.9", TaskExecutionSchema)),
   /**
    * Current-generation prepared activity; absent when unavailable, including after restart.
+   * WebSocket replies/events include this only for peers advertising `task-progress`.
    * Producer bounds display fields to 512 UTF-16 units and retains the newest items within
    * 8,192 total string units (including exact opaque IDs), at most 64 items. Full text is history.
    */
@@ -170,6 +171,7 @@ export const TasksHistoryParamsSchema = closedObject({
 export const TasksHistoryResultSchema = closedObject({
   /** Stable messageId or __openclaw.id anchors refreshes; entry IDs can have sibling rows. */
   messages: Type.Array(Type.Unknown()),
+  /** Prepared history activity, negotiated with the same `task-progress` capability. */
   activity: Type.Optional(Type.Array(ChatHistoryActivitySchema)),
   nextCursor: Type.Optional(Type.String({ maxLength: 8192 })),
 });

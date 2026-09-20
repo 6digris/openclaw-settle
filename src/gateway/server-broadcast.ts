@@ -40,6 +40,7 @@ import { MAX_BUFFERED_BYTES, WEBSOCKET_OPEN_READY_STATE } from "./server-constan
 import type { GatewayClientRegistry } from "./server/client-registry.js";
 import { closeGatewayTransportWithGrace } from "./server/connection-transport-close.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
+import { presentTaskPayload } from "./task-wire-presentation.js";
 import { logWs, summarizeAgentEventForWsLog } from "./ws-log.js";
 
 // Pairing scope is for device-pairing handshakes only; chat transcript events
@@ -391,8 +392,10 @@ export function createGatewayBroadcaster(params: {
     let outboundEventLogged = false;
     let lastFrameSequence = 0;
     let lastFrameRecipientProfileId: string | undefined;
+    let lastFrameBase: FrameFields | undefined;
     let lastFrame: string | undefined;
     let frameBase: FrameBase | undefined = retained?.base;
+    let legacyTaskFrameBase: FrameBase | undefined;
     let frameFields: FrameFields | undefined = retained?.base;
     // Private coalescers preserve inputs; identical pending histories can share this merge.
     let mergedFrames: Map<unknown, { payload: unknown; base: FrameBase }> | undefined;
@@ -412,6 +415,19 @@ export function createGatewayBroadcaster(params: {
     // JSON.stringify for the payload.
     const getFrameBase = () => {
       return (frameBase ??= frameBaseFor(payload));
+    };
+    const getClientFrameBase = (client: GatewayWsClient): FrameBase => {
+      if (
+        event !== "task" ||
+        hasGatewayClientCap(client.connect.caps, GATEWAY_CLIENT_CAPS.TASK_PROGRESS)
+      ) {
+        return getFrameBase();
+      }
+      if (!legacyTaskFrameBase) {
+        const legacy = presentTaskPayload(event, payload, client.connect.caps);
+        legacyTaskFrameBase = legacy === payload ? getFrameBase() : frameBaseFor(legacy);
+      }
+      return legacyTaskFrameBase;
     };
     const sessionSubscriptionVerified = opts?.sessionSubscriptionVerified === true;
     const isSessionSubscriptionEvent = SESSION_SUBSCRIPTION_EVENTS.has(event);
@@ -628,7 +644,7 @@ export function createGatewayBroadcaster(params: {
             canSkipSourcePayload =
               (prototype === null || prototype === Object.prototype) && !("toJSON" in payload);
           }
-          if (!canSkipSourcePayload) {
+          if (!canSkipSourcePayload && event !== "task") {
             getFrameBase();
           }
           projectSession = params.prepareSessionEventProjection?.(event, payload, {
@@ -638,8 +654,9 @@ export function createGatewayBroadcaster(params: {
           skipSourcePayload = canSkipSourcePayload && projectSession !== undefined;
           sessionProjectionPrepared = true;
         }
-        const base = skipSourcePayload ? getFrameFields() : getFrameBase();
-        let payloadFragment = frameBase?.payloadFragment ?? "";
+        const clientFrameBase = skipSourcePayload ? undefined : getClientFrameBase(c);
+        const base = clientFrameBase ?? getFrameFields();
+        let payloadFragment = clientFrameBase?.payloadFragment ?? "";
         if (presencePayload) {
           // Presence contains session references. Only the connection owner's
           // recipient projection may cross this boundary; never send the raw roster.
@@ -667,7 +684,8 @@ export function createGatewayBroadcaster(params: {
           !projectSession &&
           lastFrame !== undefined &&
           lastFrameSequence === nextSeq &&
-          lastFrameRecipientProfileId === recipientProfileId
+          lastFrameRecipientProfileId === recipientProfileId &&
+          lastFrameBase === base
         ) {
           frame = lastFrame;
         } else {
@@ -675,6 +693,7 @@ export function createGatewayBroadcaster(params: {
           if (!presencePayload && !projectSession) {
             lastFrameSequence = nextSeq;
             lastFrameRecipientProfileId = recipientProfileId;
+            lastFrameBase = base;
             lastFrame = frame;
           }
         }

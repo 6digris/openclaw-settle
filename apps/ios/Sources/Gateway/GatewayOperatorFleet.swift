@@ -167,6 +167,7 @@ final class GatewayOperatorFleet {
             caps: [
                 OpenClawGatewayClientCapability.inlineWidgets,
                 OpenClawGatewayClientCapability.modelSelectionPolicy,
+                OpenClawGatewayClientCapability.taskProgress,
             ],
             commands: [],
             permissions: [:],

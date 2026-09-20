@@ -28,6 +28,7 @@ import {
   writeSessionPlacementRecovery,
 } from "../lib/sessions/session-placement-recovery.ts";
 import { createStorageMock } from "../test-helpers/storage.ts";
+import { deferDeviceIdentityDigest, stubInsecureCrypto } from "./gateway-crypto.test-support.ts";
 
 const realLoadOrCreateDeviceIdentity = nodes.loadOrCreateDeviceIdentity;
 const wsInstances = vi.hoisted((): MockWebSocket[] => []);
@@ -112,13 +113,6 @@ function storeDeviceIdentity(deviceId: string) {
       createdAtMs: 1,
     }),
   );
-}
-
-function deferDeviceIdentityDigest() {
-  const digest = createDeferred<ArrayBuffer>();
-  const digestMock = vi.fn(() => digest.promise);
-  vi.stubGlobal("crypto", { subtle: { digest: digestMock } });
-  return { digest, digestMock };
 }
 
 function createDeviceTokenState(request: (method: string) => Promise<unknown>) {
@@ -349,15 +343,6 @@ function getLatestWebSocket(): MockWebSocket {
     throw new Error("missing websocket instance");
   }
   return ws;
-}
-
-function stubInsecureCrypto() {
-  // Real insecure contexts keep randomUUID/getRandomValues; only crypto.subtle
-  // is gated to secure contexts.
-  vi.stubGlobal("crypto", {
-    randomUUID: () => "req-insecure",
-    getRandomValues: (array: Uint8Array) => array.fill(7),
-  });
 }
 
 function useNodeFakeTimers() {
@@ -602,6 +587,7 @@ describe("GatewayBrowserClient", () => {
     expect(connectFrame.params?.caps).toEqual([
       GATEWAY_CLIENT_CAPS.AGENT_KIND,
       GATEWAY_CLIENT_CAPS.APPROVALS,
+      "task-progress",
       GATEWAY_CLIENT_CAPS.TASK_SUGGESTIONS,
       GATEWAY_CLIENT_CAPS.TERMINAL_OFFSET_SEQ,
       GATEWAY_CLIENT_CAPS.TERMINAL_SESSION_METADATA,

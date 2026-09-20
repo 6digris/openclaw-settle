@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { validatePreviousConnectParams } from "../../gateway-protocol/src/connect-compatibility.test-support.js";
 import { GATEWAY_SERVER_CAPS, validateConnectParams } from "../../gateway-protocol/src/index.js";
-import { GatewayClient } from "./client.js";
+import { GatewayClient, type GatewayClientOptions } from "./client.js";
 import { rawDataToString } from "./websocket-data.js";
 import { WebSocketServer, type WebSocket } from "./websocket.test-support.js";
 
@@ -44,14 +44,33 @@ describe("GatewayClient websocket opening handshakeTimeout", () => {
     return (server.address() as AddressInfo).port;
   }
 
-  it.each([
-    { advertised: false, modelCatalog: {} },
-    { advertised: false, modelCatalog: { agentId: "alpha" } },
-    { advertised: true, modelCatalog: { agentId: "alpha", sessionKey: "agent:alpha:saved" } },
-    { advertised: true, modelCatalog: undefined },
+  it.each<
+    Pick<GatewayClientOptions, "modelCatalog" | "caps" | "role"> & {
+      advertised: boolean;
+      expectedCaps: string[];
+    }
+  >([
+    { advertised: false, modelCatalog: {}, expectedCaps: ["task-progress"] },
+    { advertised: false, modelCatalog: { agentId: "alpha" }, expectedCaps: ["task-progress"] },
+    {
+      advertised: true,
+      modelCatalog: { agentId: "alpha", sessionKey: "agent:alpha:saved" },
+      expectedCaps: ["task-progress", "model-catalog-snapshot"],
+    },
+    { advertised: true, expectedCaps: ["task-progress"] },
+    { advertised: false, role: "operator", expectedCaps: ["task-progress"] },
+    { advertised: false, caps: [], expectedCaps: [] },
+    {
+      advertised: true,
+      modelCatalog: { agentId: "alpha" },
+      caps: ["tool-events"],
+      expectedCaps: ["tool-events", "model-catalog-snapshot"],
+    },
+    { advertised: false, role: "node", expectedCaps: [] },
+    { advertised: false, role: "worker", expectedCaps: [] },
   ])(
-    "negotiates catalog input with a compatible Gateway: %j",
-    async ({ advertised, modelCatalog }) => {
+    "negotiates catalog input and caller-owned task capabilities with a compatible Gateway: %j",
+    async ({ advertised, modelCatalog, caps, role, expectedCaps }) => {
       const server = http.createServer();
       const wss = new WebSocketServer({ server });
       const port = await listen(server);
@@ -91,6 +110,8 @@ describe("GatewayClient websocket opening handshakeTimeout", () => {
         url: `ws://127.0.0.1:${port}`,
         deviceIdentity: null,
         modelCatalog,
+        caps,
+        role,
         onHelloOk: () => connected.resolve(),
         onConnectError: connected.reject,
       });
@@ -99,14 +120,11 @@ describe("GatewayClient websocket opening handshakeTimeout", () => {
         client.start();
         await connected.promise;
         const frame = await received.promise;
+        expect(frame.params).toMatchObject({ caps: expectedCaps });
         if (advertised && modelCatalog) {
-          expect(frame.params).toMatchObject({
-            modelCatalog,
-            caps: ["model-catalog-snapshot"],
-          });
+          expect(frame.params).toMatchObject({ modelCatalog });
         } else {
           expect(frame.params).not.toHaveProperty("modelCatalog");
-          expect(frame.params).toMatchObject({ caps: [] });
         }
       } finally {
         await client.stopAndWait();

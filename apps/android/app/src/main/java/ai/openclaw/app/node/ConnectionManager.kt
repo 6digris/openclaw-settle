@@ -45,6 +45,7 @@ class ConnectionManager internal constructor(
     internal const val INLINE_WIDGETS_CLIENT_CAPABILITY = "inline-widgets"
     internal const val USAGE_REFRESHING_CLIENT_CAPABILITY = "usage-refreshing"
     internal const val MODEL_SELECTION_POLICY_CLIENT_CAPABILITY = "model-selection-policy"
+    internal const val TASK_PROGRESS_CLIENT_CAPABILITY = "task-progress"
 
     internal fun operatorScopesForStoredDeviceToken(storedScopes: List<String>): List<String> {
       val normalized =
@@ -167,6 +168,7 @@ class ConnectionManager internal constructor(
           if (inlineWidgetsAvailable()) add(INLINE_WIDGETS_CLIENT_CAPABILITY)
           add(USAGE_REFRESHING_CLIENT_CAPABILITY)
           add(MODEL_SELECTION_POLICY_CLIENT_CAPABILITY)
+          add(TASK_PROGRESS_CLIENT_CAPABILITY)
         },
       commands = emptyList(),
       permissions = emptyMap(),

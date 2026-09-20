@@ -237,7 +237,10 @@ struct GatewayChannelConnectTests {
         #expect(session.snapshotMakeCount() == 1)
     }
 
-    @Test func `connect advertises compatible protocol range`() async throws {
+    @Test(arguments: [true, false])
+    func `connect advertises compatible protocol range and caller-owned capabilities`(
+        useMacCapabilities: Bool) async throws
+    {
         let recorder = ConnectParamsRecorder()
         let session = GatewayTestWebSocketSession(
             taskFactory: {
@@ -247,17 +250,25 @@ struct GatewayChannelConnectTests {
                         recorder.record(message)
                     })
             })
+        var options = GatewayWebSocketTestSupport.identityFreeOperatorConnectOptions
+        options.caps = useMacCapabilities ? GatewayConnection.operatorClientCaps : []
         let channel = try GatewayChannelActor(
             url: #require(URL(string: "ws://example.invalid")),
             token: nil,
             session: WebSocketSessionBox(session: session),
-            connectOptions: GatewayWebSocketTestSupport.identityFreeOperatorConnectOptions)
+            connectOptions: options)
 
-        try await channel.connect()
+        try await self.withChannel(channel) { channel in
+            try await channel.connect()
 
-        let params = try #require(recorder.snapshot())
-        #expect(params["minProtocol"] as? Int == GATEWAY_MIN_PROTOCOL_VERSION)
-        #expect(params["maxProtocol"] as? Int == GATEWAY_PROTOCOL_VERSION)
+            let params = try #require(recorder.snapshot())
+            #expect(params["minProtocol"] as? Int == GATEWAY_MIN_PROTOCOL_VERSION)
+            #expect(params["maxProtocol"] as? Int == GATEWAY_PROTOCOL_VERSION)
+            let expectedCaps = useMacCapabilities
+                ? ["agent-kind", "inline-widgets", "model-selection-policy", "task-progress", "usage-refreshing"]
+                : []
+            #expect(params["caps"] as? [String] == expectedCaps)
+        }
     }
 
     @Test func `node connect advertises worker path environment`() async throws {
@@ -291,6 +302,7 @@ struct GatewayChannelConnectTests {
 
         let params = try #require(recorder.snapshot())
         #expect(params["pathEnv"] as? String == "/opt/homebrew/bin:/usr/bin:/bin")
+        #expect(params["caps"] as? [String] == ["system"])
     }
 
     @Test func `node connect forwards the selected computer-use descriptor`() async throws {
