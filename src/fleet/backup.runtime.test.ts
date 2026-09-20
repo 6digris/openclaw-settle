@@ -73,6 +73,13 @@ function containerMock(current: FleetContainerInspectResult = inspection()) {
   } satisfies FleetContainerRuntime;
 }
 
+function stopInspection(current: ReturnType<typeof inspection>) {
+  return async () => {
+    current.running = false;
+    current.state = "exited";
+  };
+}
+
 async function createArchive(
   params: { tenant?: string; mutate?: (dir: string) => Promise<void> } = {},
 ): Promise<string> {
@@ -685,10 +692,7 @@ describe("fleet restore runtime", () => {
         );
         return running;
       });
-      containers.stop.mockImplementation(async () => {
-        running.running = false;
-        running.state = "exited";
-      });
+      containers.stop.mockImplementation(stopInspection(running));
 
       await restoreFleetCell({ ...restoreParams(containers, archive), force: true });
 
@@ -705,10 +709,7 @@ describe("fleet restore runtime", () => {
     const archive = await createArchive();
     const running = inspection(true);
     const containers = containerMock(running);
-    containers.stop.mockImplementation(async () => {
-      running.running = false;
-      running.state = "exited";
-    });
+    containers.stop.mockImplementation(stopInspection(running));
     containers.remove.mockRejectedValue(new Error("transient removal failure"));
     await expect(
       restoreFleetCell({ ...restoreParams(containers, archive), force: true }),
@@ -723,10 +724,7 @@ describe("fleet restore runtime", () => {
     const archive = await createArchive();
     const running = inspection(true);
     const containers = containerMock(running);
-    containers.stop.mockImplementation(async () => {
-      running.running = false;
-      running.state = "exited";
-    });
+    containers.stop.mockImplementation(stopInspection(running));
     containers.run.mockImplementation(async () => {
       running.running = true;
       running.state = "running";
