@@ -2117,7 +2117,11 @@ describe("mobile release authority", () => {
           "timeout-minutes": number;
         };
         diagnose: {
-          env: Record<string, string>;
+          env?: Record<string, string>;
+          strategy: {
+            "fail-fast": boolean;
+            matrix: { include: Array<{ scenario: string; timeout_minutes: number }> };
+          };
           needs: string;
           permissions: Record<string, string>;
           "runs-on": string;
@@ -2176,9 +2180,7 @@ describe("mobile release authority", () => {
       (step) => step.name === "Prepare trusted Linux Android tooling",
     );
     const kvmIndex = steps.findIndex((step) => step.name === "Verify Linux KVM acceleration");
-    const diagnosticIndex = steps.findIndex(
-      (step) => step.name === "Run phone emulator diagnostic",
-    );
+    const diagnosticIndex = steps.findIndex((step) => step.name === "Run emulator diagnostic");
     const artifactIndex = steps.findIndex(
       (step) => step.name === "Upload Android emulator diagnostic",
     );
@@ -2201,12 +2203,17 @@ describe("mobile release authority", () => {
     expect(job.permissions).toEqual({ contents: "read" });
     expect(job.needs).toBe("validate-target");
     expect(job["runs-on"]).toBe("ubuntu-24.04");
-    expect(job["timeout-minutes"]).toBe(25);
-    expect(job.env).toEqual({
-      ANDROID_SCREENSHOT_EMULATOR_TIMEOUT_SECONDS: "180",
-      AVD_NAME: "OpenClaw_Screenshots_API36",
-      DEVICE_PROFILE: "pixel_2",
-      SYSTEM_IMAGE: "system-images;android-36;google_apis;x86_64",
+    expect(job["timeout-minutes"]).toBe("${{ matrix.timeout_minutes }}");
+    expect(job.env).toBeUndefined();
+    expect(job.strategy).toEqual({
+      "fail-fast": false,
+      matrix: {
+        include: [
+          { scenario: "phone", timeout_minutes: 25 },
+          { scenario: "wear", timeout_minutes: 25 },
+          { scenario: "phone-then-wear", timeout_minutes: 40 },
+        ],
+      },
     });
 
     expect(validateIndex).toBe(0);
@@ -2278,7 +2285,7 @@ describe("mobile release authority", () => {
         "fetch-depth": 1,
         "persist-credentials": false,
         "sparse-checkout":
-          ".github/actions/setup-android-toolchain\nscripts/android-sips-linux.sh\n",
+          ".github/actions/setup-android-toolchain\nscripts/android-sips-linux.sh\nscripts/android-emulator-diagnostic.sh\n",
         path: ".mobile-release-tooling",
       },
     });
@@ -2463,7 +2470,10 @@ describe("mobile release authority", () => {
       expect(fs.existsSync(rejected.sentinel)).toBe(false);
     }
 
-    const diagnostic = steps[diagnosticIndex]?.run ?? "";
+    const diagnostic = fs.readFileSync("scripts/android-emulator-diagnostic.sh", "utf8");
+    expect(steps[diagnosticIndex]?.env).toEqual({ DIAGNOSTIC_SCENARIO: "${{ matrix.scenario }}" });
+    expect(steps[diagnosticIndex]?.run).toContain('bash "$diagnostic" "$DIAGNOSTIC_SCENARIO"');
+    expect(diagnostic).toContain("ANDROID_SCREENSHOT_EMULATOR_TIMEOUT_SECONDS=180");
     expect(diagnostic).toContain(
       'printf \'no\\n\' | avdmanager create avd --force --name "$AVD_NAME" --package "$SYSTEM_IMAGE" --device "$DEVICE_PROFILE"',
     );
@@ -2952,7 +2962,7 @@ fi
       if: "always()",
       uses: "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
       with: {
-        name: "android-emulator-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}",
+        name: "android-emulator-diagnostic-${{ matrix.scenario }}-${{ github.run_id }}-${{ github.run_attempt }}",
         path: "${{ runner.temp }}/android-emulator-diagnostic",
         "retention-days": 7,
       },
@@ -2961,6 +2971,228 @@ fi
     expect(source).not.toContain("environment:");
     expect(source).not.toMatch(/\b(?:pnpm|gradle|fastlane)\b/iu);
     expect(source).not.toMatch(/apps-signing|MATCH_PASSWORD|GOOGLE_PLAY|upload-and-record/iu);
+  });
+
+  it("runs fixed phone and Wear diagnostics through the workflow's trusted shell", async () => {
+    const workflow = parse(
+      fs.readFileSync(".github/workflows/android-emulator-diagnostic.yml", "utf8"),
+    ) as {
+      jobs: { diagnose: { steps: Array<{ name: string; run?: string }> } };
+    };
+    const run = workflow.jobs.diagnose.steps.find(
+      (step) => step.name === "Run emulator diagnostic",
+    )?.run;
+    if (!run) {
+      throw new Error("Missing canonical diagnostic entrypoint");
+    }
+    const source = fs.readFileSync("scripts/android-emulator-diagnostic.sh", "utf8");
+    const exercise = async (scenario: string, mode = "ready", admission = "matching") => {
+      const root = tempRoots.make("openclaw-android-diagnostic-entrypoint-");
+      const bin = path.join(root, "bin");
+      const home = path.join(root, "home");
+      const diagnostic = path.join(root, "diagnostic");
+      const runner = path.join(root, "runner");
+      for (const directory of [
+        bin,
+        home,
+        diagnostic,
+        path.join(runner, "openclaw-android-tools"),
+      ]) {
+        fs.mkdirSync(directory, { recursive: true });
+      }
+      // Test-only clock compression of the actual entrypoint, not a second implementation.
+      const fixtureSource = source
+        .replace(
+          "ANDROID_SCREENSHOT_EMULATOR_TIMEOUT_SECONDS=180",
+          "ANDROID_SCREENSHOT_EMULATOR_TIMEOUT_SECONDS=1",
+        )
+        .replace(
+          "final_cold_boot_observation_seconds=900",
+          "final_cold_boot_observation_seconds=5",
+        );
+      const trusted = path.join(
+        root,
+        ".mobile-release-tooling/scripts/android-emulator-diagnostic.sh",
+      );
+      fs.mkdirSync(path.dirname(trusted), { recursive: true });
+      fs.writeFileSync(trusted, fixtureSource, { mode: 0o755 });
+      const executable = (name: string, body: string) =>
+        fs.writeFileSync(
+          path.join(bin, name),
+          `#!/bin/bash
+set -euo pipefail
+${body}
+`,
+          { mode: 0o755 },
+        );
+      executable(
+        "git",
+        `
+shift 2
+case "$1 $2" in
+  "rev-parse HEAD") if [[ "$ADMISSION" == wrong-sha ]]; then echo wrong; else echo "$GITHUB_WORKFLOW_SHA"; fi ;;
+  "ls-tree HEAD")
+    mode=100755
+    [[ "$ADMISSION" != symlink ]] || mode=120000
+    printf '%s blob fixture scripts/android-emulator-diagnostic.sh\\n' "$mode" ;;
+  "cat-file blob")
+    cat "$TRUSTED_SCRIPT"
+    [[ "$ADMISSION" != changed-bytes ]] || printf '# changed\\n' ;;
+  *) exit 91 ;;
+esac`,
+      );
+      executable("sdkmanager", `printf 'installed SDK revisions\\n'`);
+      executable(
+        "avdmanager",
+        `
+printf 'avdmanager %s\\n' "$*" >>"$TRACE"
+if [[ "$1" == create ]]; then
+  while [[ "$1" != --name ]]; do shift; done
+  avd="$2"
+  mkdir -p "$HOME/.android/avd/$avd.avd"
+  printf 'AvdId=%s\\n' "$avd" >"$HOME/.android/avd/$avd.avd/config.ini"
+fi`,
+      );
+      executable(
+        "emulator",
+        `
+if [[ "$1" == -version || "$1" == -accel-check ]]; then printf 'emulator fixture\\n'; exit 0; fi
+if [[ -f "$STATE/pid" ]] && kill -0 "$(cat "$STATE/pid")" 2>/dev/null; then
+  echo 'previous emulator still running' >&2; exit 98
+fi
+printf '%s\\n' "$$" >"$STATE/pid"
+printf '%s\\n' "$$" >>"$STATE/pids"
+printf '%s\\n' "$2" >"$STATE/avd"
+printf 'launch %s\\n' "$*" >>"$TRACE"
+printf 'emulator-startup-sentinel\\n' >&2
+if [[ "$MODE" == exited || ( "$MODE" == wear-exited && "$2" == *Wear* ) ]]; then exit 42; fi
+exec /bin/sleep 60`,
+      );
+      executable(
+        "adb",
+        `
+printf 'adb %s\\n' "$*" >>"$TRACE"
+if [[ "$1" == devices ]]; then
+  printf 'List of devices attached\\n'
+  if [[ "$MODE" == preexisting ]]; then printf 'external-device\\tdevice\\n'; exit 0; fi
+  if [[ -f "$STATE/pid" ]] && kill -0 "$(cat "$STATE/pid")" 2>/dev/null; then
+    count=0
+    [[ ! -f "$STATE/polls" ]] || count="$(cat "$STATE/polls")"
+    count=$((count + 1)); printf '%s\\n' "$count" >"$STATE/polls"
+    if [[ "$MODE" != no-adb && ( "$MODE" != late-adb || "$count" -gt 2 ) ]]; then
+      printf 'emulator-5554\\tdevice\\n'
+    fi
+  fi
+elif [[ "$1" == -s && "$3" == emu ]]; then
+  if [[ "$MODE" == wrong-avd ]]; then echo Another_AVD; else cat "$STATE/avd"; fi
+elif [[ "$1" == -s && "$3" == shell ]]; then
+  if [[ "\${5:-}" == sys.boot_completed && "$MODE" == late-boot && ! -f "$STATE/boot-polled" ]]; then
+    touch "$STATE/boot-polled"; printf '0\\n'
+  else printf '1\\n'; fi
+fi`,
+      );
+      const result = await runVitestShutdownCommand({
+        bin: "/bin/bash",
+        args: ["-c", run],
+        cwd: root,
+        timeoutMs: 15_000,
+        env: {
+          PATH: `${bin}:/usr/bin:/bin`,
+          HOME: home,
+          TMPDIR: runner,
+          LANG: "C",
+          LC_ALL: "C",
+          DIAGNOSTIC_DIR: diagnostic,
+          DIAGNOSTIC_SCENARIO: scenario,
+          GITHUB_WORKFLOW_SHA: "a".repeat(40),
+          RUNNER_TEMP: runner,
+          TRUSTED_SCRIPT: trusted,
+          TRACE: path.join(root, "trace"),
+          STATE: root,
+          MODE: mode,
+          ADMISSION: admission,
+        },
+      });
+      const trace = fs.existsSync(path.join(root, "trace"))
+        ? fs.readFileSync(path.join(root, "trace"), "utf8")
+        : "";
+      if (fs.existsSync(path.join(root, "pids"))) {
+        for (const pid of fs.readFileSync(path.join(root, "pids"), "utf8").trim().split("\n")) {
+          expect(() => process.kill(Number(pid), 0)).toThrow();
+        }
+      }
+      return { result, trace, diagnostic };
+    };
+
+    for (const scenario of ["phone", "wear", "phone-then-wear"]) {
+      const outcome = await exercise(scenario);
+      expect(outcome.result.code, outcome.result.stderr).toBe(0);
+      const factors = scenario === "phone-then-wear" ? ["phone", "wear"] : [scenario];
+      expect(outcome.trace.split("\n").filter((line) => line.startsWith("launch "))).toHaveLength(
+        factors.length,
+      );
+      for (const factor of factors) {
+        const result = fs.readFileSync(path.join(outcome.diagnostic, factor, "result.txt"), "utf8");
+        expect(result).toContain("boot_completed=1");
+        expect(result).toContain(
+          factor === "wear" ? "OpenClaw_Wear_Screenshots_API34" : "OpenClaw_Screenshots_API36",
+        );
+        expect(outcome.trace).toContain(
+          factor === "wear"
+            ? "--package system-images;android-34;android-wear;x86_64 --device wearos_large_round"
+            : "--package system-images;android-36;google_apis;x86_64 --device pixel_2",
+        );
+      }
+      if (scenario === "phone-then-wear") {
+        expect(outcome.trace.indexOf("delete avd --name OpenClaw_Screenshots_API36")).toBeLessThan(
+          outcome.trace.indexOf("launch -avd OpenClaw_Wear_Screenshots_API34"),
+        );
+      }
+    }
+    for (const mode of ["late-adb", "late-boot", "no-adb"]) {
+      const outcome = await exercise("wear", mode);
+      expect(outcome.result.code, outcome.result.stderr).toBe(1);
+      expect(fs.existsSync(path.join(outcome.diagnostic, "wear/result.txt"))).toBe(false);
+      const observations = fs.readFileSync(
+        path.join(outcome.diagnostic, "wear/post-deadline-observations.log"),
+        "utf8",
+      );
+      expect(observations).toContain(
+        mode === "no-adb"
+          ? "observation_stop=observation-cap-reached"
+          : "observation_stop=late-boot-completed",
+      );
+      expect(
+        fs.readFileSync(path.join(outcome.diagnostic, "wear/process-status.log"), "utf8"),
+      ).toContain("exit_status=1");
+    }
+    for (const mode of ["exited", "wear-exited"]) {
+      const outcome = await exercise("phone-then-wear", mode);
+      expect(outcome.result.code, outcome.result.stderr).toBe(1);
+      const failed = mode === "exited" ? "phone" : "wear";
+      expect(
+        fs.readFileSync(path.join(outcome.diagnostic, failed, "process-status.log"), "utf8"),
+      ).toContain("owned_emulator_exit_status=42");
+      if (mode === "exited") {
+        expect(outcome.trace).not.toContain("launch -avd OpenClaw_Wear");
+      }
+    }
+    for (const mode of ["preexisting", "wrong-avd"]) {
+      const outcome = await exercise("wear", mode);
+      expect(outcome.result.code).toBe(1);
+      expect(fs.existsSync(path.join(outcome.diagnostic, "wear/result.txt"))).toBe(false);
+      if (mode === "preexisting") {
+        expect(outcome.trace).not.toContain("launch ");
+      }
+    }
+    const unsupported = await exercise("arbitrary; echo unsafe");
+    expect(unsupported.result.code).toBe(2);
+    expect(unsupported.trace).toBe("");
+    for (const admission of ["wrong-sha", "symlink", "changed-bytes"]) {
+      const rejected = await exercise("wear", "ready", admission);
+      expect(rejected.result.code).not.toBe(0);
+      expect(rejected.trace).toBe("");
+    }
   });
 
   it("generates two-axis varied-color Android conversion smoke inputs", () => {
