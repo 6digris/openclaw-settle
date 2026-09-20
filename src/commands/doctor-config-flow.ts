@@ -36,6 +36,7 @@ import { shouldSkipPluginValidationForDoctorConfigPreflight } from "./doctor-con
 import { runDoctorConfigPreflight } from "./doctor-config-preflight.js";
 import type { DoctorOptions, DoctorPrompter } from "./doctor-prompter.js";
 import { createWorkspaceAliasMigrationRepair } from "./doctor-workspace-alias.js";
+import { createDoctorChangesPanelSink } from "./doctor/changes-panel-sink.js";
 import { cronCodexRuntimePolicyTargetKey } from "./doctor/cron/store-migration.js";
 import { emitDoctorNotes, sanitizeDoctorNote } from "./doctor/emit-notes.js";
 import { finalizeDoctorConfigFlow } from "./doctor/finalize-config-flow.js";
@@ -55,34 +56,6 @@ import { containsAuthoredInclude } from "./doctor/shared/include-migration-owner
 import { normalizeCompatibilityConfigValues } from "./doctor/shared/legacy-config-core-migrate.js";
 import type { DoctorPluginMetadataSnapshotState } from "./doctor/shared/plugin-metadata-snapshot-scope.js";
 import { shouldSkipLegacyUpdateDoctorConfigWrite } from "./doctor/shared/update-phase.js";
-
-// Repair-mode "Doctor changes" panels queue until the final candidate passes the
-// same validation the atomic writer enforces: printing "Doctor changes" and then
-// refusing the write would report repairs that never reached disk. Preview
-// panels print immediately — they promise nothing.
-type DoctorChangesPanelSink = {
-  emit: (changeLines: ReadonlyArray<string>, options?: { sanitize?: boolean }) => void;
-  drain: () => string[];
-};
-
-function createDoctorChangesPanelSink(shouldRepair: boolean): DoctorChangesPanelSink {
-  const pending: string[] = [];
-  return {
-    emit: (changeLines, options = {}) => {
-      if (changeLines.length === 0) {
-        return;
-      }
-      const body = changeLines.join("\n");
-      const message = options.sanitize ? sanitizeDoctorNote(body) : body;
-      if (shouldRepair) {
-        pending.push(message);
-        return;
-      }
-      note(message, "Doctor changes preview");
-    },
-    drain: () => pending.splice(0),
-  };
-}
 
 async function refreshGatewayAuthStateAfterAuthProfileRepair(): Promise<void> {
   try {
@@ -452,6 +425,21 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     );
   }
 
+  const { recoverInstalledPluginConfigIds } =
+    await import("./doctor/shared/installed-plugin-id-recovery.js");
+  const installedPluginRecovery = await recoverInstalledPluginConfigIds(
+    state.candidate,
+    process.env,
+  );
+  applyConfigMutation(
+    { ...installedPluginRecovery, warnings: installedPluginRecovery.notices },
+    { fixHint: `Run "${doctorFixCommand}" to apply these changes.`, emitWarnings: true },
+  );
+  if (referenceSource) {
+    referenceSource.installedPluginIdRecovery = installedPluginRecovery.recovery;
+  }
+  // Preserve authored legacy disable policy before auto-enable can generate a
+  // canonical entry that would otherwise win the migration's shallow merge.
   const pluginActivationSourceConfig = state.candidate;
   const { collectCodexPluginActivationWarnings } =
     await import("./doctor/shared/codex-plugin-activation-warning.js");
@@ -555,6 +543,7 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     const prompter = params.prompter;
     const repairSequence = await runDoctorRepairSequence({
       state,
+      installedPluginIdRecovery: installedPluginRecovery.recovery,
       doctorFixCommand,
       env: process.env,
       blockedCodexProviderPlan,
@@ -574,6 +563,12 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
         : {}),
     });
     state = repairSequence.state;
+    if (referenceSource) {
+      referenceSource.installedPluginIdRecovery = new Map([
+        ...installedPluginRecovery.recovery,
+        ...repairSequence.installedPluginIdRecovery,
+      ]);
+    }
     pluginMetadataSnapshotState.current = repairSequence.pluginMetadataSnapshot;
     openAICodexAuthProfileIdMap = repairSequence.openAICodexAuthProfileIdMap;
     retiredModelRefConfig = repairSequence.retiredModelRefConfig;
