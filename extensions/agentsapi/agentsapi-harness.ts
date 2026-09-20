@@ -61,11 +61,11 @@ export function createAgentsApiHarness(runtime: PluginRuntime): AgentHarnessV2 {
       if (closing) {
         throw new Error("Agents API harness is closing");
       }
-      validateAgentsApiInput(params);
+      const target = validateAgentsApiInput(params);
       const authority = captureNativeSessionGenerationAuthority({
-        target: params.sessionTarget!,
+        target,
         config: params.config,
-        storePath: params.sessionTarget!.storePath,
+        storePath: target.storePath,
         assertCurrent: () => {
           assertCurrent();
           params.hostCapabilities.assertActive();
@@ -91,6 +91,7 @@ export function createAgentsApiHarness(runtime: PluginRuntime): AgentHarnessV2 {
               bind,
               () => authority.assertCurrent(),
               assertCurrent,
+              target,
             );
           },
         );
@@ -144,6 +145,7 @@ async function runAgentsApiSession(
   bind: (binding: import("./agentsapi-bindings.js").AgentsApiBinding) => Promise<void>,
   assertOwnerCurrent: () => void,
   assertHarnessCurrent: () => void,
+  target: ReturnType<typeof validateAgentsApiInput>,
 ): Promise<AgentHarnessAttemptResult> {
   const startedAtMs = Date.now();
   const cancellationState = {
@@ -190,7 +192,7 @@ async function runAgentsApiSession(
   let terminal: ReturnType<typeof agentHarnessAttemptTerminal.normalize> = { kind: "ok" };
   let reply: ReturnType<typeof createAgentsApiMessageProjection>["reply"] | undefined;
   let terminalTurnId: string | undefined;
-  const handle: Parameters<typeof setActiveEmbeddedRun>[1] = {
+  const handle = {
     kind: "embedded",
     toolAuthorityFingerprint: params.toolAuthorityFingerprint,
     sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
@@ -217,7 +219,7 @@ async function runAgentsApiSession(
     isCompacting: () => false,
     abort: () => cancellation.abortExplicitly(new Error("Agents API turn interrupted")),
     cancel: () => cancellation.abortExplicitly(new Error("Agents API turn interrupted")),
-  };
+  } satisfies Parameters<typeof setActiveEmbeddedRun>[1];
   try {
     params.replyOperation?.attachBackend(handle);
     setActiveEmbeddedRun(
@@ -321,10 +323,7 @@ async function runAgentsApiSession(
     sessionIdUsed: params.sessionId,
     sessionFileUsed: params.sessionFile,
     agentHarnessId: "agentsapi",
-    messagesSnapshot: SessionManager.open(
-      params.sessionTarget!,
-      params.workspaceDir,
-    ).buildSessionContext().messages,
+    messagesSnapshot: SessionManager.open(target, params.workspaceDir).buildSessionContext().messages,
     assistantTexts:
       reply?.lastAssistant?.content
         .filter((part) => part.type === "text")
@@ -352,7 +351,7 @@ async function runAgentsApiSession(
   };
 }
 
-function validateAgentsApiInput(params: AgentHarnessAttemptParamsV2): void {
+function validateAgentsApiInput(params: AgentHarnessAttemptParamsV2) {
   const target = params.sessionTarget;
   if (
     !target?.agentId ||
@@ -376,4 +375,11 @@ function validateAgentsApiInput(params: AgentHarnessAttemptParamsV2): void {
   if (params.contextEngine && params.contextEngine.info.id !== "legacy") {
     throw new Error("Agents API MVP currently supports only the default legacy context engine");
   }
+  return {
+    ...target,
+    agentId: target.agentId,
+    sessionId: target.sessionId,
+    sessionKey: target.sessionKey,
+    storePath: target.storePath,
+  };
 }
