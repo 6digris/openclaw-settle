@@ -3390,7 +3390,8 @@ describe("gateway agent handler", () => {
           },
           { reqId: runId, client: nativeSubagentClient() },
         );
-        await waitForAgentCommandCall();
+        // The fixture resets the command mock; await this run through async preparation.
+        await waitForAgentCommandCallAfter(0);
 
         // src/agents/subagent-spawn.ts owns the `subagent` row for this runId.
         expect(createRunningTaskRunSpy).not.toHaveBeenCalled();
