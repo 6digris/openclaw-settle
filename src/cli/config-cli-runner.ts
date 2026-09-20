@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { resolveManagedUnsetPathsForWrite } from "../config/config-path-mutation.js";
 import { replaceConfigFile } from "../config/config.js";
+import { getDeferredPluginMigrationConfigFacts } from "../config/deferred-plugin-migration-config.js";
 import { AUTO_MANAGED_CONFIG_META_PATHS } from "../config/io.meta.js";
 import { prepareConfigWriteValues } from "../config/io.write-prepare.js";
 import { prepareConfigWriteTopology } from "../config/io.write-topology.js";
@@ -17,6 +18,7 @@ import { formatErrorMessage } from "../infra/errors.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { ExitError, writeRuntimeJson } from "../runtime.js";
 import { toDotPath } from "../shared/dot-path.js";
+import { parseConfigPathArrayIndex } from "../shared/path-array-index.js";
 import {
   formatPluginInstallConfigSetError,
   type ConfigMutationOptions,
@@ -62,6 +64,27 @@ function pathEquals(path: readonly PathSegment[], expected: readonly PathSegment
   return (
     path.length === expected.length && path.every((segment, index) => segment === expected[index])
   );
+}
+
+function remapSuppliedPathsAfterDelete(
+  paths: PathSegment[][],
+  deletedPath: PathSegment[],
+  arrayIndex: number | undefined,
+): PathSegment[][] {
+  const parent = deletedPath.slice(0, -1);
+  return paths.flatMap((path) => {
+    if (pathStartsWith(path, deletedPath)) {
+      return [];
+    }
+    if (arrayIndex === undefined || path.length <= parent.length || !pathStartsWith(path, parent)) {
+      return [path];
+    }
+    const segment = path[parent.length];
+    const index = segment === undefined ? undefined : parseConfigPathArrayIndex(segment);
+    return index !== undefined && index > arrayIndex
+      ? [[...parent, String(index - 1), ...path.slice(parent.length + 1)]]
+      : [path];
+  });
 }
 
 function valueHasAutoManagedChild(value: unknown, childPath: readonly PathSegment[]): boolean {
@@ -314,8 +337,8 @@ export async function runConfigOperations(params: {
   const mutationSchema = await loadMutationSchema();
   const roster = new ConfigMutationAgentRoster(next, snapshot.sourceConfigBeforeMigrations);
   let unsetPaths: PathSegment[][] = [];
-  const explicitSetPaths: PathSegment[][] = [];
-  const suppliedValuePaths: PathSegment[][] = [];
+  let explicitSetPaths: PathSegment[][] = [];
+  let suppliedValuePaths: PathSegment[][] = [];
   const appliedOperations: ConfigSetOperation[] = [];
   const recordOperation = (operation: ConfigSetOperation): PathSegment[] => {
     const writePath = roster.writePath(operation.setPath);
@@ -344,6 +367,13 @@ export async function runConfigOperations(params: {
     }
     if (operation.mutation === "delete") {
       const writePath = recordOperation(operation);
+      // Capture identity before the splice changes legacy roster positions.
+      const deletesCanonicalAgent =
+        operation.setPath.length === 3 &&
+        operation.setPath[0] === "agents" &&
+        operation.setPath[1] === "list" &&
+        writePath[1] === "entries";
+      const deletedSegment = operation.setPath.at(-1);
       const unsetResult = unsetAtPath(next, operation.setPath);
       if (!unsetResult.removed && operation.inputMode === "unset") {
         const requestedPath = formatConfigSetPath(operation.requestedPath, operation.pathTokens);
@@ -372,12 +402,28 @@ export async function runConfigOperations(params: {
           assertStrictConfigForMutation(
             currentConfig,
             mutationStart.writeOptions.basePluginMetadataSnapshot,
+            getDeferredPluginMigrationConfigFacts(snapshot.sourceConfig),
           );
         }
         throw new Error(message);
       }
       if (!unsetResult.removed || unsetResult.leafContainer !== "array") {
         unsetPaths.push(writePath);
+      }
+      if (unsetResult.removed) {
+        // Canonical agent IDs (even numeric IDs) are keys, not list indices.
+        const arrayIndex =
+          unsetResult.leafContainer === "array" &&
+          !deletesCanonicalAgent &&
+          deletedSegment !== undefined
+            ? parseConfigPathArrayIndex(deletedSegment)
+            : undefined;
+        suppliedValuePaths = remapSuppliedPathsAfterDelete(
+          suppliedValuePaths,
+          writePath,
+          arrayIndex,
+        );
+        explicitSetPaths = remapSuppliedPathsAfterDelete(explicitSetPaths, writePath, arrayIndex);
       }
       continue;
     }
@@ -411,30 +457,56 @@ export async function runConfigOperations(params: {
   let nextConfig = normalizeConfigMutationModelRefs(next as OpenClawConfig);
   const normalizedExplicitSetPaths = explicitSetPaths.map(normalizeConfigMutationExplicitSetPath);
   // Parent merge paths own policy, but inherited children are not caller-authored values.
-  const authoredNextConfig = prepareConfigWriteValues({
+  const resolutionEnv = mutationStart.writeOptions.envSnapshotForRestore ?? process.env;
+  const preparedValues = prepareConfigWriteValues({
     snapshot,
     nextConfig,
     explicitSetPaths: suppliedValuePaths.map(normalizeConfigMutationExplicitSetPath),
-    env: process.env,
-  }).authoredConfig;
+    env: resolutionEnv,
+  });
+  const authoredNextConfig = preparedValues.authoredConfig;
+  const preparedPreviousValues = prepareConfigWriteValues({
+    snapshot,
+    nextConfig: currentConfig,
+    env: resolutionEnv,
+  });
+  const authoredPreviousConfig = preparedPreviousValues.authoredConfig;
+  let modelValidation = {
+    config: authoredNextConfig,
+    previousConfig: authoredPreviousConfig,
+    env: preparedValues.resolutionEnv,
+    previousEnv: preparedPreviousValues.resolutionEnv,
+  };
   if (options.dryRun) {
-    nextConfig = prepareConfigWriteTopology({
+    const topology = prepareConfigWriteTopology({
       snapshot,
       pluginMetadataSnapshot: mutationStart.writeOptions.basePluginMetadataSnapshot,
       nextConfig: authoredNextConfig,
       options: { explicitSetPaths: normalizedExplicitSetPaths },
       unsetPaths: resolveManagedUnsetPathsForWrite(unsetPaths),
-      env: process.env,
-    }).nextConfig;
+      env: resolutionEnv,
+    });
+    nextConfig = topology.nextConfig;
+    modelValidation = {
+      config: topology.authoredConfig,
+      previousConfig: authoredPreviousConfig,
+      env: topology.resolutionEnv,
+      previousEnv: preparedPreviousValues.resolutionEnv,
+    };
   }
   const validation = await validateConfigMutation({
     config: nextConfig,
+    modelValidation,
     previousConfig: currentConfig,
     operations: appliedOperations,
     options,
     configPath: snapshot.path,
-    unchanged: params.successMode === "set" && isDeepStrictEqual(currentConfig, nextConfig),
+    unchanged:
+      params.successMode === "set" &&
+      isDeepStrictEqual(currentConfig, nextConfig) &&
+      isDeepStrictEqual(authoredPreviousConfig, authoredNextConfig),
     pluginMetadataSnapshot: mutationStart.writeOptions.basePluginMetadataSnapshot,
+    deferredPluginMigrations: getDeferredPluginMigrationConfigFacts(snapshot.sourceConfig),
   });
   if (validation.kind === "dry-run") {
     printConfigDryRunResult(validation.result, runtime, options.json);

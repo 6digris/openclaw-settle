@@ -218,6 +218,7 @@ export function prepareConfigWriteTopology(
   }
   return {
     nextConfig,
+    resolutionEnv: values.resolutionEnv,
     // Apply topology changes to the paired authored view without materializing untouched refs.
     authoredConfig: coerceConfig(
       restoreEnvVarRefsFromResolved(nextConfig, values.authoredConfig, values.resolvedConfig),

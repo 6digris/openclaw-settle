@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDoctorConfigSnapshot } from "../commands/doctor-config-snapshot.test-helpers.js";
+import { setDeferredPluginMigrationConfigFacts } from "../config/deferred-plugin-migration-config.js";
+import { ConfigWritePostCommitError } from "../config/io.write-errors.js";
 import type { ConfigMutationResult } from "../config/mutate.js";
 import { ConfigMutationConflictError } from "../config/mutation-conflict.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -8,10 +10,13 @@ import type { DoctorHealthFlowContext } from "./doctor-health-contribution-types
 
 const mocks = vi.hoisted(() => ({
   removeAuthProfilesAcrossOwnerStores: vi.fn(async () => true),
-  replaceConfigFile:
-    vi.fn<
-      (_params: unknown) => Promise<Pick<ConfigMutationResult<unknown>, "path" | "persistedHash">>
-    >(),
+  replaceConfigFile: vi.fn<
+    (_params: unknown) => Promise<
+      Pick<ConfigMutationResult<unknown>, "path" | "persistedHash"> & {
+        nextConfig?: OpenClawConfig;
+      }
+    >
+  >(),
 }));
 
 vi.mock("../agents/auth-profiles.js", () => ({
@@ -33,7 +38,8 @@ vi.mock("../config/config.js", async (importOriginal) => ({
       { snapshot: createDoctorConfigSnapshot(), previousHash: null, attempt: 0 },
       {},
     );
-    return mocks.replaceConfigFile({ ...options, nextConfig });
+    const committed = await mocks.replaceConfigFile({ ...options, nextConfig });
+    return { nextConfig, ...committed };
   },
 }));
 
@@ -172,5 +178,95 @@ describe("Doctor retired auth profile cleanup", () => {
     expect(ctx.cfgForPersistence).toBe(baseline);
     expect(mocks.replaceConfigFile).toHaveBeenCalledOnce();
     expect(mocks.removeAuthProfilesAcrossOwnerStores).not.toHaveBeenCalled();
+  });
+
+  it.each(["complete", "partial"] as const)(
+    "keeps the last usable receipt terminal after %s publication fails",
+    async (publication) => {
+      const ctx = createContext();
+      expect(await runWriteConfigHealth(ctx, { runPostWriteRepairs: false })).toBe(true);
+      expect(ctx.configResult.confirmedConfigSource).toEqual({
+        path: ctx.configPath,
+        hash: "committed-revision",
+      });
+      expect(ctx.cfgForPersistence).toEqual(ctx.cfg);
+      const receipt = structuredClone(ctx.configResult.confirmedConfigSource);
+      const baseline = structuredClone(ctx.cfgForPersistence);
+      const error = new ConfigWritePostCommitError({
+        configPath: ctx.configPath,
+        rollbackStatus: "unknown",
+        publication,
+        cause: new Error("post-write publication failed"),
+      });
+      mocks.replaceConfigFile.mockRejectedValueOnce(error);
+      ctx.cfg = { gateway: { mode: "local", port: 19091 } };
+
+      await expect(runWriteConfigHealth(ctx)).rejects.toBe(error);
+      expect(ctx.configWriteError).toBe(error);
+      expect(ctx.configResult.confirmedConfigSource).toStrictEqual(receipt);
+      expect(ctx.cfgForPersistence).toStrictEqual(baseline);
+      await expect(runWriteConfigHealth(ctx)).rejects.toBe(error);
+      expect(mocks.replaceConfigFile).toHaveBeenCalledTimes(2);
+      expect(mocks.replaceConfigFile).toHaveBeenLastCalledWith(
+        expect.objectContaining({ baseHash: receipt?.hash }),
+      );
+      expect(mocks.removeAuthProfilesAcrossOwnerStores).not.toHaveBeenCalled();
+    },
+  );
+
+  it("retains deferred migration inputs until the final cleanup write with the latest receipt", async () => {
+    const ctx = createContext();
+    const retainedConfig = { ...ctx.cfg, session: { store: "/tmp/legacy-sessions.json" } };
+    setDeferredPluginMigrationConfigFacts(retainedConfig, [
+      {
+        pluginId: "receipt-test",
+        reason: "state migration has not completed",
+        command: "openclaw doctor --fix",
+        configPaths: [["session", "store"]],
+      },
+    ]);
+    mocks.replaceConfigFile
+      .mockResolvedValueOnce({
+        nextConfig: retainedConfig,
+        path: ctx.configPath,
+        persistedHash: "retained-revision",
+      })
+      .mockResolvedValueOnce({
+        nextConfig: ctx.cfg,
+        path: ctx.configPath,
+        persistedHash: "clean-revision",
+      });
+
+    expect(await runWriteConfigHealth(ctx, { runPostWriteRepairs: false })).toBe(true);
+    expect(ctx.cfg.session).toBeUndefined();
+    expect(ctx.cfgForPersistence.session?.store).toBe("/tmp/legacy-sessions.json");
+    expect(ctx.configResult.confirmedConfigSource).toEqual({
+      path: ctx.configPath,
+      hash: "retained-revision",
+    });
+    expect(mocks.removeAuthProfilesAcrossOwnerStores).not.toHaveBeenCalled();
+
+    // The runtime config is unchanged, but its persisted retained input must be removed.
+    expect(await runWriteConfigHealth(ctx)).toBe(true);
+    expect(mocks.replaceConfigFile).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        nextConfig: ctx.cfg,
+        baseHash: "retained-revision",
+        writeOptions: expect.objectContaining({ expectedConfigPath: ctx.configPath }),
+      }),
+    );
+    expect(ctx.cfgForPersistence).toEqual(ctx.cfg);
+    expect(ctx.cfgForPersistence.session).toBeUndefined();
+    expect(ctx.configResult.confirmedConfigSource).toEqual({
+      path: ctx.configPath,
+      hash: "clean-revision",
+    });
+    expect(mocks.replaceConfigFile.mock.invocationCallOrder[1]).toBeLessThan(
+      mocks.removeAuthProfilesAcrossOwnerStores.mock.invocationCallOrder[0]!,
+    );
+    expect(await runWriteConfigHealth(ctx)).toBe(true);
+    expect(mocks.replaceConfigFile).toHaveBeenCalledTimes(2);
+    expect(mocks.removeAuthProfilesAcrossOwnerStores).toHaveBeenCalledOnce();
   });
 });

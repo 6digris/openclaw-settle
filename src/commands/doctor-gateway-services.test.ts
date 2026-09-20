@@ -11,6 +11,13 @@ import type { LaunchctlResult } from "../daemon/launchd-exec.js";
 import type { ServiceConfigAudit } from "../daemon/service-audit.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { withTempDir } from "../test-utils/temp-dir.js";
+import {
+  makeDoctorIo,
+  makeDoctorPrompts,
+  pinSnapshotMock,
+  registerDoctorRuntimePinTests,
+} from "./doctor-gateway-runtime.test-utils.js";
+import { registerDoctorServiceDefaultsTests } from "./doctor-gateway-service-defaults.test-support.js";
 import { createDoctorPrompter } from "./doctor-prompter.js";
 import {
   readEmbeddedGatewayTokenForTest,
@@ -39,7 +46,9 @@ const mocks = vi.hoisted(() => ({
   stage: vi.fn(),
   install: vi.fn(),
   restart: vi.fn(),
-  writeConfig: vi.fn<(cfg: OpenClawConfig) => Promise<OpenClawConfig>>(),
+  writeConfig: vi.fn<(nextConfig: OpenClawConfig) => Promise<OpenClawConfig>>(
+    async (nextConfig) => nextConfig,
+  ),
   auditGatewayServiceConfig: vi.fn(),
   buildGatewayInstallPlan: vi.fn(),
   resolveGatewayAuthTokenForService: vi.fn(),
@@ -177,29 +186,6 @@ const originalParentAllowsGatewayServiceRepair =
   process.env.OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_SERVICE_REPAIR;
 const originalParentAllowsGatewayActivation =
   process.env.OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION;
-
-function makeDoctorIo() {
-  return { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
-}
-
-function makeDoctorPrompts() {
-  return {
-    confirm: vi.fn().mockResolvedValue(true),
-    confirmAutoFix: vi.fn().mockResolvedValue(true),
-    confirmAggressiveAutoFix: vi.fn().mockResolvedValue(true),
-    confirmRuntimeRepair: vi.fn().mockResolvedValue(true),
-    select: vi.fn().mockResolvedValue("node"),
-    shouldRepair: false,
-    shouldForce: false,
-    repairMode: {
-      shouldRepair: false,
-      shouldForce: false,
-      nonInteractive: false,
-      canPrompt: true,
-      updateInProgress: false,
-    },
-  };
-}
 
 function mockProcessPlatform(platform: NodeJS.Platform) {
   Object.defineProperty(process, "platform", {
@@ -429,8 +415,9 @@ function setupGatewayTokenRepairScenario() {
 
 describe("maybeRepairGatewayServiceConfig", () => {
   beforeEach(() => {
+    pinSnapshotMock.mockReset().mockReturnValue({ revision: "empty", stored: false });
     vi.clearAllMocks();
-    mocks.writeConfig.mockImplementation(async (cfg) => cfg);
+    mocks.writeConfig.mockReset().mockImplementation(async (nextConfig) => nextConfig);
     delete process.env.OPENCLAW_GATEWAY_TOKEN;
     fsMocks.realpath.mockImplementation(async (value: string) => value);
     mocks.resolveGatewayPort.mockReturnValue(18789);
@@ -705,6 +692,8 @@ describe("maybeRepairGatewayServiceConfig", () => {
     },
   );
 
+  registerDoctorRuntimePinTests({ mocks, runRepair, createRecommendedServiceAudit });
+
   it("preserves a supported Bun runtime when repairing the Gateway service", async () => {
     const bunPath = "/home/test/.bun/bin/bun";
     const bunCommand = {
@@ -826,47 +815,12 @@ describe("maybeRepairGatewayServiceConfig", () => {
     expect(mocks.install).toHaveBeenCalledTimes(1);
   });
 
-  it("repairs managed port drift even when an operator overrides the working directory", async () => {
-    mockProcessPlatform("linux");
-    mocks.resolveGatewayPort.mockReturnValue(18888);
-    const managedDefinition = {
-      programArguments: gatewayProgramArguments,
-      workingDirectory: "/opt/managed-openclaw",
-      environment: {},
-    };
-    mocks.readCommand.mockResolvedValue({
-      ...managedDefinition,
-      workingDirectory: "/opt/operator-openclaw",
-      managedDefinition,
-      managedOverrides: { launcher: "working-directory" },
-    });
-    mocks.buildGatewayInstallPlan.mockResolvedValue({
-      programArguments: ["/usr/bin/node", "/usr/local/bin/openclaw", "gateway", "--port", "18888"],
-      workingDirectory: "/tmp",
-      environment: {},
-    });
-    mocks.auditGatewayServiceConfig.mockResolvedValue({
-      ok: false,
-      issues: [
-        {
-          code: "gateway-port-mismatch",
-          message: "Gateway service port does not match current gateway config.",
-          detail: "18789 -> 18888",
-          level: "recommended",
-        },
-      ],
-    });
-    mocks.install.mockResolvedValue(undefined);
-
-    await runRepair({ gateway: { port: 18888 } });
-
-    expectCallField(mocks.auditGatewayServiceConfig, "expectedPort", 18888);
-    const installOptions = requireRecord(
-      callArg(mocks.install, 0, "install call"),
-      "install options",
-    );
-    expect(installOptions.programArguments).toContain("18888");
-    expectNoNoteContaining("operator-owned systemd drop-in", "Gateway service config");
+  registerDoctorServiceDefaultsTests({
+    mocks,
+    gatewayProgramArguments,
+    runRepair,
+    mockProcessPlatform,
+    expectNoNoteContaining,
   });
 
   it("repairs gateway services with embedded proxy environment values", async () => {
@@ -914,12 +868,29 @@ describe("maybeRepairGatewayServiceConfig", () => {
 
       expectCallField(mocks.auditGatewayServiceConfig, "expectedGatewayToken", "env-token");
       expectCallConfigGatewayAuthToken(mocks.buildGatewayInstallPlan, "env-token");
-      expectGatewayAuthToken(callArg(mocks.writeConfig, 0, "writeConfig call"), "env-token");
+      expectGatewayAuthToken(callArg(mocks.writeConfig, 0, "Doctor writer callback"), "env-token");
       expect(mocks.writeConfig.mock.invocationCallOrder[0]).toBeLessThan(
         mocks.install.mock.invocationCallOrder[0]!,
       );
       expect(mocks.stage).not.toHaveBeenCalled();
       expect(mocks.install).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("uses the persisted writer result when planning service installation", async () => {
+    await withEnvAsync({ OPENCLAW_GATEWAY_TOKEN: "env-token" }, async () => {
+      setupGatewayTokenRepairScenario();
+      mocks.writeConfig.mockImplementationOnce(async (nextConfig) => ({
+        ...nextConfig,
+        gateway: { ...nextConfig.gateway, auth: { mode: "token", token: "persisted-token" } },
+      }));
+      await runRepair({ gateway: {} });
+      expectGatewayAuthToken(callArg(mocks.writeConfig, 0, "Doctor writer callback"), "env-token");
+      expectCallConfigGatewayAuthToken(mocks.buildGatewayInstallPlan, "persisted-token");
+      expect(mocks.writeConfig.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.install.mock.invocationCallOrder[0]!,
+      );
+      expect(mocks.install).toHaveBeenCalledOnce();
     });
   });
 
@@ -1470,7 +1441,13 @@ describe("maybeRepairGatewayServiceConfig", () => {
         await runRepair(cfg);
 
         expectCallField(mocks.auditGatewayServiceConfig, "expectedGatewayToken", undefined);
-        expectGatewayAuthToken(callArg(mocks.writeConfig, 0, "writeConfig call"), "stale-token");
+        expectGatewayAuthToken(
+          callArg(mocks.writeConfig, 0, "Doctor writer callback"),
+          "stale-token",
+        );
+        expect(mocks.writeConfig.mock.invocationCallOrder[0]).toBeLessThan(
+          mocks.install.mock.invocationCallOrder[0]!,
+        );
         expectCallConfigGatewayAuthToken(mocks.buildGatewayInstallPlan, "stale-token");
         expect(mocks.stage).not.toHaveBeenCalled();
         expect(mocks.install).toHaveBeenCalledTimes(1);
@@ -1715,7 +1692,10 @@ describe("maybeRepairGatewayServiceConfig", () => {
         expect(mocks.readRuntime.mock.invocationCallOrder[0]).toBeLessThan(
           mocks.writeConfig.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
         );
-        expectGatewayAuthToken(callArg(mocks.writeConfig, 0, "writeConfig call"), "stale-token");
+        expectGatewayAuthToken(
+          callArg(mocks.writeConfig, 0, "Doctor writer callback"),
+          "stale-token",
+        );
         expect(mocks.writeConfig.mock.invocationCallOrder[0]).toBeLessThan(
           mocks.install.mock.invocationCallOrder[0]!,
         );
@@ -2024,7 +2004,9 @@ describe("maybeRepairGatewayServiceConfig", () => {
 
 describe("maybeScanExtraGatewayServices", () => {
   beforeEach(() => {
+    pinSnapshotMock.mockReset().mockReturnValue({ revision: "empty", stored: false });
     vi.clearAllMocks();
+    mocks.writeConfig.mockReset().mockImplementation(async (nextConfig) => nextConfig);
     mocks.isContainerEnvironment.mockReturnValue(false);
     mocks.findExtraGatewayServices.mockResolvedValue([]);
     mocks.renderGatewayServiceCleanupHints.mockReturnValue([]);
@@ -2070,7 +2052,15 @@ describe("maybeScanExtraGatewayServices", () => {
       if (reported) {
         expectNoteContaining("custom-gateway.service", "Other gateway-like services detected");
         expect(mocks.renderGatewayServiceCleanupHints).toHaveBeenCalledWith([service]);
-        expectNoteContaining(`${scope === "system" ? "sudo " : ""}rm ${unitPath}`, "Cleanup hints");
+        expectNoteContaining(
+          `systemctl --${scope} status -- custom-gateway.service`,
+          "Inspection hints",
+        );
+        expectNoteContaining(
+          `systemctl --${scope} cat -- custom-gateway.service`,
+          "Inspection hints",
+        );
+        expectNoNoteContaining(`rm ${unitPath}`, "Cleanup hints");
       } else {
         expectNoNoteContaining("custom-gateway.service", "Other gateway-like services detected");
       }
@@ -2488,7 +2478,9 @@ describe("maybeResolveDuelingSystemdGatewayScopes", () => {
   };
 
   beforeEach(() => {
+    pinSnapshotMock.mockReset().mockReturnValue({ revision: "empty", stored: false });
     vi.clearAllMocks();
+    mocks.writeConfig.mockReset().mockImplementation(async (nextConfig) => nextConfig);
     mocks.findSystemdGatewayInstallation.mockResolvedValue({ kind: "none" });
     mocks.renderGatewayServiceCleanupHints.mockReturnValue([]);
     delete process.env.OPENCLAW_SERVICE_REPAIR_POLICY;

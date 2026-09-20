@@ -1247,6 +1247,13 @@ describe("config mutate helpers", () => {
         },
       },
     });
+    snapshot.authoredConfig = {
+      plugins: {
+        entries: {
+          old: { ...oldEntry, config: { token: "${OPENCLAW_TEST_PLUGIN_TOKEN}" } },
+        },
+      },
+    };
     ioMocks.readConfigFileSnapshotForWrite
       .mockResolvedValueOnce({
         snapshot,
@@ -2019,6 +2026,7 @@ describe("config mutate helpers", () => {
     ]);
     expect(validationMocks.validateConfigObjectWithPlugins).toHaveBeenCalledWith(nextConfig, {
       pluginValidation: "skip",
+      deferredPluginMigrations: [],
     });
     expect(ioMocks.createConfigIO).toHaveBeenCalledWith({
       configPath,
@@ -2920,6 +2928,13 @@ describe("config mutate helpers", () => {
       parsed: { plugins: { $include: "./config/plugins.json5" } },
       sourceConfig: { plugins: { entries: { old: oldEntry } } },
     });
+    snapshot.authoredConfig = {
+      plugins: {
+        entries: {
+          old: { ...oldEntry, config: { token: "${OPENCLAW_TEST_INCLUDE_TOKEN}" } },
+        },
+      },
+    };
     const observedSources: OpenClawConfig[] = [];
 
     try {

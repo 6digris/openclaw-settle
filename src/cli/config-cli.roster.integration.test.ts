@@ -8,6 +8,7 @@ import { resolveLegacyInheritedAuthAgentId } from "../agents/legacy-inherited-au
 import { readConfigFileSnapshot } from "../config/config.js";
 import { resolveSessionStoreCompatibilityAgentId } from "../config/legacy.default-agent-owner.js";
 import { captureEnv, deleteTestEnvValue, setTestEnvValue } from "../test-utils/env.js";
+import { formatCliCommand } from "./command-format.js";
 import { useConfigCliIntegrationHarness } from "./config-cli.integration.test-harness.js";
 
 const cronOwnerRefusal = await import("../config/io.cron-owner-refusal.js");
@@ -743,7 +744,9 @@ describe("config cli roster integration", () => {
           expect(registeredRuntimeErrors.join("\n")).toContain(
             'Cannot set model reference "<configured model reference>" at agents.entries.main.model',
           );
-          expect(registeredRuntimeErrors.join("\n")).toContain("openclaw models list");
+          expect(registeredRuntimeErrors.join("\n")).toContain(
+            formatCliCommand("openclaw models list"),
+          );
         },
       );
     },

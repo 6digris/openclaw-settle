@@ -751,6 +751,8 @@ describe("config cli", () => {
         "google/gemini-3.1-pro-preview": { alias: "gemini" },
       });
       expect(mockCheckTouchedTextModelRefs).toHaveBeenCalledWith({
+        env: expect.any(Object),
+        previousEnv: expect.any(Object),
         config: written,
         previousConfig: expect.any(Object),
         touchedPaths: [["agents", "defaults", "model", "primary"]],
@@ -797,6 +799,8 @@ describe("config cli", () => {
         primary: "${MODEL_REF}",
       });
       expect(mockCheckTouchedTextModelRefs).toHaveBeenCalledWith({
+        env: expect.any(Object),
+        previousEnv: expect.any(Object),
         config: expect.objectContaining({
           agents: expect.objectContaining({
             defaults: expect.objectContaining({ model: { primary: "${MODEL_REF}" } }),
@@ -4824,6 +4828,8 @@ describe("config cli", () => {
 
       expect(mockWriteConfigFile).not.toHaveBeenCalled();
       expect(mockCheckTouchedTextModelRefs).toHaveBeenCalledWith({
+        env: expect.any(Object),
+        previousEnv: expect.any(Object),
         config: {
           agents: { defaults: { model: { fallbacks: ["backup"] } } },
         },

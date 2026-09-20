@@ -1,7 +1,6 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
-  countActiveDescendantRuns,
-  getSessionDisplaySubagentRunByChildSessionKey,
+  buildSubagentSessionListReadIndex,
   getSubagentSessionRuntimeMs,
   getSubagentSessionStartedAt,
   isSubagentRunLive,
@@ -9,6 +8,7 @@ import {
   resolveSubagentSessionStatus,
 } from "../agents/subagents/registry/subagent-registry-read.js";
 import {
+  isTerminalSessionStatus,
   buildGroupDisplayName,
   buildGroupDisplayTitle,
   resolveSessionGoalDisplayState,
@@ -105,74 +105,52 @@ export function projectGatewaySessionRunState(params: {
   key: string;
   entry?: SessionEntry;
   now: number;
-  rowContext?: SessionListRowContext;
+  rowContext?: Pick<SessionListRowContext, "subagentRuns">;
 }) {
   const { key, entry, now, rowContext } = params;
-  const subagentRun = rowContext
-    ? rowContext.subagentRuns.getDisplaySubagentRun(key)
-    : getSessionDisplaySubagentRunByChildSessionKey(key);
+  const subagentRuns = rowContext?.subagentRuns ?? buildSubagentSessionListReadIndex(now);
+  const subagentRun = subagentRuns.getDisplaySubagentRun(key);
   const subagentOwner =
     normalizeOptionalString(subagentRun?.controllerSessionKey) ||
     normalizeOptionalString(subagentRun?.requesterSessionKey);
   const liveSubagentRunActive = isSubagentRunLive(subagentRun) || isSubagentRunQueued(subagentRun);
   const hasActiveSubagentRun =
-    liveSubagentRunActive ||
-    (rowContext?.subagentRuns.countActiveDescendantRuns(key) ?? countActiveDescendantRuns(key)) > 0;
-  const persistedSessionStatus = entry?.status;
-  const persistedSessionEndedAt = entry?.endedAt;
-  const persistedSessionStartedAt = entry?.startedAt;
-  const persistedSessionRuntimeMs = entry?.runtimeMs;
-  const subagentRunState = subagentRun
-    ? liveSubagentRunActive
-      ? "active"
-      : typeof subagentRun.execution.endedAt === "number" ||
-          persistedSessionStatus === "done" ||
-          persistedSessionStatus === "failed" ||
-          persistedSessionStatus === "killed" ||
-          persistedSessionStatus === "timeout" ||
-          typeof persistedSessionEndedAt === "number"
-        ? "historical"
-        : "interrupted"
-    : undefined;
-  const subagentStatus = subagentRun
-    ? liveSubagentRunActive
-      ? resolveSubagentSessionStatus(subagentRun)
-      : persistedSessionStatus === "running"
-        ? undefined
-        : (persistedSessionStatus ??
-          (typeof subagentRun.execution.endedAt === "number"
-            ? resolveSubagentSessionStatus(subagentRun)
-            : undefined))
-    : undefined;
-  const subagentStartedAt = subagentRun
-    ? liveSubagentRunActive
-      ? getSubagentSessionStartedAt(subagentRun)
-      : (persistedSessionStartedAt ?? getSubagentSessionStartedAt(subagentRun))
-    : undefined;
-  const subagentEndedAt = subagentRun
-    ? liveSubagentRunActive
-      ? subagentRun.execution.endedAt
-      : (persistedSessionEndedAt ?? subagentRun.execution.endedAt)
-    : undefined;
-  const subagentRuntimeMs = subagentRun
-    ? liveSubagentRunActive
-      ? getSubagentSessionRuntimeMs(subagentRun, now)
-      : (persistedSessionRuntimeMs ??
-        (typeof subagentRun.execution.endedAt === "number"
-          ? getSubagentSessionRuntimeMs(subagentRun, now)
-          : undefined))
-    : undefined;
+    liveSubagentRunActive || subagentRuns.countActiveDescendantRuns(key) > 0;
   const fields: Pick<
     GatewaySessionRow,
     "status" | "subagentRunState" | "hasActiveSubagentRun" | "startedAt" | "endedAt" | "runtimeMs"
   > = {
-    status: subagentRun ? subagentStatus : entry?.status,
-    subagentRunState,
+    status: entry?.status === "interrupted" ? "failed" : entry?.status,
+    subagentRunState: undefined,
     hasActiveSubagentRun: subagentRun || hasActiveSubagentRun ? hasActiveSubagentRun : undefined,
-    startedAt: subagentRun ? subagentStartedAt : entry?.startedAt,
-    endedAt: subagentRun ? subagentEndedAt : entry?.endedAt,
-    runtimeMs: subagentRun ? subagentRuntimeMs : entry?.runtimeMs,
+    startedAt: entry?.startedAt,
+    endedAt: entry?.endedAt,
+    runtimeMs: entry?.runtimeMs,
   };
+  if (subagentRun) {
+    const endedAt = subagentRun.execution.endedAt;
+    fields.subagentRunState = liveSubagentRunActive
+      ? "active"
+      : typeof endedAt === "number" ||
+          isTerminalSessionStatus(fields.status) ||
+          typeof fields.endedAt === "number"
+        ? "historical"
+        : "interrupted";
+    fields.status = liveSubagentRunActive
+      ? resolveSubagentSessionStatus(subagentRun)
+      : fields.status === "running"
+        ? undefined
+        : (fields.status ??
+          (typeof endedAt === "number" ? resolveSubagentSessionStatus(subagentRun) : undefined));
+    fields.startedAt =
+      (liveSubagentRunActive ? undefined : fields.startedAt) ??
+      getSubagentSessionStartedAt(subagentRun);
+    fields.endedAt = liveSubagentRunActive ? endedAt : (fields.endedAt ?? endedAt);
+    fields.runtimeMs = liveSubagentRunActive
+      ? getSubagentSessionRuntimeMs(subagentRun, now)
+      : (fields.runtimeMs ??
+        (typeof endedAt === "number" ? getSubagentSessionRuntimeMs(subagentRun, now) : undefined));
+  }
   return { subagentRun, subagentOwner, fields };
 }
 

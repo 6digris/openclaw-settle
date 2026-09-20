@@ -2,6 +2,7 @@ import { buildAgentRunTerminalOutcomeFromLifecycleEvent } from "../agent-run-ter
 import {
   formatAgentRunRouteChange,
   normalizeAgentRunTerminalReceipt,
+  type AgentRunTerminalReceipt,
 } from "../agent-run-terminal-receipt.js";
 import {
   buildAgentRunTerminalReplySnapshot,
@@ -69,6 +70,11 @@ export function mergeRunEntryExecutionTrace<T extends EmbeddedAgentRunResult>(pa
   requestedProvider: string;
   requestedModel: string;
   fallbackAttempts: FallbackAttempt[];
+  providerPolicyRetry?: {
+    category: "cyber";
+    provider: string;
+    model: string;
+  };
 }): T {
   const currentTrace = params.result.meta.executionTrace;
   const winnerProvider =
@@ -129,6 +135,7 @@ export function mergeRunEntryExecutionTrace<T extends EmbeddedAgentRunResult>(pa
         winnerModel,
         attempts: attempts.length > 0 ? attempts : undefined,
         fallbackUsed: currentTrace?.fallbackUsed === true || outerAttempts.length > 0,
+        ...(params.providerPolicyRetry ? { providerPolicyRetry: params.providerPolicyRetry } : {}),
       },
     },
   };
@@ -184,7 +191,7 @@ export function buildRunEntryTerminal(params: {
           }),
         }
       : undefined);
-  const terminalReceipt =
+  const terminalReceipt: AgentRunTerminalReceipt | undefined =
     normalizedTerminalReceipt?.runId === params.runId
       ? {
           ...normalizedTerminalReceipt,
@@ -203,6 +210,7 @@ export function buildRunEntryTerminal(params: {
   const metadata: Record<string, unknown> = { terminalReply };
   if (terminalReceipt) {
     metadata.terminalReceipt = terminalReceipt;
+    metadata.assistantTranscriptIdempotencyKey = terminalReceipt.assistantTranscriptIdempotencyKey;
   }
   if (params.behavior.kind === "channel-delivery" || params.behavior.kind === "followup-delivery") {
     for (const key of [

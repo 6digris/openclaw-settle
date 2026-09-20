@@ -12,6 +12,7 @@ import { resolveRequiredHomeDir } from "../infra/home-dir.js";
 import { parseJsonWithJson5Fallback } from "../utils/parse-json-compat.js";
 import {
   applyConfigEnvVars,
+  cloneEnvWithPlatformSemantics,
   createConfigRuntimeEnvBase,
   getPublishedConfigRuntimeEnvState,
 } from "./config-env-vars.js";
@@ -312,7 +313,7 @@ export function resolveConfigForRead(
   });
   return {
     resolvedConfigRaw,
-    envSnapshotForRestore: { ...env } as Record<string, string | undefined>,
+    envSnapshotForRestore: cloneEnvWithPlatformSemantics(env),
     envWarnings,
     resolutionFacts: createConfigResolutionFacts(
       envWarnings,
@@ -323,9 +324,7 @@ export function resolveConfigForRead(
   };
 }
 
-export function snapshotEnv(env: NodeJS.ProcessEnv): Record<string, string | undefined> {
-  return { ...env };
-}
+export { snapshotEnv, restoreEnvChangesIfUnchanged } from "./config-env-vars.js";
 
 export function replaceEnvSnapshot(
   env: NodeJS.ProcessEnv,
@@ -358,23 +357,4 @@ export function createManagedRuntimeEnvBase(
     ownedEnv: getPublishedConfigRuntimeEnvState().ownedEnv,
     preservedKeys: GATEWAY_CONFIG_SELECTION_ENV_KEYS,
   });
-}
-
-export function restoreEnvChangesIfUnchanged(params: {
-  env: NodeJS.ProcessEnv;
-  before: Record<string, string | undefined>;
-  after: Record<string, string | undefined>;
-}): void {
-  const keys = new Set([...Object.keys(params.before), ...Object.keys(params.after)]);
-  for (const key of keys) {
-    if (params.before[key] === params.after[key] || params.env[key] !== params.after[key]) {
-      continue;
-    }
-    const previous = params.before[key];
-    if (previous === undefined) {
-      delete params.env[key];
-    } else {
-      params.env[key] = previous;
-    }
-  }
 }
