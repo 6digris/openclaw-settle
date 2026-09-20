@@ -229,7 +229,13 @@ export async function discardPackageUpdateBackup(
   assertCurrent = () => {},
 ): Promise<string | null> {
   try {
-    await removePackagePath(backupPath, assertCurrent);
+    assertCurrent();
+    // Node retries recursive removal at every directory level. A loaded Windows
+    // addon can keep an obsolete package locked for the driver's entire lifetime,
+    // multiplying five retries into hours before the retention fallback runs.
+    // Obsolete backups already have a recoverable retained-path outcome; attempt
+    // retirement once and leave ordinary staging/removal retries unchanged.
+    await fs.rm(backupPath, { recursive: true, force: true });
     return null;
   } catch {
     assertCurrent();
