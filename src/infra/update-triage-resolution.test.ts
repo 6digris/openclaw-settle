@@ -303,6 +303,41 @@ describe("saved update failure resolution", () => {
     },
   );
 
+  it.each(["OPENCLAW_UPDATE_IN_PROGRESS", "OPENCLAW_UPDATE_POST_CORE_CONVERGENCE"])(
+    "uses the caller's %s marker when explaining pending migrations",
+    async (marker) => {
+      vi.stubEnv("OPENCLAW_UPDATE_IN_PROGRESS", undefined);
+      vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_CONVERGENCE", undefined);
+      try {
+        const env = { OPENCLAW_STATE_DIR: "/fixture/state", [marker]: "1" };
+        vi.mocked(readDeferredPluginMigrations).mockReturnValue([
+          {
+            pluginId: "codex",
+            reason: "Retained state migration is unfinished.",
+            command: "openclaw doctor --fix",
+          },
+        ]);
+        const result = await validateTriageUpdateResolution({
+          failure: failure(),
+          installRoot: "/fixture/openclaw",
+          env,
+          signal: new AbortController().signal,
+          validateDoctor,
+        });
+        expect(result).toMatchObject({
+          ok: false,
+          summary: expect.stringContaining(
+            'Let the current update or repair finish. If this warning remains afterward, run "openclaw doctor --fix".',
+          ),
+        });
+        expect(readDeferredPluginMigrations).toHaveBeenCalledWith({ env });
+        expect(validateDoctor).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
   it.each([false, true])(
     "keeps mixed plugin installation failures unresolved after Doctor is clean (completed update: %s)",
     async (completed) => {
