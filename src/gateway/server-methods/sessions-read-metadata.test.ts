@@ -169,42 +169,52 @@ test.each([
   },
 );
 
-test("sessions.preview rechecks visibility after yielding between keys", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    const { opts, storePath } = await seedMetadataReads();
-    const firstRead = createDeferred();
-    const read = transcriptPreview.readSessionPreviewItemsFromTranscript;
-    vi.spyOn(transcriptPreview, "readSessionPreviewItemsFromTranscript").mockImplementation(
-      (...args) => {
-        const result = read(...args);
-        if (args[0].sessionKey === "agent:main:first") {
-          firstRead.resolve();
-        }
-        return result;
-      },
-    );
-    const pending = directSessionReq(
-      "sessions.preview",
-      { keys: ["agent:main:first", "agent:main:second"] },
-      opts,
-    );
-    await firstRead.promise;
-    replaceSessionEntrySync(
-      { agentId: "main", sessionKey: "agent:main:second", storePath },
-      { sessionId: "main-second", updatedAt: 2, createdActor: owner, visibility: "draft" },
-    );
-    expect(await pending).toMatchObject({
-      ok: true,
-      payload: {
-        previews: [
-          {
-            key: "agent:main:first",
-            status: "ok",
-            items: [{ role: "user", text: "needle alpha" }],
-          },
-          { key: "agent:main:second", status: "missing", items: [] },
-        ],
-      },
+test.each(["first", "second"])(
+  "sessions.preview rechecks visibility after awaiting the %s key",
+  async (hidden) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const { opts, storePath } = await seedMetadataReads();
+      const firstRead = createDeferred();
+      const read = transcriptPreview.readSessionPreviewItemsFromTranscript;
+      vi.spyOn(transcriptPreview, "readSessionPreviewItemsFromTranscript").mockImplementation(
+        (...args) => {
+          const result = read(...args);
+          if (args[0].sessionKey === "agent:main:first") {
+            firstRead.resolve();
+          }
+          return result;
+        },
+      );
+      const pending = directSessionReq(
+        "sessions.preview",
+        { keys: ["agent:main:first", "agent:main:second"] },
+        opts,
+      );
+      await firstRead.promise;
+      replaceSessionEntrySync(
+        { agentId: "main", sessionKey: `agent:main:${hidden}`, storePath },
+        { sessionId: `main-${hidden}`, updatedAt: 2, createdActor: owner, visibility: "draft" },
+      );
+      expect(await pending).toMatchObject({
+        ok: true,
+        payload: {
+          previews: [
+            {
+              key: "agent:main:first",
+              status: hidden === "first" ? "missing" : "ok",
+              items: hidden === "first" ? [] : [{ role: "user", text: "needle alpha" }],
+            },
+            {
+              key: "agent:main:second",
+              status: hidden === "second" ? "missing" : "ok",
+              items:
+                hidden === "second"
+                  ? []
+                  : [{ role: "user", text: expect.stringContaining("needle beta") }],
+            },
+          ],
+        },
+      });
     });
-  });
-});
+  },
+);

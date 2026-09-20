@@ -288,7 +288,7 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
           previews.push({ key, status: "missing", items: [] });
           continue;
         }
-        const items = readSessionPreviewItemsFromTranscript(
+        const items = await readSessionPreviewItemsFromTranscript(
           {
             agentId: target.agentId,
             sessionEntry: entry,
@@ -299,6 +299,31 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
           limit,
           maxChars,
         );
+        const currentCfg = context.getRuntimeConfig();
+        const currentTarget = resolveGatewaySessionStoreTargetWithStore({
+          cfg: currentCfg,
+          key,
+          agentId: requestedAgent.agentId,
+          exactRead: true,
+          readOnly: true,
+          projection: "list",
+        });
+        const currentEntry = resolveCanonicalSessionEntryFromStoreKeys(
+          currentTarget.store,
+          currentTarget.storeKeys,
+        );
+        const currentVisibility = hasOperatorBoundary(client, currentCfg)
+          ? createSessionListEntryFilter({ client, cfg: currentCfg })
+          : undefined;
+        if (
+          currentTarget.storePath !== target.storePath ||
+          currentTarget.canonicalKey !== target.canonicalKey ||
+          currentEntry?.sessionId !== entry.sessionId ||
+          currentVisibility?.(currentTarget.canonicalKey, currentEntry) === false
+        ) {
+          previews.push({ key, status: "missing", items: [] });
+          continue;
+        }
         previews.push({ key, status: items.length > 0 ? "ok" : "empty", items });
       } catch (error) {
         previews.push({

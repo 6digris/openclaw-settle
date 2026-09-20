@@ -21,10 +21,12 @@ import {
 } from "../../../agents/sessions/agent-session-loop-correctness.test-support.js";
 import { SessionManager } from "../../../agents/sessions/session-manager.js";
 import {
+  loadExactSessionEntry,
   loadTranscriptEventsSync,
   readSessionTranscriptMessageEvents,
 } from "../../../config/sessions/session-accessor.js";
 import { readTranscriptEventRows } from "../../../config/sessions/session-accessor.sqlite-read.js";
+import { waitForSessionTranscriptIndexReconcile } from "../../../config/sessions/session-transcript-reconcile.js";
 import { onInternalSessionTranscriptUpdate } from "../../../sessions/transcript-events.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import {
@@ -37,6 +39,7 @@ import {
   registerClientVoiceConsultRun,
   resolveClientVoiceRunBinding,
 } from "../../../talk/client-voice-session.js";
+import { observeMainThreadSql } from "../../../test-utils/main-thread-sql-spies.js";
 import { projectChatDisplayMessages } from "../../chat-display-projection.js";
 import { createTranscriptUpdateBroadcastHandler } from "../../server-session-events.js";
 import { createSessionRowProjection } from "../../session-row-projection.js";
@@ -370,10 +373,28 @@ describe("native Talk action ownership through public plugin registration", () =
         append(`excluded sentinel ${index}`, { display: false, excludeFromContext: true });
       }
       const raw = rawTranscriptRows();
-      const display = readSessionPreviewItemsFromTranscript(scope, 16, 800);
+      const display = await readSessionPreviewItemsFromTranscript(scope, 16, 800);
       expect.soft(display.map((item) => item.text)).toEqual(["ordinary", "display only"]);
-      const context = readSessionPreviewItemsFromTranscript(scope, 16, 800, "model-context");
-      expect.soft(context.map((item) => item.text)).toEqual(["ordinary", "context only"]);
+      await waitForSessionTranscriptIndexReconcile({
+        agentId: scope.agentId,
+        path: scope.storePath,
+      });
+      const sessionEntry = loadExactSessionEntry(scope)?.entry;
+      expect(sessionEntry?.sessionId).toBe(SESSION_ID);
+      await closeOpenClawAgentDatabaseByPathAsync(scope.storePath);
+      const sql = observeMainThreadSql();
+      try {
+        const context = await readSessionPreviewItemsFromTranscript(
+          { ...scope, sessionEntry },
+          16,
+          800,
+          "model-context",
+        );
+        expect(context.map((item) => item.text)).toEqual(["ordinary", "context only"]);
+        sql.expectIdle();
+      } finally {
+        sql.restore();
+      }
       await connectNativeSession(fixture);
       expect(nativeBackgroundItems(await nativeCallSession())).toEqual([
         { role: "user", text: "ordinary" },
@@ -386,11 +407,11 @@ describe("native Talk action ownership through public plugin registration", () =
       append("post-reset excluded", { display: false, excludeFromContext: true });
       const resetRaw = rawTranscriptRows();
       expect(
-        readSessionPreviewItemsFromTranscript(scope, 16, 800, "model-context").map(
+        (await readSessionPreviewItemsFromTranscript(scope, 16, 800, "model-context")).map(
           (item) => item.text,
         ),
       ).toEqual(["reset-kept"]);
-      expect(readSessionPreviewItemsFromTranscript(scope, 16, 800)).toEqual([]);
+      expect(await readSessionPreviewItemsFromTranscript(scope, 16, 800)).toEqual([]);
       await connectNativeSession(fixture);
       expect(nativeBackgroundItems(await nativeCallSession())).toEqual([
         { role: "user", text: "reset-kept" },
@@ -399,7 +420,7 @@ describe("native Talk action ownership through public plugin registration", () =
       for (let index = 0; index < 20; index++) {
         append(`${index}:` + "x".repeat(30));
       }
-      const bounded = readSessionPreviewItemsFromTranscript(scope, 3, 20, "model-context");
+      const bounded = await readSessionPreviewItemsFromTranscript(scope, 3, 20, "model-context");
       expect(bounded).toEqual(
         [17, 18, 19].map((index) => ({ role: "user", text: `${index}:` + "x".repeat(14) + "..." })),
       );
