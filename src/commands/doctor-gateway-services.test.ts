@@ -1356,7 +1356,7 @@ describe("maybeRepairGatewayServiceConfig", () => {
           expect(mocks.stage).not.toHaveBeenCalled();
           expect(mocks.install).not.toHaveBeenCalled();
           expect(mocks.restart).not.toHaveBeenCalled();
-          expect(mocks.replaceConfigFile).not.toHaveBeenCalled();
+          expect(mocks.writeConfig).not.toHaveBeenCalled();
           expectNoteContaining("deferred to update finalization", "Gateway service config");
         },
       );
