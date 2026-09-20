@@ -222,6 +222,7 @@ it("keeps caller cancellation independent of idle reclamation", async () => {
     const reason = new DOMException(`${mode} caller stopped`, "AbortError");
     const reclamation = reclaimAbandonedSqliteSnapshotsAsync(f.cache);
     const entered = await f.entered;
+    const ownedSetupReady = owned ? Promise.withResolvers<void>() : undefined;
     const operation = withSqliteReadOnlyWorkerScope(async () => {
       if (mode === "snapshot") {
         await readSnapshot(f.source, controller.signal);
@@ -242,6 +243,7 @@ it("keeps caller cancellation independent of idle reclamation", async () => {
           await owner.mutate(owner.assertCurrent, async () => {
             openOpenClawStateDatabase(owned.options);
             vi.stubEnv("XDG_CACHE_HOME", path.dirname(f.cache));
+            ownedSetupReady?.resolve();
             await readSnapshot(owned.options.path, controller.signal);
           });
         } finally {
@@ -253,6 +255,10 @@ it("keeps caller cancellation independent of idle reclamation", async () => {
       (error: unknown) => error,
     );
     try {
+      if (ownedSetupReady) {
+        // Exclusion acquisition and cold-open belong to fixture setup, not cancellation.
+        await Promise.race([ownedSetupReady.promise, operation]);
+      }
       const started = performance.now();
       controller.abort(reason);
       const error = await operation;
