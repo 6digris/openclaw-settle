@@ -4,7 +4,6 @@ import { createMessageInjectionAuthority } from "../../../auto-reply/reply/messa
 import {
   createReplyOperation,
   expireStaleReplyOperation,
-  type ReplyOperation,
 } from "../../../auto-reply/reply/reply-run-registry.js";
 import { CliPluginInvocationResources } from "../../../cli/plugin-invocation-resources.js";
 import { resolveDefaultSessionStorePath } from "../../../config/sessions/paths.js";
@@ -13,7 +12,6 @@ import {
   resolveSqliteReadScope,
   toDatabaseOptions,
 } from "../../../config/sessions/session-accessor.sqlite-scope.js";
-import { createDiagnosticEmbeddedRunOwner } from "../../../logging/diagnostic-run-activity.js";
 import {
   projectNestedToolActivityForHooks,
   type NestedToolActivity,
@@ -83,83 +81,31 @@ import {
 } from "./attempt-finalize.js";
 import { SESSIONS_YIELD_ABORT_REASON } from "./attempt-sessions-yield.js";
 import { prepareEmbeddedAttemptStream } from "./attempt-stream-prepare.js";
-
-function prepareCatalogExecutor(
-  projections: NestedToolActivity[],
-  options?: {
-    activeSession?: AgentSession;
-    attempt?: Partial<Parameters<typeof prepareEmbeddedAttemptStream>[0]["attempt"]>;
-    getRunState?: () => {
-      aborted: boolean;
-      promptError: unknown;
-      timedOut: boolean;
-      yieldDetected: boolean;
-    };
-    runAbortController?: AbortController;
-    sandboxSessionKey?: string;
-    sessionKey?: string;
-    replyOperation?: ReplyOperation;
-    onAttemptAbort?: () => void;
-    abortRun?: (isTimeout?: boolean, reason?: unknown) => void;
-    markExternalAbort?: () => void;
-    toolProgressDetail?: "explain" | "raw";
-    onAgentEvent?: (event: { stream: string; data: Record<string, unknown> }) => void;
-    trustedLocalMediaToolNames?: ReadonlySet<string>;
-  },
-) {
-  const runAbortController = options?.runAbortController ?? new AbortController();
-  return prepareEmbeddedAttemptStream({
-    attempt: {
-      runId: "run-output-schema",
-      sessionId: "session-output-schema",
-      sessionKey: options?.sessionKey ?? "agent:main:main",
-      replyOperation: options?.replyOperation,
-      onAttemptAbort: options?.onAttemptAbort,
-      toolProgressDetail: options?.toolProgressDetail,
-      onAgentEvent: options?.onAgentEvent,
-      ...options?.attempt,
-    } as never,
-    activeSession:
-      options?.activeSession ??
-      ({
-        agent: {},
-        isStreaming: false,
-        sessionManager: SessionManager.inMemory(),
-        subscribe: () => () => {},
-      } as never),
-    hookRunner: undefined as never,
-    hookAgentId: "main",
-    diagnosticTrace: {} as never,
-    diagnosticOwner: createDiagnosticEmbeddedRunOwner({
-      sessionId: "session-output-schema",
-      runId: "run-output-schema",
-    }),
-    clientToolCallSlots: [],
-    nestedToolActivities: projections,
-    isReplaySafeTool: () => false,
-    runAbortController,
-    abortRun: options?.abortRun ?? vi.fn(),
-    markExternalAbort: options?.markExternalAbort ?? vi.fn(),
-    getRunState:
-      options?.getRunState ??
-      (() => ({
-        aborted: false,
-        promptError: undefined,
-        timedOut: false,
-        yieldDetected: false,
-      })),
-    hasDeliveredSourceReply: () => false,
-    markSourceReplyDelivered: vi.fn(),
-    onBlockReply: vi.fn(),
-    onBlockReplyFlush: vi.fn(),
-    sandboxSessionKey: options?.sandboxSessionKey ?? "agent:main:main",
-    builtinToolNames: new Set(),
-    replaySafeToolNames: new Set(),
-    trustedLocalMediaToolNames: options?.trustedLocalMediaToolNames ?? new Set(),
-  });
-}
+import { prepareCatalogExecutor } from "./attempt-stream-prepare.test-support.js";
 
 registerAgentSessionLoopTestLifecycle();
+
+async function trackPreparedStreamSubscriptions() {
+  const { session } = await createTestSession();
+  const listeners = new Set<Parameters<AgentSession["subscribe"]>[0]>();
+  const releases: Array<ReturnType<typeof vi.fn>> = [];
+  const subscribe = session.subscribe.bind(session);
+  vi.spyOn(session, "subscribe").mockImplementation((listener) => {
+    listeners.add(listener);
+    const unsubscribe = subscribe(listener);
+    const release = vi.fn(() => {
+      listeners.delete(listener);
+      unsubscribe();
+    });
+    releases.push(release);
+    return release;
+  });
+  const actual = await vi.importActual<typeof import("../../embedded-agent-subscribe.js")>(
+    "../../embedded-agent-subscribe.js",
+  );
+  mocks.subscribe.mockImplementation(actual.subscribeEmbeddedAgentSession);
+  return { session, listeners, releases };
+}
 
 describe("prepareEmbeddedAttemptStream", () => {
   afterEach(async () => {
@@ -535,91 +481,103 @@ describe("prepareEmbeddedAttemptStream", () => {
     }
   });
 
-  it("uses the persisted assistant entry id and closes steering during revision settlement", async () => {
-    let resolveHook: ((value: { action: "revise"; reason: string }) => void) | undefined;
-    mocks.runBeforeFinalizeHook.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveHook = resolve;
+  it.each([false, true])(
+    "keeps finalization closed after revision or unsubscribe (unsubscribe: %s)",
+    async (unsubscribeDuringHook) => {
+      let resolveHook:
+        | ((value: { action: "revise"; reason: string } | { action: "continue" }) => void)
+        | undefined;
+      mocks.runBeforeFinalizeHook.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveHook = resolve;
+          }),
+      );
+      const messages = [{ role: "user", content: "Question" }];
+      const prepared = prepareEmbeddedAttemptStream({
+        attempt: {
+          runId: "run-finalize-id",
+          sessionId: "session-finalize-id",
+          sessionKey: "agent:main:main",
+          maxBeforeAgentFinalizeRevisions: 3,
+          beforeAgentFinalizeRevisionAttempts: 0,
+        } as never,
+        activeSession: {
+          agent: { hasQueuedMessages: () => false },
+          isStreaming: false,
+          messages,
+          pendingMessageCount: 0,
+          subscribe: () => () => {},
+        } as never,
+        hookRunner: { hasHooks: (name: string) => name === "before_agent_finalize" } as never,
+        hookAgentId: "main",
+        diagnosticTrace: {} as never,
+        diagnosticOwner: {} as never,
+        clientToolCallSlots: [],
+        nestedToolActivities: [],
+        isReplaySafeTool: () => false,
+        runAbortController: new AbortController(),
+        abortRun: vi.fn(),
+        markExternalAbort: vi.fn(),
+        getRunState: () => ({
+          aborted: false,
+          promptError: undefined,
+          timedOut: false,
+          yieldDetected: false,
         }),
-    );
-    const messages = [{ role: "user", content: "Question" }];
-    const prepared = prepareEmbeddedAttemptStream({
-      attempt: {
-        runId: "run-finalize-id",
-        sessionId: "session-finalize-id",
-        sessionKey: "agent:main:main",
-        maxBeforeAgentFinalizeRevisions: 3,
-        beforeAgentFinalizeRevisionAttempts: 0,
-      } as never,
-      activeSession: {
-        agent: { hasQueuedMessages: () => false },
-        isStreaming: false,
-        messages,
-        pendingMessageCount: 0,
-        subscribe: () => () => {},
-      } as never,
-      hookRunner: { hasHooks: (name: string) => name === "before_agent_finalize" } as never,
-      hookAgentId: "main",
-      diagnosticTrace: {} as never,
-      diagnosticOwner: {} as never,
-      clientToolCallSlots: [],
-      nestedToolActivities: [],
-      isReplaySafeTool: () => false,
-      runAbortController: new AbortController(),
-      abortRun: vi.fn(),
-      markExternalAbort: vi.fn(),
-      getRunState: () => ({
-        aborted: false,
-        promptError: undefined,
-        timedOut: false,
-        yieldDetected: false,
-      }),
-      hasDeliveredSourceReply: () => false,
-      markSourceReplyDelivered: vi.fn(),
-      onBlockReply: vi.fn(),
-      onBlockReplyFlush: vi.fn(),
-      sandboxSessionKey: "agent:main:main",
-      builtinToolNames: new Set(),
-      replaySafeToolNames: new Set(),
-      trustedLocalMediaToolNames: new Set(),
-    });
-    const subscriptionInput = mocks.subscribe.mock.calls.at(-1)?.[0] as {
-      onBeforeTerminalDelivery?: (event: unknown) => Promise<unknown>;
-    };
-    const decision = subscriptionInput.onBeforeTerminalDelivery?.({
-      messages: [],
-      willRetry: false,
-      assistantEntryId: "canonical-entry-id",
-      lastAssistant: {
-        role: "assistant",
-        content: [{ type: "text", text: "Draft answer" }],
-        stopReason: "stop",
-      },
-      assistantTexts: ["Draft answer"],
-      hasAssistantVisibleText: true,
-      isError: false,
-      incompleteTerminalAssistant: false,
-      hadDeterministicSideEffect: false,
-    });
+        hasDeliveredSourceReply: () => false,
+        markSourceReplyDelivered: vi.fn(),
+        onBlockReply: vi.fn(),
+        onBlockReplyFlush: vi.fn(),
+        sandboxSessionKey: "agent:main:main",
+        builtinToolNames: new Set(),
+        replaySafeToolNames: new Set(),
+        trustedLocalMediaToolNames: new Set(),
+      });
+      const subscriptionInput = mocks.subscribe.mock.calls.at(-1)?.[0] as {
+        onBeforeTerminalDelivery?: (event: unknown) => Promise<unknown>;
+      };
+      const decision = subscriptionInput.onBeforeTerminalDelivery?.({
+        messages: [],
+        willRetry: false,
+        assistantEntryId: "canonical-entry-id",
+        lastAssistant: {
+          role: "assistant",
+          content: [{ type: "text", text: "Draft answer" }],
+          stopReason: "stop",
+        },
+        assistantTexts: ["Draft answer"],
+        hasAssistantVisibleText: true,
+        isError: false,
+        incompleteTerminalAssistant: false,
+        hadDeterministicSideEffect: false,
+      });
 
-    await vi.waitFor(() => expect(mocks.runBeforeFinalizeHook).toHaveBeenCalledOnce());
-    const hookMessages = mocks.runBeforeFinalizeHook.mock.calls[0]?.[0].event.messages;
-    expect(hookMessages).not.toBe(messages);
-    expect(hookMessages[0]).toBe(messages[0]);
-    messages.push({ role: "user", content: "Later message" });
-    expect(hookMessages).toHaveLength(1);
-    expect(prepared.queueHandle.isStopped?.()).toBe(true);
-    await expect(prepared.queueHandle.queueMessage("too late")).rejects.toThrow(
-      "active session is finalizing",
-    );
+      await vi.waitFor(() => expect(mocks.runBeforeFinalizeHook).toHaveBeenCalledOnce());
+      const hookMessages = mocks.runBeforeFinalizeHook.mock.calls[0]?.[0].event.messages;
+      expect(hookMessages).not.toBe(messages);
+      expect(hookMessages[0]).toBe(messages[0]);
+      messages.push({ role: "user", content: "Later message" });
+      expect(hookMessages).toHaveLength(1);
+      expect(prepared.queueHandle.isStopped?.()).toBe(true);
+      await expect(prepared.queueHandle.queueMessage("too late")).rejects.toThrow(
+        "active session is finalizing",
+      );
 
-    resolveHook?.({ action: "revise", reason: "Tighten the answer" });
-    await expect(decision).resolves.toEqual({ suppressTerminalDelivery: true });
-    expect(hookMessages).toHaveLength(1);
-    expect(prepared.getBeforeAgentFinalizeRevisionEntryId()).toBe("canonical-entry-id");
-    expect(prepared.queueHandle.isStopped?.()).toBe(true);
-  });
+      if (unsubscribeDuringHook) {
+        prepared.subscription.unsubscribe();
+        resolveHook?.({ action: "continue" });
+        await expect(decision).resolves.toBeUndefined();
+        expect(prepared.getBeforeAgentFinalizeRevisionEntryId()).toBeUndefined();
+      } else {
+        resolveHook?.({ action: "revise", reason: "Tighten the answer" });
+        await expect(decision).resolves.toEqual({ suppressTerminalDelivery: true });
+        expect(prepared.getBeforeAgentFinalizeRevisionEntryId()).toBe("canonical-entry-id");
+      }
+      expect(hookMessages).toHaveLength(1);
+      expect(prepared.queueHandle.isStopped?.()).toBe(true);
+    },
+  );
 
   it("keeps already-started steering authoritative over finalization", async () => {
     let resolveSteer: (() => void) | undefined;
@@ -854,6 +812,103 @@ describe("prepareEmbeddedAttemptStream", () => {
       prepared.stopAcceptingSteerMessages();
       prepared.deferredLifecycleOwner?.discard();
       prepared.subscription.unsubscribe();
+    }
+  });
+
+  it("releases prepared stream subscriptions when deferred lifecycle adoption throws", async () => {
+    const { session, listeners, releases } = await trackPreparedStreamSubscriptions();
+    const failure = new Error("deferred lifecycle adoption failed");
+
+    expect(() =>
+      prepareCatalogExecutor([], {
+        activeSession: session,
+        attempt: {
+          deferTerminalLifecycle: true,
+          onDeferredLifecycleOwner: () => {
+            throw failure;
+          },
+        },
+      }),
+    ).toThrow(failure);
+
+    expect(releases).toHaveLength(2);
+    expect(listeners.size).toBe(0);
+    for (const release of releases) {
+      expect(release).toHaveBeenCalledOnce();
+    }
+    expect(ACTIVE_EMBEDDED_RUNS.has("session-output-schema")).toBe(false);
+  });
+
+  it.each(["subscription", "registration"] as const)(
+    "releases acquired stream subscriptions when %s preparation fails",
+    async (stage) => {
+      const { session, listeners, releases } = await trackPreparedStreamSubscriptions();
+      const failure = new Error(`${stage} failed`);
+      const fail = () => {
+        throw failure;
+      };
+      (stage === "subscription" ? mocks.subscribe : mocks.setActiveRun).mockImplementationOnce(
+        fail,
+      );
+
+      expect(() => prepareCatalogExecutor([], { activeSession: session })).toThrow(failure);
+      expect(releases).toHaveLength(stage === "subscription" ? 1 : 2);
+      expect(listeners.size).toBe(0);
+      for (const release of releases) {
+        expect(release).toHaveBeenCalledOnce();
+      }
+    },
+  );
+
+  it.each([
+    "prompt",
+    "abort",
+    "pre-aborted",
+    "supersede",
+    "unsubscribe",
+    "discard",
+    "complete",
+  ] as const)("releases each stream subscription once through %s cleanup", async (phase) => {
+    const { session, listeners, releases } = await trackPreparedStreamSubscriptions();
+    const runAbortController = new AbortController();
+    if (phase === "pre-aborted") {
+      runAbortController.abort();
+    }
+    const prepared = prepareCatalogExecutor([], {
+      activeSession: session,
+      runAbortController,
+      abortRun: (_isTimeout, reason) => runAbortController.abort(reason),
+      attempt: { deferTerminalLifecycle: true, onDeferredLifecycleOwner: () => {} },
+    });
+    expect(listeners.size).toBe(phase === "pre-aborted" ? 1 : 2);
+
+    if (phase === "prompt") {
+      prepared.stopAcceptingSteerMessages();
+    } else if (phase === "abort") {
+      runAbortController.abort();
+    } else if (phase === "supersede") {
+      prepared.queueHandle.cancel("superseded");
+    } else if (phase === "unsubscribe") {
+      prepared.subscription.unsubscribe();
+    } else if (phase === "discard") {
+      prepared.deferredLifecycleOwner!.discard();
+    } else if (phase === "complete") {
+      await prepared.deferredLifecycleOwner!.complete();
+    }
+
+    expect(prepared.queueHandle.isStopped?.()).toBe(true);
+    expect(listeners.size).toBe(
+      phase === "prompt" || phase === "abort" || phase === "pre-aborted" || phase === "supersede"
+        ? 1
+        : 0,
+    );
+    prepared.stopAcceptingSteerMessages();
+    prepared.subscription.unsubscribe();
+    prepared.deferredLifecycleOwner!.discard();
+    prepared.subscription.unsubscribe();
+    expect(listeners.size).toBe(0);
+    for (const release of releases) {
+      expect(release).toHaveBeenCalledOnce();
     }
   });
 
