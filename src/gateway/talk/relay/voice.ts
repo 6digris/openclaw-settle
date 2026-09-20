@@ -27,7 +27,6 @@ export function ensureRelayVoiceSession(session: RelaySession): boolean {
       sessionKey,
       provider: session.provider,
       origin: "relay",
-      originAuthority: session.originAuthority,
       voiceSessionId: session.id,
     });
     session.voiceSessionCreated = true;

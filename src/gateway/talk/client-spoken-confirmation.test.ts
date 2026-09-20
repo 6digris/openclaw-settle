@@ -157,7 +157,6 @@ describe("native Talk spoken confirmation handoff", () => {
       setRuntimeConfigSnapshot(config, config);
     }
     const voiceSessionId = createOrResumeClientVoiceSession({
-      ...(originAuthority ? { originAuthority } : {}),
       agentId: "main",
       sessionKey,
       origin: "client",
@@ -301,6 +300,7 @@ describe("native Talk spoken confirmation handoff", () => {
       ownerConnId: "confirmation-client",
       authority: { senderIsOwner: true },
       getVoiceSessionId: () => voiceSessionId,
+      getOriginAuthority: () => originAuthority,
       initialItems: [],
     });
     const bridge = controlBridge();

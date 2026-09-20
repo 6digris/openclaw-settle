@@ -35,7 +35,6 @@ import {
   createOrResumeClientVoiceSession,
   ensureClientVoiceAgentSessionEntry,
   resolveClientVoiceRunBinding,
-  registerClientVoiceConsultRun,
 } from "../../../talk/client-voice-session.js";
 import { clientVoiceSessionTesting } from "../../../talk/client-voice-session.test-support.js";
 import { captureEnv, setTestEnvValue } from "../../../test-utils/env.js";
@@ -57,10 +56,11 @@ import {
   browserSession,
   configureBrowserProviderFixture,
   invokeCreate,
+  invokeClose,
+  invokeTranscript,
   type BrowserRequest,
 } from "./client-browser-provider.test-support.js";
 import { readLegacyVoiceBinding } from "./client-legacy-voice-bindings.js";
-import { talkClientHandlers } from "./client.js";
 
 const voiceMocks = vi.hoisted(() => ({
   resolveConfiguredRealtimeVoiceProvider: vi.fn(),
@@ -103,27 +103,6 @@ function configureDelegatedBrowserProvider(
     voiceMocks.resolveConfiguredRealtimeVoiceProvider,
     createBrowserSession,
   );
-}
-
-async function invokeTranscript(params: Record<string, unknown>) {
-  const respond = vi.fn();
-  await talkClientHandlers["talk.client.transcript"]?.({
-    params,
-    respond,
-    context: { getRuntimeConfig: () => ({}) },
-  } as never);
-  return respond;
-}
-
-async function invokeClose(params: Record<string, unknown>) {
-  const respond = vi.fn();
-  await talkClientHandlers["talk.client.close"]?.({
-    params,
-    respond,
-    context: { getRuntimeConfig: () => ({}) },
-    client: { connId: "conn-close" },
-  } as never);
-  return respond;
 }
 
 async function createBrowserConsult() {
@@ -256,12 +235,32 @@ describe("talk.client.transcript", () => {
     const voiceSessionId = respond.mock.calls.at(-1)![1].voiceSessionId as string;
     ownedVoiceSessionId = voiceSessionId;
     captured.release();
-    registerClientVoiceConsultRun({
-      agentId: "main",
-      sessionKey,
-      voiceSessionId,
-      runId: "origin-bound-run",
+    const admitted = createDeferred();
+    const register = createDeferred();
+    voiceMocks.consultRealtimeVoiceAgent.mockImplementationOnce(async (params) => {
+      admitted.resolve();
+      await register.promise;
+      params.onRunStarted({ runId: "origin-bound-run", sessionId, timeoutMs: 1000 });
+      return { text: "fixture result" };
     });
+    const control = createBrowserSession.mock.calls[0]![0].gatewayControl!;
+    control.bindControl?.({ submitToolResult: async () => {} });
+    control.onReady?.();
+    control.onToolCall?.({
+      itemId: "origin-item",
+      callId: "origin-call",
+      name: "openclaw_agent_consult",
+      args: { question: "Read status" },
+    });
+    await admitted.promise;
+    const closing = invokeClose({ sessionKey, voiceSessionId });
+    try {
+      await nextEventLoopTurn();
+    } finally {
+      register.resolve();
+    }
+    await closing;
+    await vi.waitFor(() => expect(resolveClientVoiceRunBinding("origin-bound-run")).toBeDefined());
     const origin = resolveClientVoiceRunBinding("origin-bound-run")?.originAuthority;
     expect(origin?.deviceId).toBe("paired-widget");
     expect(origin?.isCurrent()).toBe(true);

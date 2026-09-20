@@ -384,6 +384,7 @@ export function submitTalkRealtimeRelayToolResult(params: {
 
 /** Tracks the chat run started for a realtime agent-consult tool call. */
 export function registerTalkRealtimeRelayAgentRun(params: {
+  originAuthority?: RelaySession["originAuthority"];
   relaySessionId: string;
   connId: string;
   sessionKey: string;
@@ -417,6 +418,7 @@ export function registerTalkRealtimeRelayAgentRun(params: {
   }
   const { agentId, sessionKey } = session.sessionTarget;
   registerClientVoiceConsultRun({
+    originAuthority: params.originAuthority,
     agentId,
     sessionKey,
     voiceSessionId: session.id,

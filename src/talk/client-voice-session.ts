@@ -52,7 +52,6 @@ import {
 } from "./voice-transcript.js";
 
 const voiceSessionByRunId = new Map<string, ClientVoiceRunBinding>();
-const voiceOrigins = new Map<string, ClientVoiceAppLaunchOrigin>();
 const voiceSessionOperations = createVoiceTranscriptOperationRegistry(
   VOICE_TRANSCRIPT_QUEUE_POLICY,
 );
@@ -174,7 +173,6 @@ function ensureToolEffectSubscription(): void {
 
 /** Create a call record or resume the same open call across transport restarts. */
 export function createOrResumeClientVoiceSession(params: {
-  originAuthority?: ClientVoiceAppLaunchOrigin;
   agentId: string;
   sessionKey: string;
   provider?: string;
@@ -186,25 +184,7 @@ export function createOrResumeClientVoiceSession(params: {
   const voiceSessionId = params.voiceSessionId?.trim() || randomUUID();
   const provider = params.provider?.trim() || undefined;
   const now = params.now ?? Date.now();
-  const originKey = operationKey(params.agentId, voiceSessionId);
-  const previousOrigin = voiceOrigins.get(originKey);
-  if (previousOrigin && params.originAuthority?.deviceId !== previousOrigin.deviceId) {
-    params.originAuthority?.release();
-    throw new Error("voice session originating device does not match");
-  }
-  try {
-    createOrResumeVoiceSessionRecord({ ...params, voiceSessionId, provider, now });
-  } catch (error) {
-    params.originAuthority?.release();
-    throw error;
-  }
-  // A resumed record receives only this fresh ingress's authority, never authority from stored IDs.
-  if (params.originAuthority) {
-    if (previousOrigin !== params.originAuthority) {
-      previousOrigin?.release();
-    }
-    voiceOrigins.set(originKey, params.originAuthority);
-  }
+  createOrResumeVoiceSessionRecord({ ...params, voiceSessionId, provider, now });
   return voiceSessionId;
 }
 
@@ -261,6 +241,8 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
 
 /** Correlate a consult run with its open call for confirmation and mutation evidence. */
 export function registerClientVoiceConsultRun(params: {
+  /** Fresh ingress/transport authority only; a durable call ID never restores it. */
+  originAuthority?: ClientVoiceAppLaunchOrigin;
   agentId: string;
   sessionKey: string;
   voiceSessionId: string;
@@ -308,7 +290,7 @@ export function registerClientVoiceConsultRun(params: {
   ) {
     // Replays keep the operational claim; a reassignment must never revive it.
     previousBinding?.originAuthority?.release();
-    const origin = voiceOrigins.get(operationKey(params.agentId, params.voiceSessionId));
+    const origin = params.originAuthority;
     const originAuthority = origin?.isCurrent() ? origin.retain() : undefined;
     voiceSessionByRunId.set(
       params.runId,
@@ -343,17 +325,6 @@ export function recordClientVoiceAppLaunchPolicyUse(params: {
     throw new Error("Voice app launch lost its call binding");
   }
   recordVoiceSessionAppLaunchPolicyUse(binding, params);
-}
-
-export function assertClientVoiceSessionOrigin(params: {
-  agentId: string;
-  voiceSessionId: string;
-  deviceId?: string;
-}): void {
-  const origin = voiceOrigins.get(operationKey(params.agentId, params.voiceSessionId));
-  if (origin && origin.deviceId !== params.deviceId) {
-    throw new Error("voice session originating device does not match");
-  }
 }
 
 export function resolveClientVoiceRunBinding(runId?: string): ClientVoiceRunBinding | undefined {
@@ -645,9 +616,6 @@ async function closeClientVoiceSessionInternal(params: {
     return binding?.voiceSessionId === params.voiceSessionId && binding.agentId === params.agentId;
   });
   deactivateClientVoiceConfirmationSession(params.agentId, params.voiceSessionId, liveRunIds);
-  const originKey = operationKey(params.agentId, params.voiceSessionId);
-  voiceOrigins.get(originKey)?.release();
-  voiceOrigins.delete(originKey);
   // Record retry ownership only after canonical close and confirmation cleanup.
   // Channel delivery is best-effort and must never delay this durable boundary.
   mutationDigestDeliveryOwner.record({
@@ -737,10 +705,6 @@ const clientVoiceSessionTesting = {
     for (const binding of voiceSessionByRunId.values()) {
       binding.originAuthority?.release();
     }
-    for (const origin of voiceOrigins.values()) {
-      origin.release();
-    }
-    voiceOrigins.clear();
     voiceSessionByRunId.clear();
     voiceSessionOperations.clear();
     mutationDigestDeliveryOwner.clear();

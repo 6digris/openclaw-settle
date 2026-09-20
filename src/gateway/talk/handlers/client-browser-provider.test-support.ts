@@ -3,6 +3,7 @@ import { vi } from "vitest";
 import type { GatewayRequestHandlerOptions } from "../../server-methods/types.js";
 import { resolveSessionMutationAuthorization } from "../../session-sharing.js";
 import { createTalkClient } from "./client-create.js";
+import { talkClientHandlers } from "./client.js";
 export type BrowserRequest = Parameters<
   NonNullable<
     import("../../../plugins/types.js").RealtimeVoiceProviderPlugin["createBrowserSession"]
@@ -70,4 +71,25 @@ export async function invokeCreate(options: GatewayRequestHandlerOptions) {
     return;
   }
   await createTalkClient({ ...options, sessionMutationAuthorization: admission.authorization });
+}
+
+export async function invokeTranscript(params: Record<string, unknown>) {
+  const respond = vi.fn();
+  await talkClientHandlers["talk.client.transcript"]?.({
+    params,
+    respond,
+    context: { getRuntimeConfig: () => ({}) },
+  } as never);
+  return respond;
+}
+
+export async function invokeClose(params: Record<string, unknown>) {
+  const respond = vi.fn();
+  await talkClientHandlers["talk.client.close"]?.({
+    params,
+    respond,
+    context: { getRuntimeConfig: () => ({}) },
+    client: { connId: "conn-close" },
+  } as never);
+  return respond;
 }

@@ -187,11 +187,18 @@ alone: the system-agent owner requires explicit approval of the exact proposal.
 Delegation text, transcripts, and provider/plugin prompts never mint grants.
 
 The originating client must authenticate with its signed, paired-device token.
-A newly paired client may need to reconnect after receiving that token. Shared-token
-only clients and unknown origins keep ordinary confirmation. A persisted call can
-resume with a fresh authenticated origin; stored call IDs never restore authority
-on their own. Already admitted consults retain their own device-revocation hold
-after hangup or same-device transport resume; completion releases that hold. The same owner handles Browser Talk, native thin
+A signed device identity combined with the shared Gateway token is **not**
+paired-device-token authentication. A newly paired client may need to reconnect
+after receiving its device token; verify the actual handshake mode rather than
+inferring it from pairing or a client configuration screenshot. Shared-token
+clients and unknown origins keep ordinary confirmation.
+
+App-launch policies do not add a new restriction to ordinary Talk continuation.
+Each consult receives only its own authenticated RPC or provider-transport origin;
+resuming a call from another client does not inherit a previous client's reusable
+grant. Stored call IDs and old persisted records never restore that authority.
+Already admitted consults retain their own device-revocation hold after hangup
+or transport resume; completion releases that hold. The same owner handles Browser Talk, native thin
 clients using Gateway control, Gateway relay, and native sideband delegation.
 
 Launches accept only an installed desktop-entry identity, its revision, and the

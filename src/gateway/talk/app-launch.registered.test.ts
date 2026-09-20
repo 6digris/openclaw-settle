@@ -294,7 +294,6 @@ describe.runIf(process.platform === "linux")("registered installed-app voice flo
           sessionKey,
           origin: "client",
           transcriptCapable: true,
-          originAuthority: origin,
         });
         ingress.release();
         const admission = prepareSystemAgentRunAdmission(
@@ -306,6 +305,7 @@ describe.runIf(process.platform === "linux")("registered installed-app voice flo
         try {
           const admitted = await admission.admit("embedded");
           registerClientVoiceConsultRun({
+            originAuthority: origin,
             agentId: "main",
             sessionKey,
             voiceSessionId,
@@ -369,6 +369,7 @@ describe.runIf(process.platform === "linux")("registered installed-app voice flo
             expect(nativeCommands).toEqual(["device.apps"]);
           }
         } finally {
+          origin?.release();
           admission.close();
           registry.unregister("node-connection");
           await Promise.all(pending);

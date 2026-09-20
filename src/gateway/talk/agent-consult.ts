@@ -15,6 +15,7 @@ import {
   REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
   buildRealtimeVoiceAgentConsultChatMessage,
 } from "../../talk/agent-consult-tool.js";
+import type { ClientVoiceAppLaunchOrigin } from "../../talk/client-voice-app-launch-policy.js";
 import { abortChatRunById } from "../chat-abort.js";
 import { handleTrustedInternalChatSend } from "../server-methods/chat-send-handler.js";
 import type { GatewayRequestHandlerOptions } from "../server-methods/shared-types.js";
@@ -65,6 +66,7 @@ export async function startTalkRealtimeAgentConsult(
   request: GatewayRequestHandlerOptions,
   params: {
     sessionTarget: PreparedTalkSessionTarget;
+    originAuthority?: ClientVoiceAppLaunchOrigin;
     callId: string;
     args: unknown;
     relaySessionId?: string;
@@ -137,6 +139,7 @@ export async function startTalkRealtimeAgentConsult(
           try {
             if (params.relaySessionId && params.connId) {
               registerTalkRealtimeRelayAgentRun({
+                originAuthority: params.originAuthority,
                 relaySessionId: params.relaySessionId,
                 connId: params.connId,
                 sessionKey: params.sessionTarget.canonicalKey,

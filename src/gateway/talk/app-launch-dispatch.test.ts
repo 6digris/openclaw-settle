@@ -72,15 +72,16 @@ async function scope(
       sessionKey,
       origin: "client",
       transcriptCapable: true,
-      originAuthority,
     });
     ingress.release();
     registerClientVoiceConsultRun({
+      originAuthority,
       agentId: "main",
       sessionKey,
       voiceSessionId,
       runId: "launch-run",
     });
+    originAuthority?.release();
     emitTrustedDiagnosticEvent({
       type: "tool.execution.started",
       runId: "launch-run",
@@ -157,7 +158,7 @@ describe("Talk installed-app final Gateway authority", () => {
     });
   });
 
-  it("rejects a token-only resume without replacing the authenticated device owner", async () => {
+  it("allows ordinary token-only resume without inheriting the previous consult authority", async () => {
     await scope(async ({ make, voiceSessionId }) => {
       expect(() =>
         createOrResumeClientVoiceSession({
@@ -166,7 +167,14 @@ describe("Talk installed-app final Gateway authority", () => {
           voiceSessionId,
           origin: "client",
         }),
-      ).toThrow("originating device does not match");
+      ).not.toThrow();
+      registerClientVoiceConsultRun({
+        agentId: "main",
+        sessionKey: "agent:main:launch",
+        voiceSessionId,
+        runId: "token-only-run",
+      });
+      expect(resolveClientVoiceRunBinding("token-only-run")?.originAuthority).toBeUndefined();
       expect(make().isCurrent(true)).toBe(true);
     });
   });
@@ -183,10 +191,6 @@ describe("Talk installed-app final Gateway authority", () => {
         sessionKey: "agent:main:launch",
         voiceSessionId,
         origin: "client",
-        originAuthority: captureTalkVoiceOrigin({
-          client: { ...sharingPolicyClient({ deviceId: "widget" }), isDeviceTokenAuth: true },
-          hasCurrentClientAuthority: fresh.isCurrent,
-        }),
       });
       fresh.release();
       expect(make().isCurrent(true)).toBe(true);
@@ -203,23 +207,25 @@ describe("Talk installed-app final Gateway authority", () => {
         { deviceId: "other-widget", role: "operator" },
         () => true,
       );
+      const originAuthority = captureTalkVoiceOrigin({
+        client: { ...sharingPolicyClient({ deviceId: "other-widget" }), isDeviceTokenAuth: true },
+        hasCurrentClientAuthority: fresh.isCurrent,
+      });
       createOrResumeClientVoiceSession({
         agentId: "main",
         sessionKey: "agent:main:launch",
         voiceSessionId,
         origin: "client",
-        originAuthority: captureTalkVoiceOrigin({
-          client: { ...sharingPolicyClient({ deviceId: "other-widget" }), isDeviceTokenAuth: true },
-          hasCurrentClientAuthority: fresh.isCurrent,
-        }),
       });
       fresh.release();
       registerClientVoiceConsultRun({
+        originAuthority,
         agentId: "main",
         sessionKey: "agent:main:launch",
         voiceSessionId,
         runId: "resumed-run",
       });
+      originAuthority?.release();
       const voiceRun = resolveClientVoiceRunBinding("resumed-run");
       expect(voiceRun?.originAuthority?.deviceId).toBe("other-widget");
       await withGatewayToolCallerIdentity(
