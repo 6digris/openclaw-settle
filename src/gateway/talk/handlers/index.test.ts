@@ -38,6 +38,7 @@ import { resolveSessionMutationAuthorization } from "../../session-sharing.js";
 import { prepareTalkAgentConsultTranscript } from "../agent-consult-transcript.js";
 import { buildTalkRealtimeConfig } from "../session-config.js";
 import { forgetLegacyVoiceBinding } from "./client-legacy-voice-bindings.js";
+import { talkConfigAccentCases } from "./config-accent.test-support.js";
 import { talkHandlers } from "./index.js";
 import {
   expectRecordFields,
@@ -1252,24 +1253,7 @@ describe("talk.config handler", () => {
     },
   );
 
-  it.each([
-    {
-      name: "prefers the authenticated profile accent over gateway appearance defaults",
-      profileId: "profile-1",
-      profileAccent: "#A1B2C3",
-      expectedAccent: "#a1b2c3",
-    },
-    {
-      name: "ignores malformed authenticated profile accents",
-      profileId: "profile-1",
-      profileAccent: "not-a-color",
-      expectedAccent: "#52c99a",
-    },
-    {
-      name: "keeps profile-less callers on their existing gateway accent path",
-      expectedAccent: "#52c99a",
-    },
-  ])("$name", async ({ profileId, profileAccent, expectedAccent }) => {
+  it.each(talkConfigAccentCases)("$name", async ({ profileId, profileAccent, expectedAccent }) => {
     markTalkOwnerCold("tts");
     const runtimeConfig = createTalkConfig("healthy-talk-key");
     mocks.getSpeechProvider.mockReturnValue({ id: "acme" });
@@ -1292,7 +1276,9 @@ describe("talk.config handler", () => {
     });
 
     expect(respond.mock.calls[0]?.[0]).toBe(true);
-    expect(respond.mock.calls[0]?.[1]?.config?.ui).toEqual({ seamColor: expectedAccent });
+    expect(respond.mock.calls[0]?.[1]?.config?.ui).toEqual(
+      expectedAccent ? { seamColor: expectedAccent } : undefined,
+    );
     if (profileId) {
       expect(mocks.getCanonicalUserPreferences).toHaveBeenCalledWith(profileId, ["ui.accent"]);
     } else {
@@ -2069,7 +2055,7 @@ describe("talk.session unified handlers", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.resolveSessionKeyFromResolveParams.mockImplementation(async ({ p }) => {
+    mocks.resolveSessionKeyFromResolveParams.mockImplementation(({ p }) => {
       const key = (p as { key?: unknown }).key;
       return {
         ok: true,
@@ -2878,7 +2864,6 @@ describe("talk.session unified handlers", () => {
       brain: "agent-consult",
     });
     expect(mocks.resolveSessionKeyFromResolveParams).toHaveBeenCalledWith({
-      cfg: config,
       projection: {},
       client: { connId: "conn-1", connect: { scopes: ["operator.write"] } },
       p: {

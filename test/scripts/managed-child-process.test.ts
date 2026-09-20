@@ -26,7 +26,9 @@ import {
 import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import { waitForChildClose, waitForDead, waitForPidFile } from "../helpers/process-wait.js";
 import { startProcessWatchdogFixture } from "../helpers/process-watchdog.js";
+import { createDeferred } from "../helpers/promise.js";
 import { runQaGatewayFixture } from "../helpers/qa-gateway-cleanup.js";
+import { exitedDescendantReaper } from "./exited-descendant-reaper.test-support.js";
 import { createScriptTestHarness } from "./test-helpers.js";
 
 const testNodeExecPath = resolveTestNodeExecPath();
@@ -95,6 +97,20 @@ fs.renameSync(pidPath + ".tmp", pidPath);
 `;
 }
 
+// Advance only the readiness clock; native launch errors and all cleanup still settle normally.
+function expirePidReadiness(filePath: string, timeoutMs: number, commandOutcome: Promise<unknown>) {
+  let elapsed = 0;
+  return waitForPidFile(
+    filePath,
+    timeoutMs,
+    async () => {
+      await commandOutcome;
+      elapsed = timeoutMs;
+    },
+    () => elapsed,
+  );
+}
+
 describe("managed-child-process", () => {
   it("registers with the containing owner when the command creates its own TMP leaf", async () => {
     const root = createTempDir("managed-command-owner-");
@@ -135,31 +151,10 @@ process.exitCode = await runManagedCommand({
       );
       // Linux may reap orphaned tool services after the leader's close. Adopt
       // them here and defer reaping until the real supervisor has settled.
-      const reaper = `
-import ctypes, os, subprocess, sys
-if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
-    raise OSError(ctypes.get_errno(), "PR_SET_CHILD_SUBREAPER failed")
-try:
-    result = subprocess.run(sys.argv[1:])
-finally:
-    reaped = 0
-    while True:
-        try:
-            pid, code = os.waitpid(-1, os.WNOHANG)
-        except ChildProcessError:
-            break
-        if pid == 0 or code != 0:
-            raise RuntimeError("tool descendant did not exit successfully")
-        reaped += 1
-    print("successfully reaped:", reaped)
-    if reaped == 0:
-        raise RuntimeError("fixture did not retain an exited descendant")
-sys.exit(result.returncode)
-`;
       let output = "";
       const code = await runManagedCommand({
         bin: "python3",
-        args: ["-c", reaper, process.execPath, runnerPath],
+        args: ["-c", exitedDescendantReaper, process.execPath, runnerPath],
         stdio: ["ignore", "pipe", "pipe"],
         timeoutMs: 10_000,
         onReady(child) {
@@ -180,11 +175,13 @@ sys.exit(result.returncode)
       resistant,
       abort,
       bin = testNodeExecPath,
+      waitForPid = (file: string, timeoutMs: number) => waitForPidFile(file, timeoutMs),
     }: {
       runner: "managed" | "managed-inherit" | "preparation";
       resistant: boolean;
       abort: boolean;
       bin?: string;
+      waitForPid?: typeof expirePidReadiness;
     },
     ...cleanups: Array<() => unknown>
   ) {
@@ -226,6 +223,7 @@ ${publish(2)}
     const abortController = new AbortController();
     const stdout = vi.spyOn(process.stdout, "write");
     let output = "";
+    let commandOutcome!: Promise<Error | undefined>;
     const releaseAndWait = startProcessWatchdogFixture(() => {
       const command =
         runner === "preparation"
@@ -240,10 +238,11 @@ ${publish(2)}
                   output += String(chunk);
                 }),
             });
-      return command.then(
+      commandOutcome = command.then(
         () => undefined,
         (error: unknown) => toErrorObject(error, "Nested fixture command failed"),
       );
+      return commandOutcome;
     });
     const pids: number[] = [];
     let commandOutcomeAsserted = false;
@@ -251,7 +250,7 @@ ${publish(2)}
     await runQaGatewayFixture(
       async () => {
         for (const pidPath of pidPaths) {
-          pids.push(await waitForPidFile(pidPath, 10_000));
+          pids.push(await waitForPid(pidPath, 10_000, commandOutcome));
         }
         expect(pids.every(isProcessAlive)).toBe(true);
         if (abort) {
@@ -315,7 +314,7 @@ ${publish(2)}
       const bin = path.join(createTempDir("openclaw-nested-startup-"), "missing-node");
       const lastCleanup = vi.fn();
       const failure = await runNestedCleanupFixture(
-        { runner, resistant: false, abort: false, bin },
+        { runner, resistant: false, abort: false, bin, waitForPid: expirePidReadiness },
         lastCleanup,
       ).catch((error: unknown) => error);
 
@@ -1497,10 +1496,11 @@ if (role === "leaf") {
     expectCase: typeof expect,
     {
       bin = process.execPath,
+      waitForPid = (file: string, timeoutMs: number) => waitForPidFile(file, timeoutMs),
       dir = fs.mkdtempSync(
         path.join(fs.realpathSync(os.tmpdir()), "openclaw-managed-held-output-"),
       ),
-    }: { bin?: string; dir?: string } = {},
+    }: { bin?: string; dir?: string; waitForPid?: typeof expirePidReadiness } = {},
   ) {
     // Concurrent rows own their roots; the shared afterEach can run while a sibling is alive.
     // This namespace owns the deliberate failed join and manual rescue. Pass
@@ -1599,8 +1599,8 @@ child.once('message', () => { ${normalExit ? "process.exit(0);" : ""} });
     });
     await runQaGatewayFixture(
       async () => {
-        escapedPid = await waitForPidFile(pidPath, 10_000);
-        const parentPid = await waitForPidFile(parentPidPath, 10_000);
+        escapedPid = await waitForPid(pidPath, 10_000, outcome);
+        const parentPid = await waitForPid(parentPidPath, 10_000, outcome);
         const canceledAt = Date.now();
         if (mode === "normal drainage") {
           await waitFor(() => exitedAt !== 0);
@@ -1712,9 +1712,17 @@ child.once('message', () => { ${normalExit ? "process.exit(0);" : ""} });
       const bin = path.join(dir, "missing-node");
       const signals = ["SIGHUP", "SIGINT", "SIGTERM"] as const;
       const listeners = signals.map((signal) => process.listenerCount(signal));
-      const completion = runEscapedOutputFixture(mode, expectCase, { bin, dir }).catch(
-        (error: unknown) => error,
-      );
+      const observedRelease = createDeferred();
+      const completion = runEscapedOutputFixture(mode, expectCase, {
+        bin,
+        dir,
+        waitForPid: (file, timeoutMs, commandOutcome) =>
+          expirePidReadiness(
+            file,
+            timeoutMs,
+            Promise.all([commandOutcome, observedRelease.promise]),
+          ),
+      }).catch((error: unknown) => error);
       const owner = findVitestResourceOwner(dir);
       await runQaGatewayFixture(
         async () => {
@@ -1733,6 +1741,8 @@ child.once('message', () => { ${normalExit ? "process.exit(0);" : ""} });
           }, 10_000);
         },
         async () => {
+          // Keep PID evidence until the release assertion has observed the real command join.
+          observedRelease.resolve();
           const failure = await completion;
           expectCase(fs.existsSync(dir)).toBe(false);
           expectCase(signals.map((signal) => process.listenerCount(signal))).toEqual(listeners);

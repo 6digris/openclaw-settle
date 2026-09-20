@@ -1,4 +1,5 @@
 // Defines storage contracts for task registry records and observer events.
+import type { TaskFlowSyncResult } from "./task-flow-registry.types.js";
 import type { TaskDeliveryState, TaskRecord } from "./task-registry.types.js";
 
 /** Full task registry snapshot used for persistence restore and replacement writes. */
@@ -8,6 +9,7 @@ export type TaskRegistryStoreSnapshot = {
 };
 
 export type TaskExecutionRestoreStore = {
+  repairLegacyIdentifiers?: () => void;
   loadSnapshot: () => TaskRegistryStoreSnapshot;
   withMutation?: <T>(operation: () => T) => T;
   upsertTaskWithDeliveryState: (params: {
@@ -18,7 +20,40 @@ export type TaskExecutionRestoreStore = {
 
 export type TaskRegistryMutationScope = {
   taskId: string;
-  flowId: string;
+  flowId?: string;
   runId?: string;
   childSessionKey?: string;
 };
+
+export type TaskLiveFlowSelection = {
+  taskId: string;
+  flowId: string;
+  createdAt: number;
+};
+
+export type TaskLiveFlowSyncOutcome =
+  | { kind: "not-selected" }
+  | { kind: "retry"; reason: "storage_contention" | "projection_changed" }
+  | { kind: "result"; result: TaskFlowSyncResult };
+
+export type TaskLiveFlowAuthority = {
+  assertCurrent(): void;
+  isSelected(selection: TaskLiveFlowSelection): boolean;
+};
+
+type TaskRegistryObserverRecord = Omit<TaskRecord, "detail">;
+
+export type TaskRegistryObserverEvent =
+  | {
+      kind: "restored";
+    }
+  | {
+      kind: "upserted";
+      task: TaskRegistryObserverRecord;
+      previous?: TaskRegistryObserverRecord;
+    }
+  | {
+      kind: "deleted";
+      taskId: string;
+      previous: TaskRegistryObserverRecord;
+    };

@@ -159,7 +159,7 @@ describe("chat history in-flight assistant recovery", () => {
             "run-first",
           ),
         );
-        admitChatSubmission(state);
+        admitChatSubmission(state, undefined);
       }
 
       await loadChatHistory(state, { startup: method === "chat.startup" });
@@ -798,6 +798,7 @@ describe("chat history in-flight assistant recovery", () => {
     await loadChatHistory(state);
 
     expect(state.chatRunId).toBe("run-reconnected");
+    expect(state.chatRecoveredRunId).toBe("run-reconnected");
     expect(state.chatStream).toBeNull();
     expect(state.chatRunStartup).toBeFalsy();
     handleChatGatewayEvent(state, {
@@ -861,6 +862,7 @@ describe("chat history in-flight assistant recovery", () => {
     await loadPromise;
 
     expect(state.chatRunId).toBe("run-newer");
+    expect(state.chatRecoveredRunId).toBeUndefined();
     expect(state.chatStream).toBe("A newer live response.");
   });
 

@@ -31,7 +31,10 @@ import {
   isSessionProfileDependentMethod,
 } from "./session-method-policy.js";
 import { SessionMutationAuthorizationChangedError } from "./session-mutation-authorization-error.js";
-import { resolveRequestedSessionAgentId } from "./session-request-agent.js";
+import {
+  resolveRequestedSessionAgentId,
+  resolveRequestedSessionAgentInput,
+} from "./session-request-agent.js";
 import type { SessionRowReadView } from "./session-row-prepared-read.js";
 import { getSessionRowProjection } from "./session-row-projection-access.js";
 import {
@@ -134,6 +137,7 @@ export {
   isGatewayAdmin,
   isResolvedIncognitoSession,
   isSessionVisibilityAllowed,
+  prepareSessionSharingTargets,
   resolveSessionSharingRole,
   resolveSessionSharingTarget,
   resolveSessionSharingTargets,
@@ -218,12 +222,16 @@ export function resolveSessionMutationAuthorization(params: {
     targetRef: SessionMutationTarget,
     targetCount: number,
   ): { target: SessionSharingTarget | null } | { error: ErrorShape } => {
+    const input = resolveRequestedSessionAgentInput(targetRef.sessionKey, targetRef.agentId);
+    if (!input.ok) {
+      return { error: input.error };
+    }
     try {
       return {
         target: resolveSessionSharingTarget({
           cfg: getCfg(),
           sessionKey: targetRef.sessionKey,
-          agentId: targetRef.agentId,
+          agentId: input.value,
           ...(lookupCaches ??= createLookupCaches()),
           exactRead: targetCount === 1,
         }),

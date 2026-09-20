@@ -13,6 +13,7 @@ type ProgressDisclosureChoice = boolean | number;
 
 export type ProgressDisclosureState = Readonly<{
   open: boolean;
+  initiallyCollapsed: boolean;
   manualOpen: ProgressDisclosureChoice | undefined;
   manualReopens: number;
   activeRunId: string | null;
@@ -26,12 +27,13 @@ export type ProgressDisclosureEvent =
   | {
       type: "mount";
       open: boolean;
+      initiallyCollapsed?: boolean;
       manualOpen?: ProgressDisclosureChoice;
       activeRunId: string | null;
       completedRunId: string | null;
       readingHistory: boolean;
     }
-  | { type: "run"; runId: string; open: boolean }
+  | { type: "run"; runId: string; open: boolean; recovered?: boolean }
   | { type: "complete"; runId: string }
   | { type: "history"; readingHistory: boolean }
   | { type: "gesture"; distancePx: number }
@@ -43,6 +45,7 @@ export type ProgressDisclosureEvent =
 
 const INITIAL_STATE: ProgressDisclosureState = {
   open: false,
+  initiallyCollapsed: false,
   manualOpen: undefined,
   manualReopens: 0,
   activeRunId: null,
@@ -62,25 +65,40 @@ export function resolveProgressDisclosure(
       return {
         ...INITIAL_STATE,
         open: event.manualOpen === undefined ? event.open : Boolean(event.manualOpen),
+        initiallyCollapsed: event.initiallyCollapsed === true,
         manualOpen: event.manualOpen,
         activeRunId: event.activeRunId,
         completedRunId: event.completedRunId,
         readingHistory: event.readingHistory,
       };
-    case "run":
+    case "run": {
+      // History may identify an existing run after its card. A new live run,
+      // including the first locally submitted turn, keeps its ordinary default.
+      const retainInitial = state.initiallyCollapsed && event.recovered === true;
       return event.runId === state.activeRunId
         ? state
         : {
             ...state,
             activeRunId: event.runId,
             completedRunId: null,
-            open: typeof state.manualOpen === "boolean" ? state.manualOpen : event.open,
-            manualOpen: typeof state.manualOpen === "boolean" ? state.manualOpen : undefined,
+            initiallyCollapsed: retainInitial,
+            open:
+              typeof state.manualOpen === "boolean"
+                ? state.manualOpen
+                : retainInitial
+                  ? state.open
+                  : event.open,
+            manualOpen:
+              retainInitial || typeof state.manualOpen === "boolean" ? state.manualOpen : undefined,
             manualReopens: 0,
             gestures: 0,
             distancePx: 0,
           };
+    }
     case "complete":
+      if (state.initiallyCollapsed && !state.activeRunId && !state.completedRunId) {
+        return { ...state, completedRunId: event.runId };
+      }
       return event.runId !== state.activeRunId || event.runId === state.completedRunId
         ? state
         : {
@@ -88,7 +106,7 @@ export function resolveProgressDisclosure(
             completedRunId: event.runId,
             open:
               state.manualOpen === undefined
-                ? state.readingHistory
+                ? state.readingHistory || state.initiallyCollapsed
                   ? state.open
                   : true
                 : Boolean(state.manualOpen),

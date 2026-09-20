@@ -279,6 +279,9 @@ export function applyHistoryRun(params: {
     // Their identity fences ABA races where a run starts and finishes while
     // history is pending; deltas from this same live run must still merge.
     adoptStartedChatRun(state, inFlightRunId, Date.now());
+    if (recoveringRun && state.chatRunId === inFlightRunId) {
+      state.chatRecoveredRunId = inFlightRunId;
+    }
     if (recoveringRun && sessionInfo) {
       observeChatRunModel(state, inFlightRunId, sessionInfo);
     }

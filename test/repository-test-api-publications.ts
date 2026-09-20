@@ -69,9 +69,6 @@ const publications: Record<string, string | symbol> = {
   "src/commands/doctor-auth-migration-receipts.ts": Symbol.for(
     "openclaw.authProfileMigrationReceiptsTestApi",
   ),
-  "src/commands/doctor-heartbeat-main-session-repair.ts": Symbol.for(
-    "openclaw.doctorHeartbeatMainSessionRepairTestApi",
-  ),
   "src/commands/doctor-session-snapshots.ts": Symbol.for("openclaw.doctorSessionSnapshotsTestApi"),
   "src/commands/doctor/shared/codex-native-assets.ts": Symbol.for(
     "openclaw.codexNativeAssetsTestApi",
@@ -96,8 +93,6 @@ const publications: Record<string, string | symbol> = {
   "src/media/playback-transcode.ts": Symbol.for("openclaw.playbackTranscodeTestApi"),
   "src/model-catalog/remote-overlay.ts": Symbol.for("openclaw.remoteModelCatalogOverlayTestApi"),
   "src/node-host/plugin-node-host.ts": Symbol.for("openclaw.nodeHostPluginTestApi"),
-  "src/plugin-state/plugin-state-store.sqlite.ts": Symbol.for("openclaw.pluginStateSqliteTestApi"),
-  "src/plugin-state/plugin-state-store.ts": Symbol.for("openclaw.pluginStateStoreTestApi"),
   "src/plugins/memory-runtime.ts": Symbol.for("openclaw.memoryRuntimeTestApi"),
   "src/sessions/session-lifecycle-admission.ts": Symbol.for(
     "openclaw.sessionLifecycleAdmissionTestApi",

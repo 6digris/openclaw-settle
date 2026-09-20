@@ -30,6 +30,7 @@ import type { GoalComposerController } from "./chat-composer-goal-mode.ts";
 import { renderChatGoal } from "./chat-composer-goal.ts";
 import type { HumanMentionMenuHost } from "./chat-composer-mention-menu.ts";
 import { renderChatComposerPlusMenu } from "./chat-composer-plus-menu.ts";
+import { renderComposerQuestionDock } from "./chat-composer-question.ts";
 import { renderChatQueue } from "./chat-composer-queue.ts";
 import { renderSelectedHumanMentions } from "./chat-composer-selected-mentions.ts";
 import {
@@ -50,7 +51,6 @@ import {
 } from "./chat-composer-status.ts";
 import type { ChatComposerProps, ChatComposerState } from "./chat-composer-types.ts";
 import {
-  ensureChatComposerPickerDismissal,
   handleChatComposerDropdownShow,
   markPointerOpenedChatComposerDropdown,
   restorePointerOpenedChatComposerTrigger,
@@ -142,9 +142,6 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
     slashMenuAnnouncementId,
     goalComposer,
   } = context;
-  if (slashMenuVisible || skillMenuVisible || mentionMenuVisible || emojiMenuVisible) {
-    ensureChatComposerPickerDismissal();
-  }
   const disabledBanner = props.disabledBanner
     ? html`
         <div
@@ -245,11 +242,11 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
       : state.dictationError
         ? { text: state.dictationError, tone: "danger" as const, icon: icons.alertTriangle }
         : offlineText
-          ? { text: offlineText, tone: "warn" as const, icon: icons.globeOff }
+          ? { text: offlineText, tone: "info" as const, icon: icons.inbox }
           : null;
-  const composerUnderlaps =
+  const composerStatus =
     showComposerInput && primaryComposerStatus
-      ? html`<div class="agent-chat__composer-underlaps" data-tone=${primaryComposerStatus.tone}>
+      ? html`<div class="agent-chat__composer-status" data-tone=${primaryComposerStatus.tone}>
           <div
             id=${props.disabledReason ? disabledReasonId : nothing}
             class="agent-chat__composer-status-band"
@@ -294,6 +291,8 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
             gatewayScope: props.gatewayScope,
             sessionIdentity: props.progressCardIdentity,
             initiallyCollapsed: props.progressCardInitiallyCollapsed,
+            initialRunId: props.progressCardInitialRunId,
+            recoveredRunId: props.progressCardRecoveredRunId,
             activeRunId: props.runId,
             readingHistory: props.readingHistory,
             onManipulate: props.onProgressManipulate,
@@ -334,34 +333,22 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
         })}
       </div>`
     : nothing;
-  const compoundQuestionComposer = Boolean(questionPanelProps && showComposerInput);
   return html`
-    <div
-      class="agent-chat__composer-shell ${
-        compoundQuestionComposer ? "agent-chat__composer-shell--question-composer" : ""
-      }"
-    >
-      <div class="agent-chat__composer-overlay">
-        ${props.anchoredNotices ?? nothing} ${composerAlerts} ${fallbackStatus}
-        ${
-          interruptedStatus === nothing
-            ? nothing
-            : html`<div class="agent-chat__composer-run-status">${interruptedStatus}</div>`
-        }
+    <div class="agent-chat__composer-shell">
+      <div class="chat-footer__context">
+        ${props.footerContent ?? nothing}
+        <div class="agent-chat__composer-notices">
+          ${props.notices ?? nothing} ${composerStatus} ${composerAlerts} ${fallbackStatus}
+          ${
+            interruptedStatus === nothing
+              ? nothing
+              : html`<div class="agent-chat__composer-run-status">${interruptedStatus}</div>`
+          }
+        </div>
+        ${renderComposerQuestionDock(questionPanelProps)}
+        ${props.disabledBanner?.kind === "above-composer" ? disabledBanner : nothing}
+        ${progressCard} ${queue} ${goalCard}
       </div>
-      ${
-        questionPanelProps
-          ? html`
-              <div class="agent-chat__question-dock">
-                <openclaw-chat-question-panel
-                  .props=${questionPanelProps}
-                ></openclaw-chat-question-panel>
-              </div>
-            `
-          : nothing
-      }
-      ${props.disabledBanner?.kind === "above-composer" ? disabledBanner : nothing} ${progressCard}
-      ${queue} ${goalCard}
       ${
         showComposerInput
           ? html`<div
@@ -400,10 +387,15 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
               }
               <div class="agent-chat__composer-lede">
                 ${goalComposer.render()}
-                ${renderSelectedHumanMentions(visibleDraft, props.mentions, () => {
-                  commitComposerDraft(props, props.getDraft?.() ?? props.draft, []);
-                  requestUpdate();
-                })}
+                ${renderSelectedHumanMentions(
+                  visibleDraft,
+                  props.mentions,
+                  () => {
+                    commitComposerDraft(props, props.getDraft?.() ?? props.draft, []);
+                    requestUpdate();
+                  },
+                  state.mentionMenu.selectedAvatarUrls,
+                )}
                 ${
                   props.replyTarget
                     ? html`
@@ -609,7 +601,6 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
             ? disabledBanner
             : nothing
       }
-      ${composerUnderlaps}
     </div>
   `;
 }

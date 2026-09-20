@@ -1,9 +1,17 @@
+import path from "node:path";
+import type { Page } from "playwright";
 import { expect, it } from "vitest";
 import {
   controlUiBundledGatewayUrl,
   controlUiBundledSettingsStorageKey,
 } from "../test-helpers/control-ui-e2e.ts";
-import { createChatFlowE2eSuite, installMockGateway } from "./chat-flow.test-support.ts";
+import {
+  createChatFlowE2eSuite,
+  installMockGateway,
+  requireRecord,
+  requireString,
+  waitForChatScrollIdle,
+} from "./chat-flow.test-support.ts";
 
 const suite = createChatFlowE2eSuite();
 const startupCases = [
@@ -24,6 +32,67 @@ const startupCases = [
     outcome,
   })),
 ];
+
+async function captureProgressDisclosure(page: Page) {
+  return page.evaluateHandle(() => {
+    type Sample = { open: boolean; bodyVisibleHeight: number };
+    const frames: Sample[] = [];
+    const mutations: Sample[] = [];
+    let frame = 0;
+    const sample = (samples: Sample[]) => {
+      const card = document.querySelector<HTMLDetailsElement>(".session-progress-card--composer");
+      if (!card?.checkVisibility({ visibilityProperty: true })) {
+        return;
+      }
+      const body = card.querySelector<HTMLElement>(".session-progress-card__body");
+      const cardRect = card.getBoundingClientRect();
+      const bodyRect = body?.getBoundingClientRect();
+      samples.push({
+        open: card.open,
+        bodyVisibleHeight: bodyRect
+          ? Math.max(
+              0,
+              Math.min(bodyRect.bottom, cardRect.bottom) - Math.max(bodyRect.top, cardRect.top),
+            )
+          : 0,
+      });
+    };
+    const observer = new MutationObserver(() => sample(mutations));
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+    const tick = () => {
+      sample(frames);
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return {
+      frames,
+      mutations,
+      cancel: () => {
+        cancelAnimationFrame(frame);
+        observer.disconnect();
+      },
+    };
+  });
+}
+
+async function expectStableDisclosure(
+  capture: Awaited<ReturnType<typeof captureProgressDisclosure>>,
+  open: boolean,
+) {
+  await expect
+    .poll(() => capture.evaluate((state) => state.frames.length))
+    .toBeGreaterThanOrEqual(3);
+  const samples = await capture.evaluate((state) => [...state.frames, ...state.mutations]);
+  expect(samples.length).toBeGreaterThan(0);
+  for (const sample of samples) {
+    expect(sample.open).toBe(open);
+    if (open) {
+      expect(sample.bodyVisibleHeight).toBeGreaterThan(0);
+    } else {
+      expect(sample.bodyVisibleHeight).toBeLessThanOrEqual(1);
+    }
+  }
+}
 
 suite.define(() => {
   it.each(startupCases)(
@@ -110,21 +179,8 @@ suite.define(() => {
         const ready = page.locator(".chat-thread").getByText("Ready.", { exact: true });
         await ready.waitFor();
         expect(await page.locator(".session-progress-card--composer").count()).toBe(0);
-        const paintedDisclosure = await page.evaluateHandle(() => {
-          const frames: boolean[] = [];
-          let frame = 0;
-          const sample = () => {
-            const element = document.querySelector<HTMLDetailsElement>(
-              ".session-progress-card--composer",
-            );
-            if (element?.checkVisibility({ visibilityProperty: true })) {
-              frames.push(element.open);
-            }
-            frame = requestAnimationFrame(sample);
-          };
-          frame = requestAnimationFrame(sample);
-          return { frames, cancel: () => cancelAnimationFrame(frame) };
-        });
+        expect(await page.locator(".agent-chat__progress-float--loading").count()).toBe(0);
+        const paintedDisclosure = await captureProgressDisclosure(page);
         try {
           // History is already visible throughout the unresolved RPC, including
           // the case that never answers. The delay is fixture latency, not a retry.
@@ -140,12 +196,7 @@ suite.define(() => {
           const progress = page.locator(".session-progress-card--composer");
           if (card) {
             await progress.waitFor();
-            await expect
-              .poll(() => paintedDisclosure.evaluate((capture) => capture.frames.length))
-              .toBeGreaterThanOrEqual(3);
-            expect(
-              await paintedDisclosure.evaluate((capture) => capture.frames.some(Boolean)),
-            ).toBe(false);
+            await expectStableDisclosure(paintedDisclosure, false);
             expect(await progress.getAttribute("open")).toBe(null);
           } else {
             expect(await progress.count()).toBe(0);
@@ -231,8 +282,120 @@ suite.define(() => {
     },
   );
 
-  it.each(["unavailable", "access-denied"] as const)(
-    "mounts the first recovered card closed after an initial %s response",
+  it.each([
+    { reading: false, hasCard: false },
+    { reading: false, hasCard: true },
+    { reading: true, hasCard: false },
+    { reading: true, hasCard: true },
+  ])(
+    "preserves the scroll owner when late progress resolves (reading=$reading, card=$hasCard)",
+    async ({ reading, hasCard }) => {
+      const context = await suite.newBrowserContext({ viewport: { width: 1440, height: 900 } });
+      const page = await context.newPage();
+      const sessionKey = "agent:main:main";
+      const gateway = await installMockGateway(page, {
+        sessionInfo: { key: sessionKey, kind: "direct", updatedAt: 1, hasActiveRun: false },
+        historyMessages: Array.from({ length: 40 }, (_, index) => ({
+          role: index % 2 ? "assistant" : "user",
+          content: [
+            { type: "text", text: "History " + index + ": " + "Reading context. ".repeat(8) },
+          ],
+        })),
+        deferredMethods: ["progressCard.get"],
+      });
+      try {
+        await page.goto(suite.server.baseUrl + "chat");
+        await gateway.waitForRequest("progressCard.get");
+        const thread = page.locator(".chat-thread");
+        await waitForChatScrollIdle(page);
+        if (reading) {
+          const previous = await thread.evaluate((node) => node.scrollTop);
+          await thread.press("PageUp");
+          await expect.poll(() => thread.evaluate((node) => node.scrollTop)).toBeLessThan(previous);
+          await waitForChatScrollIdle(page);
+        }
+        const before = await thread.evaluate((node) => {
+          const bounds = node.getBoundingClientRect();
+          const row = [...node.querySelectorAll<HTMLElement>(".chat-virtual-row")].find(
+            (candidate) => {
+              const rect = candidate.getBoundingClientRect();
+              return rect.top >= bounds.top && rect.bottom <= bounds.bottom;
+            },
+          );
+          if (!row) {
+            throw new Error("Expected a visible transcript anchor");
+          }
+          return {
+            key: row.dataset.virtualRowKey,
+            y: row.getBoundingClientRect().top,
+            height: node.clientHeight,
+          };
+        });
+        expect(await page.locator(".agent-chat__progress-float--loading").count()).toBe(0);
+        const capture = await captureProgressDisclosure(page);
+        try {
+          await gateway.resolveDeferred("progressCard.get", {
+            card: hasCard
+              ? {
+                  sessionKey,
+                  revision: 1,
+                  updatedAt: 1,
+                  steps: Array.from({ length: 24 }, (_, index) => ({
+                    step: "Long task step " + index,
+                    status: "pending",
+                  })),
+                }
+              : null,
+          });
+          if (hasCard) {
+            await expectStableDisclosure(capture, false);
+          }
+          // Observe the empty response through two browser paint boundaries too.
+          await page.evaluate(
+            () =>
+              new Promise<void>((resolve) => {
+                requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+              }),
+          );
+          await waitForChatScrollIdle(page);
+          const after = await thread.evaluate((node, key) => {
+            const row = [...node.querySelectorAll<HTMLElement>(".chat-virtual-row")].find(
+              (candidate) => candidate.dataset.virtualRowKey === key,
+            );
+            if (!row) {
+              throw new Error("Transcript anchor was unexpectedly discarded");
+            }
+            return {
+              y: row.getBoundingClientRect().top,
+              height: node.clientHeight,
+              distance: node.scrollHeight - node.clientHeight - node.scrollTop,
+            };
+          }, before.key);
+          if (!hasCard) {
+            expect(after.height).toBe(before.height);
+          }
+          if (reading) {
+            expect(Math.abs(after.y - before.y)).toBeLessThanOrEqual(1);
+            expect(after.distance).toBeGreaterThan(8);
+          } else {
+            expect(Math.abs(after.distance)).toBeLessThanOrEqual(8);
+            // Following latest intentionally moves rows by the changed viewport height.
+            expect(
+              Math.abs(after.y - before.y - (after.height - before.height)),
+            ).toBeLessThanOrEqual(1);
+          }
+        } finally {
+          await capture.evaluate((state) => state.cancel());
+          await capture.dispose();
+        }
+      } finally {
+        await suite.closeBrowserContext(context);
+      }
+    },
+  );
+
+  it.each(["empty", "unavailable", "access-denied"] as const)(
+    "never paints the first recovered card expanded after an initial %s response",
     async (failure) => {
       const context = await suite.newBrowserContext({});
       await context.addInitScript(
@@ -252,20 +415,24 @@ suite.define(() => {
       const gateway = await installMockGateway(page, {
         sessionInfo: { key: sessionKey, kind: "direct", updatedAt: 1, hasActiveRun: false },
         historyMessages: [{ role: "assistant", content: [{ type: "text", text: "Ready." }] }],
-        deferredMethods: ["progressCard.get"],
+        deferredMethods: ["progressCard.get", "chat.send"],
       });
       try {
         await page.goto(`${suite.server.baseUrl}chat`);
         await gateway.waitForRequest("progressCard.get");
         const ready = page.locator(".chat-thread").getByText("Ready.", { exact: true });
         await ready.waitFor();
-        await gateway.rejectDeferred("progressCard.get", {
-          code: failure === "access-denied" ? "INVALID_REQUEST" : "UNAVAILABLE",
-          message: "Progress temporarily unavailable",
-          ...(failure === "access-denied"
-            ? { details: { code: "SESSION_PARTICIPATION_REQUIRED" } }
-            : {}),
-        });
+        if (failure === "empty") {
+          await gateway.resolveDeferred("progressCard.get", { card: null });
+        } else {
+          await gateway.rejectDeferred("progressCard.get", {
+            code: failure === "access-denied" ? "INVALID_REQUEST" : "UNAVAILABLE",
+            message: "Progress temporarily unavailable",
+            ...(failure === "access-denied"
+              ? { details: { code: "SESSION_PARTICIPATION_REQUIRED" } }
+              : {}),
+          });
+        }
         await page.evaluate(
           () =>
             new Promise<void>((resolve) => {
@@ -283,18 +450,44 @@ suite.define(() => {
         // read's cached null as a successful first progress response.
         const composer = page.locator(".agent-chat__composer-combobox textarea");
         await composer.fill("Keep this recovery draft");
-        await gateway.resolveDeferred("progressCard.get", {
-          card: {
-            sessionKey,
-            revision: 2,
-            updatedAt: 2,
-            steps: [{ step: "Recovered progress", status: "in_progress" }],
-          },
+        const capture = await captureProgressDisclosure(page);
+        try {
+          await gateway.resolveDeferred("progressCard.get", {
+            card: {
+              sessionKey,
+              revision: 2,
+              updatedAt: 2,
+              steps: Array.from({ length: 24 }, (_, index) => ({
+                step: `Recovered progress ${index + 1}: verify the task without moving the reader`,
+                status: index === 0 ? "in_progress" : "pending",
+              })),
+            },
+          });
+          await progress.waitFor();
+          // Retain the actual viewport before the red/green disclosure assertion.
+          // The same test on main captures its expanded first card before failing.
+          await page.screenshot({
+            path: path.join(suite.artifactDir, `first-recovered-progress-${failure}.png`),
+            fullPage: false,
+          });
+          expect(await progress.getAttribute("open")).toBe(null);
+          await expectStableDisclosure(capture, false);
+          expect(await composer.inputValue()).toBe("Keep this recovery draft");
+          expect(await ready.isVisible()).toBe(true);
+        } finally {
+          await capture.evaluate((state) => state.cancel());
+          await capture.dispose();
+        }
+        // A fresh composer submission is a new turn, not hydration of the
+        // initial card. Its adopted run must regain the ordinary open default.
+        await composer.fill("Start a genuinely new local task");
+        await composer.press("Enter");
+        const send = await gateway.waitForRequest("chat.send");
+        await gateway.resolveDeferred("chat.send", {
+          status: "started",
+          runId: requireString(requireRecord(send.params).idempotencyKey, "local run id"),
         });
-        await progress.waitFor();
-        expect(await progress.getAttribute("open")).toBe(null);
-        expect(await composer.inputValue()).toBe("Keep this recovery draft");
-        expect(await ready.isVisible()).toBe(true);
+        await expect.poll(() => progress.getAttribute("open")).toBe("");
       } finally {
         await suite.closeBrowserContext(context);
       }
@@ -396,17 +589,25 @@ suite.define(() => {
             requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
           }),
       );
-      await gateway.resolveDeferred("progressCard.get", { card });
-      const progress = page.locator(".session-progress-card--composer");
-      await progress.waitFor();
-      // The error screen has not presented a transcript yet.
-      expect(await progress.getAttribute("open")).toBe("");
-      await page
-        .locator('.chat-history-error[role="alert"]')
-        .getByRole("button", { name: "Retry" })
-        .click();
-      await page.locator(".chat-thread").getByText("Ready.", { exact: true }).waitFor();
-      expect(await progress.getAttribute("open")).toBe("");
+      const capture = await captureProgressDisclosure(page);
+      try {
+        await gateway.resolveDeferred("progressCard.get", { card });
+        const progress = page.locator(".session-progress-card--composer");
+        await progress.waitFor();
+        // The error screen has not presented a transcript yet.
+        await expectStableDisclosure(capture, true);
+        expect(await progress.getAttribute("open")).toBe("");
+        await page
+          .locator('.chat-history-error[role="alert"]')
+          .getByRole("button", { name: "Retry" })
+          .click();
+        await page.locator(".chat-thread").getByText("Ready.", { exact: true }).waitFor();
+        expect(await progress.getAttribute("open")).toBe("");
+        await expectStableDisclosure(capture, true);
+      } finally {
+        await capture.evaluate((state) => state.cancel());
+        await capture.dispose();
+      }
     } finally {
       await suite.closeBrowserContext(context);
     }

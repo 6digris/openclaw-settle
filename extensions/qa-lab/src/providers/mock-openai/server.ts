@@ -66,9 +66,6 @@ import {
   QA_STRANDED_FINAL_RETRY_PROMPT_RE,
   QA_TELEGRAM_CURRENT_SESSION_STATUS_PROMPT_RE,
   QA_TELEGRAM_STREAM_SINGLE_MARKER,
-  QA_TELEGRAM_LONG_FINAL_THREE_CHUNK_PROMPT_RE,
-  QA_TELEGRAM_LONG_FINAL_PROMPT_RE,
-  QA_WHATSAPP_LONG_FINAL_PROMPT_RE,
   QA_SLACK_CHART_PRESENTATION_PROMPT_RE,
   QA_MESSAGE_DECISION_SUPPRESSION_PROMPT_RE,
   QA_MESSAGE_DECISION_SEND_PROMPT_RE,
@@ -151,7 +148,8 @@ import {
   extractPlannedToolIdentity,
   extractPlannedToolArgs,
   splitMockStreamingText,
-  buildQaLongFinalText,
+  buildChannelStreamingFixtureEvents,
+  QA_TELEGRAM_PREPARED_DELIVERY_RE,
   buildAssistantThenToolCallEvents,
   buildAssistantEvents,
   buildStreamingFinalAnswerEvents,
@@ -161,6 +159,7 @@ import {
   buildFailedResponseEvents,
 } from "./mock-openai-events.js";
 import {
+  extractLatestScenarioFamilyPrompt,
   extractLastUserText,
   extractLastMatchingUserTurn,
   extractMockSubagentContext,
@@ -203,6 +202,7 @@ import {
   isSnackRecallPrompt,
   extractSnackPreference,
 } from "./mock-openai-tooling.js";
+import type { QaMockOpenAiServerOptions } from "./server-options.js";
 
 const MOCK_HTTP_POST_ROUTES = new Map([
   ["/v1/images/generations", "OpenAI Images"],
@@ -304,10 +304,6 @@ function hasCompactionOutputRecoveryMarker(allInputText: string) {
   );
 }
 
-const QA_STREAMING_TOOL_PROGRESS_FAMILY_PROMPT_RE =
-  /(?:partial|quiet) streaming qa check|final-only marker streaming qa check|block streaming qa check|tool progress(?: error)? qa check/i;
-const QA_STREAMING_TOOL_PROGRESS_CONTINUATION_RE =
-  /^Continue with (?:the current Matrix QA scenario|the QA scenario plan and report worked, failed, and blocked items)\.$/i;
 const QA_CODE_MODE_TARGET_MARKER = "qa-code-mode-target:";
 const QA_RESTART_CHECKPOINT_COUNT = 3;
 const QA_RESTART_FINAL_TEXT = "unsafeVisible=false\nRESTART-CODE-MODE-WAIT-OK";
@@ -321,39 +317,6 @@ const QA_TELEGRAM_VISIBLE_PARTIAL_FAILURE_MARKER = "TELEGRAM-VISIBLE-PARTIAL-BEF
 const QA_REPEATED_REQUEST_RESPONSE_PAUSE_MS = 80_000;
 const QA_REPEATED_REQUEST_STALLED_RESPONSE_PAUSE_MS = 180_000;
 const QA_REPEATED_REQUEST_STALL_ATTEMPT = 5;
-
-function isStreamingToolProgressContinuationText(text: string) {
-  const trimmed = text.trim();
-  return (
-    QA_STREAMING_TOOL_PROGRESS_CONTINUATION_RE.test(trimmed) ||
-    trimmed.startsWith(QA_SETTLED_TOOL_TERMINAL_CONTINUATION_NEEDLE)
-  );
-}
-
-function extractLatestScenarioFamilyPrompt(
-  texts: string[],
-  familyPattern = QA_STREAMING_TOOL_PROGRESS_FAMILY_PROMPT_RE,
-) {
-  let envelope = "";
-  for (const text of texts.toReversed()) {
-    if (familyPattern.test(text)) {
-      envelope = text;
-      break;
-    }
-    if (!isStreamingToolProgressContinuationText(text)) {
-      return "";
-    }
-  }
-  if (!envelope) {
-    return "";
-  }
-  const pattern = new RegExp(familyPattern.source, `${familyPattern.flags}g`);
-  let latestIndex = -1;
-  for (const match of envelope.matchAll(pattern)) {
-    latestIndex = match.index;
-  }
-  return latestIndex < 0 ? "" : envelope.slice(latestIndex);
-}
 
 function stringifyScenarioToolOutput(value: unknown): string {
   if (typeof value === "string") {
@@ -1361,7 +1324,7 @@ async function buildResponsesPayload(
   }
   if (QA_SUBAGENT_SELF_YIELD_WORKER_RE.test(prompt) && canCallSessionsYield) {
     return buildToolCallEventsWithArgs("sessions_yield", {
-      message: "Waiting for the remote job to report back.",
+      waitFor: "message",
     });
   }
   const terminalTurn = options.subagentTurn;
@@ -1658,26 +1621,13 @@ async function buildResponsesPayload(
     }
     return buildAssistantEvents("");
   }
-  if (QA_TELEGRAM_LONG_FINAL_THREE_CHUNK_PROMPT_RE.test(allInputText)) {
-    const text = buildQaLongFinalText({
-      endMarker: "TELEGRAM-LONG-FINAL-3CHUNK-END",
-      segmentCount: 96,
-      startMarker: "TELEGRAM-LONG-FINAL-3CHUNK-BEGIN",
-    });
-    return buildStreamingFinalAnswerEvents("msg_mock_telegram_long_final_three_chunk", text);
-  }
-  if (QA_TELEGRAM_LONG_FINAL_PROMPT_RE.test(allInputText)) {
-    const text = buildQaLongFinalText();
-    return buildStreamingFinalAnswerEvents("msg_mock_telegram_long_final", text);
-  }
-  if (QA_WHATSAPP_LONG_FINAL_PROMPT_RE.test(allInputText)) {
-    const text = buildQaLongFinalText({
-      endMarker: "WHATSAPP-LONG-FINAL-END",
-      segmentPrefix: "whatsapp-long-final-segment",
-      segmentCount: 64,
-      startMarker: "WHATSAPP-LONG-FINAL-BEGIN",
-    });
-    return buildStreamingFinalAnswerEvents("msg_mock_whatsapp_long_final", text);
+  const channelStreamingEvents = buildChannelStreamingFixtureEvents({
+    currentPrompt,
+    allInputText,
+    hasCompletedToolOutput,
+  });
+  if (channelStreamingEvents) {
+    return channelStreamingEvents;
   }
   const whatsAppPendingHistoryReply = buildWhatsAppPendingHistoryReply(prompt, input);
   if (whatsAppPendingHistoryReply) {
@@ -1893,11 +1843,17 @@ async function buildResponsesPayload(
     }
     return buildAssistantEvents(buildStrandedFinalRecoveryText());
   }
-  if (QA_A2A_MESSAGE_TOOL_MIRROR_PROMPT_RE.test(prompt)) {
+  // Finalization must preserve the source fixture's empty reply so the gateway
+  // owns denial warnings; a new user or target turn ends that fixture instead.
+  const a2aPrompt = extractLatestScenarioFamilyPrompt(
+    allUserTexts.map((text) => splitMockConversationContext(text).current),
+    QA_A2A_MESSAGE_TOOL_MIRROR_PROMPT_RE,
+  );
+  if (a2aPrompt) {
     if (hasCompletedToolOutput) {
       return buildAssistantEvents("");
     }
-    const sessionsSendArgs = buildQaA2aMessageToolMirrorSessionsSendArgs(prompt);
+    const sessionsSendArgs = buildQaA2aMessageToolMirrorSessionsSendArgs(a2aPrompt);
     if (sessionsSendArgs && hasDeclaredTool(body, "sessions_send")) {
       return buildToolCallEventsWithArgs("sessions_send", sessionsSendArgs);
     }
@@ -2623,14 +2579,13 @@ async function buildResponsesPayload(
   return buildAssistantEvents(buildAssistantText(input, body));
 }
 
-export async function startQaMockOpenAiServer(params?: {
-  host?: string;
-  port?: number;
-  finalOnlyMarkerPauseMs?: number;
-  modelRefs?: readonly string[];
-}) {
+export async function startQaMockOpenAiServer(params?: QaMockOpenAiServerOptions) {
   const host = params?.host ?? "127.0.0.1";
   const finalOnlyMarkerPauseMs = params?.finalOnlyMarkerPauseMs ?? 1_500;
+  const repeatedRequestResponsePauseMs =
+    params?.repeatedRequestResponsePauseMs ?? QA_REPEATED_REQUEST_RESPONSE_PAUSE_MS;
+  const repeatedRequestStalledResponsePauseMs =
+    params?.repeatedRequestStalledResponsePauseMs ?? QA_REPEATED_REQUEST_STALLED_RESPONSE_PAUSE_MS;
   const terminalRequesterSettleGate = createTerminalRequesterSettleGate();
   const scenarioStates = new Map<string, MockScenarioState>();
   const servedCompactionSummaryFaultMarkers = new Set<string>();
@@ -2861,17 +2816,19 @@ export async function startQaMockOpenAiServer(params?: {
           }
         : {}),
       ...(failure ? { failure } : {}),
-      ...(QA_FINAL_ONLY_MARKER_STREAMING_PROMPT_RE.test(allInputText)
-        ? { previewPauseMs: finalOnlyMarkerPauseMs }
-        : {}),
+      ...(QA_TELEGRAM_PREPARED_DELIVERY_RE.test(splitMockConversationContext(prompt).current)
+        ? { previewPauseMs: 3_000 }
+        : QA_FINAL_ONLY_MARKER_STREAMING_PROMPT_RE.test(allInputText)
+          ? { previewPauseMs: finalOnlyMarkerPauseMs }
+          : {}),
       // Stall one request; later failures let the normal retry budget settle the turn.
       ...(repeatedRequestRecovery &&
       scenarioState.repeatedRequestRecoveryAttempts <= QA_REPEATED_REQUEST_STALL_ATTEMPT
         ? {
             responsePauseMs:
               scenarioState.repeatedRequestRecoveryAttempts === QA_REPEATED_REQUEST_STALL_ATTEMPT
-                ? QA_REPEATED_REQUEST_STALLED_RESPONSE_PAUSE_MS
-                : QA_REPEATED_REQUEST_RESPONSE_PAUSE_MS,
+                ? repeatedRequestStalledResponsePauseMs
+                : repeatedRequestResponsePauseMs,
           }
         : {}),
     };

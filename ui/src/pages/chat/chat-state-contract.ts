@@ -49,6 +49,8 @@ export type ChatState = StreamCausalBoundaryState & {
   chatAttachments: ChatAttachment[];
   chatQueue: ChatQueueItem[];
   chatRunId: string | null;
+  /** Run adopted from history, rather than a new live send or event. */
+  chatRecoveredRunId?: string;
   /** Monotonic count of locally owned runs cleared by terminal reconciliation. */
   chatRunLifecycleGeneration?: number;
   /** True when the active run was recovered from the embedded-run registry and

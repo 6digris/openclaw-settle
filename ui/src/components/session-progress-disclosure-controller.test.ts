@@ -3,6 +3,9 @@
 import type { ProgressCard } from "@openclaw/gateway-protocol";
 import { html, nothing, render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { makeChatHost } from "../pages/chat/chat-host.test-support.ts";
+import { adoptStartedChatRun } from "../pages/chat/run-lifecycle.ts";
+import { resolveChatProjectionRunId } from "../pages/chat/tool-stream-status.ts";
 import { observeTranscript } from "./session-progress-card.test-support.ts";
 import { renderSessionProgressCard } from "./session-progress-card.ts";
 import type { ComposerProgressRunLifecycle } from "./session-progress-disclosure-controller.ts";
@@ -124,6 +127,126 @@ describe("elastic progress disclosure controller", () => {
         show(initiallyCollapsed);
         expect(container.querySelector("details")!.open).toBe(manualOpen);
       }
+    },
+  );
+
+  it.each([
+    [null, "run-1", null],
+    [null, null, "run-1"],
+    ["run-1", null, "run-1"],
+  ] as const)(
+    "keeps a late first card closed through initial metadata (%s → %s/%s)",
+    async (initialRun, activeRun, completedRun) => {
+      const container = createContainer();
+      const gatewayScope = {};
+      const show = (activeRunId: string | null, completedRunId: string | null = null) =>
+        renderTranscriptCard(container, {
+          gatewayScope,
+          initiallyCollapsed: true,
+          recoveredRunId: "run-1",
+          activeRunId,
+          completedRunId,
+        });
+      const writes = vi.spyOn(HTMLDetailsElement.prototype, "open", "set");
+      show(initialRun);
+      const card = container.querySelector("details")!;
+      expect(card.open).toBe(false);
+      await Promise.resolve();
+      expect(card.open).toBe(false);
+      show(activeRun, completedRun);
+      expect(card.open).toBe(false);
+      await Promise.resolve();
+      expect(card.open).toBe(false);
+      expect(writes.mock.calls.every(([open]) => !open)).toBe(true);
+      writes.mockRestore();
+      // A genuinely different task resumes the ordinary run default.
+      show("run-2");
+      expect(card.open).toBe(true);
+    },
+  );
+
+  it("opens the ordinary default for a newly adopted local send after a late idle card", () => {
+    const container = createContainer();
+    const host = makeChatHost({ sessionKey: progressCard.sessionKey });
+    const show = () =>
+      renderTranscriptCard(container, {
+        initiallyCollapsed: true,
+        activeRunId: resolveChatProjectionRunId({
+          localRunId: host.chatRunId,
+          queue: host.chatQueue,
+        }),
+      });
+    show();
+    expect(container.querySelector("details")!.open).toBe(false);
+    // chat-send-delivery calls this owner for the new chat.send started ACK;
+    // history recovery calls the same owner, which currently records no provenance.
+    adoptStartedChatRun(host, "new-local-submission", NOW_MS + 1000);
+    expect(host.chatRunId).toBe("new-local-submission");
+    show();
+    expect(container.querySelector("details")!.open).toBe(true);
+  });
+
+  it.each([
+    { initialRunId: "initial", activeRunId: "initial", recoveredRunId: undefined, open: false },
+    { initialRunId: null, activeRunId: "recovered", recoveredRunId: "recovered", open: false },
+    { initialRunId: "initial", activeRunId: "new-local", recoveredRunId: "initial", open: true },
+  ])("keeps the correct first frame after an empty refresh ($activeRunId)", async (scenario) => {
+    const container = createContainer();
+    const gatewayScope = {};
+    renderTranscriptCard(container, {
+      gatewayScope,
+      initiallyCollapsed: true,
+      initialRunId: scenario.initialRunId,
+      activeRunId: scenario.initialRunId,
+    });
+    expect(container.querySelector("details")!.open).toBe(false);
+    render(nothing, container);
+    const writes = vi.spyOn(HTMLDetailsElement.prototype, "open", "set");
+    renderTranscriptCard(container, { gatewayScope, initiallyCollapsed: true, ...scenario });
+    expect(container.querySelector("details")!.open).toBe(scenario.open);
+    await Promise.resolve();
+    expect(writes.mock.calls.every(([open]) => open === scenario.open)).toBe(true);
+    writes.mockRestore();
+  });
+
+  it.each([true, false, 48] as const)(
+    "keeps a manual %s choice while the late card acquires its run identity",
+    async (choice) => {
+      const container = createContainer();
+      const gatewayScope = {};
+      const show = (activeRunId: string | null, completedRunId: string | null = null) =>
+        renderTranscriptCard(container, {
+          gatewayScope,
+          initiallyCollapsed: true,
+          recoveredRunId: "run-1",
+          activeRunId,
+          completedRunId,
+        });
+      show(null);
+      const summary = container.querySelector("summary")!;
+      if (typeof choice === "number") {
+        summary.dispatchEvent(
+          new WheelEvent("wheel", { deltaY: -choice, bubbles: true, cancelable: true }),
+        );
+      } else {
+        summary.click();
+        if (!choice) {
+          summary.click();
+        }
+      }
+      const writes = vi.spyOn(HTMLDetailsElement.prototype, "open", "set");
+      show("run-1");
+      await Promise.resolve();
+      show(null, "run-1");
+      await Promise.resolve();
+      expect(writes.mock.calls.every(([open]) => open === Boolean(choice))).toBe(true);
+      writes.mockRestore();
+      render(nothing, container);
+      show(null, "run-1");
+      expect(container.querySelector("details")!.open).toBe(Boolean(choice));
+      expect(
+        container.querySelector<HTMLElement>(".session-progress-card__body")!.style.height,
+      ).toBe(typeof choice === "number" ? "48px" : "");
     },
   );
 
