@@ -3,9 +3,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildUpdateRehearsalPathEnv } from "../infra/update-rehearsal-paths.js";
-import { resolveCommandEnv } from "../process/exec-spawn.js";
-import { withEnvAsync } from "../test-utils/env.js";
 import {
   expectIntegrityDriftRejected,
   mockNpmViewMetadataResult,
@@ -21,6 +18,11 @@ import {
   resolvePluginInstallTransaction,
 } from "./install-transaction.js";
 import type { PluginInstallArtifactConsentRequest } from "./install-types.js";
+import {
+  prunePluginLocalOpenClawPeerLinks,
+  readTextFileTree,
+  registerManagedNpmDependencyTests,
+} from "./install.npm-dependencies.test-support.js";
 import {
   hasRetainedManagedNpmInstallMarker,
   markRetainedManagedNpmInstall,
@@ -417,53 +419,6 @@ function writeMissingCurrentPlatformOptionalPackage(params: {
     recursive: true,
     force: true,
   });
-}
-
-function readTextFileTree(dir: string, rootDir = dir): Record<string, string> {
-  return Object.fromEntries(
-    fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-      const entryPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        return Object.entries(readTextFileTree(entryPath, rootDir));
-      }
-      if (!entry.isFile()) {
-        return [];
-      }
-      return [[path.relative(rootDir, entryPath), fs.readFileSync(entryPath, "utf8")]];
-    }),
-  );
-}
-
-function prunePluginLocalOpenClawPeerLinks(npmRoot: string) {
-  const nodeModulesDir = path.join(npmRoot, "node_modules");
-  if (!fs.existsSync(nodeModulesDir)) {
-    return;
-  }
-  for (const entry of fs.readdirSync(nodeModulesDir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) {
-      continue;
-    }
-    const entryPath = path.join(nodeModulesDir, entry.name);
-    const packageDirs = entry.name.startsWith("@")
-      ? fs
-          .readdirSync(entryPath, { withFileTypes: true })
-          .filter((scopedEntry) => scopedEntry.isDirectory())
-          .map((scopedEntry) => path.join(entryPath, scopedEntry.name))
-      : [entryPath];
-    for (const packageDir of packageDirs) {
-      const packageNodeModulesDir = path.join(packageDir, "node_modules");
-      const packageNodeModules = fs.existsSync(packageNodeModulesDir)
-        ? fs.lstatSync(packageNodeModulesDir)
-        : null;
-      if (packageNodeModules && !packageNodeModules.isDirectory()) {
-        continue;
-      }
-      fs.rmSync(path.join(packageNodeModulesDir, "openclaw"), {
-        recursive: true,
-        force: true,
-      });
-    }
-  }
 }
 
 function mockNpmViewAndInstall(params: MockNpmPackage & { spec: string }) {
@@ -3119,6 +3074,17 @@ describe("installPluginFromNpmSpec", () => {
     });
   });
 
+  registerManagedNpmDependencyTests({
+    makeTempDir: () => suiteTempRootTracker.makeTempDir(),
+    writeInstalledNpmPlugin,
+    mockNpmViewAndInstall,
+    runCommandWithTimeoutMock,
+    resolveOpenClawPackageRootSyncMock,
+    installPluginFromNpmSpec,
+    resolveTestPluginPackageDir,
+    isManagedNpmInstallCommand,
+  });
+
   it("rolls back the managed npm root when npm install fails", async () => {
     const npmRoot = path.join(suiteTempRootTracker.makeTempDir(), "npm");
     const npmProjectRoot = resolvePluginNpmProjectDir({
@@ -4314,51 +4280,3 @@ describe("installPluginFromNpmSpec", () => {
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
-
-describe("private rehearsal npm transport", () => {
-  it("pins metadata and managed install children without mutating inherited cache", async () => {
-    const root = suiteTempRootTracker.makeTempDir();
-    const npmRoot = path.join(root, "npm");
-    const outside = suiteTempRootTracker.makeTempDir();
-    fs.writeFileSync(path.join(outside, "retained"), "original cache");
-    mockNpmViewAndInstall({
-      spec: "@fixture/private-cache@1.0.0",
-      packageName: "@fixture/private-cache",
-      version: "1.0.0",
-      pluginId: "private-cache",
-      npmRoot,
-    });
-    await withEnvAsync(
-      {
-        ...buildUpdateRehearsalPathEnv(root),
-        OPENCLAW_UPDATE_IN_PROGRESS: "1",
-        OPENCLAW_SERVICE_REPAIR_POLICY: "external",
-        OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_SERVICE_REPAIR: "0",
-        OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION: "0",
-        OPENCLAW_COMPATIBILITY_HOST_VERSION: undefined,
-        npm_config_cache: outside,
-        NPM_CONFIG_CACHE: outside,
-      },
-      async () => {
-        const result = await installPluginFromNpmSpec({
-          spec: "@fixture/private-cache@1.0.0",
-          npmDir: npmRoot,
-          logger: {},
-        });
-        expect(result.ok).toBe(true);
-        const calls = runCommandWithTimeoutMock.mock.calls.filter(([argv]) => argv[0] === "npm");
-        expect(calls.some(([argv]) => argv[1] === "view")).toBe(true);
-        expect(calls.some(([argv]) => isManagedNpmInstallCommand(argv))).toBe(true);
-        for (const [argv, options] of calls) {
-          const childEnv = resolveCommandEnv({ argv, env: options?.env });
-          expect(childEnv.npm_config_cache).toBe(path.join(root, "cache", "npm"));
-          expect(childEnv.NPM_CONFIG_CACHE).toBe(childEnv.npm_config_cache);
-        }
-        expect(process.env.npm_config_cache).toBe(outside);
-        expect(process.env.NPM_CONFIG_CACHE).toBe(outside);
-      },
-    );
-    expect(fs.readdirSync(outside)).toEqual(["retained"]);
-    expect(fs.readFileSync(path.join(outside, "retained"), "utf8")).toBe("original cache");
-  });
-});

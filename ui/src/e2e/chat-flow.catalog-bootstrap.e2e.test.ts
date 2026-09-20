@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { expect, it } from "vitest";
 import { upsertSessionEntryCore } from "../../../src/config/sessions/session-accessor.js";
 import {
@@ -11,7 +10,7 @@ import {
 } from "../../../src/gateway/test-helpers.e2e.js";
 import { createOpenClawTestState } from "../../../src/test-utils/openclaw-test-state.js";
 import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
-import { captureControlUiE2eFailureDiagnostics } from "../test-helpers/control-ui-e2e.ts";
+import { createRequireRecord } from "../../../test/helpers/record.js";
 import { createChatFlowE2eSuite, installMockGateway } from "./chat-flow.test-support.ts";
 import { createControlUiE2eContextOptions } from "./control-ui-e2e-suite.test-support.ts";
 
@@ -156,12 +155,6 @@ suite.define(() => {
         await expect.poll(() => currentRow.isVisible()).toBe(true);
         expect(await gateway.getRequests("models.list")).toHaveLength(requestsBeforeOpen);
         expect(await gateway.getRequests("sessions.list")).toHaveLength(sessionRequestsBeforeOpen);
-      } catch (error) {
-        await captureControlUiE2eFailureDiagnostics(page, {
-          label: `catalog-bootstrap-${route}-${sessionScope}`,
-          error: error instanceof Error ? error : new Error(String(error)),
-        });
-        throw error;
       } finally {
         await context.close();
       }

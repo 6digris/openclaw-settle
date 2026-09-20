@@ -7,6 +7,15 @@ const enModelControls = {
       subscription: "Subscription",
       api: "API",
       default: "Default",
+      decisionLabel: "Decision Model",
+      decisionDisabled: "Disabled",
+      decisionInherit: "Use global default · {model}",
+      decisionUnavailable:
+        "This decision model is unavailable. Enable its plugin or choose another model.",
+      decisionHelp:
+        "Makes typed choices, scores, and yes/no judgments. Disabled until you select a decision model; chat models are not used as a fallback.",
+      decisionAgentHelp:
+        "Use the global decision model, choose an override, or disable decisions for this agent.",
       effort: "Effort",
       faster: "Faster",
       smarter: "Smarter",
@@ -31,6 +40,8 @@ const enModelControls = {
       chatOnlyHelp:
         "This model can chat, but it cannot use tools. Choose another model for files, commands, web, or media tasks.",
       loadingModels: "Loading models…",
+      modelPending: "Model pending",
+      modelStarting: "Starting…",
       modelsUnavailable: "Models unavailable",
       runtimeUnavailable: "This harness is unavailable for this model.",
       modelsRefreshFailed: "Some models could not be refreshed. Open Models to try again.",

@@ -149,6 +149,7 @@ suite.define(() => {
           sessionInfo: queued,
         };
         await gateway.setMethodResponse("chat.history", queuedHistory);
+        await gateway.setMethodResponse("chat.startup", queuedHistory);
         await gateway.setSessionsListResponse(chatSessionListResponse([queued]));
         await gateway.emitGatewayEvent("sessions.changed", {
           agentId: "main",
@@ -168,6 +169,13 @@ suite.define(() => {
         }
 
         const active = session("active");
+        // The persisted event and later history reads describe the same reply.
+        const resumedReplyId = "automatic-follow-up-result";
+        const resumedReply = {
+          role: "assistant",
+          content: "The queued follow-up started automatically.",
+          __openclaw: { id: resumedReplyId, seq: 3, runId },
+        };
         const activeHistory = {
           inFlightRun: null,
           messages: [
@@ -176,6 +184,7 @@ suite.define(() => {
               ...pendingInput.message,
               __openclaw: { id: "persisted-follow-up", idempotencyKey: `${runId}:user` },
             },
+            resumedReply,
           ],
           pendingInputs: { items: [], total: 0 },
           sessionId: active.sessionId,
@@ -183,6 +192,7 @@ suite.define(() => {
           thinkingLevel: null,
         };
         await gateway.setMethodResponse("chat.history", activeHistory);
+        await gateway.setMethodResponse("chat.startup", activeHistory);
         await gateway.setSessionsListResponse(chatSessionListResponse([active]));
         await gateway.emitGatewayEvent("sessions.changed", {
           agentId: "main",
@@ -192,9 +202,10 @@ suite.define(() => {
         await gateway.emitGatewayEvent("session.message", {
           activeRunIds: [],
           hasActiveRun: false,
-          message: { role: "assistant", content: "The queued follow-up started automatically." },
-          messageId: "automatic-follow-up-result",
-          messageSeq: 3,
+          message: resumedReply,
+          messageId: resumedReplyId,
+          messageSeq: resumedReply["__openclaw"].seq,
+          runId,
           session: active,
           sessionKey,
         });
@@ -233,7 +244,9 @@ suite.define(() => {
 
         const failed = session("failed");
         expect(completedUpdatedAt).toBeLessThanOrEqual(failed.updatedAt);
-        await gateway.setMethodResponse("chat.history", { ...activeHistory, sessionInfo: failed });
+        const failedHistory = { ...activeHistory, sessionInfo: failed };
+        await gateway.setMethodResponse("chat.history", failedHistory);
+        await gateway.setMethodResponse("chat.startup", failedHistory);
         await gateway.setSessionsListResponse(chatSessionListResponse([failed]));
         await gateway.emitGatewayEvent("sessions.changed", {
           agentId: "main",

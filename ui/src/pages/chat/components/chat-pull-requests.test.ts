@@ -88,8 +88,6 @@ describe("renderChatPullRequests", () => {
         pullRequests: [],
         branch: sessionBranch(),
         status: "ready",
-        expanded: false,
-        onExpand: () => {},
         onDismiss: () => {},
         publication: publication({ activity: "read", selection: null }),
       }),
@@ -106,8 +104,6 @@ describe("renderChatPullRequests", () => {
         renderChatPullRequests({
           pullRequests: [pullRequest({ state })],
           status: "unavailable",
-          expanded: false,
-          onExpand: () => {},
           onDismiss: () => {},
         }),
         container,
@@ -124,8 +120,6 @@ describe("renderChatPullRequests", () => {
       renderChatPullRequests({
         pullRequests: [],
         status: "ready",
-        expanded: false,
-        onExpand: () => {},
         onDismiss: () => {},
       }),
       container,
@@ -138,8 +132,6 @@ describe("renderChatPullRequests", () => {
       renderChatPullRequests({
         pullRequests: [pullRequest()],
         status: "ready",
-        expanded: false,
-        onExpand: () => {},
         onDismiss: () => {},
       }),
       container,
@@ -171,8 +163,6 @@ describe("renderChatPullRequests", () => {
           }),
         ],
         status: "ready",
-        expanded: false,
-        onExpand: () => {},
         onDismiss: () => {},
       }),
       container,
@@ -194,82 +184,174 @@ describe("renderChatPullRequests", () => {
     );
   });
 
-  it("collapses to two chips preferring live PRs and expands via show more", () => {
-    const onExpand = vi.fn();
-    const pullRequests = [
-      pullRequest({ number: 1, state: "merged", checks: undefined }),
-      pullRequest({ number: 2, state: "merged", checks: undefined }),
-      pullRequest({ number: 3, state: "open" }),
-    ];
-    render(
-      renderChatPullRequests({
-        pullRequests,
-        status: "ready",
-        expanded: false,
-        onExpand,
-        onDismiss: () => {},
-      }),
-      container,
-    );
-    const numbers = [...container.querySelectorAll(".chat-pr__number")].map(
-      (node) => node.textContent,
-    );
-    // The open PR leads even though merged history came first from the server.
-    expect(numbers).toEqual(["#3", "#1"]);
-    const more = container.querySelector<HTMLButtonElement>(".chat-prs__more");
-    expect(more?.textContent?.trim()).toBe("Show 1 more");
-    more?.click();
-    expect(onExpand).toHaveBeenCalledTimes(1);
-
-    render(
-      renderChatPullRequests({
-        pullRequests,
-        status: "ready",
-        expanded: true,
-        onExpand,
-        onDismiss: () => {},
-      }),
-      container,
-    );
-    expect(container.querySelectorAll(".chat-pr")).toHaveLength(3);
-    expect(container.querySelector(".chat-prs__more")).toBeNull();
-  });
-
-  it("renders merged PRs with a state label and without live-work signals", () => {
+  it("keeps live PRs ahead of settled history", () => {
     render(
       renderChatPullRequests({
         pullRequests: [
-          pullRequest({
-            state: "merged",
-            additions: undefined,
-            deletions: undefined,
-            checks: undefined,
-            checksUrl: undefined,
-          }),
+          pullRequest({ number: 1, state: "merged", checks: undefined }),
+          pullRequest({ number: 2, state: "closed", checks: undefined }),
+          pullRequest({ number: 3, state: "open" }),
         ],
-        status: "rate-limited",
-        expanded: false,
-        onExpand: () => {},
+        status: "ready",
         onDismiss: () => {},
       }),
       container,
     );
-    const chip = container.querySelector(".chat-pr");
-    expect(chip?.getAttribute("data-state")).toBe("merged");
-    expect(chip?.querySelector(".chat-pr__state")?.textContent?.trim()).toBe("Merged");
-    expect(chip?.querySelector(".chat-pr__diff")).toBeNull();
-    expect(chip?.querySelector(".chat-pr__checks")).toBeNull();
-    // Merged is terminal, so the stale-data warning stays off merged chips.
-    expect(chip?.querySelector(".chat-pr__warning")).toBeNull();
+    expect(
+      [...container.querySelectorAll(".chat-pr__number")].map((node) => node.textContent),
+    ).toEqual(["#3", "#1", "#2"]);
   });
+
+  it.each([null, "read"] as const)(
+    "renders merged PRs without a redundant card while publication activity is %s",
+    (activity) => {
+      const onDismiss = vi.fn();
+      const onNewAction = vi.fn();
+      render(
+        renderChatPullRequests({
+          pullRequests: [
+            pullRequest({
+              state: "merged",
+              additions: undefined,
+              deletions: undefined,
+              checks: undefined,
+              checksUrl: undefined,
+            }),
+          ],
+          status: "rate-limited",
+          onDismiss,
+          publication: publication({
+            activity,
+            result: {
+              requestId: "publication-merged",
+              status: "published",
+              url: pullRequest().url,
+              repository: "openclaw/openclaw",
+              branch: pullRequest().branch,
+              headCommit: "a".repeat(40),
+              publisher: { source: "agent-override", accountId: 3, login: "agent-bot" },
+            },
+            onNewAction,
+          }),
+        }),
+        container,
+      );
+      const chip = container.querySelector(".chat-pr");
+      expect(chip?.getAttribute("data-state")).toBe("merged");
+      expect(chip?.querySelector(".chat-pr__state")?.textContent?.trim()).toBe("Merged");
+      expect(chip?.querySelector(".chat-pr__diff")).toBeNull();
+      expect(chip?.querySelector(".chat-pr__checks")).toBeNull();
+      // Merged is terminal, so the stale-data warning stays off merged chips.
+      expect(chip?.querySelector(".chat-pr__warning")).toBeNull();
+      expect(container.querySelectorAll(".chat-pr")).toHaveLength(1);
+      expect(container.textContent).not.toContain("Choose a new publication");
+      expect(container.textContent).not.toContain("Publish as");
+      const dismiss = chip?.querySelector<HTMLButtonElement>(".chat-pr__dismiss");
+      expect(dismiss?.disabled).toBe(activity !== null);
+      dismiss?.click();
+      expect(onNewAction).toHaveBeenCalledTimes(activity === null ? 1 : 0);
+      expect(onDismiss).toHaveBeenCalledTimes(activity === null ? 1 : 0);
+    },
+  );
+
+  it.each([sessionBranch().branch, pullRequest().branch])(
+    "shows unpublished changes on %s instead of merged PR history",
+    (branch) => {
+      render(
+        renderChatPullRequests({
+          pullRequests: [pullRequest({ state: "merged" })],
+          branch: sessionBranch({ branch }),
+          status: "ready",
+          onDismiss: () => {},
+          publication: publication(),
+        }),
+        container,
+      );
+      expect(container.querySelectorAll(".chat-pr")).toHaveLength(1);
+      expect(container.querySelector(".chat-pr__number")).toBeNull();
+      expect(container.querySelector(".chat-pr__branch")?.textContent).toBe(branch);
+      expect(container.querySelector(".chat-pr__create")?.textContent).toContain("Publish PR");
+    },
+  );
+
+  it("keeps the current PR and CI visible when an older receipt falls out of the PR snapshot", () => {
+    const onNewAction = vi.fn();
+    const onDismiss = vi.fn();
+    render(
+      renderChatPullRequests({
+        pullRequests: [pullRequest()],
+        status: "ready",
+        onDismiss,
+        publication: publication({
+          result: {
+            requestId: "old-publication",
+            status: "published",
+            url: "https://github.com/openclaw/openclaw/pull/1",
+            repository: "openclaw/openclaw",
+            branch: pullRequest().branch,
+            headCommit: "a".repeat(40),
+          },
+          onNewAction,
+        }),
+      }),
+      container,
+    );
+    expect(container.querySelectorAll(".chat-pr")).toHaveLength(1);
+    expect(container.querySelector(".chat-pr__number")?.textContent).toBe("#103469");
+    expect(container.querySelector(".chat-pr__checks")).not.toBeNull();
+    container.querySelector<HTMLButtonElement>(".chat-pr__dismiss")?.click();
+    expect(onNewAction).toHaveBeenCalledOnce();
+    expect(onDismiss).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])(
+    "keeps publication recovery inside the PR row after publication completed: %s",
+    (completed) => {
+      const onPublish = vi.fn();
+      const onRefresh = vi.fn();
+      render(
+        renderChatPullRequests({
+          pullRequests: [pullRequest()],
+          status: "ready",
+          onDismiss: () => {},
+          publication: publication({
+            locked: !completed,
+            error: "Response lost.",
+            onPublish,
+            onRefresh,
+            result: completed
+              ? {
+                  requestId: "published-with-refresh-error",
+                  status: "published",
+                  url: pullRequest().url,
+                  repository: "openclaw/openclaw",
+                  branch: pullRequest().branch,
+                  headCommit: "a".repeat(40),
+                }
+              : null,
+          }),
+        }),
+        container,
+      );
+      expect(container.querySelectorAll(".chat-pr")).toHaveLength(1);
+      expect(container.textContent).toContain("#103469");
+      expect(container.textContent).toContain("Response lost.");
+      const action = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) =>
+          button.textContent?.trim() === (completed ? "Refresh publication" : "Retry publication"),
+      );
+      expect(action).toBeDefined();
+      action?.click();
+      expect(completed ? onRefresh : onPublish).toHaveBeenCalledOnce();
+      expect(container.querySelectorAll(".chat-pr__dismiss")).toHaveLength(1);
+    },
+  );
 
   it("marks open chips stale when GitHub is rate limited", () => {
     render(
       renderChatPullRequests({
         pullRequests: [pullRequest()],
         status: "rate-limited",
-        expanded: false,
-        onExpand: () => {},
         onDismiss: () => {},
       }),
       container,
@@ -283,8 +365,6 @@ describe("renderChatPullRequests", () => {
         pullRequests: [],
         branch: sessionBranch(),
         status: "ready",
-        expanded: false,
-        onExpand: () => {},
         onDismiss: () => {},
         publication: publication(),
       }),
@@ -317,8 +397,6 @@ describe("renderChatPullRequests", () => {
         pullRequests: [],
         branch: sessionBranch(),
         status: "ready",
-        expanded: false,
-        onExpand: () => {},
         onDismiss: () => {},
         onOpenSessionDiff,
       }),
@@ -339,8 +417,6 @@ describe("renderChatPullRequests", () => {
         // createUrl because GitHub's pull/new page would 404.
         branch: sessionBranch({ createUrl: undefined, additions: 12, deletions: 3 }),
         status: "ready",
-        expanded: false,
-        onExpand: () => {},
         onDismiss: () => {},
       }),
       container,
@@ -359,8 +435,6 @@ describe("renderChatPullRequests", () => {
       pullRequests: [],
       branch: sessionBranch(),
       status: "ready",
-      expanded: false,
-      onExpand: () => {},
       onDismiss: () => {},
       publication: publication({ onPublish }),
     };
@@ -390,6 +464,9 @@ describe("renderChatPullRequests", () => {
     expect(container.querySelector<HTMLAnchorElement>(".chat-pr__create")?.href).toBe(
       "https://github.com/openclaw/openclaw/pull/125200",
     );
+    expect(container.querySelector(".chat-pr__branch")?.textContent).toBe(props.branch?.branch);
+    expect(container.querySelector(".chat-pr__diff")).not.toBeNull();
+    expect(container.querySelector(".chat-pr__publication-outcome")).toBeNull();
 
     render(
       renderChatPullRequests({
@@ -445,8 +522,6 @@ describe("renderChatPullRequests", () => {
           pullRequests: [],
           branch: sessionBranch(),
           status: "ready",
-          expanded: false,
-          onExpand: () => {},
           onDismiss: () => {},
           publication: publication({
             options: { shared, personal: null, pendingPersonal: null, latestShared: null },
@@ -471,8 +546,6 @@ describe("renderChatPullRequests", () => {
         pullRequests: [],
         branch: sessionBranch(),
         status: "ready",
-        expanded: false,
-        onExpand: () => {},
         onDismiss: () => {},
         publication: publication({ personalReady: false }),
       }),
@@ -492,8 +565,6 @@ describe("renderChatPullRequests", () => {
         pullRequests: [],
         branch: sessionBranch(),
         status: "rate-limited",
-        expanded: false,
-        onExpand: () => {},
         onDismiss: () => {},
         publication: publication(),
       }),
@@ -511,8 +582,6 @@ describe("renderChatPullRequests", () => {
       renderChatPullRequests({
         pullRequests: [pullRequest()],
         status: "ready",
-        expanded: false,
-        onExpand: () => {},
         onDismiss,
       }),
       container,
@@ -659,8 +728,6 @@ describe("CI job details", () => {
       gateway,
       sessionKey: "agent:main:main",
       status: "ready" as const,
-      expanded: false,
-      onExpand() {},
       onDismiss() {},
     };
     render(renderChatPullRequests(props), container);
@@ -828,7 +895,14 @@ describe("CI job details", () => {
     expect(h.request).toHaveBeenCalledTimes(1);
   });
 
-  it("clears prior details when a refresh rejects session or credential authority", async () => {
+  it.each([
+    ["GitHub identity changed", "GitHub identity changed"],
+    [
+      "GitHub API rate limit exceeded (HTTP 403). Wait 2382 seconds and retry.",
+      "GitHub API rate limit exceeded (HTTP 403). Wait 2382 seconds and retry.",
+    ],
+    ["GitHub request failed: token=synthetic-secret", "GitHub request failed: token=[redacted]"],
+  ])("clears prior details and preserves the safe RPC error: %s", async (message, expected) => {
     const h = harness();
     h.request.mockResolvedValueOnce(
       details({
@@ -841,12 +915,19 @@ describe("CI job details", () => {
     h.disclosure.open = true;
     await settle(h.element);
     expect(container.textContent).toContain("Private build");
-    h.request.mockRejectedValue(new Error("GitHub identity changed"));
+    h.request.mockRejectedValue(new Error(message));
     await vi.advanceTimersByTimeAsync(30_000);
     await h.element.updateComplete;
     expect(container.querySelector(".chat-ci__job")).toBeNull();
     expect(container.textContent).not.toContain("Private build");
     expect(container.querySelector('.chat-ci__notice[data-state="unavailable"]')).not.toBeNull();
+    expect(container.textContent).toContain(expected);
+    expect(container.textContent).not.toContain("synthetic-secret");
+    h.request.mockResolvedValue(details());
+    container.querySelector<HTMLButtonElement>(".chat-ci__retry")?.click();
+    await settle(h.element);
+    expect(container.querySelector(".chat-ci__notice")).toBeNull();
+    expect(container.querySelector(".chat-ci__job")).not.toBeNull();
   });
 
   it("clears details when the connection retires", async () => {

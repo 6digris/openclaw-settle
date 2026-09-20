@@ -12,7 +12,7 @@ import { applyLoggingConfig } from "../logging/logger.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { createLazyImportLoader } from "../shared/lazy-promise.js";
 import type { StatusSessionStores } from "../status/session-stores.js";
-import type { StatusSummary } from "../status/types.js";
+import type { StatusSummary } from "../status/summary.js";
 import type { buildChannelsTable as buildChannelsTableFn } from "./status-all/channels.js";
 import type { AgentLocalStatusesResult } from "./status.agent-local.js";
 import {
@@ -112,6 +112,7 @@ export type StatusScanOverviewResult = {
         | "degradedSecretOwners"
         | "degradedPlugins"
         | "startupMigrationWarning"
+        | "installationReplacementWarning"
         | "secretEgressProxy"
         | "sqliteWal"
       > &
@@ -302,6 +303,7 @@ export async function collectStatusScanOverview(params: {
           degradedSecretOwners: status.degradedSecretOwners ?? [],
           degradedPlugins: status.degradedPlugins ?? [],
           startupMigrationWarning: status.startupMigrationWarning,
+          installationReplacementWarning: status.installationReplacementWarning,
           secretEgressProxy: status.secretEgressProxy,
           sqliteWal: status.sqliteWal,
           // The Gateway owns route readiness; CLI channel runtimes stay unloaded.
@@ -403,7 +405,7 @@ export async function resolveStatusSummaryFromOverview(params: {
     StatusScanOverviewResult,
     "skipColdStartNetworkChecks" | "cfg" | "sourceConfig" | "runtimeDegradation" | "sessionStores"
   >;
-}) {
+}): Promise<StatusSummary> {
   if (params.overview.skipColdStartNetworkChecks) {
     return buildColdStartStatusSummary();
   }

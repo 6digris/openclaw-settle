@@ -13,6 +13,7 @@ import {
   createGatewayHarness,
   createSessions,
   mountSidebar,
+  mountSessionCatalogSidebar,
   type TestSessionMenu,
 } from "../app-sidebar.ts";
 import "../../components/app-sidebar.ts";
@@ -28,7 +29,7 @@ describe("AppSidebar session catalog pagination", () => {
       } as unknown as GatewayBrowserClient);
       previousGateway.publish({
         hello: {
-          features: { methods: ["sessions.catalog.list"] },
+          features: { methods: ["sessions.catalog.list"], events: ["sessions.catalog.changed"] },
         } as ApplicationGatewaySnapshot["hello"],
       });
       const sessions = createSessions("main", ["agent:main:main"]);
@@ -44,18 +45,19 @@ describe("AppSidebar session catalog pagination", () => {
       } as unknown as GatewayBrowserClient);
       currentGateway.publish({
         hello: {
-          features: { methods: ["sessions.catalog.list"] },
+          features: { methods: ["sessions.catalog.list"], events: ["sessions.catalog.changed"] },
         } as ApplicationGatewaySnapshot["hello"],
       });
       provider.setContext(createContext(currentGateway.gateway, sessions));
       await sidebar.updateComplete;
-      await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(200);
 
       staleResponse.resolve(catalogPage([{ threadId: "thread-stale", name: "Stale session" }]));
       await vi.advanceTimersByTimeAsync(0);
       await sidebar.updateComplete;
       expect(sidebar.textContent).not.toContain("Stale session");
-      await vi.advanceTimersByTimeAsync(30_000);
+      currentGateway.publishEvent("sessions.catalog.changed", { agentId: "main" });
+      await vi.advanceTimersByTimeAsync(200);
 
       expect(currentRequest).toHaveBeenCalledTimes(2);
       expect(currentRequest).toHaveBeenNthCalledWith(2, "sessions.catalog.list", {
@@ -289,20 +291,9 @@ describe("AppSidebar session catalog pagination", () => {
       const request = vi
         .fn()
         .mockResolvedValue(catalogPage([{ threadId: "thread-1", name: "Newest" }]));
-      const gateway = createGatewayHarness({ request } as unknown as GatewayBrowserClient);
-      gateway.publish({
-        hello: {
-          features: { methods: ["sessions.catalog.list"] },
-        } as ApplicationGatewaySnapshot["hello"],
-      });
-      const { sidebar } = await mountSidebar(
-        gateway.gateway,
-        createSessions("main", ["agent:main:main"]),
-      );
-      sidebar.connected = true;
-      await sidebar.updateComplete;
-      await vi.advanceTimersByTimeAsync(0);
-      await sidebar.updateComplete;
+      const { sidebar } = await mountSessionCatalogSidebar({
+        request,
+      } as unknown as GatewayBrowserClient);
 
       // One scroll region: catalog groups live inside the sessions scroller.
       // Sibling scroll-less sections flex-squeeze and paint over each other.
@@ -323,7 +314,7 @@ describe("AppSidebar session catalog pagination", () => {
       const gateway = createGatewayHarness({ request } as unknown as GatewayBrowserClient);
       gateway.publish({
         hello: {
-          features: { methods: ["sessions.catalog.list"] },
+          features: { methods: ["sessions.catalog.list"], events: ["sessions.catalog.changed"] },
         } as ApplicationGatewaySnapshot["hello"],
       });
       const { sidebar } = await mountSidebar(
@@ -383,7 +374,7 @@ describe("AppSidebar session catalog pagination", () => {
       const gateway = createGatewayHarness({ request } as unknown as GatewayBrowserClient);
       gateway.publish({
         hello: {
-          features: { methods: ["sessions.catalog.list"] },
+          features: { methods: ["sessions.catalog.list"], events: ["sessions.catalog.changed"] },
         } as ApplicationGatewaySnapshot["hello"],
       });
       const { sidebar } = await mountSidebar(
@@ -396,7 +387,8 @@ describe("AppSidebar session catalog pagination", () => {
 
       const oldProgressId = (request.mock.calls[0]?.[1] as { progressId?: string })?.progressId;
       expect(oldProgressId).toEqual(expect.any(String));
-      await vi.advanceTimersByTimeAsync(30_000);
+      gateway.publishEvent("sessions.catalog.changed", { agentId: "main" });
+      await vi.advanceTimersByTimeAsync(200);
       expect(request).toHaveBeenCalledTimes(2);
 
       const staleCatalog = catalogPage([{ threadId: "thread-obsolete", name: "Obsolete session" }])
@@ -451,7 +443,7 @@ describe("AppSidebar session catalog pagination", () => {
       const gateway = createGatewayHarness({ request } as unknown as GatewayBrowserClient);
       gateway.publish({
         hello: {
-          features: { methods: ["sessions.catalog.list"] },
+          features: { methods: ["sessions.catalog.list"], events: ["sessions.catalog.changed"] },
         } as ApplicationGatewaySnapshot["hello"],
       });
       const { sidebar } = await mountSidebar(
@@ -463,7 +455,8 @@ describe("AppSidebar session catalog pagination", () => {
       await vi.advanceTimersByTimeAsync(0);
 
       const oldProgressId = (request.mock.calls[0]?.[1] as { progressId?: string })?.progressId;
-      await vi.advanceTimersByTimeAsync(30_000);
+      gateway.publishEvent("sessions.catalog.changed", { agentId: "main" });
+      await vi.advanceTimersByTimeAsync(200);
       if (!oldProgressId) {
         throw new Error("first catalog request has no progress id");
       }
@@ -502,7 +495,7 @@ describe("AppSidebar session catalog pagination", () => {
     }
   });
 
-  it("discovers an external session on the stable poll and then follows changes quickly", async () => {
+  it("discovers an external session on a catalog change and paces later changes", async () => {
     vi.useFakeTimers();
     try {
       const empty = catalogPage([]);
@@ -515,7 +508,7 @@ describe("AppSidebar session catalog pagination", () => {
       const gateway = createGatewayHarness({ request } as unknown as GatewayBrowserClient);
       gateway.publish({
         hello: {
-          features: { methods: ["sessions.catalog.list"] },
+          features: { methods: ["sessions.catalog.list"], events: ["sessions.catalog.changed"] },
         } as ApplicationGatewaySnapshot["hello"],
       });
       const { sidebar } = await mountSidebar(
@@ -529,21 +522,27 @@ describe("AppSidebar session catalog pagination", () => {
       expect(request).toHaveBeenCalledTimes(1);
       expect(sidebar.textContent).not.toContain("External session");
 
-      await vi.advanceTimersByTimeAsync(30_000);
+      gateway.publishEvent("sessions.catalog.changed", { agentId: "main" });
+      await vi.advanceTimersByTimeAsync(199);
+      expect(request).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
       await sidebar.updateComplete;
       expect(request).toHaveBeenCalledTimes(2);
       expect(sidebar.textContent).toContain("External session");
 
-      await vi.advanceTimersByTimeAsync(4_999);
+      gateway.publishEvent("sessions.catalog.changed", { agentId: "main" });
+      await vi.advanceTimersByTimeAsync(999);
       expect(request).toHaveBeenCalledTimes(2);
       await vi.advanceTimersByTimeAsync(1);
+      expect(request).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
       expect(request).toHaveBeenCalledTimes(3);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("returns to the stable cadence when only a progressive host order changed", async () => {
+  it("keeps the safety cadence when a progressive host update changes host order", async () => {
     vi.useFakeTimers();
     try {
       const basePage = catalogPage([{ threadId: "thread-local", name: "Local session" }]);
@@ -576,7 +575,7 @@ describe("AppSidebar session catalog pagination", () => {
       const gateway = createGatewayHarness({ request } as unknown as GatewayBrowserClient);
       gateway.publish({
         hello: {
-          features: { methods: ["sessions.catalog.list"] },
+          features: { methods: ["sessions.catalog.list"], events: ["sessions.catalog.changed"] },
         } as ApplicationGatewaySnapshot["hello"],
       });
       const { sidebar } = await mountSidebar(
@@ -587,7 +586,8 @@ describe("AppSidebar session catalog pagination", () => {
       await sidebar.updateComplete;
       await vi.advanceTimersByTimeAsync(0);
 
-      await vi.advanceTimersByTimeAsync(30_000);
+      gateway.publishEvent("sessions.catalog.changed", { agentId: "main" });
+      await vi.advanceTimersByTimeAsync(200);
       const progressId = (request.mock.calls[1]?.[1] as { progressId?: string })?.progressId;
       if (!progressId) {
         throw new Error("second catalog request has no progress id");
@@ -600,23 +600,23 @@ describe("AppSidebar session catalog pagination", () => {
       pending.resolve(stablePage);
       await vi.advanceTimersByTimeAsync(0);
 
-      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(10 * 60_000 - 1);
       expect(request).toHaveBeenCalledTimes(2);
-      await vi.advanceTimersByTimeAsync(25_000);
+      await vi.advanceTimersByTimeAsync(1);
       expect(request).toHaveBeenCalledTimes(3);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("coalesces a presence and focus burst into one catalog refresh", async () => {
+  it("ignores a presence and focus burst without a catalog change", async () => {
     vi.useFakeTimers();
     try {
       const request = vi.fn().mockResolvedValue(catalogPage([]));
       const gateway = createGatewayHarness({ request } as unknown as GatewayBrowserClient);
       gateway.publish({
         hello: {
-          features: { methods: ["sessions.catalog.list"] },
+          features: { methods: ["sessions.catalog.list"], events: ["sessions.catalog.changed"] },
         } as ApplicationGatewaySnapshot["hello"],
       });
       const { sidebar } = await mountSidebar(
@@ -631,12 +631,8 @@ describe("AppSidebar session catalog pagination", () => {
         presence: [{ deviceId: "node-1", mode: "node", reason: "connect" }],
       });
       globalThis.dispatchEvent(new Event("focus"));
-      await vi.advanceTimersByTimeAsync(49);
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
       expect(request).toHaveBeenCalledTimes(1);
-      await vi.advanceTimersByTimeAsync(1);
-      expect(request).toHaveBeenCalledTimes(2);
-      await vi.advanceTimersByTimeAsync(0);
-      expect(request).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }

@@ -1,7 +1,10 @@
 import { isDeepStrictEqual } from "node:util";
 import type { ConfigSnapshotReadMeasure } from "../../../config/io.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../../../config/types.openclaw.js";
+import type { DeferredPluginMigration } from "../../../infra/deferred-plugin-migrations.js";
+import type { PreparedAgentDatabaseMigrationDiscovery } from "../../../infra/state-migrations.media-persistence-targets.js";
 import type {
+  LegacyStateMigrationInvocationPurpose,
   LegacyStateMigrationStepReceipt,
   PreparedPostSessionPluginMigration,
 } from "../../../infra/state-migrations.types.js";
@@ -9,7 +12,10 @@ import type { PluginMetadataSnapshot } from "../../../plugins/plugin-metadata-sn
 import type { CronCodexRuntimePolicyTarget } from "../cron/store-migration.js";
 
 export type DoctorConfigPreflightOptions = {
+  agentDatabaseMigrationDiscovery?: PreparedAgentDatabaseMigrationDiscovery;
   migrateState?: boolean;
+  /** Select Doctor normalization without enabling repair-only migrations. */
+  invocationPurpose?: LegacyStateMigrationInvocationPurpose;
   migrateLegacyConfig?: boolean;
   repairPrefixedConfig?: boolean;
   recoverCorruptTargetStore?: boolean;
@@ -31,13 +37,12 @@ export type DoctorConfigPreflightOptions = {
   skipPristineStartupStateMigrations?: boolean;
   /** Enable migrations that may retire security-sensitive stores only during explicit repair. */
   doctorOnlyStateMigrations?: boolean;
-  /** Explicit Doctor repair has imported install records and converged migration plugins. */
-  migrationPluginsConverged?: true;
 };
 
 export type DoctorConfigPreflightResult = {
   snapshot: ConfigFileSnapshot;
   baseConfig: OpenClawConfig;
+  deferredPluginMigrations?: readonly DeferredPluginMigration[];
   modelBillingRouteMigrationSource?: OpenClawConfig;
   pluginMetadataSnapshot?: PluginMetadataSnapshot;
   cronCodexRuntimePolicyTargets?: CronCodexRuntimePolicyTarget[];

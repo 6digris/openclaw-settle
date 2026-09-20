@@ -6,7 +6,6 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import fs from "node:fs/promises";
-import { Socket } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { formatCliCommand } from "../cli/command-format.js";
@@ -52,6 +51,7 @@ import {
   resolveManagedUpdateLeaseDatabasePath,
   type ManagedHandoffLease,
 } from "./update-managed-service-handoff-lease.js";
+import { MANAGED_HANDOFF_NATIVE_SCOPE_SOURCE } from "./update-managed-service-handoff-native-scope-source.js";
 import { MANAGED_HANDOFF_RUNTIME_ENTRY } from "./update-managed-service-handoff-runtime-assets.js";
 import { stageManagedHandoffRuntime } from "./update-managed-service-handoff-runtime.js";
 import { resolveManagedUpdateRequester } from "./update-requester-authority.js";
@@ -74,6 +74,12 @@ type HandoffChild = ChildProcess & {
   stdin: NonNullable<ChildProcess["stdin"]>;
   stdout: NonNullable<ChildProcess["stdout"]>;
 };
+
+function unrefHandoffPipe(pipe: HandoffChild["stdin"] | HandoffChild["stdout"]): void {
+  if ("unref" in pipe && typeof pipe.unref === "function") {
+    pipe.unref();
+  }
+}
 // The private admission pipe must not change the installed CLI's stdin lifetime.
 const HANDOFF_COMMAND_RUNNER_SCRIPT = String.raw`
 const gateFs = process.getBuiltinModule("fs");
@@ -501,6 +507,9 @@ function recordUpdateHandoffOutcome(reason, restored, completedStatus, expectedR
     metaFile = JSON.parse(fs.readFileSync(params.metaPath, "utf-8"));
   } catch {}
   const run = runLedger?.getUpdateRun(params.runId);
+  // Cancellation must preserve a refusal already recorded by the Gateway.
+  if (reason === "managed-service-handoff-cancelled" && run?.reason &&
+      run.steps.some((step) => step.step === "requested" && step.status === "failed")) reason = run.reason;
   const meta = resolveUpdateRestartNoticeMeta(run, metaFile && metaFile.version === 1 && metaFile.meta ? metaFile.meta : {});
   const status = (reason === "managed-service-handoff-cancelled" || completedStatus === "skipped") && restored !== false
     ? "skipped" : "error";
@@ -632,100 +641,7 @@ function runServiceCommand(command, args, onSpawn, deadline, timeoutCap) {
   });
 }
 
-async function inspectSystemdService(unit, deadline) {
-  const result = await runServiceCommand(
-    "systemctl",
-    [
-      "--user",
-      "show",
-      unit,
-      "--property=Id,LoadState,ActiveState,MainPID,ExecMainStartTimestampMonotonic,InvocationID,FragmentPath",
-    ],
-    undefined,
-    deadline,
-  );
-  if (result.code !== 0) return null;
-  return parseSystemdProperties(result.stdout);
-}
-
-async function inspectTriageScope() {
-  const result = await runServiceCommand("systemctl", [
-    "--user",
-    "show",
-    params.scopeUnit,
-    "--property=Id,LoadState,ActiveState,PartOf,CanStart,KillMode,ControlGroup,InvocationID",
-  ]);
-  const scope = parseSystemdProperties(result.stdout);
-  const membership = fs.readFileSync("/proc/self/cgroup", "utf8").trim();
-  if (
-    result.code !== 0 ||
-    scope.Id !== params.scopeUnit ||
-    scope.LoadState !== "loaded" ||
-    scope.ActiveState !== "active" ||
-    scope.CanStart !== "no" ||
-    scope.KillMode !== "control-group" ||
-    !scope.PartOf?.split(/\s+/).includes(params.serviceRecovery.unit) ||
-    !/^[a-f0-9]{32}$/i.test(scope.InvocationID || "") ||
-    !scope.ControlGroup ||
-    membership !== "0::" + scope.ControlGroup ||
-    !hasManagedUpdateLease()
-  ) {
-    throw new Error("automatic triage native scope ownership could not be verified");
-  }
-  const action = managedUpdateLease.action;
-  if (action.lifetime.placement.kind === "attached" && action.lifetime.placement.invocation !== scope.InvocationID) {
-    throw new Error("automatic triage native scope was replaced");
-  }
-  return scope;
-}
-
-let nativePlacement;
-async function admitTriageScope() {
-  const primary = await inspectSystemdService(params.serviceRecovery.unit);
-  if (
-    !primary ||
-    primary.Id !== params.serviceRecovery.unit ||
-    primary.LoadState !== "loaded" ||
-    (params.triageTransition
-      ? !params.primaryFragment || primary.FragmentPath !== params.primaryFragment
-      : primary.ActiveState !== "active" ||
-        primary.MainPID !== String(params.parentPid) ||
-        !parentIdentityCurrent())
-  ) {
-    throw new Error(
-      "automatic triage primary ownership changed before native admission; run openclaw triage manually",
-    );
-  }
-  const scope = await inspectTriageScope();
-  if (
-    (!params.triageTransition &&
-      !parentIdentityCurrent()) ||
-    !bindManagedUpdateLeaseToProcess(
-      process.pid,
-      undefined,
-      { ...managedUpdateLease.action, lifetime: { ...managedUpdateLease.action.lifetime, placement: { kind: "attached", invocation: scope.InvocationID } } },
-    )
-  ) {
-    throw new Error("automatic triage owner changed during admission");
-  }
-  nativePlacement = managedUpdateLease;
-}
-
-let triageClosing = false;
-function stopTriageScope() {
-  if (params.action !== "triage") return;
-  if (triageClosing) return;
-  triageClosing = true;
-  // Retain the captured native placement when a stale lease is replaced. Native
-  // membership plus invocation fencing must never stop the replacement's scope.
-  const placement = nativePlacement ?? managedUpdateLease;
-  releaseManagedUpdateLease();
-  if (placement) {
-    try { leaseStore.stopNative(placement, true); }
-    catch (error) { appendLog("automatic triage native cleanup failed: " + String(error)); }
-  }
-
-}
+${MANAGED_HANDOFF_NATIVE_SCOPE_SOURCE}
 
 process.once("SIGTERM", () => {
   if (params.action !== "triage") return process.exit(143);
@@ -1428,8 +1344,10 @@ async function runOwnedUpdateCommand(phase, commandArgv, timeoutMs, cwd = params
             if (
               !hasManagedUpdateLease() ||
               managedUpdateLease.payload !== runnerIdentity ||
-              fs.readFileSync("/proc/" + child.pid + "/cgroup", "utf8").trim() !==
-                "0::" + scope.ControlGroup
+              !procCgroupMembershipMatches(
+                fs.readFileSync("/proc/" + child.pid + "/cgroup", "utf8"),
+                scope.ControlGroup,
+              )
             ) {
               throw new Error("automatic triage executor lost its native placement");
             }
@@ -1490,7 +1408,7 @@ async function runOwnedUpdateCommand(phase, commandArgv, timeoutMs, cwd = params
       });
       if (params.action === "triage") {
         admissionDeadline = setTimeout(() => {
-          appendLog("installed candidate did not admit triage; run openclaw triage manually");
+          appendLog("The installed update did not start diagnostics. Run openclaw triage manually.");
           stopTriageScope();
         }, 30000);
         leaseWatch = setInterval(() => {
@@ -1550,7 +1468,7 @@ async function runOwnedUpdateCommand(phase, commandArgv, timeoutMs, cwd = params
     );
     if (params.action === "triage" && !triageAdmitted) {
       appendLog(
-        "installed candidate cannot accept automatic triage; run openclaw triage manually",
+        "The installed update does not support automatic diagnostics. Run openclaw triage manually.",
       );
       process.exitCode = 1;
     }
@@ -2637,7 +2555,7 @@ export function claimManagedServiceUpdateHandoff(
   return true;
 }
 
-/** A transferred updater may inspect its serving ancestor only under its current lease. */
+/** A transferred updater may manage its serving ancestor only under its current lease. */
 export async function isCurrentManagedServiceUpdateHandoffProcess(params: {
   root: string;
   runId: string | undefined;
@@ -2750,12 +2668,7 @@ export async function transferManagedServiceUpdateHandoff(
     resolveUpdateInstallRoot(identity.installRoot),
   );
   const child = active?.launcher;
-  if (
-    !active ||
-    !(child?.stdin instanceof Socket) ||
-    !(child.stdout instanceof Socket) ||
-    !claimManagedServiceUpdateHandoff(identity)
-  ) {
+  if (!active || !child?.stdin || !child.stdout || !claimManagedServiceUpdateHandoff(identity)) {
     return false;
   }
   active.transferred = true;
@@ -2767,8 +2680,8 @@ export async function transferManagedServiceUpdateHandoff(
   // child. Only acknowledged transfer releases the child and its control pipes;
   // readiness still owns cancellation through native exit.
   child.unref();
-  child.stdin.unref();
-  child.stdout.unref();
+  unrefHandoffPipe(child.stdin);
+  unrefHandoffPipe(child.stdout);
   return true;
 }
 

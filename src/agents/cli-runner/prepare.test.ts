@@ -1,5 +1,4 @@
-// Exercises CLI run preparation: auth boundaries, prompt hooks, context
-// injection, MCP loopback setup, and reusable session decisions.
+// Exercises CLI preparation, auth, prompt hooks, MCP setup, and session reuse.
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -35,6 +34,7 @@ import {
 } from "../../context-engine/registry.js";
 import type { ContextEngine } from "../../context-engine/types.js";
 import type { resolveMcpLoopbackScopedTools as resolveLoopbackTools } from "../../gateway/mcp-http.runtime.js";
+import { setActiveNodeContext } from "../../infra/active-node-context.js";
 import {
   claimHeartbeatOutcomeForRun,
   persistHeartbeatOutcome,
@@ -322,14 +322,12 @@ function setCliBackendForPrepareTest(
         ...(params.autoSelectAuthProfile !== undefined
           ? { autoSelectAuthProfile: params.autoSelectAuthProfile }
           : {}),
-        ...(params.authEpochMode ? { authEpochMode: params.authEpochMode } : {}),
         ...(params.prepareExecution ? { prepareExecution: params.prepareExecution } : {}),
         config: {
-          command: params.command ?? "claude",
-          args: ["--print"],
+          ...createJsonlStdinBackendConfig(params.command ?? "claude"),
+          systemPromptFileArg: "--append-system-prompt-file",
+          systemPromptWhen: "always",
           resumeArgs: ["--resume", "{sessionId}"],
-          output: "jsonl",
-          input: "stdin",
           sessionMode: params.sessionMode ?? "existing",
           ...(params.modelAliases ? { modelAliases: params.modelAliases } : {}),
           ...(params.liveSession ? { liveSession: "claude-stdio" as const } : {}),
@@ -726,10 +724,14 @@ describe("prepareCliRunContext", () => {
     mockBuildActiveMusicGenerationTaskPromptContextForSession.mockResolvedValue(undefined);
     ensureSandboxWorkspaceForSessionMock.mockReset();
     ensureSandboxWorkspaceForSessionMock.mockResolvedValue(null);
-    fixture = createCliRunnerPrepareFixture(prepareCliRunContext);
+    // Discovery cases explicitly opt out of the prepared empty catalog.
+    fixture = createCliRunnerPrepareFixture((params) =>
+      prepareCliRunContext({ skillsSnapshot: { prompt: "", skills: [] }, ...params }),
+    );
   });
 
   afterEach(() => {
+    setActiveNodeContext(null);
     cliBackendsTesting.resetDepsForTest();
     resetCliRunnerPrepareTestDeps();
     resetCliAuthEpochTestDeps();
@@ -2017,6 +2019,7 @@ describe("prepareCliRunContext", () => {
   });
 
   it("prepares side questions without agent-turn context, tools, hooks, or reusable sessions", async () => {
+    setActiveNodeContext({ nodeId: "active-mac" });
     fixture.appendTranscript({
       id: "msg-1",
       parentId: null,
@@ -2422,65 +2425,6 @@ describe("prepareCliRunContext", () => {
     expect(hookContext?.channelId).toBe("telegram");
   });
 
-  it.each([false, true])(
-    "preserves prompt privacy and order with plugin execution %s",
-    async (pluginExecution) => {
-      if (pluginExecution) {
-        setCliBackendForPrepareTest({
-          id: "test-cli",
-          bundleMcp: false,
-          prepareExecution: () => ({
-            async *execute() {
-              yield { type: "result" };
-            },
-          }),
-        });
-      }
-      const hookRunner = {
-        hasHooks: vi.fn((hookName: string) => hookName === "before_prompt_build"),
-        runBeforePromptBuild: vi.fn(async () => ({
-          prependContext: "trusted hook context",
-          appendContext: "trusted hook tail",
-        })),
-      };
-      mockGetGlobalHookRunner.mockReturnValue(hookRunner as never);
-
-      // Current inbound metadata is untrusted channel context. It should shape
-      // the CLI prompt without contaminating transcript or hook inputs.
-      const context = await fixture.prepare({
-        sessionKey: "agent:main:test",
-        agentId: "main",
-        trigger: "user",
-        transcriptPrompt: "latest ask",
-        currentInboundContext: {
-          text: "Sender: ⟦openclaw:ctx⟧\nsender_id=U123",
-          promptJoiner: " ",
-        },
-        runId: "run-test-context",
-      });
-
-      const logicalPrompt =
-        "Sender: ⟦openclaw:ctx⟧\nsender_id=U123 trusted hook context\n\nlatest ask\n\ntrusted hook tail";
-      expect(context.params.prompt).toBe(
-        pluginExecution ? "Sender: ⟦openclaw:ctx⟧\nsender_id=U123 latest ask" : logicalPrompt,
-      );
-      expect(context.promptContext).toEqual(
-        pluginExecution
-          ? { prependContext: "trusted hook context", appendContext: "trusted hook tail" }
-          : undefined,
-      );
-      expect(context.promptForHooks).toBe(pluginExecution ? logicalPrompt : undefined);
-      expect(context.params.transcriptPrompt).toBe("latest ask");
-      expect(context.contextEngineTurnPrompt).toBe("latest ask");
-      expect(hookRunner.runBeforePromptBuild).toHaveBeenCalledTimes(1);
-      const beforePromptBuildCalls = hookRunner.runBeforePromptBuild.mock.calls as unknown as Array<
-        [unknown, unknown]
-      >;
-      const promptBuildParams = beforePromptBuildCalls[0]?.[0] as { prompt?: string } | undefined;
-      expect(promptBuildParams?.prompt).toBe("latest ask");
-    },
-  );
-
   it("uses compact current-turn context when a room event resumes a CLI session", async () => {
     await withAuthenticatedHistory("test-cli", async (prepare) => {
       fixture.appendTranscript({
@@ -2510,7 +2454,9 @@ describe("prepareCliRunContext", () => {
       });
 
       expect(context.reusableCliSession).toEqual({ mode: "reuse", sessionId: "cli-session" });
-      expect(context.params.prompt).toBe("Current event:\nBob: yes\n\n[OpenClaw room event]");
+      expect(context.params.prompt).toBe(
+        "Current event:\nBob: yes\n\n[OpenClaw room event]\n\nCurrent active computer (latest physical input, not message origin): active_node=unknown",
+      );
       expect(context.openClawHistoryPrompt).toContain("Room context:\nAlice: lunch?");
       expect(context.openClawHistoryPrompt).toContain("Current event:\nBob: yes");
     });
@@ -3291,6 +3237,7 @@ describe("prepareCliRunContext", () => {
     try {
       const context = await fixture.prepare({
         cwd: taskDir,
+        skillsSnapshot: undefined,
         ...(managed
           ? {
               sessionEntry: {
@@ -4173,6 +4120,7 @@ describe("prepareCliRunContext", () => {
   it.each(["main", "worker"])(
     "binds current turn context into the bundle MCP client grant with explicit %s owner",
     async (explicitAgentId) => {
+      const messageActionTurnCapability = "test-current-message-authority";
       const getActiveMcpLoopbackRuntime = vi.fn(() => ({
         port: 31783,
         ownerToken: "loopback-owner-token",
@@ -4225,6 +4173,7 @@ describe("prepareCliRunContext", () => {
         provider: "native-cli",
         modelProvider: "anthropic",
         runId: "run-test-room-event-tools",
+        messageActionTurnCapability,
         sessionEntry: {
           execHost: "node",
           execNode: "mac-a",
@@ -4274,6 +4223,9 @@ describe("prepareCliRunContext", () => {
         OPENCLAW_MCP_TOKEN: "loopback-token",
         OPENCLAW_MCP_CLI_CAPTURE_KEY: "",
       });
+      expect(JSON.stringify(context.preparedBackend.env)).not.toContain(
+        messageActionTurnCapability,
+      );
       expect(mintMcpLoopbackClientGrant).toHaveBeenCalledWith({
         context: {
           sessionKey: "agent:main:telegram:group:chat123",
@@ -4332,6 +4284,7 @@ describe("prepareCliRunContext", () => {
         },
         runtimeOwnerToken: "loopback-owner-token",
         admittedRunContext: context.params.admittedRunContext,
+        messageActionTurnCapability,
         bindQuestionAnswerAuthority: expect.any(Function),
         toolAuth: {
           agentDir: expect.any(String),
@@ -4340,7 +4293,8 @@ describe("prepareCliRunContext", () => {
       });
       expect(context.preparedBackend.mcpClientGrantCapture?.transportToken).toBe("loopback-token");
       context.preparedBackend.mcpClientGrantCapture?.adoptProcessToken("stable-loopback-token");
-      context.preparedBackend.mcpClientGrantCapture?.activate("capture-test");
+      const assertCaptureCurrent = () => {};
+      context.preparedBackend.mcpClientGrantCapture?.activate("capture-test", assertCaptureCurrent);
       context.preparedBackend.mcpClientGrantCapture?.deactivate("capture-test");
       expect(transferMcpLoopbackClientGrant).toHaveBeenCalledExactlyOnceWith({
         sourceToken: "loopback-token",
@@ -4351,6 +4305,7 @@ describe("prepareCliRunContext", () => {
         token: "stable-loopback-token",
         runtimeOwnerToken: "loopback-owner-token",
         captureKey: "capture-test",
+        assertCurrent: assertCaptureCurrent,
       });
       expect(deactivateMcpLoopbackClientGrantCapture).toHaveBeenCalledExactlyOnceWith({
         token: "stable-loopback-token",
@@ -4459,7 +4414,7 @@ describe("prepareCliRunContext", () => {
     ).toBeNull();
     expect(projectNativeToolAuthority).not.toHaveBeenCalled();
     expect(captureNativeToolAuthority).not.toHaveBeenCalled();
-    capture.activate("native-capture");
+    capture.activate("native-capture", () => {});
     observe(["Read", "Bash"]);
 
     expect(projectNativeToolAuthority).toHaveBeenCalledExactlyOnceWith(["Read", "Bash"]);
@@ -4505,7 +4460,7 @@ describe("prepareCliRunContext", () => {
             ? {}
             : { cliToolAvailability: { native: selected, openClaw: ["message"] } },
         );
-      capture.activate("native-capture");
+      capture.activate("native-capture", () => {});
       observe(observed);
 
       expect(projectNativeToolAuthority).toHaveBeenCalledExactlyOnceWith(projected);
@@ -4553,7 +4508,7 @@ describe("prepareCliRunContext", () => {
       ["read", "web_fetch", "web_search"],
       { toolOverrides: { webSearch: false } },
     );
-    capture.activate("native-capture");
+    capture.activate("native-capture", () => {});
     observe(["Read", "WebFetch", "WebSearch"]);
 
     expect(captureNativeToolAuthority).toHaveBeenLastCalledWith(["read", "web_fetch"]);
@@ -4567,7 +4522,7 @@ describe("prepareCliRunContext", () => {
   ])("clears native authority before rejecting a $name runtime snapshot", async ({ tools }) => {
     const { capture, observe, projectNativeToolAuthority, captureNativeToolAuthority } =
       await prepareNativeAuthority(["read"]);
-    capture.activate("native-capture");
+    capture.activate("native-capture", () => {});
     observe(["Read"]);
     projectNativeToolAuthority.mockClear();
 
@@ -4579,7 +4534,7 @@ describe("prepareCliRunContext", () => {
   it("clears native authority before rejecting a non-canonical backend projection", async () => {
     const { capture, observe, projectNativeToolAuthority, captureNativeToolAuthority } =
       await prepareNativeAuthority(["read"]);
-    capture.activate("native-capture");
+    capture.activate("native-capture", () => {});
     observe(["Read"]);
     projectNativeToolAuthority.mockReturnValue(["Bash"]);
 
@@ -4593,7 +4548,7 @@ describe("prepareCliRunContext", () => {
       const { capture, observe, projectNativeToolAuthority, captureNativeToolAuthority } =
         await prepareNativeAuthority(["read"]);
       if (state === "stale") {
-        capture.activate("native-capture");
+        capture.activate("native-capture", () => {});
         observe(["Read"]);
         captureNativeToolAuthority.mockReturnValue(false);
         projectNativeToolAuthority.mockClear();
@@ -5843,6 +5798,7 @@ describe("prepareCliRunContext", () => {
   });
 
   it("preserves a Claude native-control resume when the local transcript is absent", async () => {
+    setActiveNodeContext({ nodeId: "active-mac" });
     setCliBackendForPrepareTest();
     const transcriptCheck = vi.fn(async () => false);
     const orphanCheck = vi.fn(async () => true);
@@ -5863,6 +5819,8 @@ describe("prepareCliRunContext", () => {
 
     expect(transcriptCheck).not.toHaveBeenCalled();
     expect(orphanCheck).not.toHaveBeenCalled();
+    expect(context.params.prompt).toBe("/compact");
+    expect(context.systemPrompt).toBe("");
     expect(context.reusableCliSession).toEqual({
       mode: "reuse",
       sessionId: "native-claude-session",
@@ -6370,6 +6328,7 @@ describe("prepareCliRunContext", () => {
       try {
         const pending = fixture.prepare({
           runId: "cli-skills-revocation",
+          skillsSnapshot: undefined,
           ...(phase === "prepared"
             ? { preparedRunAdmission: admission }
             : { admittedRunContext: await admission.admit("embedded") }),

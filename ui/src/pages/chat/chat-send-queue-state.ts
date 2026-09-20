@@ -1,3 +1,6 @@
+import type { ChatWorkContext } from "../../../../packages/gateway-protocol/src/chat-work-context.js";
+import { t } from "../../i18n/index.ts";
+import { registerChatMessageMetadataEnglish } from "../../i18n/locales/en-chat-message-metadata.ts";
 import type { ChatAttachment, ChatQueueItem, HumanMention } from "../../lib/chat/chat-types.ts";
 import { resolveCurrentUserIdentity } from "../../lib/chat/current-user-identity.ts";
 import { trimHumanMentions } from "../../lib/chat/human-mentions.ts";
@@ -43,6 +46,8 @@ import { isQueuedMessageBeingEdited } from "./queued-message-edit.ts";
 import { hasDirectSessionRun, isChatBusy } from "./run-lifecycle.ts";
 import { scheduleChatScroll } from "./scroll.ts";
 
+registerChatMessageMetadataEnglish();
+
 export function setChatError(
   host: { lastError?: string | null; chatError?: string | null },
   error: string | null,
@@ -65,6 +70,7 @@ export function createPendingSendMessage(
   intent?: ChatQueueItem["intent"],
   expectedLeafEntryId?: string | null,
   mentions?: readonly HumanMention[],
+  workContext?: ChatWorkContext,
 ): { item: ChatQueueItem; admission: ReturnType<typeof captureChatOutboxAdmission> } | null {
   const submitted = trimHumanMentions(text, mentions);
   const hasAttachments = Boolean(attachments && attachments.length > 0);
@@ -79,6 +85,7 @@ export function createPendingSendMessage(
     id: generateUUID(),
     text: intent ? text : submitted.text,
     ...(submitted.mentions ? { mentions: submitted.mentions } : {}),
+    ...(workContext ? { workContext } : {}),
     createdAt: Date.now(),
     ...(resumedOrderKey !== undefined ? { orderKey: resumedOrderKey } : {}),
     attachments: hasAttachments ? attachments : undefined,
@@ -111,7 +118,7 @@ export function publishPendingSendMessage(host: ChatHost, pending: ChatQueueItem
     recordChatSendTiming(host, pending, pending.sendState, submittedAtMs);
   }
   schedulePendingSendPaintTiming(host, pending, submittedAtMs);
-  scheduleChatScroll(host, true, false, { source: "manual" });
+  scheduleChatScroll(host, true, true, { source: "manual" });
 }
 
 export function reconnectSafeQueuedSendState(
@@ -234,6 +241,12 @@ export function finishChatDeliveryAdmission(
   if (!current) {
     return "failed";
   }
+  if (current.workContextUnavailable) {
+    const error = t("chat.messages.attachedContext.restoreFailed");
+    setState("failed", error);
+    surfaceChatDeliveryFailure(host, route, current.agentId, error);
+    return "failed";
+  }
   const sendsDuringActiveRun = Boolean(current.queueMode || options?.allowActiveRunSend);
   if (
     chatSendHoldReason(host, route) ||
@@ -310,10 +323,7 @@ export async function prepareQueuedChatPayload(
     !connectionIsCurrent() ||
     !ownerIsCurrent() ||
     !current ||
-    current.sendRunId !== original.sendRunId ||
-    current.attachmentPayload?.key !== original.attachmentPayload?.key ||
-    current.sendAttempts !== original.sendAttempts ||
-    current.sendState !== original.sendState ||
+    !sameQueuedDeliveryVersion(current, original) ||
     isQueuedMessageBeingEdited(host, id)
   ) {
     if (payload.status === "ready" && !original.attachmentPayload) {

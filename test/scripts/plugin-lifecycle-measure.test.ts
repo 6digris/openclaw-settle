@@ -310,6 +310,16 @@ describe("plugin lifecycle resource sampler", () => {
           },
         );
 
+        expect(
+          nonEmptyPathExists(pidFile),
+          JSON.stringify({
+            status: result.status,
+            signal: result.signal,
+            error: result.error?.message,
+            stdout: result.stdout,
+            stderr: result.stderr,
+          }),
+        ).toBe(true);
         descendantPid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
         expect(result.status).toBe(124);
         expect(result.stdout).toContain("signal=timeout");
@@ -332,14 +342,6 @@ describe("plugin lifecycle resource sampler", () => {
       const summary = path.join(dir, "summary.tsv");
       const pidFile = path.join(dir, "descendant.pid");
       let descendantPid: number | undefined;
-      let wrapper: ChildProcess | undefined;
-      let stdout = "";
-      let stderr = "";
-      let wrapperError: Error | undefined;
-      let killResult: boolean | undefined;
-      let close: Awaited<ReturnType<typeof waitForChildClose>> | undefined;
-      let closeStarted = false;
-      let closeError: unknown;
 
       try {
         const result = spawn(
@@ -361,56 +363,16 @@ describe("plugin lifecycle resource sampler", () => {
               OPENCLAW_PLUGIN_LIFECYCLE_TIMEOUT_KILL_GRACE_MS: "200",
               PID_FILE: pidFile,
             },
-            stdio: ["ignore", "pipe", "pipe"],
+            stdio: "ignore",
           },
         );
 
-        wrapper = result;
-        // Buffer only: logging here would perturb the readiness-to-signal interval.
-        result.stdout.setEncoding("utf8").on("data", (chunk: string) => {
-          stdout += chunk;
-        });
-        result.stderr.setEncoding("utf8").on("data", (chunk: string) => {
-          stderr += chunk;
-        });
-        result.on("error", (error) => {
-          wrapperError = error;
-        });
-
         expect(waitForNonEmptyPath(pidFile, 2000)).toBe(true);
         descendantPid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
-        killResult = result.kill("SIGTERM");
-        closeStarted = true;
-        close = await waitForChildClose(result, 5000);
-        if (wrapperError) {
-          throw wrapperError;
-        }
+        result.kill("SIGTERM");
+        const close = await waitForChildClose(result, 5000);
         expect(close.signal).toBe("SIGTERM");
         expect(waitForPidExit(descendantPid, 1000)).toBe(true);
-      } catch (error) {
-        // Readiness can fail before stream/error callbacks run. Drain once using
-        // the existing close budget, without replacing the initiating failure.
-        if (wrapper && !closeStarted) {
-          try {
-            close = await waitForChildClose(wrapper, 5000);
-          } catch (drainError) {
-            closeError = drainError;
-          }
-        }
-        let diagnostics: string;
-        try {
-          diagnostics = JSON.stringify({
-            close: close ?? null,
-            killResult: killResult ?? null,
-            wrapperError: wrapperError?.stack ?? null,
-            closeError: closeError instanceof Error ? closeError.stack : closeError,
-            stdout,
-            stderr,
-          });
-        } catch {
-          throw error;
-        }
-        throw new Error(`external-stop diagnostics: ${diagnostics}`, { cause: error });
       } finally {
         if (descendantPid !== undefined && descendantPid > 0 && pidExists(descendantPid)) {
           process.kill(descendantPid, "SIGKILL");

@@ -14,24 +14,19 @@ import {
   writeUpdatePostInstallDoctorResult,
 } from "../../infra/update-doctor-result.js";
 import { createUpdateRun, recordUpdateRunStep } from "../../infra/update-run-ledger.js";
-import { defaultRuntime } from "../../runtime.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { removePreparedWorkerOwnershipColumns } from "../../state/openclaw-state-schema-v17.test-support.js";
+import type { UpdateCommandOptions } from "./shared.js";
 import type { PostCorePluginUpdateResult } from "./update-command-plugins.js";
 
 const mocks = vi.hoisted(() => ({
-  convergeMigrationPlugins: vi.fn(),
   readConfig: vi.fn(),
   resolveEntrypoint: vi.fn(),
   runExec: vi.fn(),
-}));
-
-vi.mock("../../commands/doctor/shared/migration-plugin-convergence.js", () => ({
-  convergeDoctorMigrationPlugins: mocks.convergeMigrationPlugins,
 }));
 
 vi.mock("../../config/config.js", async (importOriginal) => ({
@@ -59,7 +54,6 @@ vi.mock("./shared.js", async (importOriginal) => ({
 
 import {
   completePostCorePluginUpdate,
-  convergeUpdateDoctorMigrationPlugins,
   runUpdateFinalizationDoctorInFreshProcess,
 } from "./update-command-fresh-doctor.js";
 
@@ -108,9 +102,6 @@ afterEach(() => {
 
 describe("post-plugin update readiness", () => {
   beforeEach(() => {
-    vi.mocked(defaultRuntime.error).mockClear();
-    vi.mocked(defaultRuntime.log).mockClear();
-    mocks.convergeMigrationPlugins.mockReset().mockResolvedValue(undefined);
     mocks.readConfig.mockReset().mockResolvedValue(validConfigSnapshot);
     mocks.resolveEntrypoint.mockReset().mockResolvedValue("/opt/openclaw/dist/index.js");
     mocks.runExec.mockReset().mockImplementation(async (_command, args: string[]) => ({
@@ -121,48 +112,92 @@ describe("post-plugin update readiness", () => {
     }));
   });
 
-  it.each([undefined, false, true])(
-    "forwards only explicit capability acceptance before migration (accept=%s)",
-    async (acceptCapabilities) => {
-      const opts = { yes: true, json: true, acceptCapabilities };
-      await convergeUpdateDoctorMigrationPlugins(opts);
+  it("keeps a fresh Doctor requester refusal terminal when later checks would pass", async () => {
+    const isCurrent = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+    const opts: UpdateCommandOptions = {
+      run: {
+        runId: "live-run",
+        env: {},
+        executorFence: { assertCurrent: vi.fn() },
+        requesterAuthority: { requester: {}, isCurrent },
+      },
+    };
+    await expect(completePostCorePluginUpdate({ ...updateOptions, opts })).rejects.toThrow(
+      "requester-revoked",
+    );
+    expect(isCurrent).toHaveBeenCalledTimes(1);
+    expect(mocks.runExec).not.toHaveBeenCalled();
+  });
 
-      expect(mocks.convergeMigrationPlugins).toHaveBeenCalledExactlyOnceWith(
-        acceptCapabilities
-          ? {
-              env: process.env,
-              onCapabilityConsent: expect.any(Function),
-              onNote: expect.any(Function),
-            }
-          : { env: process.env, onNote: expect.any(Function) },
-      );
+  it.each(["", "  "])(
+    "never downgrades a present run with invalid id %j to legacy Doctor",
+    async (runId) => {
+      const opts: UpdateCommandOptions = {
+        run: { runId, env: {}, executorFence: { assertCurrent: vi.fn() } },
+      };
+      await expect(
+        runUpdateFinalizationDoctorInFreshProcess({ ...updateOptions, opts, phase: "post-plugin" }),
+      ).rejects.toThrow("original update executor");
       expect(mocks.runExec).not.toHaveBeenCalled();
     },
   );
 
-  it("keeps initial plugin migration diagnostics off JSON stdout", async () => {
-    const message = "Refreshed the configured Codex package before migration.";
-    mocks.convergeMigrationPlugins.mockImplementationOnce(
-      async ({ onNote }: { onNote?: (message: string, title: string) => void }) => {
-        expect(onNote).toEqual(expect.any(Function));
-        onNote?.(message, "Doctor changes");
-      },
-    );
+  it.each([
+    { phase: "pre-plugin", operatorPolicy: "external" },
+    { phase: "post-plugin", operatorPolicy: "external" },
+    { phase: "pre-plugin", operatorPolicy: undefined },
+    { phase: "post-plugin", operatorPolicy: undefined },
+  ] as const)(
+    "keeps service authority with the parent in the $phase child (operator policy: $operatorPolicy)",
+    async ({ phase, operatorPolicy }) => {
+      vi.stubEnv("OPENCLAW_SERVICE_REPAIR_POLICY", operatorPolicy);
+      const { runExec } =
+        await vi.importActual<typeof import("../../process/exec.js")>("../../process/exec.js");
+      mocks.runExec.mockImplementationOnce(async (_command, _args, options) => {
+        const result = await runExec(
+          process.execPath,
+          [
+            "-e",
+            "process.stdout.write(JSON.stringify({ policy: process.env.OPENCLAW_SERVICE_REPAIR_POLICY, repair: process.env.OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_SERVICE_REPAIR, activation: process.env.OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION }))",
+          ],
+          options,
+        );
+        expect(JSON.parse(result.stdout)).toEqual({
+          policy: "external",
+          repair: "0",
+          activation: "0",
+        });
+        return result;
+      });
 
-    await convergeUpdateDoctorMigrationPlugins({ json: true });
+      await runUpdateFinalizationDoctorInFreshProcess({
+        ...updateOptions,
+        phase,
+        root: tempDirs.make("fresh-doctor-policy-"),
+      });
+    },
+  );
 
-    expect(defaultRuntime.error).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(message));
-    expect(defaultRuntime.log).not.toHaveBeenCalled();
-    expect(mocks.runExec).not.toHaveBeenCalled();
-  });
-
-  it("propagates plugin convergence refusal before starting a migration Doctor", async () => {
-    const refusal = new Error("configured plugin capability review required");
-    mocks.convergeMigrationPlugins.mockRejectedValueOnce(refusal);
-
-    await expect(convergeUpdateDoctorMigrationPlugins({ json: true })).rejects.toBe(refusal);
-    expect(mocks.runExec).not.toHaveBeenCalled();
-  });
+  it.each([
+    { phase: "pre-plugin", timeout: undefined, expected: undefined },
+    { phase: "post-plugin", timeout: undefined, expected: undefined },
+    { phase: "pre-plugin", timeout: "3", expected: 3_000 },
+    { phase: "post-plugin", timeout: "3", expected: 3_000 },
+  ] as const)(
+    "uses the operator deadline for $phase Doctor ($timeout)",
+    async ({ phase, timeout, expected }) => {
+      await runUpdateFinalizationDoctorInFreshProcess({
+        ...updateOptions,
+        phase,
+        opts: { timeout },
+      });
+      expect(mocks.runExec).toHaveBeenCalledExactlyOnceWith(
+        "/usr/bin/node",
+        expect.arrayContaining(["doctor", "--repair"]),
+        expect.objectContaining({ timeoutMs: expected }),
+      );
+    },
+  );
 
   it.each([undefined, 5_000])("propagates the primary Doctor timeout %s", async (timeoutMs) => {
     await runUpdateFinalizationDoctorInFreshProcess({
@@ -452,7 +487,7 @@ describe("post-plugin update readiness", () => {
         result: { status: "error", failureFacts },
       });
       throw Object.assign(new Error("Doctor exited"), {
-        exitCode: 1,
+        exitCode: 23,
         stderr: "Last cleanup message",
       });
     });
@@ -461,7 +496,7 @@ describe("post-plugin update readiness", () => {
         ...updateOptions,
         phase: "pre-plugin",
       }),
-    ).rejects.toMatchObject({ failureFacts });
+    ).rejects.toMatchObject({ failureFacts, exitCode: 23 });
     const result = await completePostCorePluginUpdate(updateOptions);
     expect(result.pluginUpdate).toMatchObject({ status: "error", failureFacts });
   });
@@ -594,37 +629,51 @@ describe("post-plugin update readiness", () => {
     });
   });
 
-  it("retains posture warnings while accepting post-plugin readiness", async () => {
-    mocks.runExec.mockImplementation(async (_command, args: string[]) => ({
-      stdout: args.includes("--lint")
-        ? JSON.stringify({
-            ok: true,
-            checksRun: 1,
-            findings: [],
-            warnings: [
-              {
-                checkId: "core/doctor/security",
-                severity: "warning",
-                message: "Open group policy permits mention-gated requests.",
-                fixHint: "Review the group allowlist.",
-              },
-            ],
-          })
-        : "",
-      stderr: "",
-    }));
-    const result = await completePostCorePluginUpdate(updateOptions);
-    expect(result.pluginUpdate).toMatchObject({
-      status: "warning",
-      warnings: [
-        {
-          reason: "doctor-advisory",
-          message: "Open group policy permits mention-gated requests.",
-          guidance: ["Review the group allowlist."],
-        },
-      ],
-    });
-  });
+  it.each([
+    {
+      checkId: "core/doctor/security",
+      message: "Open group policy permits mention-gated requests.",
+      fixHint: "Review the group allowlist.",
+    },
+    {
+      checkId: "core/doctor/lint-state-inspection",
+      message: "Temporary doctor lint state snapshot cleanup did not complete.",
+      fixHint: "Rerun doctor after the update.",
+    },
+  ])(
+    "retains $checkId warnings while accepting post-plugin readiness",
+    async ({ checkId, message, fixHint }) => {
+      mocks.runExec.mockImplementation(async (_command, args: string[]) => ({
+        stdout: args.includes("--lint")
+          ? JSON.stringify({
+              ok: true,
+              checksRun: 1,
+              findings: [],
+              warnings: [
+                {
+                  checkId,
+                  severity: "warning",
+                  message,
+                  fixHint,
+                },
+              ],
+            })
+          : "",
+        stderr: "",
+      }));
+      const result = await completePostCorePluginUpdate(updateOptions);
+      expect(result.pluginUpdate).toMatchObject({
+        status: "warning",
+        warnings: [
+          {
+            reason: "doctor-advisory",
+            message,
+            guidance: [fixHint],
+          },
+        ],
+      });
+    },
+  );
 
   it.each([
     {

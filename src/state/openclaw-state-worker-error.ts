@@ -1,8 +1,20 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { SqliteCoordinatorError } from "../infra/sqlite-coordinator.js";
+import {
+  isSqliteNativeOpenFailure,
+  markSqliteNativeOpenFailure,
+} from "../infra/sqlite-error-diagnostics.js";
 import { SqliteSchemaVersionError } from "../infra/sqlite-user-version.js";
 import { StartupMaintenanceRequiredError } from "../infra/startup-maintenance-required.js";
+import { StateDatabaseCoordinatorContentionError } from "../infra/state-database-coordinator.js";
+import { SkillUploadRequestError } from "../skills/lifecycle/upload-store-error.js";
 import { OpenClawAgentDatabaseMediaMigrationRequiredError } from "./openclaw-agent-db-migration-required.js";
 import { OpenClawStateDatabaseSchemaMigrationRequiredError } from "./openclaw-state-db-schema-migration-required.js";
+import {
+  isOpenClawStateLeaseErrorCode,
+  OpenClawStateLeaseError,
+  type OpenClawStateLeaseErrorCode,
+} from "./openclaw-state-lease-error.js";
 import {
   OpenClawStateExternalOwnershipError,
   OpenClawStateOwnershipError,
@@ -13,6 +25,7 @@ type MaintenanceKind = ConstructorParameters<typeof StartupMaintenanceRequiredEr
 type StateMigrationKind = ConstructorParameters<
   typeof OpenClawStateDatabaseSchemaMigrationRequiredError
 >[0];
+type CoordinatorFamily = ConstructorParameters<typeof StateDatabaseCoordinatorContentionError>[0];
 
 type ErrorValue =
   | { ref: number }
@@ -20,9 +33,20 @@ type ErrorValue =
   | { undefined: true };
 
 type ErrorIdentity =
-  | { type: "error" | "aggregate" | "ownership" | "newer-schema" }
+  | {
+      type:
+        | "error"
+        | "aggregate"
+        | "ownership"
+        | "newer-schema"
+        | "coordinator"
+        | "range-error"
+        | "skill-upload-request";
+    }
+  | { type: "coordinator-contention"; family: CoordinatorFamily }
   | { type: "ownership-metadata"; databasePath: string }
   | { type: "external-ownership"; databasePath: string; managerId: string }
+  | { type: "state-lease"; leaseCode: OpenClawStateLeaseErrorCode }
   | { type: "maintenance"; kind: MaintenanceKind }
   | { type: "state-migration"; kind: StateMigrationKind; pathname: string }
   | { type: "agent-media-migration"; pathname: string; schemaVersion: number };
@@ -31,6 +55,8 @@ type ErrorNode = ErrorIdentity & {
   name: string;
   message: string;
   code?: string | number;
+  errcode?: number;
+  nativeOpen?: true;
   cause?: ErrorValue;
   errors?: ErrorValue[];
 };
@@ -42,7 +68,21 @@ export type OpenClawStateWorkerErrorPayload = {
   nodes: ErrorNode[];
 };
 
+type ErrorGraphOptions = { includeOrdinary?: boolean };
+
 function identifyError(error: Error): ErrorIdentity {
+  if (error instanceof SkillUploadRequestError) {
+    return { type: "skill-upload-request" };
+  }
+  if (error instanceof StateDatabaseCoordinatorContentionError) {
+    return { type: "coordinator-contention", family: error.family };
+  }
+  if (error instanceof SqliteCoordinatorError) {
+    return { type: "coordinator" };
+  }
+  if (error instanceof OpenClawStateLeaseError) {
+    return { type: "state-lease", leaseCode: error.code };
+  }
   if (error instanceof OpenClawStateOwnershipMetadataError) {
     return { type: "ownership-metadata", databasePath: error.databasePath };
   }
@@ -72,6 +112,9 @@ function identifyError(error: Error): ErrorIdentity {
   if (error instanceof StartupMaintenanceRequiredError) {
     return { type: "maintenance", kind: error.kind };
   }
+  if (error instanceof RangeError) {
+    return { type: "range-error" };
+  }
   return { type: error instanceof AggregateError ? "aggregate" : "error" };
 }
 
@@ -84,8 +127,13 @@ function isScalar(value: unknown): value is string | number | boolean | null {
   );
 }
 
+function isNativeErrorCode(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 0x7fff_ffff;
+}
+
 export function encodeOpenClawStateWorkerError(
   error: unknown,
+  options: ErrorGraphOptions = {},
 ): OpenClawStateWorkerErrorPayload | undefined {
   if (!(error instanceof Error)) {
     return undefined;
@@ -112,8 +160,10 @@ export function encodeOpenClawStateWorkerError(
     encodeValue(error);
     for (const current of errors) {
       const identity = identifyError(current);
-      canonical ||= identity.type !== "error" && identity.type !== "aggregate";
+      const nativeOpen = isSqliteNativeOpenFailure(current);
+      canonical ||= nativeOpen || (identity.type !== "error" && identity.type !== "aggregate");
       const code = "code" in current ? current.code : undefined;
+      const errcode = "errcode" in current ? current.errcode : undefined;
       nodes.push({
         ...identity,
         name: current.name,
@@ -121,11 +171,15 @@ export function encodeOpenClawStateWorkerError(
         ...(typeof code === "string" || (typeof code === "number" && Number.isFinite(code))
           ? { code }
           : {}),
+        ...(isNativeErrorCode(errcode) ? { errcode } : {}),
+        ...(nativeOpen ? { nativeOpen: true } : {}),
         ...("cause" in current ? { cause: encodeValue(current.cause) } : {}),
         ...(current instanceof AggregateError ? { errors: current.errors.map(encodeValue) } : {}),
       });
     }
-    return canonical ? { version: 1, root: 0, nodes } : undefined;
+    return canonical || options.includeOrdinary === true
+      ? { version: 1, root: 0, nodes }
+      : undefined;
   } catch {
     return undefined;
   }
@@ -137,6 +191,7 @@ function isMaintenanceKind(kind: unknown): kind is MaintenanceKind {
     kind === "agent-media" ||
     kind === "agent-databases-composite-primary-key" ||
     kind === "audit-events-v2" ||
+    kind === "legacy-cron-run-logs" ||
     kind === "legacy-workshop-review-index" ||
     kind === "legacy-workspace" ||
     kind === "legacy-session-store"
@@ -149,7 +204,16 @@ function parseIdentity(node: Record<string, unknown>): ErrorIdentity | undefined
     case "aggregate":
     case "ownership":
     case "newer-schema":
+    case "coordinator":
+    case "range-error":
+    case "skill-upload-request":
       return { type: node.type };
+    case "coordinator-contention":
+      return node.family === "gateway-lifecycle" ||
+        node.family === "state-lifecycle" ||
+        node.family === "state-handles"
+        ? { type: node.type, family: node.family }
+        : undefined;
     case "ownership-metadata":
       return typeof node.databasePath === "string"
         ? { type: node.type, databasePath: node.databasePath }
@@ -158,11 +222,16 @@ function parseIdentity(node: Record<string, unknown>): ErrorIdentity | undefined
       return typeof node.databasePath === "string" && typeof node.managerId === "string"
         ? { type: node.type, databasePath: node.databasePath, managerId: node.managerId }
         : undefined;
+    case "state-lease":
+      return isOpenClawStateLeaseErrorCode(node.leaseCode) && node.code === node.leaseCode
+        ? { type: node.type, leaseCode: node.leaseCode }
+        : undefined;
     case "maintenance":
       return isMaintenanceKind(node.kind) ? { type: node.type, kind: node.kind } : undefined;
     case "state-migration":
       return (node.kind === "agent-databases-composite-primary-key" ||
         node.kind === "audit-events-v2" ||
+        node.kind === "legacy-cron-run-logs" ||
         node.kind === "legacy-workshop-review-index") &&
         typeof node.pathname === "string"
         ? { type: node.type, kind: node.kind, pathname: node.pathname }
@@ -202,7 +271,15 @@ function parseNode(value: unknown, count: number): ErrorNode | undefined {
   if (!identity) {
     return undefined;
   }
-  const allowed = new Set([...Object.keys(identity), "name", "message", "code", "cause"]);
+  const allowed = new Set([
+    ...Object.keys(identity),
+    "name",
+    "message",
+    "code",
+    "errcode",
+    "nativeOpen",
+    "cause",
+  ]);
   const errors: ErrorValue[] = [];
   if (identity.type === "aggregate") {
     allowed.add("errors");
@@ -221,6 +298,8 @@ function parseNode(value: unknown, count: number): ErrorNode | undefined {
     ("code" in value &&
       typeof value.code !== "string" &&
       !(typeof value.code === "number" && Number.isFinite(value.code))) ||
+    ("errcode" in value && !isNativeErrorCode(value.errcode)) ||
+    ("nativeOpen" in value && value.nativeOpen !== true) ||
     ("cause" in value && !isErrorValue(value.cause, count))
   ) {
     return undefined;
@@ -232,6 +311,8 @@ function parseNode(value: unknown, count: number): ErrorNode | undefined {
     ...(typeof value.code === "string" || typeof value.code === "number"
       ? { code: value.code }
       : {}),
+    ...(isNativeErrorCode(value.errcode) ? { errcode: value.errcode } : {}),
+    ...(value.nativeOpen === true ? { nativeOpen: true } : {}),
     ...(isErrorValue(value.cause, count) ? { cause: value.cause } : {}),
     ...(identity.type === "aggregate" ? { errors } : {}),
   };
@@ -245,8 +326,16 @@ function createError(node: ErrorNode): Error {
   switch (node.type) {
     case "error":
       return new Error(node.message);
+    case "range-error":
+      return new RangeError(node.message);
+    case "skill-upload-request":
+      return new SkillUploadRequestError(node.message);
     case "aggregate":
       return new AggregateError([], node.message);
+    case "coordinator":
+      return new SqliteCoordinatorError(node.message);
+    case "coordinator-contention":
+      return new StateDatabaseCoordinatorContentionError(node.family);
     case "ownership":
       return new OpenClawStateOwnershipError(node.message);
     case "ownership-metadata":
@@ -255,6 +344,8 @@ function createError(node: ErrorNode): Error {
       return new OpenClawStateExternalOwnershipError(node.databasePath, node.managerId);
     case "newer-schema":
       return new SqliteSchemaVersionError(node.message);
+    case "state-lease":
+      return new OpenClawStateLeaseError(node.message, { code: node.leaseCode });
     case "maintenance":
       return new StartupMaintenanceRequiredError(node.kind, node.message);
     case "state-migration":
@@ -270,6 +361,7 @@ function createError(node: ErrorNode): Error {
 
 function decodeErrorGraph(
   value: unknown,
+  options: ErrorGraphOptions,
 ): { errors: Error[]; nodes: ErrorNode[]; root: number } | undefined {
   try {
     if (
@@ -301,14 +393,15 @@ function decodeErrorGraph(
       }
       visited.add(ref);
       const node = nodes[ref]!;
-      canonical ||= node.type !== "error" && node.type !== "aggregate";
+      canonical ||=
+        node.nativeOpen === true || (node.type !== "error" && node.type !== "aggregate");
       for (const edge of [...(node.cause ? [node.cause] : []), ...(node.errors ?? [])]) {
         if ("ref" in edge) {
           pending.push(edge.ref);
         }
       }
     }
-    if (!canonical || visited.size !== nodes.length) {
+    if ((!canonical && options.includeOrdinary !== true) || visited.size !== nodes.length) {
       return undefined;
     }
     const errors = nodes.map(createError);
@@ -318,9 +411,19 @@ function decodeErrorGraph(
       const error = errors[index]!;
       error.name = node.name;
       error.message = node.message;
+      if (node.nativeOpen) {
+        markSqliteNativeOpenFailure(error);
+      }
       if (node.code !== undefined) {
         Object.defineProperty(error, "code", {
           value: node.code,
+          configurable: true,
+          writable: true,
+        });
+      }
+      if (node.errcode !== undefined) {
+        Object.defineProperty(error, "errcode", {
+          value: node.errcode,
           configurable: true,
           writable: true,
         });
@@ -366,9 +469,15 @@ export function retainOpenClawStateWorkerErrorPayload(error: Error, payload: unk
 }
 
 /** Hydrate each caller independently; never rewrite a cached opening rejection. */
-export function hydrateOpenClawStateWorkerError(value: Error): Error;
-export function hydrateOpenClawStateWorkerError(value: unknown): unknown;
-export function hydrateOpenClawStateWorkerError(value: unknown): unknown {
+export function hydrateOpenClawStateWorkerError(value: Error, options?: ErrorGraphOptions): Error;
+export function hydrateOpenClawStateWorkerError(
+  value: unknown,
+  options?: ErrorGraphOptions,
+): unknown;
+export function hydrateOpenClawStateWorkerError(
+  value: unknown,
+  options: ErrorGraphOptions = {},
+): unknown {
   if (!(value instanceof Error)) {
     return value;
   }
@@ -408,7 +517,7 @@ export function hydrateOpenClawStateWorkerError(value: unknown): unknown {
       isRecord(retained.group)
     ) {
       if (!groups.has(retained.group)) {
-        groups.set(retained.group, decodeErrorGraph(retained.payload));
+        groups.set(retained.group, decodeErrorGraph(retained.payload, options));
       }
       const graph = groups.get(retained.group);
       const index = retained.materialized ? retained.node : graph?.root;

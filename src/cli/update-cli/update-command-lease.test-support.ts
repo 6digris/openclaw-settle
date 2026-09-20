@@ -19,6 +19,7 @@ export type LeaseScenario = {
   writerRecords?: Record<string, PluginInstallRecord>;
   runtimeRoot?: string;
   verifyRepairOwner?: boolean;
+  verifyServiceCustody?: boolean;
 };
 
 // A narrow child substitutes for the CLI, not for its cross-process lease.
@@ -104,6 +105,13 @@ export async function runUpdateLeaseChild(): Promise<void> {
     assert.equal(scenario.lane, "fresh-process");
     const resultPath = process.env.OPENCLAW_UPDATE_POST_CORE_RESULT_PATH;
     assert.ok(resultPath && scenario.pluginUpdate);
+    assert.deepEqual(
+      JSON.parse(await fs.readFile(path.join(path.dirname(resultPath), "handoff.json"), "utf8")),
+      {
+        completionOwner: "parent",
+        timeout: { version: 1, serialized: "15", operator: null },
+      },
+    );
     await withPluginLifecycleLease({ waitMs: 0 }, async () => record("packages-acquired"));
     await record("packages-released");
     const { readConfigFileSnapshot } = await import("../../config/config.js");
@@ -113,15 +121,7 @@ export async function runUpdateLeaseChild(): Promise<void> {
     return;
   }
   if (command === "doctor") {
-    const previousEvents = await fs.readFile(path.join(stateDir, "events.jsonl"), "utf8");
-    const phase =
-      (scenario.lane === "resume" || scenario.lane === "repair") &&
-      !previousEvents.includes('"event":"pre-attempt"')
-        ? "pre"
-        : "post";
-    // Both migration passes use the installed target's post-core generation;
-    // "pre" labels the first pass, before the broader package cohort.
-    assert.equal(process.env.OPENCLAW_UPDATE_POST_CORE_CONVERGENCE, "1");
+    const phase = process.env.OPENCLAW_UPDATE_POST_CORE_CONVERGENCE === "1" ? "post" : "pre";
     assert.deepEqual(process.argv.slice(3), [
       "--repair",
       "--non-interactive",
@@ -138,6 +138,13 @@ export async function runUpdateLeaseChild(): Promise<void> {
       assert.equal(process.env.OPENCLAW_COMPATIBILITY_HOST_VERSION, scenario.hostVersion);
     }
     await record(`${phase}-attempt`);
+    if (scenario.verifyServiceCustody) {
+      assert.equal(
+        await fs.readFile(path.join(stateDir, "managed-service-state"), "utf8"),
+        "stopped",
+        "The update parent must park the service before its Doctor child runs",
+      );
+    }
     if (scenario.verifyRepairOwner) {
       const runId = process.env.OPENCLAW_UPDATE_RUN_ID;
       assert.ok(runId, "Doctor did not inherit its invoking repair run ID");
@@ -194,7 +201,7 @@ export async function runUpdateLeaseChild(): Promise<void> {
       if (!(error instanceof Error) || !("code" in error)) {
         throw error;
       }
-      assert.equal(error.code, "OPENCLAW_STATE_LEASE_TIMEOUT");
+      assert.equal(error.code, "OPENCLAW_STATE_LEASE_HELD");
       process.stdout.write("excluded");
     }
     return;

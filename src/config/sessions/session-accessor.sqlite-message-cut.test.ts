@@ -1,9 +1,12 @@
+import fs from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import { registerOpenClawAgentDatabaseAsyncResource } from "../../state/openclaw-agent-db-resources.js";
+import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { deliveryContextFromSession } from "../../utils/delivery-context.shared.js";
 import {
   appendTranscriptEvent,
+  appendTranscriptMessage,
   forkSessionAtMessage,
   listSessionBranches,
   listSessionParticipantsReadOnly,
@@ -30,11 +33,65 @@ const { createSession } = useSessionMessageCutFixtures();
 
 afterEach(() => {
   vi.restoreAllMocks();
-  closeOpenClawAgentDatabasesForTest();
-  closeOpenClawStateDatabaseForTest();
 });
 
 describe("SQLite session message cuts", () => {
+  it.each(["rewind", "fork"] as const)(
+    "returns authored text, not attached context, on %s",
+    async (mode) => {
+      const { env, scope } = await createSession();
+      const text = "Edit only these words";
+      const snapshot = { page: "chat", title: "Captured work" };
+      await appendTranscriptMessage(scope, {
+        eventId: "context-input",
+        parentId: "assistant-2",
+        message: {
+          role: "user",
+          content: text + "\n\nWorking context captured at send time. " + JSON.stringify(snapshot),
+          __openclaw: { workContext: { snapshot, text } },
+        },
+        now: Date.now(),
+      });
+      const params = { agentId, env, sessionKey, entryId: "context-input" };
+      const result =
+        mode === "rewind"
+          ? await rewindSessionToMessage(params)
+          : await forkSessionAtMessage({ ...params, targetKey: sessionKey + ":context-fork" });
+      expect(result).toMatchObject({ status: "created", editorText: text });
+    },
+  );
+
+  it("drains fixture resources before retiring native handles and removing the root", async ({
+    onTestFinished,
+  }) => {
+    const { env } = await createSession();
+    const agentDatabase = openOpenClawAgentDatabase({ agentId, env });
+    const stateDatabase = openOpenClawStateDatabase({ env });
+    const closingSnapshots: Array<{ agentOpen: boolean; stateOpen: boolean; rootExists: boolean }> =
+      [];
+    registerOpenClawAgentDatabaseAsyncResource({
+      agentId,
+      path: agentDatabase.path,
+      revoke: () => {},
+      close: async () => {
+        await Promise.resolve();
+        closingSnapshots.push({
+          agentOpen: agentDatabase.db.isOpen,
+          stateOpen: stateDatabase.db.isOpen,
+          rootExists: fs.existsSync(env.OPENCLAW_STATE_DIR),
+        });
+      },
+    });
+
+    // Inspect real fixture teardown after both consumer and helper afterEach hooks run.
+    onTestFinished(() => {
+      expect(closingSnapshots).toEqual([{ agentOpen: true, stateOpen: true, rootExists: true }]);
+      expect(agentDatabase.db.isOpen).toBe(false);
+      expect(stateDatabase.db.isOpen).toBe(false);
+      expect(fs.existsSync(env.OPENCLAW_STATE_DIR)).toBe(false);
+    });
+  });
+
   it.each(["rewind", "switch", "fork"] as const)(
     "rejects %s when the source lifecycle changes in the writer queue",
     async (mode) => {
