@@ -379,7 +379,6 @@ const preparedModelRuntimeLeaseContext = {
   getBuildTimeoutMs: () => modelRuntimeBuildTimeoutMs,
   getGatewayLifecycleActive: () => gatewayLifecycleActive,
   getPendingReplacement: getBlockingReplacement,
-  prepareSnapshot: prepareModelRuntimeSnapshot,
 };
 
 /** Acquires a run generation from configured facts; full catalog discovery is explicit. */

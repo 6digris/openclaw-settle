@@ -241,9 +241,16 @@ export function normalizePreparedModelRuntimeInput(
   const env = input.env ? Object.freeze({ ...input.env }) : undefined;
   const selections = new Map<string, AgentHarnessPluginSelection>();
   for (const selection of input.runtimePluginSelections ?? []) {
-    const runtime = resolveSelectedAgentHarnessRuntime(selection, input.config);
+    const runtime = resolveSelectedAgentHarnessRuntime(
+      { ...selection, agentId: selection.agentId ?? input.agentId },
+      input.config,
+    );
     const { agentId: _agentId, ...normalized } = selection;
-    const entry = Object.freeze({ ...normalized, runtime });
+    // Resolve policy before dropping its scope; prepared keys must never reselect another agent.
+    const entry = Object.freeze({
+      ...normalized,
+      runtime: runtime === "auto" ? "openclaw" : runtime,
+    });
     selections.set(JSON.stringify(entry), entry);
   }
   const runtimePluginSelections = Object.freeze(
