@@ -527,9 +527,17 @@ describe("createBlockReplyPipeline content coverage dedup", () => {
       pipeline.enqueue(sourceChunk([0, 3]));
       pipeline.enqueue(sourceChunk([3, 6]));
       pipeline.enqueue(sourceChunk([0, 3]));
+      pipeline.enqueue(
+        setReplyPayloadMetadata(
+          { text: "bbb" },
+          { assistantMessageIndex: 1, blockSourceText: "bbb", blockSourceRange: [0, 3] },
+        ),
+      );
       await pipeline.flush({ force: true });
 
-      expect(sent.map((payload) => payload.text)).toEqual(coalescing ? ["aaaaaa"] : ["aaa", "aaa"]);
+      expect(sent.map((payload) => payload.text)).toEqual(
+        coalescing ? ["aaaaaabbb"] : ["aaa", "aaa", "bbb"],
+      );
     },
   );
 

@@ -148,7 +148,14 @@ export function createBlockReplyPipeline(params: {
   const sourceOccurrenceKey = (payload: ReplyPayload) => {
     const metadata = getReplyPayloadMetadata(payload);
     const range = metadata?.blockSourceRange;
-    return range ? `${metadata?.assistantMessageIndex ?? ""}:${range[0]}:${range[1]}` : undefined;
+    return range
+      ? JSON.stringify([
+          metadata?.assistantMessageIndex ?? null,
+          range[0],
+          range[1],
+          metadata?.blockSourceText ?? "",
+        ])
+      : undefined;
   };
 
   const flushBufferedAssistantBlock = () => {

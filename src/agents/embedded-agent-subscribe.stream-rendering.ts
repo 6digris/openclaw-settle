@@ -121,7 +121,10 @@ export function createStreamRendering({
   const messagingToolSourceReplyPayloads = state.messagingToolSourceReplyPayloads;
   const partialReplyDirectiveAccumulator = createStreamingDirectiveAccumulator();
   let reasoningProjection = createTextProjection([trimTextFilter("both")]);
-  const coveredBlockSourceRanges = new Map<number, Array<readonly [number, number]>>();
+  const coveredBlockSources = new Map<
+    number,
+    Array<{ range: readonly [number, number]; text: string }>
+  >();
   // Retain the producer snapshot for eligibility; the projection builds its own
   // source, and comparing a reconstructed growing prefix can restore prefix work.
   let reasoningRaw: string | undefined;
@@ -434,24 +437,36 @@ export function createStreamRendering({
     }
 
     let sourceRangeAlreadyCovered = false;
+    const blockSourceText = options?.sourceText;
+    const sourceStart = options?.sourceStart;
+    const sourceEnd = options?.sourceEnd;
     const blockSourceRange =
-      options?.sourceText !== undefined &&
-      options.sourceStart !== undefined &&
-      options.sourceEnd !== undefined
-        ? ([options.sourceStart, options.sourceEnd] as const)
+      blockSourceText !== undefined && sourceStart !== undefined && sourceEnd !== undefined
+        ? ([sourceStart, sourceEnd] as const)
         : undefined;
     if (blockSourceRange) {
       const index = options?.assistantMessageIndex ?? state.assistantMessageIndex;
-      const covered = coveredBlockSourceRanges.get(index) ?? [];
+      const covered = coveredBlockSources.get(index) ?? [];
       const [start, end] = blockSourceRange;
-      let coveredUntil = start;
-      for (const [coveredStart, coveredEnd] of covered.toSorted((a, b) => a[0] - b[0])) {
-        if (coveredStart > coveredUntil) {
+      let cursor = start;
+      let coveredText = "";
+      for (const entry of covered.toSorted((a, b) => a.range[0] - b.range[0])) {
+        const [coveredStart, coveredEnd] = entry.range;
+        if (coveredEnd <= cursor) {
+          continue;
+        }
+        if (coveredStart > cursor) {
           break;
         }
-        coveredUntil = Math.max(coveredUntil, coveredEnd);
+        const overlap = cursor - coveredStart;
+        const length = Math.min(end, coveredEnd) - cursor;
+        coveredText += entry.text.slice(overlap, overlap + length);
+        cursor += length;
+        if (cursor >= end) {
+          break;
+        }
       }
-      if (coveredUntil >= end) {
+      if (cursor >= end && coveredText === blockSourceText) {
         sourceRangeAlreadyCovered = true;
       }
     }
@@ -536,7 +551,7 @@ export function createStreamRendering({
         chunk === text.trimEnd() &&
         cleanedText === chunk &&
         (options?.sourceStart === undefined || emittedBlockSourceRange !== undefined)
-          ? options?.sourceText
+          ? blockSourceText
           : undefined,
       blockSourceRange: emittedBlockSourceRange,
       consumePendingToolMedia:
@@ -546,9 +561,9 @@ export function createStreamRendering({
     });
     if (blockSourceRange && !sourceRangeAlreadyCovered) {
       const index = options?.assistantMessageIndex ?? state.assistantMessageIndex;
-      const covered = coveredBlockSourceRanges.get(index) ?? [];
-      covered.push(blockSourceRange);
-      coveredBlockSourceRanges.set(index, covered);
+      const covered = coveredBlockSources.get(index) ?? [];
+      covered.push({ range: blockSourceRange, text: blockSourceText ?? "" });
+      coveredBlockSources.set(index, covered);
     }
     markBlockReplyTextHandled();
   };
