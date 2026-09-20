@@ -197,8 +197,11 @@ class DevicePage extends OpenClawLightDomElement {
     const pending = capability ? pendingCookieSyncEdits.get(capability) : undefined;
     const domains = pending?.domains ?? sync.domains;
     const result = this.extensionSetupResult;
-    const installed = result !== null && result.installedProfiles > 0;
-    const needsSetup = result !== null && (!installed || !result.nativeHostRegistered);
+    const installed =
+      result !== null && (result.installedProfiles ?? result.discoveredProfiles) > 0;
+    const needsSetup = result
+      ? !installed || !result.nativeHostRegistered
+      : this.extensionError !== null;
     const addDomain = () => {
       this.updateDomains((current) => [...current, this.newDomain]);
       this.newDomain = "";
@@ -220,7 +223,7 @@ class DevicePage extends OpenClawLightDomElement {
                       ? "configPage.deviceSettings.chromeExtensionDetected"
                       : this.extensionOperation === "checking"
                         ? "configPage.deviceSettings.chromeExtensionChecking"
-                        : this.extensionError
+                        : this.extensionError || result?.installedProfiles === undefined
                           ? "configPage.deviceSettings.chromeExtensionUnknown"
                           : "configPage.deviceSettings.chromeExtensionNotInstalled",
                   ),
@@ -397,7 +400,7 @@ class DevicePage extends OpenClawLightDomElement {
       );
     }
     const result = this.extensionSetupResult;
-    if (result && result.installedProfiles > 0) {
+    if (result && (result.installedProfiles ?? result.discoveredProfiles) > 0) {
       return t(
         !result.nativeHostRegistered
           ? "configPage.deviceSettings.chromeExtensionRepairHint"
@@ -410,7 +413,9 @@ class DevicePage extends OpenClawLightDomElement {
       return t(
         result.installRequested
           ? "configPage.deviceSettings.chromeExtensionPending"
-          : "configPage.deviceSettings.chromeExtensionStoreRequired",
+          : result.installedProfiles === undefined
+            ? "configPage.deviceSettings.chromeExtensionStatusUnsupported"
+            : "configPage.deviceSettings.chromeExtensionStoreRequired",
       );
     }
     return t("configPage.deviceSettings.chromeExtensionHint");
@@ -541,9 +546,29 @@ class DevicePage extends OpenClawLightDomElement {
               html`
                 ${this.toggle("capabilities.canvasEnabled", capabilities.canvasEnabled, "canvas", t("configPage.deviceSettings.canvasHint"))}
                 ${this.toggle("capabilities.cameraEnabled", capabilities.cameraEnabled, "camera", t("configPage.deviceSettings.cameraHint"))}
-                ${this.toggle("capabilities.keepAwakeEnabled", capabilities.keepAwakeEnabled, "keepAwake", t("configPage.deviceSettings.keepAwakeHint"))}
+                ${this.toggle("capabilities.keepAwakeEnabled", capabilities.keepAwakeEnabled, "keepAwake", t(snapshot.device.platform === "ios" ? "configPage.deviceSettings.keepAwakeHint" : "configPage.deviceSettings.keepAwakeComputerHint"))}
                 ${capabilities.healthSummaryAvailable ? this.toggle("capabilities.healthSummaryEnabled", capabilities.healthSummaryEnabled, "healthSummary", t("configPage.deviceSettings.healthSummaryHint")) : nothing}
                 ${this.toggle("capabilities.computerControlEnabled", capabilities.computerControlEnabled, "computerControl", t("configPage.deviceSettings.computerControlHint"))}
+                ${this.toggle("capabilities.desktopSharingEnabled", capabilities.desktopSharingEnabled, "desktopSharing", t(snapshot.device.platform === "macos" ? "configPage.deviceSettings.desktopSharingHint" : "configPage.deviceSettings.desktopSharingComputerHint"))}
+                ${
+                  snapshot.desktopSharing
+                    ? renderSettingsRow({
+                        title: t("configPage.deviceSettings.desktopSharingStatus"),
+                        description: snapshot.desktopSharing.detail,
+                        control: renderSettingsStatus({
+                          kind:
+                            snapshot.desktopSharing.state === "error"
+                              ? "danger"
+                              : snapshot.desktopSharing.state === "running"
+                                ? "ok"
+                                : "muted",
+                          label: t(
+                            `configPage.deviceSettings.desktopSharingStates.${snapshot.desktopSharing.state}`,
+                          ),
+                        }),
+                      })
+                    : nothing
+                }
                 ${this.toggle("capabilities.unattendedDesktopEnabled", capabilities.unattendedDesktopEnabled, "unattendedDesktop", t("configPage.deviceSettings.unattendedDesktopHint"))}
                 ${
                   snapshot.desktopAvailability
@@ -640,8 +665,8 @@ class DevicePage extends OpenClawLightDomElement {
     return html`
       ${renderSettingsPageHeader({
         title: t(deviceSettingsGroupLabelKey(snapshot)),
-        subtitle: html`${t(snapshot?.device.platform === "ios" ? "configPage.deviceSettings.introIos" : "configPage.deviceSettings.intro")}
-        ${renderLearnMoreLink(snapshot?.device.platform === "ios" ? "https://docs.openclaw.ai/platforms/ios" : "https://docs.openclaw.ai/platforms/macos")}`,
+        subtitle: html`${t(snapshot?.device.platform === "macos" ? "configPage.deviceSettings.intro" : "configPage.deviceSettings.introIos")}
+        ${renderLearnMoreLink(`https://docs.openclaw.ai/platforms/${snapshot?.device.platform ?? "macos"}`)}`,
       })}
       ${renderSettingsWorkspace(renderSettingsPage(body))}
     `;

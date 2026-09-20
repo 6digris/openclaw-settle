@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+import { waitForLayoutSettled } from "../pages/chat/chat-layout.browser.test-support.ts";
 import { waitForControlUiRoute } from "../test-helpers/control-ui-e2e.ts";
 import {
   captureNewSessionComposerUiProof,
@@ -58,14 +59,29 @@ suite.define(() => {
           ".new-session-page__triggers .agent-select__trigger, .new-session-page__triggers > span > .new-session-page__trigger",
         );
         await expect.poll(() => selectors.count()).toBe(agentCount + 2);
-        for (const width of [390, 320, 430, 560, 1280]) {
+        await page.evaluate(() => document.fonts.ready);
+        for (const { width, mobile } of [
+          { width: 390, mobile: true },
+          { width: 320, mobile: true },
+          { width: 430, mobile: true },
+          { width: 560, mobile: true },
+          { width: 1280, mobile: false },
+        ]) {
           await page.setViewportSize({ width, height: 900 });
+          await page
+            .locator(mobile ? ".shell--mobile-nav" : ".shell:not(.shell--mobile-nav)")
+            .waitFor();
+          await selectors.first().click({ trial: true });
+          // Measure only after the shell mode, controls, and container layout settle.
+          await waitForLayoutSettled(page, ".new-session-page__triggers button");
           await captureNewSessionComposerUiProof(suite, page, `mobile-setup-${width}.png`);
           const layout = await selectors.evaluateAll((buttons) =>
             buttons.map((button) => {
               const box = button.getBoundingClientRect();
+              // Flex/grid aligns the wrapper; inline button baselines can differ within one row.
+              const item = button.closest(".new-session-page__select")!.getBoundingClientRect();
               return {
-                row: Math.round(box.top + box.height / 2),
+                row: Math.round(item.top + item.height / 2),
                 left: box.left,
                 right: box.right,
                 height: box.height,

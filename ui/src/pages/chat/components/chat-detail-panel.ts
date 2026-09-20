@@ -26,6 +26,7 @@ import type {
   FileSidebarNavigation,
   AttachmentSidebarRuntime,
   SidebarContent,
+  ChatDetailPanelContent,
 } from "./chat-sidebar-content-types.ts";
 import {
   buildRawContent,
@@ -37,7 +38,6 @@ import { computeFileMatches } from "./chat-sidebar-file-view.ts";
 import type { FileEditorViewHandle } from "./file-editor-view.ts";
 
 type FileSidebarContent = Extract<SidebarContent, { kind: "file" }>;
-type ChatDetailPanelContent = Exclude<SidebarContent, { kind: "task" }>;
 
 const FILE_WRAP_PREFERENCE_KEY = "openclaw.control.fileView.wrap.v1";
 
