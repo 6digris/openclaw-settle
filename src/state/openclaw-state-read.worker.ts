@@ -1,5 +1,6 @@
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { readWorkspaceStateSnapshotForDirectoryInDatabase } from "../agents/workspace-state-store.kernel.js";
 import { ExecutionDecisionCursorError } from "../audit/execution-decision-receipts.js";
 import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identity-context.js";
 import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
@@ -51,6 +52,8 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
         typeof input.command.input.now === "number" &&
         (typeof input.command.input.runId === "string" ||
           typeof input.command.input.executionId === "string")) ||
+      (input.command.type === "workspace.snapshot" &&
+        typeof input.command.workspaceDir === "string") ||
       input.command.type === "fleet.list" ||
       input.command.type === "nodeHost.config" ||
       (input.command.type === "onboardingRecommendations.read" &&
@@ -147,6 +150,17 @@ serveWorkerTasks((input): OpenClawStateReadReply => {
                   type: command.type,
                   sourceAdmitted,
                   row: readConfigMachineStateRowInDatabase(db, command.type),
+                };
+              }
+              if (command.type === "workspace.snapshot") {
+                return {
+                  ok: true,
+                  type: command.type,
+                  sourceAdmitted,
+                  snapshot: readWorkspaceStateSnapshotForDirectoryInDatabase({
+                    workspaceDir: command.workspaceDir,
+                    database: { db, path: input.databasePath },
+                  }),
                 };
               }
               if (command.type === "userProfiles.avatar.reconcile") {
