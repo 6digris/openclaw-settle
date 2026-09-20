@@ -28,6 +28,7 @@ vi.mock("./worker-environments/session-repository-checkpoints.js", () => ({
 
 // Cold reset imports are fixture preparation, outside the publication behavior's test budget.
 await import("./session-reset-service.js");
+await import("../agents/embedded-agent.js");
 
 describe("repository checkpoint GitHub publication", () => {
   installGitHubPublicationTestHarness();
