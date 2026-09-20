@@ -689,6 +689,36 @@ export async function snapshotUpdateCandidateState(
       ...(contentVersion === undefined ? {} : { contentVersion }),
     });
   }
+  // Doctor must rehearse the same retired policy inputs as activation. Copy
+  // bytes, never links: the migration may claim or archive only private files.
+  const { root } = await import("@openclaw/fs-safe");
+  const { detectLegacyExecApprovals, DOCTOR_CLAIM_SUFFIX, MAX_LEGACY_EXEC_APPROVALS_BYTES } =
+    await import("./state-migrations.exec-approvals.js");
+  const { sourcePath } = detectLegacyExecApprovals({ stateDir: sourceRoot });
+  for (const source of [sourcePath, `${sourcePath}${DOCTOR_CLAIM_SUFFIX}`]) {
+    // lstat keeps broken links visible to the same refusal as ordinary links.
+    const exists = await fs.lstat(source).then(
+      () => true,
+      (error: unknown) => {
+        if (hasNodeErrorCode(error, "ENOENT")) {
+          return false;
+        }
+        throw error;
+      },
+    );
+    if (!exists) {
+      continue;
+    }
+    const sourceRootHandle = await root(sourceRoot);
+    const opened = await sourceRootHandle.read(path.relative(sourceRoot, source), {
+      hardlinks: "reject",
+      symlinks: "reject",
+      maxBytes: MAX_LEGACY_EXEC_APPROVALS_BYTES,
+    });
+    const target = targetPath(source);
+    await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+    await fs.writeFile(target, opened.buffer, { mode: 0o600, flag: "wx" });
+  }
   const versions = publishStateDatabaseVersions(files, inspected);
   const pluginPaths = await copyUpdateCandidatePlugins(plugins, input);
   return { versions, pluginPaths };
