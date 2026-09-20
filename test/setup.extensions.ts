@@ -8,9 +8,12 @@ let restoreUpstreamLinks: (() => void) | undefined;
 beforeEach(async () => {
   vi.useRealTimers();
   if (
-    !expect.getState().testPath?.replaceAll("\\", "/").match(
-      /\/extensions\/codex\/src\/app-server\/upstream-(?:fork-import|session-fork|session-fork-continuation)\.test\.ts$/,
-    )
+    !expect
+      .getState()
+      .testPath?.replaceAll("\\", "/")
+      .match(
+        /\/extensions\/codex\/src\/app-server\/upstream-(?:fork-import|session-fork|session-fork-continuation)\.test\.ts$/,
+      )
   ) {
     return;
   }
@@ -23,8 +26,12 @@ beforeEach(async () => {
       "openclaw/plugin-sdk/session-catalog",
     ),
   ]);
-  const upsert = vi.spyOn(owner, "upsertSessionUpstreamLink").mockImplementation(facade.upsertSessionUpstreamLink);
-  const remove = vi.spyOn(owner, "deleteSessionUpstreamLink").mockImplementation(facade.deleteSessionUpstreamLink);
+  const upsert = vi
+    .spyOn(owner, "upsertSessionUpstreamLink")
+    .mockImplementation(facade.upsertSessionUpstreamLink);
+  const remove = vi
+    .spyOn(owner, "deleteSessionUpstreamLink")
+    .mockImplementation(facade.deleteSessionUpstreamLink);
   restoreUpstreamLinks = () => {
     upsert.mockRestore();
     remove.mockRestore();
