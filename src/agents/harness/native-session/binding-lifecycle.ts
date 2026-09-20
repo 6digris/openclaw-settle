@@ -10,9 +10,7 @@ import {
 } from "./binding-leases.js";
 
 /** Shared binding coordination; backend callbacks retain native ownership and retention policy. */
-export function createNativeSessionBindingLifecycle<
-  TRecord extends NativeSessionBindingRecord<unknown>,
->(
+export function createNativeSessionBindingLifecycle<TRecord extends NativeSessionBindingRecord>(
   state: NativeSessionBindingStateStore<TRecord>,
   options: NativeSessionBindingLifecycleOptions<TRecord>,
 ) {
@@ -39,7 +37,7 @@ export function createNativeSessionBindingLifecycle<
     // Exclusive native operations require one stable ownership snapshot. Late
     // callers cannot attach bindings after that operation has begun.
     if (pendingExclusiveOperations > 0) {
-      throw options.errors.mutationBlocked();
+      throw new Error(options.errors.mutationBlocked);
     }
     activeMutations += 1;
     try {
@@ -85,7 +83,7 @@ export function createNativeSessionBindingLifecycle<
   ): Promise<TResult> => {
     const deleteIf = state.deleteIf?.bind(state);
     if (!deleteIf) {
-      throw options.errors.conditionalDeletionRequired();
+      throw new Error(options.errors.conditionalDeletionRequired);
     }
     return await withMutation(async () => {
       deletion.assertCurrent();
@@ -96,7 +94,7 @@ export function createNativeSessionBindingLifecycle<
             commit() {
               deletion.assertCurrent();
               if (!active || state.lookup(key) !== undefined) {
-                throw options.errors.deletionChanged();
+                throw new Error(options.errors.deletionChanged);
               }
             },
             rollback() {},
@@ -112,7 +110,7 @@ export function createNativeSessionBindingLifecycle<
           const stored = options.readRecord(state.lookup(key));
           deletion.assertRecordCurrent(stored);
           if (!stored) {
-            throw options.errors.deletionChanged();
+            throw new Error(options.errors.deletionChanged);
           }
           const { lease: _lease, ...expectedValue } = stored;
           let deleted: TRecord | undefined;
@@ -140,7 +138,7 @@ export function createNativeSessionBindingLifecycle<
                   !isDeepStrictEqual(value, expectedValue) ||
                   !deleteIf(key, (raw) => isDeepStrictEqual(raw, current))
                 ) {
-                  throw options.errors.deletionChanged();
+                  throw new Error(options.errors.deletionChanged);
                 }
                 deleted = current;
                 // The host commits synchronously after removal; heartbeat
@@ -160,7 +158,7 @@ export function createNativeSessionBindingLifecycle<
                   },
                 };
                 if (!state.registerIfAbsent(key, restored)) {
-                  throw options.errors.rollbackChanged();
+                  throw new Error(options.errors.rollbackChanged);
                 }
                 deleted = undefined;
                 owner.phase = "held";
@@ -185,30 +183,22 @@ export function createNativeSessionBindingLifecycle<
   };
 }
 
-export type NativeSessionBindingLifecycle<TRecord extends NativeSessionBindingRecord<unknown>> =
-  ReturnType<typeof createNativeSessionBindingLifecycle<TRecord>>;
-
-export type NativeSessionBindingLifecycleOptions<
-  TRecord extends NativeSessionBindingRecord<unknown>,
+type NativeSessionBindingLifecycleOptions<
+  TRecord extends NativeSessionBindingRecord,
 > = Omit<NativeSessionBindingLeaseConfig<TRecord>, "errors"> & {
   errors: NativeSessionBindingLeaseConfig<TRecord>["errors"] & {
-    mutationBlocked: () => Error;
-    conditionalDeletionRequired: () => Error;
-    deletionChanged: () => Error;
-    rollbackChanged: () => Error;
+    mutationBlocked: string;
+    conditionalDeletionRequired: string;
+    deletionChanged: string;
+    rollbackChanged: string;
   };
 };
 
-export type NativeSessionBindingDeletionOptions<
-  TRecord extends NativeSessionBindingRecord<unknown>,
+type NativeSessionBindingDeletionOptions<
+  TRecord extends NativeSessionBindingRecord,
 > = NativeSessionBindingLeaseOptions<TRecord> & {
   assertCurrent: () => void;
   assertRecordCurrent: (current: TRecord | undefined) => void;
 };
 
-export type {
-  NativeSessionBindingLease,
-  NativeSessionBindingLeaseOptions,
-  NativeSessionBindingRecord,
-  NativeSessionBindingStateStore,
-} from "./binding-leases.js";
+export type { NativeSessionBindingLeaseOptions } from "./binding-leases.js";

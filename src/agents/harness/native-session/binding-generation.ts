@@ -3,17 +3,13 @@ import { loadSessionEntryReadOnly } from "../../../config/sessions/session-acces
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 
 /** Resolve host lineage before selecting a native queue, catalog, or connection. */
-export async function resolveNativeSessionBinding<TBinding>(params: {
+export async function resolveNativeSessionBinding<TBinding>(params: Omit<NativeSessionGenerationParams, "target"> & {
   target?: NativeSessionGenerationTarget;
-  config?: OpenClawConfig;
-  storePath?: string;
   readBinding: (sessionId?: string) => TBinding | undefined;
   generation?: NativeSessionGenerationOperations;
   reclaimStale?: boolean;
   signal?: AbortSignal;
-  assertCurrent?: () => void;
   assertBinding?: (binding: TBinding | undefined) => void;
-  createSupersededError: (sessionId: string) => Error;
 }): Promise<{ binding: TBinding | undefined; assertCurrent: () => void }> {
   let assertCurrent = params.assertCurrent ?? (() => {});
   const assertAdmissionCurrent = () => {
@@ -49,15 +45,10 @@ export async function resolveNativeSessionBinding<TBinding>(params: {
 }
 
 /** Let the authoritative OpenClaw generation adopt its predecessor or reclaim a stale row. */
-export async function reclaimNativeSessionGeneration(params: {
-  target: NativeSessionGenerationTarget;
-  config?: OpenClawConfig;
-  storePath?: string;
+export async function reclaimNativeSessionGeneration(params: NativeSessionGenerationParams & {
   generation: NativeSessionGenerationOperations;
-  assertCurrent?: () => void;
   onHostGenerationVerified?: (assertHostGeneration: () => void) => void;
   reclaimStale?: boolean;
-  createSupersededError: (sessionId: string) => Error;
 }): Promise<boolean> {
   params.assertCurrent?.();
   if (!params.target.sessionKey?.trim()) {
@@ -71,13 +62,7 @@ export async function reclaimNativeSessionGeneration(params: {
 }
 
 /** Capture the host generation and predecessor together, then revalidate both after waits. */
-export function captureNativeSessionGenerationAuthority(params: {
-  target: NativeSessionGenerationTarget;
-  config?: OpenClawConfig;
-  storePath?: string;
-  assertCurrent?: () => void;
-  createSupersededError: (sessionId: string) => Error;
-}): NativeSessionGenerationAuthority {
+export function captureNativeSessionGenerationAuthority(params: NativeSessionGenerationParams) {
   const readEntry = () => {
     try {
       return readBindingSessionEntry(params);
@@ -88,7 +73,8 @@ export function captureNativeSessionGenerationAuthority(params: {
   };
   const entry = readEntry();
   const current = entry?.sessionId === params.target.sessionId;
-  const state = entry === undefined ? "ephemeral" : current ? "current" : "superseded";
+  const state: "current" | "ephemeral" | "superseded" =
+    entry === undefined ? "ephemeral" : current ? "current" : "superseded";
   const previousSessionId = current ? entry.previousSessionId : undefined;
   const assertHostCurrent = () => {
     if (state === "ephemeral") {
@@ -115,18 +101,21 @@ export function captureNativeSessionGenerationAuthority(params: {
   };
 }
 
-export type NativeSessionGenerationTarget = {
+type NativeSessionGenerationTarget = {
   agentId: string;
   sessionId: string;
   sessionKey?: string;
 };
 
-export type NativeSessionGenerationAuthority = {
-  state: "current" | "ephemeral" | "superseded";
-  previousSessionId: string | undefined;
-  assertHostCurrent: () => void;
-  assertCurrent: () => void;
+type NativeSessionGenerationParams = {
+  target: NativeSessionGenerationTarget;
+  config?: OpenClawConfig;
+  storePath?: string;
+  assertCurrent?: () => void;
+  createSupersededError: (sessionId: string) => Error;
 };
+
+type NativeSessionGenerationAuthority = ReturnType<typeof captureNativeSessionGenerationAuthority>;
 
 export type NativeSessionGenerationReclaimPlan =
   | { kind: "resolved"; result: boolean }

@@ -26,16 +26,6 @@ export function createAgentHarnessAttemptDeadlineController(params: {
   ) => void;
   onTimeout: (timeout: AgentHarnessAttemptTimeout) => void;
 }) {
-  const settlementTimeoutMs = params.settlementTimeoutMs;
-  if (
-    !Number.isFinite(settlementTimeoutMs) ||
-    settlementTimeoutMs <= 0 ||
-    settlementTimeoutMs > MAX_TIMER_TIMEOUT_MS
-  ) {
-    throw new RangeError(
-      `settlementTimeoutMs must be finite, greater than 0, and at most ${MAX_TIMER_TIMEOUT_MS}`,
-    );
-  }
   let deadline: Deadline | { kind: "unlimited" } | { kind: "closed" } = { kind: "closed" };
   let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -92,7 +82,7 @@ export function createAgentHarnessAttemptDeadlineController(params: {
       armDeadline({
         kind: "settlement",
         startedAtMs,
-        timeoutMs: settlementTimeoutMs,
+        timeoutMs: params.settlementTimeoutMs,
       });
     },
     dispose,

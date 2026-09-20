@@ -385,18 +385,15 @@ export function createCodexAppServerBindingStore(
     onReleaseFailure: (key, error) =>
       embeddedAgentLog.warn("failed to release codex app-server binding lease", { key, error }),
     errors: {
-      atomicUpdatesRequired: () =>
-        new Error("Codex app-server bindings require atomic plugin-state updates"),
+      atomicUpdatesRequired: "Codex app-server bindings require atomic plugin-state updates",
       invalidRow: (key) => new Error(`Invalid Codex app-server binding row: ${key}`),
       lostLease: bindingLeaseLostError,
       leaseTimeout: (key) => new Error(`Timed out waiting for Codex binding lease: ${key}`),
       acquisitionRejected: (key) => new Error(`Codex binding generation was retired: ${key}`),
-      mutationBlocked: () =>
-        new Error("Codex binding mutation blocked while a native archive is in progress; retry"),
-      conditionalDeletionRequired: () =>
-        new Error("Codex session deletion requires conditional plugin-state deletion"),
-      deletionChanged: () => new Error("Codex binding changed before session deletion"),
-      rollbackChanged: () => new Error("Codex binding changed before session deletion rollback"),
+      mutationBlocked: "Codex binding mutation blocked while a native archive is in progress; retry",
+      conditionalDeletionRequired: "Codex session deletion requires conditional plugin-state deletion",
+      deletionChanged: "Codex binding changed before session deletion",
+      rollbackChanged: "Codex binding changed before session deletion rollback",
     },
   });
 
@@ -428,11 +425,6 @@ export function createCodexAppServerBindingStore(
       };
     },
   });
-
-  const withBindingLease = <T>(
-    identity: CodexAppServerBindingIdentity,
-    run: () => Promise<T>,
-  ): Promise<T> => lifecycle.withLease(bindingStoreKey(identity), run, prepareLease(identity));
 
   const transitionSessionGeneration = async (
     identity: Extract<CodexAppServerBindingIdentity, { kind: "session" }>,
@@ -475,7 +467,7 @@ export function createCodexAppServerBindingStore(
             },
           };
         },
-        { ttlMs },
+        ttlMs,
       );
     });
   };
@@ -726,13 +718,10 @@ export function createCodexAppServerBindingStore(
           // the key afterwards is fenced by ownsStoredSessionGeneration on read
           // and displaced via reclaim-generation; durable stable-key fences come
           // from retireSessionGeneration, not runtime clears.
-          {
-            ttlMs:
-              mutation.kind === "clear" && !retainLegacyClear && !lifecycle.hasLease(key)
-                ? 1
-                : undefined,
-            assertCurrent,
-          },
+          mutation.kind === "clear" && !retainLegacyClear && !lifecycle.hasLease(key)
+            ? 1
+            : undefined,
+          assertCurrent,
         );
       });
     },
@@ -773,7 +762,8 @@ export function createCodexAppServerBindingStore(
               },
             };
           },
-          { assertCurrent },
+          undefined,
+          assertCurrent,
         );
       });
     },
@@ -800,7 +790,8 @@ export function createCodexAppServerBindingStore(
       );
     },
 
-    withLease: withBindingLease,
+    withLease: (identity, run) =>
+      lifecycle.withLease(bindingStoreKey(identity), run, prepareLease(identity)),
   };
 }
 

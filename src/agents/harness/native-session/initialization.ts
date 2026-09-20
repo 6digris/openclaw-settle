@@ -16,10 +16,10 @@ export function createNativeSessionInitializationOwner<TStore, TIdentity, TBindi
     assertCurrent: () => void,
   ) => Promise<boolean>;
   errors: {
-    linkChanged: () => Error;
-    bindingChanged: () => Error;
-    linkWriteFailed: () => Error;
-    ownerChanged: () => Error;
+    linkChanged: string;
+    bindingChanged: string;
+    linkWriteFailed: string;
+    ownerChanged: string;
   };
 }) {
   type Ownership = {
@@ -56,7 +56,7 @@ export function createNativeSessionInitializationOwner<TStore, TIdentity, TBindi
               assertCommitAllowed: initialization.assertRollbackCurrent,
             }) === "changed"
           ) {
-            throw options.errors.linkChanged();
+            throw new Error(options.errors.linkChanged);
           }
           initialization.assertRollbackCurrent();
           await cleanup?.(initialization.assertRollbackCurrent);
@@ -78,7 +78,7 @@ export function createNativeSessionInitializationOwner<TStore, TIdentity, TBindi
           );
           if (!stored) {
             ownership.binding = undefined;
-            throw options.errors.bindingChanged();
+            throw new Error(options.errors.bindingChanged);
           }
           initialization.assertCurrent();
         },
@@ -94,35 +94,35 @@ export function createNativeSessionInitializationOwner<TStore, TIdentity, TBindi
             })
           ) {
             link = undefined;
-            throw options.errors.linkWriteFailed();
+            throw new Error(options.errors.linkWriteFailed);
           }
           initialization.assertCurrent();
         },
       };
     },
 
-    getRollback(params: {
-      initialization?: SessionInitialization;
-      bindingStore: TStore;
-      identity: TIdentity;
-      binding: TBinding | undefined;
-    }): (() => Promise<void>) | undefined {
+    getRollback(
+      store: TStore,
+      params: { initialization?: SessionInitialization },
+      identity: TIdentity,
+      binding: TBinding | undefined,
+    ): (() => Promise<void>) | undefined {
       const handle = params.initialization;
       if (!handle) {
         return undefined;
       }
       handle.assertRollbackCurrent();
       const ownership = initializations.get(handle);
-      if (!ownership && !params.binding) {
+      if (!ownership && !binding) {
         return undefined;
       }
       if (
         !ownership ||
-        ownership.store !== params.bindingStore ||
-        !isDeepStrictEqual(ownership.identity, params.identity) ||
-        (params.binding && !isDeepStrictEqual(ownership.binding, params.binding))
+        ownership.store !== store ||
+        !isDeepStrictEqual(ownership.identity, identity) ||
+        (binding && !isDeepStrictEqual(ownership.binding, binding))
       ) {
-        throw options.errors.ownerChanged();
+        throw new Error(options.errors.ownerChanged);
       }
       // Reject indeterminate native work before either local deletion commits.
       ownership.assertCleanupAllowed?.();

@@ -3,15 +3,13 @@ import { randomUUID } from "node:crypto";
 import type { PluginStateSyncKeyedStore } from "../../../plugin-state/plugin-state-store.js";
 
 /** Serializes native binding changes across processes without owning backend policy. */
-export function createNativeSessionBindingLeases<
-  TRecord extends NativeSessionBindingRecord<unknown>,
->(
+export function createNativeSessionBindingLeases<TRecord extends NativeSessionBindingRecord>(
   state: NativeSessionBindingStateStore<TRecord>,
   options: NativeSessionBindingLeaseConfig<TRecord>,
 ) {
   const update = state.update?.bind(state);
   if (!update) {
-    throw options.errors.atomicUpdatesRequired();
+    throw new Error(options.errors.atomicUpdatesRequired);
   }
   const context = new AsyncLocalStorage<Map<string, NativeSessionBindingLeaseOwner>>();
 
@@ -21,7 +19,8 @@ export function createNativeSessionBindingLeases<
       current: TRecord | undefined,
       leaseToken?: string,
     ) => { next?: TRecord; result: TResult },
-    transaction: { ttlMs?: number; assertCurrent?: () => void } = {},
+    ttlMs?: number,
+    assertCurrent?: () => void,
   ): Promise<TResult> => {
     const deadline = Date.now() + options.lease.waitMs;
     while (true) {
@@ -36,7 +35,7 @@ export function createNativeSessionBindingLeases<
         throw owner.failure;
       }
       const ownedToken = owner?.token;
-      transaction.assertCurrent?.();
+      assertCurrent?.();
       owner?.assertCurrent?.();
       update(
         key,
@@ -56,7 +55,7 @@ export function createNativeSessionBindingLeases<
           result = applied.result;
           return applied.next;
         },
-        transaction.ttlMs == null ? undefined : { ttlMs: transaction.ttlMs },
+        ttlMs == null ? undefined : { ttlMs },
       );
       if (leaseLost) {
         const failure = options.errors.lostLease(key);
@@ -109,7 +108,8 @@ export function createNativeSessionBindingLeases<
         });
         return { result: next !== undefined, next };
       },
-      { assertCurrent: acquisition.assertCurrent },
+      undefined,
+      acquisition.assertCurrent,
     );
     acquisition.assertCurrent?.();
     if (!acquired) {
@@ -209,27 +209,12 @@ export function createNativeSessionBindingLeases<
 
 export type NativeSessionBindingLease = { token: string; expiresAt: number };
 
-/** Structural envelope only; backend codecs retain additional domain record fields. */
-export type NativeSessionBindingRecord<TBinding> =
-  | {
-      version: 1;
-      state: "active";
-      binding: TBinding;
-      sessionId?: string;
-      lease?: NativeSessionBindingLease;
-    }
-  | {
-      version: 1;
-      state: "cleared";
-      sessionId?: string;
-      lease?: NativeSessionBindingLease;
-      retired?: true;
-    };
+export type NativeSessionBindingRecord = { lease?: NativeSessionBindingLease };
 
-export type NativeSessionBindingStateStore<TRecord extends NativeSessionBindingRecord<unknown>> =
+export type NativeSessionBindingStateStore<TRecord extends NativeSessionBindingRecord> =
   Pick<PluginStateSyncKeyedStore<TRecord>, "deleteIf" | "lookup" | "registerIfAbsent" | "update">;
 
-export type NativeSessionBindingLeaseOptions<TRecord extends NativeSessionBindingRecord<unknown>> =
+export type NativeSessionBindingLeaseOptions<TRecord extends NativeSessionBindingRecord> =
   {
     assertCurrent?: () => void;
     /** Undefined refuses acquisition without changing the current row. */
@@ -239,13 +224,13 @@ export type NativeSessionBindingLeaseOptions<TRecord extends NativeSessionBindin
     ) => TRecord | undefined;
   };
 
-export type NativeSessionBindingLeaseConfig<TRecord extends NativeSessionBindingRecord<unknown>> = {
+export type NativeSessionBindingLeaseConfig<TRecord extends NativeSessionBindingRecord> = {
   readRecord: (raw: unknown) => TRecord | undefined;
   lease: { staleMs: number; waitMs: number; retryIntervalMs: number; renewIntervalMs: number };
   releaseTtlMs: (key: string, current: TRecord) => number | undefined;
   onReleaseFailure?: (key: string, error: unknown) => void;
   errors: {
-    atomicUpdatesRequired: () => Error;
+    atomicUpdatesRequired: string;
     invalidRow: (key: string) => Error;
     lostLease: (key: string, cause?: unknown) => Error;
     leaseTimeout: (key: string) => Error;

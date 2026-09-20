@@ -61,67 +61,26 @@ hooks are notifications, not the owner of durable binding removal.
 
 ## Shared native binding lifecycle
 
-`createNativeSessionBindingLifecycle` from
-`openclaw/plugin-sdk/agent-harness-session-runtime` supplies the binding
-coordination used by bundled and separately published official harnesses.
-This private-local runtime is packaged as JavaScript only; it is not a supported
-third-party plugin API. It consumes an existing synchronous
-plugin-state store; it does not create a database or a second session store.
-The synchronous store contract remains available through the next Plugin SDK
-major.
+Official harnesses use the JavaScript-only private
+`openclaw/plugin-sdk/agent-harness-session-runtime`; it is not a third-party
+Plugin SDK contract and uses the existing synchronous plugin-state store.
+`createNativeSessionBindingLifecycle` owns exact-token lease acquisition,
+renewal, mutation fences, and transactional deletion/rollback. The backend
+supplies its record codec, acquisition/retention policy, errors, and timing.
+Pass host authority through `assertCurrent` and validate the expected generation
+in `assertRecordCurrent`. Leases coordinate storage; they grant no execution
+authority. Keep native cleanup after the host transaction commits.
 
-The shared record envelope contains an active backend payload or a cleared
-binding, with optional physical session generation, retirement fence, and
-lease. The harness supplies its record codec, lease-acquisition policy,
-release TTL policy, error constructors, and lease timing budgets. Native
-credentials, model selection, supervision rules, and resource cleanup remain
-with that harness.
-
-| Operation                         | Contract                                                                                                                             |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `transact(key, apply, options)`   | Applies a synchronous state change through atomic plugin-state updates, respecting live leases and the supplied current-owner check. |
-| `withLease(key, run, options)`    | Acquires and renews one exact-token lease, reuses it for nested work, and releases only that lease.                                  |
-| `withMutation(run)`               | Admits binding changes unless an exclusive operation is pending.                                                                     |
-| `withExclusiveMutationFence(run)` | Drains admitted changes, rejects later changes, and permits the exclusive operation's own scoped changes.                            |
-| `withDeletion(key, options, run)` | Prepares exact synchronous removal and conditional rollback for the host's session transaction.                                      |
-| `hasLease(key)`                   | Reports a lease in the current async scope for backend retention policy; it is not execution authority.                              |
-
-Pass the host-provided authority callback through `assertCurrent`, and validate
-the expected physical session generation in `assertRecordCurrent` for deletion.
-A lease token coordinates state changes; it does not grant permission to run
-tools or alter native resources. Keep native cleanup after the authoritative
-session transaction completes.
-
-Deletion compares the prepared record while allowing heartbeat expiry renewal.
-Commit removes only the matching record with the live lease and suspends
-renewal. Rollback restores only that removal, only while the operation remains
-current, and renews the same lease. Expired, replaced, or closed owners cannot
-mutate another owner's binding.
-
-### Generation admission and native ownership
-
-The same private runtime provides `captureNativeSessionGenerationAuthority`,
-`reclaimNativeSessionGeneration`, and `resolveNativeSessionBinding`. They read
-the existing OpenClaw session owner and preserve its physical generation and
-predecessor through awaited work. A missing host entry permits an ephemeral
-session; a failed read does not authorize durable ownership. Resolving a binding
-adopts a verified predecessor before considering stale reclamation. The backend
-supplies its record operations, error constructors, and reclamation policy.
-
-`withNativeSessionBindingOwnership` enters the backend's scheduler before
-acquiring a binding lease, then rereads and compares the native owner. Backends
-retain queue selection, native protocol operations, and resource cleanup order.
-The shared helper does not create another scheduler or execution authority.
-
-### Initialization rollback
+`captureNativeSessionGenerationAuthority`, `reclaimNativeSessionGeneration`,
+and `resolveNativeSessionBinding` preserve the host generation and predecessor
+across waits, adopting a verified predecessor before stale reclamation. A missing
+host entry permits an ephemeral session; a failed read cannot authorize a binding.
 
 `createNativeSessionInitializationOwner` associates binding and upstream-link
-writes with the host's exact initialization handle before a write can commit.
-Its rollback requires the matching store, identity, binding, and live rollback
-authority. It removes only the exact upstream link and invokes backend cleanup
-after that removal. The backend supplies conditional binding writes, binding
-validation, cleanup eligibility, and native cleanup. Host session creation and
-deletion remain owned by the existing session lifecycle.
+writes with the exact host creation handle. Rollback requires the matching
+store, identity, binding, and live authority, removes only the exact upstream
+link, then invokes backend cleanup. Queue selection, native protocol/policy,
+and resource cleanup remain with the backend; core owns host session lifecycle.
 
 ## Subagent task history
 
