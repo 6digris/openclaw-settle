@@ -676,7 +676,9 @@ const enSettings = {
       chromeExtensionEnableHint:
         "The extension is installed but not enabled. Open Chrome and approve or enable OpenClaw.",
       chromeExtensionStatusFailed:
-        "Could not check Chrome installation. Make sure the OpenClaw CLI is installed on this Mac, then check again.",
+        "Could not check Chrome installation automatically. You can still run setup. Make sure the OpenClaw Mac app and CLI are up to date.",
+      chromeExtensionStatusUnsupported:
+        "Automatic installation checks require an updated Mac app. Open Chrome to check whether OpenClaw is installed and enabled.",
       chromeExtensionSetup: "Set up Chrome on this Mac",
       chromeExtensionHint:
         "Prepare the OpenClaw extension on this Mac, then approve it in Chrome. This does not install on a remote Gateway.",
@@ -720,6 +722,7 @@ const enSettings = {
         limited: "Limited",
         denied: "Denied",
         notDetermined: "Not determined",
+        notGranted: "Not granted",
         unavailable: "Unavailable",
       },
       permissions: {
@@ -742,10 +745,6 @@ const enSettings = {
           hint: "Use Apple Speech; passive Voice Wake stays on-device.",
         },
         location: { title: "Location", hint: "Share location when requested by the agent." },
-        automation: {
-          title: "Automation (Terminal)",
-          hint: "Control Terminal for automation actions; other apps request access separately.",
-        },
         contacts: { title: "Contacts", hint: "Access contacts when requested by the agent." },
         calendars: {
           title: "Calendars",
@@ -763,9 +762,9 @@ const enSettings = {
       preciseLocationReadOnlyHint: "Manage precise location access in Settings.",
       preciseLocationStatuses: { enabled: "Enabled", disabled: "Disabled" },
       privacy: "Privacy",
-      activePresence: "Active computer presence",
+      activePresence: "System-wide presence detection",
       activePresenceHint:
-        "Share this Mac's idle duration so OpenClaw can identify the Mac you used most recently and route node alerts. Never sends keys, pointer positions, app names, or window titles. Requires Accessibility.",
+        "OpenClaw activity identifies this Mac without extra permissions. Enable this to also detect activity in other apps. Shares only idle duration, never keys, pointer positions, app names, or window titles. Requires Accessibility.",
     },
     deviceTalk: {
       title: "This Mac",

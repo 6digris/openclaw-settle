@@ -125,6 +125,11 @@ describe("test runtime prerequisites", () => {
       "runtime",
     ],
     [
+      "native catalog worker capture custody",
+      ["src/agents/prepared-model-catalog-worker.custody.integration.test.ts"],
+      "runtime",
+    ],
+    [
       "native Google Meet SDK",
       ["extensions/google-meet/src/transports/chrome-startup.test.ts"],
       "runtime",
@@ -316,6 +321,7 @@ describe("test runtime prerequisites", () => {
       [
         "agent-command-local.test.ts",
         "simple-completion-runtime.plugin-scope.test.ts",
+        "prepared-model-catalog-worker.custody.integration.test.ts",
         "prepared-model-catalog-worker.integration.test.ts",
         "runtime-plugins.context-engine.integration.test.ts",
       ],
@@ -326,6 +332,7 @@ describe("test runtime prerequisites", () => {
       [
         "agent-command-local.test.ts",
         "simple-completion-runtime.plugin-scope.test.ts",
+        "prepared-model-catalog-worker.custody.integration.test.ts",
         "prepared-model-catalog-worker.integration.test.ts",
         "runtime-plugins.context-engine.integration.test.ts",
       ],
@@ -2575,6 +2582,10 @@ describe("scripts/test-projects changed-target routing", () => {
       "test/vitest/vitest.unit-fast.config.ts",
       "src/agents/embedded-agent-runner/run/model-setup.selected-model.test.ts",
     ],
+    [
+      "test/vitest/vitest.unit-fast-isolated.config.ts",
+      "src/state/openclaw-agent-execution-cleanup.test.ts",
+    ],
   ])("preserves whole-owner watch coverage for %s with %s", (config, file) => {
     const [plan] = buildVitestRunPlans(["--watch", config, file]);
     expect(plan).toMatchObject({
@@ -2662,10 +2673,6 @@ describe("scripts/test-projects changed-target routing", () => {
       "test/vitest/vitest.agents-embedded-agent-overflow-compaction.config.ts",
     ],
     [
-      "src/agents/embedded-agent-runner/run.prepared-harness-source-delivery.integration.test.ts",
-      "test/vitest/vitest.agents-embedded-agent-overflow-compaction.config.ts",
-    ],
-    [
       "src/agents/embedded-agent-runner/run/attempt.abort-race.test.ts",
       "test/vitest/vitest.agents-embedded-agent-run.config.ts",
     ],
@@ -2724,6 +2731,7 @@ describe("scripts/test-projects changed-target routing", () => {
         "src/agents/embedded-agent-runner/run/model-setup.ownership.test.ts",
         "src/agents/embedded-agent-runner/run/model-setup.selected-model.test.ts",
         "src/agents/embedded-agent-runner/run/runtime-preparation.thinking.test.ts",
+        "src/agents/embedded-agent-runner/run/run-attempt-dispatch.owner.test.ts",
       ],
     },
     {
@@ -2787,6 +2795,7 @@ describe("scripts/test-projects changed-target routing", () => {
           "src/agents/embedded-agent-runner/run/model-setup.ownership.test.ts",
           "src/agents/embedded-agent-runner/run/model-setup.selected-model.test.ts",
           "src/agents/embedded-agent-runner/run/runtime-preparation.thinking.test.ts",
+          "src/agents/embedded-agent-runner/run/run-attempt-dispatch.owner.test.ts",
         ],
         watchMode: false,
       },
@@ -2820,10 +2829,7 @@ describe("scripts/test-projects changed-target routing", () => {
         {
           config: "test/vitest/vitest.agents-embedded-agent-overflow-compaction.config.ts",
           forwardedArgs: [],
-          includePatterns: [
-            `${root}/run.overflow-compaction.test.ts`,
-            `${root}/run.prepared-harness-source-delivery.integration.test.ts`,
-          ],
+          includePatterns: [`${root}/run.overflow-compaction.test.ts`],
           watchMode: false,
         },
         {
@@ -4903,16 +4909,13 @@ describe("scripts/test-projects changed-target routing", () => {
   });
 
   it("routes forced stateful unit-fast tests to the isolated lane", () => {
-    const plans = buildVitestRunPlans(
-      ["src/system-agent/assistant.configured.test.ts"],
-      process.cwd(),
-    );
-
+    const file = "src/system-agent/assistant.configured.test.ts";
+    const plans = buildVitestRunPlans([file], process.cwd());
     expect(plans).toEqual([
       {
         config: "test/vitest/vitest.unit-fast-isolated.config.ts",
         forwardedArgs: [],
-        includePatterns: ["src/system-agent/assistant.configured.test.ts"],
+        includePatterns: [file],
         watchMode: false,
       },
     ]);

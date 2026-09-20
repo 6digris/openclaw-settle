@@ -22,6 +22,7 @@ import {
   withAgentDatabaseMaintenanceLease,
   withOpenClawAgentDatabaseAsync,
 } from "./openclaw-agent-db.js";
+import { clearOpenClawAgentIntegrityVerification } from "./openclaw-quarantine-store.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
@@ -255,6 +256,7 @@ describe("asynchronous agent database maintenance admission", () => {
 
   it("refuses a foreign caller coalesced onto the mutation owner's real async admission", async () => {
     const f = fixture();
+    clearOpenClawAgentIntegrityVerification(f.options.pathname, f.env);
     const ready = createDeferred();
     const release = createDeferred();
     const inspect = integrityWorker.assertSqliteIntegrityInWorker;

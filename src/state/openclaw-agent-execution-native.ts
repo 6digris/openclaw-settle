@@ -27,6 +27,7 @@ import type {
   AgentDatabaseRequestExecutionSource,
   AgentDatabaseOperations,
 } from "./openclaw-agent-execution-contract.js";
+import { requestOpenClawAgentDatabaseQuickCheck } from "./openclaw-database-verify.js";
 import { publishOpenClawStateDatabaseWorkerAdmission } from "./openclaw-state-db-cache.js";
 import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
 
@@ -98,6 +99,7 @@ export function createAgentDatabaseNativeGeneration(
   let nativeIdentity: AgentDatabaseExecutionIdentity | undefined;
   let nativeStopped: Promise<void> | undefined;
   let lease: OpenClawAgentDatabaseWorkerLeaseReceipt | undefined;
+  let quickCheckPending = false;
 
   const assertCurrent = () => {
     assertLogicalCurrent();
@@ -177,6 +179,18 @@ export function createAgentDatabaseNativeGeneration(
             sharedStatePath: context.admission.databasePath,
             sharedStateIdentity: context.admission.identity.key,
           };
+          return true;
+        }
+        if (
+          request.stage === "prepare" &&
+          isRecord(facts) &&
+          facts.kind === "agent-integrity-cached"
+        ) {
+          source.assertCurrent();
+          if (!lease || !isDeepStrictEqual(facts.lease, lease)) {
+            throw new Error("Agent integrity notice differs from its captured native lease");
+          }
+          quickCheckPending = true;
           return true;
         }
         if (request.stage === "open") {
@@ -320,6 +334,10 @@ export function createAgentDatabaseNativeGeneration(
         assertCurrent();
         source.assertCurrent();
       });
+      if (quickCheckPending) {
+        quickCheckPending = false;
+        requestOpenClawAgentDatabaseQuickCheck({ path: pathname, env: input.environment });
+      }
     }
     return runSqliteWorkerStoreOperation(
       store,
