@@ -967,6 +967,9 @@ enum class GatewayMethod(
   ThemesImport("themes.import"),
   ControlUiGithubDetail("controlUi.githubDetail"),
   ProgressCardRefresh("progressCard.refresh"),
+  UsersLinkChannelIdentity("users.linkChannelIdentity"),
+  UsersUnlinkChannelIdentity("users.unlinkChannelIdentity"),
+  UsersListChannelIdentities("users.listChannelIdentities"),
 }
 
 enum class GatewayEvent(
