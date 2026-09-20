@@ -278,13 +278,13 @@ try {
     $proof.bootstrap.imageRegistration = @(Get-AppxPackage -Name Microsoft.DesktopAppInstaller | Select-Object PackageFullName, Version, Architecture, InstallLocation, SignatureKind)
     $bootstrapScript = Join-Path $bootstrapRoot 'repair.ps1'
     @'
-param([string]$ModulePath,[string]$Payload,[string]$DependencyRoot)
+param([string]$ModulePath,[string]$Bundle,[string]$DependencyRoot)
 $ErrorActionPreference = 'Stop'
 Import-Module $ModulePath -Force
 $dependencies = @(Get-ChildItem -LiteralPath (Join-Path $DependencyRoot 'x64') -File | Where-Object { $_.Extension -in @('.appx','.msix') } | ForEach-Object FullName)
 if ($dependencies.Count -eq 0) { throw 'Official x64 dependency payloads absent.' }
 try {
-    Add-AppxPackage -Path $Payload -DependencyPath $dependencies -ForceUpdateFromAnyVersion -ForceApplicationShutdown -ErrorAction Stop
+    Add-AppxPackage -Path $Bundle -DependencyPath $dependencies -ForceUpdateFromAnyVersion -ForceApplicationShutdown -ErrorAction Stop
     Repair-WinGetPackageManager -Version 1.29.290 -AllUsers -ErrorAction Stop
 } catch {
     $originalFailure = $_
@@ -301,7 +301,7 @@ try {
     throw $originalFailure
 }
 '@ | Set-Content $bootstrapScript
-    Assert-Proof ((Invoke-Native (Join-Path $PSHOME 'pwsh.exe') @('-NoProfile','-NonInteractive','-File',$bootstrapScript,'-ModulePath',(Join-Path $moduleRoot 'Microsoft.WinGet.Client.psd1'),'-Payload',$applicationPath,'-DependencyRoot',$dependencyRoot) 'winget-fixed-bootstrap') -eq 0) 'Fixed-version WinGet repair failed; no image-version fallback.'
+    Assert-Proof ((Invoke-Native (Join-Path $PSHOME 'pwsh.exe') @('-NoProfile','-NonInteractive','-File',$bootstrapScript,'-ModulePath',(Join-Path $moduleRoot 'Microsoft.WinGet.Client.psd1'),'-Bundle',$bundle,'-DependencyRoot',$dependencyRoot) 'winget-fixed-bootstrap') -eq 0) 'Fixed-version WinGet repair failed; no image-version fallback.'
     $winget = (Get-Command winget -CommandType Application -ErrorAction Stop).Source
     $wingetVersion = @(& $winget --version)
     Assert-Proof ($LASTEXITCODE -eq 0 -and ($wingetVersion -join "`n").Trim() -ceq 'v1.29.290') 'Winget alias is not the fixed released version.'
