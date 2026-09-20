@@ -33,13 +33,16 @@ export function createNativeSessionInitializationOwner<TStore, TIdentity, TBindi
 
   return {
     /** Capture cleanup ownership before any potentially committing binding or link write. */
-    prepare(this: void, params: {
-      initialization: SessionInitialization;
-      bindingStore: TStore;
-      identity: TIdentity;
-      prepareCleanup?: () => (assertCurrent: () => void) => Promise<void>;
-      assertCleanupAllowed?: () => void;
-    }) {
+    prepare(
+      this: void,
+      params: {
+        initialization: SessionInitialization;
+        bindingStore: TStore;
+        identity: TIdentity;
+        prepareCleanup?: () => (assertCurrent: () => void) => Promise<void>;
+        assertCleanupAllowed?: () => void;
+      },
+    ) {
       const { initialization, bindingStore, identity } = params;
       initialization.assertCurrent();
       let link: SessionUpstreamLink | undefined;
