@@ -1,5 +1,12 @@
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import {
+  readSandboxBrowserRegistryInDatabase,
+  readSandboxRegistryEntryInDatabase,
+  readSandboxRegistryInDatabase,
+  readSandboxRuntimeIdsInDatabase,
+} from "../agents/sandbox/registry.kernel.js";
+import { readWorkspaceStateSnapshotForDirectoryInDatabase } from "../agents/workspace-state-store.kernel.js";
 import { ExecutionDecisionCursorError } from "../audit/execution-decision-receipts.js";
 import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identity-context.js";
 import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
@@ -51,10 +58,19 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
         typeof input.command.input.now === "number" &&
         (typeof input.command.input.runId === "string" ||
           typeof input.command.input.executionId === "string")) ||
+      (input.command.type === "workspace.snapshot" &&
+        typeof input.command.workspaceDir === "string") ||
       input.command.type === "fleet.list" ||
       input.command.type === "nodeHost.config" ||
       (input.command.type === "onboardingRecommendations.read" &&
         typeof input.command.configKey === "string") ||
+      input.command.type === "sandboxRegistry.list" ||
+      input.command.type === "sandboxRegistry.browsers" ||
+      (input.command.type === "sandboxRegistry.get" &&
+        typeof input.command.containerName === "string") ||
+      (input.command.type === "sandboxRegistry.runtimeIds" &&
+        typeof input.command.backendId === "string" &&
+        typeof input.command.scopeKey === "string") ||
       (input.command.type === "fleet.get" && typeof input.command.tenantId === "string"))
   );
 }
@@ -149,6 +165,17 @@ serveWorkerTasks((input): OpenClawStateReadReply => {
                   row: readConfigMachineStateRowInDatabase(db, command.type),
                 };
               }
+              if (command.type === "workspace.snapshot") {
+                return {
+                  ok: true,
+                  type: command.type,
+                  sourceAdmitted,
+                  snapshot: readWorkspaceStateSnapshotForDirectoryInDatabase({
+                    workspaceDir: command.workspaceDir,
+                    database: { db, path: input.databasePath },
+                  }),
+                };
+              }
               if (command.type === "userProfiles.avatar.reconcile") {
                 return {
                   ok: true,
@@ -158,6 +185,38 @@ serveWorkerTasks((input): OpenClawStateReadReply => {
                     db,
                     () => selectProfileDisplayEntries(db, [command.profileId])[0]?.[1],
                   ),
+                };
+              }
+              if (command.type === "sandboxRegistry.list") {
+                return {
+                  ok: true,
+                  type: command.type,
+                  sourceAdmitted,
+                  entries: readSandboxRegistryInDatabase(db),
+                };
+              }
+              if (command.type === "sandboxRegistry.get") {
+                return {
+                  ok: true,
+                  type: command.type,
+                  sourceAdmitted,
+                  entry: readSandboxRegistryEntryInDatabase(db, command.containerName),
+                };
+              }
+              if (command.type === "sandboxRegistry.runtimeIds") {
+                return {
+                  ok: true,
+                  type: command.type,
+                  sourceAdmitted,
+                  runtimeIds: readSandboxRuntimeIdsInDatabase(db, command),
+                };
+              }
+              if (command.type === "sandboxRegistry.browsers") {
+                return {
+                  ok: true,
+                  type: command.type,
+                  sourceAdmitted,
+                  entries: readSandboxBrowserRegistryInDatabase(db),
                 };
               }
               return command.type === "fleet.list"

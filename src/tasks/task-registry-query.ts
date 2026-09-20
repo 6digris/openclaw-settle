@@ -15,7 +15,7 @@ import {
   cloneTaskRecord,
   listTasksFromIndex,
   cloneTaskRecordForObserver,
-  normalizeTaskTimestamps,
+  normalizeTaskRecord,
   compareTasksNewestFirst,
   pickPreferredRunIdTask,
   snapshotTaskRecords,
@@ -435,7 +435,7 @@ export async function listFreshTasksForOwnerKey(ownerKey: string): Promise<TaskR
       const records = await store.listTasksForOwnerKey(key);
       read.assertCurrent();
       for (const task of records) {
-        merged.set(task.taskId, cloneTaskRecord(normalizeTaskTimestamps(task)));
+        merged.set(task.taskId, cloneTaskRecord(normalizeTaskRecord(task)));
       }
       return [...merged.values()]
         .map((task, insertionIndex) => Object.assign({}, task, { insertionIndex }))
@@ -493,8 +493,20 @@ export function listTaskStatesForFlowIds(
 }
 
 function findLatestTaskForRelatedSessionKey(sessionKey: string): TaskRecord | undefined {
-  const task = listTasksForRelatedSessionKey(sessionKey)[0];
-  return task ? cloneTaskRecord(task) : undefined;
+  ensureTaskRegistryReady();
+  const key = normalizeOptionalString(sessionKey);
+  if (!key) {
+    return undefined;
+  }
+  // Raw records stay inside this synchronous lookup; only the selected record is cloned.
+  const selected = [...(taskIdsByRelatedSessionKey.get(key) ?? [])]
+    .flatMap((taskId, insertionIndex) => {
+      const task = tasks.get(taskId);
+      return task ? [{ task, createdAt: task.createdAt, insertionIndex }] : [];
+    })
+    .toSorted(compareTasksNewestFirst)
+    .find(({ task }) => taskMatchesRelatedSession(task, key))?.task;
+  return selected ? cloneTaskRecord(selected) : undefined;
 }
 
 export function listTasksForRelatedSessionKey(

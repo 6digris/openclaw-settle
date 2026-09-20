@@ -1,6 +1,11 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Selectable } from "kysely";
 import type {
+  SandboxBrowserRegistryEntry,
+  SandboxRegistryEntry,
+} from "../agents/sandbox/registry.types.js";
+import type { WorkspaceStateSnapshot } from "../agents/workspace-state-store.kernel.js";
+import type {
   ExecutionIdentityInspectionQuery,
   ExecutionIdentityInspectionOutcome,
 } from "../audit/execution-identity-inspection.types.js";
@@ -34,7 +39,12 @@ export type OpenClawStateReadCommand =
   | { type: "audit.run.inspect"; input: ExecutionIdentityInspectionQuery }
   | { type: "fleet.list" }
   | { type: "fleet.get"; tenantId: string }
-  | { type: "nodeHost.config" };
+  | { type: "nodeHost.config" }
+  | { type: "workspace.snapshot"; workspaceDir: string }
+  | { type: "sandboxRegistry.list" }
+  | { type: "sandboxRegistry.get"; containerName: string }
+  | { type: "sandboxRegistry.runtimeIds"; backendId: string; scopeKey: string }
+  | { type: "sandboxRegistry.browsers" };
 export type OpenClawStateReadRequest = {
   context: SqliteWorkerStateContext;
   databasePath: string;
@@ -77,6 +87,26 @@ export type OpenClawStateReadReply = (
       type: "nodeHost.config";
       sourceAdmitted: true;
       row: Pick<Selectable<ConfigMachineState>, "value_json" | "updated_at_ms"> | undefined;
+    }
+  | { ok: true; type: "workspace.snapshot"; sourceAdmitted: true; snapshot: WorkspaceStateSnapshot }
+  | {
+      ok: true;
+      type: "sandboxRegistry.list";
+      sourceAdmitted: true;
+      entries: SandboxRegistryEntry[];
+    }
+  | {
+      ok: true;
+      type: "sandboxRegistry.get";
+      sourceAdmitted: true;
+      entry: SandboxRegistryEntry | null;
+    }
+  | { ok: true; type: "sandboxRegistry.runtimeIds"; sourceAdmitted: true; runtimeIds: string[] }
+  | {
+      ok: true;
+      type: "sandboxRegistry.browsers";
+      sourceAdmitted: true;
+      entries: SandboxBrowserRegistryEntry[];
     }
   | {
       ok: false;
