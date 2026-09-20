@@ -187,7 +187,7 @@ export function createDeclarationClosureRenderer(params: {
   const indexes = new Map<string, DeclarationIndex>();
   const renderedClosures = new Map<string, DeclarationClosure>();
   const reachability = new Map<string, WalkResult>();
-  const active = new Set<string>();
+  const rootVisited = new Set<string>();
   const ambientReachability = new Map<string, Walk>();
   const activeAmbient = new Set<string>();
   const unresolvedDependencies = new Set<string>();
@@ -588,10 +588,12 @@ export function createDeclarationClosureRenderer(params: {
     if (cached !== undefined || reachability.has(key)) {
       return cached ?? null;
     }
-    if (active.has(key)) {
+    if (rootVisited.has(key)) {
+      // The first traversal contributes this node to the root union, including back edges.
+      // Rewalking completed cyclic branches can expand exponentially through shared paths.
       return { sections: new Map(), tainted: true };
     }
-    active.add(key);
+    rootVisited.add(key);
     const index = getIndex(sourceFile);
     const statements = index.declarations.get(name);
     let result: WalkResult;
@@ -645,9 +647,8 @@ export function createDeclarationClosureRenderer(params: {
         }
       }
     }
-    active.delete(key);
     if (result?.tainted) {
-      // Back-edge results are complete only inside the current root union. Caching them can let
+      // Revisited-node results are complete only inside the current root union. Caching them can let
       // reachable cycle changes escape the hash and make later exports entry-order sensitive.
     } else {
       reachability.set(key, result);
@@ -664,6 +665,7 @@ export function createDeclarationClosureRenderer(params: {
     if (cached) {
       return cached;
     }
+    rootVisited.clear();
     const walk = walkDeclaration(owner, exportName, true) ?? recallFallback(owner);
     const uniqueSections = [...walk.sections.values()].toSorted(
       (left, right) => compareText(left.name, right.name) || compareText(left.text, right.text),
