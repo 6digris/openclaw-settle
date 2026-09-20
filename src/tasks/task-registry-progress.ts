@@ -11,6 +11,7 @@ import type { AgentEventPayload } from "../infra/agent-events.js";
 import { getAgentRunLifecycleGeneration } from "../infra/agent-run-registry.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
+import { getPluginValueInstance } from "../plugins/plugin-instance-scope.js";
 import {
   getGatewayRestartDrainSignal,
   runWithGatewayDetachedWorkContinuation,
@@ -89,6 +90,8 @@ function enqueueYieldedTaskProgress(task: TaskRecord, runId: string, prepared?: 
       taskRegistryLog.warn("Background progress queue is full; activity remains in Tasks");
       return;
     }
+    const channel = progress.owner.requesterOrigin?.channel;
+    const plugin = channel ? getChannelPlugin(channel) : undefined;
     batch = {
       lifecycleGeneration: getAgentRunLifecycleGeneration(),
       requesterSessionKey: progress.entry.requesterSessionKey,
@@ -96,6 +99,7 @@ function enqueueYieldedTaskProgress(task: TaskRecord, runId: string, prepared?: 
       requesterSessionId: progress.requesterSessionId,
       operationId: progress.operationId,
       origin: { ...progress.owner.requesterOrigin },
+      transportOwner: plugin ? getPluginValueInstance(plugin) : undefined,
       abortController: new AbortController(),
       members: new Map(),
       pendingItems: new Map(),
@@ -419,116 +423,126 @@ async function finalizeProgressBatch(
 
 async function runProgressPublication(key: string, batch: TaskProgressBatch): Promise<void> {
   try {
-    if (batch.operationId && getGlobalHookRunner()?.hasHooks("reply_payload_sending")) {
-      return;
-    }
-    await runWithGatewayDetachedWorkContinuation(async () => {
-      const read = await prepareTaskBackingRead();
-      const fresh = read && prepareProgressBatch(key, batch, read);
-      if (!read || !fresh || fresh.rows.length === 0) {
-        return null;
-      }
-      const assertCurrent = () => {
-        const current = prepareProgressBatch(key, batch, read);
-        if (!current || current.membersKey !== fresh.membersKey) {
-          throw new Error("Background progress was superseded before delivery");
-        }
-      };
-      const progressRuntime = batch.operationId ? await loadProgressRuntime() : undefined;
-      const identity =
-        batch.operationId && batch.requesterSessionId && fresh.owner.agentId
-          ? {
-              operationId: batch.operationId,
-              requesterSessionId: batch.requesterSessionId,
-              sessionKey: fresh.sessionKey,
-              agentId: fresh.owner.agentId,
-            }
-          : undefined;
-      assertCurrent();
-      const initialSnapshot = identity && progressRuntime?.readTaskProgressSnapshot(identity);
-      if (batch.operationId && !initialSnapshot) {
-        return null;
-      }
-      const capturedItems = [...batch.pendingItems].filter(([, { source }]) => {
-        if (!source) {
-          return true;
-        }
-        // A committed rebind can preserve the backing generation while retiring this member.
-        return fresh.rows.some(
-          ({ task, entry }) =>
-            task.taskId === source.taskId &&
-            entry.runId === source.runId &&
-            entry.generation === source.generation,
-        );
-      });
-      const capturedPlan = batch.pendingPlan;
-      const { prepareProgressContent } = await loadProgressPresentation();
-      const presentation = await prepareProgressContent(
-        key,
-        fresh.origin,
-        fresh.rows,
-        initialSnapshot,
-        { items: capturedItems.map(([, update]) => update), plan: capturedPlan },
-      );
-      if (!presentation?.content) {
-        return null;
-      }
-      assertCurrent();
-      if (identity && progressRuntime) {
-        const origin = fresh.rows[0]?.entry.progressOrigin;
-        const publication = await progressRuntime.publishTaskProgressMessage({
-          ...identity,
-          origin: fresh.origin,
-          sourceMessageId: origin?.messageId,
-          sourceChannelId: origin?.channelId,
-          content: presentation.content,
-          previousContent: batch.lastPublishedContent,
-          snapshot: presentation.snapshot,
-          signal: AbortSignal.any([batch.abortController.signal, getGatewayRestartDrainSignal()]),
-          assertCurrent,
-        });
-        if (publication !== "sent" && publication !== "unchanged") {
+    const publish = () =>
+      runWithGatewayDetachedWorkContinuation(async () => {
+        if (batch.operationId && getGlobalHookRunner()?.hasHooks("reply_payload_sending")) {
           return null;
         }
-      } else {
-        const { sendMessage } = await loadTaskRegistryDeliveryRuntime();
+        const read = await prepareTaskBackingRead();
+        const fresh = read && prepareProgressBatch(key, batch, read);
+        if (!read || !fresh || fresh.rows.length === 0) {
+          return null;
+        }
+        const assertCurrent = () => {
+          const current = prepareProgressBatch(key, batch, read);
+          if (!current || current.membersKey !== fresh.membersKey) {
+            throw new Error("Background progress was superseded before delivery");
+          }
+        };
+        const progressRuntime = batch.operationId ? await loadProgressRuntime() : undefined;
+        const identity =
+          batch.operationId && batch.requesterSessionId && fresh.owner.agentId
+            ? {
+                operationId: batch.operationId,
+                requesterSessionId: batch.requesterSessionId,
+                sessionKey: fresh.sessionKey,
+                agentId: fresh.owner.agentId,
+              }
+            : undefined;
         assertCurrent();
-        const idempotencyKey = `task-progress:${createHash("sha256").update(key).digest("hex")}:${Date.now()}`;
-        await sendMessage({
-          channel: fresh.origin.channel,
-          to: fresh.origin.to ?? "",
-          accountId: fresh.origin.accountId,
-          threadId: fresh.origin.threadId,
-          content: presentation.content,
-          agentId: fresh.owner.agentId,
-          idempotencyKey,
-          mirror: {
-            sessionKey: fresh.sessionKey,
+        const initialSnapshot = identity && progressRuntime?.readTaskProgressSnapshot(identity);
+        if (batch.operationId && !initialSnapshot) {
+          return null;
+        }
+        const capturedItems = [...batch.pendingItems].filter(([, { source }]) => {
+          if (!source) {
+            return true;
+          }
+          // A committed rebind can preserve the backing generation while retiring this member.
+          return fresh.rows.some(
+            ({ task, entry }) =>
+              task.taskId === source.taskId &&
+              entry.runId === source.runId &&
+              entry.generation === source.generation,
+          );
+        });
+        const capturedPlan = batch.pendingPlan;
+        const { prepareProgressContent } = await loadProgressPresentation();
+        const presentation = await prepareProgressContent(
+          key,
+          fresh.origin,
+          fresh.rows,
+          initialSnapshot,
+          { items: capturedItems.map(([, update]) => update), plan: capturedPlan },
+        );
+        if (!presentation?.content) {
+          return null;
+        }
+        assertCurrent();
+        if (identity && progressRuntime) {
+          const origin = fresh.rows[0]?.entry.progressOrigin;
+          const publication = await progressRuntime.publishTaskProgressMessage({
+            ...identity,
+            origin: fresh.origin,
+            sourceMessageId: origin?.messageId,
+            sourceChannelId: origin?.channelId,
+            content: presentation.content,
+            previousContent: batch.lastPublishedContent,
+            snapshot: presentation.snapshot,
+            signal: AbortSignal.any([batch.abortController.signal, getGatewayRestartDrainSignal()]),
+            assertCurrent,
+          });
+          if (publication !== "sent" && publication !== "unchanged") {
+            return null;
+          }
+        } else {
+          const { sendMessage } = await loadTaskRegistryDeliveryRuntime();
+          assertCurrent();
+          const idempotencyKey = `task-progress:${createHash("sha256").update(key).digest("hex")}:${Date.now()}`;
+          await sendMessage({
+            channel: fresh.origin.channel,
+            to: fresh.origin.to ?? "",
+            accountId: fresh.origin.accountId,
+            threadId: fresh.origin.threadId,
+            content: presentation.content,
             agentId: fresh.owner.agentId,
             idempotencyKey,
-          },
-          skipQueue: true,
-          gatewayOwnedDelivery: true,
-          abortSignal: AbortSignal.any([
-            batch.abortController.signal,
-            getGatewayRestartDrainSignal(),
-          ]),
-          assertDirectAdapterHandoff: assertCurrent,
-          onPlatformSendDispatch: async () => assertCurrent(),
-        });
-      }
-      batch.lastPublishedContent = presentation.content;
-      for (const [itemId, update] of capturedItems) {
-        if (batch.pendingItems.get(itemId) === update) {
-          batch.pendingItems.delete(itemId);
+            mirror: {
+              sessionKey: fresh.sessionKey,
+              agentId: fresh.owner.agentId,
+              idempotencyKey,
+            },
+            skipQueue: true,
+            gatewayOwnedDelivery: true,
+            abortSignal: AbortSignal.any([
+              batch.abortController.signal,
+              getGatewayRestartDrainSignal(),
+            ]),
+            assertDirectAdapterHandoff: assertCurrent,
+            onPlatformSendDispatch: async () => assertCurrent(),
+          });
         }
-      }
-      if (batch.pendingPlan === capturedPlan) {
-        batch.pendingPlan = undefined;
-      }
-      await ensureProgressTyping(key, batch);
-      return null;
-    }, "tasks:progress");
+        batch.lastPublishedContent = presentation.content;
+        for (const [itemId, update] of capturedItems) {
+          if (batch.pendingItems.get(itemId) === update) {
+            batch.pendingItems.delete(itemId);
+          }
+        }
+        if (batch.pendingPlan === capturedPlan) {
+          batch.pendingPlan = undefined;
+        }
+        await ensureProgressTyping(key, batch);
+        return null;
+      }, "tasks:progress");
+    // Child events may arm the next timer from another plugin scope.
+    const owner = batch.transportOwner;
+    if (owner?.owner) {
+      await owner.runInRegistry(owner.owner.registry, publish);
+    } else if (owner) {
+      await owner.run(publish);
+    } else {
+      await publish();
+    }
   } catch (error) {
     taskRegistryLog.debug(
       "Background progress update could not finish; task completion is unaffected",

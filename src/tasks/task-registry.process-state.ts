@@ -5,6 +5,7 @@ import type { AgentActivityItem } from "../../packages/gateway-protocol/src/sche
 import type { TaskSummary } from "../../packages/gateway-protocol/src/schema/tasks.js";
 import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
 import type { GetReplyOptions } from "../auto-reply/get-reply-options.types.js";
+import type { PluginInstanceHandle } from "../plugins/plugin-instance-scope.js";
 import type { OpenClawStateDatabaseReadAdmission } from "../state/openclaw-state-db-async-lifecycle.js";
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
 import type { TaskAgentEventTarget } from "./task-registry-agent-event-target.js";
@@ -95,6 +96,7 @@ export type TaskProgressBatch = {
   requesterSessionId?: string;
   operationId?: string;
   origin: DeliveryContext;
+  transportOwner?: PluginInstanceHandle;
   abortController: AbortController;
   lastPublishedContent?: string;
   typingStarted?: boolean;

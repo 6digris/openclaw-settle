@@ -34,7 +34,13 @@ import {
   initializeGlobalHookRunner,
   resetGlobalHookRunner,
 } from "../plugins/hook-runner-global.js";
-import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
+import { PluginInstance } from "../plugins/plugin-instance.js";
+import {
+  requireActivePluginRegistry,
+  resetPluginRuntimeStateForTest,
+  setActivePluginRegistry,
+} from "../plugins/runtime.js";
+import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
 import { createPluginRecord } from "../plugins/status.test-fixtures.js";
 import { getActiveGatewayRootWorkCount } from "../process/gateway-work-admission.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
@@ -390,11 +396,36 @@ it("keeps the captured requester when a child also owns a current association on
 });
 
 describe("detached progress at the registered channel boundary", () => {
-  it.each(["warm", "reopened"] as const)(
-    "keeps adopted-card publication responsive while shared-state admission is held (%s)",
+  it.each(["warm", "reopened", "competing owner", "retired owner"] as const)(
+    "keeps adopted-card publication with its live owner while shared-state admission is held (%s)",
     async (stateMode) => {
       await withPublisher(async (fixture) => {
         // Session seeding schedules maintenance that must settle before introducing contention.
+        const registry = requireActivePluginRegistry();
+        const registration = expectDefined(registry.channels[0], "admitted channel");
+        const instance = new PluginInstance(channel, {
+          registry,
+          record: expectDefined(registry.plugins[0], "admitted plugin"),
+        });
+        registration.plugin = instance.wrap(registration.plugin);
+        setActivePluginRegistry(registry);
+        const wrongOwnerEdits: string[] = [];
+        const competing = createTestRegistry([
+          {
+            pluginId: channel,
+            source: "competing",
+            plugin: {
+              ...registration.plugin,
+              actions: {
+                ...expectDefined(registration.plugin.actions, "admitted message actions"),
+                handleAction: async (ctx) => {
+                  wrongOwnerEdits.push(String(ctx.params.messageId));
+                  return { content: [], details: { ok: true } };
+                },
+              },
+            } satisfies ChannelPlugin,
+          },
+        ]);
         await fixture.restart();
         resetTaskRegistryForTests({ persist: false });
         resetTaskFlowRegistryForTests({ persist: false });
@@ -497,12 +528,26 @@ describe("detached progress at the registered channel boundary", () => {
             ),
             "adopted progress batch",
           );
-          publication = flushTaskProgressBatch(selected.key, selected.batch);
+          if (stateMode === "retired owner") {
+            await instance.dispose();
+          }
+          publication =
+            stateMode === "competing owner" || stateMode === "retired owner"
+              ? withPluginRuntimeRegistryScope(competing, () =>
+                  flushTaskProgressBatch(selected.key, selected.batch),
+                )
+              : flushTaskProgressBatch(selected.key, selected.batch);
           const releasedAtTimer = await timer;
           await publication;
           expect(fixture.sends).toEqual([]);
-          expect(fixture.edits).toHaveLength(1);
-          expect(fixture.edits[0]?.messageId).toBe(initialMessage.messageId);
+          expect(wrongOwnerEdits).toEqual([]);
+          if (stateMode === "retired owner") {
+            expect([...fixture.messages.values()]).toEqual([initialMessage]);
+            expect(fixture.edits).toEqual([]);
+          } else {
+            expect(fixture.edits).toHaveLength(1);
+            expect(fixture.edits[0]?.messageId).toBe(initialMessage.messageId);
+          }
           expect(getActiveGatewayRootWorkCount()).toBe(0);
           expect(releasedAtTimer, "timer must run before the contended coordinator releases").toBe(
             0,
@@ -514,6 +559,7 @@ describe("detached progress at the registered channel boundary", () => {
             () => holder?.release(),
             () => holder?.joined,
             () => publication,
+            () => instance.dispose(),
             () => closeOpenClawStateDatabaseAsync(),
             () => resetTaskRegistryForTests({ persist: false }),
             () => resetTaskFlowRegistryForTests({ persist: false }),
