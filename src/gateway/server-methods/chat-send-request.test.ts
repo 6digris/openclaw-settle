@@ -181,7 +181,9 @@ describe("normalizeChatSendRequest", () => {
         mentions: [{ kind: "everyone", start: 0, end: 9 }],
       },
     });
-    if (!plain.ok || !broadcast.ok || !individual.ok) throw new Error("Expected valid requests");
+    if (!plain.ok || !broadcast.ok || !individual.ok) {
+      throw new Error("Expected valid requests");
+    }
     expect(
       new Set([
         plain.value.requestIdentity,
