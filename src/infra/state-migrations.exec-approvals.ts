@@ -516,6 +516,23 @@ export async function migrateLegacyExecApprovals(params: {
   };
 }
 
+function comparableExecApprovalsPolicy(file: ExecApprovalsFile) {
+  return {
+    ...file,
+    socket: undefined,
+    agents: Object.fromEntries(
+      Object.entries(file.agents ?? {}).map(([name, agent]) => [
+        name,
+        {
+          ...agent,
+          // Parsing creates IDs for older allowlists. IDs identify records, not authorization.
+          allowlist: agent.allowlist?.map((entry) => ({ ...entry, id: undefined })),
+        },
+      ]),
+    ),
+  };
+}
+
 /** Show policy differences without revealing socket credentials or command patterns. */
 export async function inspectLegacyExecApprovals(params: {
   stateDir: string;
@@ -568,7 +585,10 @@ export async function inspectLegacyExecApprovals(params: {
     policyMatches: Boolean(
       legacy &&
       canonical &&
-      isDeepStrictEqual({ ...legacy, socket: undefined }, { ...canonical, socket: undefined }),
+      isDeepStrictEqual(
+        comparableExecApprovalsPolicy(legacy),
+        comparableExecApprovalsPolicy(canonical),
+      ),
     ),
     socketMatches: Boolean(
       legacy && canonical && isDeepStrictEqual(legacy.socket, canonical.socket),
