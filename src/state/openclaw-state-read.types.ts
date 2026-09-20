@@ -10,6 +10,7 @@ import type {
   ExecutionIdentityInspectionOutcome,
 } from "../audit/execution-identity-inspection.types.js";
 import type { FleetCellRecord } from "../fleet/registry.types.js";
+import type { DevicePairingStoreState } from "../infra/device-pairing.types.js";
 import type { readExecApprovalsConfigRow } from "../infra/exec-approvals-sqlite.js";
 import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import type { AsyncWorkScope } from "../shared/async-work-scope.js";
@@ -34,6 +35,7 @@ export type OpenClawStateReadAuthority = {
 };
 
 export type OpenClawStateReadCommand =
+  | { type: "devicePairing.inventory" }
   | { type: "exec-approvals.read" }
   | { type: "agentDatabaseRegistry.read" }
   | { type: "onboardingRecommendations.read"; configKey: string }
@@ -57,6 +59,12 @@ export type OpenClawStateReadRequest = {
   command: OpenClawStateReadCommand | { type: "admit" };
 };
 export type OpenClawStateReadReply = (
+  | {
+      ok: true;
+      type: "devicePairing.inventory";
+      sourceAdmitted: true;
+      state: DevicePairingStoreState;
+    }
   | {
       ok: true;
       type: "agentDatabaseRegistry.read";

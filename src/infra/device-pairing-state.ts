@@ -1,7 +1,7 @@
 // Shared snapshot, lock, and normalization owner for device pairing domain modules.
 import { expectDefined } from "@openclaw/normalization-core";
 import { normalizeUniqueSingleOrTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
-import { isArtifactPreservingStateRead } from "../state/openclaw-state-db-readonly.js";
+import { executeExistingOpenClawStateRead } from "../state/openclaw-state-db-readonly.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { runOpenClawStateWorkerOperation } from "../state/openclaw-state-worker-store.js";
 import { loadDevicePairingStoreState } from "./device-pairing-store.js";
@@ -39,23 +39,23 @@ export async function loadDevicePairingInventoryState(
   baseDir?: string,
   readOnly = false,
 ): Promise<DevicePairingStoreState> {
-  const context = captureOpenClawStateWorkerContext(
-    baseDir ? { env: { ...process.env, OPENCLAW_STATE_DIR: baseDir } } : {},
-  );
-  const artifactPreserving = isArtifactPreservingStateRead();
-  const command = {
-    type: "devicePairing.inventory" as const,
-    input: { readOnly, artifactPreserving },
-  };
-  const state = (await (readOnly
-    ? runOpenClawStateWorkerOperation(context, (scope) => scope.execute(command), {
-        existingOnly: true,
-      })
-    : runOpenClawStateWorkerOperation(context, (scope) => scope.execute(command)))) ?? {
-    pendingById: {},
-    pairedByDeviceId: {},
-  };
-  context.admission.assertCurrent();
+  const options = baseDir ? { env: { ...process.env, OPENCLAW_STATE_DIR: baseDir } } : {};
+  let state: DevicePairingStoreState;
+  if (readOnly) {
+    const reply = await executeExistingOpenClawStateRead(options, {
+      type: "devicePairing.inventory",
+    });
+    if (reply && (!reply.ok || reply.type !== "devicePairing.inventory")) {
+      throw new Error("Unexpected device pairing inventory result");
+    }
+    state = reply?.state ?? { pendingById: {}, pairedByDeviceId: {} };
+  } else {
+    const context = captureOpenClawStateWorkerContext(options);
+    state = await runOpenClawStateWorkerOperation(context, (scope) =>
+      scope.execute({ type: "devicePairing.inventory", input: undefined }),
+    );
+    context.admission.assertCurrent();
+  }
   pruneExpiredDevicePairingRequests(state);
   return state;
 }

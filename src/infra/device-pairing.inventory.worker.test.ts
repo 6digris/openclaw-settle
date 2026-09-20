@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { expectDefined } from "@openclaw/normalization-core";
@@ -8,7 +9,10 @@ import { collectDevicePairingHealthFindings } from "../commands/doctor-device-pa
 import { deviceHandlers } from "../gateway/server-methods/devices.js";
 import { nodePairingHandlers } from "../gateway/server-methods/nodes.pairing.js";
 import type { GatewayRequestHandlerOptions } from "../gateway/server-methods/types.js";
-import { withArtifactPreservingStateReads } from "../state/openclaw-state-db-readonly.js";
+import {
+  withArtifactPreservingStateReads,
+  withOpenClawStateDatabaseReadSnapshot,
+} from "../state/openclaw-state-db-readonly.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
 import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -154,6 +158,62 @@ it("preserves device expiry, node decisions, ordering and source artifacts acros
     } finally {
       sql.restore();
     }
+  });
+});
+
+it("keeps read-only inventory and Doctor findings on the selected snapshot while live state changes", async () => {
+  await withOpenClawTestState({ label: "pairing-inventory-snapshot" }, async (state) => {
+    const stored = inventory(Date.now());
+    persistDevicePairingStoreState(stored, state.stateDir, "both");
+    await closeOpenClawStateDatabaseAsync();
+    let readFromClosedScope: (() => ReturnType<typeof listDevicePairingReadOnly>) | undefined;
+    await withArtifactPreservingStateReads(() =>
+      withOpenClawStateDatabaseReadSnapshot(async () => {
+        stored.pendingById = {};
+        delete stored.pairedByDeviceId.newer;
+        persistDevicePairingStoreState(stored, state.stateDir, "both");
+        readFromClosedScope = AsyncLocalStorage.bind(() =>
+          listDevicePairingReadOnly(state.stateDir),
+        );
+        const sql = observeMainThreadSql();
+        try {
+          const selected = await listDevicePairingReadOnly(state.stateDir);
+          expect(selected.paired.map((device) => device.deviceId)).toEqual(["newer", "older"]);
+          expect(selected.pending.map((request) => request.requestId)).toEqual([
+            "recent",
+            "renewed",
+          ]);
+          const live = await listDevicePairing(state.stateDir);
+          expect(live.paired.map((device) => device.deviceId)).toEqual(["older"]);
+          expect(live.pending).toEqual([]);
+          sql.expectIdle();
+        } finally {
+          sql.restore();
+        }
+        const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");
+        try {
+          const findings = await collectDevicePairingHealthFindings({
+            cfg: { gateway: { mode: "local" } },
+          });
+          expect(
+            findings
+              .filter((finding) => finding.path === "devices.pending")
+              .map((finding) => finding.target),
+          ).toEqual(["device-recent:recent", "device-renewed:renewed"]);
+          expect(prepare.mock.calls.filter(([query]) => query.includes("device_pairing_"))).toEqual(
+            [],
+          );
+        } finally {
+          prepare.mockRestore();
+        }
+      }),
+    );
+    await expect(expectDefined(readFromClosedScope, "captured snapshot reader")()).rejects.toThrow(
+      /read scope is closing or closed/,
+    );
+    const live = await listDevicePairingReadOnly(state.stateDir);
+    expect(live.paired.map((device) => device.deviceId)).toEqual(["older"]);
+    expect(live.pending).toEqual([]);
   });
 });
 
