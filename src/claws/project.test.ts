@@ -4,7 +4,7 @@ import { dirname, join, sep } from "node:path";
 import * as tar from "tar";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { withEnvAsync } from "../test-utils/env.js";
+import { configureFsSafeNative, getFsSafeNativeConfig } from "../infra/fs-safe-defaults.js";
 import { buildClawProject } from "./project-build.js";
 import { ClawProjectError, createClawProject, validateClawProject } from "./project.js";
 
@@ -93,6 +93,7 @@ describe("Claw projects", () => {
     const outputDirectory = tempDirs.make("openclaw-claw-close-failure-");
     const output = join(outputDirectory, "claw.tgz");
     const closeError = Object.assign(new Error("staged file close failed"), { code: "EIO" });
+    const nativeConfig = getFsSafeNativeConfig();
     const open = fs.open;
     let closeAttempts = 0;
     vi.spyOn(fs, "open").mockImplementation(async (...args) => {
@@ -111,14 +112,15 @@ describe("Claw projects", () => {
       return handle;
     });
     try {
-      await withEnvAsync({ FS_SAFE_NATIVE_MODE: "off" }, async () => {
-        await expect(
-          buildClawProject(join(process.cwd(), "test", "fixtures", "claws", "project-v1"), output),
-        ).rejects.toBe(closeError);
-      });
+      // Shared workers may retain an explicit mode, which takes precedence over env.
+      configureFsSafeNative({ mode: "off" });
+      await expect(
+        buildClawProject(join(process.cwd(), "test", "fixtures", "claws", "project-v1"), output),
+      ).rejects.toBe(closeError);
       expect(closeAttempts).toBe(1);
       await expect(readdir(outputDirectory)).resolves.toEqual([]);
     } finally {
+      configureFsSafeNative(nativeConfig);
       vi.restoreAllMocks();
     }
   });
