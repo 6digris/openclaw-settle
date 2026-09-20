@@ -400,6 +400,10 @@ export interface CronRunReceipts {
   store_key: string;
 }
 
+export interface CronRunTriggerStateRetirements {
+  receipt_id: string;
+}
+
 export interface CurrentConversationBindings {
   account_id: string;
   binding_id: string;
@@ -814,6 +818,26 @@ export interface GithubRepositoryPublicationRequests {
   workspace_tree: string | null;
 }
 
+export interface LocalWorkspaceProjections {
+  agent_id: string;
+  base_commit: string;
+  baseline_json: string | null;
+  baseline_ref: string | null;
+  created_at_ms: number;
+  journal_json: string | null;
+  journal_pack: Uint8Array | null;
+  lifecycle_revision: string | null;
+  paused_runtimes_json: string | null;
+  pending_ref: string | null;
+  pending_target: string | null;
+  projection_path: string;
+  revision: Generated<number>;
+  session_id: string;
+  session_key: string;
+  source_paths_json: string;
+  worktree_id: string;
+}
+
 export interface MacosPortGuardianRecords {
   command: string;
   mode: string;
@@ -930,6 +954,12 @@ export interface NativeHookRelayBridges {
   updated_at_ms: number;
 }
 
+export interface NodeWorkerLaunchCleanup {
+  cleanup_mode: string;
+  launch_id: string;
+  lineage_settled: number | null;
+}
+
 export interface NodeWorkerLaunchContainers {
   container_json: string | null;
   launch_id: string;
@@ -954,6 +984,24 @@ export interface NodeWorkerLaunches {
   updated_at_ms: number;
   worker_pid: number | null;
   worker_start_time: number | null;
+}
+
+export interface NodeWorkerPreparedWorkspaces {
+  bound_at_ms: number | null;
+  cache_key: string;
+  created_at_ms: number;
+  environment_id: string;
+  gateway_namespace: string;
+  home_dir: string;
+  owner_epoch: number | null;
+  preparation_key: string;
+  prepared_manifest_ref: string;
+  retired_at_ms: number | null;
+  session_id: string | null;
+  session_key: string | null;
+  source_manifest_ref: string;
+  state: string;
+  workspace_dir: string;
 }
 
 export interface NodeWorkerTurns {
@@ -1223,6 +1271,7 @@ export interface SessionWatchCursors {
   target_session_key: string;
   updated_at: number;
   watcher_session_key: string;
+  watcher_store_path: string | null;
 }
 
 export interface SkillLibraryEntries {
@@ -1368,9 +1417,11 @@ export interface StateLeases {
 export interface SubagentRuns {
   child_session_key: string;
   controller_session_key: string | null;
+  controller_store_path: string | null;
   created_at: number;
   payload_json: Generated<string>;
   requester_session_key: string;
+  requester_store_path: string | null;
   run_id: string;
 }
 
@@ -1389,6 +1440,9 @@ export interface TaskRuns {
   detail_json: string | null;
   ended_at: number | null;
   error: string | null;
+  execution_owner_host: string | null;
+  execution_owner_pid: number | null;
+  execution_owner_start_identity: number | null;
   label: string | null;
   last_event_at: number | null;
   last_tool_name: string | null;
@@ -1489,11 +1543,17 @@ export interface WorkerEnvironments {
   destroy_requested_at_ms: number | null;
   environment_id: string;
   idle_since_at_ms: number | null;
+  last_activated_at_ms: number | null;
   last_error: string | null;
   lease_id: string | null;
   node_device_id: string | null;
   node_setup_id: string | null;
   owner_epoch: Generated<number>;
+  preparation_consumed_at_ms: number | null;
+  preparation_demand_at_ms: number | null;
+  preparation_expires_at_ms: number | null;
+  preparation_key: string | null;
+  preparation_purpose: string | null;
   profile_id: string;
   profile_snapshot_json: string;
   provider_id: string;
@@ -1670,6 +1730,21 @@ export interface WorktreeProvisionedFileChunks {
   worktree_id: string;
 }
 
+export interface WorktreeTemplates {
+  backend: string;
+  cache_key: string;
+  common_dir: string;
+  content_key: string;
+  created_at: number;
+  id: string;
+  last_used_at: number;
+  path: string;
+  repo_root: string;
+  source_commit: string;
+  status: string;
+  worktree_root: string;
+}
+
 export interface Worktrees {
   base_ref: string;
   branch: string;
@@ -1719,6 +1794,7 @@ export interface DB {
   cron_job_scratch: CronJobScratch;
   cron_jobs: CronJobs;
   cron_run_receipts: CronRunReceipts;
+  cron_run_trigger_state_retirements: CronRunTriggerStateRetirements;
   current_conversation_bindings: CurrentConversationBindings;
   delivery_queue_entries: DeliveryQueueEntries;
   device_auth_tokens: DeviceAuthTokens;
@@ -1744,6 +1820,7 @@ export interface DB {
   github_publication_requests: GithubPublicationRequests;
   github_publication_session_lifecycles: GithubPublicationSessionLifecycles;
   github_repository_publication_requests: GithubRepositoryPublicationRequests;
+  local_workspace_projections: LocalWorkspaceProjections;
   macos_port_guardian_records: MacosPortGuardianRecords;
   managed_outgoing_image_records: ManagedOutgoingImageRecords;
   mcp_oauth_pending_authorizations: McpOauthPendingAuthorizations;
@@ -1754,8 +1831,10 @@ export interface DB {
   migration_runs: MigrationRuns;
   migration_sources: MigrationSources;
   native_hook_relay_bridges: NativeHookRelayBridges;
+  node_worker_launch_cleanup: NodeWorkerLaunchCleanup;
   node_worker_launch_containers: NodeWorkerLaunchContainers;
   node_worker_launches: NodeWorkerLaunches;
+  node_worker_prepared_workspaces: NodeWorkerPreparedWorkspaces;
   node_worker_turns: NodeWorkerTurns;
   official_external_plugin_catalog_snapshots: OfficialExternalPluginCatalogSnapshots;
   operator_approval_execution_identities: OperatorApprovalExecutionIdentities;
@@ -1812,5 +1891,6 @@ export interface DB {
   workspace_path_aliases: WorkspacePathAliases;
   workspace_setup_state: WorkspaceSetupState;
   worktree_provisioned_file_chunks: WorktreeProvisionedFileChunks;
+  worktree_templates: WorktreeTemplates;
   worktrees: Worktrees;
 }

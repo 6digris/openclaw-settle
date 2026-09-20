@@ -24,7 +24,6 @@ import {
   buildCircuitBreakerKey,
   forgetActiveRecallRun,
   getCachedResult,
-  getCircuitBreakerEntry,
   isCircuitBreakerOpen,
   resetActiveRecallStateForTests,
   setCachedResult,
@@ -73,6 +72,7 @@ import {
   HOOK_TIMEOUT_RECOVERY_GRACE_MS,
   MAX_SETUP_GRACE_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
+  TRIGGER_LOOKUP_SETTLE_RESERVE_MS,
   type ConversationRecallContext,
 } from "./types.js";
 
@@ -343,9 +343,26 @@ export default definePluginEntry({
               ...sessionContext,
               mainKey: liveConfig.session?.mainKey ?? api.config.session?.mainKey,
             };
+            // Use the producer's request, never infer it from user-controlled envelope markers.
+            const currentUserMessage = event.currentUserMessage ?? event.prompt;
+            if (event.currentUserMessage !== undefined && !currentUserMessage.trim()) {
+              api.logger.debug?.("active-memory: recall skipped reason=no-current-text");
+              return undefined;
+            }
+            // Omission preserves legacy producers. Explicit text without an admission ID
+            // cannot identify a request, even when the correlation runId and text match.
+            const requestKey =
+              event.currentUserMessage === undefined
+                ? undefined
+                : event.currentUserMessageId
+                  ? JSON.stringify({
+                      message: currentUserMessage,
+                      messageId: event.currentUserMessageId,
+                    })
+                  : null;
             const recentTurns = extractRecentTurns(event.messages);
             const searchQuery = buildSearchQuery({
-              latestUserMessage: event.prompt,
+              latestUserMessage: currentUserMessage,
               recentTurns,
             });
             const memorySlot = normalizePluginsConfig(liveConfig.plugins).slots.memory;
@@ -375,25 +392,39 @@ export default definePluginEntry({
               chatIdAllowed
             ) {
               toolAuthority.assertActive();
-              laneOne = await resolveTriggerRecall({
-                cfg: liveConfig,
-                agentId: effectiveAgentId,
-                query: searchQuery,
-                message: event.prompt,
-                activeProjectKeys: ctx.activeProjectKeys,
-                signal: AbortSignal.timeout(HOOK_TIMEOUT_RECOVERY_GRACE_MS),
-                runId: ctx.runId,
-                authorityFingerprint: toolAuthority.fingerprint,
-              }).catch((error: unknown) => {
+              // Lane one is optional and runs inside the preflight deadline.
+              // Its own timeout is what is left of that budget, less enough
+              // to fall through to model recall before the watchdog fires.
+              // Without that headroom it is skipped outright: even a zero
+              // delay timer is asynchronous and can lose to the watchdog.
+              const triggerLookupTimeoutMs =
+                hookDeadline.remainingMs() - TRIGGER_LOOKUP_SETTLE_RESERVE_MS;
+              if (triggerLookupTimeoutMs > 0) {
+                laneOne = await resolveTriggerRecall({
+                  cfg: liveConfig,
+                  agentId: effectiveAgentId,
+                  query: searchQuery,
+                  message: currentUserMessage,
+                  activeProjectKeys: ctx.activeProjectKeys,
+                  signal: AbortSignal.timeout(triggerLookupTimeoutMs),
+                  runId: ctx.runId,
+                  requestKey,
+                  authorityFingerprint: toolAuthority.fingerprint,
+                }).catch((error: unknown) => {
+                  api.logger.debug?.(
+                    `active-memory: lane-1 trigger recall failed: ${toSingleLineErrorMessage(error)}`,
+                  );
+                  return { hasStrongHit: false, injectedCount: 0 };
+                });
+                toolAuthority.assertActive();
+                if (laneOne.context && laneOne.injectedCount > 0 && invocationConfig.logging) {
+                  api.logger.info?.(
+                    `active-memory: lane-1 injected ${laneOne.injectedCount} trigger-matched entries`,
+                  );
+                }
+              } else {
                 api.logger.debug?.(
-                  `active-memory: lane-1 trigger recall failed: ${toSingleLineErrorMessage(error)}`,
-                );
-                return { hasStrongHit: false, injectedCount: 0 };
-              });
-              toolAuthority.assertActive();
-              if (laneOne.context && laneOne.injectedCount > 0 && invocationConfig.logging) {
-                api.logger.info?.(
-                  `active-memory: lane-1 injected ${laneOne.injectedCount} trigger-matched entries`,
+                  "active-memory: lane-1 trigger recall skipped: preflight budget exhausted",
                 );
               }
             }
@@ -439,7 +470,7 @@ export default definePluginEntry({
             }
             const escalationDecision = resolveRecallEscalationDecision({
               mode: invocationConfig.mode,
-              message: event.prompt,
+              message: currentUserMessage,
               hasStrongLaneOneHit: laneOne.hasStrongHit,
             });
             if (escalationDecision !== "recall") {
@@ -467,7 +498,7 @@ export default definePluginEntry({
                 ? { ...invocationConfig, toolsAllow: [productRecallToolName] }
                 : { ...invocationConfig, toolsAllow: allowedRecallTools };
             const query = buildQuery({
-              latestUserMessage: event.prompt,
+              latestUserMessage: currentUserMessage,
               recentTurns,
               config: recallConfig,
             });
@@ -485,6 +516,7 @@ export default definePluginEntry({
               messageProvider: ctx.messageProvider,
               channelId: ctx.channelId,
               query,
+              requestKey,
               searchQuery,
               currentModelProviderId: ctx.modelProviderId,
               currentModelId: ctx.modelId,
@@ -551,7 +583,6 @@ const testing = {
   setSetupGraceTimeoutMsForTests,
   setTimeoutPartialDataGraceMsForTests,
   setCachedResult,
-  getCircuitBreakerEntry,
 };
 
 export { testing };

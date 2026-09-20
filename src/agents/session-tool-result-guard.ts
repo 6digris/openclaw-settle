@@ -9,6 +9,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { sliceUtf16Safe, truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { publishTranscriptUpdate } from "../config/sessions/session-accessor.js";
 import type { TranscriptEntryAnchor } from "../config/sessions/transcript-entry-anchor.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   boundedJsonUtf8Bytes,
   firstEnumerableOwnKeys,
@@ -42,9 +43,11 @@ import {
   getRawSessionAppendMessage,
   setRawSessionAppendMessage,
 } from "./session-raw-append-message.js";
-import { createPendingToolCallState } from "./session-tool-result-state.js";
+import { resolveAppendedMessageSeq } from "./session-tool-result-guard.transcript-seq.js";
 import { makeMissingToolResult, sanitizeToolCallInputs } from "./session-transcript-repair.js";
 import type { SessionManager } from "./sessions/index.js";
+import { withSessionCompactionPersistence } from "./sessions/session-compaction-persistence.js";
+import type { CompactionAppendPersistence } from "./sessions/session-compaction-persistence.js";
 import {
   extractToolCallsFromAssistant,
   extractToolResultId,
@@ -52,6 +55,7 @@ import {
 } from "./tool-call-id.js";
 import {
   copyCodeModeSourceAppend,
+  copyCodeModeSourceAppendOptions,
   prepareCodeModeSourceAppend,
   withCodeModeSourceAppend,
   type CodeModeSourceAppend,
@@ -91,82 +95,10 @@ type UserMessagePersistedCallback = (
     sessionTarget?: ReturnType<SessionManager["getSessionTarget"]>;
   },
 ) => void | Promise<void>;
-type CompactionAppendValidator = (entryId: string, appendedText: string) => boolean;
 type AppendMessageOptions = Parameters<SessionManager["appendMessage"]>[1];
 
 function isUserAgentMessage(message: AgentMessage): message is UserAgentMessage {
   return message.role === "user";
-}
-
-function isExpectedCompactionAppend(entryId: string, appendedText: string): boolean {
-  const lines = appendedText
-    .trimEnd()
-    .split("\n")
-    .filter((line) => line.length > 0);
-  if (lines.length !== 1) {
-    return false;
-  }
-  try {
-    const line = lines.at(0);
-    if (!line) {
-      return false;
-    }
-    const entry: unknown = JSON.parse(line);
-    return (
-      typeof entry === "object" &&
-      entry !== null &&
-      Reflect.get(entry, "type") === "compaction" &&
-      Reflect.get(entry, "id") === entryId
-    );
-  } catch {
-    return false;
-  }
-}
-
-type TranscriptSeqByEntryId = Map<string, number>;
-
-function resolveEntryTranscriptSeq(
-  sessionManager: SessionManager,
-  entryId: string | null | undefined,
-  seqByEntryId: TranscriptSeqByEntryId,
-): number | undefined {
-  if (!entryId) {
-    return 0;
-  }
-  const cached = seqByEntryId.get(entryId);
-  if (cached !== undefined) {
-    return cached;
-  }
-  let seq = 0;
-  for (const entry of sessionManager.getBranch(entryId)) {
-    if (entry.type === "message" || entry.type === "compaction") {
-      seq += 1;
-    }
-    seqByEntryId.set(entry.id, seq);
-  }
-  return seqByEntryId.get(entryId);
-}
-
-function resolveAppendedMessageSeq(params: {
-  sessionManager: SessionManager;
-  entryId: unknown;
-  parentEntryId: string | null | undefined;
-  seqByEntryId: TranscriptSeqByEntryId;
-}): number | undefined {
-  if (typeof params.entryId !== "string") {
-    return undefined;
-  }
-  const parentSeq = resolveEntryTranscriptSeq(
-    params.sessionManager,
-    params.parentEntryId,
-    params.seqByEntryId,
-  );
-  if (parentSeq === undefined) {
-    return undefined;
-  }
-  const messageSeq = parentSeq + 1;
-  params.seqByEntryId.set(params.entryId, messageSeq);
-  return messageSeq;
 }
 
 // `details` is runtime/UI metadata, not model-visible tool output. Keep the
@@ -649,7 +581,7 @@ export function installSessionToolResultGuard(
       event: PluginHookBeforeMessageWriteEvent,
       sourceAppend?: CodeModeSourceAppend,
     ) => PluginHookBeforeMessageWriteResult | undefined;
-    redactLoggingConfig?: ToolResultDetailRedactionConfig;
+    config?: OpenClawConfig;
     maxToolResultChars?: number;
     suppressNextUserMessagePersistence?: boolean;
     suppressTranscriptOnlyAssistantPersistence?: boolean;
@@ -658,12 +590,10 @@ export function installSessionToolResultGuard(
     onUserMessagePersistenceSuppressed?: AsyncMessageCallback<UserAgentMessage>;
     onUserMessageBlocked?: (message: UserAgentMessage) => void;
     onMessagePersisted?: (message: AgentMessage) => void | Promise<void>;
-    withCompactionPersistence?: (
-      append: () => string,
-      validateAppend: CompactionAppendValidator,
-    ) => string;
+    withCompactionPersistence?: CompactionAppendPersistence;
   },
 ): {
+  hasPendingToolResults: () => boolean;
   flushPendingToolResults: () => void;
   clearPendingToolResults: () => void;
   clearNextUserMessagePersistenceSuppression: () => void;
@@ -674,7 +604,7 @@ export function installSessionToolResultGuard(
   const originalAppendWithTranscriptAnchor =
     sessionManager.appendMessageWithTranscriptAnchor.bind(sessionManager);
   setRawSessionAppendMessage(sessionManager, originalAppend);
-  const pendingState = createPendingToolCallState();
+  const pending = new Map<string, string | undefined>();
   const persistMessage = (message: AgentMessage, sourceAppend?: CodeModeSourceAppend) => {
     const transformer = opts?.transformMessageForPersistence;
     const persisted = transformer ? transformer(message) : message;
@@ -694,9 +624,9 @@ export function installSessionToolResultGuard(
   const missingToolResultText = opts?.missingToolResultText;
   const beforeWrite = opts?.beforeMessageWriteHook;
   const toolResultTransformerMayMutate = opts?.transformToolResultForPersistence !== undefined;
-  const redactionConfig = opts?.redactLoggingConfig;
+  const redactionConfig = opts?.config?.logging;
   const maxToolResultChars = resolveMaxToolResultChars(opts);
-  const transcriptSeqByEntryId: TranscriptSeqByEntryId = new Map();
+  const transcriptSeqByEntryId = new Map<string, number>();
   let transcriptRunId = opts?.runId;
   let assistantErrorTranscript = opts?.assistantErrorTranscript;
   let suppressNextUserMessagePersistence = opts?.suppressNextUserMessagePersistence === true;
@@ -710,6 +640,7 @@ export function installSessionToolResultGuard(
     anchor?: TranscriptEntryAnchor;
     appended: boolean;
     entryId: string;
+    lifecycleRevision?: string;
     message: AgentMessage;
     messageSeq?: number;
     sessionTarget?: ReturnType<SessionManager["getSessionTarget"]>;
@@ -717,48 +648,73 @@ export function installSessionToolResultGuard(
     const runOwnedMessage = attachSessionTranscriptRunId(message, transcriptRunId);
     copyCodeModeSourceAppend(message, runOwnedMessage, sourceAppend);
     const parentEntryId = sessionManager.getLeafId();
+    const originalTarget = sessionManager.getSessionTarget();
     const {
       entryId,
       anchor,
       appended,
+      lifecycleRevision,
       message: persistedMessage,
-    } = withRuntimeUserTurnTranscriptRecorder(runOwnedMessage, () =>
-      originalAppendWithTranscriptAnchor(
+    } = withRuntimeUserTurnTranscriptRecorder(runOwnedMessage, (beforeFreshMessageCommit) => {
+      // SQLite redacts again, so it must resolve the guard's same policy.
+      const appendOptions =
+        opts?.config || beforeFreshMessageCommit
+          ? copyCodeModeSourceAppendOptions(options, {
+              ...options,
+              ...(opts?.config ? { config: opts.config } : {}),
+              ...(beforeFreshMessageCommit ? { beforeFreshMessageCommit } : {}),
+            })
+          : options;
+      return originalAppendWithTranscriptAnchor(
         runOwnedMessage as never,
         sourceAppend
-          ? prepareCodeModeSourceAppend(options ?? {}, runOwnedMessage, sourceAppend)
-          : options,
-      ),
-    );
+          ? prepareCodeModeSourceAppend(appendOptions ?? {}, runOwnedMessage, sourceAppend)
+          : appendOptions,
+      );
+    });
+    const sessionTarget = anchor
+      ? {
+          agentId: anchor.agentId,
+          sessionId: anchor.sessionId,
+          sessionKey: anchor.sessionKey,
+          storePath: anchor.storePath,
+        }
+      : originalTarget;
+    const messageSeq =
+      appended && sessionTarget
+        ? resolveAppendedMessageSeq({
+            sessionManager,
+            entryId,
+            parentEntryId,
+            seqByEntryId: transcriptSeqByEntryId,
+          })
+        : undefined;
     // Destructive tool-side state commits only after this exact result is durable.
     acknowledgeInternalToolResult(acknowledgementSource);
     const persistedId =
       persistedMessage.role === "toolResult" ? extractToolResultId(persistedMessage) : null;
     // Update only committed state, before callbacks can re-enter or throw.
     if (persistedId) {
-      pendingState.delete(persistedId);
+      pending.delete(persistedId);
     }
-    pendingState.trackToolCalls(extractPendingAssistantToolCalls(persistedMessage));
+    for (const call of extractPendingAssistantToolCalls(persistedMessage)) {
+      pending.set(call.id, call.name);
+    }
     if (!appended) {
       return { entryId, message: persistedMessage, appended, ...(anchor ? { anchor } : {}) };
     }
     void opts?.onMessagePersisted?.(persistedMessage);
-    const sessionTarget = sessionManager.getSessionTarget();
     if (!sessionTarget) {
       return { entryId, message: persistedMessage, appended, ...(anchor ? { anchor } : {}) };
     }
     return {
       entryId,
       appended,
+      lifecycleRevision,
       message: persistedMessage,
       ...(anchor ? { anchor } : {}),
       sessionTarget,
-      messageSeq: resolveAppendedMessageSeq({
-        sessionManager,
-        entryId,
-        parentEntryId,
-        seqByEntryId: transcriptSeqByEntryId,
-      }),
+      messageSeq,
     };
   };
   const originalAppendCompaction = sessionManager.appendCompaction.bind(sessionManager);
@@ -767,16 +723,9 @@ export function installSessionToolResultGuard(
   ): string => {
     // Replayed boundaries supply their recorded identity; new ones inherit the owning run.
     args[5] = { runId: transcriptRunId, ...args[5] };
-    const append = () => originalAppendCompaction(...args);
-    if (!opts?.withCompactionPersistence) {
-      return append();
-    }
-    try {
-      return opts.withCompactionPersistence(append, isExpectedCompactionAppend);
-    } catch (error) {
-      sessionManager.reloadPersistedTranscript();
-      throw error;
-    }
+    return withSessionCompactionPersistence(sessionManager, opts?.withCompactionPersistence, () =>
+      originalAppendCompaction(...args),
+    );
   }) as SessionManager["appendCompaction"];
 
   /**
@@ -801,11 +750,11 @@ export function installSessionToolResultGuard(
   };
 
   const flushPendingToolResults = () => {
-    if (pendingState.size() === 0) {
+    if (pending.size === 0) {
       return;
     }
     if (allowSyntheticToolResults) {
-      for (const [id, name] of pendingState.entries()) {
+      for (const [id, name] of pending.entries()) {
         const synthetic = makeMissingToolResult({
           toolCallId: id,
           toolName: name,
@@ -837,11 +786,11 @@ export function installSessionToolResultGuard(
         }
       }
     }
-    pendingState.clear();
+    pending.clear();
   };
 
   const clearPendingToolResults = () => {
-    pendingState.clear();
+    pending.clear();
   };
 
   const guardedAppend = (
@@ -857,7 +806,7 @@ export function installSessionToolResultGuard(
         allowedToolNames: opts?.allowedToolNames,
       });
       if (sanitized.length === 0) {
-        if (pendingState.shouldFlushForSanitizedDrop()) {
+        if (pending.size > 0) {
           flushPendingToolResults();
         }
         return undefined;
@@ -873,7 +822,7 @@ export function installSessionToolResultGuard(
 
     if (nextRole === "toolResult") {
       const id = extractToolResultId(nextMessage as Extract<AgentMessage, { role: "toolResult" }>);
-      const toolName = id ? pendingState.getToolName(id) : undefined;
+      const toolName = id ? pending.get(id) : undefined;
       const normalizedToolResult = normalizePersistedToolResultName(
         nextMessage,
         toolName,
@@ -932,22 +881,20 @@ export function installSessionToolResultGuard(
       (nextRole === "assistant" &&
         toolCalls.length === 0 &&
         isTranscriptOnlyOpenClawAssistantMessage(nextMessage));
-    if (
-      !transcriptOnly &&
-      pendingState.shouldFlushBeforeNonToolResult(nextRole, toolCalls.length)
-    ) {
-      flushPendingToolResults();
+    if (!transcriptOnly) {
+      if (pending.size > 0 && (toolCalls.length === 0 || nextRole !== "assistant")) {
+        flushPendingToolResults();
+      }
     }
     // If synthetic results are disabled, a new assistant tool-call turn is a safe
     // boundary to drop older pending ids. When synthetic results are enabled,
     // do not synthesize here: parallel tool-result appends can still be racing
     // this assistant append, and transcript repair can move late real results
     // back into strict provider order before the next replay.
-    if (
-      !allowSyntheticToolResults &&
-      pendingState.shouldFlushBeforeNewToolCalls(toolCalls.length)
-    ) {
-      flushPendingToolResults();
+    if (!allowSyntheticToolResults) {
+      if (pending.size > 0 && toolCalls.length > 0) {
+        flushPendingToolResults();
+      }
     }
 
     const transformedMessage = persistMessage(nextMessage, sourceAppend);
@@ -977,6 +924,7 @@ export function installSessionToolResultGuard(
         const replayMessage = assistantErrorTranscript.record(
           finalMessage as AssistantAgentMessage,
           target,
+          message,
         );
         if (!replayMessage) {
           return undefined;
@@ -994,6 +942,7 @@ export function installSessionToolResultGuard(
       anchor,
       appended,
       entryId: result,
+      lifecycleRevision,
       message: persistedMessage,
       messageSeq,
       sessionTarget,
@@ -1012,6 +961,7 @@ export function installSessionToolResultGuard(
     if (sessionTarget) {
       const runId = resolveTerminalAssistantTranscriptRunId(persistedMessage, transcriptRunId);
       void publishTranscriptUpdate(sessionTarget, {
+        lifecycleRevision,
         message: persistedMessage,
         messageId: typeof result === "string" ? result : undefined,
         ...(messageSeq !== undefined ? { messageSeq } : {}),
@@ -1040,12 +990,13 @@ export function installSessionToolResultGuard(
   sessionManager.appendCompaction = guardedAppendCompaction;
 
   return {
+    hasPendingToolResults: () => pending.size > 0,
     flushPendingToolResults,
     clearPendingToolResults,
     clearNextUserMessagePersistenceSuppression: () => {
       suppressNextUserMessagePersistence = false;
     },
-    getPendingIds: pendingState.getPendingIds,
+    getPendingIds: () => Array.from(pending.keys()),
     setTranscriptRunId: (runId, errors) => {
       transcriptRunId = runId;
       assistantErrorTranscript = errors;

@@ -75,6 +75,7 @@ const modes: Record<
       RELEASE_CANDIDATE_BRANCH: "",
       NPM_DIST_TAG: "default",
       PREFLIGHT_ONLY: "false",
+      PREPARED_ARTIFACT: "",
       PUBLISH_SCOPE: "selected",
       RELEASE_PLUGINS: "",
       RELEASE_PUBLISH_RUN_ATTEMPT: "",
@@ -165,7 +166,9 @@ posixIt.each([
     expect(gitCommands(report)).toEqual(commands);
     expect(report.githubOutput).toBe(output);
     expect(report.readyAttempts).toHaveLength(commands.length);
-    if (output) expect(report.boundaries.some(({ name }) => name === "output")).toBe(true);
+    if (output) {
+      expect(report.boundaries.some(({ name }) => name === "output")).toBe(true);
+    }
   },
   55_000,
 );
@@ -366,16 +369,16 @@ posixIt.each(["clawhub-trust", "npm-trust"] as const)(
   55_000,
 );
 
-posixIt(
-  "npm extended-stable retains exact-tip admission and its single bounded fetch",
-  async () => {
+posixIt.each(["refs/heads/extended-stable/2026.8.33", "refs/heads/main"])(
+  "npm extended-stable retains exact-tip admission from %s",
+  async (workflowRef) => {
     const branch = "extended-stable/2026.8.33";
     const report = await pluginRun("npm-trust", {
       env: {
         NPM_DIST_TAG: "extended-stable",
         PUBLISH_SCOPE: "all-publishable",
         SOURCE_REF: sha,
-        WORKFLOW_REF: `refs/heads/${branch}`,
+        WORKFLOW_REF: workflowRef,
       },
       revisions: {
         [`${sha}^{commit}`]: sha,
@@ -468,13 +471,41 @@ posixIt.each(candidateAdmissionCases)(
       commandResults: commands,
     });
     expect(report.code, report.output).toBe(code);
-    if (message) expect(report.output).toContain(message);
+    if (message) {
+      expect(report.output).toContain(message);
+    }
     if (code === 0) {
       expect(gitCommands(report).slice(-2)).toEqual([
         ["merge-base", "--is-ancestor", workflowSha, "origin/main"],
         ["merge-base", "--is-ancestor", "HEAD", "refs/remotes/origin/extended-stable/2026.8.33"],
       ]);
     }
+  },
+  55_000,
+);
+
+posixIt.each([
+  ["moved canonical tip", "refs/heads/main", "c".repeat(40)],
+  ["untrusted workflow branch", "refs/heads/topic", sha],
+  ["same-name main tag", "refs/tags/main", sha],
+])(
+  "npm extended-stable recovery rejects %s",
+  async (_name, workflowRef, branchSha) => {
+    const branch = "extended-stable/2026.8.33";
+    const report = await pluginRun("npm-trust", {
+      env: {
+        NPM_DIST_TAG: "extended-stable",
+        PUBLISH_SCOPE: "all-publishable",
+        SOURCE_REF: sha,
+        WORKFLOW_REF: workflowRef,
+      },
+      revisions: {
+        [`${sha}^{commit}`]: sha,
+        [`refs/remotes/origin/${branch}`]: branchSha,
+      },
+    });
+    expect(report.code, report.output).toBe(1);
+    expect(report.output).toContain("Extended-stable plugin");
   },
   55_000,
 );
@@ -611,7 +642,9 @@ const terminalCases: Array<{
 
 posixIt.each(
   terminalCases.flatMap((entry) =>
-    (["cleanup-failure", "cancel"] as const).map((failure) => ({ ...entry, failure })),
+    (["cleanup-failure", "cancel"] as const).map((failure) =>
+      Object.assign({}, entry, { failure }),
+    ),
   ),
 )(
   "$mode $operation $failure fences every later Git/output/consumer boundary",

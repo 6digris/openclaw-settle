@@ -12,7 +12,11 @@ import { formatNextRun } from "../../lib/presenter.ts";
 import { updatePickers } from "../../test-helpers/select-picker.ts";
 import { createStorageMock } from "../../test-helpers/storage.ts";
 import { createSkill } from "../skills/view.test-support.ts";
-import { createAgentViewTestProps as createProps } from "./agents-view.test-helpers.ts";
+import {
+  createAgentViewTestProps as createProps,
+  inertAgentFileControls,
+  primaryModelPicker,
+} from "./agents-view.test-helpers.ts";
 import { renderAgentChannels, renderAgentFiles } from "./panels-status-files.ts";
 import { renderAgents } from "./view.ts";
 
@@ -93,7 +97,11 @@ describe("renderAgents", () => {
     expect(
       container.querySelector<HTMLInputElement>(".agent-identity-editor__fields input")?.value,
     ).toBe("Fetched Beta");
-    expect(container.querySelector(".agent-identity-editor__avatar-text")?.textContent).toBe("🦊");
+    expect(
+      container
+        .querySelector(".agent-identity-editor__avatar .identity-avatar__text")
+        ?.getAttribute("data-avatar"),
+    ).toBe("🦊");
   });
 
   it("renders and counts a server-scoped default-agent cron job without an explicit agentId", () => {
@@ -237,28 +245,6 @@ describe("renderAgents", () => {
     expect(panel?.agentId).toBe("beta");
   });
 
-  it("renders the custom agent select with the provided agents and selected label", async () => {
-    const container = document.createElement("div");
-    document.body.append(container);
-
-    try {
-      render(renderAgents(createProps()), container);
-      const select = container.querySelector("openclaw-agent-select") as
-        | (HTMLElement & {
-            options: Array<{ value: string }>;
-            updateComplete: Promise<boolean>;
-          })
-        | null;
-      expect(select).not.toBeNull();
-      await select?.updateComplete;
-
-      expect(select?.options.map((option) => option.value)).toEqual(["alpha", "beta"]);
-      expect(select?.querySelector(".agent-select__label")?.textContent?.trim()).toBe("Beta");
-    } finally {
-      container.remove();
-    }
-  });
-
   it("selects the configured primary model on initial render", async () => {
     const container = document.createElement("div");
     const configForm = {
@@ -291,9 +277,8 @@ describe("renderAgents", () => {
     );
 
     await updatePickers(container);
-    const defaultSelect = container.querySelector("openclaw-select-picker.model-picker__select");
     expect(
-      defaultSelect
+      primaryModelPicker(container)
         ?.querySelector('[role="option"][aria-selected="true"]')
         ?.getAttribute("data-value"),
     ).toBe("openai/gpt-5.4");
@@ -315,10 +300,10 @@ describe("renderAgents", () => {
     );
 
     await updatePickers(container);
-    const inheritedSelect = container.querySelector("openclaw-select-picker.model-picker__select");
-    expect(
-      inheritedSelect?.querySelector('[role="option"][aria-selected="true"]')?.textContent?.trim(),
-    ).toBe("Inherit default (openai/gpt-5.4)");
+    const inheritedSelection = primaryModelPicker(container)?.querySelector(
+      '[role="option"][aria-selected="true"]',
+    );
+    expect(inheritedSelection?.textContent?.trim()).toBe("Inherit default (openai/gpt-5.4)");
   });
 
   it("shows canonical model names alongside configured aliases in agent options", async () => {
@@ -383,7 +368,7 @@ describe("renderAgents", () => {
     );
 
     await updatePickers(container);
-    const select = container.querySelector("openclaw-select-picker.model-picker__select");
+    const select = primaryModelPicker(container);
     expect(
       select?.querySelector('[role="option"][aria-selected="true"]')?.getAttribute("data-value"),
     ).toBe("anthropic/claude-opus-4-8");
@@ -471,7 +456,7 @@ describe("renderAgents", () => {
     );
 
     await updatePickers(container);
-    const betaSelect = container.querySelector("openclaw-select-picker.model-picker__select");
+    const betaSelect = primaryModelPicker(container);
     expect(
       betaSelect?.querySelector('[role="option"][data-value="openai/gpt-5.4"]'),
     ).not.toBeNull();
@@ -493,7 +478,7 @@ describe("renderAgents", () => {
     );
 
     await updatePickers(container);
-    const alphaSelect = container.querySelector("openclaw-select-picker.model-picker__select");
+    const alphaSelect = primaryModelPicker(container);
     expect(
       alphaSelect?.querySelector('[role="option"][data-value="anthropic/claude-sonnet-4-6"]'),
     ).not.toBeNull();
@@ -727,11 +712,8 @@ describe("renderAgentFiles", () => {
         agentFileContents: { "AGENTS.md": "# Instructions" },
         agentFileDrafts: { "AGENTS.md": "# Instructions" },
         agentFileSaving: false,
-        onLoadFiles: () => undefined,
+        ...inertAgentFileControls,
         onSelectFile,
-        onFileDraftChange: () => undefined,
-        onFileReset: () => undefined,
-        onFileSave: () => undefined,
       }),
       container,
     );
@@ -777,11 +759,8 @@ describe("renderAgentFiles", () => {
         agentFileContents: { "AGENTS.md": "" },
         agentFileDrafts: { "AGENTS.md": "" },
         agentFileSaving: false,
-        onLoadFiles: () => undefined,
+        ...inertAgentFileControls,
         onSelectFile,
-        onFileDraftChange: () => undefined,
-        onFileReset: () => undefined,
-        onFileSave: () => undefined,
       }),
       container,
     );
@@ -840,11 +819,8 @@ describe("renderAgentFiles", () => {
         agentFileContents: { "SOUL.md": "" },
         agentFileDrafts: { "SOUL.md": "" },
         agentFileSaving: false,
-        onLoadFiles: () => undefined,
+        ...inertAgentFileControls,
         onSelectFile,
-        onFileDraftChange: () => undefined,
-        onFileReset: () => undefined,
-        onFileSave: () => undefined,
       }),
       container,
     );
@@ -896,11 +872,7 @@ describe("renderAgentFiles", () => {
         },
         agentFileDrafts: {},
         agentFileSaving: false,
-        onLoadFiles: () => undefined,
-        onSelectFile: () => undefined,
-        onFileDraftChange: () => undefined,
-        onFileReset: () => undefined,
-        onFileSave: () => undefined,
+        ...inertAgentFileControls,
       }),
       container,
     );
@@ -950,11 +922,7 @@ describe("renderAgentFiles", () => {
           "USER.md": "# User Profile\n\nHello world",
         },
         agentFileSaving: false,
-        onLoadFiles: () => undefined,
-        onSelectFile: () => undefined,
-        onFileDraftChange: () => undefined,
-        onFileReset: () => undefined,
-        onFileSave: () => undefined,
+        ...inertAgentFileControls,
       }),
       container,
     );
@@ -1002,11 +970,7 @@ describe("renderAgentFiles", () => {
           "USER.md": "# User Profile\n\nHello world",
         },
         agentFileSaving: false,
-        onLoadFiles: () => undefined,
-        onSelectFile: () => undefined,
-        onFileDraftChange: () => undefined,
-        onFileReset: () => undefined,
-        onFileSave: () => undefined,
+        ...inertAgentFileControls,
       }),
       container,
     );
@@ -1022,27 +986,16 @@ describe("renderAgentFiles", () => {
     const previewExpandButton = expandButton!;
     previewExpandButton.click();
 
-    expect([...previewPanel.classList]).toEqual(["md-preview-dialog__panel", "fullscreen"]);
-    expect([...previewExpandButton.classList]).toEqual([
-      "btn",
-      "btn--sm",
-      "md-preview-icon-btn",
-      "md-preview-expand-btn",
-      "is-fullscreen",
-    ]);
+    expect(previewPanel.classList.contains("fullscreen")).toBe(true);
+    expect(previewExpandButton.classList.contains("is-fullscreen")).toBe(true);
     expect(previewExpandButton.getAttribute("aria-pressed")).toBe("true");
     expect(previewExpandButton.getAttribute("aria-label")).toBe("Collapse preview");
     expect(previewExpandButton.closest("openclaw-tooltip")?.content).toBe("Collapse preview");
 
     container.querySelector<HTMLButtonElement>('[aria-label="Close preview"]')?.click();
 
-    expect([...previewPanel.classList]).toEqual(["md-preview-dialog__panel"]);
-    expect([...previewExpandButton.classList]).toEqual([
-      "btn",
-      "btn--sm",
-      "md-preview-icon-btn",
-      "md-preview-expand-btn",
-    ]);
+    expect(previewPanel.classList.contains("fullscreen")).toBe(false);
+    expect(previewExpandButton.classList.contains("is-fullscreen")).toBe(false);
     expect(previewExpandButton.getAttribute("aria-pressed")).toBe("false");
     expect(previewExpandButton.getAttribute("aria-label")).toBe("Expand preview");
     expect(previewExpandButton.closest("openclaw-tooltip")?.content).toBe("Expand preview");

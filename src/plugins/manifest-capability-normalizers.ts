@@ -4,6 +4,7 @@ import { isBlockedObjectKey } from "../infra/prototype-keys.js";
 import { isRecord } from "../utils.js";
 import { PLUGIN_MANIFEST_CONTRACT_KEYS } from "./manifest-contract-keys.js";
 import type {
+  PluginManifest,
   PluginManifestCapabilityProviderAuthSignal,
   PluginManifestCapabilityProviderConfigSignal,
   PluginManifestCapabilityProviderMetadata,
@@ -13,6 +14,7 @@ import type {
   PluginManifestConfigLiteral,
   PluginManifestContracts,
   PluginManifestDangerousConfigFlag,
+  PluginManifestDecisionModel,
   PluginManifestMcpServer,
   PluginManifestMediaUnderstandingCapability,
   PluginManifestMediaUnderstandingProviderMetadata,
@@ -23,6 +25,63 @@ import type {
   PluginManifestToolProfile,
   PluginManifestTranscriptSource,
 } from "./manifest-types.js";
+
+export function normalizeManifestDecisionModels(
+  value: unknown,
+  providers: readonly string[] | undefined,
+): PluginManifestDecisionModel[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const models: PluginManifestDecisionModel[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!isRecord(entry)) {
+      continue;
+    }
+    const provider = normalizeOptionalString(entry.provider);
+    const id = normalizeOptionalString(entry.id);
+    const name = normalizeOptionalString(entry.name);
+    if (!provider || !id || !name || !providers?.includes(provider)) {
+      continue;
+    }
+    const ref = `${provider}/${id}`;
+    if (!seen.has(ref)) {
+      models.push({ provider, id, name });
+      seen.add(ref);
+    }
+  }
+  return models.length ? models : undefined;
+}
+
+/** Endpoint restrictions constrain a provider alias without changing stored credential identity. */
+export function normalizeManifestProviderAuthAliases(
+  value: unknown,
+): PluginManifest["providerAuthAliases"] {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const aliases: NonNullable<PluginManifest["providerAuthAliases"]> = Object.create(null);
+  for (const [key, entry] of Object.entries(value)) {
+    const alias = normalizeOptionalString(key);
+    if (!alias || isBlockedObjectKey(alias)) {
+      continue;
+    }
+    if (typeof entry === "string") {
+      const provider = normalizeOptionalString(entry);
+      if (provider) {
+        aliases[alias] = provider;
+      }
+    } else if (isRecord(entry)) {
+      const provider = normalizeOptionalString(entry.provider);
+      const baseUrls = normalizeTrimmedStringList(entry.baseUrls);
+      if (provider && baseUrls.length > 0) {
+        aliases[alias] = { provider, baseUrls };
+      }
+    }
+  }
+  return Object.keys(aliases).length > 0 ? aliases : undefined;
+}
 
 function isPluginToolProfile(profile: string): profile is PluginManifestToolProfile {
   return (

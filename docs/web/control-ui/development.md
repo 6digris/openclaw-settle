@@ -9,6 +9,10 @@ sidebarTitle: "Build and develop"
 
 Contributor notes for building the Control UI and running it against a Gateway you choose.
 
+Every command on this page runs from a checkout of the `openclaw/openclaw`
+repository with `pnpm install` already done. A packaged CLI install has no
+`pnpm` scripts.
+
 ## Build and develop the UI
 
 The Gateway serves static files from `dist/control-ui`:
@@ -17,7 +21,7 @@ The Gateway serves static files from `dist/control-ui`:
 pnpm ui:build
 ```
 
-For bundled builds, the Gateway retains manifest-verified assets so already-open tabs can fetch older asset URLs after an update. The cache keeps at most three generations and 96 MiB total, preferring the current generation; older generations can be pruned sooner to meet the byte budget. Background startup preparation reuses verified inventories through publication and pruning instead of rereading unchanged retained assets at each step. Newly published assets are verified before reuse, including a concurrent publisher's winning copy. Configured `gateway.controlUi.root` builds do not use this cache.
+For bundled builds, the Gateway retains manifest-verified assets so already-open tabs can fetch older asset URLs after an update. The cache serves at most three generations and 96 MiB total, preferring the current generation; older generations can be pruned sooner to meet the byte budget. Background startup preparation reuses verified inventories through publication and pruning instead of rereading unchanged retained assets at each step. Newly published assets are verified before reuse, including a concurrent publisher's winning copy. Each pruner claims an old directory before removing it so concurrent publishers do not delete the same tree. Cleanup failures log a warning and may temporarily leave extra files on disk, without discarding a successfully published generation. Later preparation can reclaim abandoned staging directories after one hour. Configured `gateway.controlUi.root` builds do not use this cache.
 
 Bundled public assets (themes, fonts, icons, and artwork) use `?v=<build-id>` URLs with a one-year immutable HTTP cache. The ID includes a digest of the public files, so rebuilding changed files at the same commit also changes their URLs. The Gateway snapshots this identity at startup; restart it after rebuilding an in-place installation. Unversioned requests, stale IDs, documents, `sw.js`, and custom `gateway.controlUi.root` installs keep `Cache-Control: no-cache`. The service worker keeps its network-first policy for public assets, allowing the browser's HTTP cache to satisfy matching versioned requests.
 
@@ -40,6 +44,33 @@ pnpm ui:dev
 ```
 
 Then point the UI at your Gateway WS URL (e.g. `ws://127.0.0.1:18789`).
+
+To use the real Gateway's capabilities, media, and native plugin UI while
+developing, select its URL when starting Vite:
+
+```bash
+OPENCLAW_UI_DEV_GATEWAY_URL=http://127.0.0.1:18789 pnpm ui:dev --host 127.0.0.1 --port 5173
+```
+
+Configured development binds to loopback by default. Open `http://127.0.0.1:5173` and use the Gateway's normal authentication and
+device pairing. The target accepts `http://`, `https://`, `ws://`, or `wss://`,
+including a configured Gateway base path. Keep credentials out of this setting.
+Add the exact browser origin to `gateway.controlUi.allowedOrigins` when needed;
+the development proxy preserves the browser's Origin and does not provide
+authentication credentials.
+
+Vite serves the UI and its hot reload connection, and proxies Gateway requests.
+The UI keeps credentials and saved settings scoped to the actual Gateway. An
+owner pairing handoff can be delivered on the dev page while retaining its
+original Gateway destination and fragment. To use another Gateway, restart
+Vite with the new target; an already-open page cannot forward requests through
+the replacement target. Reload the page after restarting Vite.
+
+UI edits use Vite's normal hot reload or page reload. Start the Gateway's source
+watch separately when developing its implementation. Stopping Vite stops its
+proxy, without stopping the Gateway or deleting either application's state.
+Without `OPENCLAW_UI_DEV_GATEWAY_URL`, `pnpm ui:dev` retains its existing
+standalone connection behavior. This setting does not affect `pnpm ui:build`.
 
 For a standalone preview with synthetic data, use:
 
@@ -69,6 +100,47 @@ browser extensions, or an already-controlling service worker. Browser-level
 navigation outside the app is outside its control. Production connection settings
 and `pnpm ui:dev` behavior are unchanged; use that command when you intentionally
 need a real Gateway or external integration.
+
+## Chat input ownership
+
+`ChatOutboxGatewayOwner` owns queued-input admission, updates, removal, and the
+matching pane projections. Single-row changes and reordering share one durable
+compare-and-set operation; queue callers do not publish separate storage and
+display updates. Command completion uses the composer recovery owner to retain
+or release draft attachments. Delivery waits for the full settings-update chain,
+then continues admission synchronously so another picker update cannot enter
+between settlement and transport.
+
+## Chat render scheduling
+
+Streaming deltas and session-roster notifications must not trigger a render for
+each event. The chat stream owns its frame queue; the shell and chat-page session
+subscriptions coalesce their presentation updates through `SubscriptionsController`.
+Their state synchronization stays immediate, while the Lit commit runs inside the
+scheduled frame so child property bindings do not escape into a later microtask.
+Disconnecting or replacing a subscription retires its queued frame. Hidden
+documents retain immediate invalidation because animation frames may be suspended.
+
+The `chat-stream-runtime-budgets.e2e.test.ts` suite protects streaming with
+structural update counts; chat-page unit tests cover intervening roster publications.
+
+## Talk live smoke test
+
+Maintainers can exercise the browser Talk paths end to end from the repository
+root. Replace each placeholder with a real key:
+
+```bash
+OPENAI_API_KEY=<openai-key> GEMINI_API_KEY=<gemini-key> \
+  node --import tsx scripts/dev/realtime-talk-live-smoke.ts
+```
+
+The run verifies the OpenAI backend WebSocket bridge, a synthesized PCM24
+speech-to-response audio roundtrip, OpenAI browser WebRTC SDP exchange, Google
+Live constrained-token browser setup with a JPEG frame and `describe_view`
+function roundtrip, and the Gateway relay browser adapter with fake microphone
+media. Pass `--openai-audio-cycles 3` for a short repeated OpenAI connect,
+talkback, and close soak. The command prints provider status only and does not
+log secrets.
 
 ## Debugging/testing: dev server + remote Gateway
 

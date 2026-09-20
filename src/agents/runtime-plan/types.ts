@@ -4,7 +4,6 @@
  * observability decisions shared across embedded-agent hot paths.
  */
 import type { TSchema } from "typebox";
-import type { FailoverReason as AgentRuntimeFailoverReason } from "../../../packages/gateway-protocol/src/failover-reasons.js";
 import type {
   ModelApi,
   ProviderModelRouteRuntimePolicy,
@@ -12,6 +11,7 @@ import type {
 } from "../../plugin-sdk/provider-model-types.js";
 import type { ReplyPayload as AgentRuntimeReplyPayload } from "../../shared/reply-payload.types.js";
 import type { AuthProfileStore } from "../auth-profiles/types.js";
+import type { ModelFallbackResultClassification } from "../model-fallback-attempt.js";
 import type { ProviderModelAuthSourceClassification } from "../provider-model-auth-source-plan.js";
 import type { AgentTool } from "../runtime/index.js";
 
@@ -136,21 +136,6 @@ type AgentRuntimeTranscriptPolicy = {
   allowSyntheticToolResults: boolean;
 };
 
-/** Classified model-call failure or success observation for fallback. */
-type AgentRuntimeOutcomeClassification =
-  | {
-      message: string;
-      reason?: AgentRuntimeFailoverReason;
-      status?: number;
-      code?: string;
-      rawError?: string;
-    }
-  | {
-      error: unknown;
-    }
-  | null
-  | undefined;
-
 /** Runtime hook that classifies run results for model fallback. */
 type AgentRuntimeOutcomeClassifier = (params: {
   provider: string;
@@ -158,7 +143,7 @@ type AgentRuntimeOutcomeClassifier = (params: {
   result: unknown;
   hasDirectlySentBlockReply?: boolean;
   hasBlockReplyPipelineOutput?: boolean;
-}) => AgentRuntimeOutcomeClassification;
+}) => ModelFallbackResultClassification;
 
 /** Resolved provider/model/harness/transport reference for an attempt. */
 type AgentRuntimeResolvedRef = {
@@ -242,25 +227,20 @@ type PreparedOpenClawToolPlanning = {
   metadataSnapshot?: AgentRuntimePreparedMetadataSnapshot;
 };
 
+type AgentRuntimeModelOverrides = {
+  workspaceDir?: string;
+  modelApi?: string;
+  model?: AgentRuntimeModel;
+};
+
 /** Tool normalization and diagnostics hooks for one runtime attempt. */
 type AgentRuntimeToolPlan = {
   preparedPlanning?: PreparedOpenClawToolPlanning;
   normalize<TSchemaType extends TSchema = TSchema, TResult = unknown>(
     tools: AgentTool<TSchemaType, TResult>[],
-    params?: {
-      workspaceDir?: string;
-      modelApi?: string;
-      model?: AgentRuntimeModel;
-    },
+    params?: AgentRuntimeModelOverrides,
   ): AgentTool<TSchemaType, TResult>[];
-  logDiagnostics(
-    tools: AgentTool[],
-    params?: {
-      workspaceDir?: string;
-      modelApi?: string;
-      model?: AgentRuntimeModel;
-    },
-  ): void;
+  logDiagnostics(tools: AgentTool[], params?: AgentRuntimeModelOverrides): void;
 };
 
 /** Delivery behavior hooks for one runtime attempt. */
@@ -278,11 +258,6 @@ export type AgentRuntimeDeliveryPlan = {
     originRoutable: boolean;
     dispatcherAvailable: boolean;
   }): AgentRuntimeFollowupFallbackRouteResult | undefined;
-};
-
-/** Outcome classification hooks for one runtime attempt. */
-export type AgentRuntimeOutcomePlan = {
-  classifyRunResult: AgentRuntimeOutcomeClassifier;
 };
 
 /** Extra transport parameter plan for one runtime attempt. */
@@ -307,23 +282,14 @@ export type AgentRuntimePlan = {
   tools: AgentRuntimeToolPlan;
   transcript: {
     policy: AgentRuntimeTranscriptPolicy;
-    resolvePolicy(params?: {
-      workspaceDir?: string;
-      modelApi?: string;
-      model?: AgentRuntimeModel;
-    }): AgentRuntimeTranscriptPolicy;
+    resolvePolicy(params?: AgentRuntimeModelOverrides): AgentRuntimeTranscriptPolicy;
   };
   delivery: AgentRuntimeDeliveryPlan;
-  outcome: AgentRuntimeOutcomePlan;
+  outcome: { classifyRunResult: AgentRuntimeOutcomeClassifier };
   transport: AgentRuntimeTransportPlan;
-  observability: {
+  observability: AgentRuntimeResolvedRef & {
     resolvedRef: string;
-    provider: string;
-    modelId: string;
-    modelApi?: string;
-    harnessId?: string;
     authProfileId?: string;
-    transport?: AgentRuntimeTransport;
   };
 };
 
@@ -338,12 +304,7 @@ export type BuildAgentRuntimeDeliveryPlanParams = {
 };
 
 /** Inputs needed to build the full prepared runtime plan. */
-export type BuildAgentRuntimePlanParams = {
-  config?: unknown;
-  workspaceDir?: string;
-  agentDir?: string;
-  provider: string;
-  modelId: string;
+export type BuildAgentRuntimePlanParams = BuildAgentRuntimeDeliveryPlanParams & {
   model?: AgentRuntimeModel;
   modelApi?: string | null;
   harnessId?: string;

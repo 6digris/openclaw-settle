@@ -28,6 +28,7 @@ import {
   type TestChatPane,
 } from "./chat-pane.test-support.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
+import { openSessionWorkspacePreview } from "./components/chat-session-workspace-state.ts";
 import type { SidebarContent } from "./components/chat-sidebar.ts";
 import { cacheChatSessionSnapshot, type ChatMessageCache } from "./session-message-cache.ts";
 import { openSlot } from "./sidebar-layout.ts";
@@ -609,8 +610,8 @@ describe("chat pane initialization", () => {
     const response = createDeferred<Record<string, unknown>>();
     const request = vi.fn(() => response.promise);
     const client = createGatewayBrowserClientFixture({ request });
-    const sessions = createSessionCapabilityFixture();
-    const { state } = createTestChatPane({ client, sessions });
+    const { state, sessions } = createTestChatPane({ client });
+    vi.spyOn(sessions, "listBranches").mockResolvedValue([]);
     state.chatMessagesBySession = new Map();
     state.chatMessages = [nativeHistoryMessage(1, "prior account transcript")];
     const stop = subscribeChatPaneSnapshotInvalidation(() => state);
@@ -642,8 +643,7 @@ describe("chat pane initialization", () => {
     const client = createGatewayBrowserClientFixture({
       request,
     });
-    const sessions = createSessionCapabilityFixture();
-    const { pane, state } = createTestChatPane({ client, sessions });
+    const { pane, state } = createTestChatPane({ client });
     const canonicalSessionKey = "agent:main:main";
     const hello = {
       features: { methods: ["chat.startup"] },
@@ -700,6 +700,7 @@ describe("chat pane initialization", () => {
     expect(request).toHaveBeenCalledWith(
       "chat.startup",
       expect.objectContaining({ sessionKey: canonicalSessionKey }),
+      { signal: expect.any(AbortSignal) },
     );
   });
 
@@ -798,12 +799,12 @@ describe("chat pane keyboard shortcuts", () => {
       "workspace",
     ]);
     expect(state.sidebarContent).toBe(canvasContent);
-    state.attachmentSidebarContent = {
+    openSessionWorkspacePreview(state, "attachment:report", "report.pdf", {
       kind: "attachment",
       attachmentKind: "document",
       title: "report.pdf",
       src: "/media/report.pdf",
-    };
+    });
 
     const collapseEvent = new KeyboardEvent("keydown", {
       cancelable: true,
@@ -818,7 +819,7 @@ describe("chat pane keyboard shortcuts", () => {
     expect(hasWorkspace()).toBe(false);
     expect(state.sidebarLayout.columns[0]?.panels[0]?.slot).toBe("detail");
     expect(state.sidebarContent).toBe(canvasContent);
-    expect(state.attachmentSidebarContent).toBeNull();
+    expect(state.sessionWorkspaceState?.previews ?? []).toEqual([]);
 
     const mainSidebarEvent = dispatchSidebarShortcut(pane, false);
     expect(mainSidebarEvent.defaultPrevented).toBe(false);
@@ -950,6 +951,10 @@ describe("chat pane history pagination intent", () => {
     pane.syncHistoryObserver = vi.fn();
     const event = new Event("scroll");
     const thread = document.createElement("div");
+    Object.defineProperties(thread, {
+      scrollHeight: { value: 1000 },
+      clientHeight: { value: 500 },
+    });
     thread.scrollTop = 80;
     Object.defineProperty(event, "target", { value: thread });
 
@@ -970,6 +975,10 @@ describe("chat pane history pagination intent", () => {
     pane.transcriptScrollTop = 100;
     pane.syncHistoryObserver = vi.fn();
     const thread = document.createElement("div");
+    Object.defineProperties(thread, {
+      scrollHeight: { value: 1000 },
+      clientHeight: { value: 500 },
+    });
     const event = new Event("scroll");
     Object.defineProperty(event, "target", { value: thread });
 

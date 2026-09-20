@@ -4,6 +4,10 @@ import type {
   CommandEntry,
   CommandsListParams,
   ModelChoice,
+  QuestionGetResult,
+  QuestionListResult,
+  QuestionResolveParams,
+  QuestionResolveResult,
   SessionsListParams,
   SessionsPatchParams,
   SessionsPatchResult,
@@ -28,6 +32,19 @@ export type ChatSendOptions = {
 export type TuiChatSendResult = {
   runId: string;
   status?: string;
+};
+
+export type TuiImageRequest = {
+  sessionKey: string;
+  agentId?: string;
+  source: string;
+  artifactId?: string;
+  signal: AbortSignal;
+};
+
+export type TuiImageData = {
+  data: string;
+  mimeType: string;
 };
 
 export type TuiApprovalDecision = "allow-once" | "allow-always" | "deny";
@@ -194,6 +211,7 @@ export type TuiBackend = {
     runId?: string;
   }) => Promise<{ ok: boolean; aborted: boolean; runIds?: string[] }>;
   loadHistory: (opts: { sessionKey: string; agentId?: string; limit?: number }) => Promise<unknown>;
+  loadImage?: (opts: TuiImageRequest) => Promise<TuiImageData>;
   listSessions: (opts?: SessionsListParams) => Promise<TuiSessionList>;
   listAgents: () => Promise<TuiAgentsList>;
   patchSession: (opts: SessionsPatchParams) => Promise<SessionsPatchResult>;
@@ -208,6 +226,9 @@ export type TuiBackend = {
   listCommands?: (opts?: CommandsListParams) => Promise<CommandEntry[]>;
   listPluginApprovals?: () => Promise<unknown>;
   resolvePluginApproval?: (id: string, decision: TuiApprovalDecision) => Promise<{ ok?: boolean }>;
+  listQuestions?: () => Promise<QuestionListResult>;
+  getQuestion?: (id: string) => Promise<QuestionGetResult>;
+  resolveQuestion?: (params: QuestionResolveParams) => Promise<QuestionResolveResult>;
   getTaskSuggestionActionCapabilities?: () => TuiTaskSuggestionActionCapabilities;
   listTaskSuggestions?: () => Promise<TaskSuggestion[]>;
   acceptTaskSuggestion?: (taskId: string) => Promise<TaskSuggestionsAcceptResult>;

@@ -118,7 +118,9 @@ Use this with `$release-openclaw-maintainer` and `$openclaw-testing` when a rele
   and serve as Release SHA. One successful fresh full parent may qualify both
   roles and their exact publication bytes. If notes change afterward, a later
   Release SHA may reuse product evidence only when its complete delta from
-  Code SHA is exactly `CHANGELOG.md`; its changed bytes still need qualification.
+  Code SHA changes the selected `CHANGELOG/YYYY.M.PATCH.md` and optionally
+  `CHANGELOG.md` and `CHANGELOG/records/YYYY.M.PATCH.md`, with no other paths,
+  renames, or deletions; its changed bytes still need qualification.
 - Extended-stable validates one exact branch tip; it does not reuse the regular
   Code-SHA/Release-SHA evidence model.
 - In a sparse worktree or Testbox source sync, first confirm `package.json`,
@@ -268,6 +270,28 @@ The script prints only provider status and HTTP class, never tokens.
 The Anthropic check performs a tiny message completion so exhausted or
 non-billable credentials fail before the expensive release matrix.
 
+### Before publication
+
+For regular beta/stable protected publication, after evidence validation run
+`pnpm release:publish-preflight` with the intended tag, exact Full Release
+Validation run and attempt, npm dist-tag, plugin scope, approved soak waiver when
+applicable, and protected publication tooling ref. `pnpm release:candidate`
+invokes this check with its downloaded manifests; do not redownload them or
+replace the selected attempt. Use the report's exact dispatch command for the
+chosen publication route only after resolving every `FAIL` and owner-action
+`WARN`. Alpha uses its matching Tideclaw branch; extended-stable retains its
+separate owner workflows and is not admitted by this preflight.
+
+Check the report before retrying a failed publication: preserve the verified
+`openclaw_npm_resume_run_id` for already-published core bytes, inspect matching
+draft/published release state, and identify exact orphaned plugin/ClawHub children
+before cancellation. Preflight is read-only and does not authorize publication,
+cancel children, or prove a repository secret from local credentials. Bootstrap
+candidates need a read-only `npm whoami` probe using the repository's actual
+`NPM_TOKEN`; follow the secret-isolated step in
+[Release policy](https://docs.openclaw.ai/reference/RELEASING#probe-the-bootstrap-token)
+and retain its run URL. Do not rotate credentials as part of a diagnostic check.
+
 ## Dispatch
 
 An early standalone product-performance run is optional beta confidence. If
@@ -310,11 +334,21 @@ Prefer an immutable trusted-main workflow revision, target the exact Code SHA:
 
 ```bash
 TOOLING_SHA="<exact-main-ancestor-sha>"
+PUBLICATION_SELECTION='{"route":"normal","npmDistTag":"latest","publishOpenclawNpm":true,"pluginPublishScope":"all-publishable","plugins":[]}'
 node scripts/full-release-validation-at-sha.mjs \
   --sha <code-sha> \
   --target-ref release/YYYY.M.PATCH \
-  --workflow-sha "$TOOLING_SHA"
+  --workflow-sha "$TOOLING_SHA" \
+  -f validation_purpose=publish \
+  -f publication_selection_json="$PUBLICATION_SELECTION"
 ```
+
+Select `npmDistTag=beta` for beta publication and `route=prepared` only for an
+intended prepared-button consumer. The source-admission result does not qualify
+registry state or authorize publishing. Nonpublish investigations use explicit
+`validation_purpose=diagnostic` without publication selection; recurring main
+qualification uses `main-qualification`, and exact published-package confidence
+uses `postpublish-confidence`. Keep coverage/profile selection independent.
 
 For regular `release/*` validation, never raw-dispatch the workflow without
 `target_context_ref` (the helper's `--target-ref` records it). Canonical
@@ -337,7 +371,8 @@ current release-isolation contract; older workflow revisions fail closed.
 
 For immutable workflow proof on a moving `main`, use
 `pnpm ci:full-release --sha <code-sha> --target-ref
-release/YYYY.M.PATCH --workflow-sha <tooling-sha>`. Its canonical `release-ci/*` ref keeps evidence reuse
+release/YYYY.M.PATCH --workflow-sha <tooling-sha> -f validation_purpose=publish
+-f publication_selection_json="$PUBLICATION_SELECTION"`. Its canonical `release-ci/*` ref keeps evidence reuse
 enabled after proving the workflow commit is still on trusted `main` lineage.
 Pass `-f reuse_evidence=false` only when the operator intentionally needs a
 fresh full run.
@@ -347,10 +382,16 @@ that Code SHA as Release SHA and use the same successful parent/attempt and
 its exact prepared bytes for candidate and publication checks. Required gates,
 final channel-specific SDK review and acknowledgement still apply.
 
-Only if notes change after qualification, commit exactly `CHANGELOG.md` and
+Only if notes change after qualification, commit the selected release entry and
+any matching record/index updates, then
 optionally run the helper against the new Release SHA with reuse. That parent must report
-`policy=changelog-only-release-v1`, `evidenceSha=<code-sha>`, and
-`changedPaths=["CHANGELOG.md"]`; it should reuse the product matrix instead of
+`policy=split-changelog-release-v1`, `evidenceSha=<code-sha>`, and the complete
+`changedPaths`: the selected `CHANGELOG/YYYY.M.PATCH.md` is required, with only
+`CHANGELOG.md` and `CHANGELOG/records/YYYY.M.PATCH.md` permitted alongside it.
+Entry/record additions or modifications are permitted; index changes must be
+modifications. Renames, deletions, other releases, and docs source edits require
+fresh product qualification. Historical root-only receipts retain
+`changelog-only-release-v1`. The split path should reuse the product matrix instead of
 dispatching child lanes. Npm preflight and package/install acceptance still run
 against the exact Release SHA and its new tarball bytes.
 
@@ -361,8 +402,12 @@ recovering historical separate evidence. Regular final qualification records
 SDK reports for both `beta` and `latest`; review the acknowledgement for the
 actual publication channel. Prepared descriptors live in `publicationArtifacts` in
 the exact final manifest. Product evidence reuse never substitutes Code-SHA
-package or image bytes for the final Release SHA. A parent that produced these
-artifacts needs a fresh all-group FRV instead of same-parent continuation.
+package or image bytes for the final Release SHA. For failed independent npm qualification, use `pnpm frv continue --failed`:
+failed npm jobs retry on their original run, successful preparation jobs
+and diagnostic children carry forward, and the parent verifies the resulting
+receipts. Failure alone is not a continuation rejection. Frozen workflows
+execute their original receipt logic; a local controller upgrade does not
+retrofit that logic, and final verification still owns the recovery result.
 
 The SHA-pinned helper infers `beta` for matching beta release candidates and
 exact alpha tags, and `stable` for stable/correction versions, then passes the
@@ -377,29 +422,93 @@ focused fixes; never widen automatically.
 Publish with `openclaw-release-publish.yml` using `release_profile=from-validation`
 unless a maintainer intentionally wants to cross-check a specific profile; the
 publish workflow reads the effective profile from the full-validation manifest.
+Stable publication requires soak unless the operator supplies `stable_soak_waiver`
+with a reason; the publisher forwards and records that reason in release evidence
+without changing validation coverage or other publication gates.
 
 ### Extended-stable validation
 
-For `.33+` shared publication, use the trusted main-pinned helper against the
-immutable canonical branch tip. The protected publication tooling tag requires
-a canonical `release-ci/<sha12>-<epoch>` producer at the recorded validation Tooling SHA:
+Use one remote-only procedure for `.33+` extended-stable validation. Keep these
+four identities separate:
+
+- **Validation SHA:** exact 40-character candidate commit to validate.
+- **Tooling SHA:** exact trusted-main commit whose workflows and helpers run.
+- **Context ref:** canonical `extended-stable/YYYY.M.33` branch containing the
+  candidate.
+- **Workflow transport ref:** immutable
+  `release-ci/<tooling-sha-prefix>-<unique-id>` branch at the Tooling SHA.
+
+GitHub workflow dispatch `--ref` accepts a branch or tag name, not a raw commit
+SHA. Never raw-dispatch this validation or hand-assemble its identity inputs.
+Use the checked helper exclusively:
 
 ```bash
-RELEASE_SHA="<frozen-canonical-branch-tip-sha>"
+VALIDATION_SHA="<exact-candidate-sha>"
 TOOLING_SHA="<recorded-full-main-ancestor-sha>"
+CONTEXT_REF="extended-stable/YYYY.M.33"
 pnpm ci:full-release \
-  --sha "$RELEASE_SHA" \
-  --target-ref extended-stable/YYYY.M.33 \
+  --sha "$VALIDATION_SHA" \
+  --target-ref "$CONTEXT_REF" \
   --workflow-sha "$TOOLING_SHA" \
-  -f release_profile=stable
+  -f validation_purpose=publish \
+  -f publication_selection_json='{"route":"extended-stable","npmDistTag":"extended-stable","publishOpenclawNpm":true,"pluginPublishScope":"all-publishable","plugins":[]}' \
+  -f release_profile=stable \
+  -f run_release_soak=true \
+  -f fail_fast=false \
+  -f rerun_group=all \
+  -f reuse_evidence=false \
+  -f dispatch_release_evidence=false
 ```
 
+The helper verifies both SHAs, creates the transport ref with the equivalent of
+the following GitHub refs operation, and dispatches from that branch:
+
+```bash
+gh api --method POST repos/openclaw/openclaw/git/refs \
+  -f ref="refs/heads/release-ci/${TOOLING_SHA:0:12}-<unique-id>" \
+  -f sha="$TOOLING_SHA"
+```
+
+Do not run that operation separately. The helper also supplies
+`ref=$VALIDATION_SHA`, `expected_sha=$VALIDATION_SHA`,
+`target_context_ref=$CONTEXT_REF`, and this exact trusted identity:
+
+```text
+{"fullRef":"refs/heads/main","ref":"main","sha":"<tooling-sha>"}
+```
+
+Outside this extended-stable procedure, a direct canonical-branch dispatch is
+valid only when that branch's own head is both the Validation SHA and the
+trusted workflow implementation to execute. It cannot use a different
+trusted-main Tooling SHA. Current extended-stable validation requires distinct
+trusted-main tooling, so it must use the immutable `release-ci/*` transport
+above. Direct canonical-branch and mutable-`main` dispatches are not valid
+alternatives for this procedure.
+
 Accept only a complete `rerun_group=all` run with a supported exact-target
-manifest. Bind its workflow SHA separately from the canonical target SHA;
-require the manifest target, package versions, saved `run_attempt`, and final
-tag to identify the same candidate. Direct canonical-branch and direct `main`
-producers do not satisfy protected-tag publication. Reject narrow runs,
-untrusted tooling, mismatched targets, and earlier-attempt evidence.
+manifest. Bind its workflow SHA separately from the candidate SHA; require the
+manifest target, package versions, saved `run_attempt`, and final tag to identify
+the same candidate. Reject narrow runs, untrusted tooling, mismatched targets,
+and earlier-attempt evidence.
+
+Run the npm preflight separately from trusted `main`. Here `tag` is the exact
+candidate SHA; it is an npm-preflight input, not the workflow transport ref:
+
+```bash
+gh workflow run openclaw-npm-release.yml \
+  --repo openclaw/openclaw \
+  --ref main \
+  -f tag="$VALIDATION_SHA" \
+  -f preflight_only=true \
+  -f npm_dist_tag=extended-stable \
+  -f release_candidate_branch="$CONTEXT_REF"
+```
+
+This standalone run is a supplemental validation-only preflight. Do not pass
+its run ID as publication `preflight_run_id`: a `main` workflow head does not
+have the canonical candidate branch/SHA identity required by that publication
+input. Publication continues to use the Full Release Validation run's
+manifest-bound integrated npm artifact and exact run attempt.
 
 Product failures need an approved backport. Frozen-target tooling failures need
 the smallest behavior-preserving repair. Provider, approval, runner, or log
@@ -483,7 +592,8 @@ run-ID-cached bytes first.
      prerequisite, and retry only the failed surface
    - wrapper/monitor failure: keep the child and candidate identities; record
      the wrapper result separately from the child result
-   - changelog/release-note failure: change only `CHANGELOG.md`, keep Code SHA
+   - changelog/release-note failure: change only the selected release entry and
+     permitted record/index paths under `split-changelog-release-v1`, keep Code SHA
      evidence, and repeat Release SHA proof
    - publish child/registry selector failure: keep Release SHA and resume the
      failed child; never rebuild an immutable version that already published

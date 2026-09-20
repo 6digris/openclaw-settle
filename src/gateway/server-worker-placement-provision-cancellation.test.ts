@@ -1,6 +1,7 @@
 import { setImmediate } from "node:timers/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getWorkerPlacementStartupMocks } from "./server-worker-placement-startup.test-harness.js";
+import { seedAttachedPlacementEnvironment } from "./worker-environments/placement-test-fixtures.js";
 
 const { runtimeFactoryMocks, moveDestinationMocks } = getWorkerPlacementStartupMocks();
 const workspace = vi.hoisted(() => ({ preflight: vi.fn() }));
@@ -126,35 +127,23 @@ describe("dispatch Stop before provider allocation", () => {
         signal?.throwIfAborted();
       });
       const placements = createWorkerSessionPlacementStore({ database: support.testState.stateDb });
-      const harness = createHarness(placements, { workspacePath: support.testState.root });
+      const harness = createHarness(support.testState.stateDb, placements, {
+        workspacePath: support.testState.root,
+      });
       const active = harness.placements.seedActive(2, "remote-exec");
       if (active.state !== "active") {
         throw new Error("Move fixture requires an active source");
       }
       harness.markEnvironmentOwnerEpoch(active.activeOwnerEpoch);
-      support.testState.stateDb.db
-        .prepare(`INSERT INTO worker_environments (
-        environment_id, provider_id, profile_id, profile_snapshot_json,
-        provision_operation_id, lease_id, state, owner_epoch,
-        attached_session_ids_json, created_at_ms, updated_at_ms, state_changed_at_ms
-      ) VALUES (?, 'test', ?, '{}', ?, 'lease-move', 'attached', ?, ?, 1000, 1000, 1000)`)
-        .run(
-          active.environmentId,
-          REQUEST.profileId,
-          `provision:${active.environmentId}`,
-          active.activeOwnerEpoch,
-          JSON.stringify([active.sessionId]),
-        );
+
       if (outcome === "published") {
-        vi.mocked(harness.environments.create).mockImplementation(
-          async (_profile, _key, _machine, _mode, _path, signal) => {
-            destinationSignal = signal;
-            entered.resolve();
-            await release.promise;
-            signal?.throwIfAborted();
-            throw new Error("published destination must be canceled");
-          },
-        );
+        vi.mocked(harness.environments.createWithRequest).mockImplementation(async ({ signal }) => {
+          destinationSignal = signal;
+          entered.resolve();
+          await release.promise;
+          signal?.throwIfAborted();
+          throw new Error("published destination must be canceled");
+        });
       }
       const environments = {
         ...support.createService(support.createProvider()),
@@ -257,7 +246,9 @@ describe("dispatch Stop before provider allocation", () => {
             expect(stopped).toBeInstanceOf(Error);
           }
         }
-        expect(harness.environments.create).toHaveBeenCalledTimes(outcome === "published" ? 1 : 0);
+        expect(harness.environments.createWithRequest).toHaveBeenCalledTimes(
+          outcome === "published" ? 1 : 0,
+        );
         expect(placements.listPendingWorkspaceResults()).toEqual([]);
       } finally {
         release.resolve();
@@ -326,6 +317,11 @@ describe("dispatch Stop before provider allocation", () => {
       const environments = support.createService(support.createProvider());
       const placements = createWorkerSessionPlacementStore({ database: support.testState.stateDb });
       if (state === "reclaimed") {
+        seedAttachedPlacementEnvironment(support.testState.stateDb, {
+          environmentId: "old-environment",
+          sessionId: REQUEST.sessionId,
+          ownerEpoch: 1,
+        });
         const active = seedActivePlacement(placements, {
           environmentId: "old-environment",
           ownerEpoch: 1,
@@ -350,6 +346,9 @@ describe("dispatch Stop before provider allocation", () => {
           to: "reclaimed",
           expectedGeneration: current.generation,
         });
+        support.testState.stateDb.db
+          .prepare("DELETE FROM worker_environments WHERE environment_id = ?")
+          .run("old-environment");
       }
       const entered = createDeferredCore();
       const release = createDeferredCore();
@@ -357,7 +356,7 @@ describe("dispatch Stop before provider allocation", () => {
         entered.resolve();
         await release.promise;
       });
-      const create = vi.spyOn(environments, "create");
+      const create = vi.spyOn(environments, "createWithRequest");
       const runtime = createGatewayWorkerPlacementRuntime({
         placements,
         environments,
@@ -494,7 +493,7 @@ describe("dispatch Stop before provider allocation", () => {
       );
       workspace.preflight.mockResolvedValue(undefined);
       const placements = createWorkerSessionPlacementStore({ database: support.testState.stateDb });
-      const harness = createHarness(placements);
+      const harness = createHarness(support.testState.stateDb, placements);
       const environments = {
         ...support.createService(support.createProvider()),
         ...harness.environments,
@@ -792,7 +791,11 @@ describe("dispatch Stop before provider allocation", () => {
         patch: { environmentId: intent.environmentId },
       });
       await expect(
-        environments.create("development", key, undefined, REQUEST.executionMode),
+        environments.createWithRequest({
+          profileId: "development",
+          idempotencyKey: key,
+          executionMode: REQUEST.executionMode,
+        }),
       ).rejects.toMatchObject({ code: "provider_failure" });
       const cancelSessionWork = vi.fn(
         async (

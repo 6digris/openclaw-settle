@@ -9,7 +9,7 @@ import {
   normalizeChannelId,
 } from "../channels/plugins/index.js";
 import { resolveInstallableChannelPlugin } from "../commands/channel-setup/channel-plugin-resolution.js";
-import { assertAccountSelectorForMutation } from "../commands/channels/account-selector.js";
+import { parseAccountSelector } from "../commands/channels/account-selector.js";
 import { requireValidConfigForWrite } from "../commands/config-validation.js";
 import { getRuntimeConfig, type OpenClawConfig } from "../config/config.js";
 import { applyPluginAutoEnable } from "../config/plugin-auto-enable.js";
@@ -104,7 +104,12 @@ async function resolveChannelPluginForMode(
   channelId: string;
   plugin: ChannelPlugin;
 } | null> {
-  assertAccountSelectorForMutation(opts.account);
+  parseAccountSelector(opts.account);
+  // Only omission infers the channel. A blank value from an unset shell variable must
+  // not redirect login or logout to a channel the caller never named.
+  if (opts.channel !== undefined && !opts.channel.trim()) {
+    throw new Error("--channel must not be blank");
+  }
   const writeSnapshot = await requireValidConfigForWrite(runtime);
   if (!writeSnapshot) {
     return null;

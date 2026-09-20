@@ -7,8 +7,8 @@ import {
   recordDoctorHealthWarnings,
   renderStructuredHealthFindings,
 } from "./doctor-health-contribution.js";
-import { defineSplitHealthCheckInput } from "./health-check-adapter.js";
-import type { DetectableHealthCheckInput } from "./health-check-runner-types.js";
+import { copyHealthCheck } from "./health-check-adapter.js";
+import type { DoctorHealthCheck } from "./health-check-runner-types.js";
 import { isHealthCheckEnabledByDefault, type HealthFinding } from "./health-checks.js";
 
 const loadHealthCheckRegistryModule = async () => await import("./health-check-registry.js");
@@ -33,9 +33,10 @@ function reportDoctorRepairResult(
 function withDoctorHealthCheckFacts<T extends object>(
   ctx: DoctorHealthFlowContext,
   input: T,
-): T & Pick<DoctorHealthCheckContext, "runWithPluginMetadataSnapshot"> {
+): T & Pick<DoctorHealthCheckContext, "runWithPluginMetadataSnapshot" | "agentDatabaseRefusals"> {
   return {
     ...input,
+    agentDatabaseRefusals: ctx.agentDatabaseRefusals,
     ...(ctx.runWithPluginMetadataSnapshot
       ? { runWithPluginMetadataSnapshot: ctx.runWithPluginMetadataSnapshot }
       : {}),
@@ -44,7 +45,7 @@ function withDoctorHealthCheckFacts<T extends object>(
 
 export async function runStructuredHealthRepairs(
   ctx: DoctorHealthFlowContext,
-  resolveCoreChecks: () => Promise<readonly DetectableHealthCheckInput[]>,
+  resolveCoreChecks: () => Promise<readonly DoctorHealthCheck[]>,
 ): Promise<void> {
   if (!ctx.prompter.shouldRepair) {
     return;
@@ -55,10 +56,14 @@ export async function runStructuredHealthRepairs(
   const { note } = await import("../../packages/terminal-core/src/note.js");
 
   const workspaceDir = resolveDoctorWorkspaceDir(ctx.cfg, ctx.env);
-  registerBundledHealthChecks({ cfg: ctx.cfg, cwd: workspaceDir, env: ctx.env });
-  const checks = listExtensionHealthChecksForDoctor(await resolveCoreChecks())
+  const availabilityFindings = registerBundledHealthChecks({
+    cfg: ctx.cfg,
+    cwd: workspaceDir,
+    env: ctx.env,
+  });
+  const checks = listExtensionHealthChecksForDoctor(await resolveCoreChecks(), availabilityFindings)
     .filter(isHealthCheckEnabledByDefault)
-    .map(defineSplitHealthCheckInput);
+    .map(copyHealthCheck);
   const result = await runDoctorHealthRepairs(
     withDoctorHealthCheckFacts(ctx, {
       mode: "fix" as const,
@@ -70,7 +75,12 @@ export async function runStructuredHealthRepairs(
     }),
     { checks },
   );
-  reportDoctorRepairResult(ctx, result, result.remainingFindings, note);
+  reportDoctorRepairResult(
+    ctx,
+    result,
+    [...availabilityFindings, ...result.remainingFindings],
+    note,
+  );
 }
 
 export async function runCoreContributionHealth(

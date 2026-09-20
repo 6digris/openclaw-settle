@@ -1,19 +1,12 @@
+import type {
+  ApprovalDecision,
+  ApprovalTerminalReason,
+} from "../../../packages/gateway-protocol/src/schema/approvals.js";
 import type { AnyAgentTool } from "../tools/common.js";
 
-type AgentHarnessHostApprovalDecision = "allow-once" | "allow-always" | "deny";
-
-type AgentHarnessHostApprovalTerminalReason =
-  | "user"
-  | "timeout"
-  | "malformed-verdict"
-  | "no-route"
-  | "run-aborted"
-  | "gateway-restart"
-  | "storage-corrupt";
-
 type AgentHarnessHostApprovalResult = Readonly<{
-  decision: AgentHarnessHostApprovalDecision | null | undefined;
-  terminalReason: AgentHarnessHostApprovalTerminalReason | null | undefined;
+  decision: ApprovalDecision | null | undefined;
+  terminalReason: ApprovalTerminalReason | null | undefined;
 }>;
 
 type AgentHarnessPreparedEnvironment = Readonly<{
@@ -46,6 +39,29 @@ export type AgentHarnessHostCapabilities = Readonly<{
     message: import("../runtime/index.js").AgentMessage;
     maxChars: number;
   }) => Promise<{ text?: string; images: import("../../llm/types.js").ImageContent[] }>;
+  /** Stages reply attachments under captured sender policy while the harness reader is live. */
+  prepareReplyMedia?: (
+    request: {
+      workspaceRoot?: string;
+      readWorkspaceFile: (
+        relativePath: string,
+        options: { maxBytes: number; signal: AbortSignal },
+      ) => Promise<Buffer>;
+      signal?: AbortSignal;
+    } & (
+      | {
+          kind: "attempt";
+          attempt: import("../embedded-agent-runner/run/attempt-result.js").EmbeddedRunAttemptWithReceiptEvidence;
+        }
+      | { kind: "payload"; payload: import("../../auto-reply/reply-payload.js").ReplyPayload }
+    ),
+  ) => Promise<
+    | {
+        kind: "attempt";
+        preparedMedia: import("../../auto-reply/reply/reply-media-paths.js").PreparedReplyMedia;
+      }
+    | { kind: "payload"; payload: import("../../auto-reply/reply-payload.js").ReplyPayload }
+  >;
   /** Closure-bound event sink backed by the host-owned trajectory recorder. */
   trajectory?: Readonly<{
     recordEvent: (type: string, data?: Record<string, unknown>) => void;
@@ -91,10 +107,10 @@ export type AgentHarnessHostCapabilities = Readonly<{
     mcpTool?: { server: string; tool: string };
     /** Persistence-only proof; loss of correlation does not cancel a one-shot approval. */
     isMcpToolApprovalActive?: () => boolean;
-    allowedDecisions?: AgentHarnessHostApprovalDecision[];
+    allowedDecisions?: ApprovalDecision[];
     timeoutMs: number;
     transportTimeoutMs?: number;
-  }) => Promise<{ id?: string; decision?: AgentHarnessHostApprovalDecision | null } | undefined>;
+  }) => Promise<{ id?: string; decision?: ApprovalDecision | null } | undefined>;
   waitForApproval: (request: {
     approvalId: string;
     timeoutMs: number;

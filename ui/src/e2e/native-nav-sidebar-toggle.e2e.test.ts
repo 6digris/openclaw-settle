@@ -248,11 +248,16 @@ suite.define(() => {
   it.each(["navigation", "replacement open", "reconnection", "outside pointer", "Escape"] as const)(
     "keeps pending Inbox intent current across %s",
     async (action) => {
-      const page = await openPage({ pathname: "new" });
-      const held = await holdModuleResponse(
-        page,
-        /\/assets\/sidebar-attention-panel\.runtime-[^/?]+\.js(?:\?.*)?$/u,
-      );
+      let held!: Awaited<ReturnType<typeof holdModuleResponse>>;
+      const page = await openPage({
+        pathname: "new",
+        beforeNavigate: async (targetPage) => {
+          held = await holdModuleResponse(
+            targetPage,
+            /\/assets\/sidebar-attention-panel\.runtime-[^/?]+\.js(?:\?.*)?$/u,
+          );
+        },
+      });
       const attention = await page
         .locator("openclaw-app-sidebar openclaw-sidebar-attention")
         .elementHandle();
@@ -657,7 +662,7 @@ suite.define(() => {
   it("keeps overlay motion anchored to its owning interaction", async () => {
     const page = await openPage({ nativeNav: false });
 
-    await page.keyboard.press("Meta+K");
+    await page.keyboard.press("ControlOrMeta+K");
     const palette = page.locator(".cmd-palette");
     const paletteDialog = page.locator("openclaw-modal-dialog.palette");
     await page.locator(".cmd-palette__input:not([disabled])").waitFor({ state: "visible" });
@@ -921,23 +926,17 @@ suite.define(() => {
       await expect.poll(() => retainedHost.getAttribute("data-toast-placement")).toBe("shell");
       const retainedToast = retainedHost.locator(".app-toast");
       await expect.poll(() => retainedToast.textContent()).toContain("Codex hidden");
-      if (finalLayout === "compact") {
-        await expect
-          .poll(async () => {
-            const [toastBounds, headerBounds] = await Promise.all([
-              retainedToast.boundingBox(),
-              page.locator(".chat-pane__header:visible").first().boundingBox(),
-            ]);
-            return Boolean(
-              toastBounds && headerBounds && toastBounds.y >= headerBounds.y + headerBounds.height,
-            );
-          })
-          .toBe(true);
-      } else {
-        await expect
-          .poll(async () => Math.round((await retainedToast.boundingBox())?.y ?? -1))
-          .toBe(20);
-      }
+      await expect
+        .poll(async () => {
+          const [toastBounds, headerBounds] = await Promise.all([
+            retainedToast.boundingBox(),
+            page.locator(".chat-pane__header:visible").first().boundingBox(),
+          ]);
+          return Boolean(
+            toastBounds && headerBounds && toastBounds.y >= headerBounds.y + headerBounds.height,
+          );
+        })
+        .toBe(true);
       await expect
         .poll(async () => {
           const [toastBounds, composerBounds] = await Promise.all([

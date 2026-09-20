@@ -1,20 +1,9 @@
 import { describe, expect, test, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import type { SessionEntry } from "../config/sessions.js";
-import { filterAndSortSessionEntries } from "./session-utils-list.js";
+import { createSessionRowProjectionFixture } from "./session-row-projection.test-support.js";
+import { filterAndSortSessionEntries, prepareSessionRowSelection } from "./session-utils-list.js";
 
-// Candidate search must never render full rows or read transcripts.
-vi.mock("../acp/runtime/session-meta.js", () => ({
-  readAcpSessionMetaBatch: () => new Map(),
-}));
-vi.mock("./session-transcript-title-reader.js", () => ({
-  readSessionTitleFieldsFromTranscriptBatch: () => [],
-}));
-vi.mock("./session-utils-row.js", () => ({
-  buildGatewaySessionRow: () => {
-    throw new Error("search selection must not render session rows");
-  },
-}));
 vi.mock("../agents/provider-model-normalization.runtime.js", () => ({
   normalizeProviderModelIdWithRuntime: () => undefined,
 }));
@@ -61,18 +50,19 @@ function selectSessionKeys(params: {
 }): string[] {
   const now = params.now ?? Date.now();
   const store = params.store ?? makeStore(now);
-  return filterAndSortSessionEntries({
+  const projection = createSessionRowProjectionFixture({
     cfg: params.cfg ?? baseCfg,
     store,
-    targetsBySessionKey: new Map(
-      Object.keys(store).map((key) => [
-        key,
-        { agentId: "main", storeTarget: { agentId: "main", storePath: "" } },
-      ]),
-    ),
-    opts: params.opts,
-    now,
-  }).map(([key]) => key);
+    agentId: "main",
+  });
+  try {
+    return filterAndSortSessionEntries({
+      ...prepareSessionRowSelection(projection, params.opts),
+      now,
+    }).map(([key]) => key);
+  } finally {
+    projection.dispose();
+  }
 }
 
 describe("filterAndSortSessionEntries search", () => {

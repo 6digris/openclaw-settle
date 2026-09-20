@@ -4,9 +4,11 @@ import path from "node:path";
 import { stableStringify } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { createConfigIO } from "../config/io.js";
+import { hashConfigRaw } from "../config/io.read-helpers.js";
 import { formatConfigIssueLines } from "../config/issue-format.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "./errors.js";
+import { isPathInside } from "./path-guards.js";
 import { resolveRuntimeProcessEntrypointUrl } from "./runtime-process-url.js";
 import { resolveRuntimeWorkerArgv } from "./runtime-worker-url.js";
 import type {
@@ -23,6 +25,37 @@ import {
 } from "./state-migrations.types.js";
 
 export type PreparedLegacyStateMigrationStep = Omit<LegacyStateMigrationStepPlan, "outcome">;
+
+export function migrationStepPlan(
+  step: PreparedLegacyStateMigrationStep,
+): PreparedLegacyStateMigrationStep {
+  return {
+    id: step.id,
+    phase: step.phase,
+    source: step.source,
+    target: step.target,
+    requiredness: step.requiredness,
+    reversibility: step.reversibility,
+    ...(step.refusal ? { refusal: step.refusal } : {}),
+  };
+}
+
+export function closeMigrationPlanTail(
+  steps: readonly PreparedLegacyStateMigrationStep[],
+  blocker: PreparedLegacyStateMigrationStep,
+): PreparedLegacyStateMigrationStep[] {
+  const blockerIndex = steps.indexOf(blocker);
+  return steps.map((step, index) => {
+    const plannedStep = migrationStepPlan(step);
+    if (index > blockerIndex) {
+      plannedStep.refusal = {
+        code: "blocked-by-prior-refusal",
+        message: `Migration step "${step.id}" is blocked by prior refusal at "${blocker.id}".`,
+      };
+    }
+    return plannedStep;
+  });
+}
 
 function digest(value: unknown): string {
   return `sha256:${createHash("sha256").update(stableStringify(value)).digest("hex")}`;
@@ -124,11 +157,7 @@ export async function readLegacyStateMigrationPlanConfig(params: {
         { normalizeRoot: true },
       ),
     );
-    const rootHash = snapshot.hash;
-    if (!rootHash) {
-      warnings.push(`Could not hash snapshot config: ${params.configPath}`);
-      return { config: snapshot.sourceConfig, configIncludedPaths: [], warnings };
-    }
+    const rootHash = hashConfigRaw(snapshot.raw);
     const configIncludedPaths = [
       ...new Set(snapshot.includedPaths?.map((inputPath) => path.resolve(inputPath)) ?? []),
     ]
@@ -161,6 +190,25 @@ export async function readLegacyStateMigrationPlanConfig(params: {
 
 function normalizeEndpoint(endpoint: LegacyStateMigrationEndpoint): LegacyStateMigrationEndpoint {
   return endpoint.kind === "owner" ? endpoint : { ...endpoint, path: path.resolve(endpoint.path) };
+}
+
+export function remapMigrationEndpointRoot(
+  endpoint: LegacyStateMigrationEndpoint,
+  sourceRoot: string,
+  targetRoot: string,
+): LegacyStateMigrationEndpoint {
+  if (endpoint.kind === "owner") {
+    return endpoint;
+  }
+  const endpointPath = path.resolve(endpoint.path);
+  const source = path.resolve(sourceRoot);
+  if (endpointPath !== source && !isPathInside(source, endpointPath)) {
+    return endpoint;
+  }
+  return {
+    ...endpoint,
+    path: path.resolve(targetRoot, path.relative(source, endpointPath)),
+  };
 }
 
 export function createLegacyStateMigrationCallerEnv(params: {

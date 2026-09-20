@@ -156,6 +156,32 @@ afterEach(() => {
 });
 
 describe("agent harness host capability", () => {
+  it.each([
+    { available: undefined, expected: [] },
+    { available: false, expected: ["github_identity_status"] },
+    { available: true, expected: ["github_identity_status", "github_publish"] },
+  ])(
+    "captures GitHub availability independently of plugin inputs: $available",
+    async ({ available, expected }) => {
+      const { attempt } = await admittedAttempt("github-tools", {
+        githubPublicationAvailable: available,
+      });
+      const host = createAgentHarnessHostCapabilities({ attempt, pluginId: "copilot" });
+      attempt.githubPublicationAvailable = available !== true;
+      try {
+        const tools = host.capabilities.createToolSurface?.({
+          githubPublicationAvailable: available !== true,
+          config: { tools: { profile: "coding" } },
+        });
+        expect(
+          tools?.filter((tool) => tool.name.startsWith("github_")).map((tool) => tool.name),
+        ).toEqual(expected);
+      } finally {
+        host.close();
+      }
+    },
+  );
+
   it.each(["restart", "unrelated scope", "user abort", "timeout"] as const)(
     "preserves the original cancellation when a startup capability closes: %s",
     async (reason) => {
@@ -407,6 +433,38 @@ describe("agent harness host capability", () => {
 
     expect(preparedExecute).not.toHaveBeenCalled();
   });
+
+  it.each(policyRevocations)(
+    "does not stage reply bytes after $name during a remote read",
+    async ({ revoke }) => {
+      const readStarted = createDeferred();
+      const readResult = createDeferred<Buffer>();
+      const readWorkspaceFile = vi.fn(async () => {
+        readStarted.resolve();
+        return await readResult.promise;
+      });
+      const { attempt, admission } = await admittedAttempt("run-reply-media");
+      const host = createAgentHarnessHostCapabilities({ attempt, pluginId: "codex" });
+      const prepare = host.capabilities.prepareReplyMedia;
+      if (!prepare) {
+        throw new Error("expected reply media capability");
+      }
+      const request = {
+        kind: "payload" as const,
+        payload: { text: "Artifact ready\nMEDIA:./artifact.txt" },
+        readWorkspaceFile,
+      };
+      const pending = prepare(request);
+      const rejected = expect(pending).rejects.toThrow();
+      await readStarted.promise;
+      await revoke({ host, attempt, admission });
+      readResult.resolve(Buffer.from("remote artifact"));
+      await rejected;
+      await expect(prepare(request)).rejects.toThrow();
+      expect(readWorkspaceFile).toHaveBeenCalledTimes(1);
+      host.close();
+    },
+  );
 
   it("delegates trajectory events and rejects a flush that outlives the capability", async () => {
     const flushStarted = createDeferred();

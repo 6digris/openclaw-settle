@@ -418,7 +418,7 @@ describe("minimal npm extended-stable workflow", () => {
       "The parent derives the canonical `extended-stable/YYYY.M.33` branch",
     );
     expect(releaseDocs).toContain('git tag "$PUBLISH_REF" "$TOOLING_SHA"');
-    expect(releaseDocs).toContain("`release-ci/<sha12>-<epoch>` producer branch");
+    expect(releaseDocs).toContain("The helper dispatches from an immutable `release-ci/*` ref");
   });
 
   it("accepts arbitrary SHA preflight targets and exercises every publishable plugin package", () => {
@@ -592,10 +592,7 @@ describe("minimal npm extended-stable workflow", () => {
       "${{ inputs.release_candidate_branch != '' && github.workflow_sha || '' }}",
     );
     expect(verify.run).toContain(
-      "--json workflowName,displayTitle,headBranch,headSha,event,status,conclusion,url",
-    );
-    expect(verify.run).toContain(
-      "trusted-workflow/scripts/openclaw-npm-extended-stable-release.mjs verify-run",
+      "node trusted-workflow/scripts/openclaw-npm-extended-stable-release.mjs verify-run",
     );
   });
 

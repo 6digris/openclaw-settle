@@ -124,7 +124,7 @@ async function scenario(
     },
   });
   let reconciliations = 0;
-  const harness = createHarness(placements, {
+  const harness = createHarness(database, placements, {
     workspacePath: worktreePath,
     ...(failedRetry ? { failAt: "sync" as const } : {}),
     runReclaimPreparation: barriers.runReclaimPreparation,
@@ -204,7 +204,7 @@ async function scenario(
   const provisionEntered = createDeferred();
   const releaseProvision = createDeferred();
   if (pendingDispatch) {
-    vi.mocked(harness.environments.create).mockImplementationOnce(async () => {
+    vi.mocked(harness.environments.createWithRequest).mockImplementationOnce(async () => {
       provisionEntered.resolve();
       await releaseProvision.promise;
       return harness.ready;
@@ -641,7 +641,7 @@ it.each(["missing", "local"] as const)(
       cancelSessionWork: cancel,
       revokeSessionAuthority: vi.fn(),
     });
-    const harness = createHarness(placements, {
+    const harness = createHarness(database, placements, {
       workspacePath: root,
       runReclaimPreparation: barriers.runReclaimPreparation,
       runReclaimBarrier: barriers.runReclaimBarrier,
@@ -709,7 +709,7 @@ it.each(["missing", "local"] as const)(
       await setImmediate();
       expect(dispatchSettled).toBe(true);
       expect(stopped).toBe(false);
-      expect(harness.environments.create).not.toHaveBeenCalled();
+      expect(harness.environments.createWithRequest).not.toHaveBeenCalled();
     } finally {
       cancellationLoad.resolve();
       release.resolve();
@@ -718,7 +718,7 @@ it.each(["missing", "local"] as const)(
       clearAgentRunContext(runId, admitted.value.lifecycleGeneration);
     }
     expect(await dispatch).toBe("cancelled");
-    expect(harness.environments.create).not.toHaveBeenCalled();
+    expect(harness.environments.createWithRequest).not.toHaveBeenCalled();
     expect(harness.environments.destroy).not.toHaveBeenCalled();
     const transcript = await loadTranscriptEvents({ storePath, ...REQUEST });
     expect(transcript.filter((event) => asRecord(event)?.type === "message")).toEqual([

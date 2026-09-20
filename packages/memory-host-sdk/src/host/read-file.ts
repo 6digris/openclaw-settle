@@ -21,6 +21,7 @@ import {
   matchesExtraMemoryPathEntry,
   normalizeExtraMemoryPathEntries,
 } from "./internal.js";
+import { getAgentWorkspaceAccess } from "./openclaw-runtime-agent.js";
 import {
   buildMemoryReadResult,
   DEFAULT_MEMORY_READ_LINES,
@@ -30,6 +31,12 @@ import { retryTransientMemoryRead } from "./read-retry.js";
 import type { MemoryExtraPath } from "./types.js";
 
 // Secure markdown memory-file reader for workspace and configured extra paths.
+
+function memoryPathNotAllowed(): Error {
+  return Object.assign(new Error("path is not an allowed Markdown memory file"), {
+    code: "MEMORY_PATH_NOT_ALLOWED",
+  });
+}
 
 /** Check that an absolute path stays inside an allowed extra directory without symlink escapes. */
 async function isAllowedAdditionalDirectoryPath(
@@ -140,10 +147,10 @@ export async function readMemoryFile(params: {
     }
   }
   if (!allowedWorkspace && !allowedAdditional) {
-    throw additionalPathError ?? new Error("path required");
+    throw additionalPathError ?? memoryPathNotAllowed();
   }
   if (!absPath.endsWith(".md") && allowedAdditional !== "file") {
-    throw new Error("path required");
+    throw memoryPathNotAllowed();
   }
   if (allowedWorkspace) {
     try {
@@ -199,8 +206,10 @@ export async function readAgentMemoryFile(params: {
     throw new Error("memory search disabled");
   }
   const contextLimits = resolveMemoryHostAgentContextLimits(params.cfg, params.agentId);
-  return await readMemoryFile({
-    workspaceDir: resolveMemoryHostAgentWorkspaceDir(params.cfg, params.agentId),
+  const workspaceDir = resolveMemoryHostAgentWorkspaceDir(params.cfg, params.agentId);
+  const access = getAgentWorkspaceAccess(workspaceDir, "memoryFiles");
+  return await (access?.memoryFiles?.readFile ?? readMemoryFile)({
+    workspaceDir,
     extraPaths: settings.extraPaths,
     relPath: params.relPath,
     from: params.from,
