@@ -42,6 +42,7 @@ import { finalizeDoctorConfigFlow } from "./doctor/finalize-config-flow.js";
 import {
   applyLegacyCompatibilityStep,
   applyUnknownConfigKeyStep,
+  prepareDoctorConfigReferenceSource,
 } from "./doctor/shared/config-flow-steps.js";
 import { prepareDoctorConfigMigrationResult } from "./doctor/shared/config-migration-result.js";
 import {
@@ -119,6 +120,18 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
   prompter?: DoctorPrompter;
 }) {
   const shouldRepair = params.options.repair === true || params.options.yes === true;
+  const prompter = params.prompter;
+  const onCapabilityConsent =
+    shouldRepair && prompter
+      ? createPluginCapabilityConsentPrompter({
+          note: async (message, title) => note(message, title),
+          confirm: (confirmation) =>
+            prompter.confirmRuntimeRepair({
+              ...confirmation,
+              requiresInteractiveConfirmation: true,
+            }),
+        })
+      : undefined;
   let preflight = await withProgress(
     {
       label: "Checking OpenClaw state…",
@@ -132,6 +145,7 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
         repairPrefixedConfig: shouldRepair,
         recoverCorruptTargetStore: shouldRepair,
         doctorOnlyStateMigrations: shouldRepair,
+        onCapabilityConsent,
         preparePluginMetadataSnapshot: true,
         ...(params.agentDatabaseMigrationDiscovery
           ? { agentDatabaseMigrationDiscovery: params.agentDatabaseMigrationDiscovery }
@@ -170,6 +184,7 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     };
   }
   const { snapshot, baseConfig: baseCfg } = preflight;
+  const referenceSource = prepareDoctorConfigReferenceSource(snapshot);
   const pluginMetadataSnapshotState: DoctorPluginMetadataSnapshotState = {
     current: preflight.pluginMetadataSnapshot,
   };
@@ -550,7 +565,6 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
 
   if (shouldRepair) {
     const { runDoctorRepairSequence } = await import("./doctor/repair-sequencing.js");
-    const prompter = params.prompter;
     const repairSequence = await runDoctorRepairSequence({
       state,
       doctorFixCommand,
@@ -558,18 +572,7 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
       blockedCodexProviderPlan,
       pluginMetadataSnapshotState,
       runWithPluginMetadataSnapshot,
-      ...(prompter
-        ? {
-            onCapabilityConsent: createPluginCapabilityConsentPrompter({
-              note: async (message, title) => note(message, title),
-              confirm: (confirmation) =>
-                prompter.confirmRuntimeRepair({
-                  ...confirmation,
-                  requiresInteractiveConfirmation: true,
-                }),
-            }),
-          }
-        : {}),
+      onCapabilityConsent,
     });
     state = repairSequence.state;
     pluginMetadataSnapshotState.current = repairSequence.pluginMetadataSnapshot;
@@ -716,7 +719,7 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
           },
         }
       : {}),
-    sourceConfigForWrite: snapshot.sourceConfig,
+    ...(referenceSource ? { referenceSource } : {}),
     ...(pluginInstallConfigImport ? { pluginInstallConfigImport } : {}),
     path: snapshot.path ?? CONFIG_PATH,
     shouldWriteConfig,

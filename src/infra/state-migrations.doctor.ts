@@ -2761,13 +2761,18 @@ function completedPluginMigrationFields(
 /** Admit preflight's shared-state writers through the same schema step as later migrations. */
 export async function prepareLegacyStateDatabaseSchema(
   env: NodeJS.ProcessEnv,
+  options: {
+    requiredness?: "conditional" | "required";
+    assertCurrent?: () => void;
+  } = {},
 ): Promise<LegacyStateMigrationStepReceipt> {
   const { receipts } = await runLegacyStateMigrationSteps([
     createStateSchemaMigrationStep({
       stateDir: resolveStateDir(env),
       env,
       mode: "doctor",
-      requiredness: "conditional",
+      requiredness: options.requiredness ?? "conditional",
+      assertCurrent: options.assertCurrent,
     }),
   ]);
   return receipts[0]!;

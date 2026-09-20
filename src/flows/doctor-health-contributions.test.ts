@@ -528,7 +528,11 @@ vi.mock("../config/config.js", async (importOriginal) => ({
       {},
     );
     await mocks.replaceConfigFile({ ...options, nextConfig });
-    return { nextConfig };
+    const path = options.writeOptions?.expectedConfigPath;
+    if (!path) {
+      throw new Error("Doctor write fixture requires an expected config path");
+    }
+    return { nextConfig, path, persistedHash: "committed-revision" };
   },
   readConfigFileSnapshot: mocks.readConfigFileSnapshot,
 }));
@@ -4531,11 +4535,20 @@ describe("doctor health contributions", () => {
       1,
       expect.objectContaining({
         nextConfig: originalCfg,
+        baseHash: "planning-revision",
+        writeOptions: expect.objectContaining({ expectedConfigPath: ctx.configPath }),
       }),
     );
     expect(mocks.replaceConfigFile).toHaveBeenLastCalledWith(
       expect.objectContaining({
         nextConfig: repairedCfg,
+        baseHash: "committed-revision",
+        writeOptions: expect.objectContaining({
+          expectedConfigPath: ctx.configPath,
+          allowConfigSizeDrop: true,
+          preservedLegacyRootKeys: ["defaultModel"],
+          skipPluginValidation: true,
+        }),
       }),
     );
   });
@@ -4625,6 +4638,7 @@ describe("doctor health contributions", () => {
         cfg,
         shouldWriteConfig: true,
         shouldRepairCronCodexModelRefsAfterConfigWrite: true,
+        confirmedConfigSource: { path: "/tmp/fake-openclaw.json", hash: "planning-revision" },
         blockedCodexModelIdentities: ["codex\u0000gpt-5.6-sol"],
       },
       configPath: "/tmp/fake-openclaw.json",
@@ -4656,6 +4670,7 @@ describe("doctor health contributions", () => {
           cfg,
           shouldWriteConfig: true,
           shouldRepairCronCodexModelRefsAfterConfigWrite: legacy,
+          confirmedConfigSource: { path: "/tmp/fake-openclaw.json", hash: "planning-revision" },
           retiredModelRefConfig,
           blockedCodexModelIdentities: ["codex\u0000gpt-5.6-sol"],
         },

@@ -324,6 +324,7 @@ export async function readConfigFileSnapshot(
     ...(options.isolateEnv ? { env: cloneEnvWithPlatformSemantics(process.env) } : {}),
     ...(options.lowerPrecedenceEnv ? { lowerPrecedenceEnv: options.lowerPrecedenceEnv } : {}),
     ...(pluginValidation ? { pluginValidation } : {}),
+    deferDoctorLegacyIssues: options.deferDoctorLegacyIssues,
     ...(options.suppressFutureVersionWarning ? { suppressFutureVersionWarning: true } : {}),
     ...(options.preservedLegacyRootKeys
       ? { preservedLegacyRootKeys: options.preservedLegacyRootKeys }
@@ -339,6 +340,7 @@ export async function readConfigFileSnapshotWithPluginMetadata(
     ConfigSnapshotMetadataReadOptions,
     | "allowCurrentPluginMetadata"
     | "deferredPluginMigrations"
+    | "deferDoctorLegacyIssues"
     | "allowSuspiciousRecovery"
     | "isolateEnv"
     | "lowerPrecedenceEnv"
@@ -350,6 +352,7 @@ export async function readConfigFileSnapshotWithPluginMetadata(
   >,
 ): Promise<ReadConfigFileSnapshotWithPluginMetadataResult> {
   return await createConfigIO({
+    deferDoctorLegacyIssues: options?.deferDoctorLegacyIssues,
     ...(options?.deferredPluginMigrations
       ? { deferredPluginMigrations: options.deferredPluginMigrations }
       : {}),

@@ -315,6 +315,7 @@ async function readConfigSnapshotWithPreparation(
       const collect = () =>
         // Keep validation plugin-aware, but defer executable repair diagnostics until
         // the updater selects the target plugin generation, including writer snapshots.
+        context.options.deferDoctorLegacyIssues ||
         context.options.pluginValidation === "core-only" ||
         shouldDeferConfiguredPluginInstallRepair(deps.env)
           ? findLegacyConfigIssues(effectiveConfigRaw, effectiveParsed)
@@ -340,6 +341,7 @@ async function readConfigSnapshotWithPreparation(
           exists: true,
           raw: snapshotRaw,
           parsed: snapshotParsed,
+          authoredConfig: coerceConfig(resolved),
           includeProvenance,
           agentRosterIncludeOwned,
           bindingsIncludeOwned,
@@ -428,6 +430,7 @@ async function readConfigSnapshotWithPreparation(
             exists: true,
             raw: snapshotRaw,
             parsed: snapshotParsed,
+            authoredConfig: coerceConfig(resolved),
             includeProvenance,
             agentRosterIncludeOwned,
             bindingsIncludeOwned,

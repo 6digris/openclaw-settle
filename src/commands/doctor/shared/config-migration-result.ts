@@ -8,11 +8,13 @@ import type {
   LegacyStateMigrationStepReceipt,
   PreparedPostSessionPluginMigration,
 } from "../../../infra/state-migrations.types.js";
+import type { PluginCapabilityConsentHandler } from "../../../plugins/capability-consent.js";
 import type { PluginMetadataSnapshot } from "../../../plugins/plugin-metadata-snapshot.types.js";
 import type { CronCodexRuntimePolicyTarget } from "../cron/store-migration.js";
 
 export type DoctorConfigPreflightOptions = {
   agentDatabaseMigrationDiscovery?: PreparedAgentDatabaseMigrationDiscovery;
+  onCapabilityConsent?: PluginCapabilityConsentHandler;
   migrateState?: boolean;
   /** Select Doctor normalization without enabling repair-only migrations. */
   invocationPurpose?: LegacyStateMigrationInvocationPurpose;

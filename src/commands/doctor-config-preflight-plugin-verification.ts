@@ -1,9 +1,11 @@
+import { PLUGIN_CAPABILITY_CONSENT_REQUIRED } from "../../packages/gateway-protocol/src/capability-consent-error-details.js";
 import { note } from "../../packages/terminal-core/src/note.js";
 import type { ConfigSnapshotReadMeasure } from "../config/io.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import type { DeferredPluginMigration } from "../infra/deferred-plugin-migrations.js";
 import { resolveUpdateRehearsalRoot } from "../infra/update-rehearsal-paths.js";
+import type { PluginCapabilityConsentHandler } from "../plugins/capability-consent.js";
 import { normalizePluginsConfig, resolveEffectiveEnableState } from "../plugins/config-state.js";
 import type { PluginPayloadSmokeFailure } from "../plugins/payload-verification.js";
 import {
@@ -85,13 +87,27 @@ export async function runDoctorPluginConvergence(params: {
   cfg: OpenClawConfig;
   env: NodeJS.ProcessEnv;
   measure?: ConfigSnapshotReadMeasure;
+  retainedPluginIds?: readonly string[];
+  onCapabilityConsent?: PluginCapabilityConsentHandler;
+  beforePersistentEffect?: () => void;
+  preparePersistentEffect?: () => void | Promise<void>;
 }): Promise<StartupPluginConvergenceResult> {
   const plan = await planStartupPluginVerification(params);
-  if (!plan.required) {
+  if (!plan.required && !params.retainedPluginIds?.length) {
     return { quarantinedPlugins: [] };
   }
   const { inspectPluginMigrationAvailability } =
     await import("./doctor/shared/plugin-migration-availability.js");
+  if (!plan.required) {
+    // Retained obligations can outlive their config selection. Inspect them even
+    // when there is no currently selected package work, without installing anything.
+    const { pending, ...migrationInspection } = await inspectPluginMigrationAvailability({
+      ...params,
+      installRecords: plan.installRecords,
+      deferInstallation: false,
+    });
+    return { quarantinedPlugins: [], migrationInspection, deferredPlugins: pending };
+  }
   const isUpdateRehearsal = Boolean(resolveUpdateRehearsalRoot(params.env));
   if (isUpdateRehearsal) {
     // Shipped drivers run this preflight inside their fixed canary deadline.
@@ -129,6 +145,9 @@ export async function runDoctorPluginConvergence(params: {
         cfg: params.cfg,
         env: params.env,
         compatibilityHostVersion: resolveCompatibilityHostVersion(params.env),
+        onCapabilityConsent: params.onCapabilityConsent,
+        beforePersistentEffect: params.beforePersistentEffect,
+        preparePersistentEffect: params.preparePersistentEffect,
       }),
     params.measure,
   );
@@ -149,6 +168,14 @@ export async function runDoctorPluginConvergence(params: {
     note(
       warnings.map((warning) => `- ${warning}`).join("\n"),
       `Doctor ${PLUGIN_AVAILABILITY_POLICY.severity}s`,
+    );
+  }
+  const consentRefusals = convergence.outcomes?.filter(
+    (outcome) => outcome.status === "error" && outcome.code === PLUGIN_CAPABILITY_CONSENT_REQUIRED,
+  );
+  if (consentRefusals?.length) {
+    throw new Error(
+      `Plugin capability consent is required before migrating state: ${consentRefusals.map((outcome) => outcome.pluginId).join(", ")}. Run \`openclaw update repair\` to review the requested capabilities.`,
     );
   }
   const quarantinedPlugins = buildStartupPluginQuarantine({

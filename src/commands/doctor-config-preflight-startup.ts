@@ -23,6 +23,7 @@ import type {
   LegacyStateMigrationStepReceipt,
   MigrationMessages,
 } from "../infra/state-migrations.types.js";
+import type { PluginCapabilityConsentHandler } from "../plugins/capability-consent.js";
 import { withDeferredPluginDoctorMigrations } from "../plugins/doctor-contract-registry.js";
 import { setActiveDegradedPlugins } from "../plugins/runtime-degraded-state.js";
 import { ExitError } from "../runtime.js";
@@ -63,6 +64,7 @@ import type { PluginMigrationInspection } from "./doctor/shared/plugin-migration
 /** Admit the same config and state before the lease and again before migration writes. */
 export async function readStartupMigrationSnapshot(params: {
   env: NodeJS.ProcessEnv;
+  beforePluginConvergence?: boolean;
   readSnapshot: () => Promise<DoctorConfigPreflightPluginSnapshotRead>;
   planRepair: (
     read: DoctorConfigPreflightPluginSnapshotRead,
@@ -87,7 +89,12 @@ export async function readStartupMigrationSnapshot(params: {
           deferredPluginMigrations: params.deferredPluginMigrations,
         }),
       );
-      const recoveryOptions = { configPath: selected.path, observe: false, env: params.env };
+      const recoveryOptions = {
+        configPath: selected.path,
+        observe: false,
+        env: params.env,
+        deferDoctorLegacyIssues: params.beforePluginConvergence,
+      };
       const coreRecovery = await measureDoctorConfigPreflightStep("admission.core-recovery", () =>
         createConfigIO({
           ...recoveryOptions,
@@ -148,10 +155,13 @@ export async function readStartupMigrationSnapshot(params: {
         };
       }
       const repair = read.snapshot.valid ? null : params.planRepair(read);
-      if (!read.snapshot.valid && !repair) {
+      // A core-admissible config can still need only a plugin-owned repair. A null
+      // core preview is not evidence that the post-convergence planner cannot repair it.
+      const deferredRepair = params.beforePluginConvergence ? startupConfig : undefined;
+      if (!read.snapshot.valid && !repair && !deferredRepair) {
         throw new Error('OpenClaw config is invalid; run "openclaw doctor --fix" before startup.');
       }
-      await params.validateConfig?.(repair?.snapshot ?? read.snapshot);
+      await params.validateConfig?.(repair?.snapshot ?? deferredRepair ?? read.snapshot);
       if (
         params.beforeStateMigrations &&
         !(await measureDoctorConfigPreflightStep("admission.config-guard", () =>
@@ -277,6 +287,8 @@ export async function prepareDoctorMigrationPlugins(params: {
   env: NodeJS.ProcessEnv;
   measure?: ConfigSnapshotReadMeasure;
   converge: boolean;
+  onCapabilityConsent?: PluginCapabilityConsentHandler;
+  retainedPluginMigrations?: readonly DeferredPluginMigration[];
   lease: StartupMigrationLease | undefined;
   snapshotRead: DoctorConfigPreflightPluginSnapshotRead;
   readRefreshedSnapshot: () => Promise<DoctorConfigPreflightPluginSnapshotRead>;
@@ -292,13 +304,77 @@ export async function prepareDoctorMigrationPlugins(params: {
   }
   const convergence = await (
     params.converge ? runDoctorPluginConvergence : refreshStartupPluginQuarantine
-  )(params);
+  )({
+    ...params,
+    retainedPluginIds: params.retainedPluginMigrations?.map((plugin) => plugin.pluginId),
+    beforePersistentEffect: () => params.lease?.heartbeat(),
+    preparePersistentEffect: async () => {
+      if (
+        params.beforeStateMigrations &&
+        !(await params.beforeStateMigrations(params.snapshotRead.snapshot))
+      ) {
+        throwStartupMigrationGuardRejected();
+      }
+      params.lease?.heartbeat();
+    },
+  });
   setActiveDegradedPlugins(convergence.quarantinedPlugins);
   params.onWarnings(convergence.warnings ?? []);
   params.lease?.heartbeat();
-  params.onDeferredPlugins(convergence.deferredPlugins ?? [], convergence.migrationInspection);
   if (!params.converge) {
+    params.onDeferredPlugins(convergence.deferredPlugins ?? [], convergence.migrationInspection);
     return params.snapshotRead;
+  }
+  const inspection = convergence.migrationInspection;
+  const required = new Set([
+    ...(params.retainedPluginMigrations ?? [])
+      .filter((plugin) => plugin.requiresStateMigration || plugin.requiresDoctorInspection)
+      .map((plugin) => plugin.pluginId),
+    ...(inspection?.requiredPluginIds ?? []),
+    ...(inspection?.inspectionRequiredPluginIds ?? []),
+  ]);
+  const stateless = new Set(inspection?.statelessPluginIds ?? []);
+  const runtimeAliases = new Set(inspection?.runtimePluginAliases ?? []);
+  const retainedInputs = [
+    ...(params.retainedPluginMigrations ?? []),
+    ...(convergence.deferredPlugins ?? []),
+  ];
+  const unavailable = new Map(
+    (convergence.deferredPlugins ?? []).map((plugin) => [plugin.pluginId, plugin]),
+  );
+  const unavailableIds = new Set([
+    ...unavailable.keys(),
+    ...convergence.quarantinedPlugins.map((plugin) => plugin.pluginId),
+  ]);
+  const refused = [...unavailableIds].filter((pluginId) => {
+    const pending = unavailable.get(pluginId);
+    // Match the preparation owner's completion policy: an alias is not stateless
+    // proof if either the current or retained input owns more than session.store.
+    const statelessAlias =
+      runtimeAliases.has(pluginId) &&
+      retainedInputs
+        .filter((plugin) => plugin.pluginId === pluginId)
+        .every(
+          (plugin) =>
+            !plugin.validationExcludedPaths?.length &&
+            (plugin.configPaths ?? []).every(
+              (segments) =>
+                segments.length === 2 && segments[0] === "session" && segments[1] === "store",
+            ),
+        );
+    return (
+      required.has(pluginId) ||
+      pending?.requiresStateMigration ||
+      pending?.requiresDoctorInspection ||
+      (!stateless.has(pluginId) && !statelessAlias)
+    );
+  });
+  if (refused.length > 0) {
+    // A missing owner cannot prove that its state or config migration is unnecessary.
+    // Stop before the refreshed read can select executable plugin contracts.
+    throwStartupMigrationRefusal(
+      `Plugin migration owners are unavailable: ${refused.toSorted().join(", ")}. Run \`openclaw update repair\` before migrating state.`,
+    );
   }
   const refreshed = await params.readRefreshedSnapshot();
   assertStartupConfigUnchanged(params.snapshotRead.snapshot, refreshed.snapshot);
@@ -312,6 +388,8 @@ export async function prepareDoctorMigrationPlugins(params: {
   ) {
     throwStartupMigrationGuardRejected();
   }
+  params.lease?.heartbeat();
+  params.onDeferredPlugins(convergence.deferredPlugins ?? [], convergence.migrationInspection);
   return refreshed;
 }
 

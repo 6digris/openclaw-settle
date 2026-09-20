@@ -29,9 +29,14 @@ export function createDoctorConfigRepairPlanner(params: {
   stateMigrationsRequested: boolean;
   skipLegacyParentConfigWrite: boolean;
   hasImportedPluginConfig: () => boolean;
+  beforePluginConvergence?: () => boolean;
   runWithPluginMetadataSnapshot: PluginMetadataSnapshotScopeRunner;
 }) {
   const planScopedConfigRepair = (snapshot: ConfigFileSnapshot) => {
+    if (params.beforePluginConvergence?.()) {
+      // Recovery selection is a preview, not authority to commit a plugin-owned repair.
+      return planAutomaticConfigRepair(snapshot, { pluginContracts: false });
+    }
     // Read in the caller's lease cache before entering a retained Doctor metadata scope.
     const installRecords = params.hasImportedPluginConfig()
       ? loadInstalledPluginIndexInstallRecordsSync()
@@ -79,6 +84,7 @@ export function createDoctorLegacyConfigMigration(params: {
 /** Repair active legacy bytes before considering an older backup. */
 export async function prepareDoctorConfigRecovery(params: {
   enabled: boolean;
+  beforePluginConvergence?: boolean;
   snapshotRead: DoctorConfigPreflightPluginSnapshotRead;
   planRepair: (snapshot: ConfigFileSnapshot) => ReturnType<typeof planAutomaticConfigRepair>;
   readSnapshot: () => Promise<DoctorConfigPreflightPluginSnapshotRead>;
@@ -94,6 +100,15 @@ export async function prepareDoctorConfigRecovery(params: {
       typeof snapshot.raw === "string" && parseConfigJson5(snapshot.raw).ok
         ? params.planRepair(snapshot)
         : null;
+    // A core-only preview cannot decide that readable plugin-owned config is unrecoverable.
+    // Leave those source bytes for the post-convergence planner, never select an older backup.
+    if (
+      params.beforePluginConvergence &&
+      typeof snapshot.raw === "string" &&
+      parseConfigJson5(snapshot.raw).ok
+    ) {
+      return { snapshotRead, activeConfigRepair };
+    }
     let configRepaired = false;
     if (!activeConfigRepair && (await recoverConfigFromJsonRootSuffix(snapshot))) {
       note("Removed non-JSON prefix from openclaw.json.", "Config");

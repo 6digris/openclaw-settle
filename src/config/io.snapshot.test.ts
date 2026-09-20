@@ -171,6 +171,8 @@ describe("config snapshot plugin metadata", () => {
       expect(snapshot.legacyIssues).toEqual(
         expect.arrayContaining([expect.objectContaining({ path: "routing.allowFrom" })]),
       );
+      expect(snapshot.authoredConfig?.gateway?.auth?.token).toBe("${SNAPSHOT_TOKEN}");
+      expect(snapshot.authoredConfig?.nodeHost?.browserProxy?.enabled).toBe("invalid");
       expect(snapshot.parsed).toMatchObject({ gateway: { auth: { token: "${SNAPSHOT_TOKEN}" } } });
       expect(snapshot.sourceConfigBeforeMigrations?.gateway?.auth?.token).toBe("read-time-token");
       expect(snapshot.sourceConfigBeforeMigrations?.nodeHost?.browserProxy?.enabled).toBe(
@@ -183,6 +185,9 @@ describe("config snapshot plugin metadata", () => {
         JSON.stringify({ browserProxy: { enabled: "still-invalid" } }),
       );
       const changed = await readConfigFileSnapshotFromContext(context);
+      expect(changed.authoredConfig?.gateway?.auth?.token).toBe("${SNAPSHOT_TOKEN}");
+      expect(changed.authoredConfig?.nodeHost?.browserProxy?.enabled).toBe("still-invalid");
+      expect(snapshot.authoredConfig?.nodeHost?.browserProxy?.enabled).toBe("invalid");
       expect(changed.raw).toBe(snapshot.raw);
       expect(changed.hash).not.toBe(snapshot.hash);
       expect(changed.valid).toBe(false);

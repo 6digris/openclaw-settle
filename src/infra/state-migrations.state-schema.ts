@@ -15,6 +15,7 @@ export function createStateSchemaMigrationStep(params: {
   env: NodeJS.ProcessEnv;
   mode: LegacyStateMigrationMode;
   requiredness: LegacyStateMigrationStep["requiredness"];
+  assertCurrent?: () => void;
 }): LegacyStateMigrationStep {
   const stateEnv = { ...params.env, OPENCLAW_STATE_DIR: params.stateDir };
   const database: LegacyStateMigrationEndpoint = {
@@ -29,6 +30,8 @@ export function createStateSchemaMigrationStep(params: {
     requiredness: params.requiredness,
     reversibility: "checkpoint-required",
     run: async () => {
+      // Revalidate the caller's live scope immediately before the synchronous writer.
+      params.assertCurrent?.();
       const result =
         params.mode === "doctor"
           ? repairOpenClawStateDatabaseSchema({ env: stateEnv })

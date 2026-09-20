@@ -88,7 +88,8 @@ export async function inspectPluginMigrationAvailability(params: {
             configuredChannelOwnerPluginIds: context.configuredChannelOwnerPluginIds,
             blockedPluginIds,
           });
-          const inspectedIds = new Set([...selected, ...(params.retainedPluginIds ?? [])]);
+          const retainedIds = new Set(params.retainedPluginIds ?? []);
+          const inspectedIds = new Set([...selected, ...retainedIds]);
           const requiredPluginIds: string[] = [];
           const inspectionRequiredPluginIds: string[] = [];
           const statelessCandidates = new Set<string>();
@@ -110,6 +111,9 @@ export async function inspectPluginMigrationAvailability(params: {
               requiredPluginIds.push(plugin.id);
             } else if (
               legacySetup ||
+              plugin.doctorContract?.configRepair ||
+              plugin.doctorContract?.resolveSessionStoreAgentIds ||
+              plugin.doctorContract?.sessionRouteStateOwners ||
               (artifact && (!plugin.doctorContract || Array.isArray(declaration)))
             ) {
               inspectionRequiredPluginIds.push(plugin.id);
@@ -121,13 +125,21 @@ export async function inspectPluginMigrationAvailability(params: {
           const inspectionRequiredIds = new Set(inspectionRequiredPluginIds);
           const statelessPluginIds: string[] = [];
           const normalizedConfig = normalizePluginsConfig(params.cfg.plugins);
-          const pending = [...selected].toSorted().flatMap((pluginId) => {
-            if (!passesManifestOwnerBasePolicy({ plugin: { id: pluginId }, normalizedConfig })) {
+          const pending = [...inspectedIds].toSorted().flatMap((pluginId) => {
+            if (
+              !retainedIds.has(pluginId) &&
+              !passesManifestOwnerBasePolicy({ plugin: { id: pluginId }, normalizedConfig })
+            ) {
               return [];
             }
             const plugin = metadata.plugins.find((candidate) => candidate.id === pluginId);
             const bundled = context.bundledPluginsById.has(pluginId);
+            const inactiveRetainedOwner =
+              retainedIds.has(pluginId) &&
+              (!plugin ||
+                !isActivatedManifestOwner({ plugin, normalizedConfig, rootConfig: params.cfg }));
             const unavailable =
+              inactiveRetainedOwner ||
               !context.knownIds.has(pluginId) ||
               (Object.hasOwn(context.records, pluginId) &&
                 isPayloadMissing(env, context.records[pluginId]?.installPath)) ||
@@ -138,7 +150,7 @@ export async function inspectPluginMigrationAvailability(params: {
             // package convergence would hide its Doctor contract from the canary. Ordinary
             // config paths stay deferred because their source may be stale during an update.
             const availableWithoutPackageConvergence =
-              bundled ||
+              (bundled && !inactiveRetainedOwner) ||
               (plugin?.origin === "config" &&
                 rehearsalRoot !== undefined &&
                 isPathInside(rehearsalRoot, plugin.rootDir) &&

@@ -15,8 +15,10 @@ import { appendConfigPathSegment } from "../shared/dot-path.js";
 import { parseConfigPathArrayIndex } from "../shared/path-array-index.js";
 import { isRecord } from "../utils.js";
 import { configIncludeOwnsAgentRosterValues } from "./agent-roster-provenance.js";
+import { createConfigRuntimeEnvBase } from "./config-env-vars.js";
+import { restoreEnvVarRefsFromResolved } from "./env-preserve.js";
 import { containsEnvVarReference } from "./env-substitution.js";
-import { coerceConfig } from "./io.read-helpers.js";
+import { coerceConfig, resolveConfigForRead } from "./io.read-helpers.js";
 import type { ConfigWriteInputBasis } from "./io.types.js";
 import { createConfigIncludeOwnershipError } from "./io.write-errors.js";
 import { parseLegacyAgentRoster, projectLegacyAgentRosterEntries } from "./legacy.roster.js";
@@ -27,9 +29,10 @@ import {
   getConfigResolutionFacts,
   hasUnresolvedConfigPath,
   hasUnresolvedConfigPathInSubtree,
+  setConfigResolutionFacts,
 } from "./resolution-facts.js";
 import { projectRuntimeChangesOntoSource } from "./source-value-projection.js";
-import type { OpenClawConfig } from "./types.js";
+import type { ConfigFileSnapshot, OpenClawConfig } from "./types.js";
 
 const AGENT_ROSTER_PATHS = [
   ["agents", "entries"],
@@ -1572,6 +1575,51 @@ export function projectAuthoredAgentRosterForWrite(params: {
     ["agents", "entries"],
   );
   return setPathValueCreatingParents(withoutLegacyRoster, ["agents", "entries"], entries);
+}
+
+/** Keep reference identity for persistence separate from values used by physical owners. */
+export function prepareConfigWriteValues(params: {
+  snapshot: ConfigFileSnapshot;
+  nextConfig: OpenClawConfig;
+  env: NodeJS.ProcessEnv;
+  lowerPrecedenceEnv?: Readonly<Record<string, string>>;
+  explicitSetPaths?: readonly (readonly string[])[];
+  explicitSetValueSource?: OpenClawConfig;
+}) {
+  const { snapshot } = params;
+  const source = snapshot.sourceConfigBeforeMigrations ?? snapshot.sourceConfig;
+  const authored = snapshot.authoredConfig ?? snapshot.parsed;
+  const restore = (config: OpenClawConfig, explicitSetPaths?: readonly (readonly string[])[]) => {
+    const canonicalRoster = readAgentRosterProperty(config)?.kind === "entries";
+    const project = (value: unknown) =>
+      canonicalRoster
+        ? projectAuthoredAgentRosterForWrite({
+            rootAuthoredConfig: value,
+            sourceConfigBeforeMigrations: source,
+          })
+        : value;
+    return coerceConfig(
+      restoreEnvVarRefsFromResolved(config, project(authored), project(source), explicitSetPaths),
+    );
+  };
+  const authoredConfig = restore(params.nextConfig, params.explicitSetPaths);
+  const resolution = resolveConfigForRead(
+    authoredConfig,
+    createConfigRuntimeEnvBase(source, params.env),
+    params.lowerPrecedenceEnv,
+  );
+  const resolvedConfig = coerceConfig(resolution.resolvedConfigRaw);
+  setConfigResolutionFacts(resolvedConfig, resolution.resolutionFacts);
+  return {
+    authoredConfig,
+    resolutionEnv: resolution.envSnapshotForRestore,
+    explicitSetValueSource: params.explicitSetValueSource
+      ? restore(params.explicitSetValueSource, params.explicitSetPaths)
+      : authoredConfig,
+    resolvedConfig,
+    authoredSourceConfig: restore(snapshot.sourceConfig),
+    authoredRuntimeConfig: restore(snapshot.runtimeConfig),
+  };
 }
 
 type ConfigWriteSourceProjectionParams = {

@@ -114,6 +114,8 @@ export async function readDoctorConfigPreflightSnapshot(params: {
   observe?: boolean;
   preparePluginMetadataSnapshot: boolean;
   skipPluginValidation: boolean;
+  /** Read only source/core facts until the package convergence owner has accepted the inventory. */
+  beforePluginConvergence?: boolean;
   /** Complete a private update snapshot before Doctor contract modules are inspected. */
   prepareSnapshot?: (snapshot: ConfigFileSnapshot) => Promise<void>;
   preparePluginMigrations?: (
@@ -131,6 +133,16 @@ export async function readDoctorConfigPreflightSnapshot(params: {
       ...(params.allowCurrentPluginMetadata ? {} : { allowCurrentPluginMetadata: false }),
     };
     let deferred = params.deferredPluginMigrations;
+    if (params.beforePluginConvergence && !params.includePluginMetadata) {
+      const snapshot = await readConfigFileSnapshot({
+        ...sharedOptions,
+        pluginValidation: "core-only",
+        deferredPluginMigrations: deferred,
+      });
+      await params.prepareSnapshot?.(snapshot);
+      // Neither availability inspection nor Doctor legacy detectors may load the old payload.
+      return { snapshot, pluginMigrationFingerprint: null };
+    }
     if (params.preparePluginMigrations) {
       const core = await readConfigFileSnapshot({
         ...sharedOptions,
@@ -143,6 +155,7 @@ export async function readDoctorConfigPreflightSnapshot(params: {
     const readOptions = {
       ...sharedOptions,
       deferredPluginMigrations: deferred,
+      deferDoctorLegacyIssues: params.beforePluginConvergence,
     };
     return withDeferredPluginDoctorMigrations(
       deferred?.map((entry) => entry.pluginId) ?? [],
@@ -156,7 +169,9 @@ export async function readDoctorConfigPreflightSnapshot(params: {
               })
             : result.pluginMetadataSnapshot;
           return {
-            snapshot: addDoctorLegacyIssues(result.snapshot, pluginMetadataSnapshot),
+            snapshot: params.beforePluginConvergence
+              ? result.snapshot
+              : addDoctorLegacyIssues(result.snapshot, pluginMetadataSnapshot),
             pluginMigrationFingerprint: pluginMetadataSnapshot?.configFingerprint?.trim() || null,
             ...(pluginMetadataSnapshot ? { pluginMetadataSnapshot } : {}),
           };
@@ -168,7 +183,10 @@ export async function readDoctorConfigPreflightSnapshot(params: {
         if (!params.preparePluginMigrations) {
           await params.prepareSnapshot?.(snapshot);
         }
-        return { snapshot: addDoctorLegacyIssues(snapshot), pluginMigrationFingerprint: null };
+        return {
+          snapshot: params.beforePluginConvergence ? snapshot : addDoctorLegacyIssues(snapshot),
+          pluginMigrationFingerprint: null,
+        };
       },
     );
   });

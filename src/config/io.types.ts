@@ -133,6 +133,8 @@ export type ConfigIoDeps = {
 export type NormalizedConfigIoDeps = Required<ConfigIoDeps>;
 
 export type ConfigIoFactoryOptions = ConfigIoDeps & {
+  /** Admission retains schema validation but delays executable Doctor diagnostics. */
+  deferDoctorLegacyIssues?: boolean;
   pluginValidation?: "full" | "skip" | "core-only";
   preservedLegacyRootKeys?: readonly string[];
   /** Admission can prepare migration facts before their checkpoint is writable. */
@@ -141,6 +143,8 @@ export type ConfigIoFactoryOptions = ConfigIoDeps & {
 };
 
 export type ConfigSnapshotReadOptions = {
+  /** Admission retains schema validation but delays executable Doctor diagnostics. */
+  deferDoctorLegacyIssues?: boolean;
   deferredPluginMigrations?: readonly DeferredPluginMigration[];
   measure?: ConfigSnapshotReadMeasure;
   observe?: boolean;

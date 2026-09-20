@@ -4,10 +4,13 @@ import { intro as clackIntro, outro as clackOutro } from "@clack/prompts";
 import { stylePromptTitle } from "../../packages/terminal-core/src/prompt-style.js";
 import type { DoctorDatabasePreflight } from "../commands/doctor-database-preflight.js";
 import type { DoctorOptions } from "../commands/doctor-prompter.js";
+import { shouldDeferConfiguredPluginInstallRepair } from "../commands/doctor/shared/update-phase.js";
 import { resolveConfigPath, resolveStateDir } from "../config/paths.js";
 import { formatUpdateDoctorConfigChange } from "../infra/update-doctor-config.js";
 import {
   captureUpdateDoctorConfigWrites,
+  createDeferredConfiguredPluginRepairDoctorResult,
+  getUpdateDoctorConfigWriteAuthority,
   normalizeUpdatePostInstallDoctorWarnings,
   UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE,
   UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV,
@@ -19,6 +22,7 @@ import {
 } from "../infra/update-doctor-result.js";
 import { formatUpdateFailureFact } from "../infra/update-failure-facts-format.js";
 import { createUpdateFailureFact } from "../infra/update-failure-facts.js";
+import { resolveUpdateRehearsalRoot } from "../infra/update-rehearsal-paths.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
@@ -90,6 +94,116 @@ async function runDoctorHealthFlowWithResult(
   let healthContext: DoctorHealthFlowContext | undefined;
   let doctorResult: UpdatePostInstallDoctorResult = { status: "error" };
   try {
+    if (
+      shouldDeferConfiguredPluginInstallRepair(process.env) &&
+      !resolveUpdateRehearsalRoot(process.env)
+    ) {
+      let sharedSchemaRepaired = false;
+      // A state-only read is not a new agent admission pass. Preserve supplied
+      // decisions without replacing prior refusals with an uninspected empty set.
+      if (databasePreflight?.agentRefusals?.length) {
+        const { recordAgentDatabaseAdmissions } =
+          await import("../state/agent-database-admission.js");
+        recordAgentDatabaseAdmissions(databasePreflight.agentRefusals);
+      }
+      // Only the shipped post-install handoff needs shared schema content before
+      // its fresh post-core owner starts. Do not discover plugins or agent state here.
+      if (
+        updateResult &&
+        process.env.OPENCLAW_COMPATIBILITY_HOST_VERSION?.trim() &&
+        (options.repair === true || options.yes === true)
+      ) {
+        const { prepareDoctorDatabasePreflight } =
+          await import("../commands/doctor-database-preflight.js");
+        const schemas =
+          databasePreflight ?? (await prepareDoctorDatabasePreflight({ scope: "state" }));
+        if (schemas.pendingMigrations?.some((database) => database.kind === "state")) {
+          const { guardUpdateDoctorSchemaUpgrade } =
+            await import("../commands/doctor-update-schema-guard.js");
+          await guardUpdateDoctorSchemaUpgrade({
+            schemas,
+            runtime: effectiveRuntime,
+            json: options.json,
+            statePublicationOnly: true,
+          });
+          const { beginDoctorMaintenance } = await import("../commands/doctor-maintenance.js");
+          const assertRequesterCurrent =
+            getUpdateDoctorConfigWriteAuthority(resolveConfigPath())?.assertCurrent;
+          assertRequesterCurrent?.();
+          maintenance = await beginDoctorMaintenance({ options, root, runtime: effectiveRuntime });
+          const owner = maintenance;
+          if (!owner) {
+            throw new Error("Shared state schema repair requires Doctor maintenance ownership.");
+          }
+          await owner.run(async () => {
+            const { prepareLegacyStateDatabaseSchema } =
+              await import("../infra/state-migrations.doctor.js");
+            const { throwIfDoctorStateMigrationRefused } =
+              await import("../infra/state-migrations.messages.js");
+            const assertCurrent = () => {
+              owner.assertCurrent();
+              assertRequesterCurrent?.();
+            };
+            assertCurrent();
+            const receipt = await prepareLegacyStateDatabaseSchema(process.env, {
+              requiredness: "required",
+              assertCurrent,
+            });
+            throwIfDoctorStateMigrationRefused([receipt]);
+            if (receipt.warnings.length > 0) {
+              throw new Error(receipt.warnings.join("\n"));
+            }
+            assertCurrent();
+            const repairedSchemas = await prepareDoctorDatabasePreflight({ scope: "state" });
+            if (repairedSchemas.pendingMigrations?.some((database) => database.kind === "state")) {
+              throw new Error(
+                "Shared state schema repair did not complete before post-core handoff.",
+              );
+            }
+            for (const change of receipt.changes) {
+              effectiveRuntime.log(change);
+            }
+            sharedSchemaRepaired = true;
+          });
+        }
+      }
+      if (options.repair === true || options.yes === true) {
+        const { repairDoctorConfigBeforePluginConvergence } =
+          await import("../commands/doctor/shared/automatic-startup-config-repair.js");
+        const owner = maintenance;
+        const assertRequesterCurrent =
+          getUpdateDoctorConfigWriteAuthority(resolveConfigPath())?.assertCurrent;
+        const repairAliases = async () => {
+          const assertCurrent = () => {
+            owner?.assertCurrent();
+            assertRequesterCurrent?.();
+          };
+          assertCurrent();
+          const changes = await repairDoctorConfigBeforePluginConvergence({ assertCurrent });
+          for (const change of changes) {
+            effectiveRuntime.log(change);
+          }
+        };
+        if (owner) {
+          await owner.run(repairAliases);
+        } else {
+          await repairAliases();
+        }
+      }
+      const message = sharedSchemaRepaired
+        ? "Shared state schema repair completed; plugin-dependent and agent state repair remain deferred until post-core plugin convergence."
+        : "Plugin-dependent Doctor repair deferred until post-core plugin convergence; state migrations have not run.";
+      effectiveRuntime.log(message);
+      const warnings = normalizeUpdatePostInstallDoctorWarnings(maintenance?.warnings ?? []);
+      doctorResult = {
+        ...createDeferredConfiguredPluginRepairDoctorResult([message]),
+        ...(warnings.length ? { warnings } : {}),
+      };
+      if (updateResult) {
+        exitCode = UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE;
+      }
+      return;
+    }
     const { beginDoctorMaintenance } = await import("../commands/doctor-maintenance.js");
     maintenance = await beginDoctorMaintenance({ options, root, runtime: effectiveRuntime });
     const runChecks = async () => {

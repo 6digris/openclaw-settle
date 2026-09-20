@@ -170,9 +170,6 @@ export function assertShippedPluginInstallConfigImportCurrent(
 /** Preserve retired source records before Doctor can restore or rewrite their config. */
 export async function importShippedPluginInstallConfigForDoctor(
   snapshot: ConfigFileSnapshot,
-  options: {
-    validateRecords?: (records: Record<string, PluginInstallRecord>) => void;
-  } = {},
 ): Promise<ShippedPluginInstallConfigImport | undefined> {
   const source = inspectShippedPluginInstallConfigRecords(snapshot.sourceConfig);
   if (source.status === "missing") {
@@ -218,7 +215,6 @@ export async function importShippedPluginInstallConfigForDoctor(
         persisted,
         source.records,
       );
-      options.validateRecords?.(nextInstallRecords);
       if (isDeepStrictEqual(nextInstallRecords, persisted)) {
         return receipt(lease.databasePath, false);
       }
