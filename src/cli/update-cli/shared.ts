@@ -56,6 +56,9 @@ export type UpdateCommandOptions = {
   sourceUpdate?: { root: string };
   /** In-process reporting only, after the update owner settles. Never serialized. */
   onResult?: (result: UpdateRunResult) => void;
+  /** Captured before dotenv; only inherited selectors may choose a Node executable. */
+  runtimeRecoveryEnv?: NodeJS.ProcessEnv;
+  /** In-process executor only; workers must reacquire authority, never deserialize this. */
   /** Legacy live context is unsupported; its presence is refusal-only. */
   recovery?: unknown;
   reapplyLocalOverrides?: boolean;
@@ -65,6 +68,10 @@ export type UpdateCommandOptions = {
     defaultStepTimeoutMs?: number;
     activationTimeoutMs?: number;
     env: NodeJS.ProcessEnv;
+    /** Completion routing only; mutation authority remains with the live executor. */
+    completionOwner?: "gateway-restart";
+    /** The handoff helper acknowledged the foreground Gateway's closure. */
+    gatewayRestartRequired?: true;
     /** Prepared before replacement; never load the old authority graph after activation. */
     requesterAuthority?: UpdateRequesterAuthority;
     /** Live local executor only. A child must independently acquire its owner. */
@@ -97,6 +104,7 @@ export type UpdateFinalizeOptions = {
 };
 
 export type UpdateWizardOptions = {
+  runtimeRecoveryEnv?: NodeJS.ProcessEnv;
   acceptCapabilities?: boolean;
   timeout?: string;
 };

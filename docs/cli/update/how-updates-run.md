@@ -33,7 +33,7 @@ replacement. Choose an empty `OPENCLAW_GIT_DIR` and retry.
 
 If the resolved registry package version equals the installed version without changing
 the selected channel or installation method, or the Git target SHA equals
-`HEAD`, plugin convergence still runs; if plugins remain unchanged, the run finishes `skipped` with reason `already-current`. A same-version
+`HEAD`, plugin convergence still runs; if plugins and runtime artifacts remain unchanged, the run finishes `skipped` with reason `already-current`. Runtime maintenance can therefore succeed without changing the Git revision. A same-version
 explicit `--channel` or installation-method change finishes successfully.
 Changed plugins restart a running managed Gateway unless `--no-restart` is set; retained exact pins produce the same advisories as a core update without requiring a restart.
 
@@ -143,8 +143,8 @@ Their request and recovery watchdogs do not become update validation deadlines.
 Startup and readiness responses share that validation deadline, including reading
 the response body.
 
-These deadlines belong to the invoking updater. The published 2026.9.3 updater
-caps its complete rehearsal at five minutes, including the snapshot, and its
+These deadlines belong to the invoking updater. The published 2026.9.3 and 2026.9.4 updaters
+cap their complete rehearsal at five minutes, including the snapshot, and their
 later schema inspection at thirty seconds, even with `--timeout 900`. Installing
 a newer candidate cannot enlarge those parent-process deadlines on that first
 update. Subsequent updates use the newer updater's allowances described above.
@@ -233,6 +233,10 @@ or state, invalid or unattributed plugin-registry results, and failed core start
 or readiness checks. The updater reruns the failed check after each attempt and
 activates only after it passes. Failed or unavailable repair discards the
 staged update and leaves the serving Gateway untouched.
+After Doctor migrations complete and validation children shut down, repair reuses
+that private copy and its completed checks. If no usable inference route exists,
+the attempt is skipped without another snapshot or Doctor pass. Incomplete
+migrations or unconfirmed child shutdown require a fresh private copy instead.
 Successful repair of a private copy does not mean the update was applied:
 the updater validates a fresh copy of the update again before activation. If that check
 fails, the report retains the failed update and the command exits nonzero even
@@ -272,9 +276,11 @@ five-minute startup lease. If that lease ends while the same Gateway is still
 progressing, verification finishes with a warning and reason `still-starting`.
 The process stays running, recovery backups remain available, and the updater
 does not restart it again, roll it back, or instruct you to keep it stopped.
-The run is `skipped` because readiness is unverified. A version that has not yet
-been observed is unknown; a version mismatch requires an observed serving
-version that disagrees with the installed target.
+Direct updater verification reports `skipped` because readiness is unverified.
+For a foreground RPC handoff, the replacement Gateway retains final verification:
+the run stays pending and its continuation is preserved until startup verification
+settles. A version that has not yet been observed is unknown; a version mismatch
+requires an observed serving version that disagrees with the installed target.
 
 When the readiness allowance expires for the same running PID or boot generation
 while the restart owner reports waiting for a listener, startup migration, or
@@ -417,14 +423,40 @@ the CLI update to a detached helper before activation. A foreground
 Gateway keeps update hints but leaves installation and activation to the
 operator: stop it, run `openclaw update`, then launch it again.
 
-Control-plane `update.run` package-manager updates and supervised git-checkout updates use
-the same managed-service handoff instead of replacing the package tree or
-rebuilding `dist/` inside the live Gateway process: the Gateway starts a
-detached helper, which runs `openclaw update --yes --json` from outside the
-Gateway process tree. The Gateway exits only after update validation succeeds
-and activation begins. If the handoff is unavailable,
-`update.run` returns a structured response with the safe shell command to run
-manually.
+Control-plane `update.run` uses the same detached CLI update owner for
+package-manager and Git installations, including a verified foreground Gateway.
+The Gateway stays available during validation. Before replacing its installed
+code, the updater asks that exact Gateway to drain work and close its services,
+databases, and listener. A foreground Gateway launches a fresh process only after
+the updater settles; it does not reopen its old module graph after replacement.
+Managed services restart through their existing service manager.
+
+With `OPENCLAW_NO_RESPAWN` enabled, a foreground Gateway refuses `update.run`
+before starting the updater. Stop the Gateway, run `openclaw update`, and start
+it again, or relaunch it without `OPENCLAW_NO_RESPAWN` to allow control-plane updates.
+
+Each requested update checks the current local installation and Git upstream
+before accepting its target. After a pinned Git update leaves the checkout
+detached, a verified update receipt preserves the upstream for that same checkout
+and revision. Startup status discovery does not freeze later update requests.
+
+A foreground replacement can still be starting when the initial readiness
+observation ends. OpenClaw leaves that process running and reports readiness as
+unverified. Use `openclaw gateway status --deep` to check its progress.
+Successful updates remain pending until the replacement verifies startup.
+
+If readiness rejects a foreground replacement, OpenClaw requests a graceful shutdown
+and reports shutdown as pending with the replacement PID. The old Gateway process
+waits for that replacement to close. If shutdown does not finish, inspect the
+replacement's startup logs and active updates before stopping it manually.
+
+Stopping a foreground Gateway during helper startup, package staging, or activation
+waits for owned update work to finish, then leaves the Gateway stopped. New updates
+and unrelated restarts cannot bypass that wait. If cleanup ownership is uncertain,
+the Gateway remains draining; after checking the updater, send Stop again to recheck
+the same work. A replacement already starting is also stopped. Pending startup
+verification runs on the next Gateway start.
+The previous package backup remains available while that verification is pending.
 
 Stored extended-stable selections receive read-only startup and 24-hour update
 hints when `update.checkOnStart` is enabled. These checks never apply an update,

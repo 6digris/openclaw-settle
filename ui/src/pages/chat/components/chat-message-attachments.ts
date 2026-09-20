@@ -3,7 +3,6 @@ import { normalizeBasePath } from "../../../app-route-paths.ts";
 import { t } from "../../../i18n/index.ts";
 import { formatBytes } from "../../../lib/agents/display.ts";
 import type { MessageContentItem } from "../../../lib/chat/chat-types.ts";
-import { classifyImageAttachment } from "../../../lib/media-file-extension.ts";
 import "./chat-audio-player.ts";
 import "./chat-svg-attachment.ts";
 import "./chat-video-player.ts";
@@ -28,7 +27,6 @@ import {
   renderAssistantAttachmentStatusCard,
 } from "./chat-message-attachment-status.ts";
 import { openResolvedImage } from "./chat-message-image-open.ts";
-import { renderMessageImages } from "./chat-message-images.ts";
 import {
   buildAssistantAttachmentUrl,
   isLocalAssistantAttachmentSource,
@@ -37,6 +35,7 @@ import {
   isChatMediaResourceCurrent,
   notifyChatMediaResourceSubscribers,
   observeChatMediaResource,
+  resolveAttachmentImageKind,
   scheduleChatMediaResourceRefresh,
   type AttachmentItem,
   type AssistantAttachmentItem,
@@ -478,13 +477,7 @@ export function renderMessageAttachment(
   }
   const { attachment } = item;
   const pastedText = presentation === "card" && isSentPastedTextAttachment(item);
-  const imageAttachment = classifyImageAttachment(attachment);
-  if (imageAttachment === "raster") {
-    return renderMessageImages(
-      [{ ...attachment, alt: attachment.label, fileName: attachment.label }],
-      options,
-    );
-  }
+  const imageAttachment = resolveAttachmentImageKind(attachment) === "svg";
   const resolved = resolveAttachmentSource(attachment, options);
   if (resolved.status !== "available" && !pastedText) {
     return renderAssistantAttachmentStatusCard({

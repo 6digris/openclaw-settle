@@ -35,6 +35,12 @@ This is creation-only: later messages do not regenerate an existing session's
 name. Explicit worktree names are preserved, and typing never creates a worktree
 or runs setup.
 
+If automatic naming fails after submission, the session receives a two-word,
+crustacean-themed name. New worktree branches use the saved session title when
+available, with the same two-word fallback if naming has not finished. They never
+use the first-message text as a branch-name fallback. A title that arrives later
+updates the sidebar without renaming an existing branch.
+
 ## New-session preferences and recents
 
 For connections with a durable user profile, the Gateway stores each agent's latest folder, worktree, model, and thinking choices. The new-session picker also shows recent projects and folders derived only from sessions created by that profile. These conveniences follow the person across browsers; they do not grant access to a project or path.
@@ -87,6 +93,13 @@ navigation. Navigation and the active list share one scroll area on every route;
 the sidebar header and footer stay fixed. Returning to conversations restores
 their sidebar scroll position. Navigation changes this context; background
 machine or session activity does not switch your workspace.
+
+Use **Filter & sort machines** beside the search field to sort each group
+alphabetically, online first (the default), or offline first. Choose **All**,
+**Online**, or **Offline** to filter by reported status; search narrows that
+selection further. Starting, stopping, and error states remain visible under
+**All**. Filtering does not change the machine open in the workspace. These
+choices stay in place when you leave Systems and return on the same connection.
 
 The machine list excludes cloud workers whose teardown is complete, including
 retained records from archived sessions and failed starts with no allocated
@@ -256,11 +269,46 @@ With **Person** grouping, hover or focus a person’s header and choose **Show o
 
 Choose **Icon & color** from a session menu and select a color swatch to add a narrow color stripe to its sidebar row and a matching dot beside the chat title. Pick one of eight colors, or choose **Default** to clear only the color. **Reset to default** clears both the icon and color. The colors match Claude Code’s `/color` names, so imported Claude Code sessions keep the same color. Imported catalog rows show their color without offering color editing.
 
+## Direct session shortcuts
+
+- **⌘⇧O** on Mac or **Ctrl+Shift+O** on Windows/Linux opens **New Session**
+  and focuses its composer. It opens a draft, without creating an empty session
+  or sending a message. **⌘N / Ctrl+N** remains **New Window**.
+- **⌘⇧A** on Mac or **Ctrl+Shift+A** on Windows/Linux requests **Archive**
+  for the current chat pane only, not other sessions selected in the sidebar.
+  It uses the same permissions, protected-session checks, archive lifecycle, and
+  **Undo** as the chat header menu. The archived conversation stays open; this
+  is not a separate stop or delete action.
+
+Both shortcuts work from the chat composer, ignore key repeat and text
+composition, and leave open modal dialogs in control. New Session preserves the
+existing conversation's draft through normal navigation. Archive does not clear
+that draft or navigate to another conversation.
+
+Browser shortcut handling can vary by browser version and configuration. If your
+browser handles a chord itself, use the corresponding New Session control or
+**Archive** in the current chat's header menu. The menu's **A** shortcut still
+works while that menu is open.
+
+In the macOS app, these additional shortcuts apply while the Dashboard web view
+has keyboard focus. A separate native reading pane does not forward Archive to
+the Dashboard or another window. The existing native **⌘N** New Gateway Window
+and **⌘⇧N** New Thread commands are unchanged.
+
+These direct shortcuts do not change the command palette's **⌘K / Ctrl+K**, then
+**⌘Enter / Ctrl+Enter** workflow for starting a task in the background.
+
 ## Command palette
 
 The command palette can start an independent task without leaving your current
 conversation or settings page. Search sessions, settings, and commands as usual,
-or write a prompt in the same field.
+or write a prompt in the same field. Multiline text or a prompt of 60 or more
+characters pauses palette searches and gently hides the search tabs, results, and
+hints. The input stays anchored in place. Search returns when the text is
+single-line and shortened to 50 characters or fewer, or cleared. Between 51 and
+59 characters, the palette keeps its current mode to avoid flickering while you
+edit. Counts exclude leading and trailing whitespace. Session-creation errors and
+recovery actions remain visible in either mode.
 
 - **Enter** opens or runs the selected result. With no result, Enter does not send.
 - **Shift+Enter** adds a line. The field grows downward to three lines, then scrolls
@@ -282,8 +330,8 @@ Accepted creation closes the palette and offers **Open session** without changin
 the foreground view or its draft. A failed submission retains the prompt and
 choices with an error. These settings do not affect sessions opened from search,
 and the existing conversation composer keeps its own send and steer/queue
-shortcuts. Prompts longer than the transcript-search limit are not sent as search
-queries; they remain intact for session creation.
+shortcuts. Long prompts remain intact for session creation and are never sent as
+search queries.
 
 ## New session page
 

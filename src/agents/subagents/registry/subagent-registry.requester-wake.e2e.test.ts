@@ -444,10 +444,10 @@ describe("requester settle wake product flow", () => {
               agentId: "main",
               sessionKey: MAIN_REQUESTER_SESSION_KEY,
             }),
-            () => {
+            async () => {
               const gatewayContextResolver = getGatewayToolCallerIdentity()?.gatewayContextResolver;
               resolvers.push(gatewayContextResolver);
-              registry.registerSubagentRun(
+              await registry.registerSubagentRun(
                 createSubagentRunParams({
                   ...child,
                   requesterTurnRunId,
@@ -646,6 +646,14 @@ describe("requester settle wake product flow", () => {
     if (!rejectRequesterWake) {
       const wakeMessage = getRequesterWakeCalls()[0]?.params?.message;
       expect(wakeMessage).toContain(modelRouteChange);
+      // Yielded batches must retain the same outcome/blocked boundary as
+      // individual completions, not downgrade failed checks to a final update.
+      expect(wakeMessage).toContain(
+        "Reviews, failed checks, and other in-scope fixable blockers require continued work",
+      );
+      expect(wakeMessage).toContain(
+        "report a blocker only when progress needs new user authority or an unavailable external decision",
+      );
       expect(wakeMessage).toContain(
         "Keep this runtime-authored model-route change notice internal on this shared surface.",
       );

@@ -1,7 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { DatabaseSync } from "node:sqlite";
 import { serialize } from "node:v8";
-import { MessageChannel, receiveMessageOnPort, type MessagePort } from "node:worker_threads";
+import {
+  MessageChannel,
+  receiveMessageOnPort,
+  type MessagePort,
+  type Transferable,
+} from "node:worker_threads";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
@@ -18,7 +23,19 @@ const GRANTED = 1;
 const REFUSED = 2;
 const ADMISSION_TIMEOUT_MS = 5_000;
 
-type SqliteWorkerAdmissionRequest = {
+/** Only the factory's admission before agent open may certify this refusal. */
+export const SqliteWorkerOpenRefusedError = resolveGlobalSingleton(
+  Symbol.for("openclaw.sqliteWorkerOpenRefusedError"),
+  () =>
+    class OpenRefusedError extends Error {
+      constructor(readonly originalError: unknown) {
+        super("SQLite worker admission was refused before agent open", { cause: originalError });
+        this.name = "SqliteWorkerOpenRefusedError";
+      }
+    },
+);
+
+export type SqliteWorkerAdmissionRequest = {
   stage: "open" | "prepare" | "transaction" | "commit";
   facts: unknown;
 };
@@ -266,13 +283,16 @@ export function settleSqliteWorkerOperationContext(
 }
 
 /** Called on the SQLite worker, after transaction entry and before its row mutation. */
-export function requestSqliteWorkerOperationAdmission(request: SqliteWorkerAdmissionRequest): void {
+export function requestSqliteWorkerOperationAdmission(
+  request: SqliteWorkerAdmissionRequest,
+  transferList: Transferable[] = [],
+): void {
   const scope = currentAdmission.getStore();
   if (!scope?.active) {
     throw new SqliteWorkerError("SQLite operation requires its retained admission", "unavailable");
   }
   const decision = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
-  scope.port.postMessage({ ...request, decision: decision.buffer }, []);
+  scope.port.postMessage({ ...request, decision: decision.buffer }, transferList);
   Atomics.wait(decision, 0, REQUESTED, ADMISSION_TIMEOUT_MS);
   if (Atomics.load(decision, 0) !== GRANTED) {
     Atomics.compareExchange(decision, 0, REQUESTED, REFUSED);

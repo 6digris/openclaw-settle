@@ -7,7 +7,6 @@ import type { MessageContentItem, MessageImageSource } from "../../../lib/chat/c
 import { readTranscriptMediaEntries } from "../../../lib/chat/message-extract.ts";
 import { normalizeMessage } from "../../../lib/chat/message-normalizer.ts";
 import {
-  classifyImageAttachment,
   isAudioTranscriptMediaPath,
   isImageMediaPath,
   isSvgImageMediaPath,
@@ -16,16 +15,14 @@ import {
 } from "../../../lib/media-file-extension.ts";
 
 export type ImageBlock = {
-  url: string;
   factIndex?: number;
-  artifactId?: string;
   fileName?: string;
   openUrl?: string;
   alt?: string;
   sizeBytes?: number;
   width?: number;
   height?: number;
-};
+} & ({ url: string; artifactId?: string } | { url?: undefined; artifactId: string });
 
 export type ArtifactDownloadResolver = (params: {
   sessionKey: string;
@@ -427,13 +424,37 @@ function appendImageBlock(images: ImageBlock[], block: ImageBlock) {
     !images.some((entry) =>
       block.factIndex !== undefined
         ? entry.factIndex === block.factIndex
-        : entry.factIndex === undefined && entry.url === block.url && entry.alt === block.alt,
+        : entry.factIndex === undefined &&
+          entry.url === block.url &&
+          entry.artifactId === block.artifactId &&
+          entry.alt === block.alt,
     )
   ) {
     images.push(block);
     return true;
   }
   return false;
+}
+
+export function resolveAttachmentImageKind(
+  attachment: AttachmentItem["attachment"],
+): "raster" | "svg" | undefined {
+  const mimeType = attachment.mimeType?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  const inferExtension = !mimeType || mimeType === "application/octet-stream";
+  const image =
+    attachment.kind === "image" ||
+    (attachment.kind === "document" &&
+      (isImageMediaPath(attachment.url, mimeType) ||
+        (inferExtension && isImageMediaPath(attachment.label, undefined))));
+  if (!image) {
+    return undefined;
+  }
+  return mimeType === "image/svg+xml" ||
+    (inferExtension &&
+      (isSvgImageMediaPath(attachment.url, undefined) ||
+        isSvgImageMediaPath(attachment.label, undefined)))
+    ? "svg"
+    : "raster";
 }
 
 export function projectMessageMedia(
@@ -520,7 +541,8 @@ export function projectMessageMedia(
     if (item.type === "attachment" || item.type === "attachment_error") {
       if (item.type === "attachment") {
         positionedSources.add(item.attachment.url);
-        if (classifyImageAttachment(item.attachment) === "raster") {
+        if (resolveAttachmentImageKind(item.attachment) === "raster") {
+          // Tiles and their gallery must share the same projected image identity.
           const image = {
             ...item.attachment,
             alt: item.attachment.label,
@@ -541,8 +563,7 @@ export function projectMessageMedia(
       continue;
     }
     if (item.type !== "image") {
-      // Non-media content still separates image runs even when another renderer
-      // owns it (reasoning, tool calls, canvas, or omitted media).
+      // Other renderers own these blocks, but they still separate image sets.
       orderedContent.push({ type: "boundary" });
       continue;
     }
@@ -580,6 +601,8 @@ export function projectMessageMedia(
           url,
           ...(typeof factIndex === "number" ? { factIndex } : {}),
         });
+      } else if (metadata.artifactId) {
+        appendImageBlock(blockImages, { ...metadata, artifactId: metadata.artifactId });
       }
     }
     // Separate blocks are separate attachments, including identical uploads.
@@ -603,9 +626,18 @@ export function projectMessageMedia(
     height,
     factIndex,
   } of readTranscriptMediaEntries(message)) {
-    const image = isImageMediaPath(mediaPath, mediaType);
-    const svg = image && isSvgImageMediaPath(mediaPath, mediaType);
-    if (image && !svg) {
+    // Without slot identity, a persisted fact mirrors the already-positioned media.
+    // Valid layouts still distinguish separate uploads of the same source.
+    if (!validLayout && positionedSources.has(mediaPath)) {
+      continue;
+    }
+    const imageKind = resolveAttachmentImageKind({
+      kind: "document",
+      url: mediaPath,
+      label: fileName?.trim() || labelForMediaPath(mediaPath),
+      mimeType: mediaType,
+    });
+    if (imageKind === "raster") {
       const projected: ImageBlock = {
         url: mediaPath,
         fileName,
@@ -620,13 +652,14 @@ export function projectMessageMedia(
         type: "attachment",
         attachment: {
           url: mediaPath,
-          kind: svg
-            ? "image"
-            : isAudioTranscriptMediaPath(mediaPath, mediaType)
-              ? "audio"
-              : isVideoTranscriptMediaPath(mediaPath, mediaType)
-                ? "video"
-                : "document",
+          kind:
+            imageKind === "svg"
+              ? "image"
+              : isAudioTranscriptMediaPath(mediaPath, mediaType)
+                ? "audio"
+                : isVideoTranscriptMediaPath(mediaPath, mediaType)
+                  ? "video"
+                  : "document",
           label: fileName?.trim() || labelForMediaPath(mediaPath),
           ...(origin ? { origin } : {}),
           ...(typeof mediaType === "string" ? { mimeType: mediaType } : {}),
