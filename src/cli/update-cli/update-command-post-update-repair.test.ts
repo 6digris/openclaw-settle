@@ -23,6 +23,7 @@ import { renderUpdateRunReport } from "../../infra/update-run-report.js";
 import { defaultRuntime } from "../../runtime.js";
 import { classifyUpdateOutcome } from "../../shared/update-outcome.js";
 import type { FinishUpdateParams } from "./update-command-finish-types.js";
+import { registerCurrentCoreRuntimeRefreshTests } from "./update-command-post-update-runtime-refresh.test-support.js";
 import { finishUpdate } from "./update-command-post-update.js";
 import { taskRecovery } from "./update-command-post-update.test-support.js";
 import { repairUpdateService } from "./update-command-repair-service.js";
@@ -340,6 +341,8 @@ describe("post-activation repair after rollback refusal or failure", () => {
       }
     },
   );
+
+  registerCurrentCoreRuntimeRefreshTests(fixture, mocks);
 
   it("terminalizes a failed final native read after current-core plugin parking", async () => {
     const params = fixture();

@@ -20,6 +20,7 @@ import {
   managedServiceState,
   programArguments,
   registerForegroundFinalizationTests,
+  registerManagedInstallEnvironmentTest,
   successfulPluginUpdate,
   taskRecovery,
   validConfigSnapshot,
@@ -126,6 +127,7 @@ vi.mock("./update-command-result.js", async (importOriginal) => ({
 }));
 
 import * as postCoreModule from "./update-command-post-core.js";
+import { registerBoundaryFinalizationControls } from "./update-command-post-update-boundary.test-support.js";
 import { finishUpdate } from "./update-command-post-update.js";
 import * as rollbackModule from "./update-command-rollback.js";
 import { UpdateServiceLoadBoundaryError } from "./update-command-service-load.js";
@@ -203,6 +205,8 @@ describe("successful update finalization ordering", () => {
     expect(mocks.printResult).not.toHaveBeenCalled();
     expect(loadUpdateRecovery(run.runId, { env })).toEqual(record);
   });
+
+  registerBoundaryFinalizationControls({ makeTempDir: (prefix) => tempDirs.make(prefix), mocks });
 
   it("retains pending staged service load without legacy rollback or completion", async () => {
     const refusal = new UpdateServiceLoadBoundaryError("checkpoint seal refused");
@@ -339,6 +343,7 @@ describe("successful update finalization ordering", () => {
   });
 
   it("restarts when shell completion cache generation returns false", async () => {
+    vi.stubEnv("OPENCLAW_PROFILE", undefined);
     Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
     mocks.checkCompletionStatus.mockResolvedValueOnce({
       shell: "zsh",
@@ -583,65 +588,7 @@ describe("successful update finalization ordering", () => {
     expect(mocks.leaseActive).toBe(false);
   });
 
-  it("removes operator overrides and process identity from the managed install environment", async () => {
-    const identity = createManagedServiceIdentityFixture(
-      tempDirs.make("openclaw-post-update-service-home-"),
-    );
-    const managedEnvironment = {
-      ANTHROPIC_API_KEY: "managed-provider",
-      MANAGED_VALUE: "base",
-      OPENCLAW_SERVICE_MARKER: "openclaw",
-      OPENCLAW_SERVICE_KIND: "gateway",
-      OPENCLAW_LAUNCHD_LABEL: "ai.openclaw.work",
-    };
-    const effectiveEnvironment = {
-      ...managedEnvironment,
-      ANTHROPIC_API_KEY: "drop-in-provider",
-      OPENAI_API_KEY: "operator-only-provider",
-    };
-    mocks.readServiceState.mockResolvedValueOnce(
-      managedServiceState(effectiveEnvironment, {
-        environment: effectiveEnvironment,
-        managedDefinition: { programArguments, environment: managedEnvironment },
-        managedOverrides: {
-          environment: { keys: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "UNSET_PROVIDER_KEY"] },
-        },
-      }),
-    );
-    vi.stubEnv("ANTHROPIC_API_KEY", effectiveEnvironment.ANTHROPIC_API_KEY);
-    vi.stubEnv("OPENAI_API_KEY", effectiveEnvironment.OPENAI_API_KEY);
-    vi.stubEnv("UNSET_PROVIDER_KEY", "removed-by-drop-in");
-    vi.stubEnv("GEMINI_API_KEY", "allowed-runtime-credential");
-    vi.stubEnv("OPENCLAW_PROFILE", "caller-only-profile");
-    const callerStateDir = path.join(identity.home, ".openclaw-caller-only-profile");
-    vi.stubEnv("OPENCLAW_STATE_DIR", callerStateDir);
-    vi.stubEnv("OPENCLAW_CONFIG_PATH", path.join(callerStateDir, "openclaw.json"));
-    try {
-      const ownedUpdateEnvironment: NodeJS.ProcessEnv = { ...process.env, ...effectiveEnvironment };
-      for (const key of ["OPENCLAW_PROFILE", "OPENCLAW_STATE_DIR", "OPENCLAW_CONFIG_PATH"]) {
-        delete ownedUpdateEnvironment[key];
-      }
-      await finishSuccessfulPackageSwitch({
-        restartEnvironment: ownedUpdateEnvironment,
-      });
-
-      const installEnv = mocks.restartService.mock.lastCall?.[0].serviceInstallEnv;
-      expect(installEnv?.OPENAI_API_KEY).toBeUndefined();
-      expect(installEnv?.UNSET_PROVIDER_KEY).toBeUndefined();
-      expect(installEnv?.ANTHROPIC_API_KEY).toBe("managed-provider");
-      expect(installEnv?.MANAGED_VALUE).toBe("base");
-      expect(installEnv?.GEMINI_API_KEY).toBe("allowed-runtime-credential");
-      expect(installEnv?.OPENCLAW_PROFILE).toBeUndefined();
-      expect(installEnv?.OPENCLAW_STATE_DIR).toBeUndefined();
-      expect(installEnv?.OPENCLAW_CONFIG_PATH).toBeUndefined();
-      expect(installEnv?.OPENCLAW_SERVICE_MARKER).toBeUndefined();
-      expect(installEnv?.OPENCLAW_SERVICE_KIND).toBeUndefined();
-      expect(installEnv?.OPENCLAW_LAUNCHD_LABEL).toBe("ai.openclaw.work");
-    } finally {
-      vi.unstubAllEnvs();
-      identity.restore();
-    }
-  });
+  registerManagedInstallEnvironmentTest({ tempDirs, mocks });
 
   it("reads the preserved service config without using the caller config or writing state", async () => {
     const { createConfigIO } =

@@ -44,9 +44,9 @@ export const TSGO_CORE_TEST_SHARDS = [
     config: "test/tsconfig/tsconfig.core.test.plugins-platform.json",
   },
   {
-    name: "config-hooks",
+    name: "config-cli",
     group: "src",
-    config: "test/tsconfig/tsconfig.core.test.config-hooks.json",
+    config: "test/tsconfig/tsconfig.core.test.config-cli.json",
   },
   { name: "messaging", group: "src", config: "test/tsconfig/tsconfig.core.test.messaging.json" },
   { name: "services", group: "src", config: "test/tsconfig/tsconfig.core.test.services.json" },
@@ -79,7 +79,16 @@ export const TSGO_CORE_TEST_SHARDS = [
     group: "src",
     config: "test/tsconfig/tsconfig.core.test.commands-doctor.json",
   },
-  { name: "cli", group: "src", config: "test/tsconfig/tsconfig.core.test.cli.json" },
+  {
+    name: "cli-update",
+    group: "src",
+    config: "test/tsconfig/tsconfig.core.test.cli-update.json",
+  },
+  {
+    name: "gateway-methods",
+    group: "src",
+    config: "test/tsconfig/tsconfig.core.test.gateway-methods.json",
+  },
 ] as const;
 
 export const TSGO_CORE_GRAPHS = [

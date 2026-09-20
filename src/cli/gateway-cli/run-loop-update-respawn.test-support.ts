@@ -6,11 +6,13 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import { stopChildProcess } from "../../../test/helpers/stop-child-process.js";
 import { withTimeout } from "../../infra/fs-safe.js";
 import { getFreePort } from "../../test-utils/ports.js";
+import { registerPackageLifecycleStopTests } from "./run-loop-package-lifecycle.test-support.js";
 import { registerForegroundUpdateStopTests } from "./run-loop-stop.test-support.js";
 import { createUpdateRespawnChild, type UpdateRespawnFixtures } from "./run-loop.test-support.js";
 
 export function registerUpdateRespawnTests(fixtures: UpdateRespawnFixtures): void {
   registerForegroundUpdateStopTests(fixtures);
+  registerPackageLifecycleStopTests(fixtures);
   const {
     peekGatewaySigusr1RestartReason,
     respawnGatewayProcessForUpdate,
@@ -125,9 +127,16 @@ export function registerUpdateRespawnTests(fixtures: UpdateRespawnFixtures): voi
       const lockRelease = vi.fn(async () => {});
       acquireGatewayLock.mockResolvedValueOnce({ release: lockRelease });
       const child = createUpdateRespawnChild();
-      if (outcome === "exited" || outcome === "unhealthy") {
+      if (outcome === "exited") {
         child.exitCode = 1;
       }
+      const readinessRejected = [
+        "unhealthy",
+        "timeout",
+        "version-mismatch",
+        "channel-errors",
+        "generation-changed",
+      ].includes(outcome);
       const health = respawnHealth({
         healthy: outcome === "healthy" || outcome === "exited" || outcome === "timeout",
         waitOutcome:
@@ -198,6 +207,33 @@ export function registerUpdateRespawnTests(fixtures: UpdateRespawnFixtures): voi
           });
           expect(consumeGatewayRestartIntentPayloadSync).toHaveBeenCalledTimes(consumedIntents);
           updater.resolve({ respawn: outcome !== "unsafe" });
+          if (readinessRejected) {
+            await waitForLoopCondition(
+              () => child.kill.mock.calls.length === 1,
+              "rejected foreground successor did not receive termination",
+            );
+            expect(runtime.exit).not.toHaveBeenCalled();
+            expect(gatewayLog.warn).toHaveBeenCalledWith(
+              expect.stringContaining("shutdown pending"),
+            );
+            child.exitCode = 1;
+            child.emit("exit", 1, null);
+            await new Promise<void>((resolve) => {
+              setImmediate(resolve);
+            });
+            expect(runtime.exit).not.toHaveBeenCalled();
+            child.emit("close", 1, null);
+          } else if (outcome === "exited") {
+            await waitForLoopCondition(
+              () => waitForGatewayHealthyRestart.mock.calls.length === 1,
+              "foreground successor readiness was not observed",
+            );
+            await new Promise<void>((resolve) => {
+              setImmediate(resolve);
+            });
+            expect(runtime.exit).not.toHaveBeenCalled();
+            child.emit("close", 1, null);
+          }
           await expect(withTimeout(exited, 4_000)).resolves.toBe(
             outcome === "healthy" || outcome === "pending" ? 0 : 1,
           );
@@ -213,16 +249,13 @@ export function registerUpdateRespawnTests(fixtures: UpdateRespawnFixtures): voi
           } else {
             expect(respawnGatewayProcessForUpdate).toHaveBeenCalledOnce();
           }
-          if (
-            [
-              "unhealthy",
-              "timeout",
-              "version-mismatch",
-              "channel-errors",
-              "generation-changed",
-            ].includes(outcome)
-          ) {
+          if (readinessRejected) {
             expect(child.kill).toHaveBeenCalledOnce();
+          }
+          if (outcome === "healthy" || outcome === "pending") {
+            expect(child.kill).not.toHaveBeenCalled();
+            expect(child.exitCode).toBeNull();
+            expect(child.signalCode).toBeNull();
           }
           if (outcome === "pending") {
             expect(killProcessTree).not.toHaveBeenCalled();
@@ -373,7 +406,11 @@ process.send("parked");`,
         child.exitCode = 1;
         child.emit("exit", 1, null);
         releaseFlush.resolve();
-
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
+        expect(runtime.exit).not.toHaveBeenCalled();
+        child.emit("close", 1, null);
         await expect(withTimeout(exited, 5_000)).resolves.toBe(1);
         expect(start).toHaveBeenCalledOnce();
         expect(acquireGatewayLock).toHaveBeenCalledOnce();
@@ -384,6 +421,7 @@ process.send("parked");`,
         expect(markUpdateRestartSentinelFailure).not.toHaveBeenCalled();
       } finally {
         releaseFlush.resolve();
+        child.emit("close", 1, null);
         await withTimeout(exited, 5_000);
         flushLogger.mockReset().mockResolvedValue(undefined);
       }

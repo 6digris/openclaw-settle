@@ -113,6 +113,7 @@ export async function preflightUpdateCommandSchemas(params: {
   invocationCwd?: string;
   legacyConfigPlan?: LegacyConfigUpdatePlan;
   managedServiceRootRedirect: ManagedServiceRootRedirect | null;
+  managedServiceRoot?: string;
   channel: UpdateChannel;
   requestedChannel?: UpdateChannel | null;
   devTarget?: DevUpdateTarget;
@@ -172,6 +173,7 @@ export async function preflightUpdateCommandSchemas(params: {
         timeoutMs: updateStepTimeoutMs,
         invocationCwd,
         managedServiceRootRedirect,
+        managedServiceRoot: params.managedServiceRoot,
         legacyConfigPlan: params.legacyConfigPlan,
         expectedForeground:
           params.expectedForeground || run?.completionOwner === "gateway-restart" || undefined,

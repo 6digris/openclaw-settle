@@ -44,6 +44,25 @@ export function createGatewaySignalObserver(logger: Pick<SubsystemLogger, "warn"
   };
 }
 
+export function createGatewayStabilityReporter(
+  runtime: Pick<
+    typeof import("./lifecycle.runtime.js"),
+    "writeDiagnosticStabilityBundleForFailureSync"
+  >,
+  logger: Pick<SubsystemLogger, "warn">,
+) {
+  return (reason: string, error?: unknown, shutdownStep?: string) => {
+    const result = runtime.writeDiagnosticStabilityBundleForFailureSync(
+      reason,
+      error,
+      ...(shutdownStep ? [{ shutdownStep }] : []),
+    );
+    if ("message" in result) {
+      logger.warn(result.message);
+    }
+  };
+}
+
 export function createGatewayDrainReporter(
   action: GatewayRunSignalAction,
   drainTimeoutMs: number | undefined,

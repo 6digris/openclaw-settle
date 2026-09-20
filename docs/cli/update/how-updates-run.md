@@ -441,9 +441,17 @@ observation ends. OpenClaw leaves that process running and reports readiness as
 unverified. Use `openclaw gateway status --deep` to check its progress.
 Successful updates remain pending until the replacement verifies startup.
 
-Stopping a foreground Gateway during an update waits for active update work to
-finish, then leaves the Gateway stopped. A replacement already starting is also
-stopped. Pending startup verification runs on the next Gateway start.
+If readiness rejects a foreground replacement, OpenClaw requests a graceful shutdown
+and reports shutdown as pending with the replacement PID. The old Gateway process
+waits for that replacement to close. If shutdown does not finish, inspect the
+replacement's startup logs and active updates before stopping it manually.
+
+Stopping a foreground Gateway during helper startup, package staging, or activation
+waits for owned update work to finish, then leaves the Gateway stopped. New updates
+and unrelated restarts cannot bypass that wait. If cleanup ownership is uncertain,
+the Gateway remains draining; after checking the updater, send Stop again to recheck
+the same work. A replacement already starting is also stopped. Pending startup
+verification runs on the next Gateway start.
 The previous package backup remains available while that verification is pending.
 
 Stored extended-stable selections receive read-only startup and 24-hour update

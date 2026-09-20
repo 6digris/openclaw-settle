@@ -1,12 +1,20 @@
 import type { ChildProcess } from "node:child_process";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { GatewayRestartIntent } from "../../infra/restart-intent.js";
+import type { ForegroundUpdateStop } from "../../infra/update-managed-service-handoff.js";
 import type { SubsystemLogger } from "../../logging/subsystem.js";
-import { sameManagedUpdateOwner } from "./run-loop-request.js";
+import { createDeferredCore } from "../../shared/deferred.js";
+import { sameManagedUpdateOwner, type GatewayRunSignalRequest } from "./run-loop-request.js";
 
 export class GatewayUpdateSuccessor {
   private child: ChildProcess | true | null = null;
   private closed: Promise<void> | undefined;
+  private foregroundStop?: {
+    owner: ForegroundUpdateStop;
+    confirmed: ReturnType<typeof createDeferredCore<void>>;
+    onSettled: () => void;
+    state: "waiting" | "joining" | "settled";
+  };
   stopRequested = false;
 
   constructor(
@@ -14,6 +22,9 @@ export class GatewayUpdateSuccessor {
     private readonly lifecycle: Pick<
       typeof import("./lifecycle.runtime.js"),
       | "cancelManagedServiceUpdateHandoff"
+      | "captureForegroundUpdateHandoffStop"
+      | "completeForegroundUpdateHandoffAfterClose"
+      | "markUpdateRestartSentinelFailure"
       | "readRestartSentinelReadOnly"
       | "writeRestartSentinelIfUnchanged"
       | "waitForGatewayHealthyRestart"
@@ -22,6 +33,14 @@ export class GatewayUpdateSuccessor {
 
   get committed(): boolean {
     return this.child !== null;
+  }
+
+  get waitingForStop(): boolean {
+    return this.foregroundStop !== undefined && this.foregroundStop.state !== "settled";
+  }
+
+  get capturedStop(): boolean {
+    return this.foregroundStop !== undefined;
   }
 
   get running(): boolean {
@@ -103,18 +122,127 @@ export class GatewayUpdateSuccessor {
   }
 
   stop(signal: "SIGINT" | "SIGTERM"): void {
-    if (this.stopRequested) {
-      return;
-    }
-    this.stopRequested = true;
-    this.logger.info(`received ${signal}; stopping after foreground update settlement`);
-    if (this.child && this.child !== true && this.running) {
-      try {
-        this.child.kill(signal);
-      } catch (error) {
-        this.logger.warn(`fresh Gateway stop signal failed: ${formatErrorMessage(error)}`);
+    if (!this.stopRequested) {
+      this.stopRequested = true;
+      this.logger.info(`received ${signal}; stopping after foreground update settlement`);
+      if (this.child && this.child !== true && this.running) {
+        try {
+          this.child.kill(signal);
+        } catch (error) {
+          this.logger.warn(`fresh Gateway stop signal failed: ${formatErrorMessage(error)}`);
+        }
       }
     }
+    this.joinForegroundStop();
+  }
+
+  private joinForegroundStop(): void {
+    const pending = this.foregroundStop;
+    if (!pending || pending.state !== "waiting") {
+      return;
+    }
+    pending.state = "joining";
+    void pending.owner
+      .settle()
+      .then((joined) => {
+        if (!joined) {
+          pending.state = "waiting";
+          this.logger.error(
+            "foreground update settlement unconfirmed; remaining draining; retry Stop after checking the updater",
+          );
+          return;
+        }
+        pending.state = "settled";
+        pending.confirmed.resolve();
+        pending.onSettled();
+      })
+      .catch((error: unknown) => {
+        pending.state = "waiting";
+        this.logger.error(`foreground update settlement failed: ${formatErrorMessage(error)}`);
+      });
+  }
+
+  private retainForegroundStop(owner: ForegroundUpdateStop, onSettled: () => void): void {
+    this.foregroundStop ??= {
+      owner,
+      confirmed: createDeferredCore(),
+      onSettled,
+      state: "waiting",
+    };
+  }
+
+  async completeForegroundHandoffAfterClose(
+    identity: NonNullable<GatewayRestartIntent["successorOwner"]>,
+  ): Promise<{ respawn: boolean }> {
+    const owner = this.lifecycle.captureForegroundUpdateHandoffStop({ onPark: () => {} });
+    const completed = await this.lifecycle.completeForegroundUpdateHandoffAfterClose(identity);
+    if (completed !== "pending") {
+      return completed;
+    }
+    if (owner) {
+      this.retainForegroundStop(owner, () => {});
+    }
+    const pending = this.foregroundStop;
+    if (!pending) {
+      throw new Error("foreground update settlement owner is unavailable; remaining draining");
+    }
+    await this.cancelHandoff(() => identity);
+    this.joinForegroundStop();
+    await pending.confirmed.promise;
+    return { respawn: false };
+  }
+
+  async markHandoffUnavailable(
+    foregroundClosed: boolean,
+    reason = "restart-handoff-unavailable",
+  ): Promise<void> {
+    if (foregroundClosed) {
+      return;
+    }
+    await this.lifecycle.markUpdateRestartSentinelFailure(reason).catch((error: unknown) => {
+      this.logger.warn(`failed to mark update restart ${reason}: ${String(error)}`);
+    });
+  }
+
+  handleSignal(
+    request: Pick<GatewayRunSignalRequest, "action" | "signal" | "restartIntent">,
+    foregroundActive: boolean | undefined,
+    params: {
+      beforeWait: () => void;
+      onPark: (identity: NonNullable<GatewayRestartIntent["successorOwner"]>) => void;
+      onSettled: () => void;
+    },
+  ): boolean {
+    const { action, signal, restartIntent } = request;
+    const successorOwner = restartIntent?.successorOwner;
+    if (
+      this.waitingForStop &&
+      action !== "stop" &&
+      (action !== "restart" ||
+        !successorOwner ||
+        !this.foregroundStop?.owner.canPark(successorOwner))
+    ) {
+      this.logger.info(
+        `received ${signal}; ignoring restart while foreground update Stop is pending`,
+      );
+      return true;
+    }
+    if (action !== "stop" || (signal !== "SIGINT" && signal !== "SIGTERM")) {
+      return false;
+    }
+    if (!foregroundActive && !this.waitingForStop) {
+      if (this.foregroundStop) {
+        return false;
+      }
+      const owner = this.lifecycle.captureForegroundUpdateHandoffStop({ onPark: params.onPark });
+      if (!owner) {
+        return false;
+      }
+      this.retainForegroundStop(owner, params.onSettled);
+      params.beforeWait();
+    }
+    this.stop(signal);
+    return true;
   }
 
   async cancelHandoff(
@@ -149,23 +277,25 @@ export class GatewayUpdateSuccessor {
   async cancel(): Promise<void> {
     const child = this.child;
     if (child && child !== true && child.exitCode === null && child.signalCode === null) {
-      const exited = new Promise<void>((resolve) => {
-        child.once("exit", () => resolve());
-      });
       try {
-        child.kill("SIGKILL");
-        await exited;
-      } catch {}
+        child.kill("SIGTERM");
+      } catch (error) {
+        this.logger.warn(`fresh Gateway cancellation failed: ${formatErrorMessage(error)}`);
+      }
     }
+    await this.closed;
   }
 
   async exit(code: number, exitProcess: (code: number) => void): Promise<void> {
     if (this.stopRequested) {
-      await this.closed;
+      await this.foregroundStop?.confirmed.promise;
     }
     const exitCode = code === 0 && !this.stopRequested && !this.running ? 1 : code;
     if (exitCode !== code) {
       this.logger.error("fresh Gateway stopped before handoff completed; check its startup logs");
+    }
+    if (this.stopRequested || exitCode !== 0) {
+      await this.closed;
     }
     exitProcess(exitCode);
   }

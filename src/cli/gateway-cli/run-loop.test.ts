@@ -43,6 +43,19 @@ import {
 
 const closeLogTempDirs = useAutoCleanupTempDirTracker(afterEach);
 
+const spawnProcess = vi.hoisted(() => vi.fn<typeof import("node:child_process").spawn>());
+vi.mock("node:child_process", async () => {
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  const { mockNodeChildProcessModule } =
+    await import("../../gateway/server-methods/node-child-process.test-support.js");
+  if (!spawnProcess.getMockImplementation()) {
+    spawnProcess.mockImplementation(actual.spawn);
+  }
+  const mocked = await mockNodeChildProcessModule({});
+  vi.spyOn(mocked, "spawn").mockImplementation(spawnProcess);
+  return mocked;
+});
+
 vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>();
   // Foreground fixtures must not inherit the CI runner's systemd service or filesystem timing.
@@ -90,6 +103,10 @@ const isForegroundUpdateHandoff = vi.fn((_identity: ManagedUpdateOwner) => false
 const completeForegroundUpdateHandoffAfterClose =
   vi.fn<
     typeof import("../../infra/update-managed-service-handoff.js").completeForegroundUpdateHandoffAfterClose
+  >();
+const captureForegroundUpdateHandoffStop =
+  vi.fn<
+    typeof import("../../infra/update-managed-service-handoff.js").captureForegroundUpdateHandoffStop
   >();
 const requestManagedServiceUpdateHandoffPark = vi.fn(async (_identity: ManagedUpdateOwner) => true);
 const commitManagedServiceUpdateHandoff = vi.fn(
@@ -227,7 +244,8 @@ const armShutdownHardExitWatchdog = vi.fn(
   }),
 );
 
-vi.mock("../../infra/gateway-lock.js", () => ({
+vi.mock("../../infra/gateway-lock.js", async (original) => ({
+  ...(await original<typeof import("../../infra/gateway-lock.js")>()),
   acquireGatewayLock: (opts?: { port?: number }) => acquireGatewayLock(opts),
 }));
 
@@ -255,6 +273,9 @@ vi.mock("../../infra/restart-intent.js", () => ({
 }));
 
 vi.mock("../../infra/update-managed-service-handoff.js", () => ({
+  captureForegroundUpdateHandoffStop: (
+    params: Parameters<typeof captureForegroundUpdateHandoffStop>[0],
+  ) => captureForegroundUpdateHandoffStop(params),
   isForegroundUpdateHandoff: (identity: ManagedUpdateOwner) => isForegroundUpdateHandoff(identity),
   completeForegroundUpdateHandoffAfterClose: (identity: ManagedUpdateOwner) =>
     completeForegroundUpdateHandoffAfterClose(identity),
@@ -429,6 +450,11 @@ let supervisorEnvSnapshot: ReturnType<typeof captureEnv> | undefined;
 beforeEach(async () => {
   vi.useRealTimers();
   vi.clearAllMocks();
+  spawnProcess
+    .mockReset()
+    .mockImplementation(
+      (await vi.importActual<typeof import("node:child_process")>("node:child_process")).spawn,
+    );
   acquireGatewayLock.mockReset().mockImplementation(async () => ({
     release: vi.fn(async () => {}),
   }));
@@ -489,6 +515,7 @@ beforeEach(async () => {
   claimManagedServiceUpdateHandoff.mockReturnValue(true);
   isForegroundUpdateHandoff.mockReset().mockReturnValue(false);
   completeForegroundUpdateHandoffAfterClose.mockReset().mockResolvedValue({ respawn: true });
+  captureForegroundUpdateHandoffStop.mockReset().mockReturnValue(undefined);
   requestManagedServiceUpdateHandoffPark.mockReset();
   requestManagedServiceUpdateHandoffPark.mockResolvedValue(true);
   commitManagedServiceUpdateHandoff.mockReset();
@@ -3624,6 +3651,7 @@ describe("runGatewayLoop", () => {
   });
 
   registerUpdateRespawnTests({
+    spawnProcess,
     waitForGatewayActiveWork,
     peekGatewaySigusr1RestartReason,
     respawnGatewayProcessForUpdate,
@@ -3643,6 +3671,7 @@ describe("runGatewayLoop", () => {
     writeGatewayRestartHandoffSync,
     consumeGatewaySigusr1RestartIntent,
     managedUpdateSuccessorOwner,
+    claimManagedServiceUpdateHandoff,
     isForegroundUpdateHandoff,
     requestManagedServiceUpdateHandoffPark,
     hasManagedProviderLocalServices,
@@ -3650,6 +3679,7 @@ describe("runGatewayLoop", () => {
     cancelManagedServiceUpdateHandoff,
     acquireGatewayLock,
     completeForegroundUpdateHandoffAfterClose,
+    captureForegroundUpdateHandoffStop,
     killProcessTree,
     flushLogger,
     gatewayLog,

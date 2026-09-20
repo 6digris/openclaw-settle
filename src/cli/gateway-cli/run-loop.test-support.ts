@@ -10,6 +10,7 @@ type ManagedUpdateOwner = NonNullable<GatewayRestartIntent["successorOwner"]>;
 type GatewayStart = Parameters<typeof import("./run-loop.js").runGatewayLoop>[0]["start"];
 type ExitRuntime = { log: Mock; error: Mock; exit: Mock<(code: number) => void> };
 export type UpdateRespawnFixtures = {
+  spawnProcess: Mock<typeof import("node:child_process").spawn>;
   waitForGatewayActiveWork: Mock<
     typeof import("../../infra/gateway-active-work.js").waitForGatewayActiveWork
   >;
@@ -62,6 +63,7 @@ export type UpdateRespawnFixtures = {
   writeGatewayRestartHandoffSync: { mockReturnValueOnce: (value: null) => unknown };
   consumeGatewaySigusr1RestartIntent: Mock<() => GatewayRestartIntent | null>;
   managedUpdateSuccessorOwner: ManagedUpdateOwner;
+  claimManagedServiceUpdateHandoff: Mock<(identity: ManagedUpdateOwner) => boolean>;
   isForegroundUpdateHandoff: Mock<(identity: ManagedUpdateOwner) => boolean>;
   requestManagedServiceUpdateHandoffPark: Mock<(identity: ManagedUpdateOwner) => Promise<boolean>>;
   hasManagedProviderLocalServices: Mock<() => boolean>;
@@ -74,6 +76,9 @@ export type UpdateRespawnFixtures = {
   >;
   completeForegroundUpdateHandoffAfterClose: Mock<
     typeof import("../../infra/update-managed-service-handoff.js").completeForegroundUpdateHandoffAfterClose
+  >;
+  captureForegroundUpdateHandoffStop: Mock<
+    typeof import("../../infra/update-managed-service-handoff.js").captureForegroundUpdateHandoffStop
   >;
   killProcessTree: Mock;
   flushLogger: Mock<() => Promise<void>>;

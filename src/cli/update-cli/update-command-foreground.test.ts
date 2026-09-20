@@ -23,6 +23,7 @@ import * as stateOwnership from "../../state/openclaw-state-ownership.js";
 import * as shared from "./shared.js";
 import { inspectUpdateDatabaseContexts } from "./update-command-database-context.js";
 import { executeMutableUpdate } from "./update-command-execution.js";
+import { withUpdateCommandExecutor } from "./update-command-executor.js";
 import * as managedContext from "./update-command-managed-context.js";
 import { finishAlreadyCurrentUpdate } from "./update-command-noop.js";
 import type { RefuseUpdate } from "./update-command-result.js";
@@ -465,16 +466,19 @@ it.each([
       events.push("park");
       run.gatewayRestartRequired = true;
     });
-    mocks.prepareMutableUpdate.mockImplementation(async () => {
-      events.push("prepare");
-    });
     mocks.runPackageUpdate.mockImplementation(async ({ validateCandidate, beforeActivate }) => {
       await validateCandidate(root);
       await beforeActivate();
       events.push("publish");
       return { ...successfulUpdate, root };
     });
-    const result = await executeMutableUpdate(params);
+    const result = await withUpdateCommandExecutor(params.opts.run.runId, async (executor) => {
+      mocks.prepareMutableUpdate.mockImplementation(async (_env, _timeout, admitExecutor) => {
+        events.push("prepare");
+        admitExecutor(await executor.enter(root));
+      });
+      return executeMutableUpdate(params);
+    });
     if (!capable && migrating) {
       expect(result?.result).toMatchObject({
         status: "error",
