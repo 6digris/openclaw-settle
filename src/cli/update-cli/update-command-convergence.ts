@@ -146,38 +146,7 @@ export async function convergeUpdatePlugins(params: {
         doctorWarnings.push(...warnings);
       };
       let targetRuntimeConverged = false;
-      const runtimeStartedAt = Date.now();
-      const runtime = await withPluginLifecycleLease({ assertCurrent }, (lease) =>
-        completeSourceUpdateRuntime({
-          root: postUpdateRoot,
-          timeoutMs: params.updateStepTimeoutMs,
-          lease,
-          beforePersistentEffect: assertCurrent,
-          beforePublication: params.beforeRuntimePublication,
-        }),
-      );
-      const runtimeDurationMs = Math.max(0, Date.now() - runtimeStartedAt);
-      assertCurrent?.();
-      if (params.candidateRuntime) {
-        // Migrated finalization already runs candidate code under the parent's
-        // live grant. Reuse resume's phase without attempting nested delegation.
-        const phase = await convergePostCoreUpdatePlugins({
-          root: postUpdateRoot,
-          channel: params.channel,
-          requestedChannel: params.requestedChannel,
-          opts: params.opts,
-          timeoutMs: params.updateStepTimeoutMs,
-          preUpdateConfig,
-          parentPluginInstallRecords: params.preUpdatePluginInstallRecords,
-          updateStartedAtMs: params.startedAt,
-          beforeDoctor: params.beforeDoctor,
-          onWarnings: collectDoctorWarnings,
-          assertCurrent,
-        });
-        postCorePluginUpdate = phase.pluginUpdate;
-        postUpdateConfigSnapshot = phase.configSnapshot;
-        targetRuntimeConverged = true;
-      } else if (shouldResumePostCoreInFreshProcess) {
+      if (shouldResumePostCoreInFreshProcess) {
         if (retainedDifferentRuntime && params.opts.run?.completionOwner === "gateway-restart") {
           await params.beforeDoctor?.();
           assertCurrent?.();
@@ -225,7 +194,7 @@ export async function convergeUpdatePlugins(params: {
         postCorePluginUpdate = freshProcessResult.pluginUpdate;
       }
 
-      if (retainedDifferentRuntime && !targetRuntimeConverged) {
+      if (retainedDifferentRuntime && !targetRuntimeConverged && !params.candidateRuntime) {
         return {
           resultWithPostUpdate: {
             ...params.result,
@@ -235,6 +204,41 @@ export async function convergeUpdatePlugins(params: {
           detail:
             "The installed target could not resume plugin convergence. Run openclaw update using the installed target executable.",
         };
+      }
+
+      const runtimeStartedAt = Date.now();
+      const runtime = targetRuntimeConverged
+        ? { changed: false }
+        : await withPluginLifecycleLease({ assertCurrent }, (lease) =>
+            completeSourceUpdateRuntime({
+              root: postUpdateRoot,
+              timeoutMs: params.updateStepTimeoutMs,
+              lease,
+              beforePersistentEffect: assertCurrent,
+              beforePublication: params.beforeRuntimePublication,
+            }),
+          );
+      const runtimeDurationMs = Math.max(0, Date.now() - runtimeStartedAt);
+      assertCurrent?.();
+      if (params.candidateRuntime) {
+        // Migrated finalization already runs candidate code under the parent's
+        // live grant. Reuse resume's phase without attempting nested delegation.
+        const phase = await convergePostCoreUpdatePlugins({
+          root: postUpdateRoot,
+          channel: params.channel,
+          requestedChannel: params.requestedChannel,
+          opts: params.opts,
+          timeoutMs: params.updateStepTimeoutMs,
+          preUpdateConfig,
+          parentPluginInstallRecords: params.preUpdatePluginInstallRecords,
+          updateStartedAtMs: params.startedAt,
+          beforeDoctor: params.beforeDoctor,
+          onWarnings: collectDoctorWarnings,
+          assertCurrent,
+        });
+        postCorePluginUpdate = phase.pluginUpdate;
+        postUpdateConfigSnapshot = phase.configSnapshot;
+        targetRuntimeConverged = true;
       }
 
       if (!targetRuntimeConverged) {
