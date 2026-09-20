@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { formatErrorMessage, isErrno } from "./errors.js";
+import { formatErrorMessage } from "./errors.js";
 import {
   collectPackageDistInventory,
   readPackageDistInventoryIfPresent,
@@ -39,10 +39,10 @@ import {
   type StagedPackageSwapResult,
   type StagedPackageSwapParams,
 } from "./package-update-swap-contract.js";
+import { createPackageSwapResults } from "./package-update-swap-results.js";
 import { retireVerifiedPackageSwap } from "./package-update-swap-retirement.js";
 import { runPackagePostInstallVerification } from "./package-update-verification-step.js";
 import { movePathWithCopyFallback } from "./replace-file.js";
-import { createUpdateFailureFact } from "./update-failure-facts.js";
 import {
   createFreeBsdPkgOwnershipInspection,
   FreeBsdPkgOwnershipError,
@@ -88,41 +88,8 @@ export async function swapStagedPackageInstall(
     : params.installTarget.packageRoot;
   const targetSwapRoot = native?.liveProjectRoot ?? targetPackageRoot;
   const stagedSwapRoot = native?.projectRoot ?? params.stage.packageRoot;
-  const warnings: string[] = [];
-  const step = (
-    exitCode: number,
-    stdoutTail: string | null,
-    stderrTail: string | null,
-    code = "swap-failed",
-  ): UpdateStepResult => ({
-    name: "global install swap",
-    command: `swap ${params.stage.packageRoot} -> ${targetPackageRoot ?? "unknown root"}`,
-    cwd: targetLayout?.globalRoot ?? params.stage.prefix,
-    durationMs: Date.now() - startedAt,
-    exitCode,
-    stdoutTail,
-    stderrTail,
-    ...(exitCode !== 0
-      ? {
-          failureFacts: [
-            createUpdateFailureFact({
-              check: "package-swap",
-              code,
-              message: stderrTail ?? undefined,
-            }),
-          ],
-        }
-      : {}),
-    ...(exitCode === 0 && warnings.length > 0
-      ? {
-          advisory: {
-            kind: "recoverable-maintenance" as const,
-            message: warnings.join("\n"),
-          },
-          warnings: [...warnings],
-        }
-      : {}),
-  });
+  const results = createPackageSwapResults(params, targetLayout, targetPackageRoot, startedAt);
+  const { warnings, step } = results;
   if (!targetLayout || !targetPackageRoot || !targetSwapRoot) {
     return {
       status: "failed",
@@ -714,25 +681,12 @@ export async function swapStagedPackageInstall(
       : null;
     if (postVerifyStep && isBlockingPackageUpdateStep(postVerifyStep) && !retained) {
       const rollbackMessages = await restoreSwap();
-      return {
-        status: "failed",
+      return results.verificationFailed(
         activePackageRoot,
-        step: packageRollbackVerified
-          ? step(
-              0,
-              [
-                `restored previous ${params.packageName} package and affected launchers after verification failed`,
-                "Update Doctor may have changed persistent state; managed Gateway remains stopped",
-                ...rollbackMessages,
-              ]
-                .filter(Boolean)
-                .join("; "),
-              null,
-            )
-          : step(1, null, rollbackMessages.join("\n")),
-        postVerifyStep,
         packageRollbackVerified,
-      };
+        rollbackMessages,
+        postVerifyStep,
+      );
     }
     if (activation && !retained) {
       await activation.retire();
@@ -747,21 +701,7 @@ export async function swapStagedPackageInstall(
             : null,
           !retained ? await discardPackageLauncherBackup(launchers, targetLayout.globalRoot) : null,
         ];
-    return {
-      status: "committed",
-      activePackageRoot,
-      step: step(
-        0,
-        [
-          hadPackage ? `replaced ${params.packageName}` : `installed ${params.packageName}`,
-          ...cleanup,
-        ]
-          .filter(Boolean)
-          .join("; "),
-        null,
-      ),
-      postVerifyStep,
-    };
+    return results.committed(activePackageRoot, hadPackage, cleanup, postVerifyStep);
   } catch (error) {
     if (
       error instanceof PackageUpdateActivationError ||
@@ -786,21 +726,11 @@ export async function swapStagedPackageInstall(
     } else if (!retained) {
       errors.push(...(await restoreSwap()));
     }
-    return {
-      status: "failed",
+    return results.failed(
       activePackageRoot,
-      step: step(
-        1,
-        null,
-        errors.join("\n"),
-        isErrno(error) && typeof error.code === "string"
-          ? error.code
-          : error instanceof Error
-            ? error.name
-            : "swap-failed",
-      ),
-      postVerifyStep: null,
-      packageRollbackVerified: retained ? false : packageRollbackVerified,
-    };
+      error,
+      errors,
+      retained ? false : packageRollbackVerified,
+    );
   }
 }

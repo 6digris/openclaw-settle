@@ -622,3 +622,12 @@ export function createPackageActivationJournal(
   assertCurrent();
   return journal;
 }
+
+export function assertPackageActivationOperation(
+  record: PackageActivationRecord,
+  operationId: string,
+): void {
+  if (record.descriptor.operationId !== operationId) {
+    throw new Error("Package recovery command belongs to a different operation.");
+  }
+}

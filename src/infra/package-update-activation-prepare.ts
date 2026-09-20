@@ -4,9 +4,13 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { captureUpdateCommandExecutorAuthority } from "../cli/update-cli/update-command-executor.js";
-import { completePackageActivationCustody } from "./package-update-activation-custody.js";
+import {
+  completePackageActivationCustody,
+  inspectPackageActivationCustody,
+} from "./package-update-activation-custody.js";
 import {
   type PackageActivationDescriptor,
+  type PackageActivationRecord,
   createPackageActivationJournal,
   openPackageActivationJournal,
   isPackageActivationComplete,
@@ -54,6 +58,23 @@ export function packageActivationRecoveryCommand(
 ): string {
   const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
   return `${quote(node)} ${quote(helper)} --anchor ${quote(anchor)} --operation ${quote(operationId)}`;
+}
+
+export function resolvePackageActivationRecoveryCommand(record: PackageActivationRecord): string {
+  const anchor = resolvePackageActivationAnchor(record.descriptor.authority.installKey);
+  let helper = resolvePackageActivationHelper(anchor);
+  if (record.phase === "preparing") {
+    // Replacement already records the staged helper before its transfer. Expose
+    // that durable locator even when no command-print acknowledgement survived.
+    const custody = inspectPackageActivationCustody(anchor, record).find(
+      (entry) => entry.name === "helper",
+    );
+    if (!custody) {
+      throw new Error("Package bootstrap helper custody is missing.");
+    }
+    helper = custody.moved ? custody.destination : custody.source;
+  }
+  return packageActivationRecoveryCommand("node", anchor, record.descriptor.operationId, helper);
 }
 
 export async function preparePackageActivationJournal(params: PackageActivationPreparation) {

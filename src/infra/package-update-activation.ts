@@ -14,6 +14,7 @@ import {
 } from "./package-update-activation-custody.js";
 import {
   openPackageActivationJournal,
+  assertPackageActivationOperation,
   assertPackageActivationLayout,
   resolvePackageActivationControl,
   packageActivationIdentity,
@@ -29,7 +30,7 @@ import {
 } from "./package-update-activation-journal.js";
 import {
   preparePackageActivationJournal,
-  packageActivationRecoveryCommand,
+  resolvePackageActivationRecoveryCommand as recoveryCommand,
   type PackageActivationPreparation,
 } from "./package-update-activation-prepare.js";
 import {
@@ -62,23 +63,6 @@ const status = (record: PackageActivationRecord): PackageActivationStatus => ({
   operationId: record.descriptor.operationId,
   installKey: record.descriptor.authority.installKey,
 });
-
-function recoveryCommand(record: PackageActivationRecord): string {
-  const anchor = resolvePackageActivationAnchor(record.descriptor.authority.installKey);
-  let helper = resolvePackageActivationHelper(anchor);
-  if (record.phase === "preparing") {
-    // Replacement already records the staged helper before its transfer. Expose
-    // that durable locator even when no command-print acknowledgement survived.
-    const custody = inspectPackageActivationCustody(anchor, record).find(
-      (entry) => entry.name === "helper",
-    );
-    if (!custody) {
-      throw new Error("Package bootstrap helper custody is missing.");
-    }
-    helper = custody.moved ? custody.destination : custody.source;
-  }
-  return packageActivationRecoveryCommand("node", anchor, record.descriptor.operationId, helper);
-}
 
 /** Read-only correlation; callers still need a privately registered live fence. */
 function readPackageActivationContinuation(installKey: string) {
@@ -696,7 +680,7 @@ export async function readPackageActivationStatus(
   operationId: string,
 ): Promise<PackageActivationStatus> {
   const record = openPackageActivationJournal(anchor).read();
-  assertOperation(record, operationId);
+  assertPackageActivationOperation(record, operationId);
   assertManagedUpdateLeaseDatabaseIdentity(record.descriptor.authority);
   return status(record);
 }
@@ -707,7 +691,7 @@ export async function runPackageActivationRecovery(
 ): Promise<PackageActivationStatus> {
   const journal = openPackageActivationJournal(anchor);
   const initial = journal.read();
-  assertOperation(initial, operationId);
+  assertPackageActivationOperation(initial, operationId);
   if (isPackageActivationComplete(anchor, initial)) {
     assertManagedUpdateLeaseDatabaseIdentity(initial.descriptor.authority);
     return status(initial);
@@ -732,10 +716,4 @@ export async function runPackageActivationRecovery(
     },
     { existingAuthority: initial.descriptor.authority },
   );
-}
-
-function assertOperation(record: PackageActivationRecord, operationId: string): void {
-  if (record.descriptor.operationId !== operationId) {
-    throw new Error("Package recovery command belongs to a different operation.");
-  }
 }
