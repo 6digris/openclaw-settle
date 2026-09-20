@@ -1,10 +1,7 @@
 import syncFs from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import {
-  openRootFileFollowingParents,
-  type RootFileOpenResult,
-} from "../infra/boundary-file-read.js";
+import { openRootFile, type RootFileOpenResult } from "../infra/boundary-file-read.js";
 import {
   canonicalPathFromExistingAncestor,
   FsSafeError,
@@ -17,12 +14,15 @@ import {
   withMemoryWriteProvenance,
 } from "./memory-write-provenance.js";
 import { toRelativeSandboxPath } from "./path-policy.js";
+import { isPathBoundaryEscapeError, markHostRootEscape } from "./sandbox-paths.js";
 import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
 import { decodeUtf8File } from "./utf8-file.js";
 
 export type SandboxApplyPatchConfig = {
   root: string;
   bridge: SandboxFsBridge;
+  /** Prepared workspace admission mappings; legacy SDK bridges may omit them. */
+  workspaceMounts?: readonly { containerRoot: string; hostRoot: string }[];
 };
 
 export type ApplyPatchFileOptions = {
@@ -151,16 +151,22 @@ export async function resolvePatchFileOps(options: ApplyPatchFileOptions): Promi
       // Keep the lexical path; the containment check below owns the failure.
     }
     const canonicalRoot = await fs.realpath(containmentRoot).catch(() => containmentRoot);
-    return toRelativeSandboxPath(canonicalRoot, canonicalAbsolute, pathOptions);
+    try {
+      return toRelativeSandboxPath(canonicalRoot, canonicalAbsolute, pathOptions);
+    } catch (error) {
+      // Resolved strings reach this pure host boundary check after awaited work.
+      throw markHostRootEscape(error);
+    }
   };
   return withPatchMemoryWriteProvenance({
     observer: options.memoryWriteProvenance,
     operations: {
       readFile: async (filePath) => {
-        const opened = await openRootFileFollowingParents({
+        const opened = await openRootFile({
           absolutePath: filePath,
           rootPath: containmentRoot,
           boundaryLabel: "workspace root",
+          symlinks: "follow-parents-within-root",
         });
         assertBoundaryRead(opened, filePath);
         try {
@@ -268,6 +274,13 @@ function assertBoundaryRead(
   if (sourceCode === "ENOENT" || sourceCode === "ENOTDIR") {
     // Preserve the producer's classification so provenance observers do not parse messages.
     error.code = sourceCode;
+  }
+  if (
+    opened.reason === "validation" &&
+    ((opened.error instanceof FsSafeError && opened.error.code === "outside-workspace") ||
+      isPathBoundaryEscapeError(opened.error, "workspace root"))
+  ) {
+    markHostRootEscape(error);
   }
   throw error;
 }

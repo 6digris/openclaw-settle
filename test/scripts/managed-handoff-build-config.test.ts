@@ -18,6 +18,7 @@ import { resolveRuntimeWorkerUrl } from "../../src/infra/runtime-worker-url.js";
 import * as tempRoot from "../../src/infra/tmp-openclaw-dir.js";
 import { MANAGED_HANDOFF_RUNTIME_ENTRY } from "../../src/infra/update-managed-service-handoff-runtime-assets.js";
 import { stageManagedHandoffRuntime } from "../../src/infra/update-managed-service-handoff-runtime.js";
+import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import buildConfigs from "../../tsdown.config.ts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
@@ -59,9 +60,10 @@ vi.mock("../../src/infra/package-update-activation-runtime-assets.js", async (im
   };
 });
 
-vi.mock("../../src/infra/runtime-worker-url.js", () => ({
-  resolveRuntimeWorkerUrl: vi.fn(),
-}));
+vi.mock("../../src/infra/runtime-worker-url.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/infra/runtime-worker-url.js")>();
+  return { ...actual, resolveRuntimeWorkerUrl: vi.fn(actual.resolveRuntimeWorkerUrl) };
+});
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -114,8 +116,17 @@ it.each(
       env: { ...process.env, HOME: directory, USERPROFILE: directory },
     });
   // Use the production graph unchanged, not the invocation compiler's extra plugins.
-  const bundles = await build({ ...config, config: false, outDir, logLevel: "silent" });
+  const { bundles } = await build({ ...config, config: false, outDir, logLevel: "silent" });
   try {
+    const modules = bundles.flatMap(({ chunks }) =>
+      chunks.flatMap((chunk) => (chunk.type === "chunk" ? chunk.moduleIds : [])),
+    );
+    if (kind === "managed") {
+      expect(modules).toContain(
+        path.resolve("src/infra/update-managed-service-handoff-native-loader.ts"),
+      );
+      expect(modules).not.toContain(path.resolve("src/shared/freebsd-process-identity-native.ts"));
+    }
     vi.mocked(resolveRuntimeWorkerUrl).mockReturnValue(
       pathToFileURL(path.join(outDir, runtimeEntry)),
     );
@@ -123,9 +134,23 @@ it.each(
     if (kind === "managed") {
       const staged = stageManagedHandoffRuntime(directory);
       entry = path.join(directory, "runtime", MANAGED_HANDOFF_RUNTIME_ENTRY);
-      expect(staged).toEqual([entry]);
+      const nativeAssets =
+        process.platform === "freebsd"
+          ? [
+              "package.json",
+              "indirect.cjs",
+              "src/koffi/indirect.cjs",
+              "LICENSE.txt",
+              `build/koffi/freebsd_${process.arch}/koffi.node`,
+            ].map((file) => path.join(directory, "runtime", "node_modules", "koffi", file))
+          : [];
+      expect(staged).toEqual([entry, ...nativeAssets]);
       expect(readdirSync(directory)).toEqual(["runtime"]);
-      expect(readdirSync(path.dirname(entry))).toEqual([MANAGED_HANDOFF_RUNTIME_ENTRY]);
+      expect(readdirSync(path.dirname(entry))).toEqual(
+        process.platform === "freebsd"
+          ? [MANAGED_HANDOFF_RUNTIME_ENTRY, "node_modules"]
+          : [MANAGED_HANDOFF_RUNTIME_ENTRY],
+      );
     } else {
       const base = path.join(realpathSync(directory), "literal-$HOME-`id`-'quoted'");
       mkdirSync(base, { mode: 0o700 });
@@ -164,7 +189,7 @@ it.each(
     }
 
     const result = spawnSync(
-      process.execPath,
+      resolveTestNodeExecPath(),
       [
         "--input-type=module",
         "--eval",

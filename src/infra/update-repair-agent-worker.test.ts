@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { runUpdateCommandRepair } from "../cli/update-cli/update-command-repair.js";
 import { admitUpdateCommandRun } from "../cli/update-cli/update-command-run.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -10,6 +11,7 @@ import { prepareUnattendedUpdateRepair } from "./update-repair-agent.js";
 import type { UpdateRepairEvent, UpdateRepairParams } from "./update-repair-protocol.js";
 import * as requesterOwner from "./update-requester-authority.js";
 import { createUpdateRun, getUpdateRun, recordUpdateRunPhase } from "./update-run-ledger.js";
+import { renderUpdateRunReport } from "./update-run-report.js";
 
 async function candidate(root: string, runtime: string) {
   const directory = path.join(root, "dist/infra");
@@ -91,7 +93,7 @@ describe("fresh candidate repair process", () => {
             process.send({ type: "result", result: { status: "repaired", attempts: [attempt], finalValidation: message.validation } }, () => process.disconnect());
           }
         });
-        send({ type: "ready" });
+        send({ type: "ready", candidateRehearsal: true });
       `,
           );
           const prepareAuthority = requesterOwner.createManagedUpdateRequesterAuthority;
@@ -189,6 +191,199 @@ describe("fresh candidate repair process", () => {
     },
   );
 
+  it("keeps unavailable inference separate from the update failure it could not repair", async () => {
+    await withOpenClawTestState({ prefix: "repair-no-route-", layout: "home" }, async (state) => {
+      const failure = "Doctor completed, then failed to exit (killed at 299 s)";
+      const reason = "No usable, authenticated, tool-capable inference route could be verified.";
+      await candidate(
+        state.workspaceDir,
+        `
+        process.on("message", message => {
+          if (message.type !== "start") return;
+          const result = { status: "unavailable", attempts: [], reason: ${JSON.stringify(reason)},
+            finalValidation: { ok: false, score: 0, summary: ${JSON.stringify(failure)} } };
+          process.send({ type: "event", event: { type: "stopped", status: result.status, reason: result.reason } });
+          process.send({ type: "result", result }, () => process.disconnect());
+        });
+        process.send({ type: "ready", candidateRehearsal: true });
+        `,
+      );
+      const admitted = createUpdateRun({ trigger: "cli" }, { env: state.env });
+      recordUpdateRunPhase(
+        admitted.runId,
+        "verifying",
+        { step: { step: "Checking update health", status: "failed", detail: failure } },
+        { env: state.env },
+      );
+      await runUpdateCommandRepair({
+        root: state.workspaceDir,
+        env: state.env,
+        run: { runId: admitted.runId, env: state.env },
+        phase: "verifying",
+        result: {
+          status: "error",
+          mode: "npm",
+          root: state.workspaceDir,
+          reason: "doctor-failed",
+          steps: [],
+          durationMs: 299_000,
+        },
+        validate: async () => ({ ok: false, score: 0, summary: failure }),
+      });
+      const recorded = getUpdateRun(admitted.runId, { env: state.env })!;
+      expect(recorded.steps.find((step) => step.step === "repairing")?.status).toBe("skipped");
+      expect(recorded.repair).toMatchObject([{ status: "skipped", reason }]);
+      const report = renderUpdateRunReport({
+        ...recorded,
+        status: "failed",
+        reason: "doctor-failed",
+      });
+      expect(report.markdown).toContain(`Failed: Checking update health — ${failure}`);
+      expect(report.markdown).toContain(`Repair 1: skipped — ${reason}`);
+      expect(report.markdown).not.toContain("Failed: repairing");
+    });
+  });
+
+  it("repairs a candidate rehearsal in the staged candidate runtime", async () => {
+    await withOpenClawTestState(
+      { prefix: "repair-candidate-rehearsal-", layout: "home" },
+      async (state) => {
+        // The candidate owns rehearsal state it has already migrated to its own
+        // schema. Only its runtime may open that state during pre-activation repair.
+        const candidateRoot = path.join(state.workspaceDir, "candidate");
+        await candidate(
+          candidateRoot,
+          `
+        import fs from "node:fs";
+        const send = message => process.send(message);
+        process.on("message", message => {
+          if (message.type === "start") {
+            fs.writeFileSync("candidate-repair-pid", String(process.pid));
+            fs.writeFileSync("candidate-repair-state", message.target.stateDir);
+            send({ type: "validate", id: 1 });
+          } else if (message.type === "validation-result") {
+            const attempt = { turn: 1, provider: "openai", model: "gpt-5.6-luna", durationMs: 1, toolCalls: 1, validation: { ok: true, score: 1, summary: "Candidate rehearsal repaired." }, summary: "Candidate rehearsal repaired." };
+            send({ type: "event", event: { type: "turn-started", turn: 1, provider: attempt.provider, model: attempt.model } });
+            send({ type: "event", event: { type: "turn-finished", ...attempt } });
+            send({ type: "event", event: { type: "stopped", status: "repaired" } });
+            process.send({ type: "result", result: { status: "repaired", attempts: [attempt], finalValidation: attempt.validation } }, () => process.disconnect());
+          }
+        });
+        send({ type: "ready", candidateRehearsal: true });
+      `,
+        );
+        const rehearsalStateDir = state.path("rehearsal");
+        await fs.mkdir(rehearsalStateDir, { recursive: true });
+        const result = await prepareUnattendedUpdateRepair({
+          target: {
+            stateDir: rehearsalStateDir,
+            configPath: path.join(rehearsalStateDir, "openclaw.json"),
+            workspaceDir: path.join(rehearsalStateDir, "workspace"),
+            installRoot: candidateRoot,
+          },
+          context: { error: "Candidate lint failed", phase: "validating" },
+          budget: { maxTurns: 1, wallClockMs: 30_000 },
+          validate: async () => ({ ok: false, score: 0, summary: "Candidate lint failed" }),
+        });
+
+        expect(result, JSON.stringify(result)).toMatchObject({ status: "repaired" });
+        const pid = Number(
+          await fs.readFile(path.join(candidateRoot, "candidate-repair-pid"), "utf8"),
+        );
+        expect(pid).not.toBe(process.pid);
+        expect(await fs.readFile(path.join(candidateRoot, "candidate-repair-state"), "utf8")).toBe(
+          rehearsalStateDir,
+        );
+      },
+    );
+  });
+
+  it("keeps admission separate from the rehearsal environment sent to the child", async () => {
+    await withOpenClawTestState({ prefix: "repair-child-env-", layout: "home" }, async (state) => {
+      const reported = [
+        "HOME",
+        "TMPDIR",
+        "OPENCLAW_HOME",
+        "OPENCLAW_STATE_DIR",
+        "OPENCLAW_CONFIG_PATH",
+        "OPENCLAW_WORKSPACE_DIR",
+        "OPENCLAW_UPDATE_DEFER_CONFIGURED_PLUGIN_INSTALL_REPAIR",
+        "PATH",
+        "NODE_OPTIONS",
+        "LD_PRELOAD",
+        "DYLD_INSERT_LIBRARIES",
+        "OPENCLAW_SYNTHETIC_UNTRUSTED",
+        "OPENCLAW_UPDATE_RUN_HANDOFF",
+      ];
+      await candidate(
+        state.workspaceDir,
+        `
+        import fs from "node:fs";
+        const send = message => process.send(message);
+        process.on("message", message => {
+          if (message.type === "start") {
+            fs.writeFileSync("repair-child-env.json", JSON.stringify({
+              admission: Object.fromEntries(${JSON.stringify(reported)}.map(key => [key, process.env[key]])),
+              rehearsal: message.target.environment,
+            }));
+            const validation = { ok: true, score: 1, summary: "Environment captured." };
+            send({ type: "event", event: { type: "stopped", status: "repaired" } });
+            process.send({ type: "result", result: { status: "repaired", attempts: [], finalValidation: validation } }, () => process.disconnect());
+          }
+        });
+        send({ type: "ready", candidateRehearsal: true });
+      `,
+      );
+      const before = { ...process.env };
+      const admissionEnv: NodeJS.ProcessEnv = {
+        ...state.env,
+        TMPDIR: state.path("admission-temp"),
+      };
+      const result = await prepareUnattendedUpdateRepair({
+        ...repairParams(state),
+        admissionEnv,
+        target: {
+          stateDir: state.stateDir,
+          configPath: state.configPath,
+          workspaceDir: state.workspaceDir,
+          installRoot: state.workspaceDir,
+          environment: {
+            ...process.env,
+            HOME: state.home,
+            TMPDIR: state.root,
+            OPENCLAW_HOME: state.home,
+            OPENCLAW_UPDATE_RUN_HANDOFF: undefined,
+            NODE_OPTIONS: "--no-warnings",
+            PATH: "/synthetic-untrusted-bin",
+            LD_PRELOAD: "/synthetic-preload.so",
+            DYLD_INSERT_LIBRARIES: "/synthetic-preload.dylib",
+            OPENCLAW_SYNTHETIC_UNTRUSTED: "untrusted",
+          },
+        },
+      });
+
+      expect(result, JSON.stringify(result)).toMatchObject({ status: "repaired" });
+      const captured = JSON.parse(
+        await fs.readFile(path.join(state.workspaceDir, "repair-child-env.json"), "utf8"),
+      );
+      expect(captured.admission).toEqual(
+        Object.fromEntries(
+          reported
+            .filter((key) => admissionEnv[key] !== undefined)
+            .map((key) => [key, admissionEnv[key]]),
+        ),
+      );
+      expect(captured.rehearsal).toMatchObject({
+        TMPDIR: state.root,
+        PATH: "/synthetic-untrusted-bin",
+        LD_PRELOAD: "/synthetic-preload.so",
+      });
+      expect(captured.rehearsal).not.toHaveProperty("OPENCLAW_UPDATE_RUN_HANDOFF");
+      // Rehearsal projection and host filtering belong to the shared runtime scope.
+      expect(process.env).toEqual(before);
+    });
+  });
+
   it("cancels the child and drains the parent oracle before returning", async () => {
     await withOpenClawTestState(
       { prefix: "repair-child-cancel-", layout: "home" },
@@ -199,14 +394,11 @@ describe("fresh candidate repair process", () => {
         process.on("message", message => {
           if (message.type === "start") process.send({ type: "validate", id: 1 });
         });
-        process.send({ type: "ready" });
+        process.send({ type: "ready", candidateRehearsal: true });
       `,
         );
         const controller = new AbortController();
-        let admitted!: () => void;
-        const entered = new Promise<void>((resolve) => {
-          admitted = resolve;
-        });
+        const { promise: entered, resolve: admitted } = createDeferred();
         let drained = false;
         const pending = prepareUnattendedUpdateRepair({
           ...repairParams(state),
@@ -237,6 +429,32 @@ describe("fresh candidate repair process", () => {
         expect(drained).toBe(true);
       },
     );
+  });
+
+  it("refuses a worker that cannot separate live authority from its repair target", async () => {
+    await withOpenClawTestState({ prefix: "repair-old-worker-", layout: "home" }, async (state) => {
+      await candidate(
+        state.workspaceDir,
+        `
+        import fs from "node:fs";
+        process.on("message", () => fs.writeFileSync("unexpected-start", "started"));
+        process.send({ type: "ready" });
+        `,
+      );
+      const result = await prepareUnattendedUpdateRepair({
+        ...repairParams(state),
+        context: { error: "Candidate validation failed.", phase: "validating" },
+      });
+      expect(result).toMatchObject({
+        status: "unavailable",
+        reason: expect.stringContaining("cannot safely repair the temporary update copy"),
+      });
+      await expect(
+        fs.stat(path.join(state.workspaceDir, "unexpected-start")),
+      ).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    });
   });
 
   it("records an unavailable candidate worker instead of falling back to old imports", async () => {

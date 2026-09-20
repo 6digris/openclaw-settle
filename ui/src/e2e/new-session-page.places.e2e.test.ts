@@ -387,6 +387,19 @@ suite.define(() => {
       await expect
         .poll(() => environmentSearch.evaluate((element) => element === document.activeElement))
         .toBe(true);
+      const localEnvironment = whereSelect.locator('[data-value="gateway"]');
+      expect(await localEnvironment.getAttribute("aria-pressed")).toBe("true");
+      await environmentSearch.fill("no-such-environment");
+      await whereSelect
+        .getByRole("status")
+        .getByText("No matching environments", { exact: true })
+        .waitFor();
+      expect(await whereTrigger.locator(".new-session-page__trigger-label").textContent()).toBe(
+        "Local",
+      );
+      await environmentSearch.fill("");
+      await expect.poll(() => localEnvironment.isVisible()).toBe(true);
+      expect(await localEnvironment.getAttribute("aria-pressed")).toBe("true");
       await captureProjectUiProof(suite, page, "new-session-environment-search.png", {
         surface: whereSelect.locator('wa-popup [part="popup"]'),
         content: [environmentSearch],
@@ -458,10 +471,12 @@ suite.define(() => {
       await pollLocatorText(checkoutTrigger.locator(".new-session-page__trigger-label")).toBe(
         "New worktree from main",
       );
-      await checkoutSelect.getByLabel("From").waitFor();
+      await checkoutSelect.getByLabel("From", { exact: true }).waitFor();
       await checkoutSelect.getByLabel("Name", { exact: true }).waitFor();
       await checkoutSelect
-        .getByText("Creates branch openclaw/<name> in a separate checkout.", { exact: true })
+        .getByText("Creates a branch from the session title in a separate checkout.", {
+          exact: true,
+        })
         .waitFor();
       await page.keyboard.press("Escape");
       await expect.poll(() => checkoutTrigger.getAttribute("aria-expanded")).toBe("false");
@@ -584,7 +599,7 @@ suite.define(() => {
       const checkout = page.locator("wa-popover.new-session-page__checkout-popover");
       await captureProjectUiProof(suite, page, "project-selected.png", {
         surface: checkout.locator('wa-popup [part="popup"]'),
-        content: [checkout.getByLabel("From")],
+        content: [checkout.getByLabel("From", { exact: true })],
       });
       await page.keyboard.press("Escape");
       await page.locator(".new-session-page__message").fill("inspect the project");

@@ -5,6 +5,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { UpdateChannel } from "../../infra/update-channels.js";
 import { compareSemverStrings } from "../../infra/update-check.js";
 import { normalizeUpdatePostInstallDoctorWarnings } from "../../infra/update-doctor-result.js";
+import { updateInstallRootsMatch } from "../../infra/update-install-root.js";
 import { recordUpdateRunStep } from "../../infra/update-run-ledger.js";
 import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
@@ -12,15 +13,20 @@ import { loadInstalledPluginIndexInstallRecords } from "../../plugins/installed-
 import { withPluginLifecycleLease } from "../../plugins/plugin-lifecycle-lease.js";
 import { defaultRuntime } from "../../runtime.js";
 import { VERSION } from "../../version.js";
-import { readPackageVersion, type UpdateCommandOptions } from "./shared.js";
+import { parseUpdateTimeoutMs, readPackageVersion, type UpdateCommandOptions } from "./shared.js";
 import { preparePostCorePluginConfig } from "./update-command-config.js";
 import { completePostCorePluginUpdate } from "./update-command-fresh-doctor.js";
+import {
+  collectPostCorePluginAdvisories,
+  collectPostCorePluginFailureFacts,
+} from "./update-command-plugins-internals.js";
 import { updatePluginsAfterCoreUpdate } from "./update-command-plugins.js";
 import {
   continuePostCoreUpdateInFreshProcess,
   shouldResumePostCoreUpdateInFreshProcess,
 } from "./update-command-post-core.js";
 import { convergePostCoreUpdatePlugins } from "./update-command-resume.js";
+import { completeSourceUpdateRuntime } from "./update-command-runtime.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
 
 export async function convergeUpdatePlugins(params: {
@@ -29,6 +35,7 @@ export async function convergeUpdatePlugins(params: {
   candidateRuntime?: boolean;
   result: UpdateRunResult;
   root: string;
+  previousInstallRoot?: string;
   installKindChanged: boolean;
   configSnapshot: Awaited<ReturnType<typeof readConfigFileSnapshot>>;
   requestedChannel: UpdateChannel | null;
@@ -62,13 +69,36 @@ export async function convergeUpdatePlugins(params: {
       }
     : undefined;
 
+  const postUpdateInstalledVersion = await readPackageVersion(postUpdateRoot);
+  assertCurrent?.();
+  const versionComparison =
+    postUpdateInstalledVersion && VERSION
+      ? compareSemverStrings(VERSION, postUpdateInstalledVersion)
+      : null;
+  const runtimeRootChanged = !updateInstallRootsMatch(
+    params.previousInstallRoot ?? params.root,
+    postUpdateRoot,
+  );
+  const retainedDifferentRuntime =
+    params.coreAlreadyCurrent === true &&
+    (runtimeRootChanged || (versionComparison !== null && versionComparison !== 0));
   const shouldResumePostCoreInFreshProcess =
-    !params.coreAlreadyCurrent &&
+    (!params.coreAlreadyCurrent || retainedDifferentRuntime) &&
     !params.candidateRuntime &&
     shouldResumePostCoreUpdateInFreshProcess({
-      result: params.result,
-      downgradeRisk: params.downgradeRisk,
-      installKindChanged: params.installKindChanged,
+      // An already-current install can still differ from the retained updater.
+      // Route by that runtime transition without changing the reported core result.
+      result: retainedDifferentRuntime
+        ? {
+            ...params.result,
+            status: "ok",
+            before: { ...params.result.before, version: VERSION },
+            after: { ...params.result.after, version: postUpdateInstalledVersion },
+          }
+        : params.result,
+      downgradeRisk: params.downgradeRisk || (versionComparison !== null && versionComparison > 0),
+      installKindChanged:
+        params.installKindChanged || (retainedDifferentRuntime && runtimeRootChanged),
     });
 
   let postUpdateConfigSnapshot: Awaited<ReturnType<typeof readConfigFileSnapshot>> | undefined;
@@ -98,12 +128,6 @@ export async function convergeUpdatePlugins(params: {
 
   return await withOwnedManagedUpdateEnv(params.ownedManagedUpdateEnv, async () => {
     const previousCompatibilityHostVersion = process.env.OPENCLAW_COMPATIBILITY_HOST_VERSION;
-    const postUpdateInstalledVersion = await readPackageVersion(postUpdateRoot);
-    assertCurrent?.();
-    const versionComparison =
-      postUpdateInstalledVersion && VERSION
-        ? compareSemverStrings(VERSION, postUpdateInstalledVersion)
-        : null;
     const compatibilityHostVersion = params.candidateRuntime
       ? (postUpdateInstalledVersion ?? VERSION)
       : versionComparison != null && versionComparison > 0
@@ -121,6 +145,15 @@ export async function convergeUpdatePlugins(params: {
       if (params.candidateRuntime) {
         // Migrated finalization already runs candidate code under the parent's
         // live grant. Reuse resume's phase without attempting nested delegation.
+        await withPluginLifecycleLease({ assertCurrent }, async (lease) => {
+          await completeSourceUpdateRuntime({
+            root: postUpdateRoot,
+            timeoutMs: params.updateStepTimeoutMs,
+            lease,
+            beforePersistentEffect: assertCurrent,
+          });
+        });
+        assertCurrent?.();
         const phase = await convergePostCoreUpdatePlugins({
           root: postUpdateRoot,
           channel: params.channel,
@@ -154,6 +187,22 @@ export async function convergeUpdatePlugins(params: {
               ...params.result,
               status: "error" as const,
               reason: "post-core-update-failed",
+              ...(freshProcessResult.failureFacts?.length
+                ? {
+                    steps: [
+                      ...params.result.steps,
+                      {
+                        name: "post-update verification",
+                        command: "openclaw update",
+                        cwd: postUpdateRoot,
+                        durationMs: 0,
+                        exitCode: freshProcessResult.exitCode,
+                        stderrTail: freshProcessResult.error,
+                        failureFacts: freshProcessResult.failureFacts,
+                      },
+                    ],
+                  }
+                : {}),
             },
             detail: freshProcessResult.error,
             cancelled: freshProcessResult.exitCode === 130 || freshProcessResult.exitCode === 143,
@@ -163,8 +212,27 @@ export async function convergeUpdatePlugins(params: {
         postCorePluginUpdate = freshProcessResult.pluginUpdate;
       }
 
+      if (retainedDifferentRuntime && !targetRuntimeConverged) {
+        return {
+          resultWithPostUpdate: {
+            ...params.result,
+            status: "error" as const,
+            reason: "post-core-update-failed",
+          },
+          detail:
+            "The installed target could not resume plugin convergence. Run openclaw update using the installed target executable.",
+        };
+      }
+
       if (!targetRuntimeConverged) {
-        postCorePluginUpdate = await withPluginLifecycleLease({ assertCurrent }, async () => {
+        postCorePluginUpdate = await withPluginLifecycleLease({ assertCurrent }, async (lease) => {
+          await completeSourceUpdateRuntime({
+            root: postUpdateRoot,
+            timeoutMs: params.updateStepTimeoutMs,
+            lease,
+            beforePersistentEffect: assertCurrent,
+          });
+          assertCurrent?.();
           const preparedConfig = await preparePostCorePluginConfig({
             requestedChannel: params.requestedChannel,
             preUpdateConfig,
@@ -183,6 +251,7 @@ export async function convergeUpdatePlugins(params: {
             json: params.opts.json,
             acceptCapabilities: params.opts.acceptCapabilities,
             timeoutMs: params.updateStepTimeoutMs,
+            workTimeoutMs: parseUpdateTimeoutMs(params.opts.timeout) ?? null,
             pluginInstallRecords,
             assertCurrent,
           });
@@ -195,9 +264,12 @@ export async function convergeUpdatePlugins(params: {
         // retains its stopped interval or parks an already-current core here.
         const completedPluginUpdate = await completePostCorePluginUpdate({
           root: postUpdateRoot,
+          opts: params.opts,
+          ...(params.candidateRuntime ? { doctorConfigWrites: true as const } : {}),
           pluginUpdate: postCorePluginUpdate,
           freshDoctorRequired: postCorePluginUpdate.changed,
           beforeDoctor: params.beforeDoctor,
+          assertCurrent,
           yes: params.opts.yes === true,
           json: params.opts.json === true,
           timeoutMs: params.updateStepTimeoutMs,
@@ -212,40 +284,60 @@ export async function convergeUpdatePlugins(params: {
       }
       assertCurrent?.();
 
-      let resultWithPostUpdate: UpdateRunResult = postCorePluginUpdate
-        ? {
-            ...params.result,
-            status: postCorePluginUpdate.status === "error" ? "error" : params.result.status,
-            ...(postCorePluginUpdate.status === "error" ? { reason: "post-update-plugins" } : {}),
-            postUpdate: {
-              ...params.result.postUpdate,
-              plugins: postCorePluginUpdate,
-            },
-          }
-        : params.result;
-      if (doctorWarnings.length) {
-        resultWithPostUpdate = {
-          ...resultWithPostUpdate,
-          steps: [
-            ...resultWithPostUpdate.steps,
-            ...normalizeUpdatePostInstallDoctorWarnings(doctorWarnings).map((message, index) => ({
-              name: `post-plugin doctor warning ${index + 1}`,
-              command: "openclaw doctor --fix",
-              cwd: postUpdateRoot,
-              durationMs: 0,
-              exitCode: 0,
-              advisory: { kind: "package-post-install-doctor" as const, message },
-            })),
-          ],
-        };
+      const resultWithPostUpdate: UpdateRunResult = {
+        ...params.result,
+        steps: [...params.result.steps],
+        ...(postCorePluginUpdate
+          ? {
+              status: postCorePluginUpdate.status === "error" ? "error" : params.result.status,
+              ...(postCorePluginUpdate.status === "error" ? { reason: "post-update-plugins" } : {}),
+              postUpdate: {
+                ...params.result.postUpdate,
+                plugins: postCorePluginUpdate,
+              },
+            }
+          : {}),
+      };
+      const failureFacts = postCorePluginUpdate
+        ? collectPostCorePluginFailureFacts(postCorePluginUpdate)
+        : [];
+      if (failureFacts.length) {
+        resultWithPostUpdate.steps.push({
+          name: "post-update verification",
+          command: "openclaw plugins update",
+          cwd: postUpdateRoot,
+          durationMs: 0,
+          exitCode: 1,
+          failureFacts,
+        });
       }
+      resultWithPostUpdate.steps.push(
+        ...normalizeUpdatePostInstallDoctorWarnings(doctorWarnings).map((message, index) => ({
+          name: `post-plugin doctor warning ${index + 1}`,
+          command: "openclaw doctor --fix",
+          cwd: postUpdateRoot,
+          durationMs: 0,
+          exitCode: 0,
+          advisory: { kind: "package-post-install-doctor" as const, message },
+        })),
+      );
+      resultWithPostUpdate.steps.push(
+        ...collectPostCorePluginAdvisories(postCorePluginUpdate).map((message, index) => ({
+          name: `finalize:plugins:${index}`,
+          command: "openclaw plugins update",
+          cwd: postUpdateRoot,
+          durationMs: 0,
+          exitCode: 0,
+          advisory: { kind: "recoverable-maintenance" as const, message },
+        })),
+      );
       if (
         params.coreAlreadyCurrent &&
         resultWithPostUpdate.status !== "error" &&
         (postCorePluginUpdate?.changed ||
           (params.requestedChannel !== null && params.requestedChannel !== params.storedChannel))
       ) {
-        resultWithPostUpdate = { ...resultWithPostUpdate, status: "ok" };
+        resultWithPostUpdate.status = "ok";
         delete resultWithPostUpdate.reason;
       }
       if (params.opts.run) {
@@ -260,6 +352,7 @@ export async function convergeUpdatePlugins(params: {
             step: "post-update verification",
             status: postCorePluginUpdate?.status === "error" ? "failed" : "completed",
             endedAtMs: Date.now(),
+            ...(failureFacts.length ? { failureFacts } : {}),
           },
           { env: params.opts.run.env },
         );

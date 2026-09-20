@@ -1,12 +1,14 @@
 import { fileURLToPath } from "node:url";
 import { expectDefined } from "@openclaw/normalization-core";
 import type { OpenClawPluginService, WorkerProvider } from "openclaw/plugin-sdk/plugin-entry";
+import { createPluginStateKeyedStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
+import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import * as processRuntime from "openclaw/plugin-sdk/process-runtime";
 import type { SpawnResult } from "openclaw/plugin-sdk/process-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { importFreshModule } from "../../plugin-sdk/test-helpers/import-fresh.js";
-import { resolvePluginModuleExport } from "../../plugins/loader-module-runtime.js";
+import { resolvePluginModuleExport } from "../../plugins/module-export.js";
 import * as support from "./service.test-support.js";
 
 const SETUP_ENV = "OPENCLAW_TEST_REPLAY_SETUP";
@@ -46,6 +48,11 @@ describe("Crabbox runtime preflight cleanup", () => {
     )(
       createTestPluginApi({
         id: "crabbox",
+        runtime: createPluginRuntimeMock({
+          state: {
+            openKeyedStore: (options) => createPluginStateKeyedStoreForTests("crabbox", options),
+          },
+        }),
         rootDir: fileURLToPath(new URL("../../../extensions/crabbox/", import.meta.url)),
         registerWorkerProvider: (provider) => {
           registered = provider;
@@ -86,7 +93,7 @@ describe("Crabbox runtime preflight cleanup", () => {
         .mockImplementation(async (argv) => {
           if (argv[1] === "--version") {
             expect(argv.slice(1)).toEqual(["--version"]);
-            return commandResult({ stdout: "0.55.0" });
+            return commandResult({ stdout: "0.56.0" });
           }
           if (argv[1] === "providers") {
             expect(argv.slice(1)).toEqual(["providers", "--json"]);
@@ -101,7 +108,9 @@ describe("Crabbox runtime preflight cleanup", () => {
       const service = support.createService(await registerProvider(), {
         prepareNodeEnrollment: vi.fn(),
       });
-      await expect(service.create("development", "fresh-preflight")).rejects.toMatchObject({
+      await expect(
+        service.createWithRequest({ profileId: "development", idempotencyKey: "fresh-preflight" }),
+      ).rejects.toMatchObject({
         code: "provider_failure",
       });
       const failed = expectDefined(support.testState.store.list()[0], "failed fresh intent");
@@ -243,7 +252,7 @@ describe("Crabbox runtime preflight cleanup", () => {
     vi.spyOn(processRuntime, "runCommandWithTimeout").mockImplementation(async (argv) => {
       if (argv[1] === "--version") {
         expect(argv.slice(1)).toEqual(["--version"]);
-        return commandResult({ stdout: "0.55.0" });
+        return commandResult({ stdout: "0.56.0" });
       }
       calls.push(argv);
       if (argv[1] === "providers") {
@@ -297,7 +306,11 @@ describe("Crabbox runtime preflight cleanup", () => {
     };
     let service = support.createService(await makeProvider(), { prepareNodeEnrollment });
     await expect(
-      service.create("development", "runtime-replay", undefined, "worker-turn"),
+      service.createWithRequest({
+        profileId: "development",
+        idempotencyKey: "runtime-replay",
+        executionMode: "worker-turn",
+      }),
     ).rejects.toMatchObject({ code: "provider_failure" });
     const original = expectDefined(support.testState.store.list()[0], "unreported allocation");
     expect(original).toMatchObject({ state: "provisioning", leaseId: null });
@@ -380,14 +393,19 @@ describe("Crabbox runtime preflight cleanup", () => {
         .mockImplementation(async (argv) => {
           if (argv[1] === "--version") {
             expect(argv.slice(1)).toEqual(["--version"]);
-            return commandResult({ stdout: "0.55.0" });
+            return commandResult({ stdout: "0.56.0" });
           }
           expect(argv.slice(1)).toEqual(["providers", "--json"]);
           return commandResult({ stdout: "[]" });
         });
       const provider = await registerProvider();
       const service = support.createService(provider, { prepareNodeEnrollment: vi.fn() });
-      await expect(service.create("development", "invalid-immutable")).rejects.toMatchObject({
+      await expect(
+        service.createWithRequest({
+          profileId: "development",
+          idempotencyKey: "invalid-immutable",
+        }),
+      ).rejects.toMatchObject({
         code: "invalid_profile",
         message: expect.stringContaining(message),
       });

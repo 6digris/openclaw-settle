@@ -15,6 +15,7 @@ import type { HealthSummary } from "./health/types.js";
 import { createChatAbortMarker } from "./server-chat-state.js";
 import { DEDUPE_MAX, DEDUPE_TTL_MS, TICK_INTERVAL_MS } from "./server-constants.js";
 import { pendingChatSendDedupeKey } from "./server-shared.js";
+import * as staleInstall from "./stale-install.js";
 import { createGatewayMaintenanceStateForTest } from "./test-helpers.maintenance-state.js";
 
 const cleanOldMediaMock = vi.fn(async () => {});
@@ -162,6 +163,7 @@ async function stopMaintenanceTimers(timers: {
   dedupeCleanup: NodeJS.Timeout;
   startMediaCleanup: () => void;
   stopMediaCleanup: () => Promise<"drained" | "timed-out">;
+  stopSessionColdStorageMaintenance: () => Promise<void>;
   worktreeCleanup: NodeJS.Timeout;
 }) {
   clearInterval(timers.tickInterval);
@@ -169,6 +171,7 @@ async function stopMaintenanceTimers(timers: {
   clearInterval(timers.dedupeCleanup);
   clearInterval(timers.worktreeCleanup);
   await timers.stopMediaCleanup();
+  await timers.stopSessionColdStorageMaintenance();
 }
 
 describe("startGatewayMaintenanceTimers", () => {
@@ -188,8 +191,9 @@ describe("startGatewayMaintenanceTimers", () => {
     });
   });
 
-  it("defers a thaw restart behind active work and retries a failed idle pass", async () => {
+  it("leaves admission untouched on busy thaw ticks and retries a failed idle pass", async () => {
     vi.useFakeTimers();
+    vi.spyOn(process, "cpuUsage").mockReturnValue({ user: 0, system: 0 });
     vi.setSystemTime(new Date("2026-03-22T00:00:00Z"));
     resetGatewayWorkAdmission();
     let activeChatRuns = 1;
@@ -218,6 +222,8 @@ describe("startGatewayMaintenanceTimers", () => {
       await vi.advanceTimersByTimeAsync(TICK_INTERVAL_MS);
       expect(restartRunningChannels).not.toHaveBeenCalled();
       expect(isGatewayWorkAdmissionClosed()).toBe(false);
+      await vi.advanceTimersByTimeAsync(TICK_INTERVAL_MS);
+      expect(phases).toEqual([]);
 
       activeChatRuns = 0;
       await vi.advanceTimersByTimeAsync(TICK_INTERVAL_MS);
@@ -235,8 +241,6 @@ describe("startGatewayMaintenanceTimers", () => {
 
       expect(phases).toEqual([
         "preparing",
-        "accepting",
-        "preparing",
         "prepared",
         "accepting",
         "preparing",
@@ -250,8 +254,9 @@ describe("startGatewayMaintenanceTimers", () => {
     }
   });
 
-  it("reopens admission when thaw active-work inspection fails", async () => {
+  it("leaves admission open when thaw active-work inspection fails", async () => {
     vi.useFakeTimers();
+    vi.spyOn(process, "cpuUsage").mockReturnValue({ user: 0, system: 0 });
     vi.setSystemTime(new Date("2026-03-22T00:00:00Z"));
     const restartRunningChannels = vi.fn(async () => true);
     const logHealth = { info: vi.fn(), error: vi.fn() };
@@ -543,23 +548,25 @@ describe("startGatewayMaintenanceTimers", () => {
     await stopMaintenanceTimers(timers);
   });
 
-  it("broadcasts tick keepalives without dropIfSlow", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-04-12T00:00:00Z"));
-    const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
+  it("broadcasts tick keepalives and checks installation replacement until the timer stops", async () => {
+    const { startGatewayMaintenanceTimers, deps } = await createTimedMaintenanceScenario();
     const broadcast = vi.fn();
+    const check = vi.spyOn(staleInstall, "checkGatewayInstallationReplacement").mockResolvedValue();
 
     const timers = startGatewayMaintenanceTimers({
-      ...createMaintenanceTimerDeps(),
+      ...deps,
       broadcast,
     });
 
     broadcast.mockClear();
-    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(TICK_INTERVAL_MS);
 
     expect(broadcast).toHaveBeenCalledWith("tick", { ts: Date.now() });
+    expect(check).toHaveBeenCalledOnce();
 
     await stopMaintenanceTimers(timers);
+    await vi.advanceTimersByTimeAsync(TICK_INTERVAL_MS);
+    expect(check).toHaveBeenCalledOnce();
   });
 
   it("refreshes automatic health snapshots without live channel probes", async () => {

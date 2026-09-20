@@ -27,7 +27,8 @@ import { logMessageProcessed, logMessageReceived } from "../../logging/diagnosti
 import type { InboundDocumentContext } from "../../media-understanding/file-context.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { recordAcceptedSessionParticipantInput } from "../../sessions/session-participant-input-recording.js";
-import { setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
+import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
+import type { ChatAbortControllerEntry } from "../chat-abort.js";
 import type { ChatImageContent } from "../chat-attachments.js";
 import { broadcastChatError, broadcastChatFinal } from "./chat-broadcast.js";
 import { buildChatSendReplyInjectionText } from "./chat-send-reply-context.js";
@@ -39,19 +40,24 @@ import type { GatewayRequestContext } from "./types.js";
 /** Captures the prepared request data used by both pre-ACK and detached injection attempts. */
 export function createChatSendMessageInjectionStarter(params: {
   target: ReplyMessageInjectionTarget | undefined;
+  abortSignal: AbortSignal;
   request: Pick<NormalizedChatSendRequest, "p" | "rawMessage" | "supportsTaskSuggestions">;
   session: Pick<
     PreparedChatSendSession,
     "cfg" | "entry" | "sessionKey" | "storePath" | "clientRunId"
   >;
   admittedSessionSettings?: Readonly<Pick<SessionEntry, "permissionMode" | "toolOverrides">>;
-  turn: ReturnType<typeof prepareChatSendUserTurn>;
+  turn: Pick<
+    ReturnType<typeof prepareChatSendUserTurn>,
+    "ctx" | "isInternalTextSlashCommandTurn" | "replyOptionImages" | "replyOptionMedia"
+  >;
   imageOrder: ReplyBackendQueueMessageOptions["imageOrder"];
   documentContext?: ({ status: "rendered" } & InboundDocumentContext) | { status: "failed" };
   userTurnTranscriptRecorder: NonNullable<
     ReplyBackendQueueMessageOptions["userTurnTranscriptRecorder"]
   >;
   logGateway: GatewayRequestContext["logGateway"];
+  assertCurrent?: () => void;
 }) {
   const { p, rawMessage, supportsTaskSuggestions } = params.request;
   const { cfg, entry, sessionKey, storePath, clientRunId } = params.session;
@@ -60,6 +66,7 @@ export function createChatSendMessageInjectionStarter(params: {
     if (!params.target || isInternalTextSlashCommandTurn) {
       return undefined;
     }
+    params.assertCurrent?.();
     // Preparation can outlive terminal delivery. Recheck before the backend
     // takes this input; an unreadable receipt cannot authorize steering.
     let fenceEntry = entry;
@@ -143,6 +150,7 @@ export function createChatSendMessageInjectionStarter(params: {
         ? buildChatSendReplyInjectionText({ body: text, cfg, ctx, sessionEntry: entry })
         : text,
       {
+        assertCurrent: params.assertCurrent,
         steeringMode: "all",
         isInboundUserMessage: true,
         toolAuthorityOverlay: resolveInboundReplyToolAuthorityOverlay({
@@ -159,6 +167,7 @@ export function createChatSendMessageInjectionStarter(params: {
         ...(params.imageOrder?.length ? { imageOrder: params.imageOrder } : {}),
         ...(replyOptionMedia?.length ? { media: replyOptionMedia } : {}),
         waitForTranscriptCommit: true,
+        abortSignal: params.abortSignal,
         ...(debounceMs !== undefined ? { debounceMs } : {}),
         taskSuggestionDeliveryMode: supportsTaskSuggestions ? "gateway" : undefined,
         userTurnTranscriptRecorder: params.userTurnTranscriptRecorder,
@@ -183,6 +192,10 @@ export async function settleChatSendPreAckMessageInjection(params: {
   if (!params.attempt || (await params.attempt.acceptance)) {
     return { status: "continue", attempt: params.attempt };
   }
+  const outcome = await params.attempt.outcome;
+  if (outcome.status === "failed") {
+    throw outcome.error;
+  }
   if (params.isAborted()) {
     params.onAborted();
     return { status: "handled" };
@@ -197,6 +210,9 @@ export async function settleChatSendPreAckMessageInjection(params: {
 /** Finish an accepted steer without entering reply dispatch, or return false for fallback. */
 export async function finalizeAcceptedChatSendMessageInjection(params: {
   attempt: ReplyMessageInjectionAttempt;
+  sessionBinding?: Readonly<
+    Pick<ChatAbortControllerEntry, "sessionKey" | "sessionId" | "agentId" | "lifecycleGeneration">
+  >;
   context: GatewayRequestContext;
   ctx: RuntimeMsgContext;
   persistUserTurnTranscriptBestEffort: () => Promise<void>;
@@ -209,11 +225,6 @@ export async function finalizeAcceptedChatSendMessageInjection(params: {
 }): Promise<boolean> {
   const { context, ctx, session } = params;
   const { agentId, cfg, clientRunId, entry, sessionKey, storePath } = session;
-  // Terminal-receipt admission is fenced at the injection-start boundary
-  // (createChatSendMessageInjectionStarter), before the steer is queued, so
-  // no attempt ever exists for a fail-closed session. The only rejection
-  // left here is the runtime refusing the queued steer, which also means
-  // nothing was enqueued — the fallback to follow-up dispatch is safe.
   const finalizedCtx = finalizeInboundContext(ctx);
   const finalization = await finalizeReplyMessageInjectionAttempt({
     attempt: params.attempt,
@@ -221,6 +232,8 @@ export async function finalizeAcceptedChatSendMessageInjection(params: {
     inboundAudio: hasInboundAudio(finalizedCtx),
   });
   if (finalization.status === "rejected") {
+    // Rejection also covers withdrawing a canceled queued steer. Fallback
+    // dispatch retains the source run's abort signal and skips canceled input.
     return false;
   }
   recordAcceptedSessionParticipantInput(ctx, { agentId, sessionKey, storePath });
@@ -301,6 +314,7 @@ export async function finalizeAcceptedChatSendMessageInjection(params: {
     setGatewayDedupeEntry({
       dedupe: context.dedupe,
       key: `chat:${clientRunId}`,
+      session: captureAgentJobSession(params.sessionBinding),
       entry: {
         ts: Date.now(),
         ok: !indeterminate,

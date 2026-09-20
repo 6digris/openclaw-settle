@@ -15,6 +15,7 @@ import {
   resolvePackageActivationHelper,
   packageActivationIdentity,
   resolvePackageActivationAnchor,
+  encodePackageActivationLauncher,
 } from "./package-update-activation-journal.js";
 import { packageActivationRuntimeEntrypoint } from "./package-update-activation-runtime-assets.js";
 import {
@@ -95,7 +96,7 @@ export async function preparePackageActivationJournal(params: PackageActivationP
     const destination = path.join(params.binDir, entry.name);
     launchers.push({
       ...entry,
-      candidate: await reader.launcher(source),
+      candidate: encodePackageActivationLauncher(await reader.launcher(source)),
       candidateIdentity: packageActivationIdentity(source, "launcher"),
       previousIdentity:
         entry.previous === null ? null : packageActivationIdentity(destination, "launcher"),

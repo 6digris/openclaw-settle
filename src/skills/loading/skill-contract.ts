@@ -11,8 +11,12 @@ export interface Skill {
   locationNote?: string;
   /** Prepared instructions for transferred bundles or non-filesystem locators such as node://. */
   readContent?: string;
+  /** Prepared runtime identity of instruction bytes, or the complete delivered bundle tree. */
+  contentHash?: string;
   filePath: string;
   baseDir: string;
+  /** Assigned by Gateway discovery, never accepted from the workspace provider. */
+  fileHost?: "gateway" | "workspace";
   /** @deprecated Ignored; retained for API compatibility until the next Plugin SDK major. */
   promptVersion?: string;
   sourceInfo: SourceInfo;

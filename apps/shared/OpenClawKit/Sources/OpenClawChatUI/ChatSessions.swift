@@ -131,6 +131,30 @@ public enum OpenClawChatFastMode: Sendable, Equatable, Hashable, Codable {
     }
 }
 
+public struct OpenClawChatFastModeProfile: Sendable, Equatable {
+    public let supportsFastMode: Bool
+    public let override: OpenClawChatFastMode?
+    public let effective: OpenClawChatFastMode?
+
+    public var isEnabled: Bool {
+        self.effective?.isEnabled == true
+    }
+
+    public var showsControls: Bool {
+        self.supportsFastMode || self.override != nil
+    }
+
+    public static func resolve(
+        session: OpenClawChatSessionEntry?,
+        model: OpenClawChatModelChoice?) -> Self
+    {
+        Self(
+            supportsFastMode: model?.supportsFastMode == true,
+            override: session?.fastMode,
+            effective: session?.effectiveFastMode ?? session?.fastMode ?? model?.effectiveFastMode)
+    }
+}
+
 public struct OpenClawChatModelChoice: Identifiable, Codable, Sendable, Hashable {
     public var id: String {
         self.selectionID
@@ -140,6 +164,7 @@ public struct OpenClawChatModelChoice: Identifiable, Codable, Sendable, Hashable
     public let name: String
     public let provider: String
     public let available: Bool?
+    public let manualSelectionAllowed: Bool?
     public let unavailableReason: String?
     public let unavailableUntil: Int?
     public let contextWindow: Int?
@@ -156,6 +181,7 @@ public struct OpenClawChatModelChoice: Identifiable, Codable, Sendable, Hashable
         name: String,
         provider: String,
         available: Bool? = nil,
+        manualSelectionAllowed: Bool? = nil,
         unavailableReason: String? = nil,
         unavailableUntil: Int? = nil,
         contextWindow: Int?,
@@ -171,6 +197,7 @@ public struct OpenClawChatModelChoice: Identifiable, Codable, Sendable, Hashable
         self.name = name
         self.provider = provider
         self.available = available
+        self.manualSelectionAllowed = manualSelectionAllowed
         self.unavailableReason = unavailableReason
         self.unavailableUntil = unavailableUntil
         self.contextWindow = contextWindow
@@ -538,11 +565,13 @@ public struct OpenClawChatSessionGroupsMutationResponse: Codable, Sendable, Equa
 public struct OpenClawChatAgentChoice: Codable, Identifiable, Sendable, Hashable {
     public let id: String
     public let name: String?
+    public let emoji: String?
     public let workspaceGit: Bool?
 
-    public init(id: String, name: String? = nil, workspaceGit: Bool? = nil) {
+    public init(id: String, name: String? = nil, emoji: String? = nil, workspaceGit: Bool? = nil) {
         self.id = id
         self.name = name
+        self.emoji = emoji
         self.workspaceGit = workspaceGit
     }
 
@@ -556,10 +585,16 @@ public struct OpenClawChatAgentChoice: Codable, Identifiable, Sendable, Hashable
 public struct OpenClawChatAgentsListResponse: Codable, Sendable, Equatable {
     public let defaultId: String
     public let agents: [OpenClawChatAgentChoice]
+    public let sessionRoutingContract: String?
 
-    public init(defaultId: String, agents: [OpenClawChatAgentChoice]) {
+    public init(
+        defaultId: String,
+        agents: [OpenClawChatAgentChoice],
+        sessionRoutingContract: String? = nil)
+    {
         self.defaultId = defaultId
         self.agents = agents
+        self.sessionRoutingContract = sessionRoutingContract
     }
 }
 

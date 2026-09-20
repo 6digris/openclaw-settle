@@ -7,10 +7,16 @@ import { sql } from "kysely";
 import { z } from "zod";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
 import { openNodeSqliteDatabase, resolveExistingSqliteFileUri } from "./node-sqlite.js";
+import type { PackageLauncherFingerprint } from "./package-update-integrity.js";
 import {
   withExistingSqliteRollbackDatabase,
   type ExistingSqliteTransaction,
 } from "./sqlite-existing-database.js";
+
+/** Keep the journal's version-1 launcher encoding while the live reader exposes metadata. */
+export function encodePackageActivationLauncher(value: PackageLauncherFingerprint): string {
+  return JSON.stringify([value.type, value.mode, value.uid, value.gid, value.contents]);
+}
 
 const PACKAGE_ACTIVATION_JOURNAL = "operation.sqlite";
 const MAX_PACKAGE_ACTIVATION_DESCRIPTOR_BYTES = 1024 * 1024;

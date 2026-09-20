@@ -84,6 +84,8 @@ export async function installCandidate(params: {
   records: Record<string, PluginInstallRecord>;
   env: NodeJS.ProcessEnv;
   updateChannel?: UpdateChannel;
+  timeoutMs?: number;
+  workTimeoutMs?: number | null;
   mode?: "install" | "update";
   preferNpm?: boolean;
   repairReason?: InstallCandidateRepairReason;
@@ -107,10 +109,11 @@ export async function installCandidate(params: {
     return result;
   } catch (error) {
     consent.rethrowCallbackError();
-    if (
-      !(error instanceof ManagedPluginLifecycleError) &&
-      !(error instanceof NpmChannelResolutionError)
-    ) {
+    if (error instanceof ManagedPluginLifecycleError) {
+      if (error.kind === "invalid-request" && !error.capabilityConsent) {
+        throw error;
+      }
+    } else if (!(error instanceof NpmChannelResolutionError)) {
       throw error;
     }
     return {
@@ -166,6 +169,7 @@ async function installCandidatePackage(
   const npmSpecs = candidate.npmSpec
     ? await resolveNpmInstallSpecsForUpdateChannel({
         spec: candidate.npmSpec,
+        timeoutMs: params.timeoutMs,
         updateChannel: params.updateChannel,
         officialPackageName: candidate.trustedSourceLinkedOfficialInstall
           ? parseRegistryNpmSpec(candidate.npmSpec)?.name
@@ -255,6 +259,8 @@ async function installCandidatePackage(
           const options = copyPluginInstallTransactionRequest(params, {
             spec,
             config: params.config,
+            timeoutMs: params.timeoutMs,
+            workTimeoutMs: params.workTimeoutMs,
             extensionsDir,
             expectedPluginId: candidate.pluginId,
             expectedIntegrity: source.expectedIntegrity,

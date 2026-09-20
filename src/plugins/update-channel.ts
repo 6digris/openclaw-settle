@@ -77,6 +77,9 @@ export async function syncPluginsForUpdateChannel(params: {
   config: OpenClawConfig;
   channel: UpdateChannel;
   coreVersion?: string;
+  timeoutMs?: number;
+  workTimeoutMs?: number | null;
+  skipIds?: ReadonlySet<string>;
   workspaceDir?: string;
   env?: NodeJS.ProcessEnv;
   logger?: PluginUpdateLogger;
@@ -117,11 +120,31 @@ async function syncPluginsForUpdateChannelWithLease(
   const loadHelpers = buildLoadPathHelpers(next.plugins?.load?.paths ?? [], env);
   let installs = next.plugins?.installs ?? {};
   let changed = false;
+  const retainedLinks = new Set<string>();
+  for (const [pluginId, record] of Object.entries(installs)) {
+    const bundledInfo = bundled.get(pluginId);
+    if (params.skipIds?.has(pluginId) || record.source !== "path" || !bundledInfo) {
+      continue;
+    }
+    const linkedPath = loadHelpers.paths.find(
+      (loadPath) =>
+        !userPathsEqual(loadPath, bundledInfo.localPath, env) &&
+        (userPathsEqual(loadPath, record.sourcePath, env) ||
+          userPathsEqual(loadPath, record.installPath, env)),
+    );
+    if (!linkedPath) {
+      continue;
+    }
+    retainedLinks.add(pluginId);
+    const warning = `Retained linked plugin "${pluginId}" at ${linkedPath}; update this plugin at its source.`;
+    summary.warnings.push(warning);
+    logger.warn?.(warning);
+  }
 
   if (params.channel === "dev") {
     for (const [pluginId, record] of Object.entries(installs)) {
       const bundledInfo = bundled.get(pluginId);
-      if (!bundledInfo) {
+      if (!bundledInfo || retainedLinks.has(pluginId) || params.skipIds?.has(pluginId)) {
         continue;
       }
 
@@ -153,6 +176,13 @@ async function syncPluginsForUpdateChannelWithLease(
         continue;
       }
       const existing = resolveBridgeInstallRecord({ installs, bridge });
+      if (
+        params.skipIds?.has(bridge.bundledPluginId) ||
+        params.skipIds?.has(targetPluginId) ||
+        (existing && params.skipIds?.has(existing.pluginId))
+      ) {
+        continue;
+      }
       if (
         !isExternalizedBundledPluginEnabled({
           config: next,
@@ -191,6 +221,7 @@ async function syncPluginsForUpdateChannelWithLease(
           npmSpec && trustedSourceLinkedOfficialInstall
             ? await resolveNpmInstallSpecsForUpdateChannel({
                 spec: npmSpec,
+                timeoutMs: params.timeoutMs,
                 updateChannel: params.channel,
                 officialPackageName: resolveNpmSpecPackageName(npmSpec),
                 coreVersion: params.coreVersion,
@@ -250,6 +281,8 @@ async function syncPluginsForUpdateChannelWithLease(
           spec,
           config: next,
           mode: "update" as const,
+          timeoutMs: params.timeoutMs,
+          workTimeoutMs: params.workTimeoutMs,
           expectedPluginId: targetPluginId,
           logger,
           onBeforePluginArtifactCommit: capabilityConsent.onBeforePluginArtifactCommit,
@@ -397,7 +430,7 @@ async function syncPluginsForUpdateChannelWithLease(
 
     for (const [pluginId, record] of Object.entries(installs)) {
       const bundledInfo = bundled.get(pluginId);
-      if (!bundledInfo) {
+      if (!bundledInfo || retainedLinks.has(pluginId) || params.skipIds?.has(pluginId)) {
         continue;
       }
 
@@ -415,11 +448,7 @@ async function syncPluginsForUpdateChannelWithLease(
       // Keep explicit bundled installs on release channels. Replacing them with
       // npm installs can reintroduce duplicate-id shadowing and packaging drift.
       loadHelpers.addPath(bundledInfo.localPath);
-      const alreadyBundled =
-        record.source === "path" &&
-        userPathsEqual(record.sourcePath, bundledInfo.localPath, env) &&
-        userPathsEqual(record.installPath, bundledInfo.localPath, env);
-      if (alreadyBundled) {
+      if (userPathsEqual(record.installPath, bundledInfo.localPath, env)) {
         continue;
       }
 

@@ -271,6 +271,18 @@ separately when distinct identities share a combined reference. Human-name
 matching, alias/date version selection, and case-insensitive glob scopes remain
 available.
 
+`ModelRegistry.fork(authStorage, publishedModels?)` creates an isolated registry.
+`authStorage` supplies that caller's credentials. The optional `publishedModels`
+is a read-only map from provider ID to complete validated runtime model rows;
+an empty array withdraws that provider's rows. Omitted providers keep the captured
+catalog. Forks retain the current source's authored request settings and runtime
+registrations, and later `refresh()` calls retain the captured model publication.
+Published model metadata does not supply credentials or authorize an account.
+The optional argument requires a host release containing executable catalog
+publication; the v2026.9.4 host supports only `fork(authStorage)`.
+This session-extension subpath is runtime-only and does not publish TypeScript
+declarations.
+
 Session extension SDK and supported TypeBox imports share the host's modules.
 
 The contracts intentionally split authority:
@@ -318,3 +330,171 @@ normal OpenClaw plugin hooks for work that does not need pre-model tool-result
 timing. The old
 embedded-runner-only extension factory registration path has been removed.
 </Accordion>
+
+## Sandbox backends
+
+`openclaw/plugin-sdk/sandbox` owns backend registration, remote filesystem bridges,
+and remote-shell execution. Register a backend with
+`registerSandboxBackend(id, { factory, manager, resolveWorkdir })` and dispose the
+registration with the plugin lifecycle.
+
+A backend that allocates external resources can provide `reserveRuntimeId(params)`
+to generate a fresh candidate ID without contacting its provider. Core reserves
+one generation per backend/scope in the sandbox registry before calling the
+factory. Replays receive the original reserved `workspaceDir`, including shared
+scopes reached from a different caller workspace. The
+`ReservedSandboxBackendFactoryV1` contract requires `runtimeId` and
+`assertRuntimeCurrent` through `CreateReservedSandboxBackendParamsV1`. The
+authority check is synchronous: provision that exact ID and recheck after awaited
+work before side effects. Prepared exec specifications carry this check as
+`assertCurrent`, which the process supervisor retains through queued admission
+and native process construction. Recreate rejects work still awaiting admission;
+already-admitted commands follow the backend's normal shutdown lifecycle. Unknown
+provisioning failures retain the ID for replay. Throw
+`SandboxRuntimeRetiredError(runtimeId)` only after the provider confirms that exact
+generation is permanently released. Core replaces it at most once per request.
+Recreate and prune keep failed cleanup recorded and prevent late publication.
+
+Use `createRemoteShellSandboxBackend(params, options)` to reuse the shared
+workspace bootstrap, skills refresh, workdir validation, and filesystem bridge.
+`options.createSession` returns a `RemoteShellSandboxSession`. For a reserved
+backend, set `options.runtimeId` to `params.runtimeId`; `backendId` defaults to
+`params.cfg.backend`. `configLabel` and `configLabelKind` describe the runtime.
+By default, paths still derive from `params.cfg.ssh.workspaceRoot` and the sandbox
+scope. `preprovisionedWorkdir: { runtimeId, remoteWorkspaceDir }` adopts an existing
+placement-owned worktree without seeding or refreshing its files.
+
+Initial seeding stages all required workspace trees beside the final runtime root
+and atomically publishes the complete directory without replacement. Concurrent
+publication preserves the first workspace, even if a caller later empties its
+root. Existing roots remain
+authoritative without a new completion marker. Normal failures and lost publish
+races remove only their exact temporary directory, restoring owner access to
+read-only staged directories without following symlinks. Abrupt process loss or an
+unreachable provider can leave a `<runtime-root>.bootstrap-<uuid>` sibling; it is
+never treated as a completed workspace. Remove only a known orphan after
+initialization has stopped. Releasing a Crabbox lease removes these artifacts with
+the machine; static SSH does not glob-delete siblings during runtime cleanup.
+
+`createRemoteShellSandboxSession({ buildCommand, assertCurrent, dispose })` derives
+command execution, guarded tar uploads, and private exec-script staging from one
+transport adapter. `buildCommand({ remoteCommand, tty })` returns local `argv`,
+`env`, and optional `cwd`. The local environment belongs to the transport process;
+the requested remote environment is staged separately. `cwd` must identify the
+provider's owning workspace when repository admission depends on it. It also
+travels in `SandboxBackendExecSpec` to the process supervisor, independently of the
+remote workdir. The returned session exposes `runCommand`, `uploadDirectory`,
+`prepareExec`, and `dispose`. Optional `dispose` releases local session resources
+after completion or failure; optional `formatFailure(stderr, exitCode)` customizes
+command failure messages. Remote PTY requests affect the command built by the
+adapter; the local transport still runs with piped input.
+
+Pass the reserved `assertRuntimeCurrent` as the session's `assertCurrent`. The
+shared owner checks it around asynchronous preparation, and uploads recheck after
+local traversal immediately before spawning. Provider authority remains with the
+transport command: preparing local argv or retaining connection credentials does
+not authorize a later effect. Staging, execution, uploads, and cleanup must all
+cross that provider boundary. Cleanup retains the same provider admission even
+when it follows a failed or revoked core operation.
+
+The Crabbox adapter uses `crabbox exec --id <lease-id> [--pty] -- /bin/sh -c ...`
+and `stop --current-repo --id <lease-id>` from the original owning workspace. Its
+pre-allocation `exec --check` probe requires `execution` and `currentRepoStop` to
+both be true; initial support is for direct Daytona leases. Static SSH continues
+to use its existing settings through an adapter into the same workspace owner.
+
+## Docked link readers
+
+A link reader lets an enabled plugin claim supported HTTPS links and render a
+passive document beside chat. Core owns the dock, browser-style tabs, history,
+keyboard behavior, and safe Markdown rendering. The plugin owns URL policy,
+service requests, caching, and the document data. This is not a plugin JavaScript
+loader or a framed external website.
+
+Register read-scoped Gateway methods and a contribution descriptor:
+
+```typescript
+import type { ControlUiLinkReaderDocument } from "openclaw/plugin-sdk/control-ui-link-reader";
+
+api.registerGatewayMethod(
+  "notes.read",
+  async ({ params, respond }) => {
+    // Validate params.url against your service and bound the response before returning it.
+    const document: ControlUiLinkReaderDocument = await readNotesDocument(params);
+    respond(true, document, undefined);
+  },
+  { scope: "operator.read" },
+);
+
+api.session.controls.registerControlUiDescriptor({
+  surface: "link-reader",
+  id: "notes",
+  label: "Notes",
+  icon: "book",
+  requiredScopes: ["operator.read"],
+  linkReader: {
+    hosts: ["notes.example"],
+    pathPattern: "^/documents/[a-z0-9-]+$",
+    detailMethod: "notes.read",
+  },
+});
+```
+
+The descriptor is advertised in `hello.controlUiLinkReaders` and live plugin capability snapshots only when its
+plugin is loaded, the caller has the required scopes, and every referenced
+method belongs to that same plugin with `operator.read` scope. Hidden and control-plane write methods do not advertise a reader. Registration can happen
+before or after method registration; projection checks the completed registry.
+Plugin enablement and reload update contributions through the existing `plugins.changed` capability-refresh flow.
+The UI clears removed contributions and ignores stale request results.
+
+The `linkReader` fields are:
+
+| Field           | Contract                                                                                                                                                                               |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `hosts`         | One to sixteen exact lowercase DNS hostnames; no scheme, wildcard, or port.                                                                                                            |
+| `pathPattern`   | An anchored JavaScript Unicode regular expression, at most 1,024 characters, matched against the URL pathname. Installed plugin code owns the pattern; keep it simple and predictable. |
+| `detailMethod`  | Same-plugin read method receiving `{ url, refresh? }` and returning a `ControlUiLinkReaderDocument`.                                                                                   |
+| `previewMethod` | Optional same-plugin read method receiving `{ url }` and returning a `ControlUiLinkReaderPreview` for hover or keyboard focus. Omit it for URLs that should not fetch previews.        |
+| `imageMethod`   | Optional same-plugin read method receiving `{ url }` and returning `{ url, dataUrl }` for inline images.                                                                               |
+
+Method names are bounded to 128 characters. Credentials in URLs and non-HTTPS
+URLs are never intercepted. A descriptor is a routing hint, not authorization
+or input validation: each plugin method still validates its URL, source access,
+and request parameters. Ordinary modified clicks, downloads, unsupported links,
+and explicit external actions keep their native destination.
+
+The exported passive models include a source `url`, `title`, optional subtitle,
+author, dates, badge, and label/value metadata. A document adds Markdown `body`,
+optional comments and changed-file patches, totals, and explicit partial or
+truncated flags. Comment IDs and source links, review context labels, and badge
+text come from the plugin rather than service-specific conditions in core.
+`filesExpanded` optionally selects the initial file-diff view. Badge tones are
+`neutral`, `positive`, `negative`, `attention`, and `accent`. Metadata entries may
+include `tone: "positive" | "negative"` to emphasize their values with the theme’s
+green/red colors in previews and the reader. Omit `tone` for neutral values; the
+host does not infer it from labels or signed numbers. Use an empty metadata label
+for a compact value-only preview, and return a fuller metadata list in the detail
+document when needed.
+
+`authorUrl` optionally links the primary author to an HTTPS profile on the source
+origin. `coAuthors` carries a bounded list of `{ name, imageUrl? }` entries, with
+`coAuthorCount` for the total when not all names are included. Hovercards show up
+to three available portraits and a `+N` remainder; missing portraits remain in
+that count. Failed images retain initials without dropping an author. Names are
+also available to assistive technology and in the full reader. Author images
+keep the preview’s anonymous-image rules; these are not Gateway user identities.
+
+Return only bounded data appropriate for the caller. Rendered content cannot
+activate embedded app widgets, script, file actions, or code execution. Inline
+remote images use anonymous CORS and no referrer unless the reader declares
+`imageMethod`. That method resolves images through the plugin when the source
+does not support browser CORS. It must validate the source and every redirect,
+bound response size and time, and return the requested URL with a canonical
+base64 raster image data URL; SVG and HTML are not supported. Do not forward
+browser cookies or service credentials to image hosts. The host displays the
+validated image data without executing remote content. The host accepts PNG, JPEG, GIF, and WebP data up to
+2 MiB per image, queues at most four concurrent requests, and limits each
+document resolver to 32 unique images and 8 MiB of encoded image data. Images
+the resolver cannot serve retain the original anonymous-CORS path. If that also
+fails, they retain an external link. Use an explicit error response for unavailable content
+so the UI can offer retry and the original URL.

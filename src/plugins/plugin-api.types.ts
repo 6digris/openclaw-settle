@@ -167,7 +167,9 @@ type OpenClawPluginRunContextApi = {
   clearRunContext: (params: { runId: string; namespace?: string }) => void;
 };
 
-type OpenClawPluginLifecycleApi = {
+type OpenClawPluginLifecycleApi = Partial<
+  import("./plugin-instance.types.js").PluginInstanceLifecycle
+> & {
   /** Register cleanup hooks for plugin-owned host state and background work. */
   registerRuntimeLifecycle: (lifecycle: PluginRuntimeLifecycleRegistration) => void;
 };
@@ -183,6 +185,8 @@ export type OpenClawPluginApi = {
   version?: string;
   description?: string;
   source: string;
+  /** Selected runtime entrypoint, independent of setup; absent without runtime artifact selection. */
+  readonly runtimeSource?: string;
   rootDir?: string;
   registrationMode: PluginRegistrationMode;
   config: OpenClawConfig;
@@ -207,7 +211,7 @@ export type OpenClawPluginApi = {
   /** Grouped facade for plugin-owned lifecycle cleanup hooks. */
   lifecycle: OpenClawPluginLifecycleApi;
   registerTool: (
-    tool: AnyAgentTool | OpenClawPluginToolFactory,
+    tool: AnyAgentTool | OpenClawPluginToolFactory | OpenClawPluginToolFactory<2>,
     opts?: OpenClawPluginToolOptions,
   ) => void;
   registerHook: (
@@ -329,6 +333,8 @@ export type OpenClawPluginApi = {
   registerCommand: (command: OpenClawPluginCommandDefinition) => void;
   /** Register a context engine implementation (exclusive slot - only one active at a time). */
   registerContextEngine: (id: string, factory: ContextEngineFactory) => void;
+  /** Register one version 1 typed decision provider declared in the manifest. */
+  registerDecisionProvider: (provider: import("../decisions/types.js").DecisionProviderV1) => void;
   /** Register a compaction provider (pluggable summarization backend). */
   registerCompactionProvider: (
     provider: import("./compaction-provider.js").CompactionProvider,

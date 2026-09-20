@@ -3,6 +3,19 @@ import { Type, type Static } from "typebox";
 import { closedObject } from "./closed-object.js";
 import { NonEmptyString } from "./primitives.js";
 
+export {
+  EnvironmentsSessionCreateParamsSchema,
+  EnvironmentsSessionStatusParamsSchema,
+  EnvironmentsSessionDestroyParamsSchema,
+  type EnvironmentsSessionCreateParams,
+  type EnvironmentsSessionStatusParams,
+  type EnvironmentsSessionDestroyParams,
+} from "./environments-session.js";
+export {
+  EnvironmentsSessionExecParamsSchema,
+  type EnvironmentsSessionExecParams,
+} from "./environments-session-exec.js";
+
 /**
  * Environment inventory protocol schemas.
  *
@@ -17,6 +30,13 @@ export const EnvironmentStatusSchema = Type.String({
 const EnvironmentTrustSchema = Type.String({
   enum: ["persistent", "disposable"],
 });
+
+/** Operational desktop state reported by the current native node connection. */
+export const DesktopAvailabilitySchema = closedObject({
+  state: Type.Union([Type.Literal("locked"), Type.Literal("unlocked"), Type.Literal("unknown")]),
+});
+
+export type DesktopAvailability = Static<typeof DesktopAvailabilitySchema>;
 
 /** Durable lifecycle states for plugin-provisioned worker environments. */
 export const WorkerEnvironmentStateSchema = Type.Union([
@@ -123,6 +143,7 @@ function createEnvironmentSummaryProperties() {
       }),
     ),
     desktop: Type.Optional(Type.Boolean()),
+    desktopAvailability: Type.Optional(DesktopAvailabilitySchema),
     issues: Type.Optional(Type.Array(RuntimeTargetIssueSchema, { minItems: 1, maxItems: 8 })),
     worker: Type.Optional(WorkerEnvironmentMetadataSchema),
     preparation: Type.Optional(
@@ -144,9 +165,10 @@ export const EnvironmentSummarySchema = closedObject({
   requiredNodeCommand: Type.Optional(RequiredNodeCommandSchema),
 });
 
-/** Optional runtime scope for listing known environments. */
+/** Optional runtime scope or profile-only projection for environment discovery. */
 export const EnvironmentsListParamsSchema = closedObject({
   runtimeId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+  projection: Type.Optional(Type.Literal("profiles")),
 });
 
 /** Provider-authored machine choice for one configured worker profile. */
@@ -196,7 +218,7 @@ const WorkerEnvironmentProfileSummarySchema = closedObject({
   ),
 });
 
-/** List response containing all gateway-visible environment summaries. */
+/** Profile-only requests leave environments empty without reading inventory. */
 export const EnvironmentsListResultSchema = closedObject({
   environments: Type.Array(EnvironmentSummarySchema),
   profiles: Type.Optional(Type.Array(WorkerEnvironmentProfileSummarySchema)),
@@ -250,6 +272,8 @@ export const WorkerDesktopObserveResultSchema = closedObject({
   wsPath: NonEmptyString,
   expiresAtMs: Type.Integer({ minimum: 0 }),
   control: Type.Boolean(),
+  // Permission to request resizing, not proof that the RFB server supports it.
+  canResize: Type.Optional(Type.Boolean()),
   vncPassword: Type.Optional(NonEmptyString),
 });
 

@@ -2,14 +2,13 @@ import syncFs from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import * as postCoreConvergence from "../../commands/doctor/shared/post-core-plugin-convergence.js";
 import * as config from "../../config/config.js";
 import { CONFIG_AUDIT_SCOPE } from "../../config/io.audit.js";
 import * as configFactory from "../../config/io.factory.js";
 import { createConfigIO } from "../../config/io.js";
 import { replaceConfigFile } from "../../config/mutate.js";
-import { GUARDED_CONFIG_INCLUDE_WRITE_ERROR } from "../../config/mutation-conflict.js";
 import { captureConfigWriteLockGuard, withConfigWriteLock } from "../../config/write-lock.js";
 import * as gatewayEntrypoint from "../../daemon/gateway-entrypoint.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
@@ -23,6 +22,7 @@ import {
   POST_CORE_UPDATE_STARTED_AT_ENV,
 } from "../../infra/update-post-core-context.js";
 import { createUpdateRun } from "../../infra/update-run-ledger.js";
+import * as pluginBridges from "../../plugins/location-bridges.js";
 import { withPluginLifecycleLease } from "../../plugins/plugin-lifecycle-lease.js";
 import * as pluginRegistryRefresh from "../../plugins/registry-refresh.js";
 import * as updateCohort from "../../plugins/update-cohort.js";
@@ -30,9 +30,11 @@ import * as commandExec from "../../process/exec.js";
 import { defaultRuntime } from "../../runtime.js";
 import { withExistingOpenClawStateDatabaseReadOnly } from "../../state/openclaw-state-db-readonly.js";
 import type { DB as OpenClawStateDatabase } from "../../state/openclaw-state-db.generated.js";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  closeOpenClawStateDatabaseForTest,
+} from "../../state/openclaw-state-db.js";
 import { withEnvAsync } from "../../test-utils/env.js";
-import * as pluginBridges from "../plugins-location-bridges.js";
 import {
   persistRequestedUpdateChannel,
   persistValidatedDowngradeConfig,
@@ -47,10 +49,12 @@ import { shouldResumePostCoreUpdateInFreshProcess } from "./update-command-post-
 import * as postCoreResume from "./update-command-resume.js";
 import { resumePostCoreUpdate } from "./update-command-resume.js";
 
-const dirs = useAutoCleanupTempDirTracker(afterEach);
-afterEach(() => {
+const dirs = createTempDirTracker();
+afterEach(async () => {
+  await closeOpenClawStateDatabaseAsync();
   closeOpenClawStateDatabaseForTest();
   vi.restoreAllMocks();
+  dirs.cleanup();
 });
 
 it.each(
@@ -84,6 +88,10 @@ it.each(
     await fs.mkdir(root);
     await fs.mkdir(control);
     await fs.writeFile(path.join(root, "package.json"), '{"name":"openclaw","version":"1.0.0"}\n');
+    if (flow === "prepare") {
+      // Exercise modern parent-owned completion before the config preparation boundary.
+      await fs.writeFile(path.join(home, "handoff.json"), '{"completionOwner":"parent"}\n');
+    }
     vi.spyOn(temporaryState, "resolvePreferredOpenClawTmpDir").mockReturnValue(control);
     await withEnvAsync(
       {
@@ -101,7 +109,8 @@ it.each(
         [POST_CORE_UPDATE_STARTED_AT_ENV]: String(Date.now()),
         [POST_CORE_UPDATE_SOURCE_CONFIG_PATH_ENV]: undefined,
         [POST_CORE_UPDATE_INSTALL_RECORDS_PATH_ENV]: undefined,
-        [POST_CORE_UPDATE_RESULT_PATH_ENV]: undefined,
+        [POST_CORE_UPDATE_RESULT_PATH_ENV]:
+          flow === "prepare" ? path.join(home, "post-core-result.json") : undefined,
       },
       async () => {
         const env = { ...process.env };
@@ -458,7 +467,8 @@ it("converges healthy candidate code once without nested delegation and restores
         pluginValidation: "skip",
       }).readConfigFileSnapshot();
       expect(configSnapshot.valid).toBe(true);
-      const pluginUpdate: updatePlugins.PostCorePluginUpdateResult = {
+      const pluginUpdate: Awaited<ReturnType<typeof updatePlugins.updatePluginsAfterCoreUpdate>> = {
+        assessment: { kind: "no-payload-repair" },
         status: "ok",
         changed: false,
         sync: {
@@ -656,25 +666,27 @@ it.each([
         () => fence.assertCurrent(),
       );
     });
-    if (included) {
-      // These revocations were scheduled at commit/fsync. Guarded includes now
-      // refuse before either boundary; they must not reach those callbacks.
-      await expect(owned).rejects.toThrow(new Error(GUARDED_CONFIG_INCLUDE_WRITE_ERROR));
-      expect(reachedCommit).toBe(false);
-      expect(await captureFiles()).toEqual(beforeFiles);
-      expect([await fs.readdir(stateDir), await fs.readdir(path.dirname(includePath))]).toEqual(
-        beforeEntries,
-      );
-    } else {
-      if (revoked) {
-        await expect(owned).rejects.toThrow(/executor|ownership/i);
-        expect(await fs.readFile(configPath, "utf8")).toBe(original);
-      } else {
-        await owned;
-        expect(JSON.parse(await fs.readFile(configPath, "utf8")).gateway.port).toBe(18791);
+    if (revoked) {
+      await expect(owned).rejects.toThrow(/executor|ownership/i);
+      expect(await fs.readFile(configPath, "utf8")).toBe(original);
+      if (included) {
+        expect(await captureFiles()).toEqual(beforeFiles);
+        expect([await fs.readdir(stateDir), await fs.readdir(path.dirname(includePath))]).toEqual(
+          beforeEntries,
+        );
       }
-      expect(reachedCommit).toBe(true);
+    } else {
+      await owned;
+      expect(
+        JSON.parse(await fs.readFile(included ? includePath : configPath, "utf8")).gateway?.port ??
+          JSON.parse(await fs.readFile(includePath, "utf8")).port,
+      ).toBe(18791);
+      if (included) {
+        expect(await fs.readFile(configPath, "utf8")).toBe(original);
+        expect(await fs.readFile(`${includePath}.bak`, "utf8")).toBe(includedRaw);
+      }
     }
+    expect(reachedCommit).toBe(true);
     if (included && process.platform !== "win32") {
       expect((await fs.stat(path.dirname(includePath))).mode & 0o7777).toBe(0o3700);
     }

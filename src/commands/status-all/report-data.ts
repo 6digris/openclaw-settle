@@ -9,8 +9,11 @@ import { loadExecApprovalsReadOnly } from "../../infra/exec-approvals.js";
 import { inspectPortUsage } from "../../infra/ports-inspect.js";
 import { readRestartSentinelReadOnly } from "../../infra/restart-sentinel.js";
 import { resolvePluginControlPlaneWorkspace } from "../../plugins/control-plane-workspace.js";
-import { buildPluginCompatibilityNotices } from "../../plugins/status.js";
-import { buildWorkspaceSkillStatus } from "../../skills/discovery/status.js";
+import {
+  buildPluginCompatibilityNotices,
+  withPluginDiagnosticsReport,
+} from "../../plugins/status.js";
+import { buildWorkspaceSkillReadiness } from "../../skills/discovery/status.js";
 import { getRemoteSkillEligibility } from "../../skills/runtime/remote.js";
 import { buildStatusAllOverviewRows } from "../status-overview-rows.ts";
 import {
@@ -68,14 +71,9 @@ async function resolveStatusAllLocalDiagnosis(params: {
     port: number;
     portUsage: Awaited<ReturnType<typeof inspectPortUsage>> | null;
     tailscaleMode: string;
-    tailscale: {
-      backendState: null;
-      dnsName: string | null;
-      ips: string[];
-      error: null;
-    };
+    tailscaleDns: string | null;
     tailscaleHttpsUrl: string | null;
-    skillStatus: ReturnType<typeof buildWorkspaceSkillStatus> | null;
+    skillReadiness: ReturnType<typeof buildWorkspaceSkillReadiness> | null;
     pluginCompatibility: ReturnType<typeof buildPluginCompatibilityNotices>;
     channelsStatus: StatusScanOverviewResult["channelsStatus"];
     channelIssues: StatusScanOverviewResult["channelIssues"];
@@ -133,7 +131,7 @@ async function resolveStatusAllLocalDiagnosis(params: {
     env: process.env,
   });
   const defaultWorkspace = controlPlaneWorkspace.workspaceDir ?? null;
-  const skillStatus =
+  const skillReadiness =
     defaultWorkspace != null
       ? (() => {
           try {
@@ -143,7 +141,7 @@ async function resolveStatusAllLocalDiagnosis(params: {
               execApprovals: loadExecApprovalsReadOnly(),
               agentId: controlPlaneWorkspace.agentId,
             });
-            return buildWorkspaceSkillStatus(defaultWorkspace, {
+            return buildWorkspaceSkillReadiness(defaultWorkspace, {
               config: overview.cfg,
               agentId: controlPlaneWorkspace.agentId,
               eligibility: {
@@ -158,7 +156,10 @@ async function resolveStatusAllLocalDiagnosis(params: {
           }
         })()
       : null;
-  const pluginCompatibility = buildPluginCompatibilityNotices({ config: overview.cfg });
+  const pluginCompatibility = await withPluginDiagnosticsReport(
+    { config: overview.cfg },
+    (report) => buildPluginCompatibilityNotices({ report }),
+  );
 
   return {
     configPath,
@@ -172,14 +173,9 @@ async function resolveStatusAllLocalDiagnosis(params: {
       port,
       portUsage,
       tailscaleMode: overview.tailscaleMode,
-      tailscale: {
-        backendState: null,
-        dnsName: overview.tailscaleDns,
-        ips: [],
-        error: null,
-      },
+      tailscaleDns: overview.tailscaleDns,
       tailscaleHttpsUrl: overview.tailscaleHttpsUrl,
-      skillStatus,
+      skillReadiness,
       pluginCompatibility,
       channelsStatus: overview.channelsStatus,
       channelIssues: overview.channelIssues,
@@ -231,7 +227,6 @@ export async function buildStatusAllReportData(params: {
     secretDiagnosticsCount: params.overview.secretDiagnostics.length,
     updateRows: buildStatusUpdateRows(diagnosis.sentinel?.payload),
     agentStatus: params.overview.agentStatus,
-    tailscaleBackendState: diagnosis.tailscale.backendState,
   });
 
   return {

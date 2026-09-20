@@ -1,11 +1,27 @@
 import type { TriageFailureContext } from "../../commands/triage-prompt.js";
-import type { UpdateRequesterAuthority } from "../../infra/update-requester-authority.js";
+import type {
+  UpdateRequester,
+  UpdateRequesterAuthority,
+} from "../../infra/update-requester-authority.js";
 import type { UpdateRunStep } from "../../infra/update-run-record.js";
 import type { UpdateRecoveryHandoff } from "../../infra/update-run-recovery.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateTimeoutHandoff } from "../../infra/update-timeout-provenance.js";
 import type { UpdateCommandChildGrant } from "./update-command-executor.js";
 import type { FinishUpdateParams } from "./update-command-finish-types.js";
-export type MigratedUpdateFinalizationInput = {
+
+export type UpdateDoctorInput = {
+  executor: UpdateCommandChildGrant;
+  runId: string;
+  root: string;
+  configInputHash: string;
+  requester?: UpdateRequester;
+  repair: boolean;
+  yes?: boolean;
+  workspaceSuggestions?: boolean;
+};
+
+export type MigratedUpdateFinalizationInput = Partial<UpdateTimeoutHandoff> & {
   params: Omit<FinishUpdateParams, "packageTransaction" | "preManagedServiceStop" | "opts"> & {
     opts: Omit<FinishUpdateParams["opts"], "run" | "recovery"> & {
       run?: Omit<

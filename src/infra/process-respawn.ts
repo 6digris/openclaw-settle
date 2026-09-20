@@ -1,39 +1,30 @@
 // Respawns the gateway process when no supervisor handles restart.
 import { spawn, type ChildProcess } from "node:child_process";
 import { scheduleDetachedLaunchdRestartHandoff } from "../daemon/launchd-restart-handoff.js";
+import {
+  isWindowsTaskSupervisorChildArgument,
+  readWindowsTaskSupervisorRestartExitCode,
+} from "../daemon/windows-task-supervisor-contract.js";
 import { isContainerEnvironment } from "./container-environment.js";
 import { isTruthyEnvValue } from "./env.js";
 import { formatErrorMessage } from "./errors.js";
+import { rewritePnpmVersionedOpenClawEntryPath } from "./openclaw-root.js";
 import { triggerOpenClawRestart } from "./restart.js";
 import { detectGatewayRespawnSupervisor } from "./supervisor-markers.js";
 
 type GatewayRespawnResult = {
   mode: "supervised" | "disabled" | "failed";
   detail?: string;
+  exitCode?: number;
   handoffSpawned?: Promise<boolean>;
 };
 
-type GatewayUpdateRespawnResult = {
-  mode: "spawned" | "disabled" | "failed";
-  pid?: number;
-  detail?: string;
-  child?: ChildProcess;
-};
+type GatewayUpdateRespawnResult =
+  | { mode: "spawned"; pid?: number; child: ChildProcess }
+  | { mode: "disabled" | "failed"; detail?: string };
 type GatewayRespawnOptions = {
   env?: NodeJS.ProcessEnv;
 };
-
-const PNPM_VERSIONED_OPENCLAW_ENTRY_PATTERN =
-  /^(.*?)([\\/])node_modules\2\.pnpm\2openclaw@[^\\/]+\2node_modules\2openclaw\2.+$/;
-
-function rewritePnpmVersionedOpenClawEntryPath(entryPath: string): string {
-  // pnpm can expose argv[1] as a versioned realpath that self-update removes.
-  // Respawn through the stable OpenClaw package wrapper instead.
-  return entryPath.replace(
-    PNPM_VERSIONED_OPENCLAW_ENTRY_PATTERN,
-    "$1$2node_modules$2openclaw$2openclaw.mjs",
-  );
-}
 
 /**
  * Attempt to restart this process with a fresh PID.
@@ -60,6 +51,19 @@ export function restartGatewayProcessWithFreshPid(
         : { mode: "failed", detail: handoff.error };
     }
     if (supervisor === "schtasks") {
+      if (process.argv.some(isWindowsTaskSupervisorChildArgument)) {
+        const exitCode = readWindowsTaskSupervisorRestartExitCode(process.argv);
+        if (exitCode === undefined) {
+          return {
+            mode: "failed",
+            detail: "Windows task supervisor restart marker is missing or invalid",
+          };
+        }
+        return {
+          mode: "supervised",
+          exitCode,
+        };
+      }
       const restart = triggerOpenClawRestart();
       if (!restart.ok) {
         return {

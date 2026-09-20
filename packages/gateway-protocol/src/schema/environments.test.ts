@@ -51,6 +51,17 @@ function workerSummary(
 }
 
 describe("worker environment protocol schemas", () => {
+  it("accepts bounded desktop availability in environment lists and status responses", () => {
+    const base = { id: "node:mac-1", type: "node", status: "available" };
+    for (const state of ["locked", "unlocked", "unknown"]) {
+      const summary = { ...base, desktopAvailability: { state } };
+      expect(Value.Check(EnvironmentsListResultSchema, { environments: [summary] })).toBe(true);
+      expect(Value.Check(EnvironmentsStatusResultSchema, summary)).toBe(true);
+    }
+    for (const desktopAvailability of [null, {}, { state: "idle" }, { state: "locked", idle: 1 }]) {
+      expect(Value.Check(EnvironmentSummarySchema, { ...base, desktopAvailability })).toBe(false);
+    }
+  });
   it("accepts only a profile and local project selector for preparation", () => {
     const request = { profileId: "development", projectPath: "/projects/app" };
     expect(validateEnvironmentsPrepareParams(request)).toBe(true);
@@ -276,6 +287,11 @@ describe("worker environment protocol schemas", () => {
 
     expect(validateEnvironmentsListParams({})).toBe(true);
     expect(validateEnvironmentsListParams({ runtimeId: "codex" })).toBe(true);
+    expect(validateEnvironmentsListParams({ projection: "profiles" })).toBe(true);
+    expect(validateEnvironmentsListParams({ runtimeId: "codex", projection: "profiles" })).toBe(
+      true,
+    );
+    expect(validateEnvironmentsListParams({ projection: "unknown" })).toBe(false);
     expect(validateEnvironmentsListParams({ runtimeId: "" })).toBe(false);
     expect(validateEnvironmentsListParams({ runtimeId: "x".repeat(129) })).toBe(false);
     expect(validateEnvironmentsListParams({ runtimeId: "codex", command: "runtime.exec" })).toBe(

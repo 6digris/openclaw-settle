@@ -1,5 +1,9 @@
 import type { preparePackageActivation } from "./package-update-activation.js";
-import { discardPackageUpdateBackup } from "./package-update-filesystem.js";
+import {
+  discardPackageUpdateBackup,
+  discardPackageLauncherBackup,
+  type PackageLauncherBackup,
+} from "./package-update-filesystem.js";
 import type { PackageRootIntegrityFingerprint } from "./package-update-integrity.js";
 import type { createNpmPackageRootLinkLifecycle } from "./package-update-npm-root.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
@@ -7,11 +11,12 @@ import type { UpdateStepResult } from "./update-runner-types.js";
 /** Called only by the verified, cached transaction completion path. */
 export async function retireVerifiedPackageSwap(params: {
   activation: Awaited<ReturnType<typeof preparePackageActivation>> | undefined;
-  rootLink: ReturnType<typeof createNpmPackageRootLinkLifecycle> | undefined;
+  rootLink: Awaited<ReturnType<typeof createNpmPackageRootLinkLifecycle>> | undefined;
   hadPackage: boolean;
   previousRoot: PackageRootIntegrityFingerprint | undefined;
   backupRoot: string;
-  shimBackupDir: string | undefined;
+  launchers: PackageLauncherBackup;
+  packageBackedUp: boolean;
   globalRoot: string;
   assertCurrent: () => void;
   step: (
@@ -26,7 +31,8 @@ export async function retireVerifiedPackageSwap(params: {
     hadPackage,
     previousRoot,
     backupRoot,
-    shimBackupDir,
+    launchers,
+    packageBackedUp,
     assertCurrent,
     step,
   } = params;
@@ -51,7 +57,8 @@ export async function retireVerifiedPackageSwap(params: {
     assertRetirementCurrent();
     return undefined;
   }
-  const linkRetention = rootLink ? await rootLink.retire(assertRetirementCurrent) : null;
+  const linkRetention =
+    rootLink && packageBackedUp ? await rootLink.retire(assertRetirementCurrent) : null;
   assertRetirementCurrent();
   if (linkRetention) {
     return { ...step(1, null, linkRetention), name: "global install backup retention" };
@@ -67,16 +74,13 @@ export async function retireVerifiedPackageSwap(params: {
       messages.push(message);
     }
   }
-  if (shimBackupDir) {
-    const message = await discardPackageUpdateBackup(
-      shimBackupDir,
-      "shim backup",
-      params.globalRoot,
-      assertRetirementCurrent,
-    );
-    if (message) {
-      messages.push(message);
-    }
+  const launcherCleanup = await discardPackageLauncherBackup(
+    launchers,
+    params.globalRoot,
+    assertRetirementCurrent,
+  );
+  if (launcherCleanup) {
+    messages.push(launcherCleanup);
   }
   // Capture authority loss during the final filesystem await in the
   // retirement outcome, not only in the caller's later publication check.

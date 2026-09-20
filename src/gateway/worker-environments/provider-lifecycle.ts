@@ -73,6 +73,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
     lifecycleLease,
     finishDestroy,
     failBootstrap,
+    finishConfirmedProvisionCleanup,
     preserveIndeterminateProvisionCleanup,
     destroy,
   } = createWorkerProviderOwnerLifecycle({ ...options, providerFor, requireWorkerProfile });
@@ -246,8 +247,21 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
           signal: cancellation?.signal,
         });
       }
+      const assertCurrent = () => {
+        cancellation?.assertActive();
+        if (!attemptOpen || options.isStopping()) {
+          throw new Error("Worker provisioning operation is closed");
+        }
+        beforeProvision?.();
+        const current = expirePrepared(requireCurrentOwner(record));
+        if (current.destroyRequestedAtMs !== null) {
+          throw new Error("Worker provisioning operation is closed");
+        }
+        return current;
+      };
       const provisionOptions = {
         profileId: record.profileId,
+        assertCurrent,
         ...(machineClass ? { machineClass } : {}),
         ...(os ? { os } : {}),
         ...(executionMode ? { executionMode } : {}),
@@ -260,21 +274,11 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
           : {}),
         ...(cancellation ? { signal: cancellation.signal } : {}),
         ...(projectOperation ? { project: projectOperation.project } : {}),
+      } satisfies NonNullable<Parameters<WorkerProvider["provision"]>[2]> & {
+        assertCurrent: () => void;
       };
       cancellation?.assertActive();
       const provision = async () => {
-        const assertCurrent = () => {
-          cancellation?.assertActive();
-          if (!attemptOpen || options.isStopping()) {
-            throw new Error("Worker provisioning operation is closed");
-          }
-          beforeProvision?.();
-          const current = expirePrepared(requireCurrentOwner(record));
-          if (current.destroyRequestedAtMs !== null) {
-            throw new Error("Worker provisioning operation is closed");
-          }
-          return current;
-        };
         assertCurrent();
         const preparedProvision = await provider.prepareProvision?.(
           profile,
@@ -307,6 +311,9 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
       // A cancelled attempt may already own a paid allocation, even when its late
       // provider error looks permanent. Keep it available for canonical teardown.
       cancellation?.assertActive();
+      if (WorkerProviderError.isCleanupComplete(error)) {
+        return await finishConfirmedProvisionCleanup(record, error);
+      }
       const detail = boundedError(error);
       const permanent =
         error instanceof WorkerProviderError || options.isServiceError(error, "invalid_profile");
@@ -361,7 +368,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
         lease,
         provider,
         patch,
-        preparedInstallation,
+        enrollmentOperation?.installation ?? preparedInstallation,
         cancellation,
         projectOperation?.getPreparedWorkspace(),
         beforeProvision,

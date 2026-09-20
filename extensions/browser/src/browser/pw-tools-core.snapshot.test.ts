@@ -43,10 +43,8 @@ vi.mock("./cdp.js", () => ({
 }));
 
 type ScopedCdpClientOptions = {
-  cdpUrl?: unknown;
   fn?: unknown;
   page?: unknown;
-  targetId?: unknown;
 };
 
 function requireScopedCdpClientOptions(): ScopedCdpClientOptions {
@@ -98,9 +96,7 @@ describe("pw-tools-core aria snapshot storage", () => {
     expect(ensurePageState).toHaveBeenCalledWith(page);
     expect(withPageScopedCdpClient).toHaveBeenCalledTimes(1);
     const scopedClientOptions = requireScopedCdpClientOptions();
-    expect(scopedClientOptions.cdpUrl).toBe("http://127.0.0.1:9222");
     expect(scopedClientOptions.page).toBe(page);
-    expect(scopedClientOptions.targetId).toBe("tab-1");
     expect(typeof scopedClientOptions.fn).toBe("function");
     expect(markBackendDomRefsOnPage).toHaveBeenCalledWith({
       page,
@@ -477,6 +473,19 @@ describe("pw-tools-core aria snapshot storage", () => {
     expect(storeRoleRefsForTarget).toHaveBeenLastCalledWith(
       expect.objectContaining({ refs: { e1: { role: "button", name: "Visible" } } }),
     );
+  });
+
+  it("still rejects malformed AI names beyond the output budget", async () => {
+    const ariaSnapshot = vi.fn(
+      async () => '- button "Visible" [ref=e1]\n' + String.raw`- button "bad\uZZZZ" [ref=e2]`,
+    );
+    getPageForTargetId.mockResolvedValue(makeAriaSnapshotPage(ariaSnapshot));
+    const mod = await import("./pw-tools-core.snapshot.js");
+
+    await expect(
+      mod.snapshotAiViaPlaywright({ cdpUrl: "http://127.0.0.1:9222", maxChars: 1 }),
+    ).rejects.toBeInstanceOf(SyntaxError);
+    expect(storeRoleRefsForTarget).not.toHaveBeenCalled();
   });
 
   it("uses the default navigation timeout for non-finite timeouts", async () => {

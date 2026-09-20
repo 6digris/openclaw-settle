@@ -4,8 +4,10 @@ import { once } from "node:events";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writePackageDistInventory } from "../../scripts/lib/package-dist-inventory.ts";
 import {
   assertReliabilityForcedExit,
   waitForReliabilityWorkerExit,
@@ -23,15 +25,18 @@ import {
   resolvePackageActivationControl,
   resolvePackageActivationHelper,
   resolvePackageActivationJournalPath,
+  encodePackageActivationLauncher,
 } from "./package-update-activation-journal.js";
 import { preparePackageActivationJournal } from "./package-update-activation-prepare.js";
 import { packageActivationRuntimeEntrypoint } from "./package-update-activation-runtime-assets.js";
 import {
   readPackageActivationStatus,
+  readPackageActivationReceipt,
   runPackageActivationRecovery,
   assertNoPendingPackageActivation,
 } from "./package-update-activation.js";
 import { createPackageIntegrityReader } from "./package-update-integrity.js";
+import { swapStagedPackageInstall } from "./package-update-swap.js";
 import { createPackageSwapFixture } from "./package-update-swap.test-support.js";
 import * as runtimeWorker from "./runtime-worker-url.js";
 import * as temporaryRoot from "./tmp-openclaw-dir.js";
@@ -72,7 +77,12 @@ async function prepare(cut?: (anchor: string) => void, onCustody?: (retained: bo
       previous,
       onCustody,
       launchers: [
-        { name: "openclaw", previous: await createPackageIntegrityReader().launcher(f.launcher) },
+        {
+          name: "openclaw",
+          previous: encodePackageActivationLauncher(
+            await createPackageIntegrityReader().launcher(f.launcher),
+          ),
+        },
       ],
     });
   });
@@ -84,6 +94,131 @@ async function prepare(cut?: (anchor: string) => void, onCustody?: (retained: bo
 }
 
 describe("package activation custody and surviving completion", () => {
+  it("preserves version-1 launcher receipts with current structured metadata", async () => {
+    const f = await prepare();
+    const record = openPackageActivationJournal(f.anchor).read();
+    const captured = await createPackageIntegrityReader().launcher(f.launcher);
+    expect(record.descriptor.version).toBe(1);
+    expect(record.descriptor.launchers[0]?.previous).toBe(
+      JSON.stringify([captured.type, captured.mode, captured.uid, captured.gid, captured.contents]),
+    );
+    const journalPath = resolvePackageActivationJournalPath(f.anchor);
+    const before = fs.readFileSync(journalPath);
+    expect((await readPackageActivationStatus(f.anchor, f.operationId)).phase).toBe("prepared");
+    expect(fs.readFileSync(journalPath)).toEqual(before);
+    await runPackageActivationRecovery(f.anchor, "repair", f.operationId);
+    expect(fs.readFileSync(f.launcher, "utf8")).toBe("old launcher\n");
+    await runPackageActivationRecovery(f.anchor, "retire", f.operationId);
+    expect((await readPackageActivationStatus(f.anchor, f.operationId)).phase).toBe("complete");
+  });
+
+  it("preserves local overrides from the activation-owned displaced tree", async () => {
+    const f = await createPackageSwapFixture(root);
+    await fsp.mkdir(path.join(f.packageRoot, "dist"), { recursive: true });
+    await fsp.mkdir(path.join(f.params.stage.packageRoot, "dist/infra"), { recursive: true });
+    await fsp.writeFile(
+      path.join(f.params.stage.packageRoot, "dist/infra/update-migrated-finalize.worker.js"),
+      'console.log(JSON.stringify({ postCoreExecutor: "fd3-pid-start-v1" }));\n',
+    );
+    const edited = path.join(f.packageRoot, "dist/local.js");
+    await fsp.writeFile(edited, "upstream\n");
+    await writePackageDistInventory(f.packageRoot);
+    await fsp.writeFile(edited, "operator edit\n");
+    let saved: string | undefined;
+    let prepared = false;
+    await withUpdateCommandExecutor(randomUUID(), async (executor) => {
+      const fence = await executor.enter(f.packageRoot);
+      const result = await swapStagedPackageInstall({
+        ...f.params,
+        activation: {
+          fence,
+          nodeRunner: process.execPath,
+          onPrepared: () => {
+            prepared = true;
+          },
+        },
+        localOverrides: {
+          reapply: false,
+          env: { ...process.env, HOME: root, OPENCLAW_STATE_DIR: path.join(root, "state") },
+        },
+        onLocalOverrides: (overrides) => {
+          saved = overrides.recoveryDir;
+        },
+      });
+      expect(result.status, result.step.stderrTail ?? undefined).toBe("committed");
+    });
+    expect(prepared).toBe(true);
+    expect(fs.existsSync(resolvePackageActivationAnchor(f.packageRoot))).toBe(false);
+    expect(saved).toBeDefined();
+    expect(await fsp.readFile(path.join(saved!, "files/dist/local.js"), "utf8")).toBe(
+      "operator edit\n",
+    );
+  });
+
+  it.each(["contents", "mode"] as const)(
+    "retains recovery assets when an aborted launcher changes %s in place",
+    async (change) => {
+      const f = await prepare();
+      await runPackageActivationRecovery(f.anchor, "repair", f.operationId);
+      const journalPath = resolvePackageActivationJournalPath(f.anchor);
+      const before = fs.readFileSync(journalPath);
+      const inode = fs.lstatSync(f.launcher).ino;
+      if (change === "contents") {
+        fs.writeFileSync(f.launcher, "external edit\n");
+      } else {
+        fs.chmodSync(f.launcher, 0o700);
+      }
+      expect(fs.lstatSync(f.launcher).ino).toBe(inode);
+      await expect(runPackageActivationRecovery(f.anchor, "retire", f.operationId)).rejects.toThrow(
+        /launcher/i,
+      );
+      expect(fs.readFileSync(journalPath)).toEqual(before);
+      expect(fs.existsSync(path.join(f.anchor, "candidate"))).toBe(true);
+      expect(fs.existsSync(resolvePackageActivationHelper(f.anchor))).toBe(true);
+    },
+  );
+
+  it("exposes the durable staged helper after replacement acknowledgement loss", async () => {
+    const first = await prepare();
+    await runPackageActivationRecovery(first.anchor, "repair", first.operationId);
+    await runPackageActivationRecovery(first.anchor, "retire", first.operationId);
+    const journalPath = resolvePackageActivationJournalPath(first.anchor);
+    const open = nodeSqlite.openNodeSqliteDatabase;
+    let lost = false;
+    vi.spyOn(nodeSqlite, "openNodeSqliteDatabase").mockImplementation((file, options) => {
+      const db = open(file, options);
+      if (db.location() === journalPath) {
+        const exec = db.exec.bind(db);
+        db.exec = (statement) => {
+          exec(statement);
+          if (!lost && statement === "COMMIT") {
+            lost = true;
+            throw new Error("replacement acknowledgement lost");
+          }
+        };
+      }
+      return db;
+    });
+    await expect(prepare()).rejects.toThrow("replacement acknowledgement lost");
+    vi.mocked(nodeSqlite.openNodeSqliteDatabase).mockRestore();
+    expect(lost).toBe(true);
+    const record = openPackageActivationJournal(first.anchor).read();
+    expect(record.descriptor.operationId).not.toBe(first.operationId);
+    expect(record.phase).toBe("preparing");
+    const helper = record.descriptor.preparation.find((entry) => entry.name === "helper")!.source;
+    expect(fs.existsSync(helper)).toBe(true);
+    expect(fs.existsSync(resolvePackageActivationHelper(first.anchor))).toBe(false);
+    const before = fs.readFileSync(journalPath);
+    const receipt = readPackageActivationReceipt(first.packageRoot);
+    expect(receipt?.recoveryCommand).toContain(helper);
+    expect(receipt?.recoveryCommand).toContain(record.descriptor.operationId);
+    expect(() => assertNoPendingPackageActivation(first.packageRoot)).toThrow(helper);
+    expect(fs.readFileSync(journalPath)).toEqual(before);
+    await runPackageActivationRecovery(first.anchor, "repair", record.descriptor.operationId);
+    await runPackageActivationRecovery(first.anchor, "retire", record.descriptor.operationId);
+    expect(readPackageActivationReceipt(first.packageRoot)?.recoveryCommand).toBeUndefined();
+  });
+
   it.for(["created", "schema", "inserted", "before-publication", "after-publication"])(
     "survives actual process death at first-use %s",
     { timeout: 120_000 },
@@ -194,6 +329,163 @@ describe("package activation custody and surviving completion", () => {
               });
             }
           }
+        } finally {
+          signal.removeEventListener("abort", abort);
+          await lifetime.verifyCleanup(async () => {
+            await stopChildProcess(child, 5_000);
+            await closed;
+          });
+        }
+      }),
+  );
+  it.for(
+    ["transition", "replacement"].flatMap((operation) =>
+      ["after-update", "before-commit", "after-commit"].map((boundary) => ({
+        operation,
+        boundary,
+        cut: `${operation}-${boundary}`,
+      })),
+    ),
+  )(
+    "preserves the one-slot receipt after actual process death at $cut",
+    { timeout: 120_000 },
+    async ({ operation, boundary, cut }, { signal }) =>
+      lifetime.run(async () => {
+        signal.throwIfAborted();
+        const f = await prepare();
+        if (operation === "replacement") {
+          await runPackageActivationRecovery(f.anchor, "repair", f.operationId);
+          await runPackageActivationRecovery(f.anchor, "retire", f.operationId);
+        }
+        const journal = openPackageActivationJournal(f.anchor);
+        const before = journal.read();
+        const journalPath = resolvePackageActivationJournalPath(f.anchor);
+        const identity = fs.statSync(journalPath, { bigint: true });
+        const previousPackage = fs.readFileSync(path.join(f.packageRoot, "package.json"));
+        const previousLauncher = fs.readFileSync(f.launcher);
+        const child = spawn(
+          process.execPath,
+          [
+            ...runtimeWorker.resolveRuntimeWorkerArgv(
+              resolveRuntimeWorkerUrl({
+                ...packageActivationRuntimeEntrypoint,
+                sourceWorkerName: "package-update-activation.process.test-support",
+                distWorkerPath: "infra/package-update-activation.process.test-support.js",
+              }),
+            ),
+            cut,
+            root,
+            JSON.stringify(before.descriptor.authority),
+            JSON.stringify(before),
+          ],
+          {
+            stdio: ["ignore", "pipe", "pipe"],
+            env: { ...process.env, HOME: root, USERPROFILE: root },
+          },
+        );
+        const closed = once(child, "close");
+        void closed.catch(() => {});
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (chunk) => {
+          stdout = (stdout + String(chunk)).slice(-8192);
+        });
+        child.stderr.on("data", (chunk) => {
+          stderr = (stderr + String(chunk)).slice(-8192);
+        });
+        const abort = () => {
+          child.kill("SIGKILL");
+        };
+        signal.addEventListener("abort", abort, { once: true });
+        try {
+          const exit = await waitForReliabilityWorkerExit(
+            child,
+            `Later journal cut ${cut}: ${stderr}`,
+          );
+          await closed;
+          signal.throwIfAborted();
+          assertReliabilityForcedExit(exit, `later journal ${cut}: ${stderr}`);
+          expect(JSON.parse(stdout.trim())).toEqual({ cut, pid: child.pid });
+          const snapshot = () =>
+            fs
+              .readdirSync(resolvePackageActivationControl(f.anchor))
+              .toSorted()
+              .map((name) => {
+                const file = path.join(resolvePackageActivationControl(f.anchor), name);
+                const stat = fs.lstatSync(file);
+                return { name, ino: stat.ino, mode: stat.mode, bytes: fs.readFileSync(file) };
+              });
+          const afterDeath = snapshot();
+          // Read-only observation must not play back a hot journal or clear sidecars.
+          // A native refusal is a failure here, not implicit repair or an alternate pass.
+          const after = openPackageActivationJournal(f.anchor).read();
+          expect(fs.statSync(journalPath, { bigint: true })).toMatchObject({
+            dev: identity.dev,
+            ino: identity.ino,
+          });
+          expect(after.descriptor.journalIdentity).toBe(before.descriptor.journalIdentity);
+          if (boundary !== "after-commit") {
+            expect(after).toEqual(before);
+          } else {
+            expect(after.revision).toBe(before.revision + 1);
+            expect(() => journal.assertCurrent(before)).toThrow("no longer current");
+            if (operation === "transition") {
+              expect(after).toEqual({
+                ...before,
+                revision: before.revision + 1,
+                phase: "publishing",
+                intent: { kind: "displace" },
+              });
+            } else {
+              expect(after.descriptor.operationId).not.toBe(before.descriptor.operationId);
+              expect(after.descriptor.authority).toMatchObject({
+                databasePath: before.descriptor.authority.databasePath,
+                databaseIdentity: before.descriptor.authority.databaseIdentity,
+                parentIdentity: before.descriptor.authority.parentIdentity,
+                installKey: before.descriptor.authority.installKey,
+              });
+              expect(after.descriptor.authority.owner).not.toBe(before.descriptor.authority.owner);
+              expect(after).toMatchObject({
+                phase: "preparing",
+                intent: { kind: "prepare", completed: [], moving: null },
+                publications: [],
+              });
+              await expect(
+                readPackageActivationStatus(f.anchor, before.descriptor.operationId),
+              ).rejects.toThrow("different operation");
+            }
+          }
+          const expectedPhase =
+            operation === "replacement" && boundary !== "after-commit" ? "complete" : after.phase;
+          await expect(
+            readPackageActivationStatus(f.anchor, after.descriptor.operationId),
+          ).resolves.toMatchObject({
+            phase: expectedPhase,
+            operationId: after.descriptor.operationId,
+          });
+          await expect(
+            runPackageActivationRecovery(f.anchor, "repair", randomUUID()),
+          ).rejects.toThrow("different operation");
+          const database = new DatabaseSync(journalPath, { readOnly: true });
+          try {
+            expect(database.prepare("SELECT slot FROM package_activation").all()).toEqual([
+              { slot: 1 },
+            ]);
+          } finally {
+            database.close();
+          }
+          expect(snapshot()).toEqual(afterDeath);
+          expect(fs.readFileSync(path.join(f.packageRoot, "package.json"))).toEqual(
+            previousPackage,
+          );
+          expect(fs.readFileSync(f.launcher)).toEqual(previousLauncher);
+          await withUpdateCommandExecutor(
+            randomUUID(),
+            async (executor) => {
+              (await executor.enter(f.packageRoot)).assertCurrent();
+            },
+            { existingAuthority: after.descriptor.authority },
+          );
         } finally {
           signal.removeEventListener("abort", abort);
           await lifetime.verifyCleanup(async () => {

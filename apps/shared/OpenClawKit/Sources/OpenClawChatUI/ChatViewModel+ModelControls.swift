@@ -1,6 +1,9 @@
 import Foundation
 
 extension OpenClawChatViewModel {
+    public nonisolated static let defaultModelSelectionID = "__default__"
+    public nonisolated static let inheritedThinkingSelectionID = "__inherited__"
+
     func fetchModels(sessionSnapshot: SessionSnapshot? = nil) async {
         self.nextModelCatalogRequestID &+= 1
         let requestID = self.nextModelCatalogRequestID
@@ -84,7 +87,7 @@ extension OpenClawChatViewModel {
         guard selectionID != Self.defaultModelSelectionID,
               let model = self.modelChoices.first(where: { $0.selectionID == selectionID })
         else { return true }
-        return !self.isModelUnavailable(model)
+        return model.manualSelectionAllowed != false && !self.isModelUnavailable(model)
     }
 
     public func modelUnavailableDescription(_ model: OpenClawChatModelChoice) -> String? {
@@ -216,17 +219,21 @@ extension OpenClawChatViewModel {
             : Self.inheritedThinkingSelectionID
     }
 
+    private var fastModeProfile: OpenClawChatFastModeProfile {
+        let session = self.currentSessionEntry()
+        return OpenClawChatFastModeProfile.resolve(session: session, model: self.selectedModelChoice(for: session))
+    }
+
     public var fastModeSelectionID: String {
-        guard let session = self.currentSessionEntry(), session.fastMode != nil else {
+        let profile = self.fastModeProfile
+        guard profile.override != nil else {
             return Self.inheritedThinkingSelectionID
         }
-        return (session.effectiveFastMode ?? session.fastMode)?.isEnabled == true ? "on" : "off"
+        return profile.isEnabled ? "on" : "off"
     }
 
     public var fastModeIsEnabled: Bool {
-        let session = self.currentSessionEntry()
-        return (session?.effectiveFastMode ?? session?.fastMode ??
-            self.selectedModelChoice(for: session)?.effectiveFastMode)?.isEnabled == true
+        self.fastModeProfile.isEnabled
     }
 
     public var composerInlineModelLabel: String {
@@ -259,8 +266,8 @@ extension OpenClawChatViewModel {
         currentSelectionID: String,
         choices: [OpenClawChatModelChoice]) -> Bool
     {
-        if selectionID == defaultModelSelectionID {
-            return currentSelectionID == defaultModelSelectionID
+        if selectionID == self.defaultModelSelectionID {
+            return currentSelectionID == self.defaultModelSelectionID
         }
         guard let choice = choices.first(where: { $0.selectionID == selectionID }) else {
             return currentSelectionID == selectionID
@@ -291,11 +298,11 @@ extension OpenClawChatViewModel {
     }
 
     public var selectedModelSupportsFastMode: Bool {
-        self.selectedModelChoice(for: self.currentSessionEntry())?.supportsFastMode == true
+        self.fastModeProfile.supportsFastMode
     }
 
     public var showsFastModeControls: Bool {
-        self.selectedModelSupportsFastMode || self.currentSessionEntry()?.fastMode != nil
+        self.fastModeProfile.showsControls
     }
 
     public var isUpdatingSessionSettings: Bool {

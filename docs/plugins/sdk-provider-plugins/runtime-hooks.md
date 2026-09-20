@@ -13,6 +13,39 @@ behavior. Part of the [Building provider plugins](/plugins/sdk-provider-plugins)
 guide; start with [Provider hook
 families](/plugins/sdk-provider-plugins/hook-families) for the shared builders.
 
+## Model route policy
+
+The lightweight `provider-policy-api` artifact resolves model routes through
+`resolveModelRoutes`. Its context and result types are exported by
+`openclaw/plugin-sdk/provider-model-types`.
+
+`ProviderResolveModelRoutesContext.routeIntent` carries prepared, secret-free
+consumer intent: an optional `runtimeId`, an optional `authRequirement`
+(`"subscription"` or `"api-key"`), and `source` (`"explicit"` or `"inherited"`).
+The host projects existing model/provider policy and inherited agent defaults;
+plugins must not reload config or credentials to reconstruct it. This fact does
+not grant credential access or change which runtimes can execute a route.
+
+A `ProviderModelRouteResolution` with `kind: "routes"` can set
+`preferredAuthRequirement`. Core applies that preference only when both
+authentication classes have eligible profiles and selection is automatic.
+Preparation and availability apply the same precedence: required consumer or
+provider profile bindings select the account; configured provider authentication
+constrains automatic selection to that billing route; explicit auth order ranks
+the remaining eligible profiles. Inherited `routeIntent` and
+`preferredAuthRequirement` only break ties after those choices. An environment
+credential supplies fallback material without clearing configured authentication;
+its mode is inferred only when no mode is configured. A preference does not create
+a credential or make an unavailable or cooldown-blocked profile eligible.
+Single-class selection keeps its existing behavior.
+
+Candidate order remains separate from credential precedence, and
+`runtimePolicy.compatibleIds` continues to describe execution compatibility.
+For example, OpenAI keeps both routes available for supported models using a
+legacy official Completions adapter, prefers subscription authentication when
+both kinds are eligible, and honors explicit API route intent. These are
+additive fields on the existing contract; they add no hook or user setting.
+
 ## Hook examples
 
 <Tabs>
@@ -223,6 +256,7 @@ provider request and releases the request lease.
 
 Runtime fallback notes:
 
+- `isCacheTtlEligible(ctx)` receives `provider`, `modelId`, optional `modelApi`, and the resolved route facts `baseUrl` and `supportsPromptCacheKey`. The same bounded context is used when installing cache-TTL pruning and recording cache touches; it does not include the full model, headers, or extra request parameters. OpenAI defaults to eligible on official Platform and Codex endpoints, honors an explicit `supportsPromptCacheKey: false`, and requires explicit opt-in for custom proxy routes. This controls client-side idle pruning, not a guarantee of a provider cache hit.
 - Error classification uses the prepared provider owner or already loaded provider hooks. `matchesContextOverflowError` and `classifyFailoverReason` never trigger plugin discovery while handling an error; provider preparation owns loading those hooks.
 - `normalizeConfig` resolves one owning plugin per provider id (bundled providers first, then the matched runtime plugin) and calls only that hook - there is no scan across other providers. Google's own `normalizeConfig` hook is what normalizes `google` / `google-vertex` / `google-antigravity` config entries; it is not a separate core fallback.
 - `resolveConfigApiKey` uses the provider hook when exposed. Amazon Bedrock keeps AWS env-marker resolution in its provider plugin; runtime auth itself still uses the AWS SDK default chain when configured with `auth: "aws-sdk"`.

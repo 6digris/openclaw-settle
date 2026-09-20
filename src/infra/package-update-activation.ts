@@ -25,6 +25,7 @@ import {
   type PackageActivationJournal,
   type PackageActivationPhase,
   type PackageActivationRecord,
+  encodePackageActivationLauncher,
 } from "./package-update-activation-journal.js";
 import {
   preparePackageActivationJournal,
@@ -63,6 +64,23 @@ const status = (record: PackageActivationRecord): PackageActivationStatus => ({
   installKey: record.descriptor.authority.installKey,
 });
 
+function recoveryCommand(record: PackageActivationRecord): string {
+  const anchor = resolvePackageActivationAnchor(record.descriptor.authority.installKey);
+  let helper = resolvePackageActivationHelper(anchor);
+  if (record.phase === "preparing") {
+    // Replacement already records the staged helper before its transfer. Expose
+    // that durable locator even when no command-print acknowledgement survived.
+    const custody = inspectPackageActivationCustody(anchor, record).find(
+      (entry) => entry.name === "helper",
+    );
+    if (!custody) {
+      throw new Error("Package bootstrap helper custody is missing.");
+    }
+    helper = custody.moved ? custody.destination : custody.source;
+  }
+  return packageActivationRecoveryCommand("node", anchor, record.descriptor.operationId, helper);
+}
+
 /** Read-only correlation; callers still need a privately registered live fence. */
 function readPackageActivationContinuation(installKey: string) {
   const anchor = resolvePackageActivationAnchor(installKey);
@@ -83,13 +101,15 @@ function readPackageActivationContinuation(installKey: string) {
   if (isPackageActivationComplete(anchor, record)) {
     return undefined;
   }
-  if (
-    record.phase !== "publication-complete" ||
-    record.descriptor.authority.installKey !== installKey
-  ) {
+  if (record.descriptor.authority.installKey !== installKey) {
     throw new Error("Package publication is incomplete; its original continuation cannot run.");
   }
   assertManagedUpdateLeaseDatabaseIdentity(record.descriptor.authority);
+  if (record.phase !== "publication-complete") {
+    throw new Error(
+      `Package publication is incomplete; its original continuation cannot run. With an external Node, run ${recoveryCommand(record)} status, then repair or retire; keep other package managers stopped.`,
+    );
+  }
   return record.descriptor.authority;
 }
 
@@ -108,9 +128,9 @@ export function assertNoPendingPackageActivation(
     return;
   }
   const anchor = resolvePackageActivationAnchor(installKey);
-  const operationId = openPackageActivationJournal(anchor).read().descriptor.operationId;
+  const record = openPackageActivationJournal(anchor).read();
   throw new Error(
-    `Package publication recovery is pending. With an external Node, run ${packageActivationRecoveryCommand("node", anchor, operationId)} status, then repair or retire; keep other package managers stopped.`,
+    `Package publication recovery is pending. With an external Node, run ${recoveryCommand(record)} status, then repair or retire; keep other package managers stopped.`,
   );
 }
 
@@ -193,6 +213,20 @@ function createPublicationOwner(
         throw new Error("Selected package launcher identity changed.");
       }
     }
+  };
+  const verifySelectedLaunchers = async (selected: "previous" | "candidate") => {
+    const reader = createPackageIntegrityReader();
+    assertSelectedLaunchers(selected);
+    for (const entry of descriptor.launchers) {
+      const destination = path.join(descriptor.binDir, entry.name);
+      const fingerprint = (await reader.exists(destination))
+        ? encodePackageActivationLauncher(await reader.launcher(destination))
+        : null;
+      if (fingerprint !== entry[selected]) {
+        throw new Error("Selected package launcher fingerprint changed.");
+      }
+    }
+    assertSelectedLaunchers(selected);
   };
   const assertCurrent = () => {
     assertion();
@@ -280,14 +314,16 @@ function createPublicationOwner(
       const source = root(`launchers/${entry.name}`);
       if (
         packageActivationIdentity(source, "launcher") !== entry.candidateIdentity ||
-        (await reader.launcher(source)) !== entry.candidate
+        encodePackageActivationLauncher(await reader.launcher(source)) !== entry.candidate
       ) {
         throw new Error("Candidate launcher assets changed.");
       }
       const destination = path.join(descriptor.binDir, entry.name);
       const present = await reader.exists(destination);
       const id = present ? packageActivationIdentity(destination, "launcher") : null;
-      const fingerprint = present ? await reader.launcher(destination) : null;
+      const fingerprint = present
+        ? encodePackageActivationLauncher(await reader.launcher(destination))
+        : null;
       if (id === entry.previousIdentity && fingerprint === entry.previous) {
         launcherStates.set(entry.name, "previous");
       } else if (id === published.get(entry.name) && fingerprint === entry.candidate) {
@@ -347,11 +383,11 @@ function createPublicationOwner(
       ) {
         throw new Error("Selected package is missing.");
       }
-      assertSelectedLaunchers(selected);
+      await verifySelectedLaunchers(selected);
     }
     assertCurrent();
   };
-  const publish = async (resume: boolean, onDisplaced?: () => void) => {
+  const publish = async (resume: boolean, onDisplaced?: () => void | Promise<void>) => {
     await verifyClosure();
     if (!["preparing", "prepared", "publishing", "publication-complete"].includes(record.phase)) {
       throw new Error(`Forward publication is disarmed (${record.phase}).`);
@@ -379,7 +415,8 @@ function createPublicationOwner(
         throw new Error("Package displacement preimage changed.");
       }
       await fsp.rename(live, root("previous"));
-      onDisplaced?.();
+      await onDisplaced?.();
+      assertCurrent();
     }
     observed = await inspect();
     assertCurrent();
@@ -469,6 +506,7 @@ function createPublicationOwner(
     if (!(await packagePathEntryExists(live))) {
       throw new Error("Selected package is missing.");
     }
+    await verifySelectedLaunchers(selected);
     retirementSelected = selected;
     assertCurrent();
     if (!["retiring", "anchor-retired"].includes(record.phase)) {
@@ -641,7 +679,7 @@ export async function preparePackageActivation(
 }
 export function readPackageActivationReceipt(
   installKey: string,
-): PackageActivationStatus | undefined {
+): (PackageActivationStatus & { recoveryCommand?: string }) | undefined {
   const anchor = resolvePackageActivationAnchor(installKey);
   if (!fs.existsSync(resolvePackageActivationJournalPath(anchor))) {
     readPackageActivationContinuation(installKey);
@@ -649,7 +687,10 @@ export function readPackageActivationReceipt(
   }
   const record = openPackageActivationJournal(anchor).read();
   assertManagedUpdateLeaseDatabaseIdentity(record.descriptor.authority);
-  return status(record);
+  const receipt = status(record);
+  return receipt.phase === "complete"
+    ? receipt
+    : { ...receipt, recoveryCommand: `${recoveryCommand(record)} status` };
 }
 export async function readPackageActivationStatus(
   anchor: string,
