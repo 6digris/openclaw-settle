@@ -31,7 +31,7 @@ export function createAgentsApiHarness(runtime: PluginRuntime): AgentHarnessV2 {
   let closing = false;
   const runningSessions = new Map<string, number>();
   let bindings: ReturnType<typeof createAgentsApiBindings> | undefined;
-  const getBindings = () => bindings ??= createAgentsApiBindings(runtime);
+  const getBindings = () => (bindings ??= createAgentsApiBindings(runtime));
   const assertCurrent = () => {
     if (disposed) {
       throw new Error("Agents API harness is disposed");
@@ -70,17 +70,30 @@ export function createAgentsApiHarness(runtime: PluginRuntime): AgentHarnessV2 {
           assertCurrent();
           params.hostCapabilities.assertActive();
         },
-        createSupersededError: (sessionId) => new AgentHarnessSessionSupersededError(`Agents API session generation is no longer current: ${sessionId}`),
+        createSupersededError: (sessionId) =>
+          new AgentHarnessSessionSupersededError(
+            `Agents API session generation is no longer current: ${sessionId}`,
+          ),
       });
       authority.assertCurrent();
       runningSessions.set(params.sessionId, (runningSessions.get(params.sessionId) ?? 0) + 1);
       try {
-        return await getBindings().withSession(params.sessionId, authority.assertCurrent, (binding, bind) => {
-          if (closing) {
-            throw new Error("Agents API harness is closing");
-          }
-          return runAgentsApiSession(params, binding, bind, authority.assertCurrent, assertCurrent);
-        });
+        return await getBindings().withSession(
+          params.sessionId,
+          authority.assertCurrent,
+          (binding, bind) => {
+            if (closing) {
+              throw new Error("Agents API harness is closing");
+            }
+            return runAgentsApiSession(
+              params,
+              binding,
+              bind,
+              authority.assertCurrent,
+              assertCurrent,
+            );
+          },
+        );
       } finally {
         const count = runningSessions.get(params.sessionId)! - 1;
         if (count > 0) {
@@ -96,20 +109,28 @@ export function createAgentsApiHarness(runtime: PluginRuntime): AgentHarnessV2 {
         await getBindings().reset(params.sessionId, assertCurrent);
       }
     },
-    withSessionDeletion: (params, run) => getBindings().withSessionDeletion({
-      ...params,
-      assertCurrent: () => {
-        params.assertCurrent();
-        assertCurrent();
-      },
-    }, run),
+    withSessionDeletion: (params, run) =>
+      getBindings().withSessionDeletion(
+        {
+          ...params,
+          assertCurrent: () => {
+            params.assertCurrent();
+            assertCurrent();
+          },
+        },
+        run,
+      ),
     dispose: async () => {
       closing = true;
-      await Promise.all([...runningSessions.keys()].map((sessionId) =>
-        abortAndDrainAgentHarnessRun({ sessionId, settleMs: 95_000 }),
-      ));
+      await Promise.all(
+        [...runningSessions.keys()].map((sessionId) =>
+          abortAndDrainAgentHarnessRun({ sessionId, settleMs: 95_000 }),
+        ),
+      );
       if (bindings) {
-        await bindings.withExclusiveMutationFence(async () => { disposed = true; });
+        await bindings.withExclusiveMutationFence(async () => {
+          disposed = true;
+        });
       } else {
         disposed = true;
       }
@@ -154,8 +175,9 @@ async function runAgentsApiSession(
       cancellation.abortExplicitly(error);
     },
   });
-  const emitEvent = (event: Parameters<NonNullable<AgentHarnessAttemptParamsV2["onAgentEvent"]>>[0]) =>
-    emitAgentHarnessAttemptEvent(params, event, { label: "Agents API", log: embeddedAgentLog });
+  const emitEvent = (
+    event: Parameters<NonNullable<AgentHarnessAttemptParamsV2["onAgentEvent"]>>[0],
+  ) => emitAgentHarnessAttemptEvent(params, event, { label: "Agents API", log: embeddedAgentLog });
   const lifecycle = createAgentHarnessAttemptLifecycle({
     attempt: params,
     backend: "agentsapi",
@@ -198,23 +220,41 @@ async function runAgentsApiSession(
   };
   try {
     params.replyOperation?.attachBackend(handle);
-    setActiveEmbeddedRun(params.sessionId, handle, params.sessionKey, params.sessionFile, params.agentId);
+    setActiveEmbeddedRun(
+      params.sessionId,
+      handle,
+      params.sessionKey,
+      params.sessionFile,
+      params.agentId,
+    );
     assertCurrent();
-    const fingerprint = createHash("sha256").update(JSON.stringify([params.model.id, params.resolvedApiKey])).digest("hex");
+    const fingerprint = createHash("sha256")
+      .update(JSON.stringify([params.model.id, params.resolvedApiKey]))
+      .digest("hex");
     if (binding && binding.authFingerprint !== fingerprint) {
-      throw new Error("Agents API model or credential changed; reset the OpenClaw session before continuing");
+      throw new Error(
+        "Agents API model or credential changed; reset the OpenClaw session before continuing",
+      );
     }
     const client = new AgentsApiClient(params.resolvedApiKey!, assertOwnerCurrent);
     if (!remoteSessionId) {
-      remoteSessionId = await client.create(controller.signal, [
-        "You are the OpenClaw assistant. Use your hosted Linux workspace for commands and files.",
-        "This MVP has no apps, connectors, OpenClaw tools, file transfers, or image generation. Do not claim access to them.",
-        params.extraSystemPrompt,
-      ].filter(Boolean).join("\n\n"), params.model.id);
+      remoteSessionId = await client.create(
+        controller.signal,
+        [
+          "You are the OpenClaw assistant. Use your hosted Linux workspace for commands and files.",
+          "This MVP has no apps, connectors, OpenClaw tools, file transfers, or image generation. Do not claim access to them.",
+          params.extraSystemPrompt,
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+        params.model.id,
+      );
       assertCurrent();
       await bind({ sessionId: remoteSessionId, authFingerprint: fingerprint });
     }
-    const projection = createAgentsApiMessageProjection(remoteSessionId, (event) => { void emitEvent(event); });
+    const projection = createAgentsApiMessageProjection(remoteSessionId, (event) => {
+      void emitEvent(event);
+    });
     reply = projection.reply;
     native = createAgentsApiSession({
       client,
@@ -226,13 +266,22 @@ async function runAgentsApiSession(
       onSettled: () => deadlines.beginSettlement(Date.now()),
       onEvent: (event) => {
         projection.observe(event);
-        params.onRunProgress?.({ reason: event.type, provider: "openai", model: params.model.id, backend: "agentsapi" });
+        params.onRunProgress?.({
+          reason: event.type,
+          provider: "openai",
+          model: params.model.id,
+          backend: "agentsapi",
+        });
       },
     });
     lifecycle.emitLifecycleStart({ provider: "openai", model: params.model.id });
-    const result = await native.run(params.prompt, async () => {
-      await params.userTurnTranscriptRecorder?.persistApproved();
-    }, () => params.userTurnTranscriptRecorder?.markSentToProvider?.());
+    const result = await native.run(
+      params.prompt,
+      async () => {
+        await params.userTurnTranscriptRecorder?.persistApproved();
+      },
+      () => params.userTurnTranscriptRecorder?.markSentToProvider?.(),
+    );
     // A terminal root turn is insufficient: run() also waits for native session idle.
     terminalTurnId = result.turn.id;
     if (result.cancelled) {
@@ -272,13 +321,22 @@ async function runAgentsApiSession(
     sessionIdUsed: params.sessionId,
     sessionFileUsed: params.sessionFile,
     agentHarnessId: "agentsapi",
-    messagesSnapshot: SessionManager.open(params.sessionTarget!, params.workspaceDir).buildSessionContext().messages,
-    assistantTexts: reply?.lastAssistant?.content.filter((part) => part.type === "text").map((part) => part.text) ?? [],
+    messagesSnapshot: SessionManager.open(
+      params.sessionTarget!,
+      params.workspaceDir,
+    ).buildSessionContext().messages,
+    assistantTexts:
+      reply?.lastAssistant?.content
+        .filter((part) => part.type === "text")
+        .map((part) => part.text) ?? [],
     lastAssistant: reply?.lastAssistant,
     currentAttemptAssistant: reply?.lastAssistant,
     currentAttemptCompletedAssistant: reply?.lastAssistant,
     assistantTranscriptOwned: Boolean(reply?.lastAssistant),
-    assistantTranscriptIdempotencyKey: reply?.lastAssistant && terminalTurnId ? `agentsapi:${remoteSessionId}:${terminalTurnId}` : undefined,
+    assistantTranscriptIdempotencyKey:
+      reply?.lastAssistant && terminalTurnId
+        ? `agentsapi:${remoteSessionId}:${terminalTurnId}`
+        : undefined,
     toolMetas: [],
     didSendViaMessagingTool: false,
     messagingToolSentTexts: [],
@@ -286,22 +344,34 @@ async function runAgentsApiSession(
     messagingToolSentTargets: [],
     cloudCodeAssistFormatError: false,
     attemptUsage: reply?.usage,
-    replayMetadata: { hadPotentialSideEffects: native?.wasSubmitted() ?? false, replaySafe: !native?.wasSubmitted() },
+    replayMetadata: {
+      hadPotentialSideEffects: native?.wasSubmitted() ?? false,
+      replaySafe: !native?.wasSubmitted(),
+    },
     itemLifecycle: { startedCount: 0, completedCount: 0, activeCount: 0 },
   };
 }
 
 function validateAgentsApiInput(params: AgentHarnessAttemptParamsV2): void {
   const target = params.sessionTarget;
-  if (!target?.agentId || !target.sessionId || !target.sessionKey || !target.storePath
-    || target.sessionId !== params.sessionId || target.agentId !== params.agentId || target.sessionKey !== params.sessionKey) {
+  if (
+    !target?.agentId ||
+    !target.sessionId ||
+    !target.sessionKey ||
+    !target.storePath ||
+    target.sessionId !== params.sessionId ||
+    target.agentId !== params.agentId ||
+    target.sessionKey !== params.sessionKey
+  ) {
     throw new Error("Agents API requires a matching host-prepared session target");
   }
   if (!params.resolvedApiKey) {
     throw new Error("Agents API MVP requires an OpenAI API key");
   }
   if (params.images?.length || params.sandbox) {
-    throw new Error("Agents API MVP supports text and its hosted VM only; images and Gateway sandbox placement are unsupported");
+    throw new Error(
+      "Agents API MVP supports text and its hosted VM only; images and Gateway sandbox placement are unsupported",
+    );
   }
   if (params.contextEngine && params.contextEngine.info.id !== "legacy") {
     throw new Error("Agents API MVP currently supports only the default legacy context engine");

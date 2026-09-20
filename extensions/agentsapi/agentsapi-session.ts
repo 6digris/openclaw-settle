@@ -103,7 +103,10 @@ export function createAgentsApiSession(options: {
     async run(prompt: string, persistInput: () => Promise<void>, onSubmitted: () => void) {
       signal.throwIfAborted();
       const baselineTurnId = (await client.turns(sessionId, signal, undefined, true))[0]?.id;
-      let events = await client.subscribe(sessionId, AbortSignal.any([signal, streamController.signal]));
+      let events = await client.subscribe(
+        sessionId,
+        AbortSignal.any([signal, streamController.signal]),
+      );
       let nextEvent = events.next();
       void nextEvent.catch(() => {});
       let reconciledStream = false;
@@ -122,7 +125,10 @@ export function createAgentsApiSession(options: {
             await delay(500, undefined, { signal });
             streamController = new AbortController();
             // Subscribe before reconciliation: Agents API streams do not replay.
-            events = await client.subscribe(sessionId, AbortSignal.any([signal, streamController.signal]));
+            events = await client.subscribe(
+              sessionId,
+              AbortSignal.any([signal, streamController.signal]),
+            );
             nextEvent = events.next();
             void nextEvent.catch(() => {});
             await submission;
@@ -138,15 +144,21 @@ export function createAgentsApiSession(options: {
               rootTurn = ["completed", "failed", "cancelled"].includes(latestTurn.status)
                 ? latestTurn
                 : undefined;
-              turnFailure = latestTurn.status === "failed"
-                ? (latestTurn.error?.message ?? "Agents API turn failed") : undefined;
+              turnFailure =
+                latestTurn.status === "failed"
+                  ? (latestTurn.error?.message ?? "Agents API turn failed")
+                  : undefined;
               cancelled = latestTurn.status === "cancelled";
             }
             const session = await client.session(sessionId, signal);
             assertCurrent();
             assertSessionUsable(session);
-            settled = Boolean(rootTurn && session.status === "idle"
-              && admittedCount === admittedMessageCount && observedInputItems.size >= admittedMessageCount);
+            settled = Boolean(
+              rootTurn &&
+              session.status === "idle" &&
+              admittedCount === admittedMessageCount &&
+              observedInputItems.size >= admittedMessageCount,
+            );
             continue;
           }
           const event = chunk.value;
@@ -162,7 +174,10 @@ export function createAgentsApiSession(options: {
                 await collectInputs(turnId);
               }
             }
-            if (observedInputItems.size < admittedMessageCount || rootTurn.id !== latestInputTurnId) {
+            if (
+              observedInputItems.size < admittedMessageCount ||
+              rootTurn.id !== latestInputTurnId
+            ) {
               continue;
             }
             if (reconciledStream) {
@@ -184,9 +199,13 @@ export function createAgentsApiSession(options: {
               cancelled = false;
             }
           }
-          if ((event.type === "agent.session.turn.item.added" || event.type === "agent.session.turn.item.done")
-            && event.item?.type === "message" && event.item.role === "user"
-            && !observedInputItems.has(event.item.id)) {
+          if (
+            (event.type === "agent.session.turn.item.added" ||
+              event.type === "agent.session.turn.item.done") &&
+            event.item?.type === "message" &&
+            event.item.role === "user" &&
+            !observedInputItems.has(event.item.id)
+          ) {
             observedInputItems.add(event.item.id);
             const inputTurnId = event.item.turn_id ?? event.turn_id;
             if (!inputTurnId) {
@@ -200,15 +219,29 @@ export function createAgentsApiSession(options: {
           if (event.type === "error") {
             throw new Error(event.error?.message ?? "Agents API stream error");
           }
-          if (["agent.session.failed", "agent.session.environment.failed", "agent.session.requires_action"].includes(event.type)) {
+          if (
+            [
+              "agent.session.failed",
+              "agent.session.environment.failed",
+              "agent.session.requires_action",
+            ].includes(event.type)
+          ) {
             throw new Error(`Agents API MVP cannot continue: ${event.type}`);
           }
-          if (event.type.startsWith("agent.session.turn.") && event.turn?.subagent_id === null
-            && event.turn.id === latestInputTurnId
-            && ["agent.session.turn.completed", "agent.session.turn.failed", "agent.session.turn.cancelled"].includes(event.type)) {
+          if (
+            event.type.startsWith("agent.session.turn.") &&
+            event.turn?.subagent_id === null &&
+            event.turn.id === latestInputTurnId &&
+            [
+              "agent.session.turn.completed",
+              "agent.session.turn.failed",
+              "agent.session.turn.cancelled",
+            ].includes(event.type)
+          ) {
             rootTurn = event.turn;
             turnFailure = event.type.endsWith(".failed")
-              ? (event.turn.error?.message ?? "Agents API turn failed") : undefined;
+              ? (event.turn.error?.message ?? "Agents API turn failed")
+              : undefined;
             cancelled = event.type.endsWith(".cancelled");
           }
         }
@@ -218,7 +251,9 @@ export function createAgentsApiSession(options: {
         await events.return(undefined);
       }
       if (!rootTurn || !settled) {
-        throw new Error("Agents API stream closed before the root turn settled; reset or inspect the session before retrying");
+        throw new Error(
+          "Agents API stream closed before the root turn settled; reset or inspect the session before retrying",
+        );
       }
       if (turnFailure) {
         throw new Error(turnFailure);

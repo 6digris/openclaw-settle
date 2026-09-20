@@ -48,7 +48,10 @@ export function createAgentsApiMessageProjection(
         }
         const parts = texts.get(event.item.id);
         if (event.item.phase !== "commentary" && parts) {
-          emitAssistantSnapshot(`agentsapi:${remoteSessionId}:${event.item.id}`, joinTextParts(parts));
+          emitAssistantSnapshot(
+            `agentsapi:${remoteSessionId}:${event.item.id}`,
+            joinTextParts(parts),
+          );
         }
       }
       if (
@@ -86,7 +89,15 @@ export function createAgentsApiMessageProjection(
       items: AgentsApiItem[],
       assertCurrent: () => void,
     ): Promise<void> {
-      return commitAgentsApiReply(params, remoteSessionId, turn, items, assertCurrent, reply, complete);
+      return commitAgentsApiReply(
+        params,
+        remoteSessionId,
+        turn,
+        items,
+        assertCurrent,
+        reply,
+        complete,
+      );
     },
   };
 }

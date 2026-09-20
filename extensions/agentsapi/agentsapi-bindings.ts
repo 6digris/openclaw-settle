@@ -1,10 +1,8 @@
-import {
-  createNativeSessionBindingLifecycle,
-} from "openclaw/plugin-sdk/agent-harness-session-runtime";
 import type {
   AgentHarnessSessionDeletionMutation,
   AgentHarnessSessionDeletionParams,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { createNativeSessionBindingLifecycle } from "openclaw/plugin-sdk/agent-harness-session-runtime";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { z } from "zod";
 
@@ -26,7 +24,7 @@ export function createAgentsApiBindings(runtime: PluginRuntime) {
       renewIntervalMs: 21_000,
     },
     // Reset removes the old binding; keep an empty row only until its lease releases.
-    releaseTtlMs: (_key, current) => current.sessionId ? undefined : 1,
+    releaseTtlMs: (_key, current) => (current.sessionId ? undefined : 1),
     errors: {
       atomicUpdatesRequired: "Agents API bindings require atomic plugin-state updates",
       invalidRow: (key) => new Error(`Invalid Agents API binding row: ${key}`),
@@ -41,7 +39,10 @@ export function createAgentsApiBindings(runtime: PluginRuntime) {
   });
   const acquisition = (assertCurrent: () => void) => ({
     assertCurrent,
-    prepareLease: (current: StoredBinding | undefined, lease: NonNullable<StoredBinding["lease"]>) => ({
+    prepareLease: (
+      current: StoredBinding | undefined,
+      lease: NonNullable<StoredBinding["lease"]>,
+    ) => ({
       ...current,
       lease,
     }),
@@ -55,56 +56,90 @@ export function createAgentsApiBindings(runtime: PluginRuntime) {
     async withSession<T>(
       localSessionId: string,
       assertCurrent: () => void,
-      run: (binding: AgentsApiBinding | undefined, bind: (binding: AgentsApiBinding) => Promise<void>) => Promise<T>,
+      run: (
+        binding: AgentsApiBinding | undefined,
+        bind: (binding: AgentsApiBinding) => Promise<void>,
+      ) => Promise<T>,
     ): Promise<T> {
-      return await lifecycle.withMutation(() => lifecycle.withLease(localSessionId, async () => {
-        assertCurrent();
-        let active = true;
-        const bind = async (binding: AgentsApiBinding) => {
-          assertCurrent();
-          if (!active || !lifecycle.hasLease(localSessionId)) {
-            throw new Error("Agents API binding operation is no longer active");
-          }
-          const validated = bindingSchema.parse(binding);
-          await lifecycle.transact(localSessionId, (current) => ({
-            next: { ...validated, ...(current?.lease ? { lease: current.lease } : {}) },
-            result: undefined,
-          }), undefined, assertCurrent);
-          assertCurrent();
-        };
-        try {
-          return await run(nativeBinding(readRecord(state.lookup(localSessionId))), bind);
-        } finally {
-          active = false;
-        }
-      }, acquisition(assertCurrent)));
+      return await lifecycle.withMutation(() =>
+        lifecycle.withLease(
+          localSessionId,
+          async () => {
+            assertCurrent();
+            let active = true;
+            const bind = async (binding: AgentsApiBinding) => {
+              assertCurrent();
+              if (!active || !lifecycle.hasLease(localSessionId)) {
+                throw new Error("Agents API binding operation is no longer active");
+              }
+              const validated = bindingSchema.parse(binding);
+              await lifecycle.transact(
+                localSessionId,
+                (current) => ({
+                  next: { ...validated, ...(current?.lease ? { lease: current.lease } : {}) },
+                  result: undefined,
+                }),
+                undefined,
+                assertCurrent,
+              );
+              assertCurrent();
+            };
+            try {
+              return await run(nativeBinding(readRecord(state.lookup(localSessionId))), bind);
+            } finally {
+              active = false;
+            }
+          },
+          acquisition(assertCurrent),
+        ),
+      );
     },
     async reset(localSessionId: string, assertCurrent: () => void): Promise<void> {
-      await lifecycle.withMutation(() => lifecycle.withLease(localSessionId, async () => {
-        await lifecycle.transact(localSessionId, (current) => ({
-          next: current?.lease ? { lease: current.lease } : {},
-          result: undefined,
-        }), undefined, assertCurrent);
-      }, acquisition(assertCurrent)));
+      await lifecycle.withMutation(() =>
+        lifecycle.withLease(
+          localSessionId,
+          async () => {
+            await lifecycle.transact(
+              localSessionId,
+              (current) => ({
+                next: current?.lease ? { lease: current.lease } : {},
+                result: undefined,
+              }),
+              undefined,
+              assertCurrent,
+            );
+          },
+          acquisition(assertCurrent),
+        ),
+      );
     },
     async withSessionDeletion<T>(
       params: AgentHarnessSessionDeletionParams,
       run: (mutation: AgentHarnessSessionDeletionMutation) => Promise<T>,
     ): Promise<T> {
-      return await lifecycle.withDeletion(params.sessionId, {
-        ...acquisition(params.assertCurrent),
-        assertRecordCurrent: () => params.assertCurrent(),
-      }, (_binding, mutation) => run(mutation));
+      return await lifecycle.withDeletion(
+        params.sessionId,
+        {
+          ...acquisition(params.assertCurrent),
+          assertRecordCurrent: () => params.assertCurrent(),
+        },
+        (_binding, mutation) => run(mutation),
+      );
     },
   };
 }
 
-const bindingSchema = z.object({ sessionId: z.string().min(1), authFingerprint: z.string().min(1) });
-const storedBindingSchema = z.object({
-  sessionId: z.string().min(1).optional(),
-  authFingerprint: z.string().min(1).optional(),
-  lease: z.object({ token: z.string().min(1), expiresAt: z.number().finite() }).optional(),
-}).refine((row) => (row.sessionId === undefined) === (row.authFingerprint === undefined));
+const bindingSchema = z.object({
+  sessionId: z.string().min(1),
+  authFingerprint: z.string().min(1),
+});
+const storedBindingSchema = z
+  .object({
+    sessionId: z.string().min(1).optional(),
+    authFingerprint: z.string().min(1).optional(),
+    lease: z.object({ token: z.string().min(1), expiresAt: z.number().finite() }).optional(),
+  })
+  .refine((row) => (row.sessionId === undefined) === (row.authFingerprint === undefined));
 type StoredBinding = z.infer<typeof storedBindingSchema>;
 
 function readRecord(raw: unknown): StoredBinding | undefined {

@@ -28,19 +28,37 @@ describe("Agents API native session receipts", () => {
       if (request.url.includes("/events?")) {
         return guardedResponse(request.url, stream.response(request.signal));
       }
-      return guardedResponse(request.url, Response.json({ data: [], has_more: false, last_id: null }));
+      return guardedResponse(
+        request.url,
+        Response.json({ data: [], has_more: false, last_id: null }),
+      );
     });
     const session = createSession(controller.signal, stream.observe);
     const submitted = deferred<void>();
-    const result = session.run("Fixture prompt", async () => {}, () => submitted.resolve());
+    const result = session.run(
+      "Fixture prompt",
+      async () => {},
+      () => submitted.resolve(),
+    );
     await submitted.promise;
 
-    await stream.send({ type: "agent.session.turn.created", turn: { id: "turn-fixture", subagent_id: null } });
-    await stream.send({ type: "agent.session.turn.completed", turn: { id: "turn-fixture", subagent_id: null } });
+    await stream.send({
+      type: "agent.session.turn.created",
+      turn: { id: "turn-fixture", subagent_id: null },
+    });
+    await stream.send({
+      type: "agent.session.turn.completed",
+      turn: { id: "turn-fixture", subagent_id: null },
+    });
     expect(session.isSettled()).toBe(false);
 
     await stream.send({ type: "agent.session.idle" });
-    await stream.send({ type: "agent.session.turn.output_text.done", item_id: "assistant-fixture", content_index: 0, text: "Fixture reply" });
+    await stream.send({
+      type: "agent.session.turn.output_text.done",
+      item_id: "assistant-fixture",
+      content_index: 0,
+      text: "Fixture reply",
+    });
     expect(session.isSettled()).toBe(false);
 
     await stream.send({
@@ -67,7 +85,8 @@ describe("Agents API native session receipts", () => {
     fetchWithSsrFGuardMock.mockImplementation(async (request) => {
       request.beforeRequest?.();
       if (request.init?.method === "POST") {
-        const payload = z.object({ events: z.array(z.object({ type: z.string() })) })
+        const payload = z
+          .object({ events: z.array(z.object({ type: z.string() })) })
           .parse(await new Request(request.url, request.init).json());
         const inputType = payload.events[0]?.type;
         if (!inputType) {
@@ -82,7 +101,10 @@ describe("Agents API native session receipts", () => {
         return guardedResponse(request.url, Response.json({}));
       }
       if (request.url.includes("/turns?")) {
-        return guardedResponse(request.url, Response.json({ data: [], has_more: false, last_id: null }));
+        return guardedResponse(
+          request.url,
+          Response.json({ data: [], has_more: false, last_id: null }),
+        );
       }
       if (request.url.includes("/events?")) {
         return guardedResponse(request.url, stream.response(request.signal));
@@ -91,13 +113,19 @@ describe("Agents API native session receipts", () => {
       return guardedResponse(request.url, await idleReceipt.promise);
     });
     const session = createSession(controller.signal, stream.observe);
-    const run = session.run("Fixture prompt", async () => {}, () => {});
+    const run = session.run(
+      "Fixture prompt",
+      async () => {},
+      () => {},
+    );
     void run.catch(() => {});
     await messageRequested.promise;
     const interruption = new Error("Host interruption");
     controller.abort(interruption);
     let cancellationSettled = false;
-    const cancellation = session.cancel().then(() => { cancellationSettled = true; });
+    const cancellation = session.cancel().then(() => {
+      cancellationSettled = true;
+    });
 
     expect(messageSignal?.aborted).toBe(false);
     expect(inputTypes).toEqual(["agent.session.input.message"]);
@@ -145,7 +173,9 @@ function guardedResponse(url: string, response: Response) {
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((settle) => { resolve = settle; });
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
   return { promise, resolve };
 }
 
@@ -163,7 +193,9 @@ function createEventStream() {
           signal?.addEventListener("abort", abort, { once: true });
           detachAbort = () => signal?.removeEventListener("abort", abort);
         },
-        cancel() { detachAbort(); },
+        cancel() {
+          detachAbort();
+        },
       });
       return new Response(body, { headers: { "Content-Type": "text/event-stream" } });
     },
@@ -178,6 +210,8 @@ function createEventStream() {
       streamController.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
       return observed.promise;
     },
-    observe(event: AgentsApiEvent) { waiters.get(event.type)?.shift()?.(); },
+    observe(event: AgentsApiEvent) {
+      waiters.get(event.type)?.shift()?.();
+    },
   };
 }
