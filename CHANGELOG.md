@@ -2,6 +2,16 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.7.35
+
+### Fixes
+
+- **Doctor plugin registry:** preserve the complete bundled plugin inventory when Doctor creates or repairs registry state, so default Browser, Canvas, pairing, file-transfer, phone-control, Talk voice, and Bonjour plugins remain available after restart. State-migration discovery now also recovers from the partial registry written by 2026.7.34 while retaining external plugin install records. Backported from #136045. Thanks @wangmiao0668000666.
+
+### Complete contribution record
+
+This extended-stable follow-up was selected from a complete 1,418-commit audit after the prior 2026.7.34 audit cursor. No other defect observed during clean install or the 2026.6.35 upgrade required a July-line backport.
+
 ## 2026.7.34
 
 ### Highlights

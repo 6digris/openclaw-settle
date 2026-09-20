@@ -11,6 +11,7 @@ import type {
   PluginStateKeyedStore,
 } from "../plugin-state/plugin-state-store.js";
 import type { DoctorSessionRouteStateOwner } from "./doctor-session-route-state-owner-types.js";
+import { loadInstalledPluginIndexInstallRecordsSync } from "./installed-plugin-index-records.js";
 import type { PluginManifestRegistry } from "./manifest-registry.js";
 import {
   createPluginModuleLoaderCache,
@@ -367,12 +368,15 @@ function loadPluginDoctorContractEntry(
   };
 }
 
-function resolvePluginDoctorContracts(params?: {
-  config?: OpenClawConfig;
-  workspaceDir?: string;
-  env?: NodeJS.ProcessEnv;
-  pluginIds?: readonly string[];
-}): PluginDoctorContractEntry[] {
+function resolvePluginDoctorContracts(
+  params?: {
+    config?: OpenClawConfig;
+    workspaceDir?: string;
+    env?: NodeJS.ProcessEnv;
+    pluginIds?: readonly string[];
+  },
+  options: { completeInventory?: boolean } = {},
+): PluginDoctorContractEntry[] {
   const env = params?.env ?? process.env;
   if (params?.pluginIds && params.pluginIds.length === 0) {
     return [];
@@ -383,6 +387,12 @@ function resolvePluginDoctorContracts(params?: {
     workspaceDir: params?.workspaceDir,
     env,
     includeDisabled: true,
+    ...(options.completeInventory
+      ? {
+          preferPersisted: false,
+          installRecords: loadInstalledPluginIndexInstallRecordsSync({ env }),
+        }
+      : {}),
   });
 
   const entries: PluginDoctorContractEntry[] = [];
@@ -474,7 +484,7 @@ export function listPluginDoctorStateMigrationEntries(params?: {
   env?: NodeJS.ProcessEnv;
   pluginIds?: readonly string[];
 }): PluginDoctorStateMigrationEntry[] {
-  return resolvePluginDoctorContracts(params).flatMap((entry) =>
+  return resolvePluginDoctorContracts(params, { completeInventory: true }).flatMap((entry) =>
     entry.stateMigrations.map((migration) => ({
       pluginId: entry.pluginId,
       migration,

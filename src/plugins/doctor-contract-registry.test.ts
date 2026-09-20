@@ -20,6 +20,7 @@ let collectRelevantDoctorPluginIdsForTouchedPaths: typeof import("./doctor-contr
 let listPluginDoctorLegacyConfigRules: typeof import("./doctor-contract-registry.js").listPluginDoctorLegacyConfigRules;
 let listPluginDoctorSessionRouteStateOwners: typeof import("./doctor-contract-registry.js").listPluginDoctorSessionRouteStateOwners;
 let listPluginDoctorSessionStoreAgentIds: typeof import("./doctor-contract-registry.js").listPluginDoctorSessionStoreAgentIds;
+let listPluginDoctorStateMigrationEntries: typeof import("./doctor-contract-registry.js").listPluginDoctorStateMigrationEntries;
 let setPluginDoctorContractRegistryModuleLoaderFactoryForTest:
   | typeof import("./doctor-contract-registry.js").setPluginDoctorContractRegistryModuleLoaderFactoryForTest
   | undefined;
@@ -53,6 +54,7 @@ describe("doctor-contract-registry module loader", () => {
       listPluginDoctorLegacyConfigRules,
       listPluginDoctorSessionRouteStateOwners,
       listPluginDoctorSessionStoreAgentIds,
+      listPluginDoctorStateMigrationEntries,
       setPluginDoctorContractRegistryModuleLoaderFactoryForTest,
     } = await import("./doctor-contract-registry.js"));
     setPluginDoctorContractRegistryModuleLoaderFactoryForTest(mocks.createJiti);
@@ -215,6 +217,40 @@ describe("doctor-contract-registry module loader", () => {
         authProfilePrefixes: ["demo:"],
       },
     ]);
+  });
+
+  it("finds state migrations omitted from a partial persisted plugin inventory", () => {
+    const pluginRoot = makeTempDir();
+    fs.writeFileSync(
+      path.join(pluginRoot, "doctor-contract-api.cjs"),
+      "module.exports = { stateMigrations: [{ id: 'demo-state', label: 'Demo state', detectLegacyState: () => null, migrateLegacyState: () => ({ changes: [], warnings: [] }) }] };\n",
+      "utf-8",
+    );
+    mocks.loadPluginManifestRegistry.mockImplementation((params: { preferPersisted?: boolean }) =>
+      params.preferPersisted === false
+        ? {
+            plugins: [{ id: "omitted-plugin", rootDir: pluginRoot }],
+            diagnostics: [],
+          }
+        : { plugins: [], diagnostics: [] },
+    );
+
+    const entries = listPluginDoctorStateMigrationEntries({
+      env: { OPENCLAW_STATE_DIR: makeTempDir() },
+    });
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      pluginId: "omitted-plugin",
+      migration: { id: "demo-state", label: "Demo state" },
+    });
+    expect(mocks.loadPluginManifestRegistry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        includeDisabled: true,
+        preferPersisted: false,
+        installRecords: {},
+      }),
+    );
   });
 
   it("loads config-derived session-store agent IDs from doctor contract modules", () => {
