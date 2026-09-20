@@ -28,7 +28,6 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/worktrees/service.orphans.test.ts",
   "src/agents/worktrees/service.profiles.test.ts",
   "src/agents/worktrees/service.test.ts",
-  "src/gateway/talk/handlers/client-native-actions.test.ts",
   "src/agents/cli-runner/history-boundary.test.ts",
   "src/agents/cli-runner/session-history.test.ts",
   "src/agents/cli-runner/session-history.async.test.ts",
