@@ -3,12 +3,13 @@
 // Node >=24: node --experimental-vm-modules --test this-file.mjs
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import { createRequire, stripTypeScriptTypes } from "node:module";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import vm from "node:vm";
+import { transform } from "esbuild";
 import { createDiskSwap } from "./update-restart-swap-fixture.mjs";
 
 const sourceRoot = path.resolve(
@@ -76,7 +77,6 @@ async function fixture({
   const opts = { json: true, yes: true, run };
   const assertCurrent = () => run.executorFence.assertCurrent();
   const restartContext = {
-    restartScriptPath: null,
     refreshGatewayServiceEnv: false,
     gatewayServiceEnv: {},
     gatewayServiceInstallEnv: null,
@@ -253,9 +253,12 @@ async function fixture({
   // no function extraction, production-body rewrites, or replacement outcome logic.
   for (const name of realNames) {
     const filename = path.join(sourceRoot, "src/cli/update-cli", name + ".ts");
-    const code = stripTypeScriptTypes(await fs.readFile(filename, "utf8"), {
-      mode: "transform",
-      sourceUrl: filename,
+    const { code } = await transform(await fs.readFile(filename, "utf8"), {
+      loader: "ts",
+      format: "esm",
+      target: "esnext",
+      sourcefile: filename,
+      tsconfigRaw: { compilerOptions: { verbatimModuleSyntax: true } },
     });
     const mod = new vm.SourceTextModule(code, { context, identifier: filename });
     modules.set(path.basename(name) + ".js", mod);

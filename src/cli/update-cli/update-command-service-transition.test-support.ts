@@ -1,16 +1,22 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import { Command } from "commander";
 import { expect, it, vi, type Mock } from "vitest";
+import { readConfigFileSnapshot } from "../../config/config.js";
 import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
 import { gatewayHealthResponse } from "../../gateway/health-response.test-support.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
+import * as processSpawner from "../../process/exec-spawn.js";
 import { runExec } from "../../process/exec.js";
 import { defaultRuntime } from "../../runtime.js";
 import { VERSION } from "../../version.js";
 import { runDaemonRestart } from "../daemon-cli/lifecycle.js";
+import { addGatewayServiceCommands } from "../daemon-cli/register-service-commands.js";
 import * as startRepair from "../daemon-cli/start-repair.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import { runUpdateFinalizationDoctorInFreshProcess } from "./update-command-fresh-doctor.js";
+import { prepareUpdateRestart } from "./update-command-restart-context.js";
 import { runUpdatedInstallGatewayCommand } from "./update-command-service-command.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
 import { readyRecoveryHealth } from "./update-command-service-recovery.test-support.js";
@@ -33,7 +39,6 @@ export type InstallRootTransitionFixture = {
     >;
     child: Mock<typeof import("../../process/exec.js").runCommandWithTimeout>;
     health: Mock<typeof import("../daemon-cli/restart-health.js").waitForGatewayHealthyRestart>;
-    script: Mock;
     configSnapshot: Mock;
   };
 };
@@ -140,12 +145,6 @@ export function registerInstallRootTransitionTests(getFixture: () => InstallRoot
           gatewayBootId: "service-boot",
           portUsage: { port, status: "busy", listeners: [], hints: [] },
         }));
-        mocks.script.mockImplementation(async () => {
-          mocks.events.push("restart managed service");
-          mocks.running = true;
-          servingBuildId = "target-build";
-          return true;
-        });
       }
       mocks.child.mockImplementation(async (argv) => {
         expect(argv).toContain(replacementEntry);
@@ -170,6 +169,11 @@ export function registerInstallRootTransitionTests(getFixture: () => InstallRoot
           if (scenario === "Git already serves target build") {
             servingBuildId = "target-build";
           }
+        } else {
+          expect(argv).toContain("restart");
+          expect(argv).toContain("--preserve-definition");
+          mocks.events.push("restart managed service");
+          servingBuildId = "target-build";
         }
         mocks.running = true;
         return {
@@ -199,7 +203,6 @@ export function registerInstallRootTransitionTests(getFixture: () => InstallRoot
         refreshServiceEnv: true,
         serviceUpdateVerdict: verdict,
         serviceEnv: state.env,
-        restartScriptPath: mode === "git" ? path.join(root, "restart-service.sh") : undefined,
         gatewayPort: 19305,
         requireRunningServiceAfterRestart: true,
         timeoutMs: 1000,
@@ -247,6 +250,101 @@ export function registerRestartOutcomeTests(
     };
   },
 ) {
+  it.each([false, true])(
+    "uses the native restart owner after preparing a writable unknown-version target (revoked=%s)",
+    async (revoked) => {
+      const { root, run, mocks } = getFixture();
+      vi.spyOn(os, "tmpdir").mockReturnValue(root);
+      const unownedSpawn = vi
+        .spyOn(processSpawner, "spawnCommand")
+        .mockRejectedValue(new Error("Unowned native restart refused"));
+      mocks.capability.mockResolvedValue({ kind: "writable" });
+      const before = await maybeStopManagedServiceBeforeMutableUpdate({
+        updateInstallKind: "package",
+        root,
+        shouldRestart: true,
+        jsonMode: true,
+      });
+      const result: UpdateRunResult = {
+        status: "ok",
+        mode: "npm",
+        root,
+        steps: [],
+        durationMs: 0,
+      };
+      const prepared = await prepareUpdateRestart(
+        {
+          root,
+          result,
+          preManagedServiceStop: before,
+          shouldRestart: true,
+          updateStepTimeoutMs: 1_000,
+        },
+        await readConfigFileSnapshot(),
+      );
+      expect(prepared.refreshGatewayServiceEnv).toBe(true);
+      let current = true;
+      const executorFence = {
+        assertCurrent() {
+          if (!current) {
+            throw new Error("Original update owner revoked");
+          }
+        },
+      };
+      mocks.configSnapshot.mockImplementationOnce(async () => {
+        current = !revoked;
+      });
+      mocks.child.mockImplementation(async (argv) => {
+        if (argv.includes("restart")) {
+          const program = new Command().exitOverride();
+          addGatewayServiceCommands(program.command("gateway"));
+          await program.parseAsync(argv.slice(2), { from: "user" });
+        } else {
+          expect(argv).toContain("install");
+        }
+        return {
+          code: 0,
+          stdout: argv.includes("restart")
+            ? JSON.stringify(mocks.writeJson.mock.lastCall?.[0])
+            : JSON.stringify({ action: "install", ok: true }),
+          stderr: "",
+          signal: null,
+          killed: false,
+          termination: "exit",
+        };
+      });
+      const onVerified = vi.fn();
+      const activation = maybeRestartService({
+        ...prepared,
+        shouldRestart: true,
+        result,
+        opts: { json: true, run: { ...run, executorFence } },
+        refreshServiceEnv: prepared.refreshGatewayServiceEnv,
+        serviceEnv: prepared.gatewayServiceEnv,
+        serviceInstallEnv: prepared.gatewayServiceInstallEnv,
+        timeoutMs: 1_000,
+        onVerified,
+      });
+      if (revoked) {
+        await expect(activation).rejects.toThrow("Original update owner revoked");
+        expect(mocks.restart).not.toHaveBeenCalled();
+        expect(onVerified).not.toHaveBeenCalled();
+        expect(result.steps).toEqual([]);
+      } else {
+        await expect(activation).resolves.toBe("ok");
+        expect(mocks.restart).toHaveBeenCalledOnce();
+        expect(onVerified).toHaveBeenCalledOnce();
+        expect(result.steps).toContainEqual(
+          expect.objectContaining({ name: "gateway verification", exitCode: 0 }),
+        );
+      }
+      expect(unownedSpawn).not.toHaveBeenCalled();
+      expect(mocks.child.mock.calls.map(([argv]) => argv[3])).toEqual(
+        revoked ? ["install"] : ["install", "restart"],
+      );
+    },
+  );
+
   it.each([
     ["preserved health", "restart-health-failed"],
     ["native refusal", "failed"],

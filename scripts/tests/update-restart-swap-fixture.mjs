@@ -2,10 +2,11 @@
 // real swap/integrity/retirement owners, not a packaged CLI or service supervisor.
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import { createRequire, stripTypeScriptTypes } from "node:module";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import vm from "node:vm";
+import { transform } from "esbuild";
 
 export async function createDiskSwap(sourceRoot, base) {
   const require = createRequire(
@@ -60,9 +61,12 @@ export async function createDiskSwap(sourceRoot, base) {
     external = new Map();
   for (const name of files) {
     const filename = path.join(sourceRoot, "src", name + ".ts");
-    const code = stripTypeScriptTypes(await fs.readFile(filename, "utf8"), {
-      mode: "transform",
-      sourceUrl: filename,
+    const { code } = await transform(await fs.readFile(filename, "utf8"), {
+      loader: "ts",
+      format: "esm",
+      target: "esnext",
+      sourcefile: filename,
+      tsconfigRaw: { compilerOptions: { verbatimModuleSyntax: true } },
     });
     modules.set(
       path.basename(name) + ".js",
