@@ -4548,6 +4548,14 @@ process.on("uncaughtExceptionMonitor", (error) => {
         const dependencyEnv = {
           ...env,
           CI: "true",
+          // Reuse the prepared package manager, not the fixture's empty home cache.
+          COREPACK_HOME:
+            process.env.COREPACK_HOME ||
+            path.join(
+              process.env.XDG_CACHE_HOME || path.join(homedir(), ".cache"),
+              "node",
+              "corepack",
+            ),
           PATH: [path.dirname(process.execPath), env.PATH].join(path.delimiter),
           PNPM_CONFIG_STORE_DIR: path.join(root, "dependency-store"),
           PNPM_CONFIG_CACHE_DIR: path.join(root, "dependency-cache"),
