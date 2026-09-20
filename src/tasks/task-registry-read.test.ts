@@ -621,7 +621,7 @@ describe("task registry read preparation", () => {
     });
   });
 
-  it("joins the accepted coalescing batches without waiting for a later terminal event", async () => {
+  it.each([1, 8])("prepares %i readers through a fixed event fence", async (readers) => {
     await withReadState(async () => {
       const task = createReadTask("finite-read-fence");
       const firstEntered = createDeferred();
@@ -653,7 +653,9 @@ describe("task registry read preparation", () => {
         emitTool(task.runId!, "first");
         await firstEntered.promise;
         emitTool(task.runId!, "before-read");
-        const prepared = prepareTaskRegistryRead();
+        const prepared = Promise.all(
+          Array.from({ length: readers }, () => prepareTaskRegistryRead()),
+        );
         for (let index = 0; index < 20; index += 1) {
           emitTool(task.runId!, `coalesced-${index}`);
         }
@@ -664,15 +666,18 @@ describe("task registry read preparation", () => {
         });
         releaseFirst.resolve();
         await terminalEntered.promise;
-        const read = expectDefined(
-          await withTestTimeout(prepared, 5_000, "Read joined a later batch"),
-          "prepared task read",
-        );
-        expect(read.getTaskById(task.taskId)).toMatchObject({
-          status: "running",
-          toolUseCount: 22,
-          lastToolName: "coalesced-19",
-        });
+        for (const preparedRead of await withTestTimeout(
+          prepared,
+          5_000,
+          "Read joined a later batch",
+        )) {
+          const read = expectDefined(preparedRead, "prepared task read");
+          expect(read.getTaskById(task.taskId)).toMatchObject({
+            status: "running",
+            toolUseCount: 22,
+            lastToolName: "coalesced-19",
+          });
+        }
         expect(published).toContain("coalesced-19");
         expect(calls).toBe(3);
       } finally {

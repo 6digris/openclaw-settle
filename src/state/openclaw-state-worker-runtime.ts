@@ -7,6 +7,7 @@ import {
   listNativeHookRelayBridgeSnapshotsInDatabase,
 } from "../agents/harness/native-hook-relay-store.kernel.js";
 import { executeNativeHookRelayMutation } from "../agents/harness/native-hook-relay-store.worker.js";
+import { writeSubagentRunValuesInDatabase } from "../agents/subagents/registry/subagent-registry.store.kernel.js";
 import { listRegistryWorktreesInDatabase } from "../agents/worktrees/registry-read.kernel.js";
 import { listAuditEventsInDatabase } from "../audit/audit-event-read.kernel.js";
 import { executeAuditWriterCommand } from "../audit/audit-event-writer.worker.js";
@@ -39,6 +40,7 @@ import { countFailedDeliveryQueueEntriesInDatabase } from "../infra/delivery-que
 import * as deviceAuth from "../infra/device-auth-store.kernel.js";
 import { executeDeliveryQueueAck } from "../infra/outbound/delivery-queue-ack.worker.js";
 import { executeDeliveryQueueEnqueue } from "../infra/outbound/delivery-queue-enqueue.worker.js";
+import { executePendingDeliveryFailure } from "../infra/outbound/delivery-queue-pending-failure.worker.js";
 import { executePromotionCommand } from "../infra/promotions-feed.worker.js";
 import {
   readApnsRegistrationFromDatabase,
@@ -52,6 +54,7 @@ import {
   readStableSqliteFileGeneration,
   sameSqliteFileGeneration,
 } from "../infra/sqlite-file-generation.js";
+import { deferSqlitePostCommitPublication } from "../infra/sqlite-post-commit.js";
 import type { SqliteWorkerCommand } from "../infra/sqlite-worker-contract.js";
 import { requestSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
 import { getSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
@@ -60,6 +63,7 @@ import {
   persistTelemetrySuccessInDatabase,
   readTelemetryStateInWorker,
 } from "../infra/telemetry-store.kernel.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { readRemoteModelCatalog } from "../model-catalog/remote-store.js";
 import { isPluginStateWorkerCommand } from "../plugin-state/plugin-state-worker-contract.js";
 import { executePluginStateCommand } from "../plugin-state/plugin-state.worker.js";
@@ -98,6 +102,8 @@ import {
 import { ensureAgentProvenanceSchema } from "./agent-provenance.schema.js";
 import { recordBackupRunInDatabase } from "./backup-run-records.kernel.js";
 import { readConfigMachineState } from "./config-machine-state.js";
+import { isOnboardingRecommendationWriteCommand } from "./onboarding-recommendations.contract.js";
+import { executeOnboardingRecommendationCommand } from "./onboarding-recommendations.kernel.js";
 import { executeAgentDatabaseCleanupCommand } from "./openclaw-agent-execution-cleanup.worker.js";
 import type { OpenClawStateDatabase } from "./openclaw-state-db-contract.js";
 import { assertOpenClawStateDatabaseOwner } from "./openclaw-state-db-maintenance.js";
@@ -122,10 +128,12 @@ type Operations = OpenClawStateWorkerOperations &
   OpenClawStateWorkerInspectionOperations &
   OpenClawStateWorkerCleanupOperations;
 
+const log = createSubsystemLogger("state/worker");
+
 export function executeSharedStateCommand(
   command: Exclude<
     SqliteWorkerCommand<Operations>,
-    { type: "plugins.metadata.read" | "database.inspectIdle" }
+    { type: "plugins.metadata.read" | "database.inspectIdle" | "stateLease.acquire" }
   >,
   context: { databasePath: string },
   open: () => OpenClawStateDatabase,
@@ -306,6 +314,13 @@ export function executeSharedStateCommand(
       readStableSqliteFileGeneration(context.databasePath),
     );
   }
+  if (isOnboardingRecommendationWriteCommand(command)) {
+    return executeOnboardingRecommendationCommand(command, {
+      database: open(),
+      path: context.databasePath,
+      env: getSqliteWorkerStateContext().environment,
+    });
+  }
   if (command.type === "userPreferences.read" || command.type === "userPreferences.write") {
     return executeUserPreferenceCommand(command, {
       database: open(),
@@ -460,6 +475,9 @@ export function executeSharedStateCommand(
   if (command.type === "deliveryQueue.ack") {
     return executeDeliveryQueueAck(command.input, writeOptions);
   }
+  if (command.type === "deliveryQueue.failPending") {
+    return executePendingDeliveryFailure(command.input, writeOptions);
+  }
   if (command.type === "skillUploads.commit") {
     return commitSkillUploadInDatabase(command.input, writeOptions);
   }
@@ -567,6 +585,26 @@ export function executeSharedStateCommand(
       }
       throw error;
     }
+  }
+  if (command.type === "subagents.persistChanges") {
+    const { writeId, values, deleteRunIds } = command.input;
+    let committed = false;
+    try {
+      runOpenClawStateWriteTransaction((writer) => {
+        requestSqliteWorkerOperationAdmission({ stage: "transaction", facts: writeId });
+        writeSubagentRunValuesInDatabase(writer, values, deleteRunIds);
+        requestSqliteWorkerOperationAdmission({ stage: "commit", facts: writeId });
+        deferSqlitePostCommitPublication(writer.db, () => {
+          committed = true;
+        });
+      }, writeOptions);
+    } catch (error) {
+      if (!committed) {
+        throw error;
+      }
+      log.warn("Subagent registry write committed before cleanup failed", { error });
+    }
+    return { writeId };
   }
   if (command.type === "backup.recordOutcome") {
     return runOpenClawStateWriteTransaction(

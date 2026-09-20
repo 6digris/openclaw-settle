@@ -586,13 +586,17 @@ it("closes only the operation matching a state path while its sibling finishes n
   expect(mock.closePool).toHaveBeenCalledOnce();
 });
 
-it.each(["fleet.get", "userProfiles.avatar.reconcile"] as const)(
+it.each(["fleet.get", "userProfiles.avatar.reconcile", "onboardingRecommendations.read"] as const)(
   "captures and charges the retained UTF-8 selector while dispatch waits (%s)",
   async (type) => {
     const { options } = source();
     const selector = "租户🦞".repeat(512);
     const command =
-      type === "fleet.get" ? { type, tenantId: selector } : { type, profileId: selector };
+      type === "fleet.get"
+        ? { type, tenantId: selector }
+        : type === "userProfiles.avatar.reconcile"
+          ? { type, profileId: selector }
+          : { type, configKey: selector };
     const expected = { ...command };
     const dispatch = createDeferredCore();
     const task = queueTask(dispatch.promise);
@@ -601,14 +605,18 @@ it.each(["fleet.get", "userProfiles.avatar.reconcile"] as const)(
     const originalRoot = options.env.OPENCLAW_STATE_DIR;
     if (command.type === "fleet.get") {
       command.tenantId = "different tenant after admission";
-    } else {
+    } else if (command.type === "userProfiles.avatar.reconcile") {
       command.profileId = "different profile after admission";
+    } else {
+      command.configKey = "different key after admission";
     }
     options.env.OPENCLAW_STATE_DIR = path.join(originalRoot, "different");
     const returned: OpenClawStateReadReply =
       type === "fleet.get"
         ? { ok: true, type, sourceAdmitted: true, cell: undefined }
-        : { ok: true, type, sourceAdmitted: true, profile: undefined };
+        : type === "userProfiles.avatar.reconcile"
+          ? { ok: true, type, sourceAdmitted: true, profile: undefined }
+          : { ok: true, type, sourceAdmitted: true, record: null };
     try {
       expect(Number.isSafeInteger(submitted.inputBytes)).toBe(true);
       expect(submitted.inputBytes).toBeGreaterThanOrEqual(Buffer.byteLength(selector));
