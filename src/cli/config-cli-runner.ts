@@ -427,6 +427,18 @@ export async function runConfigOperations(params: {
           arrayIndex,
         );
         explicitSetPaths = remapSuppliedPathsAfterDelete(explicitSetPaths, writePath, arrayIndex);
+        // Validation follows surviving values after a splice, too. Keep removed
+        // operations in history for deletion policy and preview counts.
+        for (const applied of appliedOperations) {
+          const [survivingPath] = remapSuppliedPathsAfterDelete(
+            [applied.setPath],
+            writePath,
+            arrayIndex,
+          );
+          if (survivingPath) {
+            applied.setPath = survivingPath;
+          }
+        }
       }
       continue;
     }

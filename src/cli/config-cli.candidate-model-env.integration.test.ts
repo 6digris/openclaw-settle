@@ -6,7 +6,10 @@ import {
   resolveConfiguredModelRef,
 } from "../agents/model-selection-shared.js";
 import { captureEnv, deleteTestEnvValue, setTestEnvValue } from "../test-utils/env.js";
-import { useConfigCliIntegrationHarness } from "./config-cli.integration.test-harness.js";
+import {
+  createTestRuntime,
+  useConfigCliIntegrationHarness,
+} from "./config-cli.integration.test-harness.js";
 
 const catalog = vi.hoisted(() => ({ calls: vi.fn() }));
 
@@ -380,6 +383,78 @@ describe("config CLI candidate model environment", () => {
         );
         expect(fs.readFileSync(configPath, "utf8")).toBe(raw);
         expect(fs.existsSync(configPath + ".bak")).toBe(false);
+      });
+    },
+  );
+  it.each(
+    [false, true].flatMap((preview) =>
+      ["invalid-default", "invalid-agent", "valid", "discarded"].map((kind) => ({ preview, kind })),
+    ),
+  )(
+    "validates surviving model assignments after ordered deletion (preview=$preview, kind=$kind)",
+    async ({ preview, kind }) => {
+      const agentScoped = kind === "invalid-agent";
+      const model = {
+        primary: "fixture-model/allowed",
+        fallbacks: ["fixture-model/allowed", "fixture-model/allowed", "fixture-model/allowed"],
+      };
+      const raw = JSON.stringify({
+        agents: {
+          ownership: "explicit",
+          defaults: { model: agentScoped ? "fixture-model/allowed" : model },
+          entries: { main: {}, ...(agentScoped ? { ops: { model } } : {}) },
+        },
+      });
+      await withConfigFileHarness("config-ordered-model-delete-", raw, async ({ configPath }) => {
+        const { runConfigOperations } = await import("./config-cli-runner.js");
+        const prefix = agentScoped
+          ? ["agents", "entries", "ops", "model", "fallbacks"]
+          : ["agents", "defaults", "model", "fallbacks"];
+        const target = [...prefix, "2"];
+        const deleted = [...prefix, kind === "discarded" ? "2" : "0"];
+        const value = kind === "valid" ? "fixture-model/backup" : "fixture-model/not-available";
+        const { runtime, logs } = createTestRuntime();
+        catalog.calls.mockClear();
+        const outcome = runConfigOperations({
+          runtime,
+          options: { dryRun: preview },
+          successMode: "patch",
+          operations: [
+            { inputMode: "json", requestedPath: target, setPath: target, value },
+            {
+              inputMode: "unset",
+              requestedPath: deleted,
+              setPath: deleted,
+              value: undefined,
+              mutation: "delete",
+            },
+          ],
+        });
+        if (kind.startsWith("invalid")) {
+          await expect(outcome).rejects.toThrow("Cannot set model reference");
+          expect(catalog.calls).toHaveBeenCalledWith(value);
+          expect(fs.readFileSync(configPath, "utf8")).toBe(raw);
+          expect(fs.existsSync(configPath + ".bak")).toBe(false);
+          return;
+        }
+        await outcome;
+        if (kind === "discarded") {
+          expect(catalog.calls).not.toHaveBeenCalledWith(value);
+        } else {
+          expect(catalog.calls).toHaveBeenCalledWith(value);
+        }
+        if (preview) {
+          expect(logs.join("\n")).toContain("2 update(s)");
+          expect(fs.readFileSync(configPath, "utf8")).toBe(raw);
+          expect(fs.existsSync(configPath + ".bak")).toBe(false);
+        } else {
+          const saved = JSON.parse(fs.readFileSync(configPath, "utf8"));
+          expect(saved.agents.defaults.model.fallbacks).toEqual([
+            "fixture-model/allowed",
+            kind === "discarded" ? "fixture-model/allowed" : value,
+          ]);
+          expect(fs.readFileSync(configPath + ".bak", "utf8")).toBe(raw);
+        }
       });
     },
   );
