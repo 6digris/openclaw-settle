@@ -58,94 +58,93 @@ import {
 import { formatSessionArchiveReason } from "../../lib/sessions/session-archive-reason.ts";
 import { parseAgentSessionKey, parseSessionKeyParts } from "../../lib/sessions/session-key.ts";
 import { SESSIONS_PAGE_DEFAULT_LIMIT } from "../../lib/sessions/session-requests.ts";
-import { categoryDropHandlers, renderCategoryCell } from "./category-view.ts";
+import {
+  categoryDropHandlers,
+  renderCategoryCell,
+  type SessionCategoryViewProps,
+} from "./category-view.ts";
 import { renderTranscriptSearch, type TranscriptSearchProps } from "./transcript-search-view.ts";
 
-export type SessionsProps = TranscriptSearchProps & {
-  loading: boolean;
-  refreshing: boolean;
-  result: SessionsListResult | null;
-  error: string | null;
-  activeMinutes: string;
-  limit: string;
-  includeGlobal: boolean;
-  includeUnknown: boolean;
-  statusFilter: SessionArchivedFilter;
-  basePath: string;
-  agentId: string;
-  mainKey: string;
-  searchQuery: string;
-  agentIdentityById: Record<string, AgentIdentityResult>;
-  sortColumn: "key" | "kind" | "updated" | "tokens";
-  sortDir: "asc" | "desc";
-  groupBy: SessionsGroupBy;
-  /** Multi-identity gateways only; hides the Person mode elsewhere. */
-  personGroupingAvailable: boolean;
-  knownCategories: string[];
-  page: number;
-  pageSize: number;
-  selectedKeys: Set<string>;
-  sessionMenu: { key: string } | null;
-  expandedSessionKey: string | null;
-  checkpointItemsByKey: Record<string, SessionCompactionCheckpoint[]>;
-  checkpointLoadingKey: string | null;
-  checkpointBusyKey: string | null;
-  checkpointErrorByKey: Record<string, string>;
-  patchWriteDisabledReason?: string;
-  patchAdminDisabledReason?: string;
-  groupWriteDisabledReason?: string;
-  deleteArchivedDisabledReason?: string;
-  checkpointBranchDisabledReason?: string;
-  checkpointRestoreDisabledReason?: string;
-  deleteSelectedDisabledReason?: string;
-  onFiltersChange: (next: {
+export type SessionsProps = TranscriptSearchProps &
+  SessionCategoryViewProps & {
+    refreshing: boolean;
+    result: SessionsListResult | null;
+    error: string | null;
     activeMinutes: string;
     limit: string;
     includeGlobal: boolean;
     includeUnknown: boolean;
-  }) => void;
-  onClearFilters: () => void;
-  onSearchChange: (query: string) => void;
-  onSortChange: (column: "key" | "kind" | "updated" | "tokens", dir: "asc" | "desc") => void;
-  onGroupByChange: (mode: SessionsGroupBy) => void;
-  onAssignCategory: (key: string, category: string | null) => void;
-  onRequestNewCategory: (sessionKey?: string) => void;
-  onLoadMore: () => void;
-  onPageChange: (page: number) => void;
-  onPageSizeChange: (size: number) => void;
-  onRefresh: () => void;
-  onStatusFilterChange: (statusFilter: SessionArchivedFilter) => void;
-  onDeleteAllArchived: () => void;
-  onPatch: (
-    key: string,
-    patch: {
-      label?: string | null;
-      icon?: string | null;
-      color?: string | null;
-      category?: string | null;
-      archived?: boolean;
-      pinned?: boolean;
-      unread?: boolean;
-      thinkingLevel?: string | null;
-      fastMode?: FastMode | null;
-      verboseLevel?: string | null;
-      reasoningLevel?: string | null;
-    },
-  ) => void;
-  onToggleSelect: (key: string) => void;
-  onSelectPage: (keys: string[]) => void;
-  onDeselectPage: (keys: string[]) => void;
-  onDeselectAll: () => void;
-  onDeleteSelected: () => void;
-  onOpenSessionMenu: (
-    row: GatewaySessionRow,
-    position: { x: number; y: number },
-    trigger: HTMLElement | null,
-  ) => void;
-  onToggleDetails: (sessionKey: string) => void;
-  onBranchFromCheckpoint: (sessionKey: string, checkpointId: string) => void | Promise<void>;
-  onRestoreCheckpoint: (sessionKey: string, checkpointId: string) => void | Promise<void>;
-};
+    statusFilter: SessionArchivedFilter;
+    basePath: string;
+    agentId: string;
+    mainKey: string;
+    searchQuery: string;
+    agentIdentityById: Record<string, AgentIdentityResult>;
+    sortColumn: "key" | "kind" | "updated" | "tokens";
+    sortDir: "asc" | "desc";
+    /** Multi-identity gateways only; hides the Person mode elsewhere. */
+    personGroupingAvailable: boolean;
+    page: number;
+    pageSize: number;
+    selectedKeys: Set<string>;
+    sessionMenu: { key: string } | null;
+    expandedSessionKey: string | null;
+    checkpointItemsByKey: Record<string, SessionCompactionCheckpoint[]>;
+    checkpointLoadingKey: string | null;
+    checkpointBusyKey: string | null;
+    checkpointErrorByKey: Record<string, string>;
+    patchWriteDisabledReason?: string;
+    patchAdminDisabledReason?: string;
+    deleteArchivedDisabledReason?: string;
+    checkpointBranchDisabledReason?: string;
+    checkpointRestoreDisabledReason?: string;
+    deleteSelectedDisabledReason?: string;
+    onFiltersChange: (next: {
+      activeMinutes: string;
+      limit: string;
+      includeGlobal: boolean;
+      includeUnknown: boolean;
+    }) => void;
+    onClearFilters: () => void;
+    onSearchChange: (query: string) => void;
+    onSortChange: (column: "key" | "kind" | "updated" | "tokens", dir: "asc" | "desc") => void;
+    onGroupByChange: (mode: SessionsGroupBy) => void;
+    onLoadMore: () => void;
+    onPageChange: (page: number) => void;
+    onPageSizeChange: (size: number) => void;
+    onRefresh: () => void;
+    onStatusFilterChange: (statusFilter: SessionArchivedFilter) => void;
+    onDeleteAllArchived: () => void;
+    onPatch: (
+      key: string,
+      patch: {
+        label?: string | null;
+        icon?: string | null;
+        color?: string | null;
+        category?: string | null;
+        archived?: boolean;
+        pinned?: boolean;
+        unread?: boolean;
+        thinkingLevel?: string | null;
+        fastMode?: FastMode | null;
+        verboseLevel?: string | null;
+        reasoningLevel?: string | null;
+      },
+    ) => void;
+    onToggleSelect: (key: string) => void;
+    onSelectPage: (keys: string[]) => void;
+    onDeselectPage: (keys: string[]) => void;
+    onDeselectAll: () => void;
+    onDeleteSelected: () => void;
+    onOpenSessionMenu: (
+      row: GatewaySessionRow,
+      position: { x: number; y: number },
+      trigger: HTMLElement | null,
+    ) => void;
+    onToggleDetails: (sessionKey: string) => void;
+    onBranchFromCheckpoint: (sessionKey: string, checkpointId: string) => void | Promise<void>;
+    onRestoreCheckpoint: (sessionKey: string, checkpointId: string) => void | Promise<void>;
+  };
 
 const VERBOSE_LEVEL_VALUES = ["", "off", "on", "full"] as const;
 const FAST_LEVEL_VALUES = ["", "auto", "on", "off"] as const;

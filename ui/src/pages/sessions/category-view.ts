@@ -3,27 +3,25 @@ import { html, nothing } from "lit";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { t } from "../../i18n/index.ts";
 import { SESSION_DRAG_MIME } from "../../lib/sessions/drag.ts";
-import type { SessionsProps } from "./view.ts";
+import type { SessionsGroupBy } from "../../lib/sessions/grouping.ts";
 
-type SessionCategoryViewProps = Pick<
-  SessionsProps,
-  | "groupBy"
-  | "groupWriteDisabledReason"
-  | "knownCategories"
-  | "loading"
-  | "onAssignCategory"
-  | "onRequestNewCategory"
->;
+export type SessionCategoryViewProps = {
+  groupBy: SessionsGroupBy;
+  groupWriteDisabledReason?: string;
+  knownCategories: string[];
+  loading: boolean;
+  onAssignCategory: (key: string, category: string | null) => void;
+  onRequestNewCategory: (sessionKey?: string) => void;
+};
 
 const NEW_GROUP_OPTION = "__new-group__";
 
 // Drag-over highlighting toggles a class directly on the target row instead of
 // re-rendering per dragover event; lit re-renders mid-drag would cancel the drag.
 function setDropTargetActive(event: DragEvent, active: boolean) {
-  (event.currentTarget as HTMLElement | null)?.classList.toggle(
-    "session-drop-target--active",
-    active,
-  );
+  if (event.currentTarget instanceof Element) {
+    event.currentTarget.classList.toggle("session-drop-target--active", active);
+  }
 }
 
 export function categoryDropHandlers(props: SessionCategoryViewProps, category: string | null) {
@@ -72,10 +70,10 @@ export function renderCategoryCell(row: GatewaySessionRow, props: SessionCategor
         aria-label=${t("sessionsView.moveToGroup")}
         class="session-group-select"
         @change=${(e: Event) => {
-          if (props.groupWriteDisabledReason) {
+          const select = e.currentTarget;
+          if (props.groupWriteDisabledReason || !(select instanceof HTMLSelectElement)) {
             return;
           }
-          const select = e.target as HTMLSelectElement;
           if (select.value === NEW_GROUP_OPTION) {
             // The page prompts for a name and patches; restore until the refresh lands.
             select.value = current;
