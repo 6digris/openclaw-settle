@@ -67,7 +67,7 @@ function containerMock(current: FleetContainerInspectResult = inspection()) {
     removeNetwork: vi.fn(async () => undefined),
     logs: vi.fn(async () => undefined),
     start: vi.fn(async () => undefined),
-    stop: vi.fn(async () => undefined),
+    stop: vi.fn<FleetContainerRuntime["stop"]>(async () => undefined),
     restart: vi.fn(async () => undefined),
     remove: vi.fn(async () => undefined),
   } satisfies FleetContainerRuntime;
