@@ -170,12 +170,13 @@ try {
     # npm-to-Git uses the updater's npm exposure owner, not the retired installer wrapper.
     $updatedShim = Join-Path $prefix 'openclaw.cmd'
     if (-not (Test-Path -LiteralPath $updatedShim)) { throw 'Upgrade lost the installed command.' }
-    Invoke-ProofCommand -Name 'updated-installed-status' -File $engine -Arguments @('-NoProfile', '-Command', "& '$updatedShim' update status --json") -Seconds 120
+    # Status inherits a 300s network budget; bound its remote fetch below this 120s owner probe.
+    Invoke-ProofCommand -Name 'updated-installed-status' -File $engine -Arguments @('-NoProfile', '-Command', "& '$updatedShim' update status --json --timeout 10; exit `$LASTEXITCODE") -Seconds 120
     $status = Get-Content (Join-Path $EvidenceRoot 'updated-installed-status.stdout.log') -Raw | ConvertFrom-Json
     $update = if ($status.update) { $status.update } else { $status }
     $channel = if ($status.channel.value) { $status.channel.value } else { $status.channel.channel }
     if ($update.installKind -cne 'git' -or $update.git.sha -cne $ExpectedHead -or $channel -cne 'dev') { throw 'Installed command does not resolve to the exact candidate Git owner.' }
-    Invoke-ProofCommand -Name 'updated-launcher-version' -File $engine -Arguments @('-NoProfile', '-Command', "& '$updatedShim' --version") -Seconds 120
+    Invoke-ProofCommand -Name 'updated-launcher-version' -File $engine -Arguments @('-NoProfile', '-Command', "& '$updatedShim' --version; exit `$LASTEXITCODE") -Seconds 120
     $proof.cases += 'candidate Doctor/Gateway RPC/launcher passed'
     Assert-CandidateHead
     $finalDirty = @(& git -C $CandidateRoot status --porcelain=v1 --untracked-files=all)
