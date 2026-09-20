@@ -438,6 +438,7 @@ function resolveIncludeOwnedWriteCandidate(params: {
   const values = prepareConfigWriteValues({
     snapshot: params.snapshot,
     nextConfig: requestedConfig,
+    writeOptions: params.writeOptions,
     env: params.io?.env ?? process.env,
     explicitSetPaths: params.writeOptions?.explicitSetPaths,
   });
