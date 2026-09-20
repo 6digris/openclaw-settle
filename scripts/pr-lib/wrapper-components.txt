@@ -671,6 +671,7 @@ src/infra/sqlite-error-diagnostics.ts
 src/infra/sqlite-existing-database.ts
 src/infra/sqlite-file-generation.ts
 src/infra/sqlite-files.ts
+src/infra/sqlite-handle-lifecycle.ts
 src/infra/sqlite-index-schema.ts
 src/infra/sqlite-integrity.ts
 src/infra/sqlite-live-snapshot.ts
@@ -765,6 +766,7 @@ src/infra/worker-task-native-sections.ts
 src/infra/worker-task-pool-completion.ts
 src/infra/worker-task-pool-core.ts
 src/infra/worker-task-pool-owned.ts
+src/infra/worker-task-pool-resources.ts
 src/infra/worker-task-pool-retirement.ts
 src/infra/worker-task-pool.ts
 src/infra/worker-task-server.ts
@@ -1116,6 +1118,7 @@ src/state/openclaw-state-db-additive-columns.ts
 src/state/openclaw-state-db-async-lifecycle.ts
 src/state/openclaw-state-db-audit-migration.ts
 src/state/openclaw-state-db-borrow.ts
+src/state/openclaw-state-db-cache.idle.ts
 src/state/openclaw-state-db-cache.ts
 src/state/openclaw-state-db-contract.ts
 src/state/openclaw-state-db-delivery-queue-backfill.ts
