@@ -134,6 +134,25 @@ function firstRefusal() {
 }
 
 describe("unproved Doctor authority callers", () => {
+  it.each(["2026.9.3", "2026.9.4"])(
+    "keeps the shipped %s child-owned completion route outside the 9.2 bridge",
+    async (version) => {
+      const run = createUpdateRun({ trigger: "cli", before: { version } });
+      recordUpdateRunStep(run.runId, { step: "openclaw doctor", status: "completed" });
+      recordUpdateRunStep(run.runId, { step: "post-update verification", status: "in_progress" });
+      vi.stubEnv("OPENCLAW_UPDATE_RUN_ID", run.runId);
+      vi.stubEnv("OPENCLAW_UPDATE_POST_CORE", "1");
+      await resumePostCoreUpdate({
+        root: state.root,
+        channel: "stable",
+        opts: { json: true, yes: true },
+        timeoutMs: 5_000,
+      });
+      expect(dispatched).toEqual(["repair", "validate", "readiness"]);
+      expect(defaultRuntime.exit).toHaveBeenCalledExactlyOnceWith(0);
+    },
+  );
+
   it.each(["live", "paths", "sizes"] as const)(
     "fences default-budget %s await before the next child",
     async (boundary) => {

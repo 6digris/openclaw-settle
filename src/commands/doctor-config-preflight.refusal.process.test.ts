@@ -5,14 +5,22 @@ import { DatabaseSync } from "node:sqlite";
 import { afterAll, describe, expect, it } from "vitest";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
 import { getCliProcessTestTimeout } from "../cli/cli-process-child.test-helpers.js";
-import { withUpdateCommandExecutor } from "../cli/update-cli/update-command-executor.js";
-import { runUpdateFinalizationDoctorInFreshProcess } from "../cli/update-cli/update-command-fresh-doctor.js";
 import {
   createUpdatePostInstallDoctorResultPath,
   consumeUpdatePostInstallDoctorResult,
   UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV,
 } from "../infra/update-doctor-result.js";
-import { createUpdateRun, recordUpdateRunStep } from "../infra/update-run-ledger.js";
+import {
+  createManagedHandoffLeaseStore,
+  resolveManagedUpdateLeaseDatabasePath,
+} from "../infra/update-managed-service-handoff-lease.js";
+import {
+  createUpdateRun,
+  finishUpdateRun,
+  getUpdateRun,
+  listUpdateRuns,
+  recordUpdateRunStep,
+} from "../infra/update-run-ledger.js";
 import { buildUpdateDoctorEnv } from "../infra/update-runner-doctor.js";
 import {
   closeOpenClawAgentDatabasesForTest,
@@ -370,7 +378,16 @@ describe("Doctor CLI config recovery", () => {
   }, 75_000);
 });
 
-it.each(["valid", "failed schema publication"] as const)(
+it.each([
+  "valid",
+  "valid managed v1",
+  "valid managed pnpm",
+  "managed handoff mismatch",
+  "managed handoff missing",
+  "failed schema publication",
+  "terminal post-core run",
+  "missing post-core run",
+] as const)(
   "keeps the shipped 9.2 rollback window read-only and validates private state: %s",
   async (mode) => {
     await withOpenClawTestState(
@@ -429,7 +446,48 @@ it.each(["valid", "failed schema publication"] as const)(
         }
         const originals = [agentPath, sharedPath, state.configPath];
         const bytes = originals.map((file) => fs.readFileSync(file));
-        const runtimeRoot = createBuiltRuntime(state.root, undefined, { copyDirectories: true });
+        let runtimeRoot = createBuiltRuntime(state.root, undefined, { copyDirectories: true });
+        let managedRoot = runtimeRoot;
+        if (mode === "valid managed pnpm") {
+          const project = state.path("pnpm", "global", "5");
+          const previous = path.join(
+            project,
+            ".pnpm",
+            "openclaw@2026.9.2",
+            "node_modules",
+            "openclaw",
+          );
+          const current = path.join(
+            project,
+            ".pnpm",
+            `openclaw@${VERSION}`,
+            "node_modules",
+            "openclaw",
+          );
+          fs.mkdirSync(path.dirname(current), { recursive: true });
+          fs.renameSync(runtimeRoot, current);
+          runtimeRoot = fs.realpathSync(current);
+          fs.mkdirSync(previous, { recursive: true });
+          fs.writeFileSync(
+            path.join(previous, "package.json"),
+            JSON.stringify({ name: "openclaw", version: "2026.9.2" }),
+          );
+          fs.mkdirSync(path.join(project, "node_modules"), { recursive: true });
+          fs.writeFileSync(
+            path.join(project, "node_modules", ".modules.yaml"),
+            "layoutVersion: 5\n",
+          );
+          fs.writeFileSync(
+            path.join(project, "package.json"),
+            JSON.stringify({ dependencies: { openclaw: VERSION } }),
+          );
+          fs.symlinkSync(
+            current,
+            path.join(project, "node_modules", "openclaw"),
+            process.platform === "win32" ? "junction" : "dir",
+          );
+          managedRoot = fs.realpathSync(previous);
+        }
         const resultPath = createUpdatePostInstallDoctorResultPath();
         const result = await runBuiltRuntime(
           runtimeRoot,
@@ -471,21 +529,123 @@ it.each(["valid", "failed schema publication"] as const)(
         // fresh post-core boundary. Only the native child can carry live authority.
         recordUpdateRunStep(run.runId, { step: "openclaw doctor", status: "completed" });
         recordUpdateRunStep(run.runId, { step: "post-update verification", status: "in_progress" });
-        process.env.OPENCLAW_UPDATE_POST_CORE = "1";
-        await withUpdateCommandExecutor(run.runId, async (executor) => {
-          const fence = await executor.enter(runtimeRoot);
-          await runUpdateFinalizationDoctorInFreshProcess({
-            phase: "post-plugin",
-            root: runtimeRoot,
-            runId: run.runId,
-            opts: { run: { runId: run.runId, env: { ...process.env }, executorFence: fence } },
-            yes: true,
-            json: true,
-            timeoutMs: DOCTOR_CHILD_TIMEOUT_MS,
-            assertCurrent: fence.assertCurrent,
-          });
-          fence.assertCurrent();
+        if (mode === "terminal post-core run") {
+          finishUpdateRun(run.runId, { status: "failed", reason: "fixture-parent-stopped" });
+        }
+        const beforeResume = getUpdateRun(run.runId);
+        const managed =
+          mode === "valid managed v1" ||
+          mode === "valid managed pnpm" ||
+          mode === "managed handoff mismatch" ||
+          mode === "managed handoff missing";
+        const success =
+          mode === "valid" || mode === "valid managed v1" || mode === "valid managed pnpm";
+        const metaPath = state.path("handoff-meta.json");
+        let managedRow: { owner: string; payload_json: string; updated_at: number } | undefined;
+        if (managed) {
+          const store = createManagedHandoffLeaseStore();
+          const initialized = store.acquire(managedRoot, run.runId, { kind: "update" });
+          if (initialized.kind !== "acquired" || !store.release(initialized.lease)) {
+            throw new Error("Could not initialize isolated fixture handoff");
+          }
+          const { pid, startIdentity } = store.processIdentity();
+          managedRow = {
+            owner: "shipped-owner",
+            payload_json: JSON.stringify({ version: 1, pid, startIdentity }),
+            updated_at: 7,
+          };
+          const db = new DatabaseSync(resolveManagedUpdateLeaseDatabasePath());
+          try {
+            db.prepare("INSERT INTO managed_update_handoffs VALUES (?, ?, ?, ?)").run(
+              managedRoot,
+              managedRow.owner,
+              managedRow.payload_json,
+              managedRow.updated_at,
+            );
+          } finally {
+            db.close();
+          }
+          fs.writeFileSync(
+            metaPath,
+            JSON.stringify({
+              version: 1,
+              meta: {
+                runId: run.runId,
+                root: managedRoot,
+                handoffId: mode === "managed handoff mismatch" ? "another-owner" : managedRow.owner,
+              },
+            }),
+          );
+        }
+        if (mode === "managed handoff missing") {
+          const db = new DatabaseSync(resolveManagedUpdateLeaseDatabasePath());
+          db.prepare("DELETE FROM managed_update_handoffs WHERE install_root = ?").run(managedRoot);
+          db.close();
+        }
+        const resumed = await runBuiltRuntime(
+          runtimeRoot,
+          {
+            ...process.env,
+            OPENCLAW_UPDATE_POST_CORE: "1",
+            ...(managed ? { OPENCLAW_CONTROL_PLANE_UPDATE_SENTINEL_META: metaPath } : {}),
+            OPENCLAW_UPDATE_RUN_ID:
+              mode === "missing post-core run" ? "53e56de0-a951-4b3d-af1a-9e4f1ac5a069" : run.runId,
+            OPENCLAW_UPDATE_POST_CORE_CHANNEL: "stable",
+            OPENCLAW_UPDATE_POST_CORE_RESULT_PATH: state.path("post-core-result.json"),
+            OPENCLAW_UPDATE_POST_CORE_STARTED_AT_MS: String(Date.now()),
+            NODE_ENV: undefined,
+            VITEST: undefined,
+            VITEST_POOL_ID: undefined,
+            VITEST_WORKER_ID: undefined,
+          },
+          ["update", "--json", "--yes", "--no-restart"],
+          DOCTOR_CHILD_TIMEOUT_MS,
+        );
+        if (managedRow) {
+          const db = new DatabaseSync(resolveManagedUpdateLeaseDatabasePath());
+          try {
+            expect(
+              db
+                .prepare(
+                  "SELECT owner,payload_json,updated_at FROM managed_update_handoffs WHERE install_root = ?",
+                )
+                .get(managedRoot),
+            ).toEqual(mode === "managed handoff missing" ? undefined : managedRow);
+            if (managedRoot !== runtimeRoot) {
+              expect(
+                db
+                  .prepare(
+                    "SELECT COUNT(*) AS count FROM managed_update_handoffs WHERE instr(install_root, ?) = 1",
+                  )
+                  .get(runtimeRoot)?.count,
+              ).toBe(0);
+            }
+            expect(
+              db
+                .prepare(
+                  "SELECT COUNT(*) AS count FROM managed_update_handoffs WHERE instr(install_root, ?) = 1",
+                )
+                .get(`${managedRoot}/.openclaw-update-child-`)?.count,
+            ).toBe(0);
+          } finally {
+            db.prepare(
+              "DELETE FROM managed_update_handoffs WHERE install_root = ? AND owner = ?",
+            ).run(managedRoot, managedRow.owner);
+            db.close();
+          }
+        }
+        expect(resumed.code, `${resumed.stdout}\n${resumed.stderr}`).toBe(success ? 0 : 1);
+        expect(listUpdateRuns({ limit: 100 }).map((entry) => entry.runId)).toEqual([run.runId]);
+        expect(getUpdateRun(run.runId)).toMatchObject({
+          status: beforeResume?.status,
+          before: beforeResume?.before,
+          origin: beforeResume?.origin,
+          phase: beforeResume?.phase,
         });
+        if (!success) {
+          expect(fs.readFileSync(agentPath)).toEqual(bytes[0]);
+          return;
+        }
         const repaired = new DatabaseSync(agentPath, { readOnly: true });
         try {
           expect(repaired.prepare("PRAGMA user_version").get()?.user_version).toBe(
