@@ -222,15 +222,23 @@ it("keeps caller cancellation independent of idle reclamation", async () => {
     const reason = new DOMException(`${mode} caller stopped`, "AbortError");
     const reclamation = reclaimAbandonedSqliteSnapshotsAsync(f.cache);
     const entered = await f.entered;
+    let cancellationStarted = Number.NaN;
+    const cancelReading = (reading: Promise<unknown>) => {
+      cancellationStarted = performance.now();
+      controller.abort(reason);
+      return reading;
+    };
     const operation = withSqliteReadOnlyWorkerScope(async () => {
       if (mode === "snapshot") {
-        await readSnapshot(f.source, controller.signal);
+        await cancelReading(readSnapshot(f.source, controller.signal));
       } else if (mode === "update") {
-        await readUpdateStateSchemaVersions({
-          stateDir: path.dirname(f.source),
-          config: {},
-          signal: controller.signal,
-        });
+        await cancelReading(
+          readUpdateStateSchemaVersions({
+            stateDir: path.dirname(f.source),
+            config: {},
+            signal: controller.signal,
+          }),
+        );
       } else {
         if (!owned) {
           throw new Error("Owned database fixture is unavailable");
@@ -242,7 +250,8 @@ it("keeps caller cancellation independent of idle reclamation", async () => {
           await owner.mutate(owner.assertCurrent, async () => {
             openOpenClawStateDatabase(owned.options);
             vi.stubEnv("XDG_CACHE_HOME", path.dirname(f.cache));
-            await readSnapshot(owned.options.path, controller.signal);
+            // Owner admission and cold-open repair are setup, not caller cancellation.
+            await cancelReading(readSnapshot(owned.options.path, controller.signal));
           });
         } finally {
           owner.release();
@@ -253,10 +262,8 @@ it("keeps caller cancellation independent of idle reclamation", async () => {
       (error: unknown) => error,
     );
     try {
-      const started = performance.now();
-      controller.abort(reason);
       const error = await operation;
-      const cancellationMs = performance.now() - started;
+      const cancellationMs = performance.now() - cancellationStarted;
       const workerWasRunning = !f.worker().settled;
       const directoryWasPresent = fs.existsSync(entered.file);
       f.release();
