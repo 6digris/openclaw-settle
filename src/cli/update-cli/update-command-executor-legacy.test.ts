@@ -6,9 +6,9 @@ import { afterEach, expect, it } from "vitest";
 import { waitForDead } from "../../../test/helpers/process-wait.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
-import { hasErrnoCode } from "../../infra/errno.js";
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import { createManagedHandoffLeaseStore } from "../../infra/update-managed-service-handoff-lease.js";
+import { killProcessTree } from "../../process/kill-tree.js";
 import { updateExecutorNativeEntrypoints } from "./update-command-executor-native-runtime.test-support.js";
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
@@ -152,16 +152,10 @@ it.skipIf(process.platform === "win32").each([
         resolve();
       });
     });
+    let termination: ReturnType<typeof killProcessTree>;
     const killGroup = () => {
-      if (!child.pid) {
-        return;
-      }
-      try {
-        process.kill(-child.pid, "SIGKILL");
-      } catch (error) {
-        if (!hasErrnoCode(error, "ESRCH")) {
-          throw error;
-        }
+      if (child.pid && !termination) {
+        termination = killProcessTree(child.pid, { detached: true });
       }
     };
     const deadline = setTimeout(() => {
@@ -267,7 +261,7 @@ it.skipIf(process.platform === "win32").each([
       // Failed assertions must also release the independently grouped native leaf.
       fs.writeFileSync(path.join(root, "proceed"), "go");
       killGroup();
-      await closed;
+      await closed.finally(() => termination?.force());
       const leafPidFile = path.join(root, "leaf-pid");
       if (fs.existsSync(leafPidFile)) {
         await waitForDead(Number(fs.readFileSync(leafPidFile, "utf8")), 5_000);
