@@ -388,7 +388,11 @@ suite.define(() => {
         if (pendingSnapshot) {
           await gateway.resolveDeferred("progressCard.get");
         }
-        await page.getByText("Resumed progress", { exact: true }).waitFor();
+        await page
+          .locator(".chat-pane-cache__pane--active")
+          .getByRole("region", { name: "Progress note", exact: true })
+          .getByText("Resumed progress", { exact: true })
+          .waitFor();
         expect(await gateway.getRequests("progressCard.get")).toHaveLength(2);
       });
     },
