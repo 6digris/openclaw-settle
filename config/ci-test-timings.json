@@ -129,7 +129,9 @@
       "agentic-gateway-methods#selector-346-ae94537ecb6d#generation-bf91fd36fe40#part-3-of-5#include-86-ba786a5c7aa7": 112,
       "agentic-gateway-methods#selector-346-ae94537ecb6d#generation-bf91fd36fe40#part-4-of-5#include-86-b48ab076102e": 119,
       "agentic-gateway-methods#selector-346-ae94537ecb6d#generation-bf91fd36fe40#part-5-of-5#include-86-64c0a267f481": 115,
-      "agentic-gateway-server-isolated": 30,
+      "agentic-gateway-server-isolated": 1116,
+      "agentic-gateway-server-isolated#selector-102-431c58835346#generation-a4d5a0582f61#part-1-of-2#include-14-596853d653cc": 531,
+      "agentic-gateway-server-isolated#selector-102-431c58835346#generation-a4d5a0582f61#part-2-of-2#include-88-3ad56dedb969": 584,
       "agentic-plugin-sdk": 83,
       "agentic-plugin-sdk#selector-114-7ee32dee7981#generation-e2d98d802215#part-1-of-2#include-1-4d9bced7fb6c": 5,
       "agentic-plugin-sdk#selector-114-7ee32dee7981#generation-e2d98d802215#part-2-of-2#include-113-b628d2eff8ff": 75,
@@ -540,6 +542,31 @@
       },
       {
         "configs": [
+          "test/vitest/vitest.gateway-server-isolated.config.ts",
+          "test/vitest/vitest.gateway-database-workers.config.ts"
+        ],
+        "env": {},
+        "includePatterns": [
+          "src/gateway/gateway-auth-recovery.test.ts",
+          "src/gateway/gateway-cron-process-identity.windows.test.ts",
+          "src/gateway/gateway-route-model-reuse.test.ts",
+          "src/gateway/gateway-ssh-upload-signal.test.ts",
+          "src/gateway/server-methods/models-list.freshness.integration.test.ts",
+          "src/gateway/server-methods/models-list.worker-recovery.integration.test.ts",
+          "src/gateway/server.chat-cli-auth.test.ts",
+          "src/gateway/server.chat-recovered-output.test.ts",
+          "src/gateway/server.chat.canonical-publication.test.ts",
+          "src/gateway/server.cli-watchdog.test.ts",
+          "src/gateway/server.codex-failure-recovery.test.ts",
+          "src/gateway/server.message-buffer-caption.test.ts",
+          "src/gateway/server.xai-fallback.test.ts",
+          "src/gateway/setup-inference.first-signin.integration.test.ts"
+        ],
+        "pretestBuildMode": "runtime",
+        "seconds": 531
+      },
+      {
+        "configs": [
           "test/vitest/vitest.gateway-server.config.ts"
         ],
         "env": {},
@@ -636,7 +663,7 @@
     ],
     "github": []
   },
-  "source": "median of 5 successful CI and release-check runs: 35432985665, 35433007757, 35433834963, 35433862651, 35434723207; agentic-cli, agentic-cli-process and agentic-gateway-server-isolated families and matching runtime-placement records retained from main b37e28c63ad",
+  "source": "agentic-gateway-server-isolated parent/selector family and matching runtime-placement records copied from ci/test-timings-refit at a22870c58ee12c37895b8d5dfb1555080de9ac1b (median of 5 successful CI and release-check runs: 35432985665, 35433007757, 35433834963, 35433862651, 35434723207); all other measurements retained from main c619f1bc4d9dc97dee31c63dc2232338705e5954",
   "uiE2e": {
     "fileSeconds": {
       "ui/src/e2e/about.e2e.test.ts": 1,
