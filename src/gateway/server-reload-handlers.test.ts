@@ -5975,7 +5975,10 @@ describe("gateway Gmail hot reload handlers", () => {
         "config restart failed: GatewayHotReloadStaleSecretsError: runtime secrets changed while config hot reload was deferred",
       );
       expect(harness.requestRecoveryRestart).not.toHaveBeenCalled();
-      expect(harness.sharedGatewaySessionGenerationState).toEqual({
+      expect({
+        current: harness.sharedGatewaySessionGenerationState.current,
+        required: harness.sharedGatewaySessionGenerationState.required,
+      }).toEqual({
         current: "concurrent-generation",
         required: null,
       });
