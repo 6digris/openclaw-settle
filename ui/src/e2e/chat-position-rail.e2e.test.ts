@@ -10,13 +10,20 @@ import {
   createChatFlowE2eSuite,
   installMockGateway,
 } from "./chat-flow.test-support.ts";
+import { openChatSidePanelType, dockChatSidePanel } from "./chat-side-panel.test-support.ts";
 
 const suite = createChatFlowE2eSuite();
 
 suite.define(() => {
-  it.each(["dark", "light"] as const)(
-    "tracks reader position and keyboard jumps in %s mode",
-    async (colorScheme) => {
+  it.each([
+    { colorScheme: "dark", collapsedNav: false, direction: "ltr" },
+    { colorScheme: "light", collapsedNav: false, direction: "ltr" },
+    { colorScheme: "dark", collapsedNav: true, direction: "ltr" },
+    { colorScheme: "light", collapsedNav: true, direction: "ltr" },
+    { colorScheme: "dark", collapsedNav: true, direction: "rtl" },
+  ] as const)(
+    "tracks reader position and keyboard jumps in $colorScheme mode (collapsed: $collapsedNav, $direction)",
+    async ({ colorScheme, collapsedNav, direction }) => {
       await suite.withPage(
         {
           colorScheme,
@@ -78,6 +85,12 @@ suite.define(() => {
             .getByText("Transcript checkpoint 239 with code and emphasis.", { exact: true })
             .waitFor();
 
+          if (collapsedNav) {
+            await page.locator(".sidebar-brand__collapse").click();
+            await page.evaluate((dir) => {
+              document.documentElement.dir = dir;
+            }, direction);
+          }
           const rail = page.locator(".chat-position-rail");
           const markers = rail.locator(".chat-position-rail__marker");
           const preview = rail.locator(".chat-position-rail__preview-copy");
@@ -90,16 +103,25 @@ suite.define(() => {
           const conversationBounds = (await page
             .locator(".chat-main__conversation")
             .boundingBox())!;
-          expect(trackBounds.x).toBeGreaterThanOrEqual(transcriptBounds.x);
+          if (collapsedNav) {
+            expect(trackBounds.x).toBe(4);
+            const actions = (await page.locator(".shell-chrome-controls__actions").boundingBox())!;
+            expect(trackBounds.y).toBeGreaterThan(48);
+            expect(trackBounds.y + trackBounds.height).toBeLessThan(actions.y);
+          } else {
+            expect(trackBounds.x).toBeGreaterThanOrEqual(transcriptBounds.x);
+          }
           expect(trackBounds.x + trackBounds.width).toBeLessThan(contentBounds.x);
           expect(trackBounds.height).toBeCloseTo(900 * 0.45, 2);
-          expect(
-            Math.abs(
-              trackBounds.y +
-                trackBounds.height / 2 -
-                (conversationBounds.y + conversationBounds.height / 2),
-            ),
-          ).toBeLessThan(2);
+          if (!collapsedNav) {
+            expect(
+              Math.abs(
+                trackBounds.y +
+                  trackBounds.height / 2 -
+                  (conversationBounds.y + conversationBounds.height / 2),
+              ),
+            ).toBeLessThan(2);
+          }
           const markBounds = await markers.evaluateAll((items) =>
             items.map((item) => item.getBoundingClientRect().toJSON()),
           );
@@ -130,7 +152,10 @@ suite.define(() => {
           await expect.poll(() => preview.count()).toBe(1);
           await page.keyboard.press("ArrowUp");
           await expect.poll(focusedMarkerId).toBe("position-rail-0");
-          await expect.poll(() => rail.locator('[tabindex="0"]').count()).toBe(1);
+          expect(await rail.locator('[tabindex="0"]').count()).toBe(0);
+          expect(await transcript.locator('.chat-position-rail-anchor[tabindex="0"]').count()).toBe(
+            1,
+          );
           await page.keyboard.press("Tab");
           expect(await focusedMarkerId()).toBeNull();
           await transcript.focus();
@@ -204,7 +229,13 @@ suite.define(() => {
             transcript.evaluate((element) => {
               const viewport = element.getBoundingClientRect();
               const marks = [
-                ...element.querySelectorAll<HTMLElement>(".chat-position-rail__marker"),
+                ...element.ownerDocument
+                  .getElementById(
+                    element
+                      .querySelector(".chat-position-rail-anchor")!
+                      .getAttribute("aria-controls")!,
+                  )!
+                  .querySelectorAll<HTMLElement>(".chat-position-rail__marker"),
               ];
               const ids = new Set(marks.map((mark) => mark.dataset.positionMarkerId));
               const expected = [
@@ -351,6 +382,16 @@ suite.define(() => {
               ),
             );
           const restingColors = await strokeColors();
+          const tickLefts = () =>
+            markers.evaluateAll((items) =>
+              items
+                .slice(0, 9)
+                .map(
+                  (item) =>
+                    item.querySelector(".chat-position-rail__tick")!.getBoundingClientRect().left,
+                ),
+            );
+          const restingLefts = await tickLefts();
           await markers.nth(4).hover();
           await expect.poll(() => preview.textContent()).toContain("Transcript checkpoint 4");
           await expect
@@ -366,6 +407,8 @@ suite.define(() => {
               ),
             )
             .toEqual([8, 12, 16, 24, 32, 24, 16, 12, 8]);
+          // Hover grows every tick only to the physical right, including an RTL shell.
+          expect(await tickLefts()).toEqual(restingLefts);
           await expect
             .poll(strokeColors)
             .toEqual(restingColors.map((color, index) => (index === 4 ? colors.text : color)));
@@ -472,7 +515,7 @@ suite.define(() => {
           await transcript.evaluate((element) => {
             element.style.width = "800px";
           });
-          await markers.first().waitFor({ state: "hidden" });
+          await markers.first().waitFor({ state: collapsedNav ? "visible" : "hidden" });
           await transcript.evaluate((element) => {
             element.style.removeProperty("width");
           });
@@ -518,6 +561,13 @@ suite.define(() => {
               .toBe(width);
             await page.goto(`${suite.server.baseUrl}chat`);
             await transcript.locator('.chat-bubble[data-entry-id="position-rail-239"]').waitFor();
+            // Full navigation intentionally resets collapse state; reenter the tested mode.
+            if (collapsedNav) {
+              await page.locator(".sidebar-brand__collapse").click();
+              await page.evaluate((dir) => {
+                document.documentElement.dir = dir;
+              }, direction);
+            }
             await expect
               .poll(() =>
                 transcript.evaluate((element) =>
@@ -525,7 +575,9 @@ suite.define(() => {
                 ),
               )
               .toBe(width);
-            await markers.first().waitFor({ state: width === "48rem" ? "visible" : "hidden" });
+            await markers
+              .first()
+              .waitFor({ state: collapsedNav || width === "48rem" ? "visible" : "hidden" });
             if (width === "48rem") {
               const inner = await transcript.locator(".chat-thread-inner").boundingBox();
               const marker = await markers.first().boundingBox();
@@ -553,7 +605,9 @@ suite.define(() => {
               },
               { columnWidth: width, eventName: SIDEBAR_GEOMETRY_COMMIT_EVENT },
             );
-            await markers.first().waitFor({ state: width === "48rem" ? "visible" : "hidden" });
+            await markers
+              .first()
+              .waitFor({ state: collapsedNav || width === "48rem" ? "visible" : "hidden" });
           }
           await transcript.evaluate((element) =>
             element.style.removeProperty("--chat-thread-max-width"),
@@ -668,9 +722,10 @@ suite.define(() => {
           );
           await page.goto(`${suite.server.baseUrl}chat`);
           const thread = page.locator(".chat-thread");
-          const marks = thread.locator(".chat-position-rail__marker");
+          const rail = page.locator(".chat-position-rail");
+          const marks = rail.locator(".chat-position-rail__marker");
           await expect.poll(() => marks.count()).toBe(84);
-          const runMarker = thread.locator('[data-position-marker-id="run:review-run"]');
+          const runMarker = rail.locator('[data-position-marker-id="run:review-run"]');
           await runMarker.focus();
           await runMarker.press("Enter");
           const first = thread.locator('.chat-bubble[data-entry-id="first"]');
@@ -681,7 +736,7 @@ suite.define(() => {
             .toBe(true);
           await expect
             .poll(async () =>
-              (await thread.locator(".chat-position-rail__preview-copy").textContent())?.trim(),
+              (await rail.locator(".chat-position-rail__preview-copy").textContent())?.trim(),
             )
             .toBe("The shared design is ready");
           const continuation = thread.locator('.chat-bubble[data-entry-id="continuation"]');
@@ -694,7 +749,7 @@ suite.define(() => {
           await expect.poll(() => runMarker.getAttribute("aria-current")).toBe("true");
           await expect.poll(() => runMarker.getAttribute("data-visible")).toBe("");
           expect(
-            await thread.locator('.chat-position-rail__marker[aria-current="true"]').count(),
+            await rail.locator('.chat-position-rail__marker[aria-current="true"]').count(),
           ).toBe(1);
           expect(
             await first.evaluate(
@@ -753,4 +808,56 @@ suite.define(() => {
       );
     },
   );
+  it("keeps history pane-local when Chat is swapped or panels stack", async () => {
+    await suite.withPage({ viewport: { width: 1440, height: 1200 } }, async ({ page }) => {
+      await installMockGateway(page, {
+        historyMessages: Array.from({ length: 80 }, (_, index) => ({
+          __openclaw: { id: "rail-panel-" + index, seq: index + 1 },
+          role: index % 2 === 0 ? "user" : "assistant",
+          content: [{ type: "text", text: "Panel checkpoint " + index }],
+        })),
+      });
+      await page.goto(suite.server.baseUrl + "chat");
+      const rail = page.locator(".chat-position-rail");
+      await rail.locator(".chat-position-rail__marker").last().waitFor({ state: "attached" });
+      await page.locator(".sidebar-brand__collapse").click();
+      const placement = () => rail.getAttribute("data-placement");
+      await expect.poll(placement).toBe("shell");
+      await openChatSidePanelType(page, "Tasks");
+      await page.locator(".sidebar-region--right.sidebar-region--open").waitFor();
+      await expect.poll(placement).toBe("shell");
+      await page.locator(".chat-panel-swap").click();
+      await page.locator('.sidebar-region__primary[data-region="side"]').waitFor();
+      await expect.poll(placement).toBe("pane");
+      await page.locator(".chat-panel-swap").click();
+      await page.locator('.sidebar-region__primary[data-region="main"]').waitFor();
+      await expect.poll(placement).toBe("shell");
+      // A pane can be narrow inside a wide host; resize its real box, not its state.
+      const pane = page.locator("openclaw-chat-pane.chat-pane-cache__pane--visible");
+      await pane.evaluate((element) => {
+        element.style.maxWidth = "640px";
+      });
+      await page
+        .locator(".sidebar-region--right.sidebar-region--narrow.sidebar-region--open")
+        .waitFor();
+      await expect.poll(placement).toBe("pane");
+      await pane.evaluate((element) => {
+        element.style.removeProperty("max-width");
+      });
+      await expect.poll(placement).toBe("shell");
+      for (const dock of ["bottom", "left", "right"] as const) {
+        await dockChatSidePanel(page, dock);
+        await expect.poll(placement).toBe(dock === "right" ? "shell" : "pane");
+      }
+      await page.locator(".chat-panel-swap").click();
+      await page
+        .locator(".chat-pane__header")
+        .getByRole("button", { name: "Focus", exact: true })
+        .click();
+      await expect
+        .poll(() => page.locator(".sidebar-region__primary").getAttribute("hidden"))
+        .toBe("");
+      expect(await rail.evaluate((element) => element.getClientRects().length)).toBe(0);
+    });
+  });
 });

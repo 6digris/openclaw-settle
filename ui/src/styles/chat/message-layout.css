@@ -4,6 +4,7 @@
   outline: none;
 }
 
+.chat-position-rail-anchor,
 .chat-position-rail {
   /* Centered previews need clearance at both ends of a capped rail. */
   --chat-position-rail-clearance: 60px;
@@ -21,12 +22,37 @@
     )
   );
 
-  position: sticky;
   z-index: 4;
   /* Sticky insets start inside the scrollport's top padding. */
   top: calc(var(--chat-position-rail-top) - var(--chat-thread-padding-top));
   width: 0;
   height: 0;
+}
+
+.chat-position-rail-anchor {
+  position: sticky;
+  display: block;
+}
+
+.chat-position-rail {
+  position: fixed;
+}
+
+.chat-position-rail[hidden] {
+  display: none;
+}
+
+.chat-position-rail[data-placement="shell"] {
+  z-index: 44;
+}
+
+.chat-position-rail[data-placement="shell"] .chat-position-rail__track {
+  left: 4px;
+}
+
+.chat-position-rail[data-placement="shell"] .chat-position-rail__marker {
+  justify-content: left;
+  padding-left: 12px;
 }
 
 .chat-position-rail__track {
@@ -48,8 +74,8 @@
     max(
       0px,
       calc(
-        100cqh + var(--chat-thread-padding-top) + var(--chat-thread-padding-bottom) -
-          var(--chat-position-rail-top) - var(--chat-position-rail-clearance)
+        var(--chat-position-rail-scrollport-height) - var(--chat-position-rail-top) -
+          var(--chat-position-rail-clearance)
       )
     )
   );
@@ -96,7 +122,7 @@
   );
 }
 
-.chat-thread:not([data-position-rail-gutter]) > .chat-position-rail {
+.chat-thread:not([data-position-rail-gutter]) > .chat-position-rail-anchor {
   display: none;
 }
 
@@ -143,30 +169,16 @@
   color: var(--text);
 }
 
-/* The wave is pointer-only; resting and keyboard-focused marks stay uniform. */
-.chat-position-rail__item:has(
-    + .chat-position-rail__item + .chat-position-rail__item + .chat-position-rail__item:hover
-  )
-  .chat-position-rail__tick,
-.chat-position-rail__item:hover
-  + .chat-position-rail__item
-  + .chat-position-rail__item
-  + .chat-position-rail__item
-  .chat-position-rail__tick {
+/* The interaction owner publishes only the three neighbors on either side. */
+.chat-position-rail__marker[data-wave-distance="3"] .chat-position-rail__tick {
   width: 12px;
 }
 
-.chat-position-rail__item:has(+ .chat-position-rail__item + .chat-position-rail__item:hover)
-  .chat-position-rail__tick,
-.chat-position-rail__item:hover
-  + .chat-position-rail__item
-  + .chat-position-rail__item
-  .chat-position-rail__tick {
+.chat-position-rail__marker[data-wave-distance="2"] .chat-position-rail__tick {
   width: 16px;
 }
 
-.chat-position-rail__item:has(+ .chat-position-rail__item:hover) .chat-position-rail__tick,
-.chat-position-rail__item:hover + .chat-position-rail__item .chat-position-rail__tick {
+.chat-position-rail__marker[data-wave-distance="1"] .chat-position-rail__tick {
   width: 24px;
 }
 
@@ -1004,7 +1016,7 @@
 }
 
 @container chat-transcript (max-width: 960px) or (max-height: 360px) {
-  .chat-position-rail {
+  .chat-position-rail-anchor {
     display: none;
   }
 }

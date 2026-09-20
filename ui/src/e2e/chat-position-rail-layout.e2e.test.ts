@@ -106,7 +106,9 @@ suite.define(() => {
           await expect
             .poll(() =>
               marks.evaluate((element) => {
-                const thread = element.closest(".chat-thread")!;
+                const thread = element.ownerDocument
+                  .querySelector(`[aria-controls="${element.closest(".chat-position-rail")!.id}"]`)!
+                  .closest(".chat-thread")!;
                 const current = element.querySelector('[aria-current="true"]');
                 const message = current
                   ? thread.querySelector(
@@ -169,7 +171,23 @@ suite.define(() => {
               const tick = element.querySelectorAll(".chat-position-rail__tick")[index]!;
               const positions = [];
               for (let frame = 0; frame < 30; frame++) {
-                const transcript = element.closest<HTMLElement>(".chat-thread")!;
+                // Sample the completed rendering update, not the rAF phase before
+                // container-query layout and ResizeObserver delivery. No delay or
+                // settling frames: the posted task follows this frame's paint.
+                await new Promise<void>((resolve) => {
+                  requestAnimationFrame(() => {
+                    const channel = new MessageChannel();
+                    channel.port1.onmessage = () => {
+                      channel.port1.close();
+                      channel.port2.close();
+                      resolve();
+                    };
+                    channel.port2.postMessage(null);
+                  });
+                });
+                const transcript = element.ownerDocument
+                  .querySelector(`[aria-controls="${element.closest(".chat-position-rail")!.id}"]`)!
+                  .closest<HTMLElement>(".chat-thread")!;
                 const style = getComputedStyle(transcript);
                 positions.push({
                   track: element.getBoundingClientRect().top,
@@ -182,9 +200,6 @@ suite.define(() => {
                     Number.parseFloat(style.paddingBottom) -
                     Number.parseFloat(style.borderTopWidth) -
                     Number.parseFloat(style.borderBottomWidth),
-                });
-                await new Promise<void>((resolve) => {
-                  requestAnimationFrame(() => resolve());
                 });
               }
               return positions;

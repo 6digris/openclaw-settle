@@ -114,8 +114,9 @@ the bottom. The rail reserves its own space so it does not cover the composer.
 Narrow screens keep the navigation drawer; native desktop apps keep their
 existing window controls. The top expand control has no resting button fill or
 border; hover adds a background and keyboard focus remains visible. In a single
-conversation, the message-history marks share the middle of the collapsed rail.
-Split views and open left- or bottom-docked panels keep their pane-local history
+main conversation, the message-history marks share the middle of the collapsed
+rail and expand only to the right on hover. Split views, swapped conversations,
+and open left-, bottom-, or vertically stacked panels keep pane-local history
 rails so each conversation retains its own navigation.
 
 Drag page destinations, including plugin-provided pages, to reorder them together.

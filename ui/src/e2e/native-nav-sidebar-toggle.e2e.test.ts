@@ -315,7 +315,7 @@ suite.define(() => {
     await expect
       .poll(() =>
         page
-          .locator("#control-ui-main .chat-position-rail")
+          .locator("#control-ui-main .chat-position-rail-anchor")
           .evaluate((element) => getComputedStyle(element).position),
       )
       .toBe("sticky");

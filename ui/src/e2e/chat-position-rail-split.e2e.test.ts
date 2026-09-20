@@ -64,18 +64,20 @@ suite.define(() => {
           await page.locator(".sidebar-brand__collapse").click();
           const a = page
             .locator("openclaw-chat-pane")
-            .filter({ has: page.locator('[data-position-marker-id="split-rail-0"]') })
+            .filter({ has: page.locator(".chat-position-rail-anchor") })
             .nth(hoverPane);
           const b = page
             .locator("openclaw-chat-pane")
-            .filter({ has: page.locator('[data-position-marker-id="split-rail-0"]') })
+            .filter({ has: page.locator(".chat-position-rail-anchor") })
             .nth(1 - hoverPane);
-          const railA = a.locator(".chat-position-rail");
-          const railB = b.locator(".chat-position-rail");
+          const railA = page.locator(
+            `#${await a.locator(".chat-position-rail-anchor").getAttribute("aria-controls")}`,
+          );
+          const railB = page.locator(
+            `#${await b.locator(".chat-position-rail-anchor").getAttribute("aria-controls")}`,
+          );
           for (const rail of [railA, railB]) {
-            await expect
-              .poll(() => rail.evaluate((element) => getComputedStyle(element).position))
-              .toBe("sticky");
+            await expect.poll(() => rail.getAttribute("data-placement")).toBe("pane");
           }
           await railA.locator(".chat-position-rail__marker").last().waitFor({ state: "visible" });
           await railB.locator(".chat-position-rail__marker").last().waitFor({ state: "visible" });

@@ -148,6 +148,10 @@ export class PositionRailGutterController implements ReactiveController {
     // The conversation region stays fixed when its composer resizes the scrollport.
     const region = viewport.closest<HTMLElement>(".chat-main__conversation") ?? viewport;
     viewport.style.setProperty("--chat-position-rail-viewport-height", `${region.clientHeight}px`);
+    viewport.style.setProperty(
+      "--chat-position-rail-scrollport-height",
+      `${viewport.clientHeight}px`,
+    );
     // Reserve room for the compact left rail and breathing space, including
     // when a saved width fills the pane.
     viewport.toggleAttribute("data-position-rail-gutter", gutter >= 68);

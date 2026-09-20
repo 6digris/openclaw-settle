@@ -167,6 +167,7 @@ function renderTranscriptShell(
       >
       ${renderChatPositionRail({
         positions: projection.positionIndex,
+        visible: props.transcriptVisible ?? true,
         transcript,
         requestUpdate: props.onRequestUpdate ?? (() => {}),
       })}

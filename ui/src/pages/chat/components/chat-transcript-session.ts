@@ -43,6 +43,8 @@ export type ChatTranscriptSession = {
   readonly expandedAssistantMessages: Map<string, AssistantMessageExpansionState>;
   readonly liveAnnouncementText: string;
   readonly scrollElementRef: (element?: Element) => void;
+  /** The owning viewport, independent of where its navigation is presented. */
+  readonly scrollElement: HTMLDivElement | null;
   render<T>(
     rows: readonly TranscriptRow<T>[],
     renderRow: (row: TranscriptRow<T>) => unknown,

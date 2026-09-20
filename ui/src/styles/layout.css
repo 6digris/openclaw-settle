@@ -202,30 +202,28 @@ html:not(
     margin-top: 12px;
   }
 
-  /* Keep the existing rail inside its transcript owner, but paint it in the
-     shell strip. Only an unsplit, visible main conversation can occupy it;
-     splits and left/bottom-docked panels retain their local gutter rails. */
+  /* Layout owns placement through the local anchor; its transcript owns the
+     single presentation outside size-query containers. */
   .chat-split-view__column:only-child
     > .chat-split-view__cell:only-child
     > .chat-pane-cache
     > .chat-pane-cache__pane--visible[aria-hidden="false"]
     .sidebar-region:not(.sidebar-region--expanded):not(
-      :is(.sidebar-region--left, .sidebar-region--bottom).sidebar-region--open
+      :is(
+        .sidebar-region--left,
+        .sidebar-region--bottom,
+        .sidebar-region--narrow
+      ).sidebar-region--open
     )
-    > .sidebar-region__primary
+    > .sidebar-region__primary[data-region="main"]
     .chat-main__conversation
     > .chat-thread
-    > .chat-position-rail {
+    > .chat-position-rail-anchor {
     /* The bottom stack swaps the old horizontal strip's toggle for Inbox,
        so its span already accounts for the optional Home button. */
     --chat-position-rail-viewport-height: max(
       0px,
       calc(100dvh - 58px - var(--shell-controls-width) - env(safe-area-inset-bottom, 0px))
-    );
-    --chat-position-rail-height: min(
-      45dvh,
-      calc(var(--chat-position-rail-count) * 12px),
-      max(0px, calc(var(--chat-position-rail-viewport-height) - 120px))
     );
 
     position: fixed;
@@ -234,16 +232,8 @@ html:not(
     left: 0;
     display: block;
 
-    .chat-position-rail__track {
-      left: 4px;
-    }
-
     @container chat-transcript (max-height: 360px) {
       display: none;
-    }
-
-    .chat-position-rail__marker {
-      justify-content: center;
     }
   }
 }
@@ -4697,7 +4687,7 @@ wa-dropdown.sidebar-identity-menu::part(menu) {
   gap: 0;
 }
 
-.content:has(.plugin-tab-embed) > * + * {
+.content:has(.plugin-tab-embed) > :where(:not(:first-child)) {
   margin-top: 0;
 }
 

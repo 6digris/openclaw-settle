@@ -1,6 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { html, nothing, render } from "lit";
+import { ref } from "lit/directives/ref.js";
 import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestTranscript } from "../chat-view.test-helpers.ts";
 import { renderChatPositionRail } from "./chat-position-rail.ts";
@@ -30,6 +31,97 @@ function message(id: string, role: string, content: unknown, seq: number, runId?
 describe("conversation position rail", () => {
   beforeEach(installTranscriptDomMocks);
   afterEach(resetTranscriptTestDom);
+
+  it("owns one shell presentation and retires its viewport visibility and keyboard bindings", async () => {
+    const shell = document.body.appendChild(document.createElement("div"));
+    shell.className = "shell";
+    const pane = shell.appendChild(document.createElement("div"));
+    const otherViewport = shell.appendChild(document.createElement("div"));
+    otherViewport.className = "chat-thread";
+    const props = threadProps("rail-shell-owner");
+    const transcript = createTestTranscript();
+    const rerender = () => {
+      render(renderChatThread(props, transcript), pane);
+      transcript.hostUpdated();
+    };
+    props.onRequestUpdate = rerender;
+    try {
+      rerender();
+      transcript.hostConnected();
+      await Promise.resolve();
+      const anchor = pane.querySelector<HTMLElement>(".chat-position-rail-anchor")!;
+      const viewport = pane.querySelector<HTMLElement>(".chat-thread")!;
+      const rail = shell.querySelector<HTMLElement>(".chat-position-rail")!;
+      expect(rail.parentElement).toBe(shell);
+      expect(pane.querySelector(".chat-position-rail")).toBeNull();
+      expect(anchor.getAttribute("aria-controls")).toBe(rail.id);
+      let visible = true;
+      Object.defineProperty(anchor, "getClientRects", {
+        value: () => (visible ? [new DOMRect(20, 60, 0, 0)] : []),
+      });
+      Object.defineProperty(viewport, "clientHeight", { configurable: true, value: 600 });
+      const observer = [...resizeObservers].find((o) => o.observes(anchor))!;
+      expect(observer.observes(viewport)).toBe(true);
+      expect(observer.observes(otherViewport)).toBe(false);
+      observer.emitTarget(viewport, 1200, 600);
+      expect(rail.hidden).toBe(false);
+      Object.defineProperty(viewport, "getClientRects", {
+        value: () => [new DOMRect(0, 0, 1200, 600)],
+      });
+      rail.querySelector<HTMLButtonElement>(".chat-position-rail__marker")!.focus();
+      visible = false;
+      observer.emitTarget(viewport, 1200, 350);
+      expect(rail.hidden).toBe(true); // synchronous RO delivery, not a later rAF
+      expect(document.activeElement).toBe(viewport);
+      visible = true;
+      observer.emitTarget(viewport, 1200, 600);
+      const marker = rail.querySelector<HTMLButtonElement>(".chat-position-rail__marker")!;
+      anchor.focus();
+      expect(document.activeElement).toBe(marker);
+      expect(rail.querySelector('[tabindex="0"]')).toBeNull();
+      expect(anchor.tabIndex).toBe(0);
+      marker.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }),
+      );
+      expect(document.activeElement).toBe(anchor);
+      viewport.focus();
+      anchor.focus();
+      expect(document.activeElement).toBe(marker);
+      marker.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Tab",
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      expect(document.activeElement).toBe(viewport);
+      rerender();
+      await Promise.resolve();
+      expect(shell.querySelectorAll(".chat-position-rail")).toHaveLength(1);
+      expect(shell.querySelector(".chat-position-rail")).toBe(rail);
+      marker.focus();
+      props.transcriptVisible = false;
+      rerender();
+      observer.emitTarget(viewport, 1200, 600);
+      expect(rail.hidden).toBe(true);
+      expect(document.activeElement).toBe(viewport);
+      props.transcriptVisible = true;
+      rerender();
+      observer.emitTarget(viewport, 1200, 600);
+      marker.focus();
+      render(nothing, pane);
+      expect(rail.isConnected).toBe(false);
+      expect(observer.observes(viewport)).toBe(false);
+      expect(shell.querySelector(".chat-position-rail")).toBeNull();
+      observer.emitTarget(viewport, 1200, 600);
+      expect(shell.querySelector(".chat-position-rail")).toBeNull();
+    } finally {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+      transcript.hostDisconnected();
+      shell.remove();
+    }
+  });
 
   it.each(["resize", "focus", "focus-resize", "pointer", "reader"] as const)(
     "keeps the reader's rail position through %s updates",
@@ -64,12 +156,17 @@ describe("conversation position rail", () => {
             vi.spyOn(session, "activeMessageId").mockImplementation(activeMessage);
             return html`<div class="chat-thread">
               ${renderChatPositionRail({ positions, transcript: session, requestUpdate: () => {} })}
+              <div class="chat-thread-inner" ${ref(session.scrollElementRef)}></div>
             </div>`;
           },
         ),
         container,
       );
+      transcript.hostConnected();
+      await Promise.resolve();
       const root = container.querySelector<HTMLElement>(".chat-thread")!;
+      const anchor = container.querySelector<HTMLElement>(".chat-position-rail-anchor")!;
+      Object.defineProperty(anchor, "getClientRects", { value: () => [new DOMRect(0, 0, 0, 0)] });
       const marks = container.querySelector<HTMLElement>(".chat-position-rail__marks")!;
       const markers = [...marks.querySelectorAll<HTMLButtonElement>(".chat-position-rail__marker")];
       let height = 597;
@@ -133,7 +230,8 @@ describe("conversation position rail", () => {
           await flush();
           expect(marks.scrollTop).toBeLessThan(677);
         } else if (scenario === "focus") {
-          document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+          // Establish document keyboard modality independently of the previous focus target.
+          document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
           markers[40]!.focus();
           expect(markers[40]!.matches(":focus-visible")).toBe(true);
           await flush();
@@ -151,7 +249,8 @@ describe("conversation position rail", () => {
           await flush();
           expect(marks.scrollTop).toBe(677);
         } else if (scenario === "focus-resize") {
-          document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+          // Establish document keyboard modality independently of the previous focus target.
+          document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
           markers[79]!.focus();
           expect(markers[79]!.matches(":focus-visible")).toBe(true);
           height = 554;
@@ -223,6 +322,7 @@ describe("conversation position rail", () => {
     try {
       rerender();
       transcript.hostConnected();
+      await Promise.resolve();
       const root = container.querySelector<HTMLElement>(".chat-thread");
       const marks = container.querySelector<HTMLElement>(".chat-position-rail__marks");
       const original = container.querySelector<HTMLElement>(
@@ -406,7 +506,7 @@ describe("conversation position rail", () => {
     }
   });
 
-  it("keeps focused previews after pointer exit and resets interaction when the session changes", () => {
+  it("keeps focused previews after pointer exit and resets interaction when the session changes", async () => {
     const messages = Array.from({ length: 40 }, (_, index) =>
       message(
         `message-${index}`,
@@ -432,6 +532,7 @@ describe("conversation position rail", () => {
     try {
       rerender();
       transcript.hostConnected();
+      await Promise.resolve();
       expect(markers()).toHaveLength(40);
       // Rail wheel input belongs to its scrollport, never transcript history.
       for (const type of ["wheel", "touchstart", "touchmove"]) {
@@ -492,6 +593,7 @@ describe("conversation position rail", () => {
       document.dispatchEvent(escapeAfterRemoval);
       expect(escapeAfterRemoval.defaultPrevented).toBe(false);
       rerender();
+      await Promise.resolve();
       expect(preview()).toBeUndefined();
       props.sessionKey = "agent:main:second";
       rerender();
@@ -515,7 +617,7 @@ describe("conversation position rail", () => {
     { role: "assistant", senderName: "Alice Example", label: "Assistant message" },
   ])(
     "renders safe Markdown and attribution in $role previews ($label)",
-    ({ role, senderName, label }) => {
+    async ({ role, senderName, label }) => {
       const messages = [
         message(
           "formatted",
@@ -538,6 +640,7 @@ describe("conversation position rail", () => {
       try {
         rerender();
         transcript.hostConnected();
+        await Promise.resolve();
         container.querySelector<HTMLButtonElement>(".chat-position-rail__marker")!.focus();
         const preview = container.querySelector(".chat-position-rail__preview-copy")!;
         expect(container.querySelector(".chat-position-rail__preview-label")?.textContent).toBe(
@@ -560,7 +663,7 @@ describe("conversation position rail", () => {
     },
   );
 
-  it("indexes three assistant messages as one run when history starts mid-run", () => {
+  it("indexes three assistant messages as one run when history starts mid-run", async () => {
     // A paginated history window can omit the user boundary of an existing run.
     const messages = [
       message("first", "assistant", "Checking the existing style", 1, "run-partial"),
@@ -605,6 +708,7 @@ describe("conversation position rail", () => {
     try {
       props.onRequestUpdate();
       transcript.hostConnected();
+      await Promise.resolve();
       const markers = container.querySelectorAll<HTMLButtonElement>(".chat-position-rail__marker");
       expect(markers).toHaveLength(1);
       markers[0]!.focus();
@@ -655,6 +759,7 @@ describe("conversation position rail", () => {
     try {
       rerender();
       transcript.hostConnected();
+      await Promise.resolve();
       expect(container.querySelectorAll(".chat-position-rail__marker")).toHaveLength(1);
       props.stream = "Draft response";
       rerender();
