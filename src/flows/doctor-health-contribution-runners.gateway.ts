@@ -1,6 +1,7 @@
 import { note } from "../../packages/terminal-core/src/note.js";
 import { shouldManageGatewayService } from "../commands/doctor-service-repair-policy.js";
 import { isDefaultInstallIdentity } from "../config/paths.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { NON_DEFAULT_INSTALL_SERVICE_SKIP_REASON } from "../infra/gateway-supervision.js";
 import { runCoreContributionHealth } from "./doctor-health-contribution-core.js";
 import { runWriteConfigHealth } from "./doctor-health-contribution-runners.config.js";
@@ -16,6 +17,25 @@ export async function runCommandOwnerHealth(ctx: DoctorHealthFlowContext): Promi
 export async function runClaudeCliHealth(ctx: DoctorHealthFlowContext): Promise<void> {
   const { noteClaudeCliHealth } = await import("../commands/doctor-claude-cli.js");
   noteClaudeCliHealth(ctx.cfg);
+}
+
+export async function writeDoctorGatewayConfig(
+  ctx: DoctorHealthFlowContext,
+  nextConfig: OpenClawConfig,
+): Promise<OpenClawConfig> {
+  const previous = ctx.cfg;
+  ctx.cfg = nextConfig;
+  try {
+    // Service installation needs the token persisted and Doctor's saved baseline
+    // advanced. A normal-return refusal must not authorize the service change.
+    if (!(await runWriteConfigHealth(ctx, { runPostWriteRepairs: false }))) {
+      throw new Error("Doctor did not persist the gateway token; service repair was skipped.");
+    }
+    return ctx.cfg;
+  } catch (error) {
+    ctx.cfg = previous;
+    throw error;
+  }
 }
 
 export async function runGatewayServicesHealth(ctx: DoctorHealthFlowContext): Promise<void> {
@@ -51,23 +71,7 @@ export async function runGatewayServicesHealth(ctx: DoctorHealthFlowContext): Pr
     ctx.prompter,
     {
       allowExecSecretRefs: ctx.options.allowExec === true,
-      async writeConfig(nextConfig) {
-        const previous = ctx.cfg;
-        ctx.cfg = nextConfig;
-        try {
-          // Service installation needs the token persisted and Doctor's saved baseline
-          // advanced. A normal-return refusal must not authorize the service change.
-          if (!(await runWriteConfigHealth(ctx, { runPostWriteRepairs: false }))) {
-            throw new Error(
-              "Doctor did not persist the gateway token; service repair was skipped.",
-            );
-          }
-          return ctx.cfg;
-        } catch (error) {
-          ctx.cfg = previous;
-          throw error;
-        }
-      },
+      writeConfig: (nextConfig) => writeDoctorGatewayConfig(ctx, nextConfig),
     },
   );
   await noteMacLaunchAgentOverrides();
@@ -96,7 +100,7 @@ export async function runStartupChannelMaintenanceHealth(
 export async function runSecurityHealth(ctx: DoctorHealthFlowContext): Promise<void> {
   const { noteInstallPolicyHealth } = await import("../commands/doctor-install-policy.js");
   const { noteSecurityWarnings } = await import("../commands/doctor-security.js");
-  const { securityAuditFindingToHealthFinding } = await import("./doctor-core-checks.js");
+  const { securityAuditFindingToHealthFinding } = await import("./health-check-adapter.js");
   const findings = await noteSecurityWarnings(ctx.cfg);
   recordDoctorHealthWarnings(ctx, findings.map(securityAuditFindingToHealthFinding));
   await noteInstallPolicyHealth(ctx.cfg, { deep: ctx.options.deep === true, env: ctx.env });
