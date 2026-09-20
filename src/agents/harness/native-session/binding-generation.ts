@@ -98,7 +98,7 @@ export function captureNativeSessionGenerationAuthority(params: NativeSessionGen
     state,
     previousSessionId,
     assertHostCurrent,
-    assertCurrent() {
+    assertCurrent(this: void) {
       params.assertCurrent?.();
       assertHostCurrent();
     },

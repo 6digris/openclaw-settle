@@ -14,7 +14,7 @@ import { resolveCodexUpstreamForkBoundary } from "./upstream-fork-boundary.js";
 import { forkCodexUpstreamSession } from "./upstream-session-fork.js";
 import { createForkTestRuntime, forkResponse } from "./upstream-session-fork.test-support.js";
 
-vi.mock("../../../../src/sessions/session-upstream-links.js", async (importOriginal) => ({
+vi.mock("openclaw/plugin-sdk/session-catalog", async (importOriginal) => ({
   ...(await importOriginal()),
   deleteSessionUpstreamLink: vi.fn(),
   upsertSessionUpstreamLink: vi.fn(() => true),
