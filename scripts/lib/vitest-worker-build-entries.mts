@@ -1,3 +1,4 @@
+import { codexCatalogPageWorkerEntrypoint } from "../../extensions/codex/catalog-page-worker-entrypoint.ts";
 import { logbookSqliteBackendEntrypoint } from "../../extensions/logbook/src/sqlite-backend-entrypoint.test-support.ts";
 import { memoryPublicationFaultEntrypoint } from "../../extensions/memory-core/src/memory/manager-publication-fault-entrypoint.test-support.ts";
 import { qaGatewayCleanupRuntimeEntrypoint } from "../../extensions/qa-lab/src/gateway-child-artifacts-runtime.test-support.ts";
@@ -12,6 +13,7 @@ import { bashOutputSpillEntrypoints } from "../../src/agents/sessions/bash-outpu
 import {
   cliRecoveryEntrypoints,
   gatewayDirectStopEntrypoints,
+  updateExecutorEntrypoints,
   stateDirGatewayFixtureEntrypoint,
 } from "../../src/cli/cli-entrypoint.test-support.ts";
 import { updateExecutorNativeEntrypoints } from "../../src/cli/update-cli/update-command-executor-native-runtime.test-support.ts";
@@ -46,6 +48,21 @@ import { nativeSchtasksIntegrationEnabled } from "./vitest-worker-declarations.m
 
 // These fixture hooks require physical module boundaries and complete namespaces.
 export const legacyFinalizerBuildSources = [
+  "src/cli/update-finalization-output.test-support.ts",
+  "src/commands/doctor.ts",
+  "src/config/config.ts",
+  "src/config/paths.ts",
+  "src/plugins/installed-plugin-index-records.ts",
+  "src/plugins/plugin-lifecycle-lease.ts",
+  "src/cli/update-cli/update-command-config-snapshot.ts",
+  "src/cli/update-cli/update-command-config.ts",
+  "src/cli/update-cli/update-command-plugins.ts",
+  "src/cli/update-cli/update-finalization-lifecycle.ts",
+  "src/cli/update-cli/update-command-report.ts",
+  "src/commands/doctor-service-repair-policy.ts",
+  "src/cli/update-cli/update-command-service-maintenance.ts",
+  "src/daemon/service.ts",
+  "src/cli/daemon-cli/restart-health.ts",
   "src/commands/doctor/shared/legacy-config-binding-repair.runtime.ts",
   "src/cli/update-cli/update-command-legacy-finalize.test-support.ts",
   "src/infra/update-migrated-finalize.worker.ts",
@@ -66,6 +83,7 @@ export const vitestWorkerBuildEntries = {
     "src/commands/doctor/shared/legacy-config-binding-repair.runtime.ts",
   ...createRuntimeProcessBuildEntries([
     ...runtimeProcessBuildEntrypoints,
+    codexCatalogPageWorkerEntrypoint,
     agentWorkerStoreFixtureEntrypoint,
     memoryPublicationFaultEntrypoint,
     ...Object.values(triageTestRuntimeEntrypoints),
@@ -80,6 +98,7 @@ export const vitestWorkerBuildEntries = {
     ...groqSetupSdkEntrypoints,
     ...Object.values(cliRecoveryEntrypoints),
     ...Object.values(updateExecutorNativeEntrypoints),
+    ...Object.values(updateExecutorEntrypoints),
     ...Object.values(gatewayDirectStopEntrypoints),
     stateDirGatewayFixtureEntrypoint,
     ...Object.values(doctorConfigRuntimeEntrypoints),

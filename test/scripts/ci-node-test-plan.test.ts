@@ -32,12 +32,14 @@ import {
 import { expectNoNodeFsScans } from "../../src/test-utils/fs-scan-assertions.js";
 import { listGitTrackedFiles, sortRepoPaths, toRepoPath } from "../../src/test-utils/repo-files.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+import { createAgentsCoreIsolatedVitestConfig } from "../vitest/vitest.agents-core-isolated.config.ts";
 import { createAgentsCoreVitestConfig } from "../vitest/vitest.agents-core.config.ts";
 import {
   agentVitestProjectOwners,
   embeddedAgentVitestProjectOwners,
 } from "../vitest/vitest.agents-paths.mjs";
 import { createAgentsSupportVitestConfig } from "../vitest/vitest.agents-support.config.ts";
+import { createAgentsToolsVitestConfig } from "../vitest/vitest.agents-tools.config.ts";
 import { createAgentsVitestConfig } from "../vitest/vitest.agents.config.ts";
 import { cliProcessTestFiles } from "../vitest/vitest.cli-process-paths.mjs";
 import { createCliProcessVitestConfig } from "../vitest/vitest.cli-process.config.ts";
@@ -1824,6 +1826,11 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     // The embedded composite expands into per-config groups and stripes its
     // serial base config; whole-config runtime consumers may also be striped.
     const embeddedBaseOwnerFiles = ownerScopedTestFiles(agentVitestProjectOwners.embedded);
+    const supportOwnerFiles = ownerScopedTestFiles(agentVitestProjectOwners.support);
+    const cliProcessOwnerFiles = listMatchedTestFiles(createCliProcessVitestConfig({}));
+    const runtimeConfigOwnerFiles = listMatchedTestFiles(createRuntimeConfigVitestConfig({}));
+    const pluginSdkOwnerFiles = listMatchedTestFiles(createPluginSdkVitestConfig({}));
+    const pluginSdkLightOwnerFiles = listMatchedTestFiles(createPluginSdkLightVitestConfig({}));
     const gatewayMethodsOwnerFiles = [
       ...listMatchedTestFiles(createGatewayMethodsVitestConfig({})),
       ...listMatchedTestFiles(createGatewayMethodsIsolatedVitestConfig({})),
@@ -1902,16 +1909,11 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         if (owner.includePatterns) {
           expect(actual.toSorted(), owner.shardName).toEqual(owner.includePatterns.toSorted());
         } else if (owner.shardName === "agentic-agents-support") {
-          const expected = ownerScopedTestFiles(agentVitestProjectOwners.support);
-          expect(actual.toSorted()).toEqual(expected.toSorted());
+          expect(actual.toSorted()).toEqual(supportOwnerFiles.toSorted());
         } else if (owner.shardName === "agentic-cli-process") {
-          expect(actual.toSorted()).toEqual(
-            listMatchedTestFiles(createCliProcessVitestConfig({})).toSorted(),
-          );
+          expect(actual.toSorted()).toEqual(cliProcessOwnerFiles.toSorted());
         } else if (owner.shardName === "core-runtime-config") {
-          expect(actual.toSorted()).toEqual(
-            listMatchedTestFiles(createRuntimeConfigVitestConfig({})).toSorted(),
-          );
+          expect(actual.toSorted()).toEqual(runtimeConfigOwnerFiles.toSorted());
         } else if (owner.shardName === "agentic-gateway-methods") {
           expect(actual.toSorted()).toEqual(gatewayMethodsOwnerFiles.toSorted());
         } else if (owner.shardName === "agentic-gateway-server-isolated") {
@@ -1933,10 +1935,10 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           embeddedBaseOwnerFiles,
           gatewayMethodsOwnerFiles,
           gatewayServerIsolatedOwnerFiles,
-          listMatchedTestFiles(createCliProcessVitestConfig({})),
-          listMatchedTestFiles(createPluginSdkVitestConfig({})),
-          listMatchedTestFiles(createPluginSdkLightVitestConfig({})),
-          listMatchedTestFiles(createRuntimeConfigVitestConfig({})),
+          cliProcessOwnerFiles,
+          pluginSdkOwnerFiles,
+          pluginSdkLightOwnerFiles,
+          runtimeConfigOwnerFiles,
         )
         .toSorted((a, b) => a.localeCompare(b)),
     );
@@ -1951,10 +1953,10 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           embeddedBaseOwnerFiles,
           gatewayMethodsOwnerFiles,
           gatewayServerIsolatedOwnerFiles,
-          listMatchedTestFiles(createCliProcessVitestConfig({})),
-          listMatchedTestFiles(createPluginSdkVitestConfig({})),
-          listMatchedTestFiles(createPluginSdkLightVitestConfig({})),
-          listMatchedTestFiles(createRuntimeConfigVitestConfig({})),
+          cliProcessOwnerFiles,
+          pluginSdkOwnerFiles,
+          pluginSdkLightOwnerFiles,
+          runtimeConfigOwnerFiles,
         )
         .toSorted((a, b) => a.localeCompare(b)),
     );
@@ -3428,13 +3430,38 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     expect(new Set(actual).size).toBe(actual.length);
   });
 
-  it("preserves Gateway runner hooks while assigning database consumers to forks", () => {
+  it.each(["github", "blacksmith", "hybrid"] as const)(
+    "bounds serial storage-state files per physical %s job without losing coverage",
+    (runnerBackend) => {
+      const owner = "core-runtime-infra-storage-state";
+      const expected = defaultShards.find((shard) => shard.shardName === owner)!.includePatterns!;
+      const plan = getCommittedCompactPlan("pull-request", runnerBackend);
+      const actual: string[] = [];
+      for (const job of plan) {
+        const files = job.groups
+          .filter((group) => group.shard_name.replace(/-hosted-\d+$/u, "") === owner)
+          .flatMap((group) => group.includePatterns ?? []);
+        expect(files.length, job.shardName).toBeLessThanOrEqual(64);
+        actual.push(...files);
+      }
+      expect(actual.toSorted()).toEqual(expected.toSorted());
+      expect(new Set(actual).size).toBe(actual.length);
+      expect(plan.length).toBeLessThanOrEqual(80);
+      const config = createInfraVitestConfig({});
+      expect(config.test?.fileParallelism).toBe(false);
+      expect(config.test?.isolate).toBe(true);
+      expect(config.test?.pool).toBe(diagnosticForksPool);
+    },
+  );
+
+  it("preserves Gateway runner hooks while assigning database consumers to parallel forks", () => {
     const worker = createGatewayDatabaseWorkersVitestConfig({});
     const core = createGatewayCoreVitestConfig({});
     const server = createGatewayServerVitestConfig({});
     const methods = createGatewayMethodsVitestConfig({});
     expect(methods.test?.pool).toBe("forks");
     expect(worker.test?.pool).toBe("forks");
+    expect(worker.test?.fileParallelism).toBe(true);
     expect(core.test?.isolate).toBe(true);
     for (const shared of [worker, server, methods]) {
       expect(shared.test?.isolate).toBe(false);
@@ -3444,6 +3471,12 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       expect(worker.test?.setupFiles).toEqual(previous.test?.setupFiles);
     }
     expect(listMatchedTestFiles(worker)).toEqual(gatewayDatabaseWorkerTestFiles);
+    expect(listMatchedTestFiles(worker)).toEqual(
+      expect.arrayContaining([
+        "src/gateway/session-utils.queued-collector-admission.test.ts",
+        "src/gateway/session-utils.queued-collector.test.ts",
+      ]),
+    );
     const former = new Set([core, server, methods].flatMap(listMatchedTestFiles));
     for (const file of gatewayDatabaseWorkerTestFiles) {
       expect(former.has(file), file).toBe(false);
@@ -3467,15 +3500,25 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     const infra = createInfraVitestConfig({});
     const support = createAgentsSupportVitestConfig({});
     expect(infra.test?.pool).toBe(diagnosticForksPool);
+    expect(infra.test?.isolate).toBe(true);
     expect(infra.test?.setupFiles).toEqual(support.test?.setupFiles);
     const admitted = new Set(listMatchedTestFiles(infra));
-    expect(admitted.has("src/agents/sessions/sdk.auth-migration.test.ts")).toBe(true);
+    for (const file of [
+      "src/agents/sessions/sdk.auth-migration.test.ts",
+      "src/agents/subagents/spawn/subagent-spawn.in-process-gateway.test.ts",
+      "src/agents/subagents/spawn/subagent-spawn.authority.test.ts",
+      "src/agents/tools/swarm-tools.integration.test.ts",
+    ]) {
+      expect(admitted.has(file), file).toBe(true);
+    }
     const former = new Set(
       [
         createUnitVitestConfigWithOptions({}),
         createUnitFastVitestConfig(),
         createAgentsCoreVitestConfig({}),
+        createAgentsCoreIsolatedVitestConfig({}),
         support,
+        createAgentsToolsVitestConfig({}),
         createAgentsVitestConfig({}),
         createPluginSdkLightVitestConfig({}),
         createPluginSdkVitestConfig({}),
