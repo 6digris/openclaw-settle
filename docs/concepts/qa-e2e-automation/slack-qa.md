@@ -39,10 +39,12 @@ run once; positive `retryCount` values are rejected.
 Readiness checks the actual lease's identities, shared workspace, channel access,
 Gateway connection, and advertised scopes. The full lifecycle additionally needs
 driver `reactions:read`, `reactions:write`, `files:read`, and `files:write`.
-The minimal driver manifest below does not grant those optional capabilities.
-A missing scope blocks its operation and full lifecycle proof, not basic text
-flows. Ask the app owner to provision an appropriately scoped QA app; the runner
-does not grant permissions or rotate credentials to find a passing result.
+The driver manifest below includes those capabilities. Existing installations
+need the app owner to add missing scopes and reinstall the app before rerunning
+the lifecycle. A missing scope blocks its operation and full lifecycle proof,
+not basic text flows. The runner does not grant permissions or rotate credentials
+to find a passing result. Bot OAuth scopes, not workspace-admin privileges,
+authorize these fixture operations.
 
 The driver uses Web API calls; the SUT alone owns Socket Mode. Stored
 message/file/reaction readback proves native state, while a correlated SUT reply
@@ -198,7 +200,16 @@ then _Install to Workspace_:
   },
   "oauth_config": {
     "scopes": {
-      "bot": ["chat:write", "channels:history", "groups:history", "users:read"]
+      "bot": [
+        "channels:history",
+        "chat:write",
+        "files:read",
+        "files:write",
+        "groups:history",
+        "reactions:read",
+        "reactions:write",
+        "users:read"
+      ]
     }
   },
   "settings": {
@@ -208,8 +219,8 @@ then _Install to Workspace_:
 ```
 
 Copy the _Bot User OAuth Token_ (`xoxb-...`) - that becomes
-`driverBotToken`. The driver only needs to post messages and identify
-itself; no events, no Socket Mode.
+`driverBotToken`. The driver can read/write fixture messages, reactions, and files;
+it needs neither event subscriptions nor Socket Mode.
 
 **2. Create the SUT app**
 
