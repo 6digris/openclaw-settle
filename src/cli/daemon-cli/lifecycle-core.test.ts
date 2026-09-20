@@ -55,6 +55,7 @@ vi.mock("../../runtime.js", () => ({
 vi.mock("../../infra/restart-intent.js", () => ({
   clearGatewayRestartIntentSync: () => clearGatewayRestartIntentSync(),
   writeGatewayRestartIntentSync: (opts: unknown) => writeGatewayRestartIntentSync(opts),
+  writeGatewayServiceRestartIntentSync: (opts: unknown) => writeGatewayRestartIntentSync(opts),
 }));
 
 vi.mock("./lifecycle-audit.js", () => ({
@@ -479,11 +480,14 @@ describe("runServiceRestart token drift", () => {
       }),
     );
     expect(service.restart).not.toHaveBeenCalled();
-    expect(writeGatewayRestartIntentSync).toHaveBeenCalledWith({
-      targetPid: 1234,
-      reason: "gateway.restart",
-      intent: { waitMs: 2_500 },
-    });
+    expect(writeGatewayRestartIntentSync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env: expect.any(Object),
+        targetPid: 1234,
+        reason: "gateway.restart",
+        intent: { waitMs: 2_500 },
+      }),
+    );
     expect(readJsonLog<{ result?: string; message?: string }>()).toMatchObject({
       result: "restarted",
       message: "Gateway service definition repaired and restarted.",
@@ -729,10 +733,13 @@ describe("runServiceRestart token drift", () => {
 
     await runServiceRestart(createServiceRunArgs());
 
-    expect(writeGatewayRestartIntentSync).toHaveBeenCalledWith({
-      targetPid: 1234,
-      reason: "gateway.restart",
-    });
+    expect(writeGatewayRestartIntentSync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env: expect.any(Object),
+        targetPid: 1234,
+        reason: "gateway.restart",
+      }),
+    );
     expect(clearGatewayRestartIntentSync).not.toHaveBeenCalled();
     expect(service.restart).toHaveBeenCalledTimes(1);
   });
@@ -769,13 +776,16 @@ describe("runServiceRestart token drift", () => {
       },
     });
 
-    expect(writeGatewayRestartIntentSync).toHaveBeenCalledWith({
-      targetPid: 1234,
-      reason: "gateway.restart",
-      intent: {
-        waitMs: 2_500,
-      },
-    });
+    expect(writeGatewayRestartIntentSync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env: expect.any(Object),
+        targetPid: 1234,
+        reason: "gateway.restart",
+        intent: {
+          waitMs: 2_500,
+        },
+      }),
+    );
   });
 
   it("clears restart intent when service-manager restart fails before signaling", async () => {
@@ -785,10 +795,13 @@ describe("runServiceRestart token drift", () => {
 
     await expect(runServiceRestart(createServiceRunArgs())).rejects.toThrow("__exit__:1");
 
-    expect(writeGatewayRestartIntentSync).toHaveBeenCalledWith({
-      targetPid: 1234,
-      reason: "gateway.restart",
-    });
+    expect(writeGatewayRestartIntentSync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env: expect.any(Object),
+        targetPid: 1234,
+        reason: "gateway.restart",
+      }),
+    );
     expect(clearGatewayRestartIntentSync).toHaveBeenCalledOnce();
   });
 
