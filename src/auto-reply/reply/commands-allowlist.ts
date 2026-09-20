@@ -489,6 +489,7 @@ export const handleAllowlistCommand: CommandHandler = async (params, allowTextCo
           action: parsed.action,
           entry: parsed.entry,
           applyConfigEdit,
+          assertCurrent: params.command.assertOwnerCurrent,
         });
       } catch (error) {
         if (error instanceof AutoReplyConfigMutationError) {

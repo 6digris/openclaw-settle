@@ -23,7 +23,7 @@ import { logVerbose } from "../../globals.js";
 import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
 import type { SessionBindingRecord } from "../../infra/outbound/session-binding-service.js";
 import {
-  clearRestartSentinel,
+  clearRestartSentinelIfRevision,
   formatDoctorNonInteractiveHint,
   type RestartSentinelPayload,
   writeRestartSentinel,
@@ -526,7 +526,7 @@ export const handleRestartCommand: CommandHandler = defineGatewayControlCommand(
     const hasRestartListener = process.listenerCount("SIGUSR2") > 0;
     const sentinelPayload = buildRestartCommandSentinel(params);
     if (hasRestartListener) {
-      let sentinelWritten = false;
+      let sentinelRevision: number | undefined;
       scheduleGatewayRestart({
         reason: "/restart",
         // The routed restart acknowledgement and scheduler must own the same
@@ -535,12 +535,11 @@ export const handleRestartCommand: CommandHandler = defineGatewayControlCommand(
         emitHooks: sentinelPayload
           ? {
               beforeEmit: async () => {
-                await writeRestartSentinel(sentinelPayload);
-                sentinelWritten = true;
+                sentinelRevision = (await writeRestartSentinel(sentinelPayload)).revision;
               },
               afterEmitRejected: async () => {
-                if (sentinelWritten) {
-                  await clearRestartSentinel();
+                if (sentinelRevision !== undefined) {
+                  await clearRestartSentinelIfRevision(sentinelRevision);
                 }
               },
             }
@@ -550,11 +549,10 @@ export const handleRestartCommand: CommandHandler = defineGatewayControlCommand(
         "⚙️ Restarting OpenClaw in-process (SIGUSR2); back in a few seconds.",
       );
     }
-    let sentinelWritten = false;
+    let sentinelRevision: number | undefined;
     try {
       if (sentinelPayload) {
-        await writeRestartSentinel(sentinelPayload);
-        sentinelWritten = true;
+        sentinelRevision = (await writeRestartSentinel(sentinelPayload)).revision;
       }
     } catch (err) {
       logVerbose(`failed to write /restart sentinel: ${String(err)}`);
@@ -562,10 +560,17 @@ export const handleRestartCommand: CommandHandler = defineGatewayControlCommand(
         "⚠️ Restart failed: could not persist the post-restart acknowledgement.",
       );
     }
+    const nonOwner = rejectNonOwnerCommand(params, "/restart");
+    if (nonOwner) {
+      if (sentinelRevision !== undefined) {
+        await clearRestartSentinelIfRevision(sentinelRevision);
+      }
+      return nonOwner;
+    }
     const restartMethod = triggerOpenClawRestart();
     if (!restartMethod.ok) {
-      if (sentinelWritten) {
-        await clearRestartSentinel();
+      if (sentinelRevision !== undefined) {
+        await clearRestartSentinelIfRevision(sentinelRevision);
       }
       const detail = restartMethod.detail ? ` Details: ${restartMethod.detail}` : "";
       return sessionCommandReply(`⚠️ Restart failed (${restartMethod.method}).${detail}`);

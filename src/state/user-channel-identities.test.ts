@@ -54,13 +54,15 @@ it("does not create state or identity tables while resolving absent links", () =
   expect(tableExists(db, "user_profile_identities")).toBe(false);
 });
 
-it("keeps stable senders scoped to the channel account and refuses conflicting assignments", () => {
+it("keeps stable senders scoped to the channel account and refuses conflicting assignments", async () => {
   const options = stateOptions();
   const ada = ensureProfileForEmail("ada@example.test", options);
   const grace = ensureProfileForEmail("grace@example.test", options);
   const link = { profileId: ada.id, identity };
   expect(linkUserChannelIdentity(ada.id, identity, options)).toEqual(link);
   expect(linkUserChannelIdentity(ada.id, identity, options)).toEqual(link);
+  await closeOpenClawStateDatabaseAsync();
+  expect(resolveUserChannelIdentity(identity, options)?.profileId).toBe(ada.id);
   expect(listUserChannelIdentities(ada.id, options)).toEqual([link]);
   expect(() => linkUserChannelIdentity(grace.id, identity, options)).toThrow(
     "linked to another profile",
