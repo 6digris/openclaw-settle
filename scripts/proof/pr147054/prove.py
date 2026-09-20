@@ -107,6 +107,53 @@ def bounded_env(cell, profile):
     return env
 
 
+def capture_probe_environment_diagnostics(cli, package, task, env, cell):
+    # Failure-only comparisons, not a retry or an environment change for the proof.
+    # Bracket variants with the original env so cache warm-up cannot masquerade as a fix.
+    native_keys = ('LOCALAPPDATA', 'APPDATA', 'USERNAME', 'USERDOMAIN', 'HOMEDRIVE',
+                   'HOMEPATH', 'ALLUSERSPROFILE', 'ProgramW6432', 'CommonProgramFiles',
+                   'CommonProgramFiles(x86)', 'CommonProgramW6432', 'PSModuleAnalysisCachePath')
+    source = {key.casefold(): (key, value) for key, value in os.environ.items()
+              if key.casefold() in {name.casefold() for name in native_keys}}
+    script = """
+import {pathToFileURL} from 'node:url';
+const m = await import(pathToFileURL(process.argv[1]));
+const started = performance.now();
+const state = m._(process.argv[2], 5000);
+console.log(JSON.stringify({state, elapsedMs: performance.now() - started, probeBudgetMs: 5000}));
+"""
+    args = [cli[0], '--input-type=module', '-e', script,
+            str(package / 'dist/schtasks-layout-ClZuVTuI.mjs'), task]
+    rows = []
+    for label, keys in (('baseline-before', ()), ('native-localappdata', ('LOCALAPPDATA',)),
+                        ('baseline-between', ()), ('native-bootstrap', native_keys),
+                        ('baseline-after', ())):
+        child_env = dict(env)
+        restored = []
+        for name in keys:
+            inherited = source.get(name.casefold())
+            if inherited is None:
+                continue
+            key, value = inherited
+            if any(k.casefold() == key.casefold() and v == value
+                   for k, v in child_env.items()):
+                continue
+            child_env = {k: v for k, v in child_env.items() if k.casefold() != key.casefold()}
+            child_env[key] = value
+            restored.append(key)
+        row = {'label': label, 'restoredKeys': restored, 'probeBudgetMs': 5000}
+        started = time.monotonic()
+        try:
+            p = subprocess.run(args, capture_output=True, text=True, env=child_env,
+                               cwd=cell, timeout=30)
+            row.update(exitCode=p.returncode, stdout=p.stdout, stderr=p.stderr)
+        except Exception as exc:
+            row['error'] = type(exc).__name__ + ': ' + str(exc)
+        row['elapsedMs'] = (time.monotonic() - started) * 1000
+        rows.append(row)
+    return {'scope': 'read-only failure diagnostics; never lifecycle acceptance', 'probes': rows}
+
+
 def capture_install_diagnostics(cli, package, task, env, cell):
     # Failure-only, read-only observations. Never retry installation or reinterpret failure.
     module = package / 'dist/schtasks-layout-ClZuVTuI.mjs'
@@ -139,6 +186,10 @@ console.log(JSON.stringify({scope: 'read-only after failed install; not lifecycl
             result[name] = {'exitCode': p.returncode, 'stdout': p.stdout, 'stderr': p.stderr}
         except Exception as exc:
             result[name] = {'error': type(exc).__name__ + ': ' + str(exc)}
+    try:
+        result['probeEnvironment'] = capture_probe_environment_diagnostics(cli, package, task, env, cell)
+    except Exception as exc:
+        result['probeEnvironment'] = {'error': type(exc).__name__ + ': ' + str(exc)}
     return result
 
 

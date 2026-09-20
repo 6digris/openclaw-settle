@@ -51,7 +51,8 @@ class ProofControls(unittest.TestCase):
         env = {'OPENCLAW_PROFILE': 'isolated', 'HOME': str(self.base)}
         outputs = [subprocess.CompletedProcess([], 1, 'status failure', 'status stderr'),
                    subprocess.CompletedProcess([], 0, '{"state":"unknown"}', '')]
-        with patch.object(prove.subprocess, 'run', side_effect=outputs) as run:
+        with patch.object(prove.subprocess, 'run', side_effect=outputs) as run, \
+             patch.object(prove, 'capture_probe_environment_diagnostics', return_value={}):
             result = prove.capture_install_diagnostics(['node', 'openclaw.mjs'], self.package,
                                                        'owned-task', env, self.base)
         self.assertEqual(result['installedStatus']['exitCode'], 1)
@@ -67,11 +68,68 @@ class ProofControls(unittest.TestCase):
 
     def test_install_diagnostic_errors_are_evidence_not_a_new_failure(self):
         errors = [subprocess.TimeoutExpired('status', 90), OSError('diagnostic unavailable')]
-        with patch.object(prove.subprocess, 'run', side_effect=errors):
+        with patch.object(prove.subprocess, 'run', side_effect=errors), \
+             patch.object(prove, 'capture_probe_environment_diagnostics', side_effect=OSError('matrix unavailable')):
             result = prove.capture_install_diagnostics(['node', 'openclaw.mjs'], self.package,
                                                        'owned-task', {}, self.base)
         self.assertIn('TimeoutExpired', result['installedStatus']['error'])
         self.assertIn('OSError', result['installedTaskInspection']['error'])
+        self.assertIn('matrix unavailable', result['probeEnvironment']['error'])
+
+    def test_probe_comparisons_preserve_isolation_and_bracket_native_variants(self):
+        env = {'LOCALAPPDATA': 'owned-local', 'APPDATA': 'owned-roaming',
+               'HOME': 'canonical', 'USERPROFILE': 'canonical',
+               'OPENCLAW_STATE_DIR': 'owned-state', 'OPENAI_API_KEY': 'synthetic'}
+        original = dict(env)
+        native = {'LocalAppData': 'account-local', 'APPDATA': 'account-roaming',
+                  'UserName': 'native-account', 'PSModuleAnalysisCachePath': 'native-cache',
+                  'OPENAI_API_KEY': 'must-not-inherit', 'OPENCLAW_STATE_DIR': 'foreign-state',
+                  'NODE_OPTIONS': 'must-not-inherit', 'PSModulePath': 'must-not-inherit',
+                  'HTTPS_PROXY': 'must-not-inherit', 'PATH': 'must-not-inherit'}
+        output = subprocess.CompletedProcess([], 0, '{"state":{"status":"missing"}}', '')
+        with patch.dict(prove.os.environ, native, clear=True), \
+             patch.object(prove.subprocess, 'run', return_value=output) as run:
+            result = prove.capture_probe_environment_diagnostics(
+                ['node', 'openclaw.mjs'], self.package, 'owned-task', env, self.base)
+        self.assertEqual(env, original)
+        calls = run.call_args_list
+        self.assertEqual(len(calls), 5)
+        for index in (0, 2, 4):
+            self.assertEqual(calls[index].kwargs['env'], original)
+            self.assertEqual(result['probes'][index]['restoredKeys'], [])
+        local = calls[1].kwargs['env']
+        self.assertEqual(local['LocalAppData'], 'account-local')
+        self.assertNotIn('LOCALAPPDATA', local)
+        self.assertEqual(local['APPDATA'], 'owned-roaming')
+        self.assertNotIn('UserName', local)
+        self.assertEqual(calls[3].kwargs['env']['UserName'], 'native-account')
+        for call in calls:
+            child = call.kwargs['env']
+            for key in ('HOME', 'USERPROFILE', 'OPENCLAW_STATE_DIR', 'OPENAI_API_KEY'):
+                self.assertEqual(child[key], original[key])
+            for key in ('NODE_OPTIONS', 'PSModulePath', 'HTTPS_PROXY', 'PATH'):
+                self.assertNotIn(key, child)
+            self.assertEqual(call.kwargs['timeout'], 30)
+            self.assertEqual(call.args[0][-1], 'owned-task')
+            self.assertIn('m._(process.argv[2], 5000)', call.args[0][3])
+        self.assertNotIn('must-not-inherit', json.dumps(result))
+
+    def test_probe_comparison_failure_preserves_later_baselines(self):
+        outputs = [subprocess.TimeoutExpired('node', 30),
+                   subprocess.CompletedProcess([], 1, '', 'native refusal'),
+                   OSError('unavailable'),
+                   subprocess.CompletedProcess([], 0, '{"state":{"status":"unknown"}}', ''),
+                   subprocess.CompletedProcess([], 0, '{"state":{"status":"missing"}}', '')]
+        with patch.object(prove.subprocess, 'run', side_effect=outputs):
+            result = prove.capture_probe_environment_diagnostics(
+                ['node', 'openclaw.mjs'], self.package, 'owned-task', {}, self.base)
+        rows = result['probes']
+        self.assertEqual(len(rows), 5)
+        self.assertIn('TimeoutExpired', rows[0]['error'])
+        self.assertEqual(rows[1]['exitCode'], 1)
+        self.assertIn('OSError', rows[2]['error'])
+        self.assertEqual(rows[-1]['label'], 'baseline-after')
+        self.assertNotIn('acceptance', result)
 
     def test_rejects_wrong_archive(self):
         with self.archive.open('ab') as f:
