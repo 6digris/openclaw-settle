@@ -4947,6 +4947,16 @@ td.data-table-key-col {
   box-shadow: var(--shadow-lg);
 }
 
+.cmd-palette__attachments {
+  --chat-composer-editor-inset-inline: 14px;
+  --chat-composer-editor-inset-block: 6px;
+  --chat-attachment-hit-slop: 12px;
+  --chat-box-inset: 8px;
+  flex: 0 0 auto;
+  min-width: 0;
+  margin: 0 12px 6px 4px;
+}
+
 .cmd-palette__entry {
   --cmd-palette-actions-width: 170px;
   position: relative;

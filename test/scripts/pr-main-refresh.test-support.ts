@@ -494,6 +494,14 @@ if (args[0] === 'pr' && args[1] === 'view') {
   } else if (endpoint === 'repos/fixture/repo/commits/${head}') {
     const [name, email] = runGit(['-C', origin, 'show', '-s', '--format=%an%n%ae', ${JSON.stringify(head)}]).split('\\n');
     value = { commit: { author: { name, email } }, author: { ...control.metadata.author, type: 'User' } };
+  } else if (endpoint.startsWith('repos/fixture/repo/commits?')) {
+    const query = new URL(endpoint, 'https://github.com').searchParams;
+    const commits = runGit(['-C', origin, 'rev-list', '--max-count=' + query.get('per_page'), query.get('sha')]).split('\\n');
+    value = commits.map(oid => {
+      const [name, email] = runGit(['-C', origin, 'show', '-s', '--format=%an%n%ae', oid + '^{commit}']).split('\\n');
+      return { sha: oid, commit: { author: { name, email } },
+        author: oid === ${JSON.stringify(head)} ? { ...control.metadata.author, type: 'User' } : null };
+    });
   } else if (endpoint === 'users/fixture') {
     value = { id: 123 };
   } else if (endpoint?.includes('/commits/') && endpoint.includes('/check-runs?')) {

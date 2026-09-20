@@ -20,9 +20,10 @@ import {
   patchConfigHealthEntryInDatabase,
   readConfigHealthSnapshotInDatabase,
 } from "../config/io.health-state.kernel.js";
-import { loadMutableCronStoreInWorker } from "../cron/store/load.worker.js";
-import { proposeCronRunRecoveryInWorker } from "../cron/store/run-recovery.worker.js";
-import { executeCronStoreSaveCommand } from "../cron/store/save.worker.js";
+import {
+  executeCronStateCommand,
+  isCronStateWorkerCommand,
+} from "../cron/store/dispatch.worker.js";
 import {
   acquireFleetCellOperationInDatabase,
   assertFleetCellOperationInDatabase,
@@ -103,8 +104,8 @@ import { commitSkillUploadInDatabase } from "../skills/lifecycle/upload-store-co
 import * as skillWorkshop from "../skills/workshop/store.worker.js";
 import { isTaskRegistryWorkerCommand } from "../tasks/task-registry.worker-contract.js";
 import { executeTaskRegistryCommand } from "../tasks/task-registry.worker.js";
-import { ensureMeetingTranscriptsSchema } from "../transcripts/sqlite-schema.js";
 import { executeTranscriptRead } from "../transcripts/store-worker-read.js";
+import { appendTranscriptInWorker } from "../transcripts/store-worker-write.js";
 import {
   listAgentProvenanceInDatabase,
   readAgentProvenanceBatchInDatabase,
@@ -398,6 +399,9 @@ export function executeSharedStateCommand(
   if (command.type === "deviceAuth.list") {
     return deviceAuth.readDeviceAuthTokensFromDatabase(database.db, command.input);
   }
+  if (command.type === "transcripts.append") {
+    return appendTranscriptInWorker(command.input, { database, path: context.databasePath });
+  }
   switch (command.type) {
     case "transcripts.sessionEntries":
     case "transcripts.matches":
@@ -411,13 +415,7 @@ export function executeSharedStateCommand(
     case "transcripts.summarySnapshot":
     case "transcripts.utterances":
     case "transcripts.summary": {
-      ensureMeetingTranscriptsSchema({
-        database,
-        path: context.databasePath,
-        env: getSqliteWorkerStateContext().environment,
-        readOnly: command.input.readOnly,
-      });
-      return executeTranscriptRead(database.db, command);
+      return executeTranscriptRead({ database, path: context.databasePath }, command);
     }
     default:
       break;
@@ -458,14 +456,8 @@ export function executeSharedStateCommand(
   if (command.type === "sessionUpstream.listWatched") {
     return listWatchedSessionUpstreamLinksInDatabase(database.db);
   }
-  if (command.type === "cron.loadMutable") {
-    return loadMutableCronStoreInWorker(database, command.input.storeKey);
-  }
-  if (command.type === "cron.proposeRunRecovery") {
-    return proposeCronRunRecoveryInWorker(database, command.input);
-  }
-  if (command.type === "cron.save" || command.type === "cron.saveChanges") {
-    return executeCronStoreSaveCommand(command, database);
+  if (isCronStateWorkerCommand(command)) {
+    return executeCronStateCommand(command, database);
   }
   if (command.type === "deliveryQueue.countFailed") {
     return countFailedDeliveryQueueEntriesInDatabase(database);

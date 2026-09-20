@@ -192,6 +192,8 @@ export type CreateUserTurnTranscriptRecorderParams = {
   /** Private ingress custody never enters pending message JSON or transcript metadata. */
   preparePendingInputSourceCustody?: (source: { recovered: boolean }) => void;
   trackInputCompletion?: boolean;
+  /** Trusted settle replay candidates; storage must match the complete original request hash. */
+  pendingInputReplaySourceSessionKeys?: readonly string[];
   /** Exact admitted source recorders consumed by this collected transcript message. */
   pendingInputSources?: readonly UserTurnTranscriptRecorder[];
   sessionTurnMutation?: SessionTranscriptTurnMutation;
