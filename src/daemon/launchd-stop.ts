@@ -21,6 +21,7 @@ import {
 import { formatLine } from "./output.js";
 import { createGatewayLifecycleMutationReporter } from "./service-mutation.js";
 import type { GatewayServiceControlArgs, GatewayServiceEnv } from "./service-types.js";
+import { assertGatewayServiceUpdateCurrent } from "./service-update-authority.js";
 
 const LAUNCH_AGENT_STOP_PORT_RELEASE_TIMEOUT_MS = LAUNCH_AGENT_EXIT_TIMEOUT_SECONDS * 1_000;
 const LAUNCH_AGENT_STOP_PORT_RELEASE_POLL_MS = 100;
@@ -60,12 +61,16 @@ async function assertGatewayPortReleasedAfterStop(
   env: GatewayServiceEnv,
   assertCurrent?: () => void,
 ): Promise<void> {
-  const { port, probeHosts } = await resolveLaunchAgentGatewayContext(env);
+  const { env: cleanupEnv, port, probeHosts } = await resolveLaunchAgentGatewayContext(env);
   if (port === null) {
     return;
   }
   assertCurrent?.();
-  cleanStaleGatewayProcessesSync(port);
+  assertGatewayServiceUpdateCurrent();
+  cleanStaleGatewayProcessesSync(port, {
+    env: cleanupEnv,
+    assertCurrent: assertGatewayServiceUpdateCurrent,
+  });
   const diagnostics = await inspectPortUsage(port, {
     probeHosts,
   }).catch(() => null);
@@ -89,6 +94,7 @@ export async function stopLaunchAgent({
   disable: persistDisable,
   onMutation,
   assertCurrent,
+  updateHandoff,
 }: GatewayServiceControlArgs): Promise<void> {
   const serviceEnv = env ?? (process.env as GatewayServiceEnv);
   const domain = resolveLaunchAgentGuiDomain();
@@ -97,9 +103,18 @@ export async function stopLaunchAgent({
   const reportMutation = createGatewayLifecycleMutationReporter(onMutation);
 
   if (await isCurrentProcessInsideLaunchdService(label, process.env)) {
-    throw new Error(
-      `Refusing to stop LaunchAgent ${label} from inside the same launchd service; run this command from an external shell.`,
-    );
+    // A detached update executor can still descend from the serving Gateway.
+    // Keep the updater lazy for ordinary service commands; identity alone is no grant.
+    const authorized =
+      updateHandoff &&
+      (await (
+        await import("../infra/update-managed-service-handoff.js")
+      ).isCurrentManagedServiceUpdateHandoffProcess(updateHandoff));
+    if (!authorized) {
+      throw new Error(
+        `Refusing to stop LaunchAgent ${label} from inside the same launchd service; run this command from an external shell.`,
+      );
+    }
   }
 
   assertCurrent?.();

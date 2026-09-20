@@ -9,15 +9,17 @@ import {
   transitionOwnedDeliveryQueueEntry,
 } from "./delivery-queue-sqlite-claim.js";
 import {
-  completeDeliveryQueueEntryInDatabase,
-  deleteDeliveryQueueEntryInDatabase,
   getDeliveryQueueEntryStatus,
   loadDeliveryQueueEntry,
   reserveDeliveryQueueEntryAttempt,
   updateDeliveryQueueEntry,
-  upsertDeliveryQueueEntry,
-  upsertDeliveryQueueEntryInDatabase,
 } from "./delivery-queue-sqlite.js";
+import {
+  completeDeliveryQueueEntryInDatabase,
+  deleteDeliveryQueueEntryInDatabase,
+  upsertDeliveryQueueEntryInDatabase,
+} from "./delivery-queue-sqlite.kernel.js";
+import { seedDeliveryQueueEntry } from "./delivery-queue-sqlite.test-support.js";
 import { installDeliveryQueueTmpDirHooks } from "./outbound/delivery-queue.test-helpers.js";
 
 describe("delivery queue SQLite dispatch ownership", () => {
@@ -30,7 +32,7 @@ describe("delivery queue SQLite dispatch ownership", () => {
       const stateDir = tmpDir();
       const entry = { id: "owned-settlement", enqueuedAt: 1, retryCount: 0 };
       const sibling = { ...entry, id: "settlement-receipt" };
-      upsertDeliveryQueueEntry({ queueName, entry, stateDir });
+      seedDeliveryQueueEntry({ queueName, entry, stateDir });
 
       const settle = () =>
         transitionOwnedDeliveryQueueEntry(
@@ -73,7 +75,7 @@ describe("delivery queue SQLite dispatch ownership", () => {
           maxAttempts: 2,
           expectedPlatformSendAttemptId: claimed.claimId,
         };
-        upsertDeliveryQueueEntry({
+        seedDeliveryQueueEntry({
           ...params,
           entry: { id: params.id, enqueuedAt: Date.now(), retryCount: 0, ...initialClaim },
         });
@@ -130,7 +132,7 @@ describe("delivery queue SQLite dispatch ownership", () => {
     try {
       vi.setSystemTime(new Date("2026-08-28T10:00:00.000Z"));
       const params = { queueName, id: "unleased-reservation", stateDir: tmpDir() };
-      upsertDeliveryQueueEntry({
+      seedDeliveryQueueEntry({
         ...params,
         entry: { id: params.id, enqueuedAt: Date.now(), retryCount: 0 },
       });
@@ -168,7 +170,7 @@ describe("delivery queue SQLite dispatch ownership", () => {
       vi.setSystemTime(new Date("2026-08-10T10:00:00.000Z"));
       const stateDir = tmpDir();
       const id = "cron-direct-delivery:v1:dispatch-owner";
-      upsertDeliveryQueueEntry({
+      seedDeliveryQueueEntry({
         queueName,
         entry: {
           id,

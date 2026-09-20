@@ -5,14 +5,19 @@ import os from "node:os";
 import path from "node:path";
 import { createStartAccountContext } from "openclaw/plugin-sdk/channel-test-helpers";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
+import type {
+  OpenAsyncKeyedStoreOptions,
+  OpenKeyedStoreOptions,
+} from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
+  createPluginStateKeyedStoreForTests,
   createPluginStateSyncKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { defaultRuntime } from "openclaw/plugin-sdk/runtime";
 import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
+import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { generateIdentity } from "../protocol/index.js";
 import { runReefChannelLifecycle } from "./channel-lifecycle.js";
@@ -150,6 +155,11 @@ describe("Reef conversation directory", () => {
         ...options,
         env: { OPENCLAW_STATE_DIR: stateDir },
       });
+    runtime.state.openKeyedStore = <T>(options: OpenAsyncKeyedStoreOptions) =>
+      createPluginStateKeyedStoreForTests<T>("reef", {
+        ...options,
+        env: { OPENCLAW_STATE_DIR: stateDir },
+      });
     setReefRuntime(runtime);
     const identity = generateIdentity();
     openReefTrustStore(runtime, resolveReefConfig({ channels: { reef: { handle: "clawd" } } })).set(
@@ -165,7 +175,8 @@ describe("Reef conversation directory", () => {
     );
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeOpenClawStateDatabaseAsync();
     resetPluginStateStoreForTests();
     fs.rmSync(stateDir, { recursive: true, force: true });
   });
@@ -224,13 +235,14 @@ describe("Reef gateway account ownership", () => {
     },
   };
   const controllers: AbortController[] = [];
-  const pendingInboxStarts: ReturnType<typeof createDeferred<void>>[] = [];
   const inboxDrains: ReturnType<typeof createDeferred<void>>[] = [];
+  let inboxStarted = createDeferred<void>();
   const accountTasks: Promise<unknown>[] = [];
   let stateDir = "";
 
   beforeEach(async () => {
     resetPluginStateStoreForTests();
+    inboxStarted = createDeferred<void>();
     activeReefSlot.clearRuntime();
     stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "reef-account-ownership-"));
     vi.stubEnv("REEF_TEST_GUARD_KEY", "test-only-credential");
@@ -240,11 +252,16 @@ describe("Reef gateway account ownership", () => {
         ...options,
         env: { OPENCLAW_STATE_DIR: stateDir },
       });
+    runtime.state.openKeyedStore = <T>(options: OpenAsyncKeyedStoreOptions) =>
+      createPluginStateKeyedStoreForTests<T>("reef", {
+        ...options,
+        env: { OPENCLAW_STATE_DIR: stateDir },
+      });
     runtime.state.resolveStateDir = () => stateDir;
     await generateAndStoreKeys(runtime);
-    finalizeReefIdentityBinding(
+    await finalizeReefIdentityBinding(
       runtime,
-      reserveReefIdentityBinding(runtime, {
+      await reserveReefIdentityBinding(runtime, {
         handle: cfg.channels.reef.handle,
         relayUrl: "https://reefwire.ai",
       }),
@@ -255,13 +272,10 @@ describe("Reef gateway account ownership", () => {
     // Startup reconciliation polls REST before the mocked inbox loop starts.
     vi.spyOn(ReefTransportClient.prototype, "pull").mockResolvedValue({ entries: [], cursor: 0 });
     vi.spyOn(ReefInboxConnection.prototype, "start").mockImplementation(() => {
-      const started = pendingInboxStarts.shift();
-      if (!started) {
-        throw new Error("unexpected Reef inbox start");
-      }
       const drain = createDeferred<void>();
       inboxDrains.push(drain);
-      started.resolve();
+      inboxStarted.resolve();
+      inboxStarted = createDeferred<void>();
       return drain.promise;
     });
   });
@@ -273,7 +287,6 @@ describe("Reef gateway account ownership", () => {
     for (const drain of inboxDrains.splice(0)) {
       drain.resolve();
     }
-    pendingInboxStarts.splice(0);
     await Promise.allSettled(accountTasks.splice(0));
     // Count only: failed assertions must not dump signed request headers.
     const relayRequests = vi.mocked(fetch).mock.calls.length;
@@ -281,16 +294,16 @@ describe("Reef gateway account ownership", () => {
     vi.unstubAllEnvs();
     activeReefSlot.clearRuntime();
     reefRuntimeSlot.clearRuntime();
+    await closeOpenClawStateDatabaseAsync();
     resetPluginStateStoreForTests();
     fs.rmSync(stateDir, { recursive: true, force: true });
     expect(relayRequests).toBe(0);
   });
 
   function startAccount() {
+    const ready = inboxStarted.promise;
     const abort = new AbortController();
-    const inboxStarted = createDeferred<void>();
     controllers.push(abort);
-    pendingInboxStarts.push(inboxStarted);
     const start = reefPlugin.gateway?.startAccount;
     if (!start) {
       throw new Error("expected Reef gateway account starter");
@@ -303,7 +316,7 @@ describe("Reef gateway account ownership", () => {
       }),
     );
     accountTasks.push(account);
-    return { abort, account, inboxStarted: inboxStarted.promise };
+    return { abort, account, ready };
   }
 
   function sendOutbound(text: string) {
@@ -316,7 +329,8 @@ describe("Reef gateway account ownership", () => {
 
   it("retires outbound, command, and pairing authority before account shutdown drains", async () => {
     const account = startAccount();
-    await account.inboxStarted;
+    await account.ready;
+    expect(inboxDrains).toHaveLength(1);
     const active = getActiveReef();
     const send = vi.spyOn(active.flow, "send").mockResolvedValue("account-a-message");
     const listFriends = vi.spyOn(active.friends, "list").mockResolvedValue([]);
@@ -360,23 +374,21 @@ describe("Reef gateway account ownership", () => {
   });
 
   it("revokes borrowed pairing approval before a paused reconcile reaches the replaced flow", async () => {
-    const first = startAccount();
-    await first.inboxStarted;
+    await startAccount().ready;
+    expect(inboxDrains).toHaveLength(1);
     const firstActive = getActiveReef();
     const reconcilePaused = createDeferred<void>();
-    const firstListStarted = createDeferred<void>();
     const firstList = vi.fn(async () => {
-      firstListStarted.resolve();
       await reconcilePaused.promise;
       return { friendships: [] };
     });
     firstActive.friends.transport.listFriends = firstList;
     const firstSend = vi.spyOn(firstActive.flow, "send").mockResolvedValue("account-a-message");
     const stale = reefPlugin.pairing!.notifyApproval!({ cfg, id: "molty" });
-    await firstListStarted.promise;
+    await vi.waitFor(() => expect(firstList).toHaveBeenCalledOnce());
 
-    const replacement = startAccount();
-    await replacement.inboxStarted;
+    await startAccount().ready;
+    expect(inboxDrains).toHaveLength(2);
     const replacementActive = getActiveReef();
 
     reconcilePaused.resolve();
@@ -389,18 +401,17 @@ describe("Reef gateway account ownership", () => {
 
   it("rejects a borrowed Reef command when shutdown interrupts its friend lookup", async () => {
     const account = startAccount();
-    await account.inboxStarted;
+    await account.ready;
+    expect(inboxDrains).toHaveLength(1);
     const active = getActiveReef();
     const listPaused = createDeferred<void>();
-    const listStarted = createDeferred<void>();
     const listFriends = vi.fn(async () => {
-      listStarted.resolve();
       await listPaused.promise;
       return { friendships: [] };
     });
     active.friends.transport.listFriends = listFriends;
     const command = handleReefCommand({ args: "friend list" });
-    await listStarted.promise;
+    await vi.waitFor(() => expect(listFriends).toHaveBeenCalledOnce());
 
     account.abort.abort();
     listPaused.resolve();
@@ -412,14 +423,16 @@ describe("Reef gateway account ownership", () => {
 
   it("keeps the replacement account authoritative through stale and failed account teardown", async () => {
     const first = startAccount();
-    await first.inboxStarted;
+    await first.ready;
+    expect(inboxDrains).toHaveLength(1);
     const firstActive = getActiveReef();
     const firstSend = vi.spyOn(firstActive.flow, "send").mockResolvedValue("account-a-message");
     const firstList = vi.spyOn(firstActive.friends, "list").mockResolvedValue([]);
 
     first.abort.abort();
     const replacement = startAccount();
-    await replacement.inboxStarted;
+    await replacement.ready;
+    expect(inboxDrains).toHaveLength(2);
     const replacementActive = getActiveReef();
     expect(replacementActive).not.toBe(firstActive);
     const replacementSend = vi

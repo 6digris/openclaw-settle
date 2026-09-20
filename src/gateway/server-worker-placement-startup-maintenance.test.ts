@@ -97,6 +97,7 @@ function createMaintenanceRuntime(params: {
       goneEnvironmentIds.has(environmentId)
         ? { state: "destroyed" as const, leaseId: null }
         : { state: "attached" as const, leaseId: "cloud-lease" },
+    subscribeMachineShapeChanged: vi.fn(() => vi.fn()),
     installReconcileEnvironmentGuard: vi.fn(() => vi.fn()),
     start: vi.fn(),
     stop,
@@ -108,9 +109,12 @@ function createMaintenanceRuntime(params: {
       get: (sessionId: string) =>
         params.placements.find((placement) => placement.sessionId === sessionId),
       list: () => params.placements,
-      listForReconcile: () =>
+      listForReconcile: (sessionKey?: string) =>
         params.placements.filter(
-          (placement) => placement.state !== "local" && placement.state !== "reclaimed",
+          (placement) =>
+            placement.state !== "local" &&
+            placement.state !== "reclaimed" &&
+            (sessionKey === undefined || placement.sessionKey === sessionKey),
         ),
       retireSessionPlacement: vi.fn(),
       pruneOrphanedWorkspaceReconciliations: () => {
@@ -201,7 +205,7 @@ describe("worker placement session maintenance ownership", () => {
     { maintenance: "stale pruning", sessionKey: "agent:main:explicit:cloud-owned-prune" },
     { maintenance: "entry capping", sessionKey: "agent:main:explicit:cloud-owned-cap" },
   ] as const)(
-    "preserves active placements during write-triggered $maintenance and releases them on stop",
+    "preserves active placements during $maintenance and releases them for maintenance after stop",
     async ({ maintenance, sessionKey }) => {
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
         const now = Date.now();
@@ -272,13 +276,22 @@ describe("worker placement session maintenance ownership", () => {
 
           await sidecar.stop();
           expect(collectSessionMaintenancePreserveKeys()?.has(sessionKey)).not.toBe(true);
-          await triggerMaintenance();
-          await vi.waitFor(() => {
-            expect(loadSessionEntry(sessionScope(sessionKey))).toMatchObject({
-              sessionId: placement.sessionId,
-              archivedAt: expect.any(Number),
+          // Released age protection is reconsidered at the periodic deadline; caps remain due.
+          const recheckClock =
+            maintenance === "entry capping"
+              ? undefined
+              : vi.spyOn(Date, "now").mockReturnValue(Date.now() + 30 * 60 * 1_000);
+          try {
+            await triggerMaintenance();
+            await vi.waitFor(() => {
+              expect(loadSessionEntry(sessionScope(sessionKey))).toMatchObject({
+                sessionId: placement.sessionId,
+                archivedAt: expect.any(Number),
+              });
             });
-          });
+          } finally {
+            recheckClock?.mockRestore();
+          }
         } finally {
           await sidecar.stop();
         }

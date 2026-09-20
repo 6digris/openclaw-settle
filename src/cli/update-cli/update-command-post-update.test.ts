@@ -35,9 +35,7 @@ const mocks = vi.hoisted(() => ({
   readConfig: vi.fn(),
   createServiceConfigIO: vi.fn(),
   readServiceState: vi.fn(),
-  restartService: vi.fn<typeof import("./update-command-service.js").maybeRestartService>(
-    async () => "ok",
-  ),
+  restartService: vi.fn<typeof import("./update-command-service.js").maybeRestartService>(),
   stopService:
     vi.fn<
       typeof import("./update-command-service.js").maybeStopManagedServiceBeforeMutableUpdate
@@ -70,16 +68,20 @@ vi.mock("../../commands/doctor-completion.js", async (importOriginal) => ({
   checkShellCompletionStatus: mocks.checkCompletionStatus,
   ensureCompletionCacheExists: mocks.ensureCompletionCache,
 }));
-vi.mock("../../plugins/plugin-lifecycle-lease.js", () => ({
-  withPluginLifecycleLease: async (_params: unknown, callback: () => unknown) => {
-    mocks.leaseActive = true;
-    try {
-      return await callback();
-    } finally {
-      mocks.leaseActive = false;
-    }
-  },
-}));
+vi.mock("../../plugins/plugin-lifecycle-lease.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../plugins/plugin-lifecycle-lease.js")>();
+  const withPluginLifecycleLease: typeof actual.withPluginLifecycleLease = (params, callback) =>
+    actual.withPluginLifecycleLease(params, async (lease) => {
+      const leaseWasActive = mocks.leaseActive;
+      mocks.leaseActive = true;
+      try {
+        return await callback(lease);
+      } finally {
+        mocks.leaseActive = leaseWasActive;
+      }
+    });
+  return { ...actual, withPluginLifecycleLease };
+});
 vi.mock("../../plugins/installed-plugin-index-records.js", () => ({
   loadInstalledPluginIndexInstallRecords: mocks.loadPluginRecords,
 }));
@@ -116,6 +118,10 @@ vi.mock("./update-command-result.js", async (importOriginal) => ({
 }));
 
 import * as postCoreModule from "./update-command-post-core.js";
+import {
+  expectUpdateFailure,
+  registerBoundaryFinalizationControls,
+} from "./update-command-post-update-boundary.test-support.js";
 import { finishUpdate } from "./update-command-post-update.js";
 import * as rollbackModule from "./update-command-rollback.js";
 import { UpdateServiceLoadBoundaryError } from "./update-command-service-load.js";
@@ -130,15 +136,6 @@ function expectFailureReport(reason: string, options: unknown = expect.any(Objec
     expect.any(Object),
   );
   expect(defaultRuntime.exit).not.toHaveBeenCalled();
-}
-
-function expectUpdateFailure(promise: Promise<unknown>, reason: string, details: object = {}) {
-  return expect(promise).rejects.toMatchObject({
-    name: "UpdateCommandFailure",
-    exitCode: 1,
-    result: { status: "error", reason },
-    ...details,
-  });
 }
 
 afterEach(() => {
@@ -209,6 +206,8 @@ describe("successful update finalization ordering", () => {
     expect(loadUpdateRecovery(run.runId, { env })).toEqual(record);
   });
 
+  registerBoundaryFinalizationControls({ makeTempDir: (prefix) => tempDirs.make(prefix), mocks });
+
   it("retains pending staged service load without legacy rollback or completion", async () => {
     const refusal = new UpdateServiceLoadBoundaryError("checkpoint seal refused");
     mocks.restartService.mockRejectedValueOnce(refusal);
@@ -278,13 +277,18 @@ describe("successful update finalization ordering", () => {
         windowsTaskAutoStartRecovery: recovery,
       });
       try {
-        await entered.promise;
-        expect.soft(mocks.restartService).not.toHaveBeenCalled();
-        expect.soft(recovery.restore).not.toHaveBeenCalled();
-      } finally {
-        release.resolve();
-      }
-      try {
+        try {
+          await Promise.race([
+            entered.promise,
+            finishing.then(() => {
+              throw new Error("Update completed before plugin convergence entered.");
+            }),
+          ]);
+          expect.soft(mocks.restartService).not.toHaveBeenCalled();
+          expect.soft(recovery.restore).not.toHaveBeenCalled();
+        } finally {
+          release.resolve();
+        }
         await finishing;
       } finally {
         identity.restore();
@@ -339,6 +343,7 @@ describe("successful update finalization ordering", () => {
   });
 
   it("restarts when shell completion cache generation returns false", async () => {
+    vi.stubEnv("OPENCLAW_PROFILE", undefined);
     Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
     mocks.checkCompletionStatus.mockResolvedValueOnce({
       shell: "zsh",

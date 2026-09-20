@@ -17,10 +17,12 @@ import {
   type createCheckpointCommands,
   type parseCheckpointAvailability,
 } from "./crabbox-worker-warm-image-checkpoint.js";
+import type { CrabboxWarmImagePolicy } from "./crabbox-worker-warm-image-policy.js";
 import { SCRUB_WORKER_STATE } from "./crabbox-worker-warm-image-scrub.js";
 import {
   clearCrabboxWarmImageCapture,
   crabboxWarmImageRecoveryHint,
+  sameCrabboxWarmImageGeneration,
   withoutCrabboxWarmImageOperation,
   type openCrabboxWarmImageStore,
   type WarmProfileRecord,
@@ -30,9 +32,8 @@ type CrabboxProfile = ReturnType<typeof parseCrabboxProfile>;
 type LeaseContext = CheckpointContext & { id: string; provider: string };
 type WarmImageStore = ReturnType<typeof openCrabboxWarmImageStore>;
 
-const WARM_IMAGE_REFRESH_MS = 24 * 60 * 60 * 1_000;
-
 export function createCrabboxWarmImageCapture(dependencies: {
+  policy: CrabboxWarmImagePolicy;
   openStore: () => WarmImageStore;
   lookupLease: WarmImageStore["lookupLease"];
   assertCurrent: (context: LeaseContext) => void;
@@ -71,12 +72,13 @@ export function createCrabboxWarmImageCapture(dependencies: {
   ): Promise<boolean> {
     assertCurrent(context);
     const captureId = randomUUID();
-    const owner = lookupLease(context.id);
+    const owner = await lookupLease(context.id);
     const key = owner?.key;
     let claimed = false;
     let creating = false;
     let preparing = false;
     let captured = false;
+    let captureError: string | undefined;
     const attemptCapture = async () => {
       try {
         await collectImages(context, "teardown");
@@ -99,8 +101,15 @@ export function createCrabboxWarmImageCapture(dependencies: {
         ) {
           throw new Error("Crabbox capture profile does not match its recorded allocation.");
         }
-        let existing = openStore().lookup(key)!;
+        let existing = (await openStore().lookup(key))!;
         if (existing.operation) {
+          return;
+        }
+        if (existing.image?.pinned && existing.previous?.pinned) {
+          warnOnce(
+            "capture paused",
+            "The current and previous snapshots are pinned; unpin one before publishing another generation.",
+          );
           return;
         }
         if (existing.image) {
@@ -116,7 +125,13 @@ export function createCrabboxWarmImageCapture(dependencies: {
               existing.image.preparationKey !== owner.preparationKey ||
               existing.image.cacheKey !== owner.cacheKey) &&
             (owner.choice.kind !== "checkpoint" ||
-              owner.choice.checkpointId !== existing.image.checkpointId)
+              owner.choice.checkpointId !== existing.image.checkpointId) &&
+            // A pinned incompatible base remains owned, but does not prevent a newly
+            // admitted cold preparation from publishing a compatible successor.
+            !(
+              owner.choice.kind === "cold" &&
+              sameCrabboxWarmImageGeneration(owner.publicationBase, existing.image)
+            )
           ) {
             return;
           }
@@ -126,15 +141,20 @@ export function createCrabboxWarmImageCapture(dependencies: {
             context.forkedCheckpointId === existing.image.checkpointId
               ? "available"
               : await verifyImage(context, existing.image.checkpointId);
-          if (state === "missing" && !held(existing, existing.image.checkpointId)) {
+          if (
+            state === "missing" &&
+            !existing.image.pinned &&
+            !held(existing, existing.image.checkpointId)
+          ) {
             await deleteImage(context, key, existing);
-            existing = openStore().lookup(key)!;
+            existing = (await openStore().lookup(key))!;
             if (existing.image || existing.operation) {
               return;
             }
           } else if (
             state !== "missing" &&
-            Date.now() - existing.image.createdAtMs < WARM_IMAGE_REFRESH_MS &&
+            (existing.image.pinned ||
+              Date.now() - existing.image.createdAtMs < dependencies.policy.refreshAfterMs) &&
             runtimeMatches &&
             existing.image.preparationKey === owner.preparationKey &&
             existing.image.cacheKey === owner.cacheKey &&
@@ -146,7 +166,8 @@ export function createCrabboxWarmImageCapture(dependencies: {
         }
         const now = Date.now();
         assertCurrent(context);
-        claimed = openStore().update(key, (current) => {
+        claimed = await openStore().update(key, (current) => {
+          assertCurrent(context);
           if (
             !current ||
             JSON.stringify(current) !== JSON.stringify(existing) ||
@@ -184,20 +205,21 @@ export function createCrabboxWarmImageCapture(dependencies: {
         );
         // A stopped allocation or manual recovery must not start another paid operation.
         assertCurrent(context);
-        creating = openStore().update(key, (current) =>
-          current?.operation?.type === "capture" &&
-          current.operation.id === captureId &&
-          current.allocations[context.id]?.phase === owner.phase &&
-          current.allocations[context.id]?.machineClass === owner.machineClass &&
-          current.allocations[context.id]?.os === owner.os &&
-          current.allocations[context.id]?.preparationKey === owner.preparationKey &&
-          current.allocations[context.id]?.cacheKey === owner.cacheKey &&
-          current.allocations[context.id]?.purpose === owner.purpose
+        creating = await openStore().update(key, (current) => {
+          assertCurrent(context);
+          return current?.operation?.type === "capture" &&
+            current.operation.id === captureId &&
+            current.allocations[context.id]?.phase === owner.phase &&
+            current.allocations[context.id]?.machineClass === owner.machineClass &&
+            current.allocations[context.id]?.os === owner.os &&
+            current.allocations[context.id]?.preparationKey === owner.preparationKey &&
+            current.allocations[context.id]?.cacheKey === owner.cacheKey &&
+            current.allocations[context.id]?.purpose === owner.purpose
             ? { ...current, operation: { ...current.operation, phase: "creating" } }
-            : undefined,
-        );
+            : undefined;
+        });
         if (!creating) {
-          clearCrabboxWarmImageCapture(key, captureId);
+          await clearCrabboxWarmImageCapture(openStore(), key, captureId);
           return;
         }
         const created = parseCreatedCheckpoint(
@@ -228,11 +250,25 @@ export function createCrabboxWarmImageCapture(dependencies: {
           context.id,
         );
         captured = true;
-        const published = openStore().update(key, (current) => {
+        const published = await openStore().update(key, (current) => {
           if (current?.operation?.type !== "capture" || current.operation.id !== captureId) {
             return undefined;
           }
           const next = withoutCrabboxWarmImageOperation(current);
+          // Pin mutations cannot race capture. Retain at most one previous image;
+          // the displaced unpinned generation becomes durable deletion debt.
+          const predecessor = current.image;
+          let retiredCheckpointId: string | undefined;
+          if (predecessor && predecessor.checkpointId !== created.checkpointId) {
+            if (current.previous?.pinned) {
+              retiredCheckpointId = predecessor.checkpointId;
+            } else if (predecessor.pinned || dependencies.policy.keepPrevious === 1) {
+              next.previous = predecessor;
+              retiredCheckpointId = current.previous?.checkpointId;
+            } else {
+              retiredCheckpointId = predecessor.checkpointId;
+            }
+          }
           const allocation = current.allocations[context.id];
           // A late capture still owns its image; it must not recreate a released lease.
           if (
@@ -265,11 +301,11 @@ export function createCrabboxWarmImageCapture(dependencies: {
               runtimeIdentity: structuredClone(owner.runtimeIdentity),
               ...(owner.baseCommit ? { baseCommit: owner.baseCommit } : {}),
             },
-            ...(current.image && current.image.checkpointId !== created.checkpointId
+            ...(retiredCheckpointId
               ? {
                   operation: {
                     type: "retire" as const,
-                    checkpointId: current.image.checkpointId,
+                    checkpointId: retiredCheckpointId,
                   },
                 }
               : {}),
@@ -284,24 +320,25 @@ export function createCrabboxWarmImageCapture(dependencies: {
         }
         creating = false;
         claimed = false;
-        const replacement = openStore().lookup(key);
+        const replacement = await openStore().lookup(key);
         if (replacement) {
           await retireImage(context, key, replacement);
         }
       } catch (error) {
+        captureError = coerceErrorMessage(error);
         const notSubmitted =
           creating && CrabboxCheckpointCreateError.wasNotSubmitted(error, context);
         let recoveryRequired = creating;
         if (claimed && key) {
           try {
             if (creating && !notSubmitted) {
-              openStore().update(key, (current) =>
+              await openStore().update(key, (current) =>
                 current?.operation?.type === "capture" && current.operation.id === captureId
                   ? { ...current, operation: { ...current.operation, phase: "uncertain" } }
                   : undefined,
               );
             } else {
-              clearCrabboxWarmImageCapture(key, captureId);
+              await clearCrabboxWarmImageCapture(openStore(), key, captureId);
               recoveryRequired = false;
             }
           } catch {
@@ -315,19 +352,18 @@ export function createCrabboxWarmImageCapture(dependencies: {
         }
         warnOnce(
           "capture",
-          recoveryRequired
-            ? `${coerceErrorMessage(error)}. ${crabboxWarmImageRecoveryHint(captureId)}`
-            : error,
+          recoveryRequired ? `${captureError}. ${crabboxWarmImageRecoveryHint(captureId)}` : error,
         );
       }
     };
     await attemptCapture();
-    const operation = key && owner?.projectKey ? openStore().lookup(key)?.operation : undefined;
+    const operation =
+      key && owner?.projectKey ? (await openStore().lookup(key))?.operation : undefined;
     // A native create may still be running after a lost response. Enrollment must
     // never introduce node credentials into that source until capture has settled.
     if (operation?.type === "capture" && operation.leaseId === context.id) {
       throw new Error(
-        `Crabbox project image capture is unresolved. ${crabboxWarmImageRecoveryHint(operation.id)}`,
+        `${captureError ? `${captureError}. ` : ""}Crabbox project image capture is unresolved. ${crabboxWarmImageRecoveryHint(operation.id)}`,
       );
     }
     assertCurrent(context);

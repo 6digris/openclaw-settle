@@ -1,5 +1,5 @@
 // OpenClaw launcher E2E tests validate launcher process behavior.
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -7,14 +7,22 @@ import { pathToFileURL } from "node:url";
 import { build as esbuild } from "esbuild";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseNodeReleaseVersion } from "../node-version.mjs";
+import { resolveTestNodeExecPath } from "../src/test-utils/node-process.js";
 import { NODE_RELEASE_VERSION_CASES } from "./helpers/node-version-cases.js";
 import { cleanupTempDirs, makeTempDir } from "./helpers/temp-dir.js";
+
+// Node version fixtures must enter Node admission even when Vitest runs under Bun.
+const testNodeExecPath = resolveTestNodeExecPath();
 
 async function makeLauncherFixture(fixtureRoots: string[]): Promise<string> {
   const fixtureRoot = makeTempDir(fixtureRoots, "openclaw-launcher-");
   await fs.copyFile(
     path.resolve(process.cwd(), "openclaw.mjs"),
     path.join(fixtureRoot, "openclaw.mjs"),
+  );
+  await fs.copyFile(
+    path.resolve(process.cwd(), "node-host-launcher.mjs"),
+    path.join(fixtureRoot, "node-host-launcher.mjs"),
   );
   await fs.copyFile(
     path.resolve(process.cwd(), "node-version.mjs"),
@@ -189,7 +197,7 @@ describe("openclaw launcher", () => {
       );
       if (params.cached) {
         await fs.mkdir(path.dirname(nodePath), { recursive: true });
-        await fs.symlink(process.execPath, nodePath);
+        await fs.symlink(testNodeExecPath, nodePath);
       }
       const installLog = path.join(root, "installer.json");
       const preload = path.join(root, "legacy-node.mjs");
@@ -249,7 +257,7 @@ describe("openclaw launcher", () => {
       }
       const run = (input: string, args = ["status"], env: NodeJS.ProcessEnv = {}, cwd = root) =>
         spawnSync(
-          process.execPath,
+          testNodeExecPath,
           ["--import", pathToFileURL(preload).href, path.join(root, "openclaw.mjs"), ...args],
           {
             cwd,
@@ -486,7 +494,10 @@ describe("openclaw launcher", () => {
     });
 
     it("keeps a supported active Node even when a private runtime exists", async () => {
-      const fixture = await prepareRecovery({ cached: true, version: process.versions.node });
+      const version = execFileSync(testNodeExecPath, ["--print", "process.versions.node"], {
+        encoding: "utf8",
+      }).trim();
+      const fixture = await prepareRecovery({ cached: true, version });
       const result = fixture.run("");
       expect(result.status, result.stderr).toBe(17);
       expect(result.stderr).not.toContain("Node.js");
@@ -555,7 +566,7 @@ describe("openclaw launcher", () => {
       'Object.defineProperty(process.versions, "node", { value: "22.23.2" });',
     );
     const result = spawnSync(
-      process.execPath,
+      testNodeExecPath,
       ["--import", pathToFileURL(preload).href, path.join(root, "openclaw.mjs"), ...args],
       {
         cwd: root,
@@ -588,7 +599,7 @@ describe("openclaw launcher", () => {
       );
 
       const result = spawnSync(
-        process.execPath,
+        testNodeExecPath,
         [
           "--import",
           pathToFileURL(mockNodeVersionPath).href,
@@ -628,7 +639,7 @@ describe("openclaw launcher", () => {
     );
 
     const result = spawnSync(
-      process.execPath,
+      testNodeExecPath,
       ["--import", pathToFileURL(legacyRuntimePath).href, path.join(fixtureRoot, "openclaw.mjs")],
       {
         cwd: fixtureRoot,
@@ -1328,9 +1339,10 @@ describe("openclaw launcher", () => {
   );
 
   it.runIf(process.platform !== "win32").each([
-    { signal: "SIGINT" as const, exitCode: 130 },
-    { signal: "SIGTERM" as const, exitCode: 143 },
-  ])("exits $exitCode when the respawn child terminates from $signal", async (testCase) => {
+    { signal: "SIGINT" as const, target: "launcher" },
+    { signal: "SIGTERM" as const, target: "launcher" },
+    { signal: "SIGKILL" as const, target: "child" },
+  ])("preserves $signal when the respawn $target is signaled", async (testCase) => {
     const fixtureRoot = await makeLauncherFixture(fixtureRoots);
     await addGitMarker(fixtureRoot);
     const childInfoPath = path.join(fixtureRoot, "child-info.json");
@@ -1359,11 +1371,15 @@ describe("openclaw launcher", () => {
       const childInfo = await waitForJsonFile<{ pid: number }>(childInfoPath, 5000);
       respawnChildPid = childInfo.pid;
 
-      launcher.kill(testCase.signal);
+      if (testCase.target === "launcher") {
+        launcher.kill(testCase.signal);
+      } else {
+        process.kill(respawnChildPid, testCase.signal);
+      }
 
       await expect(waitForProcessExit(launcher, "launcher", 5000)).resolves.toEqual({
-        code: testCase.exitCode,
-        signal: null,
+        code: null,
+        signal: testCase.signal,
       });
       expect(isProcessAlive(respawnChildPid)).toBe(false);
     } finally {
@@ -1374,6 +1390,25 @@ describe("openclaw launcher", () => {
         process.kill(launcher.pid!, "SIGKILL");
       }
     }
+  });
+
+  it("preserves an explicit exit 143 from a compile-cache respawn child", async () => {
+    const fixtureRoot = await makeLauncherFixture(fixtureRoots);
+    await addGitMarker(fixtureRoot);
+    await fs.writeFile(
+      path.join(fixtureRoot, "dist", "entry.js"),
+      'process.stdout.write(process.env.OPENCLAW_COMPILE_CACHE_DISABLED_RESPAWNED ?? "0", () => process.exit(143));\n',
+    );
+
+    const result = spawnSync(process.execPath, [path.join(fixtureRoot, "openclaw.mjs")], {
+      cwd: fixtureRoot,
+      env: launcherEnv({ NODE_COMPILE_CACHE: path.join(fixtureRoot, ".node-compile-cache") }),
+      encoding: "utf8",
+    });
+
+    expect(result.stdout).toBe("1");
+    expect(result.status).toBe(143);
+    expect(result.signal).toBeNull();
   });
 
   it.runIf(process.platform !== "win32")(
@@ -1411,8 +1446,8 @@ describe("openclaw launcher", () => {
         launcher.kill("SIGTERM");
 
         await expect(waitForProcessExit(launcher, "launcher", 5000)).resolves.toEqual({
-          code: 1,
-          signal: null,
+          code: null,
+          signal: "SIGKILL",
         });
         expect(isProcessAlive(launcher.pid)).toBe(false);
         expect(isProcessAlive(respawnChildPid)).toBe(false);

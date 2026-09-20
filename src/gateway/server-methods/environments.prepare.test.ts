@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { ErrorCodes } from "../../../packages/gateway-protocol/src/index.js";
-import { createCoreGatewayMethodDescriptors } from "../methods/core-descriptors.js";
-import { environmentsHandlers, summarizeWorkerEnvironment } from "./environments.js";
+import { createCoreGatewayMethodDescriptors } from "../methods/core-method-policy.js";
+import { summarizeWorkerEnvironment } from "../worker-environments/environment-summary.js";
+import { environmentsHandlers } from "./environments.js";
 import {
   callEnvironmentMethod,
   FakeWorkerServiceError,
@@ -94,7 +95,9 @@ describe("environments.prepare", () => {
       expiresAtMs: 60_000,
       consumedAtMs: null,
     };
-    expect(summarizeWorkerEnvironment(workerRecord({ preparation })).preparation).toEqual({
+    const summary = summarizeWorkerEnvironment(workerRecord({ preparation }));
+    expect(summary.worker?.profileId).toBe("development");
+    expect(summary.preparation).toEqual({
       purpose: "build",
       key: "project-key",
     });

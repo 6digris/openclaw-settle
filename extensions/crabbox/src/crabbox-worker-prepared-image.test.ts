@@ -1,5 +1,6 @@
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { describe, expect, it, vi } from "vitest";
+import { crabboxState } from "./crabbox-state.test-support.js";
 import { operationLeaseId } from "./crabbox-worker-profile.js";
 import { listCrabboxWarmImages } from "./crabbox-worker-warm-image-store.js";
 import {
@@ -12,62 +13,95 @@ import {
   commandResult,
   createProjectOptions as projectOptions,
   createWarmProvider,
+  openWarmImageStore,
 } from "./crabbox-worker-warm-image.test-support.js";
 
 describe("Crabbox prepared image demand and custody", () => {
-  it("keeps an older borrower's demand off a replacement generation", async () => {
-    const now = Date.now();
-    const preparation = {
-      key: "c".repeat(64),
-      cacheKey: "d".repeat(64),
-      purpose: "reserve" as const,
-      demandAtMs: now,
-    };
-    let captures = 0;
-    const { provider, calls } = createWarmProvider(({ argv }) =>
-      argv[2] === "create"
-        ? checkpointResult(`chk_demand_${++captures}`, argv[argv.indexOf("--id") + 1]!, "available")
-        : undefined,
-    );
-    const seed = await provider.provision(
-      PROFILE,
-      "generation-seed",
-      projectOptions([], new AbortController(), preparation).options,
-    );
-    const borrower = await provider.provision(
-      PROFILE,
-      "generation-borrower",
-      projectOptions([], new AbortController(), { ...preparation, purpose: "session" }).options,
-    );
-    const next = projectOptions([], new AbortController(), preparation);
-    next.options.project.prepare.mockResolvedValueOnce({
-      seedKey: PROJECT_KEY,
-      cacheHit: false,
-      captureRequired: true,
-    });
-    const replacement = await provider.provision(PROFILE, "generation-replacement", next.options);
-    expect(captures).toBe(2);
-    await provider.notePreparedDemand!(
-      { leaseId: borrower.leaseId, profile: PROFILE },
-      { preparationKey: preparation.key, demandAtMs: now + 60_000 },
-    );
-    expect(listCrabboxWarmImages()[0]).toMatchObject({
-      checkpointId: "chk_demand_2",
-      lastDemandAtMs: now,
-    });
-    await provider.notePreparedDemand!(
-      { leaseId: replacement.leaseId, profile: PROFILE },
-      { preparationKey: preparation.key, demandAtMs: now + 60_000 },
-    );
-    expect(listCrabboxWarmImages()[0]?.lastDemandAtMs).toBe(now + 60_000);
-    await provider.destroy({ leaseId: borrower.leaseId, profile: PROFILE });
-    await provider.destroy({ leaseId: replacement.leaseId, profile: PROFILE });
-    expect(calls.some(({ argv }) => argv[2] === "delete")).toBe(false);
-    await provider.destroy({ leaseId: seed.leaseId, profile: PROFILE });
-    expect(calls.filter(({ argv }) => argv[2] === "delete").map(({ argv }) => argv[3])).toEqual([
-      "chk_demand_1",
-    ]);
-  });
+  it.each([0, 1] as const)(
+    "keeps demand on its own generation with keepPrevious=%s",
+    async (keepPrevious) => {
+      const now = Date.now();
+      const preparation = {
+        key: "c".repeat(64),
+        cacheKey: "d".repeat(64),
+        purpose: "reserve" as const,
+        demandAtMs: now,
+      };
+      let captures = 0;
+      const { provider, calls } = createWarmProvider(
+        ({ argv }) =>
+          argv[2] === "create"
+            ? checkpointResult(
+                `chk_demand_${++captures}`,
+                argv[argv.indexOf("--id") + 1]!,
+                "available",
+              )
+            : undefined,
+        undefined,
+        {
+          warmImagePolicy: {
+            refreshAfterMs: 86_400_000,
+            retainUnusedMs: 14 * 86_400_000,
+            keepPrevious,
+          },
+        },
+      );
+      const seed = await provider.provision(
+        PROFILE,
+        "generation-seed",
+        projectOptions([], new AbortController(), preparation).options,
+      );
+      const borrower = await provider.provision(
+        PROFILE,
+        "generation-borrower",
+        projectOptions([], new AbortController(), { ...preparation, purpose: "session" }).options,
+      );
+      const next = projectOptions([], new AbortController(), preparation);
+      next.options.project.prepare.mockResolvedValueOnce({
+        seedKey: PROJECT_KEY,
+        cacheHit: false,
+        captureRequired: true,
+      });
+      const replacement = await provider.provision(PROFILE, "generation-replacement", next.options);
+      expect(captures).toBe(2);
+      await provider.notePreparedDemand!(
+        { leaseId: borrower.leaseId, profile: PROFILE },
+        { preparationKey: preparation.key, demandAtMs: now + 60_000 },
+      );
+      expect((await listCrabboxWarmImages(crabboxState))[0]).toMatchObject({
+        checkpointId: "chk_demand_2",
+        lastDemandAtMs: now,
+      });
+      expect(openWarmImageStore().entries()[0]?.value.previous?.lastDemandAtMs).toBe(
+        keepPrevious ? now + 60_000 : undefined,
+      );
+      await provider.notePreparedDemand!(
+        { leaseId: replacement.leaseId, profile: PROFILE },
+        { preparationKey: preparation.key, demandAtMs: now + 60_000 },
+      );
+      expect((await listCrabboxWarmImages(crabboxState))[0]?.lastDemandAtMs).toBe(now + 60_000);
+      await provider.destroy({ leaseId: borrower.leaseId, profile: PROFILE });
+      await provider.destroy({ leaseId: replacement.leaseId, profile: PROFILE });
+      expect(calls.some(({ argv }) => argv[2] === "delete")).toBe(false);
+      await provider.destroy({ leaseId: seed.leaseId, profile: PROFILE });
+      expect(calls.filter(({ argv }) => argv[2] === "delete").map(({ argv }) => argv[3])).toEqual(
+        keepPrevious ? [] : ["chk_demand_1"],
+      );
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now + 14 * 86_400_000);
+      const maintenance = {
+        profiles: [PROFILE],
+        signal: new AbortController().signal,
+        assertCurrent() {},
+      };
+      await provider.maintain!(maintenance);
+      expect((await listCrabboxWarmImages(crabboxState))[0]?.previous?.checkpointId).toBe(
+        keepPrevious ? "chk_demand_1" : undefined,
+      );
+      clock.mockReturnValue(now + 60_000 + 14 * 86_400_000);
+      await provider.maintain!(maintenance);
+      expect(await listCrabboxWarmImages(crabboxState)).toEqual([]);
+    },
+  );
 
   it.each(["session", "reserve"] as const)(
     "refreshes changed project setup once for %s and reuses the completed image",
@@ -105,7 +139,7 @@ describe("Crabbox prepared image demand and custody", () => {
       calls.length = 0;
       const changed = await provider.provision(profile, "prepared-changed", current.options);
       expect(captures).toBe(2);
-      expect(listCrabboxWarmImages()[0]).toMatchObject({
+      expect((await listCrabboxWarmImages(crabboxState))[0]).toMatchObject({
         checkpointId: "chk_commit_b",
         baseCommit: BASE_COMMIT,
         preparationKey: next.key,
@@ -134,7 +168,7 @@ describe("Crabbox prepared image demand and custody", () => {
         ),
       ).toBe(false);
       expect(current.options.prepareNodeRuntime).not.toHaveBeenCalled();
-      expect(listCrabboxWarmImages()[0]?.lastDemandAtMs).toBe(now + 60_000);
+      expect((await listCrabboxWarmImages(crabboxState))[0]?.lastDemandAtMs).toBe(now + 60_000);
     },
   );
 
@@ -165,7 +199,7 @@ describe("Crabbox prepared image demand and custody", () => {
       });
       let demandBeforeRejection: number | null | undefined;
       current.options.beginNodeEnrollment.mockImplementationOnce(async () => {
-        demandBeforeRejection = listCrabboxWarmImages()[0]?.lastDemandAtMs;
+        demandBeforeRejection = (await listCrabboxWarmImages(crabboxState))[0]?.lastDemandAtMs;
         throw new Error("enrollment admission failed");
       });
       calls.length = 0;
@@ -178,9 +212,12 @@ describe("Crabbox prepared image demand and custody", () => {
         expect(calls.filter(({ argv }) => argv[2] === "delete").map(({ argv }) => argv[3])).toEqual(
           [CHECKPOINT_ID],
         );
-        expect(listCrabboxWarmImages()).toEqual([]);
+        expect(await listCrabboxWarmImages(crabboxState)).toEqual([]);
       } else {
-        expect(listCrabboxWarmImages()[0]).toMatchObject({ lastDemandAtMs: now, allocations: {} });
+        expect((await listCrabboxWarmImages(crabboxState))[0]).toMatchObject({
+          lastDemandAtMs: now,
+          allocations: {},
+        });
         expect(calls.some(({ argv }) => argv[2] === "delete")).toBe(false);
       }
     },
@@ -219,7 +256,7 @@ describe("Crabbox prepared image demand and custody", () => {
       } else {
         await provider.provision(PROFILE, "unactivated-producer", current.options);
       }
-      const image = listCrabboxWarmImages()[0]!;
+      const image = (await listCrabboxWarmImages(crabboxState))[0]!;
       expect(image.lastDemandAtMs).toBeNull();
       if (outcome === "deletion failure") {
         expect(image).toMatchObject({
@@ -243,7 +280,7 @@ describe("Crabbox prepared image demand and custody", () => {
           { preparationKey: preparation.key, demandAtMs: now + 1 },
         );
         await provider.destroy({ leaseId, profile: PROFILE });
-        expect(listCrabboxWarmImages()[0]).toMatchObject({
+        expect((await listCrabboxWarmImages(crabboxState))[0]).toMatchObject({
           lastDemandAtMs: now + 1,
           allocations: {},
         });
@@ -257,7 +294,7 @@ describe("Crabbox prepared image demand and custody", () => {
             assertCurrent() {},
           });
         }
-        expect(listCrabboxWarmImages()).toEqual([]);
+        expect(await listCrabboxWarmImages(crabboxState)).toEqual([]);
       }
     },
   );
@@ -310,10 +347,10 @@ describe("Crabbox prepared image demand and custody", () => {
       if (elapsed < 60_000) {
         expect(deletions[1]?.argv[3]).toBe("chk_unactivated");
         expect(deletions[1]?.options.timeoutMs).toBe(60_000 - elapsed);
-        expect(listCrabboxWarmImages()).toEqual([]);
+        expect(await listCrabboxWarmImages(crabboxState)).toEqual([]);
       } else {
         expect(deletions).toHaveLength(1);
-        expect(listCrabboxWarmImages()[0]).toMatchObject({
+        expect((await listCrabboxWarmImages(crabboxState))[0]).toMatchObject({
           allocations: {},
           lastDemandAtMs: null,
           retirement: { checkpointId: "chk_unactivated" },
@@ -323,7 +360,7 @@ describe("Crabbox prepared image demand and custody", () => {
           signal: new AbortController().signal,
           assertCurrent() {},
         });
-        expect(listCrabboxWarmImages()).toEqual([]);
+        expect(await listCrabboxWarmImages(crabboxState)).toEqual([]);
       }
     },
   );
@@ -388,7 +425,7 @@ describe("Crabbox prepared image demand and custody", () => {
         await entered.promise;
         clock.mockReturnValue(expiresAtMs + 1);
         expect(captureSignal?.aborted).toBe(false);
-        expect(listCrabboxWarmImages()[0]).toMatchObject({
+        expect((await listCrabboxWarmImages(crabboxState))[0]).toMatchObject({
           capture: { leaseId: reserveId, phase: "creating" },
           allocations: { [reserveId]: { phase: "prepared" } },
         });
@@ -402,7 +439,7 @@ describe("Crabbox prepared image demand and custody", () => {
         error: { name: "AbortError", message: "Prepared worker expired" },
       });
       expect(current.options.beginNodeEnrollment).not.toHaveBeenCalled();
-      const recorded = listCrabboxWarmImages()[0]!;
+      const recorded = (await listCrabboxWarmImages(crabboxState))[0]!;
       expect(recorded.lastDemandAtMs).toBe(now);
       expect(recorded.allocations[reserveId]?.phase).toBe("prepared");
       if (outcome === "success") {
@@ -422,7 +459,7 @@ describe("Crabbox prepared image demand and custody", () => {
         { leaseId: reserveId, profile },
         { preparationKey: "e".repeat(64), demandAtMs: expiresAtMs + 1 },
       );
-      expect(listCrabboxWarmImages()[0]?.lastDemandAtMs).toBe(now);
+      expect((await listCrabboxWarmImages(crabboxState))[0]?.lastDemandAtMs).toBe(now);
       warn.mockClear();
       await expect(provider.destroy({ leaseId: reserveId, profile })).resolves.toBeUndefined();
       if (outcome === "success") {
@@ -431,12 +468,14 @@ describe("Crabbox prepared image demand and custody", () => {
         );
       } else {
         expect(warn).toHaveBeenCalledWith(expect.stringContaining(recorded.capture!.selector));
-        expect(listCrabboxWarmImages()[0]?.capture).toEqual(recorded.capture);
+        expect((await listCrabboxWarmImages(crabboxState))[0]?.capture).toEqual(recorded.capture);
       }
       expect(
         calls.filter(({ argv }) => argv[1] === "stop" && argv.includes(reserveId)),
       ).toHaveLength(1);
-      expect(listCrabboxWarmImages()[0]?.allocations[reserveId]).toBeUndefined();
+      expect(
+        (await listCrabboxWarmImages(crabboxState))[0]?.allocations[reserveId],
+      ).toBeUndefined();
     },
   );
 
@@ -478,7 +517,7 @@ describe("Crabbox prepared image demand and custody", () => {
     let current = projectOptions(events, new AbortController(), preparation);
     const { provider, calls } = createWarmProvider((call) => current.observe(call));
     await provider.provision(profile, "original-cache", current.options);
-    const original = listCrabboxWarmImages()[0]!;
+    const original = (await listCrabboxWarmImages(crabboxState))[0]!;
     events.length = 0;
     calls.length = 0;
     current = projectOptions(events, new AbortController(), {
@@ -498,7 +537,7 @@ describe("Crabbox prepared image demand and custody", () => {
     expect(events).toEqual(["project-prepared", "enrollment-begun", "enrollment-install"]);
     expect(calls.some(({ argv }) => argv[1] === "warmup")).toBe(true);
     expect(calls.some(({ argv }) => argv[2] === "fork" || argv[2] === "create")).toBe(false);
-    expect(listCrabboxWarmImages()[0]).toMatchObject({
+    expect((await listCrabboxWarmImages(crabboxState))[0]).toMatchObject({
       checkpointId: original.checkpointId,
       preparationKey: original.preparationKey,
       allocations: {
@@ -509,6 +548,8 @@ describe("Crabbox prepared image demand and custody", () => {
       { leaseId: reserve.leaseId, profile },
       { preparationKey: "e".repeat(64), demandAtMs: preparation.demandAtMs + 60_000 },
     );
-    expect(listCrabboxWarmImages()[0]?.lastDemandAtMs).toBe(original.lastDemandAtMs);
+    expect((await listCrabboxWarmImages(crabboxState))[0]?.lastDemandAtMs).toBe(
+      original.lastDemandAtMs,
+    );
   });
 });

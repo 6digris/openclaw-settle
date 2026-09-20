@@ -1,4 +1,6 @@
+import { expectDefined } from "@openclaw/normalization-core";
 import { vi } from "vitest";
+import type { PairedDevice, PairedDeviceNodeSurface } from "../../infra/device-pairing.types.js";
 import type {
   WorkerEnvironmentServiceContract,
   WorkerEnvironmentServiceRecord,
@@ -7,6 +9,25 @@ import type { WorkerEnvironmentRecord } from "../worker-environments/store.js";
 import { environmentsHandlers } from "./environments.js";
 
 export type TestWorkerRecord = WorkerEnvironmentRecord & WorkerEnvironmentServiceRecord;
+
+export function pairedNodeDevice(
+  deviceId: string,
+  nodeSurface: Partial<PairedDeviceNodeSurface> = {},
+  device: Omit<Partial<PairedDevice>, "deviceId" | "nodeSurface"> = {},
+): PairedDevice {
+  return {
+    deviceId,
+    publicKey: `public-key-${deviceId}`,
+    roles: ["node"],
+    tokens: {
+      node: { token: "test-node-token", role: "node", scopes: [], createdAtMs: 1 },
+    },
+    createdAtMs: 1,
+    approvedAtMs: 1,
+    ...device,
+    nodeSurface: { createdAtMs: 1, approvedAtMs: 1, ...nodeSurface },
+  };
+}
 
 export type TestWorkerService = Omit<
   WorkerEnvironmentServiceContract,
@@ -92,9 +113,26 @@ export function workerRecord(overrides: Partial<TestWorkerRecord> = {}): TestWor
 }
 
 export const workerService = (overrides: Partial<TestWorkerService> = {}) => ({
+  getSessionAttachment: vi.fn(() => undefined),
+  findSessionAttachment: vi.fn(() => undefined),
+  getSessionAttachmentStatus: vi.fn(() => undefined),
+  assertSessionAttachment: vi.fn(),
+  touchSessionAttachment: vi.fn(),
+  createSessionAttachment: vi.fn(async () => {
+    throw new Error("No conversation attachment fixture");
+  }),
+  destroySessionAttachment: vi.fn(async () => undefined),
+  execSessionAttachment: vi.fn(async () => {
+    throw new Error("No attached execution fixture");
+  }),
+  openNodePortal: vi.fn(async () => {
+    throw new Error("No attached portal fixture");
+  }),
   list: vi.fn(() => []),
   get: vi.fn(() => undefined),
   inventoryVersion: vi.fn(() => 0),
+  readMachineShape: () => undefined,
+  machineShapeVersion: () => 0,
   supportsExecutionMode: vi.fn(() => false),
   listMachineOptions: vi.fn(async () => undefined),
   listOperatingSystems: vi.fn(async () => undefined),
@@ -147,11 +185,7 @@ export async function callEnvironmentMethod(
       options.connectedNodes,
     ),
   } as never);
-  const call = respond.mock.calls.at(0);
-  if (call === undefined) {
-    throw new Error("expected environments handler to respond");
-  }
-  return call;
+  return expectDefined(respond.mock.calls.at(0), "expected environments handler to respond");
 }
 
 export class FakeWorkerServiceError extends Error {

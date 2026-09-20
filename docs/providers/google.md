@@ -178,7 +178,7 @@ or let it reuse `models.providers.google.apiKey` after `GEMINI_API_KEY`:
           webSearch: {
             apiKey: "AIza...", // optional if GEMINI_API_KEY or models.providers.google.apiKey is set
             baseUrl: "https://generativelanguage.googleapis.com/v1beta", // falls back to models.providers.google.baseUrl
-            model: "gemini-2.5-flash",
+            model: "gemini-3.6-flash",
           },
         },
       },
@@ -363,6 +363,11 @@ provider. This is not the separate Cloud Text-to-Speech API path.
 
 The bundled `google` plugin registers a realtime voice provider backed by the
 Gemini Live API for backend audio bridges such as Voice Call and Google Meet.
+
+Talk and Discord expose Google's prebuilt voices in their voice catalogs. During
+an active Talk or Discord call, use `talk_voice` to select a new voice. OpenClaw
+reconnects with that voice while preserving the conversation and unfinished agent
+work; saved voice defaults stay unchanged. See [Discord voice changes](/channels/discord/voice-follow).
 
 | Setting               | Config path                                                         | Default                                                                               |
 | --------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |

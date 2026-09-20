@@ -1,5 +1,21 @@
 [
   {
+    "source": "Radius",
+    "target": "Radius"
+  },
+  {
+    "source": "Radius plugin reference",
+    "target": "Radius 插件参考"
+  },
+  {
+    "source": "radius",
+    "target": "radius"
+  },
+  {
+    "source": "Omarchy",
+    "target": "Omarchy"
+  },
+  {
     "source": "OpenClaw",
     "target": "OpenClaw"
   },
@@ -52,8 +68,16 @@
     "target": "密钥管理"
   },
   {
+    "source": "Secrets CLI",
+    "target": "密钥 CLI"
+  },
+  {
     "source": "SecretRef credential surface",
     "target": "SecretRef 凭据覆盖面"
+  },
+  {
+    "source": "Auth credential semantics",
+    "target": "认证凭据语义"
   },
   {
     "source": "Secrets runtime model",
@@ -170,6 +194,10 @@
   {
     "source": "Mantis",
     "target": "Mantis"
+  },
+  {
+    "source": "Mantis Slack desktop runbook",
+    "target": "Mantis Slack 桌面端操作手册"
   },
   {
     "source": "Message lifecycle refactor",
@@ -382,6 +410,10 @@
   {
     "source": "Diagnostics export",
     "target": "诊断导出"
+  },
+  {
+    "source": "Diagnostics flags",
+    "target": "诊断标志"
   },
   {
     "source": "Agent harness plugins",
@@ -1452,6 +1484,10 @@
     "target": "插件 SDK 子路径"
   },
   {
+    "source": "Plugin SDK migration",
+    "target": "插件 SDK 迁移"
+  },
+  {
     "source": "Plugins CLI",
     "target": "插件 CLI"
   },
@@ -1590,6 +1626,22 @@
   {
     "source": "Plugin entry points",
     "target": "插件入口点"
+  },
+  {
+    "source": "Plugin runtime helpers",
+    "target": "插件运行时辅助函数"
+  },
+  {
+    "source": "Plugin setup and config",
+    "target": "插件设置与配置"
+  },
+  {
+    "source": "Building channel plugins",
+    "target": "构建渠道插件"
+  },
+  {
+    "source": "Building provider plugins",
+    "target": "构建提供商插件"
   },
   {
     "source": "Plugin SDK tool policy and sandbox helpers",
@@ -1852,6 +1904,10 @@
     "target": "子智能体"
   },
   {
+    "source": "Parallel specialist lanes",
+    "target": "并行专职通道"
+  },
+  {
     "source": "Thinking levels",
     "target": "思考级别"
   },
@@ -2092,6 +2148,14 @@
     "target": "渠道路由"
   },
   {
+    "source": "Bot loop protection",
+    "target": "机器人循环保护"
+  },
+  {
+    "source": "Access groups",
+    "target": "访问组"
+  },
+  {
     "source": "Channels Overview",
     "target": "渠道概览"
   },
@@ -2240,6 +2304,14 @@
     "target": "网络代理"
   },
   {
+    "source": "Network",
+    "target": "网络"
+  },
+  {
+    "source": "Proxy",
+    "target": "代理"
+  },
+  {
     "source": "Node troubleshooting",
     "target": "节点故障排查"
   },
@@ -2262,6 +2334,10 @@
   {
     "source": "Onboard",
     "target": "引导设置"
+  },
+  {
+    "source": "Setup CLI",
+    "target": "设置 CLI"
   },
   {
     "source": "Operator scopes",
@@ -2296,12 +2372,28 @@
     "target": "Task Flow"
   },
   {
+    "source": "Tasks",
+    "target": "任务"
+  },
+  {
     "source": "Telegram reaction notifications",
     "target": "Telegram 表情回应通知"
   },
   {
+    "source": "Telegram reaction level",
+    "target": "Telegram 表情回应级别"
+  },
+  {
     "source": "Threat model",
     "target": "威胁模型"
+  },
+  {
+    "source": "Contributing to the threat model",
+    "target": "参与威胁模型贡献"
+  },
+  {
+    "source": "Formal verification",
+    "target": "形式化验证"
   },
   {
     "source": "Reconnaissance (AML.TA0002)",
@@ -2450,6 +2542,10 @@
   {
     "source": "WhatsApp reaction level",
     "target": "WhatsApp 表情回应级别"
+  },
+  {
+    "source": "Reactions",
+    "target": "表情回应"
   },
   {
     "source": "Zalo (official Bot/webhook channel)",
@@ -2802,6 +2898,10 @@
   {
     "source": "llmman (local models)",
     "target": "llmman（本地模型）"
+  },
+  {
+    "source": "llmman (local + hybrid local/hosted models)",
+    "target": "llmman（本地 + 本地/托管混合模型）"
   },
   {
     "source": "llama.cpp (managed or existing server)",
@@ -4048,6 +4148,14 @@
     "target": "节点文件传输"
   },
   {
+    "source": "File transfers",
+    "target": "文件传输"
+  },
+  {
+    "source": "File Transfer plugin reference",
+    "target": "文件传输插件参考"
+  },
+  {
     "source": "Node command policy",
     "target": "节点命令策略"
   },
@@ -4754,5 +4862,21 @@
   {
     "source": "FAQ: providers, hardware, and hosting",
     "target": "常见问题：服务商、硬件与托管"
+  },
+  {
+    "source": "Decision models",
+    "target": "决策模型"
+  },
+  {
+    "source": "TypeSafe AI",
+    "target": "TypeSafe AI"
+  },
+  {
+    "source": "Typesafe plugin reference",
+    "target": "TypeSafe 插件参考"
+  },
+  {
+    "source": "typesafe",
+    "target": "typesafe"
   }
 ]

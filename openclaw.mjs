@@ -6,6 +6,7 @@ import module from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isNodeHostLauncherChild, runNodeHostLauncher } from "./node-host-launcher.mjs";
 import {
   consumeLauncherRootOptionToken,
   isForegroundGmailRunInvocation,
@@ -49,7 +50,7 @@ const ensureSupportedRuntimeVersion = async () => {
     );
     return process.exit(1);
   }
-  const probe = detectCurrentSqliteCapabilities();
+  const probe = await detectCurrentSqliteCapabilities();
   const failure = nodeRuntimeFailure(process.versions.node, probe);
   if (!failure) {
     const note = nodeRuntimeNote(process.versions.node, probe);
@@ -457,15 +458,18 @@ function readLauncherJson(relativePath) {
 }
 
 function resolveLauncherVersion() {
-  const packageJson = readLauncherJson("./package.json");
-  const packageVersion = normalizeLauncherMetadataValue(packageJson?.version);
-  if (packageVersion) {
-    return packageVersion;
-  }
+  // Report what is built, not what the source says: resolveLauncherCommit already
+  // prefers dist provenance, so reading package.json first pairs a source version
+  // with a built commit and hides a checkout that pulled without rebuilding.
   const buildInfo = readLauncherJson("./dist/build-info.json");
   const buildVersion = normalizeLauncherMetadataValue(buildInfo?.version);
   if (buildVersion) {
     return buildVersion;
+  }
+  const packageJson = readLauncherJson("./package.json");
+  const packageVersion = normalizeLauncherMetadataValue(packageJson?.version);
+  if (packageVersion) {
+    return packageVersion;
   }
   return normalizeLauncherMetadataValue(process.env.OPENCLAW_BUNDLED_VERSION) ?? "0.0.0";
 }
@@ -621,9 +625,18 @@ const tryOutputPrecomputedCommandHelp = () => {
 
 // Resolve Node before loading pending package lifecycle code or any built runtime modules.
 const waitingForNodeUpdateRespawn = await ensureSupportedRuntimeVersion();
+if (
+  !waitingForNodeUpdateRespawn &&
+  (await runNodeHostLauncher({
+    entryPath: fileURLToPath(import.meta.url),
+    packageRoot: fileURLToPath(new URL("./", import.meta.url)),
+  }))
+) {
+  process.exit(process.exitCode ?? 0);
+}
 const currentNodeRuntimeFailure = process.versions.bun
   ? null
-  : nodeRuntimeFailure(process.versions.node, detectCurrentSqliteCapabilities());
+  : nodeRuntimeFailure(process.versions.node, await detectCurrentSqliteCapabilities());
 
 if (!waitingForNodeUpdateRespawn) {
   // Diagnostics must not replay package lifecycle scripts under an unsupported Node.
@@ -657,7 +670,8 @@ if (!waitingForNodeUpdateRespawn) {
 // so a timeout cannot strand a compile-cache respawn child.
 const waitingForCompileCacheRespawn =
   waitingForNodeUpdateRespawn ||
-  (!isForegroundGmailRunInvocation(process.argv) &&
+  (!isNodeHostLauncherChild() &&
+    !isForegroundGmailRunInvocation(process.argv) &&
     !(process.platform !== "win32" && isNativeHookRelayInvocation(process.argv)) &&
     (respawnWithoutCompileCacheIfNeeded() || respawnWithPackagedCompileCacheIfNeeded()));
 

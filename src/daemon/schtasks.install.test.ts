@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { decodeWindowsLauncherScript } from "../infra/windows-launcher-encoding.js";
 import {
   installScheduledTask,
@@ -14,6 +14,15 @@ import {
 } from "./schtasks.js";
 import { auditGatewayServiceConfig, SERVICE_AUDIT_CODES } from "./service-audit.js";
 import { buildServiceEnvironment } from "./service-env.js";
+
+// Registration fixtures advance the activation window without wall-clock sleeps.
+const activationClock = vi.hoisted(() => ({ now: 0 }));
+vi.mock("../utils.js", async () => ({
+  ...(await vi.importActual<typeof import("../utils.js")>("../utils.js")),
+  sleep: async (ms: number) => {
+    activationClock.now += ms;
+  },
+}));
 
 // Install tests control registration separately; runtime probes never inspect host tasks.
 vi.mock("node:child_process", async () => ({
@@ -64,11 +73,17 @@ vi.mock("./schtasks-exec.js", () => ({
 }));
 
 beforeEach(() => {
+  activationClock.now = 0;
+  vi.spyOn(Date, "now").mockImplementation(() => activationClock.now);
   schtasksCalls.length = 0;
   schtasksResponses.length = 0;
   xmlPayloadCaptures.length = 0;
   resolveWindowsOemEncodingMock.mockReset();
   resolveWindowsOemEncodingMock.mockReturnValue(null);
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe("installScheduledTask", () => {
@@ -577,6 +592,27 @@ describe("installScheduledTask", () => {
       expectInitialTaskQuery();
       expect(schtasksCalls[1]?.[0]).toBe("/Change");
       expect(schtasksCalls[2]?.[0]).toBe("/Create");
+      expectTaskRunCall(3);
+    });
+  });
+
+  it("warns and activates an existing task when an ordinary policy refresh fails", async () => {
+    await withUserProfileDir(async (_tmpDir, env) => {
+      schtasksResponses.push(okSchtasksResponse, okSchtasksResponse, accessDeniedResponse);
+      const warn = vi.fn();
+      await installScheduledTask({
+        env,
+        stdout: new PassThrough(),
+        programArguments: ["node", "gateway.js"],
+        warn,
+      });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Access is denied"));
+      expect(schtasksCalls.map((call) => call[0])).toEqual([
+        "/Query",
+        "/Change",
+        "/Create",
+        "/Run",
+      ]);
       expectTaskRunCall(3);
     });
   });

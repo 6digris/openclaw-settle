@@ -9,17 +9,18 @@ title: "Android app"
 ---
 
 <Note>
-The official Android app is available on [Google Play](https://play.google.com/store/apps/details?id=ai.openclaw.app&hl=en_IN) and as a signed standalone APK on supported [GitHub Releases](https://github.com/openclaw/openclaw/releases). It is a companion node and requires a running OpenClaw Gateway. Source: [apps/android](https://github.com/openclaw/openclaw/tree/main/apps/android) ([build instructions](https://github.com/openclaw/openclaw/blob/main/apps/android/README.md)).
+The official Android app is available on [Google Play](https://play.google.com/store/apps/details?id=ai.openclaw.app&hl=en_IN) and, for sideloading, as a signed standalone APK on selected [GitHub Releases](https://github.com/openclaw/openclaw/releases). Not every release includes the APK and checksum. See [Install outside Google Play](/platforms/android#install-outside-google-play) to find and verify both files. It is a companion node and requires a running OpenClaw Gateway. Source: [apps/android](https://github.com/openclaw/openclaw/tree/main/apps/android) ([build instructions](https://github.com/openclaw/openclaw/blob/main/apps/android/README.md)).
 </Note>
 
 ## Support snapshot
 
 - Role: companion node app (Android does not host the Gateway).
 - Gateway required: yes (run it on macOS, Linux, or Windows via WSL2).
-- Install: [Google Play](https://play.google.com/store/apps/details?id=ai.openclaw.app&hl=en_IN) or `OpenClaw-Android.apk` from a supported [GitHub Release](https://github.com/openclaw/openclaw/releases), [Getting Started](/start/getting-started) for the Gateway, then [Pairing](/channels/pairing).
+- Install: [Google Play](https://play.google.com/store/apps/details?id=ai.openclaw.app&hl=en_IN) or `OpenClaw-Android.apk` from a [GitHub Release](https://github.com/openclaw/openclaw/releases) that lists both required assets (see [Install outside Google Play](/platforms/android#install-outside-google-play)), [Getting Started](/start/getting-started) for the Gateway, then [Pairing](/channels/pairing).
 - Gateway: [Runbook](/gateway) + [Configuration](/gateway/configuration).
   - Protocols: [Gateway protocol](/gateway/protocol) (nodes + control plane).
 - Select an agent in the sidebar to view its credential status in **Settings → Providers & Models**. The page updates when the Gateway publishes model, credential, or config changes. Use **Refresh** to recheck model availability.
+- The sidebar marks sessions waiting for an answer or approval, including inactive sessions and collapsed groups. Tap the attention icon, hover over it, or focus it with a keyboard to read the oldest pending request and the count of additional requests of the same kind. The indicator clears when requests resolve, are canceled, or expire. Question previews never include answer drafts.
 - **Settings → OpenClaw** opens a dedicated Gateway settings assistant when the operator connection has `operator.admin` and the Gateway supports `openclaw.chat`. Its setup conversation stays separate from ordinary Chat, redacts secret replies locally, and moves to Chat only after you tap **Open Chat**.
 
 Its reply field switches to masked input for secret prompts. Tap it again if a prompt change closes the keyboard. Android sends sensitive replies without trimming them and clears unsent drafts when you leave this page or background the app.
@@ -39,15 +40,58 @@ capabilities; this prevents simultaneous Gateways from issuing camera,
 location, screen, or notification commands to the same phone. Android can
 suspend the secondary connections after the app leaves the foreground.
 
+The sidebar footer opens **Add Gateway** when none are saved and Gateway
+settings when one is saved. With multiple saved Gateways, it opens a native
+quick picker with a checkmark for the focused route, **Add Gateway**, and **Manage Gateways**.
+
+**Add Gateway** opens the QR scanner without disconnecting the current Gateway
+or restarting onboarding. You can also enter a setup code, choose a QR image,
+or enter a Gateway URL manually. A valid code opens a confirmation; only
+**Connect** starts the handoff. **Cancel** returns to the previous screen without
+changing the current conversation, drafts, attachments, or saved Gateways.
+Adding an already saved Gateway uses its existing connection settings; use
+**Manage Gateways** to replace its setup.
+Saved offline entries remain listed; connection status is separate from selection.
+
+Unsent text and finished attachments stay with their Gateway, agent, and session
+when you switch away and back. Finish recording, stop dictation or Talk, and let
+media imports or pending send admission finish before using the quick picker.
+The composer stays protected during handoff, but a committed offline Gateway
+remains usable without waiting for a network connection.
+
+## Dictation and attachments
+
+Tap the composer microphone to dictate. The composer shows when recognition is
+starting, listening, or transcribing, with an interim transcript while you speak.
+Only the final transcript is added to your draft. Tap Stop to finish listening,
+or Cancel while starting or transcribing to discard that attempt. Recognition
+errors leave your existing draft intact and explain how to retry.
+
+After picking or sharing photos and files, **Preparing attachments…** stays visible
+until they are ready. Send remains disabled during preparation. **Queuing message…**
+covers local send admission; the message's outbox status then shows delivery or
+any failure. Offline messages still use the durable queue.
+
 ## Wear OS companion
 
 The Wear OS companion uses the paired Android phone's authenticated Gateway connection; the watch never receives or stores Gateway credentials. It can select agents and sessions, read bounded transcripts, send text or dictated replies, abort an active run, start realtime Talk inside the selected session, and connect or disconnect the paired phone's Gateway. It also offers local reply notifications, dark or light appearance, and optional automatic speech for replies. Agent and Gateway controls are capability-negotiated for staggered phone/watch updates. Realtime Talk streams microphone and playback audio over a temporary Wear OS Data Layer channel and stops when the selected phone, Gateway connection, or audio channel is lost.
 
 ## Install outside Google Play
 
-Regular final and correction GitHub Releases include a universal `OpenClaw-Android.apk` and `OpenClaw-Android-SHA256SUMS.txt`. The APK is built from the release tag, signed with the OpenClaw Android release key, and carries GitHub Actions provenance.
+Selected GitHub Releases include a universal `OpenClaw-Android.apk` and `OpenClaw-Android-SHA256SUMS.txt`. The APK is built from the release tag, signed with the OpenClaw Android release key, and carries GitHub Actions provenance. Android assets may be attached after a release becomes public. Select a release by its listed assets, not by the latest Gateway release tag.
 
-Choose a [release](https://github.com/openclaw/openclaw/releases) that lists both assets, then download and verify that exact tag before sideloading:
+List published releases that contain both required assets:
+
+```bash
+gh api --paginate "repos/openclaw/openclaw/releases?per_page=50" \
+  --jq '.[] | select(.draft | not) | {
+    tag: .tag_name,
+    apk: ([.assets[].name] | any(. == "OpenClaw-Android.apk")),
+    checksum: ([.assets[].name] | any(. == "OpenClaw-Android-SHA256SUMS.txt"))
+  } | select(.apk and .checksum)'
+```
+
+Pick a release that lists both assets, then download and verify that exact tag before sideloading:
 
 ```bash
 release_tag=vYYYY.M.PATCH
@@ -62,6 +106,8 @@ gh attestation verify OpenClaw-Android.apk \
   --source-ref "refs/tags/${release_tag}" \
   --deny-self-hosted-runners
 ```
+
+If no release lists both files, use Google Play or build from source with your own signing identity.
 
 <Warning>
 Google Play and standalone APK installs use different update channels and may have different signing identities. Android may require uninstalling the existing app before switching channels, which removes its local app data. Stay on one channel for normal updates.
@@ -247,6 +293,8 @@ Details and example CoreDNS config: [Bonjour](/gateway/bonjour).
 
 Create a setup code in the [Control UI](/web/control-ui) (**Devices → Pair device**) or with `openclaw qr`.
 
+That mobile **setup code** (and its QR) is what Android **Scan QR or setup code** / **Enter setup code** accept. It is a different artifact from the gateway **join URL** minted by [`openclaw devices join-code`](/cli/devices#openclaw-devices-join-code) (`https://…/j/<code>`), which enrolls a headless node host via [`openclaw connect`](/cli/connect). Pasting a join URL or bare join code into Android setup is rejected — generate a fresh mobile QR/setup code with [`openclaw qr`](/cli/qr).
+
 An explicit `--url` or `--public-url` override wins. Otherwise, setup-code URL selection uses this order:
 
 1. `plugins.entries.device-pair.config.publicUrl`, unless remote preference was requested.
@@ -294,7 +342,7 @@ The app keeps a registry of every Gateway it has paired with, so you can keep op
 
 Opening or replying to a conversation notification reconnects its saved Gateway when needed. An already connecting or connected target is retained. Replies wait for that target connection to become ready, including required TLS approval. If the target is no longer available, opening the notification shows **Gateway unavailable** and opens Gateway settings without disconnecting another Gateway. Disconnect is checked again before a notification reply enters the durable send queue; already queued input keeps its normal recovery behavior.
 
-For notifications created by the updated app, **Reply queued** confirms that the reply entered the durable send queue, not that it was delivered. The notification keeps a private preview of the submitted text and offers **Open conversation**. If the reply status is unknown, open the conversation to check before sending again; the notification does not offer another Reply action. Feedback updates only the latest notification for that conversation, so an older result cannot replace a newer notice. Notifications retained from an earlier app version can still send replies, but their result does not rewrite or dismiss a notification; open the conversation to check its status.
+**Reply queued** confirms that the reply entered the durable send queue, not that it was delivered. The notification keeps a private preview of the submitted text and offers **Open conversation**. If the reply status is unknown, open the conversation to check before sending again; the notification does not offer another Reply action. Feedback updates only the latest notification for that conversation, so an older result cannot replace a newer notice. A notification posted before an app update can still send replies. Its result does not rewrite or dismiss that notification, so open the conversation to check its status.
 
 The **Channels**, **Dreaming**, **Health** logs, **Skills**, and **Usage** pages keep their last loaded data while refreshing. A failed first load shows an error rather than empty counts or default health values. When refreshes overlap, only the latest request updates the page's data, error, and progress. Disconnecting clears the displayed summaries.
 
@@ -304,7 +352,7 @@ On **Health**, **Chat: Not ready** means chat health is unconfirmed or its check
 
 After the authenticated node session connects, and when the app moves to the background while the foreground service is still connected, Android calls `node.event` with `event: "node.presence.alive"`. The Gateway records this as `lastSeenAtMs`/`lastSeenReason` on the paired node/device metadata only after the authenticated node device identity is known.
 
-The app counts the beacon as successfully recorded only when the Gateway response includes `handled: true`. Older Gateways may acknowledge `node.event` with `{ "ok": true }`; that response is compatible but does not count as a durable last-seen update.
+The app counts the beacon as successfully recorded only when the Gateway response includes `handled: true`. A Gateway that acknowledges `node.event` with `{ "ok": true }` and no `handled` field is compatible, but that response does not count as a durable last-seen update.
 
 ### 4. Approve pairing (CLI)
 
@@ -375,6 +423,7 @@ Open **Home** from the sidebar's **Pages** menu to chat, or select an existing s
 - Send: `chat.send`. Outside an active Talk session, you can send text or staged attachments while the agent is working. A new draft brings back **Send**; clearing it restores **Stop**. The Gateway applies the existing [queue mode](/concepts/queue), so steering does not require stopping the current run. Sending remains disabled while another submission, attachment staging, or microphone capture owns the draft.
 - Queued message controls: **Delete** removes the local queued copy, including when a reconnect refresh is still finishing. It does not undo a message already accepted by the Gateway; use **Stop** to cancel an active turn.
 - Durable sending: every send (text, picked images, and voice notes) is journaled to a per-gateway on-device outbox before any network attempt, so app termination cannot lose submitted input. Sends queued while offline deliver in order on reconnect with stable idempotency keys, and a send is retired only after the turn is visible in canonical `chat.history` — an acknowledgement alone is not treated as proof of delivery. Acknowledged reconnect sends show the same streaming progress as online sends; requests that never reach the socket queue remain queued for the next connection. Ambiguous outcomes (lost acknowledgement, app killed mid-send, Gateway restart before the transcript write) surface as visible rows with explicit **Retry**/**Delete** instead of auto-resending. If refreshed history changes branches, earlier queued input keeps its text and attachments but requires explicit retry; input admitted after that history is displayed can send normally when reconnecting to the same branch. Slash commands never auto-replay across a reconnect; they park for explicit retry. The queue is bounded (50 messages and 48 MB of attachment bytes per Gateway) and unsent rows expire after 48 hours. Composer drafts that were never submitted are not process-durable.
+- Completed answers show up to eight compact source cards for cited pages found in that run’s successful web searches and fetches. Tap a card to read its recorded search snippet or page excerpt and open the source. The cards do not fetch page content; favicons come through the Gateway and honor `gateway.controlUi.automaticallyFetchFavicons`, with a globe when disabled or unavailable.
 - Image input works through the picker and Android Sharesheet. Assistant-generated images resolve through the paired Gateway connection, render inline with a full-screen preview, and retain only their small artifact references in the offline transcript cache. Downloads are capped at 12 MiB and decoded to bounded display bitmaps.
 - Push updates (best-effort): `chat.subscribe` -> `event:"chat"`
 - Listen: long-press an assistant message and choose **Listen** to hear it; audio renders via Gateway `tts.speak` with the configured TTS provider chain, and on-device system TTS is used when the Gateway cannot render audio. Playback stops on session switch, new chat, app backgrounding, or chat close.
@@ -397,6 +446,10 @@ Camera commands (foreground only; permission-gated): `camera.snap` (jpg), `camer
   automatically.
 - Start continuous **Talk** from the Chat waveform. Dictation, voice-note
   recording, and Talk are mutually exclusive microphone paths.
+- Your selected agent stays bound to Talk and the main chat when the same Gateway
+  reconnects, including while its agent list refreshes. Removing that agent falls
+  back to the Gateway default. Switching Gateways or restarting the app clears
+  this in-memory choice.
 - Talk Mode promotes the existing foreground service from `connectedDevice` to `connectedDevice|microphone` before capture starts, then demotes it when Talk Mode stops. The node service declares `FOREGROUND_SERVICE_CONNECTED_DEVICE` with `CHANGE_NETWORK_STATE`; Android 14+ also requires the `FOREGROUND_SERVICE_MICROPHONE` declaration, the `RECORD_AUDIO` runtime grant, and the microphone service type at runtime.
 - By default, Android Talk uses native speech recognition, Gateway chat, and `talk.speak` through the configured Gateway Talk provider. It inherits the session's thinking setting. Local system TTS is used only when `talk.speak` is unavailable.
 - Gateway config changes refresh Android's cached Talk settings on the next use, without reconnecting or interrupting an active capture.

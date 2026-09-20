@@ -57,11 +57,11 @@ command pack, or a Codex skill bundle and use it immediately.
 
   </Step>
 
-  <Step title="Restart and use">
-    ```bash
-    openclaw gateway restart
-    ```
-
+  <Step title="Use the bundle">
+    <a id="restart-and-use" />
+    Installation applies to the running local Gateway without restarting it.
+    Start the Gateway if it was stopped. See
+    [Apply changes and inspect](/plugins/manage-plugins#apply-changes-and-inspect).
     Mapped features (skills, hooks, MCP tools, LSP defaults) are available in the next session.
 
   </Step>
@@ -107,7 +107,38 @@ Claude `hooks/hooks.json` remains in the declared capabilities, but does not app
 as a supported hook. A bundle containing both layouts keeps its OpenClaw hook packs.
 Inspection does not execute handlers or prove that the running Gateway loaded them.
 
-#### MCP for embedded OpenClaw
+#### Embedded OpenClaw settings
+
+Claude `settings.json` is imported as default embedded OpenClaw settings when
+the bundle is enabled. OpenClaw sanitizes shell override keys before applying
+them:
+
+- `shellPath`
+- `shellCommandPrefix`
+
+#### Embedded OpenClaw LSP
+
+- Enabled Claude bundles can contribute LSP server config.
+- OpenClaw loads `.lsp.json` plus any manifest-declared `lspServers` paths.
+- Bundle LSP config is merged into the effective embedded OpenClaw LSP
+  defaults.
+- Runtime tool allowlists can select bundle LSP tools with `bundle-lsp`,
+  `group:plugins`, or matching `lsp_*` names and globs. Each independent
+  restriction must permit the tool.
+- Only supported stdio-backed LSP servers are runnable; unsupported
+  transports still show up in `openclaw plugins inspect <id>`.
+- Canceling a turn or compaction cancels pending LSP startup, stops additional
+  servers from starting, and cleans up servers already acquired by that operation.
+
+### Detected but not executed
+
+These are recognized and shown in diagnostics, but OpenClaw does not run them:
+
+- Claude `hooks/hooks.json` automation
+- Cursor `.cursor/agents`, `.cursor/hooks.json`, `.cursor/rules`
+- Codex `.app.json` metadata beyond capability reporting
+
+## MCP for embedded OpenClaw
 
 - Enabled bundles can contribute MCP server config.
 - OpenClaw merges bundle MCP config into the effective embedded OpenClaw
@@ -121,7 +152,7 @@ Inspection does not execute handlers or prove that the running Gateway loaded th
 - Bundle MCP tool catalogs are sorted deterministically before registration, so
   upstream `listTools()` order changes do not thrash prompt-cache tool blocks.
 
-##### Transports
+### Transports
 
 MCP servers can use stdio or HTTP transport.
 
@@ -172,7 +203,7 @@ MCP servers can use stdio or HTTP transport.
   both stdio and HTTP transports. Request timeout defaults to 60 seconds and
   can be overridden with `requestTimeoutMs`.
 
-##### Tool naming
+### Tool naming
 
 OpenClaw registers bundle MCP tools with provider-safe names in the form
 `serverName__toolName`. For example, a server keyed `"vigil-harbor"` exposing a
@@ -190,32 +221,6 @@ OpenClaw registers bundle MCP tools with provider-safe names in the form
 - Profile filtering treats every tool from one bundle MCP server as
   plugin-owned by `bundle-mcp`, so profile allow/deny lists can reference
   either individual exposed tool names or the `bundle-mcp` plugin key.
-
-#### Embedded OpenClaw settings
-
-Claude `settings.json` is imported as default embedded OpenClaw settings when
-the bundle is enabled. OpenClaw sanitizes shell override keys before applying
-them:
-
-- `shellPath`
-- `shellCommandPrefix`
-
-#### Embedded OpenClaw LSP
-
-- Enabled Claude bundles can contribute LSP server config.
-- OpenClaw loads `.lsp.json` plus any manifest-declared `lspServers` paths.
-- Bundle LSP config is merged into the effective embedded OpenClaw LSP
-  defaults.
-- Only supported stdio-backed LSP servers are runnable; unsupported
-  transports still show up in `openclaw plugins inspect <id>`.
-
-### Detected but not executed
-
-These are recognized and shown in diagnostics, but OpenClaw does not run them:
-
-- Claude `hooks/hooks.json` automation
-- Cursor `.cursor/agents`, `.cursor/hooks.json`, `.cursor/rules`
-- Codex `.app.json` metadata beyond capability reporting
 
 ## Bundle formats
 
