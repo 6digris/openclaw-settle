@@ -40,7 +40,7 @@ Outer suites and the remaining checkout contract cases stay sequential.
 The [planning tier](/ci/capacity#planning-tiers) separates total rows from active
 jobs. Standard CI retains one Node matrix with 96 concurrent jobs and final
 caps of 70 push rows or 130 PR rows, including precise and plugin plans. Fast CI
-admits 90 push rows or 190 PR rows; its separate 32-class matrix admits at most
+admits 100 push rows or 190 PR rows; its separate 32-class matrix admits at most
 54 active jobs, reserving one additional 32-class slot for real-Gateway E2E.
 Other fast Node rows use a matrix with concurrency 190. Both matrices retain the
 same execution steps, runner routing, and required aggregate-gate coverage.

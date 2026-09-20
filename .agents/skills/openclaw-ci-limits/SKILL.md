@@ -148,12 +148,12 @@ Blacksmith burst load under 12,000 registrations per 5 minutes with headroom for
 ClawSweeper, ClawHub, Clownfish, OpenClaw RTT, and Clawbench.
 
 Standard planning retains the 90-row compact cap, 50-row plugin fallback cap,
-and final 70-push/130-PR Node caps. Fast planning uses 120/70/90/190 respectively.
+and final 70-push/130-PR Node caps. Fast planning uses 120/70/100/190 respectively.
 Count all rows, even when the concurrency limit forces multiple waves. With
 80 potentially eligible non-Node jobs, four fast main admissions and 21 fast PR
-admissions require `4 × 170 + 21 × 270 = 6,350` registrations, leaving 5,650 below
+admissions require `4 × 180 + 21 × 270 = 6,390` registrations, leaving 5,610 below
 the current 12,000 operating target. Two fast PRs plus nineteen standard PRs and
-four fast main admissions require `4 × 170 + 2 × 270 + 19 × 210 = 5,210`.
+four fast main admissions require `4 × 180 + 2 × 270 + 19 × 210 = 5,250`.
 The historical all-standard envelope remains 5,010. Compact rows are included in
 the final Node caps; never count them twice. These are conditional arrival
 bounds, not live organization-wide capacity proof.

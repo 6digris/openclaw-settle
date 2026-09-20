@@ -14133,7 +14133,17 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     const workflow = readCiWorkflow();
     const fastJob = workflow.jobs["checks-node-core-test-32-shard"];
     expect(fastJob.steps).toEqual(workflow.jobs["checks-node-core-test-nondist-shard"].steps);
-    expect(Math.min(large.length, fastJob.strategy["max-parallel"]) + 1).toBeLessThanOrEqual(55);
+    const other32Jobs = Object.entries(workflow.jobs as Record<string, { "runs-on": unknown }>)
+      .filter(
+        ([, job]) =>
+          typeof job["runs-on"] === "string" &&
+          job["runs-on"].includes("blacksmith-32vcpu-ubuntu-2404"),
+      )
+      .map(([name]) => name);
+    expect(other32Jobs).toEqual(["checks-ui-e2e-real-gateway"]);
+    expect(
+      Math.min(large.length, fastJob.strategy["max-parallel"]) + other32Jobs.length,
+    ).toBeLessThanOrEqual(55);
     expect(workflow.jobs["ci-gate"].needs).toContain("checks-node-core-test-32-shard");
     expect(runCiGateFixture("checks-node-core-test-32-shard=failure|true").status).toBe(1);
   });
@@ -14142,7 +14152,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     ["pull_request", "compact", "blacksmith", 130, "standard"],
     ["pull_request", "compact", "blacksmith", 190, "fast"],
     ["pull_request", "precise", "github", 190, "fast"],
-    ["push", "compact", "hybrid", 90, "fast"],
+    ["push", "compact", "hybrid", 100, "fast"],
     ["pull_request", "precise", "github", 130, "standard"],
     ["push", "compact", "hybrid", 70, "standard"],
     ["workflow_dispatch", "compact", "blacksmith", null, "standard"],

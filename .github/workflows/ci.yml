@@ -1799,7 +1799,7 @@ jobs:
           const nodeTestNonDistShards = nodeTestShards.filter((shard) => !shard.requires_dist);
           // Bound the final matrix: precise plans and appended plugin rows can bypass compact caps.
           const nodeMatrixLimit = testTier === "fast"
-            ? (compactPlanMode === "pull-request" ? 190 : 90)
+            ? (compactPlanMode === "pull-request" ? 190 : 100)
             : (compactPlanMode === "pull-request" ? 130 : 70);
           if (compactPlanMode && nodeTestNonDistShards.length > nodeMatrixLimit) {
             throw new Error(

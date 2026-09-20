@@ -48,7 +48,7 @@ unchanged.
 | Changed-plugin serial budget                           | 240s        | 150s                                         |
 | Compact descriptors, including dist                    | 90          | 120                                          |
 | Changed-plugin fallback rows                           | 50          | 70                                           |
-| Final Node rows, PR / push                             | 130 / 70    | 190 / 90                                     |
+| Final Node rows, PR / push                             | 130 / 70    | 190 / 100                                    |
 | Node matrix concurrency                                | 96          | 190 outside the 32-class; 54 on the 32-class |
 
 Fast Blacksmith planning reuses the existing file splitter and its complete
@@ -76,9 +76,9 @@ guarantee provider fairness against overlapping PRs.
 
 Count every row for registration budgeting regardless of concurrency. Retaining
 the conservative 80 non-Node allowance, the all-fast arrival envelope is
-`4 × (90 + 80) + 21 × (190 + 80) = 6,350`, leaving 5,650 below the current
+`4 × (100 + 80) + 21 × (190 + 80) = 6,390`, leaving 5,610 below the current
 12,000 operating target. Four fast main admissions, two fast PRs, and nineteen
-standard PRs require `4 × 170 + 2 × 270 + 19 × 210 = 5,210` registrations.
+standard PRs require `4 × 180 + 2 × 270 + 19 × 210 = 5,250` registrations.
 These are conditional arrival bounds, not live organization-wide free capacity.
 Historical 10,000-bucket and 5,010-envelope observations below retain their
 original scope. Check one exact-head PR run's actual association, emitted rows,

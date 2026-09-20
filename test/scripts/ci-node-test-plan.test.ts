@@ -316,14 +316,22 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     }
   });
 
-  it.each(["blacksmith", "hybrid", "github"])(
-    "gives fast %s jobs less work without losing owners",
-    (runnerBackend) => {
+  it.each(
+    ["blacksmith", "hybrid", "github"].flatMap((runnerBackend) =>
+      [false, true].map((gateway) => ({ runnerBackend, gateway })),
+    ),
+  )(
+    "gives fast $runnerBackend jobs less work without losing owners (Gateway=$gateway)",
+    ({ runnerBackend, gateway }) => {
       const original = fullSuiteVitestShards.slice();
       const fixtures = Array.from({ length: 48 }, (_, index) => ({
         name: `tier-fixture-${index}`,
         config: `fixture-${index}.config.ts`,
-        projects: [`test/vitest/vitest.tier-fixture-${index}.config.ts`],
+        projects: [
+          gateway
+            ? "test/vitest/vitest.gateway-core.config.ts"
+            : `test/vitest/vitest.tier-fixture-${index}.config.ts`,
+        ],
       }));
       vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue(
         Object.fromEntries(fixtures.map(({ name }) => [name, 80])),
@@ -361,20 +369,39 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
   );
 
   it("keeps measured fast hybrid runtime floors out of unrelated packed work", () => {
-    const jobs = createNodeTestShardBundles({
-      compactMode: "pull-request",
-      runnerBackend: "hybrid",
-      tier: "fast",
-      includeReleaseOnlyPluginShards: false,
-    });
-    const runtimeJobs = jobs.filter((job) => job.pretestBuildMode === "runtime");
-    expect(runtimeJobs.length).toBeGreaterThan(0);
-    for (const job of runtimeJobs) {
-      if ((job.predictedSeconds ?? 0) > 250) {
+    const original = fullSuiteVitestShards.slice();
+    const configs = new Set([
+      "test/vitest/vitest.infra.config.ts",
+      "test/vitest/vitest.runtime-config.config.ts",
+    ]);
+    fullSuiteVitestShards.splice(
+      0,
+      fullSuiteVitestShards.length,
+      ...original
+        .filter((shard) => shard.name === "core-runtime")
+        .map((shard) =>
+          Object.assign({}, shard, {
+            projects: shard.projects.filter((config) => configs.has(config)),
+          }),
+        ),
+    );
+    try {
+      const jobs = createNodeTestShardBundles({
+        compactMode: "pull-request",
+        runnerBackend: "hybrid",
+        tier: "fast",
+        includeReleaseOnlyPluginShards: false,
+      });
+      const overBudget = jobs.filter(
+        (job) => job.pretestBuildMode === "runtime" && (job.predictedSeconds ?? 0) > 250,
+      );
+      expect(overBudget.length).toBeGreaterThan(0);
+      for (const job of overBudget) {
         expect(job.groups, job.checkName).toHaveLength(1);
       }
+    } finally {
+      fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...original);
     }
-    expect(jobs.length).toBeLessThanOrEqual(120);
   });
 
   // Read-only cases share this baseline; inventory and timing mutations build fresh plans.

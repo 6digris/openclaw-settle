@@ -3387,6 +3387,7 @@ function createCompactNodeTestShardBundles(
               : resolveCiNodeTestRunnerClass(group.runner).secondsCap;
       const parallel =
         usesBlacksmithRunner &&
+        (!fast || combined.every((entry) => !entry.configs.some(isExclusiveCiTestConfig))) &&
         combined.every(isParallelCompactGroup) &&
         combined.every((entry) => estimateBinSeconds([entry]) <= serialSecondsCap);
       const secondsCap = parallel
