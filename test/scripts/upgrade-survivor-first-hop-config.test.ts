@@ -8,6 +8,7 @@ import {
   realpathSync,
   renameSync,
   statSync,
+  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -953,6 +954,46 @@ describe("packaged first-hop config preservation assertions", () => {
     expectFailure(run(fixture, "assert-hop"), "missing fixture file: first-hop-messages-leaf.json");
     expect(existsSync(join(fixture.artifacts, "positive-config-after-hop.json"))).toBe(false);
   });
+});
+
+describe.skipIf(process.platform === "win32")("first-hop artifact routing", () => {
+  it.each([false, true])(
+    "retains separate-harness captures at the selected root (override=%s)",
+    (override) => {
+      const root = realpathSync(tempDirs.make("survivor-artifact-routing-"));
+      const harness = join(root, "trusted-harness");
+      const selected = join(root, "selected-source");
+      mkdirSync(join(harness, "scripts/e2e"), { recursive: true });
+      symlinkSync(resolve("scripts/lib"), join(harness, "scripts/lib"), "dir");
+      mkdirSync(selected);
+      const driver = "scripts/e2e/update-first-hop-compat-docker.sh";
+      copyFileSync(resolve(driver), join(harness, driver));
+      const explicit = join(root, "explicit-artifacts");
+      const result = spawnSync("bash", [join(harness, driver)], {
+        cwd: harness,
+        encoding: "utf8",
+        timeout: 10_000,
+        env: {
+          ...process.env,
+          TMPDIR: root,
+          OPENCLAW_QA_ALLOW_UPDATE_FIRST_HOP: "1",
+          OPENCLAW_DOCKER_E2E_REPO_ROOT: selected,
+          OPENCLAW_UPDATE_FIRST_HOP_ARTIFACT_DIR: override ? explicit : undefined,
+          OPENCLAW_UPDATE_FIRST_HOP_SOURCE_PACKAGE_TGZ: join(root, "absent-package.tgz"),
+        },
+      });
+      // Stop at actual input validation, after choosing the capture path but before Docker/build.
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(2);
+      expect(result.stderr).toContain("source package tarball does not exist");
+      expect(
+        existsSync(
+          override ? explicit : join(selected, ".artifacts/docker-tests/update-first-hop-compat"),
+        ),
+      ).toBe(true);
+      expect(existsSync(join(harness, ".artifacts"))).toBe(false);
+    },
+  );
 });
 
 describe.skipIf(process.platform === "win32")("first-hop preservation shell ordering", () => {
