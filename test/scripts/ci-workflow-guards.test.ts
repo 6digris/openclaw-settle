@@ -3188,7 +3188,7 @@ NODE
     (jobName, historical, eventName, releaseGate, phases) => {
       const workflow = readCiWorkflow();
       const job = workflow.jobs[jobName];
-      const context = {
+      const context: Parameters<typeof evaluateWorkflowExpression>[1] = {
         eventName,
         releaseGate,
         repository: "openclaw/openclaw",
@@ -3302,7 +3302,7 @@ NODE
     { build: "failure", cancelled: false, expected: false },
     { build: "skipped", cancelled: false, expected: false },
     { build: "success", cancelled: true, expected: false },
-  ])(
+  ] as const)(
     "requires a successful app build, not unrelated test success, for retained-task UI proof ($build, cancelled=$cancelled)",
     ({ build, cancelled, expected }) => {
       const workflow = readCiWorkflow();
@@ -3315,6 +3315,8 @@ NODE
       expect(
         evaluateWorkflowExpression(`\${{ ${step.if} }}`, {
           eventName: "workflow_dispatch",
+          repository: "openclaw/openclaw",
+          runAttempt: 1,
           failed: true,
           cancelled,
           matrix: { phase: "tests" },
