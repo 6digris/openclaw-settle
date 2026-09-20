@@ -231,12 +231,27 @@ export async function prepareSessionPatchRuntimeSelection(params: {
   let validateRuntime: (() => string | undefined) | undefined;
   let validateEnvironment: (() => ErrorShape | undefined) | undefined;
   const grantingConsent = typeof params.patch.nativeRuntimeConsent === "string";
+  const model = resolveSessionModelRef(params.cfg, params.entry, params.agentId);
+  const previousModel = params.expectedEntry
+    ? resolveSessionModelRef(params.cfg, params.expectedEntry, params.agentId)
+    : undefined;
+  const requestedProfile =
+    typeof params.patch.model === "string"
+      ? splitTrailingAuthProfile(params.patch.model).profile
+      : undefined;
+  const preservesRuntimeSelection =
+    params.patch.agentRuntime === undefined &&
+    !grantingConsent &&
+    requestedProfile !== undefined &&
+    previousModel?.provider === model.provider &&
+    previousModel.model === model.model &&
+    params.expectedEntry?.authProfileOverride === params.entry.authProfileOverride;
   if (
-    typeof params.patch.agentRuntime === "string" ||
-    typeof params.patch.model === "string" ||
-    grantingConsent
+    !preservesRuntimeSelection &&
+    (typeof params.patch.agentRuntime === "string" ||
+      typeof params.patch.model === "string" ||
+      grantingConsent)
   ) {
-    const model = resolveSessionModelRef(params.cfg, params.entry, params.agentId);
     const choice = await prepareModelSelectionRuntime({
       cfg: params.cfg,
       agentId: params.agentId,
