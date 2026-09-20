@@ -167,6 +167,10 @@ validation must identify one commit. Before `.33`, protected `main` must contain
 a final version below patch `33` exactly one calendar month later, making the
 release the trailing completed month. Maintenance patches remain eligible only
 while that holds; the older line retires when `main` advances another month.
+The shared publisher checks live `main` before dispatching publication children;
+each plugin checks it again immediately before npm publication, including
+trusted-main recovery. Saved qualification does not authorize a retired line.
+A missing or unreadable current-main version blocks publication.
 
 ### Prepare and stabilize the candidate
 

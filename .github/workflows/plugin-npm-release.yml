@@ -29,6 +29,7 @@ on:
       - "scripts/lib/plugin-publication-collector.ts"
       - "scripts/lib/plugin-publication-target.mjs"
       - "scripts/lib/actions-artifact-archive.mjs"
+      - "scripts/openclaw-npm-extended-stable-release.mjs"
       - "scripts/plugin-npm-publish.sh"
       - "scripts/plugin-npm-prepared-release.mjs"
       - "scripts/plugin-publication-artifact.mjs"
@@ -1833,6 +1834,7 @@ jobs:
               --workflow-full-ref "refs/heads/$candidate_branch" \
               --workflow-sha "$RELEASE_TARGET_SHA" \
               --allow-prevalidated-ref
+            node scripts/openclaw-npm-extended-stable-release.mjs validate-active-line
           fi
           NPM_CONFIG_USERCONFIG="$npmrc" \
             NPM_CONFIG_GLOBALCONFIG=/dev/null \

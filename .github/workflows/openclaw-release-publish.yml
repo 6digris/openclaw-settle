@@ -1609,6 +1609,11 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+          if [[ "${RELEASE_NPM_DIST_TAG}" == "extended-stable" ]]; then
+            PACKAGE_VERSION="${RELEASE_TAG#v}" \
+              node "${GITHUB_WORKSPACE}/.release-harness/scripts/openclaw-npm-extended-stable-release.mjs" validate-active-line
+          fi
+
           prepared_release_notes_file="${RUNNER_TEMP}/release-notes-prepublish.md"
           prepared_release_notes_metadata_file="${RUNNER_TEMP}/release-notes-prepublish.json"
           verify_release_tag_target

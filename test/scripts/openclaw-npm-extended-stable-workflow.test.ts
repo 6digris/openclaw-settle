@@ -421,6 +421,80 @@ describe("minimal npm extended-stable workflow", () => {
     expect(releaseDocs).toContain("The helper dispatches from an immutable `release-ci/*` ref");
   });
 
+  it.each([
+    { label: "trusted-main recovery", workflowRef: "refs/heads/main", status: 0 },
+    {
+      label: "protected publisher",
+      workflowRef: "refs/tags/release-publish/bbbbbbbbbbbb-123",
+      status: 0,
+    },
+    { label: "feature branch", workflowRef: "refs/heads/feature/recovery", status: 1 },
+    {
+      label: "release branch with candidate override",
+      workflowRef: "refs/heads/release/2026.8.1",
+      status: 1,
+    },
+    { label: "ordinary tag", workflowRef: "refs/tags/v2026.8.34", status: 1 },
+    {
+      label: "wrong candidate month",
+      workflowRef: "refs/heads/main",
+      candidate: "extended-stable/2026.7.33",
+      status: 1,
+    },
+    {
+      label: "noncanonical candidate branch",
+      workflowRef: "refs/heads/main",
+      candidate: "extended-stable/2026.8.34",
+      status: 1,
+    },
+    { label: "latest selector", workflowRef: "refs/heads/main", npmDistTag: "latest", status: 1 },
+    { label: "beta selector", workflowRef: "refs/heads/main", npmDistTag: "beta", status: 1 },
+    { label: "correction suffix", workflowRef: "refs/heads/main", tag: "v2026.8.34-1", status: 1 },
+    { label: "non-tag candidate", workflowRef: "refs/heads/main", tag: "a".repeat(40), status: 1 },
+    {
+      label: "wrong protected SHA prefix",
+      workflowRef: "refs/tags/release-publish/aaaaaaaaaaaa-123",
+      status: 1,
+    },
+    {
+      label: "moved protected tag",
+      workflowRef: "refs/tags/release-publish/bbbbbbbbbbbb-123",
+      remoteSha: "c".repeat(40),
+      status: 1,
+    },
+  ])(
+    "checks the actual publication admission shell for $label",
+    ({ workflowRef, candidate, npmDistTag, tag, remoteSha, status }) => {
+      const guard = step(
+        workflow().jobs?.validate_publish_request,
+        "Require trusted workflow ref for publish",
+      );
+      const result = spawnSync(
+        "bash",
+        [
+          "--noprofile",
+          "--norc",
+          "-c",
+          `gh() { printf '%s\\n' "$REMOTE_WORKFLOW_SHA"; }\n${guard.run}`,
+        ],
+        {
+          encoding: "utf8",
+          env: {
+            PATH: process.env.PATH,
+            GITHUB_REPOSITORY: "openclaw/openclaw",
+            RELEASE_TAG: tag ?? "v2026.8.34",
+            RELEASE_NPM_DIST_TAG: npmDistTag ?? "extended-stable",
+            RELEASE_CANDIDATE_BRANCH: candidate ?? "extended-stable/2026.8.33",
+            WORKFLOW_REF: workflowRef,
+            WORKFLOW_SHA: "b".repeat(40),
+            REMOTE_WORKFLOW_SHA: remoteSha ?? "b".repeat(40),
+          },
+        },
+      );
+      expect(result.status, result.stderr).toBe(status);
+    },
+  );
+
   it("accepts arbitrary SHA preflight targets and exercises every publishable plugin package", () => {
     const parsed = workflow(preflightWorkflowPath);
     const preflight = parsed.jobs?.check_contents_npm;
@@ -586,10 +660,10 @@ describe("minimal npm extended-stable workflow", () => {
     );
     expect(verify.env?.RUN_KIND).toBe("plugin");
     expect(verify.env?.EXPECTED_ORCHESTRATOR_BRANCH).toBe(
-      "${{ inputs.release_candidate_branch != '' && github.ref_name || '' }}",
+      "${{ inputs.release_candidate_branch != '' && startsWith(github.ref, 'refs/tags/release-publish/') && github.ref_name || '' }}",
     );
     expect(verify.env?.EXPECTED_ORCHESTRATOR_SHA).toBe(
-      "${{ inputs.release_candidate_branch != '' && github.workflow_sha || '' }}",
+      "${{ inputs.release_candidate_branch != '' && startsWith(github.ref, 'refs/tags/release-publish/') && github.workflow_sha || '' }}",
     );
     expect(verify.run).toContain(
       "node trusted-workflow/scripts/openclaw-npm-extended-stable-release.mjs verify-run",

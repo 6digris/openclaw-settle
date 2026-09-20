@@ -257,7 +257,7 @@ describe("extended-stable npm release request", () => {
     ["main a year-plus ahead", "2028.12.32", "2028.11"],
   ])("rejects %s", (_label, mainPackageVersion, expectedMonth) => {
     expect(() => validateExtendedStableNpmReleaseRequest({ ...valid, mainPackageVersion })).toThrow(
-      `Extended-stable publishes only the trailing completed month: protected main ${mainPackageVersion} allows ${expectedMonth}.PATCH, not 2026.6.33. Retire the older line or dispatch with BYPASS_EXTENDED_STABLE_GUARD for an explicitly approved exception.`,
+      `Extended-stable publishes only the trailing completed month: protected main ${mainPackageVersion} allows ${expectedMonth}.PATCH, not 2026.6.33. Retire the older line; publishing a retired line requires an explicit maintainer decision.`,
     );
   });
 

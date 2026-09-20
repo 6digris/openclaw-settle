@@ -14,6 +14,7 @@ import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { PLUGIN_NPM_RELEASE_AUTHORITY_PATHS } from "../../scripts/lib/plugin-publication-candidates.ts";
+import { validateActiveExtendedStableLine } from "../../scripts/openclaw-npm-extended-stable-release.mjs";
 import { createStablePluginNpmBootstrapApproval } from "../../scripts/plugin-npm-bootstrap-approval.mjs";
 import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import { requireNodeTool } from "../helpers/node-toolchain.js";
@@ -469,10 +470,38 @@ describe("plugin npm extended-stable workflow", () => {
     { publishTag: "beta", toolingTrusted: true, candidateMoved: false },
     { publishTag: "extended-stable", toolingTrusted: true, candidateMoved: false },
     { publishTag: "extended-stable", toolingTrusted: true, candidateMoved: true },
+    {
+      publishTag: "extended-stable",
+      toolingTrusted: true,
+      candidateMoved: false,
+      mainVersion: "2026.9.1",
+      expectedFailure: "only the trailing completed month",
+    },
+    {
+      publishTag: "extended-stable",
+      toolingTrusted: true,
+      candidateMoved: false,
+      mainApiUnavailable: true,
+      expectedFailure: "fixture main API unavailable",
+    },
+    {
+      publishTag: "extended-stable",
+      toolingTrusted: true,
+      candidateMoved: false,
+      mainVersion: "invalid",
+      expectedFailure: "Protected main package version",
+    },
     { publishTag: "latest", toolingTrusted: false, candidateMoved: false },
   ])(
-    "publishes sealed bytes only with current authority: $publishTag / trusted $toolingTrusted / moved $candidateMoved",
-    ({ publishTag, toolingTrusted, candidateMoved }) => {
+    "publishes sealed bytes only with current authority: $publishTag / trusted $toolingTrusted / moved $candidateMoved / main $mainVersion / unavailable $mainApiUnavailable",
+    ({
+      publishTag,
+      toolingTrusted,
+      candidateMoved,
+      mainVersion = "2026.8.1",
+      mainApiUnavailable = false,
+      expectedFailure,
+    }) => {
       const nodeExecutable = requireNodeTool("node");
       const npmCli = realpathSync(requireNodeTool("npm"));
       const root = mkdtempSync(join(tmpdir(), "plugin-oidc-artifact-"));
@@ -480,7 +509,12 @@ describe("plugin npm extended-stable workflow", () => {
         const bin = join(root, "bin");
         mkdirSync(bin);
         mkdirSync(join(root, "scripts/lib"), { recursive: true });
-        for (const script of ["release-tooling-identity.mjs", "lib/record-shared.mjs"]) {
+        for (const script of [
+          "release-tooling-identity.mjs",
+          "lib/record-shared.mjs",
+          "openclaw-npm-extended-stable-release.mjs",
+          "lib/release-version.mjs",
+        ]) {
           writeFileSync(join(root, "scripts", script), readFileSync(join("scripts", script)));
         }
         writeFileSync(
@@ -493,6 +527,9 @@ describe("plugin npm extended-stable workflow", () => {
         writeFileSync(tarball, "sealed preflight bytes");
         const targetSha = "a".repeat(40);
         const toolingSha = "b".repeat(40);
+        // Qualification succeeded while main was August. Publication must reread
+        // main even when the qualified candidate and monthly branch remain unchanged.
+        expect(() => validateActiveExtendedStableLine("2026.7.33", "2026.8.1")).not.toThrow();
         const candidateRef = "refs/heads/extended-stable/2026.7.33";
         // The artifact was admitted at targetSha; the approval wait may advance the branch.
         const currentRef = {
@@ -512,6 +549,12 @@ if (endpoint === "repos/openclaw/openclaw/compare/${toolingSha}...main") {
   process.stdout.write(${JSON.stringify(JSON.stringify({ status: toolingTrusted ? "ahead" : "diverged" }))});
 } else if (endpoint === "repos/openclaw/openclaw/git/ref/heads/extended-stable/2026.7.33") {
   process.stdout.write(${JSON.stringify(JSON.stringify(currentRef))});
+} else if (endpoint === "repos/openclaw/openclaw/contents/package.json?ref=refs/heads/main") {
+  if (${mainApiUnavailable}) {
+    process.stderr.write("fixture main API unavailable");
+    process.exit(1);
+  }
+  process.stdout.write(${JSON.stringify(Buffer.from(JSON.stringify({ version: mainVersion })).toString("base64"))});
 } else {
   process.stderr.write("Unexpected GitHub request: " + endpoint);
   process.exit(90);
@@ -549,6 +592,9 @@ fs.appendFileSync(process.env.EVENTS, JSON.stringify({ command: "npm", args, byt
             TARBALL_PATH: tarball,
             PUBLISH_TAG: publishTag,
             PACKAGE_VERSION: "2026.7.33",
+            GITHUB_REPOSITORY: "openclaw/openclaw",
+            // No environment bypass may override the live pre-mutation guard.
+            BYPASS_EXTENDED_STABLE_GUARD: "true",
             RELEASE_TARGET_SHA: targetSha,
             OPENCLAW_RELEASE_TOOLING_REPOSITORY: "openclaw/openclaw",
             OPENCLAW_RELEASE_TOOLING_FULL_REF: "refs/heads/main",
@@ -563,7 +609,7 @@ fs.appendFileSync(process.env.EVENTS, JSON.stringify({ command: "npm", args, byt
             NODE_AUTH_TOKEN: "fixture-token-must-not-reach-npm",
           },
         });
-        const allowed = toolingTrusted && !candidateMoved;
+        const allowed = toolingTrusted && !candidateMoved && !expectedFailure;
         expect(result.status, result.stderr).toBe(allowed ? 0 : 1);
         expect(readdirSync(root).filter((name) => name.startsWith("plugin-npm-oidc."))).toEqual([]);
         const calls = readFileSync(events, "utf8")
@@ -573,7 +619,8 @@ fs.appendFileSync(process.env.EVENTS, JSON.stringify({ command: "npm", args, byt
         const npmCalls = calls.filter((call) => call.command === "npm");
         if (!allowed) {
           expect(result.stderr).toContain(
-            candidateMoved ? "branch is missing or moved" : "not reachable from current main",
+            expectedFailure ??
+              (candidateMoved ? "branch is missing or moved" : "not reachable from current main"),
           );
           expect(npmCalls).toEqual([]);
         } else {
@@ -595,9 +642,11 @@ fs.appendFileSync(process.env.EVENTS, JSON.stringify({ command: "npm", args, byt
             },
           ]);
           if (publishTag === "extended-stable") {
-            expect(calls.at(-2)?.endpoint).toBe(
+            expect(calls.slice(-3).map((call) => call.endpoint ?? call.command)).toEqual([
               "repos/openclaw/openclaw/git/ref/heads/extended-stable/2026.7.33",
-            );
+              "repos/openclaw/openclaw/contents/package.json?ref=refs/heads/main",
+              "npm",
+            ]);
           }
         }
       } finally {
