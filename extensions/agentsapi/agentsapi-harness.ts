@@ -323,7 +323,8 @@ async function runAgentsApiSession(
     sessionIdUsed: params.sessionId,
     sessionFileUsed: params.sessionFile,
     agentHarnessId: "agentsapi",
-    messagesSnapshot: SessionManager.open(target, params.workspaceDir).buildSessionContext().messages,
+    messagesSnapshot: SessionManager.open(target, params.workspaceDir).buildSessionContext()
+      .messages,
     assistantTexts:
       reply?.lastAssistant?.content
         .filter((part) => part.type === "text")
