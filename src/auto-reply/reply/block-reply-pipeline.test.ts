@@ -506,6 +506,34 @@ describe("createBlockReplyPipeline dedup with threading", () => {
 
 describe("createBlockReplyPipeline content coverage dedup", () => {
   it.each([false, true])(
+    "deduplicates source ranges while preserving identical adjacent chunks (coalescing=%s)",
+    async (coalescing) => {
+      const sent: ReplyPayload[] = [];
+      const pipeline = createBlockReplyPipeline({
+        onBlockReply: async (payload) => {
+          sent.push(payload);
+        },
+        timeoutMs: 5000,
+        ...(coalescing
+          ? { coalescing: { minChars: 100, maxChars: 200, idleMs: 0, joiner: "" } }
+          : {}),
+      });
+      const sourceChunk = (range: readonly [number, number]) =>
+        setReplyPayloadMetadata(
+          { text: "aaa" },
+          { assistantMessageIndex: 1, blockSourceText: "aaa", blockSourceRange: range },
+        );
+
+      pipeline.enqueue(sourceChunk([0, 3]));
+      pipeline.enqueue(sourceChunk([3, 6]));
+      pipeline.enqueue(sourceChunk([0, 3]));
+      await pipeline.flush({ force: true });
+
+      expect(sent.map((payload) => payload.text)).toEqual(coalescing ? ["aaaaaa"] : ["aaa", "aaa"]);
+    },
+  );
+
+  it.each([false, true])(
     "recognizes delivered source through synthetic fence wrappers (coalescing=%s)",
     async (coalescing) => {
       const sent: ReplyPayload[] = [];

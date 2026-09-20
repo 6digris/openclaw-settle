@@ -36,7 +36,15 @@ type ParagraphBreak = {
 
 type BlockChunkDrain = {
   force: boolean;
-  emit: (chunk: string, options?: { sourceText: string; startsAtLineStart: boolean }) => void;
+  emit: (
+    chunk: string,
+    options?: {
+      sourceText: string;
+      sourceStart: number;
+      sourceEnd: number;
+      startsAtLineStart: boolean;
+    },
+  ) => void;
 };
 
 function findSafeSentenceBreakIndex(
@@ -287,7 +295,12 @@ export class EmbeddedBlockChunker {
     if (!chunking || (force && source.length <= maxChars && !this.#reopenPrefix)) {
       if (!chunking || source.trim().length > 0) {
         preparedSourceBreaks.push(sourceStart + this.#buffer.length);
-        emit(source, { sourceText: this.#buffer, startsAtLineStart });
+        emit(source, {
+          sourceText: this.#buffer,
+          sourceStart: this.#consumedLength,
+          sourceEnd: this.#consumedLength + this.#buffer.length,
+          startsAtLineStart,
+        });
       }
       this.#bufferStartsAtLineStart = this.#buffer.endsWith("\n");
       this.#consumedLength += this.#buffer.length;
@@ -341,6 +354,8 @@ export class EmbeddedBlockChunker {
       preparedSourceBreaks.push(sourceStart + sourceOffset(to));
       emit(chunk, {
         sourceText: this.#buffer.slice(sourceOffset(from), sourceOffset(to)),
+        sourceStart: this.#consumedLength + sourceOffset(from),
+        sourceEnd: this.#consumedLength + sourceOffset(to),
         startsAtLineStart:
           Boolean(reopenFence) ||
           (from === 0 ? startsAtLineStart : source.charAt(from - 1) === "\n"),

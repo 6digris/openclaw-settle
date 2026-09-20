@@ -145,6 +145,11 @@ export function createBlockReplyPipeline(params: {
 
   const hasSeenOrQueuedPayloadKey = (payloadKey: string) =>
     seenKeys.has(payloadKey) || sentKeys.has(payloadKey) || pendingKeys.has(payloadKey);
+  const sourceOccurrenceKey = (payload: ReplyPayload) => {
+    const metadata = getReplyPayloadMetadata(payload);
+    const range = metadata?.blockSourceRange;
+    return range ? `${metadata?.assistantMessageIndex ?? ""}:${range[0]}:${range[1]}` : undefined;
+  };
 
   const flushBufferedAssistantBlock = () => {
     bufferedAssistantMessageIndex = undefined;
@@ -158,17 +163,20 @@ export function createBlockReplyPipeline(params: {
     const payloadKey = createBlockReplyPayloadKey(payload);
     const contentKey = createBlockReplyContentKey(payload);
     const blockSourceText = getReplyPayloadMetadata(payload)?.blockSourceText;
-    const carriesDistinctSource = blockSourceText !== undefined;
-    if (!bypassSeenCheck && !carriesDistinctSource) {
-      if (seenKeys.has(payloadKey)) {
+    const occurrenceKey = sourceOccurrenceKey(payload);
+    const dedupeKey = occurrenceKey ?? payloadKey;
+    const carriesUnkeyedDistinctSource =
+      blockSourceText !== undefined && occurrenceKey === undefined;
+    if (!bypassSeenCheck && !carriesUnkeyedDistinctSource) {
+      if (seenKeys.has(dedupeKey)) {
         return;
       }
-      seenKeys.add(payloadKey);
+      seenKeys.add(dedupeKey);
     }
-    if (!carriesDistinctSource && (sentKeys.has(payloadKey) || pendingKeys.has(payloadKey))) {
+    if (!carriesUnkeyedDistinctSource && (sentKeys.has(dedupeKey) || pendingKeys.has(dedupeKey))) {
       return;
     }
-    pendingKeys.add(payloadKey);
+    pendingKeys.add(dedupeKey);
     const isTerminalContent = isReplyPayloadTerminalContent(payload);
     const reply = resolveSendableOutboundReplyParts(payload);
     const attempt: BlockAttempt = {
@@ -217,7 +225,7 @@ export function createBlockReplyPipeline(params: {
           return;
         }
         if (delivery.source?.complete !== false) {
-          sentKeys.add(payloadKey);
+          sentKeys.add(dedupeKey);
         }
         if (isTerminalContent && delivery.source?.complete !== false) {
           if (attempt.terminal) {
@@ -249,7 +257,7 @@ export function createBlockReplyPipeline(params: {
         logVerbose(`block reply delivery failed: ${String(err)}`);
       })
       .finally(() => {
-        pendingKeys.delete(payloadKey);
+        pendingKeys.delete(dedupeKey);
       });
   };
 
@@ -306,12 +314,16 @@ export function createBlockReplyPipeline(params: {
       flushBufferedAssistantBlock();
     }
     const payloadKey = createBlockReplyPayloadKey(payload);
-    const carriesDistinctSource = getReplyPayloadMetadata(payload)?.blockSourceText !== undefined;
-    if (!carriesDistinctSource && hasSeenOrQueuedPayloadKey(payloadKey)) {
+    const occurrenceKey = sourceOccurrenceKey(payload);
+    const carriesUnkeyedDistinctSource =
+      getReplyPayloadMetadata(payload)?.blockSourceText !== undefined &&
+      occurrenceKey === undefined;
+    const dedupeKey = occurrenceKey ?? payloadKey;
+    if (!carriesUnkeyedDistinctSource && hasSeenOrQueuedPayloadKey(dedupeKey)) {
       return;
     }
-    if (!carriesDistinctSource) {
-      seenKeys.add(payloadKey);
+    if (!carriesUnkeyedDistinctSource) {
+      seenKeys.add(dedupeKey);
     }
     bufferedAssistantMessageIndex = assistantMessageIndex;
     coalescer.enqueue(payload);

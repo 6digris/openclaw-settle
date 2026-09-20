@@ -121,6 +121,7 @@ export function createStreamRendering({
   const messagingToolSourceReplyPayloads = state.messagingToolSourceReplyPayloads;
   const partialReplyDirectiveAccumulator = createStreamingDirectiveAccumulator();
   let reasoningProjection = createTextProjection([trimTextFilter("both")]);
+  const coveredBlockSourceRanges = new Map<number, Array<readonly [number, number]>>();
   // Retain the producer snapshot for eligibility; the projection builds its own
   // source, and comparing a reconstructed growing prefix can restore prefix work.
   let reasoningRaw: string | undefined;
@@ -355,6 +356,8 @@ export function createStreamRendering({
     text: string,
     options?: {
       sourceText?: string;
+      sourceStart?: number;
+      sourceEnd?: number;
       assistantMessageIndex?: number;
       final?: boolean;
       finalReply?: ReplyDirectiveParseResult;
@@ -430,12 +433,34 @@ export function createStreamRendering({
       return;
     }
 
-    // Chunker source metadata identifies a distinct source occurrence even when
-    // adjacent rendered chunks happen to have identical text.
+    let sourceRangeAlreadyCovered = false;
+    const blockSourceRange =
+      options?.sourceText !== undefined &&
+      options.sourceStart !== undefined &&
+      options.sourceEnd !== undefined
+        ? ([options.sourceStart, options.sourceEnd] as const)
+        : undefined;
+    if (blockSourceRange) {
+      const index = options?.assistantMessageIndex ?? state.assistantMessageIndex;
+      const covered = coveredBlockSourceRanges.get(index) ?? [];
+      const [start, end] = blockSourceRange;
+      let coveredUntil = start;
+      for (const [coveredStart, coveredEnd] of covered.toSorted((a, b) => a[0] - b[0])) {
+        if (coveredStart > coveredUntil) {
+          break;
+        }
+        coveredUntil = Math.max(coveredUntil, coveredEnd);
+      }
+      if (coveredUntil >= end) {
+        sourceRangeAlreadyCovered = true;
+      }
+    }
+    // Source ranges distinguish adjacent identical chunks without treating a
+    // replayed terminal snapshot as a new occurrence.
     if (
       chunk &&
-      options?.sourceText === undefined &&
-      shouldSkipAssistantText(chunk, normalizedChunk)
+      (sourceRangeAlreadyCovered ||
+        (blockSourceRange === undefined && shouldSkipAssistantText(chunk, normalizedChunk)))
     ) {
       if (slicedPrefixReplay) {
         markBlockReplyTextHandled();
@@ -501,15 +526,30 @@ export function createStreamRendering({
     if (splitResult.isSilent) {
       setReplyPayloadMetadata(payload, { silentReply: true });
     }
+    const emittedBlockSourceRange =
+      chunk === text.trimEnd() && cleanedText === chunk && !sourceRangeAlreadyCovered
+        ? blockSourceRange
+        : undefined;
     emitBlockReply(payload, {
       assistantMessageIndex: options?.assistantMessageIndex ?? state.assistantMessageIndex,
       blockSourceText:
-        chunk === text.trimEnd() && cleanedText === chunk ? options?.sourceText : undefined,
+        chunk === text.trimEnd() &&
+        cleanedText === chunk &&
+        (options?.sourceStart === undefined || emittedBlockSourceRange !== undefined)
+          ? options?.sourceText
+          : undefined,
+      blockSourceRange: emittedBlockSourceRange,
       consumePendingToolMedia:
         options?.finalReply !== undefined ||
         hasPendingAudioDirective ||
         Boolean(mediaUrls?.length || audioAsVoice),
     });
+    if (blockSourceRange && !sourceRangeAlreadyCovered) {
+      const index = options?.assistantMessageIndex ?? state.assistantMessageIndex;
+      const covered = coveredBlockSourceRanges.get(index) ?? [];
+      covered.push(blockSourceRange);
+      coveredBlockSourceRanges.set(index, covered);
+    }
     markBlockReplyTextHandled();
   };
 
@@ -528,7 +568,14 @@ export function createStreamRendering({
     if (!params.onBlockReply) {
       return undefined;
     }
-    let pendingChunk: { text: string; sourceText?: string } | undefined;
+    let pendingChunk:
+      | {
+          text: string;
+          sourceText?: string;
+          sourceStart?: number;
+          sourceEnd?: number;
+        }
+      | undefined;
     if (blockChunker.hasBuffered()) {
       blockChunker.drain({
         force: true,
@@ -536,10 +583,12 @@ export function createStreamRendering({
           if (pendingChunk !== undefined) {
             emitBlockChunk(pendingChunk.text, {
               sourceText: pendingChunk.sourceText,
+              sourceStart: pendingChunk.sourceStart,
+              sourceEnd: pendingChunk.sourceEnd,
               assistantMessageIndex: options?.assistantMessageIndex,
             });
           }
-          pendingChunk = { text, sourceText: metadata?.sourceText };
+          pendingChunk = { text, ...metadata };
         },
       });
     }
@@ -554,6 +603,8 @@ export function createStreamRendering({
         ...options,
         final: options?.final === true,
         sourceText: pendingChunk?.sourceText,
+        sourceStart: pendingChunk?.sourceStart,
+        sourceEnd: pendingChunk?.sourceEnd,
       });
     }
     if (pendingBlockReplyTasks.size === 0) {
