@@ -46,10 +46,7 @@ import {
   tasks,
 } from "./task-registry-state.js";
 import {
-  deleteOwnerKeyIndex,
-  deleteParentFlowIdIndex,
-  deleteRelatedSessionKeyIndex,
-  rebuildRunIdIndex,
+  removeTaskIndexes,
   recordTaskRegistryProjectionWrite,
   getTaskRegistryProcessState,
 } from "./task-registry.process-state.js";
@@ -539,15 +536,15 @@ export function deleteTaskRecordById(taskId: string): boolean {
       if (!tryPersistTaskDelete(taskId)) {
         return false;
       }
-      deleteOwnerKeyIndex(taskId, current);
-      deleteParentFlowIdIndex(taskId, current);
-      deleteRelatedSessionKeyIndex(taskId, current);
+      const indexedCurrent = tasks.get(taskId);
+      if (indexedCurrent) {
+        removeTaskIndexes(indexedCurrent);
+      }
       clearTaskActivity(taskId);
       recordTaskRegistryProjectionWrite("task", taskId, true);
       tasks.delete(taskId);
       bumpTaskRegistryRevision();
       taskDeliveryStates.delete(taskId);
-      rebuildRunIdIndex();
       emitTaskRegistryObserverEvent(() => ({
         kind: "deleted",
         taskId: current.taskId,
