@@ -40,8 +40,7 @@ export async function runDelegatedUpdateRepairTurn(
               createManagedUpdateRequesterAuthority(requesterInput, admissionEnv),
             )
           : undefined;
-        const assertCurrent = () => {
-          signal.throwIfAborted();
+        const assertAuthority = () => {
           fence.assertCurrent();
           if (requester?.isCurrent() === false) {
             throw new UpdateRequesterRevokedError();
@@ -51,6 +50,10 @@ export async function runDelegatedUpdateRepairTurn(
             throw new Error("Repair no longer owns the update attempt.");
           }
           return true;
+        };
+        const assertCurrent = () => {
+          signal.throwIfAborted();
+          return assertAuthority();
         };
         assertCurrent();
         const selected = await runtime.withUpdateRepairEnvironment(message.target, () =>
@@ -85,9 +88,10 @@ export async function runDelegatedUpdateRepairTurn(
               isCurrent: assertCurrent,
             }),
           );
-          if (!signal.aborted) {
-            assertCurrent();
-          }
+          // Parent cancellation revokes the whole delegated request. A local
+          // deadline may still return the bounded turn result as timed out.
+          parentSignal.throwIfAborted();
+          assertAuthority();
           if (cleanup.outcome === "uncertain") {
             throw new Error("Update repair cleanup could not be confirmed.");
           }
