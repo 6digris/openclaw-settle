@@ -75,7 +75,6 @@ import {
   detectLegacyCommitments,
   migrateLegacyCommitments,
 } from "./state-migrations.commitments.js";
-import { migrateLegacyConfigMachineState } from "./state-migrations.config-machine-state.js";
 import {
   detectLegacyDebugProxyCaptureSidecar,
   migrateLegacyDebugProxyCaptureSidecar,
@@ -85,6 +84,13 @@ import {
   detectLegacyDeviceIdentity,
   migrateLegacyDeviceIdentity,
 } from "./state-migrations.device-identity.js";
+import {
+  createAgentTargetDiscoveryStep,
+  createConfigMachineStateStep,
+  createMigrationDetectionStep,
+  createPluginInstallIndexStep,
+  createPluginMigrationPreparationStep,
+} from "./state-migrations.doctor-preparation-steps.js";
 import {
   detectLegacyExecApprovals,
   migrateLegacyExecApprovals,
@@ -134,14 +140,10 @@ import {
   collectPluginDoctorStateMigrationPlans,
   runPluginDoctorStateMigrationPlans,
 } from "./state-migrations.plugin-doctor.js";
-import {
-  migrateLegacyInstalledPluginIndex,
-  migrateLegacyPluginStateSidecar,
-} from "./state-migrations.plugin-state.js";
+import { migrateLegacyPluginStateSidecar } from "./state-migrations.plugin-state.js";
 import {
   buildLegacyStateMigrationPreludeSteps,
   buildUnresolvedBlockedPreludeSteps,
-  createConfigMigrationSources,
   createDeferredPluginSessionStoreRefusal,
   inspectOrphanSessionStoreEndpoints,
   uniqueMigrationEndpoints,
@@ -1125,127 +1127,6 @@ function buildUnresolvedBlockedMigrationSteps(params: {
       },
     ];
   });
-}
-
-function createPluginInstallIndexStep(params: {
-  stateDir: string;
-  env: NodeJS.ProcessEnv;
-  hasLegacy: boolean;
-}): LegacyStateMigrationStep {
-  return {
-    id: "plugin-install-index",
-    phase: "shared",
-    source: [{ kind: "path", path: resolveLegacyInstalledPluginIndexStorePath(params) }],
-    target: [
-      {
-        kind: "sqlite",
-        path: resolveOpenClawStateSqlitePath({
-          ...params.env,
-          OPENCLAW_STATE_DIR: params.stateDir,
-        }),
-      },
-    ],
-    requiredness: params.hasLegacy ? "required" : "not-required",
-    reversibility: "checkpoint-required",
-    collectNotices: true,
-    run: () => migrateLegacyInstalledPluginIndex({ stateDir: params.stateDir }),
-  };
-}
-
-function createAgentTargetDiscoveryStep(params: {
-  configPath: string;
-  configIncludedPaths: readonly string[];
-  stateDir: string;
-  env: NodeJS.ProcessEnv;
-  run: LegacyStateMigrationStep["run"];
-  refusal?: PreparedLegacyStateMigrationStep["refusal"];
-}): LegacyStateMigrationStep {
-  return {
-    id: "agent-migration-targets",
-    phase: "shared",
-    source: [
-      ...createConfigMigrationSources(params.configPath, params.configIncludedPaths),
-      {
-        kind: "sqlite",
-        path: resolveOpenClawStateSqlitePath({
-          ...params.env,
-          OPENCLAW_STATE_DIR: params.stateDir,
-        }),
-      },
-      { kind: "path", path: path.join(params.stateDir, "agents") },
-    ],
-    target: [],
-    requiredness: "required",
-    reversibility: "not-applicable",
-    ...(params.refusal ? { refusal: params.refusal } : {}),
-    run: params.run,
-  };
-}
-
-function createConfigMachineStateStep(params: {
-  config: OpenClawConfig;
-  configPath: string;
-  configIncludedPaths: readonly string[];
-  stateDir: string;
-  env: NodeJS.ProcessEnv;
-}): LegacyStateMigrationStep {
-  const stateEnv = { ...params.env, OPENCLAW_STATE_DIR: params.stateDir };
-  return {
-    id: "config-machine-state",
-    phase: "shared",
-    source: createConfigMigrationSources(params.configPath, params.configIncludedPaths),
-    target: [{ kind: "sqlite", path: resolveOpenClawStateSqlitePath(stateEnv) }],
-    requiredness: "conditional",
-    reversibility: "checkpoint-required",
-    run: () => migrateLegacyConfigMachineState({ config: params.config, env: stateEnv }),
-  };
-}
-
-function createMigrationDetectionStep(params: {
-  configPath: string;
-  configIncludedPaths: readonly string[];
-  stateDir: string;
-  run: LegacyStateMigrationStep["run"];
-  refusal?: PreparedLegacyStateMigrationStep["refusal"];
-}): LegacyStateMigrationStep {
-  return {
-    id: "migration-detection",
-    phase: "shared",
-    source: [
-      ...createConfigMigrationSources(params.configPath, params.configIncludedPaths),
-      { kind: "path", path: params.stateDir },
-    ],
-    target: [],
-    requiredness: "required",
-    reversibility: "not-applicable",
-    ...(params.refusal ? { refusal: params.refusal } : {}),
-    run: params.run,
-  };
-}
-
-function createPluginMigrationPreparationStep(params: {
-  configPath: string;
-  configIncludedPaths: readonly string[];
-  pluginIds: readonly string[];
-  run: LegacyStateMigrationStep["run"];
-  refusal?: PreparedLegacyStateMigrationStep["refusal"];
-}): LegacyStateMigrationStep {
-  return {
-    id: "plugin-migration-preparation",
-    phase: "shared",
-    source: [
-      ...createConfigMigrationSources(params.configPath, params.configIncludedPaths),
-      ...params.pluginIds.map((pluginId): LegacyStateMigrationEndpoint => ({
-        kind: "owner",
-        id: `plugin:${pluginId}`,
-      })),
-    ],
-    target: [],
-    requiredness: "required",
-    reversibility: "not-applicable",
-    ...(params.refusal ? { refusal: params.refusal } : {}),
-    run: params.run,
-  };
 }
 
 function listMigrationEndpointsOutsideRoot(
