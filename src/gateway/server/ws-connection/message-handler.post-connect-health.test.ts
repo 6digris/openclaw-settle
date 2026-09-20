@@ -51,6 +51,7 @@ import {
   SharedGatewaySessionGenerationState,
 } from "../../server-shared-auth-generation.js";
 import { resolveSharedGatewaySessionGeneration } from "../ws-shared-generation.js";
+import { createConnectedTestClient } from "./message-handler.post-connect-health.test-support.js";
 import { GatewayNodeLifecycleDispatchTracker } from "./node-lifecycle-dispatch.js";
 
 const {
@@ -281,48 +282,8 @@ async function createTestAgentRuntimeIdentityLease() {
   };
 }
 
-type ConnectedTestClient = {
-  invalidated: boolean;
-  invalidatedReason?: string;
-  connect: {
-    client: {
-      id: string;
-      version: string;
-      platform: string;
-      mode: string;
-    };
-    role: "operator";
-    scopes: string[];
-  };
-  connId: string;
-  usesSharedGatewayAuth: false;
-};
-
 type CloseGatewayConnection = (code?: number, reason?: string) => void;
 type SetCloseCause = (cause: string, meta?: Record<string, unknown>) => void;
-
-function createConnectedTestClient(params: {
-  connId: string;
-  invalidated?: boolean;
-  invalidatedReason?: string;
-}): ConnectedTestClient {
-  return {
-    invalidated: params.invalidated ?? false,
-    ...(params.invalidatedReason ? { invalidatedReason: params.invalidatedReason } : {}),
-    connect: {
-      client: {
-        id: "openclaw-control-ui",
-        version: "dev",
-        platform: "test",
-        mode: "ui",
-      },
-      role: "operator",
-      scopes: [],
-    },
-    connId: params.connId,
-    usesSharedGatewayAuth: false,
-  };
-}
 
 function createCloseMock() {
   return vi.fn<CloseGatewayConnection>();

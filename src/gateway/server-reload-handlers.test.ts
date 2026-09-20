@@ -115,8 +115,12 @@ import {
   captureConfigWriteListener,
   createConfigWriteListenerRef,
   createConfigWriteNotification,
+  createCronRestartPlan,
   createDirectConfigWriteFixture,
   createDefaultGatewayReloadState,
+  createGatewayRestartPlan,
+  createHotTailPlan,
+  createPluginReloadPlan,
   createTestCronState,
   createValidConfigSnapshot,
   publishConfigWrite,
@@ -627,49 +631,6 @@ function createTestCronReconciliation() {
     complete,
     invalidate: vi.fn(),
   };
-}
-
-function createCronRestartPlan(): GatewayReloadPlan {
-  return createHotTailPlan({
-    changedPaths: ["cron"],
-    hotReasons: ["cron"],
-    restartCron: true,
-  });
-}
-
-function createHotTailPlan(overrides: Partial<GatewayReloadPlan> = {}): GatewayReloadPlan {
-  return {
-    changedPaths: ["logging.level"],
-    restartGateway: false,
-    restartReasons: [],
-    hotReasons: ["logging.level"],
-    reloadHooks: false,
-    restartGmailWatcher: false,
-    restartCron: false,
-    restartHeartbeat: false,
-    reloadPlugins: false,
-    restartChannels: new Set(),
-    disposeMcpRuntimes: false,
-    noopPaths: [],
-    ...overrides,
-  };
-}
-
-function createGatewayRestartPlan(changedPath = "gateway.port"): GatewayReloadPlan {
-  return createHotTailPlan({
-    changedPaths: [changedPath],
-    restartGateway: true,
-    restartReasons: [changedPath],
-    hotReasons: [],
-  });
-}
-
-function createPluginReloadPlan(): GatewayReloadPlan {
-  return createHotTailPlan({
-    changedPaths: ["plugins.enabled"],
-    hotReasons: ["plugins.enabled"],
-    reloadPlugins: true,
-  });
 }
 
 function createReloadHandlersForTest(

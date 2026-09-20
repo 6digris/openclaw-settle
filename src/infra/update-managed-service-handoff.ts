@@ -10,7 +10,6 @@ import os from "node:os";
 import path from "node:path";
 import { formatInstallationTargetCommand } from "../cli/installation-target-format.js";
 import { resolveUpdatedInstallCommandEnv } from "../cli/update-cli/update-command-service-env.js";
-import type { TriageFailureContext } from "../commands/triage-prompt.js";
 import { resolveConfigPath, resolveStateDir } from "../config/paths.js";
 import { resolveServiceManagerEnv } from "../daemon/service-process-env.js";
 import { findInstalledSystemdGatewayScope } from "../daemon/systemd-scope.js";
@@ -32,8 +31,7 @@ import { installationTargetEnv, resolveInstallationTarget } from "./installation
 import { resolveNodeSqliteLocation } from "./node-sqlite.js";
 import { probePortUsage } from "./ports-probe.js";
 import type { GatewayRestartIntent } from "./restart-intent.js";
-import { SUPERVISOR_HINT_ENV_VARS, type RespawnSupervisor } from "./supervisor-markers.js";
-import type { UpdateChannel } from "./update-channels.js";
+import { SUPERVISOR_HINT_ENV_VARS } from "./supervisor-markers.js";
 import {
   CONTROL_PLANE_UPDATE_SENTINEL_META_ENV,
   readControlPlaneUpdateSentinelMeta,
@@ -41,7 +39,7 @@ import {
   UPDATE_RUN_ID_ENV,
   type ControlPlaneUpdateSentinelMetaFile,
 } from "./update-control-plane-sentinel.js";
-import { applyDevUpdateTargetEnv, type DevUpdateTarget } from "./update-dev-target.js";
+import { applyDevUpdateTargetEnv } from "./update-dev-target.js";
 import { resolvePnpmGlobalInstallOwner, verifyPackageUpdateRecovery } from "./update-global.js";
 import { resolveUpdateInstallRoot } from "./update-install-root.js";
 import { MANAGED_SERVICE_UPDATE_HANDOFF_TEMP_PREFIX } from "./update-managed-service-handoff-cleanup.js";
@@ -73,14 +71,12 @@ import { MANAGED_HANDOFF_NATIVE_SCOPE_SOURCE } from "./update-managed-service-ha
 import { MANAGED_HANDOFF_RUNTIME_ENTRY } from "./update-managed-service-handoff-runtime-assets.js";
 import { stageManagedHandoffRuntime } from "./update-managed-service-handoff-runtime.js";
 import { resolveGatewayServiceRecovery } from "./update-managed-service-handoff-service.js";
-import {
-  resolveManagedUpdateRequester,
-  type UpdateRequester,
-} from "./update-requester-authority.js";
 import type {
-  ForegroundUpdateOrigin,
-  UpdateRestartSentinelMeta,
-} from "./update-restart-sentinel-payload.js";
+  ManagedServiceUpdateHandoffParams,
+  ManagedServiceUpdateHandoffResult,
+} from "./update-managed-service-handoff-types.js";
+import { resolveManagedUpdateRequester } from "./update-requester-authority.js";
+import type { ForegroundUpdateOrigin } from "./update-restart-sentinel-payload.js";
 import { recordUpdateRunStep } from "./update-run-ledger.js";
 import { readCurrentGitUpdateRecovery } from "./update-runner-git-recovery.js";
 import { looksLikeGitCheckout } from "./update-runner-install-surface.js";
@@ -1683,46 +1679,6 @@ let automaticRequested = false;
   process.exitCode = 1;
 });
 `;
-
-type ManagedServiceUpdateHandoffParams = {
-  runId?: string;
-  beforePark?: () => Promise<void>;
-  root: string;
-  timeoutMs?: number;
-  recoveryTimeoutMs?: number;
-  restartDrainTimeoutMs: number;
-  restartDelayMs?: number;
-  channel?: UpdateChannel;
-  tag?: string;
-  acceptCapabilities?: boolean;
-  reapplyLocalOverrides?: boolean;
-  meta: UpdateRestartSentinelMeta;
-  requester?: UpdateRequester;
-  handoffId?: string;
-  supervisor?: RespawnSupervisor | null;
-  foregroundOrigin?: ForegroundUpdateOrigin;
-  env?: NodeJS.ProcessEnv;
-  devTarget?: DevUpdateTarget;
-  execPath?: string;
-  argv1?: string;
-  parentPid?: number;
-  invocationCwd?: string;
-  action?: {
-    kind: "triage";
-    failure: TriageFailureContext;
-    entrypoint: string;
-    nodeRunner: string;
-  };
-};
-
-type ManagedServiceUpdateHandoffResult = {
-  pid?: number;
-  command: string;
-  logPath: string;
-} & (
-  | { status: "started"; handoffId: string; installRoot: string }
-  | { status: "joined"; handoffId?: string }
-);
 
 type ActiveManagedServiceUpdateHandoff = {
   handoffId: string;

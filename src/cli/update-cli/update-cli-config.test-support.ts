@@ -8,6 +8,23 @@ import type { OpenClawConfig, ConfigFileSnapshot } from "../../config/types.open
 import { isMissingPathError } from "../../infra/errors.js";
 import { writeJsonFixture } from "./update-cli-package.test-support.js";
 
+export function createUpdateCliBaseSnapshot(config: OpenClawConfig): ConfigFileSnapshot {
+  return {
+    path: "/tmp/openclaw-config.json",
+    exists: true,
+    raw: "{}",
+    parsed: {},
+    resolved: config,
+    sourceConfig: config,
+    valid: true,
+    config,
+    runtimeConfig: config,
+    issues: [],
+    warnings: [],
+    legacyIssues: [],
+  };
+}
+
 export const pluginSyncResult = (
   config: OpenClawConfig,
   changed = false,
