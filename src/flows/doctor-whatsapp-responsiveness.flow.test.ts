@@ -51,7 +51,7 @@ describe("Doctor responsiveness contribution flow", () => {
     const fakePid = process.pid + 1_000_000;
     mocks.ps.mockReturnValue({
       status: 0,
-      stdout: `${fakePid} openclaw-tui --profile unrelated\n`,
+      stdout: `${process.getuid?.() ?? 0} ${fakePid} Thu Aug 20 19:00:00 2026 openclaw-tui --profile unrelated\n`,
     });
     mocks.checkGatewayHealth.mockResolvedValue({ healthOk: true, authenticated: false, status });
     const ctx = createDoctorHealthFlowContext({
@@ -87,7 +87,7 @@ describe("Doctor responsiveness contribution flow", () => {
         expect(notes).toEqual([]);
       } else {
         expect(mocks.ps).toHaveBeenCalledTimes(1);
-        expect(mocks.ps).toHaveBeenCalledWith("ps", ["-axo", "pid=,command="], {
+        expect(mocks.ps).toHaveBeenCalledWith("ps", ["-axo", "uid=,pid=,lstart=,command="], {
           encoding: "utf8",
           killSignal: "SIGKILL",
           timeout: 1_000,

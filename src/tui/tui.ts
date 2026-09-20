@@ -758,7 +758,7 @@ class TuiSessionIdentityState {
 }
 
 async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
-  const isLocalMode = opts.local === true || opts.backend !== undefined;
+  const isLocalMode = await (await import("./tui-update-gate.js")).prepareTuiStartup(opts);
   const config = opts.config ?? getRuntimeConfig({ skipPluginValidation: !isLocalMode });
   const cliInvocation = resolveCurrentOpenClawCliInvocation([]);
   const resolveUsableCwd = () => tryProcessCwd() ?? cliInvocation.cwd;

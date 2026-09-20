@@ -25,6 +25,31 @@ describe("mutable update execution", () => {
   registerExecutionTimeoutTests();
 
   registerNativeAdmissionTests({ executionParams, mocks, successfulUpdate });
+
+  it("holds the local TUI gate through package activation", async () => {
+    const release = vi.fn(async () => {});
+    mocks.maybeStopService.mockImplementation(async ({ phase }) => ({
+      ...inspectOrStopService(phase),
+      running: false,
+    }));
+    mocks.quiesceLocalTui.mockResolvedValue({
+      lockPath: "/tmp/openclaw-local-tui-update.lock",
+      stopped: [101],
+      release,
+    });
+    mocks.runPackageUpdate.mockImplementation(async ({ beforeActivate }) => {
+      await beforeActivate();
+      expect(mocks.quiesceLocalTui).toHaveBeenCalledWith("/opt/openclaw");
+      expect(release).not.toHaveBeenCalled();
+      return successfulUpdate;
+    });
+
+    const execution = await executeMutableUpdate(executionParams("package"));
+
+    expect(execution?.result.status).toBe("ok");
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it("retains the live update run when stopped-service context capture fails", async () => {
     await withTestDir({ prefix: "partial-stop-recovery-owner-" }, async (dir) => {
       const control = path.join(dir, "leases");
