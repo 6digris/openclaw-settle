@@ -128,6 +128,7 @@ private func usageEvent(runId: String, outputTokens: Int, seq: Int) -> OpenClawA
 private func subagentTaskSummary(
     id: String,
     status: String,
+    agentID: String = "main",
     sessionKey: String = "agent:main:main",
     lastActivity: String? = nil,
     progressSummary: String? = nil,
@@ -140,9 +141,9 @@ private func subagentTaskSummary(
         id: id,
         runtime: "subagent",
         status: AnyCodable(status),
-        agentid: "main",
+        agentid: agentID,
         sessionkey: sessionKey,
-        childsessionkey: "agent:main:subagent:\(id)",
+        childsessionkey: "agent:\(agentID):subagent:\(id)",
         updatedat: AnyCodable(endedAt ?? startedAt),
         startedat: AnyCodable(startedAt),
         endedat: endedAt.map(AnyCodable.init),
@@ -2388,6 +2389,7 @@ struct ChatViewModelTests {
                 return [subagentTaskSummary(
                     id: "listed",
                     status: "running",
+                    agentID: "worker",
                     progressSummary: "Restored from task list")]
             })
         let viewModel = await MainActor.run {
@@ -2423,8 +2425,15 @@ struct ChatViewModelTests {
             sessionKey: "agent:main:other",
             lastActivity: "Must stay hidden"))))
         viewModel.handleTransportEvent(.task(.upserted(subagentTaskSummary(
+            id: "foreign-owner",
+            status: "running",
+            agentID: "worker",
+            sessionKey: "agent:other:main",
+            lastActivity: "Another agent's conversation"))))
+        viewModel.handleTransportEvent(.task(.upserted(subagentTaskSummary(
             id: "owned",
             status: "running",
+            agentID: "worker",
             lastActivity: "Editing shared chat",
             diffStat: liveDiff))))
 
@@ -2438,6 +2447,7 @@ struct ChatViewModelTests {
         viewModel.handleTransportEvent(.task(.upserted(subagentTaskSummary(
             id: "owned",
             status: "completed",
+            agentID: "worker",
             progressSummary: "Older milestone",
             terminalSummary: "Finished cleanly",
             endedAt: Date().timeIntervalSince1970 * 1000))))

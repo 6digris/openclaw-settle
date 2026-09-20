@@ -272,9 +272,9 @@ extension OpenClawChatViewModel {
         guard task.runtime == "subagent",
               let requesterSessionKey = task.sessionkey
         else { return false }
+        // The worker's agent ID does not own the requester conversation.
         return self.matchesCurrentSessionKey(
             incoming: requesterSessionKey,
-            agentId: task.agentid,
             current: self.sessionKey)
     }
 
