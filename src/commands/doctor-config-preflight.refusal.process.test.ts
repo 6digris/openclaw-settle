@@ -5,12 +5,28 @@ import { DatabaseSync } from "node:sqlite";
 import { afterAll, describe, expect, it } from "vitest";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
 import { getCliProcessTestTimeout } from "../cli/cli-process-child.test-helpers.js";
-import { createUpdateRun } from "../infra/update-run-ledger.js";
+import { withUpdateCommandExecutor } from "../cli/update-cli/update-command-executor.js";
+import { runUpdateFinalizationDoctorInFreshProcess } from "../cli/update-cli/update-command-fresh-doctor.js";
+import {
+  createUpdatePostInstallDoctorResultPath,
+  consumeUpdatePostInstallDoctorResult,
+  UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV,
+} from "../infra/update-doctor-result.js";
+import { createUpdateRun, recordUpdateRunStep } from "../infra/update-run-ledger.js";
+import { buildUpdateDoctorEnv } from "../infra/update-runner-doctor.js";
+import {
+  closeOpenClawAgentDatabasesForTest,
+  openOpenClawAgentDatabase,
+  OPENCLAW_AGENT_SCHEMA_VERSION,
+} from "../state/openclaw-agent-db.js";
+import { removeCanonicalValidationFromHistoricalAgentFixture } from "../state/openclaw-agent-db.test-support.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
+import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { VERSION } from "../version.js";
 import {
   createBuiltRuntime,
   runBuiltRuntime,
@@ -353,3 +369,139 @@ describe("Doctor CLI config recovery", () => {
     }
   }, 75_000);
 });
+
+it.each(["valid", "failed schema publication"] as const)(
+  "keeps the shipped 9.2 rollback window read-only and validates private state: %s",
+  async (mode) => {
+    await withOpenClawTestState(
+      {
+        scenario: "minimal",
+        env: {
+          // Published 2026.9.2 update-command-package.ts sets these, including DEFER=1.
+          ...buildUpdateDoctorEnv({
+            allowGatewayServiceRepair: false,
+            allowGatewayActivation: false,
+            deferConfiguredPluginInstallRepair: true,
+            serviceRepairPolicy: "external",
+            compatibilityHostVersion: VERSION,
+          }),
+          OPENCLAW_UPDATE_POST_CORE: undefined,
+          OPENCLAW_UPDATE_POST_CORE_CONVERGENCE: undefined,
+          OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+        },
+      },
+      async (state) => {
+        await state.writeConfig({
+          plugins: { enabled: false },
+          agents: {
+            ownership: "explicit",
+            entries: { main: { workspace: state.workspaceDir } },
+          },
+          gateway: { mode: "local", auth: { mode: "none" } },
+        });
+        const agentPath = openOpenClawAgentDatabase({ agentId: "main" }).path;
+        const sharedPath = openOpenClawStateDatabase().path;
+        const run = createUpdateRun({ trigger: "cli", before: { version: "2026.9.2" } });
+        recordUpdateRunStep(run.runId, { step: "openclaw doctor", status: "in_progress" });
+        closeOpenClawAgentDatabasesForTest();
+        closeOpenClawStateDatabaseForTest();
+        const legacy = new DatabaseSync(agentPath);
+        try {
+          removeCanonicalValidationFromHistoricalAgentFixture(legacy);
+          legacy.exec(`DROP TABLE session_transcript_cold_archives;
+          PRAGMA user_version = 19;
+          UPDATE schema_meta SET schema_version = 19 WHERE meta_key = 'primary';
+          INSERT INTO cache_entries(scope,key,value_json,expires_at,updated_at)
+            VALUES ('upgrade-proof','retained','{"keep":true}',NULL,7);
+          INSERT INTO session_nodes (session_key,current_session_id,entry_json,updated_at)
+            VALUES ('agent:main:history','window-1','{"sessionId":"window-1","updatedAt":20}',20);
+          INSERT INTO session_windows (session_id,session_key,created_at,updated_at)
+            VALUES ('window-1','agent:main:history',10,20);
+          INSERT INTO transcript_events (session_id,seq,event_json,created_at)
+            VALUES ('window-1',7,'{ "type": "message", "text": "retained bytes 雪" }',11);`);
+          if (mode === "failed schema publication") {
+            legacy.exec(`CREATE TRIGGER reject_schema_publication BEFORE UPDATE ON schema_meta
+              WHEN NEW.schema_version = ${OPENCLAW_AGENT_SCHEMA_VERSION}
+              BEGIN SELECT RAISE(ABORT, 'fixture schema publication failure'); END;`);
+          }
+        } finally {
+          legacy.close();
+        }
+        const originals = [agentPath, sharedPath, state.configPath];
+        const bytes = originals.map((file) => fs.readFileSync(file));
+        const runtimeRoot = createBuiltRuntime(state.root, undefined, { copyDirectories: true });
+        const resultPath = createUpdatePostInstallDoctorResultPath();
+        const result = await runBuiltRuntime(
+          runtimeRoot,
+          {
+            ...process.env,
+            OPENCLAW_DEBUG_PROXY_ENABLED: "1",
+            [UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV]: resultPath,
+            NODE_ENV: undefined,
+            VITEST: undefined,
+            VITEST_POOL_ID: undefined,
+            VITEST_WORKER_ID: undefined,
+          },
+          ["doctor", "--fix", "--non-interactive", "--no-workspace-suggestions"],
+          DOCTOR_CHILD_TIMEOUT_MS,
+        );
+        const output = `${result.stdout}\n${result.stderr}`;
+        const receipt = await consumeUpdatePostInstallDoctorResult(resultPath);
+        expect(result.signal, output).toBeNull();
+        expect(
+          originals.map((file) => fs.readFileSync(file)),
+          output,
+        ).toEqual(bytes);
+        if (mode === "failed schema publication") {
+          expect(result.code, output).toBe(1);
+          expect(output).toContain("Private Doctor schema validation failed");
+          expect(output).toContain("Failing check media-persistence (step-refused)");
+          expect(output).not.toContain("Repair is deferred");
+          return;
+        }
+        expect(result.code, output).toBe(0);
+        expect(receipt).toMatchObject({
+          status: "ok",
+          configHash: "unchanged",
+          warnings: [expect.stringContaining("live agent databases are unchanged")],
+        });
+        expect(output).toContain("live agent databases are unchanged");
+        expect(output).not.toContain("Doctor complete.");
+        // The published driver has now discarded package rollback and recorded its
+        // fresh post-core boundary. Only the native child can carry live authority.
+        recordUpdateRunStep(run.runId, { step: "openclaw doctor", status: "completed" });
+        recordUpdateRunStep(run.runId, { step: "post-update verification", status: "in_progress" });
+        process.env.OPENCLAW_UPDATE_POST_CORE = "1";
+        await withUpdateCommandExecutor(run.runId, async (executor) => {
+          const fence = await executor.enter(runtimeRoot);
+          await runUpdateFinalizationDoctorInFreshProcess({
+            phase: "post-plugin",
+            root: runtimeRoot,
+            runId: run.runId,
+            opts: { run: { runId: run.runId, env: { ...process.env }, executorFence: fence } },
+            yes: true,
+            json: true,
+            timeoutMs: DOCTOR_CHILD_TIMEOUT_MS,
+            assertCurrent: fence.assertCurrent,
+          });
+          fence.assertCurrent();
+        });
+        const repaired = new DatabaseSync(agentPath, { readOnly: true });
+        try {
+          expect(repaired.prepare("PRAGMA user_version").get()?.user_version).toBe(
+            OPENCLAW_AGENT_SCHEMA_VERSION,
+          );
+          expect(repaired.prepare("SELECT value_json,updated_at FROM cache_entries").all()).toEqual(
+            [{ value_json: '{"keep":true}', updated_at: 7 }],
+          );
+          expect(repaired.prepare("SELECT event_json,seq FROM transcript_events").all()).toEqual([
+            { event_json: '{ "type": "message", "text": "retained bytes 雪" }', seq: 7 },
+          ]);
+        } finally {
+          repaired.close();
+        }
+      },
+    );
+  },
+  getCliProcessTestTimeout(DOCTOR_CHILD_TIMEOUT_MS, DOCTOR_CHILD_TIMEOUT_MS),
+);
