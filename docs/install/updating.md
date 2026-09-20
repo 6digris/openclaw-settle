@@ -32,6 +32,13 @@ It leaves unverified service definitions unchanged and skips their automatic
 restart. Restart the Gateway you launched manually after the update, or use its
 actual supervisor. Doctor still checks for active state writers before migrations.
 
+After package replacement, compatibility config reads from older updaters run
+in a fresh process using the updated package and its dependencies. This also
+applies to updates driven by 2026.9.4. If an optional read fails, the updater
+prints `candidate-config-read-failed` and leaves the service definition unchanged.
+Reads follow the restored package after a rollback. Inspect the reported problem
+with the updated CLI after the update.
+
 The installed 2026.9.4 updater can refuse with `managed-service-preflight` before
 the target code runs. To reach a release containing this repair, use the
 [manual package-manager procedure](/install/updating/update-methods#alternative-manual-npm-pnpm-or-bun)
@@ -39,6 +46,21 @@ with the same owning package manager, prefix, and state/configuration. Back up
 first, stop the Gateway through its actual supervisor or foreground process owner,
 replace the package, run Doctor, and restart through that same owner.
 `--no-restart` cannot repair the old admission check.
+
+<Note>
+On macOS, the 2026.9.4 Gateway's `update.run` action or `/update` can hand off
+successfully, then fail at activation with `managed-service-preflight` and
+"This command is running inside the gateway process tree." The installed
+updater refuses its own managed helper before swapping packages, so a newer
+candidate cannot repair that first update.
+
+For this ancestry refusal, the owner should run `openclaw update` once from an
+independent Terminal outside the Gateway process tree, using the same owning
+account, installation, and state/configuration. After installing a release
+containing the managed-helper authority fix, subsequent updates started through
+`update.run` or `/update` use the corrected updater. The fix applies to updates
+**from** the fixed version; it does not repair the 2026.9.4 macOS handoff in place.
+</Note>
 
 Registry updates inspect the exact candidate's Node requirement before staging.
 An incompatible runtime produces `node-runtime-preflight`, with the target
@@ -80,6 +102,12 @@ Gateway can also report a plugin that did not load without turning the core upda
 into a failure. Individual plugin outcomes remain available in `--json` output.
 Failures to install core, repair required configuration or state, or start the
 updated Gateway remain update failures.
+Local copies selected through `plugins.load.paths` are operator-managed. Updates
+and `openclaw update repair` retain the selected copy and any npm install it
+shadows, and record a `plugin-operator-managed` warning in the outcome and update
+history. Verify that copy against the updated OpenClaw version, or remove its
+path from `plugins.load.paths` to use the managed installation again. This does
+not grant the local copy trusted plugin privileges.
 An explicit package artifact (for example, a tarball path or URL) is validated
 and installed even when its version matches; matching versions do not prove
 that two artifacts contain the same code.

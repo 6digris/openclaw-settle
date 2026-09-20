@@ -3495,14 +3495,7 @@ a:is(
   min-width: 0;
   overflow: hidden;
   padding-inline-end: 8px;
-  -webkit-mask-image: linear-gradient(to right, black 0, black calc(100% - 8px), transparent 100%);
-  mask-image: linear-gradient(to right, black 0, black calc(100% - 8px), transparent 100%);
   white-space: nowrap;
-}
-
-:root[dir="rtl"] .sidebar-agent-card__name-text {
-  -webkit-mask-image: linear-gradient(to left, black 0, black calc(100% - 8px), transparent 100%);
-  mask-image: linear-gradient(to left, black 0, black calc(100% - 8px), transparent 100%);
 }
 
 .sidebar-agent-card__chevron {
@@ -3767,11 +3760,9 @@ openclaw-sidebar-attention {
 }
 
 .sidebar-identity-card__name {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+  display: block;
   overflow: hidden;
-  text-overflow: ellipsis;
+  text-overflow: clip;
   white-space: nowrap;
   color: var(--text-strong);
   font-size: calc(13.5px * var(--control-ui-text-scale));
@@ -4428,11 +4419,11 @@ wa-dropdown.sidebar-identity-menu::part(menu) {
      panels set these vars; they are 0 when closed. */
   margin-bottom: calc(
     var(--oc-terminal-reserve-bottom, 0px) + var(--oc-browser-reserve-bottom, 0px) +
-      var(--oc-assistant-reserve-bottom, 0px)
+      var(--oc-link-reader-reserve-bottom, 0px) + var(--oc-assistant-reserve-bottom, 0px)
   );
   margin-right: calc(
     var(--oc-terminal-reserve-right, 0px) + var(--oc-browser-reserve-right, 0px) +
-      var(--oc-assistant-reserve-right, 0px)
+      var(--oc-link-reader-reserve-right, 0px) + var(--oc-assistant-reserve-right, 0px)
   );
   transition:
     margin-bottom 0.16s ease,

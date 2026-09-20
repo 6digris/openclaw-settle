@@ -34,10 +34,6 @@ vi.mock("../config/config-path-mutation.js", () => ({
 vi.mock("../config/io.meta.js", () => ({ AUTO_MANAGED_CONFIG_META_PATHS: [] }));
 vi.mock("../config/io.read-helpers.js", () => ({
   coerceConfig: (value: unknown) => value,
-  visitConfigValueTree: vi.fn(),
-  rejectConfigNonFiniteNumbers: () => {
-    throw new Error("Unexpected input parsing");
-  },
 }));
 vi.mock("../config/paths.js", () => ({
   resolveConfigPath: () => "/test/openclaw.json",

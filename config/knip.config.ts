@@ -84,6 +84,8 @@ const repositoryScriptEntries = [
   "scripts/e2e/lib/fleet-cache/prepare-podman-storage.mjs!",
   "scripts/e2e/lib/fleet-cache/probe-podman-cell.mjs!",
   "scripts/e2e/lib/fleet-cache/runtime-preflight.mjs!",
+  // test:e2e:node-auto-update runs the installed-package proof against a frozen tarball.
+  "scripts/e2e/lib/node-auto-update/scenario.mjs!",
   "scripts/e2e/lib/npm-telegram-live/prepare-package.mts!",
   "scripts/e2e/lib/onboard/assert-config.mjs!",
   "scripts/e2e/lib/onboard/write-config.mjs!",
@@ -190,6 +192,8 @@ const repositoryScriptEntries = [
   "scripts/run-stylelint.mts!",
   // Path-spawned test roots are development entries; `!` would audit dev tools as production.
   "scripts/run-vitest-child.mts",
+  // The isolated Vitest adapter executes this entry by path inside its container.
+  "scripts/lib/vitest-isolated-entry.mts",
   "scripts/secrets/openclaw-bws-resolver.mjs!",
   "scripts/sync-labels.ts!",
   "scripts/test-built-bundled-channel-entry-smoke.mts!",
@@ -243,12 +247,16 @@ const rootEntries = [
   // OpenGrep rule tests read these as static source inputs; they are never executed.
   "security/opengrep/rules/ghsa-82g8-464f-2mv7/skill-env.js!",
   "security/opengrep/rules/ghsa-82g8-464f-2mv7/skill-env.ts!",
+  "security/opengrep/rules/ghsa-fv94-qvg8-xqpw/ssh-sandbox-upload.js!",
+  "security/opengrep/rules/ghsa-fv94-qvg8-xqpw/ssh-sandbox-upload.ts!",
   "openclaw.mjs!",
   "src/index.ts!",
   "src/entry.ts!",
   // Built as the official image's Docker HEALTHCHECK entrypoint.
   "src/docker-healthcheck.ts!",
-  // Uploaded in the worker bundle and launched by rsync; no static host import exists.
+  // Deployed in the worker archive and launched by path, without a static host import.
+  "src/worker/worker-deploy-entry.ts!",
+  "src/worker/worker-deploy-image-processor.ts!",
   "src/worker/workspace-rsync-receiver.ts!",
   // v2026.9.1 Gateways lazy-import this stable dist entry after an in-place update.
   "src/gateway/plugin-channel-reload-targets.ts!",
@@ -265,12 +273,14 @@ const rootEntries = [
   "scripts/release-plan-producer-core.mts!",
   "scripts/release-plan-producer.mts!",
   "scripts/full-release-publication-observations.mts!",
+  "scripts/release-verify-publish.ts!",
   // Spawned by the agent concurrency benchmark; no static import edge exists.
   "scripts/bench-agent-concurrency-worker.ts!",
   // Spawned by the durable task registry churn benchmark in a fresh GC-enabled process.
   "scripts/bench-task-registry-sqlite-worker.ts!",
   "scripts/bench-sqlite-reliability.ts!",
   "scripts/bench-cron-session-reaper.ts!",
+  "scripts/bench-codex-catalog-pages.ts!",
   // docs/reference/test/performance.md invokes this standalone comparison harness.
   "scripts/bench-workspace-computation.ts!",
   // Docker/manual E2E executables and their nested assertion/probe entrypoints.

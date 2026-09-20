@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 // Parsing and CLI hint rendering are outside this merge-intent contract.
-vi.mock("../config/io.read-helpers.js", () => ({
+vi.mock("../config/value-tree.js", () => ({
   rejectConfigNonFiniteNumbers: () => {
     throw new Error("Unexpected parser call");
   },

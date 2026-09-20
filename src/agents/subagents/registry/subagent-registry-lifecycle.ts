@@ -1,4 +1,5 @@
 import pLimit from "p-limit";
+import type { ProgressContinuationState } from "../../../channels/progress-continuation.js";
 import { getGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
 import {
   runWithGatewayDetachedWorkContinuation,
@@ -18,6 +19,7 @@ import {
 import { completeSubagentRunAttempt } from "./subagent-registry-lifecycle-completion.js";
 import type {
   CleanupBookkeepingParams,
+  PendingRequesterSettleWakeCommit,
   ScheduledRequesterSettleWake,
   SubagentLifecycleOptions,
 } from "./subagent-registry-lifecycle-context.js";
@@ -37,6 +39,10 @@ export type { SubagentLifecycleOptions } from "./subagent-registry-lifecycle-con
 const RESTORED_REQUESTER_SETTLE_WAKE_CONCURRENCY = 2;
 
 export class SubagentLifecycleController {
+  readonly pendingRequesterSettleWakeCommits = new WeakMap<
+    SubagentRunRecord,
+    PendingRequesterSettleWakeCommit
+  >();
   private readonly scheduledResumeTimers = new Set<ReturnType<typeof setTimeout>>();
   private pendingRequesterSettleWakeRearms = new WeakSet<SubagentRunRecord>();
   private readonly scheduledRequesterSettleWakeRuns = new WeakSet<SubagentRunRecord>();
@@ -317,6 +323,7 @@ export class SubagentLifecycleController {
       requesterTurnRunId: string;
       requesterYielded: boolean;
       acceptedSessionSpawns: readonly AcceptedSessionSpawn[];
+      progressPresentation?: ProgressContinuationState;
     },
     source: "live" | "restore" = "live",
   ) =>

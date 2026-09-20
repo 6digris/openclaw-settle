@@ -218,6 +218,7 @@ export function prepareConfigWriteTopology(
   }
   return {
     nextConfig,
+    clearedSessionStoreOwner: sessionStoreOwnership.ownershipPaths.length > 0,
     resolutionEnv: values.resolutionEnv,
     // Apply topology changes to the paired authored view without materializing untouched refs.
     authoredConfig: coerceConfig(

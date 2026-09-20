@@ -19,7 +19,6 @@ import type {
   WorkerSshEndpoint,
 } from "../../plugins/capability-provider.types.js";
 import { isValidSecretRef } from "../../secrets/ref-contract.js";
-import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { ensureWorkerEnvironmentNodeEnrollmentSchema } from "../../state/openclaw-state-db-schema-additive.js";
 import type {
   DB as StateDatabase,
@@ -29,7 +28,6 @@ import type {
 } from "../../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
-  runOpenClawStateWriteTransaction,
   type OpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import type { WorkerCredentialRecord } from "./credential.js";
@@ -48,11 +46,17 @@ import {
   workerEnvironmentPreparationColumns,
 } from "./prepared-environment-store.js";
 import {
+  createWorkerEnvironmentSessionAttachmentStore,
+  hasWorkerEnvironmentSessionAttachment,
+} from "./session-attachment-store.js";
+import {
   canTransitionWorkerEnvironment,
   parseWorkerEnvironmentState,
   workerEnvironmentStateRequiresLease,
   type WorkerEnvironmentState,
 } from "./state.js";
+import { ensureWorkerEnvironmentStoreSchema } from "./store-schema.js";
+import { createWorkerEnvironmentStoreWriter } from "./store-write.js";
 import { pruneExpiredTerminalWorkerEnvironments } from "./terminal-environment-retention.js";
 
 export { normalizeWorkerDesktopEndpoint } from "./desktop-endpoint.js";
@@ -96,7 +100,7 @@ type WorkerDb = Pick<
   | "worker_transcript_commit_heads"
 >;
 type Row = Selectable<WorkerEnvironments>;
-type RowWithFallbackPort = Row & { ssh_fallback_port: number | null };
+type RowWithFallbackPorts = Row & { ssh_fallback_ports_json: string };
 type RowUpdate = Updateable<WorkerEnvironments>;
 type SshFallbackPortInsert = Insertable<WorkerEnvironmentSshFallbackPorts>;
 type CredentialRow = Selectable<WorkerEnvironmentCredentials>;
@@ -130,17 +134,6 @@ const TERMINAL_STATES: WorkerEnvironmentState[] = ["destroyed", "failed", "orpha
 const WORKER_BUNDLE_HASH_PATTERN = /^[a-f0-9]{64}$/u;
 const MAX_HOST_KEY_LENGTH = 16_384;
 const MAX_SSH_FALLBACK_PORTS = 10;
-const ensuredWorkerEnvironmentDatabases = new WeakSet<DatabaseSync>();
-const WORKER_ENVIRONMENT_SSH_FALLBACK_PORTS_SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS worker_environment_ssh_fallback_ports (
-  environment_id TEXT NOT NULL,
-  position INTEGER NOT NULL CHECK (position >= 0 AND position <= 9),
-  port INTEGER NOT NULL CHECK (port >= 1 AND port <= 65535),
-  PRIMARY KEY (environment_id, position),
-  UNIQUE (environment_id, port),
-  FOREIGN KEY (environment_id) REFERENCES worker_environments(environment_id) ON DELETE CASCADE
-) STRICT;
-`;
 const WORKER_CREDENTIAL_HASH_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 const OPENSSH_HOST_KEY_TYPE_PATTERN =
   /^(?:ssh|ecdsa-sha2|sk-(?:ssh|ecdsa-sha2))-[A-Za-z0-9@._+-]+$/u;
@@ -467,37 +460,30 @@ const query = (db: DatabaseSync) => getNodeSqliteKysely<WorkerDb>(db);
 function environmentRows(db: DatabaseSync) {
   return query(db)
     .selectFrom("worker_environments")
-    .leftJoin(
-      "worker_environment_ssh_fallback_ports",
-      "worker_environment_ssh_fallback_ports.environment_id",
-      "worker_environments.environment_id",
-    )
     .selectAll("worker_environments")
-    .select("worker_environment_ssh_fallback_ports.port as ssh_fallback_port");
+    .select((eb) =>
+      eb
+        .selectFrom("worker_environment_ssh_fallback_ports")
+        .select(({ fn }) =>
+          fn.agg<string>("json_group_array", ["port"]).orderBy("position").as("ports"),
+        )
+        .whereRef(
+          "worker_environment_ssh_fallback_ports.environment_id",
+          "=",
+          "worker_environments.environment_id",
+        )
+        .$asScalar()
+        .as("ssh_fallback_ports_json"),
+    );
 }
-function recordsFromRows(rows: readonly RowWithFallbackPort[]): WorkerEnvironmentRecord[] {
-  const grouped = new Map<string, { ports: number[]; row: Row }>();
-  for (const row of rows) {
-    const current = grouped.get(row.environment_id);
-    if (current) {
-      if (row.ssh_fallback_port !== null) {
-        current.ports.push(row.ssh_fallback_port);
-      }
-      continue;
-    }
-    grouped.set(row.environment_id, {
-      ports: row.ssh_fallback_port === null ? [] : [row.ssh_fallback_port],
-      row,
-    });
-  }
-  return Array.from(grouped.values(), ({ row, ports }) => fromRow(row, ports));
+function recordsFromRows(rows: readonly RowWithFallbackPorts[]): WorkerEnvironmentRecord[] {
+  // SAFETY: SQLite aggregates the numeric port column; endpointFrom validates the decoded ports.
+  return rows.map((row) => fromRow(row, JSON.parse(row.ssh_fallback_ports_json) as number[]));
 }
 function find(db: DatabaseSync, environmentId: string) {
   const rows = executeSqliteQuerySync(
     db,
-    environmentRows(db)
-      .where("worker_environments.environment_id", "=", environmentId)
-      .orderBy("worker_environment_ssh_fallback_ports.position"),
+    environmentRows(db).where("worker_environments.environment_id", "=", environmentId),
   ).rows;
   return recordsFromRows(rows)[0];
 }
@@ -674,8 +660,7 @@ function listRows(db: DatabaseSync, reconcile: boolean): WorkerEnvironmentRecord
     db,
     ordered
       .orderBy("worker_environments.created_at_ms")
-      .orderBy("worker_environments.environment_id")
-      .orderBy("worker_environment_ssh_fallback_ports.position"),
+      .orderBy("worker_environments.environment_id"),
   ).rows;
   return recordsFromRows(rows);
 }
@@ -735,35 +720,11 @@ export function createWorkerEnvironmentStore(
   options: { database?: OpenClawStateDatabase; now?: () => number } = {},
 ) {
   const database = options.database ?? openOpenClawStateDatabase();
-  if (!ensuredWorkerEnvironmentDatabases.has(database.db)) {
-    runOpenClawStateWriteTransaction(
-      ({ db }) => {
-        // sqlite-allow-raw -- feature-local additive schema DDL; rows use Kysely below.
-        db.exec(WORKER_ENVIRONMENT_SSH_FALLBACK_PORTS_SCHEMA_SQL);
-      },
-      { database },
-      { operationLabel: "worker-environments.ssh-fallback-ports.schema.ensure" },
-    );
-    ensuredWorkerEnvironmentDatabases.add(database.db);
-  }
+  ensureWorkerEnvironmentStoreSchema(database);
   const path = database.path;
   const now = options.now ?? Date.now;
   const read = () => openOpenClawStateDatabase({ path }).db;
-  let inventoryVersion = 0;
-  const write = <T>(operation: (db: DatabaseSync) => T): T => {
-    const result = runOpenClawStateWriteTransaction(
-      ({ db }) => {
-        const value = operation(db);
-        sessionChanges.emit({ all: true, scope: "worker-environments" }, db);
-        return value;
-      },
-      { path },
-    );
-    // Device pairing's nodeDeviceId patch deliberately stays outside this version:
-    // it changes no identity/epoch/state input. Runner availability owns its own fence.
-    inventoryVersion += 1;
-    return result;
-  };
+  const { write, inventoryVersion } = createWorkerEnvironmentStoreWriter(path);
   write((db) => reconcileAttachedSessionOwners(db, now()));
   // Listeners observe permanent credential revocations that must fence live transfers.
   // Rotation-style revocations (device reconcile re-mints) intentionally do not notify.
@@ -861,13 +822,21 @@ export function createWorkerEnvironmentStore(
     return getRequired(db, environmentId);
   };
   const prepared = createPreparedEnvironmentStoreOps({ now, read, write, createIntent, get: find });
+  const sessionAttachments = createWorkerEnvironmentSessionAttachmentStore({
+    now,
+    read,
+    write,
+    createIntent,
+    getEnvironment: find,
+  });
   return {
     ...prepared,
+    ...sessionAttachments,
     createIntent(input: WorkerEnvironmentIntentInput): WorkerEnvironmentRecord {
       return write((db) => createIntent(db, input));
     },
     get: (environmentId: string) => find(read(), required(environmentId, "id")),
-    inventoryVersion: () => inventoryVersion,
+    inventoryVersion,
     hasNodeEnrollmentOwner(nodeId: string): boolean {
       const db = read();
       // Pairing can bind the node without changing inventoryVersion. Cleanup states
@@ -1163,6 +1132,11 @@ export function createWorkerEnvironmentStore(
           throw new Error("Cannot attach worker after destroy is requested");
         }
         if (to === "attached") {
+          if (hasWorkerEnvironmentSessionAttachment(db, environmentId)) {
+            throw new Error(
+              "Conversation-attached environments cannot be adopted for session placement",
+            );
+          }
           const sessionId = patch.attachedSessionIds?.[0];
           if (current.preparation && !sessionId) {
             throw new Error("Prepared worker attachment requires its exact session");

@@ -32,6 +32,7 @@ import { exitCliAfterOutput } from "../one-shot-exit.js";
 import { retainCliProcessJobUntilExit } from "../runtime-cleanup-scope.js";
 import {
   parseTimeoutMsOrExit,
+  parseUpdateTimeoutMs,
   readPackageVersion,
   resolveUpdateRoot,
   tryResolveInvocationCwd,
@@ -51,7 +52,10 @@ import {
   runUpdateFinalizationDoctorInFreshProcess,
   withPrePluginUpdateDoctorEnv,
 } from "./update-command-fresh-doctor.js";
-import { collectPostCorePluginFailureFacts } from "./update-command-plugins-internals.js";
+import {
+  collectPostCorePluginAdvisories,
+  collectPostCorePluginFailureFacts,
+} from "./update-command-plugins-internals.js";
 import {
   updatePluginsAfterCoreUpdate,
   type PostCorePluginUpdateResult,
@@ -353,6 +357,7 @@ async function updateFinalizeCommandInternal(
                 json: opts.json,
                 acceptCapabilities: opts.acceptCapabilities,
                 timeoutMs: lifecycle.budget("plugins"),
+                workTimeoutMs: parseUpdateTimeoutMs(opts.timeout) ?? null,
                 pluginInstallRecords,
                 assertCurrent: phase.assertCurrent,
                 runtime: createNonExitingRuntime(),
@@ -383,15 +388,7 @@ async function updateFinalizeCommandInternal(
       { restore: (result) => restoreMaintenance(result.configSnapshot.config) },
     );
     const pluginUpdate = completedPluginUpdate.pluginUpdate;
-    lifecycle.recordWarnings(
-      (pluginUpdate.warnings ?? [])
-        .filter(
-          (warning) =>
-            warning.reason === "plugin-target-unavailable" || warning.reason === "doctor-advisory",
-        )
-        .map((warning) => warning.message),
-      "plugins",
-    );
+    lifecycle.recordWarnings(collectPostCorePluginAdvisories(pluginUpdate), "plugins");
     configSnapshot = completedPluginUpdate.configSnapshot;
     const completionBudget = lifecycle.budget("completionCache");
     // Leave shutdown time inside the phase deadline so optional cache failures can settle.
