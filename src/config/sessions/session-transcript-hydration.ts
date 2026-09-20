@@ -107,7 +107,7 @@ export function prepareSessionTranscriptHydration(
       includeEntry: input.includeEntry,
     };
     return readInOwner(
-      () => readSessionTranscriptCurrentTurnEntry(target, request),
+      () => readSessionTranscriptCurrentTurnEntry(target, { ...request, readOnly: true }),
       (owner, resolvedScope) =>
         owner.readCurrentTurnEntry({ ...request, target, resolvedScope, admission }),
     );

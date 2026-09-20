@@ -28,6 +28,7 @@ import { closeOpenClawStateDatabaseByPathAsync } from "../../state/openclaw-stat
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { withMockedPlatform } from "../../test-utils/vitest-spies.js";
+import { sessionManagerPrepareCurrentTurnReplay } from "./session-manager-current-turn.js";
 
 it.each(["canonical", "custom", "shared"])(
   "opens cold and bounded %s SDK views without host SQLite and preserves complete durable history",
@@ -222,6 +223,12 @@ it.each(["file", "incognito"])(
       );
       if (storage === "incognito") {
         expect(fs.existsSync(target.storePath)).toBe(false);
+        closeOpenClawAgentDatabases(state.root);
+        const owners = listOpenIncognitoAgentDatabases();
+        await expect(reader.readCurrentTurnEntry(request)).rejects.toThrow(
+          SessionTranscriptStorageUnavailableError,
+        );
+        expect(listOpenIncognitoAgentDatabases()).toEqual(owners);
       }
     });
   },
@@ -383,7 +390,7 @@ it.each(["full", "bounded"])(
 );
 
 it.each(
-  ["full", "bounded", "retarget", "reload"].flatMap((entry) =>
+  ["full", "bounded", "retarget", "reload", "replay"].flatMap((entry) =>
     ["close", "replace"].map((transition) => ({ entry, transition })),
   ),
 )("rejects incognito $entry publication after owner $transition", async ({ entry, transition }) => {
@@ -401,7 +408,10 @@ it.each(
     });
     const source = SessionManager.open(target);
     source.appendMessage(makeUserMessage("discarded private history", 1));
-    const receiver = entry === "reload" ? source : SessionManager.inMemory();
+    const receiver = entry === "reload" || entry === "replay" ? source : SessionManager.inMemory();
+    if (entry === "replay") {
+      await receiver.reloadPersistedTranscriptAsync();
+    }
     const originalView = receiver.buildSessionContext();
     const pending =
       entry === "full"
@@ -410,7 +420,12 @@ it.each(
           ? SessionManager.openBoundedAsync(target, { maxBytes: 4096, maxEvents: 5 })
           : entry === "retarget"
             ? receiver.setSessionTargetAsync(target)
-            : receiver.reloadPersistedTranscriptAsync();
+            : entry === "replay"
+              ? receiver[sessionManagerPrepareCurrentTurnReplay](
+                  () => false,
+                  (candidate) => candidate?.type === "message" && candidate.message.role === "user",
+                )
+              : receiver.reloadPersistedTranscriptAsync();
     const rejected = expect(pending).rejects.toThrow(
       "incognito database owner is no longer current",
     );

@@ -119,6 +119,7 @@ export async function prepareCurrentTurnReplayWitness(
         version,
         includeEntry: true,
       });
+      reader.assertCurrent();
       assertCurrent();
       entry = omittedCustomMessage(result.event, result.anchor);
     }
@@ -133,6 +134,7 @@ export async function prepareCurrentTurnReplayWitness(
     version,
     includeEntry: false,
   });
+  reader.assertCurrent();
   assertCurrent();
   return result.anchor ? { anchor: result.anchor, version: result.version } : undefined;
 }
