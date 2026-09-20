@@ -38,6 +38,21 @@ beforeAll(() => {
   return () => vi.resetConfig();
 });
 
+function expectedHarnessSparseCheckoutArgs(linux: boolean) {
+  return [
+    "sparse-checkout",
+    "set",
+    "--no-cone",
+    "/.github/actions/",
+    "/scripts/lib/pnpm-lockfile-documents.mjs",
+    "/scripts/ios-screenshot-evidence.mjs",
+    "/scripts/lib/direct-run.mjs",
+    ...(linux
+      ? ["/scripts/lib/release-upgrade-baseline.mjs", "/scripts/lib/release-version.mjs"]
+      : []),
+  ];
+}
+
 // Execute both workflow policies against the same owned tree fixture. A leader's
 // exit must not authorize workspace deletion, Git reuse, or final success.
 const platformCases = [
@@ -232,18 +247,9 @@ it.concurrent.each([
           expect(fetches.at(-1)?.args).toContain(
             `+${"b".repeat(40)}:refs/remotes/origin/ci-harness`,
           );
-          expect(
-            report.commands.some(
-              ({ args }) =>
-                args.join(" ") ===
-                [
-                  "sparse-checkout set --no-cone /.github/actions/ /scripts/ios-screenshot-evidence.mjs /scripts/lib/direct-run.mjs",
-                  ...(linux
-                    ? ["/scripts/lib/release-upgrade-baseline.mjs /scripts/lib/release-version.mjs"]
-                    : []),
-                ].join(" "),
-            ),
-          ).toBe(true);
+          expect(report.commands.find(({ args }) => args[0] === "sparse-checkout")?.args).toEqual(
+            expectedHarnessSparseCheckoutArgs(linux),
+          );
           expect(report.commands.at(-1)?.args).toEqual([
             "checkout",
             "--force",
@@ -609,18 +615,9 @@ it.concurrent.each([
           expect(readlinkSync(path.join(harness, link))).toBe("line\nbreak.sh");
         }
         if (workflow !== "same" && workflowOwnsEvidence) {
-          expect(report.commands.find(({ args }) => args[0] === "sparse-checkout")?.args).toEqual([
-            "sparse-checkout",
-            "set",
-            "--no-cone",
-            "/.github/actions/",
-            "/scripts/lib/pnpm-lockfile-documents.mjs",
-            "/scripts/ios-screenshot-evidence.mjs",
-            "/scripts/lib/direct-run.mjs",
-            ...(kind === "linux-node"
-              ? ["/scripts/lib/release-upgrade-baseline.mjs", "/scripts/lib/release-version.mjs"]
-              : []),
-          ]);
+          expect(report.commands.find(({ args }) => args[0] === "sparse-checkout")?.args).toEqual(
+            expectedHarnessSparseCheckoutArgs(linux),
+          );
         }
         writeFileSync(path.join(workspace, action), "later candidate edit\n");
         expect(readFileSync(path.join(harness, action), "utf8")).toBe(files[action]);
