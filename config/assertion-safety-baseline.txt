@@ -5,7 +5,7 @@ extensions/acpx/src/codex-auth-bridge.ts	7
 extensions/acpx/src/codex-trust-config.ts	1
 extensions/acpx/src/pi-session-catalog-runtime.ts	1
 extensions/acpx/src/process-lease.ts	3
-extensions/acpx/src/runtime.ts	4
+extensions/acpx/src/runtime.ts	2
 extensions/acpx/src/service.ts	1
 extensions/acpx/src/state.ts	1
 extensions/active-memory/config.ts	2
@@ -1618,7 +1618,7 @@ src/agents/code-mode-runtime.ts	2
 src/agents/code-mode-script-syntax.ts	1
 src/agents/code-mode-worker.ts	2
 src/agents/code-mode.ts	2
-src/agents/code-mode.worker.ts	6
+src/agents/code-mode.worker.ts	5
 src/agents/codex-mcp-config.ts	1
 src/agents/command/attempt-execution.helpers.ts	7
 src/agents/command/attempt-execution.ts	1
@@ -2570,7 +2570,7 @@ src/fleet/service-support.runtime.ts	1
 src/flows/channel-setup.prompts.ts	2
 src/flows/channel-setup.status.ts	2
 src/flows/channel-setup.ts	7
-src/flows/doctor-core-checks.runtime.ts	3
+src/flows/doctor-core-checks.runtime.ts	2
 src/flows/doctor-core-checks.ts	3
 src/flows/doctor-health-contributions-final.ts	1
 src/flows/doctor-health-contributions.ts	1
@@ -2718,7 +2718,6 @@ src/gateway/server-methods/terminal.ts	6
 src/gateway/server-methods/tools-catalog.ts	2
 src/gateway/server-methods/web.ts	1
 src/gateway/server-methods/wizard.ts	1
-src/gateway/server-methods/workspace-fs.ts	2
 src/gateway/server-node-events.ts	2
 src/gateway/server-plugin-in-process-dispatch.ts	3
 src/gateway/server-plugin-subagent-runtime.ts	1
@@ -2968,7 +2967,7 @@ src/infra/state-migrations.runtime-state.ts	7
 src/infra/state-migrations.session-store.ts	9
 src/infra/state-migrations.shared-auth-store.ts	1
 src/infra/state-migrations.state-dir.ts	1
-src/infra/state-migrations.storage.ts	21
+src/infra/state-migrations.storage.ts	14
 src/infra/state-migrations.task-sidecar-rows.ts	8
 src/infra/state-migrations.tui-last-session.ts	2
 src/infra/state-migrations.update-check.ts	2
@@ -3004,7 +3003,7 @@ src/logging/console.ts	5
 src/logging/diagnostic-run-activity.ts	1
 src/logging/diagnostic-session-recovery-coordinator.ts	1
 src/logging/diagnostic-stability-bundle.ts	11
-src/logging/diagnostic-stability.ts	3
+src/logging/diagnostic-stability.ts	2
 src/logging/diagnostic-support-log-redaction.ts	1
 src/logging/diagnostic-support-redaction.ts	1
 src/logging/diagnostic.ts	1
