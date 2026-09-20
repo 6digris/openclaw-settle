@@ -417,9 +417,8 @@ export async function sendSubagentAnnounceDirectly(params: {
             // lifecycle deadline; settle batches can observe and replay admission.
             timeoutMs: parentOnly && isSubagentCompletion ? undefined : announceTimeoutMs,
             isExecutionAllowed: isCompletionDeliveryAllowed,
-            ...(params.isSourceSessionAdmissionAllowed
-              ? { isSourceSessionAdmissionAllowed: isCompletionAdmissionAllowed }
-              : {}),
+            isSourceSessionAdmissionAllowed:
+              params.isSourceSessionAdmissionAllowed && isCompletionAdmissionAllowed,
             resolveGatewayContext: params.resolveGatewayContext,
           });
         },
@@ -460,7 +459,7 @@ export async function sendSubagentAnnounceDirectly(params: {
     }
 
     if (isGatewayAgentRunPending(directAnnounceResponse)) {
-      return parentOnly
+      return parentOnly || params.sourceTool === "subagent_settle"
         ? {
             delivered: false,
             path: "direct",

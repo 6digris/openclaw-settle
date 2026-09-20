@@ -16,7 +16,10 @@ import {
   formatServiceInspectionReason,
   type ServiceInspectionReason,
 } from "../../daemon/service-inspection-error.js";
-import { summarizeGatewayServiceLayout } from "../../daemon/service-layout.js";
+import {
+  gatewayServiceCommandMatchesRoot,
+  summarizeGatewayServiceLayout,
+} from "../../daemon/service-layout.js";
 import type {
   GatewayServiceCommandConfig,
   GatewayServiceState,
@@ -543,19 +546,27 @@ export function resolveManagedServiceNodeRunner(
 export async function resolveManagedServicePackageUpdatePlan(params: {
   root: string;
   pkgOwnership?: FreeBsdPkgOwnershipInspection;
-}): Promise<{ rootRedirect: ManagedServiceRootRedirect | null; nodeRunner?: string }> {
+}): Promise<{
+  rootRedirect: ManagedServiceRootRedirect | null;
+  nodeRunner?: string;
+  serviceUnitTarget?: string;
+}> {
   const pkgOwnership =
     params.pkgOwnership ?? createFreeBsdPkgOwnershipInspection(UPDATE_RUNNER_TIMEOUT_MS);
   await pkgOwnership.assertUnowned(params.root);
   if (!isGatewayServiceManagementAllowedForUpdate(process.env)) {
-    return { rootRedirect: null };
+    return {
+      rootRedirect: null,
+      serviceUnitTarget: "not inspected (service management unavailable)",
+    };
   }
   // Root and runtime planning share one effective command; mutation and restart
   // revalidate independently so this snapshot cannot grant later service authority.
   const command = (await readManagedGatewayServiceForUpdate(process.env))?.command ?? null;
   const layout = await summarizeGatewayServiceLayout(command);
+  const serviceUnitTarget = layout?.entrypoint ?? "no service entrypoint found";
   if (!layout?.packageRootReal) {
-    return { rootRedirect: null };
+    return { rootRedirect: null, serviceUnitTarget };
   }
   const serviceRoot = layout?.packageRoot;
   await pkgOwnership.assertUnowned(serviceRoot);
@@ -567,18 +578,20 @@ export async function resolveManagedServicePackageUpdatePlan(params: {
     (await tryRealpathOrResolve(params.root)) !== layout.packageRootReal
   ) {
     return {
+      serviceUnitTarget,
       rootRedirect: { root: serviceRoot, previousRoot: params.root },
       ...(serviceNode ? { nodeRunner: serviceNode } : {}),
     };
   }
   if (!serviceNode) {
-    return { rootRedirect: null };
+    return { rootRedirect: null, serviceUnitTarget };
   }
   const [serviceNodeReal, currentNodeReal] = await Promise.all([
     tryRealpathOrResolve(serviceNode),
     tryRealpathOrResolve(resolveNodeRunner()),
   ]);
   return {
+    serviceUnitTarget,
     rootRedirect: null,
     ...(serviceNodeReal !== currentNodeReal ? { nodeRunner: serviceNode } : {}),
   };
@@ -599,66 +612,7 @@ export async function gatewayServiceCommandUsesRoot(params: {
         ? ((await readManagedGatewayServiceForUpdate(params.env ?? process.env))?.command ?? null)
         : null
       : params.command;
-  const layout = await summarizeGatewayServiceLayout(command);
-  const serviceRoot = layout?.packageRoot;
-  const serviceEntrypoint = layout?.entrypoint;
-  if (
-    !serviceRoot ||
-    !serviceEntrypoint ||
-    (!path.isAbsolute(serviceEntrypoint) && !path.win32.isAbsolute(serviceEntrypoint))
-  ) {
-    return null;
-  }
-  const [expectedRootReal, serviceRootReal] = await Promise.all([
-    tryRealpathOrResolve(expectedRoot),
-    tryRealpathOrResolve(serviceRoot),
-  ]);
-  if (expectedRootReal === serviceRootReal) {
-    return true;
-  }
-  // Paired read-only release mounts have different paths but the same directory
-  // identity. Copies of another release must remain foreign.
-  const [expected, actual] = await Promise.all(
-    [expectedRootReal, serviceRootReal].map((root) => fs.stat(root).catch(() => null)),
-  );
-  if (expected && actual && expected.dev === actual.dev && expected.ino === actual.ino) {
-    return true;
-  }
-  const managed = command?.managedDefinition;
-  if (
-    !managed ||
-    (await gatewayServiceCommandUsesRoot({ root: expectedRoot, command: managed })) !== true
-  ) {
-    return false;
-  }
-  const namespace = path.dirname(expectedRootReal);
-  const managedLayout = await summarizeGatewayServiceLayout(managed);
-  const stableEntry = path.join(
-    namespace,
-    "current",
-    "dist",
-    path.basename(managedLayout?.entrypoint ?? ""),
-  );
-  if (serviceEntrypoint !== stableEntry) {
-    return false;
-  }
-  // Deployment-owned current points into this installation's releases, either
-  // by symlink or by a paired bind mount. Unrelated namespaces remain foreign.
-  const releases = path.join(namespace, "releases");
-  if (serviceRootReal.startsWith(`${releases}${path.sep}`)) {
-    return true;
-  }
-  try {
-    for await (const entry of await fs.opendir(releases)) {
-      const candidate = await fs.lstat(path.join(releases, entry.name));
-      if (actual && candidate.dev === actual.dev && candidate.ino === actual.ino) {
-        return true;
-      }
-    }
-  } catch {
-    // Without directory identity proof, the override cannot authorize lifecycle actions.
-  }
-  return false;
+  return await gatewayServiceCommandMatchesRoot(expectedRoot, command);
 }
 
 export async function resolveUpdatedGatewayRestartPort(params: {

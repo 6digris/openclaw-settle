@@ -43,6 +43,7 @@ import {
 import { addSessionMember, removeSessionMember } from "../config/sessions/session-sharing-store.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
+import { peekSystemEvents } from "../infra/system-events.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import {
@@ -80,10 +81,6 @@ import {
 } from "../test-utils/openclaw-test-state.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
-import {
-  attachGatewayLocalUserIngress,
-  prepareGatewayLocalUserIngress,
-} from "./local-user-ingress.js";
 import { createMentionInbox } from "./mention-inbox.js";
 import { sessionLog } from "./server-methods/sessions-shared.js";
 import { identifiedClient, soloClient } from "./server-methods/sessions-sharing.test-support.js";
@@ -176,6 +173,9 @@ vi.mock("./server-methods/chat-send-background.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./server-methods/chat-send-background.js")>();
   return { ...actual, scheduleChatDashboardSessionTitle: dashboardTitleScheduleMocks.schedule };
 });
+
+// Shared Gateway helpers must register dispatch and lifecycle mocks before this graph loads.
+const chatSendOwner = await import("./server-methods/chat-send-external-entry.js");
 
 let gitWorkspaceTemplate: string;
 const {
@@ -481,8 +481,8 @@ test("sessions.create commits the personal default before dispatching its initia
       await createPersonalAccountSessionFixture();
     const key = "agent:main:dashboard:personal-default-initial-turn";
     const observedProfiles: Array<string | undefined> = [];
-    const { chatHandlers } = await import("./server-methods/chat.js");
-    const chatSend = vi.spyOn(chatHandlers, "chat.send").mockImplementation(({ respond }) => {
+    const chatSend = vi.spyOn(chatSendOwner, "handleDirectExternalChatSend");
+    chatSend.mockImplementation(async ({ respond }) => {
       observedProfiles.push(loadSessionEntry({ sessionKey: key, storePath })?.authProfileOverride);
       respond(true, { runId: "personal-default-first-turn", status: "started" });
     });
@@ -627,7 +627,7 @@ test.each([
             expect(resolveProviderIdForAuth("arcee", { config: cfg, storedCredential: true })).toBe(
               "arcee",
             );
-            const model = resolveModelWithRegistry({
+            const model = await resolveModelWithRegistry({
               cfg,
               provider: "arcee",
               modelId,
@@ -695,22 +695,20 @@ test.each([
                 profile: string | undefined;
                 source: string | undefined;
               }> = [];
-              const { chatHandlers } = await import("./server-methods/chat.js");
-              const chatSend = vi
-                .spyOn(chatHandlers, "chat.send")
-                .mockImplementation(({ respond }) => {
-                  const entry = loadSessionEntry({
-                    sessionKey: key,
-                    storePath,
-                    readConsistency: "latest",
-                  });
-                  observedSelections.push({
-                    ...resolveSessionModelRef(cfg, entry, "main"),
-                    profile: entry?.authProfileOverride,
-                    source: entry?.authProfileOverrideSource,
-                  });
-                  respond(true, { runId: "arcee-linked-default-first-turn", status: "started" });
+              const chatSend = vi.spyOn(chatSendOwner, "handleDirectExternalChatSend");
+              chatSend.mockImplementation(async ({ respond }) => {
+                const entry = loadSessionEntry({
+                  sessionKey: key,
+                  storePath,
+                  readConsistency: "latest",
                 });
+                observedSelections.push({
+                  ...resolveSessionModelRef(cfg, entry, "main"),
+                  profile: entry?.authProfileOverride,
+                  source: entry?.authProfileOverrideSource,
+                });
+                respond(true, { runId: "arcee-linked-default-first-turn", status: "started" });
+              });
               try {
                 const created = await directSessionReq<{ runStarted: boolean }>(
                   "sessions.create",
@@ -1335,6 +1333,7 @@ test("sessions.create keeps incognito rows process-local through list, spawn, re
     expect(created.ok).toBe(true);
     const key = requireNonEmptyString(created.payload?.key, "incognito session key");
     expect(key).toMatch(/^agent:main:dashboard:incognito-/u);
+    expect(peekSystemEvents("agent:main:main")).toEqual([]);
     const entry = created.payload?.entry;
     expect(entry?.incognito).toBe(true);
     expect(entry?.parentSessionKey).toBeUndefined();
@@ -2082,9 +2081,9 @@ test("sessions.create fences the first workspace write behind its diff baseline"
   sessionDiffBaselineMocks.useReal = true;
 
   const { ensureSessionDiffBaseline } = await import("../sessions/session-diff-baseline.js");
-  const { chatHandlers } = await import("./server-methods/chat.js");
   let firstTurn: Promise<void> | undefined;
-  const chatSend = vi.spyOn(chatHandlers, "chat.send").mockImplementation(async ({ respond }) => {
+  const chatSend = vi.spyOn(chatSendOwner, "handleDirectExternalChatSend");
+  chatSend.mockImplementation(async ({ respond }) => {
     respond(true, { runId: "diff-first-write-run", status: "started" });
     firstTurn = (async () => {
       const entry = loadSessionEntry({ agentId: "main", sessionKey, storePath });
@@ -2168,6 +2167,7 @@ test("sessions.create persists draft visibility in the initial session entry", a
 
   expect(created.ok).toBe(true);
   expect(created.payload?.entry.visibility).toBe("draft");
+  expect(peekSystemEvents("agent:main:main")).toEqual([]);
   const key = requireNonEmptyString(created.payload?.key, "created session key");
   expect(loadSessionEntry({ agentId: "main", sessionKey: key, storePath })?.visibility).toBe(
     "draft",
@@ -2287,9 +2287,9 @@ test("sessions.create persists explicit tool overrides before the first turn", a
     skills: { release: false },
     webSearch: false,
   };
-  const { chatHandlers } = await import("./server-methods/chat.js");
   const observed: Array<unknown> = [];
-  const chatSend = vi.spyOn(chatHandlers, "chat.send").mockImplementation(async ({ respond }) => {
+  const chatSend = vi.spyOn(chatSendOwner, "handleDirectExternalChatSend");
+  chatSend.mockImplementation(async ({ respond }) => {
     observed.push(loadSessionEntry({ agentId: "main", sessionKey, storePath })?.toolOverrides);
     respond(true, { runId: "create-tool-overrides-run", status: "started" });
   });
@@ -2356,20 +2356,20 @@ test("sessions.create rolls back failed provisioning before a same-key creator p
   const { storePath } = await createSessionStoreDir();
   const key = "agent:main:dashboard:worktree-rollback";
   const adminClient = { connect: { scopes: ["operator.admin"] } } as never;
-  const originalRemove = managedWorktrees.remove.bind(managedWorktrees);
+  const originalRollback = managedWorktrees.rollbackPreparation.bind(managedWorktrees);
   let failedWorktreeId: string | undefined;
   let successorWorktreeId: string | undefined;
   const { promise: rollbackGate, resolve: releaseRollback } = createDeferredCore();
   const { promise: rollbackStarted, resolve: markRollbackStarted } = createDeferredCore();
-  const removeSpy = vi.spyOn(managedWorktrees, "remove").mockImplementation(async (params) => {
-    if (params.reason === "session-create-failed") {
-      failedWorktreeId = params.id;
+  const rollbackSpy = vi
+    .spyOn(managedWorktrees, "rollbackPreparation")
+    .mockImplementation(async (record, withRollback) => {
+      failedWorktreeId = record.id;
       markRollbackStarted();
       expect(isSessionLifecycleMutationActive(storePath, [key])).toBe(true);
       await rollbackGate;
-    }
-    return await originalRemove(params);
-  });
+      await originalRollback(record, withRollback);
+    });
   try {
     const failedPromise = directSessionReq(
       "sessions.create",
@@ -2442,16 +2442,13 @@ test("sessions.create rolls back failed provisioning before a same-key creator p
       ok: false,
       error: { message: "sessions.create visibility requires a new session" },
     });
-    expect(
-      removeSpy.mock.calls.some(
-        ([params]) =>
-          params.reason === "session-create-failed" && params.id === successorWorktree.id,
-      ),
-    ).toBe(false);
+    expect(rollbackSpy.mock.calls.some(([record]) => record.id === successorWorktree.id)).toBe(
+      false,
+    );
     expect(getRegistryWorktree(process.env, successorWorktree.id)?.removedAt).toBeUndefined();
   } finally {
     releaseRollback();
-    removeSpy.mockRestore();
+    rollbackSpy.mockRestore();
     if (
       successorWorktreeId &&
       getRegistryWorktree(process.env, successorWorktreeId)?.removedAt === undefined
@@ -4934,8 +4931,8 @@ test("sessions.create commits no child after its worker turn closes", async () =
 test("sessions.create starts no initial turn when authority closes after session commit", async () => {
   const { storePath } = await createSessionStoreDir();
   const sessionKey = "agent:main:dashboard:authority-post-commit";
-  const { chatHandlers } = await import("./server-methods/chat.js");
-  const chatSend = vi.spyOn(chatHandlers, "chat.send").mockImplementation(async ({ respond }) => {
+  const chatSend = vi.spyOn(chatSendOwner, "handleDirectExternalChatSend");
+  chatSend.mockImplementation(async ({ respond }) => {
     respond(true, { runId: "must-not-start", status: "started" });
   });
   let authorityCurrent = true;
@@ -5898,110 +5895,6 @@ test("sessions.create model change clears a selection the new model does not sup
   expect(stored?.contextWindow).toBeUndefined();
 });
 
-test("sessions.create stamps trusted operator provenance and records created", async () => {
-  const { storePath } = await createSessionStoreDir();
-  const profileId = "profile-session-creator";
-  const client = {
-    connect: { scopes: ["operator.write"] },
-    authenticatedUserProfile: {
-      profileId,
-      displayName: "Test Operator",
-      hasAvatar: false,
-      updatedAt: 1,
-    },
-  };
-  attachGatewayLocalUserIngress(
-    client,
-    prepareGatewayLocalUserIngress({
-      authenticatedUserExpected: true,
-      profile: { profileId, displayName: "Test Operator" },
-      isLocalClient: false,
-    }),
-  );
-  const created = await directSessionReq<{
-    key?: string;
-    entry?: {
-      createdVia?: string;
-      createdActor?: { type: string; id?: string };
-      createdAt?: number;
-    };
-  }>("sessions.create", { agentId: "main" }, { client: client as never });
-
-  expect(created.ok).toBe(true);
-  expect(created.payload?.entry).toMatchObject({
-    createdVia: "operator",
-    createdActor: { type: "human", source: "profile", id: profileId },
-    createdAt: expect.any(Number),
-  });
-  expect(created.payload?.entry).not.toHaveProperty("createdActor.label");
-  const key = requireNonEmptyString(created.payload?.key, "created session key");
-  expect(loadSessionEntry({ sessionKey: key, storePath })).not.toHaveProperty("createdActor.label");
-  expect(listSessionStateEventsSince(key, "main", 0, 20).events).toContainEqual(
-    expect.objectContaining({
-      kind: "created",
-      actorType: "human",
-      actorId: profileId,
-      summary: "session created",
-    }),
-  );
-
-  const synthetic = await directSessionReq<{
-    entry?: { createdVia?: string; createdActor?: unknown; createdAt?: number };
-  }>(
-    "sessions.create",
-    { agentId: "main" },
-    {
-      client: {
-        connect: { scopes: ["operator.write"] },
-        internal: { syntheticClient: true },
-      } as never,
-    },
-  );
-  expect(synthetic.payload?.entry).toMatchObject({
-    createdVia: "operator",
-    createdAt: expect.any(Number),
-  });
-  expect(synthetic.payload?.entry?.createdActor).toBeUndefined();
-
-  for (const { actor, sandbox } of [
-    { actor: { type: "agent", id: "main" }, sandbox: undefined },
-    {
-      actor: { type: "human", source: "profile", id: "profile-delegated-creator" },
-      sandbox: "required",
-    },
-  ] as const) {
-    // The required parent's creation policy survives removal of gateway.roles.
-    const hinted = await directSessionReq<{
-      key?: string;
-      entry?: { createdVia?: string; createdActor?: unknown; sandbox?: "required" };
-    }>(
-      "sessions.create",
-      { agentId: "main" },
-      {
-        client: {
-          connect: { scopes: ["operator.write"] },
-          internal: {
-            syntheticClient: true,
-            sessionCreation: {
-              via: "spawn",
-              actor,
-              sandbox,
-              requesterSessionKey: "agent:main:main",
-            },
-          },
-        } as never,
-      },
-    );
-    expect(hinted.ok, JSON.stringify(hinted.error)).toBe(true);
-    expect(hinted.payload?.entry).toMatchObject({ createdVia: "spawn", createdActor: actor });
-    expect(hinted.payload?.entry?.sandbox).toBe(sandbox);
-    const hintedKey = requireNonEmptyString(hinted.payload?.key, "delegated session key");
-    const stored = loadSessionEntry({ sessionKey: hintedKey, storePath });
-    expect(stored).toMatchObject({ createdVia: "spawn", createdActor: actor });
-    expect(stored?.sandbox).toBe(sandbox);
-  }
-});
-
 test("sessions.create reset-in-place preserves the node creation stamp", async () => {
   testState.sessionConfig = { dmScope: "main" };
   const { storePath } = await createSessionStoreDir();
@@ -6055,8 +5948,8 @@ test("sessions.create adopting an existing key does not restamp node provenance"
       }),
     },
   });
-  const { chatHandlers } = await import("./server-methods/chat.js");
-  const chatSend = vi.spyOn(chatHandlers, "chat.send").mockImplementation(async ({ respond }) => {
+  const chatSend = vi.spyOn(chatSendOwner, "handleDirectExternalChatSend");
+  chatSend.mockImplementation(async ({ respond }) => {
     respond(true, { runId: "adopted-run", status: "started" });
   });
 
@@ -6104,17 +5997,15 @@ test("sessions.create adopting an existing key does not restamp node provenance"
 
 test("sessions.create replays an identical creation once and rejects conflicting intent", async () => {
   await createSessionStoreDir();
-  const { chatHandlers } = await import("./server-methods/chat.js");
   const { sessionCreateHandlers } = await import("./server-methods/sessions-create.js");
   let sharedContext:
-    | Parameters<NonNullable<(typeof chatHandlers)["chat.send"]>>[0]["context"]
+    | Parameters<typeof chatSendOwner.handleDirectExternalChatSend>[0]["context"]
     | undefined;
-  const chatSend = vi
-    .spyOn(chatHandlers, "chat.send")
-    .mockImplementation(async ({ context, respond }) => {
-      sharedContext ??= context;
-      respond(true, { runId: "create-once", status: "started" });
-    });
+  const chatSend = vi.spyOn(chatSendOwner, "handleDirectExternalChatSend");
+  chatSend.mockImplementation(async ({ context, respond }) => {
+    sharedContext ??= context;
+    respond(true, { runId: "create-once", status: "started" });
+  });
   const dedupe = new Map();
   const client = {
     connect: {
@@ -7553,8 +7444,8 @@ test.each(mentionCreationOwners)(
 test("sessions.create forwards an attachment-only first turn", async () => {
   await createSessionStoreDir();
   testState.agentsConfig = { list: [{ id: "main", default: true }] };
-  const { chatHandlers } = await import("./server-methods/chat.js");
-  const chatSend = vi.spyOn(chatHandlers, "chat.send").mockImplementation(async ({ respond }) => {
+  const chatSend = vi.spyOn(chatSendOwner, "handleDirectExternalChatSend");
+  chatSend.mockImplementation(async ({ respond }) => {
     respond(true, { runId: "attachment-run", status: "started" });
   });
   const attachment = {

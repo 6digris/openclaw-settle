@@ -10,33 +10,28 @@ import {
 } from "../../packages/gateway-protocol/src/schema/users.js";
 import { executeSqliteQuerySync, executeSqliteQueryTakeFirstSync } from "../infra/kysely-sync.js";
 import { generateSecureUuid } from "../infra/secure-random.js";
-import { deferSqlitePostCommitPublication } from "../infra/sqlite-post-commit.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db.js";
-import { mergeUserGitHubConnection } from "./user-github-connections.js";
-import { mergeUserModelAccounts } from "./user-model-accounts.js";
-import { ensureUserPreferencesSchema, mergeUserPreferences } from "./user-preferences.store.js";
-import { publishUserProfileAliasChange } from "./user-profile-events.js";
+import { ensureUserPreferencesSchema } from "./user-preferences.store.js";
 import {
   applyVerifiedGitHubIdentity,
   githubAuthenticationSubject,
-  prepareUserProfileGitHubMerge,
   selectUserProfileGitHubIdentities,
 } from "./user-profile-github-identity.js";
-import { publishUserProfilesChange, stageUserProfileCatalogChange } from "./user-profile-list.js";
+import { publishUserProfilesChange } from "./user-profile-list.js";
 import {
-  normalizeUserProfileAvatarMime,
-  requireResolvedUserProfileById,
   requireResolvedUserProfileMetadataById,
   selectResolvedUserProfileMetadataById,
-  type UserProfileMetadataRow,
+  toUserProfile,
+  type UserProfile,
   type UserProfileRow,
   userProfileAvatarPresence,
   userProfilesDb,
 } from "./user-profiles-internal.js";
+import { mergeUserProfiles } from "./user-profiles-merge.js";
 import { ensureGatewayOwnerProfileRow } from "./user-profiles-owner.js";
 import {
   ensureUserProfileRoleSchema,
@@ -46,26 +41,24 @@ import {
   UserProfileOwnerError,
 } from "./user-profiles-schema.js";
 import {
-  fetchTailscaleAvatar,
-  MAX_USER_PROFILE_AVATAR_BYTES,
-  USER_PROFILE_AVATAR_MIME_TYPES,
-  type TailscaleAvatarFetchOptions,
-  type UserProfileAvatarMime,
-} from "./user-profiles-tailscale-avatar.js";
-import {
   classifyTailscaleLogin,
   type TailscaleProfileIdentity,
 } from "./user-profiles-tailscale-login.js";
+import {
+  MAX_USER_PROFILE_AVATAR_BYTES,
+  USER_PROFILE_AVATAR_MIME_TYPES,
+  type UserProfileAvatarMime,
+} from "./user-profiles.types.js";
 
 export { formatUserProfileAvatarEtag, getProfileAvatar } from "./user-profiles-internal.js";
 export {
   getUserProfileDisplay,
   readUserProfileAliases,
   hasMultipleSessionSharingIdentities,
-  listProfiles,
 } from "./user-profile-list.js";
+export { listProfiles } from "./user-profile-reads.js";
 
-type UserProfile = Omit<UserProfileListItem, "emails" | "githubIdentity" | "hasAvatar">;
+export { adoptTailscaleProfileAvatar } from "./user-profiles-avatar.js";
 
 type GitHubAuthenticationAlias =
   | { kind: "email"; email: string }
@@ -90,18 +83,6 @@ function normalizeEmail(email: string): string {
 function normalizeInitialDisplayName(name: string | null | undefined): string | null {
   const normalized = name?.trim();
   return normalized ? truncateUtf16Safe(normalized, MAX_USER_PROFILE_DISPLAY_NAME_LENGTH) : null;
-}
-
-function toUserProfile(row: Omit<UserProfileMetadataRow, "avatar_sha256">): UserProfile {
-  return {
-    id: row.id,
-    displayName: row.display_name,
-    avatarMime: normalizeUserProfileAvatarMime(row.avatar_mime),
-    mergedInto: row.merged_into,
-    ...(row.role ? { role: row.role } : {}),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
 }
 
 function insertUserProfile(
@@ -337,58 +318,6 @@ function ensureProfileForProviderIdentity(params: {
   );
 }
 
-function mergeUserProfiles(
-  db: DatabaseSync,
-  sourceProfileId: string,
-  targetProfileId: string,
-  now: number,
-): void {
-  if (sourceProfileId === targetProfileId) {
-    return;
-  }
-  const kysely = userProfilesDb(db);
-  const sourceProfileIds = [
-    sourceProfileId,
-    ...executeSqliteQuerySync(
-      db,
-      kysely.selectFrom("user_profiles").select("id").where("merged_into", "=", sourceProfileId),
-    ).rows.map((row) => row.id),
-  ];
-  prepareUserProfileGitHubMerge(db, sourceProfileIds, targetProfileId);
-  mergeUserModelAccounts(db, sourceProfileId, targetProfileId);
-  mergeUserGitHubConnection(db, sourceProfileId, targetProfileId);
-  for (const mergedProfileId of sourceProfileIds) {
-    mergeUserPreferences(db, mergedProfileId, targetProfileId);
-  }
-  executeSqliteQuerySync(
-    db,
-    kysely
-      .updateTable("user_profile_emails")
-      .set({ profile_id: targetProfileId })
-      .where("profile_id", "in", sourceProfileIds),
-  );
-  executeSqliteQuerySync(
-    db,
-    kysely
-      .updateTable("user_profile_identities")
-      .set({ profile_id: targetProfileId })
-      .where("profile_id", "in", sourceProfileIds),
-  );
-  executeSqliteQuerySync(
-    db,
-    kysely
-      .updateTable("user_profiles")
-      .set({ merged_into: targetProfileId, updated_at: now })
-      .where("id", "in", sourceProfileIds),
-  );
-  executeSqliteQuerySync(
-    db,
-    kysely.updateTable("user_profiles").set({ updated_at: now }).where("id", "=", targetProfileId),
-  );
-  stageUserProfileCatalogChange(db, sourceProfileIds);
-  deferSqlitePostCommitPublication(db, publishUserProfileAliasChange);
-}
-
 function adoptDisplayNameIfEmpty(
   profileId: string,
   displayName: string | null,
@@ -434,56 +363,6 @@ export function ensureGatewayOwnerProfile(
   );
 }
 
-async function adoptAvatarIfEmpty(params: {
-  profileId: string;
-  profilePic: string | undefined;
-  options: OpenClawStateDatabaseOptions;
-  fetchOptions: TailscaleAvatarFetchOptions;
-}): Promise<UserProfile> {
-  const database = openOpenClawStateDatabase(params.options);
-  const beforeFetch = requireResolvedUserProfileById(database.db, params.profileId);
-  if (beforeFetch.avatar !== null || !params.profilePic) {
-    return toUserProfile(beforeFetch);
-  }
-  // Remote work may outlive a cached handle or a change to the state-directory selector.
-  const options = { ...params.options, path: database.path };
-  const avatar = await fetchTailscaleAvatar(params.profilePic, params.fetchOptions);
-  if (!avatar) {
-    const { db } = openOpenClawStateDatabase(options);
-    return toUserProfile(requireResolvedUserProfileById(db, params.profileId));
-  }
-  const sha256 = createHash("sha256").update(avatar.bytes).digest("hex");
-  const now = Date.now();
-  return runOpenClawStateWriteTransaction(
-    ({ db: transactionDb }) => {
-      const profile = requireResolvedUserProfileById(transactionDb, params.profileId);
-      if (profile.avatar !== null) {
-        return toUserProfile(profile);
-      }
-      executeSqliteQuerySync(
-        transactionDb,
-        userProfilesDb(transactionDb)
-          .updateTable("user_profiles")
-          .set({
-            avatar: avatar.bytes,
-            avatar_mime: avatar.mime,
-            avatar_sha256: sha256,
-            updated_at: now,
-          })
-          .where("id", "=", profile.id),
-      );
-      publishUserProfilesChange(transactionDb, profile.id);
-      return toUserProfile({
-        ...profile,
-        avatar_mime: avatar.mime,
-        updated_at: now,
-      });
-    },
-    options,
-    { operationLabel: "user-profiles.adopt-avatar" },
-  );
-}
-
 /** Resolves a verified Tailscale login and adopts its display name into an empty field. */
 export function ensureProfileForTailscaleIdentity(
   identity: TailscaleProfileIdentity,
@@ -504,21 +383,6 @@ export function ensureProfileForTailscaleIdentity(
           options,
         });
   return adoptDisplayNameIfEmpty(resolved.id, displayName, options);
-}
-
-/** Best-effort avatar adoption runs after authentication so remote I/O cannot delay login. */
-export async function adoptTailscaleProfileAvatar(
-  profileId: string,
-  profilePic: string | undefined,
-  options: OpenClawStateDatabaseOptions = {},
-  fetchOptions: TailscaleAvatarFetchOptions = {},
-): Promise<UserProfile> {
-  return await adoptAvatarIfEmpty({
-    profileId,
-    profilePic,
-    options,
-    fetchOptions,
-  });
 }
 
 /** Links an email to a profile and retains an aliasless prior profile as a merge tombstone. */
@@ -653,8 +517,7 @@ export function syncGitHubIdentity(
   return runOpenClawStateWriteTransaction(
     ({ db }) => {
       const now = Date.now();
-      const kysely = userProfilesDb(db);
-      const canonicalProfileId = applyVerifiedGitHubIdentity({
+      const binding = applyVerifiedGitHubIdentity({
         db,
         alias,
         identity: params.identity,
@@ -662,21 +525,24 @@ export function syncGitHubIdentity(
         mergeProfiles: (sourceProfileId, targetProfileId) =>
           mergeUserProfiles(db, sourceProfileId, targetProfileId, now),
       });
-      const profile = selectUserProfileListItemById(db, canonicalProfileId);
+      const profile = selectUserProfileListItemById(db, binding.profileId);
       // Only the exact current GitHub login may be upgraded; preserve every other saved name.
       // Read the merge head inside this transaction so edits during lookup remain authoritative.
       const displayName =
         githubDisplayName && profile.displayName === params.identity.login.trim()
           ? githubDisplayName
           : (profile.displayName ?? initialDisplayName);
+      if (!binding.changed && displayName === profile.displayName) {
+        return profile;
+      }
       executeSqliteQuerySync(
         db,
-        kysely
+        userProfilesDb(db)
           .updateTable("user_profiles")
           .set({ display_name: displayName, updated_at: now })
-          .where("id", "=", canonicalProfileId),
+          .where("id", "=", profile.id),
       );
-      publishUserProfilesChange(db, canonicalProfileId);
+      publishUserProfilesChange(db, profile.id);
       return { ...profile, displayName, updatedAt: now };
     },
     options,
