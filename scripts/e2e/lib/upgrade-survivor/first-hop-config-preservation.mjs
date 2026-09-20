@@ -14,6 +14,8 @@ const AFTER_REPAIR = "positive-config-after-repair.json";
 const SKILL_DIR = "first-hop-skills";
 const SKILL_BINDING = "positive-skills-before-repair.json";
 const SKILL_STATUS = "positive-skills-status.json";
+// Windows exposes writable files as 0666 even after chmod(0600). POSIX remains strict.
+const rotatedBackupMode = process.platform === "win32" ? 0o666 : 0o600;
 const unavailableSkills = ["first-hop-unavailable", "first-hop-absent"];
 const fixtureSkills = [
   ...unavailableSkills,
@@ -254,7 +256,18 @@ function assertRoot(raw, before, targetVersion, skillKeys = [], requireDisables 
       },
     };
   }
-  // Config writes stamp only this version field (config/io.meta.ts). Do not mask meta.
+  // config/io.meta.ts stamps this migration on a valid older config write.
+  // Accept only its absent -> true marker; preserve every existing migration and model field.
+  if (
+    expected.meta?.migrations?.utilityModelSeparation === undefined &&
+    actual.meta?.migrations?.utilityModelSeparation === true
+  ) {
+    expected.meta = {
+      ...expected.meta,
+      migrations: { ...expected.meta?.migrations, utilityModelSeparation: true },
+    };
+  }
+  // Config writes stamp this version field (config/io.meta.ts). Do not mask meta.
   if (actual.meta?.lastTouchedVersion !== expected.meta?.lastTouchedVersion) {
     requireProof(
       actual.meta?.lastTouchedVersion === targetVersion,
@@ -327,10 +340,10 @@ function assertBackups(files, previous, before, skillKeys = []) {
         const original = previous[ring[index - shift]];
         return isDeepStrictEqual(
           files[name],
-          original && shift > 0 ? { ...original, mode: 0o600 } : original,
+          original && shift > 0 ? { ...original, mode: rotatedBackupMode } : original,
         );
       }
-      if (!files[name] || files[name].mode !== 0o600) {
+      if (!files[name] || files[name].mode !== rotatedBackupMode) {
         return false;
       }
       // The oldest newly inserted backup is the exact root captured before this phase.

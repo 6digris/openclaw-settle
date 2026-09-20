@@ -243,6 +243,55 @@ describe("packaged first-hop config preservation assertions", () => {
     expect(readFileSync(`${fixture.config}.bak.first-hop-manual`, "utf8")).toBe(original);
   });
 
+  it.each(["hop", "repair"])(
+    "accepts only the source-backed utility-model marker during %s",
+    (phase) => {
+      const fixture = makeFixture();
+      prepareHop(fixture);
+      if (phase === "repair") {
+        expectSuccess(run(fixture, "assert-hop"));
+      }
+      rewriteRoot(fixture, targetVersion, true, true);
+      const config = JSON.parse(readFileSync(fixture.config, "utf8"));
+      config.meta.migrations.utilityModelSeparation = true;
+      writeFileSync(fixture.config, JSON.stringify(config));
+      // A later write retains the legitimate migrated root in the backup ring too.
+      rewriteRoot(fixture, targetVersion, true, true);
+      if (phase === "repair") {
+        doctorOutput(fixture, "Doctor complete.\n", "repair");
+      }
+      expectSuccess(run(fixture, `assert-${phase}`));
+    },
+  );
+
+  it.each(["false", "string", "unrelated", "changed-existing", "removed-existing"])(
+    "rejects utility-model metadata drift: %s",
+    (damage) => {
+      const fixture = makeFixture(false);
+      const initial = JSON.parse(readFileSync(fixture.config, "utf8"));
+      if (damage === "changed-existing" || damage === "removed-existing") {
+        initial.meta.migrations.utilityModelSeparation = true;
+        writeFileSync(fixture.config, JSON.stringify(initial));
+      }
+      expectSuccess(run(fixture, "seed", targetVersion));
+      prepareHop(fixture);
+      const config = JSON.parse(readFileSync(fixture.config, "utf8"));
+      config.meta.migrations.utilityModelSeparation =
+        damage === "false" || damage === "changed-existing"
+          ? false
+          : damage === "string"
+            ? "true"
+            : true;
+      if (damage === "removed-existing") {
+        delete config.meta.migrations.utilityModelSeparation;
+      } else if (damage === "unrelated") {
+        config.meta.migrations.unrelated = true;
+      }
+      writeFileSync(fixture.config, JSON.stringify(config));
+      expectFailure(run(fixture, "assert-hop"), "root config changed outside permitted metadata");
+    },
+  );
+
   it("allows only the selected OpenAI plugin activation", () => {
     const fixture = makeFixture();
     prepareHop(fixture);
@@ -718,17 +767,20 @@ describe("packaged first-hop config preservation assertions", () => {
     );
   });
 
-  it("accepts the writer tightening surviving rotated backups from 0644 to 0600", () => {
-    const fixture = makeFixture(false);
-    chmodSync(`${fixture.config}.bak`, 0o644);
-    chmodSync(`${fixture.config}.bak.1`, 0o644);
-    expectSuccess(run(fixture, "seed", targetVersion));
-    prepareHop(fixture);
-    rewriteRoot(fixture, targetVersion);
-    chmodSync(`${fixture.config}.bak.1`, 0o600);
-    chmodSync(`${fixture.config}.bak.2`, 0o600);
-    expectSuccess(run(fixture, "assert-hop"));
-  });
+  it.skipIf(process.platform === "win32")(
+    "accepts the writer tightening surviving rotated backups from 0644 to 0600",
+    () => {
+      const fixture = makeFixture(false);
+      chmodSync(`${fixture.config}.bak`, 0o644);
+      chmodSync(`${fixture.config}.bak.1`, 0o644);
+      expectSuccess(run(fixture, "seed", targetVersion));
+      prepareHop(fixture);
+      rewriteRoot(fixture, targetVersion);
+      chmodSync(`${fixture.config}.bak.1`, 0o600);
+      chmodSync(`${fixture.config}.bak.2`, 0o600);
+      expectSuccess(run(fixture, "assert-hop"));
+    },
+  );
 
   it.skipIf(process.platform === "win32").each([
     ["hop", "openclaw.json"],
@@ -751,20 +803,23 @@ describe("packaged first-hop config preservation assertions", () => {
     expect(observation.files[name].mode).toBe(0o644);
   });
 
-  it("preserves unrotated permissions and requires canonical permissions after rotation", () => {
-    for (const rotated of [false, true]) {
-      const fixture = makeFixture(false);
-      chmodSync(`${fixture.config}.bak`, 0o644);
-      expectSuccess(run(fixture, "seed", targetVersion));
-      prepareHop(fixture);
-      if (rotated) {
-        rewriteRoot(fixture, targetVersion);
-        expectFailure(run(fixture, "assert-hop"), "backup ring lost or rewrote recovery history");
-      } else {
-        expectSuccess(run(fixture, "assert-hop"));
+  it.skipIf(process.platform === "win32")(
+    "preserves unrotated permissions and requires canonical permissions after rotation",
+    () => {
+      for (const rotated of [false, true]) {
+        const fixture = makeFixture(false);
+        chmodSync(`${fixture.config}.bak`, 0o644);
+        expectSuccess(run(fixture, "seed", targetVersion));
+        prepareHop(fixture);
+        if (rotated) {
+          rewriteRoot(fixture, targetVersion);
+          expectFailure(run(fixture, "assert-hop"), "backup ring lost or rewrote recovery history");
+        } else {
+          expectSuccess(run(fixture, "assert-hop"));
+        }
       }
-    }
-  });
+    },
+  );
 
   it("allows only the five source-backed Doctor provenance fields", () => {
     for (const unexpected of [false, true]) {
