@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { QuestionWaitAnswerResult } from "../../../packages/gateway-protocol/src/index.js";
 import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
+import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import {
   claimEmbeddedPendingUserInputAnswer,
   steerActiveSessionWithOptionalDeliveryWait,
@@ -362,7 +363,15 @@ describe("question response custody through reply adoption", () => {
     },
   );
 
-  it.each(["next-model", "tool-cap", "permission", "sender", "source-closure"] as const)(
+  const questionSourceAuthorityChanges = [
+    "next-model",
+    "tool-cap",
+    "permission",
+    "sender",
+    "source-closure",
+    "operator-source",
+  ] as const;
+  it.each(questionSourceAuthorityChanges)(
     "uses creator policy and incoming source authority for %s",
     async (change) => {
       const key = `agent:main:question-caller-${change}`;
@@ -371,6 +380,19 @@ describe("question response custody through reply adoption", () => {
       run.run.traceAuthorized = true;
       run.run.messageProvider = "webchat";
       run.run.config = { tools: { toolsBySender: { "*": { allow: [] } } } };
+      let operatorCurrent = true;
+      if (change === "operator-source") {
+        run.operatorAuthority = createAdmittedRunOperatorAuthority({
+          profileId: "guest",
+          scopes: ["operator.write"],
+          source: {},
+          assertCurrent: () => {
+            if (!operatorCurrent) {
+              throw new Error("original operator authority revoked");
+            }
+          },
+        });
+      }
       await withQuestionCreator(key, run, async (operation) => {
         const source = new AbortController();
         const committed = vi.fn();
@@ -381,6 +403,9 @@ describe("question response custody through reply adoption", () => {
             await Promise.resolve();
             if (change === "source-closure") {
               source.abort();
+            }
+            if (change === "operator-source") {
+              operatorCurrent = false;
             }
             if (authority.kind === "source-bound") {
               authority.assertCurrent();

@@ -2,10 +2,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/users.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
-import { ensureProfileForEmail, setUserProfileRole } from "../state/user-profiles.js";
+import { ensureProfileForEmail, linkEmail, setUserProfileRole } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
   authorizeGatewaySessionCreation,
+  authorizeCurrentOperatorRoleScopes,
   invalidateOperatorRolePolicy,
   resolveCreatorSandbox,
   resolveGatewayOperatorRoleActor,
@@ -13,6 +14,7 @@ import {
   resolveOperatorRolePolicyForAssignment,
   resolveOperatorRolePolicyForProfile,
 } from "./operator-role-policy.js";
+import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
 import type { GatewayClient } from "./server-methods/shared-types.js";
 
 const guestRole = {
@@ -69,6 +71,53 @@ function identifiedClient(profileId: string): GatewayClient {
 afterEach(() => closeOpenClawStateDatabaseForTest());
 
 describe("operator role policy", () => {
+  it("retires the original source on a profile merge while preserving unrelated sources", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const source = ensureProfileForEmail("source-role@example.test");
+      const target = ensureProfileForEmail("target-role@example.test");
+      const unrelated = ensureProfileForEmail("unrelated-role@example.test");
+      const cfg = roleConfig();
+      const capture = (profileId: string) =>
+        captureGatewayOperatorRunAuthority({
+          client: identifiedClient(profileId),
+          context: { getRuntimeConfig: () => cfg },
+        })!;
+      const original = capture(source.id);
+      const unaffected = capture(unrelated.id);
+      try {
+        original.authority.assertCurrent();
+        linkEmail("source-role@example.test", target.id);
+        expect(() => original.authority.assertCurrent()).toThrow("source identity changed");
+        expect(() => unaffected.authority.assertCurrent()).not.toThrow();
+        const fresh = capture(target.id);
+        try {
+          expect(() => fresh.authority.assertCurrent()).not.toThrow();
+          expect(() => original.authority.assertCurrent()).toThrow("no longer active");
+        } finally {
+          fresh.release();
+        }
+      } finally {
+        original.release();
+        unaffected.release();
+      }
+    });
+  });
+  it("rejects retained admin authority after a role downgrade even when ordinary session work remains allowed", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const profile = ensureProfileForEmail("retained-admin@example.test");
+      const cfg = roleConfig();
+      setUserProfileRole(profile.id, "maintainer");
+      const admin = identifiedClient(profile.id);
+      admin.connect.scopes = ["operator.admin"];
+      expect(authorizeCurrentOperatorRoleScopes(admin, cfg)).toBeUndefined();
+      setUserProfileRole(profile.id, "guest");
+      invalidateOperatorRolePolicy(profile.id);
+      expect(authorizeCurrentOperatorRoleScopes(admin, cfg)).toMatchObject({ code: "FORBIDDEN" });
+      const reconnected = identifiedClient(profile.id);
+      reconnected.connect.scopes = ["operator.write"];
+      expect(authorizeCurrentOperatorRoleScopes(reconnected, cfg)).toBeUndefined();
+    });
+  });
   it("preserves legacy access only when operator roles are not configured", () => {
     expect(resolveOperatorRolePolicyForProfile("unread-profile", {})).toBeUndefined();
     expect(resolveOperatorRolePolicyForProfile(undefined, roleConfig())).toMatchObject({

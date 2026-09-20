@@ -363,6 +363,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                   ? { admittedSessionSettings: admission.admittedSessionSettings }
                   : {}),
                 runId: clientRunId,
+                operatorAuthority: admission.operatorAuthority,
                 dashboardReadAdmission,
                 skillWorkshopProposalRevision,
                 skillLibraryAuthoring,

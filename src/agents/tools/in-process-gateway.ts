@@ -213,6 +213,9 @@ async function callAgentToolGatewayRequestBound<T>(
     ? bindInProcessGatewayContext(method, resolveGatewayContext)
     : undefined;
   if (forceTransport || !hasInProcessGatewayContext(boundGateway?.resolve)) {
+    if (getGatewayToolCallerIdentity()?.operatorAuthority) {
+      throw new Error("operator run authority requires its admitted Gateway");
+    }
     if (readInProcessSubagentResume(request)) {
       throw new Error("Task resume requires trusted in-process Gateway dispatch.");
     }
@@ -378,6 +381,9 @@ async function callInProcessGatewayToolBound<T>(
   }
   if (boundGateway) {
     throw new Error(`Gateway instance unavailable for ${method}`);
+  }
+  if (caller?.operatorAuthority) {
+    throw new Error("operator run authority requires its admitted Gateway");
   }
   return await runBoundInProcessGatewayCall(undefined, () => fallback(scopes), assertCallerCurrent);
 }

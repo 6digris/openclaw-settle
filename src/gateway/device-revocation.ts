@@ -103,6 +103,13 @@ export function readGatewayDeviceRevocationGuard(
   return guard ? captures.get(guard)?.isRevocationCurrent : undefined;
 }
 
+/** Original authentication checks, excluding any later composed request/selection lifetime. */
+export function readGatewayDeviceSourceAuthority(
+  guard: (() => unknown) | undefined,
+): CurrentCaller | undefined {
+  return guard ? captures.get(guard)?.isCurrent : undefined;
+}
+
 /** Transfer a hold on the original captured state, never recapture a later device/session. */
 export function retainGatewayDeviceRevocation(
   guard: (() => unknown) | undefined,

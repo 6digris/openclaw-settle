@@ -8,6 +8,7 @@ import type { SessionCreatedActor } from "../config/sessions/session-entry-prove
 import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { roleScopesAllow } from "../shared/operator-scope-compat.js";
 import { getUserProfileRole } from "../state/user-profiles.js";
 import { bumpGatewayAccessRevision } from "./gateway-access-revision.js";
 import {
@@ -149,6 +150,28 @@ export function resolveOperatorRolePolicy(
     return undefined;
   }
   return resolveOperatorRolePolicyForProfile(actor?.profileId, cfg);
+}
+
+/** A retained caller cannot keep grants removed by the current named role. */
+export function authorizeCurrentOperatorRoleScopes(
+  client: GatewayClient | null,
+  cfg: OpenClawConfig,
+): ErrorShape | undefined {
+  const policy = resolveOperatorRolePolicy(client, cfg);
+  if (
+    policy &&
+    !roleScopesAllow({
+      role: "operator",
+      requestedScopes: client?.connect.scopes ?? [],
+      allowedScopes: policy.scopes,
+    })
+  ) {
+    return errorShape(
+      ErrorCodes.FORBIDDEN,
+      "Your operator role changed; reconnect before continuing.",
+    );
+  }
+  return undefined;
 }
 
 export function operatorSessionCap(client: GatewayClient | null, cfg: OpenClawConfig) {

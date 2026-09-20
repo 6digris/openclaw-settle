@@ -5,6 +5,7 @@ import {
   GATEWAY_CLIENT_MODES,
 } from "../../packages/gateway-protocol/src/client-info.js";
 import { PROTOCOL_VERSION } from "../../packages/gateway-protocol/src/version.js";
+import type { AdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
 import type { RuntimeContextFragment } from "../agents/internal-runtime-context.js";
 import { isKnownCoreToolId } from "../agents/tool-catalog.js";
 import { normalizeToolPolicyName } from "../agents/tool-policy.js";
@@ -28,6 +29,7 @@ export function createSyntheticPluginRuntimeClient(params?: {
   agentToolCaller?: TrustedAgentToolCaller;
   agentRunTracking?: GatewayAgentRunTaskOwner;
   operatorRoleActor?: GatewayOperatorRoleActor;
+  operatorRunAuthority?: AdmittedRunOperatorAuthority;
   cronRunContinuation?: boolean;
   internalDeliveryMediaUrls?: string[];
   runtimeContextFragments?: RuntimeContextFragment[];
@@ -64,6 +66,9 @@ export function createSyntheticPluginRuntimeClient(params?: {
     internal: {
       syntheticClient: true,
       ...(params?.operatorRoleActor ? { operatorRoleActor: params.operatorRoleActor } : {}),
+      ...(params?.operatorRunAuthority
+        ? { operatorRunAuthority: params.operatorRunAuthority }
+        : {}),
       ...(params?.sessionCreation ? { sessionCreation: params.sessionCreation } : {}),
       ...(params?.agentToolCaller ? { agentToolCaller: params.agentToolCaller } : {}),
       allowModelOverride: params?.allowModelOverride === true,
