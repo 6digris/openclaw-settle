@@ -1,12 +1,19 @@
 /* @vitest-environment jsdom */
 import { nothing, render } from "lit";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { buildCatalogSessionKey } from "../../lib/sessions/catalog-key.ts";
+import { createHost, makeTask } from "../../test-helpers/chat-background-tasks.ts";
 import { resetComposerFixture } from "./chat-composer.test-support.ts";
 import { createRefreshChatPane } from "./chat-pane-history.test-support.ts";
 import { createGatewayBrowserClientFixture } from "./chat-pane.test-support.ts";
+import { resetChatViewState } from "./chat-view-state.ts";
+import { renderChatInto } from "./chat-view.test-helpers.ts";
 import { renderChat } from "./chat-view.ts";
+import {
+  createBackgroundTasksProps,
+  handleBackgroundTasksEvent,
+} from "./components/chat-background-tasks.ts";
 import { renderChatComposer } from "./components/chat-composer.ts";
 import {
   installTranscriptDomMocks,
@@ -16,7 +23,10 @@ import {
 const defaults = { modelProvider: null, model: null, contextTokens: null };
 
 afterEach(async () => {
-  await resetComposerFixture();
+  await resetComposerFixture(() => {
+    resetChatViewState();
+    resetTranscriptTestDom();
+  });
 });
 
 it.each([
@@ -72,6 +82,78 @@ it("keeps catalog composition independent of local model credentials", () => {
 });
 
 describe("subagent composer", () => {
+  it("keeps child progress visible after yield and through a new foreground turn", async () => {
+    installTranscriptDomMocks();
+    const child = makeTask({
+      id: "child-task",
+      title: "Inspect the implementation",
+      lastActivity: "Reading the implementation",
+    });
+    const command = makeTask({ id: "command-task", runtime: "cli" });
+    const { host } = createHost({
+      request: async () => ({ tasks: [child, command] }),
+    });
+    const messages = [
+      { role: "assistant", content: "The child is continuing the review.", timestamp: 1 },
+    ];
+    const container = document.createElement("div");
+    onTestFinished(() => {
+      render(nothing, container);
+    });
+    const renderCurrent = (runActive = false) =>
+      renderChatInto(container, {
+        sessionKey: host.sessionKey,
+        messages,
+        backgroundTasks: createBackgroundTasksProps(host),
+        canAbort: runActive,
+        runActive,
+      });
+    await vi.waitFor(() => {
+      renderCurrent();
+      expect(container.querySelector(".chat-subagent-activity__snippet")?.textContent).toBe(
+        "Reading the implementation",
+      );
+    });
+    expect(container.querySelector(".chat-send-btn--stop")).toBeNull();
+    expect(container.querySelector(".chat-tasks-status__link")?.textContent?.trim()).toBe(
+      "1 running task",
+    );
+
+    handleBackgroundTasksEvent(host, {
+      action: "upserted",
+      task: { ...child, updatedAt: 3_000, lastActivity: "Checking the regression" },
+    });
+    renderCurrent();
+    expect(container.querySelector(".chat-subagent-activity__snippet")?.textContent).toBe(
+      "Checking the regression",
+    );
+    expect(container.querySelector(".chat-send-btn--stop")).toBeNull();
+
+    messages.push({
+      role: "user",
+      content: "Review another file while that continues.",
+      timestamp: 2,
+    });
+    renderCurrent(true);
+    expect(container.querySelector(".chat-send-btn--stop")).not.toBeNull();
+    expect(container.querySelector(".chat-subagent-activity__snippet")?.textContent).toBe(
+      "Checking the regression",
+    );
+    expect(container.querySelector(".chat-tasks-status__link")?.textContent?.trim()).toBe(
+      "1 running task",
+    );
+
+    handleBackgroundTasksEvent(host, {
+      action: "upserted",
+      task: { ...child, updatedAt: 4_000, lastActivity: "Writing the review findings" },
+    });
+    renderCurrent(true);
+    expect(container.querySelector('[data-subagent-task-id="child-task"]')?.textContent).toContain(
+      "Writing the review findings",
+    );
+    expect(container.textContent).not.toContain("Checking the regression");
+    expect(container.querySelector(".chat-send-btn--stop")).not.toBeNull();
+  });
   it("keeps a spawned persistent dashboard session editable", () => {
     const { pane, state } = createRefreshChatPane();
     state.sessionKey = "agent:main:dashboard:01234567-89ab-cdef-0123-456789abcdef";

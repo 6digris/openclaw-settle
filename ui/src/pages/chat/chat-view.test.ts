@@ -24,7 +24,6 @@ import type { SessionCapability } from "../../lib/sessions/index.ts";
 import type { SessionPatchOptions } from "../../lib/sessions/patch.ts";
 import { createTestSessionCapability } from "../../lib/sessions/session-capability.test-support.ts";
 import { areUiSessionKeysEquivalent } from "../../lib/sessions/session-key.ts";
-import { createHost, makeTask } from "../../test-helpers/chat-background-tasks.ts";
 import {
   createModelCatalog,
   createSessionsListResult,
@@ -65,10 +64,6 @@ import {
   stubAnimationFrames,
 } from "./chat-view.test-helpers.ts";
 import { renderChat } from "./chat-view.ts";
-import {
-  createBackgroundTasksProps,
-  handleBackgroundTasksEvent,
-} from "./components/chat-background-tasks.ts";
 import { resetChatComposerState } from "./components/chat-composer.ts";
 import * as chatMessage from "./components/chat-message.ts";
 import { renderChatModelAccountControl } from "./components/chat-model-account-control.ts";
@@ -2169,75 +2164,6 @@ describe("chat composer workbench", () => {
     fallbackTrigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     expect(openSpy).toHaveBeenCalledWith(src, "_blank", "noopener,noreferrer");
     openSpy.mockRestore();
-  });
-
-  it("keeps child progress visible after yield and through a new foreground turn", async () => {
-    const child = makeTask({
-      id: "child-task",
-      title: "Inspect the implementation",
-      lastActivity: "Reading the implementation",
-    });
-    const command = makeTask({ id: "command-task", runtime: "cli" });
-    const { host } = createHost({
-      request: async () => ({ tasks: [child, command] }),
-    });
-    const messages = [
-      { role: "assistant", content: "The child is continuing the review.", timestamp: 1 },
-    ];
-    const container = document.createElement("div");
-    const renderCurrent = (runActive = false) =>
-      renderChatInto(container, {
-        sessionKey: host.sessionKey,
-        messages,
-        backgroundTasks: createBackgroundTasksProps(host),
-        canAbort: runActive,
-        runActive,
-      });
-    await vi.waitFor(() => {
-      renderCurrent();
-      expect(container.querySelector(".chat-subagent-activity__snippet")?.textContent).toBe(
-        "Reading the implementation",
-      );
-    });
-    expect(container.querySelector(".chat-send-btn--stop")).toBeNull();
-    expect(container.querySelector(".chat-tasks-status__link")?.textContent?.trim()).toBe(
-      "1 running task",
-    );
-
-    handleBackgroundTasksEvent(host, {
-      action: "upserted",
-      task: { ...child, updatedAt: 3_000, lastActivity: "Checking the regression" },
-    });
-    renderCurrent();
-    expect(container.querySelector(".chat-subagent-activity__snippet")?.textContent).toBe(
-      "Checking the regression",
-    );
-    expect(container.querySelector(".chat-send-btn--stop")).toBeNull();
-
-    messages.push({
-      role: "user",
-      content: "Review another file while that continues.",
-      timestamp: 2,
-    });
-    renderCurrent(true);
-    expect(container.querySelector(".chat-send-btn--stop")).not.toBeNull();
-    expect(container.querySelector(".chat-subagent-activity__snippet")?.textContent).toBe(
-      "Checking the regression",
-    );
-    expect(container.querySelector(".chat-tasks-status__link")?.textContent?.trim()).toBe(
-      "1 running task",
-    );
-
-    handleBackgroundTasksEvent(host, {
-      action: "upserted",
-      task: { ...child, updatedAt: 4_000, lastActivity: "Writing the review findings" },
-    });
-    renderCurrent(true);
-    expect(container.querySelector('[data-subagent-task-id="child-task"]')?.textContent).toContain(
-      "Writing the review findings",
-    );
-    expect(container.textContent).not.toContain("Checking the regression");
-    expect(container.querySelector(".chat-send-btn--stop")).not.toBeNull();
   });
 });
 
