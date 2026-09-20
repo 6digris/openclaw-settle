@@ -11,6 +11,8 @@ import type {
   SessionEntryListWorkerResult,
   SessionRowPresenceWorkerInput,
   SessionMembersWorkerInput,
+  SessionProgressCardWorkerInput,
+  SessionTranscriptWorkerValues,
   SessionUsageCacheWorkerInput,
   SessionTranscriptHydrationWorkerInput,
 } from "./session-transcript-worker.types.js";
@@ -22,6 +24,7 @@ export type SessionHistoryWorkerRequestRunner = <TResult>(
     | Omit<SessionEntryListWorkerInput, "database">
     | Omit<SessionIdentityEvidenceWorkerInput, "database">
     | Omit<SessionMembersWorkerInput, "database">
+    | Omit<SessionProgressCardWorkerInput, "database">
     | Omit<SessionUsageCacheWorkerInput, "database">
     | Omit<SessionTranscriptHydrationWorkerInput, "database">,
   inputBytes: number,
@@ -33,6 +36,7 @@ export type SessionHistoryWorkerRequestRunner = <TResult>(
       | SessionIdentityEvidenceWorkerResult
       | SessionStoreTargetInventoryResult
       | SessionMember[]
+      | SessionTranscriptWorkerValues["session-progress-card"]
       | SessionCostUsageCacheReadResult
       | PreparedSessionTranscriptHydration,
   ) => TResult,
@@ -100,6 +104,23 @@ export function createSessionHistoryWorkerReaders(runRequest: SessionHistoryWork
             throw new Error("Session history worker returned another result instead of members");
           }
           return value;
+        },
+      ),
+    readProgressCard: async (input: Omit<SessionProgressCardWorkerInput, "kind" | "database">) =>
+      await runRequest(
+        () => ({ kind: "session-progress-card", ...input }),
+        JSON.stringify(input).length * 2,
+        (value) => {
+          if (
+            typeof value === "boolean" ||
+            Array.isArray(value) ||
+            value.kind !== "session-progress-card"
+          ) {
+            throw new Error(
+              "Session history worker returned another result instead of a progress card",
+            );
+          }
+          return value.card;
         },
       ),
     readEntries: async (scope: SessionEntryListWorkerInput["scope"]) =>

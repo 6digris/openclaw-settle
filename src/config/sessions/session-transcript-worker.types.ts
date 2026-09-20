@@ -1,3 +1,4 @@
+import type { ProgressCard } from "../../../packages/gateway-protocol/src/index.js";
 import type {
   BuildSessionEntryOptions,
   SessionFileEntry,
@@ -110,6 +111,13 @@ export type SessionMembersWorkerInput = {
   env: NodeJS.ProcessEnv;
 };
 
+export type SessionProgressCardWorkerInput = {
+  kind: "session-progress-card";
+  database: { agentId: string; path: string };
+  sessionKey: string;
+  env: NodeJS.ProcessEnv;
+};
+
 export type SessionUsageCacheWorkerInput = {
   kind: "usage-cache";
   database: { agentId: string; path: string };
@@ -158,6 +166,7 @@ export type SessionTranscriptWorkerValues = {
   "history-page": SessionHistoryWorkerResult;
   "session-row-presence": boolean;
   "session-members": SessionMember[];
+  "session-progress-card": { kind: "session-progress-card"; card: ProgressCard | null };
   "session-entry-list": SessionEntryListWorkerResult;
   "session-target-inventory": SessionStoreTargetInventoryResult;
   "session-identity-evidence": SessionIdentityEvidenceWorkerResult;

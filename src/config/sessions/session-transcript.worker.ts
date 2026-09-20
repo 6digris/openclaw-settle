@@ -25,6 +25,7 @@ import type {
   SessionTargetInventoryWorkerInput,
   SessionIdentityEvidenceWorkerInput,
   SessionMembersWorkerInput,
+  SessionProgressCardWorkerInput,
   SessionModelContextWorkerInput,
   SessionSqliteTargetWorkerInput,
   SessionRowPresenceWorkerInput,
@@ -103,6 +104,7 @@ serveWorkerTasks(
       | SessionTranscriptHistoryWorkerInput
       | SessionRowPresenceWorkerInput
       | SessionMembersWorkerInput
+      | SessionProgressCardWorkerInput
       | SessionUsageCacheWorkerInput
       | SessionBranchSummaryWorkerInput
       | UsageCostWorkerInput;
@@ -217,6 +219,25 @@ serveWorkerTasks(
               { ...request.database, env: request.env },
             );
             return result.found ? result.value : [];
+          })),
+        };
+      }
+      if (request.kind === "session-progress-card") {
+        const { withOpenClawAgentDatabaseReadOnly } =
+          await import("../../state/openclaw-agent-db-readonly.js");
+        const { readSessionProgressCard } =
+          await import("../../session-cards/progress-card-store.js");
+        return {
+          ok: true,
+          ...(await withHistoryDatabase(request.database, () => {
+            const result = withOpenClawAgentDatabaseReadOnly(
+              (database) => readSessionProgressCard(database.db, request.sessionKey),
+              { ...request.database, env: request.env },
+            );
+            return {
+              kind: "session-progress-card" as const,
+              card: result.found ? result.value : null,
+            };
           })),
         };
       }

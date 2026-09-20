@@ -157,6 +157,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
             | "history-page"
             | "session-row-presence"
             | "session-members"
+            | "session-progress-card"
             | "session-entry-list"
             | "session-target-inventory"
             | "session-identity-evidence"
