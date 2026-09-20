@@ -2194,6 +2194,7 @@ describe("scripts/changed-lanes", () => {
         excludes: ["tsgo:core"],
         coreTestChecks: ["checkBoundary", "checkTypes"],
         stylelintTargets: [
+          "ui/src/e2e/chat-composer-picker-layout.e2e.test.ts",
           "ui/src/styles/chat/composer-surface.css",
           "ui/src/styles/chat/composer.css",
         ],
