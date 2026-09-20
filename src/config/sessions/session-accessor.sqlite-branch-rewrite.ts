@@ -49,6 +49,11 @@ export function prepareTranscriptRewriteSync(
   const resolved = resolveSqliteTranscriptScope(fencedScope);
   const options = toDatabaseOptions(resolved);
   const database = openOpenClawAgentDatabase(options);
+  if (database.db.isTransaction) {
+    throw new Error(
+      "Transcript rewrite must own its commit; run it outside the active transaction",
+    );
+  }
   assertActive();
   assertOwnedTranscriptWriteCommit(fencedScope);
   const version = readTranscriptContextVersionInTransaction(database, resolved.sessionId);
