@@ -20,6 +20,7 @@ import androidx.compose.ui.node.DrawModifierNode
 import androidx.compose.ui.node.LayoutModifierNode
 import androidx.compose.ui.node.ModifierNodeElement
 import androidx.compose.ui.node.invalidateDraw
+import androidx.compose.ui.node.invalidateMeasurement
 import androidx.compose.ui.node.invalidatePlacement
 import androidx.compose.ui.platform.InspectorInfo
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -157,6 +158,7 @@ internal class FoldAwareSheetState(
     coordinates: LayoutCoordinates?,
     size: IntSize,
     direction: LayoutDirection,
+    measuredPaneSize: IntSize,
   ): IntRect? {
     if (revoked) return null
     if (coordinates == null) {
@@ -168,8 +170,9 @@ internal class FoldAwareSheetState(
     this.direction = direction
     refresh()
     if (revoked || !nativeEstablished) return null
-    placedPane = resolvedPane
-    return placedPane?.takeIf { it.width > 0 && it.height > 0 }
+    val pane = resolvedPane?.takeIf { it.width > 0 && it.height > 0 }
+    placedPane = pane?.takeIf { it.size == measuredPaneSize }
+    return pane
   }
 }
 
@@ -220,6 +223,8 @@ private class SheetHostNode(
 ) : Modifier.Node(),
   LayoutModifierNode,
   DrawModifierNode {
+  private var measuredPaneSize = IntSize.Zero
+
   override fun onAttach() {
     state.invalidate = {
       if (isAttached) {
@@ -239,10 +244,22 @@ private class SheetHostNode(
     constraints: Constraints,
   ): MeasureResult {
     val size = IntSize(constraints.maxWidth, constraints.maxHeight)
+    val measuredSize = measuredPaneSize
+    // Material updates its expanded anchor during measurement, not child placement.
+    val surface =
+      if (measuredSize.width > 0 && measuredSize.height > 0) {
+        measurable.measure(Constraints.fixed(measuredSize.width, measuredSize.height))
+      } else {
+        null
+      }
     return layout(size.width, size.height) {
-      val pane = state.place(coordinates, size, direction)
-      if (pane != null && !state.revoked) {
-        measurable.measure(Constraints.fixed(pane.width, pane.height)).place(pane.left, pane.top)
+      val pane = state.place(coordinates, size, direction, measuredSize)
+      val nextSize = pane?.size ?: IntSize.Zero
+      if (nextSize != measuredSize) {
+        measuredPaneSize = nextSize
+        invalidateMeasurement()
+      } else if (pane != null && surface != null && !state.revoked) {
+        surface.place(pane.left, pane.top)
       }
     }
   }

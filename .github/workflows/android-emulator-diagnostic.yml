@@ -182,10 +182,12 @@ jobs:
             :app:assemblePlayDebug :app:assemblePlayDebugAndroidTest \
             :app:testPlayDebugUnitTest \
             --tests ai.openclaw.app.ui.ScreenTypographyLayoutTest.textSizeReachesRealChatAndReturnsToUnchangedDefault \
-            --tests ai.openclaw.app.ui.chat.ChatComposerLayoutTest.backgroundTaskProgressDuringSnapshotDoesNotStarveQuietOrFinishedRows \
+            --tests ai.openclaw.app.ui.chat.ChatComposerLayoutTest \
+            --tests ai.openclaw.app.ui.FoldAwareSheetTest \
             :app:testThirdPartyDebugUnitTest \
             --tests ai.openclaw.app.ui.ScreenTypographyLayoutTest.textSizeReachesRealChatAndReturnsToUnchangedDefault \
-            --tests ai.openclaw.app.ui.chat.ChatComposerLayoutTest.backgroundTaskProgressDuringSnapshotDoesNotStarveQuietOrFinishedRows
+            --tests ai.openclaw.app.ui.chat.ChatComposerLayoutTest \
+            --tests ai.openclaw.app.ui.FoldAwareSheetTest
 
       - name: Prepare trusted Linux Android tooling
         shell: bash

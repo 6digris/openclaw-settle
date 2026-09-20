@@ -123,6 +123,25 @@ class FoldAwareSheetTest {
   }
 
   @Test
+  fun expandedSurfaceTracksContentGrowthWithoutReplacingItsWindow() {
+    show()
+    val dialog = dialog()
+    val nativeState = sheetState
+    for (height in listOf(440, 96)) {
+      composeRule.runOnIdle { contentHeight = height.dp }
+      composeRule.waitForIdle()
+      val surface = checkNotNull(surfacePixels())
+      assertTrue("Expanded content must remain fully visible: height=$height, surface=$surface", surface.height() >= height)
+      assertTrue("The resized surface must stay inside its native window", Rect(0, 0, 1000, 1000).contains(surface))
+      composeRule.onNodeWithText("Select").assertIsDisplayed().performClick()
+      assertSame(dialog, dialog())
+      assertSame(nativeState, sheetState)
+    }
+    assertEquals(2, actions)
+    assertEquals(0, unsafe)
+  }
+
+  @Test
   fun terminalOmissionCannotRedrawOnRecoveryOrChildRemeasure() {
     show()
     val dialog = dialog()
