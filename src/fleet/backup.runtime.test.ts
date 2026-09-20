@@ -1,10 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { configureFsSafeNative, getFsSafeNativeConfig } from "@openclaw/fs-safe/config";
 import { __setFsSafeTestHooksForTest } from "@openclaw/fs-safe/test-hooks";
 import * as tar from "tar";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSuiteTempRootTracker } from "../test-helpers/temp-dir.js";
+import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { backupFleetCell, restoreFleetCell } from "./backup.runtime.js";
 import { cellAuthSecretDir, cellOwnerId } from "./cell-profile.js";
 import type { FleetContainerInspectResult, FleetContainerRuntime } from "./containers.runtime.js";
@@ -16,7 +16,7 @@ let root: string;
 let record: FleetCellRecord;
 
 const tempRoot = createSuiteTempRootTracker({ prefix: "openclaw-fleet-backup-test-" });
-const nativeConfig = getFsSafeNativeConfig();
+let nativeModeEnv: ReturnType<typeof captureEnv>;
 
 function inspection(running = false): Extract<FleetContainerInspectResult, { kind: "ok" }> {
   return {
@@ -100,6 +100,7 @@ async function createArchive(
 }
 
 beforeEach(async () => {
+  nativeModeEnv = captureEnv(["FS_SAFE_NATIVE_MODE"]);
   root = await tempRoot.setup();
   record = {
     tenantId: "acme",
@@ -118,7 +119,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   __setFsSafeTestHooksForTest(undefined);
-  configureFsSafeNative(nativeConfig);
+  nativeModeEnv.restore();
   vi.restoreAllMocks();
   await tempRoot.cleanup();
 });
@@ -167,7 +168,7 @@ describe("fleet backup runtime", () => {
 
   function forceJavaScriptCopyFallback() {
     // These fixtures exercise publication without native or filesystem hard-link support.
-    configureFsSafeNative({ mode: "off" });
+    setTestEnvValue("FS_SAFE_NATIVE_MODE", "off");
     vi.spyOn(fs, "link").mockRejectedValue(
       Object.assign(new Error("unsupported"), { code: "ENOTSUP" }),
     );

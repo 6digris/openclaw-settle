@@ -1,7 +1,11 @@
 import { buildChannelInboundEventContext } from "openclaw/plugin-sdk/channel-inbound";
+import type { ChannelIngressContextBinding } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import {
+  consumeChannelAdmissionEvidence,
+  createChannelAdmissionAudit,
   createHostChannelInboundEventContextBuilder,
   createHostChannelIngressRuntime,
+  readChannelContextAdmissionEvidence,
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import { resolveCommandAuthorization } from "openclaw/plugin-sdk/command-auth-native";
@@ -16,7 +20,7 @@ import {
 
 describe("buildIMessageInboundContext direct reply route", () => {
   it.each([undefined, 42])(
-    "retains host owner authority after reply ID mapping (chat ID %s)",
+    "retains host admission after reply ID mapping (chat ID %s)",
     async (chatId) => {
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
         const cfg: OpenClawConfig = {
@@ -30,8 +34,11 @@ describe("buildIMessageInboundContext direct reply route", () => {
             >
           >
         >;
-        // SAFETY: Host ingress only reads current config from this synthetic Gateway.
-        const gateway = { getRuntimeConfig: () => cfg } as GatewayContext;
+        // SAFETY: Host ingress only reads config and admission audit from this synthetic Gateway.
+        const gateway = {
+          getRuntimeConfig: () => cfg,
+          channelAdmissionAudit: createChannelAdmissionAudit({ enabled: true }),
+        } as GatewayContext;
         let live = true;
         const owner = {
           channelId: "imessage",
@@ -39,7 +46,21 @@ describe("buildIMessageInboundContext direct reply route", () => {
           resolveGatewayContext: () => gateway,
         };
         const runtime = createPluginRuntimeMock();
-        runtime.channel.inbound.ingress = createHostChannelIngressRuntime(owner);
+        const hostIngress = createHostChannelIngressRuntime(owner);
+        const bindings: Array<ChannelIngressContextBinding | undefined> = [];
+        runtime.channel.inbound.ingress = {
+          ...hostIngress,
+          createResolver: (base) => {
+            const resolver = hostIngress.createResolver(base);
+            return {
+              ...resolver,
+              message: (input) => {
+                bindings.push(input.contextBinding);
+                return resolver.message(input);
+              },
+            };
+          },
+        };
         const runtimeSpy = vi.spyOn(imessageRuntime, "getIMessageRuntime").mockReturnValue(runtime);
         try {
           const message = {
@@ -76,6 +97,10 @@ describe("buildIMessageInboundContext direct reply route", () => {
             return;
           }
 
+          const buildContext = createHostChannelInboundEventContextBuilder(
+            buildChannelInboundEventContext,
+            owner,
+          );
           const { ctxPayload, imessageTo } = await buildIMessageInboundContext({
             cfg,
             accountService: undefined,
@@ -83,10 +108,7 @@ describe("buildIMessageInboundContext direct reply route", () => {
             message,
             historyLimit: 0,
             groupHistories: new Map(),
-            buildContext: createHostChannelInboundEventContextBuilder(
-              buildChannelInboundEventContext,
-              owner,
-            ),
+            buildContext: async (input) => buildContext(input),
           });
 
           expect(ctxPayload.To).toBe(
@@ -95,16 +117,23 @@ describe("buildIMessageInboundContext direct reply route", () => {
           expect(imessageTo).toBe("imessage:+15555550123");
           expect(ctxPayload.MessageSid).toMatch(/^\d+$/u);
           expect(ctxPayload.MessageSid).not.toBe(String(message.id));
+          expect(
+            bindings.at(-1)?.messageId,
+            "final ingress must use the allocated message ID",
+          ).toBe(ctxPayload.MessageSid);
+          expect(
+            consumeChannelAdmissionEvidence(readChannelContextAdmissionEvidence(ctxPayload)),
+          ).toMatchObject({
+            ingressState: "present",
+            invoker: { state: "present", kind: "person" },
+          });
           const authorization = resolveCommandAuthorization({
             ctx: ctxPayload,
             cfg: {},
             commandAuthorized: true,
           });
-          expect(authorization.senderIsOwner).toBe(true);
-          expect(authorization.assertOwnerCurrent).toBeTypeOf("function");
-          expect(() => authorization.assertOwnerCurrent?.()).not.toThrow();
-          cfg.commands = { ownerAllowFrom: [] };
-          expect(() => authorization.assertOwnerCurrent?.()).toThrow("authority changed");
+          expect(authorization.senderIsOwner).toBe(false);
+          expect(authorization.assertOwnerCurrent).toBeUndefined();
         } finally {
           live = false;
           runtimeSpy.mockRestore();

@@ -12,6 +12,8 @@ import {
   resolveInboundMentionDecision,
   resolveInboundSupplementalSenderAllowed,
   toInboundMediaFactsWithMetadata,
+  type BuildChannelInboundEventContextParams,
+  type BuiltChannelInboundEventContext,
   type ChannelInboundMediaInput,
   type MediaPlaceholderTextFact,
 } from "openclaw/plugin-sdk/channel-inbound";
@@ -197,14 +199,7 @@ function resolveInboundEchoMessageIds(message: IMessagePayload): string[] {
     message.id != null ? String(message.id) : undefined,
     normalizeReplyField(message.guid),
   ];
-  const ids: string[] = [];
-  for (const value of values) {
-    if (!value || ids.includes(value)) {
-      continue;
-    }
-    ids.push(value);
-  }
-  return ids;
+  return uniqueStrings(values.filter((value): value is string => Boolean(value)));
 }
 
 export function rememberIMessageSkippedFromMeForSelfChatDedupe(params: {
@@ -886,7 +881,9 @@ export async function buildIMessageInboundContext(params: {
   historyLimit: number;
   groupHistories: Map<string, HistoryEntry[]>;
   dmHistory?: IMessageDmHistoryContext;
-  buildContext?: typeof buildChannelInboundEventContext;
+  buildContext?: (
+    params: BuildChannelInboundEventContextParams,
+  ) => BuiltChannelInboundEventContext | Promise<BuiltChannelInboundEventContext>;
 }): Promise<{
   ctxPayload: FinalizedMsgContext;
   fromLabel: string;
@@ -1011,7 +1008,7 @@ export async function buildIMessageInboundContext(params: {
     messageId: messageSid,
     inboundEventKind: "user_request",
   });
-  const ctxPayload = (params.buildContext ?? buildChannelInboundEventContext)({
+  const ctxPayload = await (params.buildContext ?? buildChannelInboundEventContext)({
     channelIngress,
     channel: "imessage",
     supplemental: {
