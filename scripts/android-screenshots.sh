@@ -238,10 +238,10 @@ report_emulator_startup_failure() {
 
 cleanup_started_emulator() {
   if [[ "$STARTED_EMULATOR" != "1" || "$KEEP_EMULATOR" == "1" ]]; then
-    return
+    return 0
   fi
   if ! owned_emulator_running; then
-    return
+    return 0
   fi
   local deadline=$((SECONDS + 30))
   if [[ -z "${ADB_SERIAL:-}" ]] ||
@@ -260,7 +260,7 @@ cleanup_started_emulator() {
 
 restore_device_display() {
   if [[ "$DISPLAY_OVERRIDDEN" != "1" || -z "${ADB_BIN:-}" || -z "${ADB_SERIAL:-}" ]]; then
-    return
+    return 0
   fi
   if [[ -n "$ORIGINAL_WM_SIZE" ]]; then
     "$ADB_BIN" -s "$ADB_SERIAL" shell wm size "$ORIGINAL_WM_SIZE" >/dev/null 2>&1 || true
@@ -276,7 +276,7 @@ restore_device_display() {
 
 restore_device_timezone() {
   if [[ "$TIMEZONE_OVERRIDDEN" != "1" || -z "${ADB_BIN:-}" || -z "${ADB_SERIAL:-}" ]]; then
-    return
+    return 0
   fi
   if [[ -n "$ORIGINAL_TIME_ZONE" ]]; then
     "$ADB_BIN" -s "$ADB_SERIAL" shell cmd alarm set-timezone "$ORIGINAL_TIME_ZONE" >/dev/null 2>&1 || true
@@ -293,6 +293,8 @@ cleanup_emulator_log() {
 }
 
 cleanup() {
+  # No-op helpers must return 0 explicitly: Bash 5.2's bare return inherits the
+  # failing EXIT status, and errexit would skip the remaining cleanup helpers.
   restore_device_display
   restore_device_timezone
   cleanup_started_emulator

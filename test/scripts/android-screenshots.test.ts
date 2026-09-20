@@ -150,6 +150,7 @@ if [[ "$FIXTURE_SCENARIO" == exit ]]; then
 fi
 /bin/sleep 60 &
 sleeper="$!"
+printf '%s\n' "$sleeper" >"$FIXTURE_STATE/$form.sleeper.pid"
 stop() {
   trap "" TERM INT
   kill "$sleeper" 2>/dev/null || true
@@ -275,6 +276,10 @@ printf '%s\n' 0df774991941e70d70b829a546ae24753d39e35e`,
       },
     },
   );
+  for (const filename of readdirSync(state).filter((name) => name.endsWith(".pid"))) {
+    const pid = Number(readFileSync(path.join(state, filename), "utf8").trim());
+    expect(() => process.kill(pid, 0), `Fixture child ${filename} must be joined`).toThrow();
+  }
   return {
     ...result,
     root,
@@ -315,7 +320,8 @@ describe("android screenshots script", () => {
     expect(result.stderr).toContain("[android-emulator] fixture startup excerpt");
     expect(result.stdout).not.toContain("fixture startup excerpt");
     expect(result.elapsedMs).toBeLessThan(6_000);
-    expect(result.events).toContain("joined phone\n");
+    expect(result.events).toContain("entrypoint phone emulator=exited\njoined phone\n");
+    expect(result.events).not.toContain("harness-stop");
     expect(readdirSync(path.join(result.root, "tmp"))).toEqual([]);
   }, 15_000);
 
@@ -329,8 +335,11 @@ describe("android screenshots script", () => {
     expect(result.stderr).toContain("[android-emulator] fixture startup excerpt");
     expect(result.elapsedMs).toBeGreaterThanOrEqual(2_000);
     expect(result.elapsedMs).toBeLessThan(8_000);
-    expect(result.events).toContain("entrypoint phone emulator=exited\n");
+    expect(result.events).toContain(
+      "stopped phone\nentrypoint phone emulator=exited\njoined phone\n",
+    );
     expect(result.events).not.toContain("harness-stop");
+    expect(readdirSync(path.join(result.root, "tmp"))).toEqual([]);
   }, 15_000);
 
   it("includes startup output on boot-completion timeout without changing exit status 1", () => {
@@ -343,8 +352,11 @@ describe("android screenshots script", () => {
     );
     expect(result.stderr).toContain("[android-emulator] fixture startup excerpt");
     expect(result.events).not.toContain("emu kill");
-    expect(result.events).toContain("entrypoint phone emulator=exited\n");
+    expect(result.events).toContain(
+      "stopped phone\nentrypoint phone emulator=exited\njoined phone\n",
+    );
     expect(result.events).not.toContain("harness-stop");
+    expect(readdirSync(path.join(result.root, "tmp"))).toEqual([]);
   }, 15_000);
 
   it("bounds and prefixes noisy startup logs without terminal controls or executable CI commands", () => {
