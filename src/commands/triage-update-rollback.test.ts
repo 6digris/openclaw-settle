@@ -1,9 +1,13 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import * as atomicFiles from "../infra/json-files.js";
-import { writeTriageUpdateFailure } from "../infra/update-failure-report-artifact.js";
+import {
+  writeTriageUpdateFailure,
+  writeUpdateRunReportArtifact,
+} from "../infra/update-failure-report-artifact.js";
 import type { UpdateRunResult } from "../infra/update-runner-types.js";
 import {
   readTriageUpdateFailure,
@@ -11,6 +15,12 @@ import {
   updateFailureSchema,
 } from "./triage-update.js";
 import { readReleasedTriageUpdateFailure } from "./triage-update.released-reader.test-support.js";
+
+vi.mock("node:crypto", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:crypto")>()),
+  // A valid UUID whose decimal tail collides with support identifier redaction.
+  randomUUID: () => "7070f794-196a-4f08-91dc-123456789012",
+}));
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -175,6 +185,50 @@ describe("rollback-readable update diagnostics", () => {
       expect(await fs.readFile(inventoryPath, "utf8")).toBe(inventoryRaw);
       if (process.platform !== "win32") {
         expect((await fs.stat(inventoryPath)).mode & 0o777).toBe(0o600);
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "keeps the report's bounded diagnostic link readable (detached: %s)",
+    async (detached) => {
+      const stateDir = tempDirs.make("openclaw-update-report-");
+      const detachedDir = tempDirs.make("openclaw-update-detached-");
+      const env = { OPENCLAW_STATE_DIR: stateDir };
+      const secret = "sk-test-update-report-secret-1234567890";
+      const runId = "10000000-0000-4000-8000-000000000001";
+      const result: UpdateRunResult = {
+        runId,
+        status: "error",
+        mode: "npm",
+        reason: "doctor-failed",
+        durationMs: 1,
+        steps: [],
+      };
+      const tmpdir = vi.spyOn(os, "tmpdir").mockReturnValue(detachedDir);
+      try {
+        const reportPath = await writeUpdateRunReportArtifact({
+          result,
+          report: { markdown: `Update failed. token=${secret}\nphone 15555551212` },
+          env,
+          detached,
+        });
+        if (!detached) {
+          expect(path.basename(reportPath)).toBe(`${runId}.md`);
+        }
+        const markdown = await fs.readFile(reportPath, "utf8");
+        expect(markdown).not.toContain(secret);
+        expect(markdown).not.toContain("15555551212");
+        expect(markdown).toContain("phone <redacted-id>");
+        const linkedPath = markdown.split("Bounded diagnostic JSON: ")[1]!.trim();
+        const failurePath = path.resolve(path.dirname(reportPath), linkedPath);
+        const failure = await readReleasedTriageUpdateFailure(failurePath, { env, stateDir });
+        expect(failure).toMatchObject({ result: { status: "error", reason: "doctor-failed" } });
+        if (process.platform !== "win32") {
+          expect((await fs.stat(failurePath)).mode & 0o777).toBe(0o600);
+        }
+      } finally {
+        tmpdir.mockRestore();
       }
     },
   );

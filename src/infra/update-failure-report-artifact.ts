@@ -18,12 +18,17 @@ import type { PreparedUpdateFailureReport } from "./update-failure-report-prepar
 import type { UpdateRunReport } from "./update-run-report.js";
 import type { UpdateRunResult } from "./update-runner-types.js";
 
+function createUpdateArtifactId(): string {
+  // Released readers redact long decimal UUID components; underscores keep artifact links intact.
+  return randomUUID().replaceAll("-", "_");
+}
+
 /** Complete sanitized inventories are named artifacts, never restored-runtime input. */
 async function writeUpdateFailureLintArtifact(
   inventory: TriageUpdateFailure,
   directory: string,
 ): Promise<string> {
-  const outputPath = path.join(directory, `openclaw-update-lint-${randomUUID()}.json`);
+  const outputPath = path.join(directory, `openclaw-update-lint-${createUpdateArtifactId()}.json`);
   await writeTextAtomic(outputPath, `${JSON.stringify(inventory)}\n`, {
     mode: 0o600,
     dirMode: 0o700,
@@ -39,7 +44,12 @@ export async function writeTriageUpdateFailure(
   const stateDir = resolveStateDir(env);
   const outputPath =
     options.outputPath ??
-    path.join(stateDir, "logs", "support", `openclaw-update-failure-${randomUUID()}.json`);
+    path.join(
+      stateDir,
+      "logs",
+      "support",
+      `openclaw-update-failure-${createUpdateArtifactId()}.json`,
+    );
   const inventory = sanitizeTriageUpdateFailure(failure, { env, stateDir }, "inventory");
   if ("result" in inventory && inventory.result.steps.some((step) => step.doctorLintFindings)) {
     const detail = await writeUpdateFailureLintArtifact(inventory, path.dirname(outputPath)).then(
@@ -67,7 +77,8 @@ export async function writeUpdateRunReportArtifact(params: {
 }): Promise<string> {
   const env = params.env ?? process.env;
   const stateDir = resolveStateDir(env);
-  const id = (!params.detached && z.uuid().safeParse(params.result.runId).data) || randomUUID();
+  const id =
+    (!params.detached && z.uuid().safeParse(params.result.runId).data) || createUpdateArtifactId();
   const directory = params.detached ? os.tmpdir() : path.join(stateDir, "update-reports");
   const outputPath = path.join(directory, `${id}.md`);
   const failurePath =
