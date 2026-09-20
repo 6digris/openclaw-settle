@@ -98,6 +98,7 @@ export type ChatComposerProps = ChatAttachmentControlsProps & {
   progressCardInitiallyCollapsed?: boolean;
   progressCardInitialRunId?: string | null;
   progressCardRecoveredRunId?: string;
+  gatewayScope?: object;
   runActive?: boolean;
   collapseTaskProgress?: boolean;
   readingHistory?: boolean;
