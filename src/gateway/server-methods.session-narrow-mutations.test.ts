@@ -11,6 +11,7 @@ import { handleChatAbortRequest } from "./server-methods/chat-abort-handler.js";
 import * as chat from "./server-methods/chat-send-external-entry.js";
 import { createActiveRun } from "./server-methods/chat.abort.test-helpers.js";
 import { readGatewayRequestMutationAuthority } from "./server-methods/session-mutation-guards.js";
+import { sessionAbortHandlers } from "./server-methods/sessions-abort.js";
 import { sessionCreateHandlers } from "./server-methods/sessions-create.js";
 import { sessionMessagingHandlers } from "./server-methods/sessions-messaging.js";
 import { sessionMutationHandlers } from "./server-methods/sessions-mutations.js";
@@ -24,6 +25,113 @@ const key = "agent:main:narrow-mutation";
 const scope = { agentId: "main", sessionKey: key };
 
 describe("invocation-owned session mutations", () => {
+  it.each([
+    { owner: "connection", broad: false, rebind: false },
+    { owner: "device", broad: false, rebind: false },
+    { owner: "ownerless", broad: false, rebind: false },
+    { owner: "connection", broad: false, rebind: true },
+    { owner: "device", broad: true, rebind: false },
+  ] as const)(
+    "sessions.abort retains its invocation scope for a $owner foreign run (broad=$broad, rebind=$rebind)",
+    async ({ owner, broad, rebind }) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        const client = roleClient("write", "alias-stop-owner");
+        client.connId = "alias-stop-connection";
+        client.connect.device = {
+          id: "alias-device",
+          publicKey: "test",
+          signature: "test",
+          signedAt: 1,
+          nonce: "test",
+        };
+        client.connect.scopes = broad
+          ? ["operator.write", "operator.sessions.write"]
+          : ["operator.sessions.write"];
+        const cfg = rolePolicyConfig();
+        const foreignKey = "agent:main:foreign-stop";
+        await upsertSessionEntryCore(scope, {
+          sessionId: "own-incarnation",
+          updatedAt: 1,
+          createdActor: {
+            type: "human",
+            source: "profile",
+            id: client.authenticatedUserProfile!.profileId,
+          },
+        });
+        await upsertSessionEntryCore(
+          { ...scope, sessionKey: foreignKey },
+          {
+            sessionId: "foreign-incarnation",
+            updatedAt: 1,
+            createdActor: { type: "human", source: "profile", id: "another-person" },
+          },
+        );
+        const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
+        const foreign = createActiveRun(foreignKey, {
+          agentId: "main",
+          sessionId: "foreign-incarnation",
+          ...(owner === "ownerless"
+            ? {}
+            : {
+                owner:
+                  owner === "connection" ? { connId: client.connId } : { deviceId: "alias-device" },
+              }),
+        });
+        const original = createActiveRun(key, {
+          agentId: "main",
+          sessionId: "own-incarnation",
+          owner: { connId: client.connId },
+        });
+        context.chatAbortControllers.set("selected", rebind ? original : foreign);
+        const entered = createDeferredCore();
+        const release = createDeferredCore();
+        const respond = vi.fn();
+        const before = [...context.dedupe];
+        const request = handleGatewayRequest({
+          req: {
+            type: "req",
+            id: "alias-foreign",
+            method: "sessions.abort",
+            params: { key, runId: "selected" },
+          },
+          context,
+          client,
+          respond,
+          isWebchatConnect: () => false,
+          extraHandlers: {
+            "sessions.abort": async (options) => {
+              expect(readGatewayRequestMutationAuthority(options).sessionScope).toBe(
+                broad ? undefined : "operator.sessions.write",
+              );
+              entered.resolve();
+              await release.promise;
+              await sessionAbortHandlers["sessions.abort"]!(options);
+            },
+          },
+        });
+        try {
+          await Promise.race([entered.promise, request]);
+          expect(respond).not.toHaveBeenCalled();
+          if (rebind) {
+            context.chatAbortControllers.set("selected", foreign);
+          }
+        } finally {
+          release.resolve();
+          await request;
+        }
+        expect(foreign.controller.signal.aborted).toBe(broad);
+        expect(original.controller.signal.aborted).toBe(false);
+        expect(respond).toHaveBeenCalledOnce();
+        expect(respond.mock.calls[0]?.[0]).toBe(broad);
+        if (!broad) {
+          expect([...context.dedupe]).toEqual(before);
+          expect(context.chatAbortControllers.get("selected")).toBe(foreign);
+          expect(context.chatQueuedTurns.size).toBe(0);
+        }
+      });
+    },
+  );
+
   it.each(["sessions.send", "sessions.create"] as const)(
     "%s rejects absent-target routing drift before creation",
     async (method) => {
@@ -72,9 +180,13 @@ describe("invocation-owned session mutations", () => {
     },
   );
 
-  it.each(["active", "queued", "pending-chat", "agent"] as const)(
-    "narrow single and bulk Stop match the original %s producer incarnation",
-    async (kind) => {
+  it.each(
+    (["active", "queued", "pending-chat", "agent"] as const).flatMap((kind) =>
+      (["chat.abort", "sessions.abort"] as const).map((method) => ({ kind, method })),
+    ),
+  )(
+    "$method narrow single and bulk Stop match the original $kind producer incarnation",
+    async ({ kind, method }) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
         const client = roleClient("view", "exact-stop-owner");
         client.connId = "exact-stop-connection";
@@ -135,14 +247,20 @@ describe("invocation-owned session mutations", () => {
               req: {
                 type: "req",
                 id: runId,
-                method: "chat.abort",
-                params: { sessionKey: requestKey, ...(explicit ? { runId } : {}) },
+                method,
+                params: {
+                  ...(method === "chat.abort" ? { sessionKey: requestKey } : { key: requestKey }),
+                  ...(explicit ? { runId } : {}),
+                },
               },
               client,
               context,
               respond,
               isWebchatConnect: () => false,
-              extraHandlers: { "chat.abort": handleChatAbortRequest },
+              extraHandlers: {
+                "chat.abort": handleChatAbortRequest,
+                "sessions.abort": sessionAbortHandlers["sessions.abort"]!,
+              },
             });
             const allowed = mismatch === "none";
             if (kind === "active" || kind === "queued") {
@@ -151,7 +269,11 @@ describe("invocation-owned session mutations", () => {
               expect([...context.dedupe]).toEqual(before);
             }
             if (allowed) {
-              expect(respond.mock.calls[0]?.[1]).toMatchObject({ aborted: true, runIds: [runId] });
+              expect(respond.mock.calls[0]?.[1]).toMatchObject(
+                method === "chat.abort"
+                  ? { aborted: true, runIds: [runId] }
+                  : { abortedRunId: runId, status: "aborted" },
+              );
             }
             expect(respond).toHaveBeenCalledOnce();
           }
@@ -160,9 +282,13 @@ describe("invocation-owned session mutations", () => {
     },
   );
 
-  it.each(["active", "queued"] as const)(
-    "does not adopt a reentrant %s producer replacement during narrow Stop",
-    async (kind) => {
+  it.each(
+    (["active", "queued"] as const).flatMap((kind) =>
+      (["chat.abort", "sessions.abort"] as const).map((method) => ({ kind, method })),
+    ),
+  )(
+    "$method does not adopt a reentrant $kind producer replacement during narrow Stop",
+    async ({ kind, method }) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
         const client = roleClient("view", "reentrant-stop-owner");
         client.connId = "reentrant-stop";
@@ -205,17 +331,29 @@ describe("invocation-owned session mutations", () => {
           );
           const respond = vi.fn();
           await handleGatewayRequest({
-            req: { type: "req", id: changed, method: "chat.abort", params: { sessionKey: key } },
+            req: {
+              type: "req",
+              id: changed,
+              method,
+              params: method === "chat.abort" ? { sessionKey: key } : { key },
+            },
             client,
             context,
             respond,
             isWebchatConnect: () => false,
-            extraHandlers: { "chat.abort": handleChatAbortRequest },
+            extraHandlers: {
+              "chat.abort": handleChatAbortRequest,
+              "sessions.abort": sessionAbortHandlers["sessions.abort"]!,
+            },
           });
           expect(first.controller.signal.aborted).toBe(true);
           expect(second.controller.signal.aborted).toBe(false);
           expect(replacement.controller.signal.aborted).toBe(false);
-          expect(respond.mock.calls[0]?.[1]).toMatchObject({ aborted: true, runIds: ["first"] });
+          expect(respond.mock.calls[0]?.[1]).toMatchObject(
+            method === "chat.abort"
+              ? { aborted: true, runIds: ["first"] }
+              : { abortedRunId: "first", status: "aborted" },
+          );
         }
       });
     },
