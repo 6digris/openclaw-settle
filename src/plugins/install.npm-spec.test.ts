@@ -1849,6 +1849,69 @@ describe("installPluginFromNpmSpec", () => {
     expect(fs.existsSync(resolveTestPluginPackageDir(npmRoot, packageName))).toBe(false);
   });
 
+  it("rejects an update that omits a required runtime dependency and preserves the prior generation", async () => {
+    const npmRoot = path.join(suiteTempRootTracker.makeTempDir(), "npm");
+    const packageName = "dependency-payload-plugin";
+    mockNpmViewAndInstall({
+      spec: `${packageName}@1.0.0`,
+      packageName,
+      version: "1.0.0",
+      npmRoot,
+      expectedDependencySpec: "1.0.0",
+    });
+    const initial = await installPluginFromNpmSpec({
+      spec: `${packageName}@1.0.0`,
+      npmDir: npmRoot,
+      logger: { info: () => {}, warn: () => {} },
+    });
+    expect(initial.ok).toBe(true);
+    if (!initial.ok) {
+      return;
+    }
+    const initialTree = readTextFileTree(initial.targetDir);
+
+    mockNpmViewAndInstall({
+      spec: `${packageName}@2.0.0`,
+      packageName,
+      version: "2.0.0",
+      npmRoot,
+      dependency: { name: "required-runtime", version: "1.0.0" },
+      expectedDependencySpec: "2.0.0",
+    });
+    const delegate = runCommandWithTimeoutMock.getMockImplementation();
+    if (!delegate) {
+      throw new Error("expected npm mock implementation");
+    }
+    runCommandWithTimeoutMock.mockImplementation(async (argv, options) => {
+      const result = await delegate(argv, options);
+      if (isManagedNpmInstallCommand(argv) && options?.cwd) {
+        fs.rmSync(
+          path.join(options.cwd, "node_modules", packageName, "node_modules", "required-runtime"),
+          { recursive: true, force: true },
+        );
+      }
+      return result;
+    });
+
+    const update = await installPluginFromNpmSpec({
+      spec: `${packageName}@2.0.0`,
+      npmDir: npmRoot,
+      mode: "update",
+      logger: { info: () => {}, warn: () => {} },
+    });
+
+    expect(update).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("required-runtime"),
+    });
+    expect(
+      fs.existsSync(
+        resolveTestPluginGenerationProjectDir({ npmRoot, packageName, version: "2.0.0" }),
+      ),
+    ).toBe(false);
+    expect(readTextFileTree(initial.targetDir)).toEqual(initialTree);
+  });
+
   it("quarantines and rebuilds a corrupt managed npm project after npm from-argument failures", async () => {
     const stateDir = suiteTempRootTracker.makeTempDir();
     const npmRoot = path.join(stateDir, "npm");

@@ -80,6 +80,51 @@ function createDependencyHealthFixture() {
 }
 
 describe("plugin dependency health projection", () => {
+  it("confines managed dependency resolution to complete packages inside the npm project", () => {
+    const rootDir = makeTrackedTempDir("openclaw-plugin-dependency-boundary", tempDirs);
+    const projectRoot = path.join(rootDir, "project");
+    const pluginRoot = path.join(projectRoot, "node_modules", "fixture-plugin");
+    const dependencyRoot = path.join(projectRoot, "node_modules", "required-runtime");
+    fs.mkdirSync(pluginRoot, { recursive: true });
+
+    fs.mkdirSync(dependencyRoot, { recursive: true });
+    expect(
+      buildPluginDependencyStatus({
+        rootDir: pluginRoot,
+        dependencyRootDir: projectRoot,
+        dependencies: { "required-runtime": "1.0.0" },
+      }).missing,
+    ).toEqual(["required-runtime"]);
+
+    fs.writeFileSync(
+      path.join(dependencyRoot, "package.json"),
+      JSON.stringify({ name: "required-runtime", version: "1.0.0" }),
+    );
+    expect(
+      buildPluginDependencyStatus({
+        rootDir: pluginRoot,
+        dependencyRootDir: projectRoot,
+        dependencies: { "required-runtime": "1.0.0" },
+      }).missing,
+    ).toEqual([]);
+
+    fs.rmSync(dependencyRoot, { recursive: true, force: true });
+    const outsideDependencyRoot = path.join(rootDir, "node_modules", "required-runtime");
+    fs.mkdirSync(outsideDependencyRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(outsideDependencyRoot, "package.json"),
+      JSON.stringify({ name: "required-runtime", version: "1.0.0" }),
+    );
+    fs.symlinkSync(outsideDependencyRoot, dependencyRoot, "junction");
+    expect(
+      buildPluginDependencyStatus({
+        rootDir: pluginRoot,
+        dependencyRootDir: projectRoot,
+        dependencies: { "required-runtime": "1.0.0" },
+      }).missing,
+    ).toEqual(["required-runtime"]);
+  });
+
   it.each([
     { mode: "snapshot", load: buildPluginSnapshotReport },
     { mode: "runtime", load: buildPluginDiagnosticsReport },

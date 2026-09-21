@@ -76,6 +76,10 @@ import {
   auditDeclaredOpenClawHostDependency,
   relinkOpenClawPeerDependenciesInManagedNpmRoot,
 } from "./plugin-peer-link.js";
+import {
+  buildPluginDependencyStatus,
+  normalizePluginDependencySpecs,
+} from "./status-dependencies-core.js";
 
 export async function installPluginFromManagedNpmRoot(
   params: InstallSafetyOverrides & {
@@ -529,6 +533,21 @@ export async function installPluginFromManagedNpmRoot(
       return {
         ok: false,
         error: `npm install metadata remained incomplete after managed npm project recovery (quarantine: ${recovery.quarantine.quarantineDir}): ${resolutionVerification.error}`,
+      };
+    }
+
+    const { dependencies } = normalizePluginDependencySpecs(packageManifestResult.manifest ?? {});
+    // The canonical host link has its own identity audit above and may resolve outside this root.
+    delete dependencies.openclaw;
+    const missingRequiredDependencies = buildPluginDependencyStatus({
+      rootDir: installRoot,
+      dependencyRootDir: npmRoot,
+      dependencies,
+    }).missing;
+    if (missingRequiredDependencies.length > 0) {
+      return {
+        ok: false,
+        error: `npm install reported success but left required dependencies missing for ${params.packageName}: ${missingRequiredDependencies.join(", ")}`,
       };
     }
 
