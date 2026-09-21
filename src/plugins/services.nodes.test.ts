@@ -16,6 +16,7 @@ import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { ensureProfileForEmail, setUserProfileRole } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { createLazyPluginRuntime } from "./loader-module-runtime.js";
 import { createEmptyPluginRegistry } from "./registry-empty.js";
 import {
   adoptPluginRegistryRecords,
@@ -59,8 +60,16 @@ async function startFixture(options: { stop?: () => Promise<void>; bound?: boole
   const subagent = {} as PluginRuntime["subagent"];
   if (options.bound !== false) {
     bindGatewayContextResolver(subagent, resolveContext);
-    bindPluginRegistryRuntime(registry, { subagent } as PluginRuntime);
   }
+  bindPluginRegistryRuntime(
+    registry,
+    createLazyPluginRuntime({
+      ...(options.bound !== false ? { runtimeOptions: { subagent } } : {}),
+      loadPluginModule() {
+        throw new Error("Service startup must not materialize the broad plugin runtime");
+      },
+    }),
+  );
   markPluginRegistryActive(registry);
   let serviceContext: OpenClawPluginServiceContext | undefined;
   registry.services.push({
