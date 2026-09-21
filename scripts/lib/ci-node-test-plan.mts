@@ -293,6 +293,10 @@ const COMPACT_LARGE_NODE_TEST_JOB_SECONDS = 200;
 const COMPACT_SMALL_NODE_TEST_JOB_SECONDS = 276;
 const COMPACT_PARALLEL_NODE_TEST_JOB_SECONDS = 360;
 const COMPACT_FINAL_PARALLEL_NODE_TEST_JOB_SECONDS = 500;
+// Main is a post-merge detector: amortize setup after the latency-sensitive
+// placement has settled, without changing PRs or any child's concurrency.
+const COMPACT_PUSH_PARALLEL_NODE_TEST_JOB_SECONDS = 1000;
+const COMPACT_PUSH_SERIAL_NODE_TEST_JOB_SECONDS = 720;
 const COMPACT_EXPANDED_NODE_TEST_JOB_SECONDS = 210;
 // Includes the existing 100s runtime build; reserve 40s of the eight-minute
 // objective for checkout/setup. This is admission, never a test deadline.
@@ -4032,56 +4036,111 @@ function createCompactNodeTestShardBundles(
 
   // Larger initial bins change which groups reach serial Gateway/runtime rows.
   // Freeze those settled rows; only already-overlapping jobs can share more work.
-  const parallelJobs: CompactNodeTestShard[] = [];
-  for (const job of compactJobs) {
-    if (
-      job.planConcurrency !== 2 ||
-      job.runner !== EXTRA_LARGE_NODE_TEST_RUNNER ||
-      !usesBlacksmithCapacity(job.runner) ||
-      job.pretestBuildMode ||
-      job.requiresDist ||
-      !job.groups.every(isParallelCompactGroup) ||
-      job.groups.some((group) => group.configs.some(isExclusiveCiTestConfig))
-    ) {
-      continue;
-    }
-    parallelJobs.push(job);
-  }
   const retiredJobs = new Set<CompactNodeTestShard>();
-  if (parallelJobs.length > 1) {
-    const groups = parallelJobs
-      .flatMap((job) => job.groups)
-      .toSorted(
-        (a, b) =>
-          estimateStripeSeconds(b) - estimateStripeSeconds(a) ||
-          a.shard_name.localeCompare(b.shard_name),
+  // Keep the 500s placement intact before spending main's additional budget.
+  for (const pushPacking of compactMode === "push" ? [false, true] : [false]) {
+    const parallelJobs: CompactNodeTestShard[] = [];
+    for (const job of compactJobs) {
+      if (
+        retiredJobs.has(job) ||
+        job.planConcurrency !== 2 ||
+        job.runner !== EXTRA_LARGE_NODE_TEST_RUNNER ||
+        !usesBlacksmithCapacity(job.runner) ||
+        job.pretestBuildMode ||
+        job.requiresDist ||
+        !job.groups.every(isParallelCompactGroup) ||
+        job.groups.some((group) => group.configs.some(isExclusiveCiTestConfig))
+      ) {
+        continue;
+      }
+      parallelJobs.push(job);
+    }
+    // Keep main's wider packing inside existing deadline cohorts: moving an
+    // explicit-file group into a whole-config row must not lengthen its deadline.
+    const parallelPools = pushPacking
+      ? [...new Set(parallelJobs.map((job) => job.timeoutMinutes))].map((timeout) =>
+          parallelJobs.filter((job) => job.timeoutMinutes === timeout),
+        )
+      : [parallelJobs];
+    for (const pool of parallelPools) {
+      if (pool.length < 2) {
+        continue;
+      }
+      const groups = pool
+        .flatMap((job) => job.groups)
+        .toSorted(
+          (a, b) =>
+            estimateStripeSeconds(b) - estimateStripeSeconds(a) ||
+            a.shard_name.localeCompare(b.shard_name),
+        );
+      const bins = packNodeTestGroups(
+        groups,
+        (candidate, group) =>
+          admitsCompactBin(
+            [...candidate, group],
+            pushPacking
+              ? COMPACT_PUSH_PARALLEL_NODE_TEST_JOB_SECONDS
+              : COMPACT_FINAL_PARALLEL_NODE_TEST_JOB_SECONDS,
+            estimateBinSeconds,
+            { parallel: true, sharedFamily: pushPacking },
+          ),
+        pushPacking,
       );
-    const bins = packNodeTestGroups(groups, (candidate, group) =>
-      admitsCompactBin(
-        [...candidate, group],
-        COMPACT_FINAL_PARALLEL_NODE_TEST_JOB_SECONDS,
-        estimateBinSeconds,
-        { parallel: true },
-      ),
-    );
-    if (bins.length < parallelJobs.length) {
-      parallelJobs.forEach((job, index) => {
-        const bin = bins[index];
-        if (!bin) {
-          retiredJobs.add(job);
-          return;
-        }
-        job.groups = bin;
-        job.predictedSeconds = Math.ceil(estimateBinSeconds(bin));
-        job.planConcurrency = bin.length > 1 ? 2 : 1;
-        job.timeoutMinutes = bin.some((group) => !group.includePatterns)
-          ? COMPACT_WHOLE_NODE_TEST_TIMEOUT_MINUTES
-          : undefined;
-        if (bin.length === 1) {
-          // Losing a sibling must not increase this child's previous worker allowance.
-          job.env = { ...job.env, ...PINNED_COMPACT_GROUP_ENV };
-        }
-      });
+      if (bins.length < pool.length) {
+        pool.forEach((job, index) => {
+          const bin = bins[index];
+          if (!bin) {
+            retiredJobs.add(job);
+            return;
+          }
+          job.groups = bin;
+          job.predictedSeconds = Math.ceil(estimateBinSeconds(bin));
+          job.planConcurrency = bin.length > 1 ? 2 : 1;
+          if (!pushPacking) {
+            job.timeoutMinutes = bin.some((group) => !group.includePatterns)
+              ? COMPACT_WHOLE_NODE_TEST_TIMEOUT_MINUTES
+              : undefined;
+          }
+          if (bin.length === 1) {
+            // Losing a sibling must not increase this child's previous worker allowance.
+            job.env = { ...job.env, ...PINNED_COMPACT_GROUP_ENV };
+          }
+        });
+      }
+    }
+  }
+  if (compactMode === "push") {
+    // Treat settled serial rows as indivisible ordered units. Repacking their
+    // children can move slow work into Gateway rows or change worker ceilings.
+    const serialJobs = compactJobs
+      .filter(
+        (job) =>
+          !retiredJobs.has(job) &&
+          job.planConcurrency === 1 &&
+          job.runner === EXTRA_LARGE_NODE_TEST_RUNNER &&
+          usesBlacksmithCapacity(job.runner) &&
+          !job.pretestBuildMode &&
+          !job.requiresDist &&
+          job.groups.every((group) => !isExclusiveCompactGroup(group)),
+      )
+      .toSorted((a, b) => (b.predictedSeconds ?? 0) - (a.predictedSeconds ?? 0));
+    const bins = packNodeTestGroups(serialJobs, (candidate, job) => {
+      const combined = [...candidate, job];
+      return (
+        candidate[0].timeoutMinutes === job.timeoutMinutes &&
+        JSON.stringify(candidate[0].env) === JSON.stringify(job.env) &&
+        candidate.length === 1 &&
+        combined.reduce((seconds, entry) => seconds + (entry.predictedSeconds ?? 0), 0) <=
+          COMPACT_PUSH_SERIAL_NODE_TEST_JOB_SECONDS
+      );
+    });
+    for (const [first, ...rest] of bins) {
+      first.groups = [first, ...rest].flatMap((job) => job.groups);
+      first.predictedSeconds = [first, ...rest].reduce(
+        (seconds, job) => seconds + (job.predictedSeconds ?? 0),
+        0,
+      );
+      rest.forEach((job) => retiredJobs.add(job));
     }
   }
   const finalJobs = compactJobs.filter((job) => !retiredJobs.has(job));
