@@ -145,6 +145,12 @@ await runWithFailedTrailer("macos-native", async () => {
                 "inherited",
                 "browser-sign-in-before",
                 "browser-sign-in-after",
+                "guest-model-permitted",
+                "guest-model-null",
+                "guest-model-open",
+                "guest-model-invalidated",
+                "guest-model-recovered",
+                "guest-model-policy-recording",
               ]
             : ["thread-reasoning", "thread-tool-activity", "model-initial", "thread-restored"];
         const allowed = new RegExp(
@@ -152,7 +158,9 @@ await runWithFailedTrailer("macos-native", async () => {
         );
         const files: string[] = [];
         for (const entry of fs.readdirSync(menuCaptures, { withFileTypes: true })) {
-          if (!entry.isFile() || !allowed.test(entry.name)) {
+          const ownedRecording =
+            profileMode === "default" && entry.name === "guest-model-policy-recording.mov";
+          if (!entry.isFile() || (!allowed.test(entry.name) && !ownedRecording)) {
             continue;
           }
           const source = await captureRoot.open(entry.name, {
