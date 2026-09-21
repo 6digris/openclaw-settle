@@ -3,7 +3,7 @@ import { isCoreCanvasHostEnabled } from "../canvas/config.js";
 import { withCoreCanvasNodeCapability } from "../canvas/constants.js";
 import { validateConfiguredBindings } from "../channels/plugins/configured-binding-registry.js";
 import { getRuntimeConfig } from "../config/io.js";
-import { resolveConfigWidePluginMetadataSnapshot } from "../config/io.plugin-metadata.js";
+import { resolveConfigWidePluginMetadataSnapshotAsync } from "../config/io.plugin-metadata.js";
 import { prepareDecisionProviderReload } from "../decisions/runtime.js";
 import { isTruthyEnvValue } from "../infra/env.js";
 import { formatErrorMessage } from "../infra/errors.js";
@@ -126,13 +126,12 @@ export async function reloadGatewayPlugins(
   const quiescedInstances: PluginInstanceHandle[] = [];
   let rollbackConfigEffects: (() => Promise<void>) | undefined;
   let releaseResourceHandoff: (() => void) | undefined;
-  const skipChannels =
-    isTruthyEnvValue(params.env?.OPENCLAW_SKIP_CHANNELS) ||
-    isTruthyEnvValue(params.env?.OPENCLAW_SKIP_PROVIDERS);
   const channels = createPluginReloadChannels({
     channelManager,
     previousRegistry,
-    skipChannels,
+    skipChannels:
+      isTruthyEnvValue(params.env?.OPENCLAW_SKIP_CHANNELS) ||
+      isTruthyEnvValue(params.env?.OPENCLAW_SKIP_PROVIDERS),
     previousStopStarted: () => previousStopStarted,
     reloadParams: params,
     ambientEnvTriggers,
@@ -182,14 +181,16 @@ export async function reloadGatewayPlugins(
     );
     await params.checkpoint?.();
     assertCurrent();
-    // Refresh this operation's cache while retaining the durable ledger of installed package roots.
-    const nextMetadata = withPluginCache(cache, () =>
-      resolveConfigWidePluginMetadataSnapshot({
+    // Match startup's workspace inventory so a narrower scan cannot replace or drop other owners.
+    const nextMetadata = await withPluginCache(cache, () =>
+      resolveConfigWidePluginMetadataSnapshotAsync({
         config: params.sourceConfig,
         env: params.env,
         allowCurrent: false,
       }),
     );
+    await params.checkpoint?.();
+    assertCurrent();
     const activationConfig = resolveGatewayStartupPluginActivationConfig({
       runtimeConfig: params.nextConfig,
       activationSourceConfig: params.sourceConfig,
