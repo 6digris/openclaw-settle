@@ -843,7 +843,7 @@ describe("dependency guard script", () => {
 
     try {
       await expect(githubApi("token").request("/repos/openclaw/openclaw")).rejects.toMatchObject({
-        message: `403 Forbidden: GitHub error response body exceeded ${GITHUB_ERROR_BODY_MAX_BYTES} bytes`,
+        message: `GitHub API GET /repos/openclaw/openclaw failed: 403 Forbidden: GitHub error response body exceeded ${GITHUB_ERROR_BODY_MAX_BYTES} bytes`,
         status: 403,
       });
     } finally {
@@ -851,31 +851,46 @@ describe("dependency guard script", () => {
     }
   });
 
-  it("retries transient GitHub API failures within the request timeout", async () => {
+  it.each([
+    { method: "GET", status: 500 },
+    { method: "HEAD", status: 500 },
+    { method: "GET", status: 503 },
+  ])("recovers from HTTP $status on $method requests", async ({ method, status }) => {
     const fetchImpl = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(new Response("unicorn", { status: 503, statusText: "Unavailable" }))
-      .mockResolvedValueOnce(Response.json({ ok: true }));
+      .mockResolvedValueOnce(new Response("unicorn", { status, statusText: "Server Error" }))
+      .mockResolvedValueOnce(
+        method === "HEAD" ? new Response(null, { status: 204 }) : Response.json({ ok: true }),
+      );
 
     await expect(
       githubApi("token", { fetchImpl, retryDelaysMs: [0] }).request(
         "/repos/openclaw/openclaw/pulls/1/files",
+        { method },
       ),
-    ).resolves.toEqual({ ok: true });
+    ).resolves.toEqual(method === "HEAD" ? null : { ok: true });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it("does not retry non-idempotent GitHub API requests", async () => {
+  it.each([
+    { method: "POST", status: 500 },
+    { method: "PATCH", status: 500 },
+    { method: "DELETE", status: 500 },
+    { method: "POST", status: 503 },
+  ])("does not retry HTTP $status on $method writes", async ({ method, status }) => {
     const fetchImpl = vi
       .fn<typeof fetch>()
-      .mockResolvedValue(new Response("unicorn", { status: 503, statusText: "Unavailable" }));
+      .mockResolvedValue(new Response("unicorn", { status, statusText: "Server Error" }));
 
     await expect(
       githubApi("token", { fetchImpl, retryDelaysMs: [0] }).request(
         "/repos/openclaw/openclaw/issues/1/comments",
-        { method: "POST", body: "{}" },
+        { method, body: "{}" },
       ),
-    ).rejects.toMatchObject({ status: 503 });
+    ).rejects.toMatchObject({
+      status,
+      message: `GitHub API ${method} /repos/openclaw/openclaw/issues/1/comments failed: ${status} Server Error: unicorn`,
+    });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
