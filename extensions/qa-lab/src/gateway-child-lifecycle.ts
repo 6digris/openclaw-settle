@@ -1,6 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import type { WriteStream } from "node:fs";
 import path from "node:path";
+import { finished } from "node:stream/promises";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { QaSuiteInfraError } from "./errors.js";
 import {
@@ -34,7 +35,7 @@ type OwnedProcess = {
   settlement?: Promise<QaGatewayStopResult>;
   stopResult?: QaGatewayStopResult;
   completion?: Promise<void>;
-  closed: Promise<void>;
+  outputDrained: Promise<void>;
   ready: boolean;
   checkFailure: () => void;
 };
@@ -76,14 +77,22 @@ export class QaGatewayChildLifecycle {
   ) {
     // Capture close synchronously; even a failed spawn must settle its pipes
     // before teardown can finalize their log sinks.
+    const outputDrained =
+      child.stdout && child.stderr
+        ? Promise.all(
+            [child.stdout, child.stderr].map(
+              async (stream) => await finished(stream).catch(() => {}),
+            ),
+          ).then(() => {})
+        : new Promise<void>((resolve) => {
+            child.once("close", () => resolve());
+          });
     const owned: OwnedProcess = {
       child,
       prepared,
       kind,
       identity: null,
-      closed: new Promise<void>((resolve) => {
-        child.once("close", () => resolve());
-      }),
+      outputDrained,
       ready: false,
       checkFailure: () => {},
     };
@@ -102,7 +111,7 @@ export class QaGatewayChildLifecycle {
     let timer: NodeJS.Timeout | undefined;
     try {
       await Promise.race([
-        owned.closed,
+        owned.outputDrained,
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
             const label = owned.kind === "cli" ? "CLI" : "child";

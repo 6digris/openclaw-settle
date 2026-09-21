@@ -52,6 +52,8 @@ function fixture(kind: "gateway" | "cli" = "gateway") {
     lifetime,
     owned,
     log,
+    stderr,
+    stdout,
     output: () => Buffer.concat(output).toString(),
     close() {
       if (child.exitCode === null && child.signalCode === null) {
@@ -122,13 +124,11 @@ describe("QA Gateway owned child drain", () => {
 
   it("remembers close that arrives before a stop request", async () => {
     const f = fixture();
-    expect(f.child.listenerCount("close")).toBe(1);
     f.close();
     await expect(f.lifetime.stop()).resolves.toEqual({
       process: "confirmed-stopped",
       errors: [],
     });
-    expect(f.child.listenerCount("close")).toBe(0);
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -168,6 +168,20 @@ describe("QA Gateway owned child drain", () => {
       await stopping;
     }
     expect(f.output()).toBe("QA_AFTER_EXIT_TAIL\n");
+  });
+
+  it("settles after both output pipes drain without waiting for the aggregate child close", async () => {
+    const f = fixture();
+    const stopping = f.lifetime.stop();
+    Object.defineProperty(f.child, "exitCode", { value: 0 });
+    f.child.emit("exit", 0, null);
+    f.stdout.end();
+    f.stderr.end();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(stopping).resolves.toEqual({ process: "confirmed-stopped", errors: [] });
+    expect(teardown.remove).toHaveBeenCalledOnce();
+    f.child.emit("close", 0, null);
   });
 
   it("retains log and state ownership when the existing close bound expires", async () => {
