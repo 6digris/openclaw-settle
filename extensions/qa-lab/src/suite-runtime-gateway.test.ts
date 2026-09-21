@@ -2,6 +2,7 @@
 import { syncBuiltinESMExports } from "node:module";
 import timersPromises from "node:timers/promises";
 import { promisify } from "node:util";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyConfig,
@@ -294,7 +295,7 @@ describe("qa suite gateway helpers", () => {
       sleep.mockImplementation(promisify(globalThis.setTimeout));
       syncBuiltinESMExports();
       const events: string[] = [];
-      const released = Promise.withResolvers<void>();
+      const released = createDeferred<void>();
       fetchWithSsrFGuardMock
         .mockResolvedValueOnce({
           response: new Response(
