@@ -34,6 +34,11 @@ asynchronous planning first, then reread authoritative rows inside the admitted
 transaction. Preserve FIFO order, coordinator custody, transaction/commit grants,
 and settlement of accepted write-capable work.
 
+Worker authority requests wait for the retained host owner's grant or refusal;
+host scheduling delays do not expire that authority. The host still checks current
+authority before granting, and broker failure joins worker exit before releasing
+custody. Coordinator-lock and broker-capacity admission keep their own deadlines.
+
 ## Carry facts, publish after commit
 
 Before yielding, capture the physical store target, source/admission scope,
@@ -104,9 +109,28 @@ with another per-request store scan. See the
 [inventory baseline](/reference/database-schemas/worker-access-inventory#profile-priority-and-current-cutover-status)
 for measurements and the next owners to migrate.
 
+Scheduled task maintenance and asynchronous task-status summaries read exact
+backing-session keys through the existing session reader worker. Each bounded
+batch returns only identity and subagent recovery facts; retained session history
+is not materialized. Recovery hooks trigger fresh backing reads before the task
+owner rechecks the current record. A concurrent session publication invalidates
+prepared facts, so uncertain backing state keeps the task alive for a later pass.
+Synchronous operator inspection uses the same selected-row reader. An unavailable
+schema refuses the read rather than reporting missing backing sessions. Canonical
+admission, malformed-row handling, retention, and update behavior are unchanged.
+
 For writes, shared-state domain operations registered by
 `src/state/openclaw-state-worker-runtime.ts` reuse the broker and publish results
 through their original store/projection owner.
+
+Placement change reporting reads its before/after snapshots in the shared-state
+read worker using the placement store's row codec. It transfers only session
+identity, state, generation, and update time to the Gateway. The reconciliation
+coordinator reserves and admits its sweep before awaiting reporting, preserving
+dispatch ordering and request coalescing. Reporting failures preserve the original
+operation outcomes. Placement
+writes, current-authority checks, and workspace retention retain their existing
+owners; these reporting snapshots grant no execution or deletion authority.
 
 This execution cutover does not change schemas, stored bytes, retention, config,
 or update behavior. A change to those contracts follows the
