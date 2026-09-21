@@ -21,14 +21,11 @@ const startupCases = [
     { name: "expanded one item", steps: 1, collapsed: false },
     { name: "collapsed long checklist", steps: 18, collapsed: true },
     { name: "expanded long checklist", steps: 18, collapsed: false },
-  ].flatMap(({ name, steps, collapsed }) =>
-    [120, 800].map((latency) => ({ name, steps, collapsed, latency, outcome: "success" })),
-  ),
+  ].map(({ name, steps, collapsed }) => ({ name, steps, collapsed, outcome: "success" })),
   ...["error", "never"].map((outcome) => ({
     name: outcome,
     steps: 0,
     collapsed: false,
-    latency: 800,
     outcome,
   })),
 ];
@@ -96,7 +93,7 @@ async function expectStableDisclosure(
 
 suite.define(() => {
   it.each(startupCases)(
-    "paints history before $name progress after $latency ms and mounts late cards closed",
+    "paints history before $name progress and mounts late cards closed",
     async (scenario) => {
       const context = await suite.newBrowserContext({
         viewport: { width: 1440, height: 900 },
@@ -182,9 +179,14 @@ suite.define(() => {
         expect(await page.locator(".agent-chat__progress-float--loading").count()).toBe(0);
         const paintedDisclosure = await captureProgressDisclosure(page);
         try {
-          // History is already visible throughout the unresolved RPC, including
-          // the case that never answers. The delay is fixture latency, not a retry.
-          await page.waitForTimeout(scenario.latency);
+          // Hold the response across paint boundaries: request ordering, not
+          // elapsed wall time, defines late arrival, including a missing reply.
+          await page.evaluate(
+            () =>
+              new Promise<void>((resolve) => {
+                requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+              }),
+          );
           expect(await ready.isVisible()).toBe(true);
           if (scenario.outcome === "error") {
             await gateway.rejectDeferred("progressCard.get", {
@@ -661,4 +663,74 @@ suite.define(() => {
       await suite.closeBrowserContext(context);
     }
   });
+  it.each([false, true])(
+    "uses the ordinary first-card default for a new local task (finished before card: %s)",
+    async (finishedBeforeCard) => {
+      const context = await suite.newBrowserContext({});
+      await context.addInitScript(
+        ({ gatewayUrl, settingsKey }) => {
+          localStorage.setItem(
+            settingsKey,
+            JSON.stringify({ gatewayUrl, chatCollapseTaskProgress: false }),
+          );
+        },
+        {
+          gatewayUrl: controlUiBundledGatewayUrl(suite.server.baseUrl),
+          settingsKey: controlUiBundledSettingsStorageKey(suite.server.baseUrl),
+        },
+      );
+      const page = await context.newPage();
+      const sessionKey = "agent:main:main";
+      const gateway = await installMockGateway(page, {
+        sessionInfo: { key: sessionKey, kind: "direct", updatedAt: 1, hasActiveRun: false },
+        historyMessages: [{ role: "assistant", content: [{ type: "text", text: "Ready." }] }],
+        deferredMethods: ["progressCard.get", "chat.send"],
+      });
+      try {
+        await page.goto(suite.server.baseUrl + "chat");
+        await gateway.waitForRequest("progressCard.get");
+        await page.locator(".chat-thread").getByText("Ready.", { exact: true }).waitFor();
+        const composer = page.locator(".agent-chat__composer-combobox textarea");
+        await composer.fill("Start a new task before its first card arrives");
+        await composer.press("Enter");
+        const send = await gateway.waitForRequest("chat.send");
+        const runId = requireString(requireRecord(send.params).idempotencyKey, "local run id");
+        await gateway.resolveDeferred("chat.send", { status: "started", runId });
+        await page.evaluate(
+          () =>
+            new Promise<void>((resolve) => {
+              requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+            }),
+        );
+        if (finishedBeforeCard) {
+          await gateway.emitChatFinal({ runId, text: "The local task completed." });
+          await page
+            .locator(".chat-bubble")
+            .getByText("The local task completed.", { exact: true })
+            .waitFor();
+        }
+        const capture = await captureProgressDisclosure(page);
+        try {
+          await gateway.resolveDeferred("progressCard.get", {
+            card: {
+              sessionKey,
+              revision: 1,
+              updatedAt: Date.now(),
+              steps: [
+                { step: "Inspect the new local task", status: "in_progress" },
+                { step: "Verify the result", status: "pending" },
+              ],
+            },
+          });
+          await page.locator(".session-progress-card--composer").waitFor();
+          await expectStableDisclosure(capture, true);
+        } finally {
+          await capture.evaluate((state) => state.cancel());
+          await capture.dispose();
+        }
+      } finally {
+        await suite.closeBrowserContext(context);
+      }
+    },
+  );
 });

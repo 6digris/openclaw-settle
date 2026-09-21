@@ -8,10 +8,12 @@ import type {
 } from "../../../api/types.ts";
 import type { QuestionPrompt } from "../../../app/question-prompt.ts";
 import type { ChatFollowUpMode, ChatSendShortcut } from "../../../app/settings.ts";
+import type { SessionProgressCardRefreshAction } from "../../../components/session-progress-card.ts";
 import type {
   ChatGoalAction,
   ChatGoalDraft,
   ChatGoalDraftMode,
+  ChatGoalRecovery,
   ChatQueueItem,
   HumanMention,
 } from "../../../lib/chat/chat-types.ts";
@@ -98,6 +100,7 @@ export type ChatComposerProps = ChatAttachmentControlsProps & {
   progressCardInitiallyCollapsed?: boolean;
   progressCardInitialRunId?: string | null;
   progressCardRecoveredRunId?: string;
+  progressCardRefresh?: SessionProgressCardRefreshAction;
   gatewayScope?: object;
   runActive?: boolean;
   collapseTaskProgress?: boolean;
@@ -181,6 +184,7 @@ export type ChatComposerProps = ChatAttachmentControlsProps & {
   displayQueue?: ChatQueueItem[];
   queuedEdit?: ChatQueuedEditProps;
   onClearReply?: () => void;
+  goalRecovery?: ChatGoalRecovery;
   onGoalAction?: (goalId: string, action: ChatGoalAction) => void;
   onGoalSubmit?: (draft: ChatGoalDraft, submissionAction?: Event) => Promise<boolean>;
   goalDraftMode?: ChatGoalDraftMode | null;

@@ -8,6 +8,7 @@ import type { GatewayBrowserClient, GatewayEventFrame } from "../../api/gateway.
 import type { GatewaySessionRow } from "../../api/types.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import type { SessionProgressCardController } from "../../components/session-progress-card-controller.ts";
+import { sessionProgressCardsForGateway } from "../../lib/session-progress-cards.ts";
 import { resolveUiConversationIdentity } from "../../lib/sessions/session-key.ts";
 import { createSessionsListResult } from "../../test-helpers/chat-model.ts";
 import type { GatewayRequestHandler } from "../../test-helpers/gateway-client.ts";
@@ -20,6 +21,7 @@ import {
   createTestChatPane,
   type TestChatPane,
 } from "./chat-pane.test-support.ts";
+import { adoptStartedChatRun } from "./run-lifecycle.ts";
 
 const history = {
   sessionId: "research-notes",
@@ -553,3 +555,50 @@ describe("retained bare pane progress follows accepted history ownership", () =>
     expect(request).toHaveBeenCalledOnce();
   });
 });
+
+it.each([false, true])(
+  "keeps the new local run default when its first card arrives later (finished: %s)",
+  async (finishedBeforeCard) => {
+    const paint = stubPresentationFrames();
+    let pending = createDeferred<{ card: ProgressCard | null }>();
+    const request = vi.fn((method: string) =>
+      method === "chat.history" ? Promise.resolve(history) : pending.promise,
+    );
+    const { pane, state, progress, presentation, emit } = createHistoryProgressPane(request);
+    await loadChatHistory(state, { deferBranches: true });
+    progress.hostUpdate();
+    const store = sessionProgressCardsForGateway(pane.context.gateway);
+    const target = { sessionKey: history.sessionInfo.key };
+    const firstRead = store.load(target);
+    expect(presentation.progressCardPresentation()).toBeNull();
+    paint();
+    adoptStartedChatRun(state, "new-local-submission", 1_700_000_000_000);
+    expect(state.chatRecoveredRunId).toBeUndefined();
+    expect(presentation.progressCardPresentation()).toBeNull();
+    if (finishedBeforeCard) {
+      state.chatRunId = null;
+      expect(presentation.progressCardPresentation()).toBeNull();
+    }
+    pending.resolve({ card: progressCard() });
+    await firstRead;
+    expect(presentation.progressCardPresentation()).toMatchObject({
+      card: progressCard(),
+      initiallyCollapsed: false,
+    });
+    pending = createDeferred<{ card: ProgressCard | null }>();
+    emit(progressCard(2));
+    const emptyRead = store.load(target);
+    pending.resolve({ card: null });
+    await emptyRead;
+    expect(presentation.progressCardPresentation()).toBeNull();
+    pending = createDeferred<{ card: ProgressCard | null }>();
+    emit(progressCard(3));
+    const remountRead = store.load(target);
+    pending.resolve({ card: progressCard(3) });
+    await remountRead;
+    expect(presentation.progressCardPresentation()).toMatchObject({
+      card: progressCard(3),
+      initiallyCollapsed: false,
+    });
+  },
+);
