@@ -2,6 +2,7 @@ import { ChildProcess } from "node:child_process";
 import type { WriteStream } from "node:fs";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { QaSuiteInfraError } from "./errors.js";
 import { QaGatewayChildLifecycle } from "./gateway-child-lifecycle.js";
 
 const teardown = vi.hoisted(() => ({
@@ -133,6 +134,42 @@ describe("QA Gateway owned child drain", () => {
     expect(f.child.listenerCount("close")).toBe(0);
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it.each([false, true])(
+    "marks a retained primary error only when all cleanup succeeds (artifact failure: %s)",
+    async (artifactFailure) => {
+      const f = fixture();
+      const primary = new QaSuiteInfraError("gateway_startup_unhealthy", "child socket reset", {
+        cause: Object.assign(new Error("socket reset"), { code: "ECONNRESET" }),
+      });
+      f.owned.checkFailure = () => {
+        throw primary;
+      };
+      if (artifactFailure) {
+        teardown.preserve.mockRejectedValueOnce(new Error("artifact copy failed"));
+      }
+      f.close();
+      try {
+        const result = await f.lifetime.stop({ preserveToDir: "/fixture/proof" });
+        expect(result.process).toBe("confirmed-stopped");
+        expect(result.errors).toContain(primary);
+        expect(f.log.writableEnded).toBe(true);
+        expect(teardown.preserve).toHaveBeenCalledOnce();
+        if (artifactFailure) {
+          expect(result.settledRunError).toBeUndefined();
+          expect(result.errors).toHaveLength(2);
+          expect(teardown.remove).not.toHaveBeenCalled();
+        } else {
+          expect(result.settledRunError).toBe(primary);
+          expect(result.errors).toEqual([primary]);
+          expect(teardown.remove).toHaveBeenCalledOnce();
+        }
+      } finally {
+        await f.lifetime.stop();
+        f.log.destroy();
+      }
+    },
+  );
 
   it("waits for a failed spawn's close without requiring an exit event", async () => {
     const child = new ChildProcess();
