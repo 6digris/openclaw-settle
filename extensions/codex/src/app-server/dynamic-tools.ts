@@ -814,8 +814,8 @@ export function createCodexDynamicToolBridge(params: {
           const sourceReplyFinal = confirmedSourceReply ? executedArgs.final !== false : undefined;
           const autoDeliveryTtsMediaUrls = getCoreTtsToolResultMediaUrls(rawResult);
           recordAgentHarnessToolResultTelemetry({
-            extractSourceReplyPayload: (result) =>
-              extractInternalSourceReplyPayload(result?.details),
+            extractSourceReplyPayload: (toolResult) =>
+              extractInternalSourceReplyPayload(toolResult?.details),
             toolName,
             args: executedArgs,
             result,

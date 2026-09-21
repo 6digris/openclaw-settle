@@ -20,7 +20,7 @@ export async function runAgentHarnessToolInvocation<TResult>(params: {
   signal: AbortSignal;
   boundaries: ReturnType<typeof createAgentHarnessToolExecutionBoundaryRegistry>;
   retainExecutionSnapshot?: boolean;
-  prepareArguments?: (args: unknown) => unknown | Promise<unknown>;
+  prepareArguments?: (args: unknown) => unknown;
   assertCurrent?: () => void;
   beforeExecute?: () => void | Promise<void>;
   validateArguments?: (args: unknown) => void | Promise<void>;
