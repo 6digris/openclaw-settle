@@ -268,7 +268,7 @@ function listAllToolingTestFiles(): string[] {
 }
 
 describe("scripts/lib/ci-node-test-plan.mts", () => {
-  it("packs ordinary work more densely while retaining the serial Gateway budget", () => {
+  it("packs PR work more densely while retaining the serial Gateway budget", () => {
     vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue({
       "agentic-gateway-server-isolated": 200,
       "agentic-agents-core-models": 160,
@@ -304,7 +304,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         })),
       );
       const jobs = createNodeTestShardBundles({
-        compactMode: "push",
+        compactMode: "pull-request",
         runnerBackend: "blacksmith",
         includeReleaseOnlyPluginShards: false,
       });
@@ -350,71 +350,136 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     }
   });
 
-  it("retains the two-worker ceiling when compaction leaves a singleton", () => {
-    const entries = [
-      ["core-runtime-media-ui-11", 200],
-      ["agentic-agents-embedded-base-11", 180],
-      ["core-unit-src-security-11", 180],
-      ["agentic-agents-embedded-base-12", 170],
-      ["core-runtime-media-ui-12", 170],
-      ["agentic-agents-embedded-base-13", 160],
-      ["core-unit-src-security-12", 160],
-      ["agentic-agents-embedded-base-14", 110],
-      ["core-runtime-media-ui-13", 110],
-      ["core-unit-src-security-13", 50],
-    ] as const;
-    vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue(Object.fromEntries(entries));
-    vi.spyOn(testTimings, "readRuntimePlacementTimings").mockReturnValue([]);
-    vi.spyOn(buildPrerequisites, "resolveVitestPretestBuildMode").mockReturnValue(undefined);
-    const original = fullSuiteVitestShards.slice();
-    try {
-      fullSuiteVitestShards.splice(
-        0,
-        fullSuiteVitestShards.length,
-        ...entries.map(([name]) => ({
-          name,
-          config: `fixture-${name}.config.ts`,
-          projects: ["test/vitest/vitest.hooks.config.ts"],
-        })),
-      );
-      const jobs = createNodeTestShardBundles({
-        compactMode: "push",
-        runnerBackend: "blacksmith",
-        includeReleaseOnlyPluginShards: false,
-      });
-      expect(jobs).toHaveLength(4);
-      const singleton = jobs.find((job) => job.groups.length === 1);
-      expect(singleton).toMatchObject({
-        runner: EXTRA_LARGE_NODE_TEST_RUNNER,
-        planConcurrency: 1,
-        predictedSeconds: 110,
-        env: { OPENCLAW_VITEST_MAX_WORKERS: "2" },
-      });
-      expect(singleton?.groups[0]?.shard_name).toBe("agentic-agents-embedded-base-14");
-      expect(jobs.flatMap((job) => job.groups.map((group) => group.shard_name)).toSorted()).toEqual(
-        entries.map(([name]) => name).toSorted(),
-      );
-    } finally {
-      fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...original);
-    }
-  });
+  it.each(["pull-request", "push"] as const)(
+    "retains the two-worker ceiling when %s compaction leaves a singleton",
+    (compactMode) => {
+      const entries = [
+        ["core-runtime-media-ui-11", 200],
+        ["agentic-agents-embedded-base-11", 180],
+        ["core-unit-src-security-11", 180],
+        ["agentic-agents-embedded-base-12", 170],
+        ["core-runtime-media-ui-12", 170],
+        ["agentic-agents-embedded-base-13", 160],
+        ["core-unit-src-security-12", 160],
+        ["agentic-agents-embedded-base-14", 110],
+        ["core-runtime-media-ui-13", 110],
+        ["core-unit-src-security-13", 50],
+      ] as const;
+      vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue(Object.fromEntries(entries));
+      vi.spyOn(testTimings, "readRuntimePlacementTimings").mockReturnValue([]);
+      vi.spyOn(buildPrerequisites, "resolveVitestPretestBuildMode").mockReturnValue(undefined);
+      const original = fullSuiteVitestShards.slice();
+      try {
+        fullSuiteVitestShards.splice(
+          0,
+          fullSuiteVitestShards.length,
+          ...entries.map(([name]) => ({
+            name,
+            config: `fixture-${name}.config.ts`,
+            projects: ["test/vitest/vitest.hooks.config.ts"],
+          })),
+        );
+        const jobs = createNodeTestShardBundles({
+          compactMode,
+          runnerBackend: "blacksmith",
+          includeReleaseOnlyPluginShards: false,
+        });
+        expect(jobs).toHaveLength(compactMode === "push" ? 3 : 4);
+        const singleton = jobs.find((job) => job.groups.length === 1);
+        expect(singleton).toMatchObject({
+          runner: EXTRA_LARGE_NODE_TEST_RUNNER,
+          planConcurrency: 1,
+          predictedSeconds: 110,
+          env: { OPENCLAW_VITEST_MAX_WORKERS: "2" },
+        });
+        expect(singleton?.groups[0]?.shard_name).toBe("agentic-agents-embedded-base-14");
+        expect(
+          jobs.flatMap((job) => job.groups.map((group) => group.shard_name)).toSorted(),
+        ).toEqual(entries.map(([name]) => name).toSorted());
+      } finally {
+        fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...original);
+      }
+    },
+  );
 
-  it("freezes settled serial Gateway rows when compacting neighboring parallel jobs", () => {
-    const entries = [
-      ["agentic-agents-core-auth", "unit-support", 200],
-      ["agentic-agents-core-models", "hooks", 160],
-      ["agentic-agents-core-runtime", "secrets", 140],
-      ["agentic-gateway-server-isolated", "gateway-server-isolated", 130],
-      ["agentic-agents-core-subagents", "logging", 90],
-      ["agentic-agents-core-tools", "unit-fast-isolated", 80],
-      ["agentic-agents-core-runner-commands", "unit-support", 80],
-      ["agentic-agents-core-runner-embedded", "hooks", 80],
-      ["agentic-agents-core-runner-sessions", "secrets", 80],
-      ["core-unit-fast-1", "logging", 80],
-      ["core-unit-fast-2", "unit-fast-isolated", 80],
-    ] as const;
+  it.each(["pull-request", "push"] as const)(
+    "freezes settled serial Gateway rows when compacting neighboring %s jobs",
+    (compactMode) => {
+      const entries = [
+        ["agentic-agents-core-auth", "unit-support", 200],
+        ["agentic-agents-core-models", "hooks", 160],
+        ["agentic-agents-core-runtime", "secrets", 140],
+        ["agentic-gateway-server-isolated", "gateway-server-isolated", 130],
+        ["agentic-agents-core-subagents", "logging", 90],
+        ["agentic-agents-core-tools", "unit-fast-isolated", 80],
+        ["agentic-agents-core-runner-commands", "unit-support", 80],
+        ["agentic-agents-core-runner-embedded", "hooks", 80],
+        ["agentic-agents-core-runner-sessions", "secrets", 80],
+        ["core-unit-fast-1", "logging", 80],
+        ["core-unit-fast-2", "unit-fast-isolated", 80],
+      ] as const;
+      vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue(
+        Object.fromEntries(entries.map(([name, , seconds]) => [name, seconds])),
+      );
+      vi.spyOn(testTimings, "readRuntimePlacementTimings").mockReturnValue([]);
+      vi.spyOn(buildPrerequisites, "resolveVitestPretestBuildMode").mockReturnValue(undefined);
+      const original = fullSuiteVitestShards.slice();
+      try {
+        fullSuiteVitestShards.splice(
+          0,
+          fullSuiteVitestShards.length,
+          ...entries.map(([name, config]) => ({
+            name,
+            config: `fixture-${name}.config.ts`,
+            projects: [`test/vitest/vitest.${config}.config.ts`],
+          })),
+        );
+        const jobs = createNodeTestShardBundles({
+          compactMode,
+          runnerBackend: "blacksmith",
+          includeReleaseOnlyPluginShards: false,
+        });
+        const gateway = jobs.find((job) =>
+          job.groups.some((group) => group.shard_name === "agentic-gateway-server-isolated"),
+        );
+        expect(gateway).toMatchObject({
+          checkName: "checks-node-compact-large-2",
+          shardName: "compact-large-2",
+          runner: EXTRA_LARGE_NODE_TEST_RUNNER,
+          planConcurrency: 1,
+          predictedSeconds: 360,
+          env: { OPENCLAW_VITEST_MAX_WORKERS: "2" },
+        });
+        expect(gateway?.groups.map((group) => group.shard_name)).toEqual([
+          "agentic-agents-core-runtime",
+          "agentic-gateway-server-isolated",
+          "agentic-agents-core-subagents",
+        ]);
+        expect(jobs.filter((job) => job !== gateway).map((job) => job.predictedSeconds)).toEqual(
+          compactMode === "push" ? [840] : [440, 400],
+        );
+        expect(jobs).toHaveLength(compactMode === "push" ? 2 : 3);
+      } finally {
+        fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...original);
+      }
+    },
+  );
+
+  it("combines settled main serial rows without changing PR placement or child workers", () => {
+    const entries = Array.from({ length: 8 }, (_, index) => [
+      {
+        name: `agentic-agents-core-fixture-gateway-${index}`,
+        config: "gateway-server-isolated",
+        seconds: 200,
+      },
+      ...Array.from({ length: 8 }, (_entry, ordinary) => ({
+        name: `agentic-agents-core-fixture-ordinary-${index}-${ordinary}`,
+        config: "hooks",
+        seconds: 20,
+      })),
+    ]).flat();
     vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue(
-      Object.fromEntries(entries.map(([name, , seconds]) => [name, seconds])),
+      Object.fromEntries(entries.map(({ name, seconds }) => [name, seconds])),
     );
     vi.spyOn(testTimings, "readRuntimePlacementTimings").mockReturnValue([]);
     vi.spyOn(buildPrerequisites, "resolveVitestPretestBuildMode").mockReturnValue(undefined);
@@ -423,37 +488,52 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       fullSuiteVitestShards.splice(
         0,
         fullSuiteVitestShards.length,
-        ...entries.map(([name, config]) => ({
+        ...entries.map(({ name, config }) => ({
           name,
           config: `fixture-${name}.config.ts`,
           projects: [`test/vitest/vitest.${config}.config.ts`],
         })),
       );
-      const jobs = createNodeTestShardBundles({
-        compactMode: "push",
-        runnerBackend: "blacksmith",
-        includeReleaseOnlyPluginShards: false,
-      });
-      const gateway = jobs.find((job) =>
-        job.groups.some((group) => group.shard_name === "agentic-gateway-server-isolated"),
+      const options = { runnerBackend: "blacksmith", includeReleaseOnlyPluginShards: false };
+      const before = createNodeTestShardBundles({ ...options, compactMode: "pull-request" });
+      const main = createNodeTestShardBundles({ ...options, compactMode: "push" });
+      expect(before).toHaveLength(8);
+      expect(main).toHaveLength(4);
+      for (const job of before) {
+        expect(job).toMatchObject({
+          planConcurrency: 1,
+          predictedSeconds: 360,
+          env: { OPENCLAW_VITEST_MAX_WORKERS: "2" },
+        });
+      }
+      for (const job of main) {
+        expect(job).toMatchObject({
+          planConcurrency: 1,
+          predictedSeconds: 720,
+          env: { OPENCLAW_VITEST_MAX_WORKERS: "2" },
+        });
+        expect(job.groups).toHaveLength(18);
+        for (let index = 0; index < job.groups.length; index += 9) {
+          expect(
+            before.some(
+              (row) =>
+                JSON.stringify(row.groups) === JSON.stringify(job.groups.slice(index, index + 9)),
+            ),
+          ).toBe(true);
+        }
+      }
+      expect(
+        main
+          .flatMap((job) => job.groups)
+          .toSorted((a, b) => a.shard_name.localeCompare(b.shard_name)),
+      ).toEqual(
+        before
+          .flatMap((job) => job.groups)
+          .toSorted((a, b) => a.shard_name.localeCompare(b.shard_name)),
       );
-      expect(gateway).toMatchObject({
-        checkName: "checks-node-compact-large-2",
-        shardName: "compact-large-2",
-        runner: EXTRA_LARGE_NODE_TEST_RUNNER,
-        planConcurrency: 1,
-        predictedSeconds: 360,
-        env: { OPENCLAW_VITEST_MAX_WORKERS: "2" },
-      });
-      expect(gateway?.groups.map((group) => group.shard_name)).toEqual([
-        "agentic-agents-core-runtime",
-        "agentic-gateway-server-isolated",
-        "agentic-agents-core-subagents",
-      ]);
-      expect(jobs.filter((job) => job !== gateway).map((job) => job.predictedSeconds)).toEqual([
-        440, 400,
-      ]);
-      expect(jobs).toHaveLength(3);
+      expect(
+        JSON.stringify(createNodeTestShardBundles({ ...options, compactMode: "pull-request" })),
+      ).toBe(JSON.stringify(before));
     } finally {
       fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...original);
     }
@@ -1560,7 +1640,13 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         .every(
           (shard) =>
             (shard.predictedSeconds ?? Infinity) <=
-            (usesParallelPacking(shard) ? 500 : isCombinedUnbuiltCliJob(shard) ? 250 : 210),
+            (usesParallelPacking(shard)
+              ? 1000
+              : shard.runner === EXTRA_LARGE_NODE_TEST_RUNNER
+                ? 720
+                : isCombinedUnbuiltCliJob(shard)
+                  ? 250
+                  : 210),
         ),
     ).toBe(true);
     // Slow process files retain singleton envelopes without inheriting the
@@ -1628,7 +1714,13 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       shard.groups.some((group) => group.shard_name === "agentic-gateway-core-3"),
     );
     expect(tail?.predictedSeconds).toBeGreaterThanOrEqual(140);
-    expect(tail?.predictedSeconds).toBeLessThanOrEqual(usesParallelPacking(tail) ? 500 : 210);
+    expect(tail?.predictedSeconds).toBeLessThanOrEqual(
+      tail?.planConcurrency === 2
+        ? 1000
+        : tail?.runner === EXTRA_LARGE_NODE_TEST_RUNNER
+          ? 720
+          : 210,
+    );
   });
 
   it("preserves unmeasured Gateway stripes when another cohort's measurement changes", async () => {
@@ -2042,16 +2134,14 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       !shard.requiresDist &&
       !shard.pretestBuildMode &&
       (shard.planConcurrency === 2 ||
-        (shard.planConcurrency === 1 &&
-          shard.groups.length === 1 &&
-          shard.env?.OPENCLAW_VITEST_MAX_WORKERS === "2")) &&
+        (shard.planConcurrency === 1 && (shard.predictedSeconds ?? Infinity) <= 720)) &&
       shard.groups.every(
         (group) =>
           [BUNDLED_NODE_TEST_RUNNER, DEFAULT_NODE_TEST_RUNNER].includes(group.runner) &&
           !group.requiresDist &&
           !group.pretestBuildMode &&
           !isExclusiveCompactShardName(group.shard_name) &&
-          !group.configs.some(isExclusiveCiTestConfig),
+          (shard.planConcurrency === 1 || !group.configs.some(isExclusiveCiTestConfig)),
       );
 
     for (const profile of [
@@ -2137,7 +2227,11 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             if (measured) {
               expect(job.env?.OPENCLAW_VITEST_MAX_WORKERS).toBeUndefined();
               for (const sibling of job.groups.filter((entry) => entry !== group)) {
-                expect(effectiveWorkers(sibling), sibling.shard_name).toBe(2);
+                // Main can concatenate serial rows; another measured owner
+                // retains its own allowance while every unproven sibling stays pinned.
+                expect(effectiveWorkers(sibling), sibling.shard_name).toBe(
+                  sibling.fallbackMaxWorkers === 2 && sibling.env === undefined ? 8 : 2,
+                );
               }
             }
           }
@@ -2307,7 +2401,18 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         expect(placements.length, owner).toBeGreaterThan(0);
         return placements;
       });
-      expect(new Set(jobs).size).toBe(jobs.length);
+      for (const index of new Set(jobs)) {
+        if (jobs.filter((job) => job === index).length > 1) {
+          const job = compact[index]!;
+          expect(job.runner).toBe(EXTRA_LARGE_NODE_TEST_RUNNER);
+          expect(job.predictedSeconds).toBeLessThanOrEqual(job.planConcurrency === 2 ? 1000 : 720);
+          if (job.planConcurrency === 2) {
+            expect(job.groups.some((group) => group.configs.some(isExclusiveCiTestConfig))).toBe(
+              false,
+            );
+          }
+        }
+      }
     }
     // Cheap stripes may legally co-locate in one bin; only existence matters.
     for (const owner of ["core-unit-fast-1", "core-unit-fast-2"]) {
@@ -2516,6 +2621,18 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           const job = plan[jobIndex]!;
           const siblings = groups.filter((group) => job.groups.includes(group));
           if (siblings.length === 1) {
+            continue;
+          }
+          if (
+            [compact, hybridCompact].includes(plan) &&
+            job.runner === EXTRA_LARGE_NODE_TEST_RUNNER &&
+            !job.pretestBuildMode &&
+            job.groups.every((group) => !isExclusiveCompactShardName(group.shard_name))
+          ) {
+            expect(job.requiresDist).toBe(false);
+            expect(job.predictedSeconds).toBeLessThanOrEqual(
+              job.planConcurrency === 2 ? 1000 : 720,
+            );
             continue;
           }
           expect(job).toMatchObject({ planConcurrency: 1, requiresDist: false });
@@ -2932,7 +3049,16 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         plan.findIndex((shard) => shard.groups.some((group) => group.shard_name === name)),
       );
       expect(jobs.every((job) => job >= 0)).toBe(true);
-      expect(new Set(jobs).size).toBe(jobs.length);
+      if (compactMode === "pull-request") {
+        expect(new Set(jobs).size).toBe(jobs.length);
+      } else {
+        for (const index of new Set(jobs)) {
+          if (jobs.filter((job) => job === index).length > 1) {
+            expect(plan[index]?.planConcurrency).toBe(1);
+            expect(plan[index]?.predictedSeconds).toBeLessThanOrEqual(720);
+          }
+        }
+      }
       expect(
         plan
           .flatMap((shard) => shard.groups)
