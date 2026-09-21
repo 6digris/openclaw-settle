@@ -1,0 +1,3985 @@
+{
+  "schema": 1,
+  "candidateSha": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+  "toolingSha": "d01d83b79b18fd7700648e97e54db9e133bca46d",
+  "baselineSha": "a4e3a5d5f88f164a9565cf805db242b34557d71f",
+  "workflowSha": "4886aa3c106a9316d13f785bcbec504820d504e4",
+  "runId": "35557398853",
+  "attempt": "1",
+  "state": "failed",
+  "normal": [
+    {
+      "name": "cohort-1",
+      "kind": "cohort",
+      "args": [
+        "--skip",
+        "AppStateIsolationTests|ProfileChatPreferencesTests"
+      ],
+      "swiftTests": 2267,
+      "swiftSuites": 258,
+      "swiftSeconds": 307.049,
+      "exit": 0,
+      "log": "cohort-1/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "AsyncTimeoutTests-01",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift",
+      "expectedSuites": [
+        "AsyncTimeoutTests"
+      ],
+      "args": [
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "swiftTests": 6,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.006,
+      "exit": 0,
+      "log": "AsyncTimeoutTests-01/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "AsyncTimeoutTests-02",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift",
+      "expectedSuites": [
+        "AsyncTimeoutTests"
+      ],
+      "args": [
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "swiftTests": 6,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.004,
+      "exit": 0,
+      "log": "AsyncTimeoutTests-02/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "AsyncTimeoutTests-03",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift",
+      "expectedSuites": [
+        "AsyncTimeoutTests"
+      ],
+      "args": [
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "swiftTests": 6,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.004,
+      "exit": 0,
+      "log": "AsyncTimeoutTests-03/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "AsyncTimeoutTests-04",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift",
+      "expectedSuites": [
+        "AsyncTimeoutTests"
+      ],
+      "args": [
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "swiftTests": 6,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.004,
+      "exit": 0,
+      "log": "AsyncTimeoutTests-04/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "AsyncTimeoutTests-05",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift",
+      "expectedSuites": [
+        "AsyncTimeoutTests"
+      ],
+      "args": [
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "swiftTests": 6,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.006,
+      "exit": 0,
+      "log": "AsyncTimeoutTests-05/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "AsyncTimeoutTests-06",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift",
+      "expectedSuites": [
+        "AsyncTimeoutTests"
+      ],
+      "args": [
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "swiftTests": 6,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.003,
+      "exit": 0,
+      "log": "AsyncTimeoutTests-06/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "AsyncTimeoutTests-07",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift",
+      "expectedSuites": [
+        "AsyncTimeoutTests"
+      ],
+      "args": [
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "swiftTests": 6,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.01,
+      "exit": 0,
+      "log": "AsyncTimeoutTests-07/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "AsyncTimeoutTests-08",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift",
+      "expectedSuites": [
+        "AsyncTimeoutTests"
+      ],
+      "args": [
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "swiftTests": 6,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.007,
+      "exit": 0,
+      "log": "AsyncTimeoutTests-08/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "AsyncTimeoutTests-09",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift",
+      "expectedSuites": [
+        "AsyncTimeoutTests"
+      ],
+      "args": [
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "swiftTests": 6,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.006,
+      "exit": 0,
+      "log": "AsyncTimeoutTests-09/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "AsyncTimeoutTests-10",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift",
+      "expectedSuites": [
+        "AsyncTimeoutTests"
+      ],
+      "args": [
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "swiftTests": 6,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.004,
+      "exit": 0,
+      "log": "AsyncTimeoutTests-10/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "AsyncTimeoutTests-11",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift",
+      "expectedSuites": [
+        "AsyncTimeoutTests"
+      ],
+      "args": [
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "swiftTests": 6,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.004,
+      "exit": 0,
+      "log": "AsyncTimeoutTests-11/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "AsyncTimeoutTests-12",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift",
+      "expectedSuites": [
+        "AsyncTimeoutTests"
+      ],
+      "args": [
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "swiftTests": 6,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.004,
+      "exit": 0,
+      "log": "AsyncTimeoutTests-12/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "AsyncTimeoutTests-13",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift",
+      "expectedSuites": [
+        "AsyncTimeoutTests"
+      ],
+      "args": [
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "swiftTests": 6,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.005,
+      "exit": 0,
+      "log": "AsyncTimeoutTests-13/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "AsyncTimeoutTests-14",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift",
+      "expectedSuites": [
+        "AsyncTimeoutTests"
+      ],
+      "args": [
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "swiftTests": 6,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.005,
+      "exit": 0,
+      "log": "AsyncTimeoutTests-14/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "AsyncTimeoutTests-15",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift",
+      "expectedSuites": [
+        "AsyncTimeoutTests"
+      ],
+      "args": [
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "swiftTests": 6,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.004,
+      "exit": 0,
+      "log": "AsyncTimeoutTests-15/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "AsyncTimeoutTests-16",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift",
+      "expectedSuites": [
+        "AsyncTimeoutTests"
+      ],
+      "args": [
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "swiftTests": 6,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.003,
+      "exit": 0,
+      "log": "AsyncTimeoutTests-16/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "AsyncTimeoutTests-17",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift",
+      "expectedSuites": [
+        "AsyncTimeoutTests"
+      ],
+      "args": [
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "swiftTests": 6,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.007,
+      "exit": 0,
+      "log": "AsyncTimeoutTests-17/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "AsyncTimeoutTests-18",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift",
+      "expectedSuites": [
+        "AsyncTimeoutTests"
+      ],
+      "args": [
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "swiftTests": 6,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.004,
+      "exit": 0,
+      "log": "AsyncTimeoutTests-18/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "AsyncTimeoutTests-19",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift",
+      "expectedSuites": [
+        "AsyncTimeoutTests"
+      ],
+      "args": [
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "swiftTests": 6,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.005,
+      "exit": 0,
+      "log": "AsyncTimeoutTests-19/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "AsyncTimeoutTests-20",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift",
+      "expectedSuites": [
+        "AsyncTimeoutTests"
+      ],
+      "args": [
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "swiftTests": 6,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.005,
+      "exit": 0,
+      "log": "AsyncTimeoutTests-20/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CLIInstallerTests-01",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift",
+      "expectedSuites": [
+        "CLIInstallerTests"
+      ],
+      "args": [
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "swiftTests": 23,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.19,
+      "exit": 0,
+      "log": "CLIInstallerTests-01/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CLIInstallerTests-02",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift",
+      "expectedSuites": [
+        "CLIInstallerTests"
+      ],
+      "args": [
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "swiftTests": 23,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.133,
+      "exit": 0,
+      "log": "CLIInstallerTests-02/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CLIInstallerTests-03",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift",
+      "expectedSuites": [
+        "CLIInstallerTests"
+      ],
+      "args": [
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "swiftTests": 23,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.131,
+      "exit": 0,
+      "log": "CLIInstallerTests-03/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CLIInstallerTests-04",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift",
+      "expectedSuites": [
+        "CLIInstallerTests"
+      ],
+      "args": [
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "swiftTests": 23,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.126,
+      "exit": 0,
+      "log": "CLIInstallerTests-04/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CLIInstallerTests-05",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift",
+      "expectedSuites": [
+        "CLIInstallerTests"
+      ],
+      "args": [
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "swiftTests": 23,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.134,
+      "exit": 0,
+      "log": "CLIInstallerTests-05/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CLIInstallerTests-06",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift",
+      "expectedSuites": [
+        "CLIInstallerTests"
+      ],
+      "args": [
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "swiftTests": 23,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.129,
+      "exit": 0,
+      "log": "CLIInstallerTests-06/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CLIInstallerTests-07",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift",
+      "expectedSuites": [
+        "CLIInstallerTests"
+      ],
+      "args": [
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "swiftTests": 23,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.185,
+      "exit": 0,
+      "log": "CLIInstallerTests-07/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CLIInstallerTests-08",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift",
+      "expectedSuites": [
+        "CLIInstallerTests"
+      ],
+      "args": [
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "swiftTests": 23,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.136,
+      "exit": 0,
+      "log": "CLIInstallerTests-08/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CLIInstallerTests-09",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift",
+      "expectedSuites": [
+        "CLIInstallerTests"
+      ],
+      "args": [
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "swiftTests": 23,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.218,
+      "exit": 0,
+      "log": "CLIInstallerTests-09/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CLIInstallerTests-10",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift",
+      "expectedSuites": [
+        "CLIInstallerTests"
+      ],
+      "args": [
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "swiftTests": 23,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.131,
+      "exit": 0,
+      "log": "CLIInstallerTests-10/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CLIInstallerTests-11",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift",
+      "expectedSuites": [
+        "CLIInstallerTests"
+      ],
+      "args": [
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "swiftTests": 23,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.134,
+      "exit": 0,
+      "log": "CLIInstallerTests-11/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CLIInstallerTests-12",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift",
+      "expectedSuites": [
+        "CLIInstallerTests"
+      ],
+      "args": [
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "swiftTests": 23,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.155,
+      "exit": 0,
+      "log": "CLIInstallerTests-12/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CLIInstallerTests-13",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift",
+      "expectedSuites": [
+        "CLIInstallerTests"
+      ],
+      "args": [
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "swiftTests": 23,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.111,
+      "exit": 0,
+      "log": "CLIInstallerTests-13/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CLIInstallerTests-14",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift",
+      "expectedSuites": [
+        "CLIInstallerTests"
+      ],
+      "args": [
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "swiftTests": 23,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.116,
+      "exit": 0,
+      "log": "CLIInstallerTests-14/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CLIInstallerTests-15",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift",
+      "expectedSuites": [
+        "CLIInstallerTests"
+      ],
+      "args": [
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "swiftTests": 23,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.132,
+      "exit": 0,
+      "log": "CLIInstallerTests-15/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CLIInstallerTests-16",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift",
+      "expectedSuites": [
+        "CLIInstallerTests"
+      ],
+      "args": [
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "swiftTests": 23,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.128,
+      "exit": 0,
+      "log": "CLIInstallerTests-16/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CLIInstallerTests-17",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift",
+      "expectedSuites": [
+        "CLIInstallerTests"
+      ],
+      "args": [
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "swiftTests": 23,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.183,
+      "exit": 0,
+      "log": "CLIInstallerTests-17/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CLIInstallerTests-18",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift",
+      "expectedSuites": [
+        "CLIInstallerTests"
+      ],
+      "args": [
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "swiftTests": 23,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.181,
+      "exit": 0,
+      "log": "CLIInstallerTests-18/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CLIInstallerTests-19",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift",
+      "expectedSuites": [
+        "CLIInstallerTests"
+      ],
+      "args": [
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "swiftTests": 23,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.176,
+      "exit": 0,
+      "log": "CLIInstallerTests-19/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CLIInstallerTests-20",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift",
+      "expectedSuites": [
+        "CLIInstallerTests"
+      ],
+      "args": [
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "swiftTests": 23,
+      "swiftSuites": 1,
+      "swiftSeconds": 0.199,
+      "exit": 0,
+      "log": "CLIInstallerTests-20/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CronJobsStoreTests-01",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift",
+      "expectedSuites": [
+        "CronJobsStoreTests"
+      ],
+      "args": [
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "swiftTests": 4,
+      "swiftSuites": 1,
+      "swiftSeconds": 3.354,
+      "exit": 0,
+      "log": "CronJobsStoreTests-01/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CronJobsStoreTests-02",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift",
+      "expectedSuites": [
+        "CronJobsStoreTests"
+      ],
+      "args": [
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "swiftTests": 4,
+      "swiftSuites": 1,
+      "swiftSeconds": 3.238,
+      "exit": 0,
+      "log": "CronJobsStoreTests-02/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CronJobsStoreTests-03",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift",
+      "expectedSuites": [
+        "CronJobsStoreTests"
+      ],
+      "args": [
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "swiftTests": 4,
+      "swiftSuites": 1,
+      "swiftSeconds": 3.305,
+      "exit": 0,
+      "log": "CronJobsStoreTests-03/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CronJobsStoreTests-04",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift",
+      "expectedSuites": [
+        "CronJobsStoreTests"
+      ],
+      "args": [
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "swiftTests": 4,
+      "swiftSuites": 1,
+      "swiftSeconds": 3.34,
+      "exit": 0,
+      "log": "CronJobsStoreTests-04/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CronJobsStoreTests-05",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift",
+      "expectedSuites": [
+        "CronJobsStoreTests"
+      ],
+      "args": [
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "swiftTests": 4,
+      "swiftSuites": 1,
+      "swiftSeconds": 3.353,
+      "exit": 0,
+      "log": "CronJobsStoreTests-05/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CronJobsStoreTests-06",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift",
+      "expectedSuites": [
+        "CronJobsStoreTests"
+      ],
+      "args": [
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "swiftTests": 4,
+      "swiftSuites": 1,
+      "swiftSeconds": 3.245,
+      "exit": 0,
+      "log": "CronJobsStoreTests-06/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CronJobsStoreTests-07",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift",
+      "expectedSuites": [
+        "CronJobsStoreTests"
+      ],
+      "args": [
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "swiftTests": 4,
+      "swiftSuites": 1,
+      "swiftSeconds": 3.361,
+      "exit": 0,
+      "log": "CronJobsStoreTests-07/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CronJobsStoreTests-08",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift",
+      "expectedSuites": [
+        "CronJobsStoreTests"
+      ],
+      "args": [
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "swiftTests": 4,
+      "swiftSuites": 1,
+      "swiftSeconds": 2.971,
+      "exit": 0,
+      "log": "CronJobsStoreTests-08/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CronJobsStoreTests-09",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift",
+      "expectedSuites": [
+        "CronJobsStoreTests"
+      ],
+      "args": [
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "swiftTests": 4,
+      "swiftSuites": 1,
+      "swiftSeconds": 3.183,
+      "exit": 0,
+      "log": "CronJobsStoreTests-09/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CronJobsStoreTests-10",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift",
+      "expectedSuites": [
+        "CronJobsStoreTests"
+      ],
+      "args": [
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "swiftTests": 4,
+      "swiftSuites": 1,
+      "swiftSeconds": 3.261,
+      "exit": 0,
+      "log": "CronJobsStoreTests-10/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CronJobsStoreTests-11",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift",
+      "expectedSuites": [
+        "CronJobsStoreTests"
+      ],
+      "args": [
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "swiftTests": 4,
+      "swiftSuites": 1,
+      "swiftSeconds": 3.341,
+      "exit": 0,
+      "log": "CronJobsStoreTests-11/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CronJobsStoreTests-12",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift",
+      "expectedSuites": [
+        "CronJobsStoreTests"
+      ],
+      "args": [
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "swiftTests": 4,
+      "swiftSuites": 1,
+      "swiftSeconds": 3.088,
+      "exit": 0,
+      "log": "CronJobsStoreTests-12/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CronJobsStoreTests-13",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift",
+      "expectedSuites": [
+        "CronJobsStoreTests"
+      ],
+      "args": [
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "swiftTests": 4,
+      "swiftSuites": 1,
+      "swiftSeconds": 3.092,
+      "exit": 0,
+      "log": "CronJobsStoreTests-13/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CronJobsStoreTests-14",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift",
+      "expectedSuites": [
+        "CronJobsStoreTests"
+      ],
+      "args": [
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "swiftTests": 4,
+      "swiftSuites": 1,
+      "swiftSeconds": 3.56,
+      "exit": 0,
+      "log": "CronJobsStoreTests-14/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CronJobsStoreTests-15",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift",
+      "expectedSuites": [
+        "CronJobsStoreTests"
+      ],
+      "args": [
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "swiftTests": 4,
+      "swiftSuites": 1,
+      "swiftSeconds": 3.621,
+      "exit": 0,
+      "log": "CronJobsStoreTests-15/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CronJobsStoreTests-16",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift",
+      "expectedSuites": [
+        "CronJobsStoreTests"
+      ],
+      "args": [
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "swiftTests": 4,
+      "swiftSuites": 1,
+      "swiftSeconds": 3.102,
+      "exit": 0,
+      "log": "CronJobsStoreTests-16/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CronJobsStoreTests-17",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift",
+      "expectedSuites": [
+        "CronJobsStoreTests"
+      ],
+      "args": [
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "swiftTests": 4,
+      "swiftSuites": 1,
+      "swiftSeconds": 3.458,
+      "exit": 0,
+      "log": "CronJobsStoreTests-17/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CronJobsStoreTests-18",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift",
+      "expectedSuites": [
+        "CronJobsStoreTests"
+      ],
+      "args": [
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "swiftTests": 4,
+      "swiftSuites": 1,
+      "swiftSeconds": 3.607,
+      "exit": 0,
+      "log": "CronJobsStoreTests-18/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CronJobsStoreTests-19",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift",
+      "expectedSuites": [
+        "CronJobsStoreTests"
+      ],
+      "args": [
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "swiftTests": 4,
+      "swiftSuites": 1,
+      "swiftSeconds": 3.372,
+      "exit": 0,
+      "log": "CronJobsStoreTests-19/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "CronJobsStoreTests-20",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift",
+      "expectedSuites": [
+        "CronJobsStoreTests"
+      ],
+      "args": [
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "swiftTests": 4,
+      "swiftSuites": 1,
+      "swiftSeconds": 3.681,
+      "exit": 0,
+      "log": "CronJobsStoreTests-20/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "GatewayProcessManagerTests-01",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+      "expectedSuites": [
+        "GatewayReadinessDeadlinePolicyTests",
+        "GatewayProcessManagerTests"
+      ],
+      "args": [
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "swiftTests": 58,
+      "swiftSuites": 2,
+      "swiftSeconds": 30.519,
+      "exit": 0,
+      "log": "GatewayProcessManagerTests-01/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "GatewayProcessManagerTests-02",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+      "expectedSuites": [
+        "GatewayReadinessDeadlinePolicyTests",
+        "GatewayProcessManagerTests"
+      ],
+      "args": [
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "swiftTests": 58,
+      "swiftSuites": 2,
+      "swiftSeconds": 32.261,
+      "exit": 0,
+      "log": "GatewayProcessManagerTests-02/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "GatewayProcessManagerTests-03",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+      "expectedSuites": [
+        "GatewayReadinessDeadlinePolicyTests",
+        "GatewayProcessManagerTests"
+      ],
+      "args": [
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "swiftTests": 58,
+      "swiftSuites": 2,
+      "swiftSeconds": 31.221,
+      "exit": 0,
+      "log": "GatewayProcessManagerTests-03/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "GatewayProcessManagerTests-04",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+      "expectedSuites": [
+        "GatewayReadinessDeadlinePolicyTests",
+        "GatewayProcessManagerTests"
+      ],
+      "args": [
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "swiftTests": 58,
+      "swiftSuites": 2,
+      "swiftSeconds": 31.369,
+      "exit": 0,
+      "log": "GatewayProcessManagerTests-04/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "GatewayProcessManagerTests-05",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+      "expectedSuites": [
+        "GatewayReadinessDeadlinePolicyTests",
+        "GatewayProcessManagerTests"
+      ],
+      "args": [
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "swiftTests": 58,
+      "swiftSuites": 2,
+      "swiftSeconds": 31.479,
+      "exit": 0,
+      "log": "GatewayProcessManagerTests-05/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "GatewayProcessManagerTests-06",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+      "expectedSuites": [
+        "GatewayReadinessDeadlinePolicyTests",
+        "GatewayProcessManagerTests"
+      ],
+      "args": [
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "swiftTests": 58,
+      "swiftSuites": 2,
+      "swiftSeconds": 31.348,
+      "exit": 0,
+      "log": "GatewayProcessManagerTests-06/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "GatewayProcessManagerTests-07",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+      "expectedSuites": [
+        "GatewayReadinessDeadlinePolicyTests",
+        "GatewayProcessManagerTests"
+      ],
+      "args": [
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "swiftTests": 58,
+      "swiftSuites": 2,
+      "swiftSeconds": 31.566,
+      "exit": 0,
+      "log": "GatewayProcessManagerTests-07/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "GatewayProcessManagerTests-08",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+      "expectedSuites": [
+        "GatewayReadinessDeadlinePolicyTests",
+        "GatewayProcessManagerTests"
+      ],
+      "args": [
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "swiftTests": 58,
+      "swiftSuites": 2,
+      "swiftSeconds": 31.271,
+      "exit": 0,
+      "log": "GatewayProcessManagerTests-08/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "GatewayProcessManagerTests-09",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+      "expectedSuites": [
+        "GatewayReadinessDeadlinePolicyTests",
+        "GatewayProcessManagerTests"
+      ],
+      "args": [
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "swiftTests": 58,
+      "swiftSuites": 2,
+      "swiftSeconds": 30.582,
+      "exit": 0,
+      "log": "GatewayProcessManagerTests-09/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "GatewayProcessManagerTests-10",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+      "expectedSuites": [
+        "GatewayReadinessDeadlinePolicyTests",
+        "GatewayProcessManagerTests"
+      ],
+      "args": [
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "swiftTests": 58,
+      "swiftSuites": 2,
+      "swiftSeconds": 30.754,
+      "exit": 0,
+      "log": "GatewayProcessManagerTests-10/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "GatewayProcessManagerTests-11",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+      "expectedSuites": [
+        "GatewayReadinessDeadlinePolicyTests",
+        "GatewayProcessManagerTests"
+      ],
+      "args": [
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "swiftTests": 58,
+      "swiftSuites": 2,
+      "swiftSeconds": 31.516,
+      "exit": 0,
+      "log": "GatewayProcessManagerTests-11/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "GatewayProcessManagerTests-12",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+      "expectedSuites": [
+        "GatewayReadinessDeadlinePolicyTests",
+        "GatewayProcessManagerTests"
+      ],
+      "args": [
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "swiftTests": 58,
+      "swiftSuites": 2,
+      "swiftSeconds": 31.411,
+      "exit": 0,
+      "log": "GatewayProcessManagerTests-12/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "GatewayProcessManagerTests-13",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+      "expectedSuites": [
+        "GatewayReadinessDeadlinePolicyTests",
+        "GatewayProcessManagerTests"
+      ],
+      "args": [
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "swiftTests": 58,
+      "swiftSuites": 2,
+      "swiftSeconds": 30.772,
+      "exit": 0,
+      "log": "GatewayProcessManagerTests-13/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "GatewayProcessManagerTests-14",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+      "expectedSuites": [
+        "GatewayReadinessDeadlinePolicyTests",
+        "GatewayProcessManagerTests"
+      ],
+      "args": [
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "swiftTests": 58,
+      "swiftSuites": 2,
+      "swiftSeconds": 31.312,
+      "exit": 0,
+      "log": "GatewayProcessManagerTests-14/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "GatewayProcessManagerTests-15",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+      "expectedSuites": [
+        "GatewayReadinessDeadlinePolicyTests",
+        "GatewayProcessManagerTests"
+      ],
+      "args": [
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "swiftTests": 58,
+      "swiftSuites": 2,
+      "swiftSeconds": 31.704,
+      "exit": 0,
+      "log": "GatewayProcessManagerTests-15/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "GatewayProcessManagerTests-16",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+      "expectedSuites": [
+        "GatewayReadinessDeadlinePolicyTests",
+        "GatewayProcessManagerTests"
+      ],
+      "args": [
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "swiftTests": 58,
+      "swiftSuites": 2,
+      "swiftSeconds": 31.305,
+      "exit": 0,
+      "log": "GatewayProcessManagerTests-16/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "GatewayProcessManagerTests-17",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+      "expectedSuites": [
+        "GatewayReadinessDeadlinePolicyTests",
+        "GatewayProcessManagerTests"
+      ],
+      "args": [
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "swiftTests": 58,
+      "swiftSuites": 2,
+      "swiftSeconds": 31.38,
+      "exit": 0,
+      "log": "GatewayProcessManagerTests-17/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "GatewayProcessManagerTests-18",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+      "expectedSuites": [
+        "GatewayReadinessDeadlinePolicyTests",
+        "GatewayProcessManagerTests"
+      ],
+      "args": [
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "swiftTests": 58,
+      "swiftSuites": 2,
+      "swiftSeconds": 30.744,
+      "exit": 0,
+      "log": "GatewayProcessManagerTests-18/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "GatewayProcessManagerTests-19",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+      "expectedSuites": [
+        "GatewayReadinessDeadlinePolicyTests",
+        "GatewayProcessManagerTests"
+      ],
+      "args": [
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "swiftTests": 58,
+      "swiftSuites": 2,
+      "swiftSeconds": 31.533,
+      "exit": 0,
+      "log": "GatewayProcessManagerTests-19/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "GatewayProcessManagerTests-20",
+      "kind": "standalone",
+      "sourceFile": "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift",
+      "expectedSuites": [
+        "GatewayReadinessDeadlinePolicyTests",
+        "GatewayProcessManagerTests"
+      ],
+      "args": [
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "swiftTests": 58,
+      "swiftSuites": 2,
+      "swiftSeconds": 31.651,
+      "exit": 0,
+      "log": "GatewayProcessManagerTests-20/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "cohort-2",
+      "kind": "cohort",
+      "args": [
+        "--skip",
+        "AppStateIsolationTests|ProfileChatPreferencesTests"
+      ],
+      "swiftTests": 2267,
+      "swiftSuites": 258,
+      "swiftSeconds": 239.139,
+      "exit": 0,
+      "log": "cohort-2/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    },
+    {
+      "name": "cohort-3",
+      "kind": "cohort",
+      "args": [
+        "--skip",
+        "AppStateIsolationTests|ProfileChatPreferencesTests"
+      ],
+      "swiftTests": 2267,
+      "swiftSuites": 258,
+      "swiftSeconds": 265.736,
+      "exit": 0,
+      "log": "cohort-3/run.log",
+      "build": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
+    }
+  ],
+  "controls": [],
+  "commands": [
+    {
+      "name": "platform",
+      "bin": "/bin/bash",
+      "args": [
+        "-euo",
+        "pipefail",
+        "-c",
+        "sw_vers\nxcodebuild -version\nxcrun swift --version\nnode --version"
+      ],
+      "startedAt": "2026-09-21T03:27:16.661Z",
+      "timeoutMs": 60000,
+      "log": "platform/run.log",
+      "sourceState": null,
+      "returnedAfterManagedDrain": true,
+      "seconds": 0.414223333,
+      "exit": 0
+    },
+    {
+      "name": "candidate-build",
+      "bin": "swift",
+      "args": [
+        "build",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--build-tests",
+        "--jobs",
+        "3"
+      ],
+      "startedAt": "2026-09-21T03:27:17.486Z",
+      "timeoutMs": 1200000,
+      "log": "candidate-build/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 322.575315708,
+      "exit": 0
+    },
+    {
+      "name": "cohort-1",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--skip",
+        "AppStateIsolationTests|ProfileChatPreferencesTests"
+      ],
+      "startedAt": "2026-09-21T03:32:47.262Z",
+      "timeoutMs": 600000,
+      "log": "cohort-1/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 334.892234,
+      "exit": 0
+    },
+    {
+      "name": "AsyncTimeoutTests-01",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "startedAt": "2026-09-21T03:38:22.773Z",
+      "timeoutMs": 600000,
+      "log": "AsyncTimeoutTests-01/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 14.751596292,
+      "exit": 0
+    },
+    {
+      "name": "AsyncTimeoutTests-02",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "startedAt": "2026-09-21T03:38:37.879Z",
+      "timeoutMs": 600000,
+      "log": "AsyncTimeoutTests-02/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 12.650768625,
+      "exit": 0
+    },
+    {
+      "name": "AsyncTimeoutTests-03",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "startedAt": "2026-09-21T03:38:50.883Z",
+      "timeoutMs": 600000,
+      "log": "AsyncTimeoutTests-03/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 12.787258667,
+      "exit": 0
+    },
+    {
+      "name": "AsyncTimeoutTests-04",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "startedAt": "2026-09-21T03:39:03.978Z",
+      "timeoutMs": 600000,
+      "log": "AsyncTimeoutTests-04/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 13.4620275,
+      "exit": 0
+    },
+    {
+      "name": "AsyncTimeoutTests-05",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "startedAt": "2026-09-21T03:39:17.947Z",
+      "timeoutMs": 600000,
+      "log": "AsyncTimeoutTests-05/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 14.761448958,
+      "exit": 0
+    },
+    {
+      "name": "AsyncTimeoutTests-06",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "startedAt": "2026-09-21T03:39:33.041Z",
+      "timeoutMs": 600000,
+      "log": "AsyncTimeoutTests-06/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 13.42942825,
+      "exit": 0
+    },
+    {
+      "name": "AsyncTimeoutTests-07",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "startedAt": "2026-09-21T03:39:46.808Z",
+      "timeoutMs": 600000,
+      "log": "AsyncTimeoutTests-07/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 12.495832333,
+      "exit": 0
+    },
+    {
+      "name": "AsyncTimeoutTests-08",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "startedAt": "2026-09-21T03:39:59.621Z",
+      "timeoutMs": 600000,
+      "log": "AsyncTimeoutTests-08/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 12.114221125,
+      "exit": 0
+    },
+    {
+      "name": "AsyncTimeoutTests-09",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "startedAt": "2026-09-21T03:40:12.051Z",
+      "timeoutMs": 600000,
+      "log": "AsyncTimeoutTests-09/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 12.4044805,
+      "exit": 0
+    },
+    {
+      "name": "AsyncTimeoutTests-10",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "startedAt": "2026-09-21T03:40:24.958Z",
+      "timeoutMs": 600000,
+      "log": "AsyncTimeoutTests-10/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 15.188293416,
+      "exit": 0
+    },
+    {
+      "name": "AsyncTimeoutTests-11",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "startedAt": "2026-09-21T03:40:40.478Z",
+      "timeoutMs": 600000,
+      "log": "AsyncTimeoutTests-11/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 14.328237708,
+      "exit": 0
+    },
+    {
+      "name": "AsyncTimeoutTests-12",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "startedAt": "2026-09-21T03:40:55.126Z",
+      "timeoutMs": 600000,
+      "log": "AsyncTimeoutTests-12/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 13.753327125,
+      "exit": 0
+    },
+    {
+      "name": "AsyncTimeoutTests-13",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "startedAt": "2026-09-21T03:41:09.189Z",
+      "timeoutMs": 600000,
+      "log": "AsyncTimeoutTests-13/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 13.193556083,
+      "exit": 0
+    },
+    {
+      "name": "AsyncTimeoutTests-14",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "startedAt": "2026-09-21T03:41:22.758Z",
+      "timeoutMs": 600000,
+      "log": "AsyncTimeoutTests-14/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 13.8951935,
+      "exit": 0
+    },
+    {
+      "name": "AsyncTimeoutTests-15",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "startedAt": "2026-09-21T03:41:37.020Z",
+      "timeoutMs": 600000,
+      "log": "AsyncTimeoutTests-15/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 15.150471125,
+      "exit": 0
+    },
+    {
+      "name": "AsyncTimeoutTests-16",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "startedAt": "2026-09-21T03:41:52.527Z",
+      "timeoutMs": 600000,
+      "log": "AsyncTimeoutTests-16/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 12.495205333,
+      "exit": 0
+    },
+    {
+      "name": "AsyncTimeoutTests-17",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "startedAt": "2026-09-21T03:42:05.288Z",
+      "timeoutMs": 600000,
+      "log": "AsyncTimeoutTests-17/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 12.905742291,
+      "exit": 0
+    },
+    {
+      "name": "AsyncTimeoutTests-18",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "startedAt": "2026-09-21T03:42:18.485Z",
+      "timeoutMs": 600000,
+      "log": "AsyncTimeoutTests-18/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 13.147168542,
+      "exit": 0
+    },
+    {
+      "name": "AsyncTimeoutTests-19",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "startedAt": "2026-09-21T03:42:32.046Z",
+      "timeoutMs": 600000,
+      "log": "AsyncTimeoutTests-19/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 12.880622583,
+      "exit": 0
+    },
+    {
+      "name": "AsyncTimeoutTests-20",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "AsyncTimeoutTests"
+      ],
+      "startedAt": "2026-09-21T03:42:45.243Z",
+      "timeoutMs": 600000,
+      "log": "AsyncTimeoutTests-20/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 14.150434375,
+      "exit": 0
+    },
+    {
+      "name": "CLIInstallerTests-01",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "startedAt": "2026-09-21T03:42:59.695Z",
+      "timeoutMs": 600000,
+      "log": "CLIInstallerTests-01/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 12.07441525,
+      "exit": 0
+    },
+    {
+      "name": "CLIInstallerTests-02",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "startedAt": "2026-09-21T03:43:12.035Z",
+      "timeoutMs": 600000,
+      "log": "CLIInstallerTests-02/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 10.29842625,
+      "exit": 0
+    },
+    {
+      "name": "CLIInstallerTests-03",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "startedAt": "2026-09-21T03:43:22.524Z",
+      "timeoutMs": 600000,
+      "log": "CLIInstallerTests-03/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 8.294366834,
+      "exit": 0
+    },
+    {
+      "name": "CLIInstallerTests-04",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "startedAt": "2026-09-21T03:43:31.025Z",
+      "timeoutMs": 600000,
+      "log": "CLIInstallerTests-04/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 8.12978175,
+      "exit": 0
+    },
+    {
+      "name": "CLIInstallerTests-05",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "startedAt": "2026-09-21T03:43:39.339Z",
+      "timeoutMs": 600000,
+      "log": "CLIInstallerTests-05/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 7.620153375,
+      "exit": 0
+    },
+    {
+      "name": "CLIInstallerTests-06",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "startedAt": "2026-09-21T03:43:47.111Z",
+      "timeoutMs": 600000,
+      "log": "CLIInstallerTests-06/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 7.83032975,
+      "exit": 0
+    },
+    {
+      "name": "CLIInstallerTests-07",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "startedAt": "2026-09-21T03:43:55.098Z",
+      "timeoutMs": 600000,
+      "log": "CLIInstallerTests-07/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 8.559892583,
+      "exit": 0
+    },
+    {
+      "name": "CLIInstallerTests-08",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "startedAt": "2026-09-21T03:44:03.844Z",
+      "timeoutMs": 600000,
+      "log": "CLIInstallerTests-08/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 9.233704,
+      "exit": 0
+    },
+    {
+      "name": "CLIInstallerTests-09",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "startedAt": "2026-09-21T03:44:13.259Z",
+      "timeoutMs": 600000,
+      "log": "CLIInstallerTests-09/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 9.135463834,
+      "exit": 0
+    },
+    {
+      "name": "CLIInstallerTests-10",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "startedAt": "2026-09-21T03:44:22.610Z",
+      "timeoutMs": 600000,
+      "log": "CLIInstallerTests-10/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 8.534878041,
+      "exit": 0
+    },
+    {
+      "name": "CLIInstallerTests-11",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "startedAt": "2026-09-21T03:44:31.307Z",
+      "timeoutMs": 600000,
+      "log": "CLIInstallerTests-11/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 8.145236667,
+      "exit": 0
+    },
+    {
+      "name": "CLIInstallerTests-12",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "startedAt": "2026-09-21T03:44:39.639Z",
+      "timeoutMs": 600000,
+      "log": "CLIInstallerTests-12/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 8.72004375,
+      "exit": 0
+    },
+    {
+      "name": "CLIInstallerTests-13",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "startedAt": "2026-09-21T03:44:48.541Z",
+      "timeoutMs": 600000,
+      "log": "CLIInstallerTests-13/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 7.679723542,
+      "exit": 0
+    },
+    {
+      "name": "CLIInstallerTests-14",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "startedAt": "2026-09-21T03:44:56.363Z",
+      "timeoutMs": 600000,
+      "log": "CLIInstallerTests-14/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 7.252502334,
+      "exit": 0
+    },
+    {
+      "name": "CLIInstallerTests-15",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "startedAt": "2026-09-21T03:45:03.766Z",
+      "timeoutMs": 600000,
+      "log": "CLIInstallerTests-15/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 7.174274375,
+      "exit": 0
+    },
+    {
+      "name": "CLIInstallerTests-16",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "startedAt": "2026-09-21T03:45:11.081Z",
+      "timeoutMs": 600000,
+      "log": "CLIInstallerTests-16/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 8.123307334,
+      "exit": 0
+    },
+    {
+      "name": "CLIInstallerTests-17",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "startedAt": "2026-09-21T03:45:19.353Z",
+      "timeoutMs": 600000,
+      "log": "CLIInstallerTests-17/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 9.623540417,
+      "exit": 0
+    },
+    {
+      "name": "CLIInstallerTests-18",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "startedAt": "2026-09-21T03:45:29.256Z",
+      "timeoutMs": 600000,
+      "log": "CLIInstallerTests-18/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 11.923802542,
+      "exit": 0
+    },
+    {
+      "name": "CLIInstallerTests-19",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "startedAt": "2026-09-21T03:45:41.452Z",
+      "timeoutMs": 600000,
+      "log": "CLIInstallerTests-19/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 11.298743917,
+      "exit": 0
+    },
+    {
+      "name": "CLIInstallerTests-20",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CLIInstallerTests"
+      ],
+      "startedAt": "2026-09-21T03:45:53.067Z",
+      "timeoutMs": 600000,
+      "log": "CLIInstallerTests-20/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 11.341325917,
+      "exit": 0
+    },
+    {
+      "name": "CronJobsStoreTests-01",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "startedAt": "2026-09-21T03:46:04.717Z",
+      "timeoutMs": 600000,
+      "log": "CronJobsStoreTests-01/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 14.699017666,
+      "exit": 0
+    },
+    {
+      "name": "CronJobsStoreTests-02",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "startedAt": "2026-09-21T03:46:19.677Z",
+      "timeoutMs": 600000,
+      "log": "CronJobsStoreTests-02/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 12.352015375,
+      "exit": 0
+    },
+    {
+      "name": "CronJobsStoreTests-03",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "startedAt": "2026-09-21T03:46:32.230Z",
+      "timeoutMs": 600000,
+      "log": "CronJobsStoreTests-03/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 12.160763417,
+      "exit": 0
+    },
+    {
+      "name": "CronJobsStoreTests-04",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "startedAt": "2026-09-21T03:46:44.589Z",
+      "timeoutMs": 600000,
+      "log": "CronJobsStoreTests-04/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 12.065286,
+      "exit": 0
+    },
+    {
+      "name": "CronJobsStoreTests-05",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "startedAt": "2026-09-21T03:46:56.906Z",
+      "timeoutMs": 600000,
+      "log": "CronJobsStoreTests-05/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 12.172657084,
+      "exit": 0
+    },
+    {
+      "name": "CronJobsStoreTests-06",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "startedAt": "2026-09-21T03:47:09.322Z",
+      "timeoutMs": 600000,
+      "log": "CronJobsStoreTests-06/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 13.510216791,
+      "exit": 0
+    },
+    {
+      "name": "CronJobsStoreTests-07",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "startedAt": "2026-09-21T03:47:23.034Z",
+      "timeoutMs": 600000,
+      "log": "CronJobsStoreTests-07/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 11.288158666,
+      "exit": 0
+    },
+    {
+      "name": "CronJobsStoreTests-08",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "startedAt": "2026-09-21T03:47:34.590Z",
+      "timeoutMs": 600000,
+      "log": "CronJobsStoreTests-08/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 13.117117583,
+      "exit": 0
+    },
+    {
+      "name": "CronJobsStoreTests-09",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "startedAt": "2026-09-21T03:47:47.882Z",
+      "timeoutMs": 600000,
+      "log": "CronJobsStoreTests-09/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 11.101668084,
+      "exit": 0
+    },
+    {
+      "name": "CronJobsStoreTests-10",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "startedAt": "2026-09-21T03:47:59.188Z",
+      "timeoutMs": 600000,
+      "log": "CronJobsStoreTests-10/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 11.707992209,
+      "exit": 0
+    },
+    {
+      "name": "CronJobsStoreTests-11",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "startedAt": "2026-09-21T03:48:11.116Z",
+      "timeoutMs": 600000,
+      "log": "CronJobsStoreTests-11/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 10.990444792,
+      "exit": 0
+    },
+    {
+      "name": "CronJobsStoreTests-12",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "startedAt": "2026-09-21T03:48:22.270Z",
+      "timeoutMs": 600000,
+      "log": "CronJobsStoreTests-12/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 10.575764542,
+      "exit": 0
+    },
+    {
+      "name": "CronJobsStoreTests-13",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "startedAt": "2026-09-21T03:48:33.021Z",
+      "timeoutMs": 600000,
+      "log": "CronJobsStoreTests-13/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 11.031651458,
+      "exit": 0
+    },
+    {
+      "name": "CronJobsStoreTests-14",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "startedAt": "2026-09-21T03:48:44.254Z",
+      "timeoutMs": 600000,
+      "log": "CronJobsStoreTests-14/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 13.022321875,
+      "exit": 0
+    },
+    {
+      "name": "CronJobsStoreTests-15",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "startedAt": "2026-09-21T03:48:57.521Z",
+      "timeoutMs": 600000,
+      "log": "CronJobsStoreTests-15/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 11.421257917,
+      "exit": 0
+    },
+    {
+      "name": "CronJobsStoreTests-16",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "startedAt": "2026-09-21T03:49:09.097Z",
+      "timeoutMs": 600000,
+      "log": "CronJobsStoreTests-16/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 11.728379208,
+      "exit": 0
+    },
+    {
+      "name": "CronJobsStoreTests-17",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "startedAt": "2026-09-21T03:49:21.115Z",
+      "timeoutMs": 600000,
+      "log": "CronJobsStoreTests-17/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 12.293835041,
+      "exit": 0
+    },
+    {
+      "name": "CronJobsStoreTests-18",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "startedAt": "2026-09-21T03:49:33.633Z",
+      "timeoutMs": 600000,
+      "log": "CronJobsStoreTests-18/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 12.169485375,
+      "exit": 0
+    },
+    {
+      "name": "CronJobsStoreTests-19",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "startedAt": "2026-09-21T03:49:45.976Z",
+      "timeoutMs": 600000,
+      "log": "CronJobsStoreTests-19/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 11.059391708,
+      "exit": 0
+    },
+    {
+      "name": "CronJobsStoreTests-20",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "CronJobsStoreTests"
+      ],
+      "startedAt": "2026-09-21T03:49:57.196Z",
+      "timeoutMs": 600000,
+      "log": "CronJobsStoreTests-20/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 12.946002375,
+      "exit": 0
+    },
+    {
+      "name": "GatewayProcessManagerTests-01",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "startedAt": "2026-09-21T03:50:10.325Z",
+      "timeoutMs": 600000,
+      "log": "GatewayProcessManagerTests-01/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 38.527976834,
+      "exit": 0
+    },
+    {
+      "name": "GatewayProcessManagerTests-02",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "startedAt": "2026-09-21T03:50:49.121Z",
+      "timeoutMs": 600000,
+      "log": "GatewayProcessManagerTests-02/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 41.80775575,
+      "exit": 0
+    },
+    {
+      "name": "GatewayProcessManagerTests-03",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "startedAt": "2026-09-21T03:51:31.269Z",
+      "timeoutMs": 600000,
+      "log": "GatewayProcessManagerTests-03/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 41.379698791,
+      "exit": 0
+    },
+    {
+      "name": "GatewayProcessManagerTests-04",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "startedAt": "2026-09-21T03:52:12.934Z",
+      "timeoutMs": 600000,
+      "log": "GatewayProcessManagerTests-04/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 42.465156375,
+      "exit": 0
+    },
+    {
+      "name": "GatewayProcessManagerTests-05",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "startedAt": "2026-09-21T03:52:55.798Z",
+      "timeoutMs": 600000,
+      "log": "GatewayProcessManagerTests-05/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 46.097636041,
+      "exit": 0
+    },
+    {
+      "name": "GatewayProcessManagerTests-06",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "startedAt": "2026-09-21T03:53:42.141Z",
+      "timeoutMs": 600000,
+      "log": "GatewayProcessManagerTests-06/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 41.947224792,
+      "exit": 0
+    },
+    {
+      "name": "GatewayProcessManagerTests-07",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "startedAt": "2026-09-21T03:54:24.339Z",
+      "timeoutMs": 600000,
+      "log": "GatewayProcessManagerTests-07/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 41.212325708,
+      "exit": 0
+    },
+    {
+      "name": "GatewayProcessManagerTests-08",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "startedAt": "2026-09-21T03:55:05.849Z",
+      "timeoutMs": 600000,
+      "log": "GatewayProcessManagerTests-08/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 40.244627208,
+      "exit": 0
+    },
+    {
+      "name": "GatewayProcessManagerTests-09",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "startedAt": "2026-09-21T03:55:46.389Z",
+      "timeoutMs": 600000,
+      "log": "GatewayProcessManagerTests-09/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 38.83996225,
+      "exit": 0
+    },
+    {
+      "name": "GatewayProcessManagerTests-10",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "startedAt": "2026-09-21T03:56:25.427Z",
+      "timeoutMs": 600000,
+      "log": "GatewayProcessManagerTests-10/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 38.798842292,
+      "exit": 0
+    },
+    {
+      "name": "GatewayProcessManagerTests-11",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "startedAt": "2026-09-21T03:57:04.397Z",
+      "timeoutMs": 600000,
+      "log": "GatewayProcessManagerTests-11/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 41.20656075,
+      "exit": 0
+    },
+    {
+      "name": "GatewayProcessManagerTests-12",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "startedAt": "2026-09-21T03:57:45.910Z",
+      "timeoutMs": 600000,
+      "log": "GatewayProcessManagerTests-12/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 43.589100208,
+      "exit": 0
+    },
+    {
+      "name": "GatewayProcessManagerTests-13",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "startedAt": "2026-09-21T03:58:29.717Z",
+      "timeoutMs": 600000,
+      "log": "GatewayProcessManagerTests-13/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 39.531164167,
+      "exit": 0
+    },
+    {
+      "name": "GatewayProcessManagerTests-14",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "startedAt": "2026-09-21T03:59:09.479Z",
+      "timeoutMs": 600000,
+      "log": "GatewayProcessManagerTests-14/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 39.527996125,
+      "exit": 0
+    },
+    {
+      "name": "GatewayProcessManagerTests-15",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "startedAt": "2026-09-21T03:59:49.154Z",
+      "timeoutMs": 600000,
+      "log": "GatewayProcessManagerTests-15/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 39.737662792,
+      "exit": 0
+    },
+    {
+      "name": "GatewayProcessManagerTests-16",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "startedAt": "2026-09-21T04:00:29.090Z",
+      "timeoutMs": 600000,
+      "log": "GatewayProcessManagerTests-16/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 38.423931625,
+      "exit": 0
+    },
+    {
+      "name": "GatewayProcessManagerTests-17",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "startedAt": "2026-09-21T04:01:07.674Z",
+      "timeoutMs": 600000,
+      "log": "GatewayProcessManagerTests-17/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 37.993793042,
+      "exit": 0
+    },
+    {
+      "name": "GatewayProcessManagerTests-18",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "startedAt": "2026-09-21T04:01:45.815Z",
+      "timeoutMs": 600000,
+      "log": "GatewayProcessManagerTests-18/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 37.837875334,
+      "exit": 0
+    },
+    {
+      "name": "GatewayProcessManagerTests-19",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "startedAt": "2026-09-21T04:02:23.842Z",
+      "timeoutMs": 600000,
+      "log": "GatewayProcessManagerTests-19/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 38.8285715,
+      "exit": 0
+    },
+    {
+      "name": "GatewayProcessManagerTests-20",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--filter",
+        "GatewayReadinessDeadlinePolicyTests|GatewayProcessManagerTests"
+      ],
+      "startedAt": "2026-09-21T04:03:03.003Z",
+      "timeoutMs": 591572.2276670001,
+      "log": "GatewayProcessManagerTests-20/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 41.85665825,
+      "exit": 0
+    },
+    {
+      "name": "cohort-2",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--skip",
+        "AppStateIsolationTests|ProfileChatPreferencesTests"
+      ],
+      "startedAt": "2026-09-21T04:03:45.030Z",
+      "timeoutMs": 549545.3070419999,
+      "log": "cohort-2/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 250.550911333,
+      "exit": 0
+    },
+    {
+      "name": "cohort-3",
+      "bin": "/opt/homebrew/Cellar/node@24/24.20.0/bin/node",
+      "args": [
+        "scripts/test-macos-native.mts",
+        "default",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--skip-build",
+        "--experimental-maximum-parallelization-width",
+        "3",
+        "--skip",
+        "AppStateIsolationTests|ProfileChatPreferencesTests"
+      ],
+      "startedAt": "2026-09-21T04:07:55.773Z",
+      "timeoutMs": 298802.0082919998,
+      "log": "cohort-3/run.log",
+      "sourceState": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+      "returnedAfterManagedDrain": true,
+      "seconds": 277.942500875,
+      "exit": 0
+    },
+    {
+      "name": "baseline-delayed-resumption-checkout",
+      "bin": "python3",
+      "args": [
+        "-I",
+        "-S",
+        "/Users/runner/work/_temp/ci-git-owner-bobcg32i/owner.py",
+        "--git",
+        "120",
+        "checkout",
+        "--detach",
+        "a4e3a5d5f88f164a9565cf805db242b34557d71f"
+      ],
+      "startedAt": "2026-09-21T04:12:34.269Z",
+      "timeoutMs": 20305.7861250001,
+      "log": "baseline-delayed-resumption-checkout/run.log",
+      "sourceState": null,
+      "returnedAfterManagedDrain": true,
+      "seconds": 0.4364955,
+      "exit": 0
+    },
+    {
+      "name": "baseline-delayed-resumption-check-0",
+      "bin": "python3",
+      "args": [
+        "-I",
+        "-S",
+        "/Users/runner/work/_temp/ci-git-owner-bobcg32i/owner.py",
+        "--git",
+        "120",
+        "apply",
+        "--check",
+        "/Users/runner/work/_temp/native-proof-harness/controls/baseline-delayed-resumption.patch"
+      ],
+      "startedAt": "2026-09-21T04:12:34.787Z",
+      "timeoutMs": 19787.688916999847,
+      "log": "baseline-delayed-resumption-check-0/run.log",
+      "sourceState": null,
+      "returnedAfterManagedDrain": true,
+      "seconds": 0.198860625,
+      "exit": 0
+    },
+    {
+      "name": "baseline-delayed-resumption-apply-0",
+      "bin": "python3",
+      "args": [
+        "-I",
+        "-S",
+        "/Users/runner/work/_temp/ci-git-owner-bobcg32i/owner.py",
+        "--git",
+        "120",
+        "apply",
+        "/Users/runner/work/_temp/native-proof-harness/controls/baseline-delayed-resumption.patch"
+      ],
+      "startedAt": "2026-09-21T04:12:34.990Z",
+      "timeoutMs": 19584.83695799997,
+      "log": "baseline-delayed-resumption-apply-0/run.log",
+      "sourceState": null,
+      "returnedAfterManagedDrain": true,
+      "seconds": 0.232851542,
+      "exit": 0
+    },
+    {
+      "name": "baseline-delayed-resumption-build",
+      "bin": "swift",
+      "args": [
+        "build",
+        "--package-path",
+        "apps/macos",
+        "--build-system",
+        "native",
+        "--enable-code-coverage",
+        "--disable-index-store",
+        "-Xswiftc",
+        "-gline-tables-only",
+        "--build-tests",
+        "--jobs",
+        "3"
+      ],
+      "startedAt": "2026-09-21T04:12:35.380Z",
+      "timeoutMs": 19194.698667000048,
+      "log": "baseline-delayed-resumption-build/run.log",
+      "sourceState": "a4e3a5d5f88f164a9565cf805db242b34557d71f",
+      "error": "Error: Managed command timed out after 19194.698667000048ms",
+      "seconds": 19.236770333,
+      "exit": null
+    }
+  ],
+  "cleanupUncertain": true,
+  "swiftParallelizationWidth": 3,
+  "platform": {
+    "macos": "26.6.2",
+    "macosBuild": "25G83",
+    "xcode": "Xcode 26.6\nBuild version 17F113",
+    "swift": "Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)\nTarget: arm64-apple-macosx26.0"
+  },
+  "cleanProofComplete": true,
+  "error": "Error: Managed command timed out after 19194.698667000048ms",
+  "lastVerifiedSourceHead": "a4e3a5d5f88f164a9565cf805db242b34557d71f",
+  "retainedPatches": [
+    "baseline-delayed-resumption.patch"
+  ],
+  "finishedAt": "2026-09-21T04:12:54.623Z"
+}

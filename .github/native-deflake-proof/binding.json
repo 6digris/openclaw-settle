@@ -359,7 +359,9 @@
     "controls/candidate-delayed-resumption.patch": "690a15154d24ee7320f3f2e9067cea5b1884e7620d823d06206507624c789f38",
     "controls/candidate-held-response-admission-control.patch": "06abd02426a1ba01a4aaf74dbed76f48e5f7727c7c44ee9d18b2161c25f4144e",
     "controls/candidate-joins-loser-negative-control.patch": "3a1bcd9d68960405525b05a1b760509a1bb169b6ffaba4c18c18e811f98cf747",
-    "driver.mjs": "72ceedb8705f733b49d7ab43b4614c186c315d807cd8da2353629c6eb6a312df"
+    "driver.mjs": "c2795cf325ba25b0a99f44f2ff289cc8560861043fc2bb9d0743341e148aa37a",
+    "prior-clean-build.json": "1326d23d2d533b51ac6ee3f61285f32ec1f4f78d8a560d7509e28cee887ea96e",
+    "prior-clean-proof.json": "f03e5aed7a7f42338144d2be872d41a519e9d0ce311953633a088e87bafd2a7a"
   },
   "platform": {
     "macos": "26.6.2",
@@ -372,6 +374,20 @@
     "jobMinutes": 60,
     "managedMinutes": 50,
     "shutdownGraceSeconds": 90,
-    "cleanupReserveSeconds": 120
+    "cleanupReserveSeconds": 120,
+    "minimumBuildSeconds": 600,
+    "sourceAndCleanupReserveSeconds": 180
+  },
+  "phase": "controls-only",
+  "priorCleanProof": {
+    "runId": 35557398853,
+    "attempt": 1,
+    "workflowSha": "4886aa3c106a9316d13f785bcbec504820d504e4",
+    "runUrl": "https://github.com/openclaw/openclaw/actions/runs/35557398853",
+    "artifactId": 10621542991,
+    "artifactSha256": "6987d908e5e6771f8fee441413d3e85e2f4ec809adfdded59fcdbbc3d61853ba",
+    "ledgerSha256": "f03e5aed7a7f42338144d2be872d41a519e9d0ce311953633a088e87bafd2a7a",
+    "buildIdentitySha256": "1326d23d2d533b51ac6ee3f61285f32ec1f4f78d8a560d7509e28cee887ea96e",
+    "binarySha256": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7"
   }
 }

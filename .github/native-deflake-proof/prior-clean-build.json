@@ -1,0 +1,35 @@
+{
+  "name": "candidate-build",
+  "binarySha256": "8a9002de61af33e18c003c0f886c68021f1a8878a3529f628e0a56a864b189e7",
+  "source": {
+    "sha": "b43d28e26311c973101a405cb46785dcfd40a2a5",
+    "hashes": {
+      "apps/macos/Package.resolved": "2549ca7fd983abf788b8299ae2b570729d7ad98333156b227b4fe1e9ae92eed2",
+      "apps/macos/Package.swift": "3aa70e34f1a9cf93e01986dc25444a20685584880d5e686165430b00fbdb1ee1",
+      "apps/macos/Sources/OpenClaw/GatewayProcessManager.swift": "bb7412b65ff6f4fd618bba66940ca27af8a4c7af4fc19073fbba63ede32b21b2",
+      "apps/macos/Tests/OpenClawIPCTests/AsyncTimeoutTests.swift": "7cd78fbf13eef8a3332caa3e0bd7a2da667334b50ab08bcaa98c863588f9c793",
+      "apps/macos/Tests/OpenClawIPCTests/CLIInstallerTests.swift": "eb803d1c6e39300f925321840c05acef333032eb6164e3f6a136110bb639050a",
+      "apps/macos/Tests/OpenClawIPCTests/CronJobsStoreTests.swift": "67108b11fd59096ee3359f13ee9716e998cf4a103940e8d38ad2d24428b80fd2",
+      "apps/macos/Tests/OpenClawIPCTests/GatewayProcessManagerTests.swift": "50a997d11a7a34a9e73a67573c0117ccc4e75a2a84f48fad521fb9f42e03416c",
+      "apps/macos/Tests/OpenClawIPCTests/ManualTestClock.swift": "fa29b03e7dd20624b60c2db67896f92d7fbbb464744e061b6246baa4136f5c82",
+      "apps/shared/OpenClawKit/Package.resolved": null,
+      "apps/shared/OpenClawKit/Package.swift": "0438f7c7bf8b9a694af96fa20e1ea982e6715e79d3cdf17d37357f329c59bd05",
+      "apps/shared/OpenClawKit/Sources/OpenClawKit/AsyncTimeout.swift": "79f6780afaf552e532e1b339c74908728d3d209ec7435290a34416ad2d713418",
+      "apps/shared/OpenClawMLXTTSProtocol/Package.swift": "662deb1e39e7284eb4fc649e20bed379fb5ee0c2e46cff8300ebce673d51a0b9",
+      "apps/swabble/Package.resolved": null,
+      "apps/swabble/Package.swift": "836ade9a377c9ebeb419e1fe1f281feda010c0f7fce6dded6a4aa73b91c5bcfd",
+      "package.json": "65daebb3b5f8022455ffdfcb095fc48a0f6177ca4ce2e16d9760416759c07225",
+      "pnpm-lock.yaml": "1f8a8e068df19803f7492454c7c6283a6630a0cf05417044d81b24c1cd5a188a",
+      "pnpm-workspace.yaml": "edced18940dc8b3c31210b327561fca062ce6cebebe92893be983ed604f64ee8",
+      "scripts/lib/failed-trailer.mts": "86ba752b93f3101839d2cac39cb4f0d13477807c8ed5ad569ba23dddaf986796",
+      "scripts/lib/managed-child-process.mts": "1816ce579a6434676ca4bbe5a0a547d532623c264e0505474f12920583b6990a",
+      "scripts/lib/vitest-resource-ownership.mts": "d4d3c644afdc4b20580b5c145f0860ac9b0c3358512e122bdcd7e3a256293659",
+      "scripts/lib/windows-taskkill.mjs": "9100b4bda17e716e721a44132641190e8346a77260dc2194304bfee20fa1958d",
+      "scripts/prepare-apple-mermaid.mjs": "0e914c41fec9dce2dfcffcf774a0c6f121b43044176e930c15b7cc7033f7384b",
+      "scripts/test-macos-native.mts": "716d740e0f4aabbc6b36671ec688f21953d967f4d4a699417420cb63a9cf3344",
+      "scripts/windows-cmd-helpers.mjs": "a2a52f2cbc6e890dee15ca7f514f0ebacd0479f1d58785b6c3fccccc0720b24b"
+    },
+    "changedPaths": []
+  },
+  "log": "candidate-build/run.log"
+}

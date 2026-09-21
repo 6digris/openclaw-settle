@@ -1,7 +1,7 @@
-name: Native Deflake Proof
+name: Native Deflake Controls
 on:
   workflow_dispatch: {}
-run-name: Native deflake PR 154269 b43d28e26311
+run-name: Native deflake controls PR 154269 b43d28e26311 after 35557398853
 permissions:
   contents: read
 concurrency:
@@ -14,7 +14,7 @@ env:
   PROOF_CANDIDATE_SHA: b43d28e26311c973101a405cb46785dcfd40a2a5
   PROOF_TOOLING_SHA: d01d83b79b18fd7700648e97e54db9e133bca46d
   PROOF_BASELINE_SHA: a4e3a5d5f88f164a9565cf805db242b34557d71f
-  PROOF_BINDING_SHA256: 63bc95837e19d9c31d6a7a35993bbc0e79733531b9110413aaef948c462531a7
+  PROOF_BINDING_SHA256: b3346577234b80a0d68a611b9e4c61805a13ef83217d3947412a2f2f3a00d110
   PROOF_WORKFLOW_SHA: ${{ github.workflow_sha }}
 jobs:
   native-proof:
@@ -179,7 +179,7 @@ jobs:
           sw_vers
           xcodebuild -version
           swift --version
-      - name: Build once and run exact-source repetition and causal proof
+      - name: Run remaining causal controls with bound prior clean proof
         run: node "$PROOF_HARNESS_DIR/driver.mjs" --run
       - name: Upload proof logs and immutable source ledger
         if: always()

@@ -29,15 +29,86 @@ const normalPlan = [
     args: ["--skip", "AppStateIsolationTests|ProfileChatPreferencesTests"],
   })),
 ];
+const priorCleanProof = validatePriorCleanProof();
+
+function validatePriorCleanProof() {
+  const identity = binding.priorCleanProof;
+  if (binding.phase !== "controls-only" || !identity) {
+    throw new Error("This continuation requires immutable prior clean proof");
+  }
+  const readBoundJson = (file, expected) => {
+    const bytes = fs.readFileSync(path.join(bundle, file));
+    if (crypto.createHash("sha256").update(bytes).digest("hex") !== expected) {
+      throw new Error("Prior clean proof hash mismatch: " + file);
+    }
+    return JSON.parse(bytes);
+  };
+  const prior = readBoundJson("prior-clean-proof.json", identity.ledgerSha256);
+  const build = readBoundJson("prior-clean-build.json", identity.buildIdentitySha256);
+  if (
+    String(prior.runId) !== String(identity.runId) ||
+    String(prior.attempt) !== String(identity.attempt) ||
+    prior.workflowSha !== identity.workflowSha ||
+    prior.candidateSha !== binding.candidateSha ||
+    prior.toolingSha !== binding.toolingSha ||
+    prior.baselineSha !== binding.baselineSha ||
+    prior.state !== "failed" ||
+    prior.cleanupUncertain !== true ||
+    prior.cleanProofComplete !== true ||
+    prior.controls.length !== 0 ||
+    prior.normal.length !== normalPlan.length ||
+    JSON.stringify(build.source) !== JSON.stringify(binding.states.candidate) ||
+    build.binarySha256 !== identity.binarySha256
+  ) {
+    throw new Error("Prior clean proof identity or completion does not match this continuation");
+  }
+  const buildCommand = prior.commands.find((entry) => entry.name === build.name);
+  if (buildCommand?.exit !== 0 || buildCommand.returnedAfterManagedDrain !== true) {
+    throw new Error("Prior candidate build did not complete and drain");
+  }
+  for (const [index, expected] of normalPlan.entries()) {
+    const actual = prior.normal[index];
+    for (const [key, value] of Object.entries(expected)) {
+      if (JSON.stringify(actual[key]) !== JSON.stringify(value)) {
+        throw new Error("Prior clean invocation scope mismatch: " + expected.name);
+      }
+    }
+    const command = prior.commands.find((entry) => entry.name === expected.name);
+    if (
+      actual.exit !== 0 ||
+      actual.swiftTests <= 0 ||
+      actual.build !== identity.binarySha256 ||
+      command?.exit !== 0 ||
+      command.returnedAfterManagedDrain !== true ||
+      command.sourceState !== binding.candidateSha
+    ) {
+      throw new Error("Prior clean invocation did not complete and drain: " + expected.name);
+    }
+  }
+  return {
+    ...identity,
+    reused: true,
+    normalInvocations: prior.normal.length,
+    platform: prior.platform,
+    originalRunState: prior.state,
+    originalError: prior.error,
+    originalCleanupUncertain: prior.cleanupUncertain,
+    completedNormalCommandsDrained: true,
+    originalFailureCommand: prior.commands.at(-1).name,
+  };
+}
+
 if (mode === "--plan-only") {
   console.log(
     JSON.stringify(
       {
         mode: "plan-only",
         binding: binding.candidateSha,
-        normalBuilds: 1,
-        normalInvocations: normalPlan.length,
-        normalPlan,
+        phase: binding.phase,
+        normalBuilds: 0,
+        normalInvocations: 0,
+        normalPlan: [],
+        reusedCleanProof: priorCleanProof,
         controls: binding.controls,
         controlsCountTowardNormalProof: false,
       },
@@ -81,6 +152,7 @@ async function run() {
     remainingAtStart - Number(process.hrtime.bigint() - monotonicStart) / 1_000_000;
   const report = {
     schema: 1,
+    phase: binding.phase,
     candidateSha: binding.candidateSha,
     toolingSha: binding.toolingSha,
     baselineSha: binding.baselineSha,
@@ -88,6 +160,7 @@ async function run() {
     runId: process.env.GITHUB_RUN_ID,
     attempt: process.env.GITHUB_RUN_ATTEMPT,
     state: "running",
+    reusedCleanProof: priorCleanProof,
     normal: [],
     controls: [],
     commands: [],
@@ -133,6 +206,9 @@ async function run() {
     const log = path.join(directory, "run.log");
     const budget = Math.min(options.limitMs ?? 10 * 60_000, remaining() - 120_000);
     if (budget <= 0) throw new Error("Managed proof envelope exhausted before " + name);
+    if (options.minimumBudgetMs && budget < options.minimumBudgetMs) {
+      throw new Error("Insufficient measured build budget before " + name);
+    }
     console.log(
       "[native-proof] start " + name + " (remaining " + Math.floor(remaining() / 1000) + "s)",
     );
@@ -231,7 +307,11 @@ async function run() {
       name,
       "swift",
       ["build", ...common, "--build-tests", "--jobs", String(width)],
-      { limitMs: 20 * 60_000, sourceState: spec.sha },
+      {
+        limitMs: 20 * 60_000,
+        minimumBudgetMs: binding.envelope.minimumBuildSeconds * 1000,
+        sourceState: spec.sha,
+      },
     );
     verifySource(spec);
     const buildIdentity = {
@@ -324,36 +404,32 @@ async function run() {
         "Hosted platform moved; record and rebind against current ordinary CI before interpreting proof",
       );
     }
-    const normalBuild = await build("candidate-build", binding.states.candidate);
-    for (const invocation of normalPlan) {
-      verifySource(binding.states.candidate);
-      const result = await command(
-        invocation.name,
-        process.execPath,
-        ["scripts/test-macos-native.mts", ...nativeArgs, ...invocation.args],
-        { sourceState: binding.candidateSha },
-      );
-      verifySource(binding.states.candidate);
-      const counts = checkGreenLog(result, invocation);
-      report.normal.push({
-        ...invocation,
-        ...counts,
-        exit: result.code,
-        log: result.entry.log,
-        build: normalBuild.binarySha256,
-      });
-      writeReport();
+    if (JSON.stringify(actualPlatform) !== JSON.stringify(priorCleanProof.platform)) {
+      throw new Error("Control platform differs from the reused clean proof");
     }
-    if (
-      hash(binaryPath) !== normalBuild.binarySha256 ||
-      report.normal.length !== standaloneGroups.length * 20 + 3
-    ) {
-      throw new Error("Clean candidate build changed or repetition inventory is incomplete");
-    }
-    report.cleanProofComplete = true;
+    fs.copyFileSync(
+      path.join(bundle, "prior-clean-proof.json"),
+      path.join(root, "prior-clean-proof.json"),
+    );
+    fs.copyFileSync(
+      path.join(bundle, "prior-clean-build.json"),
+      path.join(root, "prior-clean-build.json"),
+    );
     writeReport();
     for (const control of binding.controls) {
-      if (remaining() <= 120_000) throw new Error("No proof budget remains for " + control.name);
+      const controlTimeoutMs = Math.max(180_000, control.innerTimeoutMs + 120_000);
+      // The observed clean build took 323s; reserve 10m for compilation plus
+      // the full control deadline, source transitions, and final cleanup.
+      if (
+        remaining() <
+        (binding.envelope.minimumBuildSeconds + binding.envelope.sourceAndCleanupReserveSeconds) *
+          1000 +
+          controlTimeoutMs
+      ) {
+        throw new Error(
+          "Insufficient build/test budget before changing source for " + control.name,
+        );
+      }
       await ownedGit(control.name + "-checkout", ["checkout", "--detach", control.sourceSha]);
       originalHead = control.sourceSha;
       verifySource(binding.states[control.sourceState]);
@@ -375,7 +451,7 @@ async function run() {
         {
           sourceState: state.sha,
           env: { OPENCLAW_NATIVE_PROOF_TIMEOUT_MS: String(control.innerTimeoutMs) },
-          limitMs: Math.max(180_000, control.innerTimeoutMs + 120_000),
+          limitMs: controlTimeoutMs,
         },
       );
       verifySource(state);
@@ -471,6 +547,7 @@ async function run() {
     if (report.controls.length !== binding.controls.length)
       throw new Error("Control inventory is incomplete");
     report.state = "passed";
+    report.controlsComplete = true;
     report.finalSourceHead = binding.candidateSha;
     report.finalBuildIsDiagnostic = true;
   } catch (error) {
