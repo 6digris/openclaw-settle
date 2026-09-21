@@ -70,9 +70,21 @@ type WorkerGeneration = {
   discovery?: {
     key: string;
     registry: PluginRegistry;
-    release: () => Promise<void>;
+    release: ReturnType<typeof retainPreparedPluginRegistry>;
   };
 };
+
+// A retained release must not close over the task scope and its previous generation.
+function retainWorkerGeneration(prepared: WorkerGeneration): () => Promise<void> {
+  const releaseBase = ownPreparedPluginGeneration(prepared.pluginGeneration).retain();
+  return async () => {
+    try {
+      await prepared.discovery?.release?.();
+    } finally {
+      await releaseBase();
+    }
+  };
+}
 
 function refreshAuthStore(params: {
   agentDir: string;
@@ -369,9 +381,7 @@ async function runCatalogRequest(
         acquiredDiscovery = {
           key,
           registry,
-          release: async () => {
-            await release?.();
-          },
+          release,
         };
       }
       const catalogRegistry = (acquiredDiscovery ?? prepared.discovery)!.registry;
@@ -473,7 +483,7 @@ async function runCatalogRequest(
     if (acquiredDiscovery) {
       const previous = prepared.discovery;
       prepared.discovery = acquiredDiscovery;
-      await previous?.release();
+      await previous?.release?.();
     }
     completed = true;
     return result;
@@ -488,11 +498,11 @@ async function runCatalogRequest(
         if (prepared?.discovery === acquiredDiscovery) {
           prepared.discovery = undefined;
         }
-        await acquiredDiscovery.release();
+        await acquiredDiscovery.release?.();
       }
       if (prepared && !prepareGeneration) {
         try {
-          await prepared.discovery?.release();
+          await prepared.discovery?.release?.();
         } finally {
           await discardPreparedPluginGeneration(prepared.pluginGeneration);
         }
@@ -552,14 +562,7 @@ if (parentPort) {
             }
             const prepared = (attempted = await prepareWorkerGeneration(value));
             if (prepared.reconstructedFingerprint === value.generationFingerprint) {
-              const releaseBase = ownPreparedPluginGeneration(prepared.pluginGeneration).retain();
-              release = async () => {
-                try {
-                  await prepared.discovery?.release();
-                } finally {
-                  await releaseBase();
-                }
-              };
+              release = retainWorkerGeneration(prepared);
             }
             return prepared;
           });
