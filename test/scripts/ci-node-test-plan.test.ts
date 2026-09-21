@@ -4682,8 +4682,15 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     expect(owners[0]?.pretestBuildMode).toBe("runtime");
   });
 
-  it("retains the changed host plugin test when the store-alias diff forces fallback", () => {
-    expect(createChangedNodeTestShards(STORE_ALIAS_CHANGED_PATHS)).toBeNull();
+  it("retains the changed host plugin test in SDK consumer and fallback plans", () => {
+    const selected = expectDefined(createChangedNodeTestShards(STORE_ALIAS_CHANGED_PATHS));
+    expect(
+      selected.flatMap((shard) =>
+        (shard.targets ?? []).concat(
+          shard.groups?.flatMap((group) => group.includePatterns ?? []) ?? [],
+        ),
+      ),
+    ).toContain("src/plugins/tools.optional.test.ts");
     const options = {
       changedPaths: STORE_ALIAS_CHANGED_PATHS,
       includeReleaseOnlyPluginShards: false,

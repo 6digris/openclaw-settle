@@ -20,6 +20,7 @@ import {
   isTestFileTarget,
   resolveControlUiTestConsumers,
   resolveChangedTestTargetPlan,
+  resolvePluginSdkTestConsumers,
   UI_E2E_VITEST_CONFIG,
 } from "../test-projects.test-support.mts";
 import { listAvailableExtensionIds } from "./changed-extensions.mts";
@@ -116,6 +117,21 @@ const UI_NODE_TEST_CONFIGS = new Set([
 const publicPluginSdkEntrySources = Object.values(
   buildPluginSdkEntrySources(publicPluginSdkEntrypoints),
 );
+// These inputs change the identity/resolution of the public surface itself.
+// A graph of the candidate tree cannot recover consumers of removed aliases.
+const SDK_GRAPH_IDENTITY_PATHS = new Set([
+  "src/plugin-sdk/index.ts",
+  "src/plugin-sdk/api-baseline.ts",
+  "scripts/lib/plugin-sdk-entries.mts",
+  "scripts/lib/plugin-sdk-entrypoints.json",
+  "scripts/lib/plugin-sdk-private-local-only-subpaths.json",
+  "scripts/lib/plugin-sdk-deprecated-public-subpaths.json",
+  "scripts/lib/plugin-sdk-deprecated-barrel-subpaths.json",
+]);
+const SDK_CONTRACT_CONFIGS = new Set([
+  "test/vitest/vitest.plugin-sdk.config.ts",
+  "test/vitest/vitest.plugin-sdk-light.config.ts",
+]);
 
 const fullNodeTestShards = createNodeTestShards({
   includeReleaseOnlyPluginShards: false,
@@ -741,11 +757,67 @@ export function createChangedNodeTestShards(
     return fallback("workspace package consumers require package-alias coverage");
   }
 
-  // Package-specifier consumers are invisible to the relative import graph.
-  // Fail safe when a core change reaches a public SDK entrypoint indirectly.
-  if (hasCoreExtensionImpact(changedPaths, { cwd })) {
+  if (changedPaths.some((file) => SDK_GRAPH_IDENTITY_PATHS.has(file))) {
+    return fallback("public SDK entry identities or API baseline changed");
+  }
+  const sdkConsumers = hasCoreExtensionImpact(changedPaths, { cwd })
+    ? resolvePluginSdkTestConsumers(regularPaths, cwd)
+    : { impactedPaths: [], entryPoints: [], tests: [], extensionRoots: [] };
+  if (!sdkConsumers) {
+    return fallback("public SDK consumer graph cannot resolve every alias");
+  }
+  const sdkPaths = new Set(sdkConsumers.impactedPaths);
+  // Other public contracts and planner changes keep their independent owner;
+  // reaching a resolvable SDK entry alone no longer widens the complete plan.
+  if (
+    hasCoreExtensionImpact(
+      changedPaths.filter((file) => !sdkPaths.has(file)),
+      { cwd },
+    )
+  ) {
     return fallback("core change reaches public SDK or extension consumers");
   }
+  if (sdkPaths.size > 0 && path.resolve(cwd) !== process.cwd()) {
+    return fallback("SDK consumers require the canonical shard inventory");
+  }
+  const sdkTests = new Set(sdkConsumers.tests);
+  const availableExtensionRoots = sdkConsumers.extensionRoots.length
+    ? new Set(listAvailableExtensionIds().map((id) => `extensions/${id}`))
+    : new Set<string>();
+  const sdkShards = sdkPaths.size
+    ? createNodeTestShardBundles({
+        changedPaths,
+        includeReleaseOnlyPluginShards: false,
+        compactMode: "pull-request",
+        runnerBackend: options.runnerBackend,
+      })
+        .filter((shard) =>
+          shard.groups?.some(
+            (group) =>
+              group.configs.some((config) => SDK_CONTRACT_CONFIGS.has(config)) ||
+              // Whole-config envelopes have no file inventory to subtract from.
+              // Their discovery, environment and runtime preparation stay intact.
+              !group.includePatterns?.length ||
+              group.includePatterns?.some(
+                (file) =>
+                  sdkTests.has(file) ||
+                  file === "test/scripts/ci-sdk-impact-replay.test.ts" ||
+                  /^(?:test\/scripts|src\/plugins\/contracts)\/[^/]*plugin-sdk[^/]*\.test\.ts$/u.test(
+                    file,
+                  ) ||
+                  (file.includes("*") &&
+                    sdkConsumers.tests.some((target) => path.matchesGlob(target, file))),
+              ),
+          ),
+        )
+        .map((shard) =>
+          Object.assign({}, shard, {
+            configs: [],
+            checkName: `checks-node-changed-sdk-${shard.shardName}`,
+            shardName: `changed-sdk-${shard.shardName}`,
+          }),
+        )
+    : [];
 
   // UI source targets intentionally name an area rather than individual tests.
   // Keep that area's complete canonical rows, including their process policies;
@@ -795,7 +867,7 @@ export function createChangedNodeTestShards(
         )
     : [];
   const resolvedTargetPlans = resolvePreciseChangedTargets(
-    regularPaths.filter((file) => !uiPaths.includes(file)),
+    regularPaths.filter((file) => !uiPaths.includes(file) && !sdkPaths.has(file)),
     cwd,
     documentationPaths,
     [
@@ -814,7 +886,7 @@ export function createChangedNodeTestShards(
   const targetPlans = resolvedTargetPlans.filter(
     ({ target, plans }) =>
       !plans.every(({ config }) =>
-        uiShards.some((shard) =>
+        [...uiShards, ...sdkShards].some((shard) =>
           shard.groups?.some(
             (group) =>
               group.configs.includes(config) &&
@@ -888,9 +960,27 @@ export function createChangedNodeTestShards(
     .map(({ target }) => target);
 
   const shards = [
-    ...uiShards,
+    ...sdkShards,
+    ...uiShards.filter(
+      (shard) =>
+        !sdkShards.some(
+          (sdkShard) =>
+            sdkShard.shardName === shard.shardName.replace("changed-ui-", "changed-sdk-"),
+        ),
+    ),
     ...canonicalShards.map((shard) => Object.assign({}, shard, { configs: [] })),
-    ...packChangedExtensionConfigShards(createChangedExtensionConfigShardsForPaths(livePaths, cwd)),
+    ...packChangedExtensionConfigShards(
+      createChangedExtensionConfigShards([
+        ...new Set([
+          ...sdkConsumers.extensionRoots.filter((root) => availableExtensionRoots.has(root)),
+          ...resolveChangedExtensionRoots(
+            livePaths.filter(
+              (file) => file.startsWith("extensions/") && !isPluginControlUiPath(file),
+            ),
+          ),
+        ]),
+      ]),
+    ),
     // Native browser files run in checks-ui, including precise changed-file plans.
     ...createChangedTargetShards(
       targets.filter((target) => !isUiBrowserTestFile(target)),

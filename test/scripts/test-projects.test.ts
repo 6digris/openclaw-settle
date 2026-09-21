@@ -29,6 +29,7 @@ import {
   resolveChangedTargetArgs,
   resolveControlUiTestConsumers,
   resolveParallelFullSuiteConcurrency,
+  resolvePluginSdkTestConsumers,
   shouldRetryVitestNoOutputTimeout,
   withRetryNoOutputTimeout,
   writeVitestIncludeFile,
@@ -4655,6 +4656,97 @@ describe("scripts/test-projects changed-target routing", () => {
 });
 
 describe("test selector native source facts", () => {
+  it("selects SDK barrel consumers through package aliases and retains runtime plugin roots", () => {
+    withTinyGitRepo(
+      {
+        "src/owner/value.ts": "export const value = 1;\n",
+        "src/owner/value.test.ts": 'import "./value.js";\n',
+        "src/plugin-sdk/allow-from.ts": 'export { value } from "../owner/value.js";\n',
+        "src/plugin-sdk/core.ts": 'export { value } from "./allow-from.js";\n',
+        "src/plugin-sdk/qa-runtime.ts": 'export { value } from "./allow-from.js";\n',
+        "src/plugin-sdk/channel-core.ts": "export const other = true;\n",
+        "extensions/static/index.ts": 'export { value } from "openclaw/plugin-sdk/core";\n',
+        "extensions/dynamic/index.ts": 'void import("openclaw/plugin-sdk/allow-from");\n',
+        "extensions/require/index.ts": 'require("@openclaw/plugin-sdk/allow-from");\n',
+        "extensions/template/index.ts": "void import(`openclaw/plugin-sdk/qa-runtime`);\n",
+        "extensions/unrelated/index.ts": 'import "openclaw/plugin-sdk/channel-core";\n',
+        "src/static-consumer.test.ts": 'import "../extensions/static/index.js";\n',
+        "src/type-consumer.test.ts":
+          'import type { value } from "@openclaw/plugin-sdk/allow-from";\n',
+        "src/directly-changed.test.ts": "export {};\n",
+        "src/unrelated.ts": "export const other = true;\n",
+        "src/unrelated.test.ts": 'import "./unrelated.js";\n',
+        "test/scripts/vitest-worker-artifacts.prepared.test-support.ts": "export {};\n",
+        "test/scripts/compiled-sdk-consumer.test.ts":
+          'import "./vitest-worker-artifacts.prepared.test-support.js";\n',
+      },
+      (cwd) => {
+        expect(
+          resolvePluginSdkTestConsumers(
+            ["src/owner/value.ts", "src/unrelated.ts", "src/directly-changed.test.ts"],
+            cwd,
+          ),
+        ).toEqual({
+          entryPoints: [
+            "src/plugin-sdk/allow-from.ts",
+            "src/plugin-sdk/core.ts",
+            "src/plugin-sdk/qa-runtime.ts",
+          ],
+          impactedPaths: ["src/owner/value.ts"],
+          tests: [
+            "src/directly-changed.test.ts",
+            "src/owner/value.test.ts",
+            "src/static-consumer.test.ts",
+            "src/type-consumer.test.ts",
+            "test/scripts/compiled-sdk-consumer.test.ts",
+          ],
+          extensionRoots: [
+            "extensions/dynamic",
+            "extensions/require",
+            "extensions/static",
+            "extensions/template",
+          ],
+        });
+        expect(resolvePluginSdkTestConsumers(["src/unrelated.ts"], cwd)?.tests).toEqual([]);
+      },
+    );
+  });
+
+  it.each([
+    "openclaw/plugin-sdk/unknown-entry",
+    "@openclaw/plugin-sdk",
+    "openclaw/plugin-sdk/core",
+  ])("refuses incomplete SDK consumer enumeration for %s", (specifier) => {
+    withTinyGitRepo(
+      {
+        "src/plugin-sdk/allow-from.ts": "export const value = true;\n",
+        "extensions/unknown/index.ts": `import ${JSON.stringify(specifier)};\n`,
+      },
+      (cwd) => {
+        expect(resolvePluginSdkTestConsumers(["src/plugin-sdk/allow-from.ts"], cwd)).toBeNull();
+      },
+    );
+  });
+
+  it("retains negative SDK loader fixtures without treating them as production aliases", () => {
+    withTinyGitRepo(
+      {
+        "src/plugin-sdk/internal-leaf.ts": "export const value = true;\n",
+        "src/plugin-sdk/internal-leaf.test.ts": 'import "./internal-leaf.js";\n',
+        "src/plugins/negative-import.test.ts":
+          "const fixture = 'import \"openclaw/plugin-sdk/unknown-entry\";';\n",
+      },
+      (cwd) => {
+        expect(resolvePluginSdkTestConsumers(["src/plugin-sdk/internal-leaf.ts"], cwd)).toEqual({
+          entryPoints: [],
+          impactedPaths: ["src/plugin-sdk/internal-leaf.ts"],
+          tests: ["src/plugin-sdk/internal-leaf.test.ts", "src/plugins/negative-import.test.ts"],
+          extensionRoots: [],
+        });
+      },
+    );
+  });
+
   it("keeps whole-area UI consumers and source readers across graph cache scopes", () => {
     const pluginModule = "extensions/example/browser/view.ts";
     const pluginConsumer = "test/plugin-browser-consumer.test.ts";

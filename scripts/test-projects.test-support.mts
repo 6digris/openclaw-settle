@@ -90,6 +90,7 @@ import { parsePermissiveBooleanToken } from "./lib/arg-utils.mts";
 import {
   getChangedPathFacts,
   isTestFileTarget,
+  isTestOnlyPath,
   isTestSupportFileTarget,
 } from "./lib/changed-path-facts.mjs";
 import {
@@ -104,6 +105,7 @@ import {
   listGatewayServerTestTargets,
   splitTestTargetChunks as splitTargetChunks,
 } from "./lib/gateway-server-test-plan.mts";
+import { pluginSdkEntrypoints, privateQaPluginSdkEntrypoints } from "./lib/plugin-sdk-entries.mts";
 import { readTestSelectorSourceFacts } from "./lib/test-selector-source-facts.mts";
 // CI imports planning before dependency installation; execution owners stay outside this closure.
 import { resolveVitestCliEntry } from "./lib/vitest-build-prerequisites.mts";
@@ -919,6 +921,12 @@ const SOURCE_ROOTS_FOR_IMPORT_GRAPH = [
   "test",
 ];
 const IMPORTABLE_FILE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts"];
+const PLUGIN_SDK_SPECIFIER_RE = /^(?:openclaw\/plugin-sdk|@openclaw\/plugin-sdk)(?:\/(.+))?$/u;
+const pluginSdkGraphEntrySources = new Set(
+  [...pluginSdkEntrypoints, ...privateQaPluginSdkEntrypoints].map(
+    (entry) => `src/plugin-sdk/${entry}.ts`,
+  ),
+);
 function importGraphPathspecs(roots: string[], suffixes: readonly string[]) {
   return [
     ...roots.flatMap((root) => suffixes.map((suffix) => `:(glob)${root}/**/*${suffix}`)),
@@ -1674,6 +1682,11 @@ function resolveImportSpecifier(
   fileSet: ReadonlySet<string>,
   extensions: readonly string[] = IMPORTABLE_FILE_EXTENSIONS,
 ) {
+  const sdkSpecifier = PLUGIN_SDK_SPECIFIER_RE.exec(specifier);
+  if (sdkSpecifier) {
+    const source = `src/plugin-sdk/${sdkSpecifier[1]}.ts`;
+    return pluginSdkGraphEntrySources.has(source) && fileSet.has(source) ? source : null;
+  }
   if (!specifier.startsWith(".")) {
     return null;
   }
@@ -1941,6 +1954,11 @@ function resolveAffectedTestsFromTargetedImportScan(
   const targets = [];
   const extensions = tooling ? TOOLING_IMPORTABLE_FILE_EXTENSIONS : IMPORTABLE_FILE_EXTENSIONS;
   while (frontier.length > 0) {
+    // SDK aliases can fan out across most plugins. Build the reverse graph once
+    // instead of issuing a growing series of repository-wide text searches.
+    if (frontier.some((file) => pluginSdkGraphEntrySources.has(file))) {
+      return null;
+    }
     const terms = frontier.flatMap((file) => resolveImportGraphSearchTerms(file, extensions));
     const matches = listImportGraphGrepMatches(cwd, terms, { tooling });
     const next = [];
@@ -2051,7 +2069,11 @@ function resolveAffectedTestsFromImportGraph(
   cwd: string,
   options: ImportGraphOptions & { forceFull?: boolean } = {},
 ) {
-  if (options.forceFull !== true && typeof changedPath === "string") {
+  if (
+    options.forceFull !== true &&
+    typeof changedPath === "string" &&
+    !changedPath.startsWith("src/plugin-sdk/")
+  ) {
     const targetedTargets = resolveAffectedTestsFromTargetedImportScan(changedPath, cwd, options);
     if (targetedTargets !== null) {
       return targetedTargets;
@@ -2077,6 +2099,89 @@ function resolveAffectedTestsFromImportGraph(
   }
 
   return [...new Set(targets)].toSorted((left, right) => left.localeCompare(right));
+}
+
+/** Select SDK consumers, retaining whole plugin roots for runtime registration edges. */
+export function resolvePluginSdkTestConsumers(changedPaths: string[], cwd = process.cwd()) {
+  const files = listImportGraphFilesForCwd(cwd, { tooling: true });
+  const fileSet = new Set(files);
+  const { reverseImports, testFiles } = getImportGraph(cwd, { tooling: true });
+  const consumersOf = (sources: string[]) => {
+    const consumers = new Set(sources);
+    for (const source of consumers) {
+      for (const consumer of reverseImports.get(source) ?? []) {
+        consumers.add(consumer);
+      }
+    }
+    return consumers;
+  };
+  const impactedPaths: string[] = [];
+  const entryPoints = new Set<string>();
+  const consumers = new Set<string>();
+  for (const changedPath of new Set(changedPaths)) {
+    if (isTestOnlyPath(changedPath) || !isImportableGraphFile(changedPath)) {
+      continue;
+    }
+    const affected = consumersOf([changedPath]);
+    const entries = [...affected].filter((file) => pluginSdkGraphEntrySources.has(file));
+    if (entries.length === 0 && !changedPath.startsWith("src/plugin-sdk/")) {
+      continue;
+    }
+    // A removed module's old edges are absent from this checkout's graph.
+    if (!fileSet.has(changedPath) || !fs.existsSync(path.join(cwd, changedPath))) {
+      return null;
+    }
+    impactedPaths.push(changedPath);
+    for (const entry of entries) {
+      entryPoints.add(entry);
+    }
+    for (const consumer of affected) {
+      consumers.add(consumer);
+    }
+  }
+  if (impactedPaths.length > 0) {
+    // This contract fixture path-launches real SDK/worker compilation, beyond
+    // import edges. Retain every borrower through the fixture's shared owner.
+    for (const consumer of consumersOf([
+      "test/scripts/vitest-worker-artifacts.prepared.test-support.ts",
+    ])) {
+      consumers.add(consumer);
+    }
+    for (const file of files) {
+      const edges = cachedImportGraphEdges.get(`${cwd}\0true\0${file}`);
+      const hasUnresolvedSdkImport = edges?.specifiers.some(
+        (specifier) =>
+          PLUGIN_SDK_SPECIFIER_RE.test(specifier) &&
+          !resolveImportSpecifier(file, specifier, fileSet, TOOLING_IMPORTABLE_FILE_EXTENSIONS),
+      );
+      if (!hasUnresolvedSdkImport) {
+        continue;
+      }
+      if (!isTestOnlyPath(file)) {
+        return null;
+      }
+      // Negative loader fixtures embed nonexistent imports. Keep their proof
+      // for every SDK change instead of treating their strings as runtime edges.
+      for (const consumer of consumersOf([file])) {
+        consumers.add(consumer);
+      }
+    }
+  }
+  for (const changedPath of changedPaths) {
+    if (testFiles.has(changedPath)) {
+      consumers.add(changedPath);
+    }
+  }
+  const sorted = (values: Iterable<string>) =>
+    [...new Set(values)].toSorted((left, right) => left.localeCompare(right));
+  return {
+    entryPoints: sorted(entryPoints),
+    impactedPaths: sorted(impactedPaths),
+    tests: sorted([...consumers].filter((file) => testFiles.has(file))),
+    extensionRoots: sorted(
+      [...consumers].flatMap((file) => /^extensions\/[^/]+(?=\/)/u.exec(file)?.[0] ?? []),
+    ),
+  };
 }
 
 /** Whole-area UI fallback also owns host tests importing UI and changed-source readers. */

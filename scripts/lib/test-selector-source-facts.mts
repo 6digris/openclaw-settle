@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const IMPORT_SPECIFIER_PATTERN =
-  /\b(?:import|export)\s+(?:type\s+)?(?:[^'"]*?\s+from\s+)?["']([^"']+)["']|\bimport\s*\(\s*["']([^"']+)["']\s*\)/gu;
+  /\b(?:import|export)\s+(?:type\s+)?(?:[^'"]*?\s+from\s+)?["']([^"']+)["']|\b(?:import|require)\s*\(\s*["']([^"']+)["']\s*\)|\b(?:import|require)\s*\(\s*`([^`$]+)`\s*\)/gu;
 type SourceFile = { file: string; parseImports: boolean };
 
 function parseStrings(value: unknown): string[] {
@@ -112,8 +112,12 @@ async function readSourceFacts() {
         ? [
             ...new Set(
               [...source.matchAll(pattern)]
-                .map((match) => match[1] ?? match[2] ?? "")
-                .filter((specifier) => specifier.startsWith(".")),
+                .map((match) => match[1] ?? match[2] ?? match[3] ?? "")
+                .filter(
+                  (specifier) =>
+                    specifier.startsWith(".") ||
+                    /^(?:openclaw\/plugin-sdk|@openclaw\/plugin-sdk)(?:\/|$)/u.test(specifier),
+                ),
             ),
           ]
         : [];

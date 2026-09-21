@@ -1389,20 +1389,35 @@ describe("CI changed Node test plan", () => {
         "src/channels/plugins/config-schema.test.ts",
       ],
     },
-  ])(
-    "fails safe when public contracts affect extension imports: $changedPaths",
-    ({ changedPaths }) => {
-      expect(createChangedNodeTestShards(changedPaths)).toBeNull();
-      expectAllExtensionConfigs(createChangedExtensionFallbackShards(changedPaths));
+  ])("selects enumerable public contract consumers: $changedPaths", ({ changedPaths }) => {
+    expect(createChangedNodeTestShards(changedPaths)).not.toBeNull();
+    expectAllExtensionConfigs(createChangedExtensionFallbackShards(changedPaths));
+  });
+
+  it.each(["src/shared/text/strip-markdown.ts", "src/channels/chat-meta-shared.ts"])(
+    "selects transitive SDK consumers of %s",
+    (file) => {
+      const shards = createChangedNodeTestShards([file]);
+      expect(shards).not.toBeNull();
+      const groups = fallbackGroups(shards ?? []);
+      for (const contract of [
+        "test/scripts/run-vitest-state-cleanup.test.ts",
+        "test/scripts/vitest-worker-artifacts.test.ts",
+      ]) {
+        expect(
+          groups.some((group) => group.includePatterns?.includes(contract)),
+          contract,
+        ).toBe(true);
+      }
     },
   );
 
-  it("fails safe when a core change reaches package consumers through the public SDK", () => {
-    expect(createChangedNodeTestShards(["src/shared/text/strip-markdown.ts"])).toBeNull();
-  });
-
-  it("fails safe when a core change reaches a public SDK wrapper through an import", () => {
-    expect(createChangedNodeTestShards(["src/channels/chat-meta-shared.ts"])).toBeNull();
+  it.each([
+    "src/plugin-sdk/api-baseline.ts",
+    "scripts/lib/plugin-sdk-entrypoints.json",
+    "scripts/lib/plugin-sdk-entries.mts",
+  ])("keeps broad coverage when SDK identities change in %s", (file) => {
+    expect(createChangedNodeTestShards([file])).toBeNull();
   });
 
   it("fails safe when workspace package consumers use package imports", () => {
@@ -1686,7 +1701,7 @@ describe("CI changed Node test plan", () => {
   );
 
   it.each([
-    "src/plugin-sdk/core.ts",
+    "src/plugin-sdk/api-baseline.ts",
     ".agents/skills/openclaw-pr-maintainer/scripts/unknown-helper.sh",
   ])(
     "retains all extension configs for the hidden maintainer helper mixed with %s",
