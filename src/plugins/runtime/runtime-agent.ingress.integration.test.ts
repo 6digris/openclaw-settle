@@ -23,7 +23,8 @@ const fileContent = "Voice tool execution reached the workspace.";
 
 function writeToolCalls(response: ServerResponse): void {
   const calls = [
-    { name: "sessions", arguments: { action: "patch", label } },
+    // Session tools use the deferred catalog; file tools remain directly callable.
+    { name: "tool_call", arguments: { id: "sessions", args: { action: "patch", label } } },
     { name: "write", arguments: { path: fileName, content: fileContent } },
   ].map((call, index) => ({
     type: "function_call",
@@ -231,8 +232,8 @@ describe("host runtime ingress agent effects", () => {
     { name: "guest", senderIsOwner: false, toolsAllow: ["sessions", "write"], canPatch: false },
     { name: "restricted owner", senderIsOwner: true, toolsAllow: ["write"], canPatch: false },
   ])("enforces $name authority in the real tool loop", { timeout: 90_000 }, async (scenario) => {
-    await withIngressFixture(scenario, ({ storedLabel, file }) => {
-      expect(storedLabel).toBe(scenario.canPatch ? label : undefined);
+    await withIngressFixture(scenario, ({ storedLabel, file, toolResults }) => {
+      expect(storedLabel, toolResults).toBe(scenario.canPatch ? label : undefined);
       expect(file).toBe(fileContent);
     });
   });

@@ -141,6 +141,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugins/provider-auth-choice.install-discovery.test.ts",
   "src/plugins/provider-auth-choice.npm-installed.test.ts",
   "src/plugins/provider-setup-availability.test.ts",
+  "src/plugins/runtime/runtime-agent.ingress.integration.test.ts",
   "src/plugins/update-authority.test.ts",
   "src/plugins/update-channel.consent.test.ts",
   "src/plugins/update-cohort.integration.test.ts",
