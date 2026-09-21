@@ -301,7 +301,14 @@ describe("hosted creation transfers accepted child input", () => {
       const fixture = await createHostedChildFixture(system, true);
       fixture.beforeInputCommit.mockImplementation(() => fixture.closeInvocation());
       try {
-        await expect(fixture.send()).rejects.toThrow("inherited tool invocation closed");
+        await expect(fixture.send()).resolves.toMatchObject({
+          ok: true,
+          runStarted: false,
+          runError: {
+            code: "UNAVAILABLE",
+            message: "Error: inherited tool invocation closed",
+          },
+        });
         expect(fixture.beforeInputCommit).toHaveBeenCalledOnce();
         expect(listSessionPendingInputs(fixture.scope())).toEqual({ items: [], total: 0 });
         expect(userMessages(fixture.scope())).toEqual([]);
