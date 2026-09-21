@@ -38,10 +38,12 @@ original stripe invocations. Per-graph elapsed times appear in the job log.
 
 The test-type jobs restore their own `.artifacts/tsgo-cache` state across runs.
 Cache keys separate compiler/dependency/configuration versions and CI rows;
-the compiler still validates every selected graph after a hit. Pull requests
-only restore state, while the existing trusted cache writer policy controls
-publication after successful checks. Cache-off and frozen-target runs retain
-their original behavior. Lint programs do not share these compiler caches.
+the compiler still validates every selected graph after a hit. The protected
+cache warmer is the sole publisher after successful checks; all ordinary CI
+jobs, including main pushes, restore only. Hybrid warming publishes each row
+on both backend-local stores. Logs distinguish exact source hits, compatible
+seeds, and misses. Cache-off and frozen-target runs retain their original
+behavior. Lint programs do not share these compiler caches.
 
 Oxlint keeps `eslint/no-redeclare` enabled for JavaScript. For `.ts`, `.tsx`,
 `.mts`, and `.cts`, `tsgo` owns declaration validity, including intentional

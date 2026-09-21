@@ -1,0 +1,58 @@
+name: Restore incremental typecheck state
+description: Restore a protected compiler seed without skipping project-mode checks.
+inputs:
+  row:
+    description: Compiler row (test-types, core-1, or core-2).
+    required: true
+outputs:
+  cache-primary-key:
+    description: Immutable key for the protected warmer to publish after successful checking.
+    value: ${{ steps.restore.outputs.cache-primary-key }}
+  cache-hit:
+    description: Whether the complete source key matched exactly.
+    value: ${{ steps.restore.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - name: Identify compiler cache inputs
+      id: inputs
+      shell: bash
+      env:
+        ROW: ${{ inputs.row }}
+      run: |
+        set -euo pipefail
+        case "$ROW" in
+          test-types|core-1|core-2) ;;
+          *) echo "Unsupported compiler cache row: $ROW" >&2; exit 1 ;;
+        esac
+        # Keep the trusted v1 prefix: main CI published these seeds before
+        # publication moved to the warmer. The lock pins the native compiler.
+        # A tree hash also shares exact hits across commits with identical trees.
+        echo "source=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+
+    - name: Restore compiler seed
+      id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: .artifacts/tsgo-cache
+        key: ${{ runner.os }}-${{ runner.arch }}-tsgo-v1-${{ inputs.row }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig*.json', 'test/tsconfig/*.json', 'scripts/run-tsgo*', 'scripts/lib/local-check-runtime.mts') }}-${{ steps.inputs.outputs.source }}
+        restore-keys: |
+          ${{ runner.os }}-${{ runner.arch }}-tsgo-v1-${{ inputs.row }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig*.json', 'test/tsconfig/*.json', 'scripts/run-tsgo*', 'scripts/lib/local-check-runtime.mts') }}-
+
+    - name: Log compiler cache restore
+      shell: bash
+      env:
+        ROW: ${{ inputs.row }}
+        MATCHED_KEY: ${{ steps.restore.outputs.cache-matched-key }}
+        EXACT_HIT: ${{ steps.restore.outputs.cache-hit }}
+      run: |
+        set -euo pipefail
+        if [[ "$EXACT_HIT" == "true" ]]; then
+          result="HIT (exact source)"
+        elif [[ -n "$MATCHED_KEY" ]]; then
+          result="HIT (compatible seed; compiler revalidates source)"
+        else
+          result="MISS"
+        fi
+        echo "[tsgo-cache:$ROW] $result; matched-key=${MATCHED_KEY:-none}"
+        echo "- Compiler cache $ROW: $result" >> "$GITHUB_STEP_SUMMARY"

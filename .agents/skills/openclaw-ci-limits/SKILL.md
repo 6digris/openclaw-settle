@@ -415,6 +415,14 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
   row; other matrix rows keep running. Pure Blacksmith and targets without
   stripe support retain the full central path. Measure the combined jobs
   natively; fewer registrations alone do not prove the eight-minute target.
+- Incremental test-type state has one publisher: the protected cache warmer.
+  Its three compiler rows use the consumer commands and two-child core limit;
+  hybrid warms both backend-local namespaces with at most three concurrent jobs.
+  This adds three Blacksmith registrations per warmer generation, not per PR.
+  All ordinary CI rows restore only, log exact/prefix/miss results, and always
+  run project-mode checks. Preserve the trusted v1 prefix so existing main seeds
+  remain available during the publisher cutover. Lint has no persistent semantic
+  cache in the pinned Oxlint; do not count compiler hits as lint hits.
 - CPU-heavy test-type, core test-type stripe, and runtime-topology jobs in `ci.yml`
   request `blacksmith-16vcpu-ubuntu-2404`. The separate `openclaw-npm-preflight.yml`
   jobs retain `blacksmith-32vcpu-ubuntu-2404`. The 2026-09-01 x64 probe

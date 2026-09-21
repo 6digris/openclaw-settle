@@ -3895,12 +3895,9 @@ jobs:
       - name: Restore test-type incremental state
         id: test-type-cache
         if: matrix.task == 'test-types' && needs.preflight.outputs.cache_mode != 'off' && needs.preflight.outputs.frozen_target != 'true'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: ./.ci-harness/.github/actions/restore-tsgo-cache
         with:
-          path: .artifacts/tsgo-cache
-          key: ${{ runner.os }}-${{ runner.arch }}-tsgo-v1-${{ matrix.task }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig*.json', 'test/tsconfig/*.json', 'scripts/run-tsgo*', 'scripts/lib/local-check-runtime.mts') }}-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-tsgo-v1-${{ matrix.task }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig*.json', 'test/tsconfig/*.json', 'scripts/run-tsgo*', 'scripts/lib/local-check-runtime.mts') }}-
+          row: test-types
 
       - name: Compute extension boundary input fingerprint
         id: extension-boundary-inputs
@@ -4242,14 +4239,6 @@ jobs:
               ;;
           esac
 
-      - name: Save test-type incremental state
-        if: success() && matrix.task == 'test-types' && needs.preflight.outputs.cache_write_allowed == 'true' && needs.preflight.outputs.cache_mode != 'off' && needs.preflight.outputs.frozen_target != 'true' && steps.test-type-cache.outputs.cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .artifacts/tsgo-cache
-          key: ${{ steps.test-type-cache.outputs.cache-primary-key }}
-
   # Keep five core stripes; the runner isolates large targets into serial child processes.
   # Ordinary hybrid runs serialize the stripes across two hosted jobs.
   # GitHub, frozen and manual runs retain five jobs. All-Blacksmith keeps one lint job.
@@ -4370,12 +4359,9 @@ jobs:
       - name: Restore core test-type incremental state
         id: test-type-cache
         if: needs.preflight.outputs.cache_mode != 'off' && needs.preflight.outputs.frozen_target != 'true'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: ./.ci-harness/.github/actions/restore-tsgo-cache
         with:
-          path: .artifacts/tsgo-cache
-          key: ${{ runner.os }}-${{ runner.arch }}-tsgo-v1-core-${{ matrix.stripe }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig*.json', 'test/tsconfig/*.json', 'scripts/run-tsgo*', 'scripts/lib/local-check-runtime.mts') }}-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-tsgo-v1-core-${{ matrix.stripe }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig*.json', 'test/tsconfig/*.json', 'scripts/run-tsgo*', 'scripts/lib/local-check-runtime.mts') }}-
+          row: core-${{ matrix.stripe }}
 
       - name: Run hosted core test-types stripe
         env:
@@ -4399,14 +4385,6 @@ jobs:
             # One queue fills an idle slot across the former stripe barrier.
             node scripts/run-tsgo-core-test-shards.mjs --stripe "$first-$last/5" --concurrency 2
           fi
-
-      - name: Save core test-type incremental state
-        if: success() && needs.preflight.outputs.cache_write_allowed == 'true' && needs.preflight.outputs.cache_mode != 'off' && needs.preflight.outputs.frozen_target != 'true' && steps.test-type-cache.outputs.cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .artifacts/tsgo-cache
-          key: ${{ steps.test-type-cache.outputs.cache-primary-key }}
 
   check-additional-shard:
     permissions:

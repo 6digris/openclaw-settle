@@ -221,3 +221,64 @@ jobs:
             echo "::error::Vitest cache warming failed"
             exit 1
           fi
+
+  warm-test-types:
+    # The same protected workflow owns publication for every compiler row.
+    # Hosted and Blacksmith runners have separate cache backends.
+    if: github.repository == 'openclaw/openclaw'
+    runs-on: ${{ (matrix.platform == 'linux-hosted' || vars.OPENCLAW_CI_RUNNER_BACKEND == 'github') && 'ubuntu-24.04' || 'blacksmith-16vcpu-ubuntu-2404' }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        platform: ${{ fromJSON(vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && '["linux", "linux-hosted"]' || '["linux"]') }}
+        row: [core-1, core-2, test-types]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node environment
+        id: setup-node-env
+        uses: ./.github/actions/setup-node-env
+        with:
+          cache-mode: read-write
+          install-bun: "false"
+          dependency-cache: ${{ matrix.platform == 'linux' && 'true' || 'false' }}
+
+      - name: Restore test-type incremental state
+        id: test-type-cache
+        uses: ./.github/actions/restore-tsgo-cache
+        with:
+          row: ${{ matrix.row }}
+
+      - name: Warm test-type incremental state
+        env:
+          ROW: ${{ matrix.row }}
+          NODE_OPTIONS: --max-old-space-size=8192
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$ROW" in
+            core-1) node scripts/run-tsgo-core-test-shards.mjs --stripe 1-2/5 --concurrency 2 ;;
+            core-2) node scripts/run-tsgo-core-test-shards.mjs --stripe 3-4/5 --concurrency 2 ;;
+            test-types)
+              # The unstriped backend uses this row for the complete core set.
+              if [[ "${{ vars.OPENCLAW_CI_RUNNER_BACKEND }}" == "hybrid" || "${{ vars.OPENCLAW_CI_RUNNER_BACKEND }}" == "github" ]]; then
+                node scripts/run-tsgo-core-test-shards.mjs --stripe 5/5 --concurrency 2
+              else
+                node scripts/run-tsgo-core-test-shards.mjs --concurrency 2
+              fi
+              OPENCLAW_LOCAL_CHECK=0 pnpm tsgo:extensions:test
+              OPENCLAW_LOCAL_CHECK=0 pnpm tsgo:scripts
+              OPENCLAW_LOCAL_CHECK=0 pnpm tsgo:test:root
+              ;;
+          esac
+
+      - name: Save test-type incremental state
+        if: steps.setup-node-env.outputs.cache-mode == 'read-write' && steps.test-type-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .artifacts/tsgo-cache
+          key: ${{ steps.test-type-cache.outputs.cache-primary-key }}
