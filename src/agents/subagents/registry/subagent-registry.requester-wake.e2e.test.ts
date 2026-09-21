@@ -24,7 +24,7 @@ import { maybeSpawnVisibleSession } from "../../tools/sessions-spawn-visible.js"
 import { createSessionsYieldTool } from "../../tools/sessions-yield-tool.js";
 import { testing as subagentAnnounceDeliveryTesting } from "../announce/subagent-announce-delivery.test-support.js";
 import { testing as subagentAnnounceOutputTesting } from "../announce/subagent-announce-output.test-support.js";
-import { testing as subagentAnnounceTesting } from "../announce/subagent-announce.js";
+import { announceTesting as subagentAnnounceTesting } from "../announce/subagent-announce-overrides.test-support.js";
 import { maybeWakeRequesterAfterAllChildrenSettled } from "../announce/subagent-announce.requester-settle-wake.js";
 import * as completionStore from "../completion/subagent-completion-admission.store.js";
 import { registerRequesterFinalAttachment } from "../requester-final-attachment.js";
@@ -155,11 +155,6 @@ vi.mock("../spawn/subagent-depth.js", () => ({
   getSubagentDepthFromSessionStore: () => 0,
 }));
 
-const loadSubagentRegistryRuntimeForTest = async () =>
-  ({
-    replaceSubagentRunAfterSteer: registry.replaceSubagentRunAfterSteerCore,
-  }) as unknown as typeof import("./subagent-registry-runtime.js");
-
 describe("requester settle wake product flow", () => {
   let previousFastTestEnv: string | undefined;
   let testState: OpenClawTestState;
@@ -232,7 +227,6 @@ describe("requester settle wake product flow", () => {
       callGateway: callGatewayMock as typeof import("../../../gateway/call.js").callGateway,
       getRuntimeConfig:
         loadConfigMock as typeof import("../../../config/config.js").getRuntimeConfig,
-      loadSubagentRegistryRuntime: loadSubagentRegistryRuntimeForTest,
     });
     subagentAnnounceDeliveryTesting.setDepsForTest({
       sendMessage: sendMessageMock,
@@ -646,6 +640,14 @@ describe("requester settle wake product flow", () => {
     if (!rejectRequesterWake) {
       const wakeMessage = getRequesterWakeCalls()[0]?.params?.message;
       expect(wakeMessage).toContain(modelRouteChange);
+      // Yielded batches must retain the same outcome/blocked boundary as
+      // individual completions, not downgrade failed checks to a final update.
+      expect(wakeMessage).toContain(
+        "Reviews, failed checks, and other in-scope fixable blockers require continued work",
+      );
+      expect(wakeMessage).toContain(
+        "report a blocker only when progress needs new user authority or an unavailable external decision",
+      );
       expect(wakeMessage).toContain(
         "Keep this runtime-authored model-route change notice internal on this shared surface.",
       );

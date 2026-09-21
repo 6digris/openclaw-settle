@@ -1,9 +1,12 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as configModule from "../../../config/config.js";
 import { hashConfigRaw } from "../../../config/io.read-helpers.js";
+import * as temporaryState from "../../../infra/tmp-openclaw-dir.js";
 import { captureUpdateDoctorConfigWrites } from "../../../infra/update-doctor-result.js";
+import { resolveManagedUpdateLeaseDatabasePath } from "../../../infra/update-managed-service-handoff-lease.js";
 import { withEnvAsync } from "../../../test-utils/env.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import {
@@ -69,7 +72,22 @@ vi.mock("../../../plugins/official-external-plugin-catalog.js", async (importOri
   };
 });
 
-afterEach(() => vi.restoreAllMocks());
+let handoffRoot: string;
+beforeEach(async () => {
+  handoffRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-plugin-id-recovery-"));
+  await fs.chmod(handoffRoot, 0o700);
+  const databasePath = path.join(handoffRoot, "managed-update-handoffs.sqlite");
+  await fs.writeFile(databasePath, "", { mode: 0o600 });
+  vi.spyOn(temporaryState, "resolvePreferredOpenClawTmpDir").mockReturnValue(handoffRoot);
+  expect(resolveManagedUpdateLeaseDatabasePath()).toBe(databasePath);
+  expect(await fs.realpath(databasePath)).toBe(
+    path.join(await fs.realpath(handoffRoot), "managed-update-handoffs.sqlite"),
+  );
+});
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await fs.rm(handoffRoot, { recursive: true, force: true });
+});
 
 it.each([
   "standalone",
@@ -195,13 +213,9 @@ it("persists the early disabled alias after Doctor repairs the same owner", asyn
   const { runInitialConfigWriteHealth } =
     await import("../../../flows/doctor-health-contribution-runners.config.js");
   const installRepair = await import("./missing-configured-plugin-install.js");
-  const temporaryState = await import("../../../infra/tmp-openclaw-dir.js");
   await withOpenClawTestState(
     { label: "doctor-recovery-repair", env: { OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" } },
     async (state) => {
-      const control = state.path("control");
-      await fs.mkdir(control, { mode: 0o700 });
-      vi.spyOn(temporaryState, "resolvePreferredOpenClawTmpDir").mockReturnValue(control);
       const cfg = {
         gateway: { mode: "local" as const },
         plugins: { enabled: false, entries: { qqbot: { enabled: false } } },
