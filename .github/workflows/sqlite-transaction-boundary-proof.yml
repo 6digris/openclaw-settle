@@ -34,18 +34,20 @@ jobs:
       OPENCLAW_VITEST_MAX_WORKERS: "2"
       BASELINE_SHA: 17690d0019bb92ee80e8ceaaced8cad822e1159d
       BASELINE_TREE: bbec4772a31d27e52cc5c8fb28a17b3b7dfbc39c
-      CANDIDATE_SHA: e3d74c9d0dbcb844bb8817e10c82630adcd9eb65
-      CANDIDATE_TREE: e1dcf25444bc0cfa58a6a4915434cc8b53d3df44
-      COMMON_OWNER_SHA: c83e6d94156e6528d91dce2d62792ca3ba5283bc
-      PREVIOUS_CARRIER_SHA: 106e66bcae5778c81743cb3867576b62d7ec61c1
-      PREVIOUS_CARRIER_TREE: 434a811f4b585f46b0399b6e8e896599f721b06f
+      CANDIDATE_SHA: 67214ac792717ee72cee7a4ae32b678ff12663fd
+      CANDIDATE_TREE: 288acf94e1a51397afd87462bf7083fe957d82ef
+      CANDIDATE_PARENT_SHA: 6a107b154f2b7d3c36494afdf38e6767796902d4
+      CANDIDATE_ENGINE_SHA: e3d74c9d0dbcb844bb8817e10c82630adcd9eb65
+      COMMON_OWNER_SHA: 7fcce84f633432e3ffee6936c13aa7ec56ac3a38
+      PREVIOUS_CARRIER_SHA: 6b662e0aca53d75d5c213d47f5fbebe4bc26d389
+      PREVIOUS_CARRIER_TREE: f4be347d85b55cb2411dadad29bc1d23cf8f2d2b
       CARRIER_SHA: ${{ github.event.pull_request.head.sha }}
       WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 5
+          fetch-depth: 6
           persist-credentials: false
       - name: Bind the carrier, product pair and exact reviewed repair
         run: |
@@ -53,10 +55,11 @@ jobs:
           [[ "$CARRIER_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$CARRIER_SHA"
-          test "$(git show -s --format=%P HEAD)" = "$PREVIOUS_CARRIER_SHA"
+          test "$(git show -s --format=%P HEAD)" = "$PREVIOUS_CARRIER_SHA $CANDIDATE_SHA"
           test "$(git rev-parse "$PREVIOUS_CARRIER_SHA^{tree}")" = "$PREVIOUS_CARRIER_TREE"
-          test "$(git show -s --format=%P "$PREVIOUS_CARRIER_SHA")" = "$CANDIDATE_SHA"
-          test "$(git show -s --format=%P "$CANDIDATE_SHA")" = "$BASELINE_SHA"
+          test "$(git show -s --format=%P "$CANDIDATE_SHA")" = "$CANDIDATE_PARENT_SHA"
+          test "$(git show -s --format=%P "$CANDIDATE_PARENT_SHA")" = "$CANDIDATE_ENGINE_SHA"
+          test "$(git show -s --format=%P "$CANDIDATE_ENGINE_SHA")" = "$BASELINE_SHA"
           test "$(git rev-parse "$BASELINE_SHA^{tree}")" = "$BASELINE_TREE"
           test "$(git rev-parse "$CANDIDATE_SHA^{tree}")" = "$CANDIDATE_TREE"
           test "$(git diff --name-only "$CANDIDATE_SHA" HEAD)" = .github/workflows/sqlite-transaction-boundary-proof.yml
@@ -73,10 +76,10 @@ jobs:
           a, b = os.environ['BASELINE_SHA'], os.environ['CANDIDATE_SHA']
           patch = git('diff', '--full-index', '--no-renames', '--binary', a, b)
           print(json.dumps(dict(patchBytes=len(patch), patchSha256=hashlib.sha256(patch).hexdigest())), flush=True)
-          assert len(patch) == 49977
-          assert hashlib.sha256(patch).hexdigest() == 'abe8d526e98e15224363e28c8178e059abcf7e752fbeb280b2a502779b5085d9'
+          assert len(patch) == 51866
+          assert hashlib.sha256(patch).hexdigest() == 'ee4d1f70f26e71a5cadc5a299d517cc3afdc7c9b74e15b175ab730343446fcc0'
           paths = git('diff', '--name-only', a, b).decode().splitlines()
-          assert len(paths) == 12
+          assert len(paths) == 14
           receipt = dict(baseline=a, baselineTree=os.environ['BASELINE_TREE'], candidate=b,
               candidateTree=os.environ['CANDIDATE_TREE'], identicalCommonOwnerPatch=os.environ['COMMON_OWNER_SHA'],
               patchSha256=hashlib.sha256(patch).hexdigest(), paths=paths,
@@ -224,6 +227,7 @@ jobs:
             src/infra/sqlite-transaction.reporting.test.ts
             src/infra/sqlite-transaction.deadline.test.ts
             src/infra/sqlite-transaction.windows.test.ts
+            src/infra/sqlite-worker-lifecycle-path.test.ts
             src/infra/sqlite-coordinator.test.ts
             src/infra/sqlite-coordinator.idle.test.ts
             src/infra/state-database-coordinator.test.ts
