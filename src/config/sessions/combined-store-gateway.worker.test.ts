@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
-import type { WorkerTaskPool } from "../../infra/worker-task-pool.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
   closeOpenClawAgentDatabasesAsync,
@@ -30,17 +29,23 @@ vi.mock("../../infra/worker-task-pool.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../infra/worker-task-pool.js")>();
   return {
     ...actual,
-    WorkerTaskPool: class<Input, Output> extends actual.WorkerTaskPool<Input, Output> {
-      override run(...args: Parameters<WorkerTaskPool<Input, Output>["run"]>) {
-        const result = super.run(...args);
-        const observe = boundary.afterReply;
-        return observe
-          ? result.then(async (reply) => {
-              await observe(reply);
-              return reply;
-            })
-          : result;
-      }
+    createOwnedWorkerTaskPool: <Input, Output>(
+      ...args: Parameters<typeof actual.createOwnedWorkerTaskPool<Input, Output>>
+    ) => {
+      const pool = actual.createOwnedWorkerTaskPool<Input, Output>(...args);
+      return {
+        ...pool,
+        run(...input: Parameters<typeof pool.run>) {
+          const result = pool.run(...input);
+          const observe = boundary.afterReply;
+          return observe
+            ? result.then(async (reply) => {
+                await observe(reply);
+                return reply;
+              })
+            : result;
+        },
+      };
     },
   };
 });

@@ -48,9 +48,12 @@ export class WorkerTaskPool<Input, Output> {
 export function createOwnedWorkerTaskPool<Input, Output>(options: WorkerTaskPoolOptions<Output>) {
   const core = createWorkerTaskPoolCore<Input, Output>(options);
   return {
+    run: (input: WorkerTaskInput<Input>, taskOptions: WorkerTaskOptions<Input>) =>
+      core.run(input, taskOptions),
     runTask: (input: WorkerTaskInput<Input>, taskOptions: WorkerTaskOptions<Input>) =>
       core.runTask(input, taskOptions),
     closeResources: (key?: string) => core.closeResources(key),
+    rotate: () => core.rotate(),
     getSnapshot: () => core.getSnapshot(),
     close: (error?: Error) => core.close(error),
   };

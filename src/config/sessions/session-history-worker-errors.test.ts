@@ -6,6 +6,7 @@ import { createDeferredCore } from "../../shared/deferred.js";
 import { SessionTranscriptColdError } from "./session-cold-storage-state.js";
 import { SessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
 import { SessionTranscriptReadFenceError } from "./session-transcript-read-fence.js";
+import { withSessionHistoryWorkerReadCandidates } from "./session-transcript-worker-resources.js";
 import { withSessionHistoryWorkerDatabase } from "./session-transcript-worker-runtime.js";
 
 type Request = {
@@ -22,6 +23,7 @@ const observed = vi.hoisted(() => ({
   close: vi.fn<() => void>(),
   run: vi.fn<() => Promise<unknown>>(),
   rotate: vi.fn<() => Promise<void>>(),
+  closeResources: vi.fn<() => Promise<void>>(),
   unregister: vi.fn<() => void>(),
   resources: [] as Resource[],
   nativeWorker: vi.fn(() => {
@@ -48,6 +50,15 @@ vi.mock("../../infra/worker-task-pool.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../infra/worker-task-pool.js")>();
   return {
     ...actual,
+    createOwnedWorkerTaskPool: () => ({
+      run(prepare: () => unknown) {
+        prepare();
+        return observed.run();
+      },
+      rotate: () => observed.rotate(),
+      closeResources: () => observed.closeResources(),
+      getSnapshot: () => ({ workers: 1 }),
+    }),
     WorkerTaskPool: class {
       run(prepare: () => unknown) {
         prepare();
@@ -56,6 +67,9 @@ vi.mock("../../infra/worker-task-pool.js", async (importOriginal) => {
       rotate() {
         return observed.rotate();
       }
+      getSnapshot() {
+        return { workers: 0 };
+      }
     },
   };
 });
@@ -63,7 +77,7 @@ vi.mock("../../infra/worker-task-server.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../infra/worker-task-server.js")>();
   return {
     ...actual,
-    serveWorkerTasks: (handler: (input: unknown) => unknown) => {
+    serveOwnedWorkerTasks: (handler: (input: unknown) => unknown) => {
       observed.handler = handler;
       actual.serveWorkerTasks(handler);
     },
@@ -74,8 +88,13 @@ vi.mock("../../state/openclaw-agent-db-resources.js", () => ({
     observed.resources.push(resource);
     return observed.unregister;
   },
+  registerOpenClawAgentDatabaseReadCandidateResource: (resource: Resource) => {
+    observed.resources.push(resource);
+    return observed.unregister;
+  },
 }));
 vi.mock("../../state/openclaw-agent-db-readonly-scope.js", () => ({
+  closeRetainedOpenClawAgentReadOnlyScopes: () => observed.close(),
   OpenClawAgentDatabaseReadOnlyScope: class {
     hasRetainedConnection = true;
     run(_database: unknown, operation: () => unknown) {
@@ -115,12 +134,35 @@ function invoke(request: ReturnType<typeof input>) {
   return Promise.resolve(observed.handler(request));
 }
 
+function readDiscoveredTarget() {
+  const pathname = `/synthetic/discovery-cleanup-${++sequence}.sqlite`;
+  const candidate = { path: pathname, physicalPath: pathname };
+  observed.run.mockResolvedValue({
+    ok: true,
+    value: {
+      kind: "session-store-target",
+      sourcePath: pathname,
+      database: { agentId: "main", path: pathname },
+    },
+  });
+  return withSessionHistoryWorkerReadCandidates([candidate], (discovery) =>
+    discovery.readStoreTarget({
+      agentId: "main",
+      storePath: pathname,
+      env: {},
+      registeredDatabases: [],
+      candidates: [candidate],
+    }),
+  );
+}
+
 beforeEach(() => {
   observed.post.mockReset();
   observed.read.mockReset();
   observed.close.mockReset();
   observed.run.mockReset();
   observed.rotate.mockReset().mockResolvedValue(undefined);
+  observed.closeResources.mockReset().mockResolvedValue(undefined);
   observed.unregister.mockReset();
 });
 afterEach(async () => {
@@ -240,6 +282,52 @@ it("retires idle history workers under critical pressure after active scopes rel
   await unregistered.promise;
   expect(observed.unregister).toHaveBeenCalledTimes(1);
 });
+
+it("reclaims a warm history worker under critical pressure after its readers close", async () => {
+  await readDiscoveredTarget();
+  expect(observed.closeResources).toHaveBeenCalledTimes(1);
+  expect(observed.rotate).not.toHaveBeenCalled();
+  channel("openclaw.memory.critical").publish(undefined);
+  expect(observed.rotate).toHaveBeenCalledTimes(1);
+});
+
+it.each([false, true])(
+  "retains discovery aliases until failed reader cleanup retires its worker (retirement fails=%s)",
+  async (fails) => {
+    const primary = new Error("reader cleanup acknowledgement failed");
+    const cleanup = new Error("retirement failed");
+    const entered = createDeferredCore();
+    const retirement = createDeferredCore();
+    observed.closeResources.mockRejectedValue(primary);
+    observed.rotate.mockImplementation(() => {
+      entered.resolve();
+      return retirement.promise;
+    });
+    let settled = false;
+    const pending = readDiscoveredTarget()
+      .catch((error: unknown) => error)
+      .finally(() => {
+        settled = true;
+      });
+    await entered.promise;
+    expect(settled).toBe(false);
+    expect(observed.unregister).not.toHaveBeenCalled();
+    if (fails) {
+      retirement.reject(cleanup);
+    } else {
+      retirement.resolve();
+    }
+    const failure: unknown = await pending;
+    if (fails) {
+      expect(failure).toBeInstanceOf(AggregateError);
+      expect(failure).toMatchObject({ errors: [primary, cleanup] });
+      expect(observed.unregister).not.toHaveBeenCalled();
+    } else {
+      expect(failure).toBe(primary);
+      expect(observed.unregister).toHaveBeenCalledTimes(1);
+    }
+  },
+);
 
 it.each([false, true])(
   "awaits retirement and preserves both failures when retirement fails=%s",

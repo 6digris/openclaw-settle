@@ -272,6 +272,21 @@ function cachedScope(options: ReadTarget): OpenClawAgentDatabaseReadOnlyScope {
   return scope;
 }
 
+/** Worker cleanup settles every retained reader before releasing discovery aliases. */
+export function closeRetainedOpenClawAgentReadOnlyScopes(): void {
+  const errors: unknown[] = [];
+  for (const scope of retainedScopes.active) {
+    try {
+      scope.close();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length) {
+    throw new AggregateError(errors, "Retained agent read-only cleanup failed");
+  }
+}
+
 /** Writable admission retires an idle reader before opening the same physical file. */
 export function closeIdleOpenClawAgentDatabaseReadOnly(pathname: string): void {
   retainedScopes.paths.get(pathname)?.closeIfIdle();

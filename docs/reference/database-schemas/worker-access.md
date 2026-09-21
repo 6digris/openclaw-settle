@@ -26,6 +26,12 @@ or `withOpenClawAgentDatabaseReadOnly` alone, does not move execution off thread
 `readWithCanonicalSessionAdmission` validates session reads on the executing
 thread; invoke it inside the worker's admitted reader.
 
+Session target discovery closes its retained database readers before releasing
+captured aliases, while keeping the worker loaded for the next read. Cleanup
+acknowledgements and confirmed worker exit settle that custody. Revocation or
+failed cleanup still retires the worker; idle expiry and critical memory pressure
+also reclaim workers whose database handles have already closed.
+
 Writers use the SQLite worker broker's `state.write` or `agent.write` operation
 through their existing domain adapter, such as
 `runOpenClawStateWorkerOperation`. The connection-bound Kysely kernel and

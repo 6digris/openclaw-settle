@@ -9,7 +9,6 @@ import {
   replaceSessionEntrySync,
 } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import type { WorkerTaskPool } from "../infra/worker-task-pool.js";
 import type { WorkerTaskPoolOptions } from "../infra/worker-task-pool.types.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
@@ -28,7 +27,7 @@ import { createWorkerSessionPlacementStore } from "./worker-environments/placeme
 const boundary = vi.hoisted(
   (): {
     afterReply?: (reply: unknown) => Promise<void>;
-    afterRotate?: () => Promise<void>;
+    afterReaderClose?: () => Promise<void>;
     failRetirement: boolean;
   } => ({ failRetirement: false }),
 );
@@ -36,35 +35,42 @@ vi.mock("../infra/worker-task-pool.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../infra/worker-task-pool.js")>();
   return {
     ...actual,
-    WorkerTaskPool: class<Input, Output> extends actual.WorkerTaskPool<Input, Output> {
-      constructor(options: WorkerTaskPoolOptions<Output>) {
-        // Exercise real queue admission without retaining hundreds of megabytes.
-        super({ ...options, maxPendingBytes: 256 * 1024 });
-      }
-      override run(...args: Parameters<WorkerTaskPool<Input, Output>["run"]>) {
-        const result = super.run(...args);
-        const observe = boundary.afterReply;
-        return observe
-          ? result.then(async (reply) => {
-              await observe(reply);
-              return reply;
-            })
-          : result;
-      }
-      override async rotate(...args: Parameters<WorkerTaskPool<Input, Output>["rotate"]>) {
+    createOwnedWorkerTaskPool: <Input, Output>(options: WorkerTaskPoolOptions<Output>) => {
+      // Exercise real queue admission without retaining hundreds of megabytes.
+      const pool = actual.createOwnedWorkerTaskPool<Input, Output>({
+        ...options,
+        maxPendingBytes: 256 * 1024,
+      });
+      const settle = async (close: () => Promise<void>) => {
         if (boundary.failRetirement) {
           throw new Error("synthetic retirement failure");
         }
-        await super.rotate(...args);
-        await boundary.afterRotate?.();
-      }
+        await close();
+        await boundary.afterReaderClose?.();
+      };
+      return {
+        ...pool,
+        run(...args: Parameters<typeof pool.run>) {
+          const result = pool.run(...args);
+          const observe = boundary.afterReply;
+          return observe
+            ? result.then(async (reply) => {
+                await observe(reply);
+                return reply;
+              })
+            : result;
+        },
+        rotate: () => settle(() => pool.rotate()),
+        closeResources: (...args: Parameters<typeof pool.closeResources>) =>
+          settle(() => pool.closeResources(...args)),
+      };
     },
   };
 });
 
 afterEach(() => {
   boundary.afterReply = undefined;
-  boundary.afterRotate = undefined;
+  boundary.afterReaderClose = undefined;
   boundary.failRetirement = false;
   vi.restoreAllMocks();
 });
@@ -332,7 +338,7 @@ it.each(["evidence", "settlement"] as const)(
           }
         }
       };
-      boundary.afterRotate = async () => {
+      boundary.afterReaderClose = async () => {
         if (phase === "settlement" && evidenceRead) {
           await write();
         }
@@ -345,7 +351,7 @@ it.each(["evidence", "settlement"] as const)(
         expect(wrote).toBe(true);
       } finally {
         boundary.afterReply = undefined;
-        boundary.afterRotate = undefined;
+        boundary.afterReaderClose = undefined;
       }
       expect(await (await createWorkerPlacementSessionEvidenceResolver([subject]))(subject)).toBe(
         "current",
@@ -410,8 +416,8 @@ it("rejects discovery revoked during final reader retirement", async () => {
     const subject = placement();
     replaceSessionEntrySync(subject, { sessionId: subject.sessionId, updatedAt: 1 });
     let revoke: Promise<void> | undefined;
-    boundary.afterRotate = async () => {
-      boundary.afterRotate = undefined;
+    boundary.afterReaderClose = async () => {
+      boundary.afterReaderClose = undefined;
       // Close joins the same in-flight retirement; do not wait for ourselves here.
       revoke = drainAgentDatabaseResources({ agentId: "main" }, async () => {});
     };
@@ -422,7 +428,7 @@ it("rejects discovery revoked during final reader retirement", async () => {
       expect(revoke).toBeDefined();
       await revoke;
     } finally {
-      boundary.afterRotate = undefined;
+      boundary.afterReaderClose = undefined;
       await revoke;
     }
   });

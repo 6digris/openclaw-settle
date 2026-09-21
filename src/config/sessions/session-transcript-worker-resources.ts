@@ -9,7 +9,11 @@ import {
   type UsageCostWorkerReply,
 } from "../../infra/session-cost-usage-worker.types.js";
 import { SQLITE_IDLE_HANDLE_TTL_MS } from "../../infra/sqlite-handle-lifecycle.js";
-import { WorkerTaskError, WorkerTaskPool } from "../../infra/worker-task-pool.js";
+import {
+  createOwnedWorkerTaskPool,
+  WorkerTaskError,
+  WorkerTaskPool,
+} from "../../infra/worker-task-pool.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { runInDetachedAsyncContext } from "../../shared/async-work-scope.js";
 import type { OpenClawAgentDatabaseOptions } from "../../state/openclaw-agent-db-contract.js";
@@ -49,7 +53,7 @@ import type {
 } from "./session-transcript-worker.types.js";
 
 const workerUrl = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sessionTranscript);
-export const historyPages = new WorkerTaskPool<
+export const historyPages = createOwnedWorkerTaskPool<
   | SessionTranscriptHistoryWorkerInput
   | SessionPreviewWorkerInput
   | SessionTitleFieldsWorkerInput
@@ -109,7 +113,7 @@ function createUsageCostPool(kind: "read" | "refresh") {
 
 type SessionDatabaseWorkerLane = {
   name: string;
-  pool: { rotate: () => Promise<void> };
+  pool: { rotate: () => Promise<void>; getSnapshot: () => { workers: number } };
   nativeSequence: number;
   retiredSequence: number;
   pending: number;
@@ -164,7 +168,7 @@ export const costRefreshLane: SessionCostWorkerLane = {
 
 channel("openclaw.memory.critical").subscribe(() => {
   for (const lane of [historyLane, costReadLane, costRefreshLane]) {
-    if (lane.pending > 0 || lane.rotation || lane.nativeSequence <= lane.retiredSequence) {
+    if (lane.pending > 0 || lane.rotation || lane.pool.getSnapshot().workers === 0) {
       continue;
     }
     historyClearTimeout(lane.idleTimer);
@@ -220,7 +224,7 @@ export function rotateDatabaseWorkers(lane: SessionDatabaseWorkerLane): Promise<
 // Missing reads can leave an idle worker without retaining any database custody.
 export function armDatabaseWorkerIdleRetirement(lane: SessionDatabaseWorkerLane): void {
   historyClearTimeout(lane.idleTimer);
-  if (lane.nativeSequence <= lane.retiredSequence || lane.pending > 0) {
+  if (lane.pool.getSnapshot().workers === 0 || lane.pending > 0) {
     return;
   }
   lane.idleTimer = runInDetachedAsyncContext(() =>
@@ -352,6 +356,24 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
       await retire();
       release();
     };
+    const closeReaders = async () => {
+      const through = historyLane.nativeSequence;
+      nativeCleanupPending = true;
+      try {
+        await historyPages.closeResources();
+        // A concurrent lifecycle revocation still owns its forced native retirement.
+        await closing;
+        releaseRetiredDatabaseCustody(historyLane, through);
+        nativeCleanupPending = false;
+      } catch (error) {
+        try {
+          await retire();
+        } catch (cleanupError) {
+          throw sessionHistoryCleanupError(error, cleanupError, "worker retirement");
+        }
+        throw error;
+      }
+    };
     const retained = new Set<string>();
     try {
       for (const candidate of candidates) {
@@ -453,7 +475,7 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
           if (result.kind === "session-target-registry-required") {
             // Native discovery may already have opened other candidates. Settle
             // their worker before continuing through the registry's read owner.
-            await retire();
+            await closeReaders();
           }
           assertCurrent();
           return result;
@@ -468,7 +490,7 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
     // settle; a later close through an alias must never miss a retained handle.
     if (dispatched) {
       try {
-        await retire();
+        await closeReaders();
       } catch (cleanupError) {
         outcome = {
           error:

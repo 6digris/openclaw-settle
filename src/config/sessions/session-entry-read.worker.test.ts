@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
+import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../../state/openclaw-agent-db-lifecycle.js";
 import { OpenClawAgentDatabaseReadOnlyScope } from "../../state/openclaw-agent-db-readonly-scope.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
@@ -13,7 +14,45 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { writeSessionEntry } from "./session-accessor.sqlite-entry-store.js";
 import { readSessionBackingFacts } from "./session-backing-facts.js";
 import { captureCanonicalSessionReaderContinuation } from "./session-canonical-key.js";
+import { readSessionEntriesFromStoreInWorker } from "./session-entry-read-runtime.js";
 import { readExactSessionEntriesWithLifecycle } from "./session-entry-read.worker.js";
+import { historyPages } from "./session-transcript-worker-resources.js";
+
+it("closes discovered readers while reusing the warm worker for repeated exact reads", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const storePath = state.statePath("custom.sqlite");
+    const database = openOpenClawAgentDatabase({
+      agentId: "main",
+      path: storePath,
+      env: state.env,
+    });
+    const sessionKey = "agent:main:discovery";
+    writeSessionEntry(database, sessionKey, { sessionId: "warm-discovery", updatedAt: 1 });
+    await closeOpenClawAgentDatabaseByPathAsync(storePath, "main");
+    let workersCreated: number | undefined;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await readSessionEntriesFromStoreInWorker({
+        agentId: "main",
+        storePath,
+        sessionKeys: [sessionKey],
+        env: state.env,
+      });
+      expect(result.entries[0]?.entry.sessionId).toBe("warm-discovery");
+      workersCreated ??= historyPages.getSnapshot().workersCreated;
+      expect(historyPages.getSnapshot().workersCreated).toBe(workersCreated);
+      const probe = new (requireNodeSqlite().DatabaseSync)(storePath);
+      try {
+        // Switching out of WAL requires every other connection to this file to be closed.
+        expect(probe.prepare("PRAGMA journal_mode = DELETE").get()).toMatchObject({
+          journal_mode: "delete",
+        });
+        probe.exec("PRAGMA journal_mode = WAL");
+      } finally {
+        probe.close();
+      }
+    }
+  });
+});
 
 it("publishes exact-read admission only after commit and reuses it on the retained reader", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {

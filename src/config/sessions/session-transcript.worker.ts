@@ -2,7 +2,8 @@ import type {
   UsageCostWorkerInput,
   UsageCostWorkerReply,
 } from "../../infra/session-cost-usage-worker.types.js";
-import { serveWorkerTasks } from "../../infra/worker-task-server.js";
+import { serveOwnedWorkerTasks } from "../../infra/worker-task-server.js";
+import { closeRetainedOpenClawAgentReadOnlyScopes } from "../../state/openclaw-agent-db-readonly-scope.js";
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
 import type { SessionIdentityEvidenceResult } from "./session-accessor.sqlite-entry-availability.js";
 import { SessionTranscriptColdError } from "./session-cold-storage-state.js";
@@ -81,7 +82,7 @@ async function withHistoryDatabase<T>(
   }
 }
 
-serveWorkerTasks(
+serveOwnedWorkerTasks(
   async (
     input,
     channel,
@@ -387,5 +388,11 @@ serveWorkerTasks(
       }
       throw error;
     }
+  },
+  {
+    closeResource() {
+      closeRetainedOpenClawAgentReadOnlyScopes();
+      historyDatabaseScopes.clear();
+    },
   },
 );
