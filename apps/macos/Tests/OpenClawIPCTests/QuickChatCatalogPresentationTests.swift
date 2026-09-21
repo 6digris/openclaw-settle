@@ -126,16 +126,17 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
         }
     }
 
-    func testGuestModelPolicyRetiresRenderedChoicesAndOpenMenu() async throws {
+    func testRestrictedOperatorModelPolicyRetiresRenderedChoicesAndOpenMenu() async throws {
         let application = AppKitTestSupport.application
         let appearance = application.appearance
         defer { application.appearance = appearance }
         application.appearance = NSAppearance(named: .aqua)
         let pointer = try XCTUnwrap(CGEvent(source: nil)?.location)
         defer { XCTAssertEqual(CGWarpMouseCursorPosition(pointer), .success) }
-        let fixture = QuickChatCatalogFixture(guestCatalog: .permitted)
-        let gateway = Self.makeGateway(
-            fixture: fixture, scopes: ["operator.sessions.read", "operator.sessions.write"])
+        // Model selection and reset require general write, independently of the
+        // restricted choices returned by this operator's Gateway catalog.
+        let fixture = QuickChatCatalogFixture(restrictedCatalog: .permitted)
+        let gateway = Self.makeGateway(fixture: fixture, scopes: ["operator.write"])
         let model = Self.makeModel(gateway: gateway)
         let controller = QuickChatController(
             enableUI: true, model: model, monitoringEnabled: false,
@@ -539,7 +540,7 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
     }
 }
 
-private enum QuickChatGuestCatalog: Equatable, Sendable {
+private enum QuickChatRestrictedCatalog: Equatable, Sendable {
     case permitted
     case noDefault
     case holding
@@ -549,16 +550,16 @@ private enum QuickChatGuestCatalog: Equatable, Sendable {
 private actor QuickChatCatalogFixture {
     private var model = "current"
     private var fastMode: Bool?
-    private var guestCatalog: QuickChatGuestCatalog?
+    private var restrictedCatalog: QuickChatRestrictedCatalog?
     private weak var socket: GatewayTestWebSocketTask?
     private var sequence = 0
     private var heldReads: [CheckedContinuation<Void, Never>] = []
     private var onHeldRead: (@Sendable () -> Void)?
     private(set) var patches: [String] = []
 
-    init(guestCatalog: QuickChatGuestCatalog? = nil) {
-        self.guestCatalog = guestCatalog
-        if guestCatalog != nil { self.model = "excluded" }
+    init(restrictedCatalog: QuickChatRestrictedCatalog? = nil) {
+        self.restrictedCatalog = restrictedCatalog
+        if restrictedCatalog != nil { self.model = "excluded" }
     }
 
     func attach(socket: GatewayTestWebSocketTask) {
@@ -566,10 +567,10 @@ private actor QuickChatCatalogFixture {
     }
 
     func prepareModelChange(
-        _ mode: QuickChatGuestCatalog,
+        _ mode: QuickChatRestrictedCatalog,
         onHeldRead: (@Sendable () -> Void)? = nil) throws -> @Sendable () -> Void
     {
-        self.guestCatalog = mode
+        self.restrictedCatalog = mode
         self.onHeldRead = onHeldRead
         self.sequence += 1
         let socket = try XCTUnwrap(self.socket)
@@ -581,7 +582,7 @@ private actor QuickChatCatalogFixture {
     }
 
     func releaseHeldCatalog() {
-        self.guestCatalog = .failed
+        self.restrictedCatalog = .failed
         let reads = self.heldReads
         self.heldReads.removeAll()
         reads.forEach { $0.resume() }
@@ -599,20 +600,20 @@ private actor QuickChatCatalogFixture {
         case "models.list":
             let params = try XCTUnwrap(request["params"] as? [String: Any])
             XCTAssertEqual(params["sessionKey"] as? String, "agent:main:main")
-            if self.guestCatalog == .holding {
+            if self.restrictedCatalog == .holding {
                 await withCheckedContinuation { continuation in
                     self.heldReads.append(continuation)
                     self.onHeldRead?()
                     self.onHeldRead = nil
                 }
             }
-            if self.guestCatalog == .failed {
+            if self.restrictedCatalog == .failed {
                 return Data(#"{"type":"res","id":"\#(id)","ok":false,"error":{"code":"UNAVAILABLE","message":"Fixture catalog unavailable"}}"#.utf8)
             }
-            if let guestCatalog {
+            if let restrictedCatalog {
                 let models: String
                 let defaultModel: String
-                switch guestCatalog {
+                switch restrictedCatalog {
                 case .permitted:
                     models = #"[{"id":"primary","name":"Primary fixture","provider":"fixture"},{"id":"fallback","name":"Fallback fixture","provider":"fixture"},{"id":"custom","name":"Custom fixture","provider":"fixture"}]"#
                     defaultModel = #""fixture/primary""#
@@ -649,16 +650,17 @@ private actor QuickChatCatalogFixture {
             let params = try XCTUnwrap(request["params"] as? [String: Any])
             XCTAssertEqual(params["key"] as? String, "agent:main:main")
             if let model = params["model"] as? String {
-                let allowed = self.guestCatalog == nil ? ["fixture/allowed", "fixture/unknown"] : ["fixture/fallback"]
+                let allowed = self.restrictedCatalog == nil
+                    ? ["fixture/allowed", "fixture/unknown"] : ["fixture/fallback"]
                 XCTAssertTrue(allowed.contains(model))
                 self.model = model
                 self.patches.append("model=\(model)")
             } else if params["model"] is NSNull {
                 self.patches.append("model=null")
-                if let guestCatalog, guestCatalog != .permitted {
+                if let restrictedCatalog, restrictedCatalog != .permitted {
                     return Data(#"{"type":"res","id":"\#(id)","ok":false,"error":{"code":"FORBIDDEN","message":"No permitted default"}}"#.utf8)
                 }
-                self.model = self.guestCatalog == nil ? "current" : "primary"
+                self.model = self.restrictedCatalog == nil ? "current" : "primary"
             } else {
                 let fast = try XCTUnwrap(params["fastMode"])
                 XCTAssertTrue(fast is Bool || fast is NSNull)
