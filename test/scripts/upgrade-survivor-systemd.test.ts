@@ -650,18 +650,19 @@ raise SystemExit(code if code >= 0 else 128 - code)
       });
       expect(readFileSync(paths.log, "utf8")).toContain("--user show openclaw-gateway.service");
       expect(existsSync(driftedEnv.OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_LOG)).toBe(false);
-      // A live supervisor alone cannot prove that its managed service is running.
+      // A live supervisor proves neither a running child nor safe offline maintenance.
+      // Its bootstrap/restart gap must not authorize repair while it can respawn.
       rmSync(runtimeFile);
-      expect(await readSystemdServiceRuntime(driftedEnv)).toMatchObject({ status: "stopped" });
+      expect(await readSystemdServiceRuntime(driftedEnv)).toMatchObject({ status: "unknown" });
       writeFileSync(
         runtimeFile,
         JSON.stringify({ supervisorPid: process.pid + 1, pid: process.pid }),
       );
       expect(await readLoadedSystemdServiceRuntime(driftedEnv)).toMatchObject({
-        status: "stopped",
+        status: "unknown",
       });
       writeFileSync(runtimeFile, JSON.stringify({ supervisorPid: process.pid, pid: 0 }));
-      expect(await readSystemdServiceRuntime(driftedEnv)).toMatchObject({ status: "stopped" });
+      expect(await readSystemdServiceRuntime(driftedEnv)).toMatchObject({ status: "unknown" });
       // This is an observation-only PID fixture; never send stop to the test worker.
       rmSync(paths.pid);
       writeFileSync(runtimeFile, JSON.stringify({ supervisorPid: process.pid, pid: process.pid }));

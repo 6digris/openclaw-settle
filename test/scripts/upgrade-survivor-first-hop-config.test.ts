@@ -1037,6 +1037,7 @@ describe.skipIf(process.platform === "win32")("first-hop preservation shell orde
         `set -euo pipefail
 doctor_calls=0
 gateway_running=1
+source_ready=0
 systemctl() {
   echo "service $2" >> "$ORDER_LOG"
   case "$2" in
@@ -1057,12 +1058,20 @@ systemctl() {
   esac
 }
 setup_lane() { echo setup >> "$ORDER_LOG"; }
+openclaw_e2e_wait_gateway_ready() {
+  echo source-ready >> "$ORDER_LOG"
+  source_ready=1
+}
 tar() { printf '{"version":"2026.9.5"}'; }
 node() {
   if [ "$1" = scripts/e2e/lib/release-scenarios/assertions.mjs ]; then
     echo configure >> "$ORDER_LOG"
   else
     if [ "$1" = scripts/e2e/lib/upgrade-survivor/first-hop-config-preservation.mjs ]; then
+      if [[ "$2" = seed* ]] && [ "$source_ready" != 1 ]; then
+        echo "authored config changed while the source Gateway was still starting" >&2
+        return 28
+      fi
       echo "preserve $2" >> "$ORDER_LOG"
     fi
     "$FIXTURE_NODE" "$@"
@@ -1148,6 +1157,10 @@ ${report}
           ARTIFACT_DIR: fixture.artifacts,
           OPENCLAW_CONFIG_PATH: fixture.config,
           OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_PID_FILE: join(fixture.artifacts, "gateway.pid"),
+          OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_DAEMON_LOG: join(
+            fixture.artifacts,
+            "gateway.log",
+          ),
           CANDIDATE_PACKAGE: "candidate.tgz",
           FUTURE_PACKAGE: "future.tgz",
           candidate_source_version: targetVersion,
@@ -1176,6 +1189,7 @@ ${report}
     const calls = readFileSync(log, "utf8").trim().split("\n");
     const expected = [
       "setup",
+      "source-ready",
       "preserve seed-skills",
       "preserve seed",
       "config validate --json",
@@ -1187,7 +1201,9 @@ ${report}
     );
     if (failure !== "hop") {
       expected.push("config validate --json", "service stop");
-      if (failure !== "service-stop") expected.push("service is-active");
+      if (failure !== "service-stop") {
+        expected.push("service is-active");
+      }
       if (!stopFailed) {
         expected.push(
           "skills list --agent main --json",
@@ -1201,7 +1217,9 @@ ${report}
             expected.push("configure", "service start");
             if (failure !== "service-start") {
               expected.push("positive-second");
-              if (failure !== "second-hop-same-pid") expected.push("stop");
+              if (failure !== "second-hop-same-pid") {
+                expected.push("stop");
+              }
             }
           }
         }

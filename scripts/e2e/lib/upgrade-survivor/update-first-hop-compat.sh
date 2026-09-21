@@ -192,14 +192,19 @@ run_negative_control() {
 run_positive_hops() {
   local lane=positive
   setup_lane "$lane" 18792
+  local first_pid
+  first_pid="$(cat "$ARTIFACT_DIR/$lane-before.pid")"
+  # Supervisor liveness precedes startup's config read. Seed only after the
+  # published Gateway is ready, with reload disabled by setup_lane.
+  openclaw_e2e_wait_gateway_ready "$first_pid" \
+    "$OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_DAEMON_LOG" 360 18792 \
+    >"$ARTIFACT_DIR/$lane-source-readiness.log" 2>&1
   local preservation=scripts/e2e/lib/upgrade-survivor/first-hop-config-preservation.mjs
   local candidate_version
   candidate_version="$(tar -xOf "$CANDIDATE_PACKAGE" package/package.json | node -pe 'JSON.parse(require("node:fs").readFileSync(0, "utf8")).version')"
   node "$preservation" seed-skills "$OPENCLAW_CONFIG_PATH" "$ARTIFACT_DIR"
   node "$preservation" seed "$OPENCLAW_CONFIG_PATH" "$ARTIFACT_DIR" "$candidate_version"
   openclaw config validate --json >"$ARTIFACT_DIR/$lane-config-admission.json"
-  local first_pid
-  first_pid="$(cat "$ARTIFACT_DIR/$lane-before.pid")"
 
   run_update "$lane-first" "$CANDIDATE_PACKAGE"
   assert_installed_build "$CANDIDATE_PACKAGE" "$ARTIFACT_DIR/$lane-first-build-info.json"

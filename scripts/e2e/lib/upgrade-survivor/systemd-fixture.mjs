@@ -237,8 +237,10 @@ function nativeRuntime() {
   const successful = !last || last.code === 0;
   return {
     pid,
-    active: pid ? "active" : "inactive",
-    sub: pid ? "running" : "dead",
+    // The supervisor can respawn during bootstrap or after a child exits. MainPID=0
+    // is not terminal offline state until that supervisor has also stopped.
+    active: pid ? "active" : supervisorPid ? "activating" : "inactive",
+    sub: pid ? "running" : supervisorPid ? "start" : "dead",
     generation,
     restarts: counts?.restarts ?? 0,
     result: successful ? "success" : "exit-code",
