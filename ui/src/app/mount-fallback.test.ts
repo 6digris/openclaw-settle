@@ -121,6 +121,13 @@ describe("Control UI mount fallback", () => {
     ],
     ["Ros\u00e9 dark", { theme: "rose", themeMode: "dark" }, "rose", "rgb(25, 23, 36)"],
     ["Miami dark", { theme: "miami", themeMode: "dark" }, "miami", "rgb(20, 15, 30)"],
+    ["Lobster dark", { theme: "lobster", themeMode: "dark" }, "lobster", "rgb(7, 18, 20)"],
+    [
+      "Lobster light",
+      { theme: "lobster", themeMode: "light" },
+      "lobster-light",
+      "rgb(244, 239, 230)",
+    ],
   ])(
     "paints %s before the app stylesheet loads",
     async (_name, settings, expectedTheme, expectedBackground) => {

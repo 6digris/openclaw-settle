@@ -33,6 +33,7 @@
           manuscript: 1,
           rose: 1,
           miami: 1,
+          lobster: 1,
         };
         var MODES = { system: 1, light: 1, dark: 1 };
         var LEGACY = {
@@ -76,6 +77,7 @@
             manuscript: ["manuscript", "manuscript-light"],
             rose: ["rose", "rose-light"],
             miami: ["miami", "miami-light"],
+            lobster: ["lobster", "lobster-light"],
           };
           var pair = FAMILIES[theme];
           var resolved = pair
@@ -206,6 +208,14 @@
 
       html[data-theme="miami-light"] {
         background: #f7f3f6;
+      }
+
+      html[data-theme="lobster"] {
+        background: #071214;
+      }
+
+      html[data-theme="lobster-light"] {
+        background: #f4efe6;
       }
 
       body {

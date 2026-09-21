@@ -31,6 +31,8 @@ export type ResolvedTheme =
   | "rose-light"
   | "miami"
   | "miami-light"
+  | "lobster"
+  | "lobster-light"
   | "custom"
   | "custom-light";
 
@@ -73,7 +75,7 @@ export function syncThemePaletteStylesheet(theme: ThemeName, ready: () => void):
     ready();
     return;
   }
-  // Retain the six built-in families once visited. Their exclusive selectors
+  // Retain built-in families once visited. Their exclusive selectors
   // leave the previous theme intact during loading and make repeat switches synchronous.
   const id = `openclaw-theme-palette-${theme}`;
   const existing = document.getElementById(id);

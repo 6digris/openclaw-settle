@@ -127,6 +127,12 @@ export const BUILTIN_THEMES: readonly ThemeDescriptor[] = (
       description:
         "Hot magenta and cyan on violet-black or pale lavender, with Space Grotesk. Bright neon energy and a synthwave character.",
     },
+    {
+      id: "lobster",
+      name: "Lobster",
+      description:
+        "Ember shell orange and bioluminescent teal on deep-sea black, with a sun-bleached sand light mode, Space Grotesk controls, and Fraunces serif chat. Large lobster line art with faint shell fills and a quiet center. Calm, briny, and quietly crustacean.",
+    },
   ] satisfies Array<Pick<ThemeDescriptor, "id" | "name" | "description">>
 ).map<ThemeDescriptor>((theme) => ({
   id: theme.id,

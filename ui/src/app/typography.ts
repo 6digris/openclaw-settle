@@ -55,6 +55,7 @@ const THEME_TYPEFACES = {
   manuscript: { ui: "lora", chat: "lora" },
   rose: { ui: "dm-sans", chat: "dm-sans" },
   miami: { ui: "space-grotesk", chat: "space-grotesk" },
+  lobster: { ui: "space-grotesk", chat: "fraunces" },
   custom: { ui: "system", chat: "system" },
 } satisfies Record<ThemeName, TypefacePair>;
 

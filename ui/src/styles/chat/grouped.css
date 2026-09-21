@@ -1240,6 +1240,7 @@ img.chat-avatar {
     [data-theme="manuscript"],
     [data-theme="rose"],
     [data-theme="miami"],
+    [data-theme="lobster"],
     [data-theme="beacon"]
   )
   .chat-confirm-popover__yes {
@@ -1262,6 +1263,7 @@ img.chat-avatar {
     [data-theme="manuscript"],
     [data-theme="rose"],
     [data-theme="miami"],
+    [data-theme="lobster"],
     [data-theme="beacon"]
   )
   .chat-confirm-popover__yes:hover {

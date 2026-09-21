@@ -128,6 +128,7 @@ describe("portable theme definition", () => {
   it.each([
     ["claw", true],
     ["rose", true],
+    ["lobster", true],
     ["custom", false],
     ["space/neon", true],
     ["pack/one/neon", true],

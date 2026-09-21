@@ -11,6 +11,7 @@ export const BUILTIN_THEME_IDS = [
   "manuscript",
   "rose",
   "miami",
+  "lobster",
 ] as const;
 
 export type BuiltinThemeId = (typeof BUILTIN_THEME_IDS)[number];

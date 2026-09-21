@@ -940,6 +940,10 @@ const enSettings = {
         label: "Miami",
         description: "Magenta & cyan",
       },
+      lobster: {
+        label: "Lobster",
+        description: "Ember & tide",
+      },
     },
     textSizes: {
       small: "Small",

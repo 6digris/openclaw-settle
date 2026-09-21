@@ -96,3 +96,11 @@
 :root[data-theme="custom-light"] {
   --app-background-image: url("../assets/themes/custom-light.webp?no-inline");
 }
+
+:root[data-theme="lobster"] {
+  --app-background-image: url("../assets/themes/lobster-dark.webp?no-inline");
+}
+
+:root[data-theme="lobster-light"] {
+  --app-background-image: url("../assets/themes/lobster-light.webp?no-inline");
+}
