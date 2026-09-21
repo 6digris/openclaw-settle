@@ -883,8 +883,15 @@ export function createChangedNodeTestShards(
   if (resolvedTargetPlans === null) {
     return null;
   }
+  // Canonical Node rows can name files through narrower configs than local routing.
+  const sdkCoveredTargets = new Set(
+    sdkShards
+      .filter((shard) => !shard.requiresDist)
+      .flatMap((shard) => shard.groups?.flatMap((group) => group.includePatterns ?? []) ?? []),
+  );
   const targetPlans = resolvedTargetPlans.filter(
     ({ target, plans }) =>
+      !sdkCoveredTargets.has(target) &&
       !plans.every(({ config }) =>
         [...uiShards, ...sdkShards].some((shard) =>
           shard.groups?.some(

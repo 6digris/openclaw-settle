@@ -1394,23 +1394,31 @@ describe("CI changed Node test plan", () => {
     expectAllExtensionConfigs(createChangedExtensionFallbackShards(changedPaths));
   });
 
-  it.each(["src/shared/text/strip-markdown.ts", "src/channels/chat-meta-shared.ts"])(
-    "selects transitive SDK consumers of %s",
-    (file) => {
-      const shards = createChangedNodeTestShards([file]);
-      expect(shards).not.toBeNull();
-      const groups = fallbackGroups(shards ?? []);
-      for (const contract of [
-        "test/scripts/run-vitest-state-cleanup.test.ts",
-        "test/scripts/vitest-worker-artifacts.test.ts",
-      ]) {
-        expect(
-          groups.some((group) => group.includePatterns?.includes(contract)),
-          contract,
-        ).toBe(true);
-      }
+  it.each([
+    {
+      source: "src/shared/text/strip-markdown.ts",
+      target: "src/talk/voice-consult-transcript-race.test.ts",
     },
-  );
+    {
+      source: "src/channels/chat-meta-shared.ts",
+      target: "src/gateway/update-run-watcher.interruption.test.ts",
+    },
+  ])("selects transitive SDK consumers of $source exactly once", ({ source, target }) => {
+    const shards = createChangedNodeTestShards([source, target]);
+    expect(shards).not.toBeNull();
+    const groups = fallbackGroups(shards ?? []);
+    for (const contract of [
+      "test/scripts/run-vitest-state-cleanup.test.ts",
+      "test/scripts/vitest-worker-artifacts.test.ts",
+    ]) {
+      expect(
+        groups.some((group) => group.includePatterns?.includes(contract)),
+        contract,
+      ).toBe(true);
+    }
+    expect(groups.filter((group) => group.includePatterns?.includes(target))).toHaveLength(1);
+    expect(shards?.flatMap((shard) => shard.targets ?? [])).not.toContain(target);
+  });
 
   it.each([
     "src/plugin-sdk/api-baseline.ts",
