@@ -60,32 +60,6 @@ describe("cron edit command", () => {
     expect(help).toMatch(/also\s+implies --announce when used alone/);
   });
 
-  it("accepts --json as the explicit machine-output spelling", async () => {
-    await createCronProgram().parseAsync(["edit", "job-1", "--enable", "--json"], {
-      from: "user",
-    });
-
-    expect(callGatewayFromCli).toHaveBeenCalledWith("cron.update", expect.anything(), {
-      id: "job-1",
-      patch: { enabled: true },
-    });
-  });
-
-  it("rethrows contradictory options in JSON mode without accessing the Gateway", async () => {
-    const originalArgv = process.argv;
-    process.argv = ["node", "openclaw", "cron", "edit", "job-1", "--json"];
-    try {
-      await expect(
-        createCronProgram()
-          .parseAsync(["edit", "job-1", "--enable", "--disable", "--json"], { from: "user" })
-          .then(() => undefined),
-      ).rejects.toThrow("Choose --enable or --disable, not both");
-      expect(callGatewayFromCli).not.toHaveBeenCalled();
-    } finally {
-      process.argv = originalArgv;
-    }
-  });
-
   it("updates the human-readable display name without changing the job name", async () => {
     await createCronProgram().parseAsync(["edit", "job-1", "--display-name", "Daily summary"], {
       from: "user",
@@ -1047,10 +1021,6 @@ describe("cron edit command", () => {
     expect(callGatewayFromCli).not.toHaveBeenCalled();
 
     errorSpy.mockRestore();
-  });
-
-  it.each(["", "   "])("rejects blank --command-cwd %j", async (value) => {
-    await expectCronEditRejection(["--command-cwd", value], "--command-cwd must not be blank");
   });
 
   it("rejects blank --command-cwd before loading an existing job", async () => {

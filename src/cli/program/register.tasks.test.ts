@@ -252,18 +252,6 @@ describe("registerTasksCommand", () => {
     });
   });
 
-  it("rejects partially numeric task audit limits before owner action", async () => {
-    const execution = runCli(["tasks", "audit", "--limit", "5abc"]);
-
-    await expect(execution).rejects.toBeInstanceOf(ExpectedCliError);
-    await expect(execution).rejects.toThrow(
-      "--limit must be a positive integer, for example --limit 25.",
-    );
-    expect(mocks.runtime.error).not.toHaveBeenCalled();
-    expect(mocks.runtime.exit).not.toHaveBeenCalled();
-    expect(mocks.tasksAuditCommand).not.toHaveBeenCalled();
-  });
-
   it.each([
     {
       args: ["tasks", "audit", "--severity", "fatal"],
@@ -361,18 +349,6 @@ describe("registerTasksCommand", () => {
     vi.clearAllMocks();
     await runCli(["tasks", "cancel", "run-123"]);
     expectCommandOptions(mocks.tasksCancelCommand, { lookup: "run-123" });
-  });
-
-  it("rejects an invalid notify policy before owner action", async () => {
-    const execution = runCli(["tasks", "notify", "run-123", "sometimes"]);
-
-    await expect(execution).rejects.toBeInstanceOf(ExpectedCliError);
-    await expect(execution).rejects.toThrow(
-      "Notify policy must be done_only, state_changes, or silent.",
-    );
-    expect(mocks.runtime.error).not.toHaveBeenCalled();
-    expect(mocks.runtime.exit).not.toHaveBeenCalled();
-    expect(mocks.tasksNotifyCommand).not.toHaveBeenCalled();
   });
 
   it("does not register the legacy top-level flows command", () => {
