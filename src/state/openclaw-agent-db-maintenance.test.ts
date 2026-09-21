@@ -307,7 +307,9 @@ describe("asynchronous agent database maintenance admission", () => {
       let tick: NodeJS.Immediate | undefined;
       let stopped = false;
       const observe = () => {
-        if (stopped) return;
+        if (stopped) {
+          return;
+        }
         const database = sqlite.openNodeSqliteDatabase(f.options.pathname, { readOnly: true });
         try {
           const row = database
@@ -337,7 +339,9 @@ describe("asynchronous agent database maintenance admission", () => {
         expect(observation).toBeDefined();
       } finally {
         stopped = true;
-        if (tick) clearImmediate(tick);
+        if (tick) {
+          clearImmediate(tick);
+        }
       }
       const interrupted = sqlite.openNodeSqliteDatabase(f.options.pathname, { readOnly: true });
       try {
@@ -396,7 +400,9 @@ describe("asynchronous agent database maintenance admission", () => {
     let tick: NodeJS.Immediate | undefined;
     let stopped = false;
     const observe = () => {
-      if (stopped) return;
+      if (stopped) {
+        return;
+      }
       const database = sqlite.openNodeSqliteDatabase(f.options.pathname, { readOnly: true });
       let mapped: number;
       try {
@@ -429,7 +435,9 @@ describe("asynchronous agent database maintenance admission", () => {
       ).rejects.toThrow(/abort/);
     } finally {
       stopped = true;
-      if (tick) clearImmediate(tick);
+      if (tick) {
+        clearImmediate(tick);
+      }
     }
     const interrupted = sqlite.openNodeSqliteDatabase(f.options.pathname, { readOnly: true });
     try {

@@ -117,7 +117,9 @@ it("repairs discovered worktree sessions only through Doctor and releases their 
     await closeOpenClawAgentDatabasesAsync();
 
     await noteSessionTranscriptHealth({ cfg, env, shouldRepair: true });
-    expect(targetDiscovery).toHaveBeenCalledTimes(1);
+    // FTS preparation needs the pre-import stores; row repairs share one fresh
+    // inventory afterward because importing sessions can create another store.
+    expect(targetDiscovery).toHaveBeenCalledTimes(2);
     targetDiscovery.mockRestore();
     for (const [index, scope] of scopes.entries()) {
       const original = before[index]!;

@@ -288,11 +288,12 @@ async function noteSessionSqliteMigrationHealth(params: {
         targets: listExistingAgentDatabaseTargets(params.cfg ?? {}, params.env),
         authority: maintenanceAuthority,
       });
-      if (prepared)
+      if (prepared) {
         note(
           `Prepared legacy transcript search ownership in ${prepared} agent store(s).`,
           "Session search",
         );
+      }
     }
     const report = await runDoctorSessionSqlite({
       allAgents: true,

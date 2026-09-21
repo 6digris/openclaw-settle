@@ -48,7 +48,9 @@ export async function prepareTranscriptFtsMappingsForMaintenance(
     assertAgentDatabaseMaintenanceAuthority(maintenance);
   };
   assertOwned();
-  if (!hasPendingTranscriptFtsMappings(database)) return;
+  if (!hasPendingTranscriptFtsMappings(database)) {
+    return;
+  }
   const identity = readDatabasePathIdentitySync(pathname).key;
   const kysely = getNodeSqliteKysely<TranscriptFtsDatabase>(database);
   const commit = <T>(operation: () => T): T => {
@@ -73,9 +75,13 @@ export async function prepareTranscriptFtsMappingsForMaintenance(
         .select(["rowid", "session_id"])
         .orderBy("rowid")
         .limit(FTS_PREPARATION_ROWS);
-      if (afterRowId !== undefined) query = query.where("rowid", ">", afterRowId);
+      if (afterRowId !== undefined) {
+        query = query.where("rowid", ">", afterRowId);
+      }
       const rows = executeSqliteQuerySync(database, query).rows;
-      if (!rows.length) return undefined;
+      if (!rows.length) {
+        return undefined;
+      }
       const mappings = executeSqliteQuerySync(
         database,
         kysely
@@ -116,14 +122,17 @@ export async function prepareTranscriptFtsMappingsForMaintenance(
           missing.push({ session_id: row.session_id, fts_rowid: row.rowid });
         }
       }
-      if (missing.length)
+      if (missing.length) {
         executeSqliteQuerySync(
           database,
           kysely.insertInto("session_transcript_fts_rows").values(missing),
         );
+      }
       return rows.at(-1)!.rowid;
     });
-    if (last === undefined) break;
+    if (last === undefined) {
+      break;
+    }
     afterRowId = last;
     await yieldBetweenBatches();
   }
@@ -133,10 +142,14 @@ export async function prepareTranscriptFtsMappingsForMaintenance(
   while (true) {
     const sessions = commit(() => {
       let query = pendingMappings(database).orderBy("session_id").limit(FTS_PREPARATION_ROWS);
-      if (afterSessionId !== undefined) query = query.where("session_id", ">", afterSessionId);
+      if (afterSessionId !== undefined) {
+        query = query.where("session_id", ">", afterSessionId);
+      }
       return executeSqliteQuerySync(database, query).rows;
     });
-    if (!sessions.length) break;
+    if (!sessions.length) {
+      break;
+    }
     for (const { session_id: sessionId } of sessions) {
       let count = 0;
       let afterMapping: number | undefined;
@@ -149,7 +162,9 @@ export async function prepareTranscriptFtsMappingsForMaintenance(
             .where("session_id", "=", sessionId)
             .orderBy("fts_rowid")
             .limit(FTS_PREPARATION_ROWS);
-          if (afterMapping !== undefined) query = query.where("fts_rowid", ">", afterMapping);
+          if (afterMapping !== undefined) {
+            query = query.where("fts_rowid", ">", afterMapping);
+          }
           const rows = executeSqliteQuerySync(database, query).rows;
           count += rows.length;
           if (!rows.length) {
@@ -163,7 +178,9 @@ export async function prepareTranscriptFtsMappingsForMaintenance(
           }
           return rows.at(-1)?.fts_rowid;
         });
-        if (last === undefined) break;
+        if (last === undefined) {
+          break;
+        }
         afterMapping = last;
         await yieldBetweenBatches();
       }

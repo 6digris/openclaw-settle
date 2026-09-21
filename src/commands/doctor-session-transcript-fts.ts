@@ -23,11 +23,14 @@ export async function prepareDoctorSessionTranscriptFts(params: {
   authority: DoctorSqliteMaintenanceAuthority | undefined;
 }): Promise<number> {
   const authority = params.authority;
-  if (!authority)
+  if (!authority) {
     throw new Error("Transcript search preparation requires Doctor maintenance ownership");
+  }
   authority.assertCurrent();
   const pending = params.targets.filter((target) => needsPreparation(target.sqlitePath));
-  if (!pending.length) return 0;
+  if (!pending.length) {
+    return 0;
+  }
   await withAgentDatabaseMaintenanceLease({ env: params.env }, async (maintenance) => {
     for (const target of pending) {
       authority.assertCurrent();
