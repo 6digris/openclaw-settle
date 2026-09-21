@@ -1,5 +1,9 @@
 [
   {
+    "source": "AgentMail",
+    "target": "AgentMail"
+  },
+  {
     "source": "Radius",
     "target": "Radius"
   },

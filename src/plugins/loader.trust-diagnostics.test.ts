@@ -17,8 +17,8 @@ import {
 } from "./loader.test-fixtures.js";
 import { buildPluginInspectReport, buildPluginSnapshotReport } from "./status.js";
 
-const pluginId = "diagnostics-otel";
-const packageName = `@openclaw/${pluginId}`;
+const defaultPluginId = "diagnostics-otel";
+const defaultPackageName = `@openclaw/${defaultPluginId}`;
 
 afterEach(() => {
   resetPluginStateStoreForTests();
@@ -31,7 +31,7 @@ describe("recorded plugin trust diagnostics", () => {
     { name: "legacy npm spec", override: {}, reason: "trusted-official", trusted: true },
     {
       name: "legacy ClawHub spec",
-      override: { source: "clawhub", spec: `clawhub:${packageName}@2026.8.2` },
+      override: { source: "clawhub", spec: `clawhub:${defaultPackageName}@2026.8.2` },
       reason: "provenance-missing",
       trusted: false,
       repair: true,
@@ -56,8 +56,44 @@ describe("recorded plugin trust diagnostics", () => {
       reason: "origin-path",
       trusted: false,
     },
+    {
+      name: "official AgentMail ClawHub install",
+      pluginId: "agentmail",
+      packageName: "@agentmail/agentmail",
+      version: "0.2.1",
+      override: {
+        source: "clawhub",
+        spec: "clawhub:@agentmail/agentmail@0.2.1",
+        clawhubPackage: "@agentmail/agentmail",
+        clawhubUrl: "https://clawhub.ai",
+        clawhubChannel: "official",
+      },
+      reason: "trusted-official",
+      trusted: true,
+    },
+    {
+      name: "legacy AgentMail ClawHub install",
+      pluginId: "agentmail",
+      packageName: "@agentmail/agentmail",
+      version: "0.2.1",
+      override: { source: "clawhub", spec: "clawhub:@agentmail/agentmail@0.2.1" },
+      reason: "provenance-missing",
+      trusted: false,
+      repair: true,
+    },
+    {
+      name: "unendorsed AgentMail npm namesake",
+      pluginId: "agentmail",
+      packageName: "@agentmail/agentmail",
+      version: "0.2.1",
+      reason: "provenance-invalid",
+      trusted: false,
+    },
   ] satisfies Array<{
     name: string;
+    pluginId?: string;
+    packageName?: string;
+    version?: string;
     override?: Partial<PluginInstallRecord>;
     missing?: boolean;
     reason: string;
@@ -65,28 +101,40 @@ describe("recorded plugin trust diagnostics", () => {
     repair?: boolean;
   }>)(
     "inspection and registration agree for $name",
-    async ({ override, missing, reason, trusted, repair }) => {
+    async ({
+      override,
+      missing,
+      reason,
+      trusted,
+      repair,
+      pluginId = defaultPluginId,
+      packageName = defaultPackageName,
+      version = "2026.8.2",
+    }) => {
       useNoBundledPlugins();
       const stateDir = fs.realpathSync(makePluginLoaderTempDir());
       const plugin = writePlugin({
         id: pluginId,
         dir: path.join(stateDir, "extensions", pluginId),
         filename: "index.cjs",
-        body: `module.exports = { id: ${JSON.stringify(pluginId)}, register(api) { api.runtime.state.openKeyedStore({ namespace: "proof", maxEntries: 2 }); } };`,
+        body: `module.exports = { id: ${JSON.stringify(pluginId)}, register(api) {
+          api.runtime.state.openKeyedStore({ namespace: "proof", maxEntries: 2 });
+          api.runtime.state.openChannelIngressQueue({ accountId: "default" });
+        } };`,
       });
       writePluginMetadata({
         dir: plugin.dir,
         id: plugin.id,
         packageJson: {
           name: packageName,
-          version: "2026.8.2",
+          version,
           openclaw: { extensions: ["./index.cjs"] },
         },
       });
       await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
         const install: PluginInstallRecord = {
           source: "npm",
-          spec: `${packageName}@2026.8.2`,
+          spec: `${packageName}@${version}`,
           installPath: plugin.dir,
           ...override,
         };
