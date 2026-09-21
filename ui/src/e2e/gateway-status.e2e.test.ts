@@ -250,9 +250,7 @@ suite.define(() => {
             animations: "disabled",
           });
         }
-        expect(await menu.textContent()).toContain("Outgoing messages saved in this browser");
-        expect(await menu.textContent()).toContain("Failed messages need review or retry");
-        expect(await menu.textContent()).toContain("Some may already have arrived");
+        expect(await menu.locator(".sidebar-identity-menu__outbox").count()).toBe(0);
         expect(await page.locator(".chat-queue__item").count()).toBe(2);
         expect(await gateway.getRequests("chat.send")).toHaveLength(0);
         await page.keyboard.press("Escape");
@@ -260,12 +258,9 @@ suite.define(() => {
         await page.setViewportSize({ width: 390, height: 844 });
         await page.getByRole("button", { name: "Expand sidebar" }).click();
         await footer.locator(".sidebar-identity-card").click();
-        const explanation = menu.locator(".sidebar-identity-menu__outbox");
-        await explanation.waitFor();
-        const bounds = await explanation.boundingBox();
-        expect(bounds).not.toBeNull();
-        expect(bounds!.x).toBeGreaterThanOrEqual(0);
-        expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
+        await menu.getByText("Alex", { exact: true }).waitFor();
+        expect(await menu.locator(".sidebar-identity-menu__outbox").count()).toBe(0);
+        expect(await footer.textContent()).toContain("2 in outbox");
         if (process.env.OPENCLAW_CAPTURE_UI_PROOF === "1") {
           await page.screenshot({
             path: path.join(suite.artifactDir, "outbox-account-menu-mobile.png"),

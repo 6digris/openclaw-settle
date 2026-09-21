@@ -401,15 +401,10 @@ export function renderGitHubIdentity(
     html`
       ${renderSettingsRow({
         title: identity?.account ? `@${identity.account.login}` : t("agentTools.githubNoAccount"),
-        description: html`${
+        description:
           identity?.source === "agent-override"
             ? t("githubConnections.agentOverride")
-            : t("githubConnections.system")
-        }${
-          identity?.credentialKind === "native"
-            ? html`<br />${t("agentTools.githubNativeAccountHint")}`
-            : nothing
-        }`,
+            : t("githubConnections.system"),
         control: html`${renderGitHubHealth(identity, controller)}<button
             class="btn btn--sm"
             @click=${onOpenConnections}

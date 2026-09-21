@@ -52,7 +52,7 @@ import {
   GatewayConfigReloadSupersededError,
   type GatewayReloadHandlerParams,
 } from "./server-reload-contracts.js";
-import type { GatewayPostReadySidecarHandle } from "./server-startup-post-attach.js";
+import type { GatewayPostReadySidecarHandle } from "./server-startup-sidecar-scheduler.js";
 import { listPluginNodeCapabilities } from "./server/plugins-http/route-capability.js";
 
 export async function reloadGatewayPlugins(
@@ -158,6 +158,7 @@ export async function reloadGatewayPlugins(
     changedPluginIds,
     port,
     pluginWorkspaceDir,
+    abortSignal: AbortSignal.any([runtime.requestEntryLifetime.signal, restartDrainSignal]),
     log,
     // SAFETY: Gateway cron implements the SDK hook surface, which erases core-only job fields.
     getCron: kernel.getCronService as () => PluginHookGatewayCronService,

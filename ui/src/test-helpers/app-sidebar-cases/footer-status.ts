@@ -197,14 +197,11 @@ describe("AppSidebar gateway footer subtitle", () => {
     expect(connectedTooltip?.content).toBe("");
     sidebar.querySelector<HTMLButtonElement>(".sidebar-identity-card")?.click();
     await sidebar.updateComplete;
-    const outbox = sidebar.querySelector(".sidebar-identity-menu__outbox");
-    expect(outbox?.textContent).toContain("3 in outbox");
-    expect(outbox?.textContent).toContain("Outgoing messages saved in this browser");
-    expect(outbox?.textContent).toContain("Failed messages need review or retry");
-    expect(outbox?.textContent).toContain("Some may already have arrived");
+    expect(sidebar.querySelector(".sidebar-identity-menu__outbox")).toBeNull();
+    expect(sidebar.querySelector(".sidebar-footer-bar")?.textContent).toContain("3 in outbox");
     sidebar.queuedOutboxCount = 0;
     await sidebar.updateComplete;
-    expect(sidebar.querySelector(".sidebar-identity-menu__outbox")).toBeNull();
+    expect(sidebar.querySelector(".sidebar-footer-bar")?.textContent).not.toContain("in outbox");
   });
 
   it("updates when the native gateway snapshot changes", async () => {

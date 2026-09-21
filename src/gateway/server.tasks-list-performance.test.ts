@@ -3,7 +3,6 @@ import {
   TASKS_LIST_CURSOR_MAX_LENGTH,
   type TasksListResult,
 } from "../../packages/gateway-protocol/src/index.js";
-import { loadSessionEntryReadOnly } from "../config/sessions/session-accessor.js";
 import * as taskRegistryRead from "../tasks/task-registry-read.js";
 import {
   createTaskRecord,
@@ -11,8 +10,10 @@ import {
   listTaskRecords,
   markTaskTerminalById,
 } from "../tasks/task-registry.js";
-import { getTaskRegistryProcessState } from "../tasks/task-registry.process-state.js";
-import { configureTaskRegistryRuntime } from "../tasks/task-registry.store.js";
+import {
+  configureTaskRegistryRuntime,
+  getTaskRegistryStore,
+} from "../tasks/task-registry.store.js";
 import { resetTaskRegistryForTests } from "../tasks/task-runtime.test-helpers.js";
 import { createInMemoryTaskRegistryStore } from "../test-utils/task-registry-store.js";
 import { installGatewayTestHooks } from "./server.auth.test-helpers.js";
@@ -28,36 +29,6 @@ import {
   withAuthenticatedTaskGateway,
 } from "./server.tasks-list.test-helpers.js";
 import * as taskSessionAccess from "./task-session-access.js";
-
-function describeFailedTaskPage(
-  access: Parameters<typeof taskSessionAccess.prepareTaskSessionReadFilter>[0] | undefined,
-  registryMutations: unknown,
-): string {
-  // Inspect only a failed response, so diagnostics cannot warm authorization reads.
-  try {
-    return JSON.stringify({
-      phase: "after-failed-task-response",
-      registryMutations,
-      taskCount: listTaskRecords().length,
-      stateDir: process.env.OPENCLAW_STATE_DIR,
-      configuredStore: access?.cfg.session?.store,
-      lastPreparedProfileId: access?.client?.authenticatedUserProfile?.profileId,
-      sessions: [OWNED_SESSION_KEY, FOREIGN_SESSION_KEY].map((sessionKey) => {
-        const entry = loadSessionEntryReadOnly({ agentId: "main", sessionKey });
-        return {
-          sessionKey,
-          present: entry !== undefined,
-          sessionId: entry?.sessionId,
-          lifecycleRevision: entry?.lifecycleRevision,
-          visibility: entry?.visibility,
-          createdActor: entry?.createdActor,
-        };
-      }),
-    });
-  } catch (error) {
-    return `after-failed-task-response diagnostic failed: ${String(error)}`;
-  }
-}
 
 installGatewayTestHooks({ scope: "suite" });
 
@@ -78,14 +49,6 @@ describe("tasks.list Gateway performance", () => {
       throw new Error("expected selected and unselected owned task fixtures");
     }
 
-    const registryTrace = {
-      snapshotLoads: 0,
-      snapshotSize: 0,
-      clearCount: 0,
-      clears: [] as Array<{ size: number; stack?: string }>,
-      deleteCount: 0,
-      deletes: [] as Array<{ taskId: string; size: number; stack?: string }>,
-    };
     let onSnapshotLoad: (() => void) | undefined;
     const initializeTasks = () => {
       resetTaskRegistryForTests({ persist: false });
@@ -93,8 +56,6 @@ describe("tasks.list Gateway performance", () => {
         store: {
           ...createInMemoryTaskRegistryStore(),
           loadSnapshot: () => {
-            registryTrace.snapshotLoads += 1;
-            registryTrace.snapshotSize = tasks.size;
             onSnapshotLoad?.();
             return { tasks, deliveryStates: new Map() };
           },
@@ -102,37 +63,17 @@ describe("tasks.list Gateway performance", () => {
       });
     };
     await withAuthenticatedTaskGateway(initializeTasks, async ({ admin, viewer }) => {
-      // Keep only bounded producer traces; no metadata reads or timers precede the response.
-      const liveTasks = getTaskRegistryProcessState().tasks;
-      const clearTasks = liveTasks.clear.bind(liveTasks);
-      const deleteTask = liveTasks.delete.bind(liveTasks);
-      const clearTrace = vi.spyOn(liveTasks, "clear").mockImplementation(() => {
-        registryTrace.clearCount += 1;
-        if (registryTrace.clears.length < 4) {
-          registryTrace.clears.push({ size: liveTasks.size, stack: new Error().stack });
-        }
-        return clearTasks();
-      });
-      const deleteTrace = vi.spyOn(liveTasks, "delete").mockImplementation((taskId) => {
-        registryTrace.deleteCount += 1;
-        if (registryTrace.deletes.length < 3) {
-          registryTrace.deletes.push({ taskId, size: liveTasks.size, stack: new Error().stack });
-        }
-        return deleteTask(taskId);
-      });
       // Keep real authorization and RPCs, but make each prepared access slice
       // consume a deterministic work budget regardless of host speed.
       let workMs = performance.now();
       let accessSliceWorkMs = 20;
       const workClock = vi.spyOn(performance, "now").mockImplementation(() => workMs);
       const prepareAccess = taskSessionAccess.prepareTaskSessionReadFilter;
-      let lastPreparedAccess: Parameters<typeof prepareAccess>[0] | undefined;
       let onAccessSlice: ((batch: Parameters<typeof prepareAccess>[1]) => void) | undefined;
       const accessWork = vi
         .spyOn(taskSessionAccess, "prepareTaskSessionReadFilter")
         .mockImplementation((...args) => {
           const filter = prepareAccess(...args);
-          lastPreparedAccess = args[0];
           onAccessSlice?.(args[1]);
           workMs += accessSliceWorkMs;
           return filter;
@@ -186,12 +127,7 @@ describe("tasks.list Gateway performance", () => {
         expect(mutationsApplied).toBe(true);
         expect(list.ok, JSON.stringify(list.error)).toBe(true);
         expect(list.payload?.tasks.map((task) => task.id)).toEqual(adminExpected);
-        expect(
-          list.payload?.nextCursor,
-          list.payload?.nextCursor
-            ? undefined
-            : describeFailedTaskPage(lastPreparedAccess, registryTrace),
-        ).toEqual(expect.any(String));
+        expect(list.payload?.nextCursor).toEqual(expect.any(String));
         expect(listMaxSortedInput).toBeLessThanOrEqual(7);
         const cursor = list.payload?.nextCursor;
         if (!cursor) {
@@ -283,13 +219,7 @@ describe("tasks.list Gateway performance", () => {
           });
           expect(visibility?.ok, JSON.stringify(visibility?.error)).toBe(true);
           expect(restricted.ok, JSON.stringify(restricted.error)).toBe(true);
-          const restrictedIds = restricted.payload?.tasks.map((task) => task.id);
-          expect(
-            restrictedIds,
-            restrictedIds?.length === 0
-              ? describeFailedTaskPage(lastPreparedAccess, registryTrace)
-              : undefined,
-          ).toEqual(viewerExpected);
+          expect(restricted.payload?.tasks.map((task) => task.id)).toEqual(viewerExpected);
           expect(restricted.payload?.tasks).toHaveLength(25);
           expect(
             restricted.payload?.tasks.every((task) => task.sessionKey === OWNED_SESSION_KEY),
@@ -492,27 +422,38 @@ describe("tasks.list Gateway performance", () => {
           }),
         );
         let scopedRevision = 0;
-        let scopedChurn: ReturnType<typeof setImmediate> | undefined;
-        const mutateUnrelatedTask = () => {
-          scopedRevision += 1;
-          markTaskTerminalById({
-            taskId: "task-00064",
-            status: "succeeded",
-            endedAt: TASK_COUNT + scopedRevision,
-          });
-          scopedChurn = setImmediate(mutateUnrelatedTask);
+        let scopedRevisionAtStop = 0;
+        let scopedChurn: Promise<void> | undefined;
+        let scopedChurnStopped = false;
+        const mutateUnrelatedTask = async () => {
+          for (;;) {
+            await new Promise<void>((resolve) => {
+              setImmediate(resolve);
+            });
+            if (scopedChurnStopped) {
+              return;
+            }
+            scopedRevision += 1;
+            markTaskTerminalById({
+              taskId: "task-00064",
+              status: "succeeded",
+              endedAt: TASK_COUNT + scopedRevision,
+            });
+          }
         };
         resetTaskRegistryForTests({ persist: false });
         configureTaskRegistryRuntime({
           store: {
             ...createInMemoryTaskRegistryStore(),
             loadSnapshot: () => {
-              scopedChurn = setImmediate(mutateUnrelatedTask);
+              scopedChurn ??= mutateUnrelatedTask();
               return { tasks: scopedTasks, deliveryStates: new Map() };
             },
           },
         });
         try {
+          // Repeated snapshot reads must share the fixture's one owned churn loop.
+          getTaskRegistryStore().loadSnapshot();
           const scopedPage = await sendRpc<TasksListResult>(viewer, "tasks-scoped", "tasks.list", {
             sessionKey: OWNED_SESSION_KEY,
             agentId: "main",
@@ -522,7 +463,9 @@ describe("tasks.list Gateway performance", () => {
           expect(scopedPage.payload?.tasks.map((task) => task.id)).toEqual(["task-00000"]);
           expect(scopedPage.payload?.nextCursor).toBeUndefined();
         } finally {
-          clearImmediate(scopedChurn);
+          scopedChurnStopped = true;
+          scopedRevisionAtStop = scopedRevision;
+          await scopedChurn;
         }
 
         const accessTasks = new Map([...createTaskSnapshot()].slice(0, 1_000));
@@ -574,9 +517,10 @@ describe("tasks.list Gateway performance", () => {
         } finally {
           accessChurn.mockRestore();
         }
+        expect(scopedRevision, "scoped task fixture must stop before later task fixtures").toBe(
+          scopedRevisionAtStop,
+        );
       } finally {
-        deleteTrace.mockRestore();
-        clearTrace.mockRestore();
         sortSpy.mockRestore();
         accessWork.mockRestore();
         workClock.mockRestore();

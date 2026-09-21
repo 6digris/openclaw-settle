@@ -35,6 +35,7 @@ import { withEnvAsync } from "../test-utils/env.js";
 import type { GatewayRequestHandlerOptions } from "./server-methods/types.js";
 import { reloadGatewayPlugins } from "./server-plugin-reload.js";
 import { createGatewayPluginRuntimeGeneration } from "./server-plugin-runtime-generation.js";
+import { GatewayRequestEntryLifetime } from "./server-request-entry.js";
 import { createGatewaySidecarStopOwner } from "./server-sidecar-owners.js";
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -95,6 +96,7 @@ async function verifyInstalledPackageRetention(
     OPENCLAW_STATE_DIR: stateDir,
     OPENCLAW_BUNDLED_PLUGINS_DIR: path.join(root, "bundled"),
   };
+  fs.mkdirSync(env.OPENCLAW_BUNDLED_PLUGINS_DIR, { recursive: true });
   const writePackage = (id: string) => {
     const packageDir = writeManagedNpmPlugin({
       stateDir,
@@ -176,6 +178,9 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
       workspaceDir,
       env,
     });
+    expect(initialMetadata.manifestRegistry.plugins.map((plugin) => plugin.id).toSorted()).toEqual(
+      healthyDir ? ["healthy", "sibling"] : ["sibling"],
+    );
     const initial = bootstrap.prepareGatewayPluginLoad({
       pluginMetadataSnapshot: initialMetadata,
       cfg: initialConfig,
@@ -218,6 +223,7 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
       }
     });
     const runtime = {
+      requestEntryLifetime: new GatewayRequestEntryLifetime(),
       pluginMetadataSnapshot: initialMetadata,
       pluginRuntime: registryOwner,
       pluginWorkspaceDir: workspaceDir,
