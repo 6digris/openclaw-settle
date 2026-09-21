@@ -161,8 +161,8 @@ it.each([
       const initial = draw();
       expect(state.chatModelCatalogInitialized).toBe(false);
       expect(initial.modelSetupRequired).toBe(false);
-      expect(initial.modelRequiredReason).toBe("Loading models…");
-      expect(container.querySelector(".agent-chat__disabled-banner button")).toBeNull();
+      expect(initial.modelRequiredReason).toBeUndefined();
+      expect(container.querySelector(".agent-chat__disabled-banner")).toBeNull();
       expect(container.querySelector("[data-chat-model-select]")?.getAttribute("aria-busy")).toBe(
         "true",
       );
@@ -172,9 +172,12 @@ it.each([
       expect(container.textContent).not.toContain("primary-model");
       expect(container.textContent).not.toContain("cached-default");
       expect(container.querySelector("[data-chat-model-option]")).toBeNull();
-      state.chatMessage = "/models";
+      state.chatMessage = "Ordinary message";
       void draw().onSend();
       expect(state.handleSendChat).toHaveBeenCalledOnce();
+      state.chatMessage = "/models";
+      void draw().onSend();
+      expect(state.handleSendChat).toHaveBeenCalledTimes(2);
       catalog.resolve({
         models: [],
         ...(restricted

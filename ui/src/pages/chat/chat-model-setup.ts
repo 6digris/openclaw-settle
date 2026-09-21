@@ -41,7 +41,6 @@ export function resolveChatModelSetup(
       state.onSetup,
       {
         retired: state.catalogRetired === true,
-        initialized: state.catalogInitialized,
         error: state.catalogError,
         modelSelectionPolicy: policy,
       },
@@ -83,12 +82,11 @@ function chatModelUnavailableBanner(
   onSetup: () => void,
   catalogState?: {
     retired: boolean;
-    initialized?: boolean;
     error: string | null;
     modelSelectionPolicy?: ModelCatalogResult["modelSelectionPolicy"];
   },
 ): ChatComposerDisabledBanner | undefined {
-  if (catalogState?.retired || (catalogState?.initialized === false && !model)) {
+  if (catalogState?.retired) {
     return {
       kind: "above-composer",
       text: t(

@@ -135,54 +135,69 @@ enum AppKitTestSupport {
         enabled=\(String(describing: enabled)) frame=\(String(describing: frame)) window=\(window.windowNumber) windowMatches=\(windowMatches)
         pressAllowed=\(String(describing: pressAllowed)) showMenuAllowed=\(String(describing: showMenuAllowed)) remaining=\(ContinuousClock.now.duration(to: tracking.expiresAt)) appRunning=\(NSApp.isRunning)
         """)
-        guard ContinuousClock.now < tracking.expiresAt else {
-            throw InteractionFailure(message: "The menu interaction deadline expired before dispatch")
-        }
-        let action: String
-        var ownerType: String?
-        var actionResult: Bool?
-        if let cell = button as? NSPopUpButtonCell {
-            guard let owner = cell.controlView as? NSPopUpButton,
-                  owner.cell === cell,
-                  owner.window === window,
-                  owner.isEnabled
-            else {
-                throw InteractionFailure(message:
-                    "The popup cell must belong to its enabled fixture control and window: \(controlType), owner=\(String(describing: cell.controlView))")
+        let performAction: @MainActor () throws -> (String, String?, Bool?) = {
+            guard ContinuousClock.now < tracking.expiresAt else {
+                throw InteractionFailure(message: "The menu interaction deadline expired before dispatch")
             }
-            action = "popup-cell"
-            ownerType = String(reflecting: type(of: owner))
-            cell.performClick(withFrame: owner.bounds, in: owner)
-        } else {
-            let windowMatches = (button.accessibilityWindow?() as? NSWindow) === window
-            guard role == .button || role == .menuButton,
-                  windowMatches
-            else {
-                throw InteractionFailure(message:
-                    "Unsupported menu element or fixture window: \(controlType), role=\(String(describing: role)), windowMatches=\(windowMatches)")
-            }
-            if pressAllowed == true {
-                action = "accessibility-press"
-                actionResult = button.accessibilityPerformPress?()
-            } else if showMenuAllowed == true {
-                action = "accessibility-show-menu"
-                actionResult = button.accessibilityPerformShowMenu?()
+            let action: String
+            var ownerType: String?
+            var actionResult: Bool?
+            if let cell = button as? NSPopUpButtonCell {
+                guard let owner = cell.controlView as? NSPopUpButton,
+                      owner.cell === cell,
+                      owner.window === window,
+                      owner.isEnabled
+                else {
+                    throw InteractionFailure(message:
+                        "The popup cell must belong to its enabled fixture control and window: \(controlType), owner=\(String(describing: cell.controlView))")
+                }
+                action = "popup-cell"
+                ownerType = String(reflecting: type(of: owner))
+                cell.performClick(withFrame: owner.bounds, in: owner)
             } else {
-                throw InteractionFailure(message:
-                    "The fixture menu element has no allowed accessibility action: Press=\(String(describing: pressAllowed)), ShowMenu=\(String(describing: showMenuAllowed))")
+                let windowMatches = (button.accessibilityWindow?() as? NSWindow) === window
+                guard role == .button || role == .menuButton,
+                      windowMatches
+                else {
+                    throw InteractionFailure(message:
+                        "Unsupported menu element or fixture window: \(controlType), role=\(String(describing: role)), windowMatches=\(windowMatches)")
+                }
+                if pressAllowed == true {
+                    action = "accessibility-press"
+                    actionResult = button.accessibilityPerformPress?()
+                } else if showMenuAllowed == true {
+                    action = "accessibility-show-menu"
+                    actionResult = button.accessibilityPerformShowMenu?()
+                } else {
+                    throw InteractionFailure(message:
+                        "The fixture menu element has no allowed accessibility action: Press=\(String(describing: pressAllowed)), ShowMenu=\(String(describing: showMenuAllowed))")
+                }
+                guard actionResult != nil else {
+                    throw InteractionFailure(
+                        message: "The fixture menu element does not implement its allowed \(action) action")
+                }
             }
-            guard actionResult != nil else {
-                throw InteractionFailure(
-                    message: "The fixture menu element does not implement its allowed \(action) action")
+            return (action, ownerType, actionResult)
+        }
+        // AX actions enter NSMenu's nested loop synchronously. Suspend this task first so
+        // Gateway delivery and model-owned dismissal can use the main actor during tracking.
+        let outcome: (action: String, ownerType: String?, result: Bool?) = try await withCheckedThrowingContinuation {
+            continuation in
+            RunLoop.main.perform(inModes: [.common]) {
+                MainActor.assumeIsolated {
+                    do { continuation.resume(returning: try performAction()) }
+                    catch { continuation.resume(throwing: error) }
+                }
             }
+            CFRunLoopWakeUp(CFRunLoopGetMain())
         }
         await tracking.waitForCompletion()
         let completed = tracking.observed && tracking.completed && !tracking.timedOut
         print("""
         Menu interaction at \(file):\(line)
-        action=\(action) result=\(String(describing: actionResult))
+        action=\(outcome.action) result=\(String(describing: outcome.result))
         observed=\(tracking.observed) inspected=\(tracking.inspectionCompleted) timedOut=\(tracking.timedOut) error=\(String(describing: tracking.error))
-        control=\(controlType) owner=\(String(describing: ownerType)) role=\(String(describing: role)) appActive=\(NSApp.isActive) visible=\(window.isVisible) key=\(window.isKeyWindow)
+        control=\(controlType) owner=\(String(describing: outcome.ownerType)) role=\(String(describing: role)) appActive=\(NSApp.isActive) visible=\(window.isVisible) key=\(window.isKeyWindow)
         """)
         if let error = tracking.error { throw error }
         try Task.checkCancellation()
