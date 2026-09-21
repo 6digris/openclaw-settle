@@ -12,7 +12,6 @@ const BUDGET = 5_000;
 const WAIT_OBJECT_0 = 0;
 const WAIT_TIMEOUT = 258;
 const PIPE_BROKEN = 109;
-const INVALID_HANDLE_STATUS = 0xc0000008;
 const mode = workerData?.mode ?? process.argv[2];
 const role = workerData?.role ?? process.argv[3];
 const jobName = workerData?.jobName ?? process.argv[4];
@@ -41,7 +40,7 @@ async function native() {
   const api = createWindowsJobBindings(koffi);
   api.assertLayouts();
   const kernel = koffi.load("kernel32.dll");
-  const ntdll = koffi.load("ntdll.dll");
+  const kernelBase = koffi.load("kernelbase.dll");
   const outDword = koffi.out(koffi.pointer("uint32_t"));
   const OpenProcess = kernel.func("__stdcall", "OpenProcess", "void *", [
     "uint32_t",
@@ -56,14 +55,14 @@ async function native() {
     "void *",
     "void *",
   ]);
-  const GetFileType = kernel.func("__stdcall", "GetFileType", "uint32_t", ["void *"]);
-  const SetLastError = kernel.func("__stdcall", "SetLastError", "void", ["uint32_t"]);
-  const QueryObject = ntdll.func("__stdcall", "NtQueryObject", "int32_t", [
+  const GetHandleInformation = kernel.func("__stdcall", "GetHandleInformation", "int32_t", [
     "void *",
-    "uint32_t",
-    "void *",
-    "uint32_t",
     outDword,
+  ]);
+  // Documented since Windows 10 / Server 2016; no pipe-name or access-right inference.
+  const CompareObjectHandles = kernelBase.func("__stdcall", "CompareObjectHandles", "int32_t", [
+    "void *",
+    "void *",
   ]);
   const WriteFile = kernel.func("__stdcall", "WriteFile", "int32_t", [
     "void *",
@@ -105,51 +104,68 @@ async function native() {
       throw error;
     }
   };
-  const objectName = async (handle) => {
-    // Only query file/pipe names. A coincident process-local number is never authority.
-    SetLastError(0);
-    const type = GetFileType(handle);
-    if (type === 0) {
-      const code = api.getLastErrorCode();
-      assert(code === 0 || code === 6, `GetFileType could not qualify handle: ${code}`);
-      return { name: null, reason: code === 6 ? "invalid-handle" : "unknown-file-type" };
-    }
-    if (type !== 3) return { name: null, reason: "not-a-pipe" };
-    const buffer = Buffer.alloc(131_072);
-    const returned = [0];
-    const result = await new Promise((resolve, reject) => {
-      QueryObject.async(handle, 1, buffer, buffer.length, returned, (error, value) =>
-        error ? reject(error) : resolve(value),
-      );
-    });
-    if (result >>> 0 === INVALID_HANDLE_STATUS) return { name: null, reason: "invalid-handle" };
-    assert(result >= 0, `NtQueryObject failed: 0x${(result >>> 0).toString(16)}`);
-    assert(returned[0] >= 16 && returned[0] <= buffer.length, "invalid object-name result size");
-    const length = buffer.readUInt16LE(0);
-    const pointer = buffer.readBigUInt64LE(8);
-    const offset = pointer - koffi.address(buffer);
-    assert(
-      length > 0 &&
-        length % 2 === 0 &&
-        offset >= 16n &&
-        offset + BigInt(length) <= BigInt(buffer.length),
-      "object name is not contained in its result buffer",
-    );
-    const name = buffer.toString("utf16le", Number(offset), Number(offset) + length);
-    assert(name.startsWith("\\Device\\NamedPipe\\"), "unexpected pipe object namespace");
-    return { name };
-  };
-  const qualify = async (descriptor) => {
-    const observed = await objectName(BigInt(descriptor.handle));
-    return {
-      ...descriptor,
-      observed: observed.name,
-      reason: observed.reason,
-      matched: observed.name === descriptor.name,
-    };
-  };
   const close = (handle, label) => {
     if (!api.CloseHandle(handle)) throw api.lastError(`CloseHandle(${label})`);
+  };
+  const handleFlags = (handle) => {
+    const flags = [0];
+    if (GetHandleInformation(handle, flags)) return flags[0];
+    const code = api.getLastErrorCode();
+    assert.equal(code, 6, `GetHandleInformation failed with unexpected Win32 error ${code}`);
+    return undefined;
+  };
+  const duplicate = (sourceProcess, handle, allowInvalid = false) => {
+    const duplicated = [null];
+    // Never DUPLICATE_CLOSE_SOURCE: inspection cannot mutate the source handle table.
+    if (!api.DuplicateHandle(sourceProcess, handle, api.GetCurrentProcess(), duplicated, 0, 0, 2)) {
+      const code = api.getLastErrorCode();
+      if (allowInvalid && code === 6) return undefined;
+      throw new Error(`DuplicateHandle inspection failed (Win32 error ${code})`);
+    }
+    const owned = api.requireHandle(duplicated[0], "DuplicateHandle result");
+    try {
+      const flags = handleFlags(owned);
+      assert(
+        flags !== undefined && (flags & 1) === 0,
+        "inspection duplicate must be non-inheritable",
+      );
+      return owned;
+    } catch (error) {
+      close(owned, "failed inspection duplicate");
+      throw error;
+    }
+  };
+  const requireLiveIdentity = (handle, expected) => {
+    assert.deepEqual(
+      identity(handle),
+      { pid: expected.pid, created: expected.created },
+      "source process creation identity differs",
+    );
+    assert.equal(
+      api.WaitForSingleObject(handle, 0),
+      WAIT_TIMEOUT,
+      "source process is no longer live",
+    );
+  };
+  const pinSource = (expected) => {
+    const handle = api.requireHandle(
+      OpenProcess(0x0010_1040, 0, expected.pid),
+      "OpenProcess(source with DUP_HANDLE)",
+    );
+    try {
+      requireLiveIdentity(handle, expected);
+      return handle;
+    } catch (error) {
+      close(handle, "rejected source process");
+      throw error;
+    }
+  };
+  const requireOriginalWitness = (descriptor) => {
+    assert(descriptor.witness !== undefined, "qualified writer has no retained witness");
+    assert(
+      CompareObjectHandles(BigInt(descriptor.handle), descriptor.witness),
+      "original candidate no longer refers to its qualified kernel object",
+    );
   };
   const waitProcess = async (handle, deadline) => {
     const remaining = Math.max(0, deadline - Date.now());
@@ -201,8 +217,12 @@ async function native() {
     self,
     pin,
     identity,
-    objectName,
-    qualify,
+    handleFlags,
+    duplicate,
+    pinSource,
+    requireLiveIdentity,
+    CompareObjectHandles,
+    requireOriginalWitness,
     close,
     waitProcess,
     createJob,
@@ -316,15 +336,78 @@ async function sentinel(n) {
     if (action === "qualify") {
       assert.equal(descriptors.length, 0, "qualification already performed");
       descriptors = value.descriptors;
-      qualified = await Promise.all(descriptors.map(n.qualify));
-      return qualified;
+      // Snapshot absence for every candidate before any duplicate can reuse an absent slot.
+      const candidates = descriptors.map((descriptor) => ({
+        ...descriptor,
+        initiallyPresent: n.handleFlags(BigInt(descriptor.handle)) !== undefined,
+        matched: false,
+        witness: undefined,
+        expectedReferenceImported: false,
+        expectedReferenceClosed: false,
+      }));
+      let source;
+      try {
+        // Capture from our own table before opening the source process or importing its writers.
+        for (const candidate of candidates) {
+          if (candidate.initiallyPresent) {
+            candidate.witness = n.duplicate(
+              n.api.GetCurrentProcess(),
+              BigInt(candidate.handle),
+              true,
+            );
+          }
+        }
+        source = n.pinSource(value.source);
+        for (const candidate of candidates) {
+          if (candidate.witness === undefined) {
+            candidate.reason = "invalid-original-candidate";
+            continue;
+          }
+          n.requireLiveIdentity(source, value.source);
+          const expected = n.duplicate(source, BigInt(candidate.handle));
+          candidate.expectedReferenceImported = true;
+          try {
+            candidate.matched = Boolean(n.CompareObjectHandles(candidate.witness, expected));
+            candidate.reason = candidate.matched ? "same-kernel-object" : "different-kernel-object";
+          } finally {
+            // A temporary imported writer must never masquerade as an inherited writer or pin EOF.
+            n.close(expected, "temporary expected source writer");
+            candidate.expectedReferenceClosed = true;
+          }
+          if (!candidate.matched) {
+            n.close(candidate.witness, "unmatched owned candidate duplicate");
+            candidate.witness = undefined;
+          }
+        }
+        n.requireLiveIdentity(source, value.source);
+        qualified = candidates;
+        return qualified.map(({ witness, ...candidate }) => ({
+          ...candidate,
+          source: { pid: value.source.pid, created: value.source.created },
+          witness: witness?.toString(),
+          witnessNonInheritable: witness !== undefined,
+          comparison: "CompareObjectHandles",
+        }));
+      } catch (error) {
+        // Only owned inspection duplicates are closed on failure; unknown originals stay untouched.
+        for (const candidate of candidates) {
+          if (candidate.witness !== undefined) {
+            n.close(candidate.witness, "failed qualification witness");
+            candidate.witness = undefined;
+          }
+        }
+        throw error;
+      } finally {
+        if (source !== undefined) n.close(source, "pinned source process");
+      }
     }
     if (action === "write") {
       const results = [];
       for (const descriptor of qualified.filter((item) => item.matched)) {
-        assert((await n.qualify(descriptor)).matched, "foreign pipe identity changed before write");
         const bytes = Buffer.from(`${value.nonce}:${descriptor.stream}\n`);
         const written = [0];
+        // Synchronous identity check immediately before touching the original table entry.
+        n.requireOriginalWitness(descriptor);
         if (!n.WriteFile(BigInt(descriptor.handle), bytes, bytes.length, written, null))
           throw n.api.lastError("WriteFile(qualified foreign writer)");
         assert.equal(written[0], bytes.length);
@@ -335,12 +418,14 @@ async function sentinel(n) {
     if (action === "release") {
       const released = [];
       for (const descriptor of qualified.filter((item) => item.matched)) {
-        assert((await n.qualify(descriptor)).matched, "foreign pipe identity changed before close");
+        n.requireOriginalWitness(descriptor);
         n.close(BigInt(descriptor.handle), `qualified foreign ${descriptor.stream}`);
         descriptor.matched = false;
+        n.close(descriptor.witness, `owned ${descriptor.stream} identity witness`);
+        descriptor.witness = undefined;
         released.push(descriptor.stream);
       }
-      return { released, alive: n.self() };
+      return { released, ownedWitnessesClosed: released, alive: n.self() };
     }
     if (action === "alive") return n.self();
     throw new Error(`unsupported sentinel action ${action}`);
@@ -367,21 +452,10 @@ async function actor(n) {
       assert(!stdio, "pipe fixture already exists");
       stdio = n.api.createCommandStdio();
       outputHandles = stdio.takeOutputReadHandles();
-      descriptors = await Promise.all(
-        [
-          { stream: "stdout", handle: stdio.stdoutWriteHandle.toString() },
-          { stream: "stderr", handle: stdio.stderrWriteHandle.toString() },
-        ].map(async (item) => {
-          const { name } = await n.objectName(BigInt(item.handle));
-          assert(name, "created pipe has no qualified native name");
-          return { ...item, name };
-        }),
-      );
-      assert.notEqual(
-        descriptors[0].name,
-        descriptors[1].name,
-        "pipe names must distinguish endpoints",
-      );
+      descriptors = [
+        { stream: "stdout", handle: stdio.stdoutWriteHandle.toString() },
+        { stream: "stderr", handle: stdio.stderrWriteHandle.toString() },
+      ];
       return { descriptors, actor: n.self() };
     }
     if (action === "spawn" && role === "B") {
@@ -397,13 +471,14 @@ async function actor(n) {
       childIdentity = n.identity(childHandle);
       n.assign(job, childHandle);
       await foreign.rpc.call("admit");
-      const qualification = await foreign.rpc.call("qualify", { descriptors: value.descriptors });
+      const qualification = await foreign.rpc.call("qualify", {
+        descriptors: value.descriptors,
+        source: value.source,
+      });
       return { qualification, sentinel: ready, jobPids: n.api.readJobProcessIds(job) };
     }
     if (action === "launch" && role === "A") {
       assert(stdio && !childHandle, "A launch requires its unreleased pipe fixture");
-      for (const descriptor of descriptors)
-        assert((await n.qualify(descriptor)).matched, "A's own pipe identity changed");
       const attributes = n.api.createProcessAttributeList(stdio.inheritedHandles, job);
       const info = {};
       try {
@@ -487,14 +562,10 @@ async function actor(n) {
       assert.deepEqual(n.api.readJobProcessIds(job), [], "actor Job is not empty at cleanup");
       if (stdio) stdio.close();
       if (outputHandles) {
-        for (const descriptor of descriptors) {
-          const handle = outputHandles[`${descriptor.stream}ReadHandle`];
-          assert.equal(
-            (await n.objectName(handle)).name,
-            descriptor.name,
-            "A read endpoint identity changed before cleanup",
-          );
-          n.close(handle, `A ${descriptor.stream} read`);
+        // Ownership transfers at creation, even if subsequent metadata/qualification fails.
+        for (const [name, handle] of Object.entries(outputHandles)) {
+          n.close(handle, `owned A ${name}`);
+          delete outputHandles[name];
         }
       }
       if (childHandle) n.close(childHandle, "retained child process");
@@ -572,7 +643,10 @@ async function runArm(n, arm, record) {
     const [a, b] = actors;
     const created = await a.rpc.call("create");
     record({ arm, stage: "pipes-created", ...created });
-    const spawned = await b.rpc.call("spawn", { descriptors: created.descriptors });
+    const spawned = await b.rpc.call("spawn", {
+      descriptors: created.descriptors,
+      source: created.actor,
+    });
     record({ arm, stage: "foreign-qualification", ...spawned });
     const matched = spawned.qualification.filter((item) => item.matched);
     assert.equal(matched.length, arm === "threads" ? 2 : 0, "unexpected inherited endpoint set");
@@ -711,6 +785,8 @@ async function main() {
       execPath: process.execPath,
       cleanupBudgetMs: BUDGET,
       scope: "Controlled dependency mechanism; no historical root-cause claim",
+      observerReferences:
+        "Candidate duplicates are non-inheritable identity witnesses retained until release; temporary expected source duplicates close immediately after comparison",
     });
     assert.equal(
       process.version,
