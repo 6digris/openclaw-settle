@@ -245,7 +245,20 @@ describe("native Codex tool response fidelity", () => {
             ),
           )
           .find((item) => item.type === "commandExecution" && item.id === callId),
-        "native command execution",
+        `native command execution: ${JSON.stringify({
+          output: output.slice(0, 2_000),
+          events: notifications.map((notification) => ({
+            method: notification.method,
+            item:
+              isJsonObject(notification.params) && isJsonObject(notification.params.item)
+                ? {
+                    type: notification.params.item.type,
+                    id: notification.params.item.id,
+                    status: notification.params.item.status,
+                  }
+                : undefined,
+          })),
+        })}`,
       );
       expect(command).toMatchObject({ status: "completed", exitCode: 0, aggregatedOutput: source });
       expect(output).not.toBe(command.aggregatedOutput);
