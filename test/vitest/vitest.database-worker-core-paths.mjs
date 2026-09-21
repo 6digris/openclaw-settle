@@ -441,6 +441,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/agent-tools.create-openclaw-coding-tools.test.ts",
   "src/agents/bash-tools.notify-on-exit-ack.test.ts",
   "src/agents/memory-write-provenance.test.ts",
+  "src/agents/bootstrap-files.memory-core.test.ts",
   "src/agents/embedded-agent-runner/model.test.ts",
   "src/agents/embedded-agent-runner/model.forward-compat.test.ts",
   "src/agents/embedded-agent-runner/model.generation-scope.test.ts",
