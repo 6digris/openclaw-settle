@@ -134,19 +134,19 @@ function requireTestConfig<T extends { test?: unknown }>(config: T): NonNullable
   return config.test as NonNullable<T["test"]>;
 }
 
-function expectThreadedNonIsolatedRunner(config: {
+function expectDefaultNonIsolatedRunner(config: {
   test?: { pool?: unknown; isolate?: unknown; runner?: unknown };
 }) {
   const testConfig = requireTestConfig(config);
-  expect(testConfig.pool).toBe("threads");
+  expect(testConfig.pool).toBe(process.platform === "win32" ? "forks" : "threads");
   expect(testConfig.isolate).toBe(false);
   expect(normalizeConfigPath(testConfig.runner)).toBe("test/non-isolated-runner.ts");
 }
-function expectThreadedIsolatedRunner(config: {
+function expectDefaultIsolatedRunner(config: {
   test?: { pool?: unknown; isolate?: unknown; runner?: unknown };
 }) {
   const testConfig = requireTestConfig(config);
-  expect(testConfig.pool).toBe("threads");
+  expect(testConfig.pool).toBe(process.platform === "win32" ? "forks" : "threads");
   expect(testConfig.isolate).toBe(true);
   expect(testConfig.runner).toBeUndefined();
 }
@@ -617,17 +617,17 @@ describe("scoped vitest configs", () => {
       defaultToolingDockerConfig,
       defaultToolingConfig,
     ]) {
-      expectThreadedNonIsolatedRunner(config);
+      expectDefaultNonIsolatedRunner(config);
     }
 
     for (const config of [defaultGatewayConfig, defaultAgentsConfig]) {
-      expectThreadedNonIsolatedRunner(config);
+      expectDefaultNonIsolatedRunner(config);
     }
 
     expectForkedNonIsolatedRunner(defaultCommandsConfig);
 
-    expectThreadedNonIsolatedRunner(defaultUiConfig);
-    expectThreadedIsolatedRunner(defaultExtensionMemoryConfig);
+    expectDefaultNonIsolatedRunner(defaultUiConfig);
+    expectDefaultIsolatedRunner(defaultExtensionMemoryConfig);
     expectForkedIsolatedRunner(defaultInfraConfig, diagnosticForksPool);
     expectForkedIsolatedRunner(defaultCliProcessConfig);
   });
@@ -740,8 +740,8 @@ describe("scoped vitest configs", () => {
     expect(testConfig.exclude).not.toContain("chat/slash-command-executor.node.test.ts");
   });
 
-  it("defaults channel tests to threads with the non-isolated runner", () => {
-    expectThreadedNonIsolatedRunner(defaultChannelsConfig);
+  it("defaults channel tests to the platform pool with the non-isolated runner", () => {
+    expectDefaultNonIsolatedRunner(defaultChannelsConfig);
   });
 
   it("keeps the core channel lane limited to non-extension roots", () => {
@@ -777,7 +777,7 @@ describe("scoped vitest configs", () => {
   });
 
   it("serializes and isolates Telegram extension files with conflicting mocks", () => {
-    expectThreadedIsolatedRunner(defaultExtensionTelegramConfig);
+    expectDefaultIsolatedRunner(defaultExtensionTelegramConfig);
     expect(requireTestConfig(defaultExtensionTelegramConfig).fileParallelism).toBe(false);
   });
 
@@ -1106,7 +1106,7 @@ describe("scoped vitest configs", () => {
         ).toBe(true);
         expect(projects.map((project) => project.name)).toEqual(names);
         expect(projects.map((project) => project.pool)).toEqual([
-          "threads",
+          process.platform === "win32" ? "forks" : "threads",
           diagnosticForksPool.name,
         ]);
         expect(projects[0]?.setupFiles).toEqual(owner.test?.setupFiles);

@@ -261,6 +261,7 @@ export function detectChangedScope(changedPaths) {
 
     if (
       windowsCiTests.has(path) ||
+      path === "test/vitest/vitest.shared.config.ts" ||
       WINDOWS_LAN_ADVERTISEMENT_SCOPE_RE.test(path) ||
       WINDOWS_FILE_URL_SCOPE_RE.test(path) ||
       WINDOWS_DAEMON_SCOPE_RE.test(path) ||
