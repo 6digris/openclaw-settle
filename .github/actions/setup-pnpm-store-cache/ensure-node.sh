@@ -126,7 +126,7 @@ openclaw_resolve_node_download_version() {
   prefix="${prefix%%[xX]*}"
   prefix="v${prefix}"
   [[ "$prefix" == *. ]] || prefix="${prefix}."
-  curl -fsSL --connect-timeout 10 --max-time 120 --retry 2 --retry-delay 2 \
+  curl -fsSL --connect-timeout 10 --max-time 120 --retry 2 --retry-all-errors --retry-delay 2 \
     https://nodejs.org/dist/index.json |
     OPENCLAW_NODE_PREFIX="$prefix" python3 -c 'import json, os, sys
 prefix = os.environ["OPENCLAW_NODE_PREFIX"]
@@ -182,7 +182,7 @@ openclaw_download_node() {
     rm -rf "$install_root"
     mkdir -p "$install_root"
     echo "Downloading Node ${version} from ${archive_url}"
-    curl -fsSL --connect-timeout 10 --max-time 120 --retry 2 --retry-delay 2 \
+    curl -fsSL --connect-timeout 10 --max-time 120 --retry 2 --retry-all-errors --retry-delay 2 \
       -o "$archive_path" "$archive_url"
     ps_archive_path="$archive_path"
     ps_install_root="$install_root"
@@ -208,7 +208,7 @@ openclaw_download_node() {
     mkdir -p "$install_root"
     echo "Downloading Node ${version} from ${archive_url}"
     rm -f "$archive_path"
-    if ! curl -fsSL --connect-timeout 10 --max-time 120 --retry 2 --retry-delay 2 \
+    if ! curl -fsSL --connect-timeout 10 --max-time 120 --retry 2 --retry-all-errors --retry-delay 2 \
       -o "$archive_path" "$archive_url"; then
       rm -f "$archive_path"
       return 1
