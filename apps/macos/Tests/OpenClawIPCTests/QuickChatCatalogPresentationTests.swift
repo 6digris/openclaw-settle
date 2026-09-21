@@ -3,18 +3,29 @@ import CoreGraphics
 import Observation
 import OpenClawChatUI
 import SwiftUI
-import XCTest
+import Testing
 @testable import OpenClaw
 @testable import OpenClawKit
 
 @MainActor
-final class QuickChatCatalogPresentationTests: XCTestCase {
-    private var guestCueLabel: NSTextField?
-    private var guestInvalidation: (@Sendable () -> Void)?
+struct QuickChatCatalogPresentationTests {
+    @Test func `rendered Quick Chat preserves catalog disclosure and shortcut behavior in order`() async throws {
+        try await TestIsolation.withIsolatedState {
+            try await AppKitTestSupport.startApplication()
+            let application = AppKitTestSupport.application
+            let previousAppearance = application.appearance
+            defer { application.appearance = previousAppearance }
+            try await self.checkRenderedPickerUsesCatalogAvailabilityReasoningAndSpeed()
+            let presentation = QuickChatPresentationTests()
+            try await presentation.checkConversationDisclosurePreservesOneComposerAndItsDraft()
+            try await presentation.checkShortcutPresentsAnEditorWithoutRequiringForegroundOwnership()
+            try await self.checkRestrictedOperatorModelPolicyRetiresRenderedChoicesAndOpenMenu()
+        }
+    }
 
-    func testRenderedPickerUsesCatalogAvailabilityReasoningAndSpeed() async throws {
+    private func checkRenderedPickerUsesCatalogAvailabilityReasoningAndSpeed() async throws {
         let application = AppKitTestSupport.application
-        XCTAssertTrue(AppKitTestSupport.didSetActivationPolicy)
+        #expect(AppKitTestSupport.didSetActivationPolicy)
         if ProcessInfo.processInfo.environment["OPENCLAW_TEST_QUICKCHAT_APPEARANCE"] == "dark" {
             application.appearance = NSAppearance(named: .darkAqua)
         }
@@ -29,94 +40,92 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
             application.deactivate()
             controller.present()
             try await self.waitForModel { model.canUseModelControls }
-            XCTAssertTrue(model.speed.supportsFastMode)
+            #expect(model.speed.supportsFastMode)
             model.selectModel("fixture/current")
-            XCTAssertNil(model.selectedModelSelectionID, "Retained metadata does not permit manual selection")
-            let panel = try XCTUnwrap(application.windows.first {
+            #expect(model.selectedModelSelectionID == nil, "Retained metadata does not permit manual selection")
+            let panel = try #require(application.windows.first {
                 ($0.contentView as? NSHostingView<QuickChatView>)?.rootView.model === model
             })
-            XCTAssertTrue(panel.isVisible)
-            let content = try XCTUnwrap(panel.contentView)
+            #expect(panel.isVisible)
+            let content = try #require(panel.contentView)
             content.layoutSubtreeIfNeeded()
-            let elements = try await AppKitTestSupport.accessibilityElements(in: content)
-            let button = try XCTUnwrap(elements.first {
-                $0.accessibilityRole?() == .button &&
-                    $0.accessibilityLabel?() == "Model"
-            })
+            let button = try await self.waitForModelButton(in: panel, value: "Current fixture")
 
             try await AppKitTestSupport.openMenu(button, in: panel) { menu in
                 try AppKitTestSupport.record(menu: menu, content: content, name: "catalog")
-                let provider = try XCTUnwrap(menu.items.first { $0.submenu != nil })
-                let choices = try XCTUnwrap(provider.submenu)
-                XCTAssertFalse(choices.items.contains { $0.title.hasPrefix("Current fixture") })
-                let unavailable = try XCTUnwrap(choices.items.first { $0.title.hasPrefix("Locked fixture") })
-                XCTAssertFalse(unavailable.isEnabled, "The catalog requires sign-in before this model can be selected")
-                XCTAssertTrue(unavailable.title.contains("Sign-in needed"))
-                let unknown = try XCTUnwrap(choices.items.first { $0.title.hasPrefix("Unknown fixture") })
-                XCTAssertTrue(unknown.isEnabled, "Missing availability must not refuse a model")
-                let allowed = try XCTUnwrap(choices.items.firstIndex { $0.title.hasPrefix("Allowed fixture") })
-                XCTAssertTrue(choices.items[allowed].isEnabled)
+                let provider = try #require(menu.items.first { $0.submenu != nil })
+                let choices = try #require(provider.submenu)
+                #expect(!choices.items.contains { $0.title.hasPrefix("Current fixture") })
+                let unavailable = try #require(choices.items.first { $0.title.hasPrefix("Locked fixture") })
+                #expect(!unavailable.isEnabled, "The catalog requires sign-in before this model can be selected")
+                #expect(unavailable.title.contains("Sign-in needed"))
+                let unknown = try #require(choices.items.first { $0.title.hasPrefix("Unknown fixture") })
+                #expect(unknown.isEnabled, "Missing availability must not refuse a model")
+                let allowed = try #require(choices.items.firstIndex { $0.title.hasPrefix("Allowed fixture") })
+                #expect(choices.items[allowed].isEnabled)
                 choices.performActionForItem(at: allowed)
             }
             try await self.waitForModel { !model.isUpdatingModel }
-            XCTAssertEqual(model.selectedModelSelectionID, "fixture/allowed")
-            XCTAssertEqual(model.displayedModelSelectionID, "fixture/allowed")
+            #expect(model.selectedModelSelectionID == "fixture/allowed")
+            #expect(model.displayedModelSelectionID == "fixture/allowed")
 
-            try await AppKitTestSupport.openMenu(button, in: panel) { menu in
+            let selectedButton = try await self.waitForModelButton(in: panel, value: "Allowed fixture")
+            try await AppKitTestSupport.openMenu(selectedButton, in: panel) { menu in
                 try AppKitTestSupport.record(menu: menu, content: content, name: "selected")
-                let provider = try XCTUnwrap(menu.items.first { $0.submenu != nil })
-                let selected = try XCTUnwrap(provider.submenu?.items.first {
+                let provider = try #require(menu.items.first { $0.submenu != nil })
+                let selected = try #require(provider.submenu?.items.first {
                     $0.title.hasPrefix("Allowed fixture")
                 })
-                XCTAssertEqual(selected.state, .on)
+                #expect(selected.state == .on)
             }
 
             var effort = try await self.waitForEffort(in: panel, value: "Inherited Brief")
-            XCTAssertEqual(model.thinkingOptions.map(\.label), ["Brief", "Thorough"])
-            XCTAssertTrue(effort.accessibilityPerformPress?() == true)
+            #expect(model.thinkingOptions.map(\.label) == ["Brief", "Thorough"])
+            #expect(effort.accessibilityPerformPress?() == true)
             let popover = try await self.waitForEffortPopover(application: application)
-            let slider = try XCTUnwrap(popover.elements.first {
+            let slider = try #require(popover.elements.first {
                 $0.accessibilityRole?() == .slider && $0.accessibilityLabel?() == "Thinking effort"
             })
-            XCTAssertTrue(slider.accessibilityPerformIncrement?() == true)
+            #expect(slider.accessibilityPerformIncrement?() == true)
             try await self.waitForModel { model.selectedThinkingLevel == "high" }
             effort = try await self.waitForEffort(in: panel, value: "Thorough")
             let effortValue: Any? = effort.accessibilityValue?()
-            XCTAssertEqual(effortValue as? String, "Thorough")
+            #expect(effortValue as? String == "Thorough")
             try await self.captureEffortPopover(popover.window, name: "effort")
             let fast = try await AppKitTestSupport.waitForAccessibilityElement(
                 in: popover.window, description: "the enabled Fast mode control")
             { elements in
                 elements.first { $0.accessibilityLabel?() == "Fast mode" && $0.isAccessibilityEnabled?() == true }
             }
-            XCTAssertTrue(fast.isAccessibilityEnabled?() == true)
+            #expect(fast.isAccessibilityEnabled?() == true)
             _ = fast.accessibilityPerformPress?()
             try await self.waitForModel { model.speed.isEnabled && !model.isUpdatingModel }
-            XCTAssertTrue(model.speed.isEnabled)
-            XCTAssertEqual(model.speed.override, .on)
+            #expect(model.speed.isEnabled)
+            #expect(model.speed.override == .on)
             effort = try await self.waitForEffort(in: panel, value: "Thorough, Fast")
             let fastEffortValue: Any? = effort.accessibilityValue?()
-            XCTAssertEqual(fastEffortValue as? String, "Thorough, Fast")
+            #expect(fastEffortValue as? String == "Thorough, Fast")
             let defaults = try await AppKitTestSupport.accessibilityElements(in: popover.window)
                 .filter { $0.accessibilityRole?() == .button && $0.accessibilityLabel?() == "Use session default" }
-            XCTAssertEqual(defaults.count, 2, "Thinking and speed each have their own inheritance control")
-            XCTAssertTrue(try XCTUnwrap(defaults.last).accessibilityPerformPress?() == true)
+            #expect(defaults.count == 2, "Thinking and speed each have their own inheritance control")
+            #expect(try #require(defaults.last).accessibilityPerformPress?() == true)
             try await self.waitForModel { !model.isUpdatingModel }
-            XCTAssertNil(model.speed.override)
-            XCTAssertFalse(model.speed.isEnabled)
-            XCTAssertEqual(model.selectedThinkingLevel, "high")
+            #expect(model.speed.override == nil)
+            #expect(!model.speed.isEnabled)
+            #expect(model.selectedThinkingLevel == "high")
             effort = try await self.waitForEffort(in: panel, value: "Thorough")
-            XCTAssertTrue(effort.accessibilityPerformPress?() == true)
-            try await AppKitTestSupport.openMenu(button, in: panel) { menu in
+            #expect(effort.accessibilityPerformPress?() == true)
+            let inheritedButton = try await self.waitForModelButton(in: panel, value: "Allowed fixture")
+            try await AppKitTestSupport.openMenu(inheritedButton, in: panel) { menu in
                 try AppKitTestSupport.record(menu: menu, content: content, name: "inherited")
-                let choices = try XCTUnwrap(menu.items.first { $0.title == "Fixture" }?.submenu)
-                let unknown = try XCTUnwrap(choices.items.firstIndex { $0.title == "Unknown fixture" })
+                let choices = try #require(menu.items.first { $0.title == "Fixture" }?.submenu)
+                let unknown = try #require(choices.items.firstIndex { $0.title == "Unknown fixture" })
                 choices.performActionForItem(at: unknown)
             }
             try await self.waitForModel { !model.isUpdatingModel }
-            XCTAssertEqual(model.displayedModelSelectionID, "fixture/unknown")
+            #expect(model.displayedModelSelectionID == "fixture/unknown")
             let patches = await fixture.patches
-            XCTAssertEqual(patches, ["model=fixture/allowed", "fast=true", "fast=null", "model=fixture/unknown"])
+            #expect(patches == ["model=fixture/allowed", "fast=true", "fast=null", "model=fixture/unknown"])
             controller.stop()
             await gateway.shutdown()
         } catch {
@@ -126,13 +135,13 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
         }
     }
 
-    func testRestrictedOperatorModelPolicyRetiresRenderedChoicesAndOpenMenu() async throws {
+    private func checkRestrictedOperatorModelPolicyRetiresRenderedChoicesAndOpenMenu() async throws {
         let application = AppKitTestSupport.application
         let appearance = application.appearance
         defer { application.appearance = appearance }
         application.appearance = NSAppearance(named: .aqua)
-        let pointer = try XCTUnwrap(CGEvent(source: nil)?.location)
-        defer { XCTAssertEqual(CGWarpMouseCursorPosition(pointer), .success) }
+        let pointer = try #require(CGEvent(source: nil)?.location)
+        defer { #expect(CGWarpMouseCursorPosition(pointer) == .success) }
         // Model selection and reset require general write, independently of the
         // restricted choices returned by this operator's Gateway catalog.
         let fixture = QuickChatCatalogFixture(restrictedCatalog: .permitted)
@@ -146,8 +155,6 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
         var cueWindow: NSPanel?
         defer {
             invalidationTimer?.invalidate()
-            self.guestInvalidation = nil
-            self.guestCueLabel = nil
             cueWindow?.orderOut(nil)
             controller.stop()
         }
@@ -156,25 +163,25 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
             try await self.waitForModel { model.canUseModelControls }
             model.dismissPermissionsForSession()
             model.text = "Unsent fixture draft"
-            let panel = try XCTUnwrap(application.windows.first {
+            let panel = try #require(application.windows.first {
                 ($0.contentView as? NSHostingView<QuickChatView>)?.rootView.model === model
             })
-            let content = try XCTUnwrap(panel.contentView)
+            let content = try #require(panel.contentView)
             var button = try await self.guestModelButton(in: panel, model: model)
             var sceneBounds = CGRect.null
             try AppKitTestSupport.pointAtModelButton(button, in: panel)
             try await AppKitTestSupport.openMenu(button, in: panel, requireCompositedPopup: true) { menu in
                 try AppKitTestSupport.record(menu: menu, content: content, name: "guest-model-permitted")
-                sceneBounds = sceneBounds.union(try XCTUnwrap(Self.guestSceneBounds(panel: panel)).scene)
-                let choices = try XCTUnwrap(menu.items.first { $0.title == "Fixture" }?.submenu)
-                XCTAssertEqual(choices.items.map(\.title), ["Primary fixture", "Fallback fixture", "Custom fixture"])
-                XCTAssertTrue(menu.items.contains { $0.title == "Session default" })
-                XCTAssertEqual(model.modelControlLabel, "Primary fixture")
-                let fallback = try XCTUnwrap(choices.items.firstIndex { $0.title == "Fallback fixture" })
+                sceneBounds = sceneBounds.union(try #require(Self.guestSceneBounds(panel: panel)).scene)
+                let choices = try #require(menu.items.first { $0.title == "Fixture" }?.submenu)
+                #expect(choices.items.map(\.title) == ["Primary fixture", "Fallback fixture", "Custom fixture"])
+                #expect(menu.items.contains { $0.title == "Session default" })
+                #expect(model.modelControlLabel == "Primary fixture")
+                let fallback = try #require(choices.items.firstIndex { $0.title == "Fallback fixture" })
                 choices.performActionForItem(at: fallback)
             }
             try await self.waitForModel { !model.isUpdatingModel && !model.isLoadingModelControls }
-            XCTAssertEqual(model.displayedModelSelectionID, "fixture/fallback")
+            #expect(model.displayedModelSelectionID == "fixture/fallback")
 
             let noDefault = try await fixture.prepareModelChange(.noDefault)
             noDefault()
@@ -183,16 +190,16 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
             try AppKitTestSupport.pointAtModelButton(button, in: panel)
             try await AppKitTestSupport.openMenu(button, in: panel, requireCompositedPopup: true) { menu in
                 try AppKitTestSupport.record(menu: menu, content: content, name: "guest-model-null")
-                sceneBounds = sceneBounds.union(try XCTUnwrap(Self.guestSceneBounds(panel: panel)).scene)
-                XCTAssertFalse(menu.items.contains { $0.title == "Session default" })
-                XCTAssertNil(model.displayedModelSelectionID)
+                sceneBounds = sceneBounds.union(try #require(Self.guestSceneBounds(panel: panel)).scene)
+                #expect(!menu.items.contains { $0.title == "Session default" })
+                #expect(model.displayedModelSelectionID == nil)
             }
             model.selectModel(OpenClawChatViewModel.defaultModelSelectionID)
-            XCTAssertFalse(model.isUpdatingModel, "An old reset action cannot bypass a null permitted default")
+            #expect(!model.isUpdatingModel, "An old reset action cannot bypass a null permitted default")
             try await self.waitForModel { !model.isUpdatingModel && !model.isLoadingModelControls }
 
-            let held = XCTestExpectation(description: "replacement catalog read held")
-            let invalidate = try await fixture.prepareModelChange(.holding, onHeldRead: { held.fulfill() })
+            let held = AsyncTestGate()
+            let invalidate = try await fixture.prepareModelChange(.holding, onHeldRead: { held.open() })
             button = try await self.guestModelButton(in: panel, model: model)
             let panelBounds = try AppKitTestSupport.screenCaptureRect(for: panel.frame)
             // This fixture's one-line status band measured 112 -> 143 points on the baseline runner.
@@ -204,8 +211,6 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
                 height: panelBounds.height + 31)
             let cue = Self.makeGuestCue(above: panel)
             cueWindow = cue.window
-            self.guestCueLabel = cue.label
-            self.guestInvalidation = invalidate
             sceneBounds = sceneBounds.union(panelEnvelope)
                 .union(try AppKitTestSupport.screenCaptureRect(for: cue.window.frame)).integral
             recording = Self.recordGuestModelMenu(bounds: sceneBounds)
@@ -228,12 +233,14 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
                     try AppKitTestSupport.record(menu: menu, content: content, name: "guest-model-open")
                     self.assertGuestSceneContained(panel: panel, bounds: captureBounds)
                     // Keep the already-asserted resting state legible in the bounded recording.
-                    let timer = Timer(
-                        timeInterval: 1,
-                        target: self,
-                        selector: #selector(self.emitGuestInvalidation),
-                        userInfo: nil,
-                        repeats: false)
+                    let emitInvalidation: @MainActor @Sendable () -> Void = {
+                        cue.label.stringValue = "PROOF · Policy change signal; fresh catalog held"
+                        cue.window.displayIfNeeded()
+                        invalidate()
+                    }
+                    let timer = Timer(timeInterval: 1, repeats: false) { _ in
+                        MainActor.assumeIsolated { emitInvalidation() }
+                    }
                     invalidationTimer = timer
                     for mode in [RunLoop.Mode.eventTracking, .common] {
                         RunLoop.main.add(timer, forMode: mode)
@@ -243,8 +250,19 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
                 // Preserve the real stale rendering on an unchanged baseline before reporting the failed contract.
                 dismissalError = error
             }
-            let heldResult = await XCTWaiter.fulfillment(of: [held], timeout: 5)
-            XCTAssertEqual(heldResult, .completed)
+            let heldDeadline = ContinuousClock.now + .seconds(5)
+            let heldTimeout = Task {
+                do {
+                    try await Task.sleep(until: heldDeadline, clock: .continuous)
+                    held.open()
+                } catch {}
+            }
+            await held.wait()
+            heldTimeout.cancel()
+            await heldTimeout.value
+            try Task.checkCancellation()
+            let heldReadArrived = await fixture.heldCatalogReadAt.map { $0 <= heldDeadline } == true
+            #expect(heldReadArrived, "The replacement catalog read must arrive before the five-second deadline")
             await fixture.releaseHeldCatalog()
             try await self.waitForModel { model.modelControlStatusMessage != nil && !model.isLoadingModelControls }
             button = try await self.guestModelButton(in: panel, model: model)
@@ -253,11 +271,11 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
             try await AppKitTestSupport.openMenu(button, in: panel, requireCompositedPopup: true) { menu in
                 try AppKitTestSupport.record(menu: menu, content: content, name: "guest-model-invalidated")
                 self.assertGuestSceneContained(panel: panel, bounds: captureBounds)
-                XCTAssertTrue(menu.items.allSatisfy { $0.action == nil && $0.submenu == nil })
+                #expect(menu.items.allSatisfy { $0.action == nil && $0.submenu == nil })
             }
-            XCTAssertTrue(model.modelChoices.isEmpty)
-            XCTAssertEqual(model.text, "Unsent fixture draft")
-            if let dismissalError { XCTFail("Policy invalidation did not dismiss the owned menu: \(dismissalError)") }
+            #expect(model.modelChoices.isEmpty)
+            #expect(model.text == "Unsent fixture draft")
+            if let dismissalError { Issue.record("Policy invalidation did not dismiss the owned menu: \(dismissalError)") }
             // Hold the asserted failure state for reading, independently of request or menu deadlines.
             try await Task.sleep(for: .seconds(1))
 
@@ -270,10 +288,10 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
             try await AppKitTestSupport.openMenu(button, in: panel, requireCompositedPopup: true) { menu in
                 try AppKitTestSupport.record(menu: menu, content: content, name: "guest-model-recovered")
                 self.assertGuestSceneContained(panel: panel, bounds: captureBounds)
-                XCTAssertTrue(menu.items.contains { $0.title == "Session default" })
+                #expect(menu.items.contains { $0.title == "Session default" })
             }
             let patches = await fixture.patches
-            XCTAssertEqual(patches, ["model=fixture/fallback"])
+            #expect(patches == ["model=fixture/fallback"])
             await recording?.task.value
             controller.stop()
             await gateway.shutdown()
@@ -286,14 +304,6 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
             await gateway.shutdown()
             throw error
         }
-    }
-
-    @objc private func emitGuestInvalidation() {
-        self.guestCueLabel?.stringValue = "PROOF · Policy change signal; fresh catalog held"
-        self.guestCueLabel?.window?.displayIfNeeded()
-        let invalidate = self.guestInvalidation
-        self.guestInvalidation = nil
-        invalidate?()
     }
 
     private func guestModelButton(in panel: NSWindow, model: QuickChatModel) async throws -> AnyObject {
@@ -360,10 +370,10 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
 
     private func assertGuestSceneContained(panel: NSWindow, bounds: CGRect) {
         guard let actual = Self.guestSceneBounds(panel: panel) else {
-            XCTFail("The owned panel has no Window Server bounds")
+            Issue.record("The owned panel has no Window Server bounds")
             return
         }
-        XCTAssertTrue(
+        #expect(
             bounds.contains(actual.scene.integral),
             "Owned scene \(actual.scene) exceeds recording crop \(bounds)")
     }
@@ -434,10 +444,23 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
                 try JSONSerialization.data(withJSONObject: status, options: [.prettyPrinted, .sortedKeys])
                     .write(to: statusFile, options: .atomic)
             } catch {
-                XCTFail("Could not preserve the bounded recording result: \(error)")
+                Issue.record("Could not preserve the bounded recording result: \(error)")
             }
         }
         return (task, started, bounds)
+    }
+
+    private func waitForModelButton(in window: NSWindow, value expectedValue: String) async throws -> AnyObject {
+        // SwiftUI can reuse the previous Model accessibility node for its loading indicator.
+        try await AppKitTestSupport.waitForAccessibilityElement(
+            in: window, description: "the enabled Model button for \(expectedValue)")
+        { elements in
+            elements.first { element in
+                let value: Any? = element.accessibilityValue?()
+                return element.accessibilityRole?() == .button && element.accessibilityLabel?() == "Model" &&
+                    element.isAccessibilityEnabled?() == true && value as? String == expectedValue
+            }
+        }
     }
 
     private func waitForEffort(in window: NSWindow, value expectedValue: String) async throws -> AnyObject {
@@ -480,13 +503,22 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
     }
 
     private func waitForModel(_ condition: @escaping @MainActor () -> Bool) async throws {
-        let ready = XCTestExpectation(description: "Quick Chat model state settled")
+        let ready = AsyncTestGate()
         let observation = QuickChatCatalogObservation(condition: condition, ready: ready)
+        let timeout = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .seconds(5))
+                ready.open()
+            } catch {}
+        }
         observation.observe()
-        let result = await XCTWaiter.fulfillment(of: [ready], timeout: 5)
+        await ready.wait()
         observation.stop()
-        XCTAssertEqual(result, .completed)
-        XCTAssertTrue(condition())
+        timeout.cancel()
+        await timeout.value
+        try Task.checkCancellation()
+        #expect(observation.satisfied)
+        #expect(condition())
     }
 
     private static func makeModel(gateway: GatewayConnection) -> QuickChatModel {
@@ -508,7 +540,7 @@ final class QuickChatCatalogPresentationTests: XCTestCase {
             modelCatalogEventsProvider: { await gateway.subscribe() },
             settingsPatchProvider: { target, settings in
                 let routeLease = await transport.acquireSessionSettingsRouteLease()
-                let lease = try XCTUnwrap(routeLease)
+                let lease = try #require(routeLease)
                 return try await lease.patchSessionSettings(
                     sessionKey: target.sessionKey, agentID: target.agentID, patch: settings)
             })
@@ -555,6 +587,7 @@ private actor QuickChatCatalogFixture {
     private var sequence = 0
     private var heldReads: [CheckedContinuation<Void, Never>] = []
     private var onHeldRead: (@Sendable () -> Void)?
+    private(set) var heldCatalogReadAt: ContinuousClock.Instant?
     private(set) var patches: [String] = []
 
     init(restrictedCatalog: QuickChatRestrictedCatalog? = nil) {
@@ -572,8 +605,9 @@ private actor QuickChatCatalogFixture {
     {
         self.restrictedCatalog = mode
         self.onHeldRead = onHeldRead
+        self.heldCatalogReadAt = nil
         self.sequence += 1
-        let socket = try XCTUnwrap(self.socket)
+        let socket = try #require(self.socket)
         let frame = Data(
             """
             {"type":"event","event":"chat.metadata.changed","payload":{"modelSelectionChanged":true},"seq":\(self.sequence)}
@@ -589,20 +623,21 @@ private actor QuickChatCatalogFixture {
     }
 
     func response(to data: Data) async throws -> Data {
-        let request = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        let id = try XCTUnwrap(request["id"] as? String)
-        let method = try XCTUnwrap(request["method"] as? String)
+        let request = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let id = try #require(request["id"] as? String)
+        let method = try #require(request["method"] as? String)
         let payload: String
         switch method {
         case "health": payload = "{}"
         case "agents.list":
             payload = #"{"defaultId":"main","mainKey":"main","scope":"per-sender","agents":[{"id":"main","kind":"agent","name":"Fixture"}]}"#
         case "models.list":
-            let params = try XCTUnwrap(request["params"] as? [String: Any])
-            XCTAssertEqual(params["sessionKey"] as? String, "agent:main:main")
+            let params = try #require(request["params"] as? [String: Any])
+            #expect(params["sessionKey"] as? String == "agent:main:main")
             if self.restrictedCatalog == .holding {
                 await withCheckedContinuation { continuation in
                     self.heldReads.append(continuation)
+                    if self.heldCatalogReadAt == nil { self.heldCatalogReadAt = ContinuousClock.now }
                     self.onHeldRead?()
                     self.onHeldRead = nil
                 }
@@ -647,12 +682,12 @@ private actor QuickChatCatalogFixture {
             {"sessions":[{"key":"agent:main:main","modelProvider":"fixture","model":"\(self.model)"\(fast)}]}
             """
         case "sessions.patch":
-            let params = try XCTUnwrap(request["params"] as? [String: Any])
-            XCTAssertEqual(params["key"] as? String, "agent:main:main")
+            let params = try #require(request["params"] as? [String: Any])
+            #expect(params["key"] as? String == "agent:main:main")
             if let model = params["model"] as? String {
                 let allowed = self.restrictedCatalog == nil
                     ? ["fixture/allowed", "fixture/unknown"] : ["fixture/fallback"]
-                XCTAssertTrue(allowed.contains(model))
+                #expect(allowed.contains(model))
                 self.model = model
                 self.patches.append("model=\(model)")
             } else if params["model"] is NSNull {
@@ -662,8 +697,8 @@ private actor QuickChatCatalogFixture {
                 }
                 self.model = self.restrictedCatalog == nil ? "current" : "primary"
             } else {
-                let fast = try XCTUnwrap(params["fastMode"])
-                XCTAssertTrue(fast is Bool || fast is NSNull)
+                let fast = try #require(params["fastMode"])
+                #expect(fast is Bool || fast is NSNull)
                 self.fastMode = fast as? Bool
                 self.patches.append(self.fastMode.map { "fast=\($0)" } ?? "fast=null")
             }
@@ -680,10 +715,11 @@ private actor QuickChatCatalogFixture {
 @MainActor
 private final class QuickChatCatalogObservation {
     let condition: @MainActor () -> Bool
-    let ready: XCTestExpectation
+    let ready: AsyncTestGate
+    private(set) var satisfied = false
     private var stopped = false
 
-    init(condition: @escaping @MainActor () -> Bool, ready: XCTestExpectation) {
+    init(condition: @escaping @MainActor () -> Bool, ready: AsyncTestGate) {
         self.condition = condition
         self.ready = ready
     }
@@ -694,8 +730,9 @@ private final class QuickChatCatalogObservation {
             Task { @MainActor in self?.observe() }
         }
         if satisfied {
+            self.satisfied = true
             self.stopped = true
-            self.ready.fulfill()
+            self.ready.open()
         }
     }
 
