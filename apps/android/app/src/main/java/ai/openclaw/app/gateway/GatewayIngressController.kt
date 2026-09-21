@@ -419,10 +419,11 @@ internal class GatewayIngressController(
     synchronized(lock) {
       val intent = browserIntent
       val participant = intent?.let { liveParticipantLocked(it, stableId) }
+      // Browser attention can outlive a suspended caller's eligibility; only its live participant blocks.
       registrations[stableId]?.ordinaryAdmission != true &&
         (
           (participant != null && browserIntent === intent) ||
-            mutablePresentation.value.attention?.stableId == stableId ||
+            mutablePresentation.value.attention?.let { it.stableId == stableId && it.attemptId == null } == true ||
             leases[stableId]?.active?.get() == false
         )
     }
@@ -756,12 +757,23 @@ internal class GatewayIngressController(
         // An acquired route owns even a failed raw probe. Its new origin need not
         // have a verified grant association yet; that metadata is never admission.
         val intent = browserIntent
+        val presentation = mutablePresentation.value
         if (!callerIsCurrent {
             origin?.let { store.requireAdmission(it, admissionCheckpoint) }
             isCurrent()
           } || intent?.let(::isLiveIntentLocked) == true || browserIntent !== intent ||
-          !ownsPresentationLocked() || ownedRegistration() !== registration || registration?.ordinaryAdmission == true ||
+          mutablePresentation.value !== presentation || !ownsPresentationLocked() ||
+          ownedRegistration() !== registration || registration?.ordinaryAdmission == true ||
           mutablePresentation.value.attention?.let { it.stableId != stableId } == true
+        ) {
+          return
+        }
+        // Predicates may sign out again without changing an equal StateFlow presentation.
+        // Recheck revocation after every callout, without invoking another caller predicate.
+        if (!callerIsCurrent {
+            origin?.let { store.requireAdmission(it, admissionCheckpoint) }
+            true
+          }
         ) {
           return
         }
