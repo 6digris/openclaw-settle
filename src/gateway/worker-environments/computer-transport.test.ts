@@ -440,21 +440,26 @@ describe("session computer transport", () => {
       }
       return await policy.invokeNode();
     });
-    const operation = transport.invoke(request("type"));
-    const record = await expectSinglePendingApproval(manager);
-    expect(record.request).toMatchObject({
-      agentId: "main",
-      sessionKey: h.state.placement.sessionKey,
-      runId: h.claim.runId,
-    });
-    expect(record.agentRuntimeDelegatedAuthority).toMatchObject({
-      kind: "worker",
-      turnClaim: h.claim,
-      operationalRunInstance: h.run,
-    });
-    expect(await manager.resolve(record.id, "allow-once")).toBe(true);
-    await expect(operation).resolves.toMatchObject({ ok: true });
-    expect((await manager.getSnapshot(record.id))?.consumedDecision).toBe("allow-once");
+    await expectSinglePendingApproval(
+      manager,
+      context,
+      () => transport.invoke(request("type")),
+      async (record, operation) => {
+        expect(record.request).toMatchObject({
+          agentId: "main",
+          sessionKey: h.state.placement.sessionKey,
+          runId: h.claim.runId,
+        });
+        expect(record.agentRuntimeDelegatedAuthority).toMatchObject({
+          kind: "worker",
+          turnClaim: h.claim,
+          operationalRunInstance: h.run,
+        });
+        expect(await manager.resolve(record.id, "allow-once")).toBe(true);
+        await expect(operation).resolves.toMatchObject({ ok: true });
+        expect((await manager.getSnapshot(record.id))?.consumedDecision).toBe("allow-once");
+      },
+    );
     releaseAgentRunDelegatedAuthority(h.authority);
     h.releaseClaim();
     h.policyHandle.mockClear();

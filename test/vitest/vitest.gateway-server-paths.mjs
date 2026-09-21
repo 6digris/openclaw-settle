@@ -53,6 +53,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/managed-outgoing-gc-availability.test.ts",
   "src/gateway/mention-directory.test.ts",
   "src/gateway/mention-inbox.test.ts",
+  "src/gateway/node-invoke-plugin-policy.ios-delivery.test.ts",
   "src/gateway/node-invoke-plugin-policy.private-transport.test.ts",
   "src/gateway/node-invoke-plugin-policy.test.ts",
   "src/gateway/node-invoke-system-run-approval.test.ts",

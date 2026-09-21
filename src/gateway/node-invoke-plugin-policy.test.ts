@@ -11,7 +11,6 @@ import type { ChannelApprovalKind } from "../infra/approval-types.js";
 import { resolveCanonicalPluginApprovalRequestAllowedDecisions } from "../infra/plugin-approval-canonical-decisions.js";
 import {
   MAX_PLUGIN_APPROVAL_TIMEOUT_MS,
-  type PluginApprovalRequest,
   type PluginApprovalRequestPayload,
 } from "../infra/plugin-approvals.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
@@ -189,49 +188,54 @@ describe("applyPluginNodeInvokePolicy", () => {
       params?.onProgress?.("approved-duplex-progress");
       return { ok: true, payload: { approved: true }, payloadJSON: null, error: null };
     });
-    const resultPromise = applyPluginNodeInvokePolicy({
+    await expectSinglePendingApproval(
+      manager,
       context,
-      client: {
-        ...createOperatorClient(),
-        internal: {
-          syntheticClient: true,
-          pluginRuntimeOwnerId: DEMO_PLUGIN_ID,
-          nodeInvokeApprovalSessionKey: "agent:main:paired",
+      () =>
+        applyPluginNodeInvokePolicy({
+          context,
+          client: {
+            ...createOperatorClient(),
+            internal: {
+              syntheticClient: true,
+              pluginRuntimeOwnerId: DEMO_PLUGIN_ID,
+              nodeInvokeApprovalSessionKey: "agent:main:paired",
+              nodeInvokeStream: stream,
+            },
+          },
+          nodeSession,
+          command: DEMO_COMMAND,
+          params: DEMO_PARAMS,
+          sessionKey: "agent:main:paired",
           nodeInvokeStream: stream,
-        },
+        }),
+      async (approval, resultPromise) => {
+        expect(approval.request.sessionKey).toBe("agent:main:paired");
+        expect(invoke).not.toHaveBeenCalled();
+        expect(await manager.resolve(approval.id, "allow-once")).toBe(true);
+
+        await expect(resultPromise).resolves.toMatchObject({ ok: true });
+        expect(stream.onDispatchReady.mock.calls).toEqual([
+          ["rejected-duplex-invoke"],
+          ["approved-duplex-invoke"],
+        ]);
+        expect(stream.onProgress.mock.calls).toEqual([["approved-duplex-progress"]]);
+        expect(invoke).toHaveBeenCalledTimes(2);
+        expect(await manager.listPendingRecords()).toHaveLength(0);
+        expect((await manager.getSnapshot(approval.id))?.consumedDecision).toBe("allow-once");
+        expect(invoke).toHaveBeenCalledWith(
+          expect.objectContaining({
+            expectedConnId: "conn-1",
+            expectedPairingGeneration: "paired-generation-1",
+            sessionKey: "agent:main:paired",
+            idleTimeoutMs: 5_000,
+          }),
+        );
+
+        runtimeCurrent = false;
+        expect(invoke.mock.calls[0]?.[0]?.isDispatchAuthorized?.()).toBe(false);
       },
-      nodeSession,
-      command: DEMO_COMMAND,
-      params: DEMO_PARAMS,
-      sessionKey: "agent:main:paired",
-      nodeInvokeStream: stream,
-    });
-
-    const approval = await expectSinglePendingApproval(manager);
-    expect(approval.request.sessionKey).toBe("agent:main:paired");
-    expect(invoke).not.toHaveBeenCalled();
-    expect(await manager.resolve(approval.id, "allow-once")).toBe(true);
-
-    await expect(resultPromise).resolves.toMatchObject({ ok: true });
-    expect(stream.onDispatchReady.mock.calls).toEqual([
-      ["rejected-duplex-invoke"],
-      ["approved-duplex-invoke"],
-    ]);
-    expect(stream.onProgress.mock.calls).toEqual([["approved-duplex-progress"]]);
-    expect(invoke).toHaveBeenCalledTimes(2);
-    expect(await manager.listPendingRecords()).toHaveLength(0);
-    expect((await manager.getSnapshot(approval.id))?.consumedDecision).toBe("allow-once");
-    expect(invoke).toHaveBeenCalledWith(
-      expect.objectContaining({
-        expectedConnId: "conn-1",
-        expectedPairingGeneration: "paired-generation-1",
-        sessionKey: "agent:main:paired",
-        idleTimeoutMs: 5_000,
-      }),
     );
-
-    runtimeCurrent = false;
-    expect(invoke.mock.calls[0]?.[0]?.isDispatchAuthorized?.()).toBe(false);
   });
 
   it("does not trust a plugin-owned invocation session without host attestation", async (testContext) => {
@@ -244,25 +248,30 @@ describe("applyPluginNodeInvokePolicy", () => {
       pluginApprovalManager: manager,
       getApprovalClientConnIds: createApprovalClientLookup([reviewer]),
     });
-    const resultPromise = applyPluginNodeInvokePolicy({
+    await expectSinglePendingApproval(
+      manager,
       context,
-      client: {
-        ...createOperatorClient(),
-        internal: {
-          syntheticClient: true,
-          pluginRuntimeOwnerId: DEMO_PLUGIN_ID,
-        },
+      () =>
+        applyPluginNodeInvokePolicy({
+          context,
+          client: {
+            ...createOperatorClient(),
+            internal: {
+              syntheticClient: true,
+              pluginRuntimeOwnerId: DEMO_PLUGIN_ID,
+            },
+          },
+          nodeSession: createNodeSession(),
+          command: DEMO_COMMAND,
+          params: DEMO_PARAMS,
+          sessionKey: "agent:main:plugin-asserted",
+        }),
+      async (approval, resultPromise) => {
+        expect(approval.request.sessionKey).toBeNull();
+        expect(await manager.resolve(approval.id, "deny")).toBe(true);
+        await expect(resultPromise).resolves.toMatchObject({ ok: true });
       },
-      nodeSession: createNodeSession(),
-      command: DEMO_COMMAND,
-      params: DEMO_PARAMS,
-      sessionKey: "agent:main:plugin-asserted",
-    });
-
-    const approval = await expectSinglePendingApproval(manager);
-    expect(approval.request.sessionKey).toBeNull();
-    expect(await manager.resolve(approval.id, "deny")).toBe(true);
-    await expect(resultPromise).resolves.toMatchObject({ ok: true });
+    );
   });
 
   it("classifies exact arguments before the policy handler and transport", async () => {
@@ -657,21 +666,25 @@ describe("applyPluginNodeInvokePolicy", () => {
     });
     const requester = createOperatorClient();
     requester.internal = synthetic ? { syntheticClient: true } : undefined;
-    const resultPromise = invokeDemoPolicy(context, requester);
+    await expectSinglePendingApproval(
+      manager,
+      context,
+      () => invokeDemoPolicy(context, requester),
+      async (record, resultPromise) => {
+        expect(record.requestedByConnId).toBe("conn-requester");
+        expect(record.requestedByDeviceId).toBe("device-owner");
+        expect(record.requestedByClientId).toBe("client-owner");
+        expect(context.broadcast).not.toHaveBeenCalled();
+        expect(context.broadcastToConnIds).toHaveBeenCalledWith(
+          "plugin.approval.requested",
+          expect.objectContaining({ id: record.id }),
+          visibleConnIds,
+          { dropIfSlow: true },
+        );
 
-    const record = await expectSinglePendingApproval(manager);
-    expect(record.requestedByConnId).toBe("conn-requester");
-    expect(record.requestedByDeviceId).toBe("device-owner");
-    expect(record.requestedByClientId).toBe("client-owner");
-    expect(context.broadcast).not.toHaveBeenCalled();
-    expect(context.broadcastToConnIds).toHaveBeenCalledWith(
-      "plugin.approval.requested",
-      expect.objectContaining({ id: record.id }),
-      visibleConnIds,
-      { dropIfSlow: true },
+        await expectApprovalResolution(resultPromise, manager, record);
+      },
     );
-
-    await expectApprovalResolution(resultPromise, manager, record);
   });
 
   it("keeps a sole-reviewer operator requester routable instead of no-route denying", async (testContext) => {
@@ -684,17 +697,21 @@ describe("applyPluginNodeInvokePolicy", () => {
       pluginApprovalManager: manager,
       getApprovalClientConnIds: createApprovalClientLookup([requester]),
     });
-    const resultPromise = invokeDemoPolicy(context, requester);
+    await expectSinglePendingApproval(
+      manager,
+      context,
+      () => invokeDemoPolicy(context, requester),
+      async (record, resultPromise) => {
+        expect(context.broadcastToConnIds).toHaveBeenCalledWith(
+          "plugin.approval.requested",
+          expect.objectContaining({ id: record.id }),
+          new Set(["conn-requester"]),
+          { dropIfSlow: true },
+        );
 
-    const record = await expectSinglePendingApproval(manager);
-    expect(context.broadcastToConnIds).toHaveBeenCalledWith(
-      "plugin.approval.requested",
-      expect.objectContaining({ id: record.id }),
-      new Set(["conn-requester"]),
-      { dropIfSlow: true },
+        await expectApprovalResolution(resultPromise, manager, record);
+      },
     );
-
-    await expectApprovalResolution(resultPromise, manager, record);
   });
 
   it("sanitizes node-policy approval titles at creation like the RPC ingress", async (testContext) => {
@@ -714,16 +731,20 @@ describe("applyPluginNodeInvokePolicy", () => {
       }),
     ]);
     const { context } = createContext({ pluginApprovalManager: manager, getApprovalClientConnIds });
-    const resultPromise = invokeDemoPolicy(context, createOperatorClient());
+    await expectSinglePendingApproval(
+      manager,
+      context,
+      () => invokeDemoPolicy(context, createOperatorClient()),
+      async (record, resultPromise) => {
+        expect(record.request.title).toBe("Deploy\\u{202E}yolped");
+        expect(record.request.description).toBe("safe\\u{200B}text");
+        // Metadata is interpolated into channel approval text lines.
+        expect(record.request.toolName).toBe("tool\\u{202E}run");
+        expect(record.request.agentId).toBe("agent\\u{200B}x");
 
-    const record = await expectSinglePendingApproval(manager);
-    expect(record.request.title).toBe("Deploy\\u{202E}yolped");
-    expect(record.request.description).toBe("safe\\u{200B}text");
-    // Metadata is interpolated into channel approval text lines.
-    expect(record.request.toolName).toBe("tool\\u{202E}run");
-    expect(record.request.agentId).toBe("agent\\u{200B}x");
-
-    await expectApprovalResolution(resultPromise, manager, record);
+        await expectApprovalResolution(resultPromise, manager, record);
+      },
+    );
   });
 
   it("limits explicitly one-shot node-policy approvals to allow-once or deny", async (testContext) => {
@@ -740,14 +761,18 @@ describe("applyPluginNodeInvokePolicy", () => {
         createOperatorClient("conn-owner-approval"),
       ]),
     });
-    const resultPromise = invokeDemoPolicy(context, createOperatorClient());
+    await expectSinglePendingApproval(
+      manager,
+      context,
+      () => invokeDemoPolicy(context, createOperatorClient()),
+      async (record, resultPromise) => {
+        expect(record.request.allowedDecisions).toEqual(["allow-once", "deny"]);
+        expect(await manager.resolve(record.id, "allow-always")).toBe(false);
+        expect(await manager.listPendingRecords()).toHaveLength(1);
 
-    const record = await expectSinglePendingApproval(manager);
-    expect(record.request.allowedDecisions).toEqual(["allow-once", "deny"]);
-    expect(await manager.resolve(record.id, "allow-always")).toBe(false);
-    expect(await manager.listPendingRecords()).toHaveLength(1);
-
-    await expectApprovalResolution(resultPromise, manager, record);
+        await expectApprovalResolution(resultPromise, manager, record);
+      },
+    );
   });
 
   it("forwards plugin policy approvals to the originating turn source", async (testContext) => {
@@ -766,136 +791,69 @@ describe("applyPluginNodeInvokePolicy", () => {
       validateAgentRuntimeApprovalAuthority: () => true,
     });
     const operationalRunInstance = createOperationalRunInstanceRef("run-node-policy");
-    const resultPromise = applyPluginNodeInvokePolicy({
+    await expectSinglePendingApproval(
+      manager,
       context,
-      client: {
-        ...createOperatorClient(),
-        internal: {
-          agentRuntimeIdentity: {
-            kind: "agentRuntime",
-            agentId: "main",
-            sessionKey: "agent:main:telegram:direct:alice",
-            operationalRunInstance,
-            delegatedAuthority: {
-              kind: "local",
-              operationalRunInstance,
-              lifecycleGeneration: "test-generation",
-              claimId: "test-claim",
+      () =>
+        applyPluginNodeInvokePolicy({
+          context,
+          client: {
+            ...createOperatorClient(),
+            internal: {
+              agentRuntimeIdentity: {
+                kind: "agentRuntime",
+                agentId: "main",
+                sessionKey: "agent:main:telegram:direct:alice",
+                operationalRunInstance,
+                delegatedAuthority: {
+                  kind: "local",
+                  operationalRunInstance,
+                  lifecycleGeneration: "test-generation",
+                  claimId: "test-claim",
+                },
+              },
             },
           },
-        },
-      },
-      nodeSession: createNodeSession(),
-      command: DEMO_COMMAND,
-      params: DEMO_PARAMS,
-      sessionKey: "agent:main:spoofed",
-      turnSource: {
-        channel: "tui",
-        to: "terminal",
-        accountId: "default",
-        threadId: 7,
-      },
-    });
-
-    const record = await expectSinglePendingApproval(manager);
-    expect(record.request.turnSourceChannel).toBe("tui");
-    expect(record.request.turnSourceTo).toBe("terminal");
-    expect(record.request.turnSourceAccountId).toBe("default");
-    expect(record.request.turnSourceThreadId).toBe(7);
-    expect(context.broadcast).not.toHaveBeenCalled();
-    expect(context.broadcastToConnIds).toHaveBeenCalledWith(
-      "plugin.approval.requested",
-      expect.objectContaining({ id: record.id }),
-      new Set<string>(),
-      { dropIfSlow: true },
-    );
-    expect(handlePluginApprovalRequested).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: record.id,
-        request: expect.objectContaining({
-          turnSourceChannel: "tui",
-          turnSourceTo: "terminal",
-          turnSourceAccountId: "default",
-          turnSourceThreadId: 7,
-          agentId: "main",
-          sessionKey: "agent:main:telegram:direct:alice",
+          nodeSession: createNodeSession(),
+          command: DEMO_COMMAND,
+          params: DEMO_PARAMS,
+          sessionKey: "agent:main:spoofed",
+          turnSource: {
+            channel: "tui",
+            to: "terminal",
+            accountId: "default",
+            threadId: 7,
+          },
         }),
-      }),
-    );
+      async (record, resultPromise) => {
+        expect(record.request.turnSourceChannel).toBe("tui");
+        expect(record.request.turnSourceTo).toBe("terminal");
+        expect(record.request.turnSourceAccountId).toBe("default");
+        expect(record.request.turnSourceThreadId).toBe(7);
+        expect(context.broadcast).not.toHaveBeenCalled();
+        expect(context.broadcastToConnIds).toHaveBeenCalledWith(
+          "plugin.approval.requested",
+          expect.objectContaining({ id: record.id }),
+          new Set<string>(),
+          { dropIfSlow: true },
+        );
+        expect(handlePluginApprovalRequested).toHaveBeenCalledWith(
+          expect.objectContaining({
+            id: record.id,
+            request: expect.objectContaining({
+              turnSourceChannel: "tui",
+              turnSourceTo: "terminal",
+              turnSourceAccountId: "default",
+              turnSourceThreadId: 7,
+              agentId: "main",
+              sessionKey: "agent:main:telegram:direct:alice",
+            }),
+          }),
+        );
 
-    await expectApprovalResolution(resultPromise, manager, record);
-  });
-
-  it("delivers plugin policy approvals to visible iOS reviewers", async (testContext) => {
-    const manager = createTestApprovalManager<PluginApprovalRequestPayload>(testContext, {
-      approvalKind: "plugin",
-    });
-    const handleRequested = vi.fn(
-      async (
-        _request: PluginApprovalRequest,
-        _opts?: {
-          isTargetVisible?: (target: { deviceId: string; scopes: readonly string[] }) => boolean;
-        },
-      ) => true,
-    );
-    setDangerousDemoCommandRegistry([createApprovalRequestPolicy()]);
-    const { context } = createContext({
-      pluginApprovalManager: manager,
-      getApprovalClientConnIds: vi.fn(() => new Set<string>()),
-      hasExecApprovalClients: vi.fn(() => false),
-      pluginApprovalIosPushDelivery: { handleRequested },
-    });
-
-    const resultPromise = invokeDemoPolicy(context, createOperatorClient());
-    const record = await expectSinglePendingApproval(manager);
-
-    expect(handleRequested).toHaveBeenCalledTimes(1);
-    const deliveryOptions = handleRequested.mock.calls[0]?.[1];
-    expect(
-      deliveryOptions?.isTargetVisible?.({
-        deviceId: "device-owner",
-        scopes: ["operator.approvals", "operator.read"],
-      }),
-    ).toBe(true);
-    expect(
-      deliveryOptions?.isTargetVisible?.({
-        deviceId: "device-other",
-        scopes: ["operator.approvals", "operator.read"],
-      }),
-    ).toBe(false);
-
-    await expectApprovalResolution(resultPromise, manager, record);
-  });
-
-  it("sends an iOS cleanup wake through the current delivery owner", async (testContext) => {
-    const manager = createTestApprovalManager<PluginApprovalRequestPayload>(testContext, {
-      approvalKind: "plugin",
-    });
-    const handleExpired = vi.fn(async () => {});
-    setDangerousDemoCommandRegistry([createApprovalRequestPolicy()]);
-    const { context } = createContext({
-      pluginApprovalManager: manager,
-      getApprovalClientConnIds: vi.fn(() => new Set<string>()),
-      hasExecApprovalClients: vi.fn(() => false),
-      pluginApprovalIosPushDelivery: {
-        handleRequested: vi.fn(async () => true),
-        handleExpired,
+        await expectApprovalResolution(resultPromise, manager, record);
       },
-    });
-
-    const resultPromise = invokeDemoPolicy(context, createOperatorClient());
-    const record = await expectSinglePendingApproval(manager);
-    const replacementExpired = vi.fn(async () => {});
-    context.pluginApprovalIosPushDelivery = { handleExpired: replacementExpired };
-    await manager.expire(record.id, "timeout");
-
-    await expect(resultPromise).resolves.toStrictEqual({
-      ok: true,
-      payload: { id: record.id, decision: null },
-    });
-    expect(handleExpired).not.toHaveBeenCalled();
-    expect(replacementExpired).toHaveBeenCalledWith(expect.objectContaining({ id: record.id }));
-    expect(replacementExpired.mock.contexts).toEqual([context.pluginApprovalIosPushDelivery]);
+    );
   });
 
   it("ignores approval routes from unsigned node.invoke clients", async (testContext) => {
@@ -954,12 +912,16 @@ describe("applyPluginNodeInvokePolicy", () => {
         createOperatorClient("conn-owner-approval"),
       ]),
     });
-    const resultPromise = invokeDemoPolicy(context, createOperatorClient());
+    await expectSinglePendingApproval(
+      manager,
+      context,
+      () => invokeDemoPolicy(context, createOperatorClient()),
+      async (record, resultPromise) => {
+        expect(record.expiresAtMs - record.createdAtMs).toBe(MAX_PLUGIN_APPROVAL_TIMEOUT_MS);
 
-    const record = await expectSinglePendingApproval(manager);
-    expect(record.expiresAtMs - record.createdAtMs).toBe(MAX_PLUGIN_APPROVAL_TIMEOUT_MS);
-
-    await expectApprovalResolution(resultPromise, manager, record);
+        await expectApprovalResolution(resultPromise, manager, record);
+      },
+    );
   });
 
   it("fails closed when the allow-once claim cannot be consumed", async (testContext) => {
@@ -974,15 +936,19 @@ describe("applyPluginNodeInvokePolicy", () => {
         createOperatorClient("conn-owner-approval"),
       ]),
     });
-    const resultPromise = invokeDemoPolicy(context, createOperatorClient());
+    await expectSinglePendingApproval(
+      manager,
+      context,
+      () => invokeDemoPolicy(context, createOperatorClient()),
+      async (record, resultPromise) => {
+        expect(await manager.resolve(record.id, "allow-once")).toBe(true);
 
-    const record = await expectSinglePendingApproval(manager);
-    expect(await manager.resolve(record.id, "allow-once")).toBe(true);
-
-    await expect(resultPromise).resolves.toStrictEqual({
-      ok: true,
-      payload: { id: record.id, decision: null },
-    });
+        await expect(resultPromise).resolves.toStrictEqual({
+          ok: true,
+          payload: { id: record.id, decision: null },
+        });
+      },
+    );
   });
 
   it("fails closed before routing an unrenderable persistent policy approval", async () => {
@@ -1045,12 +1011,16 @@ describe("applyPluginNodeInvokePolicy", () => {
         createOperatorClient("conn-owner-approval"),
       ]),
     });
-    const resultPromise = invokeDemoPolicy(context, createOperatorClient());
+    await expectSinglePendingApproval(
+      manager,
+      context,
+      () => invokeDemoPolicy(context, createOperatorClient()),
+      async (record, resultPromise) => {
+        expect(record.request.title).toBe("a".repeat(79));
+        expect(record.request.description).toBe("b".repeat(255));
 
-    const record = await expectSinglePendingApproval(manager);
-    expect(record.request.title).toBe("a".repeat(79));
-    expect(record.request.description).toBe("b".repeat(255));
-
-    await expectApprovalResolution(resultPromise, manager, record);
+        await expectApprovalResolution(resultPromise, manager, record);
+      },
+    );
   });
 });

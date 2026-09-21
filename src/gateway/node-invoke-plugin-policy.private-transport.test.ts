@@ -68,29 +68,34 @@ describe("private node policy transport", () => {
     });
     const privateTransport = createPrivateTransport();
     const onNodeCommandDispatched = vi.fn();
-    const result = applyPluginNodeInvokePolicy({
+    await expectSinglePendingApproval(
+      manager,
       context,
-      client: reviewer,
-      nodeSession: node,
-      command: DEMO_COMMAND,
-      params: DEMO_PARAMS,
-      privateTransport,
-      deadlineAtMs: performance.now() + 5_000,
-      onNodeCommandDispatched,
-    });
-
-    const approval = await expectSinglePendingApproval(manager);
-    expect(privateTransport.invoke).not.toHaveBeenCalled();
-    expect(await manager.resolve(approval.id, "allow-once")).toBe(true);
-    await expect(result).resolves.toMatchObject({ ok: true, payload: { completed: true } });
-    expect(registration.policy.classifyRisk).toHaveBeenCalledOnce();
-    expect(handle).toHaveBeenCalledOnce();
-    expect(privateTransport.invoke).toHaveBeenCalledOnce();
-    expect(privateTransport.invoke.mock.calls[0]?.[0]).not.toHaveProperty("deadlineAtMs");
-    expect(onNodeCommandDispatched).toHaveBeenCalledOnce();
-    expect((await manager.getSnapshot(approval.id))?.consumedDecision).toBe("allow-once");
-    expect(node.commands).toEqual([]);
-    expect(invoke).not.toHaveBeenCalled();
+      () =>
+        applyPluginNodeInvokePolicy({
+          context,
+          client: reviewer,
+          nodeSession: node,
+          command: DEMO_COMMAND,
+          params: DEMO_PARAMS,
+          privateTransport,
+          deadlineAtMs: performance.now() + 5_000,
+          onNodeCommandDispatched,
+        }),
+      async (approval, result) => {
+        expect(privateTransport.invoke).not.toHaveBeenCalled();
+        expect(await manager.resolve(approval.id, "allow-once")).toBe(true);
+        await expect(result).resolves.toMatchObject({ ok: true, payload: { completed: true } });
+        expect(registration.policy.classifyRisk).toHaveBeenCalledOnce();
+        expect(handle).toHaveBeenCalledOnce();
+        expect(privateTransport.invoke).toHaveBeenCalledOnce();
+        expect(privateTransport.invoke.mock.calls[0]?.[0]).not.toHaveProperty("deadlineAtMs");
+        expect(onNodeCommandDispatched).toHaveBeenCalledOnce();
+        expect((await manager.getSnapshot(approval.id))?.consumedDecision).toBe("allow-once");
+        expect(node.commands).toEqual([]);
+        expect(invoke).not.toHaveBeenCalled();
+      },
+    );
   });
 
   it.each(["missing-policy", "invalid-risk"] as const)(
