@@ -7,6 +7,7 @@ import type {
 } from "../../packages/gateway-protocol/src/schema/session-github-publication.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { executeSqliteQuerySync } from "../infra/kysely-sync.js";
+import type { GitHubPublicationRow as PublicationRow } from "../state/github-publication-read.types.js";
 import { readGitHubPublicationSessionLifecycleInWorker } from "../state/github-publication-session-lifecycles.js";
 import {
   openOpenClawStateDatabase,
@@ -40,7 +41,6 @@ import {
   projectGitHubPublicationResult as publicationResult,
   readGitHubPublicationRequest,
   readSharedGitHubPublicationRequest,
-  type GitHubPublicationRow as PublicationRow,
 } from "./github-publication-store.js";
 import { loadGatewaySessionEntryReadOnly } from "./session-utils.js";
 import { projectWorkerSessionTurnClaim } from "./worker-environments/placement-record.js";

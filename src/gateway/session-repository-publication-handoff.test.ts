@@ -8,6 +8,7 @@ import { managedWorktrees } from "../agents/worktrees/service.js";
 import { loadSessionEntry, upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import * as backoff from "../infra/backoff.js";
 import { registerClonedProjectRegistry } from "../projects/project-registry.test-support.js";
+import type { RepositoryGitHubPublicationRow } from "../state/github-publication-read.types.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -29,7 +30,6 @@ import {
   repositoryGitHubPublicationDigest,
   claimRepositoryGitHubPublication,
   readRepositoryGitHubPublication,
-  type RepositoryGitHubPublicationRow,
 } from "./github-repository-publication-store.js";
 import { assertReceiptOwner } from "./github-repository-publication-workspace.js";
 import { materializeSessionRepositoryWorkspaceOnGateway } from "./session-repository-materialization.js";

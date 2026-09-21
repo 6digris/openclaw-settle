@@ -9,7 +9,7 @@ import {
 } from "../../infra/kysely-sync.js";
 import { readSqliteDataVersion } from "../../infra/node-sqlite.js";
 import { stageSqliteTransactionState } from "../../infra/sqlite-post-commit.js";
-import { sessionChanges } from "../../sessions/session-row-changes.js";
+import { sessionChanges, type SessionRowChange } from "../../sessions/session-row-changes.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { findOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import { readOpenClawAgentDatabase } from "../../state/openclaw-agent-db-readonly-open.js";
@@ -84,6 +84,25 @@ const preparedSharingReads = resolveGlobalSingleton(
   Symbol.for("openclaw.preparedSessionSharingReads"),
   () => new Map<string, Set<PreparedSessionSharingRead>>(),
 );
+const preparedSharingChanges = resolveGlobalSingleton(
+  Symbol.for("openclaw.preparedSessionSharingChanges"),
+  () => new WeakSet<SessionRowChange>(),
+);
+
+/** Private owner metadata follows the original event object without changing its public fields. */
+export function isPreparedSessionSharingChange(change: SessionRowChange): boolean {
+  return preparedSharingChanges.has(change);
+}
+
+function emitPreparedSessionSharingChange(
+  database: SessionEntryCacheDatabase & { path: string },
+  sessionKey: string,
+  agentId = database.agentId,
+): void {
+  const change = { agentId, storePath: database.path, sessionKey };
+  preparedSharingChanges.add(change);
+  sessionChanges.emit(change, database.db);
+}
 
 export function projectSessionSharingEntry(entry: SessionEntry): SessionSharingEntry {
   return {
@@ -173,10 +192,7 @@ export function publishSessionSharingMemberChange(
       }
     }
   });
-  sessionChanges.emit(
-    { agentId, storePath: database.path, sessionKey, sharingPrepared: true },
-    database.db,
-  );
+  emitPreparedSessionSharingChange(database, sessionKey, agentId);
 }
 /** Commit-driven projections borrow owner memory; ordinary reads still validate SQLite. */
 export function readCommittedSessionEntryCache(database: DatabaseSync) {
@@ -652,15 +668,7 @@ export function publishSessionEntryCacheInvalidation(
     // A cold write has no snapshot to patch; do not hydrate owner/participants or prompt JSON.
     publishTrackedCacheUpdate(database, () => sessionEntryCaches.delete(database.db));
   }
-  sessionChanges.emit(
-    {
-      agentId: database.agentId,
-      storePath: database.path,
-      sessionKey: update.sessionKey,
-      sharingPrepared: true,
-    },
-    database.db,
-  );
+  emitPreparedSessionSharingChange(database, update.sessionKey);
 }
 
 /** Refresh participant projections without reloading unchanged session-entry JSON. */

@@ -5,6 +5,7 @@ import { resolveGitCoauthorAttribution } from "../agents/git-coauthor-attributio
 import type { PreparedGitHubPublicationIdentity } from "../agents/github-tool-identity.js";
 import { resolveControlUiSessionUrl } from "../config/control-ui-link-base.js";
 import { gitNullConfigPath } from "../infra/git-exec.js";
+import type { GitHubPublicationExecutionRow } from "../state/github-publication-read.types.js";
 import {
   currentGitHubPublicationConfig,
   resolveLocalGitHubPublicationWorktreeOwner,
@@ -52,7 +53,6 @@ import {
   readKnownGitHubPublicationPullRequestUrls,
   recoverGitHubPublicationWorkspace,
 } from "./github-publication-recovery.js";
-import type { GitHubPublicationExecutionRow } from "./github-publication-store.js";
 import { prepareGitHubPublicationTarget } from "./github-publication-target.js";
 import { GatewayOperatorAccessUnavailableError } from "./operator-access-policy.js";
 import { SessionMutationAuthorizationChangedError } from "./session-sharing.js";

@@ -7,6 +7,10 @@ import {
   iterateSqliteQuerySync,
 } from "../infra/kysely-sync.js";
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
+import type {
+  RepositoryGitHubPublicationRow,
+  RepositoryGitHubPublicationReceiptTarget,
+} from "../state/github-publication-read.types.js";
 import {
   decodeGitHubPublicationRequester,
   matchesGitHubPublicationRequester,
@@ -33,12 +37,10 @@ import {
   listRepositoryGitHubPublicationsInDatabase,
   repositoryGitHubPublicationDigest,
   type RepositoryGitHubPublicationPendingQuery,
-  type RepositoryGitHubPublicationRow,
   type RepositoryGitHubPublicationStatusRow,
 } from "./github-repository-publication.kernel.js";
 
 export { repositoryGitHubPublicationDigest } from "./github-repository-publication.kernel.js";
-export type { RepositoryGitHubPublicationRow } from "./github-repository-publication.kernel.js";
 const checkpointColumns = [
   "checkpoint_ref",
   "checkpoint_digest",
@@ -208,17 +210,6 @@ export function requireRepositoryGitHubPublication(
   }
   return row;
 }
-
-export type RepositoryGitHubPublicationReceiptTarget = Pick<
-  RepositoryGitHubPublicationRow,
-  | "workspace_id"
-  | "push_repository"
-  | "repository"
-  | "branch"
-  | "base_branch"
-  | "identity_account_id"
-  | "pull_request_url"
->;
 
 export function readKnownRepositoryGitHubPublicationPullRequestUrlsInDatabase(
   db: Parameters<typeof getNodeSqliteKysely>[0],

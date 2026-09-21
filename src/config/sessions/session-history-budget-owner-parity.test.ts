@@ -10,13 +10,13 @@ import {
   insertRepositoryGitHubPublication,
   readRepositoryGitHubPublication,
   repositoryGitHubPublicationDigest,
-  type RepositoryGitHubPublicationRow,
 } from "../../gateway/github-repository-publication-store.js";
 import { openNodeSqliteDatabase } from "../../infra/node-sqlite.js";
 import {
   onSessionIdentityMutation,
   type SessionIdentityMutation,
 } from "../../sessions/session-lifecycle-events.js";
+import type { RepositoryGitHubPublicationRow } from "../../state/github-publication-read.types.js";
 import {
   closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,

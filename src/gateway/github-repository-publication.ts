@@ -6,6 +6,7 @@ import type {
 } from "../../packages/gateway-protocol/src/schema/session-github-publication.js";
 import type { PreparedGitHubPublicationIdentity } from "../agents/github-tool-identity.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { RepositoryGitHubPublicationRow } from "../state/github-publication-read.types.js";
 import {
   decodeGitHubPublicationRequester,
   encodeGitHubPublicationRequester,
@@ -62,7 +63,6 @@ import {
   repositoryGitHubPublicationDigest,
   terminalRepositoryGitHubPublication,
   type RepositoryGitHubPublicationExecution,
-  type RepositoryGitHubPublicationRow,
 } from "./github-repository-publication-store.js";
 import {
   repositoryOwner,

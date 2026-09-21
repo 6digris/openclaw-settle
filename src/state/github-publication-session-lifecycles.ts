@@ -4,6 +4,7 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
+import type { GitHubPublicationSessionLifecycle } from "./github-publication-read.types.js";
 import {
   encodeGitHubPublicationRequester,
   type GitHubPublicationRequesterSnapshot,
@@ -46,7 +47,7 @@ export function insertGitHubPublicationSessionLifecycle(
 export function readGitHubPublicationSessionLifecycle(
   input: PublicationIdentity,
   db: DatabaseSync = openOpenClawStateDatabase().db,
-) {
+): GitHubPublicationSessionLifecycle | undefined {
   return tableExists(db, table)
     ? executeSqliteQueryTakeFirstSync(
         db,

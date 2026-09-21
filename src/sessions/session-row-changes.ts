@@ -9,8 +9,6 @@ export type SessionRowChange =
       agentId?: string;
       storePath?: string;
       scope?: "automation";
-      /** The entry/member owner installed committed sharing facts before observers. */
-      sharingPrepared?: true;
     }
   | { all: true; scope: string | { agentId?: string; storePath?: string } };
 
