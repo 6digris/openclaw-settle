@@ -114,6 +114,107 @@ struct CloudflareAccessClientTests {
         #expect(sent.allSatisfy { $0.value(forHTTPHeaderField: "Cookie") == nil })
     }
 
+    @Test(arguments: [
+        "https://login.example.test/cdn-cgi/access/login/gateway.example.test?opaque=ignored",
+        "/cdn-cgi/access/login?opaque=ignored", "../cdn-cgi/access/login",
+        "/cdn-cgi/access/login-extra", "/%63dn-cgi/access/login",
+    ], [false, true])
+    func `login redirects discover signed metadata at the original gateway URL`(
+        location: String,
+        unusableChallenge: Bool) async throws
+    {
+        let tokens = try CloudflareAccessTestTokens()
+        let application = try CloudflareAccessTestTokens.application()
+        let gatewayURL = try #require(URL(string: "wss://gateway.example.test:8443/gateway%20space/%2Fsocket"))
+        let expectedURL = try #require(URL(string: "https://gateway.example.test:8443/gateway%20space/%2Fsocket"))
+        let metadata = try tokens.token([
+            "type": "match", "hostname": "gateway.example.test", "auth_domain": "example.cloudflareaccess.com",
+            "aud": application.audience, "iat": Date().timeIntervalSince1970,
+        ])
+        var headers = ["Location": location]
+        if unusableChallenge { headers["WWW-Authenticate"] = "Basic realm=\"unrelated\"" }
+        let keysURL = application.issuer.appendingPathComponent("cdn-cgi/access/certs")
+        let requests = try Requests([
+            (Data(), self.response(expectedURL, 302, headers: headers)),
+            (Data(), self.response(expectedURL, 200, headers: ["Cf-Access-Metadata": metadata])),
+            (tokens.jwks, self.response(keysURL, 200)),
+        ])
+        let client = CloudflareAccessClient(request: { request, limit in
+            try await requests.send(request, maximumBytes: limit)
+        })
+        #expect(try await client.discover(gatewayURL: gatewayURL) == application)
+        let sent = await requests.requests
+        #expect(sent.map(\.httpMethod) == ["GET", "HEAD", "GET"])
+        #expect(sent.map { $0.url?.absoluteString } == [
+            expectedURL.absoluteString, expectedURL.absoluteString, keysURL.absoluteString,
+        ])
+        #expect(sent[1].value(forHTTPHeaderField: "Cf-Access-Metadata-Request") == "true")
+        #expect(sent[1].value(forHTTPHeaderField: "User-Agent") == CloudflareAccessClient.userAgent)
+        #expect(sent.allSatisfy {
+            $0.value(forHTTPHeaderField: "Cookie") == nil &&
+                $0.value(forHTTPHeaderField: "Authorization") == nil &&
+                $0.value(forHTTPHeaderField: "Cf-Access-Token") == nil
+        })
+    }
+
+    @Test(arguments: [
+        (200, "/cdn-cgi/access/login"), (301, "/cdn-cgi/access/login"),
+        (303, "/cdn-cgi/access/login"), (307, "/cdn-cgi/access/login"), (308, "/cdn-cgi/access/login"),
+        (302, ""), (302, "/login"), (302, "/cdn-cgi/access/login%ZZ"),
+        (302, "/cdn-cgi/access/login\n"), (302, "?next=/cdn-cgi/access/login"),
+        (401, "/cdn-cgi/access/login"),
+    ])
+    func `non Access redirects and malformed locations remain ordinary`(status: Int, location: String) async throws {
+        let origin = try CloudflareAccessTestTokens.application().origin
+        let requests = try Requests([
+            (Data(), self.response(origin.url, status, headers: ["Location": location])),
+        ])
+        let client = CloudflareAccessClient(request: { request, limit in
+            try await requests.send(request, maximumBytes: limit)
+        })
+        #expect(try await client.discover(gatewayURL: origin.url) == nil)
+        #expect(await requests.requests.count == 1)
+        #expect(try !CloudflareAccessClient.isChallenge(self.response(origin.url, 302), origin: origin))
+        let foreign = try #require(URL(string: "https://other.example.test:8443/"))
+        #expect(try !CloudflareAccessClient.isChallenge(
+            self.response(foreign, 302, headers: ["Location": "/cdn-cgi/access/login"]), origin: origin))
+    }
+
+    @Test(arguments: ["missing", "malformed", "wrong-host", "bad-signature"])
+    func `login hint still rejects missing or unverified metadata`(failure: String) async throws {
+        let tokens = try CloudflareAccessTestTokens()
+        let application = try CloudflareAccessTestTokens.application()
+        var metadata = try tokens.token([
+            "type": "match", "hostname": failure == "wrong-host" ? "other.example.test" : "gateway.example.test",
+            "auth_domain": "example.cloudflareaccess.com", "aud": application.audience,
+            "iat": Date().timeIntervalSince1970,
+        ])
+        if failure == "malformed" { metadata = "not-a-jwt" }
+        if failure == "bad-signature" {
+            var parts = metadata.split(separator: ".").map(String.init)
+            parts[2] = String(parts[2].reversed())
+            metadata = parts.joined(separator: ".")
+        }
+        let headers = failure == "missing" ? [:] : ["Cf-Access-Metadata": metadata]
+        let requests = try Requests([
+            (Data(), self.response(application.origin.url, 302, headers: ["Location": "/cdn-cgi/access/login"])),
+            (Data(), self.response(application.origin.url, 200, headers: headers)),
+            (tokens.jwks, self.response(application.issuer.appendingPathComponent("cdn-cgi/access/certs"), 200)),
+        ])
+        let client = CloudflareAccessClient(request: { request, limit in
+            try await requests.send(request, maximumBytes: limit)
+        })
+        do {
+            _ = try await client.discover(gatewayURL: application.origin.url)
+            Issue.record("Unverified metadata admitted an Access application")
+        } catch CloudflareAccessError.invalidApplication {
+            // A recognized login hint must not downgrade invalid metadata to ordinary ingress.
+        } catch {
+            Issue.record("Unexpected discovery error: \(error)")
+        }
+        #expect(await requests.requests.count == (failure == "bad-signature" ? 3 : 2))
+    }
+
     @Test func `app grant requires signature audience expiry and matching identity`() async throws {
         let tokens = try CloudflareAccessTestTokens()
         let application = try CloudflareAccessTestTokens.application()

@@ -52,8 +52,18 @@ struct CloudflareAccessClient: Sendable {
     }
 
     static func isChallenge(_ response: HTTPURLResponse, origin: CloudflareAccessOrigin) -> Bool {
+        guard let responseURL = response.url, origin.contains(responseURL) else { return false }
+        // cloudflared also recognizes the decoded login path on a 302. The redirect is
+        // only a hint: discovery still verifies signed metadata from the original URL.
+        if response.statusCode == 302,
+           let location = response.value(forHTTPHeaderField: "Location"), !location.isEmpty,
+           let target = URLComponents(string: location, encodingInvalidCharacters: false)?
+               .url(relativeTo: responseURL)?.absoluteURL,
+               target.path.hasPrefix("/cdn-cgi/access/login")
+        {
+            return true
+        }
         guard [301, 302, 303, 307, 308, 401, 403].contains(response.statusCode),
-              let responseURL = response.url, origin.contains(responseURL),
               let header = response.value(forHTTPHeaderField: "WWW-Authenticate"), header.utf8.count <= 8192
         else { return false }
         let parts = header.split(maxSplits: 1, whereSeparator: { $0.isWhitespace })
