@@ -21,7 +21,83 @@ import { stageSystemdService } from "./systemd-install.js";
 import { restartSystemdService } from "./systemd-lifecycle.js";
 import { parseSystemdExecStart } from "./systemd-unit.js";
 
+async function nativeOmittedEnabledRefresh() {
+  const f = await fixture("win32");
+  const execute = native.task.getMockImplementation()!;
+  native.task.mockImplementation(async (args: string[]) => {
+    const result = await execute(args);
+    if (args[0] === "/Create") {
+      // windows-2025 run 35551610834 exports the true default without a field,
+      // then adds a separate Enabled=false line when the operator disables it.
+      f.setTask(
+        omitExportedTaskDefaults(f.task())
+          .replace(
+            /(<Settings>)([\s\S]*?)(<\/Settings>)/u,
+            (_match, open, body, close) =>
+              `${open}${body.replace(/[\t \r\n]*<Enabled>true<\/Enabled>/u, "")}${close}`,
+          )
+          .replace(/\r?\n/gu, "\r\r\n"),
+      );
+    }
+    return result;
+  });
+  await f.install();
+  const receipt = await readRetainedReceipt(f.capture.backupPaths);
+  await f.capture.finish();
+  native.task.mockImplementation(execute);
+  const disabled = f
+    .task()
+    .replace(
+      "</StopIfGoingOnBatteries>",
+      "</StopIfGoingOnBatteries>\r\r\n    <Enabled>false</Enabled>",
+    );
+  return { ...f, receipt, disabled };
+}
+
 describe("service definition backup receipts", () => {
+  it("restores a serialized native receipt after omitted Enabled becomes explicit false", async () => {
+    const f = await nativeOmittedEnabledRefresh();
+    expect(f.disabled).not.toBe(f.task());
+    f.setTask(f.disabled);
+    await restoreGatewayServiceDefinitionBackup({ ...f, receipt: f.receipt });
+    expect(await fs.readFile(f.sourcePath)).toEqual(f.original);
+    expect(f.task()).toBe(
+      f.originalTask.replace(
+        /(<Settings>[\s\S]*?)<Enabled>true<\/Enabled>/u,
+        "$1<Enabled>false</Enabled>",
+      ),
+    );
+  });
+
+  it.each(["duplicate", "attribute", "nested", "priority", "identity", "unknown"])(
+    "refuses a %s change alongside native Enabled omission",
+    async (edit) => {
+      const f = await nativeOmittedEnabledRefresh();
+      const enabled = "<Enabled>false</Enabled>";
+      const changed =
+        edit === "duplicate"
+          ? f.disabled.replace(enabled, enabled + enabled)
+          : edit === "attribute"
+            ? f.disabled.replace(enabled, '<Enabled custom="true">false</Enabled>')
+            : edit === "nested"
+              ? f.task().replace("<IdleSettings>", `<IdleSettings>${enabled}`)
+              : edit === "priority"
+                ? f.disabled.replace("<Settings>", "<Settings><Priority>4</Priority>")
+                : edit === "identity"
+                  ? f.disabled.replace("<UserId>operator</UserId>", "<UserId>another</UserId>")
+                  : f.disabled.replace(
+                      "<Settings>",
+                      "<Settings><CustomSetting>true</CustomSetting>",
+                    );
+      f.setTask(changed);
+      await expect(
+        restoreGatewayServiceDefinitionBackup({ ...f, receipt: f.receipt }),
+      ).rejects.toThrow("Scheduled Task changed");
+      expect(f.task()).toBe(changed);
+      expect(native.task.mock.calls.filter(([args]) => args[0] === "/Create")).toHaveLength(1);
+    },
+  );
+
   it("accepts an acknowledged restoration without replacing an open Windows launcher again", async () => {
     const f = await fixture("win32");
     await f.install();
