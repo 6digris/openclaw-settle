@@ -30,6 +30,7 @@ import { buildCodexParentLocalInstructions } from "./src/app-server/turn-params.
 
 export { CODEX_APP_SERVER_VERSION } from "./src/app-server/version.js";
 export { createCodexDynamicToolBridge };
+export { createNativeToolControllerFixture } from "./src/app-server/native-tool-controller.test-support.js";
 export { readCodexDynamicToolCallParams } from "./src/app-server/protocol-validators.js";
 export { createCodexNativeTestState } from "./src/app-server/native-app-server.test-support.js";
 export { createIsolatedCodexAppServerClient } from "./src/app-server/shared-client.js";

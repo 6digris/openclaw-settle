@@ -14,7 +14,10 @@ import {
 } from "../agents/agent-run-terminal-outcome.js";
 import { isAllowedToolCallName } from "../agents/tool-call-shared.js";
 import type { AgentEventPayload } from "../infra/agent-events.js";
-import type { TrustedToolExecutionEvent } from "../infra/diagnostic-events.js";
+import type {
+  TrustedToolExecutionEvent,
+  TrustedToolExecutionEventMetadata,
+} from "../infra/diagnostic-events.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import type {
   AuditEventInput,
@@ -29,7 +32,10 @@ let persistenceFailureWarned = false;
 
 export type AgentEventAuditRecorder = {
   record: (event: AgentEventPayload) => void;
-  recordTool: (event: TrustedToolExecutionEvent) => void;
+  recordTool: (
+    event: TrustedToolExecutionEvent,
+    metadata?: TrustedToolExecutionEventMetadata,
+  ) => void;
   stop: () => Promise<void>;
 };
 
@@ -387,7 +393,12 @@ export function createAgentEventAuditRecorder(options?: {
       }
       scheduleTerminal(runInstance, { input: projection.input, ...projection.terminal });
     },
-    recordTool: (event) => {
+    recordTool: (event, metadata) => {
+      // A delegating harness still owns audit presentation. Core execution facts
+      // serve operational consumers, not a second copy of the same audit action.
+      if (metadata?.diagnosticsDelegated) {
+        return;
+      }
       const input = projectToolExecutionEventToAudit(event);
       if (input) {
         writer.record(input);

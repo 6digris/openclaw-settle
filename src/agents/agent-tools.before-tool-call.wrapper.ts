@@ -1,11 +1,11 @@
 /**
  * Wrapped before_tool_call execution boundary.
- * Owns tool preparation/finalization, adjusted-param replay state, terminal
- * results, diagnostics around execution, and wrapper metadata.
+ * Owns preparation/finalization, execution, replay state, diagnostics, results, and metadata.
  */
 import {
   emitTrustedDiagnosticEvent,
   emitTrustedDiagnosticEventWithPrivateData,
+  emitTrustedToolExecutionEvent,
 } from "../infra/diagnostic-events.js";
 import { resolveDiagnosticModelContentCapturePolicy } from "../infra/diagnostic-llm-content.js";
 import {
@@ -615,23 +615,28 @@ export function wrapToolWithBeforeToolCallHook(
               includeOutput: true,
             }),
           );
+        } else {
+          emitTrustedToolExecutionEvent({ ...eventBase, ...terminalDiagnostic });
         }
         // Keep loop hashes and diagnostics on the raw outcome; this note is model feedback only.
         return outcome.loopWarning ? appendToolLoopWarning(result, outcome.loopWarning) : result;
       } catch (err) {
+        const failureEvent = {
+          type: "tool.execution.error" as const,
+          ...eventBase,
+          durationMs: Date.now() - startedAt,
+          ...resolveToolErrorDiagnostic(err, signal),
+        };
         if (hookOptions.emitDiagnostics) {
           emitTrustedDiagnosticEventWithPrivateData(
-            {
-              type: "tool.execution.error",
-              ...eventBase,
-              durationMs: Date.now() - startedAt,
-              ...resolveToolErrorDiagnostic(err, signal),
-            },
+            failureEvent,
             buildToolContentPrivateData(toolContentPolicy, {
               input: executeParams,
               includeOutput: false,
             }),
           );
+        } else {
+          emitTrustedToolExecutionEvent(failureEvent);
         }
         await recordLoopOutcome({
           ctx,
@@ -712,8 +717,7 @@ export function rewrapToolWithBeforeToolCallHook(
 ): AnyAgentTool {
   const preservedContext = getBeforeToolCallHookContext(tool);
   const sourceTool = getBeforeToolCallSourceTool(tool) ?? tool;
-  const preservedOptions = getBeforeToolCallDiagnosticOptions(tool);
-  const wrapperOptions = { ...preservedOptions, ...options };
+  const wrapperOptions = { ...getBeforeToolCallDiagnosticOptions(tool), ...options };
   if (sourceTool === tool) {
     return wrapToolWithBeforeToolCallHook(tool, ctx ?? preservedContext, wrapperOptions);
   }

@@ -1,5 +1,5 @@
 /** Real native app-server requests cross the production dynamic-tool and host boundaries.
- * Only inference, model selection, and the final Gateway method receiver are fixtures.
+ * Inference/model selection and the node transport are fixtures; Gateway dispatch, policy record and native ELF effect are real.
  */
 import fs from "node:fs/promises";
 import http from "node:http";
@@ -8,6 +8,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import {
   CODEX_APP_SERVER_VERSION,
   createCodexDynamicToolBridge,
+  createNativeToolControllerFixture,
   readCodexDynamicToolCallParams,
   createCodexNativeTestState,
   createIsolatedCodexAppServerClient,
@@ -25,70 +26,102 @@ import {
 } from "../../agents/tools/gateway-caller-context.js";
 import { shouldUseInProcessGatewayTool } from "../../agents/tools/gateway.js";
 import { createNodesTool } from "../../agents/tools/nodes-tool.js";
+import {
+  onTrustedToolExecutionEvent,
+  setDiagnosticsEnabledForProcess,
+} from "../../infra/diagnostic-events.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { consultRealtimeVoiceAgent } from "../../talk/agent-consult-runtime.js";
+import { resetClientVoiceConfirmationStateForTest } from "../../talk/client-voice-confirmation.test-support.js";
 import {
   closeClientVoiceSession,
   createOrResumeClientVoiceSession,
   resolveOpenClientVoiceSessionId,
 } from "../../talk/client-voice-session.js";
+import { clientVoiceSessionTesting } from "../../talk/client-voice-session.test-support.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { createAgentRuntimeApprovalAuthorityValidator } from "../agent-runtime-identity-token.js";
-import type { GatewayRequestContext, GatewayRequestOptions } from "../server-methods/types.js";
+import type { GatewayRequestContext } from "../server-methods/types.js";
 import { createTalkClientAgentConsultRunner } from "./client-agent-consult.js";
 import { createTalkClientGatewayControlOwner } from "./client-gateway-control.js";
+import { createNativeAppPolicyFixture } from "./native-app-policy.test-support.js";
 
 type Consult = typeof consultRealtimeVoiceAgent;
 type CoreRun = typeof import("../../agents/embedded-agent.js").runEmbeddedAgent;
 const mocks = vi.hoisted(() => ({
   run: vi.fn<CoreRun>(),
   consult: vi.fn<Consult>(),
-  dispatch: vi.fn<(options: GatewayRequestOptions) => Promise<void>>(),
 }));
 vi.mock("../../agents/embedded-agent.js", () => ({ runEmbeddedAgent: mocks.run }));
 vi.mock("../../talk/agent-consult-runtime.js", () => ({
   consultRealtimeVoiceAgent: mocks.consult,
 }));
-vi.mock("../server-methods.js", () => ({ handleGatewayRequest: mocks.dispatch }));
-afterEach(() => vi.clearAllMocks());
 
-it.each([
-  "logical-close",
-  "transport-replacement",
-  "logical-close-owned",
-  "transport-replacement-owned",
-  "closed-before-admission",
-  "cancelled",
-  "gateway-retired",
-  "gateway-replaced",
-  "source-revoked",
-  "execution-replaced",
-] as const)(
+afterEach(() => {
+  vi.clearAllMocks();
+  setDiagnosticsEnabledForProcess(false);
+  vi.unstubAllEnvs();
+  clientVoiceSessionTesting.reset();
+  resetClientVoiceConfirmationStateForTest();
+});
+
+it
+  .runIf(process.platform === "linux")
+  .each([
+    "active",
+    "diagnostics-enabled",
+    "unapproved",
+    "node-denied",
+    "policy-revoked-before-ready",
+    "logical-close",
+    "transport-replacement",
+    "logical-close-owned",
+    "transport-replacement-owned",
+    "closed-before-admission",
+    "cancelled",
+    "gateway-retired",
+    "gateway-replaced",
+    "source-revoked",
+    "execution-replaced",
+  ] as const)(
   "preserves accepted native execution and fences its execution owner: %s",
   { timeout: 90_000 },
   async (mode) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      setDiagnosticsEnabledForProcess(mode === "diagnostics-enabled");
+      const denial =
+        mode === "unapproved" || mode === "node-denied" || mode === "policy-revoked-before-ready";
+      let voiceSessionId = "";
+      const fixture = await createNativeAppPolicyFixture(state, denial ? mode : "launch", () => {
+        const effect = clientVoiceSessionTesting
+          .readRecord("main", voiceSessionId)
+          ?.effects.find((entry) => entry.toolCallId === "launch-3");
+        expect(effect).toMatchObject({
+          runId: "native-launch-repro",
+          toolCallId: "launch-3",
+          voicePolicyId: "calculator",
+          status: "started",
+        });
+      });
       const native = await createCodexNativeTestState(state.path("native"));
       const runId = "native-launch-repro";
       const controller = new AbortController();
       const detachOnly =
-        mode.startsWith("logical-close") || mode.startsWith("transport-replacement");
+        mode.startsWith("logical-close") ||
+        mode.startsWith("transport-replacement") ||
+        mode === "active" ||
+        mode === "diagnostics-enabled";
       let owner: ReturnType<typeof createTalkClientGatewayControlOwner> | undefined;
       let replacement: ReturnType<typeof createTalkClientGatewayControlOwner> | undefined;
       let createOwner: (() => ReturnType<typeof createTalkClientGatewayControlOwner>) | undefined;
       const sessionKey = "agent:main:native-launch-proof";
       const sessionId = "native-launch-proof";
-      const voiceSessionId = createOrResumeClientVoiceSession({
+      voiceSessionId = createOrResumeClientVoiceSession({
         agentId: "main",
         sessionKey,
         origin: "client",
         transcriptCapable: true,
       });
-      const gateway = {
-        trackExecution: (run) => run(),
-        getRuntimeConfig: () => ({}),
-        validateAgentRuntimeApprovalAuthority: createAgentRuntimeApprovalAuthorityValidator(),
-      } as GatewayRequestContext;
+      const gateway = fixture.context;
       let currentGateway: GatewayRequestContext | undefined = gateway;
       const context = {
         broadcastToConnIds: vi.fn(),
@@ -100,46 +133,40 @@ it.each([
         "chatAbortControllers" | "logGateway" | "resolveGatewayContext" | "broadcastToConnIds"
       >;
       const operands: Array<{ run: boolean; inProcess: boolean; resolver: boolean }> = [];
-      const received: string[] = [];
-      mocks.dispatch.mockImplementation(async ({ req, client, context: receiver, respond }) => {
-        expect(receiver).toBe(gateway);
-        const identity = client?.internal?.agentRuntimeIdentity;
-        if (req.method === "node.invoke") {
-          expect(identity?.operationalRunInstance?.runId).toBe(runId);
-          expect(identity && gateway.validateAgentRuntimeApprovalAuthority?.(identity)).toBe(true);
-        }
-        received.push(req.method);
-        if (req.method === "node.list") {
-          respond(true, {
-            nodes: [
-              {
-                nodeId: "paired-fixture",
-                connected: true,
-                commands: ["device.apps", "device.apps.launch"],
-              },
-            ],
-          });
-        } else if (req.method === "node.invoke") {
-          respond(true, { ok: true });
-        } else {
-          throw new Error("Unexpected fixture method: " + req.method);
+      const executionEvents: Array<{
+        type: string;
+        toolCallId?: string;
+        mutatingAction?: boolean;
+      }> = [];
+      const unsubscribe = onTrustedToolExecutionEvent((event) => {
+        if (event.runId === runId) {
+          executionEvents.push(event);
         }
       });
       let requests = 0;
+      let modelNamespace: string | undefined;
+      let requestController: ReturnType<typeof createNativeToolControllerFixture> | undefined;
+      let lastNativeTerminal: unknown;
+
+      const nativeRequests: string[] = [];
       const server = http.createServer((request, response) => {
         request.resume();
         request.on("end", () => {
+          const step = requests++ % 4;
+          const action = step === 0 ? "status" : step === 1 ? "app_list" : "app_launch";
           const item =
-            requests++ % 2 === 0
+            step < 3
               ? {
                   type: "function_call",
-                  call_id: "launch-" + requests,
+                  call_id: (step === 2 ? "launch-" : "read-") + requests,
                   name: "nodes",
+                  ...(modelNamespace ? { namespace: modelNamespace } : {}),
                   arguments: JSON.stringify({
-                    action: "app_launch",
-                    node: "paired-fixture",
-                    appId: "linux-desktop:fixture.desktop",
-                    appRevision: "a".repeat(64),
+                    action,
+                    node: "paired-node",
+                    ...(step === 2
+                      ? { appId: fixture.app.appId, appRevision: fixture.app.appRevision }
+                      : {}),
                   }),
                 }
               : {
@@ -218,7 +245,7 @@ it.each([
       let admission: PreparedAgentRunAdmission | undefined;
       let replacementAdmission: PreparedAgentRunAdmission | undefined;
       let bridge: ReturnType<typeof createCodexDynamicToolBridge> | undefined;
-      const results: Awaited<ReturnType<NonNullable<typeof bridge>["handleToolCall"]>>[] = [];
+      const results: Array<{ success: boolean; contentItems: unknown[] }> = [];
       let completed = createDeferred<unknown>();
       let threadId = "";
       const nativeTurn = async () => {
@@ -247,11 +274,12 @@ it.each([
           },
           agentDir: state.agentDir(),
           authProfileId: null,
-          config: {},
+          config: fixture.config(),
           timeoutMs: 20_000,
         });
         expect(client.getRuntimeIdentity()?.serverVersion).toBe(CODEX_APP_SERVER_VERSION);
         client.addRequestHandler(async (request) => {
+          nativeRequests.push(request.method);
           if (request.method !== "item/tool/call") {
             return undefined;
           }
@@ -262,12 +290,48 @@ it.each([
           if (!call) {
             throw new Error("Invalid native dynamic tool request");
           }
-          const result = await bridge.handleToolCall(call);
-          results.push(result);
-          return { contentItems: result.contentItems, success: result.success };
+          if (!requestController) {
+            throw new Error("Missing production request controller");
+          }
+          const rawResult = await requestController.handleServerRequest(request, {
+            threadId: call.threadId,
+            turnId: call.turnId,
+          });
+          const result: unknown = rawResult;
+          if (
+            !result ||
+            typeof result !== "object" ||
+            Array.isArray(result) ||
+            !("success" in result) ||
+            typeof result.success !== "boolean" ||
+            !("contentItems" in result) ||
+            !Array.isArray(result.contentItems)
+          ) {
+            throw new Error("Native controller returned no response");
+          }
+          if (call.callId === "read-1" || call.callId === "read-2") {
+            expect(clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.effects).toEqual(
+              [],
+            );
+          }
+          if (result.success && call.callId === "launch-3") {
+            expect(
+              await requestController.handleServerRequest(request, {
+                threadId: call.threadId,
+                turnId: call.turnId,
+              }),
+            ).toEqual(result);
+          }
+          results.push({ success: result.success, contentItems: result.contentItems });
+          return rawResult;
         });
         client.addNotificationHandler((notification) => {
+          if (notification.method === "turn/started" && requestController) {
+            const value = notification.params as { turn?: { id?: string } };
+            requestController.turnIdRef.current = value.turn?.id;
+          }
           if (notification.method === "turn/completed") {
+            lastNativeTerminal = notification.params;
             completed.resolve(notification.params);
           }
         });
@@ -286,7 +350,7 @@ it.each([
               abortSignal,
               prompt: "Open fixture",
               workspaceDir: native.cwd,
-              config: {},
+              config: fixture.config(),
               timeoutMs: 60_000,
               sessionTarget: {
                 agentId: "main",
@@ -319,14 +383,14 @@ it.each([
               workspaceDir: native.cwd,
               admittedRunContext,
               abortSignal: input.abortSignal,
-              config: {},
+              config: fixture.config(),
             },
             pluginId: "codex",
           });
           const source = createNodesTool({
             agentId: "main",
             agentSessionKey: sessionKey,
-            config: {},
+            config: fixture.config(),
           });
           const diagnostic = {
             ...source,
@@ -349,12 +413,26 @@ it.each([
             loading: "direct",
             hookContext: { agentId: "main", sessionKey, runId },
           });
+          modelNamespace = bridge.specs.find(
+            (spec) =>
+              spec.type === "namespace" &&
+              spec.tools.some((descriptor) => descriptor.name === "nodes"),
+          )?.name;
           const started = await client!.request(
             "thread/start",
             { cwd: native.cwd, dynamicTools: bridge.specs, experimentalRawEvents: true },
             { timeoutMs: 20_000 },
           );
           threadId = started.thread.id;
+          requestController = createNativeToolControllerFixture({
+            bridge,
+            client: client!,
+            threadId,
+            runId,
+            sessionId,
+            sessionKey,
+            signal: new AbortController().signal,
+          });
           // The production control owner has accepted and admitted this consult.
           // Retire/replace its presentation transport BEFORE the first native call.
           if (!owner || !createOwner) {
@@ -365,18 +443,66 @@ it.each([
             await replacement.adoptProvider(async () => {});
             replacement.activate();
           }
-          await owner.close();
+          if (!denial && mode !== "active" && mode !== "diagnostics-enabled") {
+            await owner.close();
+          }
           expect(input.abortSignal?.aborted).toBe(false);
           expect(Boolean(resolveOpenClientVoiceSessionId({ agentId: "main", sessionKey }))).toBe(
-            mode.startsWith("transport-replacement"),
+            mode.startsWith("transport-replacement") ||
+              denial ||
+              mode === "active" ||
+              mode === "diagnostics-enabled",
           );
-          await expect(owner.runAgentConsult({ prompt: "late admission" })).rejects.toThrow(
-            "closed",
-          );
+          if (owner.signal.aborted) {
+            await expect(owner.runAgentConsult({ prompt: "late admission" })).rejects.toThrow(
+              "closed",
+            );
+          }
           await nativeTurn();
-          expect(results[0]?.success, JSON.stringify(results[0])).toBe(true);
-          expect(operands).toEqual([{ run: true, inProcess: true, resolver: true }]);
-          expect(received).toEqual(["node.list", "node.invoke"]);
+          expect(results.slice(0, 2).map((result) => result.success)).toEqual([true, true]);
+          expect(JSON.stringify(results[1])).toContain(fixture.app.appId);
+          expect(JSON.stringify(results[1])).toContain(fixture.app.appRevision);
+          if (denial) {
+            expect(results[2]?.success, JSON.stringify(results[2])).toBe(false);
+            expect(JSON.stringify(results[2])).toMatch(
+              /VOICE_CONFIRMATION_REQUIRED|not advertise|not allow|denied/,
+            );
+            expect(fixture.effectCount()).toBe(0);
+            expect(
+              fixture.permits.some(
+                (permit) => (permit as { type: string }).type === "installed-app-launch.allow",
+              ),
+            ).toBe(false);
+            if (mode === "unapproved") {
+              expect(clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.effects).toEqual(
+                [],
+              );
+            }
+            return { payloads: [], meta: { durationMs: 1 } };
+          }
+          expect(
+            results[2]?.success,
+            JSON.stringify({
+              result: results[2],
+              requests,
+              lastNativeTerminal,
+              executionEvents,
+              nativeRequests,
+            }),
+          ).toBe(true);
+          expect(operands).toEqual(
+            Array.from({ length: 3 }, () => ({ run: true, inProcess: true, resolver: true })),
+          );
+          await expect.poll(() => fixture.effectCount()).toBe(1);
+          const effect = clientVoiceSessionTesting
+            .readRecord("main", voiceSessionId)
+            ?.effects.find((entry) => entry.toolCallId === "launch-3");
+          expect(effect).toMatchObject({ runId, toolName: "nodes", voicePolicyId: "calculator" });
+          expect(
+            executionEvents.filter(
+              (event) => event.type === "tool.execution.started" && event.mutatingAction === true,
+            ),
+          ).toHaveLength(1);
           if (!detachOnly) {
             if (mode === "cancelled") {
               controller.abort();
@@ -415,7 +541,7 @@ it.each([
           ownerConnId: "native-control-connection",
           getVoiceSessionId: () => voiceSessionId,
           initialItems: [],
-          registerRun: vi.fn(),
+          getOriginAuthority: () => fixture.origin,
           authority: { senderIsOwner: true },
         });
         createOwner = () =>
@@ -449,20 +575,24 @@ it.each([
         if (mode === "closed-before-admission") {
           await expect(accepted).rejects.toThrow("closed");
           expect(results).toEqual([]);
-          expect(received).toEqual([]);
+          expect(fixture.effectCount()).toBe(0);
           return;
         }
         await accepted;
         runner.runOwnedArgs.claimFailureAppend?.();
+        if (denial) {
+          return;
+        }
         // Completion closes execution authority even though native declarations remain.
         if (detachOnly) {
           await nativeTurn();
         }
-        expect(results[1]?.success).toBe(false);
-        expect(JSON.stringify(results[1])).toMatch(/no longer active|Aborted/);
-        expect(received).toEqual(["node.list", "node.invoke"]);
+        expect(results.slice(3).map((result) => result.success)).toEqual([false, false, false]);
+        expect(JSON.stringify(results.slice(3))).toMatch(/no longer active|Aborted/);
+        expect(fixture.effectCount()).toBe(1);
         currentGateway = undefined;
       } finally {
+        unsubscribe();
         await replacement?.close();
         await owner?.close();
         host?.close();
@@ -471,6 +601,7 @@ it.each([
         if (client) {
           expect(await client.closeAndWait()).toMatchObject({ exited: true });
         }
+        await fixture.close();
         server.closeAllConnections();
         await new Promise<void>((resolve) => {
           server.close(() => resolve());

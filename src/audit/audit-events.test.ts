@@ -3,6 +3,7 @@ import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
 import type { AgentEventPayload } from "../infra/agent-events.js";
 import {
   emitTrustedDiagnosticEvent,
+  emitTrustedToolExecutionEvent,
   onTrustedToolExecutionEvent,
   resetDiagnosticEventsForTest,
   setDiagnosticsEnabledForProcess,
@@ -742,6 +743,49 @@ describe("agent activity audit projection", () => {
         status: "unknown",
         errorCode: "tool_outcome_unknown",
       });
+    },
+  );
+
+  it.each([false, true])(
+    "retains one audit owner for delegated execution (diagnostics=%s)",
+    async (enabled) => {
+      setDiagnosticsEnabledForProcess(enabled);
+      const inputs: AuditEventInput[] = [];
+      const operational: TrustedToolExecutionEvent[] = [];
+      const recorder = createAgentEventAuditRecorder({ writer: captureAuditWriter(inputs) });
+      const stopAudit = onTrustedToolExecutionEvent(recorder.recordTool);
+      const stopOperational = onTrustedToolExecutionEvent((event) => operational.push(event));
+      const call = {
+        runId: "delegated-audit",
+        toolName: "nodes",
+        toolCallId: "native-call",
+        agentId: "main",
+      };
+      try {
+        emitTrustedDiagnosticEvent({ type: "tool.execution.started", ...call });
+        emitTrustedToolExecutionEvent({
+          type: "tool.execution.started",
+          ...call,
+          mutatingAction: true,
+        });
+        emitTrustedToolExecutionEvent({ type: "tool.execution.completed", ...call, durationMs: 1 });
+        emitTrustedDiagnosticEvent({ type: "tool.execution.completed", ...call, durationMs: 1 });
+        expect(operational).toHaveLength(4);
+        expect(
+          operational.filter(
+            (event) => event.type === "tool.execution.started" && event.mutatingAction === true,
+          ),
+        ).toHaveLength(1);
+        expect(inputs.map((input) => input.action)).toEqual([
+          "tool.action.started",
+          "tool.action.finished",
+        ]);
+        expect(JSON.stringify(inputs)).not.toContain("diagnosticsDelegated");
+      } finally {
+        stopAudit();
+        stopOperational();
+        await recorder.stop();
+      }
     },
   );
 

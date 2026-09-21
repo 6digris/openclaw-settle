@@ -989,7 +989,12 @@ export type TrustedToolExecutionEvent = Extract<
   }
 >;
 
-type TrustedToolExecutionEventListener = (event: TrustedToolExecutionEvent) => void;
+/** Out-of-band core provenance; never an authorization fact or persisted event field. */
+export type TrustedToolExecutionEventMetadata = Readonly<{ diagnosticsDelegated: boolean }>;
+type TrustedToolExecutionEventListener = (
+  event: TrustedToolExecutionEvent,
+  metadata: TrustedToolExecutionEventMetadata,
+) => void;
 
 type QueuedDiagnosticEvent = {
   event: DiagnosticEventPayload;
@@ -1481,7 +1486,9 @@ function isToolExecutionEventInput(
 function dispatchTrustedToolExecutionEvent(
   state: DiagnosticEventsGlobalState,
   event: TrustedToolExecutionEventInput,
+  diagnosticsDelegated = false,
 ): void {
+  const metadata = Object.freeze({ diagnosticsDelegated });
   state.toolExecutionSeq += 1;
   let enriched: TrustedToolExecutionEvent;
   try {
@@ -1496,13 +1503,20 @@ function dispatchTrustedToolExecutionEvent(
   }
   for (const listener of state.toolExecutionListeners) {
     try {
-      listener(enriched);
+      listener(enriched, metadata);
     } catch (error) {
       console.error(
         `[diagnostic-events] tool execution listener error type=${enriched.type} seq=${enriched.seq}: ${String(error)}`,
       );
     }
   }
+}
+
+/** Core execution facts must reach operational consumers even when a harness owns diagnostics.
+ * This does not emit optional diagnostic/audit telemetry or carry private content.
+ */
+export function emitTrustedToolExecutionEvent(event: TrustedToolExecutionEventInput): void {
+  dispatchTrustedToolExecutionEvent(getDiagnosticEventsState(), event, true);
 }
 
 /** Emits an untrusted diagnostic event from external/plugin-facing code. */

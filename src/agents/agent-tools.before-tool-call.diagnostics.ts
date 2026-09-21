@@ -10,6 +10,7 @@ import {
 } from "../infra/diagnostic-error-metadata.js";
 import {
   emitTrustedDiagnosticEvent,
+  emitTrustedToolExecutionEvent,
   emitTrustedSkillUsedDiagnosticEvent,
   emitTrustedSecurityEvent,
   type DiagnosticEventInput,
@@ -78,6 +79,10 @@ export function startToolExecutionLiveness(
         liveness.view,
       ),
     );
+  } else {
+    // The finalized implementation boundary owns mutation provenance. Delegating
+    // presentation diagnostics must not suppress synchronous effect recording.
+    emitTrustedToolExecutionEvent({ type: "tool.execution.started", ...event });
   }
   return liveness;
 }
