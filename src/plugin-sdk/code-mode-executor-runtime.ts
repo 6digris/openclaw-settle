@@ -2,9 +2,6 @@
 export {
   CodeModeHeadlessAbortError,
   CodeModeHeadlessTimeoutError,
-  codeModeFailureCode,
-  codeModeFailureMessage,
-  normalizeCodeModeTimeoutResult,
 } from "../agents/code-mode-errors.js";
 export type {
   CodeModeExecutor,
@@ -24,7 +21,7 @@ export {
   captureCodeModeValue,
   EMPTY_CODE_MODE_OUTPUT,
 } from "../agents/code-mode-json.js";
-export type { CodeModeJsonSource, CodeModeOutputSource } from "../agents/code-mode-json.js";
+export type { CodeModeOutputSource } from "../agents/code-mode-json.js";
 export type { CodeModeApiVirtualFile } from "../agents/code-mode-namespaces.js";
 export {
   buildUserSource,
@@ -34,19 +31,13 @@ export {
 } from "../agents/code-mode-source-location.js";
 export type { SourceLocation } from "../agents/code-mode-source-location.js";
 export { prepareSource } from "../agents/code-mode-source.js";
-export {
-  CODE_MODE_WORKER_WATCHDOG_GRACE_MS,
-  MAX_CODE_MODE_PENDING_TOOL_CALLS,
-} from "../agents/code-mode-worker-types.js";
+export { CODE_MODE_WORKER_WATCHDOG_GRACE_MS } from "../agents/code-mode-worker-types.js";
 export type {
   CodeModeConfig,
-  CodeModeFailurePhase,
   CodeModeNamespaceDescriptor,
-  CodeModeSettlementMode,
   CodeModeVmResult,
   CodeModeWorkerBoundary,
   CodeModeWorkerContinuation,
-  CodeModeWorkerInput,
   CodeModeWorkerPayload,
   CodeModeWorkerThreadResult,
   PendingBridgeRequest,

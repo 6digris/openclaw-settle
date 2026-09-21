@@ -5,16 +5,20 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import * as workerUrls from "openclaw/plugin-sdk/process-runtime";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import { codeModeExecutor } from "../../extensions/code-mode-quickjs/code-mode-executor-api.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { observeWorkerActivity } from "../../test/helpers/worker-activity.js";
 import * as executorPlugins from "../plugins/code-mode-executor.js";
+import type { CodeModeExecutor } from "./code-mode-executor-types.js";
 import { CodeModeOutputState } from "./code-mode-json.js";
 import { resolveCodeModeConfig } from "./code-mode-runtime.js";
 import { activeRuns, disposeAllCodeModeRuns } from "./code-mode-state.js";
 import { applyCodeModeCatalog } from "./code-mode.js";
 import { createCodeModeHarness, resultDetails } from "./code-mode.test-support.js";
 import { clearToolSearchCatalog } from "./tool-search.js";
+
+const { codeModeExecutor } = await vi.importActual<{ codeModeExecutor: CodeModeExecutor }>(
+  "../../extensions/code-mode-quickjs/code-mode-executor-api.js",
+);
 
 afterEach(async () => {
   await disposeAllCodeModeRuns();

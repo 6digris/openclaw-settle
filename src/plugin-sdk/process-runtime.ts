@@ -24,7 +24,7 @@ export { WorkerTaskError, WorkerTaskPool } from "../infra/worker-task-pool.js";
 export { serveWorkerTasks } from "../infra/worker-task-server.js";
 export type { WorkerTaskControl } from "../infra/worker-task-native-sections.js";
 export type { WorkerTaskChannel } from "../infra/worker-task-server.js";
-export type { WorkerTaskRequestContext, WorkerTaskResponse } from "../infra/worker-task-pool.js";
+export type { WorkerTaskResponse } from "../infra/worker-task-pool.js";
 export { killProcessTree, signalProcessTree } from "../process/kill-tree.js";
 export {
   spawnTerminalPty,
