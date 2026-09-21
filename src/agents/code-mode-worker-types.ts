@@ -52,7 +52,7 @@ export type CodeModeNamespaceDescriptor = {
   scope: SerializedCodeModeNamespaceValue;
 };
 
-export type CodeModeWorkerInput<State = CodeModeExecutorContinuation> =
+type CodeModeWorkerInput<State> =
   | {
       kind: "exec";
       source: string;
