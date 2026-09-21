@@ -1,41 +1,64 @@
 name: Windows Testbox Probe
-run-name: PR148066 read-only missing-task phase diagnosis
+run-name: PR148066 prospective Vitest first-use capture
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  missing-task-diagnostic:
-    strategy:
-      fail-fast: false
-      matrix:
-        order: [forward, reverse]
+  vitest-first-use:
     runs-on: windows-2025
-    timeout-minutes: 10
+    timeout-minutes: 30
+    env:
+      NODE_OPTIONS: --max-old-space-size=8192
+      OPENCLAW_VITEST_MAX_WORKERS: "1"
+      OPENCLAW_TEST_PROJECTS_PARALLEL: "1"
+      OPENCLAW_TEST_SKIP_FULL_EXTENSIONS_SHARD: "1"
     steps:
       - name: Checkout reviewed proof revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+          path: _proof
           sparse-checkout: .maintainer/pr-148066
+      - name: Checkout exact original source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 7c532c395d62d36b989a0f35bf15ccafb90c6668
+          persist-credentials: false
+          path: source
       - name: Setup pinned Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "24.20.0"
-      - name: Verify reviewed driver bytes
+      - name: Verify source and derive read-only missing prefix
         shell: cmd
-        run: node -e "const fs=require('fs'),c=require('crypto');for(const [f,h] of Object.entries({'run.mjs':'ee4e37cb8fe134848b7ebc6b59558899df4cd1c5481e28cd05bdc9264e8d709a','probe.mjs':'c69abd7146e58a06c855906511c50528ed5635f75716b587960786d8a954ddc0','loader.mjs':'b5918bda5cdcf5b32efc6a506b7101987d60c2fc7b0b1c2cc37506d86d014fc3','source-manifest.json':'eb78580e24003012939a1e21ba33f02bf2dc7ddc6d6e27cc308c2a640f4d456a'})){if(c.createHash('sha256').update(fs.readFileSync('.maintainer/pr-148066/'+f)).digest('hex')!==h)throw Error('reviewed hash mismatch '+f)}"
-      - name: Read-only original and instrumented missing-task probes
-        shell: cmd
+        run: node _proof/.maintainer/pr-148066/vitest-run.mjs prepare
+      - name: Setup source-pinned pnpm without cache restore
+        uses: ./source/.github/actions/setup-pnpm-store-cache
+        with:
+          package-manager-file: source/package.json
+          lockfile-path: source/pnpm-lock.yaml
+          cache-mode: off
+          node-version: "24.20.0"
+      - name: Install exact frozen dependencies
+        shell: bash
+        working-directory: source
         env:
-          DIAGNOSTIC_ORDER: ${{ matrix.order }}
-        run: node .maintainer/pr-148066/run.mjs %DIAGNOSTIC_ORDER%
-      - name: Upload bounded diagnostics including failures
+          CI: true
+        run: pnpm install --frozen-lockfile --prefer-offline --config.ignore-scripts=false --config.engine-strict=false --config.enable-pre-post-scripts=true --config.side-effects-cache=true
+      - name: Runtime build then original Vitest router and read-only capture
+        shell: cmd
+        run: node _proof/.maintainer/pr-148066/vitest-run.mjs run
+      - name: Verify task-private staging cleanup
+        if: ${{ always() }}
+        shell: cmd
+        run: node _proof/.maintainer/pr-148066/vitest-run.mjs cleanup
+      - name: Upload bounded evidence including failures
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: pr148066-windows-${{ matrix.order }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/pr148066-windows-${{ matrix.order }}/*
+          name: pr148066-vitest-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pr148066-vitest/*
           if-no-files-found: error
           retention-days: 7
