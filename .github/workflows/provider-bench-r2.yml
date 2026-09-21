@@ -242,7 +242,17 @@ jobs:
             findmnt -T /tmp
             findmnt -T "$store"
             nvme_dev=$(stat -Lc '%d' /mnt/ephemeral)
-            test "$(stat -Lc '%d' /tmp)" = "$nvme_dev"
+            assert_nvme_writes() {
+              local path="$1" writable="$1"
+              # RunsOn overlays image contents; new files live in the upper layer.
+              if [[ "$(findmnt -nr -o FSTYPE -T "$path")" == overlay ]]; then
+                writable=$(findmnt -nr -o OPTIONS -T "$path" | sed -n 's/.*upperdir=\([^,]*\).*/\1/p')
+                test -n "$writable"
+              fi
+              echo "BENCH_STORAGE path=$path writable=$writable"
+              test "$(stat -Lc '%d' "$writable")" = "$nvme_dev"
+            }
+            assert_nvme_writes /tmp
             block=$(findmnt -nr -o MAJ:MIN -T "$(realpath /mnt/ephemeral)")
             lsblk --inverse --json --output NAME,TYPE,MODEL "/dev/block/$block" | node -e '
               const tree = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
@@ -252,7 +262,7 @@ jobs:
               if (!disks.length || disks.some(n => n.model?.trim() !== "Amazon EC2 NVMe Instance Storage")) process.exit(1);
             '
             if [[ "$STORAGE" == nvme ]]; then
-              test "$(stat -Lc '%d' "$store")" = "$nvme_dev"
+              assert_nvme_writes "$store"
             else
               mountpoint "$RUNS_ON_STICKYDISK_DIR"
               sticky_dev=$(stat -Lc '%d' "$RUNS_ON_STICKYDISK_DIR")
