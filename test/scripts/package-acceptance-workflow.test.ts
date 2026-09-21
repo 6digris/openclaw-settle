@@ -1838,7 +1838,12 @@ describe("frozen admission workflow barriers", () => {
     const steps = job.steps ?? [];
     const identity = workflowStep(job, "Resolve called package tooling identity");
     const setup = workflowStep(job, "Setup Node environment");
-    expect(steps.indexOf(identity)).toBe(0);
+    expect(steps[0]).toEqual({
+      name: "Setup supported Node runtime",
+      uses: "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+      with: { "node-version": "${{ env.NODE_VERSION }}", "package-manager-cache": false },
+    });
+    expect(steps.indexOf(identity)).toBe(1);
     expect(steps.indexOf(identity)).toBeLessThan(steps.indexOf(checkout));
     expect(steps.indexOf(checkout)).toBeLessThan(steps.indexOf(validate));
     expect(steps.indexOf(validate)).toBeLessThan(steps.indexOf(setup));

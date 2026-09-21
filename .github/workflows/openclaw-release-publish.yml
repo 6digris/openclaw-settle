@@ -437,6 +437,12 @@ jobs:
           run-id: ${{ inputs.full_release_validation_run_id }}
           github-token: ${{ github.token }}
 
+      - name: Setup supported Node runtime
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
       - name: Validate full release validation manifest
         id: full_manifest
         if: ${{ inputs.release_evidence_mode == 'full-release-validation' && (inputs.publish_openclaw_npm || inputs.plugin_publish_scope == 'all-publishable' || inputs.preflight_run_id != '' || inputs.full_release_validation_run_id != '') }}
@@ -1051,6 +1057,12 @@ jobs:
           echo "workflow_ref=${CHILD_WORKFLOW_REF}" >> "${GITHUB_OUTPUT}"
           wait_for_run ci.yml "${run_id}" "${PARENT_WORKFLOW_SHA}" "" false
 
+      - name: Setup supported Node runtime
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
       - name: Verify exact native CI qualification
         id: proof
         env:
@@ -1100,6 +1112,12 @@ jobs:
           sparse-checkout: scripts
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Setup supported Node runtime
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
 
       - name: Write Android release approval
         env:
@@ -1250,6 +1268,13 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ inputs.focused_release_evidence_run_id }}
           github-token: ${{ github.token }}
+
+      - name: Setup supported Node runtime
+        if: ${{ always() }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
 
       - name: Verify focused release evidence after approval
         if: ${{ inputs.publish_openclaw_npm && inputs.release_evidence_mode == 'authorized-beta-focused-v1' }}
@@ -2044,6 +2069,12 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Setup supported Node runtime
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
       - name: Verify exact npm and selector readback matches preflight bytes
         env:
           RELEASE_TAG: ${{ inputs.tag }}
@@ -2154,6 +2185,12 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Setup supported Node runtime
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
       - name: Publish the verified draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -2249,6 +2286,13 @@ jobs:
           sparse-checkout: scripts
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Setup supported Node runtime
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
       - name: Dispatch detached Linux mirror
         timeout-minutes: 3
         env:
@@ -2291,6 +2335,12 @@ jobs:
           sparse-checkout: scripts
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Setup supported Node runtime
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
 
       - name: Dispatch detached Linux release request
         env:

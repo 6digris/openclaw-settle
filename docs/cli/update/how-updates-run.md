@@ -134,13 +134,11 @@ classification. The live plugin files and host links stay unchanged. Channels,
 cron, automatic updates, background task maintenance, and other side services are
 suppressed in this canary. Copied task records remain available for startup
 validation without recovery or pruning.
-
-The disposable test Gateway validates canonical session rows but defers rebuilding
-transcript search/history projections and recovering copied orphan sessions to the
-live Gateway's startup. It records that deferral and closes its temporary session
-maintenance connections. Normal Gateway startup still rebuilds pending projections
-before serving history. This candidate-side behavior also applies when the installed
-2026.9.4 updater starts the test Gateway.
+The canary also defers session catalog hydration, worker recovery, and startup
+maintenance until activation, recording a warning. Required configuration,
+database ownership, schema, and migration checks still run before readiness;
+plugin runtime loading remains part of validation. The serving Gateway prepares
+its session catalogs and maintenance normally after activation.
 
 Doctor waits for accepted transcript reconciliation and its SQLite lease cleanup
 before closing agent database connections. That lifecycle boundary also applies

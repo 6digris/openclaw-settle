@@ -250,7 +250,7 @@ describe("runGatewayStartupMaintenance", () => {
     listLegacyPairingStoreFiles.mockReset().mockResolvedValue([]);
   });
 
-  it.each([false, true])("runs startup maintenance with updateCanary=%s", async (updateCanary) => {
+  it("runs channel and session maintenance for a normal gateway", async () => {
     const log = createLog();
     const { runGatewayStartupMaintenance } = await import("./server-startup-plugins.js");
 
@@ -258,7 +258,6 @@ describe("runGatewayStartupMaintenance", () => {
       cfgAtStart: {},
       startupRuntimeConfig: {},
       minimalTestGateway: false,
-      updateCanary,
       log,
     });
 
@@ -270,7 +269,6 @@ describe("runGatewayStartupMaintenance", () => {
     expect(runStartupSessionMigration).toHaveBeenCalledWith({
       cfg: {},
       env: process.env,
-      updateCanary,
       log,
     });
     expect(log.warn).not.toHaveBeenCalled();

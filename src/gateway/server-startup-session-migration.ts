@@ -13,7 +13,6 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { readActiveGatewayLockIdentity } from "../infra/gateway-lock.js";
 import { readGatewayOwnerLease } from "../infra/gateway-owner-lease.js";
 import { hasGatewayLifecycleCoordinator } from "../infra/state-database-coordinator.js";
-import { resolveUpdateRehearsalRoot } from "../infra/update-rehearsal-paths.js";
 import {
   isSubagentSessionKey,
   isIncognitoSessionKey,
@@ -153,20 +152,11 @@ async function reconcileStartupOrphans(
 export async function runStartupSessionMigration(params: {
   cfg: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
-  updateCanary?: boolean;
   agentIds?: ReadonlySet<string>;
   assertCurrent?: () => void;
   log: SessionStartupMigrationLogger;
   deps?: SessionMigrationDeps;
 }): Promise<void> {
-  if (params.updateCanary && resolveUpdateRehearsalRoot(params.env ?? process.env)) {
-    // The probe still certifies canonical rows, but never takes runtime custody of copied work.
-    await runSessionStartupMigration(params);
-    params.log.warn(
-      "session: update canary deferred transcript projection rebuilds and copied orphan-session recovery to live Gateway startup; canonical session validation completed",
-    );
-    return;
-  }
   let reconcile = params.deps?.reconcileSessionTranscriptIndexes;
   let reconciledSessions = 0;
   await runSessionStartupMigration({
