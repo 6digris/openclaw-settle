@@ -5263,6 +5263,7 @@ jobs:
           path: |
             ${{ steps.swift-test.outputs.menu-default-artifact-path }}/*-window.png
             ${{ steps.swift-test.outputs.menu-default-artifact-path }}/*-menu-*.png
+            ${{ steps.swift-test.outputs.menu-default-artifact-path }}/guest-model-policy-recording.mov
             ${{ steps.swift-test.outputs.menu-default-artifact-path }}/*-capture-status.json
             ${{ steps.swift-test.outputs.menu-default-artifact-path }}/capture-export.json
           if-no-files-found: error
