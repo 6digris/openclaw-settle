@@ -412,7 +412,10 @@ exec ${shellQuote(realGit)} "$@"
     join(bin, "gh"),
     prelude +
       `
-event({ kind: 'gh', args });
+const graphqlPayload = args[0] === 'api' && args.includes('graphql') && args.includes('--input')
+  ? JSON.parse(readFileSync(0, 'utf8')) : null;
+const graphqlQuery = graphqlPayload?.query ?? args.find(arg => arg.startsWith('query='))?.slice(6) ?? '';
+event({ kind: 'gh', args, query: graphqlQuery });
 if (args[0] === 'browse') {
   console.log('https://github.com/fixture/repo');
   process.exit(0);
@@ -439,13 +442,14 @@ if (args[0] === 'pr' && args[1] === 'view') {
   control.metadata.autoMergeRequest = { mergeMethod: 'SQUASH' };
   writeFileSync(controlFile, JSON.stringify(control));
   value = {};
-} else if (args[0] === 'api' && args.includes('graphql') && args.includes('--input')) {
-  const payload = JSON.parse(readFileSync(0, 'utf8'));
-  const input = payload.variables.input;
-  if (input.expectedHeadOid !== control.metadata.headRefOid || input.pullRequestId !== control.metadata.id ||
+} else if (graphqlPayload && graphqlQuery.startsWith('mutation ')) {
+  const input = graphqlPayload.variables.input;
+  if (graphqlQuery !== 'mutation PullRequestMerge($input:MergePullRequestInput!){mergePullRequest(input:$input){clientMutationId}}' ||
+      !input || input.expectedHeadOid !== control.metadata.headRefOid || input.pullRequestId !== control.metadata.id ||
       input.mergeMethod !== 'SQUASH' || Object.hasOwn(input, 'commitHeadline')) {
     throw new Error('Unpinned synthetic merge');
   }
+  event({ kind: 'merge-dispatch' });
   const parent = runGit(['-C', origin, 'rev-parse', 'refs/heads/main']);
   const tree = runGit(['-C', origin, 'merge-tree', '--write-tree', parent, control.metadata.headRefOid]);
   const body = input.commitBody;
@@ -507,16 +511,19 @@ if (args[0] === 'pr' && args[1] === 'view') {
     value = { login: 'fixture' };
   } else if (endpoint === 'graphql') {
     if (control.failAuth) process.exit(1);
-    if (args.some(arg => arg.includes('viewer{login}'))) {
+    if (graphqlPayload && JSON.stringify(graphqlPayload.variables) !== JSON.stringify({ owner: 'fixture', name: 'repo', number: 42 })) {
+      throw new Error('Unexpected merge read variables');
+    }
+    if (graphqlQuery.includes('viewer{login}')) {
       if (control.writerRateLimited) {
         process.stdout.write('HTTP/2.0 403 Forbidden\\nX-RateLimit-Resource: graphql\\nX-RateLimit-Remaining: 0\\n\\n');
         console.log(JSON.stringify({ errors: [{ type: 'RATE_LIMITED', message: 'API rate limit exceeded for synthetic writer' }] }));
         process.exit(1);
       }
       value = { data: { viewer: { login: 'fixture' } } };
-    } else if (args.some(arg => arg.includes('addComment('))) {
+    } else if (graphqlQuery.includes('addComment(')) {
       value = { data: { addComment: { commentEdge: { node: { url: 'https://example.invalid/pr/42#completion' } } } } };
-    } else if (args.some(arg => arg.includes('viewerMergeBodyText'))) {
+    } else if (graphqlQuery.includes('viewerMergeBodyText')) {
       value = { data: { repository: { pullRequest: {
         headRefOid: control.metadata.headRefOid,
         author: { ...control.metadata.author, __typename: 'User' },
@@ -524,7 +531,7 @@ if (args[0] === 'pr' && args[1] === 'view') {
         viewerMergeHeadlineText: 'Fixture merge headline',
         viewerMergeBodyText: 'Reviewed fixture body',
       } } } };
-    } else if (args.some(arg => arg.includes('ref(qualifiedName:'))) {
+    } else if (graphqlQuery.includes('ref(qualifiedName:')) {
       value = { data: { repository: {
         id: 'fixture-repo', databaseId: 123, nameWithOwner: 'fixture/repo', url: 'https://github.com/fixture/repo',
         ref: { target: { oid: runGit(['-C', origin, 'rev-parse', 'refs/heads/main']) } },
@@ -783,6 +790,7 @@ if (process.argv[1]?.endsWith('/watch-pr-ci.mts')) {
             sha?: string;
             shared?: string;
             args?: string[];
+            query?: string;
             localObject?: boolean;
           } => JSON.parse(line),
         );

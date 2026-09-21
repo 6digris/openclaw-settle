@@ -351,7 +351,10 @@ function runProtectedShell(
 const fs = require("node:fs");
 const cp = require("node:child_process");
 const args = process.argv.slice(2);
-fs.appendFileSync("calls.jsonl", JSON.stringify(args) + "\\n");
+const graphqlPayload = args[0] === "api" && args.includes("graphql") && args.includes("--input")
+  ? JSON.parse(fs.readFileSync(0, "utf8")) : null;
+const graphqlQuery = graphqlPayload?.query ?? args.find(arg => arg.startsWith("query="))?.slice(6) ?? "";
+fs.appendFileSync("calls.jsonl", JSON.stringify({ args, query: graphqlQuery }) + "\\n");
 const value = JSON.parse(fs.readFileSync("input.json", "utf8"));
 const save = () => fs.writeFileSync("input.json", JSON.stringify(value));
 const fail = (message, code = 19) => { console.error(message); process.exit(code); };
@@ -379,16 +382,17 @@ const endpoint = args.find(arg => /^(?:repos\\/|orgs\\/|user$|graphql$)/u.test(a
 if (args[0] === "api" && args.includes("repos/openclaw/openclaw") &&
     JSON.stringify(args) !== JSON.stringify(["api", "--hostname", "github.com", "repos/openclaw/openclaw", "-H", "Cache-Control: max-age=0"])) fail("unexpected repository authority request");
 if (endpoint && endpoint === process.env.FAKE_DENIED) fail("protected refusal");
+if (graphqlPayload && JSON.stringify(graphqlPayload.variables) !== JSON.stringify({ owner: "openclaw", name: "openclaw", number: 131091 })) fail("unexpected merge read variables");
 if (args[0] === "browse") out(repo.url);
 else if (args[0] === "pr" && args[1] === "checks" && args.includes("--required")) {
   // gh v2.98.0 checks.go exports JSON before applying its human-output exit codes.
   out(value.requiredChecks);
 } else if (args[0] === "pr" && args[1] === "merge") out("synthetic merge request accepted");
 else if (args[0] === "workflow" && args[1] === "run") { value.dispatched = true; save(); }
-else if (endpoint === "graphql" && args.some(arg => arg.includes("viewerMergeBodyText"))) {
+else if (endpoint === "graphql" && graphqlQuery.includes("viewerMergeBodyText")) {
   out({data:{repository:{pullRequest:{...pr,viewerMergeHeadlineText:"Fixture merge headline",viewerMergeBodyText:value.mergePreview}}}});
 }
-else if (endpoint === "graphql" && args.some(arg => arg.includes("repository(owner:"))) {
+else if (endpoint === "graphql" && graphqlQuery.includes("repository(owner:")) {
   out({data:{repository:{...repo,id:repoNodeId,databaseId:repo.id,ref:{target:{oid:"${mainSha}"}},pullRequest:pr}}});
 } else if (endpoint === "user") {
   if (JSON.stringify(args) === JSON.stringify(["api", "user", "--include"])) out("HTTP/2.0 200 OK\\n\\n" + JSON.stringify(value.actor));
@@ -510,16 +514,18 @@ else if (endpoint === "graphql" && args.some(arg => arg.includes("repository(own
         ? JSON.parse(readFileSync(file, "utf8"))
         : undefined;
     };
+    const requests = readFileSync(join(root, "calls.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { args: string[]; query: string });
     return {
       ...result,
       proof: readArtifact("merge-crabbox-bypass.json"),
       audit: readArtifact("merge-crabbox-parent-audit.json"),
       intent: readArtifact("intent.json"),
-      calls: readFileSync(join(root, "calls.jsonl"), "utf8")
-        .trim()
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => JSON.parse(line) as string[]),
+      calls: requests.map((request) => request.args),
+      queries: requests.map((request) => request.query),
     };
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -683,9 +689,9 @@ describe("Crabbox authorization before final effects", () => {
       }
       if (revoke) {
         expect(output).toContain("merge-verify passed for PR #131091");
-        expect(
-          result.calls.filter((args) => args.some((arg) => arg.includes("ref(qualifiedName:"))),
-        ).toHaveLength(2);
+        expect(result.queries.filter((query) => query.includes("ref(qualifiedName:"))).toHaveLength(
+          2,
+        );
       }
     },
   );

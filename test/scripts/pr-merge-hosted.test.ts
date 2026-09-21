@@ -160,15 +160,7 @@ describePosix("native hosted merge handoff", () => {
     const before = f.events().length;
     const result = f.run("merge-run");
     expect(result.status, result.stdout + result.stderr).toBe(0);
-    const mergeCalls = f
-      .events()
-      .filter(
-        (event) =>
-          event.kind === "gh" &&
-          event.args?.[0] === "api" &&
-          event.args.includes("graphql") &&
-          event.args.includes("--input"),
-      );
+    const mergeCalls = f.events().filter((event) => event.kind === "merge-dispatch");
     expect(mergeCalls).toHaveLength(1);
     const events = f.events().slice(before);
     const reviewReads = events
@@ -176,13 +168,7 @@ describePosix("native hosted merge handoff", () => {
       .filter(({ event }) => event.kind === "review-comments");
     expect(reviewReads).toHaveLength(2);
     expect(reviewReads[1]?.index).toBeLessThan(
-      events.findIndex(
-        (event) =>
-          event.kind === "gh" &&
-          event.args?.[0] === "api" &&
-          event.args.includes("graphql") &&
-          event.args.includes("--input"),
-      ),
+      events.findIndex((event) => event.kind === "merge-dispatch"),
     );
     expect(
       events.some(
@@ -388,8 +374,7 @@ describePosix("native pending GitHub merge handoff", () => {
     const afterDispatch = events.slice(events.indexOf(mergeCalls[0]!) + 1);
     expect(
       afterDispatch.filter(
-        (event) =>
-          event.kind === "gh" && event.args?.some((arg) => arg.includes("ref(qualifiedName:")),
+        (event) => event.kind === "gh" && event.query?.includes("ref(qualifiedName:"),
       ),
     ).toHaveLength(2);
     expect(events.some((event) => event.kind === "gh" && event.args?.includes("POST"))).toBe(false);
