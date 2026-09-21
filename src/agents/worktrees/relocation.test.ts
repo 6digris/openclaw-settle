@@ -271,7 +271,7 @@ describe.skipIf(process.platform === "win32")("native managed worktree relocatio
     expect(localWorkspaceStore(env).get(record.id)?.projection_path).toBe(projection);
   });
 
-  it("retains a partial Git move without replay when the following projection rename fails", async () => {
+  it("retains a partial Git move without replay or cleanup when the projection rename fails", async () => {
     const sessionKey = "agent:main:partial-move";
     const record = await service.create({
       repoRoot: repo,
@@ -293,6 +293,13 @@ describe.skipIf(process.platform === "win32")("native managed worktree relocatio
       (workspace) => workspace.prepare(),
     );
     await fs.writeFile(path.join(projection, "retained.txt"), "retained bytes\n");
+    const unrelated = await service.create({
+      repoRoot: repo,
+      name: "cleanup-eligible",
+      baseRef: "HEAD",
+      ownerKind: "session",
+      ownerId: "agent:main:cleanup-eligible",
+    });
     const preview = await service.previewMove({ id: record.id, destinationRoot });
     expect(preview.blockers).toEqual([]);
     const params = {
@@ -312,6 +319,22 @@ describe.skipIf(process.platform === "win32")("native managed worktree relocatio
     const receipt = await service.move(params);
     rename.mockRestore();
     expect(receipt.phase).toBe("recovery_required");
+    const beforeCleanup = await service.inventory();
+    const persistedReceipts = await readWorktreeMoveReceipts(env);
+    const refs = await requireGit(repo, ["show-ref"]);
+    const shouldRemoveOwner = vi.fn(() => true);
+    const remove = vi.spyOn(service, "remove");
+    // An unresolved move fences the whole cleanup pass, including unrelated
+    // eligible worktrees, before GC can retire paths or prune recovery evidence.
+    await expect(
+      service.gc({ limits: { maxCount: 0 }, shouldRemoveOwner }),
+    ).rejects.toThrow("Workspace relocation is unresolved");
+    expect(shouldRemoveOwner).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+    expect(await service.inventory()).toEqual(beforeCleanup);
+    expect(await readWorktreeMoveReceipts(env)).toEqual(persistedReceipts);
+    expect(await requireGit(repo, ["show-ref"])).toBe(refs);
+    expect(await fs.readFile(path.join(unrelated.path, "README.md"), "utf8")).toBe("base\n");
     await expect(fs.lstat(record.path)).rejects.toMatchObject({ code: "ENOENT" });
     expect(await fs.readFile(path.join(receipt.destination, "retained.txt"), "utf8")).toBe(
       "retained bytes\n",
@@ -319,7 +342,9 @@ describe.skipIf(process.platform === "win32")("native managed worktree relocatio
     expect(await fs.readFile(path.join(projection, "retained.txt"), "utf8")).toBe(
       "retained bytes\n",
     );
-    expect((await service.inventory()).worktrees[0]?.path).toBe(record.path);
+    expect((await service.inventory()).worktrees.find((row) => row.id === record.id)?.path).toBe(
+      record.path,
+    );
     await expect(service.move(params)).rejects.toThrow("Filesystem completion is unproven");
     await expect(readManagedWorktreeBackupInventory(env)).rejects.toThrow("unresolved");
     expect((await service.verifyMove(receipt.operationId)).verified).toBe(false);

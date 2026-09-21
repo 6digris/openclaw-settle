@@ -29,6 +29,8 @@ import {
 } from "./checkout.js";
 import { ensureEmptyWorktreeSource, removeUnusedEmptyWorktreeSource } from "./empty-source.js";
 import { WorktreeRepositoryError } from "./errors.js";
+import { enforceWorktreeCleanupLimits } from "./gc-limits.js";
+import { WorktreeGcProgress } from "./gc-progress.js";
 import {
   createWorktreeLockPrefilter,
   lockState,
@@ -71,7 +73,6 @@ import {
   finalizeWorktreeRemoval,
   hasLiveWorktreeRunLease,
 } from "./run-lease.js";
-import { enforceWorktreeCleanupLimits } from "./service-cleanup-policy.js";
 import { reconcileListedWorktrees } from "./service-list.js";
 import {
   canResetFailedWorktreeAdd,
@@ -1424,7 +1425,8 @@ export class ManagedWorktreeService {
     }
     const now = this.now();
     const isLocked = createWorktreeLockPrefilter();
-    let removed: string[] = [];
+    const progress = new WorktreeGcProgress();
+    const result = progress.result;
     const records = listRegistryWorktrees(this.env);
     for (const record of records) {
       try {
@@ -1441,7 +1443,18 @@ export class ManagedWorktreeService {
           record.ownerId !== undefined &&
           params.shouldRemoveOwner?.(record.ownerKind, record.ownerId) === true;
         if (retiredOwner || now - record.lastActiveAt > IDLE_GC_MS) {
-          if (await this.isProtectedFromAutoRemoval(record, isLocked, params.shouldProtectOwner)) {
+          // Each record gets one decision per pass. Limit enforcement consumes
+          // this disposition instead of repeating a failed idle cleanup.
+          if (!progress.start(record.id)) {
+            continue;
+          }
+          const protection = await this.autoRemovalProtectionReason(
+            record,
+            isLocked,
+            params.shouldProtectOwner,
+          );
+          if (protection !== undefined) {
+            progress.protect("idle", record.id, protection);
             continue;
           }
           await this.remove({
@@ -1449,9 +1462,10 @@ export class ManagedWorktreeService {
             reason: retiredOwner ? "owner-gc" : "idle-gc",
             commitGuard: () => this.assertOwnerAllowsCleanup(record, params, retiredOwner),
           });
-          removed.push(record.id);
+          result.removed.push(record.id);
         }
       } catch (error) {
+        progress.error("idle", error, record.id);
         log.warn(`idle cleanup failed for ${record.id}: ${String(error)}`);
       }
     }
@@ -1460,28 +1474,36 @@ export class ManagedWorktreeService {
       // the templates under the lease before retiring any artifacts.
       if (hasTemplates(this.env)) {
         await this.withAllocationLease({}, async (guard) => {
-          await collectWorktreeTemplates(this.env, now - IDLE_GC_MS, {
-            signal: guard.signal,
-            commitGuard: () => guard.commitGuard?.(),
-          });
+          await collectWorktreeTemplates(
+            this.env,
+            now - IDLE_GC_MS,
+            {
+              signal: guard.signal,
+              commitGuard: () => guard.commitGuard?.(),
+            },
+            (error, id) => progress.error("templates", error, id),
+          );
         });
       }
     } catch (error) {
+      progress.error("templates", error);
       log.warn(`worktree template cleanup deferred: ${String(error)}`);
     }
-    removed = removed.concat(
-      await enforceWorktreeCleanupLimits({
+    result.removed.push(
+      ...(await enforceWorktreeCleanupLimits({
+        env: this.env,
         limits: params.limits ?? resolveWorktreeCleanupLimits(),
-        listWorktrees: () => listRegistryWorktrees(this.env),
-        isProtected: (record) =>
-          this.isProtectedFromAutoRemoval(record, isLocked, params.shouldProtectOwner),
-        remove: (record) =>
-          this.remove({
+        progress,
+        protect: (record) =>
+          this.autoRemovalProtectionReason(record, isLocked, params.shouldProtectOwner),
+        remove: async (record) => {
+          await this.remove({
             id: record.id,
             reason: "limit-gc",
             commitGuard: () => this.assertOwnerAllowsCleanup(record, params),
-          }),
-      }),
+          });
+        },
+      })),
     );
     let orphansDeleted = 0;
     let snapshotsPruned = 0;
@@ -1503,6 +1525,7 @@ export class ManagedWorktreeService {
             try {
               orphansDeleted = await this.reconcileOrphans(listRegistryWorktrees(this.env), guard);
             } catch (error) {
+              progress.error("orphans", error);
               log.warn(`worktree orphan cleanup deferred: ${String(error)}`);
             }
           }
@@ -1524,15 +1547,19 @@ export class ManagedWorktreeService {
               });
               snapshotsPruned += 1;
             } catch (error) {
+              progress.error("snapshots", error, record.id);
               log.warn(`snapshot retention failed for ${record.id}: ${String(error)}`);
             }
           }
         });
       } catch (error) {
+        progress.error("orphans", error);
         log.warn(`worktree cleanup deferred: ${String(error)}`);
       }
     }
-    return { removed, orphansDeleted, snapshotsPruned };
+    result.orphansDeleted = orphansDeleted;
+    result.snapshotsPruned = snapshotsPruned;
+    return result;
   }
 
   private async inspectCheckout(
@@ -1559,29 +1586,31 @@ export class ManagedWorktreeService {
     );
   }
 
-  private async isProtectedFromAutoRemoval(
+  private async autoRemovalProtectionReason(
     record: ManagedWorktreeRecord,
     isLocked: ReturnType<typeof createWorktreeLockPrefilter>,
     shouldProtectOwner?: (ownerKind: ManagedWorktreeOwnerKind, ownerId: string) => boolean,
-  ): Promise<boolean> {
+  ): Promise<string | undefined> {
     if (
       record.ownerId !== undefined &&
       shouldProtectOwner?.(record.ownerKind, record.ownerId) === true
     ) {
-      return true;
+      return "owner is active";
     }
     if (hasLiveWorktreeRunLease(this.env, record.id)) {
-      return true;
+      return "run lease is active";
     }
     const provisioned = await this.inspectCheckout(record, "provisioned");
     if (provisioned.retainedReason !== undefined) {
-      return true;
+      return `provisioned checkout state is ${provisioned.retainedReason}`;
     }
     if (await isLocked(record)) {
-      return true;
+      return "worktree has a live or foreign lock";
     }
     const nested = await this.inspectCheckout(record, "nested-repository");
-    return nested.retainedReason !== undefined;
+    return nested.retainedReason === undefined
+      ? undefined
+      : "worktree contains a nested repository";
   }
 
   private assertOwnerAllowsCleanup(
