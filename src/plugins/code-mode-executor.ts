@@ -36,7 +36,7 @@ export function resolvePluginCodeModeExecutor(
     throw new Error(
       !owner
         ? `Code Mode executor "${executorId}" is unavailable or disabled. Enable its plugin or select another executor.`
-        : `Code Mode executor "${executorId}" has multiple plugin owners: ${owners.map((owner) => owner.id).join(", ")}. Enable only one owner.`,
+        : `Code Mode executor "${executorId}" has multiple plugin owners: ${owners.map((candidate) => candidate.id).join(", ")}. Enable only one owner.`,
     );
   }
   const modulePath = resolvePluginRootPublicSurfacePath({

@@ -32,7 +32,9 @@ export const testing = {
   normalizeCodeModeTimeoutResult,
   runCodeModeExecutor: async (...args: Parameters<typeof runCodeModeExecutor>) => {
     const result = await runCodeModeExecutor(...args);
-    if (result.status === "waiting") directContinuations.add(result.continuation);
+    if (result.status === "waiting") {
+      directContinuations.add(result.continuation);
+    }
     return result;
   },
   resolveCodeModeHeadlessConfig,

@@ -97,7 +97,9 @@ async function releasePool(owner: NodePool): Promise<void> {
     return;
   }
   const timer = setTimeout(() => {
-    if (idle?.owner !== owner) return;
+    if (idle?.owner !== owner) {
+      return;
+    }
     idle = undefined;
     void runBestEffortCleanup({
       cleanup: () => closePool(owner),
@@ -131,15 +133,18 @@ function continuation(pool: NodePool): CodeModeExecutorContinuation {
     // There is no serialized VM image; report the configured heap as a diagnostic estimate.
     retainedBytes: pool.memoryLimitBytes,
     resume(input, options) {
-      if (state !== "owned")
+      if (state !== "owned") {
         return Promise.resolve(
           failure("code mode continuation is no longer available", "runtime_unavailable"),
         );
+      }
       state = "resumed";
       return run(pool, input, options);
     },
     dispose() {
-      if (state === "resumed" || state === "disposed") return Promise.resolve();
+      if (state === "resumed" || state === "disposed") {
+        return Promise.resolve();
+      }
       state = "disposing";
       return (closing ??= closePool(pool)
         .then(() => {
@@ -169,7 +174,9 @@ async function run(
     const result = await pool.tasks.run(
       () => {
         admittedTimeoutMs = Math.max(0, input.config.timeoutMs - (performance.now() - startedAt));
-        if (admittedTimeoutMs <= 0) throw new CodeModeHeadlessTimeoutError();
+        if (admittedTimeoutMs <= 0) {
+          throw new CodeModeHeadlessTimeoutError();
+        }
         return { ...input, config: { ...input.config, timeoutMs: admittedTimeoutMs } };
       },
       {
@@ -179,11 +186,15 @@ async function run(
         onInputConsumed: inlineHost?.onInputConsumed,
         onRequest: inlineHost
           ? async (value, context): Promise<WorkerTaskResponse> => {
-              if (!isRecord(value) || value.status !== "boundary")
+              if (!isRecord(value) || value.status !== "boundary") {
                 throw new Error("invalid code mode worker boundary");
-              if (!Number.isFinite(admittedTimeoutMs) || admittedTimeoutMs <= 0)
+              }
+              if (!Number.isFinite(admittedTimeoutMs) || admittedTimeoutMs <= 0) {
                 throw new Error("invalid code mode worker admission budget");
-              if (value.networkContentObserved === true) inlineHost?.onNetworkContent?.();
+              }
+              if (value.networkContentObserved === true) {
+                inlineHost?.onNetworkContent?.();
+              }
               const { onConsumed, ...command } = await inlineHost.onBoundary(
                 // SAFETY: The private Node worker emits the shared typed boundary protocol.
                 value as CodeModeWorkerBoundary,
@@ -200,7 +211,9 @@ async function run(
           : undefined,
       },
     );
-    if (result.networkContentObserved === true) inlineHost?.onNetworkContent?.();
+    if (result.networkContentObserved === true) {
+      inlineHost?.onNetworkContent?.();
+    }
     if (result.status === "waiting") {
       retained = true;
       return { ...result, continuation: continuation(pool) };
@@ -215,16 +228,20 @@ async function run(
     if (
       reason instanceof CodeModeHeadlessTimeoutError ||
       (error instanceof WorkerTaskError && error.code === "timeout")
-    )
+    ) {
       return failure("code mode timeout exceeded", "timeout");
-    if (options.signal?.aborted || reason instanceof CodeModeHeadlessAbortError)
+    }
+    if (options.signal?.aborted || reason instanceof CodeModeHeadlessAbortError) {
       return failure("code mode execution aborted", "aborted");
+    }
     return failure(
       error,
       error instanceof WorkerTaskError ? "runtime_unavailable" : codeModeFailureCode(error),
     );
   } finally {
-    if (!retained) await closePool(pool);
+    if (!retained) {
+      await closePool(pool);
+    }
   }
 }
 

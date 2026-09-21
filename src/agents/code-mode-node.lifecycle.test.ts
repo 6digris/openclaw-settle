@@ -1,12 +1,18 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
+import type { CodeModeWorkerThreadResult } from "./code-mode-worker-types.js";
 
 const fixture = vi.hoisted(() => ({
   workerUrl: "file:///runtime/code-mode-node.worker.js",
   executions: [] as Array<{ input: unknown; options: { timeoutMs: number } }>,
   pools: [] as Array<{
     isClosed: boolean;
-    run: ReturnType<typeof vi.fn>;
-    close: ReturnType<typeof vi.fn>;
+    run: Mock<
+      (
+        makeInput: () => unknown,
+        options: { timeoutMs: number },
+      ) => Promise<CodeModeWorkerThreadResult<undefined>>
+    >;
+    close: Mock<() => Promise<void>>;
   }>,
 }));
 vi.mock("../infra/runtime-worker-url.js", () => ({
@@ -16,14 +22,19 @@ vi.mock("../infra/worker-task-pool.js", () => ({
   WorkerTaskError: class extends Error {},
   WorkerTaskPool: class {
     isClosed = false;
-    run = vi.fn(async (makeInput: () => unknown, options: { timeoutMs: number }) => {
-      fixture.executions.push({ input: await makeInput(), options });
-      return {
-        status: "completed",
-        value: { kind: "complete", json: "1" },
-        output: { count: 0, source: { kind: "complete", json: "[]" } },
-      };
-    });
+    run = vi.fn(
+      async (
+        makeInput: () => unknown,
+        options: { timeoutMs: number },
+      ): Promise<CodeModeWorkerThreadResult<undefined>> => {
+        fixture.executions.push({ input: await makeInput(), options });
+        return {
+          status: "completed",
+          value: { kind: "complete", json: "1" },
+          output: { count: 0, source: { kind: "complete", json: "[]" } },
+        };
+      },
+    );
     close = vi.fn(async () => {
       this.isClosed = true;
     });
@@ -87,7 +98,9 @@ describe("Node Code Mode worker custody", () => {
         });
       try {
         await retiring;
-        if (reason === "abort") controller.abort();
+        if (reason === "abort") {
+          controller.abort();
+        }
         await vi.advanceTimersByTimeAsync(reason === "timeout" ? 1000 : 0);
         expect(observed).toMatchObject({
           status: "failed",
@@ -119,7 +132,9 @@ describe("Node Code Mode worker custody", () => {
       output: { count: 0, source: { kind: "complete", json: "[]" } },
     });
     const result = await run();
-    if (result.status !== "waiting") throw new Error("Expected a live continuation");
+    if (result.status !== "waiting") {
+      throw new Error("Expected a live continuation");
+    }
     pool.close.mockRejectedValueOnce(new Error("native exit uncertain"));
     await expect(result.continuation.dispose()).rejects.toThrow("native exit uncertain");
     expect(
@@ -210,7 +225,7 @@ describe("Node Code Mode worker custody", () => {
   it("does not release a completed pool after an idle-cache collision fails native cleanup", async () => {
     await run();
     const first = fixture.pools.at(-1)!;
-    let complete!: (value: unknown) => void;
+    let complete!: (value: CodeModeWorkerThreadResult<undefined>) => void;
     let started!: () => void;
     const starting = new Promise<void>((resolve) => {
       started = resolve;

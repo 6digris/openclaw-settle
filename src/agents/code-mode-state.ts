@@ -168,17 +168,17 @@ export function createCodeModeRunOwner(ctx: ToolSearchToolContext, config: CodeM
     }
     // Retry only already failed resources; a failure in this attempt stays owned for the next close.
     for (const failed of cleanupFailures.keys()) {
-      disposeContinuation(failed);
+      void disposeContinuation(failed);
     }
     const retained = continuation;
     continuation = undefined;
     if (retained) {
-      disposeContinuation(retained);
+      void disposeContinuation(retained);
     }
     void Promise.resolve()
       .then(async () => {
         // Abort revokes dispatch immediately, but a worker can return its parked handle later.
-        await Promise.allSettled([...executions]);
+        await Promise.allSettled(executions);
         while (disposals.size) {
           await Promise.allSettled(disposals.values());
         }

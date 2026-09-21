@@ -3,7 +3,7 @@ import { types } from "node:util";
 import { getHeapStatistics } from "node:v8";
 import { createContext, Script, type Context } from "node:vm";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { serveWorkerTasks, type WorkerTaskChannel } from "../infra/worker-task-pool.js";
+import { serveWorkerTasks, type WorkerTaskChannel } from "../infra/worker-task-server.js";
 import { CODE_MODE_CONTROLLER_SOURCE } from "./code-mode-controller-source.js";
 import type {
   CodeModeExecutorStartInput,
@@ -154,7 +154,9 @@ const rejectionScript = new Script(
 
 function evaluate(current: NodeCell, script: Script): unknown {
   const remaining = current.deadline - performance.now();
-  if (remaining <= 0) throw new Error("code mode timeout exceeded");
+  if (remaining <= 0) {
+    throw new Error("code mode timeout exceeded");
+  }
   return script.runInContext(current.context, {
     timeout: Math.max(1, Math.ceil(remaining)),
     breakOnSigint: false,
@@ -170,7 +172,9 @@ function sourceFrames(stack: string | undefined, location: SourceLocation): stri
 }
 
 function guestError(error: unknown, location: SourceLocation): string {
-  if (!types.isNativeError(error)) return String(error);
+  if (!types.isNativeError(error)) {
+    return String(error);
+  }
   const frames = sourceFrames(error.stack, location);
   if (frames.length === 0 && error.name === "SyntaxError") {
     const syntax = /^openclaw-code-mode:user\.js:(\d+)\n[^\n]*\n([ \t]*)\^/u.exec(
@@ -178,10 +182,11 @@ function guestError(error: unknown, location: SourceLocation): string {
     );
     const line = syntax?.[1];
     const prefix = syntax?.[2];
-    if (line !== undefined && prefix !== undefined)
+    if (line !== undefined && prefix !== undefined) {
       frames.push(
         ...sourceFrames(`    at ${USER_SOURCE_FILE}:${line}:${prefix.length + 1}`, location),
       );
+    }
   }
   return [`${error.name}: ${error.message}`, ...frames].join("\n");
 }
@@ -197,7 +202,9 @@ function createCell(
     startedAt + input.config.timeoutMs,
     preparedAt + (input.executionTimeoutMs ?? Infinity),
   );
-  if (deadline <= preparedAt) throw new Error("code mode timeout exceeded");
+  if (deadline <= preparedAt) {
+    throw new Error("code mode timeout exceeded");
+  }
   const program = buildUserSource(source, input.prelude, "utf16");
   const context = createContext(Object.create(null), { microtaskMode: "afterEvaluate" });
   const current: NodeCell = {
@@ -210,46 +217,56 @@ function createCell(
     deadline,
   };
   cell = current;
-  context.__openclawNodeTextEncoder = TextEncoder;
-  context.__openclawNodeTextDecoder = TextDecoder;
-  context.__openclawHostRequest = (method: string, argsJson: string, id: string, stack: string) => {
+  context["__openclawNodeTextEncoder"] = TextEncoder;
+  context["__openclawNodeTextDecoder"] = TextDecoder;
+  context["__openclawHostRequest"] = (
+    method: string,
+    argsJson: string,
+    id: string,
+    stack: string,
+  ) => {
     if (current.pendingRequests.length >= current.config.maxPendingToolCalls) {
       current.admissionError = "too many pending code mode tool calls";
       throw new Error(current.admissionError);
     }
     // The controller supplies strings; only JSON data and diagnostic stacks cross this bridge.
-    if (!isBridgeMethod(method)) throw new Error("unsupported code mode bridge method");
+    if (!isBridgeMethod(method)) {
+      throw new Error("unsupported code mode bridge method");
+    }
     const args: unknown = JSON.parse(argsJson);
-    if (!Array.isArray(args))
+    if (!Array.isArray(args)) {
       throw new Error("invalid code mode bridge arguments: expected an array");
-    if (!id.startsWith(`bridge:${method}:`) || !/^bridge:[A-Za-z]+:[1-9]\d*$/u.test(id))
+    }
+    if (!id.startsWith(`bridge:${method}:`) || !/^bridge:[A-Za-z]+:[1-9]\d*$/u.test(id)) {
       throw new Error("invalid code mode bridge id");
-    if (current.pendingRequests.some((request) => request.id === id))
+    }
+    if (current.pendingRequests.some((request) => request.id === id)) {
       throw new Error("duplicate code mode bridge id");
+    }
     current.pendingRequests.push({ id, method, args });
     return sourceFrames(
       typeof stack === "string" ? stack.slice(0, 8192) : "",
       current.location,
     ).join("\n");
   };
-  context.__openclawHostCancelRequest = (id: string) => {
+  context["__openclawHostCancelRequest"] = (id: string) => {
     const index = current.pendingRequests.findIndex((request) => request.id === id);
     if (index >= 0) {
       current.pendingRequests.splice(index, 1);
       current.canceledRequestIds.push(id);
     }
   };
-  context.__openclawHostObserveNetworkContent = () => {
+  context["__openclawHostObserveNetworkContent"] = () => {
     current.networkContentObserved = true;
   };
-  context.__openclawNodeInit = JSON.stringify({
+  context["__openclawNodeInit"] = JSON.stringify({
     __openclawCatalog: input.catalog,
     __openclawNamespaces: input.namespaces,
     __openclawApiFiles: input.apiFiles ?? [],
     __openclawSwarmEnabled: input.swarmEnabled === true,
     __openclawMaxPendingToolCalls: input.config.maxPendingToolCalls,
   });
-  context.__openclawNodeFinish = (ok: boolean, json: string) => {
+  context["__openclawNodeFinish"] = (ok: boolean, json: string) => {
     current.outcome = { ok, json };
   };
   evaluate(current, initializeScript);
@@ -259,11 +276,13 @@ function createCell(
 }
 
 function settle(current: NodeCell, requests: SettledBridgeRequest[]): void {
-  current.context.__openclawNodeReplies = JSON.stringify(requests);
+  current.context["__openclawNodeReplies"] = JSON.stringify(requests);
   try {
     evaluate(current, settleScript);
   } finally {
-    for (const request of requests) request.json = "";
+    for (const request of requests) {
+      request.json = "";
+    }
     requests.length = 0;
   }
 }
@@ -317,7 +336,9 @@ async function run(input: NodeInput, channel?: WorkerTaskChannel): Promise<NodeR
   try {
     const current =
       input.kind === "exec" ? createCell(input, prepareSource(input.source), startedAt) : cell;
-    if (!current) throw new Error("code mode continuation is no longer available");
+    if (!current) {
+      throw new Error("code mode continuation is no longer available");
+    }
     if (input.kind === "resume") {
       current.config = config;
       current.deadline = performance.now() + config.timeoutMs;
@@ -329,13 +350,19 @@ async function run(input: NodeInput, channel?: WorkerTaskChannel): Promise<NodeR
       consumed?.();
       consumed = undefined;
       const admissionError = current.admissionError ?? evaluate(current, drainScript);
-      if (admissionError) throw new ToolInputError(String(admissionError));
+      if (admissionError !== undefined && typeof admissionError !== "string") {
+        throw new Error("invalid code mode admission error");
+      }
+      if (admissionError) {
+        throw new ToolInputError(admissionError);
+      }
       // Native rejection/handled notifications arrive at the end of the turn.
       await setImmediate();
       output = takeOutput(current);
       const pending = !current.outcome;
-      if (pending && current.pendingRequests.length === 0)
+      if (pending && current.pendingRequests.length === 0) {
         throw new Error("code mode promise is pending without host work");
+      }
       if (pending || current.pendingRequests.length > 0) {
         const settlementMode = pending
           ? { kind: "awaiting" as const }
@@ -352,7 +379,9 @@ async function run(input: NodeInput, channel?: WorkerTaskChannel): Promise<NodeR
           memoryUsedBytes: getHeapStatistics().used_heap_size,
           ...(current.networkContentObserved ? { networkContentObserved: true as const } : {}),
         };
-        if (!channel) return { status: "waiting", ...boundary, continuation: undefined };
+        if (!channel) {
+          return { status: "waiting", ...boundary, continuation: undefined };
+        }
         const response = await channel.request({ status: "boundary", ...boundary });
         output = [];
         consumed = response.consumed;
@@ -368,13 +397,16 @@ async function run(input: NodeInput, channel?: WorkerTaskChannel): Promise<NodeR
             output: EMPTY_CODE_MODE_OUTPUT,
           };
         }
-        if (command.kind !== "continue") throw new Error("invalid code mode continuation");
+        if (command.kind !== "continue") {
+          throw new Error("invalid code mode continuation");
+        }
         if (
           !Number.isFinite(command.timeoutMs) ||
           command.timeoutMs <= 0 ||
           command.timeoutMs > config.timeoutMs
-        )
+        ) {
           throw new Error("code mode timeout exceeded");
+        }
         current.deadline = performance.now() + command.timeoutMs;
         current.pendingRequests = command.pendingRequests;
         current.canceledRequestIds = [];
@@ -391,7 +423,7 @@ async function run(input: NodeInput, channel?: WorkerTaskChannel): Promise<NodeR
         );
       }
       if (current.rejections.size > 0) {
-        current.context.__openclawNodeRejection = current.rejections.values().next().value;
+        current.context["__openclawNodeRejection"] = current.rejections.values().next().value;
         const encoded = evaluate(current, rejectionScript);
         const failure = formatGuestFailure(current, String(encoded));
         return failed(
@@ -418,7 +450,9 @@ async function run(input: NodeInput, channel?: WorkerTaskChannel): Promise<NodeR
       /Script execution timed out|code mode timeout exceeded/u.test(error.message);
     if (cell && output.length === 0) {
       // Preserve already-emitted output within the parent's watchdog cleanup grace.
-      if (timeout) cell.deadline = performance.now() + 50;
+      if (timeout) {
+        cell.deadline = performance.now() + 50;
+      }
       try {
         output = takeOutput(cell);
       } catch {
@@ -447,11 +481,16 @@ serveWorkerTasks(async (input, channel): Promise<NodeResult> => {
     !isRecord(input) ||
     !isRecord(input.config) ||
     (input.kind !== "exec" && input.kind !== "resume")
-  )
+  ) {
     return failed("invalid_input", "invalid code mode worker input");
+  }
   // SAFETY: The executor host supplies normalized start/resume inputs to its private worker.
   const result = await run(input as NodeInput, channel);
-  if (cell?.networkContentObserved) result.networkContentObserved = true;
-  if (result.status !== "waiting") cell = undefined;
+  if (cell?.networkContentObserved) {
+    result.networkContentObserved = true;
+  }
+  if (result.status !== "waiting") {
+    cell = undefined;
+  }
   return result;
 });

@@ -78,11 +78,11 @@ tool declarations, namespace descriptors, resource limits, and a scoped host
 bridge. Return a bounded completion or failure, or a waiting result containing
 an executor-owned `CodeModeExecutorContinuation`. Its `resume` method transfers
 custody once, `retainedBytes` reports a diagnostic size estimate, and `dispose` joins
-cleanup. Disposing an already consumed continuation has no effect. The selected
+cleanup and keeps failed cleanup retryable. Disposing an already consumed continuation has no effect. The selected
 executor stays attached to the continuation across configuration changes.
 
 The SDK supplies the common guest controller, source preparation, result
-capture, error normalization, and worker protocol types. Executors own their
+capture, bounded error text, and worker protocol types. Executors own their
 engine and suspended state. Core owns permissions, approvals, tool dispatch,
 settlement receipts, output delivery, expiry, and cancellation. Missing or
 disabled executors fail explicitly; the host never substitutes a less isolated

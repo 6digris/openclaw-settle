@@ -31,7 +31,9 @@ describe("Node Code Mode executor", () => {
       "const state = { value: 1 }; await yield_control(); state.value += 2; await yield_control(); return state;",
     );
     expect(result.status).toBe("waiting");
-    if (result.status !== "waiting") throw new Error(JSON.stringify(result));
+    if (result.status !== "waiting") {
+      throw new Error(JSON.stringify(result));
+    }
     const first = result.continuation;
     continuations.add(first);
     expect(first.retainedBytes).toBe(config.memoryLimitBytes);
@@ -45,7 +47,9 @@ describe("Node Code Mode executor", () => {
       { timeoutMs: 7_000 },
     );
     expect(result.status).toBe("waiting");
-    if (result.status !== "waiting") throw new Error(JSON.stringify(result));
+    if (result.status !== "waiting") {
+      throw new Error(JSON.stringify(result));
+    }
     const second = result.continuation;
     continuations.add(second);
     await first.dispose();
@@ -136,11 +140,13 @@ describe("Node Code Mode executor", () => {
         inlineHost: {
           onBoundary: async (_value, context) => {
             reachedBoundary();
-            return new Promise((_resolve, reject) =>
-              context.signal.addEventListener("abort", () => reject(context.signal.reason), {
-                once: true,
-              }),
-            );
+            return new Promise((_resolve, reject) => {
+              context.signal.addEventListener(
+                "abort",
+                () => reject(new Error("Host bridge aborted", { cause: context.signal.reason })),
+                { once: true },
+              );
+            });
           },
         },
       },

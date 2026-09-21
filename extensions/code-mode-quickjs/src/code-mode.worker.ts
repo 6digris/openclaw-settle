@@ -22,8 +22,8 @@ import {
   type SettledBridgeRequest,
   type SourceLocation,
 } from "openclaw/plugin-sdk/code-mode-executor-runtime";
-import { serveWorkerTasks, type WorkerTaskChannel } from "openclaw/plugin-sdk/process-runtime";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { serveWorkerTasks, type WorkerTaskChannel } from "openclaw/plugin-sdk/worker-task-server";
 import {
   EvalFlags,
   JSException,
