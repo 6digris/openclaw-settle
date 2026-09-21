@@ -3421,7 +3421,6 @@ src/tasks/generated-media-task-activity.ts	1
 src/tasks/task-flow-registry.store.ts	1
 src/tasks/task-flow-registry.ts	1
 src/tasks/task-flow-registry.types.ts	2
-src/tasks/task-registry-query.ts	4
 src/tasks/task-registry.process-state.ts	1
 src/tasks/task-registry.sqlite.shared.ts	1
 src/tasks/task-registry.ts	1

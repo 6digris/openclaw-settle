@@ -28,7 +28,6 @@ import type { TaskRecord } from "../../tasks/task-registry.types.js";
 import {
   resetTaskFlowRegistryForTests,
   resetTaskRegistryForTests,
-  setTaskRegistryDeliveryRuntimeForTests,
 } from "../../tasks/task-runtime.test-helpers.js";
 import { withStateDirEnv } from "../../test-helpers/state-dir-env.js";
 import { SessionManager } from "../sessions/session-manager.js";
@@ -1532,9 +1531,10 @@ describe("runContextEngineMaintenance", () => {
         resetTaskFlowRegistryForTests({ persist: false });
         resetSystemEventsForTest();
         const sendMessageMock = vi.fn();
-        setTaskRegistryDeliveryRuntimeForTests({
+        vi.doMock("../../tasks/task-registry-delivery-runtime.js", () => ({
           sendMessage: sendMessageMock,
-        });
+          resolveTaskControlUiSessionUrl: () => undefined,
+        }));
 
         const sessionKey = "agent:main:session-fast";
         const maintain = vi.fn(async () => ({
@@ -1559,15 +1559,9 @@ describe("runContextEngineMaintenance", () => {
           (task) => task.taskKind === TURN_MAINTENANCE_TASK_KIND,
         );
         expect(tasks).toHaveLength(1);
-        await waitForAssertion(() =>
-          expect(
-            getTaskById(expectDefined(tasks[0], "tasks[0] test invariant").taskId)?.status,
-          ).toBe("succeeded"),
-        );
-        const task = requireRecord(
-          getTaskById(expectDefined(tasks[0], "tasks[0] test invariant").taskId),
-          "maintenance task",
-        );
+        const taskId = expectDefined(tasks[0], "tasks[0] test invariant").taskId;
+        await waitForAssertion(() => expect(getTaskById(taskId)?.status).toBe("succeeded"));
+        const task = requireRecord(getTaskById(taskId), "maintenance task");
         expectRecordFields(task, {
           status: "succeeded",
           notifyPolicy: "silent",
@@ -1575,6 +1569,7 @@ describe("runContextEngineMaintenance", () => {
         });
         expect(task.parentFlowId).toBeUndefined();
       } finally {
+        vi.doUnmock("../../tasks/task-registry-delivery-runtime.js");
         vi.useRealTimers();
       }
     });
