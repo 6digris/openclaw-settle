@@ -4295,6 +4295,7 @@ describe("package artifact reuse", () => {
     expect(workflowRevision.run).toContain("job.check_run_id");
     expect(workflowRevision.run).toContain("job.workflow_file_path");
     expect(workflowRevision.run).toContain("actions/jobs/${jobId}");
+    expect(producerIdentity.run).toContain('(.status == "queued" or .status == "in_progress")');
     expect(producer.outputs).toMatchObject({
       candidate_artifact_json: "${{ steps.candidate_manifest.outputs.json }}",
       candidate_request_json: "${{ steps.candidate_request.outputs.json }}",

@@ -2311,7 +2311,7 @@ jobs:
                   (.id | tostring) == $id and
                   (.run_id | tostring) == $run_id and
                   (.run_attempt | tostring) == $run_attempt and
-                  .status == "in_progress" and
+                  (.status == "queued" or .status == "in_progress") and
                   .conclusion == null
                 ) | .name | select(type == "string" and length > 0)'
           )"
