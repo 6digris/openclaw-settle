@@ -7,6 +7,7 @@ import * as workerUrls from "openclaw/plugin-sdk/process-runtime";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { observeWorkerActivity } from "../../test/helpers/worker-activity.js";
+import { resolveBundledPublicSurfaceLocation } from "../plugin-sdk/facade-loader.js";
 import * as executorPlugins from "../plugins/code-mode-executor.js";
 import type { CodeModeExecutor } from "./code-mode-executor-types.js";
 import { CodeModeOutputState } from "./code-mode-json.js";
@@ -16,8 +17,17 @@ import { applyCodeModeCatalog } from "./code-mode.js";
 import { createCodeModeHarness, resultDetails } from "./code-mode.test-support.js";
 import { clearToolSearchCatalog } from "./tool-search.js";
 
+const executorArtifact = resolveBundledPublicSurfaceLocation({
+  dirName: "code-mode-quickjs",
+  artifactBasename: "code-mode-executor-api.js",
+  preferSource: true,
+  env: { ...process.env, OPENCLAW_BUNDLED_PLUGINS_DIR: path.resolve("extensions") },
+});
+if (!executorArtifact) {
+  throw new Error("QuickJS executor public artifact is unavailable");
+}
 const { codeModeExecutor } = await vi.importActual<{ codeModeExecutor: CodeModeExecutor }>(
-  "../../extensions/code-mode-quickjs/code-mode-executor-api.js",
+  executorArtifact.modulePath,
 );
 
 afterEach(async () => {

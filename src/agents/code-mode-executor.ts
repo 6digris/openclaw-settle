@@ -6,6 +6,7 @@ import {
   normalizeCodeModeTimeoutResult,
 } from "./code-mode-errors.js";
 import type {
+  CodeModeExecutorContinuation,
   CodeModeExecutorId,
   CodeModeExecutorRunOptions,
   CodeModeWorkerResult,
@@ -14,7 +15,7 @@ import { EMPTY_CODE_MODE_OUTPUT } from "./code-mode-json.js";
 import type { CodeModeWorkerPayload } from "./code-mode-worker-types.js";
 
 export async function runCodeModeExecutor(
-  input: CodeModeWorkerPayload,
+  input: CodeModeWorkerPayload<CodeModeExecutorContinuation>,
   options: CodeModeExecutorRunOptions & {
     executor: CodeModeExecutorId;
     runtimeConfig?: OpenClawConfig;

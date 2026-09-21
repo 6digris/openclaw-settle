@@ -1,4 +1,3 @@
-import type { CodeModeExecutorContinuation } from "./code-mode-executor-types.js";
 import type { CodeModeJsonSource, CodeModeOutputSource } from "./code-mode-json.js";
 import type { CodeModeApiVirtualFile } from "./code-mode-namespaces.js";
 
@@ -72,11 +71,10 @@ type CodeModeWorkerInput<State> =
       pendingRequests?: PendingBridgeRequest[];
     };
 
-export type CodeModeWorkerPayload<State = CodeModeExecutorContinuation> =
-  CodeModeWorkerInput<State> & {
-    /** Only interactive, non-replay cells can hand full final JSON to the run store. */
-    retainFinalValue?: boolean;
-  };
+export type CodeModeWorkerPayload<State> = CodeModeWorkerInput<State> & {
+  /** Only interactive, non-replay cells can hand full final JSON to the run store. */
+  retainFinalValue?: boolean;
+};
 
 export type CodeModeSettlementMode =
   | { kind: "awaiting" }
@@ -134,10 +132,9 @@ type CodeModeWorkerOutcome<Output, Value, State> = { networkContentObserved?: tr
     }
 );
 
-export type CodeModeVmResult<State = CodeModeExecutorContinuation> = CodeModeWorkerOutcome<
-  unknown[],
-  unknown,
+export type CodeModeVmResult<State> = CodeModeWorkerOutcome<unknown[], unknown, State>;
+export type CodeModeWorkerThreadResult<State> = CodeModeWorkerOutcome<
+  CodeModeOutputSource,
+  CodeModeJsonSource,
   State
 >;
-export type CodeModeWorkerThreadResult<State = CodeModeExecutorContinuation> =
-  CodeModeWorkerOutcome<CodeModeOutputSource, CodeModeJsonSource, State>;

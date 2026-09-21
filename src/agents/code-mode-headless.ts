@@ -3,7 +3,10 @@ import { clampNumber } from "../utils.js";
 import { createCodeModeCatalogProjection } from "./code-mode-catalog.js";
 import { awaitCodeModeDeadline } from "./code-mode-deadline.js";
 import { CodeModeHeadlessAbortError, CodeModeHeadlessTimeoutError } from "./code-mode-errors.js";
-import type { CodeModeExecutorInlineHost } from "./code-mode-executor-types.js";
+import type {
+  CodeModeExecutorContinuation,
+  CodeModeExecutorInlineHost,
+} from "./code-mode-executor-types.js";
 import { runCodeModeExecutor } from "./code-mode-executor.js";
 import { CodeModeOutputState, toCodeModeJsonSafe } from "./code-mode-json.js";
 import {
@@ -115,7 +118,7 @@ function remainingHeadlessMs(deadline: number): number {
 }
 
 async function runHeadlessWorkerLeg(params: {
-  input: CodeModeWorkerPayload;
+  input: CodeModeWorkerPayload<CodeModeExecutorContinuation>;
   config: CodeModeConfig;
   owner: CodeModeRunOwner;
   runtimeConfig: ToolSearchToolContext["config"];

@@ -52,7 +52,10 @@ export type CodeModeExecutorContinuation = {
 };
 
 export type CodeModeWorkerResult =
-  | Extract<CodeModeWorkerThreadResult, { status: "completed" | "waiting" }>
+  | Extract<
+      CodeModeWorkerThreadResult<CodeModeExecutorContinuation>,
+      { status: "completed" | "waiting" }
+    >
   | {
       status: "failed";
       error: string;

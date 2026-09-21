@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import type {
   CodeModeConfig,
+  CodeModeExecutorContinuation,
   CodeModeExecutorInlineHost,
   CodeModeExecutorStartInput,
   CodeModeWorkerPayload,
@@ -26,7 +27,9 @@ export function createQuickJsTestConfig(overrides: Partial<CodeModeConfig> = {})
 
 type StartInput = Omit<CodeModeExecutorStartInput, "namespaces"> &
   Partial<Pick<CodeModeExecutorStartInput, "namespaces">>;
-type Input = StartInput | Extract<CodeModeWorkerPayload, { kind: "resume" }>;
+type Input =
+  | StartInput
+  | Extract<CodeModeWorkerPayload<CodeModeExecutorContinuation>, { kind: "resume" }>;
 
 export async function runQuickJsExecutor(
   input: Input,
