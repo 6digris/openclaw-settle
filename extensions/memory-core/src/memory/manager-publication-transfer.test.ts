@@ -286,6 +286,11 @@ describe("bounded memory publication transfer", () => {
     // could otherwise be separately converted to UTF-8 by SQLite TEXT bindings.
     const text = "a" + "😀".repeat(160_000) + '\n漢字 e\u0301 "quoted" \\ tail Violetmarker';
     const input = replacement(text);
+    const vector = Array.from({ length: 1_023 }, (_, index) => index / 7);
+    vector.splice(510, 6, -0, Number.NaN, Infinity, -Infinity, Number.MIN_VALUE, Number.MAX_VALUE);
+    // Keep a sparse element between numeric runs to exercise JSON's null normalization.
+    vector[1_024] = 1_024 / 7;
+    input.embeddings = [vector];
     const batches = [...memoryPublicationBatches(input)];
     expect(batches.length).toBeGreaterThan(1);
     for (const batch of batches) {
@@ -312,7 +317,7 @@ describe("bounded memory publication transfer", () => {
         hash: "chunk-hash",
         model: "transfer-model",
         text,
-        embedding: "[0.125,-0.5,1]",
+        embedding: JSON.stringify(vector),
         updated_at: 101,
       },
     ]);
@@ -361,7 +366,18 @@ describe("bounded memory publication transfer", () => {
     if (!chunk) {
       throw new Error("Expected a fixture chunk");
     }
-    const vector = Array.from({ length: 16_384 }, (_, index) => index % 3);
+    const numericCases = [
+      [0.125, 0.125],
+      [-0, 0],
+      [Number.NaN, null],
+      [Infinity, null],
+      [-Infinity, null],
+      [-0.0000010000000000000002, -0.0000010000000000000002],
+    ] as const;
+    const vector = Array.from(
+      { length: 16_384 },
+      (_, index) => numericCases[index % numericCases.length]![0],
+    );
     input.chunks = Array.from({ length: 32 }, (_, index) => ({
       ...chunk,
       startLine: index + 1,
@@ -377,6 +393,7 @@ describe("bounded memory publication transfer", () => {
       batches++;
       expect(serialize(batch).byteLength).toBeLessThanOrEqual(512 * 1024);
       for (const fragment of batch) {
+        expect(fragment.json.length).toBeLessThanOrEqual(16 * 1024);
         expect(fragment.row).toBe(rows.length);
         expect(fragment.part).toBe(part++);
         json += fragment.json;
@@ -389,7 +406,11 @@ describe("bounded memory publication transfer", () => {
     }
     expect(batches).toBeGreaterThan(1);
     expect(json).toBe("");
-    expect(rows).toEqual(input.chunks.map((row) => ({ chunk: row, embedding: vector })));
+    const expectedVector = Array.from(
+      { length: vector.length },
+      (_, index) => numericCases[index % numericCases.length]![1],
+    );
+    expect(rows).toEqual(input.chunks.map((row) => ({ chunk: row, embedding: expectedVector })));
   });
 
   it.each(["incomplete", "out-of-order", "wrong-operation"] as const)(
