@@ -117,8 +117,9 @@ unit_path() {
 start_gateway() {
   local exec_start
   exec_start="$(node "$manager_script" command)"
+  node "$manager_script" begin-start
   rm -f "$pid_file" "$supervisor_script"
-  rm -f "${daemon_log}.exit.json" "${daemon_log}.runtime.json"
+  rm -f "${daemon_log}.exit.json"
   cat >"$supervisor_script" <<'SUPERVISOR'
 import fs from "node:fs";
 import { spawn } from "node:child_process";
@@ -157,19 +158,20 @@ let child;
 let activeGroupPid;
 let drainingGroupPid;
 let stopping = false;
-let entered = 0;
 
-// Keep the supervisor's control PID separate from systemd's managed MainPID.
-const publishRuntime = (pid) => {
+const publishRuntime = (pid, supervisorPid = process.pid) => {
   const file = `${daemonLog}.runtime.json`;
+  // Both manager adapters observe the ExecStart child, not this synthetic manager.
   fs.writeFileSync(`${file}.pending`, JSON.stringify({
-    supervisorPid: process.pid, pid, restarts: totalStarts - 1, entered,
+    pid, supervisorPid, groupPid: activeGroupPid ?? 0,
+    restarts: totalStarts - 1, entered: Number(process.hrtime.bigint() / 1000n),
   }));
   fs.renameSync(`${file}.pending`, file);
 };
 
 const finish = () => {
-  publishRuntime(0);
+  // Retire normal-exit custody before these numeric process identities can be reused.
+  publishRuntime(0, 0);
   try {
     fs.closeSync(output);
   } catch {}
@@ -210,7 +212,7 @@ const drainProcessGroup = (pid, onStopped) => {
   signalProcessGroup(pid, "SIGTERM");
   const forceKill = setTimeout(() => {
     signalProcessGroup(pid, "SIGKILL");
-    complete();
+    // Signal delivery is not settlement; the existing observer must confirm exit.
   }, stopTimeoutMs);
   const finishWhenStopped = () => {
     if (completed) return;
@@ -257,7 +259,6 @@ const start = () => {
     stdio: ["ignore", output, output],
   });
   activeGroupPid = child.pid;
-  entered = Math.trunc(performance.now() * 1000);
   publishRuntime(child.pid ?? 0);
   const childGroupPid = activeGroupPid;
   child.on("error", (error) => {
@@ -336,8 +337,9 @@ case "$command" in
   status)
     [ "$system_scope" = 0 ] || exit 1
     [ -z "$unit_name" ] && exit 0
-    [ "$unit_name" = openclaw-gateway.service ] && is_running && exit 0
-    exit 3
+    [ "$unit_name" = openclaw-gateway.service ] || exit 3
+    node "$manager_script" is-active
+    exit "$?"
     ;;
   stop)
     [ "$system_scope" = 0 ] && [ "$unit_name" = openclaw-gateway.service ] || exit 1
@@ -358,8 +360,8 @@ case "$command" in
     ;;
   is-active)
     [ "$system_scope" = 0 ] && [ "$unit_name" = openclaw-gateway.service ] || exit 1
-    is_running && exit 0
-    exit 3
+    node "$manager_script" is-active
+    exit "$?"
     ;;
   show)
     if [ "$system_scope" = "1" ]; then
