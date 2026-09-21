@@ -220,3 +220,30 @@ export function getHistoryLimitFromSessionKey(
 
   return undefined;
 }
+
+/** Cap applied to requester-settle wakes so they do not replay a fat DM transcript. */
+export const REQUESTER_SETTLE_HISTORY_USER_TURN_CAP = 4;
+
+/**
+ * History limit for an embedded attempt. Requester-settle turns keep the same
+ * session (delivery + yield adoption) but only recent user turns — the wake
+ * prompt and evidence path carry the task, not the full Telegram transcript.
+ */
+export function resolveHistoryLimitForAttempt(params: {
+  sessionKey: string | undefined;
+  config: OpenClawConfig | undefined;
+  route?: { accountId?: string | null; peerId?: string; chatType?: ChatType };
+  inputProvenance?: { sourceTool?: string | null } | null;
+}): number | undefined {
+  const configured = getHistoryLimitFromSessionKey(params.sessionKey, params.config, params.route);
+  const sourceTool = normalizeOptionalLowercaseString(
+    params.inputProvenance?.sourceTool ?? undefined,
+  );
+  if (sourceTool !== "subagent_settle") {
+    return configured;
+  }
+  if (configured !== undefined && configured > 0) {
+    return Math.min(configured, REQUESTER_SETTLE_HISTORY_USER_TURN_CAP);
+  }
+  return REQUESTER_SETTLE_HISTORY_USER_TURN_CAP;
+}

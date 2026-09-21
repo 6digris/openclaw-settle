@@ -193,6 +193,7 @@ describe("sessions_yield orchestration", () => {
               method: "agent",
               params: expect.objectContaining({
                 inputProvenance: expect.objectContaining({ sourceTool: "subagent_settle" }),
+                bootstrapContextMode: "lightweight",
               }),
             }),
           );

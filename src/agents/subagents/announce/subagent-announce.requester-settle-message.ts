@@ -1,9 +1,6 @@
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
-import {
-  SUBAGENT_COMPLETION_OUTCOME_INSTRUCTION,
-  SUBAGENT_PRIVATE_COMPLETION_INSTRUCTION,
-} from "../completion/subagent-completion-instructions.js";
+import { SUBAGENT_PRIVATE_COMPLETION_INSTRUCTION } from "../completion/subagent-completion-instructions.js";
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
 
 const REQUESTER_SETTLE_WAKE_ROUTE_NOTICE_MAX_CHARS = 1_024;
@@ -38,7 +35,11 @@ export function buildRequesterSettleWakeMessage(params: {
     "[Subagent Context] Every subagent spawned from this session has now settled — none are still running or awaiting completion delivery.",
     "[Subagent Context] Do not keep waiting or call sessions_yield again for this batch; no further completion events will arrive.",
     // Private completion guidance already includes the shared outcome policy.
-    ...(params.parentOnly ? [] : [`[Subagent Context] ${SUBAGENT_COMPLETION_OUTCOME_INSTRUCTION}`]),
+    ...(params.parentOnly
+      ? []
+      : [
+          "[Subagent Context] Child settlement ends this batch, not necessarily the original user request. Verify the child evidence and requested outcome, then reply. Do not start new filesystem migrations, bulk edits, or long sync jobs in this settle turn — spawn a follow-up child for remaining work.",
+        ]),
     params.parentOnly
       ? `[Subagent Context] ${SUBAGENT_PRIVATE_COMPLETION_INSTRUCTION}`
       : params.requireVisibleReply
