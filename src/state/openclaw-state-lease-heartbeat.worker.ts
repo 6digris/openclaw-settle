@@ -17,6 +17,9 @@ import { openTrackedStateDatabase, closeTrackedStateDatabase } from "./openclaw-
 import {
   leaseHeartbeatState as state,
   leaseHeartbeatStartupPhase as startupPhase,
+  leaseHeartbeatObservationPhase as observationPhase,
+  leaseHeartbeatObservationValue as observationValue,
+  markLeaseHeartbeatObservation,
   LEASE_HEARTBEAT_START_TIMEOUT_MS,
   type LeaseHeartbeatRenewalFailure,
   type LeaseHeartbeatWorkerData,
@@ -29,6 +32,14 @@ import {
 // SAFETY: The lease owner alone starts this private entry with its typed structured-clone payload.
 const params = workerData as LeaseHeartbeatWorkerData;
 const shared = new BigInt64Array(params.shared);
+const observations = new BigInt64Array(params.observations);
+let observingStartup = true;
+const mark = (phase: number) => {
+  if (observingStartup) {
+    markLeaseHeartbeatObservation(observations, phase);
+  }
+};
+mark(observationPhase.workerBody);
 Atomics.store(shared, state.startupPhase, startupPhase["body-entry"]);
 function withLifecycleCoordinator<T>(label: string, operation: () => T): T {
   // This private worker participates in an actual parent-owned coordinator,
@@ -49,6 +60,7 @@ function openHeartbeatDatabase() {
   const remaining = () =>
     Math.min(deadline, Number(Atomics.load(shared, state.expiresAt))) - Date.now();
   while (remaining() > 0 && Atomics.load(shared, state.status) === state.starting) {
+    Atomics.add(observations, observationValue.openAttempts, 1n);
     try {
       return withLifecycleCoordinator("maintenance heartbeat open", () =>
         openTrackedStateDatabase(params.path, { existingOnly: params.existingOnly }),
@@ -62,7 +74,9 @@ function openHeartbeatDatabase() {
   }
   throw new Error("state lease heartbeat startup deadline expired or owner stopped");
 }
+mark(observationPhase.openStart);
 const db = openHeartbeatDatabase();
+mark(observationPhase.openReturned);
 Atomics.store(shared, state.startupPhase, startupPhase["open-complete"]);
 let processOwner = params.processOwner;
 let heartbeat: ReturnType<typeof setTimeout> | undefined;
@@ -81,6 +95,9 @@ const renew = () => {
   }
   let expiresAt: number | undefined;
   attempt += 1;
+  if (observingStartup) {
+    Atomics.store(observations, observationValue.renewalAttempt, BigInt(attempt));
+  }
   try {
     // Native lookup can be slow; keep it outside write admission and startup readiness.
     if (
@@ -92,30 +109,46 @@ const renew = () => {
         processOwner.env,
       );
     }
-    expiresAt = withLifecycleCoordinator("maintenance heartbeat renewal", () =>
-      runWithSqliteBusyTimeout(
+    mark(observationPhase.coordinatorStart);
+    expiresAt = withLifecycleCoordinator("maintenance heartbeat renewal", () => {
+      mark(observationPhase.coordinatorOperation);
+      mark(observationPhase.busyPolicyStart);
+      const renewedAt = runWithSqliteBusyTimeout(
         db,
         0,
-        () =>
-          runSqliteTransactionSync(
+        () => {
+          mark(observationPhase.transactionStart);
+          const result = runSqliteTransactionSync(
             db,
             () => {
+              mark(observationPhase.transactionCallback);
               if (Atomics.load(shared, state.status) >= state.closed) {
+                mark(observationPhase.transactionCallbackReturned);
                 return undefined;
               }
-              return renewOpenClawStateLeaseInTransaction(
+              mark(observationPhase.renewalQueryStart);
+              const result = renewOpenClawStateLeaseInTransaction(
                 db,
                 params.identity,
                 params.leaseMs,
                 processOwner?.identity,
               );
+              mark(observationPhase.renewalQueryReturned);
+              mark(observationPhase.transactionCallbackReturned);
+              return result;
             },
             "immediate",
             { logger: { warn() {} } },
-          ),
+          );
+          mark(observationPhase.transactionReturned);
+          return result;
+        },
         { lockFailureReporting: "suppress" },
-      ),
-    );
+      );
+      mark(observationPhase.busyPolicyReturned);
+      return renewedAt;
+    });
+    mark(observationPhase.coordinatorReturned);
     if (expiresAt !== undefined) {
       Atomics.store(shared, state.lastRenewedAt, BigInt(expiresAt - params.leaseMs));
     }
@@ -123,6 +156,24 @@ const renew = () => {
       processOwner = undefined;
     }
   } catch (error) {
+    mark(observationPhase.renewalCatch);
+    if (observingStartup) {
+      // Numeric categories: 1 coordinator contention, 2 SQLite contention, 3 other.
+      Atomics.store(
+        observations,
+        observationValue.catchCategory,
+        error instanceof StateDatabaseCoordinatorContentionError
+          ? 1n
+          : isSqliteLockError(error)
+            ? 2n
+            : 3n,
+      );
+      Atomics.store(
+        observations,
+        observationValue.catchSqliteCode,
+        BigInt(sqliteExtendedResultCode(error) ?? -1),
+      );
+    }
     if (!(error instanceof StateDatabaseCoordinatorContentionError) && !isSqliteLockError(error)) {
       parentPort?.postMessage(
         {
@@ -138,7 +189,9 @@ const renew = () => {
       lose();
       return;
     }
+    mark(observationPhase.expiryReadStart);
     expiresAt = readOpenClawStateLeaseExpiry(db, params.identity);
+    mark(observationPhase.expiryReadReturned);
   }
   if (expiresAt === undefined) {
     lose();
@@ -150,9 +203,16 @@ const renew = () => {
 };
 
 Atomics.store(shared, state.startupPhase, startupPhase["initial-renew-start"]);
+mark(observationPhase.renewStart);
 renew();
+mark(observationPhase.renewReturned);
 Atomics.store(shared, state.startupPhase, startupPhase["initial-renew-returned"]);
-if (Atomics.compareExchange(shared, state.status, state.starting, state.ready) === state.starting) {
+mark(observationPhase.readyCasStart);
+const readyObserved = Atomics.compareExchange(shared, state.status, state.starting, state.ready);
+Atomics.store(observations, observationValue.readyCasObserved, readyObserved);
+mark(observationPhase.readyCasReturned);
+observingStartup = false;
+if (readyObserved === state.starting) {
   parentPort?.on("message", () => {
     if (Atomics.load(shared, state.status) !== state.ready) {
       return;

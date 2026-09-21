@@ -3,6 +3,55 @@ import type { OpenClawStateLeaseIdentity } from "./openclaw-state-lease-store.js
 
 export const LEASE_HEARTBEAT_START_TIMEOUT_MS = 5_000;
 
+// Diagnostic derivative only: fixed numeric observations, separate from lease authority.
+// Missing return markers remain meaningful when termination interrupts native work.
+export const leaseHeartbeatObservationPhase = {
+  parentConstructStart: 0,
+  parentConstructReturned: 1,
+  parentTimerArmed: 2,
+  parentTimerCallback: 3,
+  parentSettleCasStart: 4,
+  parentSettleCasReturned: 5,
+  parentFailure: 6,
+  parentStopRequested: 7,
+  parentStopJoined: 8,
+  workerBody: 9,
+  openStart: 10,
+  openReturned: 11,
+  renewStart: 12,
+  coordinatorStart: 13,
+  coordinatorOperation: 14,
+  busyPolicyStart: 15,
+  transactionStart: 16,
+  transactionCallback: 17,
+  renewalQueryStart: 18,
+  renewalQueryReturned: 19,
+  transactionCallbackReturned: 20,
+  transactionReturned: 21,
+  busyPolicyReturned: 22,
+  coordinatorReturned: 23,
+  renewalCatch: 24,
+  expiryReadStart: 25,
+  expiryReadReturned: 26,
+  renewReturned: 27,
+  readyCasStart: 28,
+  readyCasReturned: 29,
+} as const;
+
+export const leaseHeartbeatObservationValue = {
+  openAttempts: 30,
+  renewalAttempt: 31,
+  catchCategory: 32,
+  catchSqliteCode: 33,
+  readyCasObserved: 34,
+} as const;
+export const LEASE_HEARTBEAT_OBSERVATION_CELLS = 35;
+
+export function markLeaseHeartbeatObservation(cells: BigInt64Array, phase: number): void {
+  // Retain the first boundary in this startup generation; no growing trace buffer.
+  Atomics.compareExchange(cells, phase, 0n, process.hrtime.bigint());
+}
+
 export const leaseHeartbeatState = {
   status: 0,
   request: 1,
@@ -45,4 +94,5 @@ export type LeaseHeartbeatWorkerData = {
   heartbeatMs: number;
   processOwner?: { identity: StateLeaseProcessOwner; env: NodeJS.ProcessEnv };
   shared: SharedArrayBuffer;
+  observations: SharedArrayBuffer;
 };

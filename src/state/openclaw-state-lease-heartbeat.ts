@@ -13,15 +13,23 @@ import { createDeferredCore } from "../shared/deferred.js";
 import {
   leaseHeartbeatState as state,
   leaseHeartbeatStartupPhase,
+  leaseHeartbeatObservationPhase as observationPhase,
+  leaseHeartbeatObservationValue as observationValue,
+  markLeaseHeartbeatObservation,
+  LEASE_HEARTBEAT_OBSERVATION_CELLS,
   LEASE_HEARTBEAT_START_TIMEOUT_MS,
   type LeaseHeartbeatRenewalFailure,
   type LeaseHeartbeatWorkerData,
 } from "./openclaw-state-lease-heartbeat-shared.js";
 
 const WORKER_RESPONSE_TIMEOUT_MS = 1_000;
+let observationStartupOrdinal = 0;
 
 export function startOpenClawStateLeaseHeartbeat(
-  params: Omit<LeaseHeartbeatWorkerData, "shared" | "parentCoordinatorRetained"> & {
+  params: Omit<
+    LeaseHeartbeatWorkerData,
+    "shared" | "observations" | "parentCoordinatorRetained"
+  > & {
     expiresAt: number;
     onLost: (error: Error) => void;
     /** The live host renews until the worker can take over; never revives an expired owner. */
@@ -29,6 +37,12 @@ export function startOpenClawStateLeaseHeartbeat(
   },
 ) {
   const startedAt = performance.now();
+  const observationOrigin = process.hrtime.bigint();
+  const startupOrdinal = ++observationStartupOrdinal;
+  const observations = new BigInt64Array(
+    new SharedArrayBuffer(LEASE_HEARTBEAT_OBSERVATION_CELLS * BigInt64Array.BYTES_PER_ELEMENT),
+  );
+  const mark = (phase: number) => markLeaseHeartbeatObservation(observations, phase);
   const shared = new BigInt64Array(
     new SharedArrayBuffer((state.startupPhase + 1) * BigInt64Array.BYTES_PER_ELEMENT),
   );
@@ -42,6 +56,57 @@ export function startOpenClawStateLeaseHeartbeat(
   // Worker.terminate() need not run JS cleanup; the exit event does attest that
   // native source handles have settled before this last guard is released.
   const coordinator = retainHeldStateDatabaseCoordinator(params.path);
+  let observationFailed = false;
+  let observationReady = false;
+  let observationTimerArms = 0;
+  let observationTimerDelayMs = 0;
+  let observationTimerArmedElapsedMs = 0;
+  const observeTimerArm = (delayMs: number) => {
+    observationTimerArms += 1;
+    observationTimerDelayMs = delayMs;
+    observationTimerArmedElapsedMs = Number(process.hrtime.bigint() - observationOrigin) / 1e6;
+    mark(observationPhase.parentTimerArmed);
+  };
+  const emitObservation = (stage: number, stopCode?: number) => {
+    // This temporary receipt contains no path, lease identity, environment or error text.
+    // Observations must never replace the existing failure or cleanup result.
+    try {
+      const elapsedMs = Object.fromEntries(
+        Object.entries(observationPhase).map(([name, slot]) => {
+          const tick = Atomics.load(observations, slot);
+          return [name, tick === 0n ? null : Number(tick - observationOrigin) / 1e6];
+        }),
+      );
+      const values = Object.fromEntries(
+        Object.entries(observationValue).map(([name, slot]) => [
+          name,
+          Number(Atomics.load(observations, slot)),
+        ]),
+      );
+      process.stderr.write(
+        `[lease-startup-observation] ${JSON.stringify({
+          version: 1,
+          stage,
+          pid: process.pid,
+          startupOrdinal,
+          parentCoordinatorRetained: Boolean(coordinator),
+          status: Number(Atomics.load(shared, state.status)),
+          sampleElapsedMs: Number(process.hrtime.bigint() - observationOrigin) / 1e6,
+          startupElapsedMs: performance.now() - startedAt,
+          startupCapMs: LEASE_HEARTBEAT_START_TIMEOUT_MS,
+          startupTimeoutMs,
+          timerArms: observationTimerArms,
+          timerDelayMs: observationTimerDelayMs,
+          timerArmedElapsedMs: observationTimerArmedElapsedMs,
+          elapsedMs,
+          values,
+          stopCode,
+        })}\n`,
+      );
+    } catch {
+      // Best-effort diagnostic output cannot alter the original outcome.
+    }
+  };
   let handle: ReturnType<typeof acquireStateDatabaseHandleLease>;
   try {
     handle = acquireStateDatabaseHandleLease({ databasePath: params.path, busyTimeoutMs: 0 });
@@ -58,6 +123,7 @@ export function startOpenClawStateLeaseHeartbeat(
   };
   let worker: Worker;
   try {
+    mark(observationPhase.parentConstructStart);
     // Native stdio ports can outlive termination and retain their creation context.
     worker = runInDetachedAsyncContext(() =>
       createCpuTrackedWorker(url, {
@@ -75,6 +141,7 @@ export function startOpenClawStateLeaseHeartbeat(
           heartbeatMs: params.heartbeatMs,
           processOwner: params.processOwner,
           shared: shared.buffer,
+          observations: observations.buffer,
         } satisfies LeaseHeartbeatWorkerData,
         env: sourceTsconfig ? { TSX_TSCONFIG_PATH: sourceTsconfig } : {},
         execArgv: workerArgv.slice(0, -1),
@@ -82,6 +149,7 @@ export function startOpenClawStateLeaseHeartbeat(
         stderr: true,
       }),
     );
+    mark(observationPhase.parentConstructReturned);
   } catch (error) {
     release();
     throw error;
@@ -116,13 +184,29 @@ export function startOpenClawStateLeaseHeartbeat(
     if (Atomics.load(shared, state.status) === state.closed) {
       return;
     }
-    Atomics.store(shared, state.status, state.lost);
-    Atomics.notify(shared, state.ack);
-    clearStartupTimers();
-    ready.reject(error);
-    params.onLost(error);
+    const observeFailure = !observationReady && !observationFailed;
+    if (observeFailure) {
+      observationFailed = true;
+      mark(observationPhase.parentFailure);
+    }
+    try {
+      Atomics.store(shared, state.status, state.lost);
+      Atomics.notify(shared, state.ack);
+      clearStartupTimers();
+      ready.reject(error);
+      params.onLost(error);
+    } finally {
+      // Revoke and notify first; a redirected stderr write can block the parent.
+      // The failure marker precedes revocation; this later snapshot has its own time.
+      if (observeFailure) {
+        emitObservation(0);
+      }
+    }
   };
   const settleStartup = (trigger: "timeout" | "message") => {
+    if (trigger === "timeout") {
+      mark(observationPhase.parentTimerCallback);
+    }
     clearTimeout(startTimer);
     if (trigger === "timeout" && Atomics.load(shared, state.status) === state.starting) {
       const elapsedMs = performance.now() - startedAt;
@@ -134,19 +218,23 @@ export function startOpenClawStateLeaseHeartbeat(
         // A committed host renewal changes the lease bound, never the startup cap.
         startupTimeoutMs = Math.round(elapsedMs + remainingMs);
         startTimer = setTimeout(() => settleStartup("timeout"), remainingMs);
+        observeTimerArm(remainingMs);
         return;
       }
     }
     clearStartupTimers();
     // Readiness precedes notification delivery. A delayed parent must not
     // overwrite ready; callback entry still requires a fresh acknowledgement.
+    mark(observationPhase.parentSettleCasStart);
     const observedStatus = Atomics.compareExchange(
       shared,
       state.status,
       state.starting,
       state.lost,
     );
+    mark(observationPhase.parentSettleCasReturned);
     if (observedStatus === state.ready) {
+      observationReady = true;
       ready.resolve();
     } else {
       // Report the status before our transition, not the lost state it writes.
@@ -174,6 +262,7 @@ export function startOpenClawStateLeaseHeartbeat(
     Math.min(LEASE_HEARTBEAT_START_TIMEOUT_MS, params.expiresAt - Date.now()),
   );
   let startTimer = setTimeout(() => settleStartup("timeout"), startupTimeoutMs);
+  observeTimerArm(startupTimeoutMs);
   const renewDuringStartup = params.renewDuringStartup;
   const renewStartup = () => {
     startupRenewal = undefined;
@@ -237,8 +326,13 @@ export function startOpenClawStateLeaseHeartbeat(
     ready: ready.promise,
     close,
     stop() {
+      mark(observationPhase.parentStopRequested);
       close();
       return (stopping ??= worker.terminate().then((code) => {
+        mark(observationPhase.parentStopJoined);
+        if (observationFailed) {
+          emitObservation(1, code);
+        }
         if (handleReleaseError) {
           throw handleReleaseError;
         }
