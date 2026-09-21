@@ -270,7 +270,9 @@ describe("session menu navigation actions", () => {
     await runSessionNavigationAction("copy-markdown", params);
     expect(request).not.toHaveBeenCalled();
     expect(copyToClipboard).not.toHaveBeenCalled();
-    expect(showToast).toHaveBeenCalledWith({ message: t("sessionsView.actionRequiresRead") });
+    expect(showToast).toHaveBeenCalledWith({
+      message: t("sessionsView.actionRequiresScope", { scope: "operator.read" }),
+    });
   });
 
   it("reports an empty transcript without replacing the clipboard", async () => {

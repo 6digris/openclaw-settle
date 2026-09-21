@@ -421,7 +421,7 @@ describe("patchSessionRows", () => {
     expect(harness.reconcileMutation).not.toHaveBeenCalled();
     expect(harness.publishSessionMutationError).toHaveBeenCalledWith(
       harness.scope,
-      "This action requires session write access.",
+      "This action requires operator.sessions.write access.",
     );
   });
 

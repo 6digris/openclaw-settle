@@ -940,12 +940,8 @@ export const en: TranslationMap & {
     automationPrefix: "Automation:",
     actionRequiresConnection: "Connect to the Gateway to change sessions.",
     actionUnavailable: "This Gateway does not support this session action.",
-    actionRequiresRead: "This action requires operator.read access.",
-    actionRequiresWrite: "This action requires operator.write access.",
-    actionRequiresSessionRead: "This action requires session read access.",
-    actionRequiresSessionWrite: "This action requires session write access.",
+    actionRequiresScope: "This action requires {scope} access.",
     actionRequiresOwnership: "Only the session owner can make this change.",
-    actionRequiresAdmin: "This action requires operator.admin access.",
     deletePreservedReasons: {
       "owner-mismatch": "owned elsewhere",
       busy: "live run or cleanup active",

@@ -24,7 +24,7 @@ export function sessionMenuReasons(params: {
 }): Partial<Record<SessionMenuActionKind, string>> {
   const { snapshot, session, batchRows = null, cloudWorkerStopAction } = params;
   const reason = (request: SessionMethodAccessRequest) => {
-    const access = readSessionMethodAccess(snapshot, { session, ...request });
+    const access = readSessionMethodAccess(snapshot, request);
     return access.allowed ? undefined : access.reason;
   };
   const involvementReason = reason({
@@ -32,7 +32,7 @@ export function sessionMenuReasons(params: {
     requiredScope: "operator.read",
   });
   const patchReason = (patch: Record<string, unknown>) =>
-    reason({ method: "sessions.patch", params: { key: session.key, ...patch } });
+    reason({ method: "sessions.patch", params: { key: session.key, ...patch }, session });
   const renameReason = patchReason({ label: null });
   const pinReason = patchReason({ pinned: true });
   const iconReason = patchReason({ icon: null });
@@ -42,18 +42,11 @@ export function sessionMenuReasons(params: {
     if (!batchRows) {
       return patchReason(patch);
     }
-    const access = readSessionMethodAccess(snapshot, {
+    return reason({
       method: "sessions.patchMany",
       session: batchSession,
-      params: {
-        targets: batchRows.map((row) => ({
-          key: row.key,
-          ...(row.sessionId ? { expectedSessionId: row.sessionId } : {}),
-        })),
-        patch,
-      },
+      params: { patch },
     });
-    return access.allowed ? undefined : access.reason;
   };
   const unreadReason = batchPatchReason({ unread: true });
   const categoryReason = batchPatchReason({ category: null });

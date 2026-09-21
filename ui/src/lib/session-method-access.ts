@@ -30,32 +30,6 @@ export function sessionAccessRowForBatch(rows: readonly SessionAccessRow[]) {
   return rows.find((row) => row.sharingRole !== "owner" && row.sharingRole !== "admin") ?? rows[0];
 }
 
-function sessionMethodAccessReason(
-  cause: Exclude<SessionMethodAccess, { allowed: true }>["cause"],
-  requiredScope: SessionMethodOperatorScope,
-): string {
-  if (cause === "disconnected") {
-    return t("sessionsView.actionRequiresConnection");
-  }
-  if (cause === "method-unavailable") {
-    return t("sessionsView.actionUnavailable");
-  }
-  if (cause === "session-not-owned") {
-    return t("sessionsView.actionRequiresOwnership");
-  }
-  return t(
-    requiredScope === "operator.admin"
-      ? "sessionsView.actionRequiresAdmin"
-      : requiredScope === "operator.write"
-        ? "sessionsView.actionRequiresWrite"
-        : requiredScope === "operator.sessions.write"
-          ? "sessionsView.actionRequiresSessionWrite"
-          : requiredScope === "operator.sessions.read"
-            ? "sessionsView.actionRequiresSessionRead"
-            : "sessionsView.actionRequiresRead",
-  );
-}
-
 /**
  * Uses the Gateway method policy and its projected session role, plus connection
  * and advertised-method state. Dynamic placement scopes stay with their caller.
@@ -68,51 +42,49 @@ export function readSessionMethodAccess(
     resolveBaseSessionMutationRequiredScope(request.method, request.params) ??
     request.requiredScope;
   if (!requiredScope) {
-    throw new Error(`Missing required scope for session mutation method: ${request.method}`);
+    throw new Error(`Missing session method scope: ${request.method}`);
   }
+  let cause: Exclude<SessionMethodAccess, { allowed: true }>["cause"] = "missing-scope";
   if (snapshot?.phase !== "connected" || !snapshot.client) {
-    return {
-      allowed: false,
-      requiredScope,
-      reason: sessionMethodAccessReason("disconnected", requiredScope),
-      cause: "disconnected",
-    };
-  }
-  if (isGatewayMethodAdvertised(snapshot, request.method) !== true) {
-    return {
-      allowed: false,
-      requiredScope,
-      reason: sessionMethodAccessReason("method-unavailable", requiredScope),
-      cause: "method-unavailable",
-    };
-  }
-  const auth = snapshot.hello?.auth;
-  if (
-    auth &&
-    Array.isArray(auth.scopes) &&
-    roleScopesAllow({
-      role: auth.role,
-      requestedScopes: [requiredScope],
-      allowedScopes: auth.scopes,
-    })
-  ) {
-    const requireOwner =
-      requiredScope === "operator.sessions.write" && !hasOperatorWriteAccess(auth);
-    const role = request.session?.sharingRole;
-    if (requireOwner && role !== "owner" && role !== "admin") {
-      return {
-        allowed: false,
-        requiredScope,
-        reason: sessionMethodAccessReason("session-not-owned", requiredScope),
-        cause: "session-not-owned",
-      };
+    cause = "disconnected";
+  } else if (isGatewayMethodAdvertised(snapshot, request.method) !== true) {
+    cause = "method-unavailable";
+  } else {
+    const auth = snapshot.hello?.auth;
+    if (
+      auth &&
+      Array.isArray(auth.scopes) &&
+      roleScopesAllow({
+        role: auth.role,
+        requestedScopes: [requiredScope],
+        allowedScopes: auth.scopes,
+      })
+    ) {
+      const role = request.session?.sharingRole;
+      if (
+        requiredScope !== "operator.sessions.write" ||
+        hasOperatorWriteAccess(auth) ||
+        role === "owner" ||
+        role === "admin"
+      ) {
+        return { allowed: true, requiredScope };
+      }
+      cause = "session-not-owned";
     }
-    return { allowed: true, requiredScope };
   }
   return {
     allowed: false,
     requiredScope,
-    reason: sessionMethodAccessReason("missing-scope", requiredScope),
-    cause: "missing-scope",
+    reason: t(
+      cause === "disconnected"
+        ? "sessionsView.actionRequiresConnection"
+        : cause === "method-unavailable"
+          ? "sessionsView.actionUnavailable"
+          : cause === "session-not-owned"
+            ? "sessionsView.actionRequiresOwnership"
+            : "sessionsView.actionRequiresScope",
+      { scope: requiredScope },
+    ),
+    cause,
   };
 }
