@@ -247,14 +247,15 @@ describe.skipIf(process.platform === "win32")("native managed worktree relocatio
     const nested = path.join(projection, "destination");
     await fs.mkdir(nested, { mode: 0o700 });
     const originalGitDirectory = await requireGit(record.path, ["rev-parse", "--absolute-git-dir"]);
-    for (const destinationRoot of [projection, nested]) {
-      expect((await service.previewMove({ id: record.id, destinationRoot })).blockers[0]).toContain(
-        "inside the source projection",
-      );
+    for (const candidateDestinationRoot of [projection, nested]) {
+      expect(
+        (await service.previewMove({ id: record.id, destinationRoot: candidateDestinationRoot }))
+          .blockers[0],
+      ).toContain("inside the source projection");
       await expect(
         service.move({
           id: record.id,
-          destinationRoot,
+          destinationRoot: candidateDestinationRoot,
           operationId: randomUUID(),
           expectedObservation: "a".repeat(64),
           controlledMaintenance: true,
