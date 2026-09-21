@@ -159,10 +159,10 @@ describe("FaceTime call events", () => {
     ).toEqual({ senderId: "omar@example.com", senderIsOwner: true });
   });
 
-  it("requires explicit native ended evidence and fails unknown numeric states closed", () => {
+  it("recognizes disconnected without dateEnded and fails unknown numeric states closed", () => {
     const ended = normalizeFaceTimeCallEvent({
       event: "ft-call-status-changed",
-      data: { call_uuid: "call-1", call_status: 6, has_ended: true },
+      data: { call_uuid: "call-1", call_status: 6, has_ended: false },
     });
     const unknown = normalizeFaceTimeCallEvent({
       event: "ft-call-status-changed",

@@ -170,7 +170,7 @@ describe("FaceTime runtime call sequencing", () => {
     await runtime.stop();
   });
 
-  it("keeps suppression after disconnect acknowledgement until a native ended event", async () => {
+  it("keeps suppression after disconnect acknowledgement until native disconnected even without dateEnded", async () => {
     const talk = createTalkDriver({});
     mocks.startTalk.mockResolvedValueOnce(talk);
     const runtime = await createRuntime();
@@ -190,7 +190,11 @@ describe("FaceTime runtime call sequencing", () => {
     expect(talk.close).not.toHaveBeenCalled();
     expect((await runtime.status()).calls).toMatchObject([{ carrierHangupPending: true }]);
 
-    mocks.helperParams?.onMessage(incomingCall(6));
+    const disconnected = incomingCall(6);
+    mocks.helperParams?.onMessage({
+      ...disconnected,
+      data: { ...disconnected.data, has_ended: false },
+    });
     await vi.waitFor(async () => expect((await runtime.status()).calls).toEqual([]));
     expect(talk.close).toHaveBeenCalledWith("native-ended");
     await runtime.stop();
