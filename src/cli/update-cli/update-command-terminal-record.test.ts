@@ -2,8 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import * as snapshot from "../../infra/sqlite-snapshot-source.js";
+import { admitFreeBsdUpdateRootOwnership } from "../../infra/update-freebsd-root-ownership.js";
+import {
+  nativeFreeBsdRoot,
+  withFreeBsdRootFixture,
+} from "../../infra/update-freebsd-root-ownership.test-support.js";
 import { normalizeControlPlaneUpdateResult } from "../../infra/update-restart-sentinel-payload.js";
 import { createRetainedCheckpointFixture } from "../../infra/update-retained-checkpoint.test-support.js";
 import {
@@ -13,6 +19,7 @@ import {
 } from "../../infra/update-run-ledger.js";
 import { assertUpdateRecoveryAdmission } from "../../infra/update-run-recovery-admission.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
+import * as exec from "../../process/exec.js";
 import { defaultRuntime } from "../../runtime.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
@@ -307,6 +314,89 @@ describe("owned completed update publication", () => {
       resolveSettledUpdateCommandResult(f.params, f.result, new Error("release failed"), captured),
     ).rejects.toBeInstanceOf(UpdateCommandPendingRecoveryFailure);
   });
+
+  it.skipIf(!nativeFreeBsdRoot)(
+    "refuses captured success while FreeBSD admission is pending and after it is revoked",
+    async () => {
+      await withFreeBsdRootFixture(async ({ root: installedRoot, env }) => {
+        root = installedRoot;
+        for (const name of ["OPENCLAW_HOME", "OPENCLAW_PROFILE", "OPENCLAW_SUPERVISOR_MODE"]) {
+          vi.stubEnv(name, undefined);
+        }
+        for (const [key, value] of Object.entries(env)) {
+          vi.stubEnv(key, value);
+        }
+        const input = { roots: [root], env };
+        const admission = await admitFreeBsdUpdateRootOwnership(input);
+        expect(admission).toBeDefined();
+        const f = fixture();
+        f.params.opts.run.freebsdRootAdmission = admission;
+        const captured = await captureUpdateCommandTerminalRecord(
+          f.params,
+          f.result,
+          f.assertCurrent,
+        );
+        expect(captured?.record.status).toBe("succeeded");
+        expect(
+          (await resolveSettledUpdateCommandResult(f.params, f.result, undefined, captured))
+            .captured,
+        ).toBe(captured);
+        closeOpenClawStateDatabaseForTest();
+        const before = fs.readFileSync(f.databasePath);
+        const output = vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => {});
+        const publish = vi.fn(
+          async (settled: Awaited<ReturnType<typeof resolveSettledUpdateCommandResult>>) =>
+            publishUpdateCommandTerminalResult(f.params, settled.result, {
+              rolledBack: false,
+              captured: settled.captured,
+            }),
+        );
+        const refused = async () => {
+          await expect(
+            resolveSettledUpdateCommandResult(f.params, f.result, undefined, captured).then(
+              publish,
+            ),
+          ).rejects.toMatchObject({
+            name: "UpdateCommandPendingRecoveryFailure",
+            exitCode: 1,
+            result: { status: "error", recovery: { serviceRestartSafe: false } },
+            cause: { reason: "freebsd-update-ownership" },
+          });
+          expect(publish).not.toHaveBeenCalled();
+          expect(output).not.toHaveBeenCalled();
+          expect(fs.existsSync(path.join(env.OPENCLAW_STATE_DIR!, "update-reports"))).toBe(false);
+          expect(fs.readFileSync(f.databasePath)).toEqual(before);
+        };
+        const entered = createDeferred();
+        const resume = createDeferred();
+        const nativeProbe = exec.runCommandBuffered;
+        vi.spyOn(exec, "runCommandBuffered").mockImplementationOnce(async (...args) => {
+          entered.resolve();
+          await resume.promise;
+          return await nativeProbe(...args);
+        });
+        const settled = admission!.revalidate(input, f.assertCurrent).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        try {
+          await entered.promise;
+          expect(admission!.failure).toBeUndefined();
+          f.release();
+          await refused();
+          fs.chmodSync(root, 0o777);
+        } finally {
+          resume.resolve();
+          await settled;
+          fs.chmodSync(root, 0o700);
+        }
+        expect(await settled).toMatchObject({ reason: "freebsd-update-ownership" });
+        expect(admission!.canWrite).toBe(false);
+        await refused();
+      });
+    },
+    30_000,
+  );
 
   it.each(["retarget", "replace", "different-run", "different-candidate"] as const)(
     "refuses a captured result after %s",
