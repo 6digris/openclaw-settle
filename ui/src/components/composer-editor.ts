@@ -56,11 +56,9 @@ export class ComposerEditor extends HTMLElement {
     const style = document.createElement("style");
     style.textContent = `
       :host { display: block; min-width: 0; width: 100%; }
-      .composer-chip { display: inline-flex; vertical-align: baseline; align-items: baseline; gap: 0.3em;
-        max-width: min(24em, 80vw, calc(100% - 0.12em)); box-sizing: border-box; padding: 0 0.4em; margin: 0 0.06em;
-        border: 1px solid var(--accent); border-radius: var(--radius-sm, 6px);
-        color: var(--accent); background: var(--accent-subtle, transparent); font: inherit;
-        line-height: 1.35; unicode-bidi: isolate; }
+      .composer-chip { display: inline-flex; vertical-align: baseline; align-items: baseline; gap: 0.2em;
+        max-width: 100%; color: var(--accent); font: inherit;
+        unicode-bidi: isolate; cursor: text; }
       .composer-chip__icon { display: inline-flex; flex: 0 0 auto; width: 1em; height: 1em; align-items: center; justify-content: center; align-self: center; }
       .composer-chip__icon svg, .composer-chip__icon img { width: 100%; height: 100%; object-fit: cover; }
       .composer-chip__icon img { border-radius: 50%; }
