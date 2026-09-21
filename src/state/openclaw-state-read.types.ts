@@ -4,6 +4,8 @@ import type {
   SandboxBrowserRegistryEntry,
   SandboxRegistryEntry,
 } from "../agents/sandbox/registry.types.js";
+import type { SubagentRunReadRecord } from "../agents/subagents/registry/subagent-registry-read.types.js";
+import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
 import type { WorkspaceStateSnapshot } from "../agents/workspace-state-store.kernel.js";
 import type {
   ExecutionIdentityInspectionQuery,
@@ -44,6 +46,11 @@ export type OpenClawStateReadAuthority = {
 
 export type OpenClawStateReadCommand =
   | PluginBlobReadCommand
+  | { type: "subagents.sessionList" }
+  | {
+      type: "subagents.runs";
+      scope: { kind: "session"; sessionKey: string } | { kind: "ids"; runIds: readonly string[] };
+    }
   | { type: "exec-approvals.read" }
   | { type: "agentDatabaseRegistry.read" }
   | { type: "onboardingRecommendations.read"; configKey: string }
@@ -70,6 +77,19 @@ export type OpenClawStateReadRequest = {
 };
 export type OpenClawStateReadReply = (
   | PluginBlobReadReply
+  | {
+      ok: true;
+      type: "subagents.sessionList";
+      sourceAdmitted: true;
+      runs: Map<string, SubagentRunReadRecord>;
+    }
+  | {
+      ok: true;
+      type: "subagents.sessionList";
+      sourceAdmitted: true;
+      unavailable: { message: string; error: OpenClawStateWorkerErrorPayload | undefined };
+    }
+  | { ok: true; type: "subagents.runs"; sourceAdmitted: true; runs: Map<string, SubagentRunRecord> }
   | {
       ok: true;
       type: "agentDatabaseRegistry.read";

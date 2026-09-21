@@ -2,6 +2,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import * as githubIdentity from "../../agents/github-tool-identity.js";
+import * as subagentState from "../../agents/subagents/registry/subagent-registry-state.js";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
@@ -9,6 +10,7 @@ import {
 import {
   persistSessionTranscriptTurn,
   replaceSessionEntry,
+  replaceSessionEntrySync,
 } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.js";
 import {
@@ -18,7 +20,7 @@ import {
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import type { ControlUiSessionPreview } from "../control-ui-contract.js";
 import { gitHubPublicApi } from "../github-public-api.js";
-import { createControlUiHandlers } from "./control-ui.js";
+import { controlUiHandlers, createControlUiHandlers } from "./control-ui.js";
 import { identifiedClient } from "./sessions-sharing.test-support.js";
 import type { RespondFn } from "./types.js";
 
@@ -497,6 +499,104 @@ describe("controlUi.githubPreview", () => {
 });
 
 describe("controlUi.sessionPreview", () => {
+  it("replies in the same authorization frame before queued visibility revocation", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const sessionKey = "agent:main:dashboard:preview-response-frame";
+      const scope = { agentId: "main", sessionKey };
+      const entry = {
+        sessionId: "preview-response-frame",
+        updatedAt: 1,
+        label: "Visible preview title",
+        visibility: "shared" as const,
+        createdActor: { type: "human" as const, source: "profile" as const, id: "owner" },
+      };
+      await replaceSessionEntry(scope, entry);
+      const events: string[] = [];
+      const revoked = createDeferred();
+      let queued = false;
+      const respond = vi.fn<RespondFn>(() => {
+        events.push("response");
+      });
+      await expectDefined(
+        controlUiHandlers["controlUi.sessionPreview"],
+        "registered preview",
+      )(
+        requestOptions({ sessionKey }, respond, {
+          client: { ...identifiedClient("reader"), connId: "preview-reader" },
+          context: {
+            getRuntimeConfig: () => {
+              if (!queued) {
+                queued = true;
+                queueMicrotask(() => {
+                  try {
+                    replaceSessionEntrySync(scope, { ...entry, visibility: "draft" });
+                    events.push("revoked");
+                    revoked.resolve();
+                  } catch (error) {
+                    revoked.reject(error);
+                  }
+                });
+              }
+              return {};
+            },
+          },
+        }),
+      );
+      expect(queued).toBe(true);
+      await revoked.promise;
+      expect(respond).toHaveBeenCalledWith(
+        true,
+        expect.objectContaining({ status: "ok", title: entry.label }),
+        undefined,
+      );
+      expect(events).toEqual(["response", "revoked"]);
+    });
+  });
+
+  it("rechecks exact-key visibility after compact registry preparation", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const sessionKey = "agent:main:dashboard:preparing-preview";
+      const scope = { agentId: "main", sessionKey };
+      const entry = {
+        sessionId: "preparing-preview",
+        updatedAt: 1,
+        label: "Private after preparation",
+        visibility: "shared" as const,
+        createdActor: { type: "human" as const, source: "profile" as const, id: "owner" },
+      };
+      await replaceSessionEntry(scope, entry);
+      const prepared = createDeferred();
+      const identity = vi
+        .spyOn(subagentState, "getSubagentSessionListReadSnapshotIdentity")
+        .mockReturnValue(undefined);
+      const prepare = vi
+        .spyOn(subagentState, "prepareSubagentSessionListReadCache")
+        .mockReturnValueOnce(prepared.promise);
+      const respond = vi.fn<RespondFn>();
+      const pending = expectDefined(
+        createControlUiHandlers()["controlUi.sessionPreview"],
+        "session preview handler",
+      )(
+        requestOptions({ sessionKey }, respond, {
+          client: { ...identifiedClient("reader"), connId: "preview-reader" },
+          context: { getRuntimeConfig: () => ({}) },
+        }),
+      );
+      try {
+        expect(respond).not.toHaveBeenCalled();
+        await replaceSessionEntry(scope, { ...entry, visibility: "draft" });
+        prepared.resolve();
+        await pending;
+        expect(respond).toHaveBeenCalledWith(true, { status: "unavailable" }, undefined);
+      } finally {
+        prepared.resolve();
+        await pending;
+        prepare.mockRestore();
+        identity.mockRestore();
+      }
+    });
+  });
+
   it("keeps the resolved owner when previewing a qualified global main alias", async () => {
     await withOpenClawTestState({ label: "hover-global-owner" }, async () => {
       const cfg: OpenClawConfig = {
@@ -540,7 +640,7 @@ describe("controlUi.sessionPreview", () => {
 
   it("returns bounded, redacted metadata for one session", async () => {
     const secret = "sk-test-session-preview-secret-1234567890";
-    const loadSessionPreview = vi.fn().mockResolvedValue({
+    const loadSessionPreview = vi.fn().mockReturnValue({
       sessionKey: "agent:main:research",
       title: `  ${"T".repeat(240)}  `,
       derivedTitle: "  Research notes  ",
@@ -585,7 +685,7 @@ describe("controlUi.sessionPreview", () => {
   });
 
   it("returns unavailable for an unknown session", async () => {
-    const handlers = createControlUiHandlers(vi.fn(), vi.fn().mockResolvedValue(null));
+    const handlers = createControlUiHandlers(vi.fn(), vi.fn().mockReturnValue(null));
     const respond = vi.fn<RespondFn>();
 
     await expectDefined(

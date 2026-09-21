@@ -150,8 +150,6 @@ type SubagentKillIntent = {
 };
 
 export type SubagentRunRecord = Omit<SubagentRunReadRecord, "execution" | "collectorCompletion"> & {
-  /** Detached task owner; steer/restart changes runId but continues the same task. */
-  taskRunId?: string;
   /** Exact requester attempt for cancellation, independent of completion messaging. */
   requesterTurnRunId?: string;
   /** Durable proof that this requester attempt invoked sessions_yield. */

@@ -8,6 +8,10 @@ import { CHAT_HISTORY_MAX_ENTRIES } from "../../../packages/gateway-protocol/src
 import { resolveAgentConfig } from "../../agents/agent-scope.js";
 import { findModelCatalogEntry } from "../../agents/model-catalog.js";
 import { resolveConfiguredThinkingDefault } from "../../agents/model-thinking-default.js";
+import {
+  getSubagentSessionListReadSnapshotIdentity,
+  prepareOptionalSubagentSessionListReadCache,
+} from "../../agents/subagents/registry/subagent-registry-state.js";
 import { composeTranscriptDisplay } from "../../chat/transcript-display-position.js";
 import {
   listSessionPendingInputReceipts,
@@ -148,6 +152,10 @@ export async function handleChatHistoryRequest({
     );
     return;
   }
+  if (!getSubagentSessionListReadSnapshotIdentity()) {
+    await prepareOptionalSubagentSessionListReadCache();
+  }
+  signal?.throwIfAborted();
   const requestConfig = context.getRuntimeConfig();
   const agentIdOverride = normalizeOptionalText((params as { agentId?: string }).agentId);
   const requestedAgent = resolveRequestedSessionAgentId(requestConfig, sessionKey, agentIdOverride);

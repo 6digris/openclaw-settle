@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
 import { publishSubagentRunChanges } from "../agents/subagents/registry/subagent-registry-publication.js";
@@ -9,7 +10,6 @@ import { setRuntimeConfigSnapshot } from "../config/config.js";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-import * as projectionWork from "./session-projection-work.js";
 import * as materialization from "./session-row-projection-materialize.js";
 import { ready } from "./session-row-projection-record.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
@@ -41,48 +41,60 @@ it("reuses the subagent index across a 2,048-session drain with unrelated writes
       subagentRuns.set(run.runId, run);
     }
     const builds = vi.spyOn(registryRead, "buildSubagentSessionListReadIndex");
-    const yieldWork = projectionWork.yieldSessionListWork;
-    let yields = 0;
-    vi.spyOn(projectionWork, "yieldSessionListWork").mockImplementation(async () => {
-      await yieldWork();
-      yields++;
-      if (yields <= 32) {
-        replaceSessionEntrySync(
-          { agentId: "main", sessionKey: "agent:main:legacy-2047" },
-          { sessionId: "legacy-2047", updatedAt: count + yields, label: `Update ${yields}` },
-        );
-      }
-      if (yields === 12) {
-        const run = subagentRuns.get("run-1")!;
-        subagentRuns.set(run.runId, {
-          ...run,
-          execution: { status: "terminal", startedAt: 1, endedAt: 2, outcome: { status: "ok" } },
-        });
-        persistSubagentRunsToDiskOrThrow(subagentRuns, [run.runId]);
-      }
-    });
     const memoryBefore = process.memoryUsage();
     const cpu = process.threadCpuUsage();
     const started = performance.now();
     const projection = await createSessionRowProjection({ cfg });
+    let writes = 0;
+    let writesDuringDrain = 0;
+    let drainSettled = false;
+    const producer = (async () => {
+      for (let update = 1; update <= 32; update++) {
+        await nextTurn();
+        if (!drainSettled) {
+          writesDuringDrain++;
+        }
+        replaceSessionEntrySync(
+          { agentId: "main", sessionKey: "agent:main:legacy-2047" },
+          { sessionId: "legacy-2047", updatedAt: count + update, label: `Update ${update}` },
+        );
+        writes++;
+        if (update === 12) {
+          const run = subagentRuns.get("run-1")!;
+          subagentRuns.set(run.runId, {
+            ...run,
+            execution: { status: "terminal", startedAt: 1, endedAt: 2, outcome: { status: "ok" } },
+          });
+          persistSubagentRunsToDiskOrThrow(subagentRuns, [run.runId]);
+        }
+      }
+    })();
+    const drain = (async () => {
+      await projection.ensureMaterialized();
+      drainSettled = true;
+    })();
     try {
+      await Promise.all([producer, drain]);
+      // The bounded drain may finish before all producer turns; join its later publications too.
       await projection.ensureMaterialized();
       const elapsed = process.threadCpuUsage(cpu);
       const memoryAfter = process.memoryUsage();
       console.log(
         JSON.stringify({
           count,
-          yields,
+          writes,
+          writesDuringDrain,
           indexBuilds: builds.mock.calls.length,
-          initialDrainMs: performance.now() - started,
-          initialDrainThreadCpuMs: (elapsed.user + elapsed.system) / 1000,
+          drainAndPublicationsMs: performance.now() - started,
+          drainAndPublicationsThreadCpuMs: (elapsed.user + elapsed.system) / 1000,
           heapUsedDelta: memoryAfter.heapUsed - memoryBefore.heapUsed,
           rssDelta: memoryAfter.rss - memoryBefore.rss,
         }),
       );
       expect(projection.selectEntries().filter(ready)).toHaveLength(count);
       expect(projection.dirtyRowCount).toBe(0);
-      expect(yields).toBeGreaterThanOrEqual(32);
+      expect(writes).toBe(32);
+      expect(writesDuringDrain).toBeGreaterThan(0);
       expect(
         projection.snapshot({ agentId: "main", key: "agent:main:legacy-2047" }).row?.label,
       ).toBe("Update 32");
@@ -91,6 +103,7 @@ it("reuses the subagent index across a 2,048-session drain with unrelated writes
       );
       expect(builds).toHaveBeenCalledTimes(2);
     } finally {
+      await Promise.allSettled([producer, drain]);
       projection.dispose();
     }
   });

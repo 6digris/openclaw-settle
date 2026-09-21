@@ -25,15 +25,24 @@ import type { TaskRecord, TaskStatus } from "../../tasks/task-registry.types.js"
 import { resolveTaskSessionAgentId } from "../../tasks/task-session-identity.js";
 import { TASK_STATUS_DETAIL_MAX_CHARS, sanitizeTaskStatusText } from "../../tasks/task-status.js";
 import { optionalPositiveIntegerSchema, optionalStringEnum } from "../schema/typebox.js";
-import { ensureSubagentControllerOwnsRun } from "../subagents/registry/subagent-control-scope.js";
+import {
+  ensureSubagentControllerOwnsRun,
+  listControlledSubagentRunFacts,
+} from "../subagents/registry/subagent-control-scope.js";
 import {
   DEFAULT_RECENT_MINUTES,
-  listControlledSubagentRuns,
+  buildControlledSubagentRunsReadContext,
   MAX_RECENT_MINUTES,
   resolveSubagentController,
 } from "../subagents/registry/subagent-control.js";
-import { buildSubagentList } from "../subagents/registry/subagent-list.js";
-import { onSubagentRegistryPersisted } from "../subagents/registry/subagent-registry-state.js";
+import {
+  buildSubagentList,
+  readSubagentListSessionEntries,
+} from "../subagents/registry/subagent-list.js";
+import {
+  onSubagentRegistryPersisted,
+  prepareSubagentSessionListReadCache,
+} from "../subagents/registry/subagent-registry-state.js";
 import type { AnyAgentTool } from "./common.js";
 import {
   jsonResult,
@@ -112,7 +121,10 @@ function readTaskTree(
     });
   }
   const visibleTasks = new Set<string>();
-  const controlledRunsByOwner = new Map<string, ReturnType<typeof listControlledSubagentRuns>>();
+  const controlledRunsByOwner = new Map<
+    string,
+    ReturnType<typeof listControlledSubagentRunFacts>
+  >();
   const acpControlOwners = new Map<string, string | undefined>();
   let changed = true;
   while (changed) {
@@ -140,7 +152,7 @@ function readTaskTree(
         const owner = `${taskRequesterAgentId ?? ""}\0${task.ownerKey}`;
         let controlledRuns = controlledRunsByOwner.get(owner);
         if (!controlledRuns) {
-          controlledRuns = listControlledSubagentRuns(task.ownerKey, taskRequesterAgentId, cfg);
+          controlledRuns = listControlledSubagentRunFacts(task.ownerKey, taskRequesterAgentId, cfg);
           controlledRunsByOwner.set(owner, controlledRuns);
         }
         if (
@@ -383,6 +395,7 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
         recentMinutesRaw === undefined
           ? DEFAULT_RECENT_MINUTES
           : Math.min(MAX_RECENT_MINUTES, recentMinutesRaw);
+      await prepareSubagentSessionListReadCache();
       const prepared =
         !opts.listTasks && (action === "list" || action === "wait")
           ? await prepareTaskRegistryRead()
@@ -434,15 +447,15 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
       ).tasks;
 
       if (action === "list") {
-        const runs = listControlledSubagentRuns(
+        const readContext = await buildControlledSubagentRunsReadContext(
           controller.controllerSessionKey,
           controllerAgentId,
           cfg,
+          recentMinutes,
         );
         const list = buildSubagentList({
-          cfg,
-          runs,
-          recentMinutes,
+          context: readContext.list,
+          sessionEntries: readSubagentListSessionEntries(cfg, readContext.list),
         });
         const cutoff = Date.now() - recentMinutes * 60_000;
         const tasks = treeTasks

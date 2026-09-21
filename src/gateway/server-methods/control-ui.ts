@@ -7,6 +7,10 @@ import {
   prepareGitHubReadIdentity,
   resolveConfiguredGitHubToolIdentity,
 } from "../../agents/github-tool-identity.js";
+import {
+  getSubagentSessionListReadSnapshotIdentity,
+  prepareSubagentSessionListReadCache,
+} from "../../agents/subagents/registry/subagent-registry-state.js";
 import { redactToolPayloadText } from "../../logging/redact.js";
 import { getActiveSecretsRuntimeConfigSnapshot } from "../../secrets/runtime-state.js";
 import { getSessionRepositoryWorkspaceStore } from "../../state/session-repository-workspaces.js";
@@ -145,7 +149,7 @@ type LoadSessionPreview = (
   sessionKey: string,
   context: GatewayRequestContext,
   client: GatewayClient | null,
-) => SessionPreviewSource | null | Promise<SessionPreviewSource | null>;
+) => SessionPreviewSource | null;
 
 const SESSION_PREVIEW_TEXT_MAX_CHARS = 200;
 
@@ -349,7 +353,7 @@ export function createControlUiHandlers(
       (params) => gitHubPublicApi.parseGitHubTarget(params),
       (...args) => gitHubPublicApi.loadGitHubDetail(...args),
     ),
-    "controlUi.sessionPreview": async ({ params, client, context, respond }) => {
+    "controlUi.sessionPreview": async ({ params, client, context, respond, signal }) => {
       const sessionKey = parseSessionPreviewKey(params);
       if (!sessionKey) {
         respond(
@@ -360,11 +364,12 @@ export function createControlUiHandlers(
         return;
       }
       try {
-        respond(
-          true,
-          projectSessionPreview(await loadSessionPreview(sessionKey, context, client)),
-          undefined,
-        );
+        if (!getSubagentSessionListReadSnapshotIdentity()) {
+          await prepareSubagentSessionListReadCache();
+        }
+        signal?.throwIfAborted();
+        const preview = loadSessionPreview(sessionKey, context, client);
+        respond(true, projectSessionPreview(preview), undefined);
       } catch {
         respond(
           false,

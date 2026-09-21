@@ -13,7 +13,7 @@ import {
 import { markRequesterTurnYieldedInRuns } from "./subagent-registry-requester-yield.js";
 import {
   getSubagentRunsSnapshotForRead,
-  getSubagentRunsSnapshotForRunIds,
+  withSubagentRunsSnapshotForRunIds,
 } from "./subagent-registry-state.js";
 import type { SubagentRunRecord, SwarmStructuredOutputState } from "./subagent-registry.types.js";
 
@@ -88,26 +88,28 @@ export function createSubagentRegistryPublicApi(config: {
     return findRunById(readRuns(), runId.trim());
   }
 
-  function getSubagentRunsByRunIds(runIds: readonly string[]): {
-    entries: Map<string, SubagentRunRecord>;
-  } {
-    const byId = new Map<string, SubagentRunRecord>();
+  function withSubagentRunsByRunIds<T>(
+    runIds: readonly string[],
+    consume: (entries: ReadonlyMap<string, SubagentRunRecord>) => T,
+  ): Promise<T> {
     // Waiters need only their targets; retained results must not expand every wake's maps.
-    const selected = getSubagentRunsSnapshotForRunIds(runs, runIds);
-    for (const entry of selected.values()) {
-      byId.set(entry.runId, entry);
-      if (entry.swarmRunId) {
-        byId.set(entry.swarmRunId, entry);
+    return withSubagentRunsSnapshotForRunIds(runs, runIds, (selected) => {
+      const byId = new Map<string, SubagentRunRecord>();
+      for (const entry of selected.values()) {
+        byId.set(entry.runId, entry);
+        if (entry.swarmRunId) {
+          byId.set(entry.swarmRunId, entry);
+        }
       }
-    }
-    return {
-      entries: new Map(
-        runIds.flatMap((runId) => {
-          const entry = byId.get(runId.trim());
-          return entry ? [[runId, entry] as const] : [];
-        }),
-      ),
-    };
+      return consume(
+        new Map(
+          runIds.flatMap((runId) => {
+            const entry = byId.get(runId.trim());
+            return entry ? [[runId, entry] as const] : [];
+          }),
+        ),
+      );
+    });
   }
 
   function completeCollectorLaunchCleanup(runId: string): void {
@@ -208,7 +210,7 @@ export function createSubagentRegistryPublicApi(config: {
     ackPendingAgentSteeringItems,
     releasePendingAgentSteeringItems,
     getSubagentRunByRunId,
-    getSubagentRunsByRunIds,
+    withSubagentRunsByRunIds,
     completeCollectorLaunchCleanup,
     recordSwarmStructuredOutput,
     listSwarmRunsForGroup,
