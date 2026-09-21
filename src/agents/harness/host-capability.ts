@@ -473,12 +473,7 @@ export function createAgentHarnessHostCapabilities(params: {
     version: 1 as const,
     assertActive,
     bindModelExecution: (model) =>
-      bindHarnessModelExecution(
-        attempt.admittedRunContext,
-        model,
-        assertActive,
-        capabilityAbortController.signal,
-      ),
+      bindHarnessModelExecution(attempt.admittedRunContext, model, assertActive),
     retainSourceAuthority: () => retainHarnessSource(attempt.admittedRunContext, assertActive),
     reportOutputTokens: (outputTokens) => {
       assertActive();

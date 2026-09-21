@@ -211,8 +211,11 @@ Declare `nativeModelPolicySupport: "exact"` only when the harness calls
 selection before every inference dispatch, including after resume. Observe the
 returned cancellation signal, recheck its assertion after awaited preparation and
 immediately before transport writes and result settlement, and release it after
-execution cleanup. The host retains the original operator's model policy; a
-cached pre-resume model is not authority for a different resumed model. Missing
+execution cleanup. The issuing host must be active when acquiring a binding.
+The issued binding retains the original source until release; host closure blocks
+new acquisitions without revoking accepted native work. Explicit Stop, session
+and transport authority, and real source or model-policy revocation still apply.
+A cached pre-resume model is not authority for a different resumed model. Missing
 support rejects native-owned inference when the operator has a model policy.
 The method returns `undefined` when the run has no operator source; ordinary
 host action checks and native turn settlement retain their existing lifetimes.

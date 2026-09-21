@@ -1,5 +1,6 @@
 // Focused public test helpers for plugin runtime, registry, and setup fixtures.
 
+import type { AdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
 import type { EmbeddedRunAttemptParams } from "../agents/embedded-agent-runner/run/types.js";
 
 type AgentHarnessHostTestAttempt = Omit<
@@ -11,13 +12,20 @@ type AgentHarnessHostTestAttempt = Omit<
 export async function createAgentHarnessHostCapabilitiesForTest(params: {
   attempt: AgentHarnessHostTestAttempt;
   pluginId: string;
+  operatorSource?: Pick<AdmittedRunOperatorAuthority, "profileId" | "scopes" | "assertCurrent">;
 }) {
-  const { createOperationalRunInstanceRef, prepareAgentRunAdmission } =
-    await import("../agents/admitted-run-context.js");
+  const {
+    createAdmittedRunOperatorAuthority,
+    createOperationalRunInstanceRef,
+    prepareAgentRunAdmission,
+  } = await import("../agents/admitted-run-context.js");
   const { createAgentHarnessHostCapabilities } =
     await import("../agents/harness/host-capability.js");
   const admission = prepareAgentRunAdmission({
     cfg: params.attempt.config ?? {},
+    operatorAuthority: params.operatorSource
+      ? createAdmittedRunOperatorAuthority(params.operatorSource)
+      : undefined,
     facts: {
       runId: params.attempt.runId,
       agentId: params.attempt.agentId ?? "main",

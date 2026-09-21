@@ -9,46 +9,14 @@ import {
 } from "../admitted-run-context.js";
 import type { AgentHarnessHostCapabilities } from "./host-capability-types.js";
 
-/** Native selection changes stay bound to the original host source and foreground lifetime. */
+/** Acquires original-source model authority while the issuing host is active. */
 export function bindHarnessModelExecution(
   admittedRunContext: AdmittedRunContext,
   model: ModelRef | undefined,
   assertActive: () => void,
-  hostSignal: AbortSignal,
 ): ReturnType<NonNullable<AgentHarnessHostCapabilities["bindModelExecution"]>> {
   assertActive();
-  const execution = bindOperatorModelExecution(
-    readAdmittedRunOperatorAuthority(admittedRunContext),
-    model,
-  );
-  if (!execution) {
-    return undefined;
-  }
-  let released = false;
-  const release = () => {
-    if (!released) {
-      released = true;
-      hostSignal.removeEventListener("abort", release);
-      execution.release();
-    }
-  };
-  const signal = AbortSignal.any([hostSignal, execution.signal]);
-  hostSignal.addEventListener("abort", release, { once: true });
-  if (hostSignal.aborted) {
-    release();
-  }
-  return Object.freeze({
-    signal,
-    assertCurrent: () => {
-      assertActive();
-      signal.throwIfAborted();
-      if (released) {
-        throw new Error("agent harness model execution is no longer active");
-      }
-      execution.assertCurrent();
-    },
-    release,
-  });
+  return bindOperatorModelExecution(readAdmittedRunOperatorAuthority(admittedRunContext), model);
 }
 
 const retainedSources = resolveGlobalSingleton(
