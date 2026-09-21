@@ -25,10 +25,10 @@ import {
 import { runUpdateRepairLoop } from "./update-repair-agent.js";
 import {
   updateRepairBudgetSchema,
-  updateRepairWorkerMessageSchema,
   type UpdateRepairParams,
   type UpdateRepairResult,
   type UpdateRepairTurnResult,
+  type UpdateRepairWorkerMessage,
 } from "./update-repair-protocol.js";
 import {
   createUpdateRun,
@@ -97,7 +97,7 @@ async function runRepairEnvelope(
       });
       child.on("message", (raw) => {
         void (async () => {
-          const message = updateRepairWorkerMessageSchema.parse(raw);
+          const message = raw as UpdateRepairWorkerMessage;
           if (message.type === "ready") {
             if (delegation) {
               if (delegation.executor !== "unowned" && delegation.executor.bindChild) {
