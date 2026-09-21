@@ -14,6 +14,8 @@ import { observeCronRunRecoveryInDatabase } from "../cron/store/run-recovery.rea
 import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
 import { listTerminalOperatorApprovalsInDatabase } from "../gateway/operator-approval-store.kernel.js";
 import { readWorkerSessionPlacementProjectionInDatabase } from "../gateway/worker-environments/placement-read-projection.js";
+import { readWorkerPlacementChangeSnapshotInDatabase } from "../gateway/worker-environments/placement-row-codec.js";
+import { hasWorkerEnvironmentSessionAttachment } from "../gateway/worker-environments/session-attachment-store.js";
 import { executeDevicePairingRead } from "../infra/device-pairing-read.kernel.js";
 import { readExecApprovalsConfigRow } from "../infra/exec-approvals-sqlite.js";
 import { inspectCurrentConversationBindingRecordInDatabase } from "../infra/outbound/current-conversation-bindings.kernel.js";
@@ -121,6 +123,8 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
           typeof input.command.input.executionId === "string")) ||
       (input.command.type === "workspace.snapshot" &&
         typeof input.command.workspaceDir === "string") ||
+      (input.command.type === "workerEnvironments.hasSessionAttachment" &&
+        typeof input.command.environmentId === "string") ||
       (input.command.type === "updateRuns.get" && typeof input.command.runId === "string") ||
       (input.command.type === "updateRuns.list" &&
         isRecord(input.command.input) &&
@@ -145,6 +149,7 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
         typeof input.command.backendId === "string" &&
         typeof input.command.scopeKey === "string") ||
       (input.command.type === "fleet.get" && typeof input.command.tenantId === "string") ||
+      input.command.type === "workerPlacements.changeSnapshot" ||
       (input.command.type === "workers.placementProjection" &&
         Array.isArray(input.command.sessionIds) &&
         input.command.sessionIds.every((id) => typeof id === "string") &&
@@ -360,6 +365,14 @@ serveOwnedWorkerTasks(
                     }),
                   };
                 }
+                if (command.type === "workerEnvironments.hasSessionAttachment") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    attached: hasWorkerEnvironmentSessionAttachment(db, command.environmentId),
+                  };
+                }
                 if (command.type === "userProfiles.reconcile") {
                   return {
                     ok: true,
@@ -411,6 +424,14 @@ serveOwnedWorkerTasks(
                     type: command.type,
                     sourceAdmitted,
                     entries: readSandboxBrowserRegistryInDatabase(db),
+                  };
+                }
+                if (command.type === "workerPlacements.changeSnapshot") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    placements: readWorkerPlacementChangeSnapshotInDatabase(db),
                   };
                 }
                 if (command.type === "workers.placementProjection") {
