@@ -31,5 +31,4 @@ scenario:
   execution:
     kind: vitest
     path: test/e2e/qa-lab/runtime/gateway-repeated-request-recovery.e2e.test.ts
-    timeoutMs: 330000
     summary: Run a real child Gateway through repeated provider requests, bounded stalled-session diagnostics, provider timeout settlement, and one queued follow-up drain.
