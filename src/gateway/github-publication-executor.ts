@@ -48,11 +48,11 @@ import {
   findGitHubPublicationPullRequest,
   reconcileGitHubPublicationPullRequest,
 } from "./github-publication-pull-requests.js";
-import { recoverGitHubPublicationWorkspace } from "./github-publication-recovery.js";
 import {
   readKnownGitHubPublicationPullRequestUrls,
-  type GitHubPublicationExecutionRow,
-} from "./github-publication-store.js";
+  recoverGitHubPublicationWorkspace,
+} from "./github-publication-recovery.js";
+import type { GitHubPublicationExecutionRow } from "./github-publication-store.js";
 import { prepareGitHubPublicationTarget } from "./github-publication-target.js";
 import { GatewayOperatorAccessUnavailableError } from "./operator-access-policy.js";
 import { SessionMutationAuthorizationChangedError } from "./session-sharing.js";
@@ -121,6 +121,8 @@ export async function reconcileGitHubPublication<Row extends PublicationRow>(par
     ) {
       throw new Error("GitHub publication's original target is unavailable.");
     }
+    const knownPullRequestUrls = await readKnownGitHubPublicationPullRequestUrls(row);
+    assertCurrent();
     url = await reconcileGitHubPublicationPullRequest({
       requestId: row.request_id,
       pushRepository: target.pushRepository,
@@ -132,7 +134,7 @@ export async function reconcileGitHubPublication<Row extends PublicationRow>(par
       workspaceTree: row.workspace_tree,
       parentCommit: row.source_head_commit,
       marker: `<!-- openclaw-publication:${row.request_id} -->`,
-      knownPullRequestUrls: readKnownGitHubPublicationPullRequestUrls(row),
+      knownPullRequestUrls,
       refreshIdentity,
       assertCurrent,
       pushOnly: params.pushOnly,

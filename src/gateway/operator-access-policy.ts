@@ -7,6 +7,7 @@ import type {
 import { getPluginRegistryState } from "../plugins/runtime-state.js";
 import { onUserProfilesChanged, readUserProfileVersion } from "../state/user-profile-events.js";
 import { getUserProfileListItem } from "../state/user-profiles.js";
+import type { UserProfileAccessFacts } from "../state/user-profiles.types.js";
 import type { GatewayOperatorAccessAuthority } from "./operator-access-policy.types.js";
 import { resolveOperatorRolePolicyForAssignment } from "./operator-role-policy.js";
 
@@ -182,20 +183,16 @@ export function resolveGatewayOperatorAccessAuthority(
   }
 }
 
-/** Revalidate the recorded basis without adopting a new invitation or a role exemption. */
+/** The caller supplies current profile facts and rechecks its retained authority after callbacks. */
 export function resumeGatewayOperatorAccessGrant(
-  profileId: string,
+  profile: UserProfileAccessFacts,
   config: OpenClawConfig,
   grant: GatewayAccessGrantRef | null,
 ): void {
   const policies = currentAccessPolicies();
-  const profile = getUserProfileListItem(profileId);
-  if (profile.id !== profileId) {
-    throw new GatewayOperatorAccessDeniedError();
-  }
   const requiredPlugin = resolveOperatorRolePolicyForAssignment(
-    profile.id,
-    profile.role ?? null,
+    profile.profileId,
+    profile.assignedRole,
     config,
   )?.accessPolicyPlugin;
   if (requiredPlugin && requiredPlugin !== grant?.pluginId) {
@@ -204,11 +201,7 @@ export function resumeGatewayOperatorAccessGrant(
   }
   const context = {
     config,
-    profile: {
-      profileId,
-      emails: profile.emails,
-      assignedRole: profile.role ?? null,
-    },
+    profile,
   };
   if (grant) {
     const policy = policies.find(({ pluginId }) => pluginId === grant.pluginId)?.policy;

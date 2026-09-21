@@ -8,6 +8,7 @@ import {
   encodeGitHubPublicationRequester,
   type GitHubPublicationRequesterSnapshot,
 } from "./github-publication-requester.js";
+import { executeExistingOpenClawStateRead } from "./openclaw-state-db-readonly.js";
 import { ensureGitHubPublicationSessionLifecycleSchema } from "./openclaw-state-db-schema-additive.js";
 import { tableExists } from "./openclaw-state-db-schema-helpers.js";
 import type { DB } from "./openclaw-state-db.generated.js";
@@ -56,4 +57,17 @@ export function readGitHubPublicationSessionLifecycle(
           .where("request_id", "=", input.requestId),
       )
     : undefined;
+}
+
+export async function readGitHubPublicationSessionLifecycleInWorker(input: PublicationIdentity) {
+  const { publicationKind, requestId } = input;
+  const result = await executeExistingOpenClawStateRead(
+    {},
+    { type: "githubPublication.lifecycle", publicationKind, requestId },
+    { current: true },
+  );
+  if (!result?.ok || result.type !== "githubPublication.lifecycle") {
+    throw new Error("GitHub publication requester metadata is unavailable.");
+  }
+  return result.lifecycle;
 }

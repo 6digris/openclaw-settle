@@ -7,7 +7,7 @@ import type {
 } from "../../packages/gateway-protocol/src/schema/session-github-publication.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { executeSqliteQuerySync } from "../infra/kysely-sync.js";
-import { readGitHubPublicationSessionLifecycle } from "../state/github-publication-session-lifecycles.js";
+import { readGitHubPublicationSessionLifecycleInWorker } from "../state/github-publication-session-lifecycles.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -21,6 +21,7 @@ import {
   prepareCurrentGitHubPublicationIdentity,
   resolveGitHubPublicationWorktreeOwner,
 } from "./github-publication-availability.js";
+import { GitHubPublicationRecoveryPendingError } from "./github-publication-git-index.js";
 import { captureGitHubPublicationWorkspaceSnapshot } from "./github-publication-git-transport.js";
 import type { GitHubPublicationRequester } from "./github-publication-requester.js";
 import {
@@ -257,10 +258,16 @@ export function createGitHubPublicationCoordinatorMethods(params: {
           assertExpectedSharedGitHubPublisher(expected, result.publisher!);
           return result;
         }
-        const lifecycle = readGitHubPublicationSessionLifecycle({
+        const lifecycle = await readGitHubPublicationSessionLifecycleInWorker({
           publicationKind: "shared",
           requestId: existing.request_id,
+        }).catch((cause: unknown) => {
+          throw new GitHubPublicationRecoveryPendingError(
+            "GitHub publication requester metadata is unavailable; retry the existing request.",
+            { cause },
+          );
         });
+        input.requester.assertInvocationCurrent();
         if (!lifecycle || lifecycle.lifecycle_revision !== lifecycleRevision) {
           return await processRow(
             existing,
