@@ -63,7 +63,7 @@ import {
   authorizeOperatorScopesForMethod,
 } from "./method-scopes.js";
 import { hasCurrentGatewayOperatorAccess } from "./operator-access-policy.js";
-import type { GatewayOperatorAccessAuthority } from "./operator-access-policy.js";
+import type { GatewayOperatorAccessAuthority } from "./operator-access-policy.types.js";
 import { resolveBrowserOriginPolicy } from "./origin-check.js";
 import { withSerializedCredentialFallbackAttempt } from "./rate-limit-attempt-serialization.js";
 import type { GatewayClient } from "./server-methods/shared-types.js";
