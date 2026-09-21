@@ -68,6 +68,11 @@ on:
         required: false
         default: false
         type: boolean
+      run_private_node_provisioning:
+        description: "Prove private Node installation and portable updater authorization on native Windows"
+        required: false
+        default: false
+        type: boolean
       installed_startup_package:
         description: "Optional Package Acceptance binding, or {baseline, candidate} bindings for a matched comparison"
         required: false
@@ -92,7 +97,7 @@ env:
 
 jobs:
   probe:
-    if: ${{ !inputs.run_windows_git_installer_only && !inputs.run_winget_acceptance && !inputs.run_portable_node_recovery }}
+    if: ${{ inputs.run_private_node_provisioning || (!inputs.run_windows_git_installer_only && !inputs.run_winget_acceptance && !inputs.run_portable_node_recovery) }}
     name: Windows probe
     runs-on: ${{ inputs.runner_label }}
     timeout-minutes: 75
@@ -110,6 +115,25 @@ jobs:
           ref: ${{ inputs.target_ref || github.ref }}
           persist-credentials: false
           submodules: false
+
+      - name: Validate private Node proof inputs
+        if: ${{ inputs.run_private_node_provisioning }}
+        env:
+          TARGET_REF: ${{ inputs.target_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          RUNNER_LABEL: ${{ inputs.runner_label }}
+          KEEPALIVE_MINUTES: ${{ inputs.keepalive_minutes }}
+          MIXED_PROOF: ${{ inputs.run_windows_ci || inputs.run_windows_git_installer_only || inputs.run_windows_launcher_integration || inputs.run_winget_acceptance || inputs.run_portable_node_recovery || inputs.installed_startup_package != '' || inputs.installed_startup_cpu_diagnostic || inputs.require_wsl2 || inputs.import_ubuntu_wsl2 || inputs.enable_wsl2_features }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:RUNNER_LABEL -ne "windows-2025" -or $env:KEEPALIVE_MINUTES -ne "0" -or $env:MIXED_PROOF -eq "true") {
+            throw "Private Node proof requires windows-2025, keepalive 0, and no other proof selections."
+          }
+          if ($env:TARGET_REF -cnotmatch '^[0-9a-f]{40}$' -or $env:WORKFLOW_SHA -cne $env:TARGET_REF) {
+            throw "Private Node proof requires the same immutable workflow and target SHA."
+          }
+          $checkoutSha = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $checkoutSha -cne $env:TARGET_REF) { throw "Private Node proof checkout differs from target_ref." }
 
       - name: Validate Windows launcher inputs
         id: launcher_input
@@ -224,6 +248,7 @@ jobs:
 
       - name: Probe WSL2
         id: wsl2
+        if: ${{ !inputs.run_private_node_provisioning }}
         env:
           ENABLE_WSL2_FEATURES: ${{ inputs.enable_wsl2_features }}
           IMPORT_UBUNTU_WSL2: ${{ inputs.import_ubuntu_wsl2 }}
@@ -367,7 +392,7 @@ jobs:
 
       - &windows_node
         name: Setup Node.js
-        if: ${{ inputs.run_windows_ci || inputs.installed_startup_package != '' }}
+        if: ${{ inputs.run_windows_ci || inputs.installed_startup_package != '' || inputs.run_private_node_provisioning }}
         shell: bash
         env:
           REQUESTED_NODE_VERSION: ${{ inputs.installed_startup_package != '' && inputs.startup_node_version || (inputs.run_windows_launcher_integration && '24.20.0' || '24.x') }}
@@ -378,7 +403,7 @@ jobs:
 
       - &windows_pnpm
         name: Setup pnpm
-        if: ${{ inputs.run_windows_ci || inputs.installed_startup_package != '' }}
+        if: ${{ inputs.run_windows_ci || inputs.installed_startup_package != '' || inputs.run_private_node_provisioning }}
         uses: ./.github/actions/setup-pnpm-store-cache
         with:
           cache-mode: restore
@@ -386,7 +411,7 @@ jobs:
 
       - &windows_versions
         name: Runtime versions
-        if: ${{ inputs.run_windows_ci || inputs.installed_startup_package != '' }}
+        if: ${{ inputs.run_windows_ci || inputs.installed_startup_package != '' || inputs.run_private_node_provisioning }}
         shell: bash
         run: |
           node -v
@@ -395,7 +420,7 @@ jobs:
 
       - &windows_node_path
         name: Capture node path
-        if: ${{ inputs.run_windows_ci || inputs.installed_startup_package != '' }}
+        if: ${{ inputs.run_windows_ci || inputs.installed_startup_package != '' || inputs.run_private_node_provisioning }}
         shell: bash
         run: |
           node_bin="$(dirname "$(node -p 'process.execPath')")"
@@ -406,7 +431,7 @@ jobs:
 
       - &windows_install
         name: Install dependencies
-        if: ${{ inputs.run_windows_ci || inputs.installed_startup_package != '' }}
+        if: ${{ inputs.run_windows_ci || inputs.installed_startup_package != '' || inputs.run_private_node_provisioning }}
         shell: bash
         env:
           CI: true
@@ -416,6 +441,19 @@ jobs:
           node -v
           pnpm -v
           pnpm install --frozen-lockfile --prefer-offline --config.ignore-scripts=false --config.engine-strict=false --config.enable-pre-post-scripts=true --config.side-effects-cache=true || pnpm install --frozen-lockfile --prefer-offline --config.ignore-scripts=false --config.engine-strict=false --config.enable-pre-post-scripts=true --config.side-effects-cache=true
+
+      - name: Prove private Node provisioning and portable authorization
+        if: ${{ inputs.run_private_node_provisioning }}
+        shell: bash
+        timeout-minutes: 40
+        env:
+          CI: true
+        run: |
+          set -euo pipefail
+          export PATH="$NODE_BIN:$PATH"
+          # Match the real installer deadline plus owner cleanup, only for this live proof.
+          OPENCLAW_VITEST_NO_OUTPUT_TIMEOUT_MS=1920000 pnpm test:live src/cli/update-cli/update-command-node-runtime.live.test.ts
+          node scripts/run-vitest.mjs src/cli/update-cli/update-command-executor-auxiliary.test.ts -t 'preserves direct preflight release through a healthy installer child and active drain|never starts Node provisioning without released authorization input|refuses Node provisioning after|preserves native-gate environment precedence|preserves absent or empty native payload options'
 
       - name: Prove installed benchmark lifecycle
         if: ${{ inputs.installed_startup_package != '' }}
@@ -662,7 +700,7 @@ jobs:
           pnpm test:windows:ci
 
       - name: Keep runner alive for SSH inspection
-        if: ${{ always() && !cancelled() }}
+        if: ${{ always() && !cancelled() && !inputs.run_private_node_provisioning }}
         env:
           KEEPALIVE_MINUTES: ${{ inputs.keepalive_minutes }}
         run: |
@@ -693,7 +731,7 @@ jobs:
   # Native session qualification must not depend on headless CI or WSL results.
   native-schtasks:
     name: Native Scheduled Task proof
-    if: ${{ !inputs.run_windows_git_installer_only && inputs.run_windows_ci }}
+    if: ${{ !inputs.run_private_node_provisioning && !inputs.run_windows_git_installer_only && inputs.run_windows_ci }}
     runs-on: windows-2025
     timeout-minutes: 75
     steps:
@@ -952,7 +990,7 @@ jobs:
 
   winget-acceptance:
     name: Native Winget acceptance (${{ matrix.scenario }})
-    if: ${{ !inputs.run_windows_git_installer_only && inputs.run_winget_acceptance }}
+    if: ${{ !inputs.run_private_node_provisioning && !inputs.run_windows_git_installer_only && inputs.run_winget_acceptance }}
     runs-on: windows-2025
     timeout-minutes: 35
     strategy:
@@ -969,13 +1007,15 @@ jobs:
           TARGET_REF: ${{ inputs.target_ref }}
           RUN_CI: ${{ inputs.run_windows_ci }}
           RUN_LAUNCHER: ${{ inputs.run_windows_launcher_integration }}
+          RUN_PORTABLE: ${{ inputs.run_portable_node_recovery }}
+          WSL_PROOF: ${{ inputs.require_wsl2 || inputs.import_ubuntu_wsl2 || inputs.enable_wsl2_features }}
           STARTUP: ${{ inputs.installed_startup_package }}
           CPU_DIAGNOSTIC: ${{ inputs.installed_startup_cpu_diagnostic }}
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: |
           if ($env:TARGET_REF -cne 'a32b79e73b358fbcd068bbf86ef8032333d8d7c8') { throw 'Requires the reviewed PR112055 head.' }
           if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Requires a fresh disposable hosted VM.' }
-          if ($env:RUN_CI -eq 'true' -or $env:RUN_LAUNCHER -eq 'true' -or $env:STARTUP -ne '' -or $env:CPU_DIAGNOSTIC -eq 'true') { throw 'Winget qualification is a separate run.' }
+          if ($env:WSL_PROOF -eq 'true' -or $env:RUN_PORTABLE -eq 'true' -or $env:RUN_CI -eq 'true' -or $env:RUN_LAUNCHER -eq 'true' -or $env:STARTUP -ne '' -or $env:CPU_DIAGNOSTIC -eq 'true') { throw 'Winget qualification is a separate run.' }
           $destinations = @($env:GITHUB_WORKSPACE,$env:RUNNER_TEMP,$env:ProgramFiles,$env:TEMP)
           $driveNames = @($destinations | ForEach-Object { (Split-Path -Path $_ -Qualifier).TrimEnd(':') } | Sort-Object -Unique)
           foreach ($driveName in $driveNames) {
@@ -1038,7 +1078,7 @@ jobs:
 
   portable-node-recovery:
     name: Portable Node recovery (${{ matrix.engine }})
-    if: ${{ !inputs.run_windows_git_installer_only && inputs.run_portable_node_recovery }}
+    if: ${{ !inputs.run_private_node_provisioning && !inputs.run_windows_git_installer_only && inputs.run_portable_node_recovery }}
     runs-on: windows-2025
     timeout-minutes: 20
     strategy:
@@ -1053,11 +1093,12 @@ jobs:
           RUN_WINDOWS_CI: ${{ inputs.run_windows_ci }}
           RUN_LAUNCHER: ${{ inputs.run_windows_launcher_integration }}
           RUN_WINGET: ${{ inputs.run_winget_acceptance }}
+          WSL_PROOF: ${{ inputs.require_wsl2 || inputs.import_ubuntu_wsl2 || inputs.enable_wsl2_features }}
           STARTUP_PACKAGE: ${{ inputs.installed_startup_package }}
           CPU_DIAGNOSTIC: ${{ inputs.installed_startup_cpu_diagnostic }}
         run: |
           if ($env:TARGET_REF -cnotmatch '^[0-9a-f]{40}$') { throw "Portable proof requires an exact published candidate." }
-          if ($env:RUN_WINDOWS_CI -eq 'true' -or $env:RUN_LAUNCHER -eq 'true' -or $env:RUN_WINGET -eq 'true' -or $env:STARTUP_PACKAGE -ne '' -or $env:CPU_DIAGNOSTIC -eq 'true') { throw "Portable recovery must run separately from the other acceptance jobs." }
+          if ($env:WSL_PROOF -eq 'true' -or $env:RUN_WINDOWS_CI -eq 'true' -or $env:RUN_LAUNCHER -eq 'true' -or $env:RUN_WINGET -eq 'true' -or $env:STARTUP_PACKAGE -ne '' -or $env:CPU_DIAGNOSTIC -eq 'true') { throw "Portable recovery must run separately from the other acceptance jobs." }
       - name: Checkout immutable proof tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1123,10 +1164,19 @@ jobs:
 
   native-git-installer:
     name: Full Windows Git installer and published-driver proof
-    if: ${{ inputs.run_windows_launcher_integration || inputs.run_windows_git_installer_only }}
+    if: ${{ !inputs.run_private_node_provisioning && (inputs.run_windows_launcher_integration || inputs.run_windows_git_installer_only) }}
     runs-on: windows-2025
     timeout-minutes: 90
     steps:
+      - name: Validate full installer selection
+        shell: pwsh
+        env:
+          RUN_WINDOWS_CI: ${{ inputs.run_windows_ci }}
+          RUN_PORTABLE: ${{ inputs.run_portable_node_recovery }}
+          RUN_WINGET: ${{ inputs.run_winget_acceptance }}
+          MIXED_INSTALLER_ONLY: ${{ inputs.run_windows_git_installer_only && (inputs.run_windows_launcher_integration || inputs.installed_startup_package != '' || inputs.installed_startup_cpu_diagnostic || inputs.require_wsl2 || inputs.import_ubuntu_wsl2 || inputs.enable_wsl2_features) }}
+        run: |
+          if ($env:RUN_WINDOWS_CI -ne 'true' -or $env:RUN_PORTABLE -eq 'true' -or $env:RUN_WINGET -eq 'true' -or $env:MIXED_INSTALLER_ONLY -eq 'true') { throw 'Full Git proof requires Windows-CI setup and no conflicting proof selections.' }
       - *windows_checkout
       - *windows_defender
       - *windows_node
@@ -1136,11 +1186,7 @@ jobs:
           EXPECTED_HEAD: ${{ inputs.target_ref }}
           PROOF_WORKFLOW_SHA: ${{ github.workflow_sha }}
           PROOF_CASE: ${{ inputs.windows_git_installer_case }}
-          RUN_WINDOWS_CI: ${{ inputs.run_windows_ci }}
-          RUN_PORTABLE: ${{ inputs.run_portable_node_recovery }}
-          RUN_WINGET: ${{ inputs.run_winget_acceptance }}
         run: |
-          if ($env:RUN_WINDOWS_CI -ne 'true' -or $env:RUN_PORTABLE -eq 'true' -or $env:RUN_WINGET -eq 'true') { throw 'Full Git proof requires the isolated launcher plus Windows-CI selection.' }
           & ./scripts/ci/prove-windows-git-install.ps1 -CandidateRoot $env:GITHUB_WORKSPACE -ExpectedHead $env:EXPECTED_HEAD -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'full-git-install-evidence') -ProofCase $env:PROOF_CASE
           $result = Get-Content (Join-Path $env:RUNNER_TEMP 'full-git-install-evidence/result.json') -Raw | ConvertFrom-Json
           $expectedCases = if ($env:PROOF_CASE -eq 'all') { 4 } elseif ($env:PROOF_CASE -eq 'published-driver') { 2 } else { throw 'Invalid installer proof selection.' }
