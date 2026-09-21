@@ -574,7 +574,6 @@ export async function migrateLegacyMediaPersistence(
   const env = params.env ?? process.env;
   const changes: string[] = [];
   const warnings: string[] = [];
-  const notices: string[] = [];
   let recoverableWarningCount = 0;
   const refusedAgentDatabasePaths: string[] = [];
   const recoveredAgentDatabasePaths = new Set<string>();
@@ -585,7 +584,6 @@ export async function migrateLegacyMediaPersistence(
         configuredAgentDatabaseTargets: params.configuredAgentDatabaseTargets ?? [],
         env,
         warnings,
-        notices,
         preparedDiscovery: params.preparedDiscovery,
       });
       recoverableWarningCount = discovery.recoverableWarningCount;
@@ -710,7 +708,6 @@ export async function migrateLegacyMediaPersistence(
   return {
     changes,
     warnings,
-    ...(notices.length > 0 ? { notices } : {}),
     ...(recoveredAgentDatabasePaths.size > 0
       ? { recoveredAgentDatabasePaths: [...recoveredAgentDatabasePaths] }
       : {}),
