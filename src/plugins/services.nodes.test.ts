@@ -16,6 +16,8 @@ import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { ensureProfileForEmail, setUserProfileRole } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { createLazyPluginRuntime } from "./loader-module-runtime.js";
+import * as nativeModuleRequire from "./native-module-require.js";
 import { createEmptyPluginRegistry } from "./registry-empty.js";
 import {
   adoptPluginRegistryRecords,
@@ -29,7 +31,6 @@ import {
   getGatewayContextLifetime,
   withPluginRuntimeGatewayRequestScope,
 } from "./runtime/gateway-request-scope.js";
-import { createPluginRuntime } from "./runtime/index.js";
 import type { PluginRuntime } from "./runtime/types.js";
 import { startPluginServices, type PluginServicesHandle } from "./services.js";
 import { createPluginRecord } from "./status.test-helpers.js";
@@ -60,11 +61,15 @@ async function startFixture(
   } as unknown as GatewayRequestContext;
   const resolveContext = () => context;
   const subagent = {} as PluginRuntime["subagent"];
-  if (options.gateway === "unbound") {
-    bindPluginRegistryRuntime(registry, createPluginRuntime());
-  } else if (options.gateway !== "absent") {
+  const gateway = options.gateway ?? "bound";
+  if (gateway === "bound") {
     bindGatewayContextResolver(subagent, resolveContext);
-    bindPluginRegistryRuntime(registry, { subagent } as PluginRuntime);
+  }
+  if (gateway !== "absent") {
+    bindPluginRegistryRuntime(
+      registry,
+      createLazyPluginRuntime(gateway === "bound" ? { runtimeOptions: { subagent } } : {}),
+    );
   }
   markPluginRegistryActive(registry);
   let serviceContext: OpenClawPluginServiceContext | undefined;
@@ -181,19 +186,29 @@ describe("service-owned node invocation", () => {
   it.each(["absent", "unbound"] as const)(
     "omits node access for an %s host under a foreign Gateway scope",
     async (gateway) => {
-      const foreign = await startFixture();
-      await withPluginRuntimeGatewayRequestScope(
-        {
-          context: foreign.context,
-          resolveGatewayContext: foreign.resolveContext,
-          isWebchatConnect: () => false,
-        },
-        async () => {
-          const { serviceContext } = await startFixture({ gateway });
-          expect(serviceContext.invokeNode).toBeUndefined();
-          expect(serviceContext.openNodeDuplex).toBeUndefined();
-        },
-      );
+      const loadRuntime = vi
+        .spyOn(nativeModuleRequire, "tryNativeRequireModule")
+        .mockImplementation(() => {
+          throw new Error("Service metadata must not load the broad runtime");
+        });
+      try {
+        const foreign = await startFixture();
+        await withPluginRuntimeGatewayRequestScope(
+          {
+            context: foreign.context,
+            resolveGatewayContext: foreign.resolveContext,
+            isWebchatConnect: () => false,
+          },
+          async () => {
+            const { serviceContext } = await startFixture({ gateway });
+            expect(serviceContext.invokeNode).toBeUndefined();
+            expect(serviceContext.openNodeDuplex).toBeUndefined();
+            expect(loadRuntime).not.toHaveBeenCalled();
+          },
+        );
+      } finally {
+        loadRuntime.mockRestore();
+      }
     },
   );
 

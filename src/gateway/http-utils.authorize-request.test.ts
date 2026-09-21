@@ -3,6 +3,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import { makeMockHttpResponse } from "./test-http-response.js";
 
 vi.mock("./auth.js", () => ({
   authorizeHttpGatewayConnect: vi.fn(),
@@ -34,6 +35,7 @@ vi.mock("./http-common.js", () => ({
   sendGatewayAuthFailure: vi.fn(),
   sendJson: vi.fn(),
   sendMissingScopeForbidden: vi.fn(),
+  sendUnauthorized: vi.fn(),
 }));
 
 const { authorizeHttpGatewayConnect } = await import("./auth.js");
@@ -112,6 +114,9 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
           trustedProxies: ["127.0.0.1"],
         }),
       ).resolves.toEqual({
+        hasCurrentClientAuthority: expect.any(Function),
+        assertCurrent: expect.any(Function),
+        revalidate: expect.any(Function),
         authMethod: method,
         trustDeclaredOperatorScopes: false,
         authenticatedUserProfile: ownerProfile,
@@ -120,30 +125,51 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
     },
   );
 
-  it("keeps trusted-proxy requests eligible for declared HTTP scopes", async () => {
-    vi.mocked(authorizeHttpGatewayConnect).mockResolvedValue({
-      ok: true,
-      method: "trusted-proxy",
-      user: "operator",
-    });
-
-    await expect(
-      authorizeGatewayHttpRequestOrReply({
-        req: createReq({ authorization: "Bearer upstream-idp-token" }),
-        res: {} as ServerResponse,
-        auth: {
-          mode: "trusted-proxy",
-          allowTailscale: false,
-          trustedProxy: { userHeader: "x-user" },
-        },
-        trustedProxies: ["127.0.0.1"],
-      }),
-    ).resolves.toMatchObject({
-      authMethod: "trusted-proxy",
-      user: "operator",
-      trustDeclaredOperatorScopes: true,
-    });
-  });
+  it.each([{ trustedProxies: undefined }, { trustedProxies: ["192.0.2.1"] }])(
+    "keeps trusted-proxy overrides current with runtime proxies $trustedProxies",
+    async ({ trustedProxies }) => {
+      vi.mocked(authorizeHttpGatewayConnect).mockResolvedValue({
+        ok: true,
+        method: "trusted-proxy",
+        user: "operator",
+      });
+      const originalConfig = getRuntimeConfig();
+      let currentConfig = {
+        ...originalConfig,
+        gateway: { ...originalConfig.gateway, trustedProxies },
+      };
+      const { res } = makeMockHttpResponse();
+      vi.mocked(getRuntimeConfig).mockImplementation(() => currentConfig);
+      try {
+        const admitted = await authorizeGatewayHttpRequestOrReply({
+          req: createReq({ authorization: "Bearer upstream-idp-token" }),
+          res,
+          auth: {
+            mode: "trusted-proxy",
+            allowTailscale: false,
+            trustedProxy: { userHeader: "x-user" },
+          },
+          trustedProxies: ["127.0.0.1"],
+        });
+        expect(admitted).toMatchObject({
+          authMethod: "trusted-proxy",
+          user: "operator",
+          trustDeclaredOperatorScopes: true,
+        });
+        expect(admitted?.hasCurrentClientAuthority()).toBe(true);
+        await expect(admitted?.revalidate()).resolves.toBeUndefined();
+        currentConfig = {
+          ...currentConfig,
+          gateway: { ...currentConfig.gateway, trustedProxies: ["198.51.100.1"] },
+        };
+        expect(admitted?.hasCurrentClientAuthority()).toBe(false);
+        await expect(admitted?.revalidate()).rejects.toThrow("Unauthorized");
+      } finally {
+        vi.mocked(getRuntimeConfig).mockReturnValue(originalConfig);
+        res.destroy();
+      }
+    },
+  );
 
   it.each(["completed", "disconnected", "policy-changed", "stale-at-entry"] as const)(
     "keeps HTTP authorization pending on profile acquisition and revalidates before completion (%s)",
@@ -256,6 +282,9 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
             },
           }),
         ).resolves.toEqual({
+          hasCurrentClientAuthority: expect.any(Function),
+          assertCurrent: expect.any(Function),
+          revalidate: expect.any(Function),
           authMethod: "trusted-proxy",
           user: "guest@example.test",
           trustDeclaredOperatorScopes: true,
@@ -326,6 +355,9 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
           });
         } else {
           expect(result).toEqual({
+            hasCurrentClientAuthority: expect.any(Function),
+            assertCurrent: expect.any(Function),
+            revalidate: expect.any(Function),
             authMethod: "trusted-proxy",
             user: "guest@example.test",
             trustDeclaredOperatorScopes: true,
@@ -372,6 +404,9 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
         },
       }),
     ).resolves.toEqual({
+      hasCurrentClientAuthority: expect.any(Function),
+      assertCurrent: expect.any(Function),
+      revalidate: expect.any(Function),
       authMethod: "trusted-proxy",
       user: "guest@example.test",
       trustDeclaredOperatorScopes: true,
@@ -491,6 +526,9 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
           auth: { mode: "token", allowTailscale: false, token: "shared-secret" },
         }),
       ).resolves.toEqual({
+        hasCurrentClientAuthority: expect.any(Function),
+        assertCurrent: expect.any(Function),
+        revalidate: expect.any(Function),
         authMethod: "token",
         trustDeclaredOperatorScopes: false,
         authenticatedUserProfile: ownerProfile,

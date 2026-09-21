@@ -77,6 +77,8 @@ const CONTEXT_ADMISSION = Symbol("openclaw.channelContextAdmission");
 
 export class ChannelAdmissionAudit {
   #enabled: boolean;
+  #closed = false;
+  #revision = {};
   #sink: ((receipt: DecisionReceiptV1) => boolean) | undefined;
   constructor(params: {
     enabled: boolean;
@@ -88,11 +90,24 @@ export class ChannelAdmissionAudit {
   get enabled(): boolean {
     return this.#enabled;
   }
+  configure(enabled: boolean): void {
+    if (this.#closed || enabled === this.#enabled) {
+      return;
+    }
+    this.#enabled = enabled;
+    this.#revision = {};
+  }
+  captureCurrent(): () => boolean {
+    const revision = this.#revision;
+    return () => this.#enabled && this.#revision === revision;
+  }
   recordDecision(receipt: DecisionReceiptV1): boolean {
     return this.#enabled ? (this.#sink?.(receipt) ?? false) : false;
   }
   close(): void {
+    this.#closed = true;
     this.#enabled = false;
+    this.#revision = {};
     this.#sink = undefined;
   }
 }
@@ -108,15 +123,21 @@ class AdmissionEvidence implements ChannelAdmissionEvidence {
   readonly kind = "channel-admission-evidence";
   #payload: ChannelAdmissionEvidencePayload;
   #audit: ChannelAdmissionAudit | undefined;
+  #isCurrent: (() => boolean) | undefined;
   #consumed = false;
   constructor(payload: ChannelAdmissionEvidencePayload, audit: ChannelAdmissionAudit | undefined) {
     this.#payload = payload;
     this.#audit = audit;
+    this.#isCurrent = audit?.captureCurrent();
     Object.setPrototypeOf(this, null);
     Object.freeze(this);
   }
   static read(value: ChannelAdmissionEvidence | undefined) {
-    return value !== undefined && value !== null && typeof value === "object" && #payload in value
+    return value !== undefined &&
+      value !== null &&
+      typeof value === "object" &&
+      #payload in value &&
+      (value.#isCurrent?.() ?? true)
       ? { payload: value.#payload, audit: value.#audit, consumed: value.#consumed }
       : undefined;
   }

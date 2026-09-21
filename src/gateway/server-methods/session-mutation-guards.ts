@@ -1,3 +1,5 @@
+import { getRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
+import { isGatewayAuthPolicyCurrent } from "../auth-policy.js";
 import { readGatewayDeviceRevocationGuard } from "../device-revocation.js";
 import type { ExpectedProfileBinding } from "../expected-profile.js";
 import { SharedGatewaySessionGenerationState } from "../server-shared-auth-generation.js";
@@ -115,6 +117,7 @@ export function bindWebSocketRequestMutationAuthority<T extends GatewayRequestOp
       options.hasCurrentClientAuthority !== hasCurrentClientAuthority ||
       options.sessionMutationCommitGuard !== undefined ||
       client.invalidated ||
+      !isGatewayAuthPolicyCurrent(client.authPolicyGeneration, getRuntimeConfigSnapshot()) ||
       !hasCurrentDeviceRevocation() ||
       client.internal?.agentRuntimeIdentity
     ) {

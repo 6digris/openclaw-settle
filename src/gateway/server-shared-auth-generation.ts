@@ -184,10 +184,10 @@ class GenerationReaderBinding {
   }
 }
 
-/** Disconnect shared-auth clients whose generation no longer matches the expected one. */
+/** Disconnect stale shared-auth clients; null revokes every generation. */
 export function disconnectStaleSharedGatewayAuthClients(params: {
   clients: Iterable<SharedGatewayAuthClient>;
-  expectedGeneration: string | undefined;
+  expectedGeneration: string | undefined | null;
   state?: SharedGatewaySessionGenerationState;
   revokeSource?: boolean;
 }): void {
@@ -206,29 +206,12 @@ export function disconnectStaleSharedGatewayAuthClients(params: {
     });
   }
   if (params.revokeSource !== false) {
-    params.state?.publishInvalidation({
-      kind: "generation",
-      generation: params.expectedGeneration,
-    });
+    params.state?.publishInvalidation(
+      params.expectedGeneration === null
+        ? { kind: "all" }
+        : { kind: "generation", generation: params.expectedGeneration },
+    );
   }
-}
-
-/** Disconnect every shared-auth client regardless of generation. */
-export function disconnectAllSharedGatewayAuthClients(
-  clients: Iterable<SharedGatewayAuthClient>,
-  state?: SharedGatewaySessionGenerationState,
-): void {
-  for (const gatewayClient of clients) {
-    if (!gatewayClient.usesSharedGatewayAuth) {
-      continue;
-    }
-    invalidateGatewayPolicyClient(gatewayClient, {
-      reason: "gateway-auth-changed",
-      code: 4001,
-      message: "gateway auth changed",
-    });
-  }
-  state?.publishInvalidation({ kind: "all" });
 }
 
 /** Enforce shared auth generation behavior after a config write. */
@@ -240,21 +223,9 @@ export function enforceSharedGatewaySessionGenerationForConfigWrite(params: {
 }): void {
   const reloadMode = resolveGatewayReloadSettings(params.nextConfig).mode;
   const nextSharedGatewaySessionGeneration = params.resolveRuntimeSnapshotGeneration();
-  if (reloadMode === "off") {
-    params.state.publish({
-      current: nextSharedGatewaySessionGeneration,
-      required: nextSharedGatewaySessionGeneration,
-    });
-    disconnectStaleSharedGatewayAuthClients({
-      state: params.state,
-      clients: params.clients,
-      expectedGeneration: nextSharedGatewaySessionGeneration,
-    });
-    return;
-  }
   params.state.publish({
     current: nextSharedGatewaySessionGeneration,
-    required: null,
+    required: reloadMode === "off" ? nextSharedGatewaySessionGeneration : null,
   });
   disconnectStaleSharedGatewayAuthClients({
     state: params.state,

@@ -4,6 +4,8 @@ import { listCoreGatewayMethodNames } from "./methods/core-method-policy.js";
 import { createGatewayAuxHandlers } from "./server-aux-handlers.js";
 import { coreGatewayHandlers } from "./server-methods/core-handlers.js";
 import type { GatewayRequestHandlers } from "./server-methods/types.js";
+import { SharedGatewaySessionGenerationState } from "./server-shared-auth-generation.js";
+import { createTestRuntimeSecretsActivator } from "./server-startup-config.test-support.js";
 
 describe("core and auxiliary method handler parity", () => {
   it("wires a dispatchable core or auxiliary handler for every core descriptor", async () => {
@@ -11,9 +13,7 @@ describe("core and auxiliary method handler parity", () => {
     const aux = createGatewayAuxHandlers({
       log: {},
       getNativeApprovalRouteCoordinator: () => undefined,
-      activateRuntimeSecrets: async () => {
-        throw new Error("unexpected secrets reload");
-      },
+      activateRuntimeSecrets: createTestRuntimeSecretsActivator(),
       sharedGatewaySessionGenerationState: new SharedGatewaySessionGenerationState({
         current: undefined,
         required: null,
@@ -42,4 +42,3 @@ describe("core and auxiliary method handler parity", () => {
     }
   });
 });
-import { SharedGatewaySessionGenerationState } from "./server-shared-auth-generation.js";

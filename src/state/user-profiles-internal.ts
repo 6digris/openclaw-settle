@@ -5,6 +5,7 @@ import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
+  prepareSqliteQueryTakeFirstSync,
 } from "../infra/kysely-sync.js";
 import { generateSecureUuid } from "../infra/secure-random.js";
 import { USER_PROFILE_AVATAR_MIME_TYPES } from "../shared/avatar-limits.js";
@@ -24,6 +25,11 @@ import type { UserProfileAvatarMime, UserProfilesDatabase } from "./user-profile
 export type UserProfileRow = UserProfilesDatabase["user_profiles"];
 export type UserProfileMetadataRow = Omit<UserProfileRow, "avatar">;
 export type UserProfile = Omit<UserProfileListItem, "emails" | "githubIdentity" | "hasAvatar">;
+
+const metadataReaders = new WeakMap<
+  DatabaseSync,
+  (profileId: string) => UserProfileMetadataRow | undefined
+>();
 
 export function insertUserProfile(
   db: DatabaseSync,
@@ -108,15 +114,22 @@ export function selectResolvedUserProfile<T extends Pick<UserProfileRow, "merged
   profileId: string,
   query: SelectQueryBuilder<UserProfilesDatabase, "user_profiles", T>,
 ): T | undefined {
-  const profile = executeSqliteQueryTakeFirstSync(db, query.where("id", "=", profileId));
+  return readResolvedUserProfile(profileId, (id) =>
+    executeSqliteQueryTakeFirstSync(db, query.where("id", "=", id)),
+  );
+}
+
+function readResolvedUserProfile<T extends Pick<UserProfileRow, "merged_into">>(
+  profileId: string,
+  read: (profileId: string) => T | undefined,
+): T | undefined {
+  const profile = read(profileId);
   if (!profile?.merged_into) {
     return profile;
   }
   // Merge writers repoint aliases and existing tombstones, so durable profile
   // references need exactly one hop to reach the canonical row.
-  return (
-    executeSqliteQueryTakeFirstSync(db, query.where("id", "=", profile.merged_into)) ?? profile
-  );
+  return read(profile.merged_into) ?? profile;
 }
 
 export function selectResolvedUserProfileById(
@@ -138,30 +151,39 @@ export function selectResolvedUserProfileMetadataById(
   if (!hasEnsuredUserProfileRoleSchema(db)) {
     return selectResolvedUserProfileById(db, profileId);
   }
-  return selectResolvedUserProfile(
-    db,
-    profileId,
-    userProfilesDb(db)
-      .selectFrom("user_profiles")
-      .select((eb) => [
-        "id",
-        "display_name",
-        // Preserve native conversion errors for non-BLOB values in damaged profile rows.
-        eb
-          .case()
-          .when(eb.fn<string>("typeof", ["avatar"]), "=", "blob")
-          .then(null)
-          .else(eb.ref("avatar"))
-          .end()
-          .as("avatar"),
-        "avatar_mime",
-        "avatar_sha256",
-        "merged_into",
-        "role",
-        "created_at",
-        "updated_at",
-      ]),
-  );
+  let read = metadataReaders.get(db);
+  if (!read) {
+    // Reuse compilation only; every authority check binds and reads current rows.
+    read = prepareSqliteQueryTakeFirstSync<string, UserProfileMetadataRow>(db, (parameter) =>
+      userProfilesDb(db)
+        .selectFrom("user_profiles")
+        .select((eb) => [
+          "id",
+          "display_name",
+          // Preserve native conversion errors for non-BLOB values in damaged profile rows.
+          eb
+            .case()
+            .when(eb.fn<string>("typeof", ["avatar"]), "=", "blob")
+            .then(null)
+            .else(eb.ref("avatar"))
+            .end()
+            .as("avatar"),
+          "avatar_mime",
+          "avatar_sha256",
+          "merged_into",
+          "role",
+          "created_at",
+          "updated_at",
+        ])
+        .where(
+          "id",
+          "=",
+          parameter((id) => id),
+        ),
+    );
+    metadataReaders.set(db, read);
+  }
+  return readResolvedUserProfile(profileId, read);
 }
 
 export function requireResolvedUserProfileMetadataById(

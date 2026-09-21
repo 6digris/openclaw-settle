@@ -1,6 +1,7 @@
 import { onTestFinished, vi, type Mock } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { HealthSummary } from "../../health/types.js";
+import { createOperatorWsClient } from "./authenticated-request-dispatch.test-support.js";
 
 export function useGatewayTestConfig<T>(mock: Mock<() => T>, implementation: () => T) {
   const previous = mock.getMockImplementation();
@@ -31,43 +32,19 @@ export function createHealthSummary(): HealthSummary {
   };
 }
 
-type ConnectedTestClient = {
-  invalidated: boolean;
-  invalidatedReason?: string;
-  connect: {
-    client: {
-      id: string;
-      version: string;
-      platform: string;
-      mode: string;
-    };
-    role: "operator";
-    scopes: string[];
-  };
-  connId: string;
-  usesSharedGatewayAuth: false;
-};
-
 export function createConnectedTestClient(params: {
   connId: string;
   invalidated?: boolean;
   invalidatedReason?: string;
-}): ConnectedTestClient {
+}) {
   return {
+    ...createOperatorWsClient({
+      connId: params.connId,
+      clientInfo: { id: "openclaw-control-ui", mode: "ui" },
+      scopes: [],
+    }),
     invalidated: params.invalidated ?? false,
     ...(params.invalidatedReason ? { invalidatedReason: params.invalidatedReason } : {}),
-    connect: {
-      client: {
-        id: "openclaw-control-ui",
-        version: "dev",
-        platform: "test",
-        mode: "ui",
-      },
-      role: "operator",
-      scopes: [],
-    },
-    connId: params.connId,
-    usesSharedGatewayAuth: false,
   };
 }
 

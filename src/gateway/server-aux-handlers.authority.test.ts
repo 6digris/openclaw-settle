@@ -20,6 +20,7 @@ import { installTestApprovalClock } from "./exec-approval-manager.test-support.j
 import { getOperatorApprovalDetailed } from "./operator-approval-store.js";
 import { createGatewayAuxHandlers } from "./server-aux-handlers.js";
 import { SharedGatewaySessionGenerationState } from "./server-shared-auth-generation.js";
+import { createTestRuntimeSecretsActivator } from "./server-startup-config.test-support.js";
 import { createWorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
 import { seedAttachedPlacementEnvironment } from "./worker-environments/placement-test-fixtures.js";
 
@@ -40,9 +41,7 @@ function createAuthorityHarness(
   const aux = createGatewayAuxHandlers({
     log: {},
     getNativeApprovalRouteCoordinator: () => undefined,
-    activateRuntimeSecrets: async () => {
-      throw new Error("unexpected secrets reload");
-    },
+    activateRuntimeSecrets: createTestRuntimeSecretsActivator(),
     sharedGatewaySessionGenerationState: new SharedGatewaySessionGenerationState({
       current: undefined,
       required: null,
