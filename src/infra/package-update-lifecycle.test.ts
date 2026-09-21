@@ -153,7 +153,7 @@ describe("runGlobalPackageUpdateSteps lifecycle ownership", () => {
       fixture,
       async () => {},
       async ({ name, argv, cwd }) => {
-        const outputLimitExceeded = name === "npm package postinstall";
+        const outputLimitExceeded = name === "npm-package-postinstall";
         if (outputLimitExceeded && cwd) {
           await fs.rm(path.join(cwd, PACKAGE_LIFECYCLE_PENDING_RELATIVE_PATH));
         }
@@ -168,7 +168,7 @@ describe("runGlobalPackageUpdateSteps lifecycle ownership", () => {
       },
     );
     expect(result.failedStep).toMatchObject({
-      name: "npm package postinstall",
+      name: "npm-package-postinstall",
       exitCode: 0,
       outputLimitExceeded: true,
     });

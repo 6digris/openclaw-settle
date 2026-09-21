@@ -93,7 +93,7 @@ describe("Git candidate activation", () => {
     inspectionRoots = [];
     runCommand = async (argv, options) => {
       if (argv[0] === "git") {
-        if (argv.includes("clone") && argv.includes("--mirror")) {
+        if (argv.includes("init") && argv.includes("--bare")) {
           const mirror = argv.at(-1);
           assert(mirror);
           inspectionRoots.push(path.dirname(mirror));
@@ -234,6 +234,7 @@ describe("Git candidate activation", () => {
         expect(command?.timeoutMs, probe).toBe(5_000);
       }
       expect(commands.find(({ argv }) => argv.includes("remove"))?.timeoutMs).toBe(5_000);
+      expect(inspectionRoots).not.toHaveLength(0);
       await expectNoRuntimeStagingPaths();
     },
   );

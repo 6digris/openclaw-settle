@@ -451,10 +451,6 @@ describe("updateGitCheckout", () => {
     return { calls, runCommand, targetSha };
   }
 
-  async function removeControlUiAssets() {
-    await fs.rm(path.join(tempDir, "dist", "control-ui"), { recursive: true, force: true });
-  }
-
   async function runRealGit(cwd: string, ...args: string[]): Promise<string> {
     const result = await runCommandWithTimeout(["git", ...args], { cwd, timeoutMs: 5000 });
     if (result.code !== 0) {
@@ -603,7 +599,9 @@ describe("updateGitCheckout", () => {
           await fs.writeFile(keepPath, `${keep.slice("--keep=".length)}\n`);
         }
         if (command === "rev-parse" && argv.includes("--git-path")) {
-          return toCommandResult({ stdout: keepPath });
+          const gitPath = argv.at(-1);
+          assert.ok(gitPath);
+          return toCommandResult({ stdout: path.join(root, ".git", gitPath) });
         }
         if (
           command === "rev-parse" &&
@@ -748,7 +746,7 @@ describe("updateGitCheckout", () => {
       beforeGitMutation?: UpdateRunnerOptions["beforeGitMutation"];
     },
   ) {
-    // These callers script Git responses, including clone's filesystem result.
+    // These callers script Git responses, including bare init's filesystem result.
     // Native Git cases call updateGitCheckout directly and never use this adapter.
     const mirrors = new Map<string, string>();
     const fixtureCommand = withGitCandidateFixture(runCommand);
@@ -759,12 +757,12 @@ describe("updateGitCheckout", () => {
       if (argv[0] === "git" && argv[1] === "-C") {
         const commandRoot = argv[2];
         assert.ok(commandRoot);
-        if (argv[3] === "clone" && argv[4] === "--mirror") {
+        if (argv[3] === "init" && argv[4] === "--bare") {
           const result = await fixtureCommand(argv, runOptions);
           if (result.code === 0) {
             const mirror = argv.at(-1);
             assert.ok(mirror);
-            await fs.mkdir(mirror);
+            await fs.mkdir(path.join(mirror, "objects", "info"), { recursive: true });
             mirrors.set(mirror, commandRoot);
           }
           return result;
@@ -3082,7 +3080,7 @@ describe("updateGitCheckout", () => {
         stableTag: "v1.0.1",
         onDoctor: async () => {
           if (doctorBundle === "missing") {
-            await removeControlUiAssets();
+            await fs.rm(path.join(tempDir, "dist", "control-ui"), { recursive: true, force: true });
           } else {
             await fs.writeFile(
               path.join(tempDir, "dist", "control-ui", "index.html"),

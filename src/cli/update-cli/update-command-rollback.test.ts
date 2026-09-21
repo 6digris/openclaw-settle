@@ -547,7 +547,7 @@ describe("verified package rollback", () => {
         if (change === "doctor-settled-exception") {
           assert(doctorStep);
           expect(doctorStep).toMatchObject({
-            name: "post-install verification",
+            name: "post-install-verify",
             exitCode: 1,
             stderrTail: expect.stringContaining(settledFailure.message),
           });
