@@ -27,7 +27,6 @@ import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-reque
 import type { PluginServiceCronHost } from "../plugins/service-cron.js";
 import type { PluginServicesHandle } from "../plugins/services.js";
 import { runWithGatewayIndependentRootWorkAdmission } from "../process/gateway-work-admission.js";
-import { sweepSessionStateWatchNotices } from "../sessions/session-state-events.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { hasSameTranscriptCaptureIntent } from "../transcripts/config-reload.js";
@@ -46,11 +45,13 @@ import {
   hydrateConfiguredExternalCliAuth,
   publishConfiguredModelRuntimeSnapshots,
 } from "./server-startup-model-runtime.js";
+import { runGatewayStartupObservers } from "./server-startup-observers.js";
 import {
   createGatewayStartupOutcomeRecorder,
   formatGatewayStartupOutcomes,
   type GatewayStartupOutcomeRecorder,
 } from "./server-startup-outcomes.js";
+import { logGatewayReady, logGatewaySidecarsReady } from "./server-startup-readiness.js";
 import {
   scheduleGatewayGenerationTimer,
   schedulePostReadySidecarTask,
@@ -58,6 +59,7 @@ import {
 } from "./server-startup-sidecar-scheduler.js";
 import { measureStartup, type GatewayStartupTrace } from "./server-startup-trace.js";
 import { createDeferredGatewayUpdateCheck } from "./server-startup-update-check.js";
+import type { ReadinessChecker } from "./server/readiness.js";
 import {
   beginMacOSSystemCaWarmupOnce,
   type warmMacOSSystemCaOffMainThread,
@@ -827,6 +829,7 @@ export async function startGatewayPostAttachRuntime(
     trackStartupWork: <T>(run: (signal: AbortSignal) => Promise<T>) => Promise<T>;
     startWorkerEnvironmentRuntime?: () => Awaitable<GatewayPostReadySidecarHandle | null>;
     onSidecarsReady?: () => void;
+    getReadiness: ReadinessChecker;
     isClosing?: () => boolean;
     startupTrace?: GatewayStartupTrace;
     sidecarStartup?: GatewaySidecarStartupMode;
@@ -1025,7 +1028,7 @@ export async function startGatewayPostAttachRuntime(
             }
             params.unlockStartupMethods();
             params.onSidecarsReady?.();
-            params.log.info("candidate gateway ready; autonomous sidecars suppressed");
+            logGatewayReady(params, "candidate gateway ready; autonomous sidecars suppressed");
             return pluginRegistry;
           }
           const startupOutcomes = createGatewayStartupOutcomeRecorder({
@@ -1181,20 +1184,17 @@ export async function startGatewayPostAttachRuntime(
           if (params.isClosing?.()) {
             return pluginRegistry;
           }
-          params.startupTrace?.detail("sidecars.ready", [
-            [
-              "loadedPluginCount",
-              pluginRegistry.plugins.filter((plugin) => plugin.status === "loaded").length,
-            ],
-            [
-              "postReadySidecarCount",
+          logGatewaySidecarsReady({
+            log: params.log,
+            getReadiness: params.getReadiness,
+            startupTrace: params.startupTrace,
+            loadedPluginCount: pluginRegistry.plugins.filter((plugin) => plugin.status === "loaded")
+              .length,
+            postReadySidecarCount:
               postReadySidecarCount +
-                newGatewayLifetimeSidecars.length +
-                (controlUiAssetsSidecar ? 1 : 0),
-            ],
-          ]);
-          params.startupTrace?.mark("sidecars.ready");
-          params.log.info("gateway ready");
+              newGatewayLifetimeSidecars.length +
+              (controlUiAssetsSidecar ? 1 : 0),
+          });
           return pluginRegistry;
         });
   // Track original startup producers and their post-ready continuation so close
@@ -1206,73 +1206,27 @@ export async function startGatewayPostAttachRuntime(
       if (params.minimalTestGateway || candidateCanary) {
         return;
       }
-      await params.waitForPostReadyWork?.();
-      if (params.isClosing?.()) {
-        return;
-      }
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
-      if (params.isClosing?.()) {
-        return;
-      }
-      const sentinelRefresh = runWithGatewayIndependentRootWorkAdmission(
-        async () => {
-          await measureStartup(params.startupTrace, "post-attach.update-sentinel", async () => {
-            if (!params.isClosing?.()) {
-              await runtimeDeps.refreshLatestUpdateRestartSentinel(
-                restartSentinelContext.workerContext.environment,
-              );
-            }
-          });
-        },
-        "startup:update-sentinel",
+      await runGatewayStartupObservers({
+        registry: sidecarRegistry,
         signal,
-      ).catch((err: unknown) => {
-        params.log.warn(`restart sentinel refresh failed: ${String(err)}`);
+        port: params.port,
+        config: params.gatewayPluginConfigAtStart,
+        workspaceDir: params.defaultWorkspaceDir,
+        getCron: () =>
+          (params.getCronService?.() ?? params.deps.cron) as
+            | PluginHookGatewayCronService
+            | undefined,
+        isClosing: params.isClosing,
+        waitForPostReadyWork: params.waitForPostReadyWork,
+        startupTrace: params.startupTrace,
+        log: params.log,
+        logHooks: params.logHooks,
+        createHookRunner: runtimeDeps.createHookRunner,
+        refreshLatestUpdateRestartSentinel: () =>
+          runtimeDeps.refreshLatestUpdateRestartSentinel(
+            restartSentinelContext.workerContext.environment,
+          ),
       });
-      try {
-        sweepSessionStateWatchNotices();
-        const hookRunner = await runtimeDeps.createHookRunner(sidecarRegistry, {
-          logger: params.logHooks,
-        });
-        if (params.isClosing?.() || !hookRunner.hasHooks("gateway_start")) {
-          return;
-        }
-        const { withPluginHttpRouteRegistry } = await import("../plugins/http-registry.js");
-        if (params.isClosing?.()) {
-          return;
-        }
-        await runWithGatewayIndependentRootWorkAdmission(
-          async () => {
-            if (params.isClosing?.()) {
-              return;
-            }
-            await withPluginHttpRouteRegistry(sidecarRegistry, () =>
-              hookRunner.runGatewayStart(
-                { port: params.port },
-                {
-                  port: params.port,
-                  config: params.gatewayPluginConfigAtStart,
-                  workspaceDir: params.defaultWorkspaceDir,
-                  getCron: () =>
-                    (params.getCronService?.() ?? params.deps.cron) as
-                      | PluginHookGatewayCronService
-                      | undefined,
-                },
-              ),
-            );
-          },
-          "hooks:gateway-start",
-          signal,
-        ).catch((err: unknown) => {
-          params.log.warn(`gateway_start hook failed: ${String(err)}`);
-        });
-      } finally {
-        // Refresh and hooks run concurrently; a failed or cancelled hook load
-        // must still join the original refresh before metadata can be released.
-        await sentinelRefresh;
-      }
     })
     .catch((err: unknown) => {
       params.log.warn(`gateway sidecars failed to start: ${String(err)}`);

@@ -4,21 +4,142 @@ import { afterEach, expect, it, vi } from "vitest";
 import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
 import { publishSubagentRunChanges } from "../agents/subagents/registry/subagent-registry-publication.js";
 import * as registryRead from "../agents/subagents/registry/subagent-registry-read.js";
-import { persistSubagentRunsToDiskOrThrow } from "../agents/subagents/registry/subagent-registry-state.js";
+import {
+  clearSubagentRunsReadCacheForTest,
+  getSubagentSessionListReadSnapshotIdentity,
+  persistSubagentRunsToDiskOrThrow,
+} from "../agents/subagents/registry/subagent-registry-state.js";
 import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
 import { setRuntimeConfigSnapshot } from "../config/config.js";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import type { SessionRowReadView } from "./session-row-prepared-read.js";
 import * as materialization from "./session-row-projection-materialize.js";
 import { ready } from "./session-row-projection-record.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
 import { seedSessionRowProjectionTranscriptFixture } from "./session-row-projection.transcript-fixture.test-support.js";
+import type { WorkerSessionPlacementProjection } from "./worker-environments/placement-read-projection.types.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
   subagentRuns.clear();
 });
+
+it.each(["exact", "bulk"] as const)(
+  "reprepares subagent facts invalidated during a pending %s placement read",
+  async (kind) => {
+    await withOpenClawTestState(
+      { scenario: "minimal", env: { OPENCLAW_TEST_READ_SUBAGENT_RUNS_FROM_SQLITE: "1" } },
+      async () => {
+        const cfg = { agents: { entries: { main: {} } } };
+        setRuntimeConfigSnapshot(cfg);
+        const parent = "agent:main:prepared-parent";
+        const child = "agent:main:prepared-child";
+        for (const key of [parent, child]) {
+          replaceSessionEntrySync(
+            { agentId: "main", sessionKey: key },
+            {
+              sessionId: key,
+              updatedAt: 1,
+              ...(key === child ? { parentSessionKey: parent } : {}),
+              ...(kind === "exact" ? { archivedAt: 1 } : {}),
+            },
+          );
+        }
+        const run: SubagentRunRecord = {
+          runId: "pending-placement",
+          childSessionKey: child,
+          requesterSessionKey: parent,
+          requesterAgentId: "main",
+          requesterDisplayKey: "parent",
+          task: "Synthetic pending placement",
+          cleanup: "keep",
+          createdAt: Date.now(),
+          execution: { status: "running", startedAt: Date.now() },
+          completion: { required: false },
+          delivery: { status: "not_required" },
+        };
+        subagentRuns.set(run.runId, run);
+        persistSubagentRunsToDiskOrThrow(subagentRuns);
+        const entered = createDeferredCore();
+        const release = createDeferredCore();
+        let holdNextRead = false;
+        const readProjection = vi.fn(
+          async (_ids: readonly string[]): Promise<WorkerSessionPlacementProjection> => {
+            if (holdNextRead) {
+              holdNextRead = false;
+              entered.resolve();
+              await release.promise;
+            }
+            return {
+              placements: new Map(),
+              moves: new Map(),
+              environments: new Map(),
+              workspaceResultReconcilingSessionIds: new Set(),
+            };
+          },
+        );
+        const projection = await createSessionRowProjection({
+          cfg,
+          placementFactsReader: { readProjection },
+        });
+        let observed: Promise<unknown> | undefined;
+        try {
+          await projection.ensureMaterialized();
+          if (kind === "exact") {
+            expect(readProjection).not.toHaveBeenCalled();
+          }
+          const query = { agentId: "main", key: child };
+          const consume = (read: SessionRowReadView) => {
+            const row = read.describe(query);
+            return {
+              owner: row && read.present(row).controlOwnerSessionKey,
+              ancestors: row && projection.ancestorRows(row)?.map((entry) => entry.key),
+            };
+          };
+          holdNextRead = true;
+          if (kind === "bulk") {
+            sessionChanges.emit({ all: true, scope: "worker-placements" });
+          }
+          const reading =
+            kind === "exact"
+              ? projection.withPreparedExactRows(() => [query], consume, {
+                  includeAncestors: true,
+                })
+              : projection
+                  .ensureMaterialized()
+                  .then(() => ({ kind: "complete", value: consume(projection) }));
+          observed = reading.then(
+            (value) => ({ value }),
+            (error: unknown) => ({ error }),
+          );
+          await entered.promise;
+          clearSubagentRunsReadCacheForTest();
+          expect(getSubagentSessionListReadSnapshotIdentity()).toBeUndefined();
+          release.resolve();
+          expect(await observed).toEqual({
+            value: { kind: "complete", value: { owner: parent, ancestors: [parent] } },
+          });
+          if (kind === "bulk") {
+            let sameFrame = true;
+            const warm = projection.withPreparedExactRows(
+              () => [query],
+              () => sameFrame,
+            );
+            sameFrame = false;
+            expect(await warm).toEqual({ kind: "complete", value: true });
+          }
+        } finally {
+          release.resolve();
+          await observed;
+          projection.dispose();
+        }
+      },
+    );
+  },
+);
 
 it("reuses the subagent index across a 2,048-session drain with unrelated writes and refreshes a changed run", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {

@@ -1,5 +1,6 @@
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { SKILL_LIBRARY_MAX_SELECTIONS } from "../../packages/gateway-protocol/src/schema/skill-library.js";
 import {
   readSandboxBrowserRegistryInDatabase,
   readSandboxRegistryEntryInDatabase,
@@ -14,8 +15,11 @@ import {
 import { readWorkspaceStateSnapshotForDirectoryInDatabase } from "../agents/workspace-state-store.kernel.js";
 import { ExecutionDecisionCursorError } from "../audit/execution-decision-receipts.js";
 import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identity-context.js";
+import { observeCronRunRecoveryInDatabase } from "../cron/store/run-recovery.read.js";
 import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
+import { readWorkerSessionPlacementProjectionInDatabase } from "../gateway/worker-environments/placement-read-projection.js";
 import { readExecApprovalsConfigRow } from "../infra/exec-approvals-sqlite.js";
+import { inspectCurrentConversationBindingRecordInDatabase } from "../infra/outbound/current-conversation-bindings.kernel.js";
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import { runWithSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import { withStateDatabaseCoordinatorRuntimeDirectory } from "../infra/state-database-coordinator.js";
@@ -26,6 +30,10 @@ import {
   pluginBlobEntriesInDatabase,
 } from "../plugin-state/plugin-blob-store.sqlite.js";
 import { isPluginBlobReadCommand } from "../plugin-state/plugin-blob-worker-contract.js";
+import {
+  selectSkillLibraryRevisionMetadataBatch,
+  selectSkillLibraryRevisionManifestsBatch,
+} from "../skills/library/selection-read.kernel.js";
 import { readConfigMachineStateRowInDatabase } from "./config-machine-state.js";
 import { readOnboardingRecommendationsInDatabase } from "./onboarding-recommendations.kernel.js";
 import { readRegisteredAgentDatabaseRows } from "./openclaw-agent-db-registry.read.js";
@@ -41,6 +49,7 @@ import type {
   OpenClawStateReadRequest,
 } from "./openclaw-state-read.types.js";
 import { encodeOpenClawStateWorkerError } from "./openclaw-state-worker-error.js";
+import { readUserProfileIdForEmail } from "./user-profile-identity.read.js";
 import { selectProfileDisplayEntries } from "./user-profiles-internal.js";
 
 function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
@@ -64,6 +73,23 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
     typeof coordinatorRuntime.directory === "string" &&
     typeof coordinatorRuntime.keepAlive === "boolean" &&
     (isPluginBlobReadCommand(input.command) ||
+      (input.command.type === "conversationBindings.inspect" &&
+        isRecord(input.command.conversation) &&
+        typeof input.command.conversation.channel === "string" &&
+        typeof input.command.conversation.accountId === "string" &&
+        typeof input.command.conversation.conversationId === "string" &&
+        (input.command.conversation.parentConversationId === undefined ||
+          typeof input.command.conversation.parentConversationId === "string")) ||
+      (input.command.type === "cron.observeRunRecovery" &&
+        typeof input.command.storeKey === "string" &&
+        Array.isArray(input.command.proposals) &&
+        input.command.proposals.every(
+          (proposal: unknown) =>
+            isRecord(proposal) &&
+            typeof proposal.jobId === "string" &&
+            (proposal.queuedAtMs === undefined || typeof proposal.queuedAtMs === "number") &&
+            (proposal.runningAtMs === undefined || typeof proposal.runningAtMs === "number"),
+        )) ||
       input.command.type === "admit" ||
       input.command.type === "subagents.sessionList" ||
       (input.command.type === "subagents.runs" &&
@@ -74,9 +100,19 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
             Array.isArray(input.command.scope.runIds) &&
             input.command.scope.runIds.every((runId: unknown) => typeof runId === "string")))) ||
       input.command.type === "exec-approvals.read" ||
+      ((input.command.type === "skills.library.descriptions" ||
+        input.command.type === "skills.library.manifests") &&
+        Array.isArray(input.command.input) &&
+        input.command.input.length <= SKILL_LIBRARY_MAX_SELECTIONS &&
+        input.command.input.every(
+          (pin) =>
+            isRecord(pin) && typeof pin.skillId === "string" && typeof pin.revision === "string",
+        )) ||
       input.command.type === "agentDatabaseRegistry.read" ||
-      (input.command.type === "userProfiles.avatar.reconcile" &&
+      (input.command.type === "userProfiles.reconcile" &&
         typeof input.command.profileId === "string") ||
+      (input.command.type === "userProfiles.email.resolve" &&
+        typeof input.command.email === "string") ||
       (input.command.type === "audit.run.inspect" &&
         isRecord(input.command.input) &&
         typeof input.command.input.now === "number" &&
@@ -106,7 +142,11 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
       (input.command.type === "sandboxRegistry.runtimeIds" &&
         typeof input.command.backendId === "string" &&
         typeof input.command.scopeKey === "string") ||
-      (input.command.type === "fleet.get" && typeof input.command.tenantId === "string"))
+      (input.command.type === "fleet.get" && typeof input.command.tenantId === "string") ||
+      (input.command.type === "workers.placementProjection" &&
+        Array.isArray(input.command.sessionIds) &&
+        input.command.sessionIds.every((id) => typeof id === "string") &&
+        Array.isArray(input.command.conflictBindings)))
   );
 }
 
@@ -205,6 +245,25 @@ serveOwnedWorkerTasks(
                     runs: new Map(rows.map((entry) => [entry.runId, entry])),
                   };
                 }
+                if (command.type === "conversationBindings.inspect") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    record: inspectCurrentConversationBindingRecordInDatabase(
+                      db,
+                      command.conversation,
+                    ),
+                  };
+                }
+                if (command.type === "cron.observeRunRecovery") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    observation: observeCronRunRecoveryInDatabase(db, command),
+                  };
+                }
                 if (command.type === "pluginBlob.lookup") {
                   return {
                     ok: true,
@@ -253,6 +312,26 @@ serveOwnedWorkerTasks(
                     type: command.type,
                     sourceAdmitted,
                     row: readExecApprovalsConfigRow(db),
+                  };
+                }
+                if (command.type === "skills.library.descriptions") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    value: tableExists(db, "skill_library_entries")
+                      ? selectSkillLibraryRevisionMetadataBatch(db, command.input)
+                      : undefined,
+                  };
+                }
+                if (command.type === "skills.library.manifests") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    value: tableExists(db, "skill_library_entries")
+                      ? selectSkillLibraryRevisionManifestsBatch(db, command.input)
+                      : undefined,
                   };
                 }
                 if (command.type === "onboardingRecommendations.read") {
@@ -305,7 +384,7 @@ serveOwnedWorkerTasks(
                     }),
                   };
                 }
-                if (command.type === "userProfiles.avatar.reconcile") {
+                if (command.type === "userProfiles.reconcile") {
                   return {
                     ok: true,
                     type: command.type,
@@ -313,6 +392,16 @@ serveOwnedWorkerTasks(
                     profile: runSqliteDeferredTransactionSync(
                       db,
                       () => selectProfileDisplayEntries(db, [command.profileId])[0]?.[1],
+                    ),
+                  };
+                }
+                if (command.type === "userProfiles.email.resolve") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    profileId: runSqliteDeferredTransactionSync(db, () =>
+                      readUserProfileIdForEmail(db, command.email),
                     ),
                   };
                 }
@@ -346,6 +435,18 @@ serveOwnedWorkerTasks(
                     type: command.type,
                     sourceAdmitted,
                     entries: readSandboxBrowserRegistryInDatabase(db),
+                  };
+                }
+                if (command.type === "workers.placementProjection") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    result: readWorkerSessionPlacementProjectionInDatabase(
+                      db,
+                      command.sessionIds,
+                      command.conflictBindings,
+                    ),
                   };
                 }
                 return command.type === "fleet.list"

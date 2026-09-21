@@ -75,6 +75,7 @@ function readPool(): ReadPool {
     ensureSqliteLibrarySelected();
     state.pool = createOwnedWorkerTaskPool({
       workerUrl: resolveRuntimeProcessEntrypointUrl("stateRead"),
+      workerOptions: { resourceLimits: { maxOldGenerationSizeMb: 512 } },
       maxWorkers: 2,
       idleTimeoutMs: SQLITE_IDLE_HANDLE_TTL_MS,
       maxPendingTasks: DEFAULT_WORKER_PENDING_TASKS,
@@ -94,6 +95,29 @@ function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCom
           : { ...command.scope },
     };
   }
+  if (command.type === "conversationBindings.inspect") {
+    const { channel, accountId, conversationId, parentConversationId } = command.conversation;
+    return {
+      type: command.type,
+      conversation: {
+        channel,
+        accountId,
+        conversationId,
+        ...(parentConversationId !== undefined ? { parentConversationId } : {}),
+      },
+    };
+  }
+  if (command.type === "cron.observeRunRecovery") {
+    return {
+      type: command.type,
+      storeKey: command.storeKey,
+      proposals: command.proposals.map(({ jobId, queuedAtMs, runningAtMs }) => ({
+        jobId,
+        ...(queuedAtMs === undefined ? {} : { queuedAtMs }),
+        ...(runningAtMs === undefined ? {} : { runningAtMs }),
+      })),
+    };
+  }
   if (command.type === "pluginBlob.lookup") {
     const { pluginId, namespace, key } = command.input;
     return { type: command.type, input: { pluginId, namespace, key } };
@@ -104,6 +128,15 @@ function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCom
   }
   if (command.type === "updateRuns.list") {
     return { ...command, input: { ...command.input } };
+  }
+  if (
+    command.type === "skills.library.descriptions" ||
+    command.type === "skills.library.manifests"
+  ) {
+    return {
+      type: command.type,
+      input: command.input.map(({ skillId, revision }) => ({ skillId, revision })),
+    };
   }
   if (command.type === "audit.run.inspect") {
     const input = command.input;
@@ -125,6 +158,9 @@ function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCom
             },
     };
   }
+  if (command.type === "workers.placementProjection") {
+    return structuredClone(command);
+  }
   return { ...command };
 }
 
@@ -139,6 +175,25 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
             (total, runId) => total + Buffer.byteLength(runId, "utf8"),
             0,
           ))
+    );
+  }
+  if (command.type === "conversationBindings.inspect") {
+    return (
+      bytes +
+      Object.values(command.conversation).reduce(
+        (sum, value) => sum + Buffer.byteLength(value ?? "", "utf8"),
+        0,
+      )
+    );
+  }
+  if (command.type === "cron.observeRunRecovery") {
+    return command.proposals.reduce(
+      (total, proposal) =>
+        total +
+        Buffer.byteLength(proposal.jobId, "utf8") +
+        (proposal.queuedAtMs === undefined ? 0 : 8) +
+        (proposal.runningAtMs === undefined ? 0 : 8),
+      bytes + Buffer.byteLength(command.storeKey, "utf8"),
     );
   }
   if (command.type === "pluginBlob.lookup" || command.type === "pluginBlob.entries") {
@@ -171,14 +226,27 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
       (command.input.active === undefined ? 0 : 1)
     );
   }
+  if (
+    command.type === "skills.library.descriptions" ||
+    command.type === "skills.library.manifests"
+  ) {
+    return command.input.reduce(
+      (total, pin) =>
+        total + Buffer.byteLength(pin.skillId, "utf8") + Buffer.byteLength(pin.revision, "utf8"),
+      bytes,
+    );
+  }
   if (command.type === "fleet.get") {
     return bytes + Buffer.byteLength(command.tenantId, "utf8");
   }
   if (command.type === "onboardingRecommendations.read") {
     return bytes + Buffer.byteLength(command.configKey, "utf8");
   }
-  if (command.type === "userProfiles.avatar.reconcile") {
+  if (command.type === "userProfiles.reconcile") {
     return bytes + Buffer.byteLength(command.profileId, "utf8");
+  }
+  if (command.type === "userProfiles.email.resolve") {
+    return bytes + Buffer.byteLength(command.email, "utf8");
   }
   if (command.type === "workspace.snapshot") {
     return bytes + Buffer.byteLength(command.workspaceDir, "utf8");
@@ -199,6 +267,9 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
       (input.executionOffset === undefined ? 0 : 8) +
       (input.executionLimit === undefined ? 0 : 8)
     );
+  }
+  if (command.type === "workers.placementProjection") {
+    return Buffer.byteLength(JSON.stringify(command), "utf8");
   }
   return bytes;
 }

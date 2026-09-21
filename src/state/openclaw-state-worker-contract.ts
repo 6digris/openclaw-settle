@@ -24,6 +24,8 @@ import type {
 import type { DeferredPluginMigration } from "../infra/deferred-plugin-migrations.js";
 import type { DeliveryQueueWorkerOperations } from "../infra/delivery-queue.worker-contract.js";
 import type * as deviceAuth from "../infra/device-auth-store.kernel.js";
+import type { ExecAuthorizationWorkerOperations } from "../infra/exec-approvals-contracts.js";
+import type { CurrentConversationBindingWorkerOperations } from "../infra/outbound/current-conversation-bindings.worker-contract.js";
 import type { PreparedPromotionClaim } from "../infra/promotions-feed.kernel.js";
 import type { ApnsRegistration } from "../infra/push-apns-store.types.js";
 import type { WebPushWorkerOperations } from "../infra/push-web-store.worker-contract.js";
@@ -34,6 +36,7 @@ import type { SqliteWorkerPreparedBackend } from "../infra/sqlite-worker-contrac
 import type { SqliteWorkerAdmissionFactory } from "../infra/sqlite-worker-operation-admission.js";
 import type { TelemetryWorkerOperations } from "../infra/telemetry-worker-contract.js";
 import type { readRemoteModelCatalog } from "../model-catalog/remote-store.js";
+import type { NodeWorkerJournalWorkerOperations } from "../node-host/node-worker-journal.worker-contract.js";
 import type { PluginBlobWorkerOperations } from "../plugin-state/plugin-blob-worker-contract.js";
 import type { PluginStateWorkerOperations } from "../plugin-state/plugin-state-worker-contract.js";
 import type { PluginBindingApprovalEntry } from "../plugins/conversation-binding-state.types.js";
@@ -71,7 +74,9 @@ import type { UserPreferenceWorkerOperations } from "./user-preferences.types.js
 import type { UserProfileWorkerOperations } from "./user-profiles.worker.js";
 
 /** Commands share one physical shared-state actor; bindings belong to commands, not open input. */
-export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
+export type OpenClawStateWorkerOperations = CurrentConversationBindingWorkerOperations &
+  WebPushWorkerOperations &
+  ExecAuthorizationWorkerOperations &
   AuditWriterOperations &
   NativeHookRelayStoreWorkerOperations &
   TelemetryWorkerOperations &
@@ -87,6 +92,7 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
   DeliveryQueueWorkerOperations &
   TranscriptReadOperations &
   TranscriptWriteOperations &
+  NodeWorkerJournalWorkerOperations &
   TaskRegistryWorkerOperations & {
     "githubRepository.personalPending": {
       input: RepositoryGitHubPublicationPendingQuery;
