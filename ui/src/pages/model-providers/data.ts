@@ -21,6 +21,8 @@ import {
   isMonitoredAuthProvider,
   listEffectiveModelAuthProviders,
 } from "../../lib/model-auth.ts";
+import type { ModelCatalogPresentation } from "../../lib/model-catalog-store.ts";
+import type { ModelBehaviorConfig } from "./config-mutation.ts";
 
 export type ModelProviderAuthKind = "ok" | "expiring" | "expired" | "missing" | "api-key";
 
@@ -429,6 +431,34 @@ export type DefaultModelSelection = {
 };
 
 export type ModelPickerEntry = ModelCatalogEntry & { selectionRef?: string };
+export type DefaultsDraft = DefaultModelSelection & ModelBehaviorConfig;
+
+export function resolveDefaultModelPresentation(
+  catalog: ModelCatalogPresentation,
+  configured: DefaultsDraft,
+  draft: DefaultsDraft | null,
+): { defaults: DefaultsDraft; configuredModels: ModelPickerEntry[] } {
+  if (catalog.retired || catalog.modelSelectionPolicy?.restricted) {
+    return {
+      defaults: {
+        ...configured,
+        primary: catalog.modelSelectionPolicy?.defaultModel ?? "",
+        fallbacks: [],
+        utilityModel: null,
+        decisionModel: null,
+      },
+      configuredModels: catalog.models.filter((model) => model.manualSelectionAllowed !== false),
+    };
+  }
+  const defaults = draft ?? configured;
+  return {
+    defaults,
+    configuredModels: buildSelectableDefaultModels(
+      catalog.hasSnapshot ? catalog.models : null,
+      defaults,
+    ),
+  };
+}
 
 export function modelCatalogRef(model: ModelPickerEntry): string {
   if (model.selectionRef !== undefined) {

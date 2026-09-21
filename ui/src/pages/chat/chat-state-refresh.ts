@@ -14,6 +14,7 @@ import {
 } from "../../lib/chat/chat-metadata-store.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import { loadModelAuthStatus } from "../../lib/model-auth.ts";
+import { isModelCatalogRetired } from "../../lib/model-catalog-cache.ts";
 import { loadModelCatalog, peekModelCatalog } from "../../lib/model-catalog-store.ts";
 import { isSessionRunActive } from "../../lib/session-run-state.ts";
 import { reconcileSessionHistory } from "../../lib/sessions/reconcile.ts";
@@ -76,6 +77,8 @@ export function retireChatMetadataRequests(host: ChatPageHost): void {
   host.chatModelCatalogError = null;
   host.chatModelCatalogRefreshFailed = undefined;
   host.chatModelCatalogPendingProviders = undefined;
+  host.chatModelSelectionPolicy = undefined;
+  host.chatModelCatalogRetired = false;
   host.chatModelsLoading = false;
   host.chatAccountSelection = null;
 }
@@ -192,6 +195,7 @@ function bindChatMetadata(host: ChatPageHost): ChatMetadataBinding | undefined {
             binding.catalogRequest?.controller.abort();
             binding.catalogRequest = undefined;
             host.chatModelsLoading = false;
+            applyCachedChatModelCatalog(host, binding);
           }
           binding.sessionFactsInvalidated ||= update.refreshSessionFacts;
           void refreshChatMetadata(host, { automatic: true });
@@ -475,6 +479,8 @@ async function loadChatModelCatalog(
 
 function applyChatModelCatalog(host: ChatPageHost, result: ModelCatalogResult) {
   host.chatModelCatalog = result.models;
+  host.chatModelSelectionPolicy = result.modelSelectionPolicy;
+  host.chatModelCatalogRetired = false;
   host.chatAccountSelection = result.accountSelection ?? null;
   host.chatModelCatalogError = null;
   host.chatModelCatalogRefreshFailed = result.refreshFailed;
@@ -484,6 +490,11 @@ function applyChatModelCatalog(host: ChatPageHost, result: ModelCatalogResult) {
 function applyCachedChatModelCatalog(host: ChatPageHost, binding: ChatMetadataBinding): boolean {
   const fresh = peekModelCatalog(binding.client, binding.scope);
   const result = fresh ?? peekModelCatalog(binding.client, binding.scope, { allowStale: true });
+  if (!result && binding.isCurrent() && isModelCatalogRetired(binding.client, binding.scope)) {
+    applyChatModelCatalog(host, { models: [] });
+    host.chatModelCatalogRetired = true;
+    host.requestUpdate?.();
+  }
   if (!result || !binding.isCurrent()) {
     return false;
   }

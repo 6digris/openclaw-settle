@@ -9,7 +9,12 @@ import { PreparedModelRuntimePublicationSupersededError } from "../../agents/pre
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { readGatewayAccessRevision } from "../gateway-access-revision.js";
 import { ModelAccountConnectAuthorityError } from "../model-account-connect.js";
+import { prepareOperatorModelPresentation } from "../operator-model-presentation.js";
+import { SESSION_READ_SCOPE } from "../operator-scopes.js";
+import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
+import { hiddenSessionNotFound } from "../session-sharing-policy.js";
+import { createSessionListEntryFilter } from "../session-sharing.js";
 import { retainGatewaySessionEntryReadOnly } from "../session-utils-read-lifetime.js";
 import { resolveAgentIdOrRespondError } from "./agent-id-shared.js";
 import type { ChatMetadataReadParams } from "./chat-metadata-contract.js";
@@ -26,6 +31,21 @@ export function resolveChatMetadataReadParams(
 ): ChatMetadataReadParams | undefined {
   const { respond, context, client, signal } = options;
   const cfg = context.getRuntimeConfig();
+  const accessRevision = readGatewayAccessRevision();
+  const profileInput = client?.authenticatedUserProfile?.profileId;
+  const userInput = client?.authenticatedUserId;
+  const isRequestCurrent = () =>
+    !signal?.aborted &&
+    readGatewayAccessRevision() === accessRevision &&
+    client?.authenticatedUserProfile?.profileId === profileInput &&
+    client?.authenticatedUserId === userInput;
+  const assertRequestCurrent = () => {
+    if (!isRequestCurrent() || context.getRuntimeConfig() !== cfg) {
+      throw new PreparedModelRuntimePublicationSupersededError(
+        "Chat metadata access changed while preparing its metadata. Retry the request.",
+      );
+    }
+  };
   if (params.sessionKey) {
     const requested = resolveRequestedSessionAgentId(
       cfg,
@@ -37,18 +57,22 @@ export function resolveChatMetadataReadParams(
       return undefined;
     }
     // Persisted session state owns account pins; a caller cannot replace them with a draft id.
-    const accessRevision = readGatewayAccessRevision();
     const requesterProfileId = resolveAuthenticatedProfileId(client);
-    const profileInput = client?.authenticatedUserProfile?.profileId;
-    const userInput = client?.authenticatedUserId;
     const session = retainGatewaySessionEntryReadOnly(params.sessionKey, requested.agentId);
-    const isCurrent = () =>
-      !signal?.aborted &&
-      readGatewayAccessRevision() === accessRevision &&
-      client?.authenticatedUserProfile?.profileId === profileInput &&
-      client?.authenticatedUserId === userInput &&
-      session.isCurrent();
+    const isCurrent = () => isRequestCurrent() && session.isCurrent();
+    const assertReadAuthorized = () => {
+      if (
+        session.entry &&
+        createSessionListEntryFilter({ cfg, client })?.(session.canonicalKey, session.entry) ===
+          false
+      ) {
+        throw new SessionMutationAuthorizationChangedError(
+          hiddenSessionNotFound(session.canonicalKey),
+        );
+      }
+    };
     try {
+      assertReadAuthorized();
       return {
         agentId: resolveSessionAgentId({
           sessionKey: params.sessionKey,
@@ -60,15 +84,13 @@ export function resolveChatMetadataReadParams(
         sessionEntry: session.entry,
         isCurrent,
         assertCurrent: () => {
-          if (
-            !isCurrent() ||
-            context.getRuntimeConfig() !== cfg ||
-            !session.isCurrentAtResponse()
-          ) {
+          assertRequestCurrent();
+          if (!session.isCurrentAtResponse()) {
             throw new PreparedModelRuntimePublicationSupersededError(
               "Session changed while preparing its metadata. Retry the request.",
             );
           }
+          assertReadAuthorized();
         },
         release: session.release,
         requesterProfileId,
@@ -87,16 +109,19 @@ export function resolveChatMetadataReadParams(
   if (!resolved) {
     return undefined;
   }
+  assertRequestCurrent();
   const draftAccountSelection = params.authProfileId
     ? preparePersonalModelAccountSelection(
         { client, context, signal },
         params.authProfileId,
-        "operator.read",
+        SESSION_READ_SCOPE,
       )
     : undefined;
   return {
     agentId: resolved.agentId,
     requesterProfileId: draftAccountSelection?.owner ?? resolveAuthenticatedProfileId(client),
+    isCurrent: isRequestCurrent,
+    assertCurrent: assertRequestCurrent,
     ...(draftAccountSelection ? { draftAccountSelection } : {}),
   };
 }
@@ -104,7 +129,7 @@ export function resolveChatMetadataReadParams(
 export async function handleChatMetadataRequest(
   options: GatewayRequestHandlerOptions,
 ): Promise<void> {
-  const { params, respond, context } = options;
+  const { params, respond, context, client } = options;
   if (!assertValidParams(params, validateChatMetadataParams, "chat.metadata", respond)) {
     return;
   }
@@ -117,8 +142,16 @@ export async function handleChatMetadataRequest(
     const metadata = await context.readChatMetadata(scope);
     scope.draftAccountSelection?.assertCurrent();
     scope.assertCurrent?.();
-    respond(true, metadata);
+    const policy = prepareOperatorModelPresentation({
+      cfg: context.getRuntimeConfig(),
+      client,
+    })?.forAgent(scope.agentId, metadata.models);
+    respond(true, policy ? policy.metadata(metadata) : metadata);
   } catch (error) {
+    if (error instanceof SessionMutationAuthorizationChangedError) {
+      respond(false, undefined, error.error);
+      return;
+    }
     if (!(error instanceof ModelAccountConnectAuthorityError)) {
       throw error;
     }

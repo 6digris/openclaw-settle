@@ -28,6 +28,7 @@ import {
   TALK_SCOPE,
   WRITE_SCOPE,
 } from "./method-scopes.js";
+import { SESSION_READ_SCOPE } from "./operator-scopes.js";
 import type {
   GatewayBroadcastFn,
   GatewayBroadcastOpts,
@@ -49,7 +50,7 @@ import { logWs, summarizeAgentEventForWsLog } from "./ws-log.js";
 const EVENT_SCOPE_GUARDS: Record<string, string[]> = {
   agent: [READ_SCOPE],
   chat: [READ_SCOPE],
-  "chat.metadata.changed": [READ_SCOPE],
+  "chat.metadata.changed": [SESSION_READ_SCOPE],
   "board.changed": [READ_SCOPE],
   "board.command": [READ_SCOPE],
   "progressCard.changed": [READ_SCOPE],
@@ -193,6 +194,27 @@ function hasEventScope(
     required.length === 0 ||
     (role === "operator" && required.some((scope) => operatorScopeSatisfied(scope, scopes)))
   );
+}
+
+function modelMetadataInvalidationFragment(payload: unknown): string | undefined {
+  if (isProxy(payload) || !isRecord(payload)) {
+    return undefined;
+  }
+  const prototype = Object.getPrototypeOf(payload);
+  if ((prototype !== null && prototype !== Object.prototype) || "toJSON" in payload) {
+    return undefined;
+  }
+  const keys = Reflect.ownKeys(payload);
+  if (keys.length === 0) {
+    return ',"payload":{}';
+  }
+  if (keys.length !== 1 || keys[0] !== "modelSelectionChanged") {
+    return undefined;
+  }
+  const field = Object.getOwnPropertyDescriptor(payload, "modelSelectionChanged");
+  return field?.value === true && field.enumerable
+    ? ',"payload":{"modelSelectionChanged":true}'
+    : undefined;
 }
 
 type FrameFields = {
@@ -358,6 +380,9 @@ export function createGatewayBroadcaster(params: {
     const presencePayload =
       // SAFETY: Internal presence producers emit { presence: SystemPresence[] }; wire input cannot publish events.
       event === "presence" ? (payload as { presence: SystemPresence[] }) : undefined;
+    // The bounded signal has no caller-provided serialization or model/config data.
+    const metadataInvalidation =
+      event === "chat.metadata.changed" ? modelMetadataInvalidationFragment(payload) : undefined;
     let projectPresence: ((client: GatewayWsClient) => SystemPresence[]) | undefined;
     let projectSession: ((client: GatewayWsClient) => unknown) | undefined;
     let skipSourcePayload = false;
@@ -380,7 +405,12 @@ export function createGatewayBroadcaster(params: {
       });
     const frameBaseFor = (value: unknown): FrameBase => ({
       ...getFrameFields(),
-      payloadFragment: presencePayload ? "" : serializeFrameField("payload", value),
+      payloadFragment:
+        value === payload && metadataInvalidation !== undefined
+          ? metadataInvalidation
+          : presencePayload
+            ? ""
+            : serializeFrameField("payload", value),
     });
     // Lazy so filtered-out broadcasts (zero eligible clients) never pay
     // JSON.stringify for the payload.
@@ -407,6 +437,13 @@ export function createGatewayBroadcaster(params: {
         continue;
       }
       if (!hasEventScope(c, event, explicitPluginScope)) {
+        continue;
+      }
+      if (
+        event === "chat.metadata.changed" &&
+        !operatorScopeSatisfied(READ_SCOPE, c.connect.scopes ?? []) &&
+        metadataInvalidation === undefined
+      ) {
         continue;
       }
       const requiresSessionSubscription =

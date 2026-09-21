@@ -159,6 +159,7 @@ describe("direct session model catalogs", () => {
         sessionId: "catalog-read-marker-session",
         lifecycleRevision: "catalog-read-marker-lifecycle",
         updatedAt: 1,
+        createdActor: { type: "human", source: "profile", id: f.person.id },
         lastReadAt: 1,
         label: "catalog-read-marker-label",
         authProfileOverride: f.authProfileId,
@@ -237,6 +238,7 @@ describe("direct session model catalogs", () => {
       await upsertSessionEntryCore(scope, {
         sessionId: "original",
         updatedAt: 1,
+        createdActor: { type: "human", source: "profile", id: f.person.id },
         authProfileOverride: f.authProfileId,
         authProfileOverrideSource: "user",
       });
@@ -292,8 +294,16 @@ describe("direct session model catalogs", () => {
         await state.writeConfig(f.config);
         const selected = { agentId: "main", sessionKey: "agent:main:metadata-selected" };
         const other = { ...selected, sessionKey: "agent:main:metadata-other" };
-        await upsertSessionEntryCore(selected, { sessionId: "selected", updatedAt: 1 });
-        await upsertSessionEntryCore(other, { sessionId: "other", updatedAt: 1 });
+        await upsertSessionEntryCore(selected, {
+          sessionId: "selected",
+          updatedAt: 1,
+          createdActor: { type: "human", source: "profile", id: f.person.id },
+        });
+        await upsertSessionEntryCore(other, {
+          sessionId: "other",
+          updatedAt: 1,
+          createdActor: { type: "human", source: "profile", id: f.person.id },
+        });
         const entered = createDeferred();
         const release = createDeferred();
         f.context.readChatMetadata = async () => {
@@ -347,6 +357,7 @@ describe("direct session model catalogs", () => {
         {
           sessionId: "saved-catalog-session",
           updatedAt: 1,
+          createdActor: { type: "human", source: "profile", id: f.person.id },
           authProfileOverride: f.authProfileId,
           authProfileOverrideSource: "user",
         },
@@ -396,6 +407,7 @@ describe("direct session model catalogs", () => {
         {
           sessionId: "catalog-native-session",
           updatedAt: 1,
+          createdActor: { type: "human", source: "profile", id: f.person.id },
           agentHarnessId: "catalog-native",
           modelSelectionLocked: true,
         },

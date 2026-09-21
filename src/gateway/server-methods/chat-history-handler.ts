@@ -25,6 +25,7 @@ import {
 } from "../chat-abort.js";
 import { resolveEffectiveChatHistoryMaxChars } from "../chat-display-projection.js";
 import { resolveClaudeCliBindingSessionId } from "../cli-session-history.js";
+import { projectOperatorModelRead } from "../operator-model-presentation.js";
 import { getMaxChatHistoryMessagesBytes } from "../server-constants.js";
 import { buildGatewaySessionSnapshot } from "../session-event-payload.js";
 import { resolveSessionHistoryUnavailableMessage } from "../session-history-error.js";
@@ -437,6 +438,7 @@ export async function handleChatHistoryRequest({
   const startupProjection = await (startupProjectionPromise ?? readStartupProjection());
   const startupMetadata = method === "chat.startup" ? startupProjection?.metadata : undefined;
   const { sessionModelCatalog, defaultModelCatalog } = startupProjection ?? {};
+  const modelReadScope = { context, client, agentId: sessionAgentId, catalog: defaultModelCatalog };
   const rowProjection = getSessionRowProjection(context);
   if (!rowProjection) {
     respondChatHistoryUnavailable(
@@ -663,7 +665,7 @@ export async function handleChatHistoryRequest({
             messages: delta.messages,
             maxBytes: maxHistoryBytes - chatHistoryActivityBytes(delta.activity),
           });
-          respond(true, {
+          const payload = {
             kind: "delta",
             messages: delta.messages,
             ...(delta.activity.length > 0 ? { activity: delta.activity } : {}),
@@ -673,7 +675,8 @@ export async function handleChatHistoryRequest({
             sessionInfo,
             ...(boundedInFlightRun ? { inFlightRun: boundedInFlightRun } : {}),
             ...(startupMetadata ? { metadata: startupMetadata } : {}),
-          });
+          };
+          respond(true, projectOperatorModelRead(modelReadScope, payload));
           return undefined;
         };
       }
@@ -709,7 +712,7 @@ export async function handleChatHistoryRequest({
         ...(boundedInFlightRun ? { inFlightRun: boundedInFlightRun } : {}),
         ...(startupMetadata ? { metadata: startupMetadata } : {}),
       };
-      respond(true, payload);
+      respond(true, projectOperatorModelRead(modelReadScope, payload));
       return undefined;
     },
   );

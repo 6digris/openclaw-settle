@@ -5,6 +5,7 @@ public enum OpenClawChatTransportEvent: Sendable {
     case health(ok: Bool)
     case tick
     case chatMetadataChanged
+    case modelSelectionChanged
     case sessionsChanged(OpenClawChatSessionsChangedEvent)
     case sessionObserver(SessionObserverDigest)
     case chat(OpenClawChatEventPayload)
@@ -719,10 +720,21 @@ public struct OpenClawChatMetadataCapabilities: Codable, Sendable, Equatable {
     }
 }
 
+public struct OpenClawChatModelSelectionPolicy: Codable, Sendable, Equatable {
+    public let restricted: Bool
+    public let defaultModel: String?
+
+    public init(restricted: Bool, defaultModel: String?) {
+        self.restricted = restricted
+        self.defaultModel = defaultModel
+    }
+}
+
 public struct OpenClawChatModelCatalogSnapshot: Sendable, Equatable {
     public let choices: [OpenClawChatModelChoice]
     public let availabilityIsSessionScoped: Bool
     public let refreshFailed: Bool
+    public let modelSelectionPolicy: OpenClawChatModelSelectionPolicy?
 
     public var message: String? {
         if !self.availabilityIsSessionScoped {
@@ -735,11 +747,13 @@ public struct OpenClawChatModelCatalogSnapshot: Sendable, Equatable {
     public init(
         choices: [OpenClawChatModelChoice],
         availabilityIsSessionScoped: Bool,
-        refreshFailed: Bool = false)
+        refreshFailed: Bool = false,
+        modelSelectionPolicy: OpenClawChatModelSelectionPolicy? = nil)
     {
         self.choices = choices
         self.availabilityIsSessionScoped = availabilityIsSessionScoped
         self.refreshFailed = refreshFailed
+        self.modelSelectionPolicy = modelSelectionPolicy
     }
 }
 

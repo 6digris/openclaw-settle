@@ -26,6 +26,7 @@ import {
 } from "../lib/chat/chat-metadata-cache.ts";
 import { createIdleImport } from "../lib/idle-import.ts";
 import { invalidateModelAuthStatusRequests } from "../lib/model-auth-request-state.ts";
+import { modelCatalogEventInvalidation } from "../lib/model-catalog-cache.ts";
 import { resolveSessionDisplayName } from "../lib/session-display.ts";
 import {
   isUiGlobalSessionKey,
@@ -526,10 +527,11 @@ class OpenClawShell
         agentsList: context?.agents.state.agentsList,
       });
     }
-    if (event.event === "config.changed" || event.event === "chat.metadata.changed") {
+    const modelInvalidation = modelCatalogEventInvalidation(event);
+    if (modelInvalidation) {
       if (client) {
         invalidateModelAuthStatusRequests(client);
-        invalidateChatMetadataStore(client);
+        invalidateChatMetadataStore(client, undefined, undefined, modelInvalidation === "clear");
       }
     }
     this.shellGateway.handleGatewayEvent(event);

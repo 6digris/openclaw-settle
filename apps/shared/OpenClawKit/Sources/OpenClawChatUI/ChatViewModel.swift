@@ -49,9 +49,26 @@ public final class OpenClawChatViewModel {
     public internal(set) var showsThinkingPicker = false
     public internal(set) var preferredVerboseLevel: String
     var prefersExplicitVerboseLevel: Bool
-    public private(set) var modelSelectionID: String = "__default__"
+    private var requestedModelSelectionID: String = "__default__"
+    public private(set) var modelSelectionID: String {
+        get {
+            guard !self.modelCatalogInvalidated else { return Self.defaultModelSelectionID }
+            guard let policy = self.modelSelectionPolicy, policy.restricted else {
+                return self.requestedModelSelectionID
+            }
+            if self.modelChoices.contains(where: {
+                $0.selectionID == self.requestedModelSelectionID || $0.modelID == self.requestedModelSelectionID
+            }) {
+                return self.requestedModelSelectionID
+            }
+            return Self.defaultModelSelectionID
+        }
+        set { self.requestedModelSelectionID = newValue }
+    }
     public internal(set) var modelChoices: [OpenClawChatModelChoice] = []
     var modelAvailabilityIsSessionScoped = false
+    var modelSelectionPolicy: OpenClawChatModelSelectionPolicy?
+    var modelCatalogInvalidated = false
     public internal(set) var modelCatalogMessage: String?
     var agentCatalog: OpenClawChatAgentsListResponse?
     var isLoadingAgents = false
@@ -746,7 +763,8 @@ public final class OpenClawChatViewModel {
     }
 
     public var defaultModelLabel: String {
-        guard let defaultModelID = normalizedModelSelectionID(sessionDefaults?.model) else {
+        let defaults = self.modelPickerDefault
+        guard let defaultModelID = normalizedModelSelectionID(defaults.model, provider: defaults.provider) else {
             return "Default"
         }
         return "Default: \(modelLabel(for: defaultModelID))"
@@ -1265,7 +1283,8 @@ extension OpenClawChatViewModel {
         self.invalidateComposerCapabilities()
         self.modelSelectionID = Self.defaultModelSelectionID
         self.modelAvailabilityIsSessionScoped = false
-        self.modelChoices = []
+        self.invalidateModelChoices()
+        self.modelSelectionPolicy = nil
         self.modelCatalogMessage = nil
         replaceMessages([])
         self.isShowingCachedTranscript = false
@@ -1537,9 +1556,8 @@ extension OpenClawChatViewModel {
         let explicitModelID = self.normalizedModelSelectionID(
             currentSession?.model,
             provider: currentSession?.modelProvider)
-        let defaultModelID = self.normalizedModelSelectionID(
-            self.sessionDefaults?.model,
-            provider: self.sessionDefaults?.modelProvider)
+        let defaults = self.modelPickerDefault
+        let defaultModelID = self.normalizedModelSelectionID(defaults.model, provider: defaults.provider)
         if self.lastSuccessfulModelSelectionIDsByTarget[target] == Self.defaultModelSelectionID,
            explicitModelID == defaultModelID
         {

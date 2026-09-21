@@ -166,11 +166,13 @@ export function renderChatPaneComposerControls(params: {
       models: state.chatModelCatalog,
       refreshFailed: state.chatModelCatalogRefreshFailed,
       pendingProviders: state.chatModelCatalogPendingProviders,
+      modelSelectionPolicy: state.chatModelSelectionPolicy,
     },
     {
       connected: state.connected,
       loading: state.chatModelsLoading,
       error: state.chatModelCatalogError,
+      retired: state.chatModelCatalogRetired,
     },
   );
   const thinkingLevelOverride = state.sessions.think(sessionKey, agentScope.agentId);
