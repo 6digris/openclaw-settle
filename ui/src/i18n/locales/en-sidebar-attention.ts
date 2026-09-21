@@ -36,6 +36,8 @@ const enSidebarAttention = {
     overdue: "Overdue",
     dismissItem: "Dismiss {item}",
     dismissShown: "Dismiss all shown",
+    dismissHelp:
+      "Dismiss clears notifications in this tab. It does not approve requests or stop work.",
     emptyTitle: "Nothing waiting",
     emptyBody: "New requests and alerts land here.",
     issues: "Inbox",

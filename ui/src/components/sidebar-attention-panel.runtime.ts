@@ -158,23 +158,25 @@ export function renderSidebarAttentionPanel(params: SidebarAttentionPanelParams)
             ${t("attention.issues")}
           </h2>
           <div class="sidebar-issues-panel__header-actions">
-            <button
-              type="button"
-              class="btn btn--xs btn--ghost sidebar-issues-panel__dismiss-shown"
-              style=${hasVisibleDismissals ? nothing : "visibility:hidden"}
-              ?disabled=${!canDismissShown}
-              aria-hidden=${hasVisibleDismissals ? nothing : "true"}
-              @click=${() => {
-                for (const dismissal of visibleDismissals) {
-                  params.onDismiss(dismissal);
-                }
-                if (mentionDismissals.length > 0) {
-                  void params.mentions.dismiss(mentionDismissals);
-                }
-              }}
-            >
-              ${t("attention.dismissShown")}
-            </button>
+            <openclaw-tooltip .content=${t("attention.dismissHelp")}>
+              <button
+                type="button"
+                class="btn btn--xs btn--ghost sidebar-issues-panel__dismiss-shown"
+                style=${hasVisibleDismissals ? nothing : "visibility:hidden"}
+                ?disabled=${!canDismissShown}
+                aria-hidden=${hasVisibleDismissals ? nothing : "true"}
+                @click=${() => {
+                  for (const dismissal of visibleDismissals) {
+                    params.onDismiss(dismissal);
+                  }
+                  if (mentionDismissals.length > 0) {
+                    void params.mentions.dismiss(mentionDismissals);
+                  }
+                }}
+              >
+                ${t("attention.dismissShown")}
+              </button>
+            </openclaw-tooltip>
             <openclaw-tooltip .content=${t("attention.mentions.notifications")}>
               <a
                 class="sidebar-brand__icon"

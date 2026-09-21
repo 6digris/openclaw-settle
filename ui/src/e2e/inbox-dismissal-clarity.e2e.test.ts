@@ -101,6 +101,18 @@ suite.define(() => {
             await mention.getByRole("button", { name: "Dismiss", exact: true }).textContent()
           )?.trim(),
         ).toBe("Dismiss");
+        const dismissShown = panel.getByRole("button", { name: "Dismiss all shown", exact: true });
+        const dismissTooltip = panel.locator(
+          "openclaw-tooltip:has(.sidebar-issues-panel__dismiss-shown)",
+        );
+        expect(await panel.locator("#sidebar-issues-dismiss-help").count()).toBe(0);
+        await dismissShown.hover();
+        await dismissTooltip.locator("wa-tooltip[open]").waitFor();
+        expect(await dismissTooltip.locator("wa-tooltip").textContent()).toContain(
+          "Dismiss clears notifications in this tab. It does not approve requests or stop work.",
+        );
+        await page.keyboard.press("Escape");
+        await dismissTooltip.locator("wa-tooltip[open]").waitFor({ state: "detached" });
 
         // A scoped bulk action must not acknowledge another tab's mention.
         await panel.getByRole("tab", { name: /Automations/ }).click();
