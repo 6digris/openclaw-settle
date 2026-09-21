@@ -86,6 +86,18 @@ function readPool(): ReadPool {
 }
 
 function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCommand {
+  if (command.type === "conversationBindings.inspect") {
+    const { channel, accountId, conversationId, parentConversationId } = command.conversation;
+    return {
+      type: command.type,
+      conversation: {
+        channel,
+        accountId,
+        conversationId,
+        ...(parentConversationId !== undefined ? { parentConversationId } : {}),
+      },
+    };
+  }
   if (command.type === "pluginBlob.lookup") {
     const { pluginId, namespace, key } = command.input;
     return { type: command.type, input: { pluginId, namespace, key } };
@@ -131,6 +143,15 @@ function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCom
 
 function commandBytes(command: OpenClawStateReadRequest["command"]): number {
   let bytes = Buffer.byteLength(command.type, "utf8");
+  if (command.type === "conversationBindings.inspect") {
+    return (
+      bytes +
+      Object.values(command.conversation).reduce(
+        (sum, value) => sum + Buffer.byteLength(value ?? "", "utf8"),
+        0,
+      )
+    );
+  }
   if (command.type === "pluginBlob.lookup" || command.type === "pluginBlob.entries") {
     return (
       bytes +

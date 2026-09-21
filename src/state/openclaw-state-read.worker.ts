@@ -13,6 +13,7 @@ import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identi
 import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
 import { readDevicePairingStoreStateFromDatabase } from "../infra/device-pairing-store.js";
 import { readExecApprovalsConfigRow } from "../infra/exec-approvals-sqlite.js";
+import { inspectCurrentConversationBindingRecordInDatabase } from "../infra/outbound/current-conversation-bindings.kernel.js";
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import { runWithSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import { withStateDatabaseCoordinatorRuntimeDirectory } from "../infra/state-database-coordinator.js";
@@ -66,6 +67,13 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
     typeof coordinatorRuntime.directory === "string" &&
     typeof coordinatorRuntime.keepAlive === "boolean" &&
     (isPluginBlobReadCommand(input.command) ||
+      (input.command.type === "conversationBindings.inspect" &&
+        isRecord(input.command.conversation) &&
+        typeof input.command.conversation.channel === "string" &&
+        typeof input.command.conversation.accountId === "string" &&
+        typeof input.command.conversation.conversationId === "string" &&
+        (input.command.conversation.parentConversationId === undefined ||
+          typeof input.command.conversation.parentConversationId === "string")) ||
       input.command.type === "admit" ||
       input.command.type === "devicePairing.inventory" ||
       input.command.type === "exec-approvals.read" ||
@@ -168,6 +176,17 @@ serveOwnedWorkerTasks(
             return withOpenClawStateReadOnlyLocation(
               ({ db }) => {
                 sourceAdmitted = true;
+                if (command.type === "conversationBindings.inspect") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    record: inspectCurrentConversationBindingRecordInDatabase(
+                      db,
+                      command.conversation,
+                    ),
+                  };
+                }
                 if (command.type === "devicePairing.inventory") {
                   return {
                     ok: true,

@@ -45,6 +45,7 @@ import * as deliveryQueue from "../infra/delivery-queue.worker.js";
 import * as deviceAuth from "../infra/device-auth-store.kernel.js";
 import { loadDevicePairingStoreStateFromDatabase } from "../infra/device-pairing-store.js";
 import { commitExecAuthorizationsInWorker } from "../infra/exec-approvals-authorization.worker.js";
+import { executeCurrentConversationBindingCommand } from "../infra/outbound/current-conversation-bindings.worker.js";
 import { executePromotionCommand } from "../infra/promotions-feed.worker.js";
 import {
   readApnsRegistrationFromDatabase,
@@ -299,9 +300,6 @@ export function executeSharedStateCommand(
       ? withArtifactPreservingStateReads(read)
       : read();
   }
-  if (command.type === "devicePairing.inventory") {
-    return loadDevicePairingStoreStateFromDatabase(open());
-  }
   if (command.type === "plugins.conversationBindingApprovals.read") {
     return readPluginBindingApprovalsInDatabase(open().db);
   }
@@ -409,13 +407,14 @@ export function executeSharedStateCommand(
   if (skillWorkshop.isSkillWorkshopCommand(command)) {
     return skillWorkshop.executeSkillWorkshopCommand(command, database, context.databasePath);
   }
-  if (command.type === "deviceAuth.list") {
-    return deviceAuth.readDeviceAuthTokensFromDatabase(database.db, command.input);
-  }
   if (command.type === "transcripts.append" || command.type === "transcripts.writeSummary") {
     return executeTranscriptWrite(command, { database, path: context.databasePath });
   }
   switch (command.type) {
+    case "deviceAuth.list":
+      return deviceAuth.readDeviceAuthTokensFromDatabase(database.db, command.input);
+    case "devicePairing.inventory":
+      return loadDevicePairingStoreStateFromDatabase(database);
     case "transcripts.readEntries":
     case "transcripts.exportOwnership":
     case "transcripts.exportPathCollisions":
@@ -484,6 +483,12 @@ export function executeSharedStateCommand(
     path: context.databasePath,
     env: getSqliteWorkerStateContext().environment,
   };
+  if (
+    command.type === "conversationBindings.resolve" ||
+    command.type === "conversationBindings.touch"
+  ) {
+    return executeCurrentConversationBindingCommand(command, writeOptions);
+  }
   if (isNodeWorkerJournalCommand(command)) {
     return executeNodeWorkerJournalCommand(command, writeOptions);
   }
