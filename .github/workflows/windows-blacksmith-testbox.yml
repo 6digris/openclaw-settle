@@ -166,10 +166,64 @@ jobs:
           $sshd = "$env:WINDIR\System32\OpenSSH\sshd.exe"
           $keygen = "$env:WINDIR\System32\OpenSSH\ssh-keygen.exe"
           $service = Get-CimInstance Win32_Service -Filter "Name='sshd'"
+          # Diagnostic-only receipt: fixed classifications, never raw identity or command data.
+          $receipt = [ordered]@{
+            service_present = [bool]$service
+            service_state = "unavailable"
+            configured_LocalSystem_match = [bool]($service -and $service.StartName -eq "LocalSystem")
+            running_process_owner_sid_class = "unavailable"
+            service_executable_class = "unparseable"
+            service_arguments_present = "unknown"
+            process_executable_class = "unavailable"
+            original_path_guard_match = $false
+          }
+          $receiptKnownPaths = @(
+            @{ path = $sshd; kind = "inbox" }
+            @{ path = "$env:ProgramFiles\OpenSSH\sshd.exe"; kind = "program-files" }
+          )
+          if ($service) {
+            if (@("Stopped", "Start Pending", "Stop Pending", "Running", "Continue Pending", "Pause Pending", "Paused", "Unknown") -ccontains $service.State) {
+              $receipt.service_state = $service.State
+            }
+            $receiptCommand = ([string]$service.PathName).Trim()
+            $receipt.original_path_guard_match = $receiptCommand.Trim('"') -ieq $sshd
+            foreach ($receiptKnown in $receiptKnownPaths) {
+              $receiptEscaped = [regex]::Escape($receiptKnown.path)
+              if ($receiptCommand -match ('^(?:"' + $receiptEscaped + '"|' + $receiptEscaped + ')(?:\s+(?<arguments>.*))?$')) {
+                $receipt.service_executable_class = $receiptKnown.kind
+                $receipt.service_arguments_present = -not [string]::IsNullOrWhiteSpace($Matches.arguments)
+                break
+              }
+            }
+            if ($service.ProcessId -gt 0) {
+              try {
+                $receiptProcess = Get-CimInstance Win32_Process -Filter ("ProcessId = " + [uint32]$service.ProcessId) -ErrorAction Stop
+                if ($receiptProcess) {
+                  if (-not [string]::IsNullOrWhiteSpace($receiptProcess.ExecutablePath)) {
+                    $receipt.process_executable_class = "other"
+                    foreach ($receiptKnown in $receiptKnownPaths) {
+                      if ($receiptProcess.ExecutablePath -ieq $receiptKnown.path) {
+                        $receipt.process_executable_class = $receiptKnown.kind
+                        break
+                      }
+                    }
+                  }
+                  $receiptOwner = Invoke-CimMethod -InputObject $receiptProcess -MethodName GetOwnerSid -ErrorAction Stop
+                  if ($receiptOwner.ReturnValue -eq 0 -and -not [string]::IsNullOrWhiteSpace($receiptOwner.Sid)) {
+                    $receipt.running_process_owner_sid_class = if ($receiptOwner.Sid -eq "S-1-5-18") { "LocalSystem" } else { "other" }
+                  }
+                }
+              } catch {
+                # An unavailable diagnostic read must not print its exception or change admission.
+              }
+            }
+          }
+          Write-Host ("WINDOWS_SSH_SERVICE_RECEIPT=" + ($receipt | ConvertTo-Json -Compress))
           if (-not $service -or $service.State -ne "Running" -or $service.StartName -ne "LocalSystem" -or
               $service.PathName.Trim().Trim('"') -ine $sshd) {
             throw "Expected the running stock LocalSystem Windows OpenSSH service without arguments."
           }
+          throw 'WINDOWS_SSH_RECEIPT_ONLY: admission matched; authentication setup not run.'
           $effectiveConfig = & $sshd -T -C "user=$nativeUser" 2>&1
           if ($LASTEXITCODE -ne 0) { throw "Could not inspect native Windows OpenSSH configuration." }
           $keySetting = @($effectiveConfig | Where-Object { $_ -match '^authorizedkeysfile\s' })
