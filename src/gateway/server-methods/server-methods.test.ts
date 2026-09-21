@@ -49,14 +49,19 @@ import {
   resolveEffectiveChatHistoryMaxChars,
   sanitizeChatHistoryMessages,
 } from "../chat-display-projection.js";
-import { createTestApprovalManager } from "../exec-approval-manager.test-support.js";
+import {
+  createPreparedTestApprovalManager,
+  createTestApprovalManager,
+} from "../exec-approval-manager.test-support.js";
 import type { HealthSummary } from "../health/types.js";
-import { createChatAbortMarker, createChatRunState } from "../server-chat-state.js";
+import { createChatAbortMarker } from "../server-chat-state.js";
 import { HEALTH_REFRESH_INTERVAL_MS } from "../server-constants.js";
 import { injectTimestamp, timestampOptsFromConfig } from "./agent-timestamp.js";
+import { waitForApprovalAccepted } from "./approval-request.test-support.js";
 import { normalizeRpcAttachmentsToChatAttachments } from "./attachment-normalize.js";
 import { createExecApprovalHandlers } from "./exec-approval.js";
 import { logsHandlers } from "./logs.js";
+import { createExecApprovalFixture } from "./server-methods.exec-approval.test-support.js";
 
 function waitForFast<T>(
   callback: () => T | Promise<T>,
@@ -2601,22 +2606,6 @@ describe("exec approval handlers", () => {
     });
   }
 
-  function createExecApprovalFixture(testContext: TestContext, opts?: { config?: OpenClawConfig }) {
-    const manager = createTestApprovalManager(testContext);
-    const handlers = createExecApprovalHandlers(manager);
-    const broadcasts: Array<{ event: string; payload: unknown }> = [];
-    const respond = vi.fn();
-    const context = {
-      getRuntimeConfig: () => opts?.config ?? {},
-      broadcast: (event: string, payload: unknown) => {
-        broadcasts.push({ event, payload });
-      },
-      hasExecApprovalClients: () => true,
-      chatRunState: createChatRunState(),
-    };
-    return { manager, handlers, broadcasts, respond, context };
-  }
-
   function getRequestedExecApprovalPayload(
     broadcasts: Array<{ event: string; payload: unknown }>,
   ): { approvalKind: "exec"; id: string; request: Record<string, unknown> } {
@@ -2661,7 +2650,8 @@ describe("exec approval handlers", () => {
       client?: ExecApprovalRequestArgs["client"];
     },
   ) {
-    const fixture = createExecApprovalFixture(testContext);
+    const { manager } = await createPreparedTestApprovalManager(testContext);
+    const fixture = createExecApprovalFixture(testContext, undefined, manager);
     const requestPromise = requestExecApproval({
       handlers: fixture.handlers,
       respond: fixture.respond,
@@ -2669,9 +2659,7 @@ describe("exec approval handlers", () => {
       params: params.request,
       client: params.client,
     });
-    await waitForFast(() => {
-      expect(fixture.respond.mock.calls.some((call) => call[1]?.status === "accepted")).toBe(true);
-    });
+    await waitForApprovalAccepted(fixture.respond, requestPromise);
     return {
       ...fixture,
       ...getRequestedExecApprovalPayload(fixture.broadcasts),
