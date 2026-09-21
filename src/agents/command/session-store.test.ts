@@ -1,7 +1,6 @@
 // Covers command-session store updates after agent runs, CLI compaction, and
 // runtime metadata persistence.
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
@@ -10,7 +9,7 @@ import {
   type InternalSessionEntry as SessionEntry,
 } from "../../config/sessions.js";
 import * as sessionAccessor from "../../config/sessions/session-accessor.js";
-import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
+import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.js";
 import { buildAgentRunTerminalOutcomeFromLifecycleEvent } from "../agent-run-terminal-outcome.js";
 import { clearCliSessionInStore, persistCliSessionBindingResult } from "../cli-session-store.js";
 import type { EmbeddedAgentRunResult } from "../embedded-agent.js";
@@ -21,6 +20,7 @@ import {
   recordCliCompactionInStore,
   updateSessionStoreAfterAgentRun as updateSessionStoreAfterAgentRunBase,
 } from "./session-store.js";
+import { withTempSessionStore } from "./session-store.test-support.js";
 import { resolveSession } from "./session.js";
 
 const { listSessionEntriesCore, loadSessionEntry, patchSessionEntryCore, replaceSessionEntry } =
@@ -41,20 +41,6 @@ function acpMeta() {
     state: "idle" as const,
     lastActivityAt: Date.now(),
   };
-}
-
-async function withTempSessionStore<T>(
-  run: (params: { dir: string; storePath: string }) => Promise<T>,
-): Promise<T> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-session-store-"));
-  try {
-    return await run({ dir, storePath: path.join(dir, "sessions.json") });
-  } finally {
-    closeOpenClawAgentDatabasesForTest();
-    // SQLite teardown can race fixture removal on loaded CI hosts. Keep the
-    // retries bounded so persistent cleanup failures still surface.
-    await fs.rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 25 });
-  }
 }
 
 async function seedSessionStore(
@@ -83,8 +69,8 @@ function loadPersistedSessionEntry(
   return loadSessionEntry({ storePath, sessionKey }) ?? undefined;
 }
 
-afterEach(() => {
-  closeOpenClawAgentDatabasesForTest();
+afterEach(async () => {
+  await closeOpenClawAgentDatabasesAsync();
 });
 
 type SessionStoreUpdateParams = Parameters<typeof updateSessionStoreAfterAgentRunBase>[0];

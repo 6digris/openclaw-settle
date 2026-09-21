@@ -121,7 +121,7 @@ async function writeSessionEntries(
 
 async function resetTaskCommandRuntime() {
   await taskRegistryMaintenance.stopTaskRegistryMaintenance();
-  taskRegistryMaintenance.resetTaskRegistryMaintenanceRuntimeForTests();
+  taskRegistryMaintenance.configureTaskRegistryMaintenance({ runtimeAuthoritative: false });
   resetConfigRuntimeState();
   resetDetachedTaskLifecycleRuntimeForTests();
   resetTaskRegistryDeliveryRuntimeForTests();
