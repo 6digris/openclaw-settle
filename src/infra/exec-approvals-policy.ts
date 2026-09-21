@@ -10,6 +10,7 @@ import {
 import type { ExecAuthorizationPlan } from "./exec-authorization-plan.js";
 import { hasArgumentShellExpansionSource } from "./exec-authorization-render.js";
 import { parseExecArgvToken } from "./exec-command-resolution.js";
+import { resolveEnvironmentValue } from "./process-env.js";
 
 export function requiresExecApproval(params: {
   ask: ExecAsk;
@@ -161,7 +162,10 @@ function isInspectionArgv(argv: string[], env?: NodeJS.ProcessEnv): boolean {
   return (
     command !== "rg" ||
     noRipgrepConfig ||
-    !(env?.RIPGREP_CONFIG_PATH ?? process.env.RIPGREP_CONFIG_PATH)
+    !(
+      resolveEnvironmentValue(env, "RIPGREP_CONFIG_PATH") ??
+      resolveEnvironmentValue(process.env, "RIPGREP_CONFIG_PATH")
+    )
   );
 }
 

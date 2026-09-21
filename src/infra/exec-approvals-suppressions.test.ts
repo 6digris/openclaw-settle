@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { evaluateShellAllowlistWithAuthorization } from "./exec-approvals-allowlist.js";
 import { commandRequiresSecurityAuditSuppressionApproval } from "./exec-approvals-policy.js";
+import { analyzeArgvCommand } from "./exec-argv-analysis.js";
+import { planExecAuthorization } from "./exec-authorization-plan.js";
 
 async function requiresApproval(
   command: string,
@@ -88,6 +90,49 @@ describe("security audit suppression exec approval", () => {
     );
     expect(await requiresApproval("rg -- security.audit.suppressions --no-config", env)).toBe(true);
   });
+
+  it.each(["win32", "linux"] as const)(
+    "uses child-process environment key semantics for direct argv on %s",
+    async (platform) => {
+      const commands = await Promise.all(
+        [false, true].map(async (noConfig) => {
+          const argv = [
+            "rg",
+            ...(noConfig ? ["--no-config"] : []),
+            "security.audit.suppressions",
+            "src",
+          ];
+          const command = argv.join(" ");
+          const analysis = analyzeArgvCommand({ argv, platform });
+          const authorizationPlan = await planExecAuthorization({ analysis, command, platform });
+          return { command, segments: analysis.segments, authorizationPlan, noConfig };
+        }),
+      );
+      const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+      vi.stubEnv("RIPGREP_CONFIG_PATH", "");
+      try {
+        for (const { noConfig, ...command } of commands) {
+          expect(
+            commandRequiresSecurityAuditSuppressionApproval({
+              ...command,
+              env: { Ripgrep_Config_Path: "local-config" },
+            }),
+          ).toBe(platform === "win32" && !noConfig);
+          // Node keeps the lexicographically first Windows alias, including an
+          // explicitly empty value; do not mistake the later alias for authority.
+          expect(
+            commandRequiresSecurityAuditSuppressionApproval({
+              ...command,
+              env: { RIPGREP_CONFIG_PATH: "", Ripgrep_Config_Path: "local-config" },
+            }),
+          ).toBe(false);
+        }
+      } finally {
+        platformSpy.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
 
   it("requires a complete plan bound to this exact command, not diagnostic segments", async () => {
     const command = "rg security.audit.suppressions src";
