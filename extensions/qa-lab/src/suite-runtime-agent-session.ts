@@ -63,7 +63,12 @@ type QaSessionTranscriptSummary = {
   hasPendingCodeModeWait?: boolean;
   userMessageCount: number;
   successfulToolCallCounts: Record<string, number>;
-  successfulToolCallEvents?: Array<{ name: string; timestamp: number; toolCallId: string }>;
+  successfulToolCallEvents?: Array<{
+    name: string;
+    targetName?: string;
+    timestamp: number;
+    toolCallId: string;
+  }>;
   finalText: string;
   hasDirectReplySelfMessage: boolean;
   lastAssistantContentTypes?: string[];
@@ -214,8 +219,16 @@ function summarizeSessionTranscriptEvents(
           if (successfulToolCallEvents.length === MAX_SUCCESSFUL_TOOL_CALL_EVENTS) {
             successfulToolCallEvents.shift();
           }
+          const targetName =
+            toolName === "tool_call" &&
+            details &&
+            isRecord(details.tool) &&
+            isRecord(details.result)
+              ? readNonEmptyString(details.tool.name)
+              : undefined;
           successfulToolCallEvents.push({
             name: toolName,
+            ...(targetName ? { targetName } : {}),
             timestamp: message.timestamp,
             toolCallId,
           });

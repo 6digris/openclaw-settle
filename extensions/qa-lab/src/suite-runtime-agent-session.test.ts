@@ -582,6 +582,7 @@ describe("qa suite runtime agent session helpers", () => {
           { type: "toolCall", id: "plan-ok", name: "progress_card", arguments: {} },
           { type: "toolCall", id: "plan-error", name: "progress_card", arguments: {} },
           { type: "toolCall", id: "write-mismatch", name: "write", arguments: {} },
+          { type: "toolCall", id: "dispatch-ok", name: "tool_call", arguments: { id: "alias" } },
         ],
       },
     });
@@ -618,6 +619,18 @@ describe("qa suite runtime agent session helpers", () => {
         isError: false,
         timestamp: 400,
       },
+      {
+        role: "toolResult",
+        toolCallId: "dispatch-ok",
+        toolName: "tool_call",
+        content: [],
+        details: {
+          tool: { id: "openclaw:core:sessions_spawn", name: "sessions_spawn", source: "openclaw" },
+          result: { content: [], details: { status: "accepted" } },
+        },
+        isError: false,
+        timestamp: 500,
+      },
     ]) {
       await appendQaTranscriptMessage({
         tempRoot,
@@ -635,10 +648,18 @@ describe("qa suite runtime agent session helpers", () => {
         sessionKey,
       ),
     ).resolves.toMatchObject({
-      assistantToolCallCounts: { progress_card: 2, write: 1 },
-      completedToolCallCounts: { progress_card: 2 },
-      successfulToolCallCounts: { progress_card: 1 },
-      successfulToolCallEvents: [{ name: "progress_card", timestamp: 100, toolCallId: "plan-ok" }],
+      assistantToolCallCounts: { progress_card: 2, write: 1, tool_call: 1 },
+      completedToolCallCounts: { progress_card: 2, tool_call: 1 },
+      successfulToolCallCounts: { progress_card: 1, tool_call: 1 },
+      successfulToolCallEvents: [
+        { name: "progress_card", timestamp: 100, toolCallId: "plan-ok" },
+        {
+          name: "tool_call",
+          targetName: "sessions_spawn",
+          timestamp: 500,
+          toolCallId: "dispatch-ok",
+        },
+      ],
     });
   });
 

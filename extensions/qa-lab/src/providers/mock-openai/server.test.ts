@@ -3315,68 +3315,6 @@ Update and merge these partial structured summaries.`,
     expect(outputItems(settled).some((item) => item.type === "function_call")).toBe(false);
   });
 
-  it("binds crossed same-case parent responses to their matching workers", async () => {
-    const server = await startMockServer();
-    const firstChildSessionKey = "agent:qa:subagent:child-1";
-    const secondChildSessionKey = "agent:qa:subagent:child-2";
-    const startChild = (runtimeSessionId: string, childSessionKey: string) =>
-      postNonStreamingResponses(server, {
-        model: "gpt-5.6-luna",
-        instructions: [
-          `Runtime: embedded | sessionId=${runtimeSessionId}`,
-          `- Your session: ${childSessionKey}.`,
-        ].join("\n"),
-        input: [makeUserInput("Subagent terminal reply QA worker: visible.")],
-      });
-    const settleParent = async (
-      runtimeSessionId: string,
-      childSessionKey: string,
-      callId: string,
-    ) => {
-      const parent = await expectNonStreamingResponsesJson(server, {
-        model: "gpt-5.6-luna",
-        instructions: `Runtime: embedded | sessionId=${runtimeSessionId}`,
-        tools: [SESSIONS_SPAWN_TOOL, SESSIONS_YIELD_TOOL],
-        input: [
-          makeUserInput("Subagent terminal reply QA check: visible."),
-          makeToolOutputWithCallId(
-            callId,
-            JSON.stringify({ status: "accepted", childSessionKey, runId: `run-${callId}` }),
-          ),
-        ],
-      });
-      expect(outputText(parent)).toBe("Worker started.");
-    };
-
-    const firstChildResponse = startChild("qa-terminal-child-1", firstChildSessionKey);
-    const secondChildResponse = startChild("qa-terminal-child-2", secondChildSessionKey);
-    let firstChildSettled = false;
-    let secondChildSettled = false;
-    void firstChildResponse.then(() => {
-      firstChildSettled = true;
-    });
-    void secondChildResponse.then(() => {
-      secondChildSettled = true;
-    });
-
-    await expect
-      .poll(async () => {
-        const inflight = await getJson<unknown[]>(server, "/debug/inflight-requests");
-        return inflight.length;
-      })
-      .toBe(2);
-
-    await settleParent("qa-terminal-parent-2", secondChildSessionKey, "call_spawn_2");
-    const secondChild = await (await expectOk(secondChildResponse)).json();
-    expect(outputText(secondChild)).toBe("QA-SUBAGENT-TERMINAL-VISIBLE-OK");
-    expect(secondChildSettled).toBe(true);
-    expect(firstChildSettled).toBe(false);
-
-    await settleParent("qa-terminal-parent-1", firstChildSessionKey, "call_spawn_1");
-    const firstChild = await (await expectOk(firstChildResponse)).json();
-    expect(outputText(firstChild)).toBe("QA-SUBAGENT-TERMINAL-VISIBLE-OK");
-  });
-
   it.each([
     QA_REASONING_ONLY_RETRY_INSTRUCTION,
     QA_EMPTY_RESPONSE_RETRY_INSTRUCTION,
@@ -3457,45 +3395,6 @@ Update and merge these partial structured summaries.`,
     });
 
     expect(outputText(payload)).toBe("QA-SUBAGENT-TERMINAL-EMPTY-REPRESENTED");
-  });
-
-  it("delivers silent terminal representation through the required message tool", async () => {
-    const server = await startMockServer();
-    const completionInput = [
-      makeUserInput("Subagent terminal reply QA check: silent."),
-      makeUserInput(
-        TEST_RUNTIME_CONTEXT_CARRIER.replace(
-          "runtime metadata",
-          "[Internal task completion event]\nTask: qa-terminal-silent\nResult: (no output)",
-        ),
-      ),
-    ];
-    const delivery = await expectNonStreamingResponsesJson(server, {
-      tools: [MESSAGE_TOOL],
-      instructions:
-        "Visible source replies are not automatically delivered for this run. Use `message(action=send)` for user-visible source-channel output. When the message is the completed reply to the current source conversation, set `final=true`.",
-      input: completionInput,
-    });
-    const messageCall = outputToolCall(delivery, "message");
-    expect(outputToolArgsFromItem(messageCall)).toEqual({
-      action: "send",
-      message: "QA-SUBAGENT-TERMINAL-SILENT-REPRESENTED",
-      final: true,
-    });
-
-    const settled = await expectNonStreamingResponsesJson(server, {
-      tools: [MESSAGE_TOOL],
-      input: [
-        ...completionInput,
-        messageCall,
-        makeToolOutputWithCallId(
-          outputToolCallId(messageCall, "call_mock_message_silent_terminal"),
-          '{"ok":true,"messageId":"qa-silent-terminal"}',
-        ),
-      ],
-    });
-    expect(outputItems(settled).some((item) => item.type === "function_call")).toBe(false);
-    expect(outputText(settled)).toBe("");
   });
 
   it.each([

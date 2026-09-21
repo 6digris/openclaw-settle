@@ -1,4 +1,5 @@
 // QA Lab mock provider prompt directives and tool declarations.
+import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { escapeRegExp } from "openclaw/plugin-sdk/text-utility-runtime";
 import {
   type ResponsesInputItem,
@@ -6,7 +7,7 @@ import {
   QA_TOOL_SEARCH_PROMPT_RE,
   QA_TOOL_SEARCH_FAILURE_PROMPT_RE,
 } from "./mock-openai-contracts.js";
-import { extractInstructionsText } from "./mock-openai-input.js";
+import { extractAllRequestTexts, extractInstructionsText } from "./mock-openai-input.js";
 function extractLastCapture(text: string, pattern: RegExp) {
   let lastMatch: RegExpExecArray | null = null;
   const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
@@ -210,7 +211,26 @@ function extractBareToolArg(text: string, name: string) {
 export function hasDeclaredTool(body: Record<string, unknown>, name: string) {
   return (
     hasToolDefinition(body, name) ||
+    hasDeferredToolDefinition(body, name) ||
     instructionTextMentionsToolName(extractInstructionsText(body), name)
+  );
+}
+
+export function hasDeferredToolDefinition(body: Record<string, unknown>, name: string) {
+  if (!hasToolDefinition(body, "tool_call")) {
+    return false;
+  }
+  const input = Array.isArray(body.input) ? body.input.filter(isRecord) : [];
+  const instructions = extractAllRequestTexts(
+    input.filter((item) => item.role === "system" || item.role === "developer"),
+    body,
+  );
+  const directory = instructions.split("Available deferred-schema tools:\n").at(-1);
+  if (directory === instructions) {
+    return false;
+  }
+  return new RegExp(`^- ${escapeRegExp(name)}(?: \\([^\\n]+\\))?(?::|$)`, "mu").test(
+    directory?.split("\n\n", 1)[0] ?? "",
   );
 }
 
