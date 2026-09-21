@@ -2,8 +2,9 @@
 import fsNode from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { onTestFinished, vi } from "vitest";
+import { expect, onTestFinished, vi } from "vitest";
 import { asResolvedSourceConfig, asRuntimeConfig } from "./materialize.js";
+import { replaceConfigFile, ConfigMutationConflictError } from "./mutate.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "./types.js";
 
 export function createSnapshot(params: {
@@ -62,4 +63,24 @@ export function mockIncludeRollbackRename(
     rename(from, to);
   });
   onTestFinished(() => renameSpy.mockRestore());
+}
+
+const allowConfigPathWrite = () => {};
+
+export async function expectPluginIncludeMutationConflict(
+  snapshot: ConfigFileSnapshot,
+  pluginsPath: string,
+) {
+  await expect(
+    replaceConfigFile({
+      baseHash: snapshot.hash,
+      snapshot,
+      writeOptions: {
+        expectedConfigPath: snapshot.path,
+        assertConfigPathForWrite: allowConfigPathWrite,
+        includeFileTargetsForWrite: { [pluginsPath]: await resolveIncludeTarget(pluginsPath) },
+      },
+      nextConfig: { plugins: { entries: { demo: { enabled: true } } } },
+    }),
+  ).rejects.toBeInstanceOf(ConfigMutationConflictError);
 }

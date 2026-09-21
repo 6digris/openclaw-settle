@@ -48,7 +48,9 @@ describe("codex doctor contract", () => {
     const read = vi.spyOn(fs, "readdir").mockRejectedValueOnce(failure);
     try {
       const collect = fixture.migration.collectBackupResources;
-      if (!collect) throw new Error("Migration must declare its backup inventory");
+      if (!collect) {
+        throw new Error("Migration must declare its backup inventory");
+      }
       await expect(
         collect({ ...fixture.params, config: { session: { store: fixture.storePath } } }),
       ).rejects.toBe(failure);

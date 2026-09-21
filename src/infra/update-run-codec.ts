@@ -1,6 +1,5 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
-import { UPDATE_RUN_PHASES } from "../../packages/gateway-protocol/src/update-run-vocabulary.js";
 import { resolveStateDir } from "../config/paths.js";
 import { redactSensitiveText } from "../logging/redact.js";
 import { escapeRegExp } from "../shared/regexp.js";
@@ -9,24 +8,10 @@ import type { UpdateRuns } from "../state/openclaw-state-db.generated.js";
 import { resolveRequiredHomeDir } from "./home-dir.js";
 import { normalizeUpdateFailureFacts } from "./update-failure-facts.js";
 import { UPDATE_RUN_TEXT_LIMIT } from "./update-run-limits.js";
-import type { UpdateRunRecord } from "./update-run-record.js";
+import { isRetainedStep, type UpdateRunRecord } from "./update-run-record.js";
 import { UpdateRunRecordSchema } from "./update-run-schema.js";
 
 const JSON_BYTES = 16 * 1024;
-const RETAINED_STEP_NAMES = [
-  ...UPDATE_RUN_PHASES,
-  "notice:ack",
-  "notice:activating",
-  "notice:verifying",
-  "previous generation restoration",
-  "post-update verification",
-  "task-delivery-recovery",
-  "driver:adopted",
-  "driver:identity-unavailable",
-  "reconcile:abandoned",
-  "reconcile:superseded",
-  "reconcile:acknowledged",
-];
 export type UpdateRunLedgerOptions = OpenClawStateDatabaseOptions & {
   busyTimeoutMs?: number;
   redactPaths?: readonly string[];
@@ -47,14 +32,6 @@ function mapJsonText(value: unknown, transform: (text: string) => string): unkno
     );
   }
   return value;
-}
-
-export function isRetainedStep(item: unknown): boolean {
-  return (
-    isRecord(item) &&
-    typeof item.step === "string" &&
-    (item.step.startsWith("finalize:") || RETAINED_STEP_NAMES.some((name) => name === item.step))
-  );
 }
 
 /** Phase history, notice custody, and restoration proof survive diagnostic eviction. */

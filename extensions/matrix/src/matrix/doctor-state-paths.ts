@@ -1,8 +1,8 @@
 import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { PluginDoctorMigrationBackupResource } from "openclaw/plugin-sdk/runtime-doctor-migrations";
+import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveMatrixStateLayoutChildDepth } from "../storage-paths.js";
 export async function collectLegacyMatrixStateRoots(
   stateDir: string,

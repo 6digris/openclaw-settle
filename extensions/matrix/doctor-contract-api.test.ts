@@ -114,7 +114,9 @@ describe("matrix doctor contract state migrations", () => {
     const collect = migrationById(
       "matrix-storage-meta-json-to-plugin-state",
     ).collectBackupResources;
-    if (!collect) throw new Error("Migration must declare its backup inventory");
+    if (!collect) {
+      throw new Error("Migration must declare its backup inventory");
+    }
     await expect(collect(createMigrationParams(stateDir))).rejects.toBe(failure);
   });
 

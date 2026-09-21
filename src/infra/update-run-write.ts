@@ -9,10 +9,11 @@ import {
   mergeUpdateRecoveryCaptureState,
   type UpdateRecoveryCaptureState,
 } from "./update-recovery-backup-contract.js";
-import { encodeRun, isRetainedStep, type UpdateRunLedgerOptions } from "./update-run-codec.js";
+import { encodeRun, type UpdateRunLedgerOptions } from "./update-run-codec.js";
 import { decodeRun, readUpdateRunRecord } from "./update-run-read.kernel.js";
 import {
   finishUpdateRunRecord,
+  isRetainedStep,
   type FinishUpdateRunResult,
   type UpdateRunRecord,
   type UpdateRunStep,

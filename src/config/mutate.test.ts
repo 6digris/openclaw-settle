@@ -26,6 +26,7 @@ import {
 } from "./mutate.js";
 import {
   createPluginIncludeFixture,
+  expectPluginIncludeMutationConflict,
   createSnapshot,
   mockIncludeRollbackRename,
   resolveIncludeTarget,
@@ -105,24 +106,6 @@ vi.mock("../infra/tmp-openclaw-dir.js", async (importOriginal) => ({
 }));
 
 const allowConfigPathWrite = () => {};
-
-async function expectPluginIncludeMutationConflict(
-  snapshot: ConfigFileSnapshot,
-  pluginsPath: string,
-) {
-  await expect(
-    replaceConfigFile({
-      baseHash: snapshot.hash,
-      snapshot,
-      writeOptions: {
-        expectedConfigPath: snapshot.path,
-        assertConfigPathForWrite: allowConfigPathWrite,
-        includeFileTargetsForWrite: { [pluginsPath]: await resolveIncludeTarget(pluginsPath) },
-      },
-      nextConfig: { plugins: { entries: { demo: { enabled: true } } } },
-    }),
-  ).rejects.toBeInstanceOf(ConfigMutationConflictError);
-}
 
 describe("config mutate helpers", () => {
   const suiteRootTracker = createSuiteTempRootTracker({ prefix: "openclaw-config-mutate-" });
