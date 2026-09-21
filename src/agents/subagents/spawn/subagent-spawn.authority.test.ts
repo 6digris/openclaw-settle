@@ -44,12 +44,14 @@ import {
   withGatewayToolCallerIdentity,
 } from "../../tools/gateway-caller-context.js";
 import { createSessionsSpawnTool } from "../../tools/sessions-spawn-tool.js";
+import { subagentRegistryDeps } from "../registry/subagent-registry-deps.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
 import { registerSubagentRun } from "../registry/subagent-registry.js";
 import {
   settleSubagentRegistryPersistenceWork,
   writeSubagentSessionEntry,
 } from "../registry/subagent-registry.persistence.test-support.js";
+import { testing as registryTesting } from "../registry/subagent-registry.test-helpers.js";
 import { enqueueSwarmRun, releaseSwarmRun } from "../swarm/swarm-scheduler.js";
 import { installSpawnAuthorityFixture } from "./subagent-spawn.authority.test-support.js";
 import { spawnSubagentDirect } from "./subagent-spawn.js";
@@ -108,14 +110,31 @@ describe("pending spawn invocation authority", () => {
       }
       const completedB = subagentRuns.get("b")!;
       const completedGeneration = completedB.generation;
+      const cleanupPrepared = createDeferred();
+      const persist = subagentRegistryDeps.persistSubagentRunsToDiskOrThrow;
+      registryTesting.setDepsForTest({
+        ...subagentRegistryDeps,
+        persistSubagentRunsToDiskOrThrow: (runs, runIds) => {
+          persist(runs, runIds);
+          if (
+            (!runIds || runIds.includes("b")) &&
+            runs.get("b") === completedB &&
+            completedB.generation === completedGeneration &&
+            typeof completedB.cleanupCompletedAt === "number"
+          ) {
+            cleanupPrepared.resolve();
+          }
+        },
+      });
       emitAgentEvent({
         runId: "b",
         sessionKey: key("b"),
         stream: "lifecycle",
         data: { phase: "end", endedAt: Date.now() },
       });
-      await vi.dynamicImportSettled();
-      await vi.waitFor(() => expect(findTaskByRunId("b")?.status).toBe("succeeded"));
+      // Task finalization precedes browser/MCP cleanup; await its real bookkeeping before draining tails.
+      await cleanupPrepared.promise;
+      expect(findTaskByRunId("b")?.status).toBe("succeeded");
       clearAgentRunContext("b");
       await settleSubagentRegistryPersistenceWork();
       expect(completedB).toMatchObject({
