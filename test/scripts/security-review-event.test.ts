@@ -172,6 +172,102 @@ describe("automatic security review event resolution", () => {
     },
   );
 
+  it.each([
+    { title: { from: "Previous title" } },
+    { body: { from: "Previous proof" } },
+    { title: { from: "Previous title" }, body: { from: "Previous proof" } },
+    { body: { from: "" } },
+  ])("ignores text-only PR edits without API reads or status writes: %j", (changes) => {
+    expect(
+      evaluate({
+        eventName: "pull_request_target",
+        event: { action: "edited", pull_request: { number: 42 }, changes },
+      }),
+    ).toMatchObject({
+      status: 0,
+      error: "",
+      matrix: { include: [] },
+      output: 'matrix={"include":[]}\nhas-prs=false\n',
+      requests: [],
+      published: [],
+    });
+  });
+
+  it.each([
+    undefined,
+    null,
+    [],
+    {},
+    "body",
+    { base: { ref: { from: "release/1" }, sha: { from: head } } },
+    {
+      base: { ref: { from: "release/1" }, sha: { from: head } },
+      title: { from: "Previous title" },
+      body: { from: "Previous proof" },
+    },
+    { unknown: { from: "value" }, body: { from: "Previous proof" } },
+    { title: null },
+    { body: [] },
+    { body: {} },
+    { body: { from: null } },
+    { title: { from: 42 } },
+    { body: { from: "Previous proof", unknown: true } },
+  ])("reevaluates base changes and ambiguous PR edits: %j", (changes) => {
+    const result = evaluate({
+      eventName: "pull_request_target",
+      event: { action: "edited", pull_request: { number: 42 }, changes },
+    });
+    expect(result).toMatchObject({
+      status: 0,
+      matrix: { include: [{ pr: 42, head }] },
+      published: [{ body: { context: "openclaw/ci-gate", state: "pending" } }],
+    });
+    expect(result.requests).toEqual([
+      { path: `${prefix}/pulls/42`, method: "GET" },
+      { path: `${prefix}/commits/${head}/statuses?per_page=100&page=1`, method: "GET" },
+      { path: `${prefix}/statuses/${head}`, method: "POST" },
+    ]);
+  });
+
+  it.each(["opened", "synchronize"])(
+    "still evaluates %s events with text change metadata",
+    (action) => {
+      expect(
+        evaluate({
+          eventName: "pull_request_target",
+          event: {
+            action,
+            pull_request: { number: 42 },
+            changes: { body: { from: "Previous proof" } },
+          },
+        }),
+      ).toMatchObject({
+        status: 0,
+        matrix: { include: [{ pr: 42, head }] },
+        published: [{ body: { context: "openclaw/ci-gate", state: "pending" } }],
+      });
+    },
+  );
+
+  it.each([
+    { repository: { ...repository, full_name: "other/repository" } },
+    { repository: { full_name: repository.full_name } },
+    { pull_request: { number: 0 } },
+    { pull_request: {} },
+  ])("rejects invalid identity before skipping text-only edits: %j", (event) => {
+    expect(
+      evaluate({
+        eventName: "pull_request_target",
+        event: {
+          action: "edited",
+          pull_request: { number: 42 },
+          changes: { body: { from: "Previous proof" } },
+          ...event,
+        },
+      }),
+    ).toMatchObject({ status: 1, output: "", requests: [] });
+  });
+
   it("does not schedule a review job when its initial pending status cannot be recorded", () => {
     const result = evaluate({
       eventName: "pull_request_target",

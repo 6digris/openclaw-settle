@@ -473,6 +473,20 @@ describe("combined security review entry point", () => {
     expect(result.reviews.filter((entry) => entry.body?.state === "success")).toHaveLength(2);
   });
 
+  it("keeps title and body edits outside approval and guard authority", () => {
+    const result = evaluate({
+      [`GET ${pullPath}`]: {
+        responses: [
+          { ...pr, title: "Previous title", body: "Previous proof" },
+          { ...pr, title: "Updated title", body: "Updated proof" },
+        ],
+      },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.combined).toEqual(["pending", "success"]);
+    expect(result.reviews.filter((entry) => entry.body?.state === "success")).toHaveLength(2);
+  });
+
   it.each([
     { ...pr, head: { ...pr.head, sha: "d".repeat(40) } },
     { ...pr, base: { ...pr.base, ref: "stable" } },

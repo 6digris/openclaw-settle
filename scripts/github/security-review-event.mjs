@@ -14,6 +14,26 @@ function positiveInteger(value) {
   return Number.isSafeInteger(value) && value > 0;
 }
 
+function changesOnlyPullRequestText(changes) {
+  if (!changes || typeof changes !== "object" || Array.isArray(changes)) {
+    return false;
+  }
+  const entries = Object.entries(changes);
+  return (
+    entries.length > 0 &&
+    entries.every(
+      ([key, change]) =>
+        (key === "title" || key === "body") &&
+        change !== null &&
+        typeof change === "object" &&
+        !Array.isArray(change) &&
+        Object.keys(change).length === 1 &&
+        Object.hasOwn(change, "from") &&
+        typeof change.from === "string",
+    )
+  );
+}
+
 function reviewable(pullRequest, repository, defaultBranch) {
   return (
     positiveInteger(pullRequest.number) &&
@@ -59,6 +79,15 @@ async function resolvePullRequests(api, event, eventName, repository) {
       eventName === "pull_request_target" ? event.pull_request?.number : event.issue?.number;
     if (!positiveInteger(number)) {
       throw new Error("Security review event has no valid pull request number.");
+    }
+    // Neither field participates in guard-review's approval snapshot. Retargets
+    // and unknown edits still need live review; approval comment edits stay separate.
+    if (
+      eventName === "pull_request_target" &&
+      event.action === "edited" &&
+      changesOnlyPullRequestText(event.changes)
+    ) {
+      return [];
     }
     const pullRequest = await api.request(`${prefix}/pulls/${number}`);
     const selected = new Map(
