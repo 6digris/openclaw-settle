@@ -27,14 +27,29 @@ function describePendingChild(child: UnsettledRequesterChild): string {
   return `${name}, ${child.state}${started}`;
 }
 
+function describeChildCount(count: number): string {
+  return `${count} ${count === 1 ? "child session" : "child sessions"}`;
+}
+
 function formatPendingChildrenMessage(children: readonly UnsettledRequesterChild[]): string {
-  const count = children.length;
-  const noun = count === 1 ? "child session" : "child sessions";
-  const owner = children.some((child) => child.wakeArmed)
-    ? "An earlier turn of this session already yielded for"
-    : "An earlier turn of this session already spawned";
-  const listed = children.map(describePendingChild).join("; ");
-  return `${owner} ${count} ${noun} whose completion is still pending: ${listed}. This turn owns no new claim, so no yield is needed: end this turn normally and the completion will arrive in this session as a later turn. Do not re-spawn, re-send, or poll to wake it.`;
+  const paused = children.filter((child) => child.state === "paused");
+  const active = children.filter((child) => child.state !== "paused");
+  const parts: string[] = [];
+  if (active.length > 0) {
+    const owner = active.some((child) => child.wakeArmed)
+      ? "An earlier turn of this session already yielded for"
+      : "An earlier turn of this session already spawned";
+    parts.push(
+      `${owner} ${describeChildCount(active.length)} whose completion is still pending: ${active.map(describePendingChild).join("; ")}. Their completion will arrive in this session as a later turn; do not re-spawn, re-send, or poll to wake them.`,
+    );
+  }
+  if (paused.length > 0) {
+    parts.push(
+      `${describeChildCount(paused.length)} spawned by an earlier turn of this session ${paused.length === 1 ? "is" : "are"} paused by ${paused.length === 1 ? "its" : "their"} own sessions_yield and will not complete until an incoming continuation arrives: ${paused.map(describePendingChild).join("; ")}. Send that continuation with sessions_send if this session owns it; otherwise the work stays waiting.`,
+    );
+  }
+  parts.push("This turn owns no new claim, so no yield is needed: end this turn normally.");
+  return parts.join(" ");
 }
 
 const SessionsYieldToolSchema = Type.Object({

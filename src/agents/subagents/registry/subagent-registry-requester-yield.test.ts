@@ -798,6 +798,30 @@ describe("listUnsettledRequesterChildrenInRuns", () => {
     ).toEqual([]);
   });
 
+  it("reports a child paused by its own sessions_yield as paused, not completing", () => {
+    const paused = runningRun("run-paused", {
+      execution: { status: "terminal", startedAt: NOW - 2_000, endedAt: NOW - 500 },
+      pauseReason: "sessions_yield",
+      delivery: { status: "pending" },
+      requesterSettleWake: { status: "pending", attemptCount: 0, requesterYieldBatch: true },
+    });
+    expect(
+      listUnsettledRequesterChildrenInRuns({
+        requesterSessionKey: REQUESTER,
+        runs: new Map([[paused.runId, paused]]),
+        now: NOW,
+      }),
+    ).toEqual([
+      {
+        runId: "run-paused",
+        childSessionKey: "agent:main:subagent:run-paused",
+        startedAt: NOW - 2_000,
+        state: "paused",
+        wakeArmed: true,
+      },
+    ]);
+  });
+
   it("does not let a superseded generation stand in for a killed successor", () => {
     const superseded = runningRun("run-gen-1", { generation: 1 });
     const killed = runningRun("run-gen-2", {

@@ -558,6 +558,9 @@ describe("requester yield ownership", () => {
       expect((result.details as { message: string }).message).toContain(
         "Work session (agent:main:dashboard:work), running, started 1970-01-01T00:00:02.000Z",
       );
+      expect((result.details as { message: string }).message).toContain(
+        "do not re-spawn, re-send, or poll",
+      );
       expect((result.details as { message: string }).message).not.toContain(
         "return its result normally",
       );

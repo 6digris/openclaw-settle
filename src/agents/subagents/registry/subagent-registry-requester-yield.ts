@@ -24,8 +24,12 @@ export type UnsettledRequesterChild = {
   childSessionKey: string;
   label?: string;
   startedAt?: number;
-  /** Running children have not ended; completing children ended but still owe delivery. */
-  state: "running" | "completing";
+  /**
+   * Running children have not ended; completing children ended and still owe
+   * delivery; paused children yielded for an incoming continuation and will
+   * not complete until one arrives.
+   */
+  state: "running" | "completing" | "paused";
   /** True when an earlier requester yield already armed a settle wake for this child. */
   wakeArmed: boolean;
 };
@@ -80,6 +84,10 @@ export function listUnsettledRequesterChildrenInRuns(params: {
         continue;
       }
       state = "running";
+    } else if (entry.pauseReason === "sessions_yield") {
+      // markSubagentRunPausedAfterYield records a pause as an ended execution
+      // without an outcome; the child resumes only through a continuation.
+      state = "paused";
     } else if (
       wakeArmed ||
       entry.delivery?.status === "pending" ||
