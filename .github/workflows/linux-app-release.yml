@@ -251,7 +251,9 @@ jobs:
   build_linux:
     name: Build Linux companion bundles
     needs: validate_release
-    if: ${{ needs.validate_release.outputs.already_published != 'true' }}
+    # Manual dispatch only mirrors published artifacts; selected source executes only
+    # on the validated workflow_run path after release admission.
+    if: ${{ github.event_name == 'workflow_run' && needs.validate_release.outputs.already_published != 'true' }}
     # Oldest supported build base: bundles link against this glibc, so newer
     # runners would silently drop Ubuntu 22.04/Debian 12 users.
     runs-on: ubuntu-22.04
@@ -309,6 +311,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.validate_release.outputs.tag_sha }}
+          # Correction packaging proves both release and base tags resolve to this source.
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Install selected-tag dependencies
@@ -341,6 +345,17 @@ jobs:
             | tee "${RUNNER_TEMP}/openclaw-gstreamer-elements.tsv"
           echo "GSTREAMER_PLUGINS_DIR=$plugins" >> "$GITHUB_ENV"
 
+      - name: Build included Linux runtime
+        # Older release tags retain their original packaging contract.
+        if: hashFiles('apps/linux/scripts/stage-sea-runtime.sh') != ''
+        env:
+          RELEASE_TAG: ${{ needs.validate_release.outputs.release_tag }}
+          SOURCE_SHA: ${{ needs.validate_release.outputs.tag_sha }}
+        run: |
+          pnpm build
+          bash apps/linux/scripts/stage-sea-runtime.sh apps/linux/src-tauri/gen/runtime \
+            "$RELEASE_TAG" "$SOURCE_SHA"
+
       - name: Prepare pinned AppImage tools
         env:
           XDG_CACHE_HOME: ${{ runner.temp }}/openclaw-tauri-cache
@@ -348,13 +363,6 @@ jobs:
           set -euo pipefail
           .release-tooling/apps/linux/scripts/tauri-appimage-tools.sh prepare
           .release-tooling/apps/linux/scripts/tauri-appimage-tools.sh verify pre-build
-
-      - name: Build included Linux runtime
-        # Older release tags retain their original packaging contract.
-        if: hashFiles('apps/linux/scripts/stage-sea-runtime.sh') != ''
-        run: |
-          pnpm build
-          bash apps/linux/scripts/stage-sea-runtime.sh
 
       - name: Build Linux companion bundles
         working-directory: apps/linux/src-tauri

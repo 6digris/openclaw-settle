@@ -3,6 +3,8 @@ set -euo pipefail
 # Linux only. macOS/Windows test ports retain their existing runtime contract.
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 DESTINATION="${1:-$ROOT/apps/linux/src-tauri/gen/runtime}"
+RELEASE_TAG="${2:-}"
+SOURCE_SHA="${3:-}"
 [[ "$(uname -s)" == Linux ]] || { echo 'SEA production staging requires Linux' >&2; exit 1; }
 case "$(uname -m)" in x86_64) arch=x64 ;; aarch64) arch=arm64 ;; *) exit 1 ;; esac
 mkdir -p "$DESTINATION"
@@ -25,5 +27,9 @@ env -i HOME="$SCRATCH/home" PATH="$PATH" TMPDIR="$SCRATCH" \
     install_node linux "$4"
     export PATH="$(node_dir)/bin:$PATH"
     install_openclaw
-    node "$1/apps/linux/scripts/build-sea-runtime.mjs" "$(node_dir)" "$5/openclaw-runtime"
-  ' bash "$ROOT" "$SCRATCH" "$TARBALL" "$arch" "$DESTINATION"
+    release_args=()
+    if [[ -n "$6" || -n "$7" ]]; then
+      release_args=("$6" "$7")
+    fi
+    node "$1/apps/linux/scripts/build-sea-runtime.mjs" "$(node_dir)" "$5/openclaw-runtime" "${release_args[@]}"
+  ' bash "$ROOT" "$SCRATCH" "$TARBALL" "$arch" "$DESTINATION" "$RELEASE_TAG" "$SOURCE_SHA"

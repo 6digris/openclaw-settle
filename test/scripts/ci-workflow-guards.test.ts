@@ -19814,12 +19814,15 @@ it("serializes Linux manifests with stable activation and reuses completed Linux
   expect(linux.concurrency["cancel-in-progress"]).toBe(false);
   expect(linux.concurrency.queue).toBe("max");
   expect(linux.concurrency.group).not.toBe(linux.jobs.publish.concurrency.group);
-  for (const alreadyPublished of ["true", "false"]) {
-    expect(
-      runInNewContext(linux.jobs.build_linux.if.replace(/^\$\{\{|\}\}$/gu, ""), {
-        needs: { validate_release: { outputs: { already_published: alreadyPublished } } },
-      }),
-    ).toBe(alreadyPublished !== "true");
+  for (const event_name of ["workflow_run", "workflow_dispatch", "pull_request"]) {
+    for (const alreadyPublished of ["true", "false"]) {
+      expect(
+        runInNewContext(linux.jobs.build_linux.if.replace(/^\$\{\{|\}\}$/gu, ""), {
+          github: { event_name },
+          needs: { validate_release: { outputs: { already_published: alreadyPublished } } },
+        }),
+      ).toBe(event_name === "workflow_run" && alreadyPublished !== "true");
+    }
   }
   for (const [alreadyPublished, build, signing, expected] of [
     ["true", "skipped", "skipped", true],
@@ -20760,6 +20763,20 @@ it("pins simple release admission owners before selected checkout and preserves 
   ).not.toHaveProperty("LDAI_RUNTIME_FILE");
   expect(linux.jobs.build_linux["runs-on"]).toBe("ubuntu-22.04");
   expect(linux.jobs.build_linux.strategy).toBeUndefined();
+  expect(linuxBuildSteps.find(({ name }) => name === "Checkout selected tag")?.with).toMatchObject({
+    ref: "${{ needs.validate_release.outputs.tag_sha }}",
+    "fetch-depth": 0,
+  });
+  const runtimeBuild = expectDefined(
+    linuxBuildSteps.find(({ name }) => name === "Build included Linux runtime"),
+    "release runtime packaging",
+  );
+  expect(runtimeBuild.env).toEqual({
+    RELEASE_TAG: "${{ needs.validate_release.outputs.release_tag }}",
+    SOURCE_SHA: "${{ needs.validate_release.outputs.tag_sha }}",
+  });
+  expect(runtimeBuild.run).toContain("stage-sea-runtime.sh apps/linux/src-tauri/gen/runtime");
+  expect(runtimeBuild.run).toContain('"$RELEASE_TAG" "$SOURCE_SHA"');
   const finalizerSource = readFileSync("apps/linux/scripts/finalize-appimage.sh", "utf8");
   const postBuildVerifications =
     finalizerSource.match(/"\$tools_helper" verify post-build/gu) ?? [];

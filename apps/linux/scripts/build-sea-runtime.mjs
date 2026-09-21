@@ -1,8 +1,9 @@
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import zlib from "node:zlib";
+import { resolveReleaseTagPackageIdentity } from "../../../scripts/lib/release-version.mjs";
 import { digest } from "./sea-runtime.cjs";
 
 // Input is a private canonical install-cli.sh Node prefix, not a source checkout
@@ -59,7 +60,43 @@ export function packRuntime(source, output) {
   };
 }
 
-export function buildSea(source, destination) {
+function runtimeIdentity(packageVersion, { releaseTag, sourceSha, sourceDirectory }) {
+  if (!releaseTag && !sourceSha) return { version: packageVersion, packageVersion };
+  if (!releaseTag || !/^[a-f0-9]{40}$/.test(sourceSha || "")) {
+    throw new Error("Desktop release packaging requires an exact release tag and source SHA");
+  }
+  const root = JSON.parse(fs.readFileSync(path.join(sourceDirectory, "package.json"), "utf8"));
+  if (root.version !== packageVersion) {
+    throw new Error("Installed package version does not match the release source checkout");
+  }
+  const { baseTag } = resolveReleaseTagPackageIdentity(releaseTag, packageVersion);
+  const commit = (ref) => execFileSync(
+    "git", ["-C", sourceDirectory, "rev-parse", "--verify", ref],
+    { encoding: "utf8", timeout: 10_000 },
+  ).trim();
+  if (commit("HEAD") !== sourceSha) {
+    throw new Error("Desktop release source SHA does not match the packaging checkout");
+  }
+  if (commit(`refs/tags/${releaseTag}^{commit}`) !== sourceSha) {
+    throw new Error("Desktop release tag does not match its selected source SHA");
+  }
+  // Shared release policy permits base-package bytes for a correction only at
+  // the exact base tag's source commit, never by removing a numeric suffix.
+  if (baseTag && commit(`refs/tags/${baseTag}^{commit}`) !== sourceSha) {
+    throw new Error("Desktop base release tag does not match the correction source SHA");
+  }
+  return { version: releaseTag.slice(1), packageVersion, sourceSha };
+}
+
+/** @param {{releaseTag?: string, sourceSha?: string, sourceDirectory?: string}} [release] */
+export function buildSea(source, destination, release = {}) {
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.join(source, "lib/node_modules/openclaw/package.json"), "utf8"),
+  );
+  const identity = runtimeIdentity(packageJson.version, {
+    ...release,
+    sourceDirectory: release.sourceDirectory || fileURLToPath(new URL("../../../", import.meta.url)),
+  });
   const node = path.resolve(source, "bin/node");
   const version = spawnSync(node, ["--version"], { encoding: "utf8" });
   if (version.status !== 0 || version.stdout.trim() !== "v26.8.2") {
@@ -86,13 +123,10 @@ export function buildSea(source, destination) {
     const result = spawnSync(node, ["--build-sea", configPath], { stdio: "inherit" });
     if (result.status !== 0) throw new Error("Node SEA build failed");
     fs.chmodSync(destination, 0o755);
-    const packageJson = JSON.parse(
-      fs.readFileSync(path.join(source, "lib/node_modules/openclaw/package.json"), "utf8"),
-    );
     fs.writeFileSync(
       path.join(path.dirname(destination), "manifest.json"),
       JSON.stringify({
-        version: packageJson.version,
+        ...identity,
         sha256: digest(fs.readFileSync(destination)),
       }),
     );
@@ -103,9 +137,11 @@ export function buildSea(source, destination) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  if (process.argv.length !== 4)
-    throw new Error("Usage: build-sea-runtime.mjs <installed-node-prefix> <output>");
+  if (process.argv.length !== 4 && process.argv.length !== 6)
+    throw new Error("Usage: build-sea-runtime.mjs <installed-node-prefix> <output> [release-tag source-sha]");
   console.log(
-    JSON.stringify(buildSea(path.resolve(process.argv[2]), path.resolve(process.argv[3]))),
+    JSON.stringify(buildSea(path.resolve(process.argv[2]), path.resolve(process.argv[3]), {
+      releaseTag: process.argv[4], sourceSha: process.argv[5],
+    })),
   );
 }

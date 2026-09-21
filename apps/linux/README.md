@@ -414,6 +414,8 @@ cd apps/linux/src-tauri
 pnpm dlx @tauri-apps/cli@2.11.4 build --config tauri.sea.conf.json
 ```
 
+Release automation also passes its validated tag and source SHA to staging. The runtime manifest binds the desktop release version, original package version, executable digest, and source commit. A correction tag may retain base-version package bytes only when both tags resolve to the same source commit; runtime release-version equality remains exact. Untagged development builds keep the package version.
+
 The app updater or system package manager owns updates to these resources. Optional plugin installation still belongs to OpenClaw. Never run a package-manager update against the private extracted runtime.
 
 ## Installer resource

@@ -19,6 +19,10 @@ function bundledPluginFile(pluginId: string, relativePath: string, suffix = ""):
 const repositoryScriptEntries = [
   // apps/linux/README.md invokes this live Windows native-browser proof driver by path.
   "apps/linux/scripts/test-inline-browser.mjs!",
+  // Linux packaging and container proof scripts invoke these executable roots by path.
+  "apps/linux/scripts/build-sea-runtime.mjs!",
+  "apps/linux/scripts/test-sea-runtime.mjs!",
+  "apps/linux/scripts/verify-sea-runtime.mjs!",
   "scripts/render-proof-video.mts!",
   // tsdown builds this private macOS app worker protocol entry by path.
   "src/node-host/mac-worker-entry.ts!",

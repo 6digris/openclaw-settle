@@ -187,7 +187,7 @@ jobs:
           path: ${{ runner.temp }}/linux-desktop-sharing
 
       - name: Test bundled runtime extraction
-        run: node --test apps/linux/scripts/sea-runtime.test.mjs
+        run: node scripts/run-vitest.mjs test/scripts/linux-sea-runtime.test.ts
 
       - name: Build included Linux runtime
         if: github.event_name == 'workflow_dispatch'
