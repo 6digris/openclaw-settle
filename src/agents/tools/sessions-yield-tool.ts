@@ -5,14 +5,37 @@
  */
 import { Type } from "typebox";
 import { getAgentToolExecutionContext } from "../../../packages/agent-core/src/tool-execution-context.js";
+import type { UnsettledRequesterChild } from "../subagents/registry/subagent-registry-requester-yield.js";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readToolStringParam } from "./common.js";
 
 const NO_PENDING_CHILD_COMPLETION_ERROR =
   'No pending child completion is owned by this turn. If the assigned work is complete, return its result normally. An unfinished subagent waiting for an incoming continuation must explicitly set waitFor: "message".';
 
-type SessionsYieldClaimResult = boolean | { error: string };
+export type SessionsYieldClaimResult =
+  | boolean
+  | { error: string }
+  | { pendingChildren: readonly UnsettledRequesterChild[] };
 export type SessionsYieldIntent = { waitFor?: "message" };
+
+function describePendingChild(child: UnsettledRequesterChild): string {
+  const name = child.label ? `${child.label} (${child.childSessionKey})` : child.childSessionKey;
+  const started =
+    typeof child.startedAt === "number"
+      ? `, started ${new Date(child.startedAt).toISOString()}`
+      : "";
+  return `${name}, ${child.state}${started}`;
+}
+
+function formatPendingChildrenMessage(children: readonly UnsettledRequesterChild[]): string {
+  const count = children.length;
+  const noun = count === 1 ? "child session" : "child sessions";
+  const owner = children.some((child) => child.wakeArmed)
+    ? "An earlier turn of this session already yielded for"
+    : "An earlier turn of this session already spawned";
+  const listed = children.map(describePendingChild).join("; ");
+  return `${owner} ${count} ${noun} whose completion is still pending: ${listed}. This turn owns no new claim, so no yield is needed: end this turn normally and the completion will arrive in this session as a later turn. Do not re-spawn, re-send, or poll to wake it.`;
+}
 
 const SessionsYieldToolSchema = Type.Object({
   waitFor: Type.Optional(
@@ -70,6 +93,15 @@ export function createSessionsYieldTool(opts?: {
         });
       }
       const claim = await opts.claimYield?.(waitFor ? { waitFor } : undefined);
+      if (typeof claim === "object" && "pendingChildren" in claim) {
+        // Not an error: the session already waits for these children through
+        // durable registry state, so the model only needs to end the turn.
+        return jsonResult({
+          status: "already_pending",
+          message: formatPendingChildrenMessage(claim.pendingChildren),
+          pendingChildren: claim.pendingChildren,
+        });
+      }
       if (claim !== true) {
         return jsonResult({
           status: "error",

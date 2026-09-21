@@ -9,6 +9,7 @@ type SessionsYieldDetails = {
   status?: string;
   acknowledgment?: string;
   error?: string;
+  message?: string;
 };
 
 describe("sessions_yield tool", () => {
@@ -145,6 +146,37 @@ describe("sessions_yield tool", () => {
       error:
         'No pending child completion is owned by this turn. If the assigned work is complete, return its result normally. An unfinished subagent waiting for an incoming continuation must explicitly set waitFor: "message".',
     });
+    expect(onYield).not.toHaveBeenCalled();
+  });
+
+  it("reports children an earlier turn already waits for instead of the generic error", async () => {
+    const onYield = vi.fn();
+    const pendingChildren = [
+      {
+        runId: "run-child",
+        childSessionKey: "agent:main:dashboard:child",
+        label: "Work session",
+        startedAt: Date.UTC(2026, 8, 21, 2, 50, 52),
+        state: "running" as const,
+        wakeArmed: true,
+      },
+    ];
+    const tool = createSessionsYieldTool({
+      sessionId: "test-session",
+      claimYield: () => ({ pendingChildren }),
+      onYield,
+    });
+
+    const result = await tool.execute("call-1", {});
+    const details = result.details as SessionsYieldDetails & { pendingChildren?: unknown };
+
+    expect(isToolResultError(result)).toBe(false);
+    expect(details.status).toBe("already_pending");
+    expect(details.pendingChildren).toEqual(pendingChildren);
+    expect(details.message).toBe(
+      "An earlier turn of this session already yielded for 1 child session whose completion is still pending: Work session (agent:main:dashboard:child), running, started 2026-09-21T02:50:52.000Z. This turn owns no new claim, so no yield is needed: end this turn normally and the completion will arrive in this session as a later turn. Do not re-spawn, re-send, or poll to wake it.",
+    );
+    expect(details.message).not.toContain("return its result normally");
     expect(onYield).not.toHaveBeenCalled();
   });
 
