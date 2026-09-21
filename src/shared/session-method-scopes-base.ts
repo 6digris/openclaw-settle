@@ -81,35 +81,18 @@ const SESSIONS_DELETE_WRITE_SCOPE_FIELDS: ReadonlySet<string> = new Set([
   "archivedOnly",
 ]);
 
-function resolveSessionsPatchRequiredScope(params: unknown): SessionMutationOperatorScope {
+function resolveSessionsPatchRequiredScope(
+  params: unknown,
+  envelopeFields?: ReadonlySet<string>,
+): SessionMutationOperatorScope {
   if (!isRecord(params)) {
     return "operator.write";
   }
   if (params.permissionMode === "full" || Object.hasOwn(params, "sandboxMode")) {
     return "operator.admin";
   }
-  const mutations = Object.keys(params).filter(
-    (key) => !SESSIONS_PATCH_WRITE_SCOPE_ENVELOPE_FIELDS.has(key),
-  );
-  if (
-    mutations.length > 0 &&
-    mutations.every((key) => SESSIONS_PATCH_ORGANIZATION_FIELDS.has(key))
-  ) {
-    return "operator.sessions.write";
-  }
-  return mutations.every((key) => SESSIONS_PATCH_WRITE_SCOPE_MUTATIONS.has(key))
-    ? "operator.write"
-    : "operator.admin";
-}
-
-function resolveSessionsPatchManyRequiredScope(params: unknown): SessionMutationOperatorScope {
-  if (!isRecord(params) || !isRecord(params.patch)) {
-    return "operator.write";
-  }
-  if (params.patch.permissionMode === "full" || Object.hasOwn(params.patch, "sandboxMode")) {
-    return "operator.admin";
-  }
-  const mutations = Object.keys(params.patch);
+  const fields = Object.keys(params);
+  const mutations = envelopeFields ? fields.filter((key) => !envelopeFields.has(key)) : fields;
   if (
     mutations.length > 0 &&
     mutations.every((key) => SESSIONS_PATCH_ORGANIZATION_FIELDS.has(key))
@@ -160,10 +143,10 @@ export function resolveBaseSessionMutationRequiredScope(
     return resolveSessionsCreateRequiredScope(params);
   }
   if (method === "sessions.patch") {
-    return resolveSessionsPatchRequiredScope(params);
+    return resolveSessionsPatchRequiredScope(params, SESSIONS_PATCH_WRITE_SCOPE_ENVELOPE_FIELDS);
   }
   if (method === "sessions.patchMany") {
-    return resolveSessionsPatchManyRequiredScope(params);
+    return resolveSessionsPatchRequiredScope(isRecord(params) ? params.patch : undefined);
   }
   if (method === "sessions.delete") {
     return resolveSessionsDeleteRequiredScope(params);
