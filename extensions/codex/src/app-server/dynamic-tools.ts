@@ -12,7 +12,6 @@ import {
   finalizeToolTerminalPresentation,
   formatToolExecutionErrorMessage,
   getBeforeToolCallFailureDisposition,
-  HEARTBEAT_RESPONSE_TOOL_NAME,
   embeddedAgentLog,
   getChannelAgentToolMeta,
   getPluginToolMeta,
@@ -25,31 +24,26 @@ import {
   isToolWrappedWithBeforeToolCallHook,
   isToolResultError,
   isMessagingTool,
-  isMessagingToolSendAction,
-  normalizeHeartbeatToolResponse,
   resolveToolExecutionErrorKind,
-  resolveToolResultFailureKind,
   runAgentHarnessAfterToolCallHook,
   sanitizeToolResult,
   setBeforeToolCallDiagnosticsEnabled,
   type AnyAgentTool,
-  type HeartbeatToolResponse,
   type MessagingToolSend,
   type MessagingToolSourceReplyPayload,
   wrapToolWithBeforeToolCallHook,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
-  consumeTrustedToolNoStartError,
   copyInternalToolResultState,
   createAgentHarnessToolExecutionBoundaryRegistry,
   getCoreTtsToolResultMediaUrls,
   normalizeAcceptedSessionSpawnResult,
   type AcceptedSessionSpawn,
   type AgentHarnessToolExecutionSnapshot,
-  runWithToolExecutionValidation,
-  recordAgentHarnessMessagingDelivery,
-  recordAgentHarnessToolResultMedia,
-  resolveAgentHarnessToolResultPresentation,
+  runAgentHarnessToolInvocation,
+  recordAgentHarnessToolResultTelemetry,
+  collectAgentHarnessMessagingMediaUrls,
+  type AgentHarnessToolResultTelemetry,
 } from "openclaw/plugin-sdk/agent-harness-tool-runtime";
 import { emitTrustedDiagnosticEvent } from "openclaw/plugin-sdk/diagnostic-runtime";
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
@@ -415,20 +409,9 @@ export type CodexDynamicToolBridge = {
   ) => AgentHarnessToolExecutionSnapshot | undefined;
   /** Bind the authenticated app-server client once remote thread startup completes. */
   setRemoteWorkspaceFileReader?: (reader: CodexRemoteWorkspaceFileReader) => void;
-  telemetry: {
-    didSendViaMessagingTool: boolean;
+  telemetry: AgentHarnessToolResultTelemetry & {
     didDeliverSourceReplyViaMessageTool: boolean;
     sourceReplyDelivered?: true;
-    messagingToolSentTexts: string[];
-    messagingToolSentMediaUrls: string[];
-    messagingToolSentTargets: MessagingToolSend[];
-    messagingToolSourceReplyPayloads: MessagingToolSourceReplyPayload[];
-    heartbeatToolResponse?: HeartbeatToolResponse;
-    toolMediaUrls: string[];
-    toolAutoDeliveryMediaUrls: string[];
-    coreTtsToolResults: object[];
-    toolAudioAsVoice: boolean;
-    successfulCronAdds?: number;
     acceptedSessionSpawns: AcceptedSessionSpawn[];
     quarantinedTools: CodexDynamicToolSchemaQuarantine[];
   };
@@ -639,58 +622,46 @@ export function createCodexDynamicToolBridge(params: {
       const { tool, name: toolName } = toolEntry;
       const rawArguments =
         toolName === "automations" ? resolveAutomationsToolsAllow(call.arguments) : call.arguments;
-      const args = asNonArrayRecord(rawArguments);
-      const startedAt = Date.now();
       const signal = composeAbortSignals(params.signal, options?.signal);
-      const executionBoundary = executionBoundaries.begin({
-        toolCallId: call.callId,
+      const messagingContext = {
+        config: params.hookContext?.config,
+        currentChannelId: params.hookContext?.currentChannelId,
+        currentMessagingTarget: params.hookContext?.currentMessagingTarget,
+        currentThreadId: params.hookContext?.currentThreadId,
+        replyToMode: params.hookContext?.replyToMode,
+        hasRepliedRef: params.hookContext?.hasRepliedRef
+          ? { value: params.hookContext.hasRepliedRef.value }
+          : undefined,
+      };
+      return runAgentHarnessToolInvocation({
+        tool,
+        call: { toolCallId: call.callId, toolName, arguments: rawArguments, threadId: call.threadId, turnId: call.turnId },
         runId: toolResultHookContext.runId,
-        arguments: args,
-        retainAfterCompletion: options?.retainExecutionSnapshot,
-      });
-      try {
-        // Compatibility preparation owns raw arguments; record coercion must not run first.
-        const prepare = tool.prepareArguments;
-        const toolArgs = prepare ? Reflect.apply(prepare, tool, [rawArguments]) : args;
-        const preparedArgs =
-          toolName === "message" && isRecord(toolArgs)
-            ? await prepareCodexRemoteWorkspaceMessageMedia({
-                args: toolArgs,
+        signal,
+        boundaries: executionBoundaries,
+        retainExecutionSnapshot: options?.retainExecutionSnapshot,
+        prepareArguments: (toolArgs) => {
+          const args = tool.prepareArguments ? toolArgs : asNonArrayRecord(toolArgs);
+          return toolName === "message" && isRecord(args)
+            ? prepareCodexRemoteWorkspaceMessageMedia({
+                args,
                 localWorkspaceRoot: params.hookContext?.workspaceDir,
                 remoteWorkspaceRoot: params.hookContext?.remoteWorkspaceRoot,
                 readRemoteFile: readRemoteWorkspaceFile,
                 timeoutMs: params.hookContext?.remoteWorkspaceRequestTimeoutMs,
                 signal,
               })
-            : toolArgs;
-        const telemetryArgs = isRecord(preparedArgs) ? preparedArgs : args;
-        executionBoundary.setArguments(telemetryArgs);
-        const messagingContext = {
-          config: params.hookContext?.config,
-          currentChannelId: params.hookContext?.currentChannelId,
-          currentMessagingTarget: params.hookContext?.currentMessagingTarget,
-          currentThreadId: params.hookContext?.currentThreadId,
-          replyToMode: params.hookContext?.replyToMode,
-          hasRepliedRef: params.hookContext?.hasRepliedRef
-            ? { value: params.hookContext.hasRepliedRef.value }
-            : undefined,
-        };
-        executionBoundary.markDispatched();
-        const execute = () => tool.execute(call.callId, preparedArgs, signal);
-        const rawResult = shouldValidateCodexDynamicToolInput(tool)
-          ? await runWithToolExecutionValidation(
-              call.callId,
-              (value) =>
-                assertCodexDynamicToolInputMatchesSchema({
-                  toolName,
-                  schema: toolEntry.inputSchema,
-                  value,
-                }),
-              execute,
-            )
-          : await execute();
-        executionBoundary.capture();
-        const executedArgs = executionBoundary.executedArguments;
+            : args;
+        },
+        validateArguments: shouldValidateCodexDynamicToolInput(tool)
+          ? (value) => assertCodexDynamicToolInputMatchesSchema({ toolName, schema: toolEntry.inputSchema, value })
+          : undefined,
+        snapshotResult: sanitizeToolResult,
+        applyMiddleware: async (event) => legacyExtensionRunner.applyToolResultExtensions({
+          ...event,
+          result: await middlewareRunner.applyToolResultMiddleware(event),
+        }),
+        onExecutionResult: ({ rawResult }) => {
         // Delivery is committed before result middleware; presentation changes
         // cannot erase the source owner's confirmation or infer a new one.
         if (
@@ -700,26 +671,8 @@ export function createCodexDynamicToolBridge(params: {
         ) {
           telemetry.sourceReplyDelivered = true;
         }
-        const telemetryRawResult = sanitizeToolResult(rawResult);
-        const rawIsError = isToolResultError(rawResult);
-        const rawResultFailureKind = resolveToolResultFailureKind(rawResult);
-        const middlewareResult = await middlewareRunner.applyToolResultMiddleware({
-          threadId: call.threadId,
-          turnId: call.turnId,
-          toolCallId: call.callId,
-          toolName,
-          args: structuredClone(executedArgs),
-          isError: rawIsError,
-          result: rawResult,
-        });
-        const result = await legacyExtensionRunner.applyToolResultExtensions({
-          threadId: call.threadId,
-          turnId: call.turnId,
-          toolCallId: call.callId,
-          toolName,
-          args: structuredClone(executedArgs),
-          result: middlewareResult,
-        });
+        },
+        onResult: ({ boundary: executionBoundary, startedAt, executedArguments: executedArgs, rawResult, rawResultSnapshot: telemetryRawResult, rawIsError, result, observerResult, isError: resultIsError, failureKind: resultFailureKind }) => {
         // A successful spawn is durable before presentation middleware can rewrite details.
         const acceptedSessionSpawn =
           toolName === "sessions_spawn" && !rawIsError
@@ -728,15 +681,6 @@ export function createCodexDynamicToolBridge(params: {
         if (acceptedSessionSpawn) {
           telemetry.acceptedSessionSpawns.push(acceptedSessionSpawn);
         }
-        const {
-          result: observerResult,
-          isError: resultIsError,
-          failureKind: resultFailureKind,
-        } = resolveAgentHarnessToolResultPresentation({
-          result,
-          executionIsError: rawIsError,
-          executionFailureKind: rawResultFailureKind,
-        });
         notifyAgentToolResult(options?.onAgentToolResult, toolName, observerResult, resultIsError);
         void runAgentHarnessAfterToolCallHook({
           toolName,
@@ -839,7 +783,8 @@ export function createCodexDynamicToolBridge(params: {
           (toolConfirmedSourceReply || deliveredSourceReply || receiptConfirmedSourceReply);
         const sourceReplyFinal = confirmedSourceReply ? executedArgs.final !== false : undefined;
         const autoDeliveryTtsMediaUrls = getCoreTtsToolResultMediaUrls(rawResult);
-        collectToolTelemetry({
+        recordAgentHarnessToolResultTelemetry({
+          extractSourceReplyPayload: (result) => extractInternalSourceReplyPayload(result?.details),
           toolName,
           args: executedArgs,
           result,
@@ -880,11 +825,8 @@ export function createCodexDynamicToolBridge(params: {
         response.replaySafe = replaySafe;
         response.sideEffectEvidence = !replaySafe || undefined;
         return response;
-      } catch (error) {
-        // Post-processing can fail after a successful body. Boundary evidence
-        // is monotonic, so a second observer must never erase an earlier start.
-        executionBoundary.capture({ noStart: consumeTrustedToolNoStartError(error) });
-        const executedArgs = executionBoundary.executedArguments;
+        },
+        onError: ({ error, boundary: executionBoundary, startedAt, executedArguments: executedArgs }) => {
         if (
           toolName === "computer" &&
           params.computerContextEpoch?.frameToolCallId === call.callId
@@ -942,9 +884,8 @@ export function createCodexDynamicToolBridge(params: {
           replaySafe,
           sideEffectEvidence: (executionBoundary.didStartExecution && !replaySafe) || undefined,
         };
-      } finally {
-        executionBoundary.dispose();
-      }
+        },
+      });
     },
   };
 }
@@ -1097,105 +1038,6 @@ function composeAbortSignals(...signals: Array<AbortSignal | undefined>): AbortS
   }
   return AbortSignal.any(activeSignals);
 }
-function collectToolTelemetry(params: {
-  toolName: string;
-  args: Record<string, unknown>;
-  result: AgentToolResult<unknown> | undefined;
-  mediaTrustResult?: unknown;
-  telemetry: CodexDynamicToolBridge["telemetry"];
-  isError: boolean;
-  signal: AbortSignal;
-  autoDeliveryTtsMediaUrls?: readonly string[];
-  coreTtsToolResult?: object;
-  messagingTarget?: MessagingToolSend;
-  sourceReplyFinal?: boolean;
-  trustedLocalMediaToolNames?: ReadonlySet<string>;
-}): MessagingToolSend | MessagingToolSourceReplyPayload | undefined {
-  if (params.isError) {
-    return undefined;
-  }
-  if (!params.isError && params.toolName === "cron" && isCronAddAction(params.args)) {
-    params.telemetry.successfulCronAdds = (params.telemetry.successfulCronAdds ?? 0) + 1;
-  }
-  if (!params.isError && params.toolName === HEARTBEAT_RESPONSE_TOOL_NAME) {
-    const response = normalizeHeartbeatToolResponse(params.result?.details);
-    if (response) {
-      params.telemetry.heartbeatToolResponse = response;
-    }
-  }
-  // Only a live invocation may accept new media; committed effects remain evidence.
-  if (params.result && !params.signal.aborted) {
-    const media = recordAgentHarnessToolResultMedia({
-      facts: params.telemetry,
-      toolName: params.toolName,
-      result: params.result,
-      mediaTrustResult: params.coreTtsToolResult ?? params.mediaTrustResult,
-      trustedLocalMediaToolNames: params.trustedLocalMediaToolNames,
-    });
-    if (media) {
-      const mediaUrls = media.mediaUrls;
-      const autoDeliveryMediaUrls = new Set(params.telemetry.toolAutoDeliveryMediaUrls);
-      const rawAutoDeliveryMediaUrls = new Set(params.autoDeliveryTtsMediaUrls);
-      let retainsCoreTtsMedia = false;
-      for (const mediaUrl of mediaUrls) {
-        if (rawAutoDeliveryMediaUrls.has(mediaUrl)) {
-          autoDeliveryMediaUrls.add(mediaUrl);
-          retainsCoreTtsMedia = true;
-        } else {
-          autoDeliveryMediaUrls.delete(mediaUrl);
-        }
-      }
-      params.telemetry.toolAutoDeliveryMediaUrls = [...autoDeliveryMediaUrls];
-      if (
-        retainsCoreTtsMedia &&
-        params.coreTtsToolResult &&
-        !params.telemetry.coreTtsToolResults.includes(params.coreTtsToolResult)
-      ) {
-        params.telemetry.coreTtsToolResults.push(params.coreTtsToolResult);
-      }
-    }
-  }
-  if (!isMessagingTool(params.toolName)) {
-    return undefined;
-  }
-  const isMessagingSendAction = isMessagingToolSendAction(params.toolName, params.args);
-  if (!isMessagingSendAction && !params.messagingTarget) {
-    return undefined;
-  }
-  if (
-    !isMessagingSendAction &&
-    !isDeliveredMessagingToolResult({
-      toolName: params.toolName,
-      args: params.args,
-      result: params.result,
-      hookResult: params.mediaTrustResult,
-      isError: params.isError,
-    })
-  ) {
-    return undefined;
-  }
-  const sourceReplyPayload = extractInternalSourceReplyPayload(params.result?.details);
-  if (sourceReplyPayload) {
-    return recordAgentHarnessMessagingDelivery({
-      facts: params.telemetry,
-      sourceReplyPayload,
-      sourceReplyFinal: params.sourceReplyFinal,
-    });
-  }
-  return recordAgentHarnessMessagingDelivery({
-    facts: params.telemetry,
-    target: params.messagingTarget ?? {
-      tool: params.toolName,
-      provider: readFirstString(params.args, ["provider", "channel"]) ?? params.toolName,
-      accountId: readFirstString(params.args, ["accountId", "account_id"]),
-      to: readFirstString(params.args, ["to", "target", "recipient"]),
-      threadId: readFirstString(params.args, ["threadId", "thread_id", "messageThreadId"]),
-    },
-    text: readFirstString(params.args, ["text", "message", "body", "content"]),
-    mediaUrls: collectMediaUrls(params.args),
-    sourceReplyFinal: params.sourceReplyFinal,
-  });
-}
 function extractInternalSourceReplyPayload(
   details: unknown,
 ): MessagingToolSourceReplyPayload | undefined {
@@ -1207,7 +1049,7 @@ function extractInternalSourceReplyPayload(
     return undefined;
   }
   const text = readFirstString(rawPayload, ["text", "message"]);
-  const mediaUrls = collectMediaUrls(rawPayload);
+  const mediaUrls = collectAgentHarnessMessagingMediaUrls(rawPayload);
   const mediaUrl =
     typeof rawPayload.mediaUrl === "string" && rawPayload.mediaUrl.trim()
       ? rawPayload.mediaUrl.trim()
@@ -1366,55 +1208,5 @@ function readFirstString(record: Record<string, unknown>, keys: string[]): strin
     }
   }
   return undefined;
-}
-function collectMediaUrls(record: Record<string, unknown>): string[] {
-  const urls: string[] = [];
-  const pushMediaUrl = (value: unknown) => {
-    if (typeof value === "string" && value.trim()) {
-      urls.push(value.trim());
-    }
-  };
-  const pushAttachment = (value: unknown) => {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      return;
-    }
-    const attachment = value as Record<string, unknown>;
-    for (const key of ["media", "mediaUrl", "path", "filePath", "fileUrl", "url"]) {
-      pushMediaUrl(attachment[key]);
-    }
-  };
-  for (const key of [
-    "media",
-    "mediaUrl",
-    "media_url",
-    "path",
-    "filePath",
-    "fileUrl",
-    "imageUrl",
-    "image_url",
-  ]) {
-    const value = record[key];
-    pushMediaUrl(value);
-  }
-  for (const key of ["mediaUrls", "media_urls", "imageUrls", "image_urls"]) {
-    const value = record[key];
-    if (!Array.isArray(value)) {
-      continue;
-    }
-    for (const entry of value) {
-      pushMediaUrl(entry);
-    }
-  }
-  const attachments = record.attachments;
-  if (Array.isArray(attachments)) {
-    for (const attachment of attachments) {
-      pushAttachment(attachment);
-    }
-  }
-  return urls;
-}
-function isCronAddAction(args: Record<string, unknown>): boolean {
-  const action = args.action;
-  return typeof action === "string" && action.trim().toLowerCase() === "add";
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
