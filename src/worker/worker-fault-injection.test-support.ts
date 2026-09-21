@@ -39,6 +39,7 @@ import { createWorkerTranscriptCommitStore } from "../gateway/worker-environment
 import { createWorkerTranscriptCommitter } from "../gateway/worker-environments/transcript-commit.js";
 import { onAgentRuntimeEvent } from "../infra/agent-events.js";
 import type { WorkerProvider, WorkerSshEndpoint } from "../plugins/types.js";
+import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db.js";
 import * as stateDb from "../state/openclaw-state-db.js";
 import { buildWorkerConnectParams, type WorkerLaunchDescriptor } from "./launch-descriptor.js";
 import { createWorkerConnection, type WorkerConnection } from "./worker-connection.js";
@@ -213,7 +214,6 @@ export class ComposedGatewayHarness {
     readonly root: string,
     readonly sessionTarget: Awaited<ReturnType<typeof resolveSessionTranscriptRuntimeTarget>>,
   ) {
-    const stateDir = path.join(root, "state");
     this.socketPath = path.join(root, "gateway.sock");
     this.cfg = {
       agents: { list: [{ id: "main", default: true }] },
@@ -226,7 +226,7 @@ export class ComposedGatewayHarness {
       },
     };
     this.database = stateDb.openOpenClawStateDatabase({
-      env: { OPENCLAW_STATE_DIR: stateDir },
+      env: { OPENCLAW_STATE_DIR: path.join(root, "state") },
     });
     this.store = envStore.createWorkerEnvironmentStore({ database: this.database });
     this.placementStore = placements.createWorkerSessionPlacementStore({
@@ -472,6 +472,8 @@ export class ComposedGatewayHarness {
     await new Promise<void>((resolve) => {
       this.httpServer.close(() => resolve());
     });
+    // Session seeding can leave maintenance Workers holding the agent database.
+    await closeOpenClawAgentDatabasesAsync(this.root);
     stateDb.closeOpenClawStateDatabaseForTest();
     await fs.rm(this.root, { recursive: true, force: true });
   }
@@ -542,10 +544,9 @@ export class ComposedGatewayHarness {
   }
 
   private createService(): workerEnv.WorkerEnvironmentService {
-    const ledger = createWorkerTranscriptCommitStore({ database: this.database });
     const committer = createWorkerTranscriptCommitter({
       getConfig: () => this.cfg,
-      store: ledger,
+      store: createWorkerTranscriptCommitStore({ database: this.database }),
     });
     const executeInference: Parameters<
       typeof workerEnv.createWorkerEnvironmentService
