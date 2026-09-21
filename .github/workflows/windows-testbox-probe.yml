@@ -80,7 +80,7 @@ jobs:
           console.log(JSON.stringify(metadata));
           writeFileSync(path.join(evidence, "binding.json"), JSON.stringify(metadata, null, 2));
           const env = { ...process.env, TMP: evidence, TEMP: evidence, TMPDIR: evidence };
-          const result = spawnSync(process.execPath, ["--import", "./scripts/tsx.mjs", "scripts/windows-handle-inheritance-probe.mjs", evidence], { env, stdio: "inherit" });
+          const result = spawnSync(process.execPath, ["scripts/windows-handle-inheritance-probe.mjs", evidence], { env, stdio: "inherit" });
           if (result.error) throw result.error;
           process.exitCode = result.status ?? 1;
           PROBE

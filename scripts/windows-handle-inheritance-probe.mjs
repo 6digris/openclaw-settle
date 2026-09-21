@@ -783,6 +783,7 @@ async function main() {
       node: process.version,
       versions: process.versions,
       execPath: process.execPath,
+      execArgv: process.execArgv,
       cleanupBudgetMs: BUDGET,
       scope: "Controlled dependency mechanism; no historical root-cause claim",
       observerReferences:
@@ -793,6 +794,8 @@ async function main() {
       "v24.19.0",
       "this control targets the retained Node 24.19.0 dependency sources",
     );
+    // A loader's compiler service can inherit the very handles this control measures.
+    assert.deepEqual(process.execArgv, [], "run directly with native Node type stripping");
     const n = await native();
     const results = [];
     for (const arm of ["threads", "processes"]) results.push(await runArm(n, arm, record));
