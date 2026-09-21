@@ -165,6 +165,8 @@ describe("runCodexAppServerAttempt question refresh", () => {
     const closeHost = refresh
       ? await bindProductionHarnessHostCapabilitiesForTest(params)
       : undefined;
+    // Question routing and handoff ordering must not spend the watchdog on host I/O.
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const run = runCodexAppServerAttempt(params);
     await turnStarted.promise;
     expect(handleRequest).toBeTypeOf("function");
