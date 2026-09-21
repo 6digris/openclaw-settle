@@ -14,7 +14,6 @@ import {
 export {
   assertTransactionUsable,
   retainSqliteWriteAdmissionService,
-  sqliteWriteAdmissionServicesForLocation,
   withSqliteWriteAdmissionService,
 } from "./sqlite-transaction-core.js";
 export type { SqliteTransactionOptions } from "./sqlite-transaction-core.js";
