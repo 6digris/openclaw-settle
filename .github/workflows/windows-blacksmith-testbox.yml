@@ -176,11 +176,22 @@ jobs:
             service_arguments_present = "unknown"
             process_executable_class = "unavailable"
             original_path_guard_match = $false
+            process_directory_class = "unavailable"
+            process_leaf_is_sshd = "unavailable"
+            configured_command_relation = "unavailable"
+            service_process_snapshot = "unavailable"
+            path_reparse_class = "unavailable"
+            signature_status = "unavailable"
+            signer_name_class = "unavailable"
+            file_version = "unavailable"
+            file_acl = [ordered]@{ owner_class = "unavailable"; write_allow_class = "unavailable" }
+            installation_directory_acl = [ordered]@{ owner_class = "unavailable"; write_allow_class = "unavailable" }
           }
           $receiptKnownPaths = @(
             @{ path = $sshd; kind = "inbox" }
             @{ path = "$env:ProgramFiles\OpenSSH\sshd.exe"; kind = "program-files" }
           )
+          $receiptProcess = $null
           if ($service) {
             if (@("Stopped", "Start Pending", "Stop Pending", "Running", "Continue Pending", "Pause Pending", "Paused", "Unknown") -ccontains $service.State) {
               $receipt.service_state = $service.State
@@ -216,6 +227,155 @@ jobs:
               } catch {
                 # An unavailable diagnostic read must not print its exception or change admission.
               }
+            }
+          }
+          # Observe only recognized local installations; these classifications never authorize SSH.
+          $receiptSidClasses = @{
+            "S-1-5-18" = "system"
+            "S-1-5-32-544" = "administrators"
+            "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464" = "trusted-installer"
+          }
+          $receiptReadAcl = {
+            param([string]$receiptAclPath)
+            $result = [ordered]@{ owner_class = "unavailable"; write_allow_class = "unavailable" }
+            try {
+              $security = Get-Acl -LiteralPath $receiptAclPath -ErrorAction Stop
+              $descriptor = [Security.AccessControl.RawSecurityDescriptor]::new($security.GetSecurityDescriptorBinaryForm(), 0)
+              if ($descriptor.Owner) {
+                $result.owner_class = if ($receiptSidClasses.ContainsKey($descriptor.Owner.Value)) { $receiptSidClasses[$descriptor.Owner.Value] } else { "other" }
+              }
+              if ($null -eq $descriptor.DiscretionaryAcl) {
+                $result.write_allow_class = "null-dacl"
+              } else {
+                foreach ($ace in $descriptor.DiscretionaryAcl) {
+                  if ($ace -isnot [Security.AccessControl.CommonAce] -or $ace.IsCallback -or
+                      $ace.AceType -notin @([Security.AccessControl.AceType]::AccessAllowed, [Security.AccessControl.AceType]::AccessDenied) -or
+                      ([long]$ace.AccessMask -band 4026531840L) -ne 0) {
+                    throw "Unsupported ACL observation."
+                  }
+                }
+                $writeMask = [Security.AccessControl.FileSystemRights]::Write -bor
+                  [Security.AccessControl.FileSystemRights]::Delete -bor
+                  [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+                  [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+                  [Security.AccessControl.FileSystemRights]::TakeOwnership
+                $result.write_allow_class = "no-other-write-allow"
+                foreach ($rule in $security.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+                  if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+                      ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -eq 0 -and
+                      ($rule.FileSystemRights -band $writeMask) -ne 0 -and
+                      -not $receiptSidClasses.ContainsKey($rule.IdentityReference.Value)) {
+                    $result.write_allow_class = "other-write-allow"
+                  }
+                }
+              }
+            } catch {
+              $result.write_allow_class = "unavailable"
+            }
+            return $result
+          }
+          if ($receiptProcess -and -not [string]::IsNullOrWhiteSpace($receiptProcess.ExecutablePath)) {
+            try {
+              $receiptProcessPath = [string]$receiptProcess.ExecutablePath
+              $receiptDirectory = [IO.Path]::GetDirectoryName($receiptProcessPath)
+              $receipt.process_leaf_is_sshd = [IO.Path]::GetFileName($receiptProcessPath) -ieq "sshd.exe"
+              $receipt.process_directory_class = "other"
+              $receiptDirectories = @(
+                @{ path = "$env:WINDIR\System32\OpenSSH"; kind = "inbox" }
+                @{ path = "$env:ProgramFiles\OpenSSH"; kind = "program-files-openssh" }
+                @{ path = "$env:ProgramFiles\OpenSSH-Win64"; kind = "program-files-openssh-win64" }
+              )
+              foreach ($receiptKnownDirectory in $receiptDirectories) {
+                if ($receiptDirectory -ieq $receiptKnownDirectory.path) {
+                  $receipt.process_directory_class = $receiptKnownDirectory.kind
+                  break
+                }
+              }
+              if (-not [string]::IsNullOrWhiteSpace($receiptCommand)) {
+                $receipt.configured_command_relation = "different-or-unparseable"
+                $receiptEscapedProcess = [regex]::Escape($receiptProcessPath)
+                if ($receiptCommand -ieq ('"' + $receiptProcessPath + '"')) {
+                  $receipt.configured_command_relation = "quoted-direct"
+                } elseif ($receiptCommand -ieq $receiptProcessPath) {
+                  $receipt.configured_command_relation = "unquoted-direct"
+                } elseif ($receiptCommand -match ('^(?:"' + $receiptEscapedProcess + '"|' + $receiptEscapedProcess + ')\s+\S.*$')) {
+                  $receipt.configured_command_relation = "same-path-with-arguments"
+                }
+              }
+              if ($receipt.process_directory_class -ne "other" -and $receipt.process_leaf_is_sshd -eq $true -and
+                  $receiptProcessPath -match '^[A-Za-z]:\\') {
+                $receiptRoot = [IO.Path]::GetPathRoot($receiptProcessPath)
+                $receiptParts = $receiptProcessPath.Substring($receiptRoot.Length).Split('\')
+                if ($receiptParts.Count -le 6) {
+                  # Check from the drive root downward, stopping before following any reparse point.
+                  $receiptComponents = @($receiptRoot)
+                  $receiptComponent = $receiptRoot
+                  foreach ($receiptPart in $receiptParts) {
+                    $receiptComponent = Join-Path $receiptComponent $receiptPart
+                    $receiptComponents += $receiptComponent
+                  }
+                  foreach ($receiptComponent in $receiptComponents) {
+                    $receiptItem = Get-Item -LiteralPath $receiptComponent -Force -ErrorAction Stop
+                    if (($receiptItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                      $receipt.path_reparse_class = "present"
+                      break
+                    }
+                  }
+                  if ($receipt.path_reparse_class -ne "present" -and -not $receiptItem.PSIsContainer) {
+                    $receipt.path_reparse_class = "none"
+                  }
+                }
+                if ($receipt.path_reparse_class -eq "none") {
+                  $receipt.file_acl = & $receiptReadAcl $receiptProcessPath
+                  $receipt.installation_directory_acl = & $receiptReadAcl $receiptDirectory
+                  try {
+                    $receiptSignature = Get-AuthenticodeSignature -LiteralPath $receiptProcessPath -ErrorAction Stop
+                    $receiptSignatureStatus = [string]$receiptSignature.Status
+                    if (@("Valid", "UnknownError", "NotSigned", "HashMismatch", "NotTrusted", "NotSupportedFileFormat", "Incompatible") -ccontains $receiptSignatureStatus) {
+                      $receipt.signature_status = $receiptSignatureStatus
+                    }
+                    if ($receiptSignature.SignerCertificate) {
+                      $receiptSigner = $receiptSignature.SignerCertificate.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+                      if (-not [string]::IsNullOrWhiteSpace($receiptSigner)) {
+                        $receipt.signer_name_class = if ($receiptSigner -ceq "Microsoft Corporation") { "microsoft-corporation" } elseif ($receiptSigner -ceq "Microsoft Windows") { "microsoft-windows" } else { "other" }
+                      }
+                    }
+                  } catch {
+                    # Signature failures are observations, never raw diagnostics or trust decisions.
+                  }
+                  try {
+                    $receiptVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($receiptProcessPath)
+                    if (-not [string]::IsNullOrWhiteSpace($receiptVersion.FileVersion)) {
+                      $receipt.file_version = @($receiptVersion.FileMajorPart, $receiptVersion.FileMinorPart, $receiptVersion.FileBuildPart, $receiptVersion.FilePrivatePart) -join '.'
+                    }
+                  } catch {
+                    # Never emit arbitrary version-resource strings.
+                  }
+                }
+              }
+            } catch {
+              # Keep unknown path or metadata reads unavailable without exposing their values.
+            }
+          }
+          if ($service -and $receiptProcess -and $receiptProcess.CreationDate -and
+              -not [string]::IsNullOrWhiteSpace($receiptProcess.ExecutablePath)) {
+            try {
+              $receiptServiceAfter = Get-CimInstance Win32_Service -Filter "Name='sshd'" -ErrorAction Stop
+              $receiptProcessAfter = Get-CimInstance Win32_Process -Filter ("ProcessId = " + [uint32]$service.ProcessId) -ErrorAction Stop
+              if (-not $receiptServiceAfter -or -not $receiptProcessAfter) {
+                $receipt.service_process_snapshot = "changed"
+              } elseif ($receiptProcessAfter.CreationDate -and -not [string]::IsNullOrWhiteSpace($receiptProcessAfter.ExecutablePath)) {
+                $receipt.service_process_snapshot = if (
+                  $receiptServiceAfter.ProcessId -eq $service.ProcessId -and
+                  $receiptServiceAfter.State -ceq $service.State -and
+                  $receiptServiceAfter.StartName -ceq $service.StartName -and
+                  $receiptServiceAfter.PathName -ceq $service.PathName -and
+                  $receiptProcessAfter.CreationDate -eq $receiptProcess.CreationDate -and
+                  $receiptProcessAfter.ExecutablePath -ceq $receiptProcess.ExecutablePath
+                ) { "stable" } else { "changed" }
+              }
+            } catch {
+              # A failed second snapshot cannot establish a stable service/process pair.
             }
           }
           Write-Host ("WINDOWS_SSH_SERVICE_RECEIPT=" + ($receipt | ConvertTo-Json -Compress))
