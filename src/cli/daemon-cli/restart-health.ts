@@ -9,6 +9,7 @@ import {
   createConfiguredGatewayLocalProbe,
   type ConfiguredGatewayLocalProbe,
 } from "../../gateway/local-http-probe.js";
+import { readActiveGatewayLockIdentity } from "../../infra/gateway-lock.js";
 import { readGatewayOwnerLease } from "../../infra/gateway-owner-lease.js";
 import { classifyPortListener } from "../../infra/ports-format.js";
 import { inspectPortUsage } from "../../infra/ports-inspect.js";
@@ -328,6 +329,8 @@ type GatewayRestartWaitOptions = {
   expectedBuildId?: string | null;
   requireRunningService?: boolean;
   requirePluginHealth?: boolean;
+  /** Diagnostics can report absence immediately; start/restart callers wait for installation. */
+  waitForMissingService?: boolean;
   supervisorKeepsAlive?: boolean;
   isStartupMigrationActive?: typeof hasActiveStartupMigrationLease;
   probeHosts?: readonly string[];
@@ -555,12 +558,37 @@ export async function waitForGatewayHealthyRestart(
     }
     const stoppedFree =
       snapshot.runtime.status === "stopped" && snapshot.portUsage.status === "free";
-    const owner = stoppedFree
-      ? readGatewayOwnerLease({ env: params.env, port: params.port })
-      : undefined;
+    const missingServiceFree =
+      params.waitForMissingService === false &&
+      snapshot.runtime.status !== "running" &&
+      snapshot.runtime.missingUnit === true &&
+      snapshot.portUsage.status === "free";
+    let missingLegacyOwner = false;
+    if (missingServiceFree) {
+      try {
+        const legacyOwner = await readActiveGatewayLockIdentity({
+          env: params.env,
+          requireInspection: true,
+        });
+        missingLegacyOwner = legacyOwner?.port !== params.port;
+      } catch {
+        // An unverifiable legacy owner still earns the existing startup grace.
+      }
+    }
+    const owner =
+      stoppedFree || missingServiceFree
+        ? readGatewayOwnerLease({ env: params.env, port: params.port })
+        : undefined;
     if (owner && owner.state !== "dead") {
       observedOwner = owner.owner;
-    } else if (owner?.state === "dead" && owner.owner === observedOwner) {
+    } else if (
+      owner?.state === "dead" &&
+      owner.owner === observedOwner &&
+      (!missingServiceFree || missingLegacyOwner)
+    ) {
+      return withWaitContext(snapshot, "stopped-free", elapsedMs);
+    }
+    if (missingServiceFree && missingLegacyOwner && (!owner || owner.state === "dead")) {
       return withWaitContext(snapshot, "stopped-free", elapsedMs);
     }
     // A previous crashed owner cannot describe replacement startup. Keep native
