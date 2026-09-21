@@ -2,10 +2,11 @@
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import { setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import type { ChatAbortControllerEntry } from "../chat-abort.js";
+import { listQueuedChatTurnsForSession } from "../chat-queued-turns.js";
 import { chatRunBelongsToAgent, resolveChatRunOwnerAgentId } from "../chat-run-owner.js";
 import { ADMIN_SCOPE } from "../method-scopes.js";
 import { createChatAbortMarker } from "../server-chat-state.js";
-import { pendingChatSendDedupeKey } from "../server-shared.js";
+import { pendingChatSendDedupeKey, PENDING_CHAT_SEND_DEDUPE_PREFIX } from "../server-shared.js";
 import {
   normalizeOptionalChatText as normalizeOptionalText,
   normalizeUnknownChatText as normalizeUnknownText,
@@ -477,4 +478,79 @@ export function resolveAuthorizedRunsForSessionKeys(params: {
     hasUnauthorizedProtectedRuns,
     hasProtectedRuns,
   };
+}
+
+const SESSION_LIFECYCLE_ABORT_REQUESTER: ChatAbortRequester = { isAdmin: true };
+
+export function resolveAuthorizedQueuedTurnsForSession(params: {
+  context: GatewayRequestContext;
+  sessionKeys: string[];
+  sessionId?: string;
+  requiredSessionId?: string;
+  agentId?: string;
+  defaultAgentId?: string;
+  requester: ChatAbortRequester;
+  excludeRunIds?: ReadonlySet<string>;
+}) {
+  const matches = listQueuedChatTurnsForSession({
+    chatQueuedTurns: params.context.chatQueuedTurns,
+    sessionKeys: params.sessionKeys,
+    sessionIds: [params.sessionId],
+    requiredSessionId: params.requiredSessionId,
+    agentId: params.agentId,
+    defaultAgentId: params.defaultAgentId,
+  }).filter((match) => !params.excludeRunIds?.has(match.runId));
+  const authorized = matches
+    .filter((match) => canRequesterAbortChatRun(match.entry, params.requester))
+    .map((match) => ({
+      ...match,
+      sessionKey: match.entry.sessionKey,
+      sessionId: match.entry.sessionId,
+      agentId: match.entry.agentId,
+    }));
+  return {
+    authorized,
+    matchedRunIds: matches.map((match) => match.runId),
+    hasUnauthorizedRuns: authorized.length < matches.length,
+  };
+}
+
+type SessionAbortOwnerParams = {
+  context: GatewayRequestContext;
+  sessionKeys: string[];
+  sessionId?: string;
+  agentId?: string;
+  defaultAgentId?: string;
+};
+
+/** Authoritative active, pending, or queued Gateway owner for an exact session. */
+export function hasGatewaySessionAbortOwner(params: SessionAbortOwnerParams): boolean {
+  const ownerScope = {
+    sessionKeys: params.sessionKeys,
+    agentId: params.agentId,
+    defaultAgentId: params.defaultAgentId,
+    requester: SESSION_LIFECYCLE_ABORT_REQUESTER,
+  };
+  return (
+    resolveAuthorizedRunsForSessionKeys({
+      chatAbortControllers: params.context.chatAbortControllers,
+      sessionIds: [params.sessionId],
+      ...ownerScope,
+      includeProtectedRuns: true,
+    }).authorizedRuns.length > 0 ||
+    resolveAuthorizedQueuedTurnsForSession({
+      context: params.context,
+      sessionId: params.sessionId,
+      ...ownerScope,
+    }).authorized.length > 0 ||
+    ["agent:", PENDING_CHAT_SEND_DEDUPE_PREFIX].some(
+      (keyPrefix) =>
+        resolveAuthorizedPreRegisteredRunsForSessionKeys({
+          context: params.context,
+          ...ownerScope,
+          keyPrefix,
+          includeProtectedRuns: true,
+        }).authorizedRuns.length > 0,
+    )
+  );
 }
