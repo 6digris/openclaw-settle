@@ -666,15 +666,7 @@ export function createCodexDynamicToolBridge(params: {
                 value,
               })
           : undefined,
-        snapshotResult: sanitizeToolResult,
-        applyMiddleware: async (event) =>
-          legacyExtensionRunner.applyToolResultExtensions({
-            ...event,
-            threadId: call.threadId,
-            turnId: call.turnId,
-            result: await middlewareRunner.applyToolResultMiddleware(event),
-          }),
-        onExecutionResult: ({ rawResult }) => {
+        snapshotResult: (rawResult) => {
           // Delivery is committed before result middleware; presentation changes
           // cannot erase the source owner's confirmation or infer a new one.
           if (
@@ -684,6 +676,19 @@ export function createCodexDynamicToolBridge(params: {
           ) {
             telemetry.sourceReplyDelivered = true;
           }
+          return sanitizeToolResult(rawResult);
+        },
+        applyMiddleware: async (event) => {
+          const args = structuredClone(event.args);
+          const result = await middlewareRunner.applyToolResultMiddleware(event);
+          return legacyExtensionRunner.applyToolResultExtensions({
+            threadId: call.threadId,
+            turnId: call.turnId,
+            toolCallId: call.callId,
+            toolName,
+            args,
+            result,
+          });
         },
         onResult: ({
           boundary: executionBoundary,
