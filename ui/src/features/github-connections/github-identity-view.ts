@@ -1,4 +1,5 @@
 import { html, nothing, type TemplateResult } from "lit";
+import { keyed } from "lit/directives/keyed.js";
 import type { GitHubIdentityFacts } from "../../../../packages/gateway-protocol/src/schema/agents-models-skills.js";
 import { handleCopyButton } from "../../components/copy-button.ts";
 import { icons } from "../../components/icons.ts";
@@ -205,15 +206,18 @@ function renderGitHubAuthorization(controller: GitHubIdentityController) {
           <code class="settings-row__value settings-row__value--mono github-device-code"
             >${authorization.userCode}</code
           >
-          <button
-            type="button"
-            class="btn btn--sm"
-            @click=${(event: Event) =>
-              void handleCopyButton(event, authorization.userCode, copyLabel)}
-          >
-            ${icons.copy}
-            <span data-copy-label>${copyLabel}</span>
-          </button>
+          ${keyed(
+            authorization.userCode,
+            html`<button
+              type="button"
+              class="btn btn--sm"
+              @click=${(event: Event) =>
+                void handleCopyButton(event, authorization.userCode, copyLabel)}
+            >
+              ${icons.copy}
+              <span data-copy-label>${copyLabel}</span>
+            </button>`,
+          )}
         `,
       })}
       ${renderSettingsRow({

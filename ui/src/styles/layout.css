@@ -4016,11 +4016,6 @@ button.gateway-status:focus-visible {
   white-space: nowrap;
 }
 
-.gateway-status__outbox {
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-
 .gateway-status--offline .gateway-status__icon {
   color: var(--danger);
 }
