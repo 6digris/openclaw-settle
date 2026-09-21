@@ -4,6 +4,7 @@ import path from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../config/io.js";
+import { resolveConfigWidePluginMetadataSnapshot } from "../config/io.plugin-metadata.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { validateConfigObjectWithPlugins } from "../config/validation.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -19,7 +20,6 @@ import {
   clearPluginMetadataLifecycleCaches,
   retainGatewayPluginMetadata,
 } from "../plugins/plugin-metadata-lifecycle.js";
-import { loadPluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import {
   clearActivePluginRegistry,
   createPluginRegistryOwner,
@@ -160,7 +160,13 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
     const siblingDir = writePackage("sibling");
     const healthyDir = cleanupRetry === "mixed-recovery" ? writePackage("healthy") : undefined;
     const initialConfig: OpenClawConfig = {
-      agents: { entries: { main: { workspace: workspaceDir } } },
+      agents: {
+        ownership: "explicit",
+        entries: {
+          main: { workspace: workspaceDir },
+          secondary: { workspace: path.join(root, "secondary-workspace") },
+        },
+      },
       plugins: {
         allow: healthyDir ? ["sibling", "healthy"] : ["sibling"],
         entries: {
@@ -173,9 +179,8 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
     };
     setRuntimeConfigSnapshot(initialConfig);
     const log = { ...createSubsystemLogger("gateway/plugins"), ...logs };
-    const initialMetadata = loadPluginMetadataSnapshot({
+    const initialMetadata = resolveConfigWidePluginMetadataSnapshot({
       config: initialConfig,
-      workspaceDir,
       env,
     });
     expect(initialMetadata.manifestRegistry.plugins.map((plugin) => plugin.id).toSorted()).toEqual(
@@ -362,10 +367,19 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
           (await reload(nextConfig, [...pluginIds], reason, assertInvokerOwned)).runtime,
       });
     const validated = validateConfigObjectWithPlugins(config, { env });
-    assert.ok(validated.ok);
+    assert.ok(validated.ok, JSON.stringify(validated));
     expect(validated.config.plugins?.entries?.sibling?.config).toEqual(sibling.settings);
     // Startup uses authored config; the first install applies a validated runtime snapshot.
-    const firstReceipt = await reload(validated.config, ["installed-probe"], "install");
+    assert.ok(siblingRecord);
+    const siblingInstance = getPluginInstance(siblingRecord);
+    assert.ok(siblingInstance);
+    const releaseSiblingWork = siblingInstance.retainWork();
+    let firstReceipt: Awaited<ReturnType<typeof reload>>;
+    try {
+      firstReceipt = await reload(validated.config, ["installed-probe"], "install");
+    } finally {
+      releaseSiblingWork();
+    }
     expect(firstReceipt.runtime.pluginIds).toEqual(["installed-probe"]);
     expect(await probe("sibling")).toEqual(sibling);
     const first = await probe("installed-probe");

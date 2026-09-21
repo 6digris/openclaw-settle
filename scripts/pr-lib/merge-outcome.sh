@@ -285,7 +285,7 @@ merge_outcome_read_remote() {
   if [ "${MERGE_TRANSPORT:-graphql}" = rest ]; then
     response=$(merge_rest observe "$1") || return 1
   else
-    response=$(pr_gh_quota_read api graphql --hostname "$MERGE_REPO_HOST" \
+    response=$(pr_gh_quota_read api graphql --hostname "$MERGE_REPO_HOST" -H 'Cache-Control: max-age=0' \
     -f owner="${MERGE_REPO_NAME%/*}" -f name="${MERGE_REPO_NAME#*/}" -F number="$1" \
     -f 'query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){id databaseId url nameWithOwner ref(qualifiedName:"refs/heads/main"){target{oid}} pullRequest(number:$number){id number url state headRefOid baseRefName isDraft mergeCommit{oid} autoMergeRequest{mergeMethod} isInMergeQueue isMergeQueueEnabled mergeable mergeStateStatus}}}') || return 1
     if pr_gh_quota_exhausted "$response"; then

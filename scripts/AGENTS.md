@@ -49,6 +49,11 @@ context, and wrapper selection stays unchanged.
 10-second deadline before choosing wrapper code; Darwin process-identity Python
 calls use the same deadline. Ordinary PR metadata uses REST; review snapshots omit
 unused check rollups, and preparation reads only the live head fields it consumes.
+Host-qualified repository locators go directly to REST; review metadata carries
+the resolved URL through its reads instead of repeating `gh browse` HEAD probes.
+Each PR-head observation and merge snapshot explicitly requests
+`Cache-Control: max-age=0`: the relay revalidates that read and may publish its
+result, while separate before/after observations must never reuse one cached fact.
 Writer identity uses REST `GET /user --include` through the protected selected CLI;
 included headers keep relay callers on the native writer route. Reviewer assignment
 uses REST and verifies that GitHub retained the requested assignee. The CI watcher
