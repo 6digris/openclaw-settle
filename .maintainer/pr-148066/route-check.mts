@@ -1,0 +1,12 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { createVitestRunSpecs } from "./test-projects.test-support.mts";
+const target="src/daemon/schtasks-state-probe.windows.test.ts";
+const specs=createVitestRunSpecs([target],{baseEnv:process.env,cwd:process.cwd()});
+const observation=specs.map(spec=>({config:spec.config,pnpmArgs:spec.pnpmArgs}));
+const {output}=JSON.parse(fs.readFileSync(path.resolve(import.meta.dirname,"../.pr148066-capture-location.json"),"utf8"));
+fs.writeFileSync(path.join(output,"route-preflight.json"),JSON.stringify(observation,null,2)+"\n");
+assert.equal(specs.length,1);
+assert.equal(specs[0].config,"test/vitest/vitest.unit-fast.config.ts");
+console.log("Original router selected required unit-fast config");

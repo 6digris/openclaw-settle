@@ -28,8 +28,9 @@ if(process.argv[2]==='prepare') {
  fs.copyFileSync(path.join(proof,'missing-only.test.ts'),path.join(source,'src/daemon/schtasks-state-probe.windows.test.ts'));
  fs.copyFileSync(path.join(proof,'capture.mjs'),path.join(source,'src/daemon/pr148066-capture.mjs'));
  fs.copyFileSync(path.join(proof,'instrument.mjs'),path.join(source,'src/daemon/pr148066-instrument.mjs'));
+ fs.copyFileSync(path.join(proof,'route-check.mts'),path.join(source,'scripts/pr148066-route-check.mts'));
  fs.writeFileSync(path.join(source,'.pr148066-capture-location.json'),JSON.stringify({output}));
- write('derivation.json',{originalFixtureSha256:hash(original),derivedFixtureSha256:hash(derived),originalMissingPrefixPreserved:true,registrationFoundDelete:'OUT_OF_SCOPE_PHYSICALLY_ABSENT',changes:['derived fixture','pr148066-capture.mjs','pr148066-instrument.mjs','.pr148066-capture-location.json'],limitations:['New baseline observation, never historical reconstruction','fresh windows-2025 image, cache, binary and UUID/home randomness','Defender unchanged, unlike historical exclusions','setup action cache-mode off; dependency/image state not historical','Selected read-only fixture via original router instead of executing full Windows suite','Same runtime-build command explicitly immediately before selected router because selected fixture alone does not request a build','Extra Vitest mock-forwarder and metadata I/O overhead recorded; baseline native args/options unchanged','Instrumented cell follows baseline in same worker/home and shares warm/order state; no COM-vs-discovery inference','No prewarm or native identity/content hash before baseline; earlier runner/bootstrap PowerShell activity is not known cold state']});
+ write('derivation.json',{originalFixtureSha256:hash(original),derivedFixtureSha256:hash(derived),originalMissingPrefixPreserved:true,registrationFoundDelete:'OUT_OF_SCOPE_PHYSICALLY_ABSENT',changes:['derived fixture','pr148066-capture.mjs','pr148066-instrument.mjs','scripts/pr148066-route-check.mts','.pr148066-capture-location.json'],limitations:['New baseline observation, never historical reconstruction','fresh windows-2025 image, cache, binary and UUID/home randomness','Defender unchanged, unlike historical exclusions','setup action cache-mode off; dependency/image state not historical','Selected read-only fixture via original router instead of executing full Windows suite','Same runtime-build command explicitly immediately before selected router because selected fixture alone does not request a build','Builtin export forwarding shim and routing preflight and metadata I/O overhead recorded; baseline native args/options unchanged','Instrumented cell follows baseline in same worker/home and shares warm/order state; no COM-vs-discovery inference','No prewarm or native identity/content hash before baseline; earlier runner/bootstrap PowerShell activity is not known cold state']});
 } else if(process.argv[2]==='run') {
  capacity('before-build',4*1024**3);
  const env={...process.env,NODE_OPTIONS:'--max-old-space-size=8192',OPENCLAW_VITEST_MAX_WORKERS:'1',OPENCLAW_TEST_PROJECTS_PARALLEL:'1',OPENCLAW_TEST_SKIP_FULL_EXTENSIONS_SHARD:'1'};
@@ -43,9 +44,14 @@ if(process.argv[2]==='prepare') {
  }
  let result;
  try {
+  const route=await command('route-preflight',['--import','./scripts/tsx.mjs','scripts/pr148066-route-check.mts'],60*1000);assert.equal(route.status,0,'original unit-fast routing required');assert(!route.overflow);
   const build=await command('runtime-build',['scripts/run-node.mjs','--version'],15*60*1000);assert.equal(build.status,0,'runtime build failed');assert(!build.overflow);
   result=await command('vitest',['--import','./scripts/tsx.mjs','scripts/test-projects.mts','src/daemon/schtasks-state-probe.windows.test.ts'],3*60*1000);
   const worker=JSON.parse(fs.readFileSync(path.join(output,'worker.json'),'utf8'));
+  const vitestLog=fs.readFileSync(path.join(output,'vitest.log'),'utf8');
+  assert(vitestLog.includes('[test] starting test/vitest/vitest.unit-fast.config.ts'),'actual unit-fast execution required');
+  assert(!/\[test\] starting (?!test\/vitest\/vitest\.unit-fast\.config\.ts)/.test(vitestLog),'unexpected project execution');
+  assert.equal(worker.cells.length,2,'exactly one baseline and one instrumented cell');
   write('outcome.json',{disposition:worker.disposition,vitest:result,baseline:worker.cells[0]?.classification,historicalRootEstablished:false,productPatch:false,oneRunConsumed:true});
   if(result.status!==0||result.overflow||!worker.complete)process.exitCode=1;
  } catch(e) {write('driver-error.json',{message:e.message});process.exitCode=1;}

@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,7 +23,22 @@ function cache(env) {
   return [get('PSMODULEANALYSISCACHEPATH'),get('LOCALAPPDATA')&&path.join(get('LOCALAPPDATA'),'Microsoft','Windows','PowerShell'),get('USERPROFILE')&&path.join(get('USERPROFILE'),'AppData','Local','Microsoft','Windows','PowerShell')].filter(Boolean).map(meta);
 }
 function resources() { return {pid:process.pid,threadId,isMainThread,argv:process.argv,execArgv:process.execArgv,nodeVersion:process.version,nodeExecutable:process.execPath,cwd:process.cwd(),uptimeSec:process.uptime(),memory:process.memoryUsage(),usage:process.resourceUsage(),threadCpu:process.threadCpuUsage?.(),freeMemory:os.freemem(),totalMemory:os.totalmem(),availableParallelism:os.availableParallelism(),fixtureHome:process.env.HOME,tmp:os.tmpdir(),selectedEnvironment:selected(process.env)}; }
-export function begin(label,taskName) { assert(['baseline-first-use','instrumented-after-baseline'].includes(label));cell={label,taskName};receipt.cells.push(cell); }
+let originalSpawn;
+export function installObserver() {
+  assert(!originalSpawn);originalSpawn=childProcess.spawnSync;
+  childProcess.spawnSync=(...args)=>observe(originalSpawn,...args);
+  syncBuiltinESMExports();
+}
+export function restoreObserver() {
+  if(originalSpawn){childProcess.spawnSync=originalSpawn;syncBuiltinESMExports();originalSpawn=undefined;}
+}
+export function begin(label,taskName) {
+  assert(['baseline-first-use','instrumented-after-baseline'].includes(label));
+  assert(!receipt.cells.some(c=>c.label===label),'No repeated cell allowed');
+  assert(!isMainThread&&threadId>0,'Original threads worker required');
+  assert(globalThis[Symbol.for('openclaw.envIsolationTestSetup')],'Original setup.env.ts hermetic handle required');
+  cell={label,taskName,workerEnvelope:{threadId,isMainThread,originalEnvSetupHandle:true}};receipt.cells.push(cell);
+}
 export function observe(spawn,exe,args,options) {
   assert(cell); assert.equal(path.win32.basename(exe).toLowerCase(),'powershell.exe');
   assert.deepEqual(args.slice(0,3),['-NoProfile','-NonInteractive','-EncodedCommand']);

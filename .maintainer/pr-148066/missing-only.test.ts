@@ -1,17 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, expect, it, vi } from "vitest";
-import { begin, finish, postBaselineIdentity } from "./pr148066-capture.mjs";
+import { afterAll, expect, it } from "vitest";
+import { begin, finish, postBaselineIdentity, installObserver, restoreObserver } from "./pr148066-capture.mjs";
 
-vi.mock("node:child_process", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:child_process")>();
-  const { observe } = await import("./pr148066-capture.mjs");
-  return { ...actual, spawnSync: (...args: Parameters<typeof actual.spawnSync>) => observe(actual.spawnSync, ...args) };
-});
+installObserver();
 let observedTask: string | undefined;
 afterAll(() => {
-  if (!observedTask) return;
-  begin("instrumented-after-baseline", observedTask);
-  try { finish(probeScheduledTaskState(observedTask)); } finally { postBaselineIdentity(); }
+  try {
+    if (!observedTask) return;
+    begin("instrumented-after-baseline", observedTask);
+    try { finish(probeScheduledTaskState(observedTask)); } finally { postBaselineIdentity(); }
+  } finally { restoreObserver(); }
 }, 30_000);
 import { probeScheduledTaskState } from "./schtasks-state-probe.js";
 
