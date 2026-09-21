@@ -96,6 +96,35 @@ When that response has no usable HTTP framing, a separate GraphQL/core quota
 probe is labeled supplemental and does not establish the failed request's reset.
 Diagnostics never add automatic retries.
 
+### Octopool string rewrite protection
+
+Keep `gh` on the Octopool shim; never disable string rewrite protection or select
+the raw GitHub CLI to get a landing through. `review-init` resolves the repository
+with the local `gh browse` command and a child-only URL-printing launcher. Older
+Octopool versions reject this singleton command before their guarded best-effort
+path. Upgrade to Octopool 0.7.1 or later; setting an explicit
+host-qualified `GH_REPO=github.com/openclaw/openclaw` also avoids discovery while
+preserving the subsequent authoritative API checks.
+
+Immediate REST squash uses `gh api --method PUT repos/OWNER/REPO/pulls/NUMBER/merge
+--input -` with JSON containing the full prepared 40-hex `sha`,
+`merge_method: "squash"`, and the inspected `commit_message`; an optional
+`commit_title` is accepted. Keep the explicit SHA even when newer Octopool can
+resolve a missing one. Auto-merge needs Octopool's protected auto-merge support
+(openclaw/octopool#179), a numeric PR, `--squash --auto --match-head-commit SHA`,
+an explicit `--subject`, and `--body-file`. The wrapper supplies GitHub's
+current-head `viewerMergeHeadlineText` preview so repository title defaults stay
+intact. Octopool 0.6.10 and `641ce3c` do not support that auto shape.
+
+Prepare's reviewer assignment uses the exact issue-assignee POST with raw
+`assignees[]` fields. Fork commit publication declares its GraphQL JSON with
+`--input`, so the guard can inspect it; Octopool's aggregate input bound still
+applies. Native admin, non-squash, queue, and auto-cancellation variants are not
+covered by the accepted shapes above. Do not replace them with an immediate REST
+merge, which changes admission semantics. A blocked dispatch still follows the
+retained-outcome recovery rules below; the generic guard error is not authority
+to clear or retry an intent.
+
 ## Generated Outputs
 
 - If a script writes generated artifacts, keep the source-of-truth generator, the package script, and the matching verification/check command aligned.

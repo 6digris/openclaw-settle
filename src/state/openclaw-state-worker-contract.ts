@@ -1,5 +1,6 @@
 import type { AuthProfileRowRead, UserModelAuthProfile } from "../agents/auth-profiles/types.js";
 import type { NativeHookRelayStoreWorkerOperations } from "../agents/harness/native-hook-relay-store.worker-contract.js";
+import type { McpOAuthReadOperations } from "../agents/mcp-oauth-store.kernel.js";
 import type { SandboxRegistryInsert } from "../agents/sandbox/registry.kernel.js";
 import type { SubagentRegistryWrite } from "../agents/subagents/registry/subagent-registry.store.kernel.js";
 import type { ManagedWorktreeRecord } from "../agents/worktrees/types.js";
@@ -77,7 +78,8 @@ import type { UserPreferenceWorkerOperations } from "./user-preferences.types.js
 import type { UserProfileWorkerOperations } from "./user-profiles.worker.js";
 
 /** Commands share one physical shared-state actor; bindings belong to commands, not open input. */
-export type OpenClawStateWorkerOperations = CurrentConversationBindingWorkerOperations &
+export type OpenClawStateWorkerOperations = McpOAuthReadOperations &
+  CurrentConversationBindingWorkerOperations &
   WebPushWorkerOperations &
   ApnsRegistrationWorkerOperations &
   DevicePairingWorkerOperations &

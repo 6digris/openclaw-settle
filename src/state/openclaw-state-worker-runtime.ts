@@ -9,6 +9,7 @@ import {
   listNativeHookRelayBridgeSnapshotsInDatabase,
 } from "../agents/harness/native-hook-relay-store.kernel.js";
 import { executeNativeHookRelayMutation } from "../agents/harness/native-hook-relay-store.worker.js";
+import { readMcpOAuthStoreInDatabase } from "../agents/mcp-oauth-store.kernel.js";
 import { importSandboxRegistryRow } from "../agents/sandbox/registry-import.worker.js";
 import { writeSubagentRunValuesInDatabase } from "../agents/subagents/registry/subagent-registry.store.kernel.js";
 import { listRegistryWorktreesInDatabase } from "../agents/worktrees/registry-read.kernel.js";
@@ -151,6 +152,9 @@ export function executeSharedStateCommand(
   open: () => OpenClawStateDatabase,
   hasNativeDatabase: boolean,
 ): Operations[keyof Operations]["output"] {
+  if (command.type === "mcpOAuth.read") {
+    return readMcpOAuthStoreInDatabase(open().db, command.input);
+  }
   if (command.type === "execApprovals.commitAuthorizations" || isOperatorApprovalCommand(command)) {
     const databaseOptions = {
       database: open(),
