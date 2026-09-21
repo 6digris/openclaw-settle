@@ -101,15 +101,32 @@ try {
     }
     $script:InstallerTempDirectory = $temp
     if (Check-Node) { throw 'Fixture failed to remove the usable starting runtime.' }
-    $script:RealSaveInstallerDownload = (Get-Command Save-InstallerDownload).ScriptBlock
     $script:ArchiveProof = @()
-    function Save-InstallerDownload {
-        param([string]$Uri, [string]$OutFile)
-        & $script:RealSaveInstallerDownload -Uri $Uri -OutFile $OutFile
+    function Invoke-WebRequest {
+        param(
+            [string]$Uri,
+            [string]$OutFile,
+            [switch]$UseBasicParsing,
+            [int]$OperationTimeoutSeconds,
+            [int]$TimeoutSec
+        )
+        $request = @{ Uri = $Uri; OutFile = $OutFile; UseBasicParsing = $UseBasicParsing }
+        if ($PSVersionTable.PSVersion.Major -ge 7) {
+            $request.OperationTimeoutSeconds = $OperationTimeoutSeconds
+        } else {
+            $request.TimeoutSec = if ($TimeoutSec -gt 0) { $TimeoutSec } else { 600 }
+        }
+        Microsoft.PowerShell.Utility\Invoke-WebRequest @request
         if ($Uri -match '^https://nodejs\.org/dist/(?<version>v26\.\d+\.\d+)/(?<name>node-v26\.\d+\.\d+-win-(?:x64|arm64)\.zip)$') {
             $release = $Matches['version']; $name = $Matches['name']
             $sumPath = Join-Path $script:InstallerTempDirectory 'SHASUMS256.txt'
-            & $script:RealSaveInstallerDownload -Uri "https://nodejs.org/dist/$release/SHASUMS256.txt" -OutFile $sumPath
+            $sumRequest = @{ Uri = "https://nodejs.org/dist/$release/SHASUMS256.txt"; OutFile = $sumPath; UseBasicParsing = $true }
+            if ($PSVersionTable.PSVersion.Major -ge 7) {
+                $sumRequest.OperationTimeoutSeconds = 30
+            } else {
+                $sumRequest.TimeoutSec = 600
+            }
+            Microsoft.PowerShell.Utility\Invoke-WebRequest @sumRequest
             $pattern = '^(?<hash>[0-9a-fA-F]{64})\s+\*?' + [regex]::Escape($name) + '$'
             $expected = @(Get-Content -LiteralPath $sumPath | ForEach-Object {
                 if ($_ -match $pattern) { $Matches['hash'].ToLowerInvariant() }
@@ -143,7 +160,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Installed runtime failed to start.' }
     Write-PortableProofCheckpoint 'hashing-recovered-runtime'
     $proof.nodeSha256 = (Get-FileHash -LiteralPath $nodeExe -Algorithm SHA256).Hash.ToLowerInvariant()
-    $proof.sqliteCapabilityProbe = 'Exact Check-Node passed version, NUL TEXT, BLOB and JSON probes on the downloaded runtime.'
+    $proof.sqliteCapabilityProbe = 'Exact release-branch Check-Node passed the Node and SQLite version gates on the downloaded runtime.'
     $proof.processPath = 'portable runtime selected'
     $proof.userPath = 'portable runtime present'
     $proof.acceptanceAssertions = 'passed'
