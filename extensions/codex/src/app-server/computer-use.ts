@@ -131,6 +131,7 @@ export type CodexComputerUseSetupParams = {
   client?: CodexAppServerClient;
   timeoutMs?: number;
   signal?: AbortSignal;
+  assertCurrent?: () => void;
   forceEnable?: boolean;
   defaultBundledMarketplacePath?: string;
   defaultBundledMarketplacePathCandidates?: readonly string[];
@@ -145,6 +146,7 @@ type CodexComputerUseInspectionParams = {
   client?: CodexAppServerClient;
   timeoutMs?: number;
   signal?: AbortSignal;
+  assertCurrent?: () => void;
   computerUseConfig: ResolvedCodexComputerUseConfig;
   runLiveTest: boolean;
   installPlugin: boolean;
@@ -303,6 +305,7 @@ async function inspectCodexComputerUse(
     config: params.config,
     agentDir: params.agentDir,
     abandonSignal: params.signal,
+    assertCurrent: params.assertCurrent,
   };
   const lease: CodexAppServerClientLease = {};
   try {
@@ -508,8 +511,10 @@ async function prepareExplicitManagedComputerUseInstall(
     ownsIsolatedCodexHome: true,
     desktopGeneration: context.desktopGeneration,
     forceCacheRefresh: true,
-    assertCurrent: () =>
-      assertCodexAppServerClientStartSelectionCurrent({ client: context.client }),
+    assertCurrent: () => {
+      params.assertCurrent?.();
+      assertCodexAppServerClientStartSelectionCurrent({ client: context.client });
+    },
   });
 }
 
@@ -1194,9 +1199,24 @@ function createComputerUseRequest(params: {
   client?: CodexAppServerClient;
   timeoutMs?: number;
   signal?: AbortSignal;
+  assertCurrent?: () => void;
 }): CodexComputerUseRequest {
+  const assertCurrent = params.assertCurrent;
   if (params.request) {
-    return params.request;
+    const request = params.request;
+    if (!assertCurrent) {
+      return request;
+    }
+    return async <T>(
+      method: string,
+      requestParams?: unknown,
+      options?: { timeoutMs?: number; signal?: AbortSignal },
+    ) => {
+      if (method !== "thread/unsubscribe") {
+        assertCurrent();
+      }
+      return await request<T>(method, requestParams, options);
+    };
   }
   const client = params.client;
   if (!client) {
@@ -1210,6 +1230,8 @@ function createComputerUseRequest(params: {
     await client.request<T>(method, requestParams, {
       timeoutMs: options?.timeoutMs ?? params.timeoutMs,
       signal: options?.signal ?? params.signal,
+      // The readiness probe must release an accepted native subscription after revocation.
+      ...(method === "thread/unsubscribe" ? {} : { assertCurrent }),
     });
 }
 

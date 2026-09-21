@@ -157,7 +157,7 @@ export class WorkboardWorkflowStore extends WorkboardPromoteStore {
         },
       );
       return { card, token };
-    });
+    }, options.assertOwnerCurrent);
   }
 
   async heartbeat(id: string, input: WorkboardHeartbeatInput): Promise<WorkboardCard> {

@@ -6385,6 +6385,32 @@ describe("sendPollTelegram", () => {
 });
 
 describe("createForumTopicTelegram", () => {
+  it("preserves captured platform authority after awaited preparation", async () => {
+    let platformCurrent = true;
+    const createForumTopic = vi.fn();
+    const getChat = vi.fn();
+    const options = {
+      cfg: TELEGRAM_TEST_CFG,
+      token: "tok",
+      api: makeTelegramApiTestMock({ createForumTopic, getChat }),
+      assertPlatformSendAuthorized: () => {
+        if (!platformCurrent) {
+          throw new Error("Platform request authority revoked");
+        }
+      },
+    };
+    getChat.mockImplementationOnce(async () => {
+      platformCurrent = false;
+      options.assertPlatformSendAuthorized = () => {};
+      return { id: -100123 };
+    });
+    await expect(
+      createForumTopicTelegram("@platformbound", "Bound topic", options),
+    ).rejects.toThrow("Platform request authority revoked");
+    expect(getChat).toHaveBeenCalledOnce();
+    expect(createForumTopic).not.toHaveBeenCalled();
+  });
+
   const cases = [
     {
       name: "uses base chat id when target includes topic suffix",

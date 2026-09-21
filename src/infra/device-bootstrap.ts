@@ -194,6 +194,8 @@ async function loadState(baseDir?: string): Promise<DeviceBootstrapStateFile> {
 }
 
 type DeviceBootstrapTokenIssueParams = {
+  /** Revalidate caller authority after lock/state waits, before issuing a credential. */
+  assertCurrent?: () => void;
   baseDir?: string;
   profile?: DeviceBootstrapProfileInput;
   roles?: readonly string[];
@@ -203,6 +205,7 @@ type DeviceBootstrapTokenIssueParams = {
 async function issueDeviceBootstrapTokenRecord(
   params: DeviceBootstrapTokenIssueParams & { setupId?: string },
 ): Promise<{ token: string; expiresAtMs: number }> {
+  const assertCurrent = params.assertCurrent;
   return await withLock(async () => {
     const state = await loadState(params.baseDir);
     const token = generatePairingToken();
@@ -217,6 +220,7 @@ async function issueDeviceBootstrapTokenRecord(
     const profileInput = resolveIssuedBootstrapProfileInput(params);
     const profile = resolveIssuedBootstrapProfile(params);
     warnIfIssuedBootstrapScopesWereStripped({ input: profileInput, profile });
+    assertCurrent?.();
     state[token] = {
       token,
       ...(params.setupId ? { setupId: params.setupId } : {}),
@@ -381,11 +385,14 @@ export async function pruneExpiredDevicePairSetupCompletions(
 export async function clearDeviceBootstrapTokens(
   params: {
     baseDir?: string;
+    assertCurrent?: () => void;
   } = {},
 ): Promise<{ removed: number }> {
+  const assertCurrent = params.assertCurrent;
   return await withLock(async () => {
     const state = await loadState(params.baseDir);
     const removed = Object.keys(state).length;
+    assertCurrent?.();
     persistState({}, params.baseDir);
     return { removed };
   });

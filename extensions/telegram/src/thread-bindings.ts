@@ -514,16 +514,19 @@ export function createTelegramThreadBindingManager(params: {
       placements: ["current", "child"],
     },
     bind: async (input) => {
+      const assertCurrent = input.assertCurrent;
       if (input.conversation.channel !== "telegram") {
         return null;
       }
       const targetSessionKey = input.targetSessionKey.trim();
+      const targetKind = input.targetKind;
       if (!targetSessionKey) {
         return null;
       }
       const placement = input.placement === "child" ? "child" : "current";
-      const metadata = input.metadata ?? {};
+      const metadata = { ...input.metadata };
       let conversationId: string | undefined;
+      let nativeTopicCreated = false;
 
       if (placement === "child") {
         const rawConversationId = input.conversation.conversationId?.trim() ?? "";
@@ -555,8 +558,10 @@ export function createTelegramThreadBindingManager(params: {
             cfg: params.cfg,
             token: tokenResolution.token,
             accountId,
+            ...(assertCurrent ? { assertPlatformSendAuthorized: assertCurrent } : {}),
           });
           conversationId = `${result.chatId}:topic:${result.topicId}`;
+          nativeTopicCreated = true;
         } catch (err) {
           logVerbose(
             `telegram: child thread-binding failed for ${chatId}: ${formatErrorMessage(err)}`,
@@ -574,11 +579,14 @@ export function createTelegramThreadBindingManager(params: {
         accountId,
         input: {
           targetSessionKey,
-          targetKind: input.targetKind,
+          targetKind,
           conversationId,
-          metadata: input.metadata,
+          metadata,
         },
       });
+      if (!nativeTopicCreated) {
+        assertCurrent?.();
+      }
       getThreadBindingsState().bindingsByAccountConversation.set(
         resolveBindingKey({ accountId, conversationId }),
         record,

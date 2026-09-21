@@ -276,19 +276,22 @@ async function resolveTelegramCommandAuth(params: {
     storeAllowFrom: isGroup ? [] : storeAllowFrom,
     dmPolicy: effectiveDmPolicy,
   });
-  const { authorized: commandAuthorized, senderIsOwner } =
-    await resolveTelegramCommandIngressAuthorization({
-      accountId,
-      cfg,
-      dmPolicy: effectiveDmPolicy,
-      isGroup,
-      chatId,
-      resolvedThreadId,
-      senderId,
-      effectiveDmAllow: dmAllow,
-      effectiveGroupAllow,
-      eventKind: "native-command",
-    });
+  const {
+    authorized: commandAuthorized,
+    senderIsOwner,
+    assertOwnerCurrent,
+  } = await resolveTelegramCommandIngressAuthorization({
+    accountId,
+    cfg,
+    dmPolicy: effectiveDmPolicy,
+    isGroup,
+    chatId,
+    resolvedThreadId,
+    senderId,
+    effectiveDmAllow: dmAllow,
+    effectiveGroupAllow,
+    eventKind: "native-command",
+  });
   if (requireAuth && !commandAuthorized) {
     return await rejectNotAuthorized();
   }
@@ -304,6 +307,7 @@ async function resolveTelegramCommandAuth(params: {
     threadSpec,
     commandAuthorized,
     senderIsOwner,
+    assertOwnerCurrent,
   };
 }
 

@@ -168,6 +168,37 @@ describe("Codex Computer Use setup", () => {
     );
   });
 
+  it("releases an accepted readiness thread when owner revocation blocks its tool call", async () => {
+    const request = createComputerUseRequest({ installed: true });
+    let ownerCurrent = true;
+    await expectSetupErrorStatus(
+      installCodexComputerUse({
+        pluginConfig: { computerUse: {} },
+        assertCurrent: () => {
+          if (!ownerCurrent) {
+            throw new Error("Command owner was revoked");
+          }
+        },
+        request: async <T>(
+          method: string,
+          params?: unknown,
+          options?: { timeoutMs?: number; signal?: AbortSignal },
+        ) => {
+          const result = await request<T>(method, params, options);
+          if (method === "thread/start") {
+            ownerCurrent = false;
+          }
+          return result;
+        },
+      }),
+      { ready: false, reason: "live_test_failed" },
+    );
+    expectRequestMethodNotCalled(request, "mcpServer/tool/call");
+    expect(
+      requestCalls(request).filter(([method]) => method === "thread/unsubscribe"),
+    ).toHaveLength(1);
+  });
+
   it("holds the Codex-home fence until an install request settles", async () => {
     const agentDir = "/tmp/openclaw-computer-use-fence-agent";
     let rejectInstallRequest: (error: Error) => void = () => undefined;

@@ -164,13 +164,16 @@ describe("handleRestartCommand", () => {
     const handler = () => {};
     process.on("SIGUSR2", handler);
     try {
-      const result = await handleRestartCommand(restartCommandParams(), true);
+      const params = restartCommandParams();
+      params.command.assertOwnerCurrent = vi.fn();
+      const result = await handleRestartCommand(params, true);
 
       expect(result?.reply?.text).toContain("SIGUSR2");
       expect(mocks.writeRestartSentinel).not.toHaveBeenCalled();
       expect(mocks.triggerOpenClawRestart).not.toHaveBeenCalled();
 
       const scheduledArgs = mocks.scheduleGatewayRestart.mock.calls.at(-1)?.[0];
+      expect(scheduledArgs?.emitHooks?.assertCurrent).toBe(params.command.assertOwnerCurrent);
       await scheduledArgs?.emitHooks?.beforeEmit?.();
 
       expect(mocks.writeRestartSentinel).toHaveBeenCalledOnce();

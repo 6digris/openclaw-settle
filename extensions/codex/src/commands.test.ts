@@ -243,7 +243,8 @@ function inMemoryCodexPluginsIO(
     current: () => structuredClone(store.plugins ?? {}),
     currentConfig: () => structuredClone(store),
     readConfig: () => Promise.resolve(structuredClone(store)),
-    mutate: async (update) => {
+    mutate: async (update, assertCurrent) => {
+      assertCurrent?.();
       update(store);
     },
   };
@@ -517,10 +518,17 @@ describe("codex command", () => {
       const result = await runCommand(
         args,
         { listCodexAppServerModels: vi.fn(async () => ({ models: [] })) },
-        { senderIsOwner: false, gatewayClientScopes: ["operator.write"] },
+        {
+          senderIsOwner: false,
+          gatewayClientScopes: ["operator.write"],
+          assertOwnerCurrent: () => {
+            throw new Error("Caller is not a channel owner");
+          },
+        },
       );
 
       expect(result.text).not.toContain("Only an owner or operator.admin");
+      expect(result.text).not.toContain("Codex command failed");
     },
   );
 
@@ -3593,6 +3601,7 @@ describe("codex command", () => {
       config: {},
       agentDir: path.join(tempDir, "agents", "main", "agent"),
       forceEnable: true,
+      assertCurrent: expect.any(Function),
       overrides: {
         marketplaceSource: "github:example/desktop-tools",
         marketplaceName: "desktop-tools",
@@ -4922,10 +4931,24 @@ describe("codex command", () => {
     expect(appServerWrites).toBe(0);
   });
 
-  it.each(["stop", "steer"] as const)(
-    "rejects a queued %s command before any app-server write when the host rolls over",
-    async (command) => {
+  it.each([
+    { command: "stop", revokeOwner: false },
+    { command: "steer", revokeOwner: false },
+    { command: "stop", revokeOwner: true },
+    { command: "steer", revokeOwner: true },
+  ] as const)(
+    "rejects queued $command before any write after authority changes (owner: $revokeOwner)",
+    async ({ command, revokeOwner }) => {
       const runtime = await createCodexRuntimeContextOverrides(`agent:main:test:queued-${command}`);
+      let ownerCurrent = true;
+      const context = {
+        ...runtime,
+        assertOwnerCurrent: () => {
+          if (!ownerCurrent) {
+            throw new Error("Command owner was revoked");
+          }
+        },
+      };
       const identity = {
         kind: "session" as const,
         agentId: "main",
@@ -4965,26 +4988,34 @@ describe("codex command", () => {
       try {
         const pending =
           command === "stop"
-            ? runCommand("stop", { stopCodexConversationTurn: stop }, runtime)
+            ? runCommand("stop", { stopCodexConversationTurn: stop }, context)
             : runCommand(
                 "steer keep the authority boundary",
                 { steerCodexConversationTurn: steer },
-                runtime,
+                context,
               );
         await entered.promise;
-        await upsertSessionEntry({
-          storePath: runtime.sessionTarget.storePath,
-          sessionKey: runtime.sessionKey,
-          entry: {
-            sessionId: "session-next",
-            previousSessionId: "session-1",
-            updatedAt: Date.now(),
-            agentHarnessId: "codex",
-          },
-        });
+        if (revokeOwner) {
+          ownerCurrent = false;
+        } else {
+          await upsertSessionEntry({
+            storePath: runtime.sessionTarget.storePath,
+            sessionKey: runtime.sessionKey,
+            entry: {
+              sessionId: "session-next",
+              previousSessionId: "session-1",
+              updatedAt: Date.now(),
+              agentHarnessId: "codex",
+            },
+          });
+        }
         release.resolve();
 
-        expect((await pending).text).toContain("Codex session generation is no longer current");
+        expect((await pending).text).toContain(
+          revokeOwner
+            ? "Command owner was revoked"
+            : "Codex session generation is no longer current",
+        );
         expect(harness.writes).toHaveLength(0);
       } finally {
         release.resolve();
@@ -5005,6 +5036,48 @@ describe("codex command", () => {
       text: "Usage: /codex goal [status|set <objective>|pause|resume|block|complete|clear]",
     });
     expect(codexControlRequest).not.toHaveBeenCalled();
+  });
+
+  it("does not require owner authority for current-session control status reads", async () => {
+    const runtime = await createCodexRuntimeContextOverrides("agent:main:test:read-only-controls");
+    await writeTestBinding(
+      {
+        kind: "session",
+        agentId: "main",
+        sessionId: "session-1",
+        sessionKey: runtime.sessionKey,
+      },
+      { threadId: "thread-status", cwd: "/repo", model: "gpt-5.5" },
+    );
+    const context = {
+      ...runtime,
+      senderIsOwner: false,
+      assertOwnerCurrent: () => {
+        throw new Error("Caller is not a channel owner");
+      },
+    };
+    const codexControlRequest = vi.fn(
+      async (
+        _pluginConfig: unknown,
+        _method: string,
+        _params: unknown,
+        options?: CodexControlRequestOptions,
+      ) => {
+        options?.assertCurrent?.();
+        options?.assertOwnerCurrent?.();
+        return { goal: null };
+      },
+    );
+    for (const [command, expected] of [
+      ["model", "Codex model: gpt-5.5"],
+      ["fast status", "Codex fast mode: off."],
+      ["permissions status", "Codex permissions: default."],
+      ["goal status", "No Codex goal is active."],
+    ] as const) {
+      const result = await runCommand(command, { codexControlRequest }, context);
+      expect(result.text).toBe(expected);
+    }
+    expect(codexControlRequest).toHaveBeenCalledOnce();
   });
 
   it("formats every Codex skill as a code-styled bullet and tolerates malformed entries", async () => {

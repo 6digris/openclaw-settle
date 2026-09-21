@@ -86,6 +86,7 @@ export type WorkboardClaimInput = {
   ttlSeconds?: unknown;
 };
 export type WorkboardClaimOptions = {
+  assertOwnerCurrent?: () => void;
   /** Trusted dispatcher guard; never accepted from public tool or gateway input. */
   expectedAuthority?: {
     boardId: string;
@@ -133,6 +134,7 @@ export type WorkboardListOptions = {
 };
 export type WorkboardDispatchOptions = WorkboardListOptions & {
   now?: unknown;
+  assertOwnerCurrent?: () => void;
 };
 export type WorkboardStatsResult = WorkboardBoardSummary & {
   byAgent: Record<string, number>;

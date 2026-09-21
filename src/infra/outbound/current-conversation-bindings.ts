@@ -499,6 +499,7 @@ export function getGenericCurrentConversationBindingCapabilities(params: {
 export async function bindGenericCurrentConversation(
   input: SessionBindingBindInput,
 ): Promise<SessionBindingRecord | null> {
+  const assertCurrent = input.assertCurrent;
   const conversation = normalizeConversationRef(input.conversation);
   const targetSessionKey = input.targetSessionKey.trim();
   if (
@@ -527,23 +528,26 @@ export async function bindGenericCurrentConversation(
   if (ttlMs !== undefined && expiresAt === undefined) {
     return null;
   }
-  return updateCurrentConversationBindingRecord(conversation, (existing) => ({
-    bindingId: buildBindingId(conversation),
-    targetSessionKey,
-    targetKind: input.targetKind,
-    conversation,
-    status: "active",
-    boundAt: now,
-    ...(expiresAt !== undefined ? { expiresAt } : {}),
-    metadata: {
-      ...(existing?.targetSessionKey === targetSessionKey &&
-      existing.targetKind === input.targetKind
-        ? existing.metadata
-        : undefined),
-      ...input.metadata,
-      lastActivityAt: now,
-    },
-  })).current;
+  return updateCurrentConversationBindingRecord(conversation, (existing) => {
+    assertCurrent?.();
+    return {
+      bindingId: buildBindingId(conversation),
+      targetSessionKey,
+      targetKind: input.targetKind,
+      conversation,
+      status: "active",
+      boundAt: now,
+      ...(expiresAt !== undefined ? { expiresAt } : {}),
+      metadata: {
+        ...(existing?.targetSessionKey === targetSessionKey &&
+        existing.targetKind === input.targetKind
+          ? existing.metadata
+          : undefined),
+        ...input.metadata,
+        lastActivityAt: now,
+      },
+    };
+  }).current;
 }
 
 /** Resolves a current-conversation binding and prunes it if its TTL has expired. */

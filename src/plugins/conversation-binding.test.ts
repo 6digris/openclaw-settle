@@ -61,7 +61,9 @@ const sessionBindingState = vi.hoisted(() => {
         targetKind: "session" | "subagent";
         conversation: ConversationRef;
         metadata?: Record<string, unknown>;
+        assertCurrent?: () => void;
       }) => {
+        input.assertCurrent?.();
         const normalized = normalizeRef(input.conversation);
         const record: SessionBindingRecord = {
           bindingId: `binding-${nextId++}`,
@@ -414,6 +416,48 @@ function readPluginBindingApprovalRows(): Array<{
 }
 
 describe("plugin conversation binding approvals", () => {
+  it.each(["before-commit", "after-commit"] as const)(
+    "preserves binding admission and settlement when authority changes %s",
+    async (revokeAt) => {
+      const input = createDiscordCodexBindRequest("channel:owner-check", "original binding");
+      const original = await requestResolvedBinding(input);
+      const bind = sessionBindingState.bind.getMockImplementation();
+      if (!bind) {
+        throw new Error("expected binding adapter fixture");
+      }
+      let ownerCurrent = true;
+      sessionBindingState.bind.mockImplementationOnce(async (request) => {
+        if (revokeAt === "before-commit") {
+          ownerCurrent = false;
+        }
+        const result = await bind(request);
+        ownerCurrent = false;
+        return result;
+      });
+      const result = requestPluginConversationBinding({
+        ...input,
+        binding: { summary: "replacement binding" },
+        assertCurrent: () => {
+          if (!ownerCurrent) {
+            throw new Error("Command owner was revoked");
+          }
+        },
+      });
+      if (revokeAt === "before-commit") {
+        await expect(result).rejects.toThrow("Command owner was revoked");
+        await expect(getCurrentPluginConversationBinding(input)).resolves.toEqual(original);
+      } else {
+        await expect(result).resolves.toMatchObject({
+          status: "bound",
+          binding: { summary: "replacement binding" },
+        });
+        await expect(getCurrentPluginConversationBinding(input)).resolves.toMatchObject({
+          summary: "replacement binding",
+        });
+      }
+    },
+  );
+
   beforeEach(async () => {
     await drainGlobalSingletonLifecycleState();
     process.env.OPENCLAW_STATE_DIR = tempRoot;

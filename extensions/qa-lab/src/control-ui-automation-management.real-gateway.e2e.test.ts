@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
+import { redactSensitiveText } from "openclaw/plugin-sdk/security-runtime";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { expect, it } from "vitest";
 import { createControlUiE2eSuite } from "../../../ui/src/e2e/control-ui-e2e-suite.test-support.ts";
@@ -345,19 +346,42 @@ suite.define(() => {
                 );
               } else if (action === "run") {
                 expect(result).toMatchObject({ ok: true });
-                await expect
-                  .poll(
-                    async () => {
-                      const runs = await gateway.call("cron.runs", { id: jobId });
-                      return (
-                        isRecord(runs) &&
-                        Array.isArray(runs.entries) &&
-                        runs.entries.some((entry) => isRecord(entry) && entry.status === "ok")
-                      );
-                    },
-                    { timeout: 60_000 },
-                  )
-                  .toBe(true);
+                let latestRuns: unknown;
+                try {
+                  await expect
+                    .poll(
+                      async () => {
+                        const runs = await gateway.call("cron.runs", { id: jobId });
+                        latestRuns = runs;
+                        return (
+                          isRecord(runs) &&
+                          Array.isArray(runs.entries) &&
+                          runs.entries.some((entry) => isRecord(entry) && entry.status === "ok")
+                        );
+                      },
+                      { timeout: 60_000 },
+                    )
+                    .toBe(true);
+                } catch (error) {
+                  const diagnostic = redactSensitiveText(
+                    JSON.stringify(
+                      {
+                        jobId,
+                        runRequest: result,
+                        latestRuns,
+                        gatewayLog: gateway.logs().slice(-12_000),
+                      },
+                      null,
+                      2,
+                    ).replaceAll(gateway.token, "[synthetic gateway token]"),
+                  );
+                  await writeFile(
+                    path.join(proofDir, "automation-run-failure.private.json"),
+                    `${diagnostic}\n`,
+                  );
+                  console.error(`[automation-run-diagnostic] ${diagnostic}`);
+                  throw error;
+                }
               } else {
                 expect(result).toMatchObject({ removed: true });
               }

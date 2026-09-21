@@ -523,27 +523,27 @@ export const handleSessionCommand: CommandHandler = async (params, allowTextComm
 export const handleRestartCommand: CommandHandler = defineGatewayControlCommand(
   "/restart",
   async (params) => {
-    const hasRestartListener = process.listenerCount("SIGUSR2") > 0;
     const sentinelPayload = buildRestartCommandSentinel(params);
-    if (hasRestartListener) {
+    if (process.listenerCount("SIGUSR2") > 0) {
       let sentinelRevision: number | undefined;
       scheduleGatewayRestart({
         reason: "/restart",
         // The routed restart acknowledgement and scheduler must own the same
         // pending session key to avoid cross-session overwrite (#86742).
         sessionKey: sentinelPayload?.sessionKey,
-        emitHooks: sentinelPayload
-          ? {
-              beforeEmit: async () => {
-                sentinelRevision = (await writeRestartSentinel(sentinelPayload)).revision;
-              },
-              afterEmitRejected: async () => {
-                if (sentinelRevision !== undefined) {
-                  await clearRestartSentinelIfRevision(sentinelRevision);
-                }
-              },
+        emitHooks: {
+          assertCurrent: params.command.assertOwnerCurrent,
+          beforeEmit: async () => {
+            if (sentinelPayload) {
+              sentinelRevision = (await writeRestartSentinel(sentinelPayload)).revision;
             }
-          : undefined,
+          },
+          afterEmitRejected: async () => {
+            if (sentinelRevision !== undefined) {
+              await clearRestartSentinelIfRevision(sentinelRevision);
+            }
+          },
+        },
       });
       return sessionCommandReply(
         "⚙️ Restarting OpenClaw in-process (SIGUSR2); back in a few seconds.",

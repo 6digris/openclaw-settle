@@ -47,7 +47,11 @@ export type PluginStateKeyedStore<T> = {
     comparison: string,
     intent: PluginStateCompareIntent<T>,
   ) => Promise<PluginStateCompareResult<T>>;
-  register(key: string, value: T, opts?: { ttlMs?: number }): Promise<void>;
+  register(
+    key: string,
+    value: T,
+    opts?: { ttlMs?: number; assertCurrent?: () => void },
+  ): Promise<void>;
   registerIfAbsent(key: string, value: T, opts?: { ttlMs?: number }): Promise<boolean>;
   /**
    * The updater runs synchronously in the transaction; undefined leaves the entry unchanged.
@@ -73,7 +77,7 @@ export type PluginStateKeyedStore<T> = {
     keys: readonly string[],
   ) => Promise<Array<Result<T | undefined, PluginStateStoreError>>>;
   consume(key: string): Promise<T | undefined>;
-  delete(key: string): Promise<boolean>;
+  delete(key: string, opts?: { assertCurrent?: () => void }): Promise<boolean>;
   entries(): Promise<PluginStateEntry<T>[]>;
   /** Reads a lexical key range with ordering and limit applied by storage. */
   entriesInKeyRange?: (range: PluginStateKeyRange) => Promise<PluginStateEntry<T>[]>;

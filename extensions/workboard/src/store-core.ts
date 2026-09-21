@@ -15,6 +15,7 @@ import type {
   WorkboardCardStore,
   WorkboardKeyedStore,
   WorkboardSubscriptionStore,
+  WorkboardWriteAuthority,
 } from "./persistence-types.js";
 import { normalizeAutomationPatch, normalizeCardAutomation } from "./store-automation.js";
 import {
@@ -109,9 +110,10 @@ export class WorkboardCoreStore extends WorkboardStoreRuntime {
       ready?: Promise<number>;
       dataVersion?: () => number | Promise<number>;
       close?: () => void | Promise<void>;
+      runWithWriteAuthority?: WorkboardWriteAuthority;
     },
   ) {
-    super(stores.dataVersion, stores.close, stores.ready);
+    super(stores.dataVersion, stores.close, stores.ready, stores.runWithWriteAuthority);
     this.store = this.trackCardStore(store);
     this.boardStore = this.track(stores.boards);
     this.subscriptionStore = {
@@ -468,10 +470,12 @@ export class WorkboardCoreStore extends WorkboardStoreRuntime {
   async create(
     input: WorkboardLinkedCreateInput,
     scope?: WorkboardMutationScope,
+    assertOwnerCurrent?: () => void,
   ): Promise<WorkboardCard> {
     return await this.enqueueMutation(
       async () =>
         await this.withCardCompensation(async () => await this.createDirect(input, scope)),
+      assertOwnerCurrent,
     );
   }
 

@@ -242,6 +242,7 @@ export function inspectSessionBindingByConversation(
 function createDefaultSessionBindingService(): SessionBindingService {
   return {
     bind: async (input) => {
+      const assertCurrent = input.assertCurrent;
       const normalizedConversation = normalizeConversationRef(input.conversation);
       const adapter = resolveAdapterForChannelAccount(normalizedConversation);
       const genericCapabilities = adapter
@@ -288,6 +289,7 @@ function createDefaultSessionBindingService(): SessionBindingService {
         conversation: normalizedConversation,
         placement,
       };
+      assertCurrent?.();
       const bound = adapter
         ? await adapter.bind!(bindInput)
         : await bindGenericCurrentConversation(bindInput);

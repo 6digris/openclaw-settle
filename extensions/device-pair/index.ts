@@ -554,7 +554,9 @@ function buildAccessLines(payload: SetupPayload, markdown = false): string[] {
 async function issueSetupPayload(params: {
   url: string;
   allowFullAccess: boolean;
+  assertCurrent?: () => void;
 }): Promise<SetupPayload> {
+  const assertCurrent = params.assertCurrent;
   const { issueDeviceBootstrapToken, PAIRING_SETUP_BOOTSTRAP_PROFILE } =
     await loadDevicePairApiModule();
   const hasPlaintextRoute = !isFullAccessMobilePairingUrl(params.url);
@@ -562,6 +564,7 @@ async function issueSetupPayload(params: {
   const fullAccess = params.allowFullAccess && !hasPlaintextRoute;
   const accessDowngraded = params.allowFullAccess && hasPlaintextRoute;
   const issuedBootstrap = await issueDeviceBootstrapToken({
+    ...(assertCurrent ? { assertCurrent } : {}),
     profile: fullAccess
       ? {
           roles: [...PAIRING_SETUP_BOOTSTRAP_PROFILE.roles],
@@ -643,6 +646,7 @@ export default definePluginEntry({
       },
       requiredScopes: ["operator.pairing"],
       handler: async (ctx) => {
+        const assertAdmittedOwner = ctx.assertOwnerCurrent;
         const args = normalizeOptionalString(ctx.args) ?? "";
         const tokens = args.split(/\s+/).filter(Boolean);
         const action = normalizeLowercaseStringOrEmpty(tokens[0]);
@@ -659,6 +663,9 @@ export default definePluginEntry({
           gatewayClientScopes,
           senderIsOwner: ctx.senderIsOwner,
         });
+        const assertOwnerCurrent = authState.isInternalGatewayCaller
+          ? undefined
+          : assertAdmittedOwner;
         api.logger.info?.(
           `device-pair: /pair invoked channel=${ctx.channel} sender=${ctx.senderId ?? "unknown"} action=${
             action || "new"
@@ -668,6 +675,7 @@ export default definePluginEntry({
         if (authState.isMissingPairingPrivilege) {
           return buildMissingPairingScopeReply();
         }
+        assertOwnerCurrent?.();
 
         if (action === "status" || action === "pending") {
           const [{ listDevicePairing }, { formatPendingRequests }] = await Promise.all([
@@ -675,6 +683,7 @@ export default definePluginEntry({
             loadNotifyModule(),
           ]);
           const list = await listDevicePairing();
+          assertOwnerCurrent?.();
           return { text: formatPendingRequests(list.pending) };
         }
 
@@ -683,7 +692,7 @@ export default definePluginEntry({
           const { handleNotifyCommand } = await loadNotifyModule();
           return await handleNotifyCommand({
             api,
-            ctx,
+            ctx: { ...ctx, assertOwnerCurrent },
             action: notifyAction,
           });
         }
@@ -708,12 +717,13 @@ export default definePluginEntry({
           return await approvePendingPairingRequest({
             requestId: pending.requestId,
             callerScopes: authState.approvalCallerScopes,
+            assertCurrent: assertOwnerCurrent,
           });
         }
 
         if (action === "cleanup" || action === "clear" || action === "revoke") {
           const { clearDeviceBootstrapTokens } = await loadDevicePairApiModule();
-          const cleared = await clearDeviceBootstrapTokens();
+          const cleared = await clearDeviceBootstrapTokens({ assertCurrent: assertOwnerCurrent });
           return {
             text:
               cleared.removed > 0
@@ -744,7 +754,10 @@ export default definePluginEntry({
           if (channel === "telegram" && target) {
             try {
               const { armPairNotifyOnce } = await loadNotifyModule();
-              autoNotifyArmed = await armPairNotifyOnce({ api, ctx });
+              autoNotifyArmed = await armPairNotifyOnce({
+                api,
+                ctx: { ...ctx, assertOwnerCurrent },
+              });
             } catch (err) {
               api.logger.warn?.(
                 `device-pair: failed to arm one-shot pairing notify (${(err as Error)?.message ?? err})`,
@@ -755,6 +768,7 @@ export default definePluginEntry({
           let payload = await issueSetupPayload({
             url: urlResult.url,
             allowFullAccess: authState.canIssueFullAccessSetup,
+            assertCurrent: assertOwnerCurrent,
           });
           let setupCode = encodeSetupCode(payload);
 
@@ -802,6 +816,7 @@ export default definePluginEntry({
               payload = await issueSetupPayload({
                 url: urlResult.url,
                 allowFullAccess: authState.canIssueFullAccessSetup,
+                assertCurrent: assertOwnerCurrent,
               });
               setupCode = encodeSetupCode(payload);
             } finally {
@@ -827,6 +842,7 @@ export default definePluginEntry({
               payload = await issueSetupPayload({
                 url: urlResult.url,
                 allowFullAccess: authState.canIssueFullAccessSetup,
+                assertCurrent: assertOwnerCurrent,
               });
               return {
                 text:
@@ -868,6 +884,7 @@ export default definePluginEntry({
         const payload = await issueSetupPayload({
           url: urlResult.url,
           allowFullAccess: authState.canIssueFullAccessSetup,
+          assertCurrent: assertOwnerCurrent,
         });
 
         if (channel === "telegram" && target) {

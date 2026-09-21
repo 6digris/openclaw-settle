@@ -111,6 +111,7 @@ export async function resolveTelegramCommandIngressAuthorization(params: {
       authorized,
       authorizedByConfig,
       senderIsOwner: ownerAccess.senderIsOwner,
+      assertOwnerCurrent: ownerAccess.assertOwnerCurrent,
       shouldBlockControlCommand,
       reasonCode: shouldBlockControlCommand
         ? ("control_command_unauthorized" as const)
@@ -144,7 +145,12 @@ export async function resolveTelegramCommandIngressAuthorization(params: {
       modeWhenAccessGroupsOff: params.modeWhenAccessGroupsOff ?? "configured",
     },
   });
-  return { ...result.commandAccess, authorizedByConfig, senderIsOwner: ownerAccess.senderIsOwner };
+  return {
+    ...result.commandAccess,
+    authorizedByConfig,
+    senderIsOwner: ownerAccess.senderIsOwner,
+    assertOwnerCurrent: ownerAccess.assertOwnerCurrent,
+  };
 }
 
 export async function resolveTelegramNativeCommandAdmission(
