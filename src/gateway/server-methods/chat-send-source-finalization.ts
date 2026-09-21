@@ -36,12 +36,12 @@ import {
   type WebchatReplyMediaRequesterContext,
 } from "./chat-reply-media.js";
 import {
+  buildTranscriptReplyTextFromInputs,
   readChatSendReplyPayload,
   replaceChatSendReplyPayload,
   type DeliveredChatSendReply,
 } from "./chat-send-command-replies.js";
 import { isChatSendReplyDeliveryAuthorized } from "./chat-send-delivery-authority.js";
-import { buildTranscriptReplyTextFromInputs } from "./chat-send-reply-dispatch.js";
 import type { PreparedChatSendSession } from "./chat-send-session.js";
 import {
   assistantTranscriptScope,
@@ -69,6 +69,7 @@ function selectChatSendAgentReplyInputs(params: {
 }
 
 type FinalizeChatSendAgentRepliesBase = {
+  resolveReplyInputs?: (input: ReplyDispatchOperation, runId?: string) => ReplyDispatchOperation[];
   requesterContext?: WebchatReplyMediaRequesterContext;
   abortSignal?: AbortSignal;
   accountId: string | undefined;
@@ -218,7 +219,10 @@ async function finalizeChatSendAgentReplyPayloads(
 ): Promise<ChatSendAgentReplyFinalization> {
   const { accountId, context, emitFirstAssistantServerTiming, session } = params;
   const { agentId, backingSessionId, cfg, clientRunId, sessionKey, sessionLoadOptions } = session;
-  const agentRunReplyPayloads = params.inputs.map(readChatSendReplyPayload);
+  const replyInputs = params.inputs.flatMap(
+    (input) => params.resolveReplyInputs?.(input, clientRunId) ?? [input],
+  );
+  const agentRunReplyPayloads = replyInputs.map(readChatSendReplyPayload);
   if (agentRunReplyPayloads.length === 0) {
     return { kind: "dropped", reason: "no-visible-content" };
   }
@@ -263,7 +267,7 @@ async function finalizeChatSendAgentReplyPayloads(
           ...mediaScope,
           payloads: agentRunReplyPayloads,
         });
-        const normalizedInputsByIndex = params.inputs.map((input, index) => {
+        const normalizedInputsByIndex = replyInputs.map((input, index) => {
           const payload = normalizedPayloads[index];
           return payload ? replaceChatSendReplyPayload(input, payload) : [];
         });
@@ -508,6 +512,7 @@ export async function finalizeChatSendSourceReplies(
     context: params.context,
     emitFirstAssistantServerTiming: params.emitFirstAssistantServerTiming,
     inputs: selectChatSendAgentReplyInputs(params),
+    resolveReplyInputs: params.resolveReplyInputs,
     session: params.session,
     suppressFinal: params.suppressFinal,
   });

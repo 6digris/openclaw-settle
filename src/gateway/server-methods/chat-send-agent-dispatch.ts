@@ -170,6 +170,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     session,
     hasCronCreatorAuthority: cronCreatorAuthority !== undefined,
     suppressReplies: progressRefresh,
+    resolveReplyInputs: (input, runId) => replyDispatch.resolveReplyInputs(input, runId, true),
     retainWorkAdmission: retainGatewayWorkAdmission,
     armOperatorRunCancellation: admission.armOperatorRunCancellation,
     retireOperatorRunCancellation: admission.retireOperatorRunCancellation,
@@ -548,6 +549,8 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
               accountId,
               context,
               deliveredReplies: replyDispatch.deliveredReplies,
+              resolveReplyInputs: (input) =>
+                replyDispatch.resolveReplyInputs(input, undefined, true),
               emitFirstAssistantServerTiming,
               foldCommandBlocks: isInternalTextSlashCommandTurn || replyDispatchRun !== undefined,
               persistUserTurnTranscript: persistGatewayUserTurnTranscriptBestEffort,
@@ -571,6 +574,8 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
               deliveredReplies: replyDispatch.deliveredReplies,
               emitFirstAssistantServerTiming,
               hasReturnedAgentErrorPayloads: hasReturnedAgentError,
+              resolveReplyInputs: (input, runId) =>
+                replyDispatch.resolveReplyInputs(input, runId, true),
               session,
               suppressFinal: runtimeFailed,
             });

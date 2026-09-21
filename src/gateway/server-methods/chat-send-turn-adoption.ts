@@ -1,5 +1,6 @@
 import type { TurnAdoptionLifecycle } from "../../auto-reply/get-reply-options.types.js";
 import type { QueuedFollowupReplyDelivery } from "../../auto-reply/reply/queue/types.js";
+import type { ReplyDispatchOperation } from "../../auto-reply/reply/reply-dispatcher.types.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import type { ChatAbortControllerEntry } from "../chat-abort.js";
 import {
@@ -39,6 +40,7 @@ export function createChatSendTurnAdoptionLifecycle(params: {
   >;
   hasCronCreatorAuthority: boolean;
   suppressReplies?: boolean;
+  resolveReplyInputs?: (input: ReplyDispatchOperation, runId?: string) => ReplyDispatchOperation[];
   retainWorkAdmission: () => () => void;
   armOperatorRunCancellation?: () => void;
   retireOperatorRunCancellation?: () => void;
@@ -87,6 +89,7 @@ export function createChatSendTurnAdoptionLifecycle(params: {
           accountId: params.accountId,
           context: params.context,
           session: params.session,
+          resolveReplyInputs: params.resolveReplyInputs,
         }),
   });
   const lifecycle: TurnAdoptionLifecycle = {
