@@ -9,7 +9,6 @@ import {
   createCodexAppServerToolResultExtensionRunner,
   extractMessagingToolSend,
   extractMessagingToolSendResult,
-  extractMessagingToolSourceReplyPayload,
   finalizeToolTerminalPresentation,
   formatToolExecutionErrorMessage,
   getBeforeToolCallFailureDisposition,
@@ -33,8 +32,9 @@ import {
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
   copyInternalToolResultState,
-  isAsyncStartedToolResult,
   createAgentHarnessToolExecutionBoundaryRegistry,
+  extractMessagingToolSourceReplyPayload,
+  isAsyncStartedToolResult,
   getCoreTtsToolResultMediaUrls,
   normalizeAcceptedSessionSpawnResult,
   type AcceptedSessionSpawn,
