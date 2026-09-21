@@ -559,15 +559,15 @@ describe("ChatSessionRailElement", () => {
           submission = threads.submit("one", question, ask);
         },
       });
-      const input = element.querySelector<HTMLTextAreaElement>("textarea")!;
+      const textarea = element.querySelector<HTMLTextAreaElement>("textarea")!;
       const send = element.querySelector<HTMLButtonElement>(".chat-send-btn")!;
       const type = async (draft: string) => {
-        input.value = draft;
-        input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+        textarea.value = draft;
+        textarea.dispatchEvent(new InputEvent("input", { bubbles: true }));
         await element.updateComplete;
       };
       const enter = () =>
-        input.dispatchEvent(
+        textarea.dispatchEvent(
           new KeyboardEvent("keydown", {
             key: "Enter",
             bubbles: true,
@@ -579,15 +579,15 @@ describe("ChatSessionRailElement", () => {
       expect(send.disabled).toBe(false);
       enter();
       await element.updateComplete;
-      expect(input.disabled).toBe(false);
-      expect(input.value).toBe("");
-      expect(input.placeholder).toBe("Ask a question");
+      expect(textarea.disabled).toBe(false);
+      expect(textarea.value).toBe("");
+      expect(textarea.placeholder).toBe("Ask a question");
       await type("What should I verify next?");
       expect(send.disabled).toBe(true);
       enter();
       element.querySelector("form")!.dispatchEvent(new SubmitEvent("submit", { bubbles: true }));
       expect(ask).toHaveBeenCalledTimes(1);
-      expect(input.value).toBe("What should I verify next?");
+      expect(textarea.value).toBe("What should I verify next?");
       if (outcome === "answered") {
         resolveAnswer({ answer: "The composer changed.", ts: 42 });
       } else {
@@ -596,18 +596,18 @@ describe("ChatSessionRailElement", () => {
       await submission;
       await element.updateComplete;
       expect(threads.view("one").turns[0]?.status).toBe(outcome);
-      expect(input.value).toBe("What should I verify next?");
+      expect(textarea.value).toBe("What should I verify next?");
       expect(send.disabled).toBe(false);
       element.connected = false;
       await element.updateComplete;
-      expect(input.disabled).toBe(true);
+      expect(textarea.disabled).toBe(true);
       expect(send.disabled).toBe(true);
       element.querySelector("form")!.dispatchEvent(new SubmitEvent("submit", { bubbles: true }));
       expect(ask).toHaveBeenCalledTimes(1);
       element.connected = true;
       await element.updateComplete;
-      expect(input.disabled).toBe(false);
-      expect(input.value).toBe("What should I verify next?");
+      expect(textarea.disabled).toBe(false);
+      expect(textarea.value).toBe("What should I verify next?");
       expect(send.disabled).toBe(false);
     },
   );
