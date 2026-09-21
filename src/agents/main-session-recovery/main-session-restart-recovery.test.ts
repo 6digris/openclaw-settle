@@ -51,6 +51,7 @@ import {
 import { addTestHook } from "../../plugins/hooks.test-fixtures.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
+import * as gatewayWorkAdmission from "../../process/gateway-work-admission.js";
 import {
   GatewayDrainingError,
   getActiveGatewayRootWorkCount,
@@ -171,6 +172,52 @@ const scheduleRestartAbortedMainSessionRecovery = (
 ) =>
   scheduleRestartAbortedMainSessionRecoveryBase({ gatewayRuntime: mockRecoveryRuntime, ...params });
 
+let stopFinalStartupRecovery: (() => Promise<void>) | undefined;
+
+function scheduleFinalStartupRecovery(
+  params: Parameters<typeof scheduleRestartAbortedMainSessionRecovery>[0],
+  expectedTargets: number,
+) {
+  const reconciliationStarted = createDeferred();
+  const reconciliations: Promise<unknown>[] = [];
+  const admit = gatewayWorkAdmission.runWithGatewayIndependentRootWorkAdmission;
+  const admissionSpy = vi
+    .spyOn(gatewayWorkAdmission, "runWithGatewayIndependentRootWorkAdmission")
+    .mockImplementation(<T>(run: () => Promise<T>, origin?: string, signal?: AbortSignal) => {
+      const pending = admit(run, origin, signal);
+      if (origin === "main-session:target-recovery") {
+        reconciliations.push(pending);
+        reconciliationStarted.resolve();
+      }
+      return pending;
+    });
+  const recovery = scheduleRestartAbortedMainSessionRecovery(params);
+  let stopping: Promise<void> | undefined;
+  const stop = () => {
+    // Unwind a timed-out waiter too, so its enclosing environment scope can close.
+    reconciliationStarted.reject(new Error("Recovery stopped before final reconciliation started"));
+    stopping ??= recovery.stop().finally(() => {
+      admissionSpy.mockRestore();
+      stopFinalStartupRecovery = undefined;
+    });
+    return stopping;
+  };
+  stopFinalStartupRecovery = stop;
+  return {
+    stop,
+    async waitForExhaustion() {
+      await reconciliationStarted.promise;
+      // The scheduler registers the whole final-target batch synchronously. Join
+      // every actual target, including unexpected extras, before checking rows.
+      const outcomes = await Promise.allSettled(reconciliations);
+      expect(outcomes).toHaveLength(expectedTargets);
+      for (const outcome of outcomes) {
+        expect(outcome.status).toBe("fulfilled");
+      }
+    },
+  };
+}
+
 async function expectRecovery(
   expected: { started: number; settled: number; failed: number; skipped: number },
   cfg?: Parameters<typeof recoverRestartAbortedMainSessions>[0]["cfg"],
@@ -231,9 +278,14 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  resetGatewayWorkAdmission();
-  await cleanupSessionStateForTest({ stateDir: tmpDir });
-  await fs.rm(tmpDir, { recursive: true, force: true });
+  try {
+    // A runner timeout need not unwind the test body before fixture teardown.
+    await stopFinalStartupRecovery?.();
+  } finally {
+    resetGatewayWorkAdmission();
+    await cleanupSessionStateForTest({ stateDir: tmpDir });
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
 });
 
 async function makeSessionsDir(agentId = "main"): Promise<string> {
@@ -4597,28 +4649,33 @@ describe("main-session-restart-recovery", () => {
       })
       .mockResolvedValueOnce({ runId: "run-resumed" });
 
-    scheduleRestartAbortedMainSessionRecovery({
-      getConfig: () => ({ agents: { entries: { main: { default: true } } } }),
-      delayMs: 0,
-      maxRetries: 1,
-      stateDir: tmpDir,
-    });
-
-    await waitForFast(() => {
+    const recovery = scheduleFinalStartupRecovery(
+      {
+        getConfig: () => ({ agents: { entries: { main: { default: true } } } }),
+        delayMs: 0,
+        maxRetries: 1,
+        stateDir: tmpDir,
+      },
+      1,
+    );
+    try {
+      await recovery.waitForExhaustion();
       expect(loadSessionEntry({ sessionKey: "agent:main:main", storePath })).toMatchObject({
         status: "failed",
         mainRestartRecovery: { tombstone: expect.any(Object) },
       });
-    });
-    expect(callGateway).toHaveBeenCalledTimes(2);
-    const freshEntry = loadSessionEntry({ sessionKey: "agent:main:fresh", storePath });
-    expect(freshEntry).toMatchObject({
-      sessionId: "fresh-session",
-      status: "running",
-      abortedLastRun: true,
-      mainRestartRecovery: { chargedAttempts: 3 },
-    });
-    expect(freshEntry?.mainRestartRecovery?.tombstone).toBeUndefined();
+      expect(callGateway).toHaveBeenCalledTimes(2);
+      const freshEntry = loadSessionEntry({ sessionKey: "agent:main:fresh", storePath });
+      expect(freshEntry).toMatchObject({
+        sessionId: "fresh-session",
+        status: "running",
+        abortedLastRun: true,
+        mainRestartRecovery: { chargedAttempts: 3 },
+      });
+      expect(freshEntry?.mainRestartRecovery?.tombstone).toBeUndefined();
+    } finally {
+      await recovery.stop();
+    }
   });
 
   it("observes final exhaustion in distinct stores for the same logical session", async () => {
@@ -4645,30 +4702,30 @@ describe("main-session-restart-recovery", () => {
         }
         return { status: "timeout" };
       });
-      const recovery = scheduleRestartAbortedMainSessionRecovery({
-        getConfig: () => ({ agents: { entries: { ops: { default: true } } } }),
-        delayMs: 0,
-        maxRetries: 1,
-        stateDir: tmpDir,
-      });
+      const recovery = scheduleFinalStartupRecovery(
+        {
+          getConfig: () => ({ agents: { entries: { ops: { default: true } } } }),
+          delayMs: 0,
+          maxRetries: 1,
+          stateDir: tmpDir,
+        },
+        targets.length,
+      );
       try {
-        await waitForFast(() => {
-          for (const target of targets) {
-            const entry = loadSessionEntry(target);
-            expect(entry?.mainRestartRecovery?.chargedAttempts).toBe(3);
-            expect(entry?.mainRestartRecovery?.reservation).toBeUndefined();
-          }
-        });
-        await waitForFast(() => {
-          for (const [index, target] of targets.entries()) {
-            expect(loadSessionEntry(target)).toMatchObject({
-              sessionId: `ops-session-${index}`,
-              status: "failed",
-              abortedLastRun: false,
-              mainRestartRecovery: { tombstone: expect.any(Object) },
-            });
-          }
-        });
+        await recovery.waitForExhaustion();
+        for (const target of targets) {
+          const entry = loadSessionEntry(target);
+          expect(entry?.mainRestartRecovery?.chargedAttempts).toBe(3);
+          expect(entry?.mainRestartRecovery?.reservation).toBeUndefined();
+        }
+        for (const [index, target] of targets.entries()) {
+          expect(loadSessionEntry(target)).toMatchObject({
+            sessionId: `ops-session-${index}`,
+            status: "failed",
+            abortedLastRun: false,
+            mainRestartRecovery: { tombstone: expect.any(Object) },
+          });
+        }
         expect(
           vi.mocked(callGateway).mock.calls.filter(([call]) => call.method === "agent"),
         ).toHaveLength(2);
