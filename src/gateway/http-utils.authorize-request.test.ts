@@ -197,7 +197,9 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
         await started.promise;
         expect(completed).toBe(false);
         expect(profileAuthority.prepareUserProfileRoleAuthority).not.toHaveBeenCalled();
-        if (outcome === "disconnected") response.destroyed = true;
+        if (outcome === "disconnected") {
+          response.destroyed = true;
+        }
         if (outcome === "policy-changed") {
           vi.mocked(getRuntimeConfig).mockReturnValue({
             gateway: { controlUi: { allowedOrigins: ["https://changed.example.test"] } },

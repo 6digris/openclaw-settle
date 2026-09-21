@@ -98,6 +98,12 @@ export function createDiscordNativeCommandAuthority(params: {
   };
   return {
     assertActive,
+    assertOwnerCurrent: () => {
+      assertActive();
+      if (!readAuthorization().senderIsOwner) {
+        throw new Error("Discord owner authority changed; send a new request.");
+      }
+    },
     senderIsOwner: () => readAuthorization().senderIsOwner,
     isAllowed: () => {
       try {

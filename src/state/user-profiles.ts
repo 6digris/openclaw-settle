@@ -557,6 +557,8 @@ export function syncGitHubIdentity(
     identity: { accountId: number; login: string; name?: string };
     authenticationAlias: GitHubAuthenticationAlias;
     initialDisplayName?: string;
+    /** OIDC enrichment must retain the authenticated email profile and its credit preference. */
+    preserveEmailProfile?: boolean;
   },
   options: UserProfileMutationOptions = {},
 ): UserProfileListItem {
@@ -574,6 +576,7 @@ export function syncGitHubIdentity(
         mutation: options.mutation,
         alias,
         identity: params.identity,
+        preserveEmailProfile: params.preserveEmailProfile,
         createProfile: () => insertUserProfile(db, initialDisplayName, now, options.mutation).id,
         mergeProfiles: (sourceProfileId, targetProfileId) =>
           mergeUserProfiles(db, sourceProfileId, targetProfileId, now, options.mutation),

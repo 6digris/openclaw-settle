@@ -208,8 +208,10 @@ export function createGatewaySecretsReloader(params: GatewaySecretsReloaderParam
             }
             if (previousGeneration !== nextGeneration) {
               disconnectStaleSharedGatewayAuthClients({
+                state: params.sharedGatewaySessionGenerationState,
                 clients: params.clients,
                 expectedGeneration: nextGeneration,
+                revokeSource: false,
               });
             }
             transaction = {
@@ -409,6 +411,7 @@ export function createGatewaySecretsReloader(params: GatewaySecretsReloaderParam
                 );
                 if (generationRestored && failedTransaction.generationChanged) {
                   disconnectStaleSharedGatewayAuthClients({
+                    state: params.sharedGatewaySessionGenerationState,
                     clients: params.clients,
                     expectedGeneration: failedTransaction.previousGeneration,
                   });

@@ -203,9 +203,9 @@ it("keeps prepared authority SQL-free and revokes the exact binding before worke
 
       mutation = "rollback";
       const beforeRollback = getUserProfileDisplay(ada.id, options);
-      runOpenClawStateWriteTransaction(({ db }) => {
+      runOpenClawStateWriteTransaction(({ db: fixtureDb }) => {
         // Deferred integrity failure occurs at real COMMIT, after the worker receives its grant.
-        db.exec(`
+        fixtureDb.exec(`
           CREATE TABLE profile_rollback_parent (id INTEGER PRIMARY KEY);
           CREATE TABLE profile_rollback_child (
             parent_id INTEGER REFERENCES profile_rollback_parent(id) DEFERRABLE INITIALLY DEFERRED
@@ -229,8 +229,8 @@ it("keeps prepared authority SQL-free and revokes the exact binding before worke
         expect(afterRollback?.role).toBe("admin");
         expect(afterRollback?.isCurrent()).toBe(true);
       } finally {
-        runOpenClawStateWriteTransaction(({ db }) => {
-          db.exec(
+        runOpenClawStateWriteTransaction(({ db: fixtureDb }) => {
+          fixtureDb.exec(
             "DROP TRIGGER profile_rollback_at_commit; DROP TABLE profile_rollback_child; DROP TABLE profile_rollback_parent;",
           );
         }, options);

@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+import { getRuntimeConfig } from "../../../config/io.js";
 import { resolveHostAccountName } from "../../../infra/host-account-name.js";
 import { prepareUserProfileRoleAuthority } from "../../../state/user-channel-identity-operations.js";
 import {
@@ -6,9 +8,81 @@ import {
   ensureCanonicalUserProfileForTailscaleIdentity,
 } from "../../../state/user-profile-writes.js";
 import type { GatewayAuthResult } from "../../auth.js";
+import { prepareGatewayRecipientProfile } from "../../expected-profile.js";
 import type { createAuthenticatedGitHubIdentitySync } from "../../github-user-identity.js";
+import {
+  attachGatewayLocalUserIngress,
+  type prepareGatewayLocalUserIngress,
+} from "../../local-user-ingress.js";
+import { WEBSOCKET_OPEN_READY_STATE } from "../../server-constants.js";
+import type { GatewayWsClient } from "../ws-types.js";
+import { resolveGatewayConnectPolicyFailure } from "./connect-admission.js";
+import type {
+  DeviceAuthorizedGatewayConnect,
+  GatewayConnectPhaseContext,
+} from "./message-handler-types.js";
 
-export async function resolveAuthenticatedProfile(
+type PreparedConnectProfile = Awaited<ReturnType<typeof resolveAuthenticatedProfile>>;
+
+/** One connection retains its profile authority through admission and later identity refreshes. */
+export function createGatewayConnectProfileLifecycle(
+  context: GatewayConnectPhaseContext,
+  state: DeviceAuthorizedGatewayConnect,
+) {
+  const { handler } = context;
+  let client: GatewayWsClient | undefined;
+  const rolesCurrent = () =>
+    isDeepStrictEqual(context.configSnapshot.gateway?.roles, getRuntimeConfig().gateway?.roles);
+  const clientCurrent = () =>
+    !handler.isClosed() &&
+    handler.socket.readyState === WEBSOCKET_OPEN_READY_STATE &&
+    (!client || (handler.getClient() === client && !client.invalidated));
+  const assertCurrent = () => {
+    handler.connectionWork.signal.throwIfAborted();
+    if (!clientCurrent() || resolveGatewayConnectPolicyFailure(context, state) || !rolesCurrent()) {
+      throw new Error("Gateway profile acquisition authority expired");
+    }
+  };
+  return {
+    assertCurrent,
+    isCurrent: (prepared: PreparedConnectProfile | undefined) =>
+      (!prepared || prepared.authority.isCurrent()) && rolesCurrent(),
+    bind: (registered: GatewayWsClient) => {
+      client = registered;
+    },
+    async attach(
+      profileId: string,
+      updatedAt: number,
+      prepareIngress: (
+        profile: PreparedConnectProfile["profile"],
+      ) => ReturnType<typeof prepareGatewayLocalUserIngress>,
+    ) {
+      if (!client || !clientCurrent()) {
+        return;
+      }
+      const registered = client;
+      assertCurrent();
+      const prepared = await resolveAuthenticatedProfile(profileId, updatedAt, assertCurrent);
+      assertCurrent();
+      if (client !== registered || !prepared.authority.isCurrent()) {
+        throw new Error("Gateway profile changed before attachment");
+      }
+      const { profile } = prepared;
+      registered.preparedRecipientProfileId = undefined;
+      if (registered.authenticatedUserProfile) {
+        Object.assign(registered.authenticatedUserProfile, profile);
+      } else {
+        registered.authenticatedUserProfile = profile;
+      }
+      prepareGatewayRecipientProfile(registered, { identity: prepared.recipient });
+      attachGatewayLocalUserIngress(registered, prepareIngress(profile));
+      const { profileId: id, ...display } = profile;
+      handler.buildRequestContext().refreshConnectedUserProfile?.({ id, ...display });
+    },
+  };
+}
+
+async function resolveAuthenticatedProfile(
   profileId: string,
   updatedAt: number,
   assertCurrent?: () => void,
@@ -23,6 +97,11 @@ export async function resolveAuthenticatedProfile(
   return {
     profile: { profileId: id, displayName, avatarRevision, hasAvatar, updatedAt },
     authority,
+    recipient: {
+      profileId: authority.profileId,
+      role: authority.role,
+      aliases: new Set(authority.aliases),
+    },
   };
 }
 

@@ -111,6 +111,7 @@ describe("GitHub public identity metadata cache", () => {
       stubIdentityFetch(metadata);
       const first = await createAccessSync()();
       const display = getUserProfileDisplay(first.profileId);
+      const initialProfile = getUserProfileListItem(first.profileId);
       const changed = vi.fn();
       const stop = onUserProfilesChanged(changed);
       try {
@@ -122,6 +123,7 @@ describe("GitHub public identity metadata cache", () => {
         expect(renewed).toEqual(Array.from({ length: 8 }, () => first));
         expect(changed).not.toHaveBeenCalled();
         expect(getUserProfileDisplay(first.profileId)).toEqual(display);
+        expect(getUserProfileListItem(first.profileId)).toEqual(initialProfile);
         expect(new Headers(metadata.mock.calls[1]?.[1]?.headers).get("if-none-match")).toBe(
           '"profile-v1"',
         );
@@ -129,11 +131,11 @@ describe("GitHub public identity metadata cache", () => {
         await createAccessSync()();
         expect(metadata).toHaveBeenCalledTimes(2);
         clock.mockReturnValue(1_800_000_000_000 + 2 * CACHE_TTL_MS);
-        await createAccessSync()();
-        expect(getUserProfileListItem(first.profileId).githubIdentity?.login).toBe("ada-renamed");
-        expect(getUserProfileListItem(first.profileId).updatedAt).toBe(
-          1_800_000_000_000 + 2 * CACHE_TTL_MS,
-        );
+        const renamed = await createAccessSync()();
+        const persisted = getUserProfileListItem(first.profileId);
+        expect(persisted.githubIdentity?.login).toBe("ada-renamed");
+        expect(renamed).toEqual({ profileId: first.profileId, updatedAt: persisted.updatedAt });
+        expect(metadata).toHaveBeenCalledTimes(3);
         expect(changed).toHaveBeenCalledOnce();
       } finally {
         stop();

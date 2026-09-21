@@ -43,6 +43,8 @@ function unwrapIdentityResult<T>(result: UserChannelIdentityResult<T>, profileId
     case "owner":
       throw new UserProfileOwnerError(result.code);
   }
+  result satisfies never;
+  throw new Error("Unsupported channel identity result");
 }
 
 export async function listCanonicalUserChannelIdentities(

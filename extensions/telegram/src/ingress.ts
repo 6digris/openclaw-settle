@@ -110,7 +110,7 @@ export async function buildTelegramNativeCommandOwnerContext(params: {
     groupPolicy: "allowlist",
     command: false,
   });
-  return await getTelegramRuntime().channel.inbound.buildContext({
+  return getTelegramRuntime().channel.inbound.buildContext({
     channel: "telegram",
     accountId: params.accountId,
     channelIngress,

@@ -23,8 +23,9 @@ async function execute<T>(
   name: keyof PluginStateWorkerOperations,
   dispatch: (scope: Scope) => Promise<Result<T, PluginStateWorkerFailure>>,
   missing?: () => T,
-  assertCurrent?: () => void,
+  checks: { assertCurrent?: () => void; isObservation?: (result: T) => boolean } = {},
 ): Promise<T> {
+  const { assertCurrent, isObservation } = checks;
   const assertAdmission = assertCurrent
     ? () => {
         assertActive?.();
@@ -37,8 +38,12 @@ async function execute<T>(
   let dispatched = false;
   try {
     const context = captureOpenClawStateWorkerContext({ path: databasePath, env });
-    const { runOpenClawStateWorkerOperation } =
-      await import("../state/openclaw-state-worker-store.js");
+    // A write-only await here would let later reads overtake it before broker admission.
+    const [{ runOpenClawStateWorkerOperation }, { createSqliteWorkerWriteAdmission }] =
+      await Promise.all([
+        import("../state/openclaw-state-worker-store.js"),
+        import("../infra/sqlite-worker-store.js"),
+      ]);
     const operation = async (scope: Scope) => {
       dispatched = true;
       const result = await dispatch(scope);
@@ -55,13 +60,10 @@ async function execute<T>(
       assertActive?.();
       return result === undefined ? missing() : result;
     }
-    const createAdmission =
-      name === "pluginState.sweep"
-        ? (await import("../infra/sqlite-worker-store.js")).createSqliteWorkerWriteAdmission(() => {
-            context.admission.assertCurrent();
-            assertActive?.();
-          }, [databasePath])
-        : undefined;
+    const createAdmission = createSqliteWorkerWriteAdmission(() => {
+      context.admission.assertCurrent();
+      assertAdmission?.();
+    }, [databasePath]);
     // Writable operations, including comparison observations, must share the
     // host lifecycle owner before dispatch so sibling maintenance cannot overtake them.
     const result = await runOpenClawStateWorkerOperation(context, operation, {
@@ -69,7 +71,9 @@ async function execute<T>(
       requireStateLifecycle: true,
       createAdmission,
     });
-    assertActive?.();
+    if (isObservation?.(result)) {
+      assertAdmission?.();
+    }
     return result;
   } catch (error) {
     throw wrapPluginStateError(
@@ -91,28 +95,40 @@ export function registerPluginStateInWorker(
     "pluginState.register",
     (scope) => scope.execute({ type: "pluginState.register", input }),
     undefined,
-    assertCurrent,
+    { assertCurrent },
   );
 }
 
 export function observePluginStateInWorker(params: Input<"pluginState.observe">) {
   const { env, assertActive, ...input } = params;
-  return execute({ env, assertActive }, "pluginState.observe", (scope) =>
-    scope.execute({ type: "pluginState.observe", input }),
+  return execute(
+    { env, assertActive },
+    "pluginState.observe",
+    (scope) => scope.execute({ type: "pluginState.observe", input }),
+    undefined,
+    { isObservation: () => true },
   );
 }
 
 export function comparePluginStateUpdateInWorker(params: Input<"pluginState.compareUpdate">) {
   const { env, assertActive, ...input } = params;
-  return execute({ env, assertActive }, "pluginState.compareUpdate", (scope) =>
-    scope.execute({ type: "pluginState.compareUpdate", input }),
+  return execute(
+    { env, assertActive },
+    "pluginState.compareUpdate",
+    (scope) => scope.execute({ type: "pluginState.compareUpdate", input }),
+    undefined,
+    { isObservation: (result) => result.status === "conflict" },
   );
 }
 
 export function comparePluginStateDeleteInWorker(params: Input<"pluginState.compareDelete">) {
   const { env, assertActive, ...input } = params;
-  return execute({ env, assertActive }, "pluginState.compareDelete", (scope) =>
-    scope.execute({ type: "pluginState.compareDelete", input }),
+  return execute(
+    { env, assertActive },
+    "pluginState.compareDelete",
+    (scope) => scope.execute({ type: "pluginState.compareDelete", input }),
+    undefined,
+    { isObservation: (result) => result.status === "conflict" },
   );
 }
 
@@ -179,7 +195,7 @@ export function deletePluginStateInWorker(
     "pluginState.delete",
     (scope) => scope.execute({ type: "pluginState.delete", input }),
     undefined,
-    assertCurrent,
+    { assertCurrent },
   );
 }
 

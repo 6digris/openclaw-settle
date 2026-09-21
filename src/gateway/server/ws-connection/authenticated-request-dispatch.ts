@@ -25,10 +25,13 @@ import { captureGatewayDeviceRevocation } from "../../device-revocation.js";
 import { createExpectedProfileBinding } from "../../expected-profile.js";
 import { bindWebSocketRequestMutationAuthority } from "../../server-methods/session-mutation-guards.js";
 import type { GatewayRequestEntry } from "../../server-request-entry.js";
+import { SharedGatewaySessionGenerationState } from "../../server-shared-auth-generation.js";
 import { classifyGatewayStaleInstall } from "../../stale-install.js";
 import { formatForLog, logWs } from "../../ws-log.js";
 import {
+  hasCurrentGatewayPolicyClientSource,
   invalidateGatewayPolicyClient,
+  onGatewayPolicyClientInvalidated,
   registerGatewayPolicyResponse,
 } from "../ws-policy-close.js";
 import type { GatewayWsClient } from "../ws-types.js";
@@ -81,6 +84,8 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
       code: 4001,
       message: `client invalidated: ${reason}`,
       close: () => close(4001, `client invalidated: ${reason}`),
+      // The mutation owner already decided whether this was a committed revocation.
+      revokeSource: false,
     });
     return true;
   };
@@ -106,9 +111,15 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
       return;
     }
     const req = parsed;
+    if (closeInvalidatedClient(client, req.method)) {
+      return;
+    }
     const diagnostics = createGatewayRpcDiagnostics(req.method, getMethodRegistry, extraHandlers);
     logWs("in", "req", { connId, id: req.id, method: req.method });
     const context = buildRequestContext();
+    const generationState = SharedGatewaySessionGenerationState.fromReader(
+      getRequiredSharedGatewaySessionGeneration,
+    );
     const clientAuthority = captureGatewayDeviceRevocation(
       context,
       { deviceId: client.connect.device?.id, role: client.connect.role },
@@ -129,12 +140,28 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
             code: 4001,
             message: "gateway auth changed",
             close: () => close(4001, "gateway auth changed"),
+            revokeSource: false,
           });
           return false;
         }
         return true;
       },
       client.connectionSignal,
+      client.connect.role === "operator" && (!client.usesSharedGatewayAuth || generationState)
+        ? {
+            isCurrent: () => hasCurrentGatewayPolicyClientSource(client),
+            subscribe: (onRevoked) => {
+              const releaseClient = onGatewayPolicyClientInvalidated(client, onRevoked);
+              const releaseGeneration = client.usesSharedGatewayAuth
+                ? generationState?.onInvalidated(client.sharedGatewaySessionGeneration, onRevoked)
+                : undefined;
+              return () => {
+                releaseClient();
+                releaseGeneration?.();
+              };
+            },
+          }
+        : undefined,
     );
     const hasCurrentClientAuthority = clientAuthority.isCurrent;
     try {

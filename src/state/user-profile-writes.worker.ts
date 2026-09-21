@@ -180,6 +180,7 @@ export function executeUserProfileWrite(
       case "userProfiles.ensureOwner":
         return { ok: true, value: ensureGatewayOwnerProfile(command.input.displayName, owned) };
     }
+    return command satisfies never;
   } catch (error) {
     if (error instanceof UserProfileNotFoundError) {
       return { ok: false, kind: "not-found", profileId: error.profileId };

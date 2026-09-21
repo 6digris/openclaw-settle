@@ -664,13 +664,15 @@ async function dispatchDiscordCommandInteraction(params: {
       agentId: pluginCommandAgentId,
       sessionKey: effectiveRoute.sessionKey,
     });
+    authority.assertActive();
+    const senderIsOwner = authority.senderIsOwner();
     const pluginReply = await params.pluginCommandDispatch.execute({
       senderId: sender.id,
       channel: "discord",
       channelId,
       isAuthorizedSender: commandAuthorized,
-      senderIsOwner: authority.senderIsOwner(),
-      assertOwnerCurrent: authority.assertActive,
+      senderIsOwner,
+      ...(senderIsOwner ? { assertOwnerCurrent: authority.assertOwnerCurrent } : {}),
       agentId: pluginCommandAgentId,
       sessionKey: effectiveRoute.sessionKey,
       authProfileId: targetSessionEntry?.authProfileOverride,

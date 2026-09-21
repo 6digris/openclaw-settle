@@ -736,10 +736,7 @@ const SOURCE_TEST_TARGETS = new Map([
   ["src/plugin-sdk/persistent-dedupe.ts", ["src/plugin-sdk/memory-host-events.test.ts"]],
   [
     "extensions/browser/src/browser/chrome-mcp-options.ts",
-    [
-      "extensions/browser/src/browser/chrome-mcp.test.ts",
-      "test/scripts/ci-chrome-mcp-prewarm.test.ts",
-    ],
+    ["extensions/browser/src/browser/chrome-mcp.test.ts"],
   ],
   [
     "scripts/prepare-apple-mermaid.mjs",
@@ -2355,7 +2352,10 @@ const EXACT_TOOLING_TARGETS = new Map<string, string[]>([
     ".github/actions/setup-node-env/action.yml",
     ["setup-node-env-bun", packageAcceptance, workflowGuards],
   ],
-  [".github/actions/setup-node-env/dependency-fingerprint.mjs", [workflowGuards]],
+  [
+    ".github/actions/setup-node-env/dependency-fingerprint.mjs",
+    [workflowGuards, "setup-node-env-dependency-fingerprint"],
+  ],
   [".github/actions/setup-node-env/seed-bun-from-image.mjs", ["setup-node-env-bun"]],
   [".github/actions/setup-pnpm-store-cache/action.yml", [packageAcceptance, workflowGuards]],
   [".github/actions/setup-pnpm-store-cache/ensure-node.sh", ["setup-pnpm-store-cache-ensure-node"]],

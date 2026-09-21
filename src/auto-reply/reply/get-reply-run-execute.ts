@@ -379,6 +379,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
   const groupTurn = getGroupThreadTurn();
   const followupRun = {
     prompt: queuedBody,
+    operatorAuthority: opts?.operatorAuthority,
     transcriptPrompt: transcriptCommandBody,
     ...(userTurnTranscriptRecorder ? { userTurnTranscriptRecorder } : {}),
     currentInboundEventKind: inboundEventKind,

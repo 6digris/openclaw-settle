@@ -17,6 +17,7 @@ import {
   type GatewayConfigReloadTransactionOwnership,
   type GatewayReloadPlan,
 } from "./config-reload.js";
+import { publishOperatorRoleConfigChange } from "./operator-role-policy.js";
 import {
   assertReloadPublicationCurrent,
   GatewayConfigReloadSupersededError,
@@ -58,6 +59,7 @@ export function startManagedGatewayConfigReloader(
   if (params.minimalTestGateway) {
     return {
       ready: Promise.resolve(),
+      getCommittedRuntimeConfig: () => params.initialConfig,
       stop: async () => {
         lifecycle.abort(new GatewayConfigReloadSupersededError());
       },
@@ -275,6 +277,7 @@ export function startManagedGatewayConfigReloader(
       }
       if (previousSharedGatewaySessionGeneration !== nextSharedGatewaySessionGeneration) {
         disconnectStaleSharedGatewayAuthClients({
+          state: params.sharedGatewaySessionGenerationState,
           clients: params.clients,
           expectedGeneration: nextSharedGatewaySessionGeneration,
         });
@@ -305,6 +308,7 @@ export function startManagedGatewayConfigReloader(
     });
 
   let lastCommittedRuntimeConfig: OpenClawConfig | undefined;
+  let committedRuntimeConfig = params.initialConfig;
   const configReloader = startGatewayConfigReloader({
     onReloadEnabledChange: params.onReloadEnabledChange,
     initialConfig: params.initialConfig,
@@ -332,15 +336,17 @@ export function startManagedGatewayConfigReloader(
         { dropIfSlow: true },
       );
     },
-    onRuntimeConfigCommitted: (plan, committedRuntimeConfig) => {
+    onRuntimeConfigCommitted: (plan, nextCommittedRuntimeConfig) => {
       // Secret resolution can make the committed runtime config a different
       // object from the source-derived candidate. Record the committed one so a
       // rebuild below stamps owners with the identity readers actually supply.
-      lastCommittedRuntimeConfig = committedRuntimeConfig;
-      publishSystemEventStoreConfig(committedRuntimeConfig);
+      lastCommittedRuntimeConfig = nextCommittedRuntimeConfig;
+      committedRuntimeConfig = nextCommittedRuntimeConfig;
+      publishOperatorRoleConfigChange(params.resolveGatewayContext?.());
+      publishSystemEventStoreConfig(nextCommittedRuntimeConfig);
       params.resolveGatewayContext?.()?.mentionInbox?.invalidate();
       if (canAdvancePreparedModelRuntimeConfigInPlace(plan)) {
-        advancePreparedModelRuntimeConfig(committedRuntimeConfig);
+        advancePreparedModelRuntimeConfig(nextCommittedRuntimeConfig);
       }
     },
     ...(params.prepareConfigCandidate
@@ -491,6 +497,7 @@ export function startManagedGatewayConfigReloader(
   });
   return {
     ready: configReloader.ready,
+    getCommittedRuntimeConfig: () => committedRuntimeConfig,
     stop: async () => {
       lifecycle.abort(new GatewayConfigReloadSupersededError());
       stopRestartRetries();

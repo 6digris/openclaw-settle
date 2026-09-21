@@ -4,6 +4,7 @@ import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { GatewayRequestContext } from "../../gateway/server-methods/types.js";
 import { createPluginRuntimeMock } from "../../plugin-sdk/test-helpers/plugin-runtime-mock.js";
+import type { PluginCommandNativeCandidate } from "../../plugins/plugin-command-runtime.js";
 import {
   captureActivePluginRegistrySnapshot,
   rollbackStagedPluginRegistry,
@@ -144,12 +145,17 @@ async function createFixture(state: OpenClawTestState) {
     }),
   );
   const run = async (
-    options: { senderId?: string; commandName?: string; argument?: string } = {},
+    options: {
+      senderId?: string;
+      commandName?: string;
+      argument?: string;
+      pluginCommand?: PluginCommandNativeCandidate;
+    } = {},
   ) => {
     dispatch.mockClear();
     const command = createDiscordNativeCommand({
       ...createCommandOptions(createNoopThreadBindingManager("default")),
-      command: {
+      command: options.pluginCommand ?? {
         name: options.commandName ?? "ping",
         description: "Test command",
         acceptsArgs: true,

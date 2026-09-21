@@ -85,7 +85,7 @@ it("authorizes linked admins through Discord's direct-recipient grammar and curr
         });
       for (const to of [`user:${senderId}`, `discord:user:${senderId}`, `<@${senderId}>`]) {
         const direct = { ...target, route: { ...target.route, to } };
-        expect(await prepare(direct.route)).toMatchObject(target);
+        expect(await prepare(direct.route)).toMatchObject(direct);
       }
       for (const route of [
         { ...target.route, accountId: "another" },

@@ -425,6 +425,8 @@ export function createManagedReloadSecretHandlers(options: {
                   // Published policy remains authoritative if a later service handoff fails.
                   // Commit admission policy before irreversible PTY and socket eviction.
                   if (isCommitted()) {
+                    runtimeCommitted = true;
+                    transactionOwnership.markRuntimeCommitted(prepared.config, plan);
                     if (!runtimePolicyReconciled) {
                       params.commitRuntimePolicy(prepared.config);
                       await params.reconcileRuntimePolicy(prepared.config, "committed");
@@ -432,6 +434,7 @@ export function createManagedReloadSecretHandlers(options: {
                     }
                     if (sharedGatewaySessionGenerationChanged) {
                       disconnectStaleSharedGatewayAuthClients({
+                        state: params.sharedGatewaySessionGenerationState,
                         clients: params.clients,
                         expectedGeneration: nextSharedGatewaySessionGeneration,
                       });
@@ -481,17 +484,13 @@ export function createManagedReloadSecretHandlers(options: {
                   }
                   if (generationRestored && sharedGatewaySessionGenerationChanged) {
                     disconnectStaleSharedGatewayAuthClients({
+                      state: params.sharedGatewaySessionGenerationState,
                       clients: params.clients,
                       expectedGeneration: previousSharedGatewaySessionGeneration,
                     });
                   }
                 }
                 throw err;
-              } finally {
-                if (isCommitted()) {
-                  runtimeCommitted = true;
-                  transactionOwnership.markRuntimeCommitted(prepared.config, plan);
-                }
               }
             };
             const activateIfCurrent =
@@ -602,6 +601,7 @@ export function createManagedReloadSecretHandlers(options: {
           }
           if (generationRestored && sharedGatewaySessionGenerationChanged) {
             disconnectStaleSharedGatewayAuthClients({
+              state: params.sharedGatewaySessionGenerationState,
               clients: params.clients,
               expectedGeneration: previousSharedGatewaySessionGeneration,
             });

@@ -191,6 +191,8 @@ type GatewayKernelContext = {
   cronStorePath: string;
   getRuntimeConfig: () => OpenClawConfig;
   channelAdmissionAudit?: import("../../channels/message-access/admission-evidence.js").ChannelAdmissionAudit;
+  /** Last serving policy committed by this Gateway, excluding tentative secret activation. */
+  getCommittedRuntimeConfig?: () => OpenClawConfig;
   sessionRowProjectionOwner?: object;
   ensureSessionRowProjection?: () => Promise<void>;
   /** Live reload owner, including same-config restart work and shutdown. */

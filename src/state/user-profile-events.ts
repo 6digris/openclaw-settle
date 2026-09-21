@@ -173,9 +173,14 @@ export async function captureUserProfileAuthorityRead(
   const store = authorityStore(admission.identity);
   const subjectKey = subject === undefined ? undefined : mutationKey("channel", subject);
   const profileKind = dependency === "identity" ? "identity" : "profile";
-  const pending = [...store.pending.entries()]
-    .filter(([key]) => key === subjectKey || key.startsWith(`["${profileKind}",`))
-    .flatMap(([, entries]) => [...entries]);
+  const pending: Promise<void>[] = [];
+  for (const [key, entries] of store.pending) {
+    if (key === subjectKey || key.startsWith(`["${profileKind}",`)) {
+      for (const entry of entries) {
+        pending.push(entry);
+      }
+    }
+  }
   if (pending.length) {
     await Promise.all(pending);
   }

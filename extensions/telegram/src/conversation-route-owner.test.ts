@@ -118,8 +118,12 @@ describe("inspectTelegramConversationRouteOwner", () => {
         threadSpec: { scope: "forum", id: 42 },
       });
       expect(touch).not.toHaveBeenCalled();
-      if (change === "reassigned") targetSessionKey = "agent:replacement:bound";
-      if (change === "replaced") boundAt = 2;
+      if (change === "reassigned") {
+        targetSessionKey = "agent:replacement:bound";
+      }
+      if (change === "replaced") {
+        boundAt = 2;
+      }
       if (change === "unchanged") {
         touchTelegramConversationRoute(inspected);
         expect(touch).toHaveBeenCalledWith("binding-topic", undefined);
