@@ -15,7 +15,7 @@ import type { CodeModeNamespaceRuntime } from "./code-mode-namespaces.js";
 import type { CodeModeReplyLease } from "./code-mode-program-data.js";
 import type { CodeModeResultsAccess } from "./code-mode-results.js";
 import type { PendingBridgeRequest } from "./code-mode-runtime.js";
-import { readCodeModeSkill } from "./code-mode-skills.js";
+import { readCodeModeSkill, searchCodeModeSkills } from "./code-mode-skills.js";
 import { createCodeModeToolApiFile } from "./code-mode-tool-api.js";
 import { consumeMcpCodeModeGuestResult } from "./mcp-content.js";
 import type { AgentToolUpdateCallback } from "./runtime/index.js";
@@ -406,6 +406,10 @@ export async function runBridgeRequest(params: {
         signal?.throwIfAborted();
         requireCodeModeSwarmEnabled(params.ctx);
         value = await handlers[params.request.method](params);
+        break;
+      }
+      case "skillsSearch": {
+        value = searchCodeModeSkills(params.ctx.codeModeSkills ?? [], values[0], values[1]);
         break;
       }
       case "skillsList": {

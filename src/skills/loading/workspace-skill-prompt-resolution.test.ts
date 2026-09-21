@@ -73,7 +73,6 @@ describe("resolveSkillsPrompt", () => {
         await resolveSkillsPrompt({ workspaceDir: "/tmp/openclaw", skillsSnapshot: snapshot }),
       ).toBe(original);
       const resources = resolveCodeModeSkills({
-        skillsPrompt: projected,
         candidates: snapshot.resolvedSkills!,
       });
       expect(resources.map((skill) => skill.name)).toEqual(

@@ -234,3 +234,42 @@ with the same path and the returned `offset`, optional `cursor`, and optional
 Do not strip display-notice patterns from file data: those strings may be actual
 file contents. Each call still honors its explicit `limit`; if more file data
 remains, the result is `"truncated"` and its continuation describes the next page.
+
+## Skill discovery
+
+OpenClaw Code Mode exposes the run's policy-eligible skill catalog through
+`skills`. The prompt directory is only a bounded display: omitted names and
+descriptions do not remove otherwise eligible skills from this catalog.
+
+```javascript
+const matches = await skills.search("verify release publishing checks", { limit: 3 });
+if (matches.length > 0) {
+  return await skills.read(matches[0].name);
+}
+return "No matching skill found";
+```
+
+- `skills.search(query, { limit? })` returns `{ name, description, location }[]`.
+  Write queries in English. Ranking reuses Tool Search's local BM25, stemming,
+  and intent expansion, with exact names first and deterministic ties. The query
+  is limited to 4,096 UTF-16 code units; `limit` is an integer from 1 to 20,
+  defaulting to 5. Search indexes complete names and descriptions, but returns
+  descriptions bounded to 500 UTF-16 code units without splitting surrogate pairs.
+- Empty queries or queries without matches return `[]`, not an arbitrary list.
+  A lexical miss does not prove that no useful skill exists.
+- `skills.list()` returns all skills in this run's eligible catalog with full
+  descriptions. Prefer search when the catalog is large.
+- `skills.read(name)` reads the complete instructions for an exact returned name.
+  Search does not load or execute a skill, and search excerpts do not replace
+  its instructions.
+
+The existing skill owner still applies agent/session selection, manual-only
+restrictions, dependencies, and unavailable-secret gates. Sandbox and remote
+reads use their prepared locations and readers. Read-tool restrictions still
+control availability. Explicit user references keep their existing resolution
+path; search does not authorize additional tools or actions.
+
+Ranking is local and query-driven: it makes no model or network requests, does
+not inspect transcripts, and does not reorder the stable prompt directory.
+Catalog replacement follows the existing skill snapshot refresh lifecycle.
+These APIs describe OpenClaw Code Mode, not native Codex skill discovery.

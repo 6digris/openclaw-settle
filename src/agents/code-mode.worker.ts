@@ -143,6 +143,7 @@ function createHostRequestHandler(params: {
       method !== "namespace" &&
       method !== "agentSpawn" &&
       method !== "agentWait" &&
+      method !== "skillsSearch" &&
       method !== "skillsList" &&
       method !== "skillsRead" &&
       method !== "sleep" &&

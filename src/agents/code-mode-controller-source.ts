@@ -236,6 +236,7 @@ export const CODE_MODE_CONTROLLER_SOURCE = String.raw`
   });
 
   const skills = Object.freeze({
+    search: (query, options) => request("skillsSearch", options === undefined ? [query] : [query, options]),
     list: () => request("skillsList", []),
     read: (name) => request("skillsRead", [name]),
   });

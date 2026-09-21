@@ -18,6 +18,7 @@ type CodeModeBridgeMethod =
   | "namespace"
   | "agentSpawn"
   | "agentWait"
+  | "skillsSearch"
   | "skillsList"
   | "skillsRead"
   | "sleep"

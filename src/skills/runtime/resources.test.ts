@@ -378,7 +378,7 @@ describe("prepared workspace skill resources", () => {
     }
   });
 
-  it("does not read prompt-omitted bundles and includes an explicit hidden skill without changing the snapshot", async () => {
+  it("delivers prompt-omitted bundles, skips vanished roots, and preserves explicit hidden selection", async () => {
     const workspace = await fs.realpath(temps.make("skill-selected-"));
     await writeSkill(
       workspace,
@@ -402,6 +402,8 @@ describe("prepared workspace skill resources", () => {
     });
     expect(snapshot.prompt).toContain("<name>visible</name>");
     expect(snapshot.prompt).not.toContain("<name>z-omitted</name>");
+    const complete = await prepareSkillResourceDelivery(snapshot, () => {});
+    expect(complete?.skills.map((skill) => skill.name)).toEqual(["visible", "z-omitted"]);
     await fs.rm(omittedDir, { recursive: true });
     const before = structuredClone(snapshot);
     const ordinary = await prepareSkillResourceDelivery(snapshot, () => {});

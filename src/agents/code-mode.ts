@@ -162,7 +162,7 @@ function createCodeModeExecDescription(
       ? "\n- nodes: paired Gateway nodes; nodes.list(), (await nodes.get(id)).invoke(command, params)\n"
       : "";
   const skillsGuidance = ctx.codeModeSkills?.length
-    ? " Skills are available through the async `skills` global: use `await skills.list()` and `await skills.read(name)`."
+    ? " Skills are available through the async `skills` global: `await skills.search(query, { limit: 5 })` searches eligible skills, including those omitted from the prompt. Use English queries; limit is 1–20. `await skills.list()` lists them; `await skills.read(name)` reads complete instructions."
     : "";
   const { maxOutputBytes, timeoutMs } = config;
   // The catalog already reserves built-in namespace globals without constructing their runtimes.

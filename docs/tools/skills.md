@@ -819,8 +819,14 @@ Keep descriptions short and descriptive to minimize prompt overhead.
 For small context windows, the OpenClaw embedded runtime further shortens the
 descriptions in the already-admitted catalog. It retains every admitted name,
 location, and loading note, even when these exceed the description budget.
-Full skill instructions and saved snapshots are unchanged; Code Mode can still
-read every admitted skill. Native harnesses retain their own prompt policy.
+Full skill instructions are unchanged. Prompt limits bound the displayed directory,
+not the policy-eligible runtime catalog. In OpenClaw Code Mode,
+`skills.search(query, { limit: 5 })` searches eligible model-invocable skills even
+when their names were omitted from the prompt. `skills.list()` lists that catalog,
+and `skills.read(name)` reads the complete instructions. Manual-only skills and
+skills excluded by agent/session policy or availability gates remain excluded.
+Native harnesses retain their own discovery and prompt policy. See
+[Skill discovery](/tools/code-mode/guest-api#skill-discovery).
 
 ## Related
 

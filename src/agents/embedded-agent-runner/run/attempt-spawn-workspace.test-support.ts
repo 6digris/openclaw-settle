@@ -113,7 +113,7 @@ type AttemptSpawnWorkspaceHoisted = {
   resolveContextInjectionModeMock: Mock<() => "always" | "continuation-skip">;
   hasCompletedBootstrapTurnMock: Mock<() => Promise<boolean>>;
   resolveEmbeddedRunSkillEntriesMock: UnknownMock;
-  resolveSkillsPromptForRunMock: UnknownMock;
+  resolveSkillsContextForRunMock: UnknownMock;
   supportsModelToolsMock: Mock<(model?: unknown) => boolean>;
   getGlobalHookRunnerMock: Mock<() => unknown>;
   initializeGlobalHookRunnerMock: UnknownMock;
@@ -173,7 +173,7 @@ const hoisted = vi.hoisted((): AttemptSpawnWorkspaceHoisted => {
     skillEntries: [],
     loadSkillEntries: vi.fn(() => []),
   }));
-  const resolveSkillsPromptForRunMock = vi.fn(() => "");
+  const resolveSkillsContextForRunMock = vi.fn(() => ({ prompt: "", skills: [] }));
   const supportsModelToolsMock = vi.fn<(model?: unknown) => boolean>(() => true);
   const getGlobalHookRunnerMock = vi.fn<() => unknown>(() => undefined);
   const initializeGlobalHookRunnerMock = vi.fn();
@@ -245,7 +245,7 @@ const hoisted = vi.hoisted((): AttemptSpawnWorkspaceHoisted => {
     resolveContextInjectionModeMock,
     hasCompletedBootstrapTurnMock,
     resolveEmbeddedRunSkillEntriesMock,
-    resolveSkillsPromptForRunMock,
+    resolveSkillsContextForRunMock,
     supportsModelToolsMock,
     getGlobalHookRunnerMock,
     initializeGlobalHookRunnerMock,
@@ -469,7 +469,7 @@ vi.mock("../../../skills/runtime/env-overrides.js", () => ({
 }));
 
 vi.mock("../../../skills/loading/workspace-skill-prompt.js", () => ({
-  resolveSkillsPrompt: (...args: unknown[]) => hoisted.resolveSkillsPromptForRunMock(...args),
+  resolveSkillsContext: (...args: unknown[]) => hoisted.resolveSkillsContextForRunMock(...args),
 }));
 
 vi.mock("../../../skills/runtime/embedded-run-entries.js", () => ({
@@ -1035,7 +1035,7 @@ export function resetEmbeddedAttemptHarness(
     skillEntries: [],
     loadSkillEntries: vi.fn(() => []),
   });
-  hoisted.resolveSkillsPromptForRunMock.mockReset().mockReturnValue("");
+  hoisted.resolveSkillsContextForRunMock.mockReset();
   hoisted.supportsModelToolsMock.mockReset().mockReturnValue(true);
   hoisted.getGlobalHookRunnerMock.mockReset().mockReturnValue(undefined);
   hoisted.runContextEngineMaintenanceMock.mockReset().mockResolvedValue(undefined);

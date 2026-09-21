@@ -561,6 +561,11 @@ describe("Code Mode agent-loop error recovery", () => {
       value: ["demo"],
     },
     { name: "skills.read", discovery: 'await skills.read("demo")', value: "Demo instructions" },
+    {
+      name: "skills.search",
+      discovery: '(await skills.search("demo")).map((skill) => skill.name)',
+      value: ["demo"],
+    },
   ])(
     "continues ordinary recovery after $name metadata and a guest error",
     async ({ discovery, value }) => {

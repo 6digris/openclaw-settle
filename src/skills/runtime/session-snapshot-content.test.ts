@@ -25,49 +25,57 @@ afterEach(() => {
 });
 
 describe("content-addressed skill refresh", () => {
-  it("reuses session snapshots after unchanged rebuilds and refreshes instruction-only edits", async () => {
-    const workspaceDir = tempDirs.make("skills-content-");
-    vi.stubEnv("OPENCLAW_STATE_DIR", workspaceDir);
-    const skillDir = path.join(workspaceDir, "skills", "demo");
-    await writeSkill({ dir: skillDir, name: "demo", description: "Demo", body: "Original body" });
-    const params = { workspaceDir, config: {}, watch: false };
-    const first = await resolveReusableWorkspaceSkillSnapshot(params);
-    const version = getSkillsSnapshotVersion(workspaceDir);
-    const changed = vi.fn();
-    const unregister = registerSkillsChangeListener(changed);
-    try {
-      for (const event of [
-        { workspaceDir, reason: "watch" as const },
-        { workspaceDir, reason: "watch-targets" as const },
-        { reason: "manual" as const },
-      ]) {
-        bumpSkillsSnapshotVersion(event);
-        const next = await resolveReusableWorkspaceSkillSnapshot({
+  it.each([false, true])(
+    "reuses snapshots and refreshes instruction-only edits (prompt omitted=%s)",
+    async (omitted) => {
+      const workspaceDir = tempDirs.make("skills-content-");
+      vi.stubEnv("OPENCLAW_STATE_DIR", workspaceDir);
+      const skillDir = path.join(workspaceDir, "skills", "demo");
+      await writeSkill({ dir: skillDir, name: "demo", description: "Demo", body: "Original body" });
+      const params = {
+        workspaceDir,
+        config: { skills: { limits: { maxSkillsPromptChars: omitted ? 1 : 18000 } } },
+        watch: false,
+      };
+      const first = await resolveReusableWorkspaceSkillSnapshot(params);
+      expect(first.snapshot.resolvedSkills?.map((skill) => skill.name)).toEqual(["demo"]);
+      const version = getSkillsSnapshotVersion(workspaceDir);
+      const changed = vi.fn();
+      const unregister = registerSkillsChangeListener(changed);
+      try {
+        for (const event of [
+          { workspaceDir, reason: "watch" as const },
+          { workspaceDir, reason: "watch-targets" as const },
+          { reason: "manual" as const },
+        ]) {
+          bumpSkillsSnapshotVersion(event);
+          const next = await resolveReusableWorkspaceSkillSnapshot({
+            ...params,
+            existingSnapshot: first.snapshot,
+          });
+          expect(getSkillsSnapshotVersion(workspaceDir)).toBe(version);
+          expect(next.snapshot).toBe(first.snapshot);
+          expect(next.shouldRefresh).toBe(false);
+        }
+        expect(changed).not.toHaveBeenCalled();
+        await fs.appendFile(path.join(skillDir, "SKILL.md"), "\nNew instructions\n");
+        bumpSkillsSnapshotVersion({ workspaceDir, reason: "watch" });
+        const edited = await resolveReusableWorkspaceSkillSnapshot({
           ...params,
           existingSnapshot: first.snapshot,
         });
-        expect(getSkillsSnapshotVersion(workspaceDir)).toBe(version);
-        expect(next.snapshot).toBe(first.snapshot);
-        expect(next.shouldRefresh).toBe(false);
+        expect(edited.shouldRefresh).toBe(true);
+        expect(edited.snapshotVersion).toBeGreaterThan(version);
+        expect(edited.snapshot.prompt).toBe(first.snapshot.prompt);
+        expect(edited.snapshot.resolvedSkills?.[0]?.contentHash).not.toBe(
+          first.snapshot.resolvedSkills?.[0]?.contentHash,
+        );
+        expect(changed).toHaveBeenCalledOnce();
+      } finally {
+        unregister();
       }
-      expect(changed).not.toHaveBeenCalled();
-      await fs.appendFile(path.join(skillDir, "SKILL.md"), "\nNew instructions\n");
-      bumpSkillsSnapshotVersion({ workspaceDir, reason: "watch" });
-      const edited = await resolveReusableWorkspaceSkillSnapshot({
-        ...params,
-        existingSnapshot: first.snapshot,
-      });
-      expect(edited.shouldRefresh).toBe(true);
-      expect(edited.snapshotVersion).toBeGreaterThan(version);
-      expect(edited.snapshot.prompt).toBe(first.snapshot.prompt);
-      expect(edited.snapshot.resolvedSkills?.[0]?.contentHash).not.toBe(
-        first.snapshot.resolvedSkills?.[0]?.contentHash,
-      );
-      expect(changed).toHaveBeenCalledOnce();
-    } finally {
-      unregister();
-    }
-  });
+    },
+  );
 
   it("refreshes changed installed skill identities even when instructions are identical", async () => {
     const workspaceDir = tempDirs.make("skills-content-identity-");

@@ -29,7 +29,8 @@ export async function resolveEmbeddedRunSkillEntries(params: {
 }> {
   const shouldLoadSkillEntries =
     !params.skillsSnapshot ||
-    (Boolean(params.skillsSnapshot.prompt.trim()) && !params.skillsSnapshot.resolvedSkills);
+    ((Boolean(params.skillsSnapshot.prompt.trim()) || params.skillsSnapshot.skills.length > 0) &&
+      !params.skillsSnapshot.resolvedSkills);
   const config = resolveSkillRuntimeConfig(params.config);
   // Materialized sandbox copies are the sole read root, including lazy rebuilds
   // of hydrated library snapshots that still carry their host provenance.
