@@ -7,8 +7,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { gunzip } from "node:zlib";
-import { tempFile } from "@openclaw/fs-safe/advanced";
 import { type CityResponse, Reader } from "maxmind";
+import { tempFile } from "openclaw/plugin-sdk/file-access-runtime";
 import { readByteStreamWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
 import { expandDatabaseUrls, type GeolocationSettings } from "./config.js";
 
