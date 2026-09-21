@@ -82,9 +82,7 @@ describe("runCommandWithTimeout", () => {
         killSignal: "SIGINT",
         killGraceMs: 100,
         timeoutMs: 5000,
-        onOutputChunk: () => {
-          ready();
-        },
+        onOutputChunk: ready,
       });
       await started;
       if (mode !== "normal") {
