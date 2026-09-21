@@ -5,7 +5,6 @@ import {
   resolvePairingSetupAccess,
   type PairingSetupAccess,
 } from "../shared/device-bootstrap-profile.js";
-import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { isNodeHostStats } from "../shared/node-host-stats.js";
 import {
   ensureDevicePairSetupBootstrapSchema,
@@ -26,10 +25,15 @@ import {
 } from "../state/openclaw-state-db.js";
 import { clearDeviceAuthTokenFromDatabase } from "./device-auth-store.kernel.js";
 import { bindCloudWorkerSetupCompletion } from "./device-pairing-cloud-worker.js";
+import {
+  invalidateDevicePairingStoreCache,
+  readCachedDevicePairingStoreState,
+} from "./device-pairing-store-cache.js";
 import type {
   DeviceAuthToken,
   DeviceBootstrapTokenRecord,
   DevicePairingPendingRecord,
+  DevicePairingStoreState,
   DevicePairSetupCompletionRecord,
   PairedDevice,
   PairedDeviceApprovalKind,
@@ -41,13 +45,8 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "./kysely-sync.js";
-import { readSqliteDataVersion } from "./node-sqlite.js";
 import { clearApnsRegistrationFromDatabase } from "./push-apns-store-transaction.js";
-
-export type DevicePairingStoreState = {
-  pendingById: Record<string, DevicePairingPendingRecord>;
-  pairedByDeviceId: Record<string, PairedDevice>;
-};
+import { runSqliteDeferredTransactionSync } from "./sqlite-transaction.js";
 
 const DEVICE_BOOTSTRAP_TOKEN_COLUMNS_WITHOUT_SETUP = [
   "device_id",
@@ -61,13 +60,6 @@ const DEVICE_BOOTSTRAP_TOKEN_COLUMNS_WITHOUT_SETUP = [
   "token_key",
   "ts",
 ] as const satisfies readonly (keyof DeviceBootstrapTokens)[];
-
-type DevicePairingStoreCache = {
-  connection: DatabaseSync;
-  path: string;
-  state: DevicePairingStoreState;
-  dataVersion: number;
-};
 
 type DevicePairingStoreMutation<T> = {
   mutated: boolean;
@@ -87,24 +79,9 @@ type PairedDevicePresenceUpdate<T> =
       lastSeenReason: string;
     };
 
-// One materialized pairing snapshot avoids rescanning both tables for every node catalog read.
-// Store-owned writes invalidate across module copies sharing the native connection.
-// data_version catches commits on other connections (including CLI pairing writes),
-// while unrelated writes on this connection leave the snapshot reusable.
-const devicePairingStoreCache = resolveGlobalSingleton<{
-  value: DevicePairingStoreCache | undefined;
-}>(Symbol.for("openclaw.devicePairingStoreCache"), () => ({ value: undefined }));
-
 /** Route an explicit pairing base dir (tests, alternate state roots) to that dir's DB. */
 function resolveDevicePairingStateDbOptions(baseDir?: string): OpenClawStateDatabaseOptions {
   return baseDir ? { env: { ...process.env, OPENCLAW_STATE_DIR: baseDir } } : {};
-}
-
-function invalidateDevicePairingStoreCache(database: OpenClawStateDatabase): void {
-  const cached = devicePairingStoreCache.value;
-  if (cached?.connection === database.db && cached.path === database.path) {
-    devicePairingStoreCache.value = undefined;
-  }
 }
 
 function runDevicePairingStoreMutation<T>(
@@ -335,47 +312,37 @@ function fromBootstrapRow(row: DeviceBootstrapTokens): DeviceBootstrapTokenRecor
 }
 
 export function readDevicePairingStoreStateFromDatabase(db: DatabaseSync): DevicePairingStoreState {
-  const kysely = getNodeSqliteKysely<OpenClawStateKyselyDatabase>(db);
-  const pendingById: Record<string, DevicePairingPendingRecord> = {};
-  for (const row of executeSqliteQuerySync(
-    db,
-    kysely.selectFrom("device_pairing_pending").selectAll(),
-  ).rows) {
-    pendingById[row.request_id] = fromPendingRow(row);
-  }
-  const pairedByDeviceId = Object.fromEntries(
-    executeSqliteQuerySync(db, kysely.selectFrom("device_pairing_paired").selectAll()).rows.map(
-      (row) => [row.device_id, fromPairedRow(row)],
-    ),
-  );
-  return { pendingById, pairedByDeviceId };
+  return runSqliteDeferredTransactionSync(db, () => {
+    const kysely = getNodeSqliteKysely<OpenClawStateKyselyDatabase>(db);
+    const pendingById: Record<string, DevicePairingPendingRecord> = {};
+    for (const row of executeSqliteQuerySync(
+      db,
+      kysely.selectFrom("device_pairing_pending").selectAll(),
+    ).rows) {
+      pendingById[row.request_id] = fromPendingRow(row);
+    }
+    const pairedByDeviceId = Object.fromEntries(
+      executeSqliteQuerySync(db, kysely.selectFrom("device_pairing_paired").selectAll()).rows.map(
+        (row) => [row.device_id, fromPairedRow(row)],
+      ),
+    );
+    return { pendingById, pairedByDeviceId };
+  });
 }
 
 /** Load the full pending + paired device snapshot from the shared state DB. */
 export function loadDevicePairingStoreState(baseDir?: string): DevicePairingStoreState {
   const database = openOpenClawStateDatabase(resolveDevicePairingStateDbOptions(baseDir));
-  const { db } = database;
-  // A nested pairing write can still roll back with its outer transaction.
-  if (db.isTransaction) {
-    return readDevicePairingStoreStateFromDatabase(db);
-  }
-  const dataVersion = readSqliteDataVersion(db);
-  const cached = devicePairingStoreCache.value;
-  if (
-    cached?.connection === db &&
-    cached.path === database.path &&
-    cached.dataVersion === dataVersion
-  ) {
-    return structuredClone(cached.state);
-  }
-  const state = readDevicePairingStoreStateFromDatabase(db);
-  devicePairingStoreCache.value = {
-    connection: db,
-    path: database.path,
-    state: structuredClone(state),
-    dataVersion,
-  };
-  return state;
+  return loadDevicePairingStoreStateFromDatabase(database);
+}
+
+/** Reuse the connection-owned snapshot for native mutations and worker inventories. */
+export function loadDevicePairingStoreStateFromDatabase(
+  database: OpenClawStateDatabase,
+): DevicePairingStoreState {
+  return readCachedDevicePairingStoreState(database, () =>
+    readDevicePairingStoreStateFromDatabase(database.db),
+  );
 }
 
 /** Load one paired-device row without materializing either pairing table. */

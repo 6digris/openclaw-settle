@@ -15,6 +15,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/config-reload.activation.integration.test.ts",
   "src/gateway/config-reload.test.ts",
   "src/gateway/config-reload.transcripts.test.ts",
+  "src/gateway/control-ui.http.test.ts",
   "src/gateway/device-pairing-prune.test.ts",
   "src/gateway/gateway-auth-recovery.test.ts",
   "src/gateway/gateway-cli-backend.connect.test.ts",
@@ -36,6 +37,8 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/github-repository-publication.test.ts",
   "src/gateway/github-shared-publication-read.test.ts",
   "src/gateway/health/collector.queue-health.test.ts",
+  "src/gateway/http-auth-utils.paired-device.test.ts",
+  "src/gateway/user-profiles-http.auth.test.ts",
   "src/gateway/internal-source-reply-persistence.test.ts",
   "src/gateway/link-understanding.product.test.ts",
   "src/gateway/local-request-context.session-tools.test.ts",
@@ -46,6 +49,8 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/managed-outgoing-gc-availability.test.ts",
   "src/gateway/mention-directory.test.ts",
   "src/gateway/mention-inbox.test.ts",
+  "src/gateway/node-reapproval-coordinator.test.ts",
+  "src/gateway/watch-node-http.test.ts",
   "src/gateway/probe.device-auth-scope.test.ts",
   "src/gateway/server-methods/agent.create-event.test.ts",
   "src/gateway/server-methods/chat-send-commentary-media.test.ts",
@@ -97,7 +102,9 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/server.sessions.create-worktree-spawn.test.ts",
   "src/gateway/server.sessions.create.projects.test.ts",
   "src/gateway/server/skill-library-read.test.ts",
+  "src/gateway/server/ws-connection.startup.test.ts",
   "src/gateway/server/ws-connection/connect-device-pairing.test.ts",
+  "src/gateway/server/ws-connection/message-handler.control-ui-build-admission.test.ts",
   "src/gateway/session-delivery-clock-jump.integration.test.ts",
   "src/gateway/session-groups.test.ts",
   "src/gateway/session-message-events.test.ts",
@@ -122,7 +129,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/worker-environments/provider-crabbox-runtime-preflight.test.ts",
   "src/gateway/worker-environments/workspace-result-ref-mutation.test.ts",
   "src/gateway/worker-environments/workspace-result-repository.test.ts",
-];
+].toSorted();
 
 // Native Vitest subprocesses cold-import the real Gateway; keep their collection
 // outside concurrent files instead of expanding their process-lifecycle deadlines.

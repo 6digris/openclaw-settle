@@ -24,6 +24,7 @@ import type {
 import type { DeferredPluginMigration } from "../infra/deferred-plugin-migrations.js";
 import type { DeliveryQueueWorkerOperations } from "../infra/delivery-queue.worker-contract.js";
 import type * as deviceAuth from "../infra/device-auth-store.kernel.js";
+import type { DevicePairingStoreState } from "../infra/device-pairing.types.js";
 import type { ExecAuthorizationWorkerOperations } from "../infra/exec-approvals-contracts.js";
 import type { PreparedPromotionClaim } from "../infra/promotions-feed.kernel.js";
 import type { ApnsRegistration } from "../infra/push-apns-store.types.js";
@@ -114,6 +115,10 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
       output: OpenClawStateLeaseAcquisition;
     };
     "deviceAuth.list": { input: { deviceId: string }; output: DeviceAuthEntry[] };
+    "devicePairing.inventory": {
+      input: undefined;
+      output: DevicePairingStoreState;
+    };
     "deviceAuth.read": {
       input: Parameters<typeof deviceAuth.readDeviceAuthTokenObservationFromDatabase>[1] & {
         readOnly: boolean;

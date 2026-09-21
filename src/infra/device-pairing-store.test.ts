@@ -5,8 +5,10 @@ import * as stateDb from "../state/openclaw-state-db.js";
 import {
   loadDevicePairingStoreState,
   persistDevicePairingStoreState,
-  type DevicePairingStoreState,
+  readDevicePairingStoreStateFromDatabase,
 } from "./device-pairing-store.js";
+import type { DevicePairingStoreState } from "./device-pairing.types.js";
+import { openNodeSqliteDatabase } from "./node-sqlite.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 let baseDir: string;
@@ -99,4 +101,44 @@ test("reloads the pairing snapshot after reopening the database", () => {
   expect(reopened.db === database.db).toBe(false);
   reopened.db.prepare("DELETE FROM device_pairing_paired").run();
   expect(loadDevicePairingStoreState(baseDir).pairedByDeviceId).toEqual({});
+});
+
+test.each([false, true])(
+  "keeps pending and paired inventory coherent across an approval (readOnly=%s)",
+  (readOnly) => {
+    const pending: DevicePairingStoreState = {
+      pendingById: {
+        request: { requestId: "request", deviceId: "node", publicKey: "synthetic-key", ts: 1 },
+      },
+      pairedByDeviceId: {},
+    };
+    persistDevicePairingStoreState(pending, baseDir, "both");
+    const reader = openNodeSqliteDatabase(database.path, { readOnly });
+    const prepare = reader.prepare.bind(reader);
+    let approved = false;
+    const preparing = vi.spyOn(reader, "prepare").mockImplementation((sql) => {
+      if (!approved && sql.includes('"device_pairing_paired"')) {
+        // Commit through the live writer after the inventory has consumed pending rows.
+        persistDevicePairingStoreState(initial, baseDir, "both");
+        approved = true;
+      }
+      return prepare(sql);
+    });
+    try {
+      expect(readDevicePairingStoreStateFromDatabase(reader)).toEqual(pending);
+      expect(approved).toBe(true);
+      expect(readDevicePairingStoreStateFromDatabase(reader)).toEqual(initial);
+    } finally {
+      preparing.mockRestore();
+      reader.close();
+    }
+  },
+);
+
+test("releases the inventory snapshot when paired row decoding fails", () => {
+  database.db.prepare("UPDATE device_pairing_paired SET tokens_json = ?").run("{");
+  expect(() => readDevicePairingStoreStateFromDatabase(database.db)).toThrow(SyntaxError);
+  expect(database.db.isTransaction).toBe(false);
+  database.db.prepare("UPDATE device_pairing_paired SET tokens_json = NULL").run();
+  expect(readDevicePairingStoreStateFromDatabase(database.db)).toEqual(initial);
 });

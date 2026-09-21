@@ -332,6 +332,19 @@ imports, retention, and notification payloads are unchanged. Pairing, profile,
 user-preference, and visibility checks outside transaction admission retain their
 separate synchronous owners.
 
+Device and node pairing inventories run off-thread. Gateway, CLI, and Doctor
+list callers retain their existing filtering, ordering, and token presentation.
+Ordinary inventories keep writable database preparation in the shared-state
+worker. Read-only inventories use the existing retained-read owner, preserving
+missing-state behavior, artifact policy, and any selected composite snapshot.
+The row mapper reads pending and paired records in one deferred SQLite snapshot,
+so concurrent approvals cannot produce a mixed inventory. Snapshot cleanup joins
+accepted reads before releasing private bytes. Node inventories keep
+the pairing lock, and device expiry filtering does not expire pending node
+capability decisions. Mutable pairing snapshots, exact device reads, and the
+synchronous Web Push authority reader retain their existing owners. Stored
+rows, write transaction boundaries, schema versions, and retention are unchanged.
+
 Asynchronous mutable cron-store loads run in the shared-state worker, including
 the existing retired-job deletion and runtime-authority repairs. The connection-bound
 load kernel preserves their separate transactions, partition keys, and fingerprints.
