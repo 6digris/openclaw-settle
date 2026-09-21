@@ -63,7 +63,8 @@ import { getFreePort } from "../test-utils/ports.js";
 import type { TempHomeEnv } from "../test-utils/temp-home.js";
 import { VERSION } from "../version.js";
 import { createCliRuntimeCapture, getMockCallOutput } from "./test-runtime-capture.js";
-import { registerUpdateCapacityTests, statfsFixture } from "./update-cli.capacity.test-support.js";
+import { registerUpdateCapacityTests } from "./update-cli.capacity.test-support.js";
+import { statfsFixture } from "./update-cli.context.test-support.js";
 import { registerCurrentCoreUpdateTests } from "./update-cli.current-core.test-support.js";
 import { withUpdateCutoverResponses } from "./update-cli.cutover.test-support.js";
 import {
@@ -14077,8 +14078,6 @@ function defineUpdateCliSuite() {
   });
   return extractedContext;
 }
-
-export type UpdateCliExtractedContext = ReturnType<typeof defineUpdateCliSuite>;
 
 describe("update-cli", () => {
   defineUpdateCliSuite();

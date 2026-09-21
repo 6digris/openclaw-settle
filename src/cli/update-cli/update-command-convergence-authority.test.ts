@@ -24,6 +24,7 @@ vi.mock("../../process/exec.js", async (importOriginal) => ({
     signal: null,
     killed: false,
     termination: "exit",
+    cleanup: "normal",
   }),
 }));
 vi.mock("./shared.js", async (importOriginal) => ({

@@ -1,7 +1,6 @@
-import type fsSync from "node:fs";
 import type { UpdateRunRecord } from "../infra/update-run-record.js";
 import type { UpdateRunResult } from "../infra/update-runner-types.js";
-import type { UpdateCliExtractedContext } from "./update-cli.test.js";
+import type { UpdateCliExtractedContext } from "./update-cli.context.test-support.js";
 
 export function registerUpdateCapacityTests(context: UpdateCliExtractedContext): void {
   context.it(
@@ -374,18 +373,3 @@ export function registerUpdateCapacityTests(context: UpdateCliExtractedContext):
     },
   );
 }
-
-export const statfsFixture = (params: {
-  bavail: number;
-  bsize?: number;
-  blocks?: number;
-}): ReturnType<typeof fsSync.statfsSync> => ({
-  type: 0,
-  bsize: params.bsize ?? 1024,
-  blocks: params.blocks ?? 2_000_000,
-  bfree: params.bavail,
-  bavail: params.bavail,
-  files: 0,
-  frsize: params.bsize ?? 1024,
-  ffree: 0,
-});

@@ -98,6 +98,12 @@ vi.mock("../infra/file-lock.js", async (importOriginal) => ({
   withFileLock: fileLockMocks.withFileLock,
 }));
 
+const handoffFixture = vi.hoisted(() => ({ root: "" }));
+vi.mock("../infra/tmp-openclaw-dir.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/tmp-openclaw-dir.js")>()),
+  resolvePreferredOpenClawTmpDir: () => handoffFixture.root,
+}));
+
 const allowConfigPathWrite = () => {};
 
 async function expectPluginIncludeMutationConflict(
@@ -124,6 +130,7 @@ describe("config mutate helpers", () => {
 
   beforeAll(async () => {
     await suiteRootTracker.setup();
+    handoffFixture.root = await suiteRootTracker.make("handoff-store");
   });
 
   afterAll(async () => {

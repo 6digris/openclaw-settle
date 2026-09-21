@@ -1,5 +1,5 @@
 import type { PluginInstallRecord } from "../config/types.plugins.js";
-import type { UpdateCliExtractedContext } from "./update-cli.test.js";
+import type { UpdateCliExtractedContext } from "./update-cli.context.test-support.js";
 
 export function registerCurrentCoreConvergenceTests(context: UpdateCliExtractedContext): void {
   context.it.each([

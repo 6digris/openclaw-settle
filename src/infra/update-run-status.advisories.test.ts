@@ -65,6 +65,9 @@ it.each([
       options?.reason === LEGACY_UPDATE_RUN_EXPIRED_REASON ? [expired] : [current],
     );
     const result = readUpdateRunStatus();
+    if ("runStatusError" in result) {
+      throw new Error(result.runStatusError);
+    }
     expect(result.advisories?.map(({ reason }) => reason) ?? []).toEqual([
       ...(!acknowledged ? [LEGACY_UPDATE_RUN_EXPIRED_REASON] : []),
       ...(unprotected ? ["unprotected-gateway-update"] : []),

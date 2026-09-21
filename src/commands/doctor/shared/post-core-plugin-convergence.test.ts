@@ -110,6 +110,7 @@ describe("runPostCorePluginConvergence", () => {
     expect(mocks.repairMissingConfiguredPluginInstalls).toHaveBeenCalledTimes(1);
     expect(mocks.maybeRepairStaleManagedNpmBundledPlugins).toHaveBeenCalledWith({
       config: cfg,
+      beforePersistentEffect: expect.any(Function),
       env: {
         OPENCLAW_UPDATE_IN_PROGRESS: "1",
         OPENCLAW_COMPATIBILITY_HOST_VERSION: VERSION,
@@ -438,6 +439,7 @@ describe("runPostCorePluginConvergence", () => {
     });
     expect(mocks.maybeRepairStaleManagedNpmBundledPlugins).toHaveBeenCalledWith({
       config: cfg,
+      beforePersistentEffect: expect.any(Function),
       env: {
         OPENCLAW_COMPATIBILITY_HOST_VERSION: VERSION,
         OPENCLAW_UPDATE_POST_CORE_CONVERGENCE: "1",

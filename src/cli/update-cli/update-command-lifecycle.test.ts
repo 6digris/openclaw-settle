@@ -432,6 +432,8 @@ describe("update plugin lifecycle lease boundaries", () => {
         JSON.stringify({ name: "openclaw", version: "2026.9.4" }),
       );
       const maintenance = {
+        assertCurrent: vi.fn(),
+        closeStores: vi.fn(async () => {}),
         run: <T>(operation: () => T): T => operation(),
         finish: vi.fn(async () => {}),
         release: vi.fn(async () => {}),
@@ -784,6 +786,8 @@ describe("update plugin lifecycle lease boundaries", () => {
       mocks.maintenance.mockImplementationOnce(async () => {
         record("park-service");
         return {
+          assertCurrent: vi.fn(),
+          closeStores: vi.fn(async () => {}),
           run: <T>(operation: () => T): T => operation(),
           releaseState: async () => {
             record("release-state");

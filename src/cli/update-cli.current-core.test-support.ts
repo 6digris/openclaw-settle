@@ -1,7 +1,7 @@
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import type { UpdateRunResult } from "../infra/update-runner-types.js";
+import type { UpdateCliExtractedContext } from "./update-cli.context.test-support.js";
 import { registerCurrentCoreConvergenceTests } from "./update-cli.current-core-recovery.test-support.js";
-import type { UpdateCliExtractedContext } from "./update-cli.test.js";
 
 export function registerCurrentCoreUpdateTests(context: UpdateCliExtractedContext): void {
   context.it(
