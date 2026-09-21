@@ -189,6 +189,18 @@ function resolveCatalogProfile(rows: Map<string, ProfileDisplayRow>, id: string)
   const raw = rows.get(id);
   return rows.get(raw?.merged_into ?? id) ?? raw;
 }
+
+/** Gateway readers already retain this catalog with their session projection. */
+export function readResidentUserProfileId(
+  profileId: string,
+  options: OpenClawStateDatabaseOptions = {},
+): string | undefined {
+  const catalog = profileCatalogs.get(profileCatalogPath(options));
+  if (!catalog?.valid) {
+    throw new Error("User profile catalog is not ready");
+  }
+  return resolveCatalogProfile(catalog.rows, profileId)?.id;
+}
 type ProfileCatalog = {
   rows: Map<string, ProfileDisplayRow>;
   identity: DatabasePathIdentity;
@@ -351,14 +363,15 @@ export function retainUserProfileMutationPublication(
   };
 }
 
-export function retainUserProfileAvatarPublication(
+export function retainUserProfilePublication(
   identity: DatabasePathIdentity,
-  before: ProfileDisplayRow,
+  profileId: string,
+  before: ProfileDisplayRow | undefined,
 ) {
-  const publication = retainUserProfileMutationPublication(identity, [[before.id, before]]);
+  const publication = retainUserProfileMutationPublication(identity, [[profileId, before]]);
   return {
     reconcile(this: void, observed: ProfileDisplayRow | undefined) {
-      publication.reconcile([[before.id, observed]]);
+      publication.reconcile([[profileId, observed]]);
     },
     release: publication.release,
   };

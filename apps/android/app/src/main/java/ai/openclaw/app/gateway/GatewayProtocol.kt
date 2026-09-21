@@ -967,6 +967,8 @@ enum class GatewayMethod(
   ThemesImport("themes.import"),
   ControlUiGithubDetail("controlUi.githubDetail"),
   ProgressCardRefresh("progressCard.refresh"),
+  WebSearchStatus("webSearch.status"),
+  WebSearchTest("webSearch.test"),
   UsersLinkChannelIdentity("users.linkChannelIdentity"),
   UsersUnlinkChannelIdentity("users.unlinkChannelIdentity"),
   UsersListChannelIdentities("users.listChannelIdentities"),

@@ -13,8 +13,10 @@ import { readWorkspaceStateSnapshotForDirectoryInDatabase } from "../agents/work
 import { ExecutionDecisionCursorError } from "../audit/execution-decision-receipts.js";
 import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identity-context.js";
 import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
+import { readWorkerSessionPlacementProjectionInDatabase } from "../gateway/worker-environments/placement-read-projection.js";
 import { readExecApprovalsConfigRow } from "../infra/exec-approvals-sqlite.js";
 import { executeSqliteQuerySync } from "../infra/kysely-sync.js";
+import { inspectCurrentConversationBindingRecordInDatabase } from "../infra/outbound/current-conversation-bindings.kernel.js";
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import { runWithSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import { withStateDatabaseCoordinatorRuntimeDirectory } from "../infra/state-database-coordinator.js";
@@ -50,6 +52,7 @@ import {
 } from "./user-channel-identities.js";
 import { readUserChannelIdentityResult } from "./user-channel-identities.worker.js";
 import { resolveCachedGitHubIdentityInDatabase } from "./user-profile-github-identity.js";
+import { readUserProfileIdForEmail } from "./user-profile-identity.read.js";
 import { projectUserProfileDisplay } from "./user-profile-list.js";
 import {
   selectProfileDisplayEntries,
@@ -78,6 +81,13 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
     typeof coordinatorRuntime.directory === "string" &&
     typeof coordinatorRuntime.keepAlive === "boolean" &&
     (isPluginBlobReadCommand(input.command) ||
+      (input.command.type === "conversationBindings.inspect" &&
+        isRecord(input.command.conversation) &&
+        typeof input.command.conversation.channel === "string" &&
+        typeof input.command.conversation.accountId === "string" &&
+        typeof input.command.conversation.conversationId === "string" &&
+        (input.command.conversation.parentConversationId === undefined ||
+          typeof input.command.conversation.parentConversationId === "string")) ||
       input.command.type === "admit" ||
       input.command.type === "exec-approvals.read" ||
       ((input.command.type === "skills.library.descriptions" ||
@@ -89,7 +99,7 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
             isRecord(pin) && typeof pin.skillId === "string" && typeof pin.revision === "string",
         )) ||
       input.command.type === "agentDatabaseRegistry.read" ||
-      (input.command.type === "userProfiles.avatar.reconcile" &&
+      (input.command.type === "userProfiles.reconcile" &&
         typeof input.command.profileId === "string") ||
       (input.command.type === "userProfiles.channelIdentity.list" &&
         typeof input.command.profileId === "string") ||
@@ -100,6 +110,8 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
         typeof input.command.email === "string") ||
       (input.command.type === "userProfiles.channelIdentity.resolve" &&
         Check(UserChannelIdentitySchema, input.command.identity)) ||
+      (input.command.type === "userProfiles.email.resolve" &&
+        typeof input.command.email === "string") ||
       (input.command.type === "audit.run.inspect" &&
         isRecord(input.command.input) &&
         typeof input.command.input.now === "number" &&
@@ -129,7 +141,11 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
       (input.command.type === "sandboxRegistry.runtimeIds" &&
         typeof input.command.backendId === "string" &&
         typeof input.command.scopeKey === "string") ||
-      (input.command.type === "fleet.get" && typeof input.command.tenantId === "string"))
+      (input.command.type === "fleet.get" && typeof input.command.tenantId === "string") ||
+      (input.command.type === "workers.placementProjection" &&
+        Array.isArray(input.command.sessionIds) &&
+        input.command.sessionIds.every((id) => typeof id === "string") &&
+        Array.isArray(input.command.conflictBindings)))
   );
 }
 
@@ -186,6 +202,17 @@ serveOwnedWorkerTasks(
             return withOpenClawStateReadOnlyLocation(
               ({ db }) => {
                 sourceAdmitted = true;
+                if (command.type === "conversationBindings.inspect") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    record: inspectCurrentConversationBindingRecordInDatabase(
+                      db,
+                      command.conversation,
+                    ),
+                  };
+                }
                 if (command.type === "pluginBlob.lookup") {
                   return {
                     ok: true,
@@ -368,7 +395,7 @@ serveOwnedWorkerTasks(
                     linked: resolveUserChannelIdentityInDatabase(db, command.identity),
                   };
                 }
-                if (command.type === "userProfiles.avatar.reconcile") {
+                if (command.type === "userProfiles.reconcile") {
                   return {
                     ok: true,
                     type: command.type,
@@ -376,6 +403,16 @@ serveOwnedWorkerTasks(
                     profile: runSqliteDeferredTransactionSync(
                       db,
                       () => selectProfileDisplayEntries(db, [command.profileId])[0]?.[1],
+                    ),
+                  };
+                }
+                if (command.type === "userProfiles.email.resolve") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    profileId: runSqliteDeferredTransactionSync(db, () =>
+                      readUserProfileIdForEmail(db, command.email),
                     ),
                   };
                 }
@@ -409,6 +446,18 @@ serveOwnedWorkerTasks(
                     type: command.type,
                     sourceAdmitted,
                     entries: readSandboxBrowserRegistryInDatabase(db),
+                  };
+                }
+                if (command.type === "workers.placementProjection") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    result: readWorkerSessionPlacementProjectionInDatabase(
+                      db,
+                      command.sessionIds,
+                      command.conflictBindings,
+                    ),
                   };
                 }
                 return command.type === "fleet.list"

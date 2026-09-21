@@ -532,6 +532,7 @@ src/infra/abort-signal.ts
 src/infra/acquire-with-wait.ts
 src/infra/approval-resolution-ref.ts
 src/infra/backoff.ts
+src/infra/backup-scratch.ts
 src/infra/boundary-file-read.ts
 src/infra/boundary-path.ts
 src/infra/bun-sqlite-library.ts
@@ -622,6 +623,7 @@ src/infra/lifecycle-write-custody.ts
 src/infra/map-size.ts
 src/infra/net/configured-local-origin-bypass.ts
 src/infra/net/fetch-guard.ts
+src/infra/net/fetch-request-authority.ts
 src/infra/net/form-data.ts
 src/infra/net/guarded-body-stream.ts
 src/infra/net/hostname.ts
@@ -710,6 +712,7 @@ src/infra/sqlite-snapshot-staging-owner.ts
 src/infra/sqlite-snapshot-staging.ts
 src/infra/sqlite-snapshot-wal-prefix.ts
 src/infra/sqlite-source-handle.ts
+src/infra/sqlite-staging-token.ts
 src/infra/sqlite-store.worker.ts
 src/infra/sqlite-strict.ts
 src/infra/sqlite-terminal-open-latch.ts
@@ -866,6 +869,7 @@ src/plugins/current-plugin-metadata-state.ts
 src/plugins/default-enablement.ts
 src/plugins/dev-source-root.ts
 src/plugins/discovery-availability.ts
+src/plugins/discovery-required-plugins.ts
 src/plugins/discovery.ts
 src/plugins/doctor-contract-artifact.ts
 src/plugins/doctor-contract-module.ts

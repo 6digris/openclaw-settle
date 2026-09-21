@@ -20,6 +20,10 @@ import {
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db.js";
 import { ensureUserPreferencesSchema } from "./user-preferences.store.js";
+import {
+  ensureProfileForEmailInDatabase,
+  normalizeProfileEmail as normalizeEmail,
+} from "./user-profile-email.kernel.js";
 import { publishUserProfileAuthorityChange } from "./user-profile-events.js";
 import {
   applyVerifiedGitHubIdentity,
@@ -56,7 +60,10 @@ import {
   classifyTailscaleLogin,
   type TailscaleProfileIdentity,
 } from "./user-profiles-tailscale-login.js";
-import type { UserProfileAvatarMime } from "./user-profiles.types.js";
+import {
+  MAX_USER_PROFILE_DISPLAY_NAME_LENGTH,
+  type UserProfileAvatarMime,
+} from "./user-profiles.types.js";
 
 export { formatUserProfileAvatarEtag, getProfileAvatar } from "./user-profiles-internal.js";
 export {
@@ -77,16 +84,6 @@ type UserProfileAvatarError =
   | { code: "unsupported_avatar_mime"; mime: string };
 
 export { UserProfileNotFoundError };
-
-const MAX_USER_PROFILE_DISPLAY_NAME_LENGTH = 256;
-
-function normalizeEmail(email: string): string {
-  const normalized = email.trim().toLowerCase();
-  if (!normalized) {
-    throw new TypeError("email must not be empty");
-  }
-  return normalized;
-}
 
 function normalizeInitialDisplayName(name: string | null | undefined): string | null {
   const normalized = name?.trim();
@@ -222,34 +219,15 @@ function ensureProfileForEmailWithInitialName(
     return found;
   }
   const now = Date.now();
-  const displayName =
-    initialDisplayName ??
-    truncateUtf16Safe(
-      normalizedEmail.split("@", 1)[0] || normalizedEmail,
-      MAX_USER_PROFILE_DISPLAY_NAME_LENGTH,
-    );
   return runUserProfileWriteTransaction(
-    ({ db }) => {
-      const existing = selectExistingProfile(db);
-      if (existing) {
-        return existing;
-      }
-      const kysely = userProfilesDb(db);
-      const row = insertUserProfile(db, displayName, now, options.mutation);
-      executeSqliteQuerySync(
+    ({ db }) =>
+      ensureProfileForEmailInDatabase(
         db,
-        kysely.insertInto("user_profile_emails").values({
-          email: normalizedEmail,
-          profile_id: row.id,
-          created_at: now,
-        }),
-      );
-      options.mutation?.authority(row.id);
-      publishUserProfileAuthorityChange(db, row.id);
-      options.mutation?.publish(row.id);
-      publishUserProfilesChange(db, row.id);
-      return toUserProfile(row);
-    },
+        normalizedEmail,
+        initialDisplayName,
+        now,
+        options.mutation,
+      ),
     options,
     { operationLabel: "user-profiles.ensure" },
   );
