@@ -68,6 +68,8 @@ import {
 } from "../infra/telemetry-store.kernel.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { readRemoteModelCatalog } from "../model-catalog/remote-store.js";
+import { executePluginBlobCommand } from "../plugin-state/plugin-blob-store.worker.js";
+import { isPluginBlobWorkerCommand } from "../plugin-state/plugin-blob-worker-contract.js";
 import { isPluginStateWorkerCommand } from "../plugin-state/plugin-state-worker-contract.js";
 import { executePluginStateCommand } from "../plugin-state/plugin-state.worker.js";
 import {
@@ -98,7 +100,7 @@ import * as skillWorkshop from "../skills/workshop/store.worker.js";
 import { isTaskRegistryWorkerCommand } from "../tasks/task-registry.worker-contract.js";
 import { executeTaskRegistryCommand } from "../tasks/task-registry.worker.js";
 import { executeTranscriptRead } from "../transcripts/store-worker-read.js";
-import { appendTranscriptInWorker } from "../transcripts/store-worker-write.js";
+import { executeTranscriptWrite } from "../transcripts/store-worker-write.js";
 import {
   listAgentProvenanceInDatabase,
   readAgentProvenanceBatchInDatabase,
@@ -348,6 +350,9 @@ export function executeSharedStateCommand(
       env: getSqliteWorkerStateContext().environment,
     });
   }
+  if (isPluginBlobWorkerCommand(command)) {
+    return executePluginBlobCommand(command, context.databasePath, open);
+  }
   if (isPluginStateWorkerCommand(command)) {
     return executePluginStateCommand(
       command,
@@ -392,8 +397,8 @@ export function executeSharedStateCommand(
   if (command.type === "deviceAuth.list") {
     return deviceAuth.readDeviceAuthTokensFromDatabase(database.db, command.input);
   }
-  if (command.type === "transcripts.append") {
-    return appendTranscriptInWorker(command.input, { database, path: context.databasePath });
+  if (command.type === "transcripts.append" || command.type === "transcripts.writeSummary") {
+    return executeTranscriptWrite(command, { database, path: context.databasePath });
   }
   switch (command.type) {
     case "transcripts.sessionEntries":
