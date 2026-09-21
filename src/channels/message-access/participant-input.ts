@@ -1,4 +1,3 @@
-import { resolveCommandOwner } from "../../auto-reply/command-auth.js";
 import { bindCommandOwnerAuthority } from "../../auto-reply/command-owner-authority.js";
 import type { MsgContext } from "../../auto-reply/templating.js";
 import { prepareSessionParticipantInput } from "../../sessions/session-participant-input.js";
@@ -58,19 +57,14 @@ export function bindChannelParticipantInput(params: {
   ) {
     return;
   }
-  const requester = {
-    channel: principal.channelId,
-    accountId: principal.accountId,
-    senderId: principal.senderId,
-  };
-  const admittedOwner = resolveCommandOwner(gateway.getRuntimeConfig(), requester);
-  if (!admittedOwner) {
+  const authority = batch.at(-1)?.commandOwnerAuthority;
+  if (!authority?.source || !authority.isCurrent(gateway.getRuntimeConfig())) {
     return;
   }
   bindCommandOwnerAuthority(params.context, {
     isCurrent: () =>
       params.owner.isLive() &&
       params.owner.resolveGatewayContext?.() === gateway &&
-      resolveCommandOwner(gateway.getRuntimeConfig(), requester) === admittedOwner,
+      authority.isCurrent(gateway.getRuntimeConfig()),
   });
 }

@@ -235,9 +235,9 @@ export async function codexControlRequest(
   pluginConfig: unknown,
   method: CodexControlMethod,
   requestParams?: unknown,
-  options: CodexControlRequestOptions = {},
+  inputOptions: CodexControlRequestOptions = {},
 ): Promise<unknown> {
-  options = { ...options };
+  const options = { ...inputOptions };
   try {
     options.controlObservation?.phase("prepare");
   } catch {

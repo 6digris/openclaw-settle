@@ -2,6 +2,7 @@
 import { once } from "node:events";
 import type { IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
+import { DatabaseSync } from "node:sqlite";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
@@ -103,13 +104,20 @@ const {
 vi.mock("../../../state/user-profiles.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../state/user-profiles.js")>();
   adoptTailscaleProfileAvatarMock.mockImplementation(actual.adoptTailscaleProfileAvatar);
-  ensureProfileForEmailMock.mockImplementation(actual.ensureProfileForEmail);
-  ensureGatewayOwnerProfileMock.mockImplementation(actual.ensureGatewayOwnerProfile);
   return {
     ...actual,
     adoptTailscaleProfileAvatar: adoptTailscaleProfileAvatarMock,
-    ensureProfileForEmail: ensureProfileForEmailMock,
-    ensureGatewayOwnerProfile: ensureGatewayOwnerProfileMock,
+  };
+});
+
+vi.mock("../../../state/user-profile-writes.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../state/user-profile-writes.js")>();
+  ensureProfileForEmailMock.mockImplementation(actual.ensureCanonicalUserProfileForEmail);
+  ensureGatewayOwnerProfileMock.mockImplementation(actual.ensureCanonicalGatewayOwnerProfile);
+  return {
+    ...actual,
+    ensureCanonicalUserProfileForEmail: ensureProfileForEmailMock,
+    ensureCanonicalGatewayOwnerProfile: ensureGatewayOwnerProfileMock,
   };
 });
 
@@ -661,7 +669,7 @@ describe("attachGatewayWsMessageHandler post-connect health refresh", () => {
         return vi.fn(async () => {
           const profile = params.authResult.tailscaleIdentity
             ? ensureProfileForTailscaleIdentity(params.authResult.tailscaleIdentity)
-            : ensureProfileForEmailMock("authenticated@example.test");
+            : await ensureProfileForEmailMock("authenticated@example.test");
           return { profileId: profile.id, updatedAt: profile.updatedAt };
         });
       },
@@ -727,7 +735,11 @@ describe("attachGatewayWsMessageHandler post-connect health refresh", () => {
     "limits owner attribution to shared-secret %s access when roles are configured",
     async (authMethod) => {
       await withOpenClawTestState({ label: "gateway-owner-role-gate" }, async () => {
-        loadConfigMock.mockImplementationOnce(() => ({
+        const previousLoadConfig = loadConfigMock.getMockImplementation();
+        onTestFinished(() => {
+          if (previousLoadConfig) loadConfigMock.mockImplementation(previousLoadConfig);
+        });
+        loadConfigMock.mockImplementation(() => ({
           gateway: {
             auth: { mode: "none" },
             roles: {
@@ -1468,6 +1480,43 @@ describe("attachGatewayWsMessageHandler post-connect health refresh", () => {
     }
   });
 
+  it("waits for worker profile acquisition before registering a trusted-proxy socket without host SQLite", async () => {
+    await withGatewayTestState({ label: "gateway-profile-worker-admission" }, async () => {
+      const writes = await vi.importActual<typeof import("../../../state/user-profile-writes.js")>(
+        "../../../state/user-profile-writes.js",
+      );
+      const started = createGatewayHarnessGate();
+      const release = createGatewayHarnessGate();
+      const admitted = createGatewayHarnessGate();
+      ensureProfileForEmailMock.mockImplementationOnce(
+        async (...args: Parameters<typeof writes.ensureCanonicalUserProfileForEmail>) => {
+          started.resolve();
+          await release.promise;
+          return writes.ensureCanonicalUserProfileForEmail(...args);
+        },
+      );
+      const queries = vi.spyOn(DatabaseSync.prototype, "prepare");
+      try {
+        const harness = connectTrustedProxyUser("conn-profile-worker-admission");
+        await started.promise;
+        expect(harness.client).toBeNull();
+        expect(upsertPresenceMock).not.toHaveBeenCalled();
+        harness.handoffAuthenticatedReceive.mockImplementationOnce(() => admitted.resolve());
+        release.resolve();
+        await admitted.promise;
+        expect(harness.client).toMatchObject({
+          authenticatedUserId: "alice@example.com",
+          authenticatedUserProfile: { profileId: expect.any(String), displayName: "alice" },
+          preparedSessionProfile: { profileId: expect.any(String), aliases: expect.any(Set) },
+        });
+        expect(queries).not.toHaveBeenCalled();
+      } finally {
+        release.resolve();
+        queries.mockRestore();
+      }
+    });
+  });
+
   it("registers a verified profile before detached Tailscale avatar adoption completes", async () => {
     await withGatewayTestState({ label: "gateway-tailscale-avatar-detached" }, async () => {
       const avatar =
@@ -1728,7 +1777,11 @@ describe("attachGatewayWsMessageHandler post-connect health refresh", () => {
       const syncCompletion = createGatewayHarnessGate<{ profileId: string; updatedAt: number }>();
       const sync = vi.fn(async () => await syncCompletion.promise);
       createAuthenticatedGitHubIdentitySyncMock.mockReturnValueOnce(sync);
-      loadConfigMock.mockImplementationOnce(() => ({
+      const previousLoadConfig = loadConfigMock.getMockImplementation();
+      onTestFinished(() => {
+        if (previousLoadConfig) loadConfigMock.mockImplementation(previousLoadConfig);
+      });
+      loadConfigMock.mockImplementation(() => ({
         gateway: {
           auth: {
             mode: "none",
@@ -1820,7 +1873,11 @@ describe("attachGatewayWsMessageHandler post-connect health refresh", () => {
               throw error;
             }),
           );
-          loadConfigMock.mockImplementationOnce(() => ({
+          const previousLoadConfig = loadConfigMock.getMockImplementation();
+          onTestFinished(() => {
+            if (previousLoadConfig) loadConfigMock.mockImplementation(previousLoadConfig);
+          });
+          loadConfigMock.mockImplementation(() => ({
             gateway: {
               auth: {
                 mode: "none",

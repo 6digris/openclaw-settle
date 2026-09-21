@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { beforeEach, expect, it, vi } from "vitest";
+import { assert, beforeEach, expect, it, vi } from "vitest";
 import { withAdminIngress } from "../../channels/message-access/operator-authority.test-support.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
 import * as pairingStore from "../../pairing/pairing-store.js";
@@ -27,7 +27,9 @@ const beforeConfigEdit = vi.fn(async () => {});
 beforeEach(({ onTestFinished }) => {
   beforeConfigEdit.mockReset();
   const previous = captureActivePluginRegistrySnapshot();
-  onTestFinished(() => rollbackStagedPluginRegistry(previous));
+  onTestFinished(() => {
+    rollbackStagedPluginRegistry(previous);
+  });
   const allowlist = buildLegacyDmAccountAllowlistAdapter({
     channelId: "discord",
     resolveAccount: ({ cfg, accountId }) =>
@@ -51,7 +53,9 @@ beforeEach(({ onTestFinished }) => {
       ...allowlist,
       applyConfigEdit: async (params) => {
         await beforeConfigEdit();
-        return allowlist.applyConfigEdit?.(params);
+        const result = await allowlist.applyConfigEdit?.(params);
+        assert(result, "The DM config editor must handle the fixture's edit");
+        return result;
       },
     },
   };
@@ -68,7 +72,11 @@ const mutations = [
   { action: "add", target: "", revocation: "reassign" },
 ] as const;
 
-it.each(mutations.flatMap((mutation) => [false, true].map((revoke) => ({ ...mutation, revoke }))))(
+it.each(
+  mutations.flatMap(({ action, target, revocation }) =>
+    [false, true].map((revoke) => ({ action, target, revocation, revoke })),
+  ),
+)(
   "rechecks $action $target pairing writes after $revocation during preparation (revoke=$revoke)",
   async ({ action, target, revocation, revoke }) => {
     await withAdminIngress(async ({ cfg, admins, context, state }) => {

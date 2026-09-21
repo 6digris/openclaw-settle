@@ -52,11 +52,12 @@ import {
 import { isOperatorScope } from "./operator-scopes.js";
 import { isRoleAuthorizedForMethod, parseGatewayRole } from "./role-policy.js";
 import { coreGatewayHandlers } from "./server-methods/core-handlers.js";
-import { authenticatedProfileUnavailableError } from "./server-methods/gateway-client-identity.js";
+import { authorizeAuthenticatedProfileForMethod } from "./server-methods/gateway-client-identity.js";
 import { prepareGatewayRequestHandler } from "./server-methods/lazy-core-handlers.js";
 import { isTargetedNonSafeGatewayRestartRequest } from "./server-methods/restart-request.js";
 import {
   bindGatewayRequestHandlerMutationAuthority,
+  readGatewayRequestMutationAuthority,
   withSessionMutationCommitGuard,
 } from "./server-methods/session-mutation-guards.js";
 import type {
@@ -205,37 +206,6 @@ function runGatewayPendingWorkContinuation<T>(params: {
   return manager?.runPendingContinuation(request.id, params.run) ?? null;
 }
 
-async function authorizeAuthenticatedProfileForMethod(params: {
-  client: GatewayRequestOptions["client"];
-  method: string;
-  requestParams: unknown;
-  methodRegistry: GatewayMethodRegistry;
-  context: GatewayRequestContext;
-  expectedProfileBinding?: ExpectedProfileBinding;
-}): Promise<ErrorShape | null> {
-  const sync = params.client?.authenticatedGitHubIdentitySync;
-  if (!sync || params.client?.authenticatedUserProfile?.profileId.trim()) {
-    return null;
-  }
-  const requiresProfile =
-    params.expectedProfileBinding !== undefined ||
-    params.methodRegistry.requiresAuthenticatedProfile(params.method) ||
-    resolveDirectIncognitoTargets(params.method, params.requestParams).length > 0 ||
-    (sessionMutationTargetFields(params.method).length > 0 &&
-      params.context.getRuntimeConfig().gateway?.roles !== undefined);
-  if (!requiresProfile) {
-    return null;
-  }
-  try {
-    await sync();
-  } catch {
-    return authenticatedProfileUnavailableError();
-  }
-  return params.client?.authenticatedUserProfile?.profileId.trim()
-    ? null
-    : authenticatedProfileUnavailableError();
-}
-
 /** Builds the per-request method registry from core, plugin, and explicit extra handlers. */
 export function createRequestGatewayMethodRegistry(
   extraHandlers?: GatewayRequestHandlers,
@@ -305,7 +275,15 @@ export async function authorizeGatewayRequestPreDispatch(params: {
     }
     // GitHub-backed connections receive hello before remote account resolution. Profile-owned
     // methods must cross this single router fence before session authorization or handler work.
-    const profileError = await authorizeAuthenticatedProfileForMethod(params);
+    const profileError = await authorizeAuthenticatedProfileForMethod({
+      client: params.client,
+      requiresProfile: () =>
+        params.expectedProfileBinding !== undefined ||
+        params.methodRegistry.requiresAuthenticatedProfile(params.method) ||
+        resolveDirectIncognitoTargets(params.method, params.requestParams).length > 0 ||
+        (sessionMutationTargetFields(params.method).length > 0 &&
+          params.context.getRuntimeConfig().gateway?.roles !== undefined),
+    });
     if (profileError) {
       return { error: profileError };
     }
@@ -559,7 +537,14 @@ export async function handleGatewayRequest(
 ): Promise<void> {
   const { req, client, isWebchatConnect, context, signal, hasCurrentClientAuthority } = opts;
   const profileBinding =
-    opts.expectedProfileBinding ?? createExpectedProfileBinding(req.expectedProfileId, client);
+    opts.expectedProfileBinding ??
+    (req.expectedProfileId === undefined
+      ? undefined
+      : await createExpectedProfileBinding(
+          req.expectedProfileId,
+          client,
+          readGatewayRequestMutationAuthority(opts).assertLifetimeCurrent,
+        ));
   // WS publication already owns the shared guard, including policy-close responses.
   const respond =
     profileBinding && !opts.expectedProfileBinding

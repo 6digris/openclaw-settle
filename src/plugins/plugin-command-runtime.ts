@@ -151,9 +151,9 @@ function createSelectedPluginCommandDispatch(
 async function executeSelectedPluginCommand(
   runtime: PluginCommandRuntime | undefined,
   dispatch: PluginCommandDispatch,
-  context: PluginCommandDispatchContext,
+  input: PluginCommandDispatchContext,
 ): Promise<PluginCommandResult> {
-  context = { ...context };
+  const context = { ...input };
   const selected = dispatchSelections.get(dispatch as object);
   if (!selected || (runtime && selected.runtime !== runtime)) {
     return { ...INVALID_SELECTION_REPLY };

@@ -13,7 +13,10 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db.js";
-import { publishUserProfileAliasChange } from "./user-profile-events.js";
+import {
+  publishUserProfileAliasChange,
+  publishUserChannelIdentityAuthorityChange,
+} from "./user-profile-events.js";
 import { selectStoredGitHubIdentities } from "./user-profile-github-identity.js";
 import { publishUserProfilesChange } from "./user-profile-list.js";
 import {
@@ -37,7 +40,7 @@ export class UserChannelIdentityConflictError extends Error {
   }
 }
 
-function identitySubject(identity: UserChannelIdentity): string {
+export function userChannelIdentitySubject(identity: UserChannelIdentity): string {
   if (!Check(UserChannelIdentitySchema, identity)) {
     throw new TypeError("invalid channel identity");
   }
@@ -77,7 +80,8 @@ function requirePerson(db: DatabaseSync, profileId: string) {
   return profile;
 }
 
-function publishIdentityChange(db: DatabaseSync, profileId: string) {
+function publishIdentityChange(db: DatabaseSync, profileId: string, subject: string) {
+  publishUserChannelIdentityAuthorityChange(db, subject);
   publishUserProfilesChange(db, profileId);
   deferSqlitePostCommitPublication(db, publishUserProfileAliasChange);
 }
@@ -86,9 +90,9 @@ function publishIdentityChange(db: DatabaseSync, profileId: string) {
 export function linkUserChannelIdentity(
   profileId: string,
   identity: UserChannelIdentity,
-  options: OpenClawStateDatabaseOptions = {},
+  options: OpenClawStateDatabaseOptions & { beforeChange?: (db: DatabaseSync) => void } = {},
 ): UserChannelIdentityLink {
-  const subject = identitySubject(identity);
+  const subject = userChannelIdentitySubject(identity);
   ensureUserProfilesSchema(options);
   return runOpenClawStateWriteTransaction(
     ({ db }) => {
@@ -100,6 +104,7 @@ export function linkUserChannelIdentity(
         }
         return { profileId: profile.id, identity };
       }
+      options.beforeChange?.(db);
       executeSqliteQuerySync(
         db,
         userProfilesDb(db).insertInto("user_profile_identities").values({
@@ -110,7 +115,7 @@ export function linkUserChannelIdentity(
           created_at: Date.now(),
         }),
       );
-      publishIdentityChange(db, profile.id);
+      publishIdentityChange(db, profile.id, subject);
       return { profileId: profile.id, identity };
     },
     options,
@@ -122,9 +127,9 @@ export function linkUserChannelIdentity(
 export function unlinkUserChannelIdentity(
   profileId: string,
   identity: UserChannelIdentity,
-  options: OpenClawStateDatabaseOptions = {},
+  options: OpenClawStateDatabaseOptions & { beforeChange?: (db: DatabaseSync) => void } = {},
 ): boolean {
-  const subject = identitySubject(identity);
+  const subject = userChannelIdentitySubject(identity);
   ensureUserProfilesSchema(options);
   return runOpenClawStateWriteTransaction(
     ({ db }) => {
@@ -136,6 +141,7 @@ export function unlinkUserChannelIdentity(
       if (requirePerson(db, existing.profile_id).id !== profile.id) {
         throw new UserChannelIdentityConflictError();
       }
+      options.beforeChange?.(db);
       executeSqliteQuerySync(
         db,
         userProfilesDb(db)
@@ -143,7 +149,7 @@ export function unlinkUserChannelIdentity(
           .where("provider", "=", CHANNEL_IDENTITY_PROVIDER)
           .where("subject", "=", subject),
       );
-      publishIdentityChange(db, profile.id);
+      publishIdentityChange(db, profile.id, subject);
       return true;
     },
     options,
@@ -155,95 +161,96 @@ function hasIdentityTables(db: DatabaseSync): boolean {
   return tableExists(db, "user_profiles") && tableExists(db, "user_profile_identities");
 }
 
-export function listUserChannelIdentities(
+export function listUserChannelIdentitiesInDatabase(
+  db: DatabaseSync,
   profileId: string,
-  options: OpenClawStateDatabaseOptions = {},
 ): UserChannelIdentityLink[] {
-  return (
-    withExistingOpenClawStateDatabaseReadOnly(
-      ({ db }) =>
-        runSqliteDeferredTransactionSync(db, () => {
-          if (!hasIdentityTables(db)) {
-            return [];
-          }
-          const profile = requirePerson(db, profileId);
-          return executeSqliteQuerySync(
-            db,
-            userProfilesDb(db)
-              .selectFrom("user_profile_identities")
-              .select("subject")
-              .where("provider", "=", CHANNEL_IDENTITY_PROVIDER)
-              .where("profile_id", "=", profile.id)
-              .orderBy("subject", "asc"),
-          ).rows.flatMap(({ subject }) => {
-            const identity = readIdentity(subject);
-            return identity ? [{ profileId: profile.id, identity }] : [];
-          });
-        }),
-      options,
-    ) ?? []
-  );
+  return runSqliteDeferredTransactionSync(db, () => {
+    if (!hasIdentityTables(db)) {
+      return [];
+    }
+    const profile = requirePerson(db, profileId);
+    return executeSqliteQuerySync(
+      db,
+      userProfilesDb(db)
+        .selectFrom("user_profile_identities")
+        .select("subject")
+        .where("provider", "=", CHANNEL_IDENTITY_PROVIDER)
+        .where("profile_id", "=", profile.id)
+        .orderBy("subject", "asc"),
+    ).rows.flatMap(({ subject }) => {
+      const identity = readIdentity(subject);
+      return identity ? [{ profileId: profile.id, identity }] : [];
+    });
+  });
 }
 
 /** Reads the current person and login grant subjects; channel links never become login aliases. */
+export type UserChannelIdentityAuthorityFacts = {
+  profileId: string;
+  role: string | null;
+  loginIdentities: string[];
+};
+
+export function resolveUserChannelIdentityInDatabase(
+  db: DatabaseSync,
+  identity: UserChannelIdentity,
+): UserChannelIdentityAuthorityFacts | undefined {
+  const subject = userChannelIdentitySubject(identity);
+  return runSqliteDeferredTransactionSync(db, () => {
+    if (!hasIdentityTables(db)) {
+      return undefined;
+    }
+    const link = selectLink(db, subject);
+    const profile = link ? selectResolvedUserProfileMetadataById(db, link.profile_id) : undefined;
+    if (!profile || profile.id === GATEWAY_OWNER_PROFILE_ID) {
+      return undefined;
+    }
+    const kysely = userProfilesDb(db);
+    const emails = executeSqliteQuerySync(
+      db,
+      kysely.selectFrom("user_profile_emails").select("email").where("profile_id", "=", profile.id),
+    )
+      .rows.map(({ email }) => email)
+      .filter((email) => {
+        const login = classifyTailscaleLogin(email);
+        // Legacy email-shaped GitHub aliases must not revive a renamed login's grant.
+        return login.kind !== "provider" || login.provider !== "github";
+      });
+    const providerLogins = executeSqliteQuerySync(
+      db,
+      kysely
+        .selectFrom("user_profile_identities")
+        .select(["provider", "subject"])
+        .where("profile_id", "=", profile.id)
+        .where("canonical_login", "is", null),
+    )
+      // Retired attribution rows are not authenticated provider-login aliases.
+      .rows.filter(
+        (row) =>
+          row.provider !== "github" &&
+          row.provider !== "github-attribution" &&
+          !row.provider.includes("."),
+      )
+      .map((row) => `${row.subject}@${row.provider}`);
+    const githubLogins =
+      selectStoredGitHubIdentities(db, [profile.id])
+        .get(profile.id)
+        ?.accounts.map((account) => `${account.login.toLowerCase()}@github`) ?? [];
+    return {
+      profileId: profile.id,
+      role: profile.role ?? null,
+      loginIdentities: [...new Set([...emails, ...providerLogins, ...githubLogins])].toSorted(),
+    };
+  });
+}
+
 export function resolveUserChannelIdentity(
   identity: UserChannelIdentity,
   options: OpenClawStateDatabaseOptions = {},
-): { profileId: string; role: string | null; loginIdentities: string[] } | undefined {
-  const subject = identitySubject(identity);
+): UserChannelIdentityAuthorityFacts | undefined {
   return withExistingOpenClawStateDatabaseReadOnly(
-    ({ db }) =>
-      runSqliteDeferredTransactionSync(db, () => {
-        if (!hasIdentityTables(db)) {
-          return undefined;
-        }
-        const link = selectLink(db, subject);
-        const profile = link
-          ? selectResolvedUserProfileMetadataById(db, link.profile_id)
-          : undefined;
-        if (!profile || profile.id === GATEWAY_OWNER_PROFILE_ID) {
-          return undefined;
-        }
-        const kysely = userProfilesDb(db);
-        const emails = executeSqliteQuerySync(
-          db,
-          kysely
-            .selectFrom("user_profile_emails")
-            .select("email")
-            .where("profile_id", "=", profile.id),
-        )
-          .rows.map(({ email }) => email)
-          .filter((email) => {
-            const login = classifyTailscaleLogin(email);
-            // Legacy email-shaped GitHub aliases must not revive a renamed login's grant.
-            return login.kind !== "provider" || login.provider !== "github";
-          });
-        const providerLogins = executeSqliteQuerySync(
-          db,
-          kysely
-            .selectFrom("user_profile_identities")
-            .select(["provider", "subject"])
-            .where("profile_id", "=", profile.id)
-            .where("canonical_login", "is", null),
-        )
-          // Retired attribution rows are not authenticated provider-login aliases.
-          .rows.filter(
-            (row) =>
-              row.provider !== "github" &&
-              row.provider !== "github-attribution" &&
-              !row.provider.includes("."),
-          )
-          .map((row) => `${row.subject}@${row.provider}`);
-        const githubLogins =
-          selectStoredGitHubIdentities(db, [profile.id])
-            .get(profile.id)
-            ?.accounts.map((account) => `${account.login.toLowerCase()}@github`) ?? [];
-        return {
-          profileId: profile.id,
-          role: profile.role ?? null,
-          loginIdentities: [...new Set([...emails, ...providerLogins, ...githubLogins])].toSorted(),
-        };
-      }),
+    ({ db }) => resolveUserChannelIdentityInDatabase(db, identity),
     options,
   );
 }

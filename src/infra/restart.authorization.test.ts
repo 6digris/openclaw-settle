@@ -93,7 +93,9 @@ describe("scheduled restart requester authority", () => {
         sessionKey: "requester-a",
         emitHooks: {
           assertCurrent: () => {
-            if (!firstCurrent) throw new Error("first requester revoked");
+            if (!firstCurrent) {
+              throw new Error("first requester revoked");
+            }
           },
           beforeEmit: firstPreparation,
         },
@@ -106,7 +108,9 @@ describe("scheduled restart requester authority", () => {
           : {
               emitHooks: {
                 assertCurrent: () => {
-                  if (!secondCurrent) throw new Error("second requester revoked");
+                  if (!secondCurrent) {
+                    throw new Error("second requester revoked");
+                  }
                 },
                 beforeEmit: secondPreparation,
               },
@@ -134,7 +138,9 @@ describe("scheduled restart requester authority", () => {
       sessionKey: "requester-a",
       emitHooks: {
         assertCurrent: () => {
-          if (!current) throw new Error("original requester revoked");
+          if (!current) {
+            throw new Error("original requester revoked");
+          }
         },
         beforeEmit: async () => {
           entered.resolve();

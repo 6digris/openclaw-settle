@@ -79,6 +79,8 @@ Links follow explicit profile merges and the surviving profile's current role. L
 
 Every linked sender whose current effective operator role includes `operator.admin` receives channel-owner authority automatically. The role name does not matter, and no extra `gateway.auth.identityScopes` grant is needed. When operator roles are not configured, a matching administrative identity-scope grant supplies this authority instead. A configured nonadmin role prevents that fallback. Removing the link, demoting the person, or removing the role's administrative scope revokes inherited authority. Authority is rechecked before pending privileged actions take effect; already accepted operations finish their required cleanup. Explicit `commands.ownerAllowFrom` entries remain independent. See [Operator scopes](/gateway/operator-scopes).
 
+Channel policies and explicit command allowlists still apply, including to native commands. Cosmetic profile changes do not cancel an authorized request; changing its identity link or role requires a fresh request.
+
 These records use the existing shared-state identity table without changing its schema version. Older builds ignore the channel binding namespace; downgrading disables this recognition without converting the links into login accounts. Upgrading does not guess or backfill channel identities. Administrators can inspect and remove the links through the same methods after upgrading again.
 
 ## GitHub connections

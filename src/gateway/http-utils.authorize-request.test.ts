@@ -2,6 +2,7 @@
 // declared operator scopes, origin handling, and failure response routing.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 
 vi.mock("./auth.js", () => ({
   authorizeHttpGatewayConnect: vi.fn(),
@@ -38,7 +39,8 @@ vi.mock("./http-common.js", () => ({
 const { authorizeHttpGatewayConnect } = await import("./auth.js");
 const { getRuntimeConfig } = await import("../config/io.js");
 const { sendGatewayAuthFailure } = await import("./http-common.js");
-const profileStore = await import("../state/user-profiles.js");
+const profileWrites = await import("../state/user-profile-writes.js");
+const profileAuthority = await import("../state/user-channel-identity-operations.js");
 const operatorRoles = await import("./operator-role-policy.js");
 const githubIdentity = await import("./github-user-identity.js");
 const { authorizeGatewayHttpRequestOrReply } = await import("./http-utils.js");
@@ -59,7 +61,7 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
   beforeEach(() => {
     vi.mocked(authorizeHttpGatewayConnect).mockReset();
     vi.mocked(sendGatewayAuthFailure).mockReset();
-    vi.spyOn(profileStore, "ensureProfileForEmail").mockReturnValue({
+    vi.spyOn(profileWrites, "ensureCanonicalUserProfileForEmail").mockResolvedValue({
       id: "profile-guest",
       displayName: "Guest",
       avatarMime: null,
@@ -67,7 +69,7 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
       createdAt: 1,
       updatedAt: 2,
     });
-    vi.spyOn(profileStore, "ensureGatewayOwnerProfile").mockReturnValue({
+    vi.spyOn(profileWrites, "ensureCanonicalGatewayOwnerProfile").mockResolvedValue({
       id: ownerProfile.profileId,
       displayName: ownerProfile.displayName,
       avatarMime: null,
@@ -75,12 +77,20 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
       createdAt: 1,
       updatedAt: ownerProfile.updatedAt,
     });
-    vi.spyOn(profileStore, "getUserProfileDisplay").mockImplementation((id) => ({
-      id,
-      displayName: id === ownerProfile.profileId ? ownerProfile.displayName : "Guest",
-      avatarRevision: "2",
-      hasAvatar: false,
-    }));
+    vi.spyOn(profileAuthority, "prepareUserProfileRoleAuthority").mockImplementation(
+      async (profileId) => ({
+        profileId,
+        role: null,
+        aliases: [profileId],
+        isCurrent: () => true,
+        display: {
+          id: profileId,
+          displayName: profileId === ownerProfile.profileId ? ownerProfile.displayName : "Guest",
+          avatarRevision: "2",
+          hasAvatar: false,
+        },
+      }),
+    );
     vi.spyOn(githubIdentity, "createAuthenticatedGitHubIdentitySync").mockReturnValue(undefined);
   });
 
@@ -135,6 +145,80 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
     });
   });
 
+  it.each(["completed", "disconnected", "policy-changed", "stale-at-entry"] as const)(
+    "keeps HTTP authorization pending on profile acquisition and revalidates before completion (%s)",
+    async (outcome) => {
+      const started = createDeferred();
+      const release = createDeferred();
+      const response = { destroyed: false };
+      const originalConfig = getRuntimeConfig();
+      vi.mocked(authorizeHttpGatewayConnect).mockImplementationOnce(async () => {
+        if (outcome === "stale-at-entry") {
+          vi.mocked(getRuntimeConfig).mockReturnValue({
+            gateway: { controlUi: { allowedOrigins: ["https://changed.example.test"] } },
+          });
+        }
+        return { ok: true, method: "trusted-proxy", user: "guest@example.test" };
+      });
+      vi.mocked(profileWrites.ensureCanonicalUserProfileForEmail).mockImplementationOnce(
+        async (_email, options) => {
+          started.resolve();
+          await release.promise;
+          options?.assertCurrent?.();
+          return {
+            id: "profile-guest",
+            displayName: "Guest",
+            avatarMime: null,
+            mergedInto: null,
+            createdAt: 1,
+            updatedAt: 2,
+          };
+        },
+      );
+      let completed = false;
+      const pending = authorizeGatewayHttpRequestOrReply({
+        req: createReq(),
+        res: response as ServerResponse,
+        auth: {
+          mode: "trusted-proxy",
+          allowTailscale: false,
+          trustedProxy: { userHeader: "x-user" },
+        },
+      }).then((result) => {
+        completed = true;
+        return result;
+      });
+      try {
+        if (outcome === "stale-at-entry") {
+          expect(await pending).toBeNull();
+          expect(profileWrites.ensureCanonicalUserProfileForEmail).not.toHaveBeenCalled();
+          return;
+        }
+        await started.promise;
+        expect(completed).toBe(false);
+        expect(profileAuthority.prepareUserProfileRoleAuthority).not.toHaveBeenCalled();
+        if (outcome === "disconnected") response.destroyed = true;
+        if (outcome === "policy-changed") {
+          vi.mocked(getRuntimeConfig).mockReturnValue({
+            gateway: { controlUi: { allowedOrigins: ["https://changed.example.test"] } },
+          });
+        }
+        release.resolve();
+        const result = await pending;
+        if (outcome === "completed") {
+          expect(result?.authenticatedUserProfile?.profileId).toBe("profile-guest");
+        } else {
+          expect(result).toBeNull();
+          expect(profileAuthority.prepareUserProfileRoleAuthority).not.toHaveBeenCalled();
+        }
+      } finally {
+        release.resolve();
+        await pending;
+        vi.mocked(getRuntimeConfig).mockReturnValue(originalConfig);
+      }
+    },
+  );
+
   it.each([true, false])(
     "binds trusted-proxy requests to their canonical profile with roles enabled: %s",
     async (rolesConfigured) => {
@@ -148,9 +232,9 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
           ? { roles: { default: "guest", definitions: { guest: role } } }
           : {},
       });
-      const ensureProfile = vi.mocked(profileStore.ensureProfileForEmail);
+      const ensureProfile = vi.mocked(profileWrites.ensureCanonicalUserProfileForEmail);
       const rolePolicy = vi
-        .spyOn(operatorRoles, "resolveOperatorRolePolicyForProfile")
+        .spyOn(operatorRoles, "resolveOperatorRolePolicyForAssignment")
         .mockReturnValue(rolesConfigured ? role : undefined);
       vi.mocked(authorizeHttpGatewayConnect).mockResolvedValue({
         ok: true,
@@ -182,7 +266,9 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
           },
           ...(rolesConfigured ? { operatorRolePolicy: role } : {}),
         });
-        expect(ensureProfile).toHaveBeenCalledWith("guest@example.test");
+        expect(ensureProfile).toHaveBeenCalledWith("guest@example.test", {
+          assertCurrent: expect.any(Function),
+        });
       } finally {
         rolePolicy.mockRestore();
         vi.mocked(getRuntimeConfig).mockReturnValue({
@@ -209,7 +295,7 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
           vi.fn().mockRejectedValue(error),
         );
       } else {
-        vi.mocked(profileStore.ensureProfileForEmail).mockImplementation(() => {
+        vi.mocked(profileWrites.ensureCanonicalUserProfileForEmail).mockImplementation(() => {
           throw error;
         });
       }
@@ -255,11 +341,17 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
   it("uses the verified GitHub profile before dispatching a request without roles", async () => {
     const sync = vi.fn().mockResolvedValue({ profileId: "profile-github", updatedAt: 3 });
     vi.mocked(githubIdentity.createAuthenticatedGitHubIdentitySync).mockReturnValue(sync);
-    vi.mocked(profileStore.getUserProfileDisplay).mockReturnValue({
-      id: "profile-github-canonical",
-      displayName: "GitHub User",
-      avatarRevision: "3",
-      hasAvatar: true,
+    vi.mocked(profileAuthority.prepareUserProfileRoleAuthority).mockResolvedValue({
+      profileId: "profile-github-canonical",
+      role: null,
+      aliases: ["profile-github", "profile-github-canonical"],
+      isCurrent: () => true,
+      display: {
+        id: "profile-github-canonical",
+        displayName: "GitHub User",
+        avatarRevision: "3",
+        hasAvatar: true,
+      },
     });
     vi.mocked(authorizeHttpGatewayConnect).mockResolvedValue({
       ok: true,
@@ -289,7 +381,7 @@ describe("authorizeGatewayHttpRequestOrReply", () => {
         updatedAt: 3,
       },
     });
-    expect(profileStore.ensureProfileForEmail).not.toHaveBeenCalled();
+    expect(profileWrites.ensureCanonicalUserProfileForEmail).not.toHaveBeenCalled();
   });
 
   it("rejects unbound device tokens when operator roles require durable identity", async () => {

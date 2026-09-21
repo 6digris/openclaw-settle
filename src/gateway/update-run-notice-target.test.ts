@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import type { ChannelPlugin } from "../channels/plugins/types.plugin.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { SessionDeliveryRoute } from "../infra/session-delivery-queue.records.js";
 import {
   captureActivePluginRegistrySnapshot,
   rollbackStagedPluginRegistry,
@@ -11,10 +12,13 @@ import { ensureProfileForEmail, setUserProfileRole } from "../state/user-profile
 import { loadBundledPluginFacade } from "../test-utils/bundled-plugin-public-surface.js";
 import { createTestRegistry } from "../test-utils/channel-plugins.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-import { authorizeUpdateRunNoticeTarget } from "./update-run-notice-target.js";
+import {
+  authorizeUpdateRunNoticeTarget,
+  resolveUpdateRunNoticeTarget,
+} from "./update-run-notice-target.js";
 
 it("authorizes linked admins through Discord's direct-recipient grammar and current grant", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const { discordPlugin } = await loadBundledPluginFacade<{ discordPlugin: ChannelPlugin }>({
       pluginId: "discord",
       artifactBasename: "api.js",
@@ -51,9 +55,37 @@ it("authorizes linked admins through Discord's direct-recipient grammar and curr
           chatType: "direct",
         },
       } as const;
+      const sessionKey = "agent:main:discord:direct:notice";
+      const prepare = (route: SessionDeliveryRoute) =>
+        resolveUpdateRunNoticeTarget({
+          cfg,
+          session: {
+            cfg,
+            agentId: "main",
+            storePath: state.statePath("agents", "main", "sessions", "sessions.json"),
+            store: {},
+            canonicalKey: sessionKey,
+            storeKeys: [sessionKey],
+            legacyKey: undefined,
+            entry: {
+              sessionId: "notice-probe",
+              updatedAt: 1,
+              delivery: {
+                kind: "external",
+                route: {
+                  channel: route.channel,
+                  accountId: route.accountId,
+                  target: { to: route.to, chatType: route.chatType },
+                },
+                context: route,
+                origin: { provider: route.channel, chatType: route.chatType },
+              },
+            },
+          },
+        });
       for (const to of [`user:${senderId}`, `discord:user:${senderId}`, `<@${senderId}>`]) {
         const direct = { ...target, route: { ...target.route, to } };
-        expect(authorizeUpdateRunNoticeTarget(cfg, direct)).toBe(direct);
+        expect(await prepare(direct.route)).toMatchObject(target);
       }
       for (const route of [
         { ...target.route, accountId: "another" },
@@ -61,16 +93,20 @@ it("authorizes linked admins through Discord's direct-recipient grammar and curr
         { ...target.route, chatType: "group" as const },
         { ...target.route, to: senderId, chatType: "channel" as const },
       ]) {
-        expect(authorizeUpdateRunNoticeTarget(cfg, { kind: "route", route }).kind).toBe("none");
+        expect((await prepare(route)).kind).toBe("none");
       }
+      const admitted = await prepare(target.route);
       setUserProfileRole(profile.id, "member");
-      expect(authorizeUpdateRunNoticeTarget(cfg, target).kind).toBe("none");
+      expect(authorizeUpdateRunNoticeTarget(cfg, admitted).kind).toBe("none");
+      expect((await prepare(target.route)).kind).toBe("none");
       setUserProfileRole(profile.id, "admin");
-      expect(authorizeUpdateRunNoticeTarget(cfg, target)).toBe(target);
+      expect(authorizeUpdateRunNoticeTarget(cfg, admitted).kind).toBe("none");
+      expect(await prepare(target.route)).toMatchObject(target);
       cfg.gateway!.auth!.identityScopes = {};
-      expect(authorizeUpdateRunNoticeTarget(cfg, target)).toBe(target);
+      const restored = await prepare(target.route);
+      expect(restored).toMatchObject(target);
       cfg.gateway!.roles!.definitions.admin!.scopes = ["operator.read"];
-      expect(authorizeUpdateRunNoticeTarget(cfg, target).kind).toBe("none");
+      expect(authorizeUpdateRunNoticeTarget(cfg, restored).kind).toBe("none");
     } finally {
       rollbackStagedPluginRegistry(previous);
     }

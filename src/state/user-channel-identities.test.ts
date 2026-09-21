@@ -1,8 +1,9 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { executeSqliteQuerySync } from "../infra/kysely-sync.js";
+import * as operationAdmission from "../infra/sqlite-worker-operation-admission.js";
 import { tableExists } from "./openclaw-state-db-schema-helpers.js";
 import {
   closeOpenClawStateDatabaseAsync,
@@ -11,18 +12,34 @@ import {
 } from "./openclaw-state-db.js";
 import {
   linkUserChannelIdentity,
-  listUserChannelIdentities,
   resolveUserChannelIdentity,
   unlinkUserChannelIdentity,
   type UserChannelIdentity,
 } from "./user-channel-identities.js";
+import {
+  changeCanonicalUserChannelIdentity,
+  listCanonicalUserChannelIdentities,
+  prepareUserChannelIdentityAuthority,
+  prepareUserProfileRoleAuthority,
+  prepareUserProfileSelectionAuthority,
+} from "./user-channel-identity-operations.js";
 import { readUserProfileAliasRevision } from "./user-profile-events.js";
+import {
+  getUserProfileDisplay,
+  readUserProfileIdentity,
+  retainUserProfileCatalog,
+} from "./user-profile-list.js";
+import {
+  linkCanonicalUserProfileEmail,
+  setCanonicalUserProfileRole,
+} from "./user-profile-writes.js";
 import { userProfilesDb } from "./user-profiles-internal.js";
 import {
   ensureGatewayOwnerProfile,
   ensureProfileForEmail,
   ensureProfileForTailscaleIdentity,
   linkEmail,
+  setDisplayName,
   setUserProfileRole,
   syncGitHubIdentity,
 } from "./user-profiles.js";
@@ -42,16 +59,209 @@ function stateOptions() {
   return { path: join(tempDirs.make("openclaw-channel-identities-"), "state.sqlite") };
 }
 
-it("does not create state or identity tables while resolving absent links", () => {
+it("does not create state or identity tables while resolving absent links", async () => {
   const options = stateOptions();
+  expect(await prepareUserChannelIdentityAuthority(identity, options)).toBeUndefined();
+  expect(await listCanonicalUserChannelIdentities("absent", options)).toEqual([]);
   expect(resolveUserChannelIdentity(identity, options)).toBeUndefined();
-  expect(listUserChannelIdentities("absent", options)).toEqual([]);
   expect(existsSync(options.path)).toBe(false);
   const { db } = openOpenClawStateDatabase(options);
   expect(resolveUserChannelIdentity(identity, options)).toBeUndefined();
-  expect(listUserChannelIdentities("absent", options)).toEqual([]);
+  expect(await listCanonicalUserChannelIdentities("absent", options)).toEqual([]);
   expect(tableExists(db, "user_profiles")).toBe(false);
   expect(tableExists(db, "user_profile_identities")).toBe(false);
+});
+
+it("keeps prepared authority SQL-free and revokes the exact binding before worker commit acknowledgement", async () => {
+  const options = stateOptions();
+  const otherOptions = stateOptions();
+  const ada = ensureProfileForEmail("ada@example.test", options);
+  const grace = ensureProfileForEmail("grace@example.test", options);
+  const other = ensureProfileForEmail("other@example.test", otherOptions);
+  setUserProfileRole(ada.id, "admin", options);
+  linkUserChannelIdentity(ada.id, identity, options);
+  const prepared = await prepareUserChannelIdentityAuthority(identity, options);
+  expect(prepared?.linked.profileId).toBe(ada.id);
+  const { db } = openOpenClawStateDatabase(options);
+  const releaseCatalog = retainUserProfileCatalog(options);
+  const queries = vi.spyOn(db, "prepare");
+  try {
+    expect(prepared?.isCurrent()).toBe(true);
+    expect(queries).not.toHaveBeenCalled();
+    setDisplayName(ada.id, "Updated name", options);
+    setUserProfileRole(ada.id, "admin", options);
+    setUserProfileRole(grace.id, "admin", options);
+    setUserProfileRole(other.id, "admin", otherOptions);
+    linkUserChannelIdentity(ada.id, { ...identity, accountId: "other-bot" }, options);
+    queries.mockClear();
+    expect(prepared?.isCurrent()).toBe(true);
+    expect(queries).not.toHaveBeenCalled();
+    await changeCanonicalUserChannelIdentity("link", ada.id, identity, options);
+    expect(prepared?.isCurrent()).toBe(true);
+    const createAdmission = operationAdmission.createSqliteWorkerOperationAdmission;
+    let observedCommitGrant = false;
+    const admissionSpy = vi
+      .spyOn(operationAdmission, "createSqliteWorkerOperationAdmission")
+      .mockImplementation((admit) =>
+        createAdmission((request, grant) => {
+          admit(request, () => {
+            if (request.stage === "commit") {
+              observedCommitGrant = true;
+              // This executes before the worker receives permission to COMMIT.
+              expect(prepared?.isCurrent()).toBe(false);
+            }
+            return grant();
+          });
+        }),
+      );
+    try {
+      await changeCanonicalUserChannelIdentity("unlink", ada.id, identity, options);
+      expect(observedCommitGrant).toBe(true);
+    } finally {
+      admissionSpy.mockRestore();
+    }
+    await changeCanonicalUserChannelIdentity("link", ada.id, identity, options);
+    expect(prepared?.isCurrent()).toBe(false);
+    const renewed = await prepareUserChannelIdentityAuthority(identity, options);
+    expect(renewed?.isCurrent()).toBe(true);
+    setUserProfileRole(ada.id, "member", options);
+    setUserProfileRole(ada.id, "admin", options);
+    expect(renewed?.isCurrent()).toBe(false);
+
+    const admin = await prepareUserProfileRoleAuthority(ada.id, options);
+    const selectedSource = await prepareUserProfileSelectionAuthority(ada.id, options);
+    const selectedTarget = await prepareUserProfileSelectionAuthority(grace.id, options);
+    expect(admin?.role).toBe("admin");
+    expect(selectedSource?.isCurrent()).toBe(true);
+    expect(selectedTarget?.isCurrent()).toBe(true);
+    let mutation: "demote" | "reject" | "rollback" | "recover" | "merge" = "demote";
+    let actorCurrent = true;
+    let rejectedBeforeAdmission = false;
+    let rollbackGranted = false;
+    let pendingRole: ReturnType<typeof prepareUserProfileRoleAuthority> | undefined;
+    let pendingSelection: ReturnType<typeof prepareUserProfileSelectionAuthority> | undefined;
+    const mutationAdmissionSpy = vi
+      .spyOn(operationAdmission, "createSqliteWorkerOperationAdmission")
+      .mockImplementation((admit) =>
+        createAdmission((request, grant) => {
+          if (request.stage === "commit" && mutation === "reject") {
+            actorCurrent = false;
+            rejectedBeforeAdmission = true;
+          }
+          admit(request, () => {
+            if (request.stage === "commit" && mutation === "rollback") {
+              rollbackGranted = true;
+            } else if (request.stage === "commit" && mutation === "demote") {
+              queries.mockClear();
+              expect(admin?.isCurrent()).toBe(false);
+              expect(selectedSource?.isCurrent()).toBe(true);
+              expect(queries).not.toHaveBeenCalled();
+              pendingRole = prepareUserProfileRoleAuthority(ada.id, options);
+              void pendingRole.catch(() => undefined);
+            } else if (request.stage === "commit" && mutation === "merge") {
+              queries.mockClear();
+              expect(selectedSource?.isCurrent()).toBe(false);
+              expect(selectedTarget?.isCurrent()).toBe(true);
+              expect(queries).not.toHaveBeenCalled();
+              pendingSelection = prepareUserProfileSelectionAuthority(ada.id, options);
+              void pendingSelection.catch(() => undefined);
+            }
+            return grant();
+          });
+        }),
+      );
+    try {
+      await expect(
+        setCanonicalUserProfileRole(ada.id, "member", {
+          ...options,
+          assertCurrent: () => {
+            if (!admin?.isCurrent()) {
+              throw new Error("Administrative authority was revoked");
+            }
+          },
+        }),
+      ).resolves.toMatchObject({ id: ada.id, role: "member" });
+      expect(admin?.isCurrent()).toBe(false);
+      expect(selectedSource?.isCurrent()).toBe(true);
+      expect(pendingRole).toBeDefined();
+      await expect(pendingRole).resolves.toMatchObject({ profileId: ada.id, role: "member" });
+
+      setUserProfileRole(ada.id, "admin", options);
+      mutation = "reject";
+      await expect(
+        setCanonicalUserProfileRole(ada.id, "member", {
+          ...options,
+          assertCurrent: () => {
+            if (!actorCurrent) {
+              throw new Error("Original actor was revoked");
+            }
+          },
+        }),
+      ).rejects.toThrow("Original actor was revoked");
+      expect(rejectedBeforeAdmission).toBe(true);
+      expect((await prepareUserProfileRoleAuthority(ada.id, options))?.role).toBe("admin");
+
+      mutation = "rollback";
+      const beforeRollback = getUserProfileDisplay(ada.id, options);
+      runOpenClawStateWriteTransaction(({ db }) => {
+        // Deferred integrity failure occurs at real COMMIT, after the worker receives its grant.
+        db.exec(`
+          CREATE TABLE profile_rollback_parent (id INTEGER PRIMARY KEY);
+          CREATE TABLE profile_rollback_child (
+            parent_id INTEGER REFERENCES profile_rollback_parent(id) DEFERRABLE INITIALLY DEFERRED
+          );
+          CREATE TRIGGER profile_rollback_at_commit AFTER UPDATE OF role ON user_profiles
+          WHEN NEW.role = 'member'
+          BEGIN INSERT INTO profile_rollback_child VALUES (1); END;
+        `);
+      }, options);
+      try {
+        await expect(setCanonicalUserProfileRole(ada.id, "member", options)).rejects.toThrow(
+          /FOREIGN KEY constraint failed/i,
+        );
+        expect(rollbackGranted).toBe(true);
+        expect(resolveUserChannelIdentity(identity, options)?.role).toBe("admin");
+        queries.mockClear();
+        expect(readUserProfileIdentity(ada.id, options)?.role).toBe("admin");
+        expect(getUserProfileDisplay(ada.id, options)).toEqual(beforeRollback);
+        expect(queries).not.toHaveBeenCalled();
+        const afterRollback = await prepareUserProfileRoleAuthority(ada.id, options);
+        expect(afterRollback?.role).toBe("admin");
+        expect(afterRollback?.isCurrent()).toBe(true);
+      } finally {
+        runOpenClawStateWriteTransaction(({ db }) => {
+          db.exec(
+            "DROP TRIGGER profile_rollback_at_commit; DROP TABLE profile_rollback_child; DROP TABLE profile_rollback_parent;",
+          );
+        }, options);
+      }
+      mutation = "recover";
+      await expect(setCanonicalUserProfileRole(ada.id, "member", options)).resolves.toMatchObject({
+        id: ada.id,
+        role: "member",
+      });
+
+      mutation = "merge";
+      const linked = await linkCanonicalUserProfileEmail("ada@example.test", grace.id, options);
+      expect(selectedSource?.isCurrent()).toBe(false);
+      expect(selectedTarget?.isCurrent()).toBe(true);
+      expect(pendingSelection).toBeDefined();
+      await expect(pendingSelection).resolves.toMatchObject({ profileId: grace.id });
+      expect(linked.profile.id).toBe(grace.id);
+      expect(linked.display.id).toBe(linked.profile.id);
+      expect(getUserProfileDisplay(ada.id, options)).toEqual(linked.display);
+      expect(getUserProfileDisplay(grace.id, options)).toEqual(linked.display);
+    } finally {
+      mutationAdmissionSpy.mockRestore();
+      await Promise.allSettled([pendingRole, pendingSelection]);
+    }
+    const latest = await prepareUserChannelIdentityAuthority(identity, options);
+    await closeOpenClawStateDatabaseAsync();
+    expect(latest?.isCurrent()).toBe(false);
+  } finally {
+    queries.mockRestore();
+    releaseCatalog();
+  }
 });
 
 it("keeps stable senders scoped to the channel account and refuses conflicting assignments", async () => {
@@ -63,7 +273,7 @@ it("keeps stable senders scoped to the channel account and refuses conflicting a
   expect(linkUserChannelIdentity(ada.id, identity, options)).toEqual(link);
   await closeOpenClawStateDatabaseAsync();
   expect(resolveUserChannelIdentity(identity, options)?.profileId).toBe(ada.id);
-  expect(listUserChannelIdentities(ada.id, options)).toEqual([link]);
+  expect(await listCanonicalUserChannelIdentities(ada.id, options)).toEqual([link]);
   expect(() => linkUserChannelIdentity(grace.id, identity, options)).toThrow(
     "linked to another profile",
   );
@@ -155,7 +365,7 @@ it("reads current roles and only canonical login identities, including the curre
   });
 });
 
-it("moves links through explicit profile merges and uses the surviving person's role and aliases", () => {
+it("moves links through explicit profile merges and uses the surviving person's role and aliases", async () => {
   const options = stateOptions();
   const source = ensureProfileForEmail("source@example.test", options);
   const target = ensureProfileForEmail("target@example.test", options);
@@ -168,7 +378,7 @@ it("moves links through explicit profile merges and uses the surviving person's 
     role: "member",
     loginIdentities: ["source@example.test", "target@example.test"],
   });
-  expect(listUserChannelIdentities(source.id, options)).toEqual([
+  expect(await listCanonicalUserChannelIdentities(source.id, options)).toEqual([
     { profileId: target.id, identity },
   ]);
   expect(unlinkUserChannelIdentity(source.id, identity, options)).toBe(true);
@@ -204,7 +414,7 @@ it("publishes link and unlink authority changes only after their transaction com
   expect(readUserProfileAliasRevision()).toBe(revision + 2);
 });
 
-it("rejects the shared owner and malformed identities without linking a person", () => {
+it("rejects the shared owner and malformed identities without linking a person", async () => {
   const options = stateOptions();
   const owner = ensureGatewayOwnerProfile("Owner", options);
   const profile = ensureProfileForEmail("ada@example.test", options);
@@ -217,5 +427,5 @@ it("rejects the shared owner and malformed identities without linking a person",
       "invalid channel identity",
     );
   }
-  expect(listUserChannelIdentities(profile.id, options)).toEqual([]);
+  expect(await listCanonicalUserChannelIdentities(profile.id, options)).toEqual([]);
 });

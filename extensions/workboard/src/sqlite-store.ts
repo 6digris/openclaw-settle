@@ -154,13 +154,13 @@ export function createWorkboardSqliteStores(options: {
     }
   }
   return {
-    async runWithWriteAuthority(assertCurrent, run) {
+    async runWithWriteAuthority(assertCurrent, operation) {
       const authority: { active: boolean; assertCurrent?: () => void } = {
         active: true,
         assertCurrent,
       };
       try {
-        return await writeAuthority.run(authority, run);
+        return await writeAuthority.run(authority, operation);
       } finally {
         authority.active = false;
       }

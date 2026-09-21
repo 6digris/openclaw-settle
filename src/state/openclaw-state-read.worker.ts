@@ -1,5 +1,7 @@
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { Check } from "typebox/value";
+import { UserChannelIdentitySchema } from "../../packages/gateway-protocol/src/schema/users.js";
 import {
   readSandboxBrowserRegistryInDatabase,
   readSandboxRegistryEntryInDatabase,
@@ -11,6 +13,7 @@ import { ExecutionDecisionCursorError } from "../audit/execution-decision-receip
 import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identity-context.js";
 import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
 import { readExecApprovalsConfigRow } from "../infra/exec-approvals-sqlite.js";
+import { executeSqliteQuerySync } from "../infra/kysely-sync.js";
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import { runWithSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import { withStateDatabaseCoordinatorRuntimeDirectory } from "../infra/state-database-coordinator.js";
@@ -36,7 +39,18 @@ import type {
   OpenClawStateReadRequest,
 } from "./openclaw-state-read.types.js";
 import { encodeOpenClawStateWorkerError } from "./openclaw-state-worker-error.js";
-import { selectProfileDisplayEntries } from "./user-profiles-internal.js";
+import {
+  listUserChannelIdentitiesInDatabase,
+  resolveUserChannelIdentityInDatabase,
+} from "./user-channel-identities.js";
+import { readUserChannelIdentityResult } from "./user-channel-identities.worker.js";
+import { resolveCachedGitHubIdentityInDatabase } from "./user-profile-github-identity.js";
+import { projectUserProfileDisplay } from "./user-profile-list.js";
+import {
+  selectProfileDisplayEntries,
+  selectResolvedUserProfileMetadataById,
+  userProfilesDb,
+} from "./user-profiles-internal.js";
 
 function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
   if (!isRecord(input) || !isRecord(input.context) || !isRecord(input.command)) {
@@ -64,6 +78,15 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
       input.command.type === "agentDatabaseRegistry.read" ||
       (input.command.type === "userProfiles.avatar.reconcile" &&
         typeof input.command.profileId === "string") ||
+      (input.command.type === "userProfiles.channelIdentity.list" &&
+        typeof input.command.profileId === "string") ||
+      (input.command.type === "userProfiles.authority.resolve" &&
+        typeof input.command.profileId === "string") ||
+      (input.command.type === "userProfiles.githubIdentity.cached" &&
+        typeof input.command.accountId === "number" &&
+        typeof input.command.email === "string") ||
+      (input.command.type === "userProfiles.channelIdentity.resolve" &&
+        Check(UserChannelIdentitySchema, input.command.identity)) ||
       (input.command.type === "audit.run.inspect" &&
         isRecord(input.command.input) &&
         typeof input.command.input.now === "number" &&
@@ -248,6 +271,68 @@ serveOwnedWorkerTasks(
                       workspaceDir: command.workspaceDir,
                       database: { db, path: input.databasePath },
                     }),
+                  };
+                }
+                if (command.type === "userProfiles.authority.resolve") {
+                  const profile = runSqliteDeferredTransactionSync(db, () => {
+                    const current = tableExists(db, "user_profiles")
+                      ? selectResolvedUserProfileMetadataById(db, command.profileId)
+                      : undefined;
+                    if (!current) {
+                      return undefined;
+                    }
+                    const display = selectProfileDisplayEntries(db, [current.id])[0]?.[1];
+                    if (!display) {
+                      return undefined;
+                    }
+                    const aliases = executeSqliteQuerySync(
+                      db,
+                      userProfilesDb(db)
+                        .selectFrom("user_profiles")
+                        .select("id")
+                        .where("merged_into", "=", current.id)
+                        .orderBy("id", "asc"),
+                    ).rows;
+                    return {
+                      profileId: current.id,
+                      role: current.role ?? null,
+                      aliases: [current.id, ...aliases.map((alias) => alias.id)],
+                      display: projectUserProfileDisplay(display),
+                    };
+                  });
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    profile,
+                  };
+                }
+                if (command.type === "userProfiles.githubIdentity.cached") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    identity: runSqliteDeferredTransactionSync(db, () =>
+                      resolveCachedGitHubIdentityInDatabase(db, command),
+                    ),
+                  };
+                }
+                if (command.type === "userProfiles.channelIdentity.list") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    result: readUserChannelIdentityResult(() =>
+                      listUserChannelIdentitiesInDatabase(db, command.profileId),
+                    ),
+                  };
+                }
+                if (command.type === "userProfiles.channelIdentity.resolve") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    linked: resolveUserChannelIdentityInDatabase(db, command.identity),
                   };
                 }
                 if (command.type === "userProfiles.avatar.reconcile") {

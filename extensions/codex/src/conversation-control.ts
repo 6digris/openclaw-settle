@@ -125,7 +125,7 @@ export async function steerCodexConversationTurn(params: {
   return { steered: true, message: "Sent steer message to Codex." };
 }
 
-export async function setCodexConversationModel(params: {
+export async function setCodexConversationModel(input: {
   identity: CodexAppServerBindingIdentity;
   bindingStore: CodexAppServerBindingStore;
   binding: CodexAppServerThreadBinding | undefined;
@@ -137,7 +137,7 @@ export async function setCodexConversationModel(params: {
   assertCurrent: () => void;
   assertCommitAllowed?: () => void;
 }): Promise<string> {
-  params = { ...params };
+  const params = { ...input };
   const model = params.model.trim();
   if (!model) {
     return "Usage: /codex model <model>";

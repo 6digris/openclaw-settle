@@ -31,7 +31,7 @@ import {
 } from "../../sessions/user-turn-transcript.js";
 import { buildChannelUserTurnSender } from "../../sessions/user-turn-transcript.metadata.js";
 import { isReasoningTagProvider } from "../../utils/provider-utils.js";
-import { resolveCommandOwner } from "../command-auth.js";
+import { isConfiguredCommandOwner } from "../command-auth.js";
 import { bindCommandOwnerAuthority, getCommandOwnerAuthority } from "../command-owner-authority.js";
 import { getGroupThreadTurn } from "../group-thread-context.js";
 import { resolveInternalTurnTranscript } from "../internal-turn-source.js";
@@ -606,8 +606,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     senderId: normalizeOptionalString(command.senderId),
   };
   const isCurrentChannelOwner = () =>
-    channelOwnerAuthority?.isCurrent() ??
-    resolveCommandOwner(getRuntimeConfig(), cronOwner) === "configured-owner";
+    channelOwnerAuthority?.isCurrent() ?? isConfiguredCommandOwner(getRuntimeConfig(), cronOwner);
   // Only fresh owner ingress mints this identity. Management-only admissions do not imply it.
   const createdCronCreatorAuthorityCapability =
     !inheritedCronCreatorAuthorityCapability && authorityRunId && messageProvider

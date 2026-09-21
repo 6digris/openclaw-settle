@@ -117,6 +117,7 @@ type GatewayHttpRequestAuthParams = {
 
 type GatewayHttpRequestAuthCheckParams = Omit<GatewayHttpRequestAuthParams, "res"> & {
   cfg?: OpenClawConfig;
+  res?: ServerResponse;
 };
 
 type GatewayHttpConnectAuthorizer = typeof authorizeHttpGatewayConnect;
@@ -333,22 +334,23 @@ export async function authorizeControlUiReadRequestOrReply(
     params.onPluginFrameGrants?.([]);
     return { authMethod: "none", operatorScopes: [...CLI_DEFAULT_OPERATOR_SCOPES] };
   }
+  const cfg = getRuntimeConfig();
   const token = resolveControlUiReadAuthToken(params.req, params.allowQueryToken);
   const { authResult, authGeneration, deviceOperatorScopes } = await checkHttpOperatorCredentials(
-    { ...params, auth, token, rateLimiter: token ? params.rateLimiter : undefined },
+    { ...params, cfg, auth, token, rateLimiter: token ? params.rateLimiter : undefined },
     authorizeControlUiReadHttpGatewayConnect,
   );
   if (!authResult.ok) {
     sendGatewayAuthFailure(params.res, authResult);
     return null;
   }
-  const cfg = getRuntimeConfig();
   let authenticatedProfile;
   try {
     authenticatedProfile = await resolveAuthenticatedHttpUserProfile({
       authResult,
       cfg,
       req: params.req,
+      res: params.res,
     });
   } catch {
     sendGatewayAuthFailure(params.res, { ok: false, reason: "user_profile_unavailable" });
@@ -523,9 +525,10 @@ async function checkGatewayHttpRequestAuthWith(
   authorizeConnect: GatewayHttpConnectAuthorizer,
   allowDeviceToken = false,
 ): Promise<GatewayHttpRequestAuthCheckResult> {
+  const cfg = params.cfg ?? getRuntimeConfig();
   const token = getBearerToken(params.req);
   const { authResult, deviceOperatorScopes }: HttpOperatorCredentialResult = allowDeviceToken
-    ? await checkHttpOperatorCredentials({ ...params, token }, authorizeConnect)
+    ? await checkHttpOperatorCredentials({ ...params, cfg, token }, authorizeConnect)
     : {
         authResult: await authorizeConnect({
           auth: params.auth,
@@ -534,7 +537,7 @@ async function checkGatewayHttpRequestAuthWith(
           trustedProxies: params.trustedProxies,
           allowRealIpFallback: params.allowRealIpFallback,
           rateLimiter: params.rateLimiter,
-          browserOriginPolicy: resolveHttpBrowserOriginPolicy(params.req, params.cfg),
+          browserOriginPolicy: resolveHttpBrowserOriginPolicy(params.req, cfg),
         }),
       };
   if (!authResult.ok) {
@@ -544,8 +547,9 @@ async function checkGatewayHttpRequestAuthWith(
   try {
     authenticatedProfile = await resolveAuthenticatedHttpUserProfile({
       authResult,
-      cfg: params.cfg ?? getRuntimeConfig(),
+      cfg,
       req: params.req,
+      res: params.res,
     });
   } catch {
     return { ok: false, authResult: { ok: false, reason: "user_profile_unavailable" } };

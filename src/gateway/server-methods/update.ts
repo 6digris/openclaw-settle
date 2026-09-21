@@ -8,7 +8,7 @@ import {
   validateUpdateRunParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { AgentSelectionRequiredError } from "../../agents/agent-scope-config.js";
-import { resolveCommandOwner } from "../../auto-reply/command-auth.js";
+import { prepareCommandOwnerAuthority } from "../../auto-reply/command-auth.js";
 import { UpdatePreMutationError } from "../../cli/update-cli/shared.js";
 import { formatCommandOwnerHint } from "../../commands/doctor-command-owner.js";
 import { isRestartEnabled } from "../../config/commands.flags.js";
@@ -142,15 +142,16 @@ export const updateHandlers: GatewayRequestHandlers = {
             (sessionKey && isInternalMessageChannel(requesterChannel ?? deliveryContext?.channel))
           ? "control-ui"
           : "api";
-    const requester = params.requester
-      ? {
-          ...params.requester,
-          ...(requesterChannel && !isInternalMessageChannel(requesterChannel)
-            ? { authorizationSource: resolveCommandOwner(config, params.requester) ?? "" }
-            : {}),
-        }
-      : undefined;
-    const noticeTarget = resolveUpdateRunNoticeTarget({
+    const requesterInput = params.requester ? { ...params.requester } : undefined;
+    const requesterAuthority =
+      requesterInput?.channel && !isInternalMessageChannel(requesterInput.channel)
+        ? await prepareCommandOwnerAuthority(config, requesterInput)
+        : undefined;
+    const requester = requesterInput && {
+      ...requesterInput,
+      ...(requesterAuthority ? { authorizationSource: requesterAuthority.source ?? "" } : {}),
+    };
+    const noticeTarget = await resolveUpdateRunNoticeTarget({
       cfg: config,
       sessionKey,
       explicitDeliveryContext: deliveryContext,
@@ -217,8 +218,7 @@ export const updateHandlers: GatewayRequestHandlers = {
       }
       const currentConfig = getConfig();
       const reason =
-        !requester.authorizationSource ||
-        resolveCommandOwner(currentConfig, requester) !== requester.authorizationSource
+        !requester.authorizationSource || !requesterAuthority?.isCurrent(currentConfig)
           ? "owner_required"
           : !isRestartEnabled(currentConfig)
             ? "restart-disabled"
@@ -254,7 +254,7 @@ export const updateHandlers: GatewayRequestHandlers = {
       return;
     }
     const { createUpdateRunNotifier } = await import("../update-run-notice.runtime.js");
-    const notify = createUpdateRunNotifier(run, getConfig, context.deps, noticeTarget);
+    const notify = await createUpdateRunNotifier(run, getConfig, context.deps, noticeTarget);
     const sentinelMeta: UpdateRestartSentinelMeta = {
       runId,
       ...(sessionKey ? { sessionKey } : {}),
@@ -489,8 +489,7 @@ export const updateHandlers: GatewayRequestHandlers = {
                     (requester?.channel &&
                       !isInternalMessageChannel(requester.channel) &&
                       (!requester.authorizationSource ||
-                        resolveCommandOwner(currentConfig, requester) !==
-                          requester.authorizationSource))
+                        !requesterAuthority?.isCurrent(currentConfig)))
                   ) {
                     throw new Error("Foreground update authority changed before parking.");
                   }

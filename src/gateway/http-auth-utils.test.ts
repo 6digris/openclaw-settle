@@ -1,5 +1,9 @@
 import type { IncomingMessage } from "node:http";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { setDisplayName } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -17,10 +21,10 @@ vi.mock("./auth.js", async (importOriginal) => ({
 vi.mock("../infra/host-account-name.js", () => ({
   resolveHostAccountName: async () => "Gateway Person",
 }));
-vi.mock("../state/user-profiles.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../state/user-profiles.js")>();
-  ensureOwner.mockImplementation(actual.ensureGatewayOwnerProfile);
-  return { ...actual, ensureGatewayOwnerProfile: ensureOwner };
+vi.mock("../state/user-profile-writes.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../state/user-profile-writes.js")>();
+  ensureOwner.mockImplementation(actual.ensureCanonicalGatewayOwnerProfile);
+  return { ...actual, ensureCanonicalGatewayOwnerProfile: ensureOwner };
 });
 
 const roles: NonNullable<NonNullable<OpenClawConfig["gateway"]>["roles"]> = {
@@ -34,12 +38,14 @@ async function authenticate(
   cfg: OpenClawConfig = {},
   user?: string,
 ) {
+  setRuntimeConfigSnapshot(cfg);
   authorize.mockResolvedValueOnce({ ok: true, method, ...(user ? { user } : {}) });
   return checkGatewayHttpRequestAuth({ req, auth: { mode: "none", allowTailscale: false }, cfg });
 }
 
 describe("HTTP gateway owner profiles", () => {
   beforeEach(() => vi.clearAllMocks());
+  afterEach(() => clearRuntimeConfigSnapshot());
 
   it("shares the durable owner across auth methods and preserves an edited name", async () => {
     await withOpenClawTestState({ label: "http-owner-profile" }, async () => {

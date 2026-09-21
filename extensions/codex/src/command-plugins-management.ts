@@ -58,12 +58,12 @@ const AVAILABLE_USAGE =
   "Usage: /codex plugins available [query] [--page <positive integer>]. Search text must be at most 100 characters; use -- before literal query text that contains options.";
 
 export async function handleCodexPluginsSubcommand(
-  ctx: PluginCommandContext,
+  input: PluginCommandContext,
   rest: string[],
   io: CodexPluginsManagementIO,
   runtime?: CodexPluginsManagementRuntime,
 ): Promise<PluginCommandResult> {
-  ctx = { ...ctx, gatewayClientScopes: ctx.gatewayClientScopes?.slice() };
+  const ctx = { ...input, gatewayClientScopes: input.gatewayClientScopes?.slice() };
   const [verb = "list", ...args] = rest;
   const normalized = verb.toLowerCase();
 

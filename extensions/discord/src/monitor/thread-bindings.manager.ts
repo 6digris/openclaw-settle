@@ -269,10 +269,10 @@ export function createThreadBindingManager(params: {
       }
       return nextRecord;
     },
-    bindTarget: async (bindParams) => {
-      bindParams = {
-        ...bindParams,
-        metadata: bindParams.metadata ? { ...bindParams.metadata } : undefined,
+    bindTarget: async (input) => {
+      const bindParams = {
+        ...input,
+        metadata: input.metadata ? { ...input.metadata } : undefined,
       };
       const assertCurrent = bindParams.assertCurrent;
       assertCurrent?.();

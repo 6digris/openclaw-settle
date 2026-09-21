@@ -10,6 +10,11 @@ import { buildChannelInboundEventContext } from "../inbound-event/context.js";
 import { createHostChannelInboundEventContextBuilder } from "../inbound-event/host-context-builder.js";
 import { createHostChannelIngressRuntime } from "./runtime.js";
 
+export function createCommandOwnerTestGateway(cfg: OpenClawConfig) {
+  // SAFETY: Ingress authority only consumes runtime config from this synthetic Gateway.
+  return { getRuntimeConfig: () => cfg } as GatewayRequestContext;
+}
+
 export async function withAdminIngress(
   run: (fixture: Awaited<ReturnType<typeof createFixture>>) => Promise<void>,
   authority: "role" | "identity-grant" = "role",
@@ -60,8 +65,7 @@ async function createFixture(state: OpenClawTestState, authority: "role" | "iden
     return { profile, identity };
   });
   let live = true;
-  // SAFETY: Ingress authority only consumes runtime config from this synthetic Gateway.
-  const gateway = { getRuntimeConfig: () => cfg } as GatewayRequestContext;
+  const gateway = createCommandOwnerTestGateway(cfg);
   const owner = {
     channelId: "discord",
     isLive: () => live,

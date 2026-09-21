@@ -1,5 +1,6 @@
 // Gateway WebSocket connect finalization attaches node/session state and sends hello-ok.
 import os from "node:os";
+import { isDeepStrictEqual } from "node:util";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
   GATEWAY_CLIENT_IDS,
@@ -35,7 +36,7 @@ import {
 import { ADMIN_SCOPE, APPROVALS_SCOPE } from "../../method-scopes.js";
 import { serializeEventPayload } from "../../node-registry.js";
 import { isOperatorApprovalRuntimeToken } from "../../operator-approval-runtime-token.js";
-import { resolveOperatorRolePolicyForProfile } from "../../operator-role-policy.js";
+import { resolveOperatorRolePolicyForAssignment } from "../../operator-role-policy.js";
 import {
   buildPluginNodeCapabilityScopedHostUrl,
   indexPluginNodeCapabilitySurfaces,
@@ -182,10 +183,25 @@ export async function attachAuthenticatedGatewayConnect(
     ? classifyTailscaleLogin(authResult.tailscaleIdentity.login)
     : undefined;
   const authenticatedUserIsTailscaleProvider = tailscaleLogin?.kind === "provider";
+  let profileClient: GatewayWsClient | undefined;
+  const assertProfileAcquisitionCurrent = () => {
+    context.handler.connectionWork.signal.throwIfAborted();
+    if (
+      isClosed() ||
+      socket.readyState !== WEBSOCKET_OPEN_READY_STATE ||
+      (profileClient &&
+        (context.handler.getClient() !== profileClient || profileClient.invalidated)) ||
+      resolveGatewayConnectPolicyFailure(context, state) ||
+      !isDeepStrictEqual(context.configSnapshot.gateway?.roles, getRuntimeConfig().gateway?.roles)
+    ) {
+      throw new Error("Gateway profile acquisition authority expired");
+    }
+  };
   const resolveAuthenticatedGitHubIdentity = createAuthenticatedGitHubIdentitySync({
     authResult,
     authConfig: context.configSnapshot.gateway?.auth,
     requestHeaders: context.handler.upgradeReq.headers,
+    assertCurrent: assertProfileAcquisitionCurrent,
   });
   const rolesConfigured = Boolean(context.configSnapshot.gateway?.roles);
   const sharedSecretOperatorOwner =
@@ -195,19 +211,31 @@ export async function attachAuthenticatedGatewayConnect(
     shouldTrackPresence &&
     shouldUseGatewayOwnerProfile({ role, authenticatedUserId, authMethod, rolesConfigured });
   let authenticatedUserProfile: GatewayWsClient["authenticatedUserProfile"];
+  let profileAuthority:
+    | Awaited<ReturnType<typeof resolveAuthenticatedProfile>>["authority"]
+    | undefined;
   if (
     ownerProfileExpected ||
     (authenticatedUserId && (!resolveAuthenticatedGitHubIdentity || rolesConfigured))
   ) {
     try {
       // The live profile callback refreshes edits and detached provider-avatar adoption.
-      authenticatedUserProfile = await resolveGatewayConnectUserProfile({
+      const prepared = await resolveGatewayConnectUserProfile({
         ownerProfileExpected,
         authenticatedUserId,
         authResult,
         resolveAuthenticatedGitHubIdentity,
+        assertCurrent: assertProfileAcquisitionCurrent,
       });
+      assertProfileAcquisitionCurrent();
+      if (!prepared.authority.isCurrent()) {
+        throw new Error("Gateway profile changed during acquisition");
+      }
+      authenticatedUserProfile = prepared.profile;
+      profileAuthority = prepared.authority;
     } catch (error) {
+      authenticatedUserProfile = undefined;
+      profileAuthority = undefined;
       logWsControl.warn(
         `user profile resolution failed conn=${connId} user=${formatForLog(authenticatedUserId)}: ${formatForLog(error)}`,
       );
@@ -233,8 +261,9 @@ export async function attachAuthenticatedGatewayConnect(
   });
   const rolePolicy =
     role === "operator" && !sharedSecretOperatorOwner
-      ? resolveOperatorRolePolicyForProfile(
+      ? resolveOperatorRolePolicyForAssignment(
           authenticatedUserProfile?.profileId,
+          profileAuthority?.role ?? null,
           context.configSnapshot,
         )
       : undefined;
@@ -424,7 +453,7 @@ export async function attachAuthenticatedGatewayConnect(
       : {}),
   };
   attachGatewayLocalUserIngress(nextClient, localUserIngress);
-  const attachAuthenticatedProfile = (profileId: string, updatedAt: number) => {
+  const attachAuthenticatedProfile = async (profileId: string, updatedAt: number) => {
     if (
       isClosed() ||
       context.handler.getClient() !== nextClient ||
@@ -433,14 +462,29 @@ export async function attachAuthenticatedGatewayConnect(
     ) {
       return;
     }
+    assertProfileAcquisitionCurrent();
+    const { profile, authority: prepared } = await resolveAuthenticatedProfile(
+      profileId,
+      updatedAt,
+      assertProfileAcquisitionCurrent,
+    );
+    assertProfileAcquisitionCurrent();
+    if (!prepared.isCurrent()) {
+      throw new Error("Gateway profile changed before attachment");
+    }
     nextClient.preparedRecipientProfileId = undefined;
-    const profile = resolveAuthenticatedProfile(profileId, updatedAt);
     if (nextClient.authenticatedUserProfile) {
       Object.assign(nextClient.authenticatedUserProfile, profile);
     } else {
       nextClient.authenticatedUserProfile = profile;
     }
-    prepareGatewayRecipientProfile(nextClient);
+    prepareGatewayRecipientProfile(nextClient, {
+      identity: {
+        profileId: prepared.profileId,
+        role: prepared.role,
+        aliases: new Set(prepared.aliases),
+      },
+    });
     attachGatewayLocalUserIngress(
       nextClient,
       prepareLocalUserIngress(nextClient.authenticatedUserProfile),
@@ -451,7 +495,7 @@ export async function attachAuthenticatedGatewayConnect(
   if (resolveAuthenticatedGitHubIdentity) {
     nextClient.authenticatedGitHubIdentitySync = async () => {
       const result = await resolveAuthenticatedGitHubIdentity();
-      attachAuthenticatedProfile(result.profileId, result.updatedAt);
+      await attachAuthenticatedProfile(result.profileId, result.updatedAt);
       return result;
     };
   }
@@ -533,7 +577,25 @@ export async function attachAuthenticatedGatewayConnect(
     close(1011, message);
     return;
   }
-  prepareGatewayRecipientProfile(nextClient);
+  if (
+    (profileAuthority && !profileAuthority.isCurrent()) ||
+    !isDeepStrictEqual(context.configSnapshot.gateway?.roles, getRuntimeConfig().gateway?.roles)
+  ) {
+    await rejectUnavailableProfileConnect(
+      context,
+      new Error("Gateway profile changed before registration"),
+    );
+    return;
+  }
+  prepareGatewayRecipientProfile(nextClient, {
+    identity: profileAuthority
+      ? {
+          profileId: profileAuthority.profileId,
+          role: profileAuthority.role,
+          aliases: new Set(profileAuthority.aliases),
+        }
+      : undefined,
+  });
   if (!setClient(nextClient)) {
     await releasePendingNodePairingCleanup();
     setCloseCause("connect-aborted-before-register", {
@@ -542,6 +604,7 @@ export async function attachAuthenticatedGatewayConnect(
     });
     return;
   }
+  profileClient = nextClient;
   clearHandshakeTimer();
   // Only registered operators use bounded router starts. Node lifecycle traffic,
   // workers and preauth retain native yielding and their existing queue/drain rules.
@@ -689,7 +752,7 @@ export async function attachAuthenticatedGatewayConnect(
           try {
             const updated = await adoptTailscaleProfileAvatar(result.profileId, profilePic);
             if (updated.avatarMime) {
-              attachAuthenticatedProfile(updated.id, updated.updatedAt);
+              await attachAuthenticatedProfile(updated.id, updated.updatedAt);
             }
           } catch (error) {
             logGateway.warn(
@@ -718,7 +781,7 @@ export async function attachAuthenticatedGatewayConnect(
         if (!updated.avatarMime) {
           return;
         }
-        attachAuthenticatedProfile(updated.id, updated.updatedAt);
+        await attachAuthenticatedProfile(updated.id, updated.updatedAt);
       },
       (error) =>
         logGateway.warn(`Tailscale avatar adoption failed conn=${connId}: ${formatForLog(error)}`),

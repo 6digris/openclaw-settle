@@ -46,7 +46,7 @@ CREATE INDEX IF NOT EXISTS idx_user_profile_identities_profile_id
 `;
 
 export class UserProfileNotFoundError extends Error {
-  constructor(profileId: string) {
+  constructor(readonly profileId: string) {
     super(`user profile not found: ${profileId}`);
     this.name = "UserProfileNotFoundError";
   }

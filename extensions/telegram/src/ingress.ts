@@ -13,6 +13,8 @@ const TELEGRAM_CHANNEL_ID = "telegram";
 
 const telegramIngressIdentity = defineStableChannelIngressIdentity({
   key: "telegram-user-id",
+  // Bot API from.id is authenticated by bot-token polling or secret-validated webhooks.
+  authentication: "verified",
   normalize: (value) => {
     const normalized = normalizeAllowFrom([value]);
     return normalized.entries[0] ?? (normalized.hasWildcard ? "*" : null);
@@ -27,12 +29,14 @@ export function createTelegramIngressSubject(senderId: string) {
 export function createTelegramIngressResolver(params: {
   accountId?: string;
   cfg?: Pick<OpenClawConfig, "accessGroups" | "commands">;
+  useDefaultPairingStore?: boolean;
 }) {
   return getTelegramRuntime().channel.inbound.ingress.createResolver({
     channelId: TELEGRAM_CHANNEL_ID,
     accountId: params.accountId ?? "default",
     identity: telegramIngressIdentity,
     cfg: params.cfg,
+    useDefaultPairingStore: params.useDefaultPairingStore,
   });
 }
 
@@ -72,6 +76,54 @@ function telegramConversation(params: {
   };
 }
 
+export async function buildTelegramNativeCommandOwnerContext(params: {
+  accountId: string;
+  cfg: OpenClawConfig;
+  dmPolicy: DmPolicy;
+  isGroup: boolean;
+  chatId: string | number;
+  resolvedThreadId?: number;
+  senderId: string;
+  agentId: string;
+  sessionKey: string;
+  messageId: string;
+  rawBody: string;
+}) {
+  const conversation = telegramConversation(params);
+  // Bind the transport identity to the real command route. Command and room
+  // policy still decide admission after this identity-only context is prepared.
+  const channelIngress = await createTelegramIngressResolver({
+    accountId: params.accountId,
+    cfg: params.cfg,
+    useDefaultPairingStore: false,
+  }).event({
+    subject: createTelegramIngressSubject(params.senderId),
+    conversation,
+    contextBinding: {
+      agentId: params.agentId,
+      sessionKey: params.sessionKey,
+      messageId: params.messageId,
+      inboundEventKind: "user_request",
+    },
+    event: { kind: "native-command", authMode: "none", mayPair: false },
+    dmPolicy: params.dmPolicy,
+    groupPolicy: "allowlist",
+    command: false,
+  });
+  return await getTelegramRuntime().channel.inbound.buildContext({
+    channel: "telegram",
+    accountId: params.accountId,
+    channelIngress,
+    messageId: params.messageId,
+    from: params.isGroup ? `telegram:group:${params.chatId}` : `telegram:${params.chatId}`,
+    sender: { id: params.senderId },
+    conversation,
+    route: { agentId: params.agentId, routeSessionKey: params.sessionKey },
+    reply: { to: `telegram:${params.chatId}`, messageThreadId: params.resolvedThreadId },
+    message: { rawBody: params.rawBody, inboundEventKind: "user_request" },
+  });
+}
+
 export async function resolveTelegramCommandIngressAuthorization(params: {
   accountId: string;
   cfg: OpenClawConfig;
@@ -87,10 +139,11 @@ export async function resolveTelegramCommandIngressAuthorization(params: {
   hasControlCommand?: boolean;
   modeWhenAccessGroupsOff?: "allow" | "deny" | "configured";
   includeDmAllowForGroupCommands?: boolean;
+  ownerContext?: Parameters<typeof resolveCommandAuthorization>[0]["ctx"];
 }) {
   const ownerAccess = resolveCommandAuthorization({
     cfg: params.cfg,
-    ctx: {
+    ctx: params.ownerContext ?? {
       Provider: "telegram",
       AccountId: params.accountId,
       ChatType: params.isGroup ? "group" : "direct",

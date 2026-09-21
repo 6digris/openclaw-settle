@@ -15,6 +15,8 @@ type RequestMutationOptions = Pick<
 
 type RequestMutationAuthorityBase = {
   assertCurrent: () => void;
+  /** Original transport/SDK lifetime; prepared-profile methods check selection separately. */
+  assertLifetimeCurrent: () => void;
   expectedProfileBinding?: ExpectedProfileBinding;
 };
 
@@ -74,9 +76,11 @@ export function readGatewayRequestMutationAuthority(
   }
   const { req, client, signal, hasCurrentClientAuthority, sessionMutationCommitGuard } = options;
   const captured = { req, client, signal, hasCurrentClientAuthority, sessionMutationCommitGuard };
+  const assertLifetimeCurrent = () => assertRequestAuthorityCurrent(captured);
   const compatibility: GatewayRequestMutationAuthority = {
     family: "native-compatibility",
-    assertCurrent: () => assertRequestAuthorityCurrent(captured),
+    assertCurrent: assertLifetimeCurrent,
+    assertLifetimeCurrent,
   };
   bindRequestMutationAuthority(options, compatibility);
   return compatibility;
@@ -128,6 +132,7 @@ export function bindWebSocketRequestMutationAuthority<T extends GatewayRequestOp
   };
   bindRequestMutationAuthority(options, {
     family: "worker",
+    assertLifetimeCurrent: assertWorkerCurrent,
     assertCurrent: () => {
       assertWorkerCurrent();
       assertRequestAuthorityCurrent(options);
@@ -165,18 +170,29 @@ export function bindGatewayRequestHandlerMutationAuthority<T extends GatewayRequ
     }
     assertRequestAuthorityCurrent(handler);
   };
+  const assertLifetimeCurrent = () => {
+    assertHandlerCurrent();
+    // Keep the pre-router owner; the handler guard also contains native profile selection.
+    source.assertLifetimeCurrent();
+  };
   const authority: GatewayRequestMutationAuthority =
     source.family === "worker"
       ? {
           family: "worker",
           assertCurrent,
+          assertLifetimeCurrent,
           expectedProfileBinding,
           assertWorkerCurrent: () => {
             assertHandlerCurrent();
             source.assertWorkerCurrent();
           },
         }
-      : { family: "native-compatibility", assertCurrent, expectedProfileBinding };
+      : {
+          family: "native-compatibility",
+          assertCurrent,
+          assertLifetimeCurrent,
+          expectedProfileBinding,
+        };
   bindRequestMutationAuthority(handler, authority);
   return handler;
 }

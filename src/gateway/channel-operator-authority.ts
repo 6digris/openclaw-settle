@@ -3,7 +3,9 @@ import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db-co
 import {
   resolveUserChannelIdentity,
   type UserChannelIdentity,
+  type UserChannelIdentityAuthorityFacts,
 } from "../state/user-channel-identities.js";
+import { prepareUserChannelIdentityAuthority } from "../state/user-channel-identity-operations.js";
 import { resolveIdentityOperatorScopes } from "./operator-identity-scopes.js";
 import { resolveOperatorRolePolicyForAssignment } from "./operator-role-policy.js";
 
@@ -20,6 +22,13 @@ export function resolveChannelOperatorAdmin(
   if (!linked) {
     return undefined;
   }
+  return resolveLinkedOperatorAdmin(cfg, linked);
+}
+
+function resolveLinkedOperatorAdmin(
+  cfg: OpenClawConfig,
+  linked: UserChannelIdentityAuthorityFacts,
+): string | undefined {
   const policy = resolveOperatorRolePolicyForAssignment(linked.profileId, linked.role, cfg);
   const authorized = policy
     ? policy.scopes.includes("operator.admin")
@@ -29,4 +38,24 @@ export function resolveChannelOperatorAdmin(
         ),
       );
   return authorized ? linked.profileId : undefined;
+}
+
+export async function prepareChannelOperatorAdmin(
+  cfg: OpenClawConfig,
+  identity: UserChannelIdentity,
+  stateOptions: OpenClawStateDatabaseOptions = {},
+) {
+  if (!cfg.gateway?.roles && !cfg.gateway?.auth?.identityScopes) {
+    return undefined;
+  }
+  const prepared = await prepareUserChannelIdentityAuthority(identity, stateOptions);
+  if (!prepared || !resolveLinkedOperatorAdmin(cfg, prepared.linked)) {
+    return undefined;
+  }
+  return {
+    profileId: prepared.linked.profileId,
+    isCurrent: (currentCfg: OpenClawConfig) =>
+      prepared.isCurrent() &&
+      resolveLinkedOperatorAdmin(currentCfg, prepared.linked) === prepared.linked.profileId,
+  };
 }

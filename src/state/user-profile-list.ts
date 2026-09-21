@@ -196,16 +196,16 @@ type ProfileCatalog = {
   leases: Set<symbol>;
 };
 const profileCatalogs = new Map<string, ProfileCatalog>();
-type AvatarPublication = {
+type ProfileMutationPublication = {
   identity: DatabasePathIdentity;
-  profileId: string;
+  before: Map<string, ProfileDisplayRow | undefined>;
   witnesses: Map<
     Map<string, ProfileDisplayRow>,
-    { row: ProfileDisplayRow | undefined; late: boolean }
+    { rows: Map<string, ProfileDisplayRow | undefined>; late: boolean }
   >;
   catalogs: Map<ProfileCatalog, symbol>;
 };
-const avatarPublications = new Set<AvatarPublication>();
+const profileMutationPublications = new Set<ProfileMutationPublication>();
 let stopCatalogEvents: (() => void) | undefined;
 let profileCatalogHandles = new WeakMap<DatabaseSync, Map<string, ProfileDisplayRow>>();
 const profileCatalogPath = (options: OpenClawStateDatabaseOptions) =>
@@ -238,16 +238,16 @@ function loadProfileCatalog(
       shared?.rows ??
       new Map(tableExists(db, "user_profiles") ? selectProfileDisplayEntries(db) : []);
     Object.assign(catalog, { identity, valid: true });
-    for (const publication of avatarPublications) {
-      retainAvatarPublicationCatalog(publication, catalog, true);
+    for (const publication of profileMutationPublications) {
+      retainProfileMutationPublicationCatalog(publication, catalog, true);
     }
     return true;
   }
   return false;
 }
 
-function retainAvatarPublicationCatalog(
-  publication: AvatarPublication,
+function retainProfileMutationPublicationCatalog(
+  publication: ProfileMutationPublication,
   catalog: ProfileCatalog,
   late: boolean,
 ) {
@@ -255,12 +255,15 @@ function retainAvatarPublicationCatalog(
     return;
   }
   if (!publication.catalogs.has(catalog)) {
-    const lease = Symbol("pending avatar publication");
+    const lease = Symbol("pending profile mutation publication");
     publication.catalogs.set(catalog, lease);
     catalog.leases.add(lease);
   }
   if (!publication.witnesses.has(catalog.rows)) {
-    publication.witnesses.set(catalog.rows, { row: catalog.rows.get(publication.profileId), late });
+    publication.witnesses.set(catalog.rows, {
+      rows: new Map([...publication.before.keys()].map((id) => [id, catalog.rows.get(id)])),
+      late,
+    });
   }
 }
 
@@ -280,33 +283,37 @@ function releaseProfileCatalog(catalog: ProfileCatalog, lease: symbol) {
 }
 
 /** Capture under the worker's write transaction; native commits replace these row objects. */
-export function retainUserProfileAvatarPublication(
+export function retainUserProfileMutationPublication(
   identity: DatabasePathIdentity,
-  before: ProfileDisplayRow,
+  before: Array<[string, ProfileDisplayRow | undefined]>,
 ) {
-  const profileId = before.id;
-  const publication: AvatarPublication = {
+  const publication: ProfileMutationPublication = {
     identity,
-    profileId,
+    before: new Map(before),
     witnesses: new Map(),
     catalogs: new Map(),
   };
-  avatarPublications.add(publication);
+  profileMutationPublications.add(publication);
   for (const catalog of profileCatalogs.values()) {
-    retainAvatarPublicationCatalog(publication, catalog, false);
+    retainProfileMutationPublicationCatalog(publication, catalog, false);
   }
-  return {
-    reconcile(this: void, observed: ProfileDisplayRow | undefined) {
-      let changed = false;
-      for (const catalog of publication.catalogs.keys()) {
-        const witness = publication.witnesses.get(catalog.rows);
+  const publish = (after: Map<string, ProfileDisplayRow | undefined>, committed: boolean) => {
+    let changed = false;
+    for (const catalog of publication.catalogs.keys()) {
+      const witness = publication.witnesses.get(catalog.rows);
+      if (!catalog.valid || catalog.identity.key !== identity.key || !witness) {
+        continue;
+      }
+      for (const [profileId, previous] of publication.before) {
+        if (!after.has(profileId)) {
+          continue;
+        }
+        const row = witness.rows.get(profileId);
+        const observed = after.get(profileId);
         if (
-          catalog.valid &&
-          catalog.identity.key === identity.key &&
-          witness &&
-          catalog.rows.get(profileId) === witness.row &&
-          (!witness.late || isDeepStrictEqual(witness.row, before)) &&
-          !isDeepStrictEqual(witness.row, observed)
+          catalog.rows.get(profileId) === row &&
+          (!witness.late || isDeepStrictEqual(row, previous)) &&
+          !isDeepStrictEqual(row, observed)
         ) {
           if (observed) {
             catalog.rows.set(profileId, observed);
@@ -316,17 +323,44 @@ export function retainUserProfileAvatarPublication(
           changed = true;
         }
       }
-      if (changed || !isDeepStrictEqual(before, observed)) {
-        emitUserProfilesChanged();
-      }
+    }
+    if (
+      changed ||
+      (committed &&
+        [...publication.before].some(
+          ([id, previous]) => after.has(id) && !isDeepStrictEqual(previous, after.get(id)),
+        ))
+    ) {
+      emitUserProfilesChanged();
+    }
+  };
+  return {
+    reconcile(this: void, after: Array<[string, ProfileDisplayRow | undefined]>) {
+      publish(new Map(after), true);
+    },
+    invalidate(this: void) {
+      publish(new Map([...publication.before.keys()].map((id) => [id, undefined])), false);
     },
     release(this: void) {
-      avatarPublications.delete(publication);
+      profileMutationPublications.delete(publication);
       for (const [catalog, lease] of publication.catalogs) {
         releaseProfileCatalog(catalog, lease);
       }
       publication.catalogs.clear();
     },
+  };
+}
+
+export function retainUserProfileAvatarPublication(
+  identity: DatabasePathIdentity,
+  before: ProfileDisplayRow,
+) {
+  const publication = retainUserProfileMutationPublication(identity, [[before.id, before]]);
+  return {
+    reconcile(this: void, observed: ProfileDisplayRow | undefined) {
+      publication.reconcile([[before.id, observed]]);
+    },
+    release: publication.release,
   };
 }
 
@@ -417,7 +451,7 @@ export function getUserProfileDisplay(
   return projectUserProfileDisplay(profile);
 }
 
-function projectUserProfileDisplay(profile: Omit<ProfileDisplayRow, "role">) {
+export function projectUserProfileDisplay(profile: Omit<ProfileDisplayRow, "role">) {
   const avatarMime = normalizeUserProfileAvatarMime(profile.avatar_mime);
   return {
     id: profile.id,

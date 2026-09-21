@@ -101,6 +101,17 @@ For writes, shared-state domain operations registered by
 `src/state/openclaw-state-worker-runtime.ts` reuse the broker and publish results
 through their original store/projection owner.
 
+Channel identity administration, profile role assignments, email linking, and
+HTTP/WebSocket sign-in acquisition use that writer and the existing read worker.
+Worker commit receipts publish affected profile, alias, and display facts through
+the profile owner; warm sign-in ensures avoid unnecessary write transactions.
+Channel ingress prepares exact identity and role facts in the read worker, then
+retains the profile owner's physical-store and mutation revisions. Final owner
+checks read those revisions and current configuration without querying SQLite.
+Relevant identity or role mutations revoke prior authority before publication;
+closing or replacing the store invalidates its retained authority. Display caches
+and discovery snapshots do not grant permission.
+
 This execution cutover does not change schemas, stored bytes, retention, config,
 or update behavior. A change to those contracts follows the
 [storage review checkpoint](/reference/database-schemas/storage-changes#review-checkpoint-for-material-changes).

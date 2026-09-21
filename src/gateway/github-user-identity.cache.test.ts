@@ -261,6 +261,7 @@ describe("GitHub public identity metadata cache", () => {
       const changed = vi.fn();
       const stop = onUserProfilesChanged(changed);
       try {
+        setRuntimeConfigSnapshot(cfg);
         const resolve = () =>
           resolveAuthenticatedHttpUserProfile({ authResult: auth.authResult, req, cfg });
         const first = await resolve();

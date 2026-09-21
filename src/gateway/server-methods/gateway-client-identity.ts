@@ -14,7 +14,7 @@ import {
 import type { UserTurnInput } from "../../sessions/user-turn-transcript.types.js";
 import { INTERNAL_MESSAGE_CHANNEL, isOperatorUiClient } from "../../utils/message-channel.js";
 import { isSyntheticGatewayCaller } from "./gateway-personal-caller.js";
-import type { GatewayClient } from "./shared-types.js";
+import type { GatewayClient, GatewayRequestOptions } from "./shared-types.js";
 
 export function isGatewayClientProfilePending(client: GatewayClient | null): boolean {
   return Boolean(client?.authenticatedGitHubIdentitySync && !client.authenticatedUserProfile);
@@ -29,6 +29,27 @@ export function authenticatedProfileUnavailableError(
     retryAfterMs,
     details: { code: ConnectErrorDetailCodes.AUTHENTICATED_PROFILE_UNAVAILABLE },
   });
+}
+
+export async function authorizeAuthenticatedProfileForMethod(params: {
+  client: GatewayRequestOptions["client"];
+  requiresProfile: () => boolean;
+}): Promise<ErrorShape | null> {
+  const sync = params.client?.authenticatedGitHubIdentitySync;
+  if (!sync || params.client?.authenticatedUserProfile?.profileId.trim()) {
+    return null;
+  }
+  if (!params.requiresProfile()) {
+    return null;
+  }
+  try {
+    await sync();
+  } catch {
+    return authenticatedProfileUnavailableError();
+  }
+  return params.client?.authenticatedUserProfile?.profileId.trim()
+    ? null
+    : authenticatedProfileUnavailableError();
 }
 
 export function gatewayClientSenderFields(client: GatewayClient | null): {

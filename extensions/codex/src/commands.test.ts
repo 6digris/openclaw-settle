@@ -60,7 +60,6 @@ import {
   runCommand,
   supervisedTestBinding,
   writeTestBinding,
-  type CodexCommandDeps,
 } from "./commands.test-support.js";
 import { handleCodexConversationInboundClaim } from "./conversation-binding-hooks.js";
 

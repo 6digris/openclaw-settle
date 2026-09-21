@@ -1,5 +1,8 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { resolveCommandOwner } from "../auto-reply/command-auth.js";
+import {
+  isConfiguredCommandOwner,
+  prepareCommandOwnerAuthority,
+} from "../auto-reply/command-auth.js";
 import { createAccountActionGate } from "../channels/plugins/account-action-gate.js";
 import { resolveChannelDefaultAccountId } from "../channels/plugins/helpers.js";
 import { getChannelPlugin } from "../channels/plugins/index.js";
@@ -24,10 +27,15 @@ import { loadSessionEntry } from "./session-utils.js";
 
 type NoticeSession = ReturnType<typeof loadSessionEntry>;
 const log = createSubsystemLogger("gateway/update-run");
-type NoticeTarget =
+type NoticeDestination =
   | { kind: "route"; route: SessionDeliveryRoute }
   | { kind: "internal"; session: NoticeSession & { entry: SessionEntry } }
   | { kind: "none"; reason: string };
+type NoticeTarget =
+  | (Extract<NoticeDestination, { kind: "route" }> & {
+      owner: Awaited<ReturnType<typeof prepareCommandOwnerAuthority>>;
+    })
+  | Exclude<NoticeDestination, { kind: "route" }>;
 
 function isUpdateNoticeSendEnabled(cfg: OpenClawConfig, route: SessionDeliveryRoute): boolean {
   const channel = asOptionalRecord(cfg.channels?.[route.channel]);
@@ -55,25 +63,30 @@ function isUpdateNoticeSendEnabled(cfg: OpenClawConfig, route: SessionDeliveryRo
   })("sendMessage");
 }
 
-function isUpdateNoticeOwner(cfg: OpenClawConfig, route: SessionDeliveryRoute): boolean {
-  const owner = resolveCommandOwner(cfg, { ...route, senderId: route.to });
-  if (owner === "configured-owner") {
-    return true;
+async function prepareUpdateNoticeOwner(
+  cfg: OpenClawConfig,
+  route: SessionDeliveryRoute,
+  env?: NodeJS.ProcessEnv,
+) {
+  const requester = { ...route, senderId: route.to };
+  if (isConfiguredCommandOwner(cfg, requester)) {
+    return await prepareCommandOwnerAuthority(cfg, requester, { env });
   }
   if (route.chatType !== "direct") {
-    return false;
+    return undefined;
   }
   const plugin = getChannelPlugin(route.channel);
   const targetKind = plugin?.messaging?.inferTargetChatType?.({ to: route.to });
   if (targetKind && targetKind !== "direct") {
-    return false;
+    return undefined;
   }
-  if (owner) {
-    return true;
+  const owner = await prepareCommandOwnerAuthority(cfg, requester, { env });
+  if (owner.source) {
+    return owner;
   }
   // Only a channel-proven direct recipient can be translated into a sender identity.
   if (targetKind !== "direct" || !plugin?.config.formatAllowFrom) {
-    return false;
+    return undefined;
   }
   const target = plugin.messaging?.normalizeTarget?.(route.to) ?? route.to;
   const senderIds = plugin.config.formatAllowFrom({
@@ -81,7 +94,38 @@ function isUpdateNoticeOwner(cfg: OpenClawConfig, route: SessionDeliveryRoute): 
     accountId: route.accountId,
     allowFrom: [target],
   });
-  return senderIds.some((senderId) => resolveCommandOwner(cfg, { ...route, senderId }));
+  for (const senderId of senderIds) {
+    const translatedOwner = await prepareCommandOwnerAuthority(
+      cfg,
+      { ...route, senderId },
+      { env },
+    );
+    if (translatedOwner.source) {
+      return translatedOwner;
+    }
+  }
+  return undefined;
+}
+
+async function prepareUpdateRunNoticeTarget(
+  cfg: OpenClawConfig,
+  target: NoticeDestination,
+  env?: NodeJS.ProcessEnv,
+): Promise<NoticeTarget> {
+  if (target.kind !== "route") {
+    return target;
+  }
+  const route = { ...target.route };
+  if (!isUpdateNoticeSendEnabled(cfg, route)) {
+    return {
+      kind: "none",
+      reason: `update lifecycle notices are disabled by ${route.channel} actions.sendMessage policy`,
+    };
+  }
+  const owner = await prepareUpdateNoticeOwner(cfg, route, env);
+  return owner
+    ? authorizeUpdateRunNoticeTarget(cfg, { kind: "route", route, owner })
+    : { kind: "none", reason: "target is not a current command owner" };
 }
 
 export function authorizeUpdateRunNoticeTarget(
@@ -94,8 +138,8 @@ export function authorizeUpdateRunNoticeTarget(
       reason: `update lifecycle notices are disabled by ${target.route.channel} actions.sendMessage policy`,
     };
   }
-  return target.kind === "route" && !isUpdateNoticeOwner(cfg, target.route)
-    ? { kind: "none", reason: "target is not a configured command owner" }
+  return target.kind === "route" && !target.owner.isCurrent(cfg)
+    ? { kind: "none", reason: "target is not a current command owner" }
     : target;
 }
 
@@ -111,14 +155,14 @@ export function recordUpdateRunNoticeSkipped(
 }
 
 /** Resolve the origin once; internal sessions intentionally have no external delivery context. */
-export function resolveUpdateRunNoticeTarget(params: {
+export async function resolveUpdateRunNoticeTarget(params: {
   cfg: OpenClawConfig;
   sessionKey?: string;
   explicitDeliveryContext?: DeliveryContext;
   threadId?: string;
   session?: NoticeSession;
   env?: NodeJS.ProcessEnv;
-}): NoticeTarget {
+}): Promise<NoticeTarget> {
   const session =
     params.session ??
     (params.sessionKey ? loadSessionEntry(params.sessionKey, { env: params.env }) : undefined);
@@ -149,10 +193,11 @@ export function resolveUpdateRunNoticeTarget(params: {
     // Ambient recovery keeps the persisted system route thread; origin keys can supply hints.
     threadId: params.threadId ?? (params.sessionKey ? threadId : undefined),
   });
-  return authorizeUpdateRunNoticeTarget(
+  return await prepareUpdateRunNoticeTarget(
     params.cfg,
     route
       ? { kind: "route", route: { ...route, chatType } }
       : { kind: "none", reason: "no delivery target" },
+    params.env,
   );
 }

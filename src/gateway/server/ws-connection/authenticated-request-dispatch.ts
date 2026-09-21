@@ -109,7 +109,6 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
     const diagnostics = createGatewayRpcDiagnostics(req.method, getMethodRegistry, extraHandlers);
     logWs("in", "req", { connId, id: req.id, method: req.method });
     const context = buildRequestContext();
-    const expectedProfileBinding = createExpectedProfileBinding(req.expectedProfileId, client);
     const clientAuthority = captureGatewayDeviceRevocation(
       context,
       { deviceId: client.connect.device?.id, role: client.connect.role },
@@ -139,6 +138,14 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
     );
     const hasCurrentClientAuthority = clientAuthority.isCurrent;
     try {
+      const expectedProfileBinding =
+        req.expectedProfileId === undefined
+          ? undefined
+          : await createExpectedProfileBinding(req.expectedProfileId, client, () => {
+              if (!hasCurrentClientAuthority()) {
+                throw new Error("Gateway requester authority changed");
+              }
+            });
       const publishResponse = (
         ok: boolean,
         payload?: unknown,

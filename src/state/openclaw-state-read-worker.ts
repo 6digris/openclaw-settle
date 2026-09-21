@@ -85,6 +85,9 @@ function readPool(): ReadPool {
 }
 
 function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCommand {
+  if (command.type === "userProfiles.channelIdentity.resolve") {
+    return { type: command.type, identity: { ...command.identity } };
+  }
   if (command.type === "pluginBlob.lookup") {
     const { pluginId, namespace, key } = command.input;
     return { type: command.type, input: { pluginId, namespace, key } };
@@ -157,8 +160,24 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
   if (command.type === "onboardingRecommendations.read") {
     return bytes + Buffer.byteLength(command.configKey, "utf8");
   }
-  if (command.type === "userProfiles.avatar.reconcile") {
+  if (
+    command.type === "userProfiles.avatar.reconcile" ||
+    command.type === "userProfiles.channelIdentity.list" ||
+    command.type === "userProfiles.authority.resolve"
+  ) {
     return bytes + Buffer.byteLength(command.profileId, "utf8");
+  }
+  if (command.type === "userProfiles.githubIdentity.cached") {
+    return bytes + Buffer.byteLength(command.email, "utf8") + 8;
+  }
+  if (command.type === "userProfiles.channelIdentity.resolve") {
+    return (
+      bytes +
+      Object.values(command.identity).reduce(
+        (total, value) => total + Buffer.byteLength(value, "utf8"),
+        0,
+      )
+    );
   }
   if (command.type === "workspace.snapshot") {
     return bytes + Buffer.byteLength(command.workspaceDir, "utf8");

@@ -66,8 +66,6 @@ it.each(["issue", "clear"] as const)(
         for (const change of ["none", "demote", "reassign"] as const) {
           entered = createDeferredCore();
           resume = createDeferredCore();
-          unlinkUserChannelIdentity(admins[1]!.profile.id, admin.identity);
-          linkUserChannelIdentity(admin.profile.id, admin.identity);
           setUserProfileRole(admin.profile.id, "admin");
           await clearDeviceBootstrapTokens({ baseDir: state.stateDir });
           if (operation === "clear") {

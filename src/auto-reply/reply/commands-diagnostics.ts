@@ -53,8 +53,8 @@ type CodexDiagnosticsApprovalIntegration = {
   approvalFollowup?: () => Promise<string | undefined>;
 };
 
-export const handleDiagnosticsCommand: CommandHandler = async (params, allowTextCommands) => {
-  params = { ...params, command: { ...params.command } };
+export const handleDiagnosticsCommand: CommandHandler = async (input, allowTextCommands) => {
+  const params = { ...input, command: { ...input.command } };
   if (!allowTextCommands) {
     return null;
   }

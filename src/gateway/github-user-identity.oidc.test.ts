@@ -1,6 +1,8 @@
 import { IncomingMessage } from "node:http";
 import { Socket } from "node:net";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { onUserProfilesChanged } from "../state/user-profile-events.js";
@@ -36,6 +38,7 @@ const cfg: OpenClawConfig = {
 };
 
 function accessRequest(principal = "ada@example.test") {
+  setRuntimeConfigSnapshot(cfg);
   const req = new IncomingMessage(new Socket());
   req.headers = {
     "cf-access-authenticated-user-email": principal,
@@ -77,6 +80,7 @@ describe("Cloudflare Access OIDC profile resolution", () => {
           }),
         );
         const request = accessRequest();
+        const queries = vi.spyOn(DatabaseSync.prototype, "prepare");
         try {
           const httpProfile = await resolveAuthenticatedHttpUserProfile(request);
           expect(httpProfile.authenticatedUserProfile?.profileId).toBe(profile.id);
@@ -91,7 +95,9 @@ describe("Cloudflare Access OIDC profile resolution", () => {
               requestHeaders: request.req.headers,
             }),
           });
-          expect(connectedProfile).toEqual(httpProfile.authenticatedUserProfile);
+          expect(connectedProfile.profile).toEqual(httpProfile.authenticatedUserProfile);
+          expect(queries).not.toHaveBeenCalled();
+          queries.mockRestore();
           expect(getUserProfileListItem(profile.id)).toEqual(before);
           expect(transport).toHaveBeenCalledTimes(2);
           expect(
@@ -100,6 +106,7 @@ describe("Cloudflare Access OIDC profile resolution", () => {
             ),
           ).toBe(true);
         } finally {
+          queries.mockRestore();
           request.req.destroy();
         }
       });

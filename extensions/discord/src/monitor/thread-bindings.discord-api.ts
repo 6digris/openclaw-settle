@@ -143,14 +143,15 @@ export async function maybeSendBindingMessage(params: {
     return;
   }
   const record = params.record;
-  if (params.preferWebhook !== false && record.webhookId && record.webhookToken) {
+  const { webhookId, webhookToken } = record;
+  if (params.preferWebhook !== false && webhookId && webhookToken) {
     try {
       await withDiscordRequestAuthority(assertCurrent, () => {
         assertCurrent?.();
         return sendWebhookMessageDiscord(text, {
           cfg: params.cfg,
-          webhookId: record.webhookId,
-          webhookToken: record.webhookToken,
+          webhookId,
+          webhookToken,
           accountId: record.accountId,
           threadId: record.threadId,
           username: resolveThreadBindingPersonaFromRecord(record),

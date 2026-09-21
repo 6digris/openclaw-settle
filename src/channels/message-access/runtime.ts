@@ -7,7 +7,7 @@ import {
   normalizeStringEntries,
   uniqueStrings,
 } from "@openclaw/normalization-core/string-normalization";
-import type { PairingChannel } from "../../pairing/pairing-store.types.js";
+import { prepareCommandOwnerAuthority } from "../../auto-reply/command-auth.js";
 import { recordChannelIngressResolution } from "./admission-evidence.js";
 import { decideChannelIngress } from "./decision.js";
 import { resolveChannelIngressEffectiveAllowFromLists } from "./effective-allow-from.js";
@@ -38,57 +38,16 @@ import type {
   ResolvedChannelMessageIngress,
 } from "./runtime-types.js";
 import { resolveChannelIngressState } from "./state.js";
-import { readChannelIngressStoreAllowFromForDmPolicy } from "./store-allow-from.js";
+import { readChannelIngressStoreAllowFrom } from "./store-allow-from.js";
 import type {
   AccessGraphGate,
   ChannelIngressChannelId,
   ChannelIngressEventInput,
   ChannelIngressPolicyInput,
-  ChannelIngressStateInput,
   ResolvedIngressAllowlist,
 } from "./types.js";
 
 export { channelIngressRoutes } from "./runtime-routes.js";
-
-function shouldReadStore(params: {
-  conversationKind: ChannelIngressStateInput["conversation"]["kind"];
-  dmPolicy: ChannelIngressPolicyInput["dmPolicy"];
-}): boolean {
-  return (
-    params.conversationKind === "direct" &&
-    params.dmPolicy !== "allowlist" &&
-    params.dmPolicy !== "open"
-  );
-}
-
-async function readStoreAllowFrom(
-  params: ResolveChannelMessageIngressParams & { channelId: ChannelIngressChannelId },
-): Promise<Array<string | number>> {
-  if (
-    !shouldReadStore({
-      conversationKind: params.conversation.kind,
-      dmPolicy: params.policy.dmPolicy,
-    })
-  ) {
-    return [];
-  }
-  const entries = params.readStoreAllowFrom
-    ? await params
-        .readStoreAllowFrom({
-          channelId: params.channelId,
-          accountId: params.accountId,
-          dmPolicy: params.policy.dmPolicy,
-        })
-        .catch(() => [])
-    : params.useDefaultPairingStore
-      ? await readChannelIngressStoreAllowFromForDmPolicy({
-          provider: params.channelId as PairingChannel,
-          accountId: params.accountId,
-          dmPolicy: params.policy.dmPolicy,
-        })
-      : [];
-  return [...(entries ?? [])];
-}
 
 function commandRequested(policy: ChannelIngressPolicyInput): boolean {
   return policy.command != null;
@@ -433,7 +392,7 @@ async function resolveChannelMessageIngressForOwner(
   const adapter = createIdentityAdapter(params.identity);
   const subject = createIdentitySubject(params.identity, params.subject);
   const routeFacts = [...routeFactsFromDescriptors(params.route), ...(params.routeFacts ?? [])];
-  const storeAllowFrom = await readStoreAllowFrom({ ...params, channelId });
+  const storeAllowFrom = await readChannelIngressStoreAllowFrom({ ...params, channelId });
   const rawAllowFrom = normalizeStringEntries(params.allowFrom ?? []);
   const rawStoreAllowFrom = normalizeStringEntries(storeAllowFrom);
   const rawGroupAllowFrom = normalizeStringEntries(params.groupAllowFrom ?? []);
@@ -554,6 +513,24 @@ async function resolveChannelMessageIngressForOwner(
     ownerIsCurrent() &&
     ingress.admission === "dispatch"
   ) {
+    const verifiedPrincipal =
+      subject.identifiers[0]?.authentication === "verified" &&
+      subject.identifiers[0]?.kind === "stable-id" &&
+      subject.identifiers[0]?.value
+        ? {
+            channelId,
+            accountId: params.accountId ?? "default",
+            senderId: subject.identifiers[0].value,
+          }
+        : undefined;
+    const commandOwnerAuthority =
+      verifiedPrincipal && participantGatewayContext
+        ? await prepareCommandOwnerAuthority(participantGatewayContext.getRuntimeConfig(), {
+            channel: verifiedPrincipal.channelId,
+            accountId: verifiedPrincipal.accountId,
+            senderId: verifiedPrincipal.senderId,
+          })
+        : undefined;
     participantInput = {
       identity: participant
         ? {
@@ -571,16 +548,8 @@ async function resolveChannelMessageIngressForOwner(
             id: senderId!,
           },
       binding: participantBinding,
-      verifiedPrincipal:
-        subject.identifiers[0]?.authentication === "verified" &&
-        subject.identifiers[0]?.kind === "stable-id" &&
-        subject.identifiers[0]?.value
-          ? {
-              channelId,
-              accountId: params.accountId ?? "default",
-              senderId: subject.identifiers[0].value,
-            }
-          : undefined,
+      verifiedPrincipal,
+      commandOwnerAuthority: ownerIsCurrent() ? commandOwnerAuthority : undefined,
       promptedAt,
       owner: participantOwner,
       gatewayContext: participantGatewayContext,

@@ -6,17 +6,17 @@ import {
   validateUsersUnlinkChannelIdentityParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { UserChannelIdentityConflictError } from "../../state/user-channel-identities.js";
 import {
-  linkUserChannelIdentity,
-  listUserChannelIdentities,
-  unlinkUserChannelIdentity,
-  UserChannelIdentityConflictError,
-} from "../../state/user-channel-identities.js";
+  changeCanonicalUserChannelIdentity,
+  listCanonicalUserChannelIdentities,
+} from "../../state/user-channel-identity-operations.js";
 import {
   UserProfileNotFoundError,
   UserProfileOwnerError,
 } from "../../state/user-profiles-schema.js";
 import type { GatewayRequestHandlers } from "./types.js";
+import { prepareUserProfileAdministration } from "./users-profile-access.js";
 import { assertValidParams } from "./validation.js";
 
 function identityError(error: unknown) {
@@ -31,7 +31,8 @@ function identityError(error: unknown) {
 }
 
 export const usersChannelIdentityHandlers: GatewayRequestHandlers = {
-  "users.linkChannelIdentity": ({ params, respond }) => {
+  "users.linkChannelIdentity": async (options) => {
+    const { params, respond } = options;
     if (
       !assertValidParams(
         params,
@@ -43,12 +44,23 @@ export const usersChannelIdentityHandlers: GatewayRequestHandlers = {
       return;
     }
     try {
-      respond(true, linkUserChannelIdentity(params.profileId, params.identity));
+      const assertCurrent = await prepareUserProfileAdministration(options);
+      const result = await changeCanonicalUserChannelIdentity(
+        "link",
+        params.profileId,
+        params.identity,
+        { assertCurrent },
+      );
+      if (result.kind !== "linked") {
+        throw new Error("Channel identity mutation returned an unexpected result");
+      }
+      respond(true, result.link);
     } catch (error) {
       respond(false, undefined, identityError(error));
     }
   },
-  "users.unlinkChannelIdentity": ({ params, respond }) => {
+  "users.unlinkChannelIdentity": async (options) => {
+    const { params, respond } = options;
     if (
       !assertValidParams(
         params,
@@ -60,12 +72,23 @@ export const usersChannelIdentityHandlers: GatewayRequestHandlers = {
       return;
     }
     try {
-      respond(true, { removed: unlinkUserChannelIdentity(params.profileId, params.identity) });
+      const assertCurrent = await prepareUserProfileAdministration(options);
+      const result = await changeCanonicalUserChannelIdentity(
+        "unlink",
+        params.profileId,
+        params.identity,
+        { assertCurrent },
+      );
+      if (result.kind !== "unlinked") {
+        throw new Error("Channel identity mutation returned an unexpected result");
+      }
+      respond(true, { removed: result.removed });
     } catch (error) {
       respond(false, undefined, identityError(error));
     }
   },
-  "users.listChannelIdentities": ({ params, respond }) => {
+  "users.listChannelIdentities": async (options) => {
+    const { params, respond } = options;
     if (
       !assertValidParams(
         params,
@@ -77,7 +100,10 @@ export const usersChannelIdentityHandlers: GatewayRequestHandlers = {
       return;
     }
     try {
-      respond(true, { links: listUserChannelIdentities(params.profileId) });
+      const assertCurrent = await prepareUserProfileAdministration(options);
+      const links = await listCanonicalUserChannelIdentities(params.profileId);
+      assertCurrent();
+      respond(true, { links });
     } catch (error) {
       respond(false, undefined, identityError(error));
     }
