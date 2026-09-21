@@ -203,13 +203,15 @@ describeBrowserLayout.concurrent("chat footer browser layout", () => {
                       <div class="chat-group-footer">
                         <div class="chat-group-footer__meta">
                           <button class="msg-meta__summary" type="button">
-                            <span class="chat-group-timestamp">6m ago</span>
+                            <span class="chat-group-timestamp" style="width: 18px;">6m ago</span>
                           </button>
                         </div>
                       </div>
                     </div>
                   </div>
-                  <div class="chat-virtual-row" style="height: 40px;"></div>
+                  <div class="chat-virtual-row" style="height: 40px;">
+                    <div>The next message begins here.</div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -234,11 +236,12 @@ describeBrowserLayout.concurrent("chat footer browser layout", () => {
             height: Math.ceil(controlRect.height + 16),
           },
           rowBottom: rowRect.bottom,
+          deviceScaleFactor: window.devicePixelRatio,
         };
       });
       const png = await page.screenshot({ clip: bounds.clip });
-      const paintedBelowRow = await page.evaluate(
-        async ({ pngBase64, clipTop, rowBottom }) => {
+      const widestAccentRunBelowRow = await page.evaluate(
+        async ({ pngBase64, clipTop, rowBottom, deviceScaleFactor }) => {
           const image = new Image();
           image.src = `data:image/png;base64,${pngBase64}`;
           await image.decode();
@@ -248,25 +251,33 @@ describeBrowserLayout.concurrent("chat footer browser layout", () => {
           const context = canvas.getContext("2d")!;
           context.drawImage(image, 0, 0);
           const pixels = context.getImageData(0, 0, image.width, image.height).data;
-          const firstRowBelow = Math.ceil(rowBottom - clipTop);
+          const firstRowBelow = Math.ceil((rowBottom - clipTop) * deviceScaleFactor);
+          let widestRun = 0;
           for (let y = firstRowBelow; y < image.height; y += 1) {
+            let currentRun = 0;
             for (let x = 0; x < image.width; x += 1) {
               const offset = (y * image.width + x) * 4;
               if (pixels[offset]! > 240 && pixels[offset + 1]! < 20 && pixels[offset + 2]! < 20) {
-                return true;
+                currentRun += 1;
+                widestRun = Math.max(widestRun, currentRun);
+              } else {
+                currentRun = 0;
               }
             }
           }
-          return false;
+          return widestRun;
         },
         {
           pngBase64: png.toString("base64"),
           clipTop: bounds.clip.y,
           rowBottom: bounds.rowBottom,
+          deviceScaleFactor: bounds.deviceScaleFactor,
         },
       );
 
-      expect(paintedBelowRow).toBe(true);
+      // A clipped ring leaves only a vertical edge (the outline's device-pixel
+      // width). A wider run proves the rounded bottom edge was painted too.
+      expect(widestAccentRunBelowRow).toBeGreaterThan(bounds.deviceScaleFactor * 2);
     });
   });
 

@@ -649,9 +649,9 @@ openclaw-pending-session-create {
 }
 
 .chat-virtual-row:focus-within {
-  /* Paint containment otherwise clips the 2px focus outline plus its 3px
-     offset when a footer control sits on the row's bottom edge. */
-  overflow-clip-margin: 5px;
+  /* Footer controls use a -4px block margin. Paint containment must clear
+     that overhang plus the 2px focus outline and its 3px offset. */
+  overflow-clip-margin: 10px;
 }
 
 /* Message jumps need real mounted-row sizes before their target settles.
