@@ -587,8 +587,8 @@ The matching fallback covers future inventory changes without suppressing refits
 The existing 150-second split threshold produces 12 children, including the
 separate runtime-prerequisite child. This is distinct from exclusive-bin packing:
 Gateway configs retain exclusive plan admission and their current worker policy.
-With the tooling release tier applied, broad fallback fits the unchanged caps,
-including the fully hosted PR plan at 130 Node rows; that profile has no spare row.
+With the tooling release tier and measured tooling workers applied, broad fallback
+fits the unchanged caps: 111 hybrid, 120 GitHub, and 117 Blacksmith PR Node rows.
 
 At the inspected inventory, hybrid compact descriptors change from 29 to 51 on
 push and 53 to 75 on broad PRs; the maximum prediction remains 518 seconds for the
