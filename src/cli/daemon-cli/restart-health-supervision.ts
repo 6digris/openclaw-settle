@@ -1,4 +1,5 @@
 import type { GatewayService } from "../../daemon/service.js";
+import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 
 export async function resolveGatewayRestartSupervision(params: {
   service?: Partial<Pick<GatewayService, "isLoaded">>;
@@ -21,7 +22,15 @@ export async function resolveGatewayRestartSupervision(params: {
   if (timeoutMs <= 0) {
     return undefined;
   }
-  const loaded = await params.service.isLoaded({ env: params.env, timeoutMs }).catch(() => false);
+  const loaded = await params.service
+    .isLoaded({ env: params.env, timeoutMs })
+    .catch((error: unknown) => {
+      params.signal?.throwIfAborted();
+      if (hasCommandProcessCleanupError(error)) {
+        throw error;
+      }
+      return false;
+    });
   params.signal?.throwIfAborted();
   return loaded;
 }

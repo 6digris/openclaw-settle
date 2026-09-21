@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { gatewayHealthResponse } from "../../gateway/health-response.test-support.js";
+import { CommandProcessCleanupError } from "../../process/exec-result.js";
 import { mockProcessPlatform } from "../../test-utils/vitest-spies.js";
 import {
   callGateway,
@@ -254,6 +255,38 @@ describe("restart health supervision", () => {
       expect(service.isLoaded).toHaveBeenCalledTimes(stage === "supervisor" ? 1 : 0);
       expect(service.readRuntime).not.toHaveBeenCalled();
       expect(inspectPortUsage).not.toHaveBeenCalled();
+      expect(sleep).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { wrapped: false, aborted: false },
+    { wrapped: true, aborted: false },
+    { wrapped: false, aborted: true },
+    { wrapped: true, aborted: true },
+  ])(
+    "rejects uncertain native cleanup (wrapped=$wrapped, aborted=$aborted) before health probes",
+    async ({ wrapped, aborted }) => {
+      const service = makeGatewayService({ status: "stopped" });
+      const cleanupError = new CommandProcessCleanupError();
+      const failure = wrapped
+        ? new Error("inspection failed", { cause: cleanupError })
+        : cleanupError;
+      const controller = new AbortController();
+      const abortReason = new Error("original restart cancellation");
+      vi.mocked(service.isLoaded).mockImplementation(async () => {
+        if (aborted) {
+          controller.abort(abortReason);
+        }
+        throw failure;
+      });
+      await expect(
+        waitForGatewayHealthyRestart({ service, port: 18789, signal: controller.signal }),
+      ).rejects.toBe(aborted ? abortReason : failure);
+      expect(service.isLoaded).toHaveBeenCalledOnce();
+      expect(service.readRuntime).not.toHaveBeenCalled();
+      expect(inspectPortUsage).not.toHaveBeenCalled();
+      expect(callGateway).not.toHaveBeenCalled();
       expect(sleep).not.toHaveBeenCalled();
     },
   );

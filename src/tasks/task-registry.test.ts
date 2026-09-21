@@ -1,8 +1,6 @@
 // Covers task registry lifecycle, delivery, notification, and query behavior.
-import { existsSync } from "node:fs";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AcpSessionStoreEntry } from "../acp/runtime/session-meta.js";
 import { startAcpSpawnParentStreamRelay } from "../agents/subagents/spawn/acp-spawn-parent-stream.js";
 import { resetCronActiveJobs } from "../cron/active-jobs.js";
 import { emitAgentEvent, resetAgentEventsForTest } from "../infra/agent-events.js";
@@ -39,11 +37,6 @@ import {
   tryBeginGatewayRootWorkAdmission,
   tryBeginGatewaySuspendAdmission,
 } from "../process/gateway-work-admission.js";
-import { createDeferredCore } from "../shared/deferred.js";
-import {
-  closeOpenClawStateDatabaseByPathAsync,
-  registerOpenClawStateDatabaseAsyncResource,
-} from "../state/openclaw-state-db-cache.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
@@ -57,14 +50,19 @@ import { ensureTaskRuntimeStateReady } from "./runtime-internal.js";
 import { createAcpTaskBackingDetailForTest } from "./task-backing-authority.test-support.js";
 import {
   createTaskFlowForTask as createTaskFlowForTaskOrNull,
-  createManagedTaskFlow as createManagedTaskFlowOrNull,
   getTaskFlowById,
   reloadTaskFlowRegistryFromStoreAsync,
   requestFlowCancel,
   updateFlowRecordByIdExpectedRevision,
 } from "./task-flow-registry.js";
+import { createManagedTaskFlow } from "./task-flow-registry.test-support.js";
 import type { TaskFlowRecord } from "./task-flow-registry.types.js";
 import { getTaskActivitySnapshot } from "./task-registry-activity.js";
+import {
+  captureTaskDeliveryWork,
+  waitForAssertion,
+  waitForFast,
+} from "./task-registry-delivery.test-support.js";
 import { updateTaskStateByRunId } from "./task-registry-record-api.js";
 import {
   readTaskRegistryRevision,
@@ -77,7 +75,6 @@ import {
   findTaskByRunId,
   getTaskById,
   isParentFlowLinkError,
-  listTasksForAgentId,
   listTasksForOwnerKey,
   listTasksForRelatedSessionKey,
   listTaskRecords,
@@ -89,6 +86,7 @@ import {
   resolveTaskForLookupToken,
   updateTaskNotifyPolicyById,
 } from "./task-registry.js";
+import { registerTaskRegistryScheduledMaintenanceTests } from "./task-registry.maintenance-scheduling.test-utils.js";
 import {
   configureTaskRegistryMaintenance,
   getInspectableTaskAuditFindings,
@@ -130,27 +128,10 @@ import {
   setTaskRegistryDeliveryRuntimeForTests,
 } from "./task-runtime.test-helpers.js";
 
-function waitForFast<T>(
-  callback: () => T | Promise<T>,
-  options: { timeout?: number; interval?: number } = {},
-) {
-  return vi.waitFor(callback, { interval: 1, ...options });
-}
-
 const DEFAULT_TASK_RETENTION_MS = 7 * 24 * 60 * 60_000;
 const LOST_TASK_RETENTION_MS = 24 * 60 * 60_000;
 const NOTIFYCHAT_ORIGIN = { channel: "notifychat", to: "notifychat:123" } as const;
 const GUILDCHAT_ORIGIN = { channel: "guildchat", to: "guildchat:123" } as const;
-
-function createManagedTaskFlow(
-  params: Parameters<typeof createManagedTaskFlowOrNull>[0],
-): TaskFlowRecord {
-  const flow = createManagedTaskFlowOrNull(params);
-  if (!flow) {
-    throw new Error("expected managed TaskFlow creation to succeed");
-  }
-  return flow;
-}
 
 function createTaskFlowForTask(
   params: Parameters<typeof createTaskFlowForTaskOrNull>[0],
@@ -224,10 +205,6 @@ function createSessionBindingRecord(
     ...(overrides.expiresAt !== undefined ? { expiresAt: overrides.expiresAt } : {}),
     ...(overrides.metadata !== undefined ? { metadata: overrides.metadata } : {}),
   };
-}
-
-function waitForAssertion(assertion: () => void, timeoutMs = 2_000, stepMs = 5) {
-  return waitForFast(assertion, { timeout: timeoutMs, interval: stepMs });
 }
 
 function expectRecordFields(record: unknown, expected: Record<string, unknown>) {
@@ -313,49 +290,6 @@ function expectHeartbeatWake(
 }
 
 describe("task-registry", () => {
-  it("joins database resources before removing a registry fixture", async () => {
-    const entered = createDeferredCore();
-    const release = createDeferredCore();
-    let stateDir = "";
-    let databasePath = "";
-    let unregister = () => {};
-    const fixture = withTaskRegistryTempDir(async (root) => {
-      stateDir = root;
-      const database = openOpenClawStateDatabase();
-      databasePath = database.path;
-      const { admission } = captureOpenClawStateWorkerContext();
-      unregister = registerOpenClawStateDatabaseAsyncResource({
-        async close(identity) {
-          if (identity?.key === admission.identity.key) {
-            entered.resolve();
-            await release.promise;
-          }
-        },
-      });
-    });
-    try {
-      const cleanupEntered = await Promise.race([
-        entered.promise.then(() => true),
-        fixture.then(() => false),
-      ]);
-      expect(cleanupEntered).toBe(true);
-      expect(existsSync(stateDir)).toBe(true);
-      release.resolve();
-      await fixture;
-      expect(existsSync(stateDir)).toBe(false);
-    } finally {
-      release.resolve();
-      try {
-        await fixture;
-      } finally {
-        unregister();
-        if (databasePath) {
-          await closeOpenClawStateDatabaseByPathAsync(databasePath);
-        }
-      }
-    }
-  });
-
   beforeEach(async () => {
     resetGatewayWorkAdmission();
     heartbeatWakeRequests = [];
@@ -422,7 +356,7 @@ describe("task-registry", () => {
           markTaskTerminalById({ taskId: task.taskId, status: "succeeded", endedAt: Date.now() });
           await maybeDeliverTaskTerminalUpdate(task.taskId);
         } else {
-          await maybeDeliverTaskStateChangeUpdate(task.taskId, {
+          await maybeDeliverTaskStateChangeUpdate(task, {
             at: Date.now(),
             kind: "progress",
             summary: "Checking the result",
@@ -453,7 +387,7 @@ describe("task-registry", () => {
           notifyPolicy: "state_changes",
         });
         if (kind === "progress") {
-          await maybeDeliverTaskStateChangeUpdate(task.taskId, {
+          await maybeDeliverTaskStateChangeUpdate(task, {
             at: Date.now(),
             kind: "progress",
             summary: "Checking the result",
@@ -2934,6 +2868,7 @@ describe("task-registry", () => {
         expect(getGatewaySuspendStatus(suspension.suspensionId)).toEqual({
           status: "ready",
           expiresAtMs: suspension.expiresAtMs,
+          writeCustody: [],
         });
       } finally {
         releaseSend();
@@ -2999,40 +2934,6 @@ describe("task-registry", () => {
       expect(listTasksForRelatedSessionKey("agent:main:subagent:child-1")[0]?.taskId).toBe(
         older.taskId,
       );
-    });
-  });
-
-  it("infers agent ids for session-scoped tasks", async () => {
-    await withTaskRegistryTempDir(async () => {
-      const created = createTaskFixture("cli", {
-        ownerKey: undefined,
-        scopeKind: undefined,
-        taskKind: "video_generation",
-        sourceId: "video_generate:openai",
-        requesterSessionKey: "agent:main:discord:direct:123",
-        childSessionKey: "agent:main:discord:direct:123",
-        runId: "tool:video_generate:agent-index",
-        task: "Generate a lobster video",
-        notifyPolicy: "silent",
-      });
-
-      expect(created.agentId).toBe("main");
-      expect(listTasksForAgentId("main").map((task) => task.taskId)).toEqual([created.taskId]);
-    });
-  });
-
-  it("uses the child session agent for cross-agent background task attribution", async () => {
-    await withTaskRegistryTempDir(async () => {
-      const created = createTaskFixture("subagent", {
-        childSessionKey: "agent:worker:subagent:child",
-        runId: "run-worker-subagent",
-        task: "Inspect worker state",
-        deliveryStatus: "pending",
-      });
-
-      expect(created.agentId).toBe("worker");
-      expect(listTasksForAgentId("worker").map((task) => task.taskId)).toEqual([created.taskId]);
-      expect(listTasksForAgentId("main")).toEqual([]);
     });
   });
 
@@ -3632,7 +3533,7 @@ describe("task-registry", () => {
       });
 
       startTaskRegistryMaintenance();
-      stopTaskRegistryMaintenance();
+      await stopTaskRegistryMaintenance();
 
       await vi.advanceTimersByTimeAsync(5_000);
       await flushAsyncWork();
@@ -3643,57 +3544,7 @@ describe("task-registry", () => {
     });
   });
 
-  it("prunes expired ended TaskFlows during scheduled maintenance", async () => {
-    await withTaskRegistryTempDir(
-      async () => {
-        vi.useFakeTimers();
-        const endedAt = Date.now() - 8 * 24 * 60 * 60_000;
-        const flow = createManagedTaskFlow({
-          ownerKey: "agent:main:main",
-          controllerId: "tests/scheduled-task-flow-maintenance",
-          goal: "Completed without a usable result",
-          status: "blocked",
-          createdAt: endedAt,
-          updatedAt: endedAt,
-          endedAt,
-        });
-        resetTaskRegistryForTests({ persist: false });
-        resetTaskFlowRegistryForTests({ persist: false });
-
-        try {
-          startTaskRegistryMaintenance();
-          await vi.advanceTimersByTimeAsync(5_000);
-          await waitForFast(() => expect(getTaskFlowById(flow.flowId)).toBeUndefined());
-        } finally {
-          stopTaskRegistryMaintenance();
-        }
-      },
-      { durableStore: true },
-    );
-  });
-
-  it("keeps scheduled maintenance root-admitted until session cleanup inspection settles", async () => {
-    await withTaskRegistryTempDir(async () => {
-      vi.useFakeTimers();
-      let releaseInspection = (_entries: AcpSessionStoreEntry[]) => {};
-      const inspection = new Promise<AcpSessionStoreEntry[]>((resolve) => {
-        releaseInspection = resolve;
-      });
-      configureTaskRegistryMaintenanceRuntimeForTest({
-        currentTasks: new Map(),
-        snapshotTasks: [],
-        listAcpSessionEntries: async () => await inspection,
-      });
-
-      startTaskRegistryMaintenance();
-      await vi.advanceTimersByTimeAsync(5_000);
-      await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(1));
-
-      releaseInspection([]);
-      await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
-      stopTaskRegistryMaintenance();
-    });
-  });
+  registerTaskRegistryScheduledMaintenanceTests();
 
   it.each(["closing", "retained"] as const)(
     "keeps sweep membership fixed when %s retention changes during awaited cleanup",
@@ -4244,7 +4095,7 @@ describe("task-registry", () => {
       expectRecordFields(requireTaskByRunId("run-state-change"), {
         notifyPolicy: "state_changes",
       });
-      await maybeDeliverTaskStateChangeUpdate(task.taskId);
+      await maybeDeliverTaskStateChangeUpdate(task);
       expect(hoisted.sendMessageMock).toHaveBeenCalledTimes(1);
     });
   });
@@ -4279,8 +4130,8 @@ describe("task-registry", () => {
       });
       const event = { at: 250, kind: "progress" as const, summary: "Still working." };
 
-      await maybeDeliverTaskStateChangeUpdate(task.taskId, event);
-      await maybeDeliverTaskStateChangeUpdate(task.taskId, event);
+      await maybeDeliverTaskStateChangeUpdate(task, event);
+      await maybeDeliverTaskStateChangeUpdate(task, event);
 
       expect(hoisted.sendMessageMock).toHaveBeenCalledTimes(testCase.expectedSendCount);
     });
@@ -4367,6 +4218,7 @@ describe("task-registry", () => {
         notifyPolicy: "state_changes",
       });
 
+      using deliveries = captureTaskDeliveryWork();
       const relay = startAcpSpawnParentStreamRelay({
         runId: "run-state-stream",
         parentSessionKey: "agent:main:main",
@@ -4379,14 +4231,14 @@ describe("task-registry", () => {
       });
 
       relay.notifyStarted();
-      await flushAsyncWork();
+      await deliveries.settle();
       expectRecordFields(sentMessageCall(), {
         content: "Background task update: ACP background task. Started.",
       });
 
       hoisted.sendMessageMock.mockClear();
       vi.advanceTimersByTime(1_500);
-      await flushAsyncWork();
+      await deliveries.settle();
       expectRecordFields(sentMessageCall(), {
         content:
           "Background task update: ACP background task. No prompt submission observed for 1s after child start.",

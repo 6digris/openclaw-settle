@@ -4,6 +4,7 @@ import { asRecord } from "@openclaw/normalization-core/record-coerce";
 import { beforeEach, expect, it } from "vitest";
 import { loadPluginManifest, PLUGIN_MANIFEST_FILENAME } from "../../../src/plugins/manifest.ts";
 import { resolveBundledPluginPublicModulePath } from "../../../src/test-utils/bundled-plugin-public-surface.ts";
+import type { ApplicationContext } from "../app/context.ts";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { installMockGateway, waitForControlUiRoute } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
@@ -60,7 +61,7 @@ async function openWorkboard(page: Parameters<typeof waitForControlUiRoute>[0], 
     const title = surface?.querySelector<HTMLElement>(".plugins-settings-title");
     const tabs = surface?.querySelector<HTMLElement>(".plugins-settings-tabs.oc-segmented");
     const searchField = surface?.querySelector<HTMLElement>(".plugins-settings-search");
-    const section = surface?.querySelector<HTMLElement>(".settings-section");
+    const section = surface?.querySelector<HTMLElement>("#plugin-settings-panel .settings-group");
     if (!surface || !title || !tabs || !searchField || !section) {
       return null;
     }
@@ -264,7 +265,10 @@ suite.define(() => {
             },
           });
           await page.goto(`${suite.server.baseUrl}settings/plugins/${manifest.id}#configuration`);
-          await page.getByRole("heading", { name: `${name} settings`, exact: true }).waitFor();
+          await page
+            .locator(".plugin-editor")
+            .getByRole("searchbox", { name: "Search settings", exact: true })
+            .waitFor();
           const apiKey = page.locator("input").and(page.getByLabel(new RegExp(`${label}$`, "u")));
           await apiKey.waitFor();
           if (captureUiProof) {
@@ -308,9 +312,18 @@ suite.define(() => {
               },
             },
           });
-          const reads = (await gateway.getRequests("config.get")).length;
+          await expect
+            .poll(() =>
+              page.evaluate(
+                () =>
+                  document.querySelector<HTMLElement & { context: ApplicationContext }>(
+                    "openclaw-plugins-page",
+                  )?.context.runtimeConfig.state.configAutoSaveStatus,
+              ),
+            )
+            .toBe("saved");
           await page.reload();
-          await gateway.waitForRequest("config.get", { after: reads });
+          await gateway.waitForRequest("config.get");
           await expect.poll(() => apiKey.inputValue()).toBe("synthetic-credential");
           expect(await reference.inputValue()).toBe("");
           expect(await reference.getAttribute("readonly")).not.toBeNull();
@@ -374,7 +387,10 @@ suite.define(() => {
         expect(await page.locator(".plugin-installed-detail__setup-dot").count()).toBe(0);
         expect(await page.getByText("Setup required", { exact: true }).count()).toBe(0);
         await configuration.click();
-        await page.getByRole("heading", { name: "Workboard settings", exact: true }).waitFor();
+        await page
+          .locator(".plugin-editor")
+          .getByRole("searchbox", { name: "Search settings", exact: true })
+          .waitFor();
         expect(await page.locator(".plugin-editor .callout.warning").count()).toBe(0);
       },
     );
@@ -506,7 +522,9 @@ suite.define(() => {
         ).toBe(1);
         expect(await page.getByRole("button", { name: "Reload", exact: true }).count()).toBe(0);
         expect(await page.getByText("This plugin has no configurable settings.").count()).toBe(0);
-        await page.getByRole("button", { name: "Reload Broken plugin", exact: true }).waitFor();
+        expect(
+          await page.getByRole("button", { name: "Reload Broken plugin", exact: true }).count(),
+        ).toBe(0);
       },
     );
   });
@@ -557,7 +575,7 @@ suite.define(() => {
         }
         expect(
           await page.getByRole("heading", { name: "Workboard settings", exact: true }).count(),
-        ).toBe(1);
+        ).toBe(0);
         expect(await page.locator(".plugin-editor__section > h2").allTextContents()).toEqual([
           "Workspace",
           "Updates",
@@ -595,6 +613,7 @@ suite.define(() => {
           await page.setViewportSize({ width: 1440, height: 1000 });
         }
         const catalogRequests = (await gateway.getRequests("plugins.list")).length;
+        const workspaceInspections = (await gateway.getRequests("plugins.inspect")).length;
         await workspace.fill("Release planning");
         expect(await gateway.getRequests("config.set")).toHaveLength(0);
         await workspace.press("Tab");
@@ -614,6 +633,8 @@ suite.define(() => {
           await page.getByRole("button", { name: "Save configuration", exact: true }).count(),
         ).toBe(0);
 
+        await gateway.waitForRequest("plugins.inspect", { after: workspaceInspections });
+        const checkboxInspections = (await gateway.getRequests("plugins.inspect")).length;
         await page.locator('[data-setting="notifications"] .plugin-editor__title').click();
         const checkboxSave = await gateway.waitForRequest("config.set", { after: 1 });
         expect(JSON.parse(String(asRecord(checkboxSave.params).raw))).toMatchObject({
@@ -629,6 +650,8 @@ suite.define(() => {
             },
           },
         });
+        await gateway.waitForRequest("plugins.inspect", { after: checkboxInspections });
+        const resetInspections = (await gateway.getRequests("plugins.inspect")).length;
         await page
           .getByRole("button", { name: "Actions for Workspace label", exact: true })
           .click();
@@ -642,23 +665,18 @@ suite.define(() => {
           notifications: false,
         });
         await expect.poll(() => workspace.inputValue()).toBe("Planning");
+        await gateway.waitForRequest("plugins.inspect", { after: resetInspections });
         const search = page
           .locator(".plugin-editor")
           .getByRole("searchbox", { name: "Search settings", exact: true });
         await search.fill("Allow prompt changes");
         await page.getByRole("heading", { name: "Permissions", exact: true }).waitFor();
         expect(await page.locator(".plugin-editor__empty").count()).toBe(0);
-        await page
-          .locator(".plugin-editor .cfg-object__summary")
-          .filter({ hasText: "Hooks" })
-          .click();
-        const permission = page.getByRole("checkbox", {
-          name: "Allow prompt changes",
-          exact: true,
-        });
+        const permissionRow = page.locator('[data-setting="hooks.allowPromptInjection"]');
+        const permission = permissionRow.getByRole("checkbox");
         const inspections = (await gateway.getRequests("plugins.inspect")).length;
         await gateway.deferNext("plugins.inspect");
-        await permission.check();
+        await permissionRow.locator(".plugin-editor__title").click();
         const permissionSave = await gateway.waitForRequest("config.set", { after: 3 });
         await gateway.waitForRequest("plugins.inspect", { after: inspections });
         // A saved edit refreshes inspection without retiring the active editor.
@@ -745,7 +763,10 @@ suite.define(() => {
             await configuration.press(activation);
           }
           await gateway.resolveDeferred("plugins.inspect", inspection);
-          await page.getByRole("heading", { name: "Workboard settings", exact: true }).waitFor();
+          await page
+            .locator(".plugin-editor")
+            .getByRole("searchbox", { name: "Search settings", exact: true })
+            .waitFor();
           if (captureUiProof && activation === "click") {
             await page.screenshot({
               animations: "disabled",
@@ -883,13 +904,16 @@ suite.define(() => {
           .getByRole("link", { name: "Settings", exact: true })
           .click();
         await expect.poll(() => new URL(page.url()).searchParams.get("view")).toBe("settings");
-        await page.getByText("Add context to prompts", { exact: true }).waitFor();
+        expect(
+          await page.getByRole("checkbox", { name: "Add context to prompts", exact: true }).count(),
+        ).toBe(0);
 
         await page.getByRole("alert").filter({ hasText: "Configuration unavailable" }).waitFor();
         const configRequests = (await gateway.getRequests("config.get")).length;
         await gateway.setMethodResponse("config.get", configMocks["config.get"]);
         await page.getByRole("button", { name: "Retry", exact: true }).click();
         await page.getByLabel("Workspace label", { exact: true }).waitFor();
+        await page.getByRole("checkbox", { name: "Add context to prompts", exact: true }).waitFor();
         expect(await gateway.getRequests("config.get")).toHaveLength(configRequests + 1);
       },
     );

@@ -20,6 +20,8 @@ const repositoryScriptEntries = [
   // apps/linux/README.md invokes this live Windows native-browser proof driver by path.
   "apps/linux/scripts/test-inline-browser.mjs!",
   "scripts/render-proof-video.mts!",
+  // tsdown builds this private macOS app worker protocol entry by path.
+  "src/node-host/mac-worker-entry.ts!",
   // CI imports this selector from its trusted harness inside an inline Node script.
   ".github/actions/git-owner/test-prerequisites.mjs!",
   // mobile-release-authority invokes this helper from composite-action YAML.
@@ -34,6 +36,8 @@ const repositoryScriptEntries = [
   "scripts/build-discord-activity-sdk.mts!",
   // package-mac-app.sh launches the architecture scheduler by path.
   "scripts/build-mac-swift.mts!",
+  // CI passes this native test launcher through the Apple command log wrapper.
+  "scripts/test-macos-native.mts!",
   "scripts/check-control-ui-performance.mts!",
   "scripts/check-control-ui-precompressed-assets.mts!",
   "scripts/check-live-cache.ts!",
@@ -121,6 +125,7 @@ const repositoryScriptEntries = [
   "scripts/e2e/lib/upgrade-survivor/probe-gateway.mjs!",
   "scripts/e2e/lib/upgrade-survivor/probe-volume-gateway.mjs!",
   "scripts/e2e/lib/upgrade-survivor/projects-doctor.mjs!",
+  "scripts/e2e/lib/upgrade-survivor/published-plugin-registry.mjs!",
   "scripts/e2e/lib/upgrade-survivor/recovery-cleanup.mjs!",
   "scripts/e2e/lib/upgrade-survivor/schema-expectation.mjs!",
   // update-restart-auth.sh installs this manager/launch adapter into the fixture bin directory.
@@ -177,6 +182,8 @@ const repositoryScriptEntries = [
   "scripts/pr-lib/merge-body.mjs!",
   // merge.sh executes legacy capture qualification as a standalone Node CLI.
   "scripts/pr-lib/merge-legacy-refusal.mjs!",
+  // merge.sh and merge-outcome.sh execute refusal qualification by path.
+  "scripts/pr-lib/merge-pre-dispatch-refusal.mjs!",
   // merge-outcome.sh launches the REST adapter as a standalone Node CLI.
   "scripts/pr-lib/merge-rest.mjs!",
   "scripts/pr-lib/review-artifacts.mjs!",
@@ -285,6 +292,7 @@ const rootEntries = [
   "scripts/bench-sqlite-reliability.ts!",
   "scripts/bench-cron-session-reaper.ts!",
   "scripts/bench-codex-catalog-pages.ts!",
+  "scripts/bench-redaction-hot-paths.ts!",
   // docs/reference/test/performance.md invokes this standalone comparison harness.
   "scripts/bench-workspace-computation.ts!",
   // Docker/manual E2E executables and their nested assertion/probe entrypoints.
@@ -414,6 +422,8 @@ const rootBundledPluginRuntimeDependencies = [
   "@mozilla/readability",
   "@silvia-odwyer/photon-node",
   "@trycua/cua-driver",
+  // Root bundles the browser plugin's patched MCP server for npm installations.
+  "chrome-devtools-mcp",
   "grammy",
   "linkedom",
   "minimatch",
