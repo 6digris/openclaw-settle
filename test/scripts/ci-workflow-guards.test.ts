@@ -7035,7 +7035,7 @@ setImmediate(() => {
       "qa-smoke-ci-profile": "blacksmith-16vcpu-ubuntu-2404",
       "check-test-types-hosted-core-shard": "blacksmith-16vcpu-ubuntu-2404",
       "checks-ui": "blacksmith-8vcpu-ubuntu-2404",
-      "checks-windows": "blacksmith-8vcpu-windows-2025",
+      "checks-windows": "blacksmith-16vcpu-windows-2025",
     } as const;
     const expectedHybridForkRunners = {
       ...expectedHybridFirstAttemptRunners,
@@ -9557,7 +9557,7 @@ server.listen(0, "127.0.0.1", () => {
     });
     // The Windows matrix carries no per-row runner: both parts share one class.
     expect(workflow.jobs["checks-windows"]["runs-on"]).not.toContain("matrix.runner");
-    expect(source).toContain("blacksmith-8vcpu-windows-2025");
+    expect(source).toContain("blacksmith-16vcpu-windows-2025");
   });
 
   it("keeps the extension boundary sticky disk on one protected key", () => {

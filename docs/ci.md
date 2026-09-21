@@ -35,6 +35,8 @@ In-process Gateway test configs use [exclusive plan admission within existing pa
 
 Changed-extension PR jobs use [measured fallback rates and a 240-second packing budget](/ci/capacity#runner-registration-budget) within the landed 90-row compact, 130-row PR and 70-row push caps.
 
+Windows uses the measured [16-vCPU runner class](/ci/runners#blacksmith-runner-capacity); the 32-class saved only 16 seconds of tail time at nearly twice the requested-vCPU minutes. Both parts retain one Vitest worker and serial project execution.
+
 Roomy serial Blacksmith Node jobs use [measured Vitest worker sizing](/ci/capacity#vitest-worker-sizing), with existing hosted, frozen-target, and overlapping-plan limits.
 
 Source-only Linux Node shards can reuse content-validated compiled workers from the protected warmer; [fixed preparation costs](/ci/capacity#fixed-job-preparation) remain separate from test execution and runner capacity.
