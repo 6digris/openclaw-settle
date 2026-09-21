@@ -6,6 +6,7 @@ import {
 import { GatewayClientRequestError } from "../../packages/gateway-client/src/request-error.js";
 import type { ErrorShape } from "../../packages/gateway-protocol/src/schema/frames.js";
 import { createAbortError } from "../infra/abort-signal.js";
+import { registerDiagnosticToolExecutionDeadline } from "../infra/diagnostic-tool-execution-liveness.js";
 import { resolveSafeTimeoutDelayMs } from "../utils/timer-delay.js";
 import type { GatewayMethodRegistry } from "./methods/registry.js";
 import type { GatewayMethodDispatchResponse } from "./server-in-process-dispatch.types.js";
@@ -91,6 +92,7 @@ async function waitForDispatch<T>(
 ): Promise<T> {
   let timeout: NodeJS.Timeout | undefined;
   let onAbort: (() => void) | undefined;
+  let releaseDeadline: (() => void) | undefined;
   try {
     if (signal?.aborted) {
       throw resolveDispatchAbortError(method, signal);
@@ -99,6 +101,8 @@ async function waitForDispatch<T>(
     if (remainingTimeoutMs === undefined && !signal) {
       return await promise;
     }
+    releaseDeadline =
+      deadlineMs === undefined ? undefined : registerDiagnosticToolExecutionDeadline(deadlineMs);
     const cancellation = new Promise<never>((_resolve, reject) => {
       if (remainingTimeoutMs !== undefined) {
         timeout = setTimeout(() => {
@@ -132,6 +136,7 @@ async function waitForDispatch<T>(
     }
     throw error;
   } finally {
+    releaseDeadline?.();
     if (timeout) {
       clearTimeout(timeout);
     }
