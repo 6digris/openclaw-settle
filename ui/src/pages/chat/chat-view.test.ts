@@ -53,6 +53,13 @@ import { groupMessages } from "./chat-thread-grouping.ts";
 import * as chatThread from "./chat-thread.ts";
 import { resetChatViewState } from "./chat-view-state.ts";
 import {
+  getChatThinkingValue,
+  getThinkingSelect,
+  getThinkingSlider,
+  getThinkingSliderValues,
+  getThinkingReasoningValueLabel,
+} from "./chat-view-thinking.test-support.ts";
+import {
   appendChatBubble,
   createChatProps,
   createDragEvent,
@@ -597,37 +604,6 @@ function renderModelControls(
   );
   return container;
 }
-
-function getChatThinkingValue(control: HTMLElement): string {
-  return control.dataset.chatThinkingValue ?? "";
-}
-
-function getThinkingSelect(container: Element): HTMLElement {
-  const select = container.querySelector<HTMLElement>('[data-chat-thinking-select="true"]');
-  expect(select).toBeInstanceOf(HTMLElement);
-  if (!(select instanceof HTMLElement)) {
-    throw new Error("Expected chat thinking control");
-  }
-  return select;
-}
-
-function getThinkingSlider(container: Element): HTMLInputElement | null {
-  return container.querySelector<HTMLInputElement>('[data-chat-thinking-slider="true"]');
-}
-
-function getThinkingSliderValues(container: Element): string[] {
-  const values = getThinkingSlider(container)?.dataset.chatThinkingValues ?? "";
-  return values ? values.split(",") : [];
-}
-
-function getThinkingReasoningValueLabel(container: Element): string {
-  const preview = container.querySelector(
-    "[data-chat-thinking-preview-committed]:not([hidden]), " +
-      "[data-chat-thinking-preview-index]:not([hidden])",
-  );
-  return preview?.textContent?.trim() ?? "";
-}
-
 describe("chat typing status", () => {
   it.each([
     {
@@ -1797,7 +1773,6 @@ describe("chat transcript rendering", () => {
       ...existing,
     ]);
     expect(container.querySelector(".chat-transcript-announcement")?.textContent).toBe("");
-
     renderMessages([
       message("older-user", "user", "Older question"),
       message("older-assistant", "assistant", "Older answer"),
@@ -8997,7 +8972,6 @@ describe("right-click Reply", () => {
     selectedRange = document.createRange();
     selectedRange.selectNodeContents(otherBubble);
     const disjointEvent = dispatchContextMenu(bubble);
-
     expect(disjointEvent.defaultPrevented).toBe(true);
     expect(
       [...document.querySelectorAll(".chat-reply-context-menu button")].map((button) =>

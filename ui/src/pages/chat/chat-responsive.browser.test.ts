@@ -36,6 +36,12 @@ import {
   waitForLayoutSettled,
   type ControlRect,
 } from "./chat-layout.browser.test-support.ts";
+import {
+  getTextContentRect,
+  expectNoHorizontalOverflow,
+  openComposerLayoutFixture,
+  syncFixtureComposerPopoverAnchor,
+} from "./chat-responsive.fixture.test-support.ts";
 
 const VIEWPORTS = [
   [320, 568],
@@ -779,86 +785,15 @@ function chatHtml(opts: ChatFixtureOptions = {}, mobileNavLayout = false) {
   `;
 }
 
-async function syncFixtureComposerPopoverAnchor(page: Page) {
-  // The session companion runs the same composer surface, so the pane's own
-  // composer is named by its shell rather than by the shared surface class.
-  await page.locator(".agent-chat__composer-shell > .agent-chat__input").evaluate((node) => {
-    const viewport = window.visualViewport;
-    const viewportTop = viewport?.offsetTop ?? 0;
-    const layoutViewportHeight = document.documentElement.clientHeight || window.innerHeight;
-    const composerTop = node.getBoundingClientRect().top;
-    node.style.setProperty(
-      "--chat-composer-popover-bottom",
-      `${layoutViewportHeight - composerTop + 6}px`,
-    );
-    node.style.setProperty(
-      "--chat-composer-popover-max-height",
-      `${Math.max(0, composerTop - viewportTop - 28)}px`,
-    );
-  });
-}
-
 async function openFixture(width: number, height: number, opts: ChatFixtureOptions = {}) {
-  const page = await openBrowserPage(width, height);
-  try {
-    if (!realChatServer) {
-      throw new Error("Expected the Control UI server to be ready");
-    }
-    const fixtureUrl = `${realChatServer.baseUrl}chat-responsive-fixture`;
-    await page.route(fixtureUrl, (route) =>
-      route.fulfill({
-        contentType: "text/html",
-        body: `<!doctype html><html><head><style>${readUiCss()}</style></head><body>${chatHtml(opts, width <= 1100)}</body></html>`,
-      }),
-    );
-    await page.goto(fixtureUrl);
-    // Browser-owned source keeps these imports out of Vitest's SSR callback transform.
-    await page.evaluate(`(async () => {
-      const baseUrl = ${JSON.stringify(realChatServer.baseUrl)};
-      await import(baseUrl + "src/components/composer-editor.ts");
-      const { adjustTextareaHeight } = await import(
-        baseUrl + "src/pages/chat/components/chat-composer-dom.ts"
-      );
-      const editor = document.querySelector("openclaw-composer-editor");
-      editor.value = "Queued follow-up for the active operator session";
-      editor.addEventListener("input", () => adjustTextareaHeight(editor));
-      adjustTextareaHeight(editor);
-    })()`);
-    await syncFixtureComposerPopoverAnchor(page);
-    return page;
-  } catch (error) {
-    await closeBrowserPage(page);
-    throw error;
+  if (!realChatServer) {
+    throw new Error("Expected the Control UI server to be ready");
   }
-}
-
-async function getTextContentRect(page: Page, selector: string) {
-  const rect = await page.locator(selector).evaluate((node) => {
-    const range = document.createRange();
-    range.selectNodeContents(node);
-    const bounds = range.getBoundingClientRect();
-    range.detach();
-    return {
-      left: bounds.left,
-      right: bounds.right,
-      top: bounds.top,
-      bottom: bounds.bottom,
-      width: bounds.width,
-      height: bounds.height,
-    };
-  });
-  expectFiniteRect({ x: rect.left, y: rect.top, width: rect.width, height: rect.height });
-  return rect;
-}
-
-async function expectNoHorizontalOverflow(page: Page) {
-  const metrics = await page.evaluate(() => ({
-    body: document.body.scrollWidth,
-    html: document.documentElement.scrollWidth,
-    viewport: window.innerWidth,
-  }));
-  expect(metrics.html).toBeLessThanOrEqual(metrics.viewport + 1);
-  expect(metrics.body).toBeLessThanOrEqual(metrics.viewport + 1);
+  return openComposerLayoutFixture(
+    await openBrowserPage(width, height),
+    realChatServer.baseUrl,
+    chatHtml(opts, width <= 1100),
+  );
 }
 
 describeBrowserLayout.concurrent("chat responsive browser layout", () => {
@@ -2997,7 +2932,6 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
           permissionTrigger: radius(".chat-controls__permission-trigger"),
         };
       });
-
       expect(radii.permissionOption).toBe(radii.modelOption);
       expect(radii.permissionTrigger).toBe(radii.modelTrigger);
       expect(radii.attachTrigger).toBe(radii.modelTrigger);
