@@ -657,7 +657,6 @@ export async function runSessionCompactionIfNeeded(params: {
 }): Promise<SessionEntry | undefined> {
   const assertActive = () => {
     params.abortSignal?.throwIfAborted();
-    params.followupRun.operatorAuthority?.signal?.throwIfAborted();
     params.followupRun.operatorAuthority?.assertCurrent();
     if (params.authorize?.() === false) {
       throw new Error("Session compaction maintenance is no longer active");

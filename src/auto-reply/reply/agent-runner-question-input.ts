@@ -1,6 +1,7 @@
 import {
   QuestionAnswerUnconfirmedError,
   QuestionDispatchRefusedError,
+  QuestionDispatchUnsupportedError,
 } from "../../agents/harness/gateway-question-dispatch.js";
 import { claimPendingAgentQuestionAnswerFromCaller } from "../../agents/harness/gateway-question.js";
 import { readQuestionRejection } from "../../agents/tools/gateway-question-lifecycle.js";
@@ -90,6 +91,10 @@ export async function runReplyQuestionInput(
     }
     outcome = { status: "answered" };
   } catch (error) {
+    if (error instanceof QuestionDispatchUnsupportedError) {
+      assertSourceCurrent();
+      return { handled: false };
+    }
     if (error instanceof QuestionDispatchRefusedError) {
       if (state) {
         state.admission = { status: "skipped", reason: "question-response-refused" };

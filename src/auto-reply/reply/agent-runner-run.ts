@@ -102,7 +102,6 @@ export async function runReplyAgent(
     resetTriggered,
     replyOperation: providedReplyOperation,
   } = params;
-  followupRun.operatorAuthority?.signal?.throwIfAborted();
   followupRun.operatorAuthority?.assertCurrent();
   const resolveGatewayContext = providedReplyOperation
     ? getGatewayContextResolver(providedReplyOperation)

@@ -66,10 +66,10 @@ describe("followup queue authority", () => {
         ...authority,
         scopes: ["operator.write", "operator.read", "operator.write"],
       }),
+      createAdmittedRunOperatorAuthority({ ...authority, signal: new AbortController().signal }),
       createAdmittedRunOperatorAuthority({ ...authority, profileId: "maintainer" }),
       createAdmittedRunOperatorAuthority({ ...authority, scopes: ["operator.admin"] }),
       createAdmittedRunOperatorAuthority({ ...authority, source: {} }),
-      createAdmittedRunOperatorAuthority({ ...authority, signal: new AbortController().signal }),
       undefined,
       authority,
     ];
@@ -122,14 +122,13 @@ describe("followup queue authority", () => {
         "maintainer",
         "guest",
         "guest",
-        "guest",
         undefined,
         "guest",
       ]);
       expect(observed[0]?.prompt).toContain("request 0");
       expect(observed[0]?.prompt).toContain("request 1");
+      expect(observed[0]?.prompt).toContain("request 2");
       expect(observed.slice(1).map((run) => run.prompt.match(/request \d/g))).toEqual([
-        ["request 2"],
         ["request 3"],
         ["request 4"],
         ["request 5"],

@@ -173,6 +173,7 @@ describe("visitor-access plugin lifecycle", () => {
       gatewayRequest,
       logger,
       store,
+      toolContext,
       start: () => service.start(context),
       stop: () => service.stop?.(context),
       gatewayStart: () => {
@@ -234,36 +235,59 @@ describe("visitor-access plugin lifecycle", () => {
     },
   );
 
-  it("denies an invitation when its live authority closes during access lookup", async () => {
-    const policy = createPolicyFetch();
-    vi.stubGlobal("fetch", policy.fetcher);
-    let current = true;
-    const registered = registerPlugin({
-      assertInvocationCurrent() {
+  it.each(["invocation", "manager"] as const)(
+    "does not renew a grant after %s authority closes during access lookup",
+    async (revoked) => {
+      const policy = createPolicyFetch();
+      vi.stubGlobal("fetch", policy.fetcher);
+      let current = true;
+      const assertInvocationCurrent = vi.fn(() => {
         if (!current) {
           throw new Error("Invocation is closed");
         }
-      },
-    });
-    await registered.start();
-    policy.fetcher.mockClear();
-    const entered = createDeferred<void>();
-    const release = createDeferred<void>();
-    registered.gatewayRequest.mockImplementationOnce(async () => {
-      entered.resolve();
-      await release.promise;
-      return { profiles: [] };
-    });
-    const invitation = registered.execute("visitor_invite", { email: "visitor@example.test" });
-    await entered.promise;
-    current = false;
-    release.resolve();
+      });
+      const registered = registerPlugin({ assertInvocationCurrent });
+      await registered.start();
+      const email = "visitor@example.test";
+      await expect(
+        registered.execute("visitor_invite", { email, days: 1 }),
+      ).resolves.toHaveProperty("details", {});
+      policy.fetcher.mockClear();
 
-    await expect(invitation).resolves.toHaveProperty("isError", true);
+      await expect(registered.execute("visitor_invite", { email, days: 2 })).resolves.toMatchObject(
+        {
+          details: {},
+          content: [{ type: "text", text: expect.stringContaining("Renewed") }],
+        },
+      );
+      const renewed = await registered.store.lookup(email);
+      expect(renewed).toMatchObject({ createdAt: START_MS, expiresAt: START_MS + 2 * DAY_MS });
+      const entered = createDeferred<void>();
+      const release = createDeferred<void>();
+      registered.gatewayRequest.mockImplementationOnce(async () => {
+        entered.resolve();
+        await release.promise;
+        return { profiles: [] };
+      });
+      const invitation = registered.execute("visitor_invite", { email, days: 30 });
+      await entered.promise;
+      if (revoked === "invocation") {
+        current = false;
+      } else {
+        registered.toolContext.senderIsOwner = false;
+      }
+      release.resolve();
 
-    expect(policy.fetcher.mock.calls.every(([, init]) => init?.method === "GET")).toBe(true);
-    expect(await registered.store.entries()).toEqual([]);
-  });
+      await expect(invitation).resolves.toHaveProperty("isError", true);
+
+      expect(policy.fetcher.mock.calls.every(([, init]) => init?.method === "GET")).toBe(true);
+      expect(policy.emails()).toEqual([email]);
+      expect(await registered.store.lookup(email)).toEqual(renewed);
+      if (revoked === "manager") {
+        expect(assertInvocationCurrent).not.toThrow();
+      }
+    },
+  );
 
   it("revokes persisted expiries after restart, coalesces startup, and continues hourly", async () => {
     const policy = createPolicyFetch();

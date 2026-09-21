@@ -2,6 +2,7 @@ import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import type { callGateway } from "../../../gateway/call.js";
 import type { ChatAbortControllerEntry } from "../../../gateway/chat-abort.js";
 import type { GatewayContextResolver } from "../../../gateway/server-methods/types.js";
+import { bindGatewayLifecycleRequest } from "../../../gateway/server-recovery-runtime-context.js";
 import { isFastTestRuntimeEnv } from "../../../infra/env.js";
 import { getPluginRuntimeGatewayRequestScope } from "../../../plugins/runtime/gateway-request-scope.js";
 import { deleteSubagentSessionForCleanup } from "../registry/subagent-session-cleanup.js";
@@ -22,6 +23,7 @@ export function bindSubagentSpawnCleanup(params: {
   };
 }) {
   const context = params.resolveGatewayContext();
+  const dispatchCleanup = bindGatewayLifecycleRequest(params.resolveGatewayContext);
   let acceptedRun:
     | {
         runId: string;
@@ -90,9 +92,11 @@ export function bindSubagentSpawnCleanup(params: {
     if (!context?.recoveryRuntime) {
       throw new Error("Subagent cleanup Gateway is unavailable");
     }
-    return await context.recoveryRuntime.dispatchSessionMethod(method, payload, {
-      assertCurrent,
-      ...(typeof request.timeoutMs === "number" ? { timeoutMs: request.timeoutMs } : {}),
+    return await dispatchCleanup({
+      method,
+      params: payload,
+      assertDispatchCurrent: assertCurrent,
+      timeoutMs: request.timeoutMs ?? null,
     });
   };
   return {

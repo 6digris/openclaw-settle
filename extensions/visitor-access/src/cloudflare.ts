@@ -62,7 +62,6 @@ export class VisitorPolicyClient {
       throw new VisitorAccessError("Visitor access is stopping; retry after the gateway starts.");
     }
     const emails = [...new Set(await change(current))];
-    assertCurrent?.();
     if (emails.length === current.length && emails.every((email) => current.includes(email))) {
       return emails;
     }

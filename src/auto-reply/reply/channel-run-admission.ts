@@ -73,7 +73,6 @@ export function prepareChannelRunAdmission(params: {
       prepared.assertSourceCurrent();
       return;
     }
-    params.operatorAuthority?.signal?.throwIfAborted();
     params.operatorAuthority?.assertCurrent();
   };
   return Object.freeze({

@@ -324,7 +324,6 @@ export function resolveReplyOperatorAuthorityKey(
     authority.profileId,
     [...new Set(authority.scopes.map((scope) => scope.trim()).filter(Boolean))].toSorted(),
     identity(authority.source ?? authority),
-    authority.signal ? identity(authority.signal) : null,
   ]);
 }
 

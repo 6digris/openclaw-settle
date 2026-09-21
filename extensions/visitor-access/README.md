@@ -163,7 +163,10 @@ merge an external edit made between that read and write.
 Only administrators and explicitly designated owners can invite, renew, list,
 or revoke visitors. Each tool requires the host's owner authorization and checks
 its live invocation authority after asynchronous work and before grant or provider
-effects. Making a tool visible through a sandbox override does not authorize its
+effects. Grant writes carry the same manager assertion through SQLite transaction
+and commit admission. A queued renewal refused before commit preserves the previous
+expiry. Hosts without this state capability refuse invite and revoke with an update
+instruction. Making a tool visible through a sandbox override does not authorize its
 use. The plugin consumes Gateway profile and role facts and does not create,
 assign, or demote roles.
 

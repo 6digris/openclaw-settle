@@ -51,6 +51,7 @@ describe("queued turn steering", () => {
         operatorAuthority: createAdmittedRunOperatorAuthority({
           ...operatorAuthority,
           scopes: ["operator.write", "operator.read"],
+          signal: new AbortController().signal,
         }),
         originatingChannel: turn.queued.originatingChannel,
         messageProvider: turn.queued.run.messageProvider,
@@ -76,10 +77,6 @@ describe("queued turn steering", () => {
         createAdmittedRunOperatorAuthority({ ...operatorAuthority, profileId: "maintainer" }),
         createAdmittedRunOperatorAuthority({ ...operatorAuthority, scopes: ["operator.admin"] }),
         createAdmittedRunOperatorAuthority({ ...operatorAuthority, source: {} }),
-        createAdmittedRunOperatorAuthority({
-          ...operatorAuthority,
-          signal: new AbortController().signal,
-        }),
       ]) {
         await expect(
           beginReplyMessageInjectionTarget(target!, "Different original operator authority", {

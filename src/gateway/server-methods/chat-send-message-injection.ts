@@ -69,7 +69,6 @@ export function createChatSendMessageInjectionStarter(params: {
     params.assertCurrent || params.operatorAuthority
       ? () => {
           params.assertCurrent?.();
-          params.operatorAuthority?.signal?.throwIfAborted();
           params.operatorAuthority?.assertCurrent();
         }
       : undefined;

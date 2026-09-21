@@ -81,6 +81,15 @@ export class VisitorAccessService {
     await this.pending;
   }
 
+  private actionStore(assertCurrent: () => void): PluginStateKeyedStore<VisitorGrant, 2> {
+    if (!this.store.withCurrent) {
+      throw new VisitorAccessError(
+        "This Gateway cannot authorize visitor grant writes. Update OpenClaw before managing visitors.",
+      );
+    }
+    return this.store.withCurrent({ assertCurrent });
+  }
+
   private async resolveEmail(input: { email?: string; github?: string }): Promise<string> {
     if (input.email) {
       return input.email;
@@ -127,6 +136,7 @@ export class VisitorAccessService {
     { invitedVia, assertCurrent }: { invitedVia?: string; assertCurrent: () => void },
   ): Promise<string> {
     return this.serialize(async () => {
+      const store = this.actionStore(assertCurrent);
       const input = parseVisitorInput(inviteSchema, raw);
       if (input.forever && input.days !== undefined) {
         throw new VisitorAccessError("Choose days or forever: true, not both.");
@@ -143,7 +153,7 @@ export class VisitorAccessService {
       }
       const email = await this.resolveEmail(input);
       const now = Date.now();
-      const previous = await this.store.lookup(email);
+      const previous = await store.lookup(email);
       const githubLogin = input.github ?? previous?.githubLogin;
       const provenance = invitedVia?.slice(0, 256) ?? previous?.invitedVia;
       const grant: VisitorGrant = {
@@ -155,7 +165,7 @@ export class VisitorAccessService {
       };
       let gatewayAccess = "";
       await this.policy.update(async (emails) => {
-        const entries = await this.store.entries();
+        const entries = await store.entries();
         const known = new Set([...emails, ...entries.map((entry) => entry.key)]);
         if (!known.has(email) && known.size >= this.config.maxVisitors) {
           throw new VisitorAccessError(
@@ -167,10 +177,9 @@ export class VisitorAccessService {
         gatewayAccess = access.describe(email);
         // Persist first: even a lost API response must leave an expiry cleanup record.
         assertCurrent();
-        await this.store.register(email, grant);
+        await store.register(email, grant);
         return [...new Set([...emails, email])];
       }, assertCurrent);
-      assertCurrent();
       const who = grant.githubLogin ? `@${grant.githubLogin} (${email})` : email;
       return `${previous ? "Renewed" : "Invited"} ${who}. Visitor grant expires: ${expiryText(grant.expiresAt)}. ${gatewayAccess}. Sign in at https://team.openclaw.ai using Team's existing login with this email. The link itself does not grant access.`;
     }, assertCurrent);
@@ -178,11 +187,12 @@ export class VisitorAccessService {
 
   revoke(raw: unknown, assertCurrent: () => void): Promise<string> {
     return this.serialize(async () => {
+      const store = this.actionStore(assertCurrent);
       const input = parseVisitorInput(revokeSchema, raw);
       if (!input.email && !input.github) {
         throw new VisitorAccessError("Provide an email or GitHub login.");
       }
-      const entries = await this.store.entries();
+      const entries = await store.entries();
       const matching = input.email
         ? [input.email]
         : entries
@@ -194,7 +204,7 @@ export class VisitorAccessService {
         if (targets.has(key) && (value.expiresAt === null || value.expiresAt > now)) {
           // An explicit end must survive a failed or ambiguous provider response.
           assertCurrent();
-          await this.store.register(key, { ...value, expiresAt: now });
+          await store.register(key, { ...value, expiresAt: now });
         }
       }
       let removed = false;
@@ -206,9 +216,8 @@ export class VisitorAccessService {
       }, assertCurrent);
       for (const email of targets) {
         assertCurrent();
-        await this.store.delete(email);
+        await store.delete(email);
       }
-      assertCurrent();
       const who =
         targets.size > 1
           ? `@${input.github} (${targets.size} recorded emails)`

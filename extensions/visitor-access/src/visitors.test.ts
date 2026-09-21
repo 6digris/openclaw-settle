@@ -1,206 +1,16 @@
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { OpenClawConfig, PluginRuntime, PluginStateKeyedStore } from "../api.js";
-import { createVisitorAccessReader } from "./access.js";
-import { VisitorPolicyClient } from "./cloudflare.js";
-import type { VisitorAccessConfig } from "./config.js";
 import { VisitorAccessError } from "./errors.js";
-import { VisitorAccessService, type VisitorGrant } from "./visitors.js";
-
-const NOW = Date.parse("2026-08-28T12:00:00.000Z");
-const DAY_MS = 86_400_000;
-const config: VisitorAccessConfig = {
-  accountId: "test-account",
-  appId: "test-app",
-  apiToken: "test-token",
-  policyName: "Visitors (openclaw-managed)",
-  defaultTtlDays: 14,
-  maxVisitors: 50,
-};
-const policiesPath = "/client/v4/accounts/test-account/access/apps/test-app/policies";
-type GatewayRoles = NonNullable<NonNullable<OpenClawConfig["gateway"]>["roles"]>;
-const guestRole: GatewayRoles["definitions"][string] = {
-  sessions: { others: "view" },
-  agents: ["main"],
-  scopes: ["operator.sessions.write"],
-  sandbox: "required",
-};
-const staffRole: GatewayRoles["definitions"][string] = {
-  sessions: { others: "write" },
-  agents: "*",
-  scopes: ["operator.admin"],
-};
-
-function requestUrl(input: Parameters<typeof fetch>[0]): URL {
-  return new URL(input instanceof Request ? input.url : input);
-}
-
-type PolicyFixture = {
-  id: string;
-  name: string;
-  decision: string;
-  include: { email: { email: string } }[];
-};
-
-function visitorGrant(email: string, overrides: Partial<VisitorGrant> = {}): VisitorGrant {
-  return { email, createdAt: NOW - DAY_MS, expiresAt: NOW + DAY_MS, ...overrides };
-}
-
-function visitorFixture(
-  options: {
-    config?: Partial<VisitorAccessConfig>;
-    grants?: VisitorGrant[];
-    emails?: string[];
-    githubEmail?: string | null;
-    gatewayConfig?: OpenClawConfig;
-    profiles?: Array<{ id: string; emails: string[]; role?: string }>;
-  } = {},
-) {
-  const resolved = { ...config, ...options.config };
-  const grants = new Map(options.grants?.map((grant) => [grant.email, grant]));
-  const store: PluginStateKeyedStore<VisitorGrant> = {
-    async register(key, grant) {
-      grants.set(key, structuredClone(grant));
-    },
-    async registerIfAbsent(key, grant) {
-      if (grants.has(key)) {
-        return false;
-      }
-      grants.set(key, structuredClone(grant));
-      return true;
-    },
-    async lookup(key) {
-      return structuredClone(grants.get(key));
-    },
-    async consume(key) {
-      const grant = grants.get(key);
-      grants.delete(key);
-      return structuredClone(grant);
-    },
-    async delete(key) {
-      return grants.delete(key);
-    },
-    async entries() {
-      return [...grants].map(([key, value]) => ({
-        key,
-        value: structuredClone(value),
-        createdAt: value.createdAt,
-      }));
-    },
-    async clear() {
-      grants.clear();
-    },
-  };
-  const cloudflare: {
-    policy: PolicyFixture | undefined;
-    failWrites: boolean;
-    loseWriteResponse: boolean;
-    beforeWrite: () => Promise<void>;
-  } = {
-    policy: options.emails?.length
-      ? {
-          id: "visitors",
-          name: resolved.policyName,
-          decision: "allow",
-          include: options.emails.map((email) => ({ email: { email } })),
-        }
-      : undefined,
-    failWrites: false,
-    loseWriteResponse: false,
-    beforeWrite: async () => {},
-  };
-  const response = (result: unknown) => Response.json({ success: true, result });
-  const fetcher = vi.fn<typeof fetch>(async (input, init) => {
-    const url = requestUrl(input);
-    const method = init?.method ?? "GET";
-    if (url.origin === "https://api.github.com") {
-      if (!/^\/users\/[a-z0-9-]+$/.test(url.pathname) || method !== "GET") {
-        throw new Error("Unexpected GitHub request");
-      }
-      return Response.json({ email: options.githubEmail ?? null });
-    }
-    if (url.origin !== "https://api.cloudflare.com" || !url.pathname.startsWith(policiesPath)) {
-      throw new Error("Unexpected Cloudflare endpoint");
-    }
-    if (method === "GET") {
-      if (url.pathname === policiesPath) {
-        return response(cloudflare.policy ? [cloudflare.policy] : []);
-      }
-      if (url.pathname === `${policiesPath}/visitors` && cloudflare.policy) {
-        return response(cloudflare.policy);
-      }
-      throw new Error("Unknown policy read");
-    }
-    await cloudflare.beforeWrite();
-    if (cloudflare.failWrites) {
-      return new Response("Unavailable", { status: 503 });
-    }
-    if (method === "DELETE" && url.pathname === `${policiesPath}/visitors`) {
-      cloudflare.policy = undefined;
-    } else if (
-      (method === "POST" && url.pathname === policiesPath) ||
-      (method === "PUT" && url.pathname === `${policiesPath}/visitors`)
-    ) {
-      if (typeof init?.body !== "string") {
-        throw new Error("Expected a JSON policy");
-      }
-      const body = JSON.parse(init.body) as Omit<PolicyFixture, "id">;
-      cloudflare.policy = { ...body, id: "visitors" };
-    } else {
-      throw new Error("Unexpected policy mutation");
-    }
-    if (cloudflare.loseWriteResponse) {
-      throw new Error("Connection lost after Cloudflare committed the policy");
-    }
-    return response(cloudflare.policy ?? { id: "visitors" });
-  });
-  const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
-  const gatewayConfig = options.gatewayConfig ?? {
-    gateway: { roles: { default: "guest", definitions: { guest: guestRole, staff: staffRole } } },
-  };
-  const runtime: Pick<PluginRuntime, "gateway" | "config"> = {
-    gateway: {
-      isAvailable: async () => true,
-      async request() {
-        throw new Error("Expected a mocked Gateway request");
-      },
-    },
-    config: {
-      current: () => gatewayConfig,
-      async mutateConfigFile() {
-        throw new Error("Visitor operations must not change Gateway configuration");
-      },
-      async replaceConfigFile() {
-        throw new Error("Visitor operations must not replace Gateway configuration");
-      },
-    },
-  };
-  const gatewayRequest = vi.spyOn(runtime.gateway, "request").mockResolvedValue({
-    profiles: options.profiles ?? [],
-  });
-  const assertCurrent = vi.fn<() => void>();
-  const service = new VisitorAccessService(
-    resolved,
-    store,
-    new VisitorPolicyClient(resolved, fetcher),
-    logger,
-    createVisitorAccessReader(runtime),
-    fetcher,
-  );
-  return {
-    cloudflare,
-    fetcher,
-    grants,
-    gatewayRequest,
-    logger,
-    service,
-    store,
-    authority: { assertCurrent },
-    emails: () => cloudflare.policy?.include.map((rule) => rule.email.email) ?? [],
-    mutations: () =>
-      fetcher.mock.calls.filter(([, init]) => init?.method !== "GET" && init?.method),
-  };
-}
+import {
+  DAY_MS,
+  NOW,
+  guestRole,
+  requestUrl,
+  staffRole,
+  visitorFixture,
+  visitorGrant,
+  type GatewayRoles,
+} from "./visitors.test-support.js";
 
 describe("VisitorAccessService", () => {
   beforeEach(() => {
@@ -395,6 +205,30 @@ describe("VisitorAccessService", () => {
     expect(fixture.mutations()).toEqual([]);
   });
 
+  it.each(["invite", "revoke"] as const)(
+    "refuses %s on a legacy store before reading grants or calling a provider",
+    async (operation) => {
+      const grant = visitorGrant("visitor@example.com", { githubLogin: "visitor" });
+      const fixture = visitorFixture({ grants: [grant], emails: [grant.email] });
+      delete fixture.store.withCurrent;
+      const lookup = vi.spyOn(fixture.store, "lookup");
+      const entries = vi.spyOn(fixture.store, "entries");
+
+      await expect(
+        operation === "invite"
+          ? fixture.service.invite({ github: "visitor" }, fixture.authority)
+          : fixture.service.revoke({ github: "visitor" }, fixture.authority.assertCurrent),
+      ).rejects.toThrow(/Update OpenClaw before managing visitors/);
+
+      expect(lookup).not.toHaveBeenCalled();
+      expect(entries).not.toHaveBeenCalled();
+      expect(fixture.fetcher).not.toHaveBeenCalled();
+      expect(fixture.gatewayRequest).not.toHaveBeenCalled();
+      expect(fixture.grants.get(grant.email)).toEqual(grant);
+      expect(fixture.emails()).toEqual([grant.email]);
+    },
+  );
+
   it("checks live authority again after durable recording before granting provider access", async () => {
     const fixture = visitorFixture();
     const recorded = createDeferred<void>();
@@ -405,7 +239,7 @@ describe("VisitorAccessService", () => {
         throw new Error("Invitation authority is no longer current");
       }
     });
-    const register = fixture.store.register;
+    const register = fixture.store.register.bind(fixture.store);
     vi.spyOn(fixture.store, "register").mockImplementationOnce(async (key, grant) => {
       await register(key, grant);
       recorded.resolve();
@@ -423,6 +257,63 @@ describe("VisitorAccessService", () => {
     expect(fixture.mutations()).toEqual([]);
     expect(fixture.grants.get("visitor@example.com")?.expiresAt).toBe(NOW + 14 * DAY_MS);
   });
+
+  it.each(["invite", "renew", "revoke"] as const)(
+    "settles a successful %s when authority closes after its final effect",
+    async (operation) => {
+      const previous = visitorGrant("visitor@example.com");
+      const fixture = visitorFixture(
+        operation === "invite" ? {} : { grants: [previous], emails: [previous.email] },
+      );
+      let current = true;
+      fixture.authority.assertCurrent.mockImplementation(() => {
+        if (!current) {
+          throw new Error("Visitor authority is no longer current");
+        }
+      });
+      if (operation === "invite") {
+        fixture.cloudflare.afterWrite = () => {
+          current = false;
+        };
+      } else if (operation === "renew") {
+        const register = fixture.store.register.bind(fixture.store);
+        vi.spyOn(fixture.store, "register").mockImplementationOnce(async (key, grant) => {
+          await register(key, grant);
+          current = false;
+        });
+      } else {
+        const remove = fixture.store.delete.bind(fixture.store);
+        vi.spyOn(fixture.store, "delete").mockImplementationOnce(async (key) => {
+          const removed = await remove(key);
+          current = false;
+          return removed;
+        });
+      }
+
+      const result =
+        operation === "revoke"
+          ? fixture.service.revoke({ email: previous.email }, fixture.authority.assertCurrent)
+          : fixture.service.invite({ email: previous.email, days: 2 }, fixture.authority);
+      await expect(result).resolves.toContain(
+        operation === "invite" ? "Invited" : operation === "renew" ? "Renewed" : "Revoked",
+      );
+
+      expect(current).toBe(false);
+      if (operation === "revoke") {
+        expect(fixture.grants.size).toBe(0);
+        expect(fixture.emails()).toEqual([]);
+      } else {
+        expect(fixture.grants.get(previous.email)).toMatchObject({
+          createdAt: operation === "invite" ? NOW : previous.createdAt,
+          expiresAt: NOW + 2 * DAY_MS,
+        });
+        expect(fixture.emails()).toEqual([previous.email]);
+      }
+      if (operation === "renew") {
+        expect(fixture.mutations()).toEqual([]);
+      }
+    },
+  );
 
   it.each([
     {},

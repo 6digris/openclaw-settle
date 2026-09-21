@@ -1,3 +1,4 @@
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it } from "vitest";
 import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/users.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -8,6 +9,7 @@ import {
   authorizeGatewaySessionCreation,
   authorizeCurrentOperatorRoleScopes,
   invalidateOperatorRolePolicy,
+  publishOperatorRoleConfigChange,
   resolveCreatorSandbox,
   resolveGatewayOperatorRoleActor,
   resolveOperatorRolePolicy,
@@ -87,7 +89,14 @@ describe("operator role policy", () => {
       try {
         original.authority.assertCurrent();
         linkEmail("source-role@example.test", target.id);
-        expect(() => original.authority.assertCurrent()).toThrow("source identity changed");
+        expect(original.authority.signal?.aborted).toBe(true);
+        expect(original.authority.signal?.reason).toEqual(
+          new Error("operator source identity changed; start a new request"),
+        );
+        expect(() => original.authority.assertCurrent()).toThrow(
+          "operator source identity changed; start a new request",
+        );
+        expect(unaffected.authority.signal?.aborted).toBe(false);
         expect(() => unaffected.authority.assertCurrent()).not.toThrow();
         const fresh = capture(target.id);
         try {
@@ -109,15 +118,94 @@ describe("operator role policy", () => {
       setUserProfileRole(profile.id, "maintainer");
       const admin = identifiedClient(profile.id);
       admin.connect.scopes = ["operator.admin"];
+      const reader = identifiedClient(profile.id);
+      const source = captureGatewayOperatorRunAuthority({
+        client: reader,
+        context: { getRuntimeConfig: () => cfg },
+      })!;
       expect(authorizeCurrentOperatorRoleScopes(admin, cfg)).toBeUndefined();
-      setUserProfileRole(profile.id, "guest");
-      invalidateOperatorRolePolicy(profile.id);
-      expect(authorizeCurrentOperatorRoleScopes(admin, cfg)).toMatchObject({ code: "FORBIDDEN" });
-      const reconnected = identifiedClient(profile.id);
-      reconnected.connect.scopes = ["operator.write"];
-      expect(authorizeCurrentOperatorRoleScopes(reconnected, cfg)).toBeUndefined();
+      try {
+        setUserProfileRole(profile.id, "guest");
+        invalidateOperatorRolePolicy(profile.id);
+        expect(authorizeCurrentOperatorRoleScopes(admin, cfg)).toMatchObject({ code: "FORBIDDEN" });
+        // Session/agent access narrowed even though this source's scopes still fit.
+        expect(authorizeCurrentOperatorRoleScopes(reader, cfg)).toBeUndefined();
+        expect(source.authority.signal?.aborted).toBe(true);
+        expect(() => source.authority.assertCurrent()).toThrow(
+          "Your operator role changed; reconnect before continuing.",
+        );
+        const reconnected = identifiedClient(profile.id);
+        reconnected.connect.scopes = ["operator.write"];
+        expect(authorizeCurrentOperatorRoleScopes(reconnected, cfg)).toBeUndefined();
+      } finally {
+        source.release();
+      }
     });
   });
+  it.each(["agents", "sessions", "sandbox"] as const)(
+    "retires only affected sources after a committed %s policy change with unchanged scopes",
+    async (restriction) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        const profile = ensureProfileForEmail("committed-role-source@example.test");
+        const otherProfile = ensureProfileForEmail("committed-role-unaffected@example.test");
+        setUserProfileRole(otherProfile.id, "maintainer");
+        const initial = roleConfig();
+        let runtimeConfig = initial;
+        let committedConfig = initial;
+        const context = {
+          getRuntimeConfig: () => runtimeConfig,
+          getCommittedRuntimeConfig: () => committedConfig,
+        };
+        const capture = (profileId: string) =>
+          expectDefined(
+            captureGatewayOperatorRunAuthority({ client: identifiedClient(profileId), context }),
+            "operator source",
+          );
+        const original = capture(profile.id);
+        const unaffected = capture(otherProfile.id);
+        const releaseQueued = expectDefined(original.authority.retain, "source retention")();
+        original.release();
+        try {
+          const candidate = structuredClone(initial);
+          const changedRole = expectDefined(
+            candidate.gateway?.roles?.definitions.guest,
+            "guest role",
+          );
+          if (restriction === "agents") {
+            changedRole.agents = [];
+          } else if (restriction === "sessions") {
+            changedRole.sessions.others = "none";
+          } else {
+            changedRole.sandbox = "required";
+          }
+          expect(
+            authorizeCurrentOperatorRoleScopes(identifiedClient(profile.id), candidate),
+          ).toBeUndefined();
+          runtimeConfig = candidate;
+          expect(original.authority.assertCurrent).not.toThrow();
+          runtimeConfig = initial;
+          expect(original.authority.signal?.aborted).toBe(false);
+
+          committedConfig = { ...initial, logging: { level: "debug" } };
+          publishOperatorRoleConfigChange(context);
+          expect(original.authority.signal?.aborted).toBe(false);
+          committedConfig = candidate;
+          publishOperatorRoleConfigChange({});
+          expect(original.authority.signal?.aborted).toBe(false);
+          publishOperatorRoleConfigChange(context);
+          expect(original.authority.signal?.aborted).toBe(true);
+          expect(original.authority.assertCurrent).toThrow("Your operator role changed");
+          expect(unaffected.authority.signal?.aborted).toBe(false);
+          expect(unaffected.authority.assertCurrent).not.toThrow();
+        } finally {
+          releaseQueued();
+          original.release();
+          unaffected.release();
+        }
+      });
+    },
+  );
+
   it("preserves legacy access only when operator roles are not configured", () => {
     expect(resolveOperatorRolePolicyForProfile("unread-profile", {})).toBeUndefined();
     expect(resolveOperatorRolePolicyForProfile(undefined, roleConfig())).toMatchObject({

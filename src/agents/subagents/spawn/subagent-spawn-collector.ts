@@ -1,6 +1,7 @@
 import type { GatewayContextResolver } from "../../../gateway/server-methods/types.js";
 import {
   GatewayDrainingError,
+  runWithGatewayDetachedWorkContinuation,
   runWithGatewayIndependentRootWorkContinuation,
 } from "../../../process/gateway-work-admission.js";
 import { getAsyncWorkSignal } from "../../../shared/async-work-scope.js";
@@ -85,7 +86,6 @@ export function createCollectorLaunchCallbacks(params: {
         await claim;
       }
       const assertLaunchCurrent = () => {
-        params.operatorAuthority?.signal?.throwIfAborted();
         params.operatorAuthority?.assertCurrent();
         if (canLaunchQueuedRegistration?.() === false) {
           throw new Error("Collector registration no longer owns this launch");
@@ -167,9 +167,13 @@ export function createCollectorLaunchCallbacks(params: {
     if (error instanceof GatewayDrainingError) {
       return false;
     }
-    return await runWithGatewayIndependentRootWorkContinuation(async () => {
+    const callerSignal = getAsyncWorkSignal();
+    if (!dispatchAttempted && callerSignal?.aborted) {
+      return false;
+    }
+    return await runWithGatewayDetachedWorkContinuation(async () => {
       for (;;) {
-        if (!dispatchAttempted && getAsyncWorkSignal()?.aborted) {
+        if (!dispatchAttempted && callerSignal?.aborted) {
           return false;
         }
         const claim = registrationScope?.waitForClaim();

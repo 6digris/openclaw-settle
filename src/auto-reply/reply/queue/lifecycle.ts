@@ -108,7 +108,6 @@ export function retireFollowupRunCancellation(run: FollowupLifecycleRun): void {
 }
 
 export async function admitFollowupRunLifecycle(run: FollowupLifecycleRun): Promise<void> {
-  run.operatorAuthority?.signal?.throwIfAborted();
   run.operatorAuthority?.assertCurrent();
   const lifecycle = run.turnAdoptionLifecycle;
   if (!lifecycle || admittedTurnAdoptionLifecycles.has(lifecycle)) {
@@ -126,7 +125,6 @@ export async function admitFollowupRunLifecycle(run: FollowupLifecycleRun): Prom
   const admission = Promise.resolve().then(async () => {
     if (!admittedTurnAdoptionLifecycles.has(lifecycle)) {
       await lifecycle.onAdopted();
-      run.operatorAuthority?.signal?.throwIfAborted();
       run.operatorAuthority?.assertCurrent();
       admittedTurnAdoptionLifecycles.add(lifecycle);
       deferredHeartbeatStops.get(lifecycle)?.();

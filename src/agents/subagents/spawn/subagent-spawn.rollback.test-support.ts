@@ -1,4 +1,5 @@
 import { expectDefined } from "@openclaw/normalization-core";
+import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { expect, it, type Mock } from "vitest";
 import { loadSessionEntry } from "../../../config/sessions/session-accessor.js";
 import type { createGatewayInstanceRuntime } from "../../../gateway/server-instance-runtime.js";
@@ -56,7 +57,8 @@ export function registerOperatorSpawnRollbackCases(options: {
           embeddedSignal = signal;
           try {
             return await new Promise<never>((_resolve, reject) => {
-              const abort = () => reject(signal.reason);
+              const abort = () =>
+                reject(toErrorObject(signal.reason, "Accepted child execution aborted"));
               signal.addEventListener("abort", abort, { once: true });
               if (signal.aborted) {
                 signal.removeEventListener("abort", abort);

@@ -120,7 +120,6 @@ export async function admitFollowupTurn(params: {
   onCompactionNoticePayload?: (payload: ReplyPayload, turn: AdmittedFollowupTurn) => Promise<void>;
 }): Promise<FollowupAdmissionResult> {
   const assertOperatorCurrent = () => {
-    params.queued.operatorAuthority?.signal?.throwIfAborted();
     params.queued.operatorAuthority?.assertCurrent();
   };
   assertOperatorCurrent();

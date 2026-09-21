@@ -254,7 +254,6 @@ export function createFollowupRunner(
     } catch (error) {
       let operatorAuthorityLost = false;
       try {
-        queued.operatorAuthority?.signal?.throwIfAborted();
         queued.operatorAuthority?.assertCurrent();
       } catch {
         operatorAuthorityLost = true;

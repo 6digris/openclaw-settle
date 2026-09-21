@@ -17,37 +17,14 @@ export function operatorScopeSatisfied(
   return (
     granted.includes(requestedScope) ||
     granted.includes(OPERATOR_ADMIN_SCOPE) ||
-    ((requestedScope === OPERATOR_READ_SCOPE || requestedScope === OPERATOR_TALK_SCOPE) &&
+    ((requestedScope === OPERATOR_READ_SCOPE ||
+      requestedScope === OPERATOR_TALK_SCOPE ||
+      requestedScope === OPERATOR_SESSION_READ_SCOPE ||
+      requestedScope === OPERATOR_SESSION_WRITE_SCOPE) &&
       granted.includes(OPERATOR_WRITE_SCOPE)) ||
     (requestedScope === OPERATOR_SESSION_READ_SCOPE &&
-      (granted.includes(OPERATOR_SESSION_WRITE_SCOPE) ||
-        granted.includes(OPERATOR_READ_SCOPE) ||
-        granted.includes(OPERATOR_WRITE_SCOPE))) ||
-    (requestedScope === OPERATOR_SESSION_WRITE_SCOPE && granted.includes(OPERATOR_WRITE_SCOPE))
+      (granted.includes(OPERATOR_READ_SCOPE) || granted.includes(OPERATOR_SESSION_WRITE_SCOPE)))
   );
-}
-
-/** Retains grants within a role ceiling, including explicitly selected narrower session access. */
-export function applyOperatorRoleScopeCeiling(
-  scopes: readonly string[],
-  allowedScopes: readonly string[],
-): string[] {
-  const result = scopes.filter((scope) => operatorScopeSatisfied(scope, allowedScopes));
-  if (
-    allowedScopes.includes(OPERATOR_SESSION_READ_SCOPE) ||
-    allowedScopes.includes(OPERATOR_SESSION_WRITE_SCOPE)
-  ) {
-    for (const scope of [OPERATOR_SESSION_WRITE_SCOPE, OPERATOR_SESSION_READ_SCOPE]) {
-      if (
-        operatorScopeSatisfied(scope, allowedScopes) &&
-        operatorScopeSatisfied(scope, scopes) &&
-        !operatorScopeSatisfied(scope, result)
-      ) {
-        result.push(scope);
-      }
-    }
-  }
-  return result;
 }
 
 /** Returns true when a role grant satisfies requested scopes, including operator implications. */
@@ -57,6 +34,33 @@ export function roleScopesAllow(params: {
   allowedScopes: readonly string[];
 }): boolean {
   return resolveMissingRequestedScope(params) === null;
+}
+
+/** Keeps only permissions shared by both ceilings, including implied operator scopes. */
+export function intersectOperatorScopes(
+  scopes: readonly string[],
+  ceiling: readonly string[],
+): string[] {
+  if (roleScopesAllow({ role: "operator", requestedScopes: scopes, allowedScopes: ceiling })) {
+    return [...scopes];
+  }
+  const result = [...new Set([...scopes, ...ceiling])].filter(
+    (scope) =>
+      roleScopesAllow({ role: "operator", requestedScopes: [scope], allowedScopes: scopes }) &&
+      roleScopesAllow({ role: "operator", requestedScopes: [scope], allowedScopes: ceiling }),
+  );
+  // General reads and session-only writes share a narrower read capability even
+  // when neither input spells it out. Do not add redundant or one-sided grants.
+  for (const scope of [OPERATOR_SESSION_WRITE_SCOPE, OPERATOR_SESSION_READ_SCOPE]) {
+    if (
+      operatorScopeSatisfied(scope, scopes) &&
+      operatorScopeSatisfied(scope, ceiling) &&
+      !operatorScopeSatisfied(scope, result)
+    ) {
+      result.push(scope);
+    }
+  }
+  return result;
 }
 
 /** Returns the original first requested scope not covered by the role's allowed scopes. */

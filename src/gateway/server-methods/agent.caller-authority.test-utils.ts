@@ -60,7 +60,7 @@ describe("gateway agent caller authority custody", () => {
             name: "config.get",
             scope: "operator.read",
             owner: { kind: "core", area: "config" },
-            handler: ({ client: reader, respond }) => {
+            handler: ({ client: reader, respond }: GatewayRequestHandlerOptions) => {
               if (kind !== "system") {
                 expect(reader?.internal?.operatorRoleActor).toEqual({
                   kind: "operator",

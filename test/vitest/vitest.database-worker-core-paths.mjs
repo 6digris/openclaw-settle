@@ -414,6 +414,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugin-sdk/runtime-doctor-migrations.test.ts",
   "src/plugin-state/plugin-state-store.doctor-repair.test.ts",
   "src/plugin-state/plugin-state-store.test.ts",
+  "src/plugin-state/plugin-state-store.authority.test.ts",
   "src/plugin-state/plugin-state-store.bulk.test.ts",
   "src/plugin-state/plugin-state-store.errors.test.ts",
   "src/plugin-state/plugin-state-store.expiry.test.ts",

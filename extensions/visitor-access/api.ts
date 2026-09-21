@@ -2,7 +2,6 @@ export {
   buildPluginConfigSchema,
   definePluginEntry,
   type AnyAgentTool,
-  type OpenClawConfig,
   type OpenClawPluginApi,
   type OpenClawPluginToolContext,
   type PluginLogger,
