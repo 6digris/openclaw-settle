@@ -118,7 +118,7 @@ start_gateway() {
   local exec_start
   exec_start="$(node "$manager_script" command)"
   rm -f "$pid_file" "$supervisor_script"
-  rm -f "${daemon_log}.exit.json"
+  rm -f "${daemon_log}.exit.json" "${daemon_log}.runtime.json"
   cat >"$supervisor_script" <<'SUPERVISOR'
 import fs from "node:fs";
 import { spawn } from "node:child_process";
@@ -157,8 +157,19 @@ let child;
 let activeGroupPid;
 let drainingGroupPid;
 let stopping = false;
+let entered = 0;
+
+// Keep the supervisor's control PID separate from systemd's managed MainPID.
+const publishRuntime = (pid) => {
+  const file = `${daemonLog}.runtime.json`;
+  fs.writeFileSync(`${file}.pending`, JSON.stringify({
+    supervisorPid: process.pid, pid, restarts: totalStarts - 1, entered,
+  }));
+  fs.renameSync(`${file}.pending`, file);
+};
 
 const finish = () => {
+  publishRuntime(0);
   try {
     fs.closeSync(output);
   } catch {}
@@ -246,14 +257,14 @@ const start = () => {
     stdio: ["ignore", output, output],
   });
   activeGroupPid = child.pid;
-  fs.writeFileSync(`${daemonLog}.runtime.json`, JSON.stringify({
-    restarts: totalStarts - 1, entered: Math.trunc(performance.now() * 1000),
-  }));
+  entered = Math.trunc(performance.now() * 1000);
+  publishRuntime(child.pid ?? 0);
   const childGroupPid = activeGroupPid;
   child.on("error", (error) => {
     fs.writeSync(output, `[systemctl-shim] gateway spawn failed: ${String(error)}\n`);
   });
   child.once("close", (code, signal) => {
+    publishRuntime(0);
     const observed = { code, signal, at: new Date().toISOString() };
     firstExit ??= observed;
     try {
@@ -379,21 +390,7 @@ case "$command" in
       load_state="$(node "$manager_script" load-state)"
       printf 'Id=%s\nLoadState=%s\n' "$unit_name" "$load_state"
     fi
-    if is_running; then
-      printf 'ActiveState=active\nSubState=running\nMainPID=%s\n' "$(cat "$pid_file")"
-    else
-      printf 'ActiveState=inactive\nSubState=dead\nMainPID=0\n'
-    fi
-    # Missing observations stay unknown, including bootstrap failures.
-    node - "${daemon_log}.exit.json" <<'EXIT_STATUS'
-const fs = require("node:fs");
-try {
-  const { last } = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-  if (Number.isInteger(last.code) && last.code >= 0 && last.code <= 255) {
-    process.stdout.write(`ExecMainStatus=${last.code}\nExecMainCode=exited\n`);
-  }
-} catch {}
-EXIT_STATUS
+    node "$manager_script" runtime
     exit 0
     ;;
   *)

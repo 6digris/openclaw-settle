@@ -180,32 +180,45 @@ function runtimePaths() {
   return { ...JSON.parse(fs.readFileSync(file, "utf8")), uid: stat.uid, owner: `:1.${stat.ino}` };
 }
 
+function livePid(pid) {
+  if (pid === 0) {
+    return 0;
+  }
+  if (!Number.isSafeInteger(pid) || pid < 1 || pid > 0xffffffff) {
+    fail("Invalid fixture process identity.");
+  }
+  try {
+    process.kill(pid, 0);
+    if (process.platform === "linux") {
+      const state = fs.readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").at(-1);
+      if (state.startsWith("Z ")) {
+        return 0;
+      }
+    }
+    return pid;
+  } catch (error) {
+    if (!["ENOENT", "ESRCH"].includes(error.code)) {
+      throw error;
+    }
+    return 0;
+  }
+}
+
 function nativeRuntime() {
   const paths = runtimePaths();
-  let pid;
+  let supervisorPid = 0;
   let generation = 0;
   try {
     const raw = fs.readFileSync(paths.pidFile, "utf8").trim();
     if (!/^[1-9][0-9]*$/.test(raw)) {
       fail();
     }
-    pid = Number(raw);
-    if (!Number.isSafeInteger(pid) || pid > 0xffffffff) {
-      fail();
-    }
-    process.kill(pid, 0);
+    supervisorPid = livePid(Number(raw));
     generation = Math.trunc(fs.statSync(paths.pidFile).mtimeMs * 1000);
-    if (process.platform === "linux") {
-      const state = fs.readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").at(-1);
-      if (state.startsWith("Z ")) {
-        pid = 0;
-      }
-    }
   } catch (error) {
-    if (!["ENOENT", "ESRCH"].includes(error.code)) {
+    if (error.code !== "ENOENT") {
       throw error;
     }
-    pid = 0;
   }
   const readOptional = (file) => {
     try {
@@ -219,6 +232,8 @@ function nativeRuntime() {
   };
   const last = readOptional(`${paths.daemonLog}.exit.json`)?.last;
   const counts = readOptional(`${paths.daemonLog}.runtime.json`);
+  // Old observations cannot identify a new supervisor's service or its bootstrap gap.
+  const pid = supervisorPid && counts?.supervisorPid === supervisorPid ? livePid(counts.pid) : 0;
   const successful = !last || last.code === 0;
   return {
     pid,
@@ -430,6 +445,15 @@ function run() {
     return;
   }
   if (operation === "busctl" && inspectLoadedRuntime(args)) {
+    return;
+  }
+  if (operation === "runtime" && !args.length) {
+    const runtime = nativeRuntime();
+    console.log(`ActiveState=${runtime.active}\nSubState=${runtime.sub}\nMainPID=${runtime.pid}`);
+    // No exit observation stays unknown, just as in the published systemctl reader.
+    if (runtime.exitCode === 1 && runtime.exitStatus >= 0 && runtime.exitStatus <= 255) {
+      console.log(`ExecMainStatus=${runtime.exitStatus}\nExecMainCode=exited`);
+    }
     return;
   }
   if (operation === "reload" && !args.length) {

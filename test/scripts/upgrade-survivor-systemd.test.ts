@@ -525,7 +525,7 @@ raise SystemExit(code if code >= 0 else 128 - code)
       await waitForStarts(1);
       expect(await readLoadedSystemdServiceRuntime(env)).toMatchObject({
         status: "running",
-        pid: Number(readFileSync(paths.pid, "utf8").trim()),
+        pid: records()[0]!.pid,
         systemd: { managerUid: process.getuid?.() },
       });
       expect.soft(systemctl("is-active", "openclaw-gateway.service").status).toBe(0);
@@ -548,8 +548,15 @@ raise SystemExit(code if code >= 0 else 128 - code)
       const previousPid = readFileSync(paths.pid, "utf8").trim();
       expect(await readSystemdServiceRuntime(env)).toMatchObject({
         status: "running",
-        pid: Number(previousPid),
+        pid: records()[0]!.pid,
       });
+      // The supervisor owns stop/group cleanup, but native MainPID identifies the service.
+      expect(Number(previousPid)).not.toBe(records()[0]!.pid);
+      const runtimeProperties =
+        "Id,LoadState,ActiveState,SubState,Result,NRestarts,StartLimitBurst,MainPID,ExecMainStatus,ExecMainCode,KillMode,TasksCurrent,MemoryCurrent";
+      expect(
+        systemctl("show", "openclaw-gateway.service", `--property=${runtimeProperties}`).stdout,
+      ).toContain(`MainPID=${records()[0]!.pid}\n`);
       const previousLines = readFileSync(paths.log, "utf8").trim().split("\n").length;
       const assertion = () =>
         shell('assert_update_restart_service_replaced "$1" "$2"', [
@@ -573,6 +580,17 @@ raise SystemExit(code if code >= 0 else 128 - code)
         runtimeDir: env.XDG_RUNTIME_DIR,
         busAddress: env.DBUS_SESSION_BUS_ADDRESS,
       });
+      expect(await readLoadedSystemdServiceRuntime(env)).toMatchObject({
+        status: "running",
+        pid: records()[1]!.pid,
+      });
+      expect(await readSystemdServiceRuntime(env)).toMatchObject({
+        status: "running",
+        pid: records()[1]!.pid,
+      });
+      expect(
+        systemctl("show", "openclaw-gateway.service", `--property=${runtimeProperties}`).stdout,
+      ).toContain(`MainPID=${records()[1]!.pid}\n`);
       const proof = assertion();
       expect(proof.status, proof.stderr).toBe(0);
       expect(records()[1]?.pid).not.toBe(records()[0]?.pid);
@@ -603,6 +621,8 @@ raise SystemExit(code if code >= 0 else 128 - code)
       const { home, env, unit, paths } = fixture(custom);
       writeFileSync(unit, buildSystemdUnit({ programArguments: ["/usr/bin/fixture", "gateway"] }));
       writeFileSync(paths.pid, `${process.pid}\n`);
+      const runtimeFile = `${paths.daemonLog}.runtime.json`;
+      writeFileSync(runtimeFile, JSON.stringify({ supervisorPid: process.pid, pid: process.pid }));
       writeFileSync(`${paths.daemonLog}.exit.json`, JSON.stringify({ last: { code: 78 } }));
       const driftedEnv = {
         ...env,
@@ -630,8 +650,24 @@ raise SystemExit(code if code >= 0 else 128 - code)
       });
       expect(readFileSync(paths.log, "utf8")).toContain("--user show openclaw-gateway.service");
       expect(existsSync(driftedEnv.OPENCLAW_UPGRADE_SURVIVOR_SYSTEMCTL_SHIM_LOG)).toBe(false);
+      // A live supervisor alone cannot prove that its managed service is running.
+      rmSync(runtimeFile);
+      expect(await readSystemdServiceRuntime(driftedEnv)).toMatchObject({ status: "stopped" });
+      writeFileSync(
+        runtimeFile,
+        JSON.stringify({ supervisorPid: process.pid + 1, pid: process.pid }),
+      );
+      expect(await readLoadedSystemdServiceRuntime(driftedEnv)).toMatchObject({
+        status: "stopped",
+      });
+      writeFileSync(runtimeFile, JSON.stringify({ supervisorPid: process.pid, pid: 0 }));
+      expect(await readSystemdServiceRuntime(driftedEnv)).toMatchObject({ status: "stopped" });
       // This is an observation-only PID fixture; never send stop to the test worker.
       rmSync(paths.pid);
+      writeFileSync(runtimeFile, JSON.stringify({ supervisorPid: process.pid, pid: process.pid }));
+      expect(await readLoadedSystemdServiceRuntime(driftedEnv)).toMatchObject({
+        status: "stopped",
+      });
     },
   );
 });
