@@ -9,14 +9,10 @@ export const SESSION_READ_METHOD_SCOPES = {
   "models.list": SESSION_READ_SCOPE,
   "chat.startup": SESSION_READ_SCOPE,
   "chat.metadata": SESSION_READ_SCOPE,
-} as const;
-
-const sessionReadMethodScopes: ReadonlyMap<string, typeof SESSION_READ_SCOPE> = new Map(
-  Object.entries(SESSION_READ_METHOD_SCOPES),
-);
+} as const satisfies Record<string, typeof SESSION_READ_SCOPE>;
 
 export function resolveBaseSessionReadRequiredScope(method: string) {
-  return sessionReadMethodScopes.get(method);
+  return Object.hasOwn(SESSION_READ_METHOD_SCOPES, method) ? SESSION_READ_SCOPE : undefined;
 }
 
 const SESSIONS_PATCH_WRITE_SCOPE_MUTATIONS: ReadonlySet<string> = new Set([

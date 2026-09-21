@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 import { nothing, render } from "lit";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, describe, expect, it, vi } from "vitest";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { buildCatalogSessionKey } from "../../lib/sessions/catalog-key.ts";
 import { resetComposerFixture } from "./chat-composer.test-support.ts";
@@ -20,29 +20,89 @@ afterEach(async () => {
 });
 
 it.each([
-  { draft: "Hello", allowed: false },
-  { draft: "/models", allowed: true },
-])("admits $draft during model setup: $allowed", ({ draft, allowed }) => {
-  const { pane, state, context } = createRefreshChatPane(
-    createGatewayBrowserClientFixture({ recoveryScopeReady: true }),
-  );
-  state.sessionKey = "agent:main:setup";
-  context.agents.state.agentsList = {
-    defaultId: "main",
-    mainKey: "main",
-    scope: "global",
-    agents: [{ id: "main" }],
-  };
-  state.handleSendChat = vi.fn();
-  state.chatMessage = draft;
-  pane.render();
+  { draft: "Hello", allowed: false, restricted: false },
+  { draft: "/models", allowed: true, restricted: false },
+  { draft: "Hello", allowed: false, restricted: true },
+  { draft: "/models", allowed: true, restricted: true },
+])(
+  "admits $draft with no default (restricted: $restricted): $allowed",
+  ({ draft, allowed, restricted }) => {
+    const { pane, state, context } = createRefreshChatPane(
+      createGatewayBrowserClientFixture({ recoveryScopeReady: true }),
+    );
+    state.sessionKey = "agent:main:setup";
+    context.agents.state.agentsList = {
+      defaultId: "main",
+      mainKey: "main",
+      scope: "global",
+      agents: [{ id: "main" }],
+    };
+    state.handleSendChat = vi.fn();
+    state.chatMessage = draft;
+    if (restricted) {
+      state.chatModelSelectionPolicy = { restricted: true, defaultModel: null };
+      state.chatModelCatalog = [];
+    }
+    pane.render();
 
-  expect(pane.chatProps?.modelSetupRequired).toBe(true);
-  expect(pane.chatProps?.disabledReason).toBeNull();
-  expect(pane.chatProps?.canSend).toBe(true);
-  void pane.chatProps?.onSend();
-  expect(state.handleSendChat).toHaveBeenCalledTimes(allowed ? 1 : 0);
-});
+    expect(pane.chatProps?.modelSetupRequired).toBe(!restricted);
+    expect(pane.chatProps?.disabledReason).toBeNull();
+    expect(pane.chatProps?.canSend).toBe(true);
+    void pane.chatProps?.onSend();
+    expect(state.handleSendChat).toHaveBeenCalledTimes(allowed ? 1 : 0);
+    if (restricted) {
+      assert(pane.chatProps);
+      expect(pane.chatProps.modelRequiredReason).toBe(
+        "No models are permitted by your administrator.",
+      );
+      const container = document.createElement("div");
+      render(renderChatComposer(pane.chatProps), container);
+      expect(container.querySelector(".agent-chat__disabled-banner-detail")?.textContent).toBe(
+        "No models are permitted by your administrator.",
+      );
+      expect(container.querySelector(".agent-chat__disabled-banner button")).toBeNull();
+      render(nothing, container);
+    }
+  },
+);
+
+it.each([
+  { override: "example/custom", storedModel: "retired", allowed: true },
+  { override: null, storedModel: "custom", allowed: false },
+])(
+  "uses the current model choice $override when the role has no default",
+  ({ override, storedModel, allowed }) => {
+    const { pane, state, context } = createRefreshChatPane(
+      createGatewayBrowserClientFixture({ recoveryScopeReady: true }),
+    );
+    state.sessionKey = "agent:main:choice";
+    context.agents.state.agentsList = {
+      defaultId: "main",
+      mainKey: "main",
+      scope: "global",
+      agents: [{ id: "main" }],
+    };
+    state.sessionsResult = {
+      ts: 1,
+      path: "",
+      count: 1,
+      defaults,
+      sessions: [
+        { key: state.sessionKey, kind: "direct", model: storedModel, modelProvider: "example" },
+      ],
+    };
+    state.sessions.state.modelOverrides = { [state.sessionKey]: override };
+    state.chatModelCatalog = [{ id: "custom", name: "Custom model", provider: "example" }];
+    state.chatModelSelectionPolicy = { restricted: true, defaultModel: null };
+    state.chatMessage = "Hello";
+    state.handleSendChat = vi.fn();
+    pane.render();
+    expect(pane.chatProps?.modelSetupRequired).toBe(false);
+    expect(pane.chatProps?.modelRequiredReason).toBe(allowed ? undefined : "Choose a model");
+    void pane.chatProps?.onSend();
+    expect(state.handleSendChat).toHaveBeenCalledTimes(allowed ? 1 : 0);
+  },
+);
 
 it("keeps catalog composition independent of local model credentials", () => {
   const { pane, state, context } = createRefreshChatPane(

@@ -23,6 +23,7 @@ import {
   subscribeModelCatalogChanges,
 } from "../../lib/model-catalog-store.ts";
 import { normalizeAgentId } from "../../lib/sessions/session-key.ts";
+import { requiresChatModelSetup } from "../chat/chat-model-setup.ts";
 import { renderChatModelAccountControl } from "../chat/components/chat-model-account-control.ts";
 import { renderChatModelControls } from "../chat/components/chat-model-controls.ts";
 import { CatalogTargetDiscovery } from "./catalog-target.ts";
@@ -203,10 +204,7 @@ export class NewSessionModelControl {
         modelSelectionPolicy: result.modelSelectionPolicy,
         catalog: result.models,
       });
-      this.selected = selection.model;
-      this.agentRuntime = selection.agentRuntime;
-      this.thinkingLevel = selection.thinkingLevel;
-      this.fastMode = selection.fastMode;
+      this.applyModelSelection(selection);
     }
     this.restoringPreference = false;
     this.notify();
@@ -459,6 +457,19 @@ export class NewSessionModelControl {
     return this.restoringPreference;
   }
 
+  requiresModelSetup(
+    state: Omit<
+      Parameters<typeof requiresChatModelSetup>[0],
+      "modelSelectionPolicy" | "catalogRetired"
+    >,
+  ): boolean {
+    return requiresChatModelSetup({
+      ...state,
+      modelSelectionPolicy: this.metadataState.modelSelectionPolicy,
+      catalogRetired: this.metadataState.retired,
+    });
+  }
+
   modelUnavailableReason(agent: GatewayAgentRow | undefined) {
     return resolveDraftModelUnavailableReason({
       model: this.effectiveModel,
@@ -533,13 +544,17 @@ export class NewSessionModelControl {
       modelSelectionPolicy: this.metadataState.modelSelectionPolicy,
       catalog: this.catalog,
     });
+    this.applyModelSelection(selection);
+    if (selection.repaired && !this.initialModelPending) {
+      this.persistSelection(preference.agentRuntime ? (this.agentRuntime ?? "") : undefined);
+    }
+  }
+
+  private applyModelSelection(selection: ReturnType<typeof reconcileDraftModelSelection>) {
     this.selected = selection.model;
     this.agentRuntime = selection.agentRuntime;
     this.thinkingLevel = selection.thinkingLevel;
     this.fastMode = selection.fastMode;
-    if (selection.repaired && !this.initialModelPending) {
-      this.persistSelection(preference.agentRuntime ? (this.agentRuntime ?? "") : undefined);
-    }
   }
 
   private persistSelection(agentRuntime = this.agentRuntime) {
@@ -675,9 +690,8 @@ export class NewSessionModelControl {
           return;
         }
         this.metadataState.displayOnly = false;
-        this.selected = selection.model;
         const runtimeChanged = this.agentRuntime !== selection.agentRuntime;
-        this.agentRuntime = selection.agentRuntime;
+        this.applyModelSelection(selection);
         const target =
           resolveDraftModelTarget(selection.model, undefined, this.catalog, this.agentRuntime) ??
           defaultTarget;
@@ -691,8 +705,6 @@ export class NewSessionModelControl {
           };
         }
         this.contextWindow = "";
-        this.thinkingLevel = selection.thinkingLevel;
-        this.fastMode = selection.fastMode;
         this.persistSelection(runtimeChanged ? (this.agentRuntime ?? "") : undefined);
       },
       onModelPickerTargetSelect: (groupId, catalogId) => {

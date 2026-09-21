@@ -224,6 +224,22 @@ export function resolveChatModelUnavailableReason(
     : "missing-auth";
 }
 
+export function hasChatModelCatalogSelection(
+  model: string | null | undefined,
+  provider: string | null | undefined,
+  catalog: ModelCatalogEntry[],
+): boolean {
+  const key = normalizeChatModelAvailabilityKey(
+    resolvePreferredServerChatModelValue(model, provider, catalog),
+  );
+  return catalog.some(
+    (entry) =>
+      entry.manualSelectionAllowed !== false &&
+      normalizeChatModelAvailabilityKey(buildQualifiedChatModelValue(entry.id, entry.provider)) ===
+        key,
+  );
+}
+
 export function chatModelUnavailableMessage(
   reason: ModelRuntimeEntry["unavailableReason"],
 ): string | undefined {

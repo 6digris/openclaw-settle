@@ -22,6 +22,24 @@ enum AppKitTestSupport {
         self.initializedApplication.didSetActivationPolicy
     }
 
+    static func screenCaptureRect(for frame: NSRect) throws -> CGRect {
+        let primaryScreen = try #require(NSScreen.screens.first)
+        return CGRect(
+            x: frame.minX,
+            y: primaryScreen.frame.maxY - frame.maxY,
+            width: frame.width,
+            height: frame.height)
+    }
+
+    static func pointAtModelButton(_ button: AnyObject, in window: NSWindow) throws {
+        try #require((button.accessibilityWindow?() as? NSWindow) === window)
+        try #require(button.accessibilityLabel?() == "Model" && button.isAccessibilityEnabled?() == true)
+        let frame = try #require(button.accessibilityFrame?())
+        try #require(!frame.isEmpty && window.frame.contains(frame))
+        let captureFrame = try self.screenCaptureRect(for: frame)
+        try #require(CGWarpMouseCursorPosition(CGPoint(x: captureFrame.midX, y: captureFrame.midY)) == .success)
+    }
+
     static func accessibilityElements(in root: AnyObject) async throws -> [AnyObject] {
         // SwiftUI materializes its virtual accessibility children after a real client request.
         let result = await Task.detached {
@@ -376,8 +394,13 @@ private final class AppKitTestMenuTracking: NSObject {
             self.expire()
             return
         }
-        // didBeginTracking can precede the actual popup window; capture only a rendered popup.
-        guard NSApp.windows.contains(where: { $0.level == .popUpMenu && $0.isVisible }) else { return }
+        // didBeginTracking can precede Window Server publication, even when NSApp reports a visible window.
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], 0)
+            as? [[String: Any]] ?? []
+        guard windows.contains(where: {
+            $0[kCGWindowOwnerPID as String] as? Int32 == ProcessInfo.processInfo.processIdentifier &&
+                $0[kCGWindowLayer as String] as? Int == NSWindow.Level.popUpMenu.rawValue
+        }) else { return }
         self.inspectionStarted = true
         defer {
             self.inspectionCompleted = true

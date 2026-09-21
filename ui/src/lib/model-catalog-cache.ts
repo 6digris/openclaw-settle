@@ -266,7 +266,7 @@ export function clearModelCatalogCache(
   getModelCatalogCache(client).requiresSnapshot =
     options?.requireSnapshot === true ||
     cache?.requiresSnapshot === true ||
-    Array.from(cache?.entries.values() ?? []).some((entry) => entry.result !== undefined);
+    (cache?.entries.size ?? 0) > 0;
   for (const budgets of cache?.requests.values() ?? []) {
     for (const lane of budgets.values()) {
       lane.active?.reject(new DOMException("Model catalog connection retired", "AbortError"));
