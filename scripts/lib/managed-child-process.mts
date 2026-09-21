@@ -805,6 +805,27 @@ export async function finalizeManagedChild(
       });
     }
     if (!joined) {
+      const completion =
+        platform === "win32"
+          ? {
+              pid: child.pid,
+              exitCode: child.exitCode,
+              signalCode: child.signalCode,
+              groupState,
+              survivingPids: survivingPids ?? null,
+              output: [child.stdout, child.stderr].map((pipe) =>
+                pipe
+                  ? {
+                      closed: pipe.closed,
+                      destroyed: pipe.destroyed,
+                      readableEnded: pipe.readableEnded,
+                      readableLength: pipe.readableLength,
+                      readableFlowing: pipe.readableFlowing,
+                    }
+                  : null,
+              ),
+            }
+          : undefined;
       // Stop owning pipe handles only after recording failure; never disguise an
       // escaped descendant holding stdio as successful completion or cancellation.
       if (!retainOutputOnFailure) {
@@ -813,7 +834,7 @@ export async function finalizeManagedChild(
       }
       throw Object.assign(
         createManagedCommandCleanupError(
-          `Managed command cleanup could not verify child, process group, and output closure${platform === "win32" ? `: ${JSON.stringify({ survivingPids: survivingPids ?? null })}` : ""}`,
+          `Managed command cleanup could not verify child, process group, and output closure${completion ? `: ${JSON.stringify(completion)}` : ""}`,
           child,
           platform,
           groupState === "live" ? "live" : "indeterminate",
