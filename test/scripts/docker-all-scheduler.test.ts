@@ -895,7 +895,9 @@ describe("scripts/test-docker-all scheduler", () => {
 
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("Docker lanes omitted");
-      expect(result.stdout).toContain("no selected lane is supported by the frozen target");
+      expect(result.stdout).toContain(
+        "No selected Docker lane is supported by the frozen target; finalizing run summary",
+      );
       const summary = JSON.parse(readFileSync(path.join(logDir, "summary.json"), "utf8"));
       expect(summary.status).toBe("passed");
       expect(summary.lanes).toEqual([]);
