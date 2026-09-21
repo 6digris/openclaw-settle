@@ -5,7 +5,6 @@ import { isRouteId, type RouteId } from "../app-routes.ts";
 import { renderGatewayStatus } from "../components/gateway-status.ts";
 import { icons } from "../components/icons.ts";
 import { renderConnectingSplash } from "../components/loading-skeleton.ts";
-import "../components/mention-notifications.ts";
 import { renderNewSessionLink } from "../components/new-session-link.ts";
 import { renderLazySettingsSidebar } from "../components/settings-sidebar-lazy.ts";
 import type { ThemeModeChangeDetail } from "../components/theme-mode-toggle.ts";
@@ -19,6 +18,7 @@ import {
 import { readSessionMethodAccess } from "../lib/session-method-access.ts";
 import { normalizeAgentId, resolveUiSelectedSessionAgentId } from "../lib/sessions/session-key.ts";
 import { isTerminalAvailable } from "../lib/terminal-availability.ts";
+import { CHAT_SPLIT_NARROW_MEDIA_QUERY } from "../pages/chat/split-layout-types.ts";
 import type { NewSessionTarget } from "../pages/new-session/location.ts";
 import { pluginTabKey, pluginTabRefFromSearch } from "../pages/plugin/route.ts";
 import { renderPluginSurface } from "../plugins/control-ui-view.ts";
@@ -38,6 +38,7 @@ import {
   APP_SIDEBAR_ELEMENT,
   isOptionalElementDefined,
   MACOS_TITLEBAR_ELEMENT,
+  MENTION_NOTIFICATIONS_ELEMENT,
   type OptionalCustomElement,
   SIDEBAR_ATTENTION_ELEMENT,
 } from "./lazy-custom-element.ts";
@@ -242,6 +243,9 @@ export function renderApplicationShell(host: ShellViewHost) {
     }
   };
   const uiSettings = context.theme.settings;
+  if (gatewayConnected && canCallGatewayMethod(gatewaySnapshot, "mentions.list", "operator.read")) {
+    host.lazyCustomElements.preload(MENTION_NOTIFICATIONS_ELEMENT, { reportError: true });
+  }
   // The new-session draft shares the chat layout: full-height pane that owns
   // its scrolling and pins the composer dock to the bottom.
   const chatLikeRoute = sessionRoute || activeRoute === "new-session" || activeRoute === "systems";
@@ -630,7 +634,9 @@ export function renderApplicationShell(host: ShellViewHost) {
       }
       <openclaw-toast-host></openclaw-toast-host>
       <openclaw-mention-notifications
-        .watchedSessionKey=${sessionRoute ? host.activeSessionKey : null}
+        .sessionKey=${sessionRoute ? host.activeSessionKey : null}
+        .splitLayout=${sessionRoute ? uiSettings.chatSplitLayout : undefined}
+        .narrow=${globalThis.matchMedia(CHAT_SPLIT_NARROW_MEDIA_QUERY).matches}
       ></openclaw-mention-notifications>
     </div>
   `;

@@ -2,7 +2,12 @@ import type { Page } from "playwright";
 import { expect as expectBrowser } from "playwright/test";
 import { expect, it } from "vitest";
 import type { MentionInboxItem } from "../../../packages/gateway-protocol/src/index.js";
-import { defaultControlUiFeatureMethods } from "../test-helpers/control-ui-e2e.ts";
+import { prepareMentionExcerpts } from "../../../src/gateway/mention-excerpt.js";
+import type { ChatSplitLayout } from "../pages/chat/split-layout-types.ts";
+import {
+  controlUiBundledSettingsStorageKey,
+  defaultControlUiFeatureMethods,
+} from "../test-helpers/control-ui-e2e.ts";
 import {
   captureUiProof,
   controlUiSessionUrl,
@@ -35,6 +40,7 @@ const arrival: MentionInboxItem = {
   messageId: "new-message",
   createdAt: 2_000,
   excerpt: "@Taylor can you check the spacing before we ship?",
+  excerptMention: { start: 0, end: 7 },
 };
 const snapshot = (revision: number, items: MentionInboxItem[]) => ({
   gatewayInstanceId: bootId,
@@ -103,7 +109,122 @@ async function deliver(gateway: Awaited<ReturnType<typeof openTab>>, item = arri
   await gateway.emitGatewayEvent("mentions.changed", { gatewayInstanceId: bootId, revision });
 }
 
+async function openSplitTab(page: Page) {
+  const layout: ChatSplitLayout = {
+    activePaneId: "p1",
+    columnWeights: [0.5, 0.5],
+    columns: [
+      { id: "c1", paneWeights: [1], panes: [{ id: "p1", sessionKey: keys[0] }] },
+      { id: "c2", paneWeights: [1], panes: [{ id: "p2", sessionKey: targetKey }] },
+    ],
+  };
+  await page.addInitScript(
+    ({ storageKey, layout: initialLayout }) => {
+      localStorage.setItem(storageKey, JSON.stringify({ chatSplitLayout: initialLayout }));
+    },
+    { storageKey: controlUiBundledSettingsStorageKey(suite.server.baseUrl), layout },
+  );
+  const gateway = await openTab(page, keys[0]);
+  const cells = page.locator(".chat-split-view__cell");
+  await expectBrowser(cells).toHaveCount(2);
+  await expectBrowser(cells.first()).toHaveClass(/chat-split-view__cell--active/);
+  await expectBrowser(
+    cells.first().locator(".agent-chat__composer-combobox textarea"),
+  ).toBeVisible();
+  return { gateway, cells };
+}
+
+async function expectInboxMentions(page: Page, items: readonly MentionInboxItem[]) {
+  const inbox = page.getByRole("button", { name: /inbox items?$/i });
+  await inbox.click();
+  for (const item of items) {
+    await expectBrowser(page.locator(`[data-mention-id="${item.id}"]`)).toBeVisible();
+  }
+  await page.keyboard.press("Escape");
+  await expectBrowser(inbox).toHaveAttribute("aria-expanded", "false");
+}
+
 suite.define(() => {
+  it("suppresses mentions for a visible desktop split even when another pane is active", async () => {
+    await suite.withPage({ viewport: { width: 1440, height: 900 } }, async ({ page }) => {
+      const { gateway, cells } = await openSplitTab(page);
+      await expectBrowser(cells.last()).toBeVisible();
+      await expectBrowser(cells.last()).not.toHaveClass(/chat-split-view__cell--active/);
+      await deliver(gateway);
+      // Accepted Inbox content fences the negative toast assertion after delivery.
+      await expectInboxMentions(page, [arrival]);
+      expect(await page.locator(".app-toast--notification").count()).toBe(0);
+      await expectBrowser(page).toHaveURL(controlUiSessionUrl(suite.server.baseUrl, keys[0]));
+      expect(await gateway.getRequests("mentions.dismiss")).toHaveLength(0);
+    });
+  });
+
+  it("notifies for a narrow hidden split and retires its active toast when that pane becomes visible", async () => {
+    await suite.withPage({ viewport: { width: 1000, height: 900 } }, async ({ page }) => {
+      const { gateway, cells } = await openSplitTab(page);
+      await expectBrowser(cells.last()).toBeHidden();
+      await deliver(gateway);
+      const toast = page.locator(".app-toast--notification");
+      await expectBrowser(toast).toBeVisible();
+      await expectBrowser(toast.locator(".mention-toast__session")).toHaveText(
+        arrival.sessionTitle,
+      );
+      await toast.getByRole("button", { name: "View session" }).focus();
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await expectBrowser(cells.last()).toBeVisible();
+      await expectBrowser(cells.first()).toHaveClass(/chat-split-view__cell--active/);
+      await expectBrowser(toast).toHaveCount(0);
+      await expectInboxMentions(page, [arrival]);
+      expect(await gateway.getRequests("mentions.dismiss")).toHaveLength(0);
+    });
+  });
+
+  it("retires a queued mention when its split becomes visible without dropping other queued sessions", async () => {
+    await suite.withPage({ viewport: { width: 1000, height: 900 } }, async ({ page }) => {
+      const { gateway, cells } = await openSplitTab(page);
+      await expectBrowser(cells.last()).toBeHidden();
+      const first: MentionInboxItem = {
+        ...arrival,
+        id: "first-outside-split",
+        sessionKey: keys[2],
+        sessionTitle: "Release prep",
+        createdAt: 1_500,
+        excerpt: "Please review the release checklist.",
+        excerptMention: undefined,
+      };
+      const last: MentionInboxItem = {
+        ...first,
+        id: "last-outside-split",
+        createdAt: 3_000,
+        excerpt: "The final release checklist is ready.",
+      };
+      await gateway.setMethodResponse(
+        "mentions.list",
+        snapshot(2, [last, arrival, first, previous]),
+      );
+      await gateway.emitGatewayEvent("mentions.changed", {
+        gatewayInstanceId: bootId,
+        revision: 2,
+      });
+      const toast = page.locator(".app-toast--notification");
+      await expectBrowser(toast.locator(".mention-toast__excerpt")).toHaveText(first.excerpt!);
+      await toast.getByRole("button", { name: "View session" }).focus();
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await expectBrowser(cells.last()).toBeVisible();
+      await expectBrowser(cells.first()).toHaveClass(/chat-split-view__cell--active/);
+      await toast.getByRole("button", { name: "Dismiss", exact: true }).click();
+      // Hold the promoted toast so an incorrectly queued B cannot expire into a pass.
+      await expectBrowser(toast.locator(".mention-toast__excerpt")).not.toHaveText(first.excerpt!);
+      await toast.getByRole("button", { name: "View session" }).focus();
+      // The still-hidden session follows directly: B must not get promoted from FIFO.
+      await expectBrowser(toast.locator(".mention-toast__excerpt")).toHaveText(last.excerpt!);
+      await toast.getByRole("button", { name: "Dismiss", exact: true }).click();
+      await expectBrowser(toast).toHaveCount(0);
+      await expectInboxMentions(page, [first, arrival, last]);
+      expect(await gateway.getRequests("mentions.dismiss")).toHaveLength(0);
+    });
+  });
+
   it("notifies only the other two tabs and keeps toast dismissal local", async () => {
     await suite.withPage(
       { viewport: { width: 1280, height: 900 }, colorScheme: "dark" },
@@ -115,7 +236,9 @@ suite.define(() => {
           await openTab(pages[2], keys[2]),
         ] as const;
         await captureUiProof(suite, page, "01-before-mention.png");
-        for (const gateway of gateways) await deliver(gateway);
+        for (const gateway of gateways) {
+          await deliver(gateway);
+        }
         const toast = page.locator(".app-toast--notification");
         await expectBrowser(toast).toBeVisible();
         await toast.hover({ position: { x: 6, y: 6 } });
@@ -133,46 +256,13 @@ suite.define(() => {
         await expectBrowser(toast.locator(".mention-toast__excerpt")).toHaveText(arrival.excerpt!);
         await expectBrowser(toast.locator(".app-toast__footer")).toHaveText("View session");
         await expectBrowser(toast.locator(".app-toast__dismiss svg")).toHaveCount(1);
-        expect(await toast.locator(".app-toast__dismiss").innerText()).toBe("");
+        await expectBrowser(toast.getByRole("button", { name: "Dismiss", exact: true })).toHaveText(
+          "",
+        );
         await toast.evaluate(async (element) => {
           await Promise.all(element.getAnimations().map((animation) => animation.finished));
         });
-        const bounds = await toast.boundingBox();
-        expect(bounds!.width).toBe(500);
-        expect(bounds!.x + bounds!.width).toBe(1280 - 16);
-        const title = await toast.locator(".mention-toast__sender-line").boundingBox();
-        const session = await toast.locator(".mention-toast__session").boundingBox();
-        const excerpt = await toast.locator(".mention-toast__excerpt").boundingBox();
-        const action = await toast.getByRole("button", { name: "View session" }).boundingBox();
-        const avatar = await toast.locator(".viewer-avatar").boundingBox();
-        expect(session!.y - title!.y - title!.height).toBe(2);
-        expect(excerpt!.y - session!.y - session!.height).toBe(12);
-        expect(action!.y - excerpt!.y - excerpt!.height).toBeGreaterThanOrEqual(8);
-        for (const box of [session, excerpt, action]) {
-          expect(Math.abs(box!.x - title!.x)).toBeLessThan(1);
-        }
-        expect(avatar!.x + avatar!.width).toBeLessThan(title!.x);
-        expect(avatar!.width).toBe(28);
-        expect(Math.abs(avatar!.y - title!.y)).toBeLessThan(1);
-        const typeSizes = await toast.evaluate((element) => ({
-          header: parseFloat(
-            getComputedStyle(element.querySelector(".mention-toast__sender-line")!).fontSize,
-          ),
-          session: parseFloat(
-            getComputedStyle(element.querySelector(".mention-toast__session")!).fontSize,
-          ),
-          excerpt: parseFloat(
-            getComputedStyle(element.querySelector(".mention-toast__excerpt")!).fontSize,
-          ),
-        }));
-        expect(typeSizes.excerpt).toBeGreaterThan(typeSizes.header);
-        expect(typeSizes.header).toBeGreaterThan(typeSizes.session);
-        console.info("mention notification hierarchy", {
-          height: bounds!.height,
-          sessionGap: session!.y - title!.y - title!.height,
-          excerptGap: excerpt!.y - session!.y - session!.height,
-          actionGap: action!.y - excerpt!.y - excerpt!.height,
-        });
+        await expectBrowser(toast.locator(".mention-excerpt__highlight")).toHaveText("@Taylor");
         await captureUiProof(suite, page, "02-after-desktop-dark.png");
         await toast.getByRole("button", { name: "Dismiss", exact: true }).click();
         await expectBrowser(toast).toHaveCount(0);
@@ -182,8 +272,9 @@ suite.define(() => {
         await expectBrowser(pages[2]).toHaveURL(
           controlUiSessionUrl(suite.server.baseUrl, targetKey),
         );
-        for (const gateway of gateways)
+        for (const gateway of gateways) {
           expect(await gateway.getRequests("mentions.dismiss")).toHaveLength(0);
+        }
         await page.reload();
         await gateways[0].waitForRequest("mentions.list");
         await expectBrowser(page.locator(".app-toast--notification")).toHaveCount(0);
@@ -202,11 +293,19 @@ suite.define(() => {
         { viewport: { width, height }, colorScheme: theme },
         async ({ page }) => {
           const gateway = await openTab(page, keys[0], width < 768);
+          const text = `${"Earlier background. ".repeat(200)}Before we ship, @Taylor can you check the spacing? ${"Later details. ".repeat(200)}`;
+          const start = text.indexOf("@Taylor");
+          const prepared = prepareMentionExcerpts(
+            text,
+            [{ profileId: "profile-taylor", start, end: start + 7 }],
+            (value) => value,
+          ).recipients[0]!;
           const item = {
             ...arrival,
+            excerpt: prepared.excerpt,
+            excerptMention: prepared.excerptMention,
             senderLabel: "Alexandria Catherine Montgomery-Worthington",
             sessionTitle: "Release readiness — notification delivery and workspace collaboration",
-            excerpt: "@Taylor can you check the spacing before we ship the new notifications?",
           };
           await deliver(gateway, item);
           const toast = page.locator(".app-toast--notification");
@@ -227,12 +326,18 @@ suite.define(() => {
           expect(layout.overflow).toBe(false);
           expect(layout.left).toBeGreaterThanOrEqual(0);
           expect(layout.right).toBeLessThanOrEqual(width);
-          expect(layout.avatar).toBe(28);
           const action = await toast.getByRole("button", { name: "View session" }).boundingBox();
           const heading = await toast.locator(".app-toast__title").boundingBox();
           const excerpt = await toast.locator(".mention-toast__excerpt").boundingBox();
-          expect(Math.abs(action!.x - heading!.x)).toBeLessThan(1);
-          expect(excerpt!.height).toBeGreaterThan(0);
+          await expectBrowser(toast.locator(".mention-excerpt__highlight")).toHaveText("@Taylor");
+          await expectBrowser(toast.locator(".mention-toast__excerpt")).toContainText(
+            "Before we ship, @Taylor can you check the spacing?",
+          );
+          const highlight = await toast.locator(".mention-excerpt__highlight").boundingBox();
+          expect(highlight!.y).toBeGreaterThanOrEqual(excerpt!.y);
+          expect(highlight!.y + highlight!.height).toBeLessThanOrEqual(
+            excerpt!.y + excerpt!.height,
+          );
           if (width < 768) {
             const dismiss = await toast.locator(".app-toast__dismiss").boundingBox();
             expect(action!.height).toBeGreaterThanOrEqual(44);

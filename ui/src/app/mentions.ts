@@ -40,6 +40,7 @@ type MentionConnection = {
   revision: number | null;
   requiredRevision: number | null;
   dismissing: Set<string>;
+  seenArrivals: Map<string, number>;
   refreshRequested: boolean;
   refreshPromise: Promise<void> | null;
 };
@@ -59,6 +60,9 @@ export function createMentionsCapability(
   let disposed = false;
   const listeners = new Set<() => void>();
   const arrivalListeners = new Set<(items: readonly MentionInboxItem[]) => void>();
+  // The sidebar can hydrate before the lazy notification presenter subscribes.
+  // Keep only arrival IDs; the current authorized Inbox owns their contents.
+  const pendingArrivalIds = new Set<string>();
   const publish = (patch: Partial<MentionsSnapshot>) => {
     snapshot = { ...snapshot, ...patch };
     for (const listener of listeners) {
@@ -93,15 +97,37 @@ export function createMentionsCapability(
         return;
       }
       // The first accepted snapshot seeds this connection without replaying its Inbox.
-      const previousIds =
-        owner.revision === null ? null : new Set(snapshot.items.map((item) => item.id));
+      const arrivals =
+        owner.revision === null
+          ? []
+          : result.items.filter((item) => !owner.seenArrivals.has(item.id)).toReversed();
       owner.revision = result.revision;
+      const currentIds = new Set(result.items.map((item) => item.id));
+      // Omission can mean a temporarily unreadable session, not a new arrival
+      // when access returns. Retain IDs until their server-owned expiry; use
+      // observed server creation times rather than the browser clock to prune.
+      const observedTime = result.items.reduce((time, item) => Math.max(time, item.createdAt), 0);
+      for (const [id, expiresAt] of owner.seenArrivals) {
+        if (expiresAt <= observedTime && !currentIds.has(id)) {
+          owner.seenArrivals.delete(id);
+        }
+      }
+      for (const item of result.items) {
+        owner.seenArrivals.set(item.id, item.expiresAt);
+      }
+      for (const id of pendingArrivalIds) {
+        if (!currentIds.has(id)) {
+          pendingArrivalIds.delete(id);
+        }
+      }
       publish({ phase: "ready", items: result.items, error: null });
-      if (previousIds && isCurrent(owner)) {
-        const arrivals = result.items
-          .filter((item) => !previousIds.has(item.id))
-          .toSorted((left, right) => left.createdAt - right.createdAt);
+      if (isCurrent(owner)) {
         if (arrivals.length) {
+          if (!arrivalListeners.size) {
+            for (const item of arrivals) {
+              pendingArrivalIds.add(item.id);
+            }
+          }
           for (const listener of arrivalListeners) {
             listener(arrivals);
           }
@@ -119,6 +145,7 @@ export function createMentionsCapability(
       if (accessLost) {
         // Retire in-flight reads too; an earlier success cannot restore a revoked Inbox.
         connection = null;
+        pendingArrivalIds.clear();
       }
       publish({
         phase: "error",
@@ -182,6 +209,7 @@ export function createMentionsCapability(
     if (connection && isCurrent(connection)) {
       return;
     }
+    pendingArrivalIds.clear();
     if (
       disposed ||
       next.phase !== "connected" ||
@@ -204,6 +232,7 @@ export function createMentionsCapability(
       revision: null,
       requiredRevision: null,
       dismissing: new Set(),
+      seenArrivals: new Map(),
       refreshRequested: false,
       refreshPromise: null,
     };
@@ -286,11 +315,26 @@ export function createMentionsCapability(
     },
     subscribeArrivals(listener) {
       arrivalListeners.add(listener);
+      if (pendingArrivalIds.size) {
+        const currentItems = new Map(
+          connection && isCurrent(connection) ? snapshot.items.map((item) => [item.id, item]) : [],
+        );
+        const arrivals = [...pendingArrivalIds].flatMap((id) => {
+          const item = currentItems.get(id);
+          return item ? [item] : [];
+        });
+        // Consume before calling: a synchronous subscription must not replay them.
+        pendingArrivalIds.clear();
+        if (arrivals.length) {
+          listener(arrivals);
+        }
+      }
       return () => arrivalListeners.delete(listener);
     },
     dispose() {
       disposed = true;
       connection = null;
+      pendingArrivalIds.clear();
       stopGateway();
       stopEvents();
       listeners.clear();

@@ -122,6 +122,67 @@ describe("ordinary chat input admission", () => {
     }
   });
 
+  it("retains mention-centered excerpts and highlight spans from the original committed message", async () => {
+    const fixture = await createMentionFixture();
+    try {
+      const text = `An unselected @Bob example. ${"Background details. ".repeat(200)}Before release, @Bob please check the API. ${"Other background. ".repeat(200)}Before shipping, @Carol please check the spacing.`;
+      fixture.params.message = text;
+      fixture.params.mentions = [
+        {
+          profileId: fixture.bobClient.authenticatedUserProfile.profileId,
+          start: text.lastIndexOf("@Bob"),
+          end: text.lastIndexOf("@Bob") + 4,
+        },
+        {
+          profileId: fixture.carolClient.authenticatedUserProfile.profileId,
+          start: text.indexOf("@Carol"),
+          end: text.indexOf("@Carol") + 6,
+        },
+      ];
+      await fixture.send();
+      expect(fixture.read()).toEqual([]);
+      const recorder = await fixture.dispatchedRecorder;
+      await recorder.persistApproved();
+      const bob = fixture.read()[0]!;
+      const carol = fixture.read(fixture.carolClient)[0]!;
+      expect(bob.excerpt).toContain("Before release, @Bob please check the API.");
+      expect(bob.excerpt).not.toContain("unselected");
+      expect(carol.excerpt).toContain("Before shipping, @Carol please check the spacing.");
+      for (const [item, label] of [
+        [bob, "@Bob"],
+        [carol, "@Carol"],
+      ] as const) {
+        expect(item.excerpt!.length).toBeLessThanOrEqual(280);
+        expect(item.excerptMention).toBeDefined();
+        expect(item.excerpt!.slice(item.excerptMention!.start, item.excerptMention!.end)).toBe(
+          label,
+        );
+        expect(item).not.toHaveProperty("recipientExcerpts");
+      }
+      fixture.inbox.dispose();
+      const restarted = createMentionInbox({
+        gatewayInstanceId: "mention-excerpt-restart",
+        getRuntimeConfig,
+        getClients: () => [fixture.client, fixture.bobClient, fixture.carolClient],
+        broadcastToConnIds: vi.fn(),
+      });
+      try {
+        expect(restarted.list(fixture.bobClient)).toMatchObject({
+          ok: true,
+          value: { items: [bob] },
+        });
+        expect(restarted.list(fixture.carolClient)).toMatchObject({
+          ok: true,
+          value: { items: [carol] },
+        });
+      } finally {
+        restarted.dispose();
+      }
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   it("includes an idle first commit in the Inbox before ACK without waiting for the agent", async () => {
     const fixture = await createMentionFixture({ active: false });
     let atAck = 0;

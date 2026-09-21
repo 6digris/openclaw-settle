@@ -427,13 +427,27 @@ describe("temporary human mention Inbox", () => {
     },
   );
 
-  it("keeps recipients independent when they share a committed message", async () => {
+  it("keeps recipient excerpts independent and drops dismissed preview metadata", async () => {
     await withInbox(async (f) => {
-      f.post("shared-source", { recipientProfileIds: [f.bob.id, f.carol.id] });
+      const excerpt = "@Bob check the API. @Carol check the spacing.";
+      f.post("shared-source", {
+        recipientProfileIds: [f.bob.id, f.carol.id],
+        excerpt,
+        mentions: [
+          { profileId: f.bob.id, start: 0, end: 4 },
+          {
+            profileId: f.carol.id,
+            start: excerpt.indexOf("@Carol"),
+            end: excerpt.indexOf("@Carol") + 6,
+          },
+        ],
+      });
       const bob = read(f.inbox, f.bobClient).items[0]!;
       const carol = read(f.inbox, f.carolClient).items[0]!;
       expect(bob.id).not.toBe(carol.id);
       bob.excerpt = "Changed by a caller";
+      bob.excerptMention!.start = 999;
+      expect(read(f.inbox, f.bobClient).items[0]!.excerptMention!.start).toBe(0);
       expect(read(f.inbox, f.carolClient).items).toEqual([carol]);
       f.inbox.dismiss(f.bobClient, [bob.id]);
       expect(read(f.inbox, f.bobClient).items).toEqual([]);
@@ -442,8 +456,36 @@ describe("temporary human mention Inbox", () => {
         false,
         true,
       ]);
+      const stored = readMentionStoreSnapshot(-1)!.sources[0]!.message!.recipientExcerpts!;
+      expect(stored.map(({ profileId }) => profileId)).toEqual([f.carol.id]);
       f.post("shared-source", { recipientProfileIds: [f.bob.id, f.carol.id] });
       expect(f.push).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("retains selected excerpt positions when recipient profiles merge and restart", async () => {
+    await withInbox(async (f) => {
+      const old = ensureProfileForEmail("old-excerpt@mentions.example.test");
+      const oldClient = { ...identifiedClient(old.id, "Old Bob"), connId: "old-excerpt" };
+      f.clients.push(oldClient);
+      const excerpt = "Before release, @Old Bob check the API.";
+      const start = excerpt.indexOf("@Old Bob");
+      f.post("selected-old-profile", {
+        recipientProfileIds: [old.id],
+        excerpt,
+        mentions: [{ profileId: old.id, start, end: start + 8 }],
+      });
+      const original = read(f.inbox, oldClient).items;
+      expect(original[0]!.excerptMention).toEqual({ start, end: start + 8 });
+      linkEmail("old-excerpt@mentions.example.test", f.bob.id);
+      await Promise.resolve();
+      expect(read(f.inbox, f.bobClient).items).toEqual(original);
+      f.inbox.dispose();
+      const restarted = f.openInbox("excerpt-merge-restart");
+      expect(read(restarted, f.bobClient).items).toEqual(original);
+      expect(
+        readMentionStoreSnapshot(-1)!.sources[0]!.message!.recipientExcerpts![0]!.profileId,
+      ).toBe(f.bob.id);
     });
   });
 

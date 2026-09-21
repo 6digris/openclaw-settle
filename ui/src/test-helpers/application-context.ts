@@ -28,6 +28,7 @@ const unavailableMentionsCapability = {
 } satisfies MentionsCapability;
 
 const emptySidebarAttentionStore = {
+  getMentions: () => unavailableMentionsCapability,
   entries: [],
   activate: () => unavailableMentionsCapability,
   dismiss: () => undefined,

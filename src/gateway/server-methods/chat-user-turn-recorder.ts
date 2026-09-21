@@ -4,7 +4,6 @@ import { stableStringify } from "@openclaw/normalization-core/stable-stringify";
 import { runAgentHarnessBeforeMessageWriteHook } from "../../agents/harness/hook-helpers.js";
 import { normalizeMessageClientSources } from "../../chat/message-client-source.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
-import { redactSensitiveText } from "../../logging/redact.js";
 import {
   buildRunUserTurnIdempotencyKey,
   createUserTurnTranscriptRecorder,
@@ -235,7 +234,8 @@ export function createGatewayChatUserTurnController(params: {
               messageId: anchor.entryId,
               senderProfileId,
               recipientProfileIds: retained.map((mention) => mention.profileId),
-              excerpt: redactSensitiveText(text),
+              excerpt: text,
+              mentions: retained,
             });
           },
         }

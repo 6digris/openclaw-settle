@@ -122,8 +122,17 @@ describe("renderSidebarMentionItem", () => {
     renderMention({ mention: { ...mention, excerpt } });
 
     const renderedExcerpt = container.querySelector(".sidebar-mention-row__excerpt")!;
-    expect(renderedExcerpt.textContent).toBe(excerpt);
+    expect(renderedExcerpt.textContent?.trim()).toBe(excerpt);
     expect(renderedExcerpt.children).toHaveLength(0);
+  });
+
+  it("uses the supplied selected-name range inside the Inbox excerpt", () => {
+    const excerpt = "Before release, @Alex Chen please check the spacing.";
+    const start = excerpt.indexOf("@Alex Chen");
+    renderMention({ mention: { ...mention, excerpt, excerptMention: { start, end: start + 10 } } });
+    const rendered = container.querySelector(".sidebar-mention-row__excerpt")!;
+    expect(rendered.textContent?.trim()).toBe(excerpt);
+    expect(rendered.querySelector(".mention-excerpt__highlight")?.textContent).toBe("@Alex Chen");
   });
 
   it("disables repeated dismissal while leaving the session link usable", () => {

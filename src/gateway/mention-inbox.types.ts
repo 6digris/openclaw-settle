@@ -1,6 +1,7 @@
 import type { Result } from "@openclaw/normalization-core/result";
 import type {
   ErrorShape,
+  HumanMention,
   MentionsListResult,
   UsersMentionableParams,
   UsersMentionableResult,
@@ -16,7 +17,9 @@ export type MentionCommittedInput = {
   messageId: string;
   senderProfileId: string;
   recipientProfileIds: readonly string[];
+  /** Committed source text; the Inbox redacts before retaining any excerpt. */
   excerpt?: string;
+  mentions?: readonly HumanMention[];
 };
 
 /** Keep the Gateway context independent of its context-consuming Inbox implementation. */

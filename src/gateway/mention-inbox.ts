@@ -1,8 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { flattenMarkdownToPlainText } from "@openclaw/normalization-core/markdown-plain-text";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
-import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import {
   ErrorCodes,
   MAX_HUMAN_MENTIONS,
@@ -14,18 +12,22 @@ import {
 } from "../../packages/gateway-protocol/src/index.js";
 import { updateSessionProfileInvolvement } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { redactSensitiveText } from "../logging/redact.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { onSessionIdentityMutation } from "../sessions/session-lifecycle-events.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import { onUserProfilesChanged, readUserProfileVersion } from "../state/user-profile-events.js";
-import { createHumanMentionPolicy, humanMentionDisplayLabel } from "./human-mention-policy.js";
+import { createHumanMentionPolicy } from "./human-mention-policy.js";
+import { prepareMentionExcerpts } from "./mention-excerpt.js";
+import { projectMentionExcerpt, projectMentionInboxItem } from "./mention-inbox-presentation.js";
 import {
   MAX_MENTION_SOURCES,
   MENTION_RETENTION_MS,
   readMentionStoreSnapshot,
   writeMentionStoreChanges,
+  type MentionStoreExcerpt,
   type MentionStoreHead,
   type MentionStoreMessage,
   type MentionStoreSource,
@@ -34,7 +36,6 @@ import type { MentionCommittedInput, MentionInbox } from "./mention-inbox.types.
 import type { GatewayBroadcastToConnIdsFn } from "./server-broadcast-types.js";
 import type { GatewayClient } from "./server-methods/types.js";
 import { resolveSessionSharingTarget } from "./session-sharing.js";
-import { deriveSessionTitle } from "./session-utils-core.js";
 
 const MAX_GLOBAL_ITEMS = 10_000;
 const log = createSubsystemLogger("gateway/mentions");
@@ -44,6 +45,7 @@ type StoredMention = {
   recipientProfileId: string;
   source: ProcessedSource;
   message: MentionStoreMessage;
+  preview?: MentionStoreExcerpt;
 };
 
 type ProcessedSource = {
@@ -115,7 +117,13 @@ export function createMentionInbox(params: {
       for (const [profileId, id] of stored.recipients) {
         const item: StoredMention | null =
           id && stored.message
-            ? { id, recipientProfileId: profileId, source, message: stored.message }
+            ? {
+                id,
+                recipientProfileId: profileId,
+                source,
+                message: stored.message,
+                preview: projectMentionExcerpt(stored.message.recipientExcerpts, profileId),
+              }
             : null;
         source.recipients.set(profileId, item);
         if (item) {
@@ -145,7 +153,13 @@ export function createMentionInbox(params: {
               changes.set(key, undefined);
               continue;
             }
-            const message = [...source.recipients.values()].find((item) => item !== null)?.message;
+            const retained = [...source.recipients.values()].filter((item) => item !== null);
+            const message = retained[0]?.message;
+            // Re-key previews with their retained items after profile merges; a
+            // dismissed recipient leaves no private preview in the shared source.
+            const recipientExcerpts = retained.flatMap((item) =>
+              item.preview ? [{ profileId: item.recipientProfileId, ...item.preview }] : [],
+            );
             changes.set(key, {
               key,
               sequence: source.sequence,
@@ -154,7 +168,14 @@ export function createMentionInbox(params: {
                 profileId,
                 item?.id ?? null,
               ]),
-              ...(message ? { message } : {}),
+              ...(message
+                ? {
+                    message: {
+                      ...message,
+                      recipientExcerpts: recipientExcerpts.length ? recipientExcerpts : undefined,
+                    },
+                  }
+                : {}),
             });
           }
           head = writeMentionStoreChanges(db, head, changes);
@@ -313,29 +334,6 @@ export function createMentionInbox(params: {
       : undefined;
   }
 
-  function projectItem(
-    item: StoredMention,
-    current: NonNullable<ReturnType<typeof currentTarget>>,
-  ): MentionInboxItem {
-    const { content } = item.message;
-    return {
-      ...content,
-      id: item.id,
-      expiresAt: item.source.expiresAt,
-      senderProfileId: current.sender?.profileId ?? content.senderProfileId,
-      senderLabel: humanMentionDisplayLabel(current.sender?.label, content.senderProfileId),
-      ...(current.sender ? { senderAvatarUrl: current.sender.avatarUrl } : {}),
-      sessionTitle:
-        truncateUtf16Safe(
-          (deriveSessionTitle(current.target.entry) ?? "Conversation")
-            .replace(/[\p{Cc}\p{Cf}]/gu, " ")
-            .replace(/\s+/gu, " ")
-            .trim(),
-          256,
-        ) || "Conversation",
-    };
-  }
-
   function readView(
     client: GatewayClient | null,
     cfg = params.getRuntimeConfig(),
@@ -352,7 +350,7 @@ export function createMentionInbox(params: {
     for (const item of [...(profileItems ?? [])].toReversed()) {
       const current = currentTarget(item, cfg, targets);
       if (current && requester.canRead(current.target)) {
-        visible.push(projectItem(item, current));
+        visible.push(projectMentionInboxItem(item, current));
       }
     }
     const signature = createHash("sha256")
@@ -545,12 +543,20 @@ export function createMentionInbox(params: {
         ];
         if (
           input.recipientProfileIds.length > MAX_HUMAN_MENTIONS ||
+          (input.mentions?.length ?? 0) > MAX_HUMAN_MENTIONS ||
           input.sessionKey.length > 512 ||
           references.some((value) => !value || value.length > 256)
         ) {
           log.warn("Skipped mention delivery with invalid committed references.");
           return;
         }
+        const prepared = prepareMentionExcerpts(
+          input.excerpt ?? "",
+          (input.mentions ?? []).filter((mention) =>
+            input.recipientProfileIds.includes(mention.profileId),
+          ),
+          redactSensitiveText,
+        );
         const committed = mutate<StoredMention[]>(() => {
           const cfg = params.getRuntimeConfig();
           const resolved = resolveSessionSharingTarget({
@@ -633,15 +639,7 @@ export function createMentionInbox(params: {
             sessionKey: resolved.canonicalKey,
             entry: resolved.entry,
           };
-          const excerpt = input.excerpt
-            ? truncateUtf16Safe(
-                flattenMarkdownToPlainText(truncateUtf16Safe(input.excerpt, 2_048))
-                  .replace(/[\p{Cc}\p{Cf}]/gu, " ")
-                  .replace(/\s+/gu, " ")
-                  .trim(),
-                280,
-              )
-            : undefined;
+          const excerpt = prepared.fallback;
           // Recipients share immutable message data; consumed sources retain only replay tombstones.
           const message: StoredMention["message"] = {
             sessionId: input.sessionId,
@@ -672,6 +670,7 @@ export function createMentionInbox(params: {
               recipientProfileId: recipient.profileId,
               source,
               message,
+              preview: projectMentionExcerpt(prepared.recipients, profileId),
             };
             items.set(item.id, item);
             source.recipients.set(recipient.profileId, item);
@@ -696,7 +695,7 @@ export function createMentionInbox(params: {
           if (!retained || !current) {
             continue;
           }
-          const projected = projectItem(retained, current);
+          const projected = projectMentionInboxItem(retained, current);
           params.onMentionCreated({
             id: item.id,
             recipientProfileId: current.recipient.profileId,

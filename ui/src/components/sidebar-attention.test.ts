@@ -1,6 +1,5 @@
-/* @vitest-environment jsdom */
-
 import { afterEach, describe, expect, it, vi } from "vitest";
+/* @vitest-environment jsdom */
 import type { MentionInboxItem } from "../../../packages/gateway-protocol/src/index.js";
 import { createDeferred as deferred } from "../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
@@ -12,6 +11,7 @@ import type {
 } from "../api/types.ts";
 import type { ApplicationContext, ApplicationGateway } from "../app/context.ts";
 import type { ScopeUpgradeState } from "../app/device-scope-upgrade-availability.ts";
+import { createMentionsCapability } from "../app/mentions.ts";
 import { client as mockClient, createGatewayHarness } from "../app/overlays-access.test-support.ts";
 import { createApplicationOverlays } from "../app/overlays.ts";
 import {
@@ -205,7 +205,7 @@ describe("sidebar attention refresh ownership", () => {
       },
     } as unknown as Parameters<typeof createSidebarAttentionStore>[0];
     const store = createSidebarAttentionStore(sources);
-    store.activate(SidebarAttentionStoreController);
+    store.activate(SidebarAttentionStoreController, createMentionsCapability);
     stores.add(store);
     const provider = createApplicationContextProvider({
       ...sources,
@@ -710,7 +710,7 @@ describe("sidebar attention refresh ownership", () => {
       overlays,
       scopeUpgrade: context.scopeUpgrade,
     });
-    store.activate(SidebarAttentionStoreController);
+    store.activate(SidebarAttentionStoreController, createMentionsCapability);
     stores.add(store);
     const provider = createApplicationContextProvider({ ...context, sidebarAttention: store });
     const element = document.createElement("openclaw-sidebar-attention") as SidebarAttentionElement;

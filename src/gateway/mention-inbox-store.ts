@@ -20,6 +20,19 @@ const SOURCE_END = "notifications.mentions.source/";
 const reference = z.string().min(1).max(256);
 const timestamp = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const headSchema = z.object({ revision: timestamp, nextSequence: timestamp });
+const recipientExcerptSchema = z
+  .object({
+    profileId: reference,
+    excerpt: z.string().max(280),
+    excerptMention: z.object({
+      start: z.number().int().min(0).max(279),
+      end: z.number().int().min(1).max(280),
+    }),
+  })
+  .refine(
+    ({ excerpt, excerptMention }) =>
+      excerptMention.start < excerptMention.end && excerptMention.end <= excerpt.length,
+  );
 const messageSchema = z.object({
   sessionId: reference,
   content: z.object({
@@ -30,6 +43,7 @@ const messageSchema = z.object({
     createdAt: timestamp,
     excerpt: z.string().max(280).optional(),
   }),
+  recipientExcerpts: z.array(recipientExcerptSchema).max(MAX_HUMAN_MENTIONS).optional(),
 });
 const sourceSchema = z.object({
   key: z.string().regex(/^[a-f0-9]{64}$/),
@@ -42,6 +56,7 @@ const sourceSchema = z.object({
 export type MentionStoreHead = z.infer<typeof headSchema>;
 export type MentionStoreSource = z.infer<typeof sourceSchema>;
 export type MentionStoreMessage = z.infer<typeof messageSchema>;
+export type MentionStoreExcerpt = Omit<z.infer<typeof recipientExcerptSchema>, "profileId">;
 export type MentionStoreSnapshot = {
   head: MentionStoreHead;
   sources: MentionStoreSource[];
@@ -92,6 +107,16 @@ export function readMentionStoreSnapshot(
         new Set(source.recipients.map(([profileId]) => profileId)).size !== source.recipients.length
       ) {
         throw new Error("Invalid mention source identity");
+      }
+      const excerpts = source.message?.recipientExcerpts ?? [];
+      const retainedProfiles = new Set(
+        source.recipients.filter(([, id]) => id !== null).map(([profileId]) => profileId),
+      );
+      if (
+        new Set(excerpts.map(({ profileId }) => profileId)).size !== excerpts.length ||
+        excerpts.some(({ profileId }) => !retainedProfiles.has(profileId))
+      ) {
+        throw new Error("Invalid mention excerpt recipient");
       }
       sequences.add(source.sequence);
       for (const [, id] of source.recipients) {
@@ -166,6 +191,9 @@ export function writeMentionStoreChanges(
     }
     flushDeletes();
     const valueJson = JSON.stringify(source);
+    if (valueJson.length > 32_768) {
+      throw new Error("Mention source exceeds its record budget");
+    }
     executeSqliteQuerySync(
       database,
       db

@@ -1,8 +1,7 @@
 import type { CronCompactJob, ModelAuthStatusResult } from "../api/types.ts";
-import { createMentionsCapability, type MentionsCapability } from "../app/mentions.ts";
 import type {
   SidebarAttentionStoreController as StoreController,
-  SidebarAttentionStoreSources,
+  SidebarAttentionStoreControllerSources,
 } from "../app/sidebar-attention-store.ts";
 import { normalizeAgentLabel } from "../lib/agents/display.ts";
 import { createInitialCronState, loadCronStatus } from "../lib/cron/index.ts";
@@ -40,7 +39,6 @@ const VISIBILITY_REFRESH_MIN_AGE_MS = 60_000;
 const IDLE_REFRESH_INTERVAL_MS = 10 * 60_000;
 
 export class SidebarAttentionStoreController implements StoreController {
-  readonly mentions: MentionsCapability;
   private cronJobs: CronAttentionJob[] = [];
   private cronSchedulerEnabled: boolean | null = null;
   private modelAuthStatus: ModelAuthStatusResult | null = null;
@@ -66,13 +64,9 @@ export class SidebarAttentionStoreController implements StoreController {
   private readonly idleRefreshTimer: ReturnType<typeof globalThis.setInterval>;
 
   constructor(
-    private readonly sources: SidebarAttentionStoreSources,
+    private readonly sources: SidebarAttentionStoreControllerSources,
     private readonly onChange: () => void,
   ) {
-    // Load with the Inbox, but keep its profile state across presenter unmounts.
-    this.mentions = createMentionsCapability(sources.gateway, {
-      connectionBootstrap: sources.connectionBootstrap,
-    });
     this.loadedClient = null;
     this.stopGateway = sources.gateway.subscribe(() => this.synchronizeGateway());
     this.stopEvents = sources.gateway.subscribeEvents((event) => {
@@ -85,7 +79,7 @@ export class SidebarAttentionStoreController implements StoreController {
     this.stopSelection = sources.agentSelection.subscribe(() => this.synchronizeGateway());
     this.stopAgents = sources.agents.subscribe(onChange);
     this.stopOverlays = sources.overlays.subscribe(onChange);
-    this.stopMentions = this.mentions.subscribe(onChange);
+    this.stopMentions = sources.mentions.subscribe(onChange);
     document.addEventListener("visibilitychange", this.refreshIfStale);
     globalThis.addEventListener("storage", this.syncDismissalsFromStorage);
     this.idleRefreshTimer = globalThis.setInterval(this.refreshIfStale, IDLE_REFRESH_INTERVAL_MS);
@@ -186,7 +180,7 @@ export class SidebarAttentionStoreController implements StoreController {
     return buildSidebarInboxEntries({
       approvals: overlay.approvalQueue,
       attention,
-      mentions: this.mentions.snapshot.items,
+      mentions: this.sources.mentions.snapshot.items,
       scopeUpgrade,
       update,
     });
@@ -458,7 +452,6 @@ export class SidebarAttentionStoreController implements StoreController {
     this.stopAgents();
     this.stopOverlays();
     this.stopMentions();
-    this.mentions.dispose();
     document.removeEventListener("visibilitychange", this.refreshIfStale);
     globalThis.removeEventListener("storage", this.syncDismissalsFromStorage);
     globalThis.clearInterval(this.idleRefreshTimer);

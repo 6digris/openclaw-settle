@@ -1,117 +1,114 @@
 import { consume } from "@lit/context";
-import { html, nothing, type PropertyValues } from "lit";
+import { nothing, type PropertyValues } from "lit";
 import { property } from "lit/decorators.js";
 import type { MentionInboxItem } from "../../../packages/gateway-protocol/src/index.js";
 import { applicationContext, type ApplicationContext } from "../app/context.ts";
-import { t } from "../i18n/index.ts";
-import { registerSidebarAttentionEnglish } from "../i18n/locales/en-sidebar-attention.ts";
-import { sessionNavigationTarget } from "../lib/sessions/route-navigation.ts";
+import { createMentionsCapability } from "../app/mentions.ts";
 import { areUiSessionKeysEquivalent } from "../lib/sessions/session-key.ts";
-import { showToast } from "../lib/toast.ts";
 import { OpenClawLightDomContentsElement } from "../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../lit/subscriptions-controller.ts";
-import { SidebarAttentionStoreController } from "./sidebar-attention-store.ts";
-import "./viewer-facepile.ts";
+import type { ChatSplitLayout } from "../pages/chat/split-layout-types.ts";
+import { visiblePanesOf } from "../pages/chat/split-layout.ts";
 
-registerSidebarAttentionEnglish();
+type PendingMention = { mention: MentionInboxItem; abort: AbortController };
+type NotificationView = typeof import("./mention-notification-view.ts");
 
 class MentionNotifications extends OpenClawLightDomContentsElement {
   @consume({ context: applicationContext, subscribe: true })
   private context?: ApplicationContext;
 
-  @property({ attribute: false }) watchedSessionKey: string | null = null;
+  @property({ attribute: false }) sessionKey: string | null = null;
+  @property({ attribute: false }) splitLayout?: ChatSplitLayout;
+  @property({ type: Boolean }) narrow = false;
 
-  private readonly pending = new Map<
-    string,
-    { mention: MentionInboxItem; abort: AbortController }
-  >();
+  private readonly pending = new Map<string, PendingMention>();
   private reconcile = () => {};
   private readonly subscriptions = new SubscriptionsController(this).effect(
     () => this.context,
     (context) => {
-      const mentions = context.sidebarAttention.activate(SidebarAttentionStoreController);
+      const mentions = context.sidebarAttention.getMentions(createMentionsCapability);
+      let disposed = false;
+      let viewLoad: Promise<NotificationView> | null = null;
+      const forget = (entry: PendingMention) => {
+        if (this.pending.get(entry.mention.id) === entry) {
+          this.pending.delete(entry.mention.id);
+        }
+      };
+      const cancel = (entry: PendingMention) => {
+        forget(entry);
+        entry.abort.abort();
+      };
       this.reconcile = () => {
         const visible = new Set(mentions.snapshot.items.map((item) => item.id));
         for (const [id, entry] of this.pending) {
-          if (!visible.has(id) || this.isWatching(entry.mention)) {
-            entry.abort.abort();
+          if (!visible.has(id) || this.isVisible(entry.mention)) {
+            cancel(entry);
           }
+        }
+      };
+      const present = async (entry: PendingMention) => {
+        try {
+          // All arrivals await the same load in arrival order, preserving toast FIFO.
+          viewLoad ??= import("./mention-notification-view.ts").catch((error: unknown) => {
+            viewLoad = null;
+            console.warn("[openclaw] Failed to load mention notifications", error);
+            throw error;
+          });
+          const view = await viewLoad;
+          if (
+            disposed ||
+            this.context !== context ||
+            entry.abort.signal.aborted ||
+            this.pending.get(entry.mention.id) !== entry ||
+            this.isVisible(entry.mention)
+          ) {
+            cancel(entry);
+            return;
+          }
+          view.showMentionNotification(entry.mention, context, entry.abort.signal, () =>
+            forget(entry),
+          );
+        } catch {
+          // The Inbox keeps the item; a failed lazy load must not retain transient work.
+          cancel(entry);
         }
       };
       const stopState = mentions.subscribe(this.reconcile);
       const stopArrivals = mentions.subscribeArrivals((arrivals) => {
         for (const mention of arrivals) {
-          if (this.isWatching(mention)) {
+          if (this.isVisible(mention) || this.pending.has(mention.id)) {
             continue;
           }
-          const abort = new AbortController();
-          this.pending.set(mention.id, { mention, abort });
-          showToast({
-            icon: html`<span class="mention-toast__avatar">
-              <openclaw-viewer-avatar
-                .user=${{ id: mention.senderProfileId, identity: { type: "profile", id: mention.senderProfileId }, name: mention.senderLabel, avatarUrl: mention.senderAvatarUrl, watchedSessions: [] }}
-                .markAsViewer=${false}
-                variant="footer"
-              ></openclaw-viewer-avatar>
-            </span>`,
-            title: html`
-              <span class="mention-toast__sender-line">
-                <bdi class="mention-toast__name" title=${mention.senderLabel}
-                  >${mention.senderLabel}</bdi
-                >
-                <span class="mention-toast__reason">${t("attention.mentions.mentionedYou")}</span>
-              </span>
-              <span class="mention-toast__session" title=${mention.sessionTitle} dir="auto"
-                >${mention.sessionTitle}</span
-              >
-            `,
-            message: html`<span
-              class="mention-toast__excerpt"
-              title=${mention.excerpt ?? ""}
-              dir="auto"
-              >${mention.excerpt ?? t("attention.mentions.noExcerpt")}</span
-            >`,
-            actionLabel: t("attention.mentions.viewSession"),
-            onAction: () => {
-              const target = sessionNavigationTarget({
-                face: "chat",
-                sessionKey: mention.sessionKey,
-                fallbackAgentId: mention.agentId,
-                basePath: context.basePath,
-                row: { key: mention.sessionKey, displayName: mention.sessionTitle },
-                exactKey: true,
-              });
-              context.navigate("chat", target.options);
-            },
-            // Closing this transient surface never dismisses the shared Inbox entry.
-            onDismiss: () => this.pending.delete(mention.id),
-            signal: abort.signal,
-            durationMs: 5_000,
-            fifo: true,
-          });
+          const entry = { mention, abort: new AbortController() };
+          this.pending.set(mention.id, entry);
+          void present(entry);
         }
       });
       return () => {
+        disposed = true;
         stopArrivals();
         stopState();
         for (const entry of this.pending.values()) {
-          entry.abort.abort();
+          cancel(entry);
         }
-        this.pending.clear();
         this.reconcile = () => {};
       };
     },
   );
 
-  private isWatching(mention: MentionInboxItem) {
-    return (
-      this.watchedSessionKey !== null &&
-      areUiSessionKeysEquivalent(this.watchedSessionKey, mention.sessionKey)
-    );
+  private isVisible(mention: MentionInboxItem) {
+    if (this.sessionKey === null) {
+      return false;
+    }
+    return this.splitLayout
+      ? visiblePanesOf(this.splitLayout, this.narrow).some((pane) =>
+          areUiSessionKeysEquivalent(pane.sessionKey, mention.sessionKey),
+        )
+      : areUiSessionKeysEquivalent(this.sessionKey, mention.sessionKey);
   }
 
   protected override willUpdate(changed: PropertyValues<this>) {
-    if (changed.has("watchedSessionKey")) {
+    if (changed.has("sessionKey") || changed.has("splitLayout") || changed.has("narrow")) {
       this.reconcile();
     }
   }

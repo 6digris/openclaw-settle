@@ -12,6 +12,7 @@ import type {
 } from "../api/types.ts";
 import { createConnectionBootstrapCoordinator } from "../app/connection-bootstrap.ts";
 import type { ApplicationContext } from "../app/context.ts";
+import { createMentionsCapability } from "../app/mentions.ts";
 import { client as mockClient, createGatewayHarness } from "../app/overlays-access.test-support.ts";
 import {
   createSidebarAttentionStore,
@@ -120,7 +121,7 @@ describe("sidebar attention source publication", () => {
       bootstrap.synchronize({ client, connected: true });
       store = createStore(harness.gateway, bootstrap);
       try {
-        store.activate(SidebarAttentionStoreController);
+        store.activate(SidebarAttentionStoreController, createMentionsCapability);
         expect(request.mock.calls.filter(([method]) => method.startsWith("cron."))).toEqual([]);
         if (boundary === "hidden") {
           visibility = "hidden";
@@ -174,7 +175,7 @@ describe("sidebar attention source publication", () => {
     });
     const harness = createGatewayHarness(mockClient(request));
     store = createStore(harness.gateway);
-    store.activate(SidebarAttentionStoreController);
+    store.activate(SidebarAttentionStoreController, createMentionsCapability);
 
     await waitForFast(() =>
       expect(store?.entries).toMatchObject([
@@ -207,7 +208,7 @@ describe("sidebar attention source publication", () => {
       });
       const harness = createGatewayHarness(mockClient(request));
       store = createStore(harness.gateway);
-      store.activate(SidebarAttentionStoreController);
+      store.activate(SidebarAttentionStoreController, createMentionsCapability);
       await waitForFast(() => expect(offsets).toEqual([0, 1]));
 
       if (boundary === "hidden") {
@@ -254,7 +255,7 @@ describe("sidebar attention source publication", () => {
       });
       const harness = createGatewayHarness(mockClient(request));
       store = createStore(harness.gateway);
-      store.activate(SidebarAttentionStoreController);
+      store.activate(SidebarAttentionStoreController, createMentionsCapability);
 
       try {
         for (let index = 0; index < 20; index++) {
@@ -317,7 +318,7 @@ describe("sidebar attention source publication", () => {
       });
       const harness = createGatewayHarness(mockClient(request));
       store = createStore(harness.gateway);
-      store.activate(SidebarAttentionStoreController);
+      store.activate(SidebarAttentionStoreController, createMentionsCapability);
       if (initial === "settled") {
         await waitForFast(() => expect(store?.entries).toMatchObject([{ label: "previous" }]));
       } else {
@@ -365,7 +366,7 @@ describe("sidebar attention source publication", () => {
     });
     const harness = createGatewayHarness(mockClient(request));
     store = createStore(harness.gateway);
-    store.activate(SidebarAttentionStoreController);
+    store.activate(SidebarAttentionStoreController, createMentionsCapability);
     dismissSidebarAttention(harness.gateway.connection.gatewayUrl, {
       kind: "cronFailed",
       signature: "newer-job",
@@ -405,7 +406,7 @@ describe("sidebar attention source publication", () => {
     });
     const harness = createGatewayHarness(mockClient(request));
     store = createStore(harness.gateway);
-    store.activate(SidebarAttentionStoreController);
+    store.activate(SidebarAttentionStoreController, createMentionsCapability);
     pages[0]!.resolve(cronPage("dismissed"));
     await waitForFast(() => expect(store?.entries).toHaveLength(1));
     store.dismiss({ kind: "cronFailed", signature: "dismissed" });
@@ -465,7 +466,7 @@ describe("sidebar attention source publication", () => {
       }),
     );
     store = createStore(harness.gateway);
-    store.activate(SidebarAttentionStoreController);
+    store.activate(SidebarAttentionStoreController, createMentionsCapability);
     await waitForFast(() => expect(store?.entries).toHaveLength(1));
 
     try {
@@ -530,7 +531,7 @@ describe("sidebar attention source publication", () => {
       }),
     );
     store = createStore(harness.gateway);
-    store.activate(SidebarAttentionStoreController);
+    store.activate(SidebarAttentionStoreController, createMentionsCapability);
     await waitForFast(() => expect(store?.entries).toHaveLength(2));
     for (let index = 0; index < 2; index++) {
       now += 30_001;
@@ -578,7 +579,7 @@ describe("sidebar attention source publication", () => {
     });
     const harness = createGatewayHarness(mockClient(request));
     store = createStore(harness.gateway);
-    store.activate(SidebarAttentionStoreController);
+    store.activate(SidebarAttentionStoreController, createMentionsCapability);
     await waitForFast(() => expect(store?.entries).toHaveLength(1));
 
     failing = true;
@@ -619,7 +620,7 @@ describe("sidebar attention source publication", () => {
     });
     const harness = createGatewayHarness(mockClient(request));
     store = createStore(harness.gateway);
-    store.activate(SidebarAttentionStoreController);
+    store.activate(SidebarAttentionStoreController, createMentionsCapability);
     await new Promise<void>((resolve) => {
       globalThis.setTimeout(resolve, 0);
     });
@@ -657,7 +658,7 @@ describe("sidebar attention source publication", () => {
       store = createStore(harness.gateway);
       const publish = vi.fn();
       store.subscribe(publish);
-      store.activate(SidebarAttentionStoreController);
+      store.activate(SidebarAttentionStoreController, createMentionsCapability);
       harness.emitEvent("cron", {});
       document.dispatchEvent(new Event("visibilitychange"));
 
@@ -721,7 +722,7 @@ describe("sidebar attention source publication", () => {
     store = createStore(gateway);
     const publishedCounts: number[] = [];
     store.subscribe(() => publishedCounts.push(store?.entries.length ?? 0));
-    store.activate(SidebarAttentionStoreController);
+    store.activate(SidebarAttentionStoreController, createMentionsCapability);
 
     try {
       await waitForFast(() => expect(publishedCounts).toContain(1));
@@ -730,78 +731,97 @@ describe("sidebar attention source publication", () => {
     }
   });
 
-  it("creates one mention owner on activation, retains it without listeners, and disposes it", async () => {
-    const mention: MentionInboxItem = {
-      id: "mention-first",
-      senderProfileId: "alice",
-      senderLabel: "Alice",
-      sessionKey: "agent:writer:review",
-      agentId: "writer",
-      sessionTitle: "Review",
-      messageId: "message-first",
-      createdAt: 1_000,
-      expiresAt: 10_000,
-    };
-    let result = { gatewayInstanceId: "boot-a", revision: 1, items: [mention] };
-    const responses: Record<string, unknown> = {
-      "cron.list": {
-        jobs: [],
-        snapshotRevision: "lifecycle",
-        total: 0,
-        offset: 0,
-        limit: 50,
-        hasMore: false,
-        nextOffset: null,
-      },
-      "cron.status": { enabled: true, triggersEnabled: true, jobs: 0 },
-      "models.authStatus": { ts: 1, providers: [] },
-    };
-    const request = vi.fn(async (method: string) => {
-      if (method === "mentions.list") {
-        return result;
+  it.each(["notifications only", "Inbox active"])(
+    "owns mentions before health activation and through disposal (%s)",
+    async (mode) => {
+      const mention: MentionInboxItem = {
+        id: "mention-first",
+        senderProfileId: "alice",
+        senderLabel: "Alice",
+        sessionKey: "agent:writer:review",
+        agentId: "writer",
+        sessionTitle: "Review",
+        messageId: "message-first",
+        createdAt: 1_000,
+        expiresAt: 10_000,
+      };
+      let result = { gatewayInstanceId: "boot-a", revision: 1, items: [mention] };
+      const responses: Record<string, unknown> = {
+        "cron.list": {
+          jobs: [],
+          snapshotRevision: "lifecycle",
+          total: 0,
+          offset: 0,
+          limit: 50,
+          hasMore: false,
+          nextOffset: null,
+        },
+        "cron.status": { enabled: true, triggersEnabled: true, jobs: 0 },
+        "models.authStatus": { ts: 1, providers: [] },
+      };
+      const request = vi.fn(async (method: string) => {
+        if (method === "mentions.list") {
+          return result;
+        }
+        if (method in responses) {
+          return responses[method];
+        }
+        throw new Error(`Unexpected request: ${method}`);
+      });
+      const harness = createGatewayHarness(mockClient(request));
+      harness.update({
+        hello: {
+          type: "hello-ok",
+          protocol: 1,
+          server: { bootId: "boot-a", connId: "connection-a" },
+          auth: { role: "operator", scopes: ["operator.read"] },
+          features: { methods: ["mentions.list", "mentions.dismiss"] },
+        },
+        selfUser: { id: "bob", identity: { type: "profile", id: "bob" }, name: "Bob" },
+      });
+      store = createStore(harness.gateway);
+      expect(request).not.toHaveBeenCalled();
+      const publish = vi.fn();
+      const stop = store.subscribe(publish);
+      const mentions = store.getMentions(createMentionsCapability);
+      await waitForFast(() => expect(mentions.snapshot.items).toEqual([mention]));
+      // The shell can observe mentions on Settings without starting cron/model-auth work.
+      expect(request.mock.calls.map(([method]) => method)).toEqual(["mentions.list"]);
+      expect(store.entries).toEqual([]);
+      if (mode === "Inbox active") {
+        expect(store.activate(SidebarAttentionStoreController, createMentionsCapability)).toBe(
+          mentions,
+        );
+        expect(store.activate(SidebarAttentionStoreController, createMentionsCapability)).toBe(
+          mentions,
+        );
+        await waitForFast(() => expect(store?.entries).toMatchObject([{ mention }]));
+        expect(request.mock.calls.filter(([method]) => method === "mentions.list")).toHaveLength(1);
       }
-      if (method in responses) {
-        return responses[method];
+
+      stop();
+      publish.mockClear();
+      result = { ...result, revision: 2, items: [{ ...mention, id: "mention-second" }] };
+      harness.emitEvent("mentions.changed", { gatewayInstanceId: "boot-a", revision: 2 });
+      await waitForFast(() =>
+        expect(mentions.snapshot.items).toMatchObject([{ id: "mention-second" }]),
+      );
+      if (mode === "Inbox active") {
+        expect(store.entries).toMatchObject([{ mention: { id: "mention-second" } }]);
+      } else {
+        expect(request.mock.calls.map(([method]) => method)).toEqual([
+          "mentions.list",
+          "mentions.list",
+        ]);
       }
-      throw new Error(`Unexpected request: ${method}`);
-    });
-    const harness = createGatewayHarness(mockClient(request));
-    harness.update({
-      hello: {
-        type: "hello-ok",
-        protocol: 1,
-        server: { bootId: "boot-a", connId: "connection-a" },
-        auth: { role: "operator", scopes: ["operator.read"] },
-        features: { methods: ["mentions.list", "mentions.dismiss"] },
-      },
-      selfUser: { id: "bob", identity: { type: "profile", id: "bob" }, name: "Bob" },
-    });
-    store = createStore(harness.gateway);
-    expect(request).not.toHaveBeenCalled();
-    const publish = vi.fn();
-    const stop = store.subscribe(publish);
-    const mentions = store.activate(SidebarAttentionStoreController);
-    expect(store.activate(SidebarAttentionStoreController)).toBe(mentions);
-    await waitForFast(() => expect(mentions.snapshot.items).toEqual([mention]));
-    expect(request.mock.calls.filter(([method]) => method === "mentions.list")).toHaveLength(1);
+      expect(publish).not.toHaveBeenCalled();
 
-    stop();
-    publish.mockClear();
-    result = { ...result, revision: 2, items: [{ ...mention, id: "mention-second" }] };
-    harness.emitEvent("mentions.changed", { gatewayInstanceId: "boot-a", revision: 2 });
-    await waitForFast(() =>
-      expect(store?.entries.filter((entry) => entry.type === "mention")).toMatchObject([
-        { mention: { id: "mention-second" } },
-      ]),
-    );
-    expect(publish).not.toHaveBeenCalled();
-    expect(store.activate(SidebarAttentionStoreController)).toBe(mentions);
-
-    store.dispose();
-    store = undefined;
-    request.mockClear();
-    harness.emitEvent("mentions.changed", { gatewayInstanceId: "boot-a", revision: 3 });
-    await mentions.refresh();
-    expect(request).not.toHaveBeenCalled();
-  });
+      store.dispose();
+      store = undefined;
+      request.mockClear();
+      harness.emitEvent("mentions.changed", { gatewayInstanceId: "boot-a", revision: 3 });
+      await mentions.refresh();
+      expect(request).not.toHaveBeenCalled();
+    },
+  );
 });
