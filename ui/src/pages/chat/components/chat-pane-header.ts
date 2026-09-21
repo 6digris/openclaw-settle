@@ -335,13 +335,16 @@ export function renderChatPaneHeader(props: ChatPaneHeaderProps) {
         }
         ${
           props.session?.incognito
-            ? html`<span
-                class="chat-pane__incognito"
-                role="img"
-                aria-label=${t("chat.sessionHeader.incognito")}
-                title=${t("chat.sessionHeader.incognito")}
-                >${icons.lock}</span
-              >`
+            ? html`<openclaw-tooltip
+                .content=${t("sessionsView.incognitoDescription")}
+                placement="bottom"
+                open-on-click
+              >
+                <button type="button" class="chat-pane__incognito">
+                  <span aria-hidden="true">${icons.shredder}</span>
+                  ${t("sessionsView.incognitoLabel")}
+                </button>
+              </openclaw-tooltip>`
             : nothing
         }
         ${renderIdentityCrumbs(props, copied, copyPathLabel, copyBranchLabel)}

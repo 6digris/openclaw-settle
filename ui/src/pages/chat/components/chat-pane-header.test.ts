@@ -684,11 +684,25 @@ describe("chat pane header", () => {
     expect(container.querySelector('wa-dropdown-item[value="copy-path"]')).not.toBeNull();
   });
 
-  it("shows an incognito indicator for in-memory threads", () => {
+  it("visibly names incognito threads and reveals their lifetime on focus or activation", async () => {
     const { container } = mountHeader({ session: row({ incognito: true }) });
-    expect(container.querySelector(".chat-pane__incognito")?.getAttribute("aria-label")).toBe(
-      "Incognito session",
+    const indicator = container.querySelector<HTMLButtonElement>("button.chat-pane__incognito")!;
+    const tooltip = indicator.closest("openclaw-tooltip")!;
+    await tooltip.updateComplete;
+    expect(indicator?.textContent).toContain("Incognito");
+    expect(tooltip.content).toBe(
+      "Incognito session. History expires 24 hours after creation or when the Gateway restarts, whichever comes first.",
     );
+    expect(indicator.getAttribute("aria-describedby")).toBeTruthy();
+    indicator.focus();
+    expect(tooltip.hasAttribute("open")).toBe(true);
+    indicator.blur();
+    expect(tooltip.hasAttribute("open")).toBe(false);
+    indicator.click();
+    expect(tooltip.hasAttribute("open")).toBe(true);
+    indicator.click();
+    expect(tooltip.hasAttribute("open")).toBe(false);
+    expect(mountHeader().container.querySelector(".chat-pane__incognito")).toBeNull();
   });
 
   it("hides one branch and lists multiple branches with the active tip marked", () => {
