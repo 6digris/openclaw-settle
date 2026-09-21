@@ -42,7 +42,7 @@ import {
 import { resolveDiscordDmCommandAccess } from "./dm-command-auth.js";
 import { handleDiscordDmCommandDecision } from "./dm-command-decision.js";
 import { readDiscordInteractionPolicy } from "./live-policy-interaction.js";
-import { createDiscordLivePolicyReader, type DiscordLivePolicyReader } from "./live-policy.js";
+import type { DiscordLivePolicyReader } from "./live-policy.js";
 import { dispatchDiscordNativeAgentReply } from "./native-command-agent-reply.js";
 import {
   buildDiscordCommandArgMenu,
@@ -54,6 +54,7 @@ import {
   resolveDiscordNativeCommandChannelAccessContext,
   createDiscordNativeCommandAuthority,
   resolveDiscordNativeGroupDmAccess,
+  resolveDiscordNativePolicyReader,
 } from "./native-command-auth.js";
 import {
   shouldBypassConfiguredAcpEnsure,
@@ -102,22 +103,6 @@ import type { ThreadBindingManager } from "./thread-bindings.js";
 const log = createSubsystemLogger("discord/native-command");
 
 const NON_PLUGIN_COMMAND_DISPATCH = Object.freeze({ kind: "non-plugin" as const });
-
-function resolveDiscordNativePolicyReader(
-  params: Pick<DiscordCommandArgContext, "cfg" | "discordConfig" | "accountId" | "readPolicy">,
-): DiscordLivePolicyReader {
-  return (
-    params.readPolicy ??
-    createDiscordLivePolicyReader({
-      ...params,
-      readConfig: () => getRuntimeConfigSnapshot() ?? params.cfg,
-      resolvedAllowlist: {
-        guildEntries: params.discordConfig?.guilds,
-        allowFrom: params.discordConfig?.allowFrom ?? resolveDiscordAccountAllowFrom(params),
-      },
-    })
-  );
-}
 
 export function createDiscordNativeCommand(params: {
   readPolicy?: DiscordLivePolicyReader;

@@ -46,11 +46,6 @@ type ResolveUrlResult = {
   error?: string;
 };
 
-type ResolveAuthLabelResult = {
-  label?: "token" | "password" | "trusted-proxy";
-  error?: string;
-};
-
 type QrCommandContext = {
   channel: string;
   senderId?: string;
@@ -305,54 +300,6 @@ async function resolveTailnetHost(): Promise<string | null> {
       timeoutMs: opts.timeoutMs,
     }),
   );
-}
-
-function resolveAuthLabel(cfg: OpenClawPluginApi["config"]): ResolveAuthLabelResult {
-  const mode = cfg.gateway?.auth?.mode;
-  const token =
-    pickFirstDefined([process.env.OPENCLAW_GATEWAY_TOKEN, cfg.gateway?.auth?.token]) ?? undefined;
-  const password =
-    pickFirstDefined([process.env.OPENCLAW_GATEWAY_PASSWORD, cfg.gateway?.auth?.password]) ??
-    undefined;
-
-  if (mode === "token" || mode === "password") {
-    return resolveRequiredAuthLabel(mode, { token, password });
-  }
-  if (token) {
-    return { label: "token" };
-  }
-  if (password) {
-    return { label: "password" };
-  }
-  // Issuer authorization and bootstrap grants stay separate from ingress auth.
-  if (mode === "trusted-proxy") {
-    return { label: "trusted-proxy" };
-  }
-  return { error: "Gateway auth is not configured (no token or password)." };
-}
-
-function pickFirstDefined(candidates: Array<unknown>): string | null {
-  for (const value of candidates) {
-    const trimmed = normalizeOptionalString(value);
-    if (trimmed) {
-      return trimmed;
-    }
-  }
-  return null;
-}
-
-function resolveRequiredAuthLabel(
-  mode: "token" | "password",
-  values: { token?: string; password?: string },
-): ResolveAuthLabelResult {
-  if (mode === "token") {
-    return values.token
-      ? { label: "token" }
-      : { error: "Gateway auth is set to token, but no token is configured." };
-  }
-  return values.password
-    ? { label: "password" }
-    : { error: "Gateway auth is set to password, but no password is configured." };
 }
 
 async function resolveGatewayUrl(api: OpenClawPluginApi): Promise<ResolveUrlResult> {
@@ -656,6 +603,7 @@ export default definePluginEntry({
         const {
           buildMissingPairingScopeReply,
           buildMissingSetupHandoffScopeReply,
+          resolveAuthLabel,
           resolvePairingCommandAuthState,
         } = await loadPairCommandAuthModule();
         const authState = resolvePairingCommandAuthState({

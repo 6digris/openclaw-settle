@@ -24,6 +24,7 @@ import {
   TELEGRAM_THREAD_BINDINGS_MAX_ENTRIES,
   TELEGRAM_THREAD_BINDINGS_NAMESPACE,
   type TelegramBindingTargetKind,
+  type TelegramThreadBindingManager,
   type TelegramThreadBindingRecord,
 } from "./thread-bindings-store.js";
 import { resolveTelegramToken } from "./token.js";
@@ -32,30 +33,6 @@ const DEFAULT_THREAD_BINDING_IDLE_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_THREAD_BINDING_MAX_AGE_MS = 0;
 const THREAD_BINDINGS_SWEEP_INTERVAL_MS = 60_000;
 type TelegramThreadBindingStore = PluginStateSyncKeyedStore<TelegramThreadBindingRecord>;
-
-type TelegramThreadBindingManager = {
-  accountId: string;
-  shouldPersistMutations: () => boolean;
-  getIdleTimeoutMs: () => number;
-  getMaxAgeMs: () => number;
-  getByConversationId: (conversationId: string) => TelegramThreadBindingRecord | undefined;
-  listBySessionKey: (targetSessionKey: string) => TelegramThreadBindingRecord[];
-  listBindings: () => TelegramThreadBindingRecord[];
-  touchConversation: (conversationId: string, at?: number) => TelegramThreadBindingRecord | null;
-  unbindConversation: (params: {
-    conversationId: string;
-    reason?: string;
-    sendFarewell?: boolean;
-    throwOnPersistError?: boolean;
-  }) => TelegramThreadBindingRecord | null;
-  unbindBySessionKey: (params: {
-    targetSessionKey: string;
-    reason?: string;
-    sendFarewell?: boolean;
-    throwOnPersistError?: boolean;
-  }) => TelegramThreadBindingRecord[];
-  stop: () => void;
-};
 
 type TelegramThreadBindingsState = {
   managersByAccountId: Map<string, TelegramThreadBindingManager>;

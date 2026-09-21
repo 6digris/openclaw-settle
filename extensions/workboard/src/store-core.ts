@@ -3,7 +3,6 @@ import type {
   WorkboardBoardMetadata,
   WorkboardCard,
   WorkboardDeleteResult,
-  WorkboardEvent,
   WorkboardLink,
   WorkboardMetadata,
   WorkboardStatus,
@@ -48,6 +47,7 @@ import type {
   WorkboardListOptions,
   WorkboardMutationScope,
   WorkboardStatsResult,
+  WorkboardUpdateCardOptions,
 } from "./store-inputs.js";
 import {
   appendLinkPreservingDependencies,
@@ -74,17 +74,6 @@ import {
 } from "./store-normalizers.js";
 import { readCards } from "./store-read.js";
 import { WorkboardStoreRuntime } from "./store-runtime.js";
-
-type WorkboardUpdateCardOptions = {
-  allowAutomationLaunch?: boolean;
-  allowMetadataDependencyLinks?: boolean;
-  enforceStatusHolds?: boolean;
-  event?: Omit<WorkboardEvent, "id" | "at">;
-  eventAt?: number;
-  expectedUpdatedAt?: number;
-  ownerSlot?: { ownerId: string; now: number };
-  preserveProofId?: string;
-};
 
 type WorkboardMutationJournalEntry = {
   before?: WorkboardCard;

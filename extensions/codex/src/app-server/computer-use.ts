@@ -16,6 +16,7 @@ import {
 } from "./client.js";
 import { resolveCodexManagedBundledMarketplacePath } from "./computer-use-marketplace.js";
 import {
+  createComputerUseRequest,
   runCodexComputerUseLiveTest,
   skippedLiveTestStatus,
   type CodexComputerUseLiveTestStatus,
@@ -1192,47 +1193,6 @@ function pluginWarnings(plugin: CodexPluginDetail): string[] {
     );
   }
   return warnings;
-}
-
-function createComputerUseRequest(params: {
-  request?: CodexComputerUseRequest;
-  client?: CodexAppServerClient;
-  timeoutMs?: number;
-  signal?: AbortSignal;
-  assertCurrent?: () => void;
-}): CodexComputerUseRequest {
-  const assertCurrent = params.assertCurrent;
-  if (params.request) {
-    const request = params.request;
-    if (!assertCurrent) {
-      return request;
-    }
-    return async <T>(
-      method: string,
-      requestParams?: unknown,
-      options?: { timeoutMs?: number; signal?: AbortSignal },
-    ) => {
-      if (method !== "thread/unsubscribe") {
-        assertCurrent();
-      }
-      return await request<T>(method, requestParams, options);
-    };
-  }
-  const client = params.client;
-  if (!client) {
-    throw new Error("Computer Use setup requires an acquired app-server client");
-  }
-  return async <T = JsonValue | undefined>(
-    method: string,
-    requestParams?: unknown,
-    options?: { timeoutMs?: number; signal?: AbortSignal },
-  ) =>
-    await client.request<T>(method, requestParams, {
-      timeoutMs: options?.timeoutMs ?? params.timeoutMs,
-      signal: options?.signal ?? params.signal,
-      // The readiness probe must release an accepted native subscription after revocation.
-      ...(method === "thread/unsubscribe" ? {} : { assertCurrent }),
-    });
 }
 
 function resolveComputerUseConfig(

@@ -2,6 +2,7 @@ import type {
   WorkboardBoardSummary,
   WorkboardCard,
   WorkboardDiagnostic,
+  WorkboardEvent,
   WorkboardWorkspace,
   WorkboardWorkspaceAccess,
 } from "@openclaw/workboard-contract";
@@ -40,6 +41,16 @@ type WorkboardCardInput = {
 };
 
 export type WorkboardCardPatch = Partial<WorkboardCardInput>;
+export type WorkboardUpdateCardOptions = {
+  allowAutomationLaunch?: boolean;
+  allowMetadataDependencyLinks?: boolean;
+  enforceStatusHolds?: boolean;
+  event?: Omit<WorkboardEvent, "id" | "at">;
+  eventAt?: number;
+  expectedUpdatedAt?: number;
+  ownerSlot?: { ownerId: string; now: number };
+  preserveProofId?: string;
+};
 export type WorkboardCommentInput = { body?: unknown };
 export type WorkboardLinkInput = {
   type?: unknown;

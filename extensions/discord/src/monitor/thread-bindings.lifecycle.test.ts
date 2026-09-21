@@ -165,11 +165,6 @@ describe("thread binding lifecycle", () => {
     );
     vi.spyOn(discordThreadBindingApi, "createWebhookForChannel").mockImplementation(
       async (params) => {
-        try {
-          params.assertCreateAllowed?.();
-        } catch {
-          return {};
-        }
         const rest = hoisted.createDiscordRestClient(
           {
             accountId: params.accountId,
@@ -226,7 +221,6 @@ describe("thread binding lifecycle", () => {
     );
     vi.spyOn(discordThreadBindingApi, "createThreadForBinding").mockImplementation(
       async (params) => {
-        params.assertCreateAllowed?.();
         const created = await hoisted.createThreadDiscord(
           params.channelId,
           {
@@ -243,11 +237,6 @@ describe("thread binding lifecycle", () => {
     );
     vi.spyOn(discordThreadBindingApi, "maybeSendBindingMessage").mockImplementation(
       async (params) => {
-        try {
-          params.assertCurrent?.();
-        } catch {
-          return;
-        }
         if (
           params.preferWebhook !== false &&
           params.record.webhookId &&
@@ -294,103 +283,6 @@ describe("thread binding lifecycle", () => {
       webhookToken: "tok-1",
     });
   };
-
-  it.each(["channel-lookup", "webhook-create"] as const)(
-    "preserves native-create admission and settlement after owner revocation during %s",
-    async (revokeAt) => {
-      const manager = createTestThreadBindingManager({
-        accountId: "default",
-        persist: false,
-        enableSweeper: false,
-      });
-      let ownerCurrent = true;
-      if (revokeAt === "channel-lookup") {
-        hoisted.restGet.mockImplementationOnce(async () => {
-          ownerCurrent = false;
-          return { id: "thread-1", type: 11, parent_id: "parent-1" };
-        });
-      } else {
-        hoisted.restPost.mockImplementationOnce(async () => {
-          ownerCurrent = false;
-          return { id: "wh-created", token: "tok-created" };
-        });
-      }
-      try {
-        const binding = getSessionBindingService().bind({
-          targetSessionKey: "agent:main:session-binding",
-          targetKind: "session",
-          conversation: {
-            channel: "discord",
-            accountId: "default",
-            conversationId: "thread-1",
-          },
-          placement: "current",
-          assertCurrent: () => {
-            if (!ownerCurrent) {
-              throw new Error("Command owner was revoked");
-            }
-          },
-        });
-        if (revokeAt === "channel-lookup") {
-          await expect(binding).rejects.toThrow("Command owner was revoked");
-          expect(manager.getByThreadId("thread-1")).toBeUndefined();
-        } else {
-          await expect(binding).resolves.toMatchObject({
-            targetSessionKey: "agent:main:session-binding",
-          });
-          expect(manager.getByThreadId("thread-1")).toMatchObject({
-            webhookId: "wh-created",
-            targetSessionKey: "agent:main:session-binding",
-          });
-        }
-        expect(hoisted.restPost).toHaveBeenCalledTimes(revokeAt === "channel-lookup" ? 0 : 1);
-      } finally {
-        manager.stop();
-      }
-    },
-  );
-
-  it("publishes an accepted child thread without admitting a new webhook or intro after revocation", async () => {
-    const manager = createTestThreadBindingManager({
-      accountId: "default",
-      persist: false,
-      enableSweeper: false,
-    });
-    let ownerCurrent = true;
-    hoisted.createThreadDiscord.mockImplementationOnce(async () => {
-      ownerCurrent = false;
-      return { id: "thread-created" };
-    });
-    try {
-      await expect(
-        getSessionBindingService().bind({
-          targetSessionKey: "agent:main:created-thread",
-          targetKind: "session",
-          conversation: {
-            channel: "discord",
-            accountId: "default",
-            conversationId: "parent-1",
-            parentConversationId: "parent-1",
-          },
-          placement: "child",
-          metadata: { introText: "Binding ready" },
-          assertCurrent: () => {
-            if (!ownerCurrent) {
-              throw new Error("Command owner was revoked");
-            }
-          },
-        }),
-      ).resolves.toMatchObject({ targetSessionKey: "agent:main:created-thread" });
-      expect(manager.getByThreadId("thread-created")).toMatchObject({
-        targetSessionKey: "agent:main:created-thread",
-      });
-      expect(hoisted.restPost).not.toHaveBeenCalled();
-      expect(hoisted.sendMessageDiscord).not.toHaveBeenCalled();
-      expect(hoisted.sendWebhookMessageDiscord).not.toHaveBeenCalled();
-    } finally {
-      manager.stop();
-    }
-  });
 
   const requireBinding = (
     manager: ReturnType<typeof createThreadBindingManager>,

@@ -22,12 +22,30 @@ import {
   resolveGroupDmAllow,
 } from "./allow-list.js";
 import { resolveDiscordDmCommandAccess } from "./dm-command-auth.js";
+import { createDiscordLivePolicyReader, type DiscordLivePolicyReader } from "./live-policy.js";
 import { buildDiscordNativeInteractionContext } from "./native-command-context.js";
 import { resolveDiscordNativeInteractionRouteState } from "./native-command-route.js";
+import type { DiscordCommandArgContext } from "./native-command-ui.types.js";
 import type { DiscordBuildInboundContext, DiscordConfig } from "./native-command.types.js";
 import { resolveDiscordNativeInteractionChannelContext } from "./native-interaction-channel-context.js";
 import { resolveDiscordSenderIdentity } from "./sender-identity.js";
 import type { ThreadBindingManager } from "./thread-bindings.js";
+
+export function resolveDiscordNativePolicyReader(
+  params: Pick<DiscordCommandArgContext, "cfg" | "discordConfig" | "accountId" | "readPolicy">,
+): DiscordLivePolicyReader {
+  return (
+    params.readPolicy ??
+    createDiscordLivePolicyReader({
+      ...params,
+      readConfig: () => getRuntimeConfigSnapshot() ?? params.cfg,
+      resolvedAllowlist: {
+        guildEntries: params.discordConfig?.guilds,
+        allowFrom: params.discordConfig?.allowFrom ?? resolveDiscordAccountAllowFrom(params),
+      },
+    })
+  );
+}
 
 export function createDiscordNativeCommandAuthority(params: {
   cfg: OpenClawConfig;
