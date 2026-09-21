@@ -105,8 +105,8 @@ describe("mock scenario tools on a compact search surface", () => {
       >(server, "/debug/requests");
       expect(
         requests
-          .filter((request) => request.plannedToolName === "sessions_spawn")
-          .map((request) => request.plannedToolArgs?.label),
+          .filter((recordedRequest) => recordedRequest.plannedToolName === "sessions_spawn")
+          .map((recordedRequest) => recordedRequest.plannedToolArgs?.label),
       ).toEqual(labels);
     },
   );
