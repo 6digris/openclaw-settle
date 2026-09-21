@@ -173,7 +173,7 @@ describe("update CLI shared helpers", () => {
 
     await expect(
       resolveGlobalManager({
-        root: "/shared/store/openclaw",
+        root: "/opt/homebrew/lib/node_modules/openclaw",
         installKind: "package",
         timeoutMs: 1_000,
       }),
@@ -182,6 +182,59 @@ describe("update CLI shared helpers", () => {
     );
     expect(runCommandWithTimeout).toHaveBeenCalledTimes(2);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "guides Homebrew formula installs to the owning package manager",
+    async () => {
+      await expect(
+        resolveGlobalManager({
+          root: "/opt/homebrew/Cellar/openclaw-cli/2026.8.33/libexec/lib/node_modules/openclaw",
+          installKind: "package",
+          timeoutMs: 1_000,
+        }),
+      ).rejects.toThrow(
+        "This OpenClaw installation is managed by Homebrew. To update OpenClaw, run:\n\n  brew upgrade openclaw-cli\n\nThen restart the gateway:\n\n  openclaw gateway restart",
+      );
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "recognizes a custom Homebrew prefix from the brew executable",
+    async () => {
+      await withTestDir({ prefix: "openclaw-custom-brew-" }, async (prefix) => {
+        const brew = path.join(prefix, "bin", "brew");
+        await fs.mkdir(path.dirname(brew), { recursive: true });
+        await fs.writeFile(brew, "#!/bin/sh\n", { mode: 0o755 });
+        const previousPath = process.env.PATH;
+        process.env.PATH = path.dirname(brew);
+        runCommandWithTimeout.mockResolvedValueOnce({
+          ...successfulCommandResult,
+          stdout: `${prefix}\n`,
+        });
+        try {
+          await expect(
+            resolveGlobalManager({
+              root: path.join(
+                prefix,
+                "Cellar/openclaw-cli/2026.8.33/libexec/lib/node_modules/openclaw",
+              ),
+              installKind: "package",
+              timeoutMs: 1_000,
+            }),
+          ).rejects.toThrow("managed by Homebrew");
+          expect(runCommandWithTimeout).toHaveBeenCalledWith([brew, "--prefix"], {
+            timeoutMs: 5_000,
+          });
+        } finally {
+          if (previousPath === undefined) {
+            delete process.env.PATH;
+          } else {
+            process.env.PATH = previousPath;
+          }
+        }
+      });
+    },
+  );
 
   it("publishes a successful fresh clone only after the clone completes", async () => {
     await withTestDir({ prefix: "openclaw-update-clone-success-" }, async (base) => {

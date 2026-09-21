@@ -521,3 +521,40 @@ describe("resolveNodeProgramArguments", () => {
     ]);
   });
 });
+
+it.each([
+  ...["/opt/homebrew", "/usr/local", "/home/linuxbrew/.linuxbrew"].map((prefix) => ({
+    entry: `${prefix}/Cellar/openclaw-cli/2026.8.33/libexec/lib/node_modules/openclaw/dist/index.js`,
+    stable: `${prefix}/opt/openclaw-cli/libexec/lib/node_modules/openclaw/dist/index.js`,
+  })),
+  ...[
+    "/opt/homebrew/opt/openclaw-cli/libexec/lib/node_modules/openclaw/dist/index.js",
+    "/tmp/unrelated/Cellar/openclaw-cli/2026.8.33/libexec/lib/node_modules/openclaw/dist/index.js",
+    "/opt/homebrew/lib/node_modules/openclaw/dist/index.js",
+    "/home/user/.local/share/pnpm/global/5/node_modules/openclaw/dist/index.js",
+    "/home/user/.bun/install/global/node_modules/openclaw/dist/index.js",
+    "/home/user/openclaw/dist/index.js",
+    "C:/Users/test/AppData/Roaming/npm/node_modules/openclaw/dist/index.js",
+  ].map((entry) => ({ entry, stable: entry })),
+])("keeps service entrypoints stable across upgrades: $entry", async ({ entry, stable }) => {
+  const entryPath = path.resolve(entry);
+  const expected = process.platform === "win32" ? entryPath : path.resolve(stable);
+  process.argv = ["node", entryPath];
+  fsMocks.realpath.mockResolvedValue(entryPath);
+  fsMocks.access.mockResolvedValue(undefined);
+
+  const gateway = await resolveGatewayProgramArguments({
+    port: 18789,
+    runtime: "node",
+    runtimePath: validatedNodePath,
+  });
+  const node = await resolveNodeProgramArguments({
+    host: "gateway.example",
+    port: 18789,
+    runtime: "node",
+    runtimePath: validatedNodePath,
+  });
+
+  expect(gateway.programArguments[2]).toBe(expected);
+  expect(node.programArguments[1]).toBe(expected);
+});

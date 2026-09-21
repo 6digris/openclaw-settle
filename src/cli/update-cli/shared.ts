@@ -6,6 +6,7 @@ import path from "node:path";
 import { parseStrictPositiveInteger } from "@openclaw/normalization-core/number-coercion";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { theme } from "../../../packages/terminal-core/src/theme.js";
+import { resolveBrewOpenClawPath } from "../../infra/brew.js";
 import { hasErrnoCode } from "../../infra/errors.js";
 import { resolveRequiredHomeDir } from "../../infra/home-dir.js";
 import { resolveOpenClawPackageRoot } from "../../infra/openclaw-root.js";
@@ -384,6 +385,11 @@ export async function resolveGlobalManager(params: {
   const runCommand = createGlobalCommandRunner();
 
   if (params.installKind === "package") {
+    if (await resolveBrewOpenClawPath(params.root)) {
+      throw new Error(
+        "This OpenClaw installation is managed by Homebrew. To update OpenClaw, run:\n\n  brew upgrade openclaw-cli\n\nThen restart the gateway:\n\n  openclaw gateway restart",
+      );
+    }
     const detected = await detectGlobalInstallManagerForRoot(
       runCommand,
       params.root,
