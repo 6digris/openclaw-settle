@@ -1,0 +1,63 @@
+name: F52 Release Check Testbox
+
+on:
+  push:
+    branches: [ci-burden/f52-hosted-diagnostics]
+  workflow_dispatch:
+    inputs:
+      testbox_id:
+        type: string
+        description: "Testbox session ID"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: f52-release-check-testbox-${{ github.run_id }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "false"
+
+jobs:
+  check:
+    if: github.event_name == 'workflow_dispatch'
+    name: check
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 120
+    steps:
+      - name: Begin Testbox
+        uses: useblacksmith/begin-testbox@233448af4bfdc6fca509a7f0974411ac6d8a8043
+        with:
+          testbox_id: ${{ inputs.testbox_id }}
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Setup Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          cache-mode: restore
+          install-bun: "false"
+      - name: Prepare Testbox shell
+        uses: ./.github/actions/prepare-testbox-shell
+        with:
+          base-ref: HEAD
+      - name: Run Testbox
+        uses: steipete/run-testbox@2b6b1be536ec7f3c73757fedf5460a27ab4856b4
+        if: always()
+      - name: Close Testbox SSH sessions
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          runner_ssh_local_port="$(sudo sshd -T 2>/dev/null | awk '$1 == "port" { print $2; exit }')"
+          if [[ ! "$runner_ssh_local_port" =~ ^[0-9]+$ ]] ||
+            (( runner_ssh_local_port < 1 || runner_ssh_local_port > 65535 )); then
+            exit 0
+          fi
+          timeout --signal=KILL 5s sudo ss -K state established \
+            "( sport = :${runner_ssh_local_port} )" || true
