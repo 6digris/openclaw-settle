@@ -11,13 +11,13 @@ import {
   type GatewayRestartSignalAdmissionLease,
 } from "../process/gateway-work-admission.js";
 import { formatErrorMessage } from "./errors.js";
+import { resolveGatewayRestartDeferralTimeoutMs } from "./restart-budget.js";
 import { type GatewayRestartIntent, normalizeRestartIntentReason } from "./restart-intent.js";
 import {
   GatewayRestartRequest,
   PendingGatewayRestart,
   formatRestartAudit,
   normalizeGatewayRestartDelayMs,
-  resolveGatewayRestartDeferralTimeoutMs,
   type RestartAuditInfo,
   type RestartDeferralHandle,
   type RestartDeferralHooks,
@@ -29,9 +29,9 @@ import { restartGatewayViaSupervisor } from "./restart-supervisor.js";
 import type { RestartAttempt } from "./restart.types.js";
 
 export { normalizeSystemdUnit } from "./restart-supervisor.js";
+export { resolveGatewayRestartDeferralTimeoutMs } from "./restart-budget.js";
 export {
   normalizeGatewayRestartDelayMs,
-  resolveGatewayRestartDeferralTimeoutMs,
   type GatewayRestartEmitter,
   type RestartDeferralHandle,
   type ScheduledRestart,
@@ -742,7 +742,7 @@ export function deferGatewayRestartUntilIdle(
     void emitPreparedGatewayRestart(
       opts.emitHooks,
       opts.reason,
-      timedOut ? opts.timeoutIntent : undefined,
+      timedOut ? { ...opts.timeoutIntent, drainBudgetExhausted: true } : undefined,
       {
         finalIdleCheck: timedOut
           ? undefined

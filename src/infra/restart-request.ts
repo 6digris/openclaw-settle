@@ -73,15 +73,6 @@ export function normalizeGatewayRestartDelayMs(delayMs?: number): number {
     : 2000;
 }
 
-export function resolveGatewayRestartDeferralTimeoutMs(): number;
-export function resolveGatewayRestartDeferralTimeoutMs(timeoutMs: unknown): number | undefined;
-export function resolveGatewayRestartDeferralTimeoutMs(timeoutMs?: unknown): number | undefined {
-  if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs)) {
-    return 300_000;
-  }
-  return timeoutMs > 0 ? Math.floor(timeoutMs) : undefined;
-}
-
 export type RestartEmitHooks = {
   assertCurrent?: () => void;
   beforeEmit?: () => Promise<void>;

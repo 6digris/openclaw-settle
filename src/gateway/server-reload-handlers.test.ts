@@ -4440,6 +4440,14 @@ describe("gateway restart deferral preflight", () => {
         title: "refresh all accounts",
       }),
     );
+    const initialWarnings = [
+      [
+        "config change requires gateway restart (gateway.port) — deferring until 1 background task run(s) complete",
+      ],
+      [
+        "restart blocked by active background task run(s): taskId=task-nightly runId=run-nightly status=running runtime=cron label=nightly sync title=refresh all accounts",
+      ],
+    ];
     const signalSpy = vi.fn();
     process.once("SIGUSR2", signalSpy);
     vi.useFakeTimers();
@@ -4449,16 +4457,7 @@ describe("gateway restart deferral preflight", () => {
         gateway: { reload: {} },
       });
 
-      expect(logReload.warn.mock.calls).toEqual(
-        expect.arrayContaining([
-          [
-            "config change requires gateway restart (gateway.port) — deferring until 1 background task run(s) complete",
-          ],
-          [
-            "restart blocked by active background task run(s): taskId=task-nightly runId=run-nightly status=running runtime=cron label=nightly sync title=refresh all accounts",
-          ],
-        ]),
-      );
+      expect(logReload.warn.mock.calls).toEqual(expect.arrayContaining(initialWarnings));
 
       await vi.advanceTimersByTimeAsync(300_000);
       await Promise.resolve();
@@ -4466,17 +4465,13 @@ describe("gateway restart deferral preflight", () => {
       expect(signalSpy).toHaveBeenCalledTimes(1);
       expect(consumeGatewayRestartIntent()).toEqual({
         force: true,
+        drainBudgetExhausted: true,
         reason: "config reload forced restart",
       });
       expect(hoisted.markRestartAbortedMainSessions).not.toHaveBeenCalled();
       expect(logReload.warn.mock.calls).toEqual(
         expect.arrayContaining([
-          [
-            "config change requires gateway restart (gateway.port) — deferring until 1 background task run(s) complete",
-          ],
-          [
-            "restart blocked by active background task run(s): taskId=task-nightly runId=run-nightly status=running runtime=cron label=nightly sync title=refresh all accounts",
-          ],
+          ...initialWarnings,
           [
             "restart timeout after 300000ms with 1 background task run(s) still active (taskId=task-nightly runId=run-nightly status=running runtime=cron label=nightly sync title=refresh all accounts); forcing restart",
           ],
