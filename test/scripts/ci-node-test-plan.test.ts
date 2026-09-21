@@ -1336,7 +1336,10 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       configs: ["ui/vitest.config.ts"],
       env: { OPENCLAW_VITEST_MAX_WORKERS: "1" },
       includePatterns: [
-        "ui/src/components/app-sidebar.test.ts",
+        "ui/src/components/app-sidebar.catalog.test.ts",
+        "ui/src/components/app-sidebar.interactions.test.ts",
+        "ui/src/components/app-sidebar.people.test.ts",
+        "ui/src/components/app-sidebar.sessions.test.ts",
         "ui/src/pages/chat/chat-view.test.ts",
         "ui/src/pages/chat/chat-pane-lifecycle.test.ts",
         "ui/src/pages/usage/metrics.node.test.ts",
@@ -1351,7 +1354,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
 
     expect(groups.every((group) => (group.includePatterns?.length ?? 0) > 0)).toBe(true);
     const files = groups.flatMap((group) => group.includePatterns ?? []);
-    expect(files).toHaveLength(12);
+    expect(files).toHaveLength(15);
     expect(files.every((file) => existsSync(file))).toBe(true);
     expect(buildPrerequisites.resolveVitestPretestBuildMode(groups)).toBeUndefined();
     const tooling = expectDefined(
