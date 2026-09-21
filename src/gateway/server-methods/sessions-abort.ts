@@ -457,7 +457,8 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       : undefined;
     const sessionEmbeddedRun =
       !narrow ||
-      (capturedSessionEmbeddedRun?.sessionId === requiredSessionId &&
+      (capturedSessionEmbeddedRun &&
+        capturedSessionEmbeddedRun.sessionId === requiredSessionId &&
         (capturedSessionEmbeddedRun.sessionKey === key ||
           capturedSessionEmbeddedRun.sessionKey === canonicalKey))
         ? capturedSessionEmbeddedRun
