@@ -51,7 +51,7 @@ async function createUnreadAcknowledgementHarness(
     }
     throw new Error(`Unexpected request: ${method}`);
   });
-  const { pane, sessions } = createTestChatPane({ client });
+  const { pane, sessions, emitGatewayEvent } = createTestChatPane({ client });
   const patch = vi.spyOn(sessions, "patch");
   await sessions.refresh({ force: true });
   const unsubscribe = sessions.subscribe(pane.applySessionsState.bind(pane));
@@ -68,7 +68,7 @@ async function createUnreadAcknowledgementHarness(
       fields: Pick<GatewaySessionRow, "agentStatus" | "markedUnreadAt"> = {},
     ) {
       row = { ...row, updatedAt, unread: true, ...fields };
-      sessions.reconcileChanged({ ...row, reason: "send" });
+      emitGatewayEvent("sessions.changed", { ...row, sessionKey: row.key, reason: "send" });
     },
     async close() {
       unsubscribe();
