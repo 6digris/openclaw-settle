@@ -1,15 +1,13 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { openNodeSqliteDatabase } from "../../infra/node-sqlite.js";
-import {
-  markSqliteReclamationSettled,
-  waitForSqliteReclamationCommit,
-} from "./session-accessor.sqlite-reclamation-commit.js";
+import * as reclamationCommit from "./session-accessor.sqlite-reclamation-commit.js";
 
 type CommitFixture = {
   databasePath: string;
   gate: SharedArrayBuffer;
   progress: SharedArrayBuffer;
   holdAfterApproval?: boolean;
+  reclaimPages?: boolean;
   outcome?: "rollback" | "exit-before-commit" | "exit-after-commit";
 };
 
@@ -21,23 +19,63 @@ if (!port) {
 const fixture = workerData as CommitFixture;
 const progress = new Int32Array(fixture.progress);
 const database = openNodeSqliteDatabase(fixture.databasePath);
-database.exec("BEGIN IMMEDIATE; UPDATE proof SET value = 2");
-try {
-  waitForSqliteReclamationCommit(fixture.gate, () => port.postMessage("commit-request"));
+const authorize = () => {
+  reclamationCommit.waitForSqliteReclamationCommit(fixture.gate, () =>
+    port.postMessage("commit-request"),
+  );
   Atomics.store(progress, 0, 1);
   Atomics.notify(progress, 0);
-  if (fixture.holdAfterApproval) {
-    Atomics.wait(progress, 1, 0);
-  }
-  if (fixture.outcome === "exit-before-commit") {
-    process.exit(7);
-  }
-  if (fixture.outcome === "rollback") {
-    throw new Error("injected worker transaction failure");
-  }
-  database.exec("COMMIT");
-  if (fixture.outcome === "exit-after-commit") {
-    process.exit(9);
+};
+const checkpointBoundary = () => {
+  Atomics.store(progress, 3, 1);
+  Atomics.notify(progress, 3);
+};
+try {
+  if (fixture.reclaimPages) {
+    const { configureSqliteWalMaintenance } = await import("../../infra/sqlite-wal.js");
+    const maintenance = configureSqliteWalMaintenance(database, {
+      autoCheckpointPages: 0,
+      checkpointIntervalMs: 0,
+      databasePath: fixture.databasePath,
+    });
+    const exec = database.exec.bind(database);
+    database.exec = (sql) => {
+      exec(sql);
+      if (sql === "COMMIT") {
+        // Hold the committed Worker until the parent's real settlement writer is acquired.
+        Atomics.wait(progress, 2, 0);
+      }
+    };
+    try {
+      const result = maintenance.reclaimFreePages({
+        maxPages: 1,
+        onCommit: authorize,
+        afterTransaction: () => {
+          checkpointBoundary();
+          reclamationCommit.waitForSqliteReclamationSettlement(fixture.gate);
+        },
+      });
+      port.postMessage(result);
+    } finally {
+      checkpointBoundary();
+      database.exec = exec;
+    }
+  } else {
+    database.exec("BEGIN IMMEDIATE; UPDATE proof SET value = 2");
+    authorize();
+    if (fixture.holdAfterApproval) {
+      Atomics.wait(progress, 1, 0);
+    }
+    if (fixture.outcome === "exit-before-commit") {
+      process.exit(7);
+    }
+    if (fixture.outcome === "rollback") {
+      throw new Error("injected worker transaction failure");
+    }
+    database.exec("COMMIT");
+    if (fixture.outcome === "exit-after-commit") {
+      process.exit(9);
+    }
   }
 } catch (error) {
   if (database.isTransaction) {
@@ -46,7 +84,7 @@ try {
   port.postMessage({ error: String(error) });
 } finally {
   database.close();
-  markSqliteReclamationSettled(fixture.gate);
+  reclamationCommit.markSqliteReclamationSettled(fixture.gate);
   Atomics.store(progress, 0, 2);
   Atomics.notify(progress, 0);
 }

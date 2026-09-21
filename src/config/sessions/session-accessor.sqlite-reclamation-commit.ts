@@ -15,6 +15,8 @@ const REJECTED = 2;
 const COMMITTING = 3;
 const SETTLED = 4;
 const REQUESTED = 5;
+const RELEASED = 6;
+const RELEASE_FAILED = 7;
 
 /** Preserve the reclamation owner's context when an unrelated synchronous writer helps. */
 export async function withSqliteReclamationAuthorization<T>(
@@ -98,8 +100,21 @@ export function waitForSqliteReclamationCommit(
 export function markSqliteReclamationSettled(buffer: SharedArrayBuffer | undefined): void {
   if (buffer) {
     const shared = new Int32Array(buffer);
-    Atomics.store(shared, 0, SETTLED);
+    // The parent may already have joined and released its settlement writer.
+    Atomics.compareExchange(shared, 0, COMMITTING, SETTLED);
     Atomics.notify(shared, 0);
+  }
+}
+
+/** Join the parent's settlement writer before starting postcommit page maintenance. */
+export function waitForSqliteReclamationSettlement(buffer: SharedArrayBuffer): void {
+  const shared = new Int32Array(buffer);
+  markSqliteReclamationSettled(buffer);
+  while (Atomics.load(shared, 0) === SETTLED) {
+    Atomics.wait(shared, 0, SETTLED);
+  }
+  if (Atomics.load(shared, 0) !== RELEASED) {
+    throw new Error("SQLite session reclamation settlement writer was not released");
   }
 }
 
@@ -177,6 +192,12 @@ function authorizeSqliteReclamationCommit(
       // Worker's result owns success and all postcommit publication must continue.
       if (settled) {
         recoveredErrors.push(error);
+      }
+    } finally {
+      if (settled) {
+        const released = !database?.isOpen || !database.isTransaction;
+        Atomics.store(shared, 0, released ? RELEASED : RELEASE_FAILED);
+        Atomics.notify(shared, 0);
       }
     }
   }

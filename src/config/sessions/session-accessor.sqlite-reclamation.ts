@@ -267,6 +267,7 @@ export function reclaimSqliteSessionInTransaction(
         maxPages: plan.maxPages,
         beforeMutation: callbacks.beforeMutation,
         onCommit: () => callbacks.onCommit?.(database),
+        afterTransaction: callbacks.afterTransaction,
       }),
     };
   }

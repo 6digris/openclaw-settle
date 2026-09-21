@@ -63,6 +63,10 @@ dispatch can refuse work; cancellation after execution must still join its nativ
 settlement. Close and shutdown join accepted work and cleanup before releasing
 the store or replacing its generation.
 
+Session page reclamation also joins the parent's commit-settlement lock release
+before its post-vacuum WAL checkpoint. The settlement barrier must not make the
+worker report its own maintenance as blocked by another writer.
+
 ## Migrate a caller
 
 1. Trace the registered request, event, or timer through the store owner. Check

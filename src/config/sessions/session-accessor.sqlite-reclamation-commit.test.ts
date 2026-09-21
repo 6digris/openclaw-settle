@@ -12,31 +12,40 @@ import { withSqliteReclamationAuthorization } from "./session-accessor.sqlite-re
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.restoreAllMocks());
 
-function waitForApproval(progress: Int32Array): void {
+function waitForWorkerProgress(progress: Int32Array, index = 0): void {
   const deadline = performance.now() + 5_000;
-  while (Atomics.load(progress, 0) === 0) {
+  while (Atomics.load(progress, index) === 0) {
     const remaining = deadline - performance.now();
     if (remaining <= 0) {
-      throw new Error("worker did not consume commit approval");
+      throw new Error("worker did not reach the coordinated transaction boundary");
     }
-    Atomics.wait(progress, 0, 0, remaining);
+    Atomics.wait(progress, index, 0, remaining);
   }
 }
 
 function createCommitFixture(
   options: {
     holdAfterApproval?: boolean;
+    reclaimPages?: boolean;
     outcome?: "rollback" | "exit-before-commit" | "exit-after-commit";
   } = {},
 ) {
   const directory = fs.realpathSync(tempDirs.make("openclaw-reclamation-commit-"));
   const databasePath = path.join(directory, "proof.sqlite");
   const database = openNodeSqliteDatabase(databasePath);
+  if (options.reclaimPages) {
+    database.exec("PRAGMA auto_vacuum=INCREMENTAL");
+  }
   database.exec(
     "PRAGMA journal_mode=WAL; CREATE TABLE proof(value INTEGER); INSERT INTO proof VALUES (1)",
   );
+  if (options.reclaimPages) {
+    database.exec(
+      "CREATE TABLE payload(data BLOB); INSERT INTO payload VALUES (zeroblob(65536)); DELETE FROM payload",
+    );
+  }
   const gate = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
-  const progress = new Int32Array(new SharedArrayBuffer(2 * Int32Array.BYTES_PER_ELEMENT));
+  const progress = new Int32Array(new SharedArrayBuffer(4 * Int32Array.BYTES_PER_ELEMENT));
   const register = `import { register } from ${JSON.stringify(import.meta.resolve("tsx/esm/api"))}; register();`;
   const worker = new Worker(
     new URL("./session-accessor.sqlite-reclamation-commit.test-support.ts", import.meta.url),
@@ -50,6 +59,8 @@ function createCommitFixture(
   const release = () => {
     Atomics.store(progress, 1, 1);
     Atomics.notify(progress, 1);
+    Atomics.store(progress, 2, 1);
+    Atomics.notify(progress, 2);
   };
   return {
     database,
@@ -86,7 +97,7 @@ test.each(["transient", "permanent", "closed"] as const)(
       vi.spyOn(sqliteTransaction, "runSqliteImmediateTransactionSync").mockImplementation(
         (db, operation, options) => {
           if (!faultInjected || fault !== "transient") {
-            waitForApproval(fixture.progress);
+            waitForWorkerProgress(fixture.progress);
             faultInjected = true;
             if (fault !== "transient") {
               fixture.release();
@@ -114,6 +125,58 @@ test.each(["transient", "permanent", "closed"] as const)(
     }
   },
 );
+
+test("checkpoints reclaimed pages after the parent releases its settlement writer", async () => {
+  const fixture = createCommitFixture({ reclaimPages: true });
+  const actualTransaction = sqliteTransaction.runSqliteImmediateTransactionSync;
+  let joinedSettlement = false;
+  try {
+    const freePages = () =>
+      Number(fixture.database.prepare("PRAGMA freelist_count").get()?.freelist_count);
+    const freePagesBefore = freePages();
+    expect(freePagesBefore).toBeGreaterThan(0);
+    await fixture.requested;
+    const checkpointed = once(fixture.worker, "message");
+    vi.spyOn(sqliteTransaction, "runSqliteImmediateTransactionSync").mockImplementation(
+      (database, operation, options) => {
+        if (options?.operationLabel !== "session.reclamation.commit-settlement") {
+          return actualTransaction(database, operation, options);
+        }
+        return actualTransaction(
+          database,
+          () => {
+            joinedSettlement = true;
+            Atomics.store(fixture.progress, 2, 1);
+            Atomics.notify(fixture.progress, 2);
+            waitForWorkerProgress(fixture.progress, 3);
+            return operation();
+          },
+          options,
+        );
+      },
+    );
+    await fixture.withAuthorization(
+      () => {},
+      async (authorize) => {
+        expect(authorize()).toEqual([]);
+        expect(await checkpointed).toEqual([
+          expect.objectContaining({
+            checkpointCompleted: true,
+            checkpoint: expect.objectContaining({ state: "complete", walBytes: 0 }),
+            checkpointCalls: 2,
+            checkpointIncomplete: 0,
+            vacuumPasses: 1,
+          }),
+        ]);
+      },
+    );
+    expect(joinedSettlement).toBe(true);
+    expect(freePages()).toBeLessThan(freePagesBefore);
+    expect(fixture.value()).toBe(1);
+  } finally {
+    await fixture.close();
+  }
+});
 
 test.each([
   { outcome: undefined, value: 2, exitCode: 0 },

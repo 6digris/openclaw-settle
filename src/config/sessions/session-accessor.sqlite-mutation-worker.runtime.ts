@@ -34,6 +34,7 @@ import type { SqliteSessionReclamationPlan } from "./session-accessor.sqlite-lif
 import {
   markSqliteReclamationSettled,
   waitForSqliteReclamationCommit,
+  waitForSqliteReclamationSettlement,
 } from "./session-accessor.sqlite-reclamation-commit.js";
 import type {
   SqliteCanonicalValidationWorkerRequest,
@@ -133,6 +134,7 @@ async function runColdMutationWorker(port: MessagePort, data: SessionColdWorkerD
           // The parent joins the cold transaction, not the subsequent bounded page drain.
           markSqliteReclamationSettled(commitGate);
           if (data.plan.kind !== "cold-restore") {
+            waitForSqliteReclamationSettlement(commitGate);
             await reclaimSqliteFreePages(data.plan.databaseOptions, undefined, { maxPasses: 64 });
           }
           return changed;
@@ -378,6 +380,8 @@ export async function runReclamationWorkerPort(
                           {
                             beforeMutation: currentClaim.assertCurrent,
                             onCommit: authorizeCommit,
+                            afterTransaction: () =>
+                              waitForSqliteReclamationSettlement(request.commitGate),
                           },
                         );
                   // Warm results must not revive proof invalidated by the parent between requests.

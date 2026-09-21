@@ -10,6 +10,7 @@ export type SqliteWalReclamationOptions = {
   checkpointMode?: SqliteWalCheckpointMode;
   beforeMutation?: () => void;
   onCommit?: () => void;
+  afterTransaction?: () => void;
 };
 
 export type SqliteWalReclamationResult = {
@@ -114,6 +115,7 @@ export function reclaimSqliteWalFreePages(
     } finally {
       result.vacuumMs += performance.now() - startedAt;
     }
+    options.afterTransaction?.();
     if (checkpoint()) {
       result.remainingFreePages = freePages();
     }
