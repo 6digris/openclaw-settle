@@ -1,0 +1,294 @@
+# Disposable emission proof. Never merge this workflow.
+name: SQLite transaction boundary proof
+on:
+  pull_request:
+    types: [ready_for_review]
+    branches: [main]
+    paths: [.github/workflows/sqlite-transaction-boundary-proof.yml]
+permissions:
+  contents: read
+concurrency:
+  group: sqlite-transaction-boundary-proof
+  cancel-in-progress: false
+jobs:
+  paired-package:
+    if: >-
+      github.repository == 'openclaw/openclaw' &&
+      github.event_name == 'pull_request' && github.event.action == 'ready_for_review' &&
+      github.event.pull_request.number == 149882 &&
+      github.event.pull_request.state == 'open' && !github.event.pull_request.draft &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.base.repo.full_name == 'openclaw/openclaw' &&
+      github.event.pull_request.head.repo.full_name == 'openclaw/openclaw' &&
+      github.event.pull_request.head.ref == 'feat/freebsd-foreground-update' &&
+      github.event.pull_request.user.login == 'vincentkoc'
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      CI: "true"
+      NODE_OPTIONS: --max-old-space-size=8192
+      OPENCLAW_VITEST_MAX_WORKERS: "2"
+      BASELINE_SHA: 17690d0019bb92ee80e8ceaaced8cad822e1159d
+      BASELINE_TREE: bbec4772a31d27e52cc5c8fb28a17b3b7dfbc39c
+      CANDIDATE_SHA: e3d74c9d0dbcb844bb8817e10c82630adcd9eb65
+      CANDIDATE_TREE: e1dcf25444bc0cfa58a6a4915434cc8b53d3df44
+      COMMON_OWNER_SHA: c83e6d94156e6528d91dce2d62792ca3ba5283bc
+      CARRIER_SHA: ${{ github.event.pull_request.head.sha }}
+      WORKFLOW_SHA: ${{ github.workflow_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 4
+          persist-credentials: false
+      - name: Bind the carrier, product pair and exact reviewed repair
+        run: |
+          set -euo pipefail
+          [[ "$CARRIER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$CARRIER_SHA"
+          test "$(git show -s --format=%P HEAD)" = "$CANDIDATE_SHA"
+          test "$(git show -s --format=%P "$CANDIDATE_SHA")" = "$BASELINE_SHA"
+          test "$(git rev-parse "$BASELINE_SHA^{tree}")" = "$BASELINE_TREE"
+          test "$(git rev-parse "$CANDIDATE_SHA^{tree}")" = "$CANDIDATE_TREE"
+          test "$(git diff --name-only "$CANDIDATE_SHA" HEAD)" = .github/workflows/sqlite-transaction-boundary-proof.yml
+          test -z "$(git status --porcelain)"
+          git -c gc.auto=0 -c maintenance.auto=false fetch --no-tags --depth=1 --no-write-fetch-head origin "$WORKFLOW_SHA"
+          carrier_blob="$(git rev-parse --verify "$CARRIER_SHA:.github/workflows/sqlite-transaction-boundary-proof.yml")"
+          workflow_blob="$(git rev-parse --verify "$WORKFLOW_SHA:.github/workflows/sqlite-transaction-boundary-proof.yml")"
+          test "$carrier_blob" = "$workflow_blob"
+          mkdir "$RUNNER_TEMP/sqlite-boundary-proof"
+          python3 - <<'PY'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          def git(*args): return subprocess.check_output(['git', *args])
+          a, b = os.environ['BASELINE_SHA'], os.environ['CANDIDATE_SHA']
+          patch = git('diff', '--no-renames', '--binary', a, b)
+          assert len(patch) == 49281
+          assert hashlib.sha256(patch).hexdigest() == 'a01b60a825e119fd16e96c5bc75015a549917eb14c4d0068151025a61629f1f6'
+          paths = git('diff', '--name-only', a, b).decode().splitlines()
+          assert len(paths) == 12
+          receipt = dict(baseline=a, baselineTree=os.environ['BASELINE_TREE'], candidate=b,
+              candidateTree=os.environ['CANDIDATE_TREE'], identicalCommonOwnerPatch=os.environ['COMMON_OWNER_SHA'],
+              patchSha256=hashlib.sha256(patch).hexdigest(), paths=paths,
+              carrier=os.environ['CARRIER_SHA'], workflow=os.environ['WORKFLOW_SHA'], eventMerge=os.environ['GITHUB_SHA'],
+              run=os.environ['GITHUB_RUN_ID'], attempt=os.environ['GITHUB_RUN_ATTEMPT'])
+          Path(os.environ['RUNNER_TEMP'], 'sqlite-boundary-proof', 'source-binding.json').write_text(json.dumps(receipt, indent=2)+'\n')
+          print(json.dumps(receipt))
+          PY
+      - name: Prepare the canonical Git lifecycle owner
+        uses: ./.github/actions/git-owner
+      - name: Set up one frozen toolchain without a harness dependency install
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: "24.21.0"
+          install-bun: "false"
+          install-deps: "false"
+          cache-mode: "off"
+      - name: Create isolated product roots and frozen dependency installs
+        run: |
+          set -euo pipefail
+          test "$(node -p process.versions.node)" = 24.21.0
+          test "$(pnpm --version)" = 12.4.0
+          test ! -e node_modules
+          python3 -I -S "$CI_GIT_OWNER" --git 120 worktree add --detach "$RUNNER_TEMP/sqlite-baseline" "$BASELINE_SHA"
+          python3 -I -S "$CI_GIT_OWNER" --git 120 worktree add --detach "$RUNNER_TEMP/sqlite-candidate" "$CANDIDATE_SHA"
+          for role in baseline candidate; do
+            (
+              cd "$RUNNER_TEMP/sqlite-$role"
+              CI=true DEPENDENCY_CACHE=false DEPENDENCY_CACHE_HIT=false FROZEN_LOCKFILE=true \
+                bash .github/actions/setup-node-env/install-dependencies.sh
+              git diff --exit-code
+              git diff --cached --exit-code
+            )
+          done
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'; import fs from 'node:fs'; import os from 'node:os';
+          import {createHash} from 'node:crypto'; import {execFileSync} from 'node:child_process';
+          const roots=['baseline','candidate'].map(role=>`${process.env.RUNNER_TEMP}/sqlite-${role}`);
+          const inputs=roots.map(root=>execFileSync(process.execPath,[`${root}/.github/actions/setup-node-env/dependency-fingerprint.mjs`,'--workspace',root,'--frozen-lockfile','true'],{encoding:'utf8'}).trim());
+          assert.equal(inputs[0],inputs[1]);
+          for(const root of roots) assert(!fs.lstatSync(`${root}/node_modules`).isSymbolicLink());
+          const receipt={node:process.versions.node,pnpm:execFileSync('pnpm',['--version'],{encoding:'utf8'}).trim(),
+            platform:process.platform,arch:process.arch,cpus:os.cpus().length,memory:os.totalmem(),dependencyFingerprint:inputs[0],
+            toolchainSha256:createHash('sha256').update(fs.readFileSync(process.execPath)).digest('hex')};
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/sqlite-boundary-proof/toolchain.json`,JSON.stringify(receipt,null,2)+'\n',{flag:'wx'});
+          console.log(JSON.stringify(receipt));
+          NODE
+      - name: Build both canonical packages once in separate roots
+        run: |
+          set -euo pipefail
+          for role in baseline candidate; do
+            (
+              cd "$RUNNER_TEMP/sqlite-$role"
+              node scripts/package-openclaw-for-docker.mjs --allow-unreleased-changelog \
+                --output-dir "$RUNNER_TEMP/sqlite-$role-package" --output-name candidate.tgz \
+                --pack-json "$RUNNER_TEMP/sqlite-$role-pack.json"
+              git diff --exit-code
+              git diff --cached --exit-code
+            )
+          done
+      - name: Authenticate actual packaged worker emission and preserved dependencies
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, tarfile
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP']); proof=root/'sqlite-boundary-proof'
+          worker='dist/state/openclaw-state-lease-heartbeat.worker.js'
+          receipts=[]
+          for role, key in [('baseline','BASELINE_SHA'),('candidate','CANDIDATE_SHA')]:
+              package=root/f'sqlite-{role}-package/candidate.tgz'
+              with tarfile.open(package,'r:gz') as archive:
+                  members=archive.getmembers()
+                  def read(name):
+                      matches=[m for m in members if m.name=='package/'+name]
+                      assert len(matches)==1 and matches[0].isfile(), name
+                      return archive.extractfile(matches[0]).read()
+                  emitted=read(worker); build=json.loads(read('dist/build-info.json')); meta=json.loads(read('package.json'))
+                  assert build['commit']==os.environ[key]
+                  assert emitted==(root/f'sqlite-{role}'/worker).read_bytes()
+                  assert meta['dependencies']['@openclaw/fs-safe']=='0.17.0'
+                  assert meta['dependencies']['semver']=='7.8.5'
+                  (proof/f'{role}-heartbeat.worker.js').write_bytes(emitted)
+                  receipts.append(dict(role=role, source=os.environ[key], build=build,
+                      packageBytes=package.stat().st_size, packageSha256=hashlib.file_digest(package.open('rb'),'sha256').hexdigest(),
+                      workerBytes=len(emitted), workerSha256=hashlib.sha256(emitted).hexdigest(),
+                      fsSafe=meta['dependencies']['@openclaw/fs-safe'], semver=meta['dependencies']['semver']))
+          (proof/'packages.json').write_text(json.dumps(receipts,indent=2)+'\n')
+          print(json.dumps(receipts))
+          PY
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'; import fs from 'node:fs';
+          import {createRequire} from 'node:module'; import {createHash} from 'node:crypto';
+          const require=createRequire(`${process.env.RUNNER_TEMP}/sqlite-candidate/package.json`);
+          const {parse}=require('acorn'); const dir=`${process.env.RUNNER_TEMP}/sqlite-boundary-proof`;
+          const removed=['src/infra/sqlite-transaction.ts','src/logging/subsystem.ts','src/logging/logger.ts','src/logging/logger-file-transport.ts'];
+          const preserved=['src/infra/node-sqlite.ts','src/infra/sqlite-coordinator.ts','src/infra/state-database-coordinator-paths.ts','src/logging/redact.ts','src/logging/config.ts'];
+          const emissions=[];
+          for(const role of ['baseline','candidate']) {
+            const source=fs.readFileSync(`${dir}/${role}-heartbeat.worker.js`,'utf8'),comments=[];
+            const ast=parse(source,{ecmaVersion:'latest',sourceType:'module',onComment:comments});
+            const regions=comments.filter(c=>c.value.startsWith('#region ')).map(c=>c.value.slice(8).trim());
+            assert(regions.length>0,'canonical bundle source regions must be observable');
+            const imports=ast.body.filter(n=>n.type==='ImportDeclaration'||n.type==='ExportAllDeclaration'||n.type==='ExportNamedDeclaration').flatMap(n=>n.source?[n.source.value]:[]);
+            assert(!imports.some(s=>s.startsWith('.')||s.startsWith('/')),'standalone worker must have no uninspected static chunk');
+            const calls=[],functions=[],literals=[];
+            function visit(n) {
+              if(!n||typeof n!=='object') return;
+              if(n.type==='CallExpression') calls.push(n);
+              if(n.type==='FunctionDeclaration'&&n.id) functions.push(n.id.name);
+              if(n.type==='Literal') literals.push(n.value);
+              for(const value of Object.values(n)) if(Array.isArray(value)) value.forEach(visit); else if(value&&typeof value==='object') visit(value);
+            }
+            visit(ast);
+            const defaultTransactionCalls=calls.filter(n=>n.callee.type==='Identifier'&&/^createSubsystemLogger(?:\$\d+)?$/.test(n.callee.name)&&n.arguments[0]?.value==='sqlite/transaction').length;
+            const fileHooks=calls.filter(n=>n.callee.type==='MemberExpression'&&n.callee.object.name==='process'&&n.callee.property.name==='on'&&['beforeExit','exit'].includes(n.arguments[0]?.value)&&['handleProcessBeforeExit','handleProcessExit'].includes(n.arguments[1]?.name)).length;
+            for(const file of preserved) assert(regions.includes(file),`${role}: missing required ${file}`);
+            for(const name of ['@openclaw/fs-safe/advanced','semver']) assert(imports.includes(name),`${role}: missing ${name}`);
+            if(role==='baseline') {
+              for(const file of removed) assert(regions.includes(file),`baseline: missing ${file}`);
+              for(const name of ['chalk','tslog']) assert(imports.includes(name));
+              assert.equal(defaultTransactionCalls,1); assert.equal(fileHooks,2);
+            } else {
+              for(const file of removed) assert(!regions.includes(file),`candidate retains ${file}`);
+              for(const name of ['chalk','tslog']) assert(!imports.includes(name));
+              assert.equal(defaultTransactionCalls,0); assert.equal(fileHooks,0);
+              assert(!literals.includes('sqlite/transaction'));
+              assert(regions.includes('src/infra/sqlite-transaction-core.ts'));
+              assert(functions.includes('runSqliteTransactionSync'));
+              assert(!functions.includes('installProcessHooks'));
+            }
+            emissions.push({role,sha256:createHash('sha256').update(source).digest('hex'),imports,regions,defaultTransactionCalls,fileHooks});
+          }
+          assert.deepEqual(emissions[0].imports.filter(s=>s.startsWith('@openclaw/fs-safe/')).sort(),emissions[1].imports.filter(s=>s.startsWith('@openclaw/fs-safe/')).sort());
+          fs.writeFileSync(`${dir}/emission.json`,JSON.stringify({emissions,claim:'removed default reporting from the emitted heartbeat; no historical timeout cause or native qualification claim'},null,2)+'\n',{flag:'wx'});
+          console.log(JSON.stringify({emittedBoundaryPassed:true,emissions}));
+          NODE
+      - name: Prove transaction, reporter, registry, handoff and worker siblings
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/sqlite-candidate"
+          tests=(
+            src/infra/sqlite-transaction.test.ts
+            src/infra/sqlite-transaction-core.test.ts
+            src/infra/sqlite-transaction.reporting.test.ts
+            src/infra/sqlite-transaction.deadline.test.ts
+            src/infra/sqlite-transaction.windows.test.ts
+            src/infra/sqlite-coordinator.test.ts
+            src/infra/sqlite-coordinator.idle.test.ts
+            src/infra/state-database-coordinator.test.ts
+            src/infra/state-database-coordinator-delegate.test.ts
+            src/infra/update-managed-service-handoff-store-recovery.test.ts
+            src/infra/update-managed-service-handoff-retarget.test.ts
+            src/state/openclaw-state-lease-heartbeat.startup.test.ts
+            src/state/openclaw-state-lease-heartbeat.diagnostics.test.ts
+            src/state/openclaw-state-lease-heartbeat.test.ts
+            src/state/openclaw-state-read-worker.test.ts
+            test/scripts/check-sqlite-transaction-boundary.test.ts
+            test/scripts/eager-import-closure.test.ts
+          )
+          node scripts/run-vitest.mjs "${tests[@]}" --reporter=default --reporter=json \
+            --outputFile.json="$RUNNER_TEMP/sqlite-owner-tests.json"
+          node --input-type=module - "${tests[@]}" <<'NODE'
+          import assert from 'node:assert/strict'; import fs from 'node:fs'; import path from 'node:path';
+          const r=JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/sqlite-owner-tests.json`));
+          assert.equal(r.success,true); assert(r.numPassedTests>0);
+          for(const key of ['numFailedTests','numPendingTests','numTodoTests','numFailedTestSuites']) assert.equal(r[key],0);
+          const files=r.testResults.map(f=>path.relative(process.cwd(),f.name));
+          assert.deepEqual(files.toSorted(),process.argv.slice(2).toSorted());
+          const assertions=r.testResults.flatMap(f=>f.assertionResults); assert(assertions.length>0);
+          assert(assertions.every(a=>a.status==='passed'));
+          const receipt={source:process.env.CANDIDATE_SHA,files,passed:r.numPassedTests,skipped:0,
+            assertions:r.testResults.map(f=>({file:path.relative(process.cwd(),f.name),tests:f.assertionResults.map(a=>({title:a.fullName,status:a.status}))}))};
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/sqlite-boundary-proof/tests.json`,JSON.stringify(receipt,null,2)+'\n',{flag:'wx'});
+          console.log(JSON.stringify({source:receipt.source,files,passed:receipt.passed,skipped:0}));
+          NODE
+          pnpm run lint:kysely
+          pnpm run lint:tmp:sqlite-transaction-boundary
+          pnpm run plugin-sdk:surface:check
+          git diff --exit-code
+          git diff --cached --exit-code
+      - name: Seal only the composed candidate for later operator proof
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/sqlite-candidate"
+          proof="$RUNNER_TEMP/sqlite-boundary-proof"
+          git archive --format=tar.gz --prefix=openclaw/ "$CANDIDATE_SHA" > "$proof/source.tar.gz"
+          node scripts/install-smoke-candidate-payload.mts seal \
+            --archive "$proof/source.tar.gz" --package-dir "$RUNNER_TEMP/sqlite-candidate-package" \
+            --output-dir "$proof/payload" --repository "$GITHUB_REPOSITORY" --target-sha "$CANDIDATE_SHA" \
+            --harness-repository "$GITHUB_REPOSITORY" --harness-sha "$CARRIER_SHA" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+          for role in baseline candidate; do
+            git -C "$RUNNER_TEMP/sqlite-$role" diff --exit-code
+            git -C "$RUNNER_TEMP/sqlite-$role" diff --cached --exit-code
+          done
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'; import fs from 'node:fs'; import {createHash} from 'node:crypto';
+          const dir=`${process.env.RUNNER_TEMP}/sqlite-boundary-proof`,sha=f=>createHash('sha256').update(fs.readFileSync(f)).digest('hex');
+          const packages=JSON.parse(fs.readFileSync(`${dir}/packages.json`));
+          for(const p of packages) assert.equal(sha(`${process.env.RUNNER_TEMP}/sqlite-${p.role}-package/candidate.tgz`),p.packageSha256);
+          const manifest=JSON.parse(fs.readFileSync(`${dir}/payload/install-smoke-candidate-payload.json`));
+          assert.equal(manifest.targetSha,process.env.CANDIDATE_SHA);
+          assert.equal(manifest.files.find(f=>f.name==='candidate.tgz').sha256,packages[1].packageSha256);
+          const receipt={source:process.env.CANDIDATE_SHA,tree:process.env.CANDIDATE_TREE,carrier:process.env.CARRIER_SHA,
+            run:process.env.GITHUB_RUN_ID,attempt:process.env.GITHUB_RUN_ATTEMPT,emissionPassed:true,focusedTestsPassed:true,
+            guardsPassed:true,manifestSha256:sha(`${dir}/payload/install-smoke-candidate-payload.json`),
+            sourceArchiveSha256:sha(`${dir}/source.tar.gz`),packageVersion:manifest.packageVersion,
+            nativeOperatorProof:'not run'};
+          fs.writeFileSync(`${dir}/complete.json`,JSON.stringify(receipt,null,2)+'\n',{flag:'wx'}); console.log(JSON.stringify(receipt));
+          NODE
+      - name: Retain the minimum reusable candidate and emission evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: sqlite-boundary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sqlite-boundary-proof
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
