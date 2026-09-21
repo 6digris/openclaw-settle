@@ -2,6 +2,7 @@ import type { Page } from "playwright";
 import { expect, it } from "vitest";
 import type { ApplicationContext } from "../app/context.ts";
 import type { PresencePayload } from "../app/user-profile.ts";
+import type { SwarmRosterHydrator } from "../lib/sessions/swarm-roster.ts";
 import type { ChatPageHost } from "../pages/chat/chat-state-host.ts";
 import {
   controlUiSessionUrl,
@@ -19,6 +20,7 @@ const baseTime = 1_900_000_000_000;
 type MeasuredPane = HTMLElement & {
   state: Pick<ChatPageHost, "sessionKey" | "chatMessages" | "chatAvatarStatus">;
   presencePayload?: PresencePayload;
+  swarmHydrator?: Pick<SwarmRosterHydrator, "rows">;
   render: () => unknown;
   updateComplete: Promise<boolean>;
 };
@@ -96,6 +98,7 @@ suite.define(() => {
           { id: "collaborator", name: "Collaborator", watchedSessions: [] },
         ],
       });
+      await page.clock.install();
       await page.goto(controlUiSessionUrl(suite.server.baseUrl, selectedKey));
       await page.getByText("The retained conversation is ready.", { exact: true }).waitFor();
       const backgroundRow = page.locator(`[data-session-key="${foreignKey}"]`);
@@ -109,14 +112,17 @@ suite.define(() => {
         ),
       ).toBeNull();
       await gateway.resolveDeferred("agent.identity.get");
-      // Transcript paint precedes the idle avatar read. Its accepted status owns
-      // completion; virtual time alone cannot settle an outstanding identity request.
-      await page.waitForFunction(
-        () =>
-          document.querySelector<MeasuredPane>("openclaw-chat-pane.chat-pane-cache__pane--active")
-            ?.state.chatAvatarStatus === "none",
-      );
-      await page.clock.install();
+      // Avatar and initial swarm publications redraw after transcript paint.
+      // Their accepted state must settle before measuring unrelated updates.
+      await page.waitForFunction((key) => {
+        const pane = document.querySelector<MeasuredPane>(
+          "openclaw-chat-pane.chat-pane-cache__pane--active",
+        );
+        const rows = pane?.swarmHydrator?.rows;
+        return (
+          pane?.state.chatAvatarStatus === "none" && rows?.length === 1 && rows[0]?.key === key
+        );
+      }, selectedKey);
       await pauseVirtualClock(page);
       const probe = await observePaneRenders(page);
       const counts = { foreign: [] as number[], presence: 0, selected: 0, viewer: 0 };
