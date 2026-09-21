@@ -99,7 +99,12 @@ export class TranscriptMessageAnchors {
   }
 
   /** Resolve a pending search return or capture history against the committed projection. */
-  capture(element: HTMLDivElement | null, commanded: boolean, following = false): void {
+  capture(
+    element: HTMLDivElement | null,
+    commanded: boolean,
+    following = false,
+    readingProjectionChanged = false,
+  ): void {
     const search = this.searchReturn;
     if (search && (search.phase === "pending" || this.restoringSearch)) {
       const rowKey = this.committedMessageRows.get(search.anchor.messageKey);
@@ -113,10 +118,14 @@ export class TranscriptMessageAnchors {
         this.searchReturn = null;
       }
     }
+    const retained =
+      this.prependReturn && this.messageKeys.has(this.prependReturn.messageKey)
+        ? this.prependReturn
+        : null;
     const anchor =
-      commanded || this.restoringSearch
-        ? null
-        : captureTranscriptPrependAnchor(element, this.firstMessageKey, this.messageKeys);
+      !commanded && !this.restoringSearch && (this.hasPrepend || readingProjectionChanged)
+        ? (retained ?? captureTranscriptMessageAnchor(element, this.messageKeys))
+        : null;
     if (anchor) {
       this.prependReturn = { ...anchor, measured: false };
     }
@@ -127,7 +136,7 @@ export class TranscriptMessageAnchors {
   update(
     element: HTMLDivElement | null,
     virtualizer: Virtualizer<HTMLDivElement, HTMLElement>,
-    measureRows: () => void,
+    measureRows: () => boolean,
     following = false,
     onRestored?: () => void,
   ): boolean {
@@ -157,13 +166,13 @@ export class TranscriptMessageAnchors {
     if (!anchor) {
       return false;
     }
-    if (!anchor.measured) {
-      measureRows();
-      anchor.measured = true;
-      return true;
+    const changed = measureRows();
+    const moved = restoreTranscriptMessageAnchor(anchor, element, virtualizer);
+    if (anchor.measured && !changed && !moved) {
+      this.prependReturn = null;
     }
-    this.prependReturn = null;
-    return restoreTranscriptMessageAnchor(anchor, element, virtualizer) ?? false;
+    anchor.measured = true;
+    return true;
   }
 
   /** Measure after nested row controls commit, before the sizer's restoration commit. */
@@ -206,19 +215,6 @@ export class TranscriptMessageAnchors {
     this.messageKeys = new Set();
     this.committedMessageRows = new Map();
   }
-}
-
-/** Capture the message being read before older history changes its containing row. */
-function captureTranscriptPrependAnchor(
-  scrollElement: HTMLDivElement | null,
-  previousFirstMessageKey: string | undefined,
-  next: TranscriptMessageKeys,
-): ChatTranscriptMessageAnchor | null {
-  const first = previousFirstMessageKey;
-  if (!scrollElement || !first || first === next.keys().next().value || !next.has(first)) {
-    return null;
-  }
-  return captureTranscriptMessageAnchor(scrollElement, next);
 }
 
 function captureTranscriptMessageAnchor(
@@ -274,7 +270,11 @@ function restoreTranscriptMessageAnchor(
   if (Math.abs(delta) <= tolerance) {
     return false;
   }
-  const offset = Math.max(0, scrollElement.scrollTop + delta);
+  const maxOffset = Math.max(0, scrollElement.scrollHeight - scrollElement.clientHeight);
+  const offset = Math.max(0, Math.min(maxOffset, scrollElement.scrollTop + delta));
+  if (Math.abs(offset - scrollElement.scrollTop) <= tolerance) {
+    return false;
+  }
   // Commit one measured message target through the scroll owner. This also
   // retires deferred row corrections already represented by the measured DOM.
   virtualizer.scrollToOffset(offset, { behavior: "instant" });

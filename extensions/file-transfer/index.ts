@@ -4,6 +4,7 @@ import {
   type AnyAgentTool,
   type OpenClawPluginNodeHostCommand,
 } from "openclaw/plugin-sdk/plugin-entry";
+import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { createLazyFileTransferNodeInvokePolicy } from "./src/shared/lazy-node-invoke-policy.js";
 import {
   DIR_FETCH_TOOL_DESCRIPTOR,
@@ -11,6 +12,7 @@ import {
   FILE_FETCH_TOOL_DESCRIPTOR,
   FILE_WRITE_TOOL_DESCRIPTOR,
 } from "./src/tools/descriptors.js";
+import { registerNodeWorkspaces } from "./src/workspace-service.js";
 
 type FileTransferToolDescriptor = Pick<
   AnyAgentTool,
@@ -41,14 +43,25 @@ function createLazyTool(
 
 const fileTransferNodeHostCommands: OpenClawPluginNodeHostCommand[] = [
   {
-    command: "file.fetch",
-    hasActiveWork: () => false,
+    command: "file.stat",
     cap: "file",
     dangerous: true,
     handle: async (paramsJSON) => {
+      const { handleFileStat } = await import("./src/node-host/file-stat.js");
+      const params = asOptionalRecord(readNodeCommandParams(paramsJSON)) ?? {};
+      return JSON.stringify(await handleFileStat(params));
+    },
+  },
+  {
+    command: "file.fetch",
+    hasActiveWork: () => false,
+    duplex: "optional",
+    cap: "file",
+    dangerous: true,
+    handle: async (paramsJSON, io) => {
       const { handleFileFetch } = await import("./src/node-host/file-fetch.js");
       const params = readNodeCommandParams(paramsJSON) as Parameters<typeof handleFileFetch>[0];
-      const result = await handleFileFetch(params);
+      const result = await handleFileFetch(params, io);
       return JSON.stringify(result);
     },
   },
@@ -77,6 +90,17 @@ const fileTransferNodeHostCommands: OpenClawPluginNodeHostCommand[] = [
     },
   },
   {
+    command: "file.create",
+    cap: "file",
+    dangerous: true,
+    duplex: true,
+    handle: async (paramsJSON, io) => {
+      const { handleFileCreate } = await import("./src/node-host/file-create.js");
+      const params = asOptionalRecord(readNodeCommandParams(paramsJSON)) ?? {};
+      return JSON.stringify(await handleFileCreate(params, io));
+    },
+  },
+  {
     command: "file.write",
     hasActiveWork: () => false,
     cap: "file",
@@ -96,6 +120,7 @@ export default definePluginEntry({
   description: "Fetch, list, and write files on paired nodes via dedicated node commands.",
   nodeHostCommands: fileTransferNodeHostCommands,
   register(api) {
+    registerNodeWorkspaces(api);
     api.registerCli(
       async ({ program }) => {
         const { registerFileTransferCli } = await import("./src/cli.js");

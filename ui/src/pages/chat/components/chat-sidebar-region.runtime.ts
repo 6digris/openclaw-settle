@@ -14,6 +14,7 @@ import {
 import { renderPanelTabStrip, type PanelTabStripTab } from "../../../components/panel-tab-strip.ts";
 import {
   BROWSER_PANEL_TOGGLE_EVENT,
+  LINK_READER_PANEL_TOGGLE_EVENT,
   TERMINAL_PANEL_TOGGLE_EVENT,
   type PanelToggleElement,
 } from "../../../components/panel-toggle-contract.ts";
@@ -89,6 +90,7 @@ class ChatSidebarRegion extends OpenClawLightDomElement {
   @property({ type: Boolean }) narrow = false;
   @property({ type: Number }) availableWidth = 0;
   private previousGeometry = "";
+  private geometryFrame: number | null = null;
   private contentMounted = false;
   private focusedSurface: Element | null = null;
   private nativeCloseListeners: AbortController | undefined;
@@ -105,12 +107,17 @@ class ChatSidebarRegion extends OpenClawLightDomElement {
     document.addEventListener("pointerdown", this.trackFocus, options);
     document.addEventListener("focusin", this.trackFocus, options);
     window.addEventListener("openclaw:native-close-focused-panel", this.closeFocusedPanel, options);
+    this.requestUpdate();
   }
 
   override disconnectedCallback(): void {
     this.nativeCloseListeners?.abort();
     this.nativeCloseListeners = undefined;
     this.focusedSurface = null;
+    if (this.geometryFrame !== null) {
+      cancelAnimationFrame(this.geometryFrame);
+      this.geometryFrame = null;
+    }
     super.disconnectedCallback();
   }
 
@@ -234,6 +241,14 @@ class ChatSidebarRegion extends OpenClawLightDomElement {
                 }),
               );
             }
+            if (slot === "link-reader" && openSlots.has(slot)) {
+              this.deliverPanelEvent(
+                slot,
+                new CustomEvent(LINK_READER_PANEL_TOGGLE_EVENT, {
+                  detail: { open: true, newTab: true },
+                }),
+              );
+            }
             if (slot === "terminal" && openSlots.has(slot)) {
               this.deliverPanelEvent(
                 slot,
@@ -257,7 +272,10 @@ class ChatSidebarRegion extends OpenClawLightDomElement {
         ${this.panelTypes()
           .filter(
             (type) =>
-              type.slot === "browser" || type.slot === "terminal" || !openSlots.has(type.slot),
+              type.slot === "browser" ||
+              type.slot === "terminal" ||
+              type.slot === "link-reader" ||
+              !openSlots.has(type.slot),
           )
           .map(
             (type) => html`
@@ -527,7 +545,11 @@ class ChatSidebarRegion extends OpenClawLightDomElement {
         dock === "bottom"
           ? (panel?.getBoundingClientRect().height ?? column.height)
           : (panel?.getBoundingClientRect().width ?? column.width);
-      return { primarySize, panelSize, total: primarySize + panelSize };
+      // Grid columns mirror in RTL; divider ratios follow physical left/top movement.
+      const panelBeforeMain =
+        dock !== "bottom" &&
+        (dock === "left") !== (getComputedStyle(shell ?? this).direction === "rtl");
+      return { primarySize, panelSize, panelBeforeMain, total: primarySize + panelSize };
     };
     return renderChatResizableDivider({
       className: "sidebar-column__divider",
@@ -537,8 +559,8 @@ class ChatSidebarRegion extends OpenClawLightDomElement {
       minRatio: 0.05,
       maxRatio: 0.95,
       measureRatio: () => {
-        const { primarySize, panelSize, total } = measure();
-        return total > 0 ? (dock === "left" ? panelSize : primarySize) / total : 0.5;
+        const { primarySize, panelSize, panelBeforeMain, total } = measure();
+        return total > 0 ? (panelBeforeMain ? panelSize : primarySize) / total : 0.5;
       },
       measureSize: () => measure().total,
       onResize: (event) => {
@@ -549,9 +571,11 @@ class ChatSidebarRegion extends OpenClawLightDomElement {
             : this.availableWidth > 0
               ? this.availableWidth
               : (bounds?.width ?? 0);
-        const total = measure().total || regionSize;
+        const measured = measure();
+        const total = measured.total || regionSize;
         const requested =
-          total * (dock === "left" ? event.detail.splitRatio : 1 - event.detail.splitRatio);
+          total *
+          (measured.panelBeforeMain ? event.detail.splitRatio : 1 - event.detail.splitRatio);
         const minimum = dock === "bottom" ? SIDEBAR_MIN_HEIGHT_PX : SIDEBAR_MIN_WIDTH_PX;
         const maximum = Math.max(minimum, regionSize * 0.6);
         this.callbacks?.resizePanel(column.id, Math.max(minimum, Math.min(requested, maximum)));
@@ -585,11 +609,27 @@ class ChatSidebarRegion extends OpenClawLightDomElement {
     const root = this.parentElement?.querySelector<HTMLElement>(".sidebar-region__right-runtime");
     if (root) {
       renderTemplate(this.renderPanel(), root);
-      const panel = root.querySelector<HTMLElement>(".side-panel");
+      this.scheduleGeometryCommit();
+    }
+  }
+
+  private scheduleGeometryCommit() {
+    if (this.geometryFrame !== null) {
+      return;
+    }
+    // Nested panels commit after this host. Measure their final geometry once,
+    // rather than forcing layout in the middle of each parent/child update.
+    this.geometryFrame = requestAnimationFrame(() => {
+      this.geometryFrame = null;
+      const shell = this.parentElement;
+      if (!this.isConnected || !shell) {
+        return;
+      }
+      const panel = shell.querySelector<HTMLElement>(
+        ".sidebar-region__right-runtime > .side-panel",
+      );
       const geometry = Array.from(
-        this.parentElement!.querySelectorAll<HTMLElement>(
-          ".sidebar-region__primary, .side-panel__panel",
-        ),
+        shell.querySelectorAll<HTMLElement>(".sidebar-region__primary, .side-panel__panel"),
         (content) =>
           `${content.dataset.panelSlot ?? "conversation"}:${content.getBoundingClientRect().width}`,
       ).join(":");
@@ -605,7 +645,7 @@ class ChatSidebarRegion extends OpenClawLightDomElement {
         }),
       );
       this.previousGeometry = geometry;
-    }
+    });
   }
 
   override render() {

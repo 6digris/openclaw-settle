@@ -13,7 +13,7 @@ import { loadInstalledPluginIndexInstallRecords } from "../../plugins/installed-
 import { withPluginLifecycleLease } from "../../plugins/plugin-lifecycle-lease.js";
 import { defaultRuntime } from "../../runtime.js";
 import { VERSION } from "../../version.js";
-import { readPackageVersion, type UpdateCommandOptions } from "./shared.js";
+import { parseUpdateTimeoutMs, readPackageVersion, type UpdateCommandOptions } from "./shared.js";
 import { preparePostCorePluginConfig } from "./update-command-config.js";
 import { completePostCorePluginUpdate } from "./update-command-fresh-doctor.js";
 import {
@@ -25,11 +25,14 @@ import {
   continuePostCoreUpdateInFreshProcess,
   shouldResumePostCoreUpdateInFreshProcess,
 } from "./update-command-post-core.js";
+import { convergePostCoreUpdatePlugins } from "./update-command-resume.js";
 import { completeSourceUpdateRuntime } from "./update-command-runtime.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
 
 export async function convergeUpdatePlugins(params: {
   coreAlreadyCurrent?: boolean;
+  /** Local running-code context, never installation state or mutation authority. */
+  candidateRuntime?: boolean;
   result: UpdateRunResult;
   root: string;
   previousInstallRoot?: string;
@@ -46,6 +49,7 @@ export async function convergeUpdatePlugins(params: {
   packageUpdateNodeRunner?: string;
   updateStepTimeoutMs: number;
   beforeDoctor?: () => Promise<void>;
+  beforeRuntimePublication?: () => Promise<void>;
   assertCurrent?: () => void;
 }): Promise<{
   resultWithPostUpdate: UpdateRunResult;
@@ -81,6 +85,7 @@ export async function convergeUpdatePlugins(params: {
     (runtimeRootChanged || (versionComparison !== null && versionComparison !== 0));
   const shouldResumePostCoreInFreshProcess =
     (!params.coreAlreadyCurrent || retainedDifferentRuntime) &&
+    !params.candidateRuntime &&
     shouldResumePostCoreUpdateInFreshProcess({
       // An already-current install can still differ from the retained updater.
       // Route by that runtime transition without changing the reported core result.
@@ -124,18 +129,59 @@ export async function convergeUpdatePlugins(params: {
 
   return await withOwnedManagedUpdateEnv(params.ownedManagedUpdateEnv, async () => {
     const previousCompatibilityHostVersion = process.env.OPENCLAW_COMPATIBILITY_HOST_VERSION;
-    const compatibilityDowngradeTarget =
-      versionComparison != null && versionComparison > 0 ? postUpdateInstalledVersion : null;
-    if (compatibilityDowngradeTarget) {
-      // The parent still reports its pre-update VERSION. Convergence and fresh
-      // completion must both use the installed target's compatibility contract.
-      process.env.OPENCLAW_COMPATIBILITY_HOST_VERSION = compatibilityDowngradeTarget;
+    const compatibilityHostVersion = params.candidateRuntime
+      ? (postUpdateInstalledVersion ?? VERSION)
+      : versionComparison != null && versionComparison > 0
+        ? postUpdateInstalledVersion
+        : null;
+    if (compatibilityHostVersion) {
+      // Downgraded parents and candidate workers both use the installed target,
+      // not a pre-update VERSION or an inherited compatibility-host override.
+      process.env.OPENCLAW_COMPATIBILITY_HOST_VERSION = compatibilityHostVersion;
     }
     try {
       let postCorePluginUpdate;
       const doctorWarnings: string[] = [];
-      let pluginsUpdatedInFreshProcess = false;
-      if (shouldResumePostCoreInFreshProcess) {
+      const collectDoctorWarnings = (warnings: string[]) => {
+        doctorWarnings.push(...warnings);
+      };
+      let targetRuntimeConverged = false;
+      const runtimeStartedAt = Date.now();
+      const runtime = await withPluginLifecycleLease({ assertCurrent }, (lease) =>
+        completeSourceUpdateRuntime({
+          root: postUpdateRoot,
+          timeoutMs: params.updateStepTimeoutMs,
+          lease,
+          beforePersistentEffect: assertCurrent,
+          beforePublication: params.beforeRuntimePublication,
+        }),
+      );
+      const runtimeDurationMs = Math.max(0, Date.now() - runtimeStartedAt);
+      assertCurrent?.();
+      if (params.candidateRuntime) {
+        // Migrated finalization already runs candidate code under the parent's
+        // live grant. Reuse resume's phase without attempting nested delegation.
+        const phase = await convergePostCoreUpdatePlugins({
+          root: postUpdateRoot,
+          channel: params.channel,
+          requestedChannel: params.requestedChannel,
+          opts: params.opts,
+          timeoutMs: params.updateStepTimeoutMs,
+          preUpdateConfig,
+          parentPluginInstallRecords: params.preUpdatePluginInstallRecords,
+          updateStartedAtMs: params.startedAt,
+          beforeDoctor: params.beforeDoctor,
+          onWarnings: collectDoctorWarnings,
+          assertCurrent,
+        });
+        postCorePluginUpdate = phase.pluginUpdate;
+        postUpdateConfigSnapshot = phase.configSnapshot;
+        targetRuntimeConverged = true;
+      } else if (shouldResumePostCoreInFreshProcess) {
+        if (retainedDifferentRuntime && params.opts.run?.completionOwner === "gateway-restart") {
+          await params.beforeDoctor?.();
+          assertCurrent?.();
+        }
         const freshProcessResult = await continuePostCoreUpdateInFreshProcess({
           root: postUpdateRoot,
           channel: params.channel,
@@ -175,11 +221,11 @@ export async function convergeUpdatePlugins(params: {
             cancelled: freshProcessResult.exitCode === 130 || freshProcessResult.exitCode === 143,
           };
         }
-        pluginsUpdatedInFreshProcess = freshProcessResult.resumed;
+        targetRuntimeConverged = freshProcessResult.resumed;
         postCorePluginUpdate = freshProcessResult.pluginUpdate;
       }
 
-      if (retainedDifferentRuntime && !pluginsUpdatedInFreshProcess) {
+      if (retainedDifferentRuntime && !targetRuntimeConverged) {
         return {
           resultWithPostUpdate: {
             ...params.result,
@@ -191,19 +237,14 @@ export async function convergeUpdatePlugins(params: {
         };
       }
 
-      if (!pluginsUpdatedInFreshProcess) {
-        postCorePluginUpdate = await withPluginLifecycleLease({ assertCurrent }, async (lease) => {
-          await completeSourceUpdateRuntime({
-            root: postUpdateRoot,
-            timeoutMs: params.updateStepTimeoutMs,
-            lease,
-            beforePersistentEffect: assertCurrent,
-          });
-          assertCurrent?.();
+      if (!targetRuntimeConverged) {
+        postCorePluginUpdate = await withPluginLifecycleLease({ assertCurrent }, async () => {
           const preparedConfig = await preparePostCorePluginConfig({
             requestedChannel: params.requestedChannel,
             preUpdateConfig,
             suppressFutureVersionWarning: shouldResumePostCoreInFreshProcess,
+            ...(assertCurrent ? { observe: false } : {}),
+            assertCurrent,
           });
           assertCurrent?.();
           postUpdateConfigSnapshot = preparedConfig.configSnapshot;
@@ -216,6 +257,7 @@ export async function convergeUpdatePlugins(params: {
             json: params.opts.json,
             acceptCapabilities: params.opts.acceptCapabilities,
             timeoutMs: params.updateStepTimeoutMs,
+            workTimeoutMs: parseUpdateTimeoutMs(params.opts.timeout) ?? null,
             pluginInstallRecords,
             assertCurrent,
           });
@@ -228,25 +270,40 @@ export async function convergeUpdatePlugins(params: {
         // retains its stopped interval or parks an already-current core here.
         const completedPluginUpdate = await completePostCorePluginUpdate({
           root: postUpdateRoot,
+          opts: params.opts,
+          ...(params.candidateRuntime ? { doctorConfigWrites: true as const } : {}),
           pluginUpdate: postCorePluginUpdate,
           freshDoctorRequired: postCorePluginUpdate.changed,
           beforeDoctor: params.beforeDoctor,
+          assertCurrent,
           yes: params.opts.yes === true,
           json: params.opts.json === true,
           timeoutMs: params.updateStepTimeoutMs,
-          onWarnings: (warnings) => {
-            doctorWarnings.push(...warnings);
-          },
+          onWarnings: collectDoctorWarnings,
           ...(params.packageUpdateNodeRunner ? { nodeRunner: params.packageUpdateNodeRunner } : {}),
         });
         assertCurrent?.();
         postCorePluginUpdate = completedPluginUpdate.pluginUpdate;
         postUpdateConfigSnapshot = completedPluginUpdate.configSnapshot;
       }
+      assertCurrent?.();
 
       const resultWithPostUpdate: UpdateRunResult = {
         ...params.result,
-        steps: [...params.result.steps],
+        steps: [
+          ...params.result.steps,
+          ...(runtime.changed
+            ? [
+                {
+                  name: "source runtime publication",
+                  command: "openclaw update",
+                  cwd: postUpdateRoot,
+                  durationMs: runtimeDurationMs,
+                  exitCode: 0,
+                },
+              ]
+            : []),
+        ],
         ...(postCorePluginUpdate
           ? {
               status: postCorePluginUpdate.status === "error" ? "error" : params.result.status,
@@ -273,7 +330,7 @@ export async function convergeUpdatePlugins(params: {
       }
       resultWithPostUpdate.steps.push(
         ...normalizeUpdatePostInstallDoctorWarnings(doctorWarnings).map((message, index) => ({
-          name: `post-plugin doctor warning ${index + 1}`,
+          name: `post-plugin-doctor-warning-${index + 1}`,
           command: "openclaw doctor --fix",
           cwd: postUpdateRoot,
           durationMs: 0,
@@ -294,7 +351,9 @@ export async function convergeUpdatePlugins(params: {
       if (
         params.coreAlreadyCurrent &&
         resultWithPostUpdate.status !== "error" &&
-        (postCorePluginUpdate?.changed ||
+        (runtime.changed ||
+          postCorePluginUpdate?.changed ||
+          (retainedDifferentRuntime && params.opts.run?.gatewayRestartRequired) ||
           (params.requestedChannel !== null && params.requestedChannel !== params.storedChannel))
       ) {
         resultWithPostUpdate.status = "ok";
@@ -320,7 +379,7 @@ export async function convergeUpdatePlugins(params: {
 
       return { resultWithPostUpdate, postUpdateConfigSnapshot };
     } finally {
-      if (compatibilityDowngradeTarget) {
+      if (compatibilityHostVersion) {
         if (previousCompatibilityHostVersion === undefined) {
           delete process.env.OPENCLAW_COMPATIBILITY_HOST_VERSION;
         } else {

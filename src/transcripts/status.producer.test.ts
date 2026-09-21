@@ -11,6 +11,7 @@ import {
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { createTranscriptsAutoStartService } from "./auto-start.js";
+import * as transcriptCapture from "./capture.js";
 import { activeSessions, readTranscriptCaptureSnapshot, startTranscripts } from "./capture.js";
 import { readConfiguredTranscriptStarts } from "./configured-start-status.js";
 import * as providerRegistry from "./provider-registry.js";
@@ -25,6 +26,30 @@ import { transcriptSessionSelector, TranscriptsStore } from "./store.js";
 const fixture = useTranscriptStatusFixture();
 
 describe("configured transcript source provenance", () => {
+  it("does not save empty transcription artifacts from a capture provider", async () => {
+    const f = fixture();
+    f.provider.start = async (request) => {
+      for (const text of [
+        "context:",
+        "context",
+        "###",
+        "Transcribe the audio.",
+        "Context: ship the fix.",
+        "はい。",
+      ]) {
+        await request.onUtterance({ text, final: true });
+      }
+      return { ok: true, session: request.session };
+    };
+    await f.start({ ...room, sessionId: "clean-capture" });
+    const sessions = await f.store.listSessionEntries();
+    expect(sessions).toHaveLength(1);
+    expect(
+      (await f.store.readUtterancesForSession(sessions[0]!.session)).map(
+        (utterance) => utterance.text,
+      ),
+    ).toEqual(["context", "Context: ship the fix.", "はい。"]);
+  });
   it.each(["reorder", "title"] as const)(
     "retains capture and retry diagnostics across an accepted %s change",
     async (change) => {
@@ -44,15 +69,17 @@ describe("configured transcript source provenance", () => {
           : { ok: true as const, session: request.session },
       );
       f.provider.start = start;
+      const captureStarts = vi.spyOn(transcriptCapture, "startTranscripts");
       const service = createTranscriptsAutoStartService(f.ctx);
       try {
-        service.start();
-        await vi.waitFor(async () =>
-          expect((await f.read()).configuredSources).toMatchObject([
-            { sessionId: "ready", state: "armed" },
-            { sessionId: "waiting", startDiagnostic: "retrying" },
-          ]),
+        await service.start().settled;
+        expect(readConfiguredTranscriptStarts(f.ctx.config.transcripts)?.get(1)?.diagnostic).toBe(
+          "retrying",
         );
+        expect((await f.read()).configuredSources).toMatchObject([
+          { sessionId: "ready", state: "armed" },
+          { sessionId: "waiting", startDiagnostic: "retrying" },
+        ]);
         const next = {
           transcripts: {
             autoStart:
@@ -63,7 +90,7 @@ describe("configured transcript source provenance", () => {
                   ),
           },
         };
-        service.start(next);
+        await service.start(next).settled;
         const retained = await readTranscriptLibraryStatus(f.store, next);
         expect(
           retained.configuredSources.find((source) => source.sessionId === "waiting"),
@@ -77,12 +104,9 @@ describe("configured transcript source provenance", () => {
 
         unavailable = false;
         await vi.advanceTimersByTimeAsync(5_000);
-        await vi.waitFor(async () =>
-          expect(
-            (await readTranscriptLibraryStatus(f.store, next)).configuredSources,
-          ).toMatchObject(
-            next.transcripts.autoStart.map(({ sessionId }) => ({ sessionId, state: "armed" })),
-          ),
+        await Promise.allSettled(captureStarts.mock.results.map(({ value }) => value));
+        expect((await readTranscriptLibraryStatus(f.store, next)).configuredSources).toMatchObject(
+          next.transcripts.autoStart.map(({ sessionId }) => ({ sessionId, state: "armed" })),
         );
         expect(start).toHaveBeenCalledTimes(3);
         // An admitted retry keeps its existing capture title even after a future-title edit.
@@ -137,10 +161,11 @@ describe("configured transcript source provenance", () => {
         () => getRuntimeConfigSnapshot() ?? undefined,
       );
       try {
-        service.start();
-        await vi.waitFor(async () =>
-          expect((await f.read()).configuredSources[0]?.startDiagnostic).toBe("retrying"),
+        await service.start().settled;
+        expect(readConfiguredTranscriptStarts(f.ctx.config.transcripts)?.get(0)?.diagnostic).toBe(
+          "retrying",
         );
+        expect((await f.read()).configuredSources[0]?.startDiagnostic).toBe("retrying");
         expect(await f.store.listSessionEntries()).toHaveLength(0);
         for (const [index, title] of titles.entries()) {
           if (unrelated) {
@@ -199,10 +224,11 @@ describe("configured transcript source provenance", () => {
     f.provider.start = start;
     const service = createTranscriptsAutoStartService(f.ctx, () => current);
     try {
-      service.start();
-      await vi.waitFor(async () =>
-        expect((await f.read()).configuredSources[0]?.startDiagnostic).toBe("retrying"),
+      await service.start().settled;
+      expect(readConfiguredTranscriptStarts(f.ctx.config.transcripts)?.get(0)?.diagnostic).toBe(
+        "retrying",
       );
+      expect((await f.read()).configuredSources[0]?.startDiagnostic).toBe("retrying");
       current = { transcripts: { autoStart: [{ ...source, ...changed, title: "Ineligible" }] } };
       vi.mocked(providerRegistry.getTranscriptSourceProvider).mockReturnValue(f.provider);
       await vi.advanceTimersByTimeAsync(5_000);
@@ -229,10 +255,8 @@ describe("configured transcript source provenance", () => {
     const f = fixture({ transcripts: { autoStart: [source] } });
     const service = createTranscriptsAutoStartService(f.ctx);
     try {
-      service.start();
-      await vi.waitFor(async () =>
-        expect((await f.read()).configuredSources[0]?.state).toBe("armed"),
-      );
+      await service.start().settled;
+      expect((await f.read()).configuredSources[0]?.state).toBe("armed");
       const changed = await readTranscriptLibraryStatus(f.store, {
         transcripts: {
           autoStart: [
@@ -262,16 +286,15 @@ describe("configured transcript source provenance", () => {
     vi.mocked(providerRegistry.getTranscriptSourceProvider).mockReturnValue(undefined);
     const service = createTranscriptsAutoStartService(f.ctx);
     try {
-      service.start();
-      await vi.waitFor(async () =>
-        expect(
-          (await f.read()).configuredSources.every(
-            (source) => source.startDiagnostic === "retrying",
-          ),
-        ).toBe(true),
-      );
+      await service.start().settled;
+      const starts = readConfiguredTranscriptStarts(f.ctx.config.transcripts);
+      expect(starts?.size).toBe(100);
+      expect([...starts!.values()].every((source) => source.diagnostic === "retrying")).toBe(true);
       const result = await f.read();
       expect(result.configuredSources).toHaveLength(100);
+      expect(
+        result.configuredSources.every((source) => source.startDiagnostic === "retrying"),
+      ).toBe(true);
       expect(result.omitted.configuredSources).toBe(1);
       await service.stop();
       expect(
@@ -318,14 +341,10 @@ describe("configured transcript source provenance", () => {
       f.provider.start = start;
       const service = createTranscriptsAutoStartService(f.ctx, () => current);
       try {
-        service.start();
+        await service.start().settled;
         const request = await entered.promise;
-        await vi.waitFor(
-          () =>
-            expect(
-              readConfiguredTranscriptStarts(f.ctx.config.transcripts)?.get(0)?.diagnostic,
-            ).toBe("retrying"),
-          { interval: 0 },
+        expect(readConfiguredTranscriptStarts(f.ctx.config.transcripts)?.get(0)?.diagnostic).toBe(
+          "retrying",
         );
         expect((await f.read()).configuredSources[0]).toMatchObject({
           startDiagnostic: "retrying",
@@ -430,13 +449,13 @@ describe("configured transcript source provenance", () => {
       });
       const service = createTranscriptsAutoStartService(f.ctx);
       try {
-        service.start();
-        await vi.waitFor(async () =>
-          expect((await f.read()).configuredSources[0]?.startDiagnostic).not.toBe("starting"),
+        await service.start().settled;
+        expect(readConfiguredTranscriptStarts(f.ctx.config.transcripts)?.get(0)?.diagnostic).toBe(
+          "admitted-start-failed",
         );
         await vi.advanceTimersByTimeAsync(65_000);
-        await vi.waitFor(async () =>
-          expect((await f.read()).configuredSources[0]?.startDiagnostic).not.toBe("starting"),
+        expect(readConfiguredTranscriptStarts(f.ctx.config.transcripts)?.get(0)?.diagnostic).toBe(
+          "admitted-start-failed",
         );
         expect.soft(start).toHaveBeenCalledOnce();
         expect.soft(await f.store.listSessionEntries()).toHaveLength(1);
@@ -459,13 +478,11 @@ describe("configured transcript source provenance", () => {
         };
         const other = createTranscriptsAutoStartService({ ...f.ctx, config: otherConfig });
         try {
-          other.start();
-          await vi.waitFor(async () =>
-            expect(
-              (await readTranscriptLibraryStatus(f.store, otherConfig)).configuredSources[0]
-                ?.startDiagnostic,
-            ).toBe("id-conflict"),
-          );
+          await other.start().settled;
+          expect(
+            (await readTranscriptLibraryStatus(f.store, otherConfig)).configuredSources[0]
+              ?.startDiagnostic,
+          ).toBe("id-conflict");
         } finally {
           await other.stop();
         }
@@ -515,10 +532,11 @@ describe("configured transcript source provenance", () => {
       const stop = vi.spyOn(f.provider, "stop");
       const service = createTranscriptsAutoStartService(f.ctx);
       try {
-        service.start();
-        await vi.waitFor(async () =>
-          expect((await f.read()).configuredSources[0]?.startDiagnostic).toBe("retrying"),
+        await service.start().settled;
+        expect(readConfiguredTranscriptStarts(f.ctx.config.transcripts)?.get(0)?.diagnostic).toBe(
+          "retrying",
         );
+        expect((await f.read()).configuredSources[0]?.startDiagnostic).toBe("retrying");
         if (pending) {
           await vi.advanceTimersByTimeAsync(5_000);
           await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(2), { interval: 0 });
@@ -567,23 +585,28 @@ describe("configured transcript source provenance", () => {
     f.provider.start = start;
     const service = createTranscriptsAutoStartService(f.ctx);
     try {
-      service.start();
-      await vi.waitFor(async () =>
-        expect((await f.read()).configuredSources.map((s) => s.startDiagnostic)).toEqual([
-          "retrying",
-          "retrying",
-        ]),
-      );
+      await service.start().settled;
+      expect(
+        [...readConfiguredTranscriptStarts(f.ctx.config.transcripts)!.values()].map(
+          (s) => s.diagnostic,
+        ),
+      ).toEqual(["retrying", "retrying"]);
+      expect((await f.read()).configuredSources.map((s) => s.startDiagnostic)).toEqual([
+        "retrying",
+        "retrying",
+      ]);
       expect(await f.store.listSessionEntries()).toHaveLength(0);
       vi.mocked(providerRegistry.getTranscriptSourceProvider).mockReturnValue(f.provider);
       await vi.advanceTimersByTimeAsync(5_000);
-      await vi.waitFor(async () =>
-        expect((await f.read()).configuredSources.map((s) => s.state)).toEqual([
-          "armed",
-          "not-active",
-        ]),
+      await vi.waitFor(() =>
+        expect(
+          [...readConfiguredTranscriptStarts(f.ctx.config.transcripts)!.values()].map(
+            (s) => s.diagnostic,
+          ),
+        ).toEqual([undefined, "id-conflict"]),
       );
       const result = await f.read();
+      expect(result.configuredSources.map((s) => s.state)).toEqual(["armed", "not-active"]);
       expect(result.configuredSources[1]?.startDiagnostic).toBe("id-conflict");
       expect(start).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(65_000);
@@ -603,7 +626,13 @@ describe("configured transcript source provenance", () => {
     const f = fixture({
       transcripts: { autoStart: [entry, { ...entry, providerId: delayedId }] },
     });
-    const start = vi.fn(f.provider.start!);
+    const entered = createDeferred();
+    const gate = createDeferred();
+    const start = vi.fn(async (request: TranscriptStartRequest) => {
+      entered.resolve();
+      await gate.promise;
+      return { ok: true as const, session: request.session };
+    });
     const delayedStart = vi.fn(f.provider.start!);
     f.provider.start = start;
     const delayedProvider = { ...f.provider, id: delayedId, start: delayedStart };
@@ -612,13 +641,22 @@ describe("configured transcript source provenance", () => {
     );
     const service = createTranscriptsAutoStartService(f.ctx);
     try {
-      service.start();
-      await vi.waitFor(async () =>
-        expect((await f.read()).configuredSources).toMatchObject([
-          { state: "armed" },
-          { startDiagnostic: "retrying" },
-        ]),
-      );
+      let settled = false;
+      const starting = service.start().settled.then(() => {
+        settled = true;
+      });
+      await entered.promise;
+      expect(settled).toBe(false);
+      expect((await f.read()).configuredSources[0]).toMatchObject({
+        state: "unknown",
+        startDiagnostic: "starting",
+      });
+      gate.resolve();
+      await starting;
+      expect((await f.read()).configuredSources).toMatchObject([
+        { state: "armed" },
+        { startDiagnostic: "retrying" },
+      ]);
       const request = start.mock.calls[0]![0];
       await request.onUtterance({ text: "Saved before the duplicate retry", final: true });
       await request.onStatus!({ active: false });
@@ -632,8 +670,10 @@ describe("configured transcript source provenance", () => {
         id === delayedId ? delayedProvider : f.provider,
       );
       await vi.advanceTimersByTimeAsync(5_000);
-      await vi.waitFor(async () =>
-        expect((await f.read()).configuredSources[1]?.startDiagnostic).not.toBe("starting"),
+      await vi.waitFor(() =>
+        expect(readConfiguredTranscriptStarts(f.ctx.config.transcripts)?.get(1)?.diagnostic).toBe(
+          "id-conflict",
+        ),
       );
       expect.soft((await f.read()).configuredSources[1]).toMatchObject({
         state: "not-active",
@@ -648,6 +688,7 @@ describe("configured transcript source provenance", () => {
       expect(await f.store.readSummary(session)).toEqual(notes);
       expect(await f.store.readSummaryInputRevision(session)).toBe(revision);
     } finally {
+      gate.resolve();
       await service.stop();
     }
   });
@@ -655,43 +696,42 @@ describe("configured transcript source provenance", () => {
   it("fences late diagnostics and teardown against a replacement service and a manual capture", async () => {
     const f = fixture({ transcripts: { autoStart: [{ ...room, sessionId: "pending" }] } });
     const gate = createDeferred();
-    let pending: TranscriptStartRequest | undefined;
+    const entered = createDeferred<TranscriptStartRequest>();
     f.provider.start = async (request) => {
       if (request.session.sessionId === "pending") {
-        pending = request;
+        entered.resolve(request);
         await gate.promise;
       }
       return { ok: true, session: request.session };
     };
     const old = createTranscriptsAutoStartService(f.ctx);
-    old.start();
-    await vi.waitFor(() => expect(pending).toBeDefined());
-    const stopping = old.stop();
-    await f.start({ ...room, sessionId: "manual" });
     const config = { transcripts: { autoStart: [{ ...room, sessionId: "manual" }] } };
     const replacement = createTranscriptsAutoStartService({ ...f.ctx, config });
     try {
-      replacement.start();
-      await vi.waitFor(async () =>
-        expect(
-          (await readTranscriptLibraryStatus(f.store, config)).configuredSources[0]
-            ?.startDiagnostic,
-        ).toBe("id-conflict"),
-      );
+      const starting = old.start().settled;
+      const pending = await entered.promise;
+      const stopping = old.stop();
+      expect(pending.abortSignal?.aborted).toBe(true);
+      await f.start({ ...room, sessionId: "manual" });
+      await replacement.start().settled;
+      expect(
+        (await readTranscriptLibraryStatus(f.store, config)).configuredSources[0]?.startDiagnostic,
+      ).toBe("id-conflict");
       gate.resolve();
+      await starting;
       await stopping;
       await old.stop();
       expect(
         (await readTranscriptLibraryStatus(f.store, config)).configuredSources[0]?.startDiagnostic,
       ).toBe("id-conflict");
-      await pending!.onUtterance({ text: "stale pending note" });
-      await expect(f.store.readUtterancesForSession(pending!.session)).resolves.toEqual([]);
+      await pending.onUtterance({ text: "stale pending note" });
+      await expect(f.store.readUtterancesForSession(pending.session)).resolves.toEqual([]);
       expect((await f.read()).active.map((s) => s.sessionId)).toEqual(["manual"]);
       await replacement.stop();
       expect((await f.read()).active.map((s) => s.sessionId)).toEqual(["manual"]);
     } finally {
       gate.resolve();
-      await stopping;
+      await old.stop();
       await replacement.stop();
       await f.tool.execute("stop", { action: "stop", sessionId: "manual" });
     }
@@ -730,10 +770,10 @@ describe("configured transcript source provenance", () => {
     };
     const f = fixture(config);
     const service = createTranscriptsAutoStartService(f.ctx);
-    service.start();
     try {
-      await vi.waitFor(async () => expect((await f.read()).active).toHaveLength(1));
+      await service.start().settled;
       const result = await f.read();
+      expect(result.active).toHaveLength(1);
       const capture = result.active[0]!;
       expect(capture.source).toMatchObject({ accountId: "default", providerId: "voice-alias" });
       expect(result.configuredSources[0]).toMatchObject({

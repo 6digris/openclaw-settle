@@ -599,6 +599,7 @@ metadata:
       `~/.openclaw/tools/<skillKey>`). Existing specs without `sha256` keep the
       previous download behavior. Response bodies are capped at 256 MiB; larger
       transfers are aborted while streaming, and partial staging data is removed.
+      Archive extraction does not require a system `tar` command.
   </Accordion>
   <Accordion title="Sandboxing notes">
     `requires.bins` is checked on the **host** at skill load time. If an agent
@@ -762,8 +763,10 @@ the total number of operating-system file watches.
     keys, sources, precedence winners, and `SKILL.md` content
     keep the same snapshot version and do not notify chat metadata consumers.
     Idle worktree watcher cleanup does not invalidate other workspaces.
-    Precedence collision warnings appear once per distinct collision set in each
-    workspace during a Gateway process.
+    Copies with identical `SKILL.md` content and declared metadata do not produce
+    precedence collision warnings. Different content warns once per ordered
+    winner/loser content pair during a Gateway process, across workspaces and
+    rebuilds. Editing either copy can produce a new warning; precedence stays the same.
 
     Use `allowSymlinkTargets`
     for intentional symlinked layouts where a skill

@@ -8,11 +8,13 @@ import {
   meetingTranscriptUtteranceQuery,
   type MeetingTranscriptSessionRow,
   readTranscriptSummaryKeys,
+  readStoredTranscriptSummaryRevision,
   sessionFromRow,
   summaryFromRow,
   transcriptSummaryInputRevisionFromRow,
   utteranceFromRow,
 } from "./store-sqlite.js";
+import type { TranscriptSummarySnapshot } from "./store-types.js";
 import type { TranscriptsSummary } from "./summary.js";
 
 type TranscriptSessionIdentity = Pick<TranscriptSessionDescriptor, "sessionId" | "startedAt">;
@@ -22,6 +24,29 @@ type TranscriptSessionEntry = {
   hasSummary: boolean;
 };
 type TranscriptSessionMatchEntry = TranscriptSessionEntry & { inputRevision: string };
+
+/** Runs inside the read worker's transaction so input and replacement basis agree. */
+export function readTranscriptSummarySnapshot(
+  database: DatabaseSync,
+  session: TranscriptSessionIdentity,
+  maxUtterances: number,
+): TranscriptSummarySnapshot | undefined {
+  const row = executeSqliteQueryTakeFirstSync(
+    database,
+    meetingTranscriptSessionQuery(database, session).selectAll(),
+  );
+  if (!row) {
+    return undefined;
+  }
+  const summaryRevision = readStoredTranscriptSummaryRevision(database, session);
+  return {
+    inputRevision: transcriptSummaryInputRevisionFromRow(row),
+    nextSequence: row.next_utterance_seq,
+    stoppedAt: row.stopped_at ?? undefined,
+    summaryRevision: summaryRevision ?? "",
+    utterances: readTranscriptUtterances(database, session, maxUtterances),
+  };
+}
 
 export function readTranscriptSessionEntries(database: DatabaseSync): TranscriptSessionEntry[] {
   const rows = executeSqliteQuerySync(
@@ -73,16 +98,10 @@ export function readTranscriptSessionMatches(
   };
   const entries = (selection: typeof query) =>
     executeSqliteQuerySync(database, selection).rows.map(matchedEntry);
-  const canonical = executeSqliteQueryTakeFirstSync(
-    database,
-    meetingTranscriptDb(database)
-      .selectFrom("meeting_transcript_sessions")
-      .selectAll()
-      .where("selector", "=", value),
-  );
+  const canonical = entries(query.where("selector", "=", value))[0];
   const date = value.match(/^(\d{4}-\d{2}-\d{2})\//u)?.[1];
   const qualified = canonical
-    ? [matchedEntry(canonical)]
+    ? [canonical]
     : date
       ? entries(
           query.where("session_id", "=", value.slice(11)).where("started_at", "like", `${date}T%`),

@@ -270,6 +270,9 @@
   --space-7: 32px;
   --space-8: 40px;
 
+  /* Shared by mobile headers, transcripts, and independently loaded composers. */
+  --chat-mobile-edge-inset: var(--space-3);
+
   /* One inset shared by every widget frame (chat preview panel, board card)
      so agent-authored widget documents meet identical breathing room on all
      surfaces. Board layout math mirrors this value numerically. */
@@ -906,6 +909,13 @@ wa-dropdown-item {
 
 wa-dropdown-item[disabled] {
   cursor: not-allowed;
+}
+
+/* The submenu safe triangle follows the pointer and can cover sibling rows,
+   trapping hover on tall or flipped menus. Let real rows receive the pointer;
+   Web Awesome still owns submenu closing and its pointer-exit grace period. */
+wa-dropdown-item::part(submenu)::before {
+  pointer-events: none;
 }
 
 /* Keep Web Awesome's checkbox rail trailing so it cannot shift menu icons and labels. */

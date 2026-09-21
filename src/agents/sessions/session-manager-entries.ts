@@ -1,3 +1,4 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { buildSessionContext as buildCoreSessionContext } from "../../../packages/agent-core/src/harness/session/session.js";
 import {
   readActiveTranscriptEntryAnchor,
@@ -6,6 +7,7 @@ import {
   validatePreparedAssistantAppendSync,
   type TranscriptEntryAnchor,
 } from "../../config/sessions/session-accessor.js";
+import { prepareTranscriptMessageAppend } from "../../config/sessions/session-accessor.sqlite-transcript-message-append.js";
 import { resolveSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
 import { applyAssistantDeliveryDirectives } from "../../config/sessions/transcript-assistant-delivery.js";
 import { isSessionTranscriptSideAppendEntry } from "../../config/sessions/transcript-tree.js";
@@ -51,6 +53,21 @@ function isSqliteTranscriptMutationConflict(error: unknown): boolean {
     current = current.cause;
   }
   return false;
+}
+
+function isTalkRealtimeVoiceEntry(entry: SessionEntry): boolean {
+  if (
+    entry.type !== "message" ||
+    (entry.message.role !== "user" && entry.message.role !== "assistant")
+  ) {
+    return false;
+  }
+  const provenance: unknown = Reflect.get(entry.message, "provenance");
+  return (
+    isRecord(provenance) &&
+    provenance.kind === "realtime_voice" &&
+    provenance.sourceChannel === "talk"
+  );
 }
 
 export class SessionManagerEntries extends SessionManagerPersistence {
@@ -119,9 +136,20 @@ export class SessionManagerEntries extends SessionManagerPersistence {
         expectedMutationAt: validatedMutationAt,
       });
     }
+    // Keep preparation local to this append: retries must not redact the payload again or
+    // consume its code-mode source token against a different message object.
+    const preparedMessage =
+      this.persistenceTarget && canonicalEntry.type === "message"
+        ? prepareTranscriptMessageAppend(
+            copyCodeModeSourceAppendOptions(options, {
+              message: canonicalEntry.message,
+              config: options?.config,
+            }),
+          )
+        : undefined;
     let persistenceResult;
     try {
-      persistenceResult = this.persist(canonicalEntry, attemptOptions);
+      persistenceResult = this.persistRecord(canonicalEntry, attemptOptions, preparedMessage);
     } catch (error) {
       const deliberateBranchAppend = this.pendingDeliberateAppend;
       const sideBranchAppend =
@@ -166,13 +194,17 @@ export class SessionManagerEntries extends SessionManagerPersistence {
               ...persistenceOptions,
               expectedMutationAt: this.readPersistedTranscriptMutationAt(),
             });
-      persistenceResult = this.persist(canonicalEntry, retryOptions);
+      persistenceResult = this.persistRecord(canonicalEntry, retryOptions, preparedMessage);
     }
     if (persistenceResult?.adoptedMessageId) {
       this.reloadPersistedTranscript();
       // Context-excluded users have no payload in byId. The exact SQLite replay
       // anchors their identity; physical ancestry still closes older turns.
-      if (this.resolveCurrentTurnEntryId() !== persistenceResult.adoptedMessageId) {
+      // Final Talk speech records history without consuming the consult's keyed input.
+      if (
+        this.resolveCurrentTurnEntryId(isTalkRealtimeVoiceEntry) !==
+        persistenceResult.adoptedMessageId
+      ) {
         throw new Error(
           `Session transcript keyed user is outside the current turn: ${persistenceResult.adoptedMessageId}`,
         );

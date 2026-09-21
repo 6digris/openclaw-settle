@@ -56,11 +56,18 @@ function measureConnectedTranscriptRows(
   }
   // Width changes and retired smooth commands can have undelivered sizes.
   // Ordinary row refs stay on TanStack's observer path; never clear its cache.
-  const rows = scrollElement.querySelectorAll<HTMLElement>(".chat-virtual-row");
-  for (const row of rows) {
-    virtualizer.resizeItem(virtualizer.indexFromElement(row), row.offsetHeight);
+  let changed = false;
+  for (const row of scrollElement.querySelectorAll<HTMLElement>(".chat-virtual-row")) {
+    const index = virtualizer.indexFromElement(row);
+    // Rows are border-boxes; read their fractional layout height, not a scaled
+    // client rect when a containing board or sidebar is transitioning.
+    const height = Number.parseFloat(getComputedStyle(row).height);
+    const key = virtualizer.options.getItemKey(index);
+    const previousSize = virtualizer.itemSizeCache.get(key);
+    virtualizer.resizeItem(index, Number.isFinite(height) ? height : row.offsetHeight);
+    changed ||= virtualizer.itemSizeCache.get(key) !== previousSize;
   }
-  return rows.length > 0;
+  return changed;
 }
 
 export function measureTranscriptRow(
@@ -68,7 +75,8 @@ export function measureTranscriptRow(
   entry: ResizeObserverEntry | undefined,
   virtualizer: Virtualizer<HTMLDivElement, HTMLElement>,
 ): number {
-  const size = measureElement(element, entry, virtualizer);
+  // Rounded row heights accumulate when skipped overscan uses those measurements.
+  const size = entry?.borderBoxSize?.[0]?.blockSize ?? measureElement(element, entry, virtualizer);
   if (size === 0 && virtualizer.scrollElement?.clientHeight === 0) {
     // A hidden panel has no row geometry. Retain the last measurement instead
     // of replacing it with zero and moving the restored viewport.
@@ -85,6 +93,27 @@ export function maxTranscriptScrollOffset(element: HTMLElement | null): number |
   return element && element.clientHeight > 0
     ? Math.max(0, element.scrollHeight - element.clientHeight)
     : null;
+}
+
+export function reconcileInitialTranscriptOffset(
+  element: HTMLDivElement | null,
+  virtualizer: Virtualizer<HTMLDivElement, HTMLElement>,
+): "pending" | "settled" | "corrected" {
+  const maxOffset = maxTranscriptScrollOffset(element);
+  const offset = virtualizer.scrollOffset;
+  if (maxOffset === null || offset === null) {
+    return "pending";
+  }
+  if (offset >= 0 && offset <= maxOffset) {
+    return "settled";
+  }
+  if (maxOffset !== 0) {
+    return "pending";
+  }
+  // An underfilled end anchor clamps to zero without a native scroll event.
+  virtualizer.scrollOffset = 0;
+  virtualizer.scrollToOffset(0);
+  return "corrected";
 }
 
 export class TranscriptGeometryController implements ReactiveController {
@@ -130,6 +159,16 @@ export class TranscriptGeometryController implements ReactiveController {
     // Refresh the offset and direction before compensating deferred row growth.
     this.beforeMeasure();
     return measureConnectedTranscriptRows(this.host.scrollElement, this.getVirtualizer());
+  }
+
+  measureSearchRows(): boolean {
+    const element = this.host.scrollElement;
+    const rect = element?.getBoundingClientRect();
+    if (!element || !rect?.width || !rect.height || !element.querySelector(".chat-virtual-row")) {
+      return false;
+    }
+    this.measureRows();
+    return true;
   }
 
   queueRowMeasure(): void {

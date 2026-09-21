@@ -24,6 +24,7 @@ const metaManifestPath = "extensions/meta/openclaw.plugin.json";
 const testNodeExecPath = resolveTestNodeExecPath();
 
 type Step = {
+  id?: string;
   env?: Record<string, string>;
   if?: string;
   name?: string;
@@ -81,6 +82,7 @@ function workflowPathPatternCovers(pattern: string, path: string): boolean {
 
 function runStableBootstrapAdmission(
   overrides: {
+    input?: Record<string, unknown>;
     approval?: Record<string, unknown>;
     env?: Record<string, string>;
     run?: Record<string, unknown>;
@@ -107,6 +109,7 @@ function runStableBootstrapAdmission(
       validationRunId: "456",
       validationRunAttempt: 3,
       packages: ["@openclaw/team-reports"],
+      ...overrides.input,
     });
     const approvalDir = join(root, "npm-stable-bootstrap-approval");
     mkdirSync(approvalDir);
@@ -169,15 +172,86 @@ function runStableBootstrapAdmission(
 }
 
 describe("plugin npm extended-stable workflow", () => {
+  it("records the resolved candidate and already-published dispositions without producer-local data", () => {
+    const root = mkdtempSync(join(tmpdir(), "npm-publication-plan-"));
+    try {
+      const identity = (packageName: string) => ({
+        packageName,
+        packageDir: `extensions/${packageName}`,
+        version: "2026.9.5",
+      });
+      const all = [identity("new"), identity("existing")];
+      const planStep = step(
+        workflow().jobs?.preview_plugins_npm,
+        "Record resolved npm publication plan",
+      );
+      const result = spawnSync("bash", ["-c", planStep.run ?? "exit 99"], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          RUNNER_TEMP: root,
+          SOURCE_SHA: "a".repeat(40),
+          ALL_PACKAGES: JSON.stringify(
+            all.map((entry) => ({ ...entry, localPath: "/producer/private" })),
+          ),
+          CANDIDATES: JSON.stringify([all[0]]),
+        },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(readFileSync(join(root, "npm-publication-plan.json"), "utf8"))).toEqual({
+        sourceSha: "a".repeat(40),
+        all,
+        candidates: [all[0]],
+        skippedPublished: [all[1]],
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   it.each([
     ["selected existing-package repair", "", "latest", "full-release-validation", false],
     ["qualified stable publication", "stable", "latest", "full-release-validation", true],
     ["qualified full publication", "full", "latest", "full-release-validation", true],
     ["beta publication", "beta", "beta", "full-release-validation", false],
     ["focused beta evidence", "beta", "latest", "authorized-beta-focused-v1", false],
+    [
+      "waived stable publication",
+      "beta",
+      "latest",
+      "full-release-validation",
+      true,
+      "Operator approved soak waiver",
+    ],
+    ["unwaived stable publication", "beta", "latest", "full-release-validation", false],
+    [
+      "waived beta tag",
+      "beta",
+      "latest",
+      "full-release-validation",
+      false,
+      "Operator approved soak waiver",
+      "v2026.9.3-beta.1",
+    ],
+    [
+      "waived alpha tag",
+      "beta",
+      "latest",
+      "full-release-validation",
+      false,
+      "Operator approved soak waiver",
+      "v2026.9.3-alpha.1",
+    ],
+    [
+      "waived focused evidence",
+      "beta",
+      "latest",
+      "authorized-beta-focused-v1",
+      false,
+      "Operator approved soak waiver",
+    ],
   ])(
     "creates bootstrap approval only with qualified evidence: %s",
-    (_name, profile, distTag, evidenceMode, expected) => {
+    (_name, profile, distTag, evidenceMode, expected, waiver = "", tag = "v2026.9.3") => {
       const parent = parse(
         readFileSync(".github/workflows/openclaw-release-publish.yml", "utf8"),
       ) as Workflow;
@@ -189,13 +263,20 @@ describe("plugin npm extended-stable workflow", () => {
         const condition = step(parent.jobs?.publish, name).if!;
         expect(
           runInNewContext(condition.slice(3, -2), {
+            contains: (value: string, search: string) => value.includes(search),
+            fromJSON: JSON.parse,
             inputs: {
+              tag,
               npm_dist_tag: distTag,
               release_evidence_mode: evidenceMode,
               publish_openclaw_npm: false,
               plugin_publish_scope: "selected",
             },
-            needs: { resolve_release_target: { outputs: { release_profile: profile } } },
+            needs: {
+              resolve_release_target: {
+                outputs: { release_profile: profile, stable_soak_waiver: JSON.stringify(waiver) },
+              },
+            },
           }),
           name,
         ).toBe(expected);
@@ -204,10 +285,17 @@ describe("plugin npm extended-stable workflow", () => {
   );
 
   it.skipIf(process.platform === "win32")(
-    "admits exact attested stable/full bootstrap and retains beta",
+    "round-trips attested stable/full and waived beta bootstrap approvals and retains beta",
     () => {
-      for (const releaseProfile of ["stable", "full"]) {
-        const result = runStableBootstrapAdmission({ approval: { releaseProfile } });
+      for (const input of [
+        { releaseProfile: "stable" },
+        { releaseProfile: "full" },
+        {
+          releaseProfile: "beta",
+          stableSoakWaiver: 'Operator approved "stable" publication.\nSoak waived.',
+        },
+      ]) {
+        const result = runStableBootstrapAdmission({ input });
         expect(result.status, result.stderr).toBe(0);
       }
       const beta = runStableBootstrapAdmission({
@@ -228,6 +316,13 @@ describe("plugin npm extended-stable workflow", () => {
       { approval: { releaseTag: "v2026.9.33" }, env: { PACKAGE_VERSION: "2026.9.33" } },
     ],
     ["profile", { approval: { releaseProfile: "beta" } }],
+    ["empty waiver", { approval: { releaseProfile: "beta", stableSoakWaiver: "" } }],
+    ["blank waiver", { approval: { releaseProfile: "beta", stableSoakWaiver: " \n\t " } }],
+    ["non-string waiver", { approval: { releaseProfile: "beta", stableSoakWaiver: true } }],
+    [
+      "unknown waived profile",
+      { approval: { releaseProfile: "unknown", stableSoakWaiver: "Approved" } },
+    ],
     ["attestation", { attestationExit: 1 }],
     ["tag moved", { tagSha: "c".repeat(40) }],
     ["target", { approval: { targetSha: "c".repeat(40) } }],
@@ -248,13 +343,35 @@ describe("plugin npm extended-stable workflow", () => {
     expect(step(publish, "Authorize bootstrap release").if).toBe(
       "steps.publication_evidence.outputs.publish_route == 'npm-token-bootstrap'",
     );
-    expect(step(publish, "Verify bootstrap npm dist-tag").if).toBe(
-      "steps.publication_evidence.outputs.publish_route == 'npm-token-bootstrap'",
+    expect(step(publish, "Verify immutable npm registry readback").run).toContain(
+      '--publish-tag "$PUBLISH_TAG"',
     );
     expect(publish?.permissions?.attestations).toBe("read");
     const approval = step(publish, "Download stable npm bootstrap approval");
     expect(approval.with?.name).toContain(
       "${{ inputs.release_publish_run_id }}-${{ inputs.release_publish_run_attempt }}",
+    );
+  });
+  it("defers registry visibility only after a publish with a final parent verifier", () => {
+    const parsed = workflow();
+    const publish = parsed.jobs?.publish_plugins_npm;
+    expect(parsed.on?.workflow_dispatch?.inputs?.defer_registry_verification?.default).toBe(false);
+    expect(step(publish, "Publish with trusted publisher").id).toBe("oidc_publish");
+    expect(step(publish, "Publish approved bootstrap tarball").id).toBe("bootstrap_publish");
+    expect(step(publish, "Verify immutable npm registry readback").env?.DEFER_VISIBILITY).toBe(
+      "${{ inputs.defer_registry_verification && inputs.release_publish_run_id != '' && (steps.oidc_publish.outcome == 'success' || steps.bootstrap_publish.outcome == 'success') }}",
+    );
+    expect(step(publish, "Verify immutable npm registry readback").run).toContain(
+      '--defer-visibility "$DEFER_VISIBILITY"',
+    );
+    const parent = parse(
+      readFileSync(".github/workflows/openclaw-release-publish.yml", "utf8"),
+    ) as Workflow;
+    const dispatch = Object.values(parent.jobs ?? {})
+      .flatMap((job) => job.steps ?? [])
+      .find((candidate) => candidate.run?.includes("npm_args=("));
+    expect(dispatch?.run).toContain(
+      'npm_args+=(-f defer_registry_verification="${PUBLISH_OPENCLAW_NPM}")',
     );
   });
   it("keeps push triggers aligned with npm publication authorities", () => {

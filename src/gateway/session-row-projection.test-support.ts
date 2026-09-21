@@ -10,7 +10,10 @@ import {
   parseAgentSessionKey,
 } from "../routing/session-key.js";
 import { resolveRequestedSessionAgentId } from "./session-request-agent.js";
-import { sort as sortSessionRows } from "./session-row-projection-record.js";
+import {
+  create as createSessionRow,
+  sort as sortSessionRows,
+} from "./session-row-projection-record.js";
 import { createSessionRowProjection, type SessionRowProjection } from "./session-row-projection.js";
 import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
 import type { SessionListRowContext } from "./session-utils-contracts.js";
@@ -95,7 +98,7 @@ export function createSessionRowProjectionFixture(params: {
       modelSource: { entry, readSourceEntry: (parentKey) => store[parentKey] },
     });
     rows.set(id(fields), {
-      ...fields,
+      ...createSessionRow(fields, entry),
       entry,
       storedEntry: entry,
       materialized: materializeSessionRow(inputs),
@@ -152,6 +155,8 @@ export function createSessionRowProjectionFixture(params: {
           (!query.storePath || row.storeTarget.storePath === query.storePath),
       ),
     describe,
+    // This row-only fixture cannot certify the resident owner's complete ancestry graph.
+    ancestorRows: () => undefined,
     setArchivePageSize: () => {},
     modelFacts: (row) => {
       const source = describe(row)!.materialized.source;
@@ -165,7 +170,7 @@ export function createSessionRowProjectionFixture(params: {
       const now = options?.now ?? Date.now();
       const row = presentSessionRow(record.materialized, {
         now,
-        subagentRuns: rowContext.subagentRuns.atTime(now),
+        subagentRuns: options?.subagentRuns ?? rowContext.subagentRuns.atTime(now),
         activeModel: record.fallbackModel,
         excludedChildKeys: options?.excludedChildKeys,
       });
@@ -197,6 +202,10 @@ export function createSessionRowProjectionFixture(params: {
     },
     isCurrent: (row) => rows.get(id(row))?.generation === row.generation,
     selectEntries,
+    listCreatedActors: () =>
+      selectEntries({ sortBy: null }).flatMap((row) =>
+        row.entry.createdActor ? [row.entry.createdActor] : [],
+      ),
     snapshot: (query, options) => {
       const record = describe(query);
       return record

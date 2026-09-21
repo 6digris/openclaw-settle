@@ -2,6 +2,7 @@ import { createHostChannelInboundEventContextBuilder } from "../channels/inbound
 import { registerChannelIngressHostOwner } from "../channels/message-access/ingress-host-owner.js";
 import { createChannelIngressDrain } from "../channels/message/ingress-drain.js";
 import { createChannelIngressQueue } from "../channels/message/ingress-queue.js";
+import { getRuntimeConfig } from "../config/config.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import {
   createPluginBlobStore,
@@ -10,6 +11,7 @@ import {
 import {
   createPluginStateKeyedStore,
   createPluginStateSyncKeyedStore,
+  type OpenAsyncKeyedStoreOptions,
   type OpenKeyedStoreOptions,
 } from "../plugin-state/plugin-state-store.js";
 import { createLazyRuntimeSurface } from "../shared/lazy-runtime.js";
@@ -17,6 +19,7 @@ import { PluginTrustRefusalError } from "./plugin-trust.js";
 import {
   capturePluginLifecycleAuthority,
   getPluginRecordRegistry,
+  getPluginRegistryResourceOwner,
   isPluginRecordActive,
   isPluginRegistryPreparing,
   revokePluginRecord,
@@ -27,8 +30,8 @@ import {
   bindGatewayContextResolver,
   getCanonicalGatewayContextResolver,
   getGatewayContextResolver,
+  getPluginRuntimeGatewayRequestScope,
   withPluginRuntimePluginScope,
-  withPluginRuntimeRegistryScope,
 } from "./runtime/gateway-request-scope.js";
 import type { PluginRuntime } from "./runtime/types.js";
 
@@ -166,6 +169,16 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
       return cached;
     }
     const currentRegistry = () => getPluginRecordRegistry(registry, record);
+    const currentDecisionRegistry = () => {
+      const owner = currentRegistry();
+      const invocationView = getPluginRuntimeGatewayRequestScope()?.pluginRegistry;
+      // An admitted prepared view may borrow a Gateway provider. Keep that exact
+      // composition without accepting an unrelated ambient registry or global owner.
+      return invocationView?.plugins.includes(record) &&
+        getPluginRegistryResourceOwner(invocationView) === owner
+        ? invocationView
+        : owner;
+    };
     const resolveDelegatedRuntime = (ownerPluginId: string) => {
       const owner = currentRegistry().plugins.find((entry) => entry.id === ownerPluginId);
       if (!owner) {
@@ -215,16 +228,16 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
           if (requireActive) {
             assertRuntimeCurrent();
           }
-          return withPluginRuntimeRegistryScope(currentRegistry(), () =>
-            withPluginRuntimePluginScope(
-              {
-                pluginId,
-                pluginSource: record.source,
-                pluginOrigin: record.origin,
-                pluginTrustedOfficialInstall: record.trustedOfficialInstall,
-              },
-              run,
-            ),
+          const scopedRegistry = currentRegistry();
+          return withPluginRuntimePluginScope(
+            {
+              pluginId,
+              pluginSource: record.source,
+              pluginOrigin: record.origin,
+              pluginTrustedOfficialInstall: record.trustedOfficialInstall,
+            },
+            run,
+            scopedRegistry,
           );
         };
         const getRuntimeProperty = () => {
@@ -242,9 +255,12 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
               assertTrustedPluginRuntime("openBlobStore");
               return createPluginBlobStore<TMetadata>(pluginId, options);
             },
-            openKeyedStore: <T>(options: OpenKeyedStoreOptions) => {
+            openKeyedStore: <T>(options: OpenAsyncKeyedStoreOptions) => {
               assertTrustedPluginRuntime("openKeyedStore");
-              return createPluginStateKeyedStore<T>(pluginId, options);
+              if (options.retention === "retained") {
+                assertRuntimeCurrent();
+              }
+              return createPluginStateKeyedStore<T>(pluginId, options, assertRuntimeCurrent);
             },
             openSyncKeyedStore: <T>(options: OpenKeyedStoreOptions) => {
               assertTrustedPluginRuntime("openSyncKeyedStore");
@@ -330,6 +346,25 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
         }
         if (prop === "channel") {
           return resolveRecordChannelRuntime(record, true);
+        }
+        if (prop === "decisions") {
+          return {
+            evaluate: async (batch, options) => {
+              assertRuntimeCurrent();
+              const { evaluateDecisionInRegistry } = await import("../decisions/runtime.js");
+              assertRuntimeCurrent();
+              const result = await evaluateDecisionInRegistry(
+                batch,
+                options,
+                currentDecisionRegistry(),
+                getRuntimeConfig(),
+                record.id,
+              );
+              assertRuntimeCurrent();
+              options.signal.throwIfAborted();
+              return result;
+            },
+          } satisfies PluginRuntime["decisions"];
         }
         if (prop === "llm") {
           const llm = getRuntimeProperty();

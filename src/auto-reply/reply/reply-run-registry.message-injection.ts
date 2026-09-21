@@ -35,6 +35,7 @@ type ReplyBackendQueueMessageMismatch =
   | "tool_authority_mismatch"
   | "image_input_unsupported"
   | "source_reply_delivery_mode_mismatch"
+  | "reply_expectation_mismatch"
   | "task_suggestion_delivery_mode_mismatch";
 
 type ReplyMessageInjectionRejectionReason =
@@ -49,6 +50,7 @@ export function resolveReplyBackendQueueMessageMismatch(
   backend: Pick<
     ReplyBackendHandle,
     | "sourceReplyDeliveryMode"
+    | "terminalReplyExpectation"
     | "supportsQueueMessageImages"
     | "taskSuggestionDeliveryMode"
     | "toolAuthorityFingerprint"
@@ -71,6 +73,12 @@ export function resolveReplyBackendQueueMessageMismatch(
     if (!activeFingerprint || !incomingFingerprint || activeFingerprint !== incomingFingerprint) {
       return "tool_authority_mismatch";
     }
+  }
+  if (
+    options?.terminalReplyExpectation !== undefined &&
+    options.terminalReplyExpectation !== (backend.terminalReplyExpectation ?? "required")
+  ) {
+    return "reply_expectation_mismatch";
   }
   if (hasPromptImageInput(options) && backend.supportsQueueMessageImages !== true) {
     return "image_input_unsupported";
@@ -155,6 +163,7 @@ function resolveReplyBackendMessageInjection(
 export function resolveReplyMessageInjectionRejection(params: {
   operation: ReplyOperation | undefined;
   options?: ReplyBackendQueueMessageOptions;
+  allowPendingUserInputAnswer?: false;
   assertCurrent?: () => void;
 }):
   | {
@@ -216,6 +225,7 @@ export function resolveReplyMessageInjectionRejection(params: {
   if (
     ((mismatch === "tool_authority_mismatch" && pendingInputAuthorityProven) ||
       hiddenPendingInputAuthorized) &&
+    params.allowPendingUserInputAnswer !== false &&
     !hasPromptImageInput(params.options) &&
     injection.claimPendingUserInputAnswer
   ) {
@@ -249,7 +259,8 @@ export function beginReplyMessageInjectionTarget(
   options?: ReplyMessageInjectionOptions,
 ): ReplyMessageInjectionAttempt {
   const operation = target[replyMessageInjectionTargetOperation];
-  const { toolAuthorityOverlay, assertCurrent, ...backendOptions } = options ?? {};
+  const { toolAuthorityOverlay, assertCurrent, allowPendingUserInputAnswer, ...backendOptions } =
+    options ?? {};
   const projectedToolAuthorityFingerprint = toolAuthorityOverlay
     ? operation.projectToolAuthorityFingerprint(toolAuthorityOverlay)
     : backendOptions.toolAuthorityFingerprint;
@@ -264,6 +275,7 @@ export function beginReplyMessageInjectionTarget(
   const resolved = resolveReplyMessageInjectionRejection({
     operation,
     options: queueOptions,
+    allowPendingUserInputAnswer,
     assertCurrent,
   });
   if (!("injection" in resolved)) {
@@ -309,6 +321,9 @@ export function beginReplyMessageInjectionTarget(
   };
   const runtimeQueueOptions: ReplyBackendQueueMessageOptions = {
     ...queueOptions,
+    // Admission above checks the human principal; the runtime must not interpret
+    // an authorized status control as an answer to ask_user.
+    ...(allowPendingUserInputAnswer === false ? { isInboundUserMessage: false } : {}),
     onQueueAccepted: (accepted) => {
       // Rejection is provisional until the outcome rules out an uncertain question
       // dispatch. Forwarding false early would release the parked input for replay.
@@ -383,6 +398,8 @@ export async function finalizeReplyMessageInjectionAttempt(params: {
   attempt: ReplyMessageInjectionAttempt;
   target: ReplyMessageInjectionTarget;
   inboundAudio?: boolean;
+  /** Status-only controls cannot cancel independent work when their receipt is uncertain. */
+  abortOnUnconfirmedTranscript?: false;
   onOutcome?: (outcome: "accepted" | "indeterminate") => void;
   onAdopted?: () => void | Promise<void>;
   shouldAbortOnAdoptionError?: (error: unknown) => boolean;
@@ -415,7 +432,9 @@ export async function finalizeReplyMessageInjectionAttempt(params: {
   recordAcceptedReplyMessageInjectionTarget(params.target, {
     inboundAudio: params.inboundAudio,
   });
-  let aborted = outcome.result?.transcriptCommit === "unconfirmed";
+  let aborted =
+    outcome.result?.transcriptCommit === "unconfirmed" &&
+    params.abortOnUnconfirmedTranscript !== false;
   if (aborted) {
     abortReplyMessageInjectionTarget(params.target);
   }

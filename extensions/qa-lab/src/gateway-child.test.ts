@@ -764,36 +764,6 @@ describe("buildQaRuntimeEnv", () => {
     expect(developmentEnv.NODE_ENV).toBe("development");
   });
 
-  it.each(["parent", "runtime patch"])(
-    "keeps %s supervision out of QA-owned children",
-    (source) => {
-      const supervisorEnv = {
-        OPENCLAW_SUPERVISOR_MODE: "external",
-        OPENCLAW_LAUNCHD_LABEL: "ai.openclaw.gateway",
-        LAUNCH_JOB_LABEL: "ai.openclaw.gateway",
-        LAUNCH_JOB_NAME: "ai.openclaw.gateway",
-        XPC_SERVICE_NAME: "ai.openclaw.gateway",
-        OPENCLAW_SYSTEMD_UNIT: "openclaw-gateway.service",
-        INVOCATION_ID: "synthetic-parent-invocation",
-        SYSTEMD_EXEC_PID: "1234",
-        JOURNAL_STREAM: "8:1234",
-        OPENCLAW_WINDOWS_TASK_NAME: "OpenClaw Gateway",
-        OPENCLAW_SERVICE_MARKER: "openclaw",
-        OPENCLAW_SERVICE_KIND: "gateway",
-      };
-      const env = buildQaRuntimeEnv({
-        ...createParams(source === "parent" ? supervisorEnv : {}),
-        runtimeEnvPatch: source === "runtime patch" ? supervisorEnv : undefined,
-      });
-
-      for (const key of Object.keys(supervisorEnv)) {
-        expect(env[key], key).toBeUndefined();
-      }
-      expect(env.OPENCLAW_NO_RESPAWN).toBe("1");
-      expect(env.OPENCLAW_QA_PARENT_PID).toBe(String(process.pid));
-    },
-  );
-
   it("does not inherit parent channel or provider skip controls", () => {
     const env = buildQaRuntimeEnv({
       ...createParams({
@@ -1278,7 +1248,7 @@ describe("buildQaRuntimeEnv", () => {
       timeoutMs: 100,
     });
 
-    logs += "signal SIGUSR1 received\nrestart mode: in-process restart\n";
+    logs += "signal SIGUSR2 received\nrestart mode: in-process restart\n";
 
     await expect(wait).resolves.toBeUndefined();
   });
@@ -1375,10 +1345,10 @@ describe("buildQaRuntimeEnv", () => {
     expect(output.text()).not.toContain("�");
   });
 
-  it("times out when a SIGUSR1 restart never reaches the boundary", async () => {
+  it("times out when a SIGUSR2 restart never reaches the boundary", async () => {
     await expect(
       waitForQaGatewayRestartBoundary({
-        readLogsSince: () => "signal SIGUSR1 received\n",
+        readLogsSince: () => "signal SIGUSR2 received\n",
         mark: 0,
         pollMs: 1,
         timeoutMs: 1,
@@ -1389,7 +1359,7 @@ describe("buildQaRuntimeEnv", () => {
   it("keeps oversized restart-boundary poll intervals within the timeout", async () => {
     await expect(
       waitForQaGatewayRestartBoundary({
-        readLogsSince: () => "signal SIGUSR1 received\n",
+        readLogsSince: () => "signal SIGUSR2 received\n",
         mark: 0,
         pollMs: Number.MAX_SAFE_INTEGER,
         timeoutMs: 5,

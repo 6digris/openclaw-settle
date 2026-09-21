@@ -3,14 +3,12 @@ import { runExistingOpenClawStateWriteTransaction } from "../state/openclaw-stat
 import type { DB } from "../state/openclaw-state-db.generated.js";
 import { OPENCLAW_STATE_SCHEMA_SQL } from "../state/openclaw-state-schema.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
-import {
-  decodeRun,
-  encodeRun,
-  isRetainedStep,
-  type UpdateRunLedgerOptions,
-} from "./update-run-codec.js";
-import { readUpdateRunRecord } from "./update-run-reader.js";
+import { createUpdateErrorFact } from "./update-failure-facts.js";
+import { encodeRun, isRetainedStep, type UpdateRunLedgerOptions } from "./update-run-codec.js";
+import { decodeRun, readUpdateRunRecord } from "./update-run-read.kernel.js";
 import type { UpdateRunRecord, UpdateRunStep } from "./update-run-record.js";
+import { updateRunStepKey } from "./update-run-step-key.js";
+import { recordUpdateRunVerificationRecord } from "./update-run-verification.js";
 
 const schemaStart = OPENCLAW_STATE_SCHEMA_SQL.indexOf("CREATE TABLE IF NOT EXISTS update_runs (");
 const schemaEndMarker = "ON update_runs(status, created_at_ms DESC, run_id);";
@@ -23,7 +21,8 @@ export const updateRunLedgerSchema = OPENCLAW_STATE_SCHEMA_SQL.slice(
   schemaEnd + schemaEndMarker.length,
 );
 
-export function upsertStep(record: UpdateRunRecord, step: UpdateRunStep): void {
+export function upsertStep(record: UpdateRunRecord, input: UpdateRunStep): void {
+  const step = { ...input, step: updateRunStepKey(input.step) };
   const index = record.steps.findIndex((existing) => existing.step === step.step);
   if (index >= 0) {
     record.steps[index] = { ...record.steps[index], ...step };
@@ -61,12 +60,14 @@ export function mutateRunInTransaction(
   runId: string,
   update: (record: UpdateRunRecord) => void,
   options: UpdateRunLedgerOptions,
+  captureBefore?: (record: UpdateRunRecord) => void,
 ): UpdateRunRecord {
   const record = readUpdateRunRecord(db, runId);
   if (!record) {
     throw new Error(`Unknown update run: ${runId}`);
   }
   const before = JSON.stringify(record);
+  captureBefore?.(structuredClone(record));
   update(record);
   return before === JSON.stringify(record) ? record : persistRun(db, record, options);
 }
@@ -75,11 +76,12 @@ export function mutateRun(
   runId: string,
   update: (record: UpdateRunRecord) => void,
   options: UpdateRunLedgerOptions,
+  captureBefore?: Parameters<typeof mutateRunInTransaction>[4],
 ): UpdateRunRecord {
   // An existing run can belong to a restored older runtime. History updates
   // must never reopen through bootstrap/migration merely to report its outcome.
   return runExistingOpenClawStateWriteTransaction(
-    ({ db }) => mutateRunInTransaction(db, runId, update, options),
+    ({ db }) => mutateRunInTransaction(db, runId, update, options, captureBefore),
     options,
     {
       schemaSql: updateRunLedgerSchema,
@@ -87,4 +89,50 @@ export function mutateRun(
       busyTimeoutMs: options.busyTimeoutMs,
     },
   );
+}
+
+type RecoveryDiagnostics = Pick<UpdateRunRecord["verification"], "recovery" | "rollbackOutcome">;
+type UpdateRunDiagnostics = RecoveryDiagnostics & {
+  failure?: Pick<UpdateRunStep, "step" | "detail" | "failureFacts" | "exitCode">;
+};
+
+/** Diagnostic capture cannot interrupt lifecycle work or replace its original outcome. */
+export function recordUpdateRunDiagnostics(
+  runId: string,
+  diagnostics:
+    | UpdateRunDiagnostics
+    | ((recorded: Readonly<RecoveryDiagnostics>) => UpdateRunDiagnostics),
+  warn: (message: string) => void,
+  options: UpdateRunLedgerOptions = {},
+): void {
+  try {
+    if (
+      typeof diagnostics !== "function" &&
+      !(diagnostics.failure || diagnostics.recovery || diagnostics.rollbackOutcome)
+    ) {
+      return;
+    }
+    mutateRun(
+      runId,
+      (record) => {
+        const { failure, recovery, rollbackOutcome } =
+          typeof diagnostics === "function" ? diagnostics(record.verification) : diagnostics;
+        if (failure && record.status === "running") {
+          upsertStep(record, { ...failure, status: "failed" });
+        }
+        if (recovery || rollbackOutcome) {
+          recordUpdateRunVerificationRecord(record, {
+            ...(recovery ? { recovery } : {}),
+            ...(rollbackOutcome ? { rollbackOutcome } : {}),
+          });
+        }
+      },
+      options,
+    );
+  } catch (error) {
+    const fact = createUpdateErrorFact("requested", error, options.env);
+    warn(
+      `Update diagnostics could not be recorded (${fact.code}): ${fact.message ?? "no error message"}`,
+    );
+  }
 }

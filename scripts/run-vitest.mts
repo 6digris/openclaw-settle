@@ -37,7 +37,6 @@ import {
   resolveRunVitestSpawnEnv,
   resolveVitestNoOutputTimeoutMs,
   resolveVitestNoOutputHeartbeatMs,
-  resolveVitestCompileCacheSafeEnv,
   resolveVitestConfigArg,
   normalizeVitestConfigPath,
   matchesVitestConfigPath,
@@ -213,7 +212,7 @@ export function resolveVitestSpawnParams(
   platform: NodeJS.Platform = process.platform,
 ): PnpmRunnerParams {
   return {
-    env: resolveVitestProcessEnv(resolveVitestCompileCacheSafeEnv(env)),
+    env: resolveVitestProcessEnv(env),
     detached: shouldUseDetachedVitestProcessGroup(platform),
     stdio: ["inherit", "pipe", "pipe"],
   };
@@ -920,6 +919,20 @@ export async function runVitest(
   argv: string[] = process.argv.slice(2),
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
+  if (argv.some((arg) => arg === "--isolated-image" || arg.startsWith("--isolated-image="))) {
+    const { parseIsolatedVitestArgs, runIsolatedVitest } =
+      await import("./lib/vitest-isolated.mts");
+    const isolated = parseIsolatedVitestArgs(argv);
+    if (isolated) {
+      process.exitCode = await runIsolatedVitest(
+        resolveRepoRoot(import.meta.url),
+        isolated.image,
+        isolated.args,
+        env,
+      );
+      return;
+    }
+  }
   if (argv.length === 0) {
     console.error("usage: node scripts/run-vitest.mjs <vitest args...>");
     process.exitCode = 1;

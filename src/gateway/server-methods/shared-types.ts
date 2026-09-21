@@ -14,6 +14,7 @@ import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
 import type { CliDeps } from "../../cli/deps.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { AgentRunDelegatedAuthority } from "../../infra/agent-run-authority.types.js";
+import type { ExecApprovalRequest, ExecApprovalResolved } from "../../infra/exec-approvals.js";
 import type {
   PluginApprovalRequest,
   PluginApprovalRequestPayload,
@@ -159,6 +160,8 @@ export type GatewaySystemAgentSession = {
     dispose: () => Promise<void>;
   };
   welcome: string;
+  /** Passive creation entry, retained so reconnects do not append duplicate history. */
+  newAgentWelcome?: string;
   welcomeQuestion?: SystemAgentChatQuestion;
   /** Audit cursor captured with the pending caretaker welcome; cleared after delivery. */
   welcomeAuditSequence?: number;
@@ -209,6 +212,17 @@ type GatewayKernelContext = {
   placementStandingGrants?: PlacementStandingGrantRuntime;
   systemAgentApprovalManager?: ExecApprovalManager<SystemAgentApprovalRequestPayload>;
   forwardPluginApprovalRequest?: (request: PluginApprovalRequest) => Promise<boolean>;
+  forwardExecApprovalRequest?: (request: ExecApprovalRequest) => Promise<boolean>;
+  execApprovalIosPushDelivery?: {
+    handleRequested?: (
+      request: ExecApprovalRequest,
+      opts?: {
+        isTargetVisible?: (target: { deviceId: string; scopes: readonly string[] }) => boolean;
+      },
+    ) => Promise<boolean>;
+    handleResolved?: (resolved: ExecApprovalResolved) => Promise<void>;
+    handleExpired?: (request: ExecApprovalRequest) => Promise<void>;
+  };
   approvalWebPushDelivery?: {
     handleRequested: <TPayload>(record: ExecApprovalRecord<TPayload>) => boolean | Promise<boolean>;
     handleResolved: (resolved: { id: string }) => Promise<void>;

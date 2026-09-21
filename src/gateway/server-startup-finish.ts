@@ -437,6 +437,8 @@ export async function finishGatewayStartup(params: {
   if (tlsRenewal) {
     registerGatewayLifetimeSidecars(tlsRenewal);
   }
+  let appliedCustomPluginUiEnabled =
+    gatewayPluginConfigAtStart.gateway?.controlUi?.experimental?.customPlugins === true;
   const configReloaderParams: Parameters<typeof startManagedGatewayConfigReloader>[0] = {
     onReloadEnabledChange: tlsRenewal?.setEnabled,
     configRevisionProjector: gatewayRequestContext.configRevisionProjector,
@@ -548,10 +550,27 @@ export async function finishGatewayStartup(params: {
       for (const nodeSession of nodeRegistry.refreshRuntimePolicy(nextConfig)) {
         refreshConnectedNodeSurfaceCaches({ context: gatewayRequestContext, nodeSession });
       }
-      await Promise.all([
+      const reconciled = await Promise.allSettled([
+        runtime.hostDesktopService.reconcileRuntimePolicy(),
+        runtime.gatewayComputerService.reconcileRuntimePolicy(),
+        workerEnvironmentService?.reconcileDesktopPolicy(),
         nodeDesktopService.reconcileRuntimePolicy(),
         runtimeState.discovery?.update({ mdnsMode: nextConfig.discovery?.mdns?.mode }),
+        (async () => {
+          const customPluginUiEnabled =
+            nextConfig.gateway?.controlUi?.experimental?.customPlugins === true;
+          if (customPluginUiEnabled !== appliedCustomPluginUiEnabled) {
+            const { listControlUiPluginCatalog } = await import("./control-ui-plugin-assets.js");
+            const catalog = await listControlUiPluginCatalog();
+            broadcast("plugins.controlUi.changed", { revision: catalog.revision });
+            appliedCustomPluginUiEnabled = customPluginUiEnabled;
+          }
+        })(),
       ]);
+      const failed = reconciled.find((result) => result.status === "rejected");
+      if (failed) {
+        throw failed.reason;
+      }
     },
     commitRuntimePolicy: (nextConfig) => {
       controlUiRootLifecycle.setEnabled(
@@ -652,6 +671,22 @@ export async function finishGatewayStartup(params: {
         },
         log,
         errorMessage: "retained npm generation cleanup failed",
+      }),
+    );
+    registerGatewayLifetimeSidecars(
+      gatewayRuntimeServices.scheduleGatewayIdleTask({
+        delayMs: RETAINED_PLUGIN_CLEANUP_DELAY_MS,
+        retryDelayMs: RETAINED_PLUGIN_CLEANUP_DELAY_MS,
+        isClosing: () => lifecycle.closePreludeStarted,
+        isBusy: () => getActiveGatewayRootWorkCount({ excludeCurrent: true }) > 0,
+        repeatDelayMs: 15 * 60_000,
+        run: async () => {
+          const { reclaimAbandonedSqliteSnapshotsAsync } =
+            await import("../infra/sqlite-snapshot-staging.js");
+          await reclaimAbandonedSqliteSnapshotsAsync();
+        },
+        log,
+        errorMessage: "SQLite snapshot staging cleanup failed",
       }),
     );
   } else {

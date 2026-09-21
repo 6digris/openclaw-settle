@@ -39,16 +39,16 @@ import type { SecurityAuditFinding } from "../security/audit.types.js";
 import type { SkillStatusEntry } from "../skills/discovery/status.js";
 import { resolveSkillWorkshopConfig } from "../skills/workshop/config.js";
 import { detectSkillWorkshopToolPolicyDiagnostic } from "../skills/workshop/tool-policy-diagnostic.js";
-import {
-  configValidationIssuesToHealthFindings,
-  configValidationWarningsToHealthFindings,
-  FINAL_CONFIG_VALIDATION_CHECK_ID,
-} from "./doctor-config-validation-findings.js";
+import { finalConfigValidationCheck } from "./doctor-config-validation-check.js";
 import { detectGatewayAuthHealth } from "./doctor-gateway-auth.js";
 import { hasActiveGatewayExecCredential } from "./doctor-gateway-exec-credential.js";
 import { removedWorkspacesStateCheck } from "./doctor-removed-workspaces-state-check.js";
+import {
+  collectRuntimeToolSchemaFindingsWithRuntime,
+  createRuntimeToolSchemaCheck,
+} from "./doctor-tool-schema-check.js";
 import { resolveDoctorWorkspaceSuggestionScopes } from "./doctor-workspace-suggestion-scopes.js";
-import { copyHealthCheck } from "./health-check-adapter.js";
+import { copyHealthCheck, securityAuditFindingToHealthFinding } from "./health-check-adapter.js";
 import type { DoctorHealthCheck } from "./health-check-runner-types.js";
 import type {
   HealthCheck,
@@ -131,21 +131,6 @@ async function collectWorkspaceSuggestionNotesWithRuntime(
   return notes;
 }
 
-async function collectRuntimeToolSchemaFindingsWithRuntime(
-  ctx: HealthCheckContext,
-): Promise<readonly HealthFinding[]> {
-  const runtime = await loadDoctorCoreChecksRuntimeModule();
-  const runWithPluginMetadataSnapshot = (
-    ctx as HealthCheckContext & {
-      runWithPluginMetadataSnapshot?: PluginMetadataSnapshotScopeRunner;
-    }
-  ).runWithPluginMetadataSnapshot;
-  return runtime.collectRuntimeToolSchemaFindings(ctx.cfg, {
-    env: ctx.env,
-    ...(runWithPluginMetadataSnapshot ? { runWithPluginMetadataSnapshot } : {}),
-  });
-}
-
 async function collectProviderCatalogProjectionFindingsWithRuntime(
   ctx: HealthCheckContext,
 ): Promise<readonly HealthFinding[]> {
@@ -163,7 +148,7 @@ async function collectLocalAudioAccelerationFindingsWithRuntime(): Promise<
 async function collectGatewayHealthFindingsWithRuntime(
   ctx: HealthCheckContext,
 ): Promise<readonly HealthFinding[]> {
-  const runtime = await loadDoctorCoreChecksRuntimeModule();
+  const runtime = await import("../commands/doctor-gateway-health.js");
   return runtime.collectGatewayHealthFindings(ctx);
 }
 
@@ -593,18 +578,6 @@ const bootstrapSizeCheck: HealthCheck = {
   },
 };
 
-function createRuntimeToolSchemaCheck(deps: CoreHealthCheckDeps): HealthCheck {
-  return {
-    id: "core/doctor/runtime-tool-schemas",
-    kind: "core",
-    description: "Active agent tool schemas project into model/runtime-compatible tool inputs.",
-    source: "doctor",
-    async detect(ctx) {
-      return deps.collectRuntimeToolSchemaFindings(ctx);
-    },
-  };
-}
-
 function createProviderCatalogProjectionCheck(deps: CoreHealthCheckDeps): HealthCheck {
   return {
     id: "core/doctor/provider-catalog-projection",
@@ -802,19 +775,6 @@ function createSecurityCheck(deps: CoreHealthCheckDeps): DoctorHealthCheck {
       const findings = await deps.collectSecurityWarnings(ctx.cfg, ctx.env);
       return findings.map(securityAuditFindingToHealthFinding);
     },
-  };
-}
-
-export function securityAuditFindingToHealthFinding(finding: SecurityAuditFinding): HealthFinding {
-  const detailLines = finding.detail.split("\n");
-  const firstDetail = detailLines.shift() ?? "";
-  const fixHint = [...detailLines, ...(finding.remediation?.split("\n") ?? [])].join("\n");
-  return {
-    checkId: "core/doctor/security",
-    severity:
-      finding.severity === "critical" ? "error" : finding.severity === "warn" ? "warning" : "info",
-    message: `${finding.title}${firstDetail ? `: ${firstDetail}` : ""}`,
-    ...(fixHint ? { fixHint } : {}),
   };
 }
 
@@ -1275,25 +1235,6 @@ const browserClawdProfileResidueCheck: HealthCheck = {
       warnings: result.warnings,
       effects: result.changes.length > 0 ? [effect] : [],
     };
-  },
-};
-
-const finalConfigValidationCheck: DoctorHealthCheck = {
-  id: FINAL_CONFIG_VALIDATION_CHECK_ID,
-  updateReadiness: "post-plugin",
-  kind: "core",
-  description: "Active openclaw.jsonc parses and conforms to the config schema.",
-  source: "doctor",
-  async detect() {
-    const { readConfigFileSnapshot } = await import("../config/config.js");
-    const snap = await readConfigFileSnapshot({ observe: false });
-    if (!snap.exists) {
-      return [];
-    }
-    return [
-      ...configValidationIssuesToHealthFindings(snap.issues),
-      ...configValidationWarningsToHealthFindings(snap.warnings),
-    ];
   },
 };
 
