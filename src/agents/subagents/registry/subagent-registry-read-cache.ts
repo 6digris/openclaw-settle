@@ -19,7 +19,7 @@ import {
 } from "../../../state/openclaw-state-worker-error.js";
 import type { SubagentRunReadRecord } from "./subagent-registry-read.types.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
-import type { SubagentSessionReadLookup } from "./subagent-session-read-scope.js";
+import { SubagentSessionReadLookup } from "./subagent-session-read-scope.js";
 
 type SubagentRunsCacheState<T extends SubagentRunReadRecord> = (
   | { snapshot: Map<string, T>; changes?: never; lookup?: SubagentSessionReadLookup }
@@ -41,6 +41,16 @@ export type SubagentRunsCache<T extends SubagentRunReadRecord> = {
   copy: (entry: SubagentRunRecord) => T;
   project: (entry: SubagentRunRecord) => T;
 };
+
+export function getSessionListLookup<T extends SubagentRunReadRecord>(
+  cache: SubagentRunsCache<T>,
+): SubagentSessionReadLookup | undefined {
+  const state = cache.state;
+  if (!state.snapshot) {
+    return undefined;
+  }
+  return (state.lookup ??= new SubagentSessionReadLookup(state.snapshot));
+}
 
 export function captureSubagentFactsAdmission(databasePath = resolveOpenClawStateSqlitePath()) {
   return captureOpenClawStateDatabaseReadAdmission(databasePath);

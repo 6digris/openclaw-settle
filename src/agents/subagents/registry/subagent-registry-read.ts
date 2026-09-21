@@ -25,6 +25,7 @@ import {
 import type { SubagentRunReadRecord } from "./subagent-registry-read.types.js";
 import {
   getSubagentSessionListRunsSnapshotForRead,
+  getSubagentSessionListRunsSnapshotForChildSessions,
   getSubagentSessionListRunsSnapshotForSessions,
   getSubagentRunsSnapshotForChildSession,
   getSubagentRunsSnapshotForController,
@@ -76,6 +77,14 @@ export function listSubagentSessionListRunsForControllers(
 /** Builds an O(1) latest-run lookup from one persisted and in-memory snapshot. */
 export function buildLatestSubagentRunReadIndex(): LatestSubagentRunReadIndex {
   return buildLatestSubagentRunReadIndexFromRuns(getSubagentRunsSnapshotForRead(subagentRuns));
+}
+
+export function buildLatestSubagentSessionListReadIndex(
+  childSessionKeys: readonly string[],
+): LatestSubagentRunReadIndex<SubagentRunReadRecord> {
+  return buildLatestSubagentRunReadIndexFromRuns(
+    getSubagentSessionListRunsSnapshotForChildSessions(childSessionKeys),
+  );
 }
 
 /** Builds a reusable index from the full readable registry snapshot. */

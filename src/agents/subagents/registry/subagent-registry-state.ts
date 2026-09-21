@@ -11,7 +11,7 @@ import {
   projectSubagentRunForMaintenance,
   projectSubagentRunForSessionList,
 } from "./subagent-delivery-state.js";
-import { subagentRuns } from "./subagent-registry-memory.js";
+import { getSubagentRunsForChildSession, subagentRuns } from "./subagent-registry-memory.js";
 import {
   persistSubagentRegistryChangesAsync,
   supersedePendingSubagentRegistryWrites,
@@ -25,6 +25,7 @@ import {
   applySubagentRunChanges,
   assertSubagentReadContext,
   captureSubagentFactsAdmission,
+  getSessionListLookup,
   getPersistedSubagentRunsSnapshot,
   loadPersistedSubagentRunsForRead,
   prepareSubagentRunsCache,
@@ -137,7 +138,7 @@ function updateCommittedSwarmNotifications(
   return [...events.values()];
 }
 
-type SubagentRegistryPersistListener = () => void;
+type SubagentRegistryPersistListener = (sessionKeys?: readonly (string | undefined)[]) => void;
 
 const SUBAGENT_REGISTRY_PERSIST_LISTENERS = new Set<SubagentRegistryPersistListener>();
 
@@ -145,7 +146,7 @@ function emitSubagentRegistryPersisted(keys?: Array<string | undefined>): void {
   publishSubagentRunChanges(keys);
   for (const listener of SUBAGENT_REGISTRY_PERSIST_LISTENERS) {
     try {
-      listener();
+      listener(keys);
     } catch {
       // Persistence already succeeded; observers are best-effort.
     }
@@ -165,7 +166,9 @@ function rememberPersistedSubagentRunsSnapshot(
   changedRunIds?: readonly string[],
   databasePath?: string,
 ): Array<string | undefined> | undefined {
-  const previous = persistedSubagentSessionListRunsReadCache.state.snapshot;
+  const previous =
+    persistedSubagentSessionListRunsReadCache.state.snapshot ??
+    persistedSubagentRunsReadCache.state.snapshot;
   const keys =
     previous &&
     changedRunIds?.flatMap((runId) =>
@@ -274,16 +277,6 @@ async function readSubagentSessionListRunsSnapshot(
     runs.set(runId, projectSubagentRunForSessionList(entry));
   }
   return runs;
-}
-
-function getSessionListLookup<T extends SubagentRunReadRecord>(
-  cache: SubagentRunsCache<T>,
-): SubagentSessionReadLookup | undefined {
-  const state = cache.state;
-  if (cache !== persistedSubagentSessionListRunsReadCache || !state.snapshot) {
-    return undefined;
-  }
-  return (state.lookup ??= new SubagentSessionReadLookup(state.snapshot));
 }
 
 function indexedSnapshotRows<T>(snapshot: Map<string, T>, keys: readonly string[]): T[] {
@@ -448,6 +441,37 @@ export function getSubagentRunsSnapshotForRead(
   inMemoryRuns: Map<string, SubagentRunRecord>,
 ): Map<string, SubagentRunRecord> {
   return getSubagentRunsSnapshot(inMemoryRuns, persistedSubagentRunsReadCache);
+}
+
+/** All generations of exact children, sharing the existing snapshot and its publication-owned lookup. */
+export function getSubagentSessionListRunsSnapshotForChildSessions(
+  childSessionKeys: readonly string[],
+): Map<string, SubagentRunReadRecord> {
+  const keys = new Set(childSessionKeys.map((key) => key.trim()).filter(Boolean));
+  const selected = new Map<string, SubagentRunReadRecord>();
+  if (keys.size === 0) {
+    return selected;
+  }
+  const cache = persistedSubagentSessionListRunsReadCache;
+  if (shouldReadPersistedSubagentRuns()) {
+    const snapshot = loadPersistedSubagentRunsForRead(cache);
+    const lookup = getSessionListLookup(cache);
+    for (const runId of lookup?.selectChildren(keys) ?? []) {
+      // A live row can have moved out of a persisted child bucket.
+      const persisted = snapshot.get(runId);
+      const live = persisted && subagentRuns.get(persisted.runId);
+      const entry = live ? cache.project(live) : persisted;
+      if (entry && keys.has(entry.childSessionKey.trim())) {
+        selected.set(entry.runId, entry);
+      }
+    }
+  }
+  for (const key of keys) {
+    for (const entry of getSubagentRunsForChildSession(key)) {
+      selected.set(entry.runId, cache.project(entry));
+    }
+  }
+  return selected;
 }
 
 export function getSubagentMaintenanceRunsSnapshotForRead(
