@@ -10,7 +10,7 @@ import { writePackageRoot } from "../../infra/package-update-steps.test-support.
 import { CONTROL_PLANE_UPDATE_SENTINEL_META_ENV } from "../../infra/update-control-plane-sentinel.js";
 import { pkgQueryResult } from "../../infra/update-freebsd-pkg-ownership.test-support.js";
 import * as rootOwnership from "../../infra/update-freebsd-root-ownership.js";
-import * as updateRunner from "../../infra/update-runner.js";
+import * as updateRunner from "../../infra/update-runner-git.js";
 import * as exec from "../../process/exec.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
 import { withEnvAsync } from "../../test-utils/env.js";
@@ -127,8 +127,8 @@ describe("FreeBSD pkg update admission", () => {
         .spyOn(exec, "runCommandBuffered")
         .mockImplementation(async () => pkgQueryResult(claimed ? `${root}/package.json\n` : ""));
       const publish = vi.fn();
-      vi.spyOn(updateRunner, "runGatewayUpdate").mockImplementation(async (options) => {
-        await options?.beforeGitMutation?.({});
+      vi.spyOn(updateRunner, "updateGitCheckout").mockImplementation(async ({ opts }) => {
+        await opts.beforeGitMutation?.({});
         publish();
         return { status: "ok", mode: "git", root, steps: [], durationMs: 0 };
       });
@@ -142,6 +142,8 @@ describe("FreeBSD pkg update admission", () => {
           progress: {},
           channel: "dev",
           tag: "dev",
+          inspectGitTarget: async () => {},
+          validateCandidate: async () => {},
           beforeGitMutation: async () => {
             claimed = true;
           },
@@ -179,6 +181,8 @@ describe("FreeBSD pkg update admission", () => {
           progress: {},
           channel: "dev",
           tag: "dev",
+          inspectGitTarget: async () => {},
+          validateCandidate: async () => {},
           getManagedServiceEnv: () => undefined,
           getSnapshotSource,
           allowGatewayServiceRepair: false,

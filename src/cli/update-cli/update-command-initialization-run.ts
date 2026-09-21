@@ -18,6 +18,7 @@ import {
 import { preparePackageUpdateRuntime } from "./update-command-node-runtime.js";
 import {
   assertUpdatePackageActivationAdmission,
+  recordUpdateCommandTarget,
   type prepareUpdateCommand,
 } from "./update-command-run.js";
 import { preflightUpdateCommandSchemas, previewUpdateCommand } from "./update-command-schema.js";
@@ -105,6 +106,15 @@ export async function initializeAndRunUpdate(
               ...(freebsdRootFence ? { freebsdRootFence } : {}),
               registerRun: async (run) => {
                 registerRun(run);
+                if (target.inspectionWarning) {
+                  recordUpdateCommandTarget(run, {
+                    step: {
+                      step: "warning:installation-inspection",
+                      status: "completed",
+                      detail: target.inspectionWarning,
+                    },
+                  });
+                }
                 handleFailure = await prepareUpdateCommandFailureTriage(
                   { ...opts, invocationCwd, run },
                   recoveryState.triageTarget,
