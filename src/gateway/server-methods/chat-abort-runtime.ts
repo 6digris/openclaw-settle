@@ -468,9 +468,8 @@ function prepareChatSessionAbort(
   // The worker manager admits at most one active inference per session, and a
   // worker-backed turn shares its controller's runId. One exact match therefore
   // represents the only worker owner instead of inventing a second owner.
-  const hasControllerRepresentedWorkerRun = Boolean(
-    hasWorkerRun && matchedActiveRunIds.some((runId) => workerCancellation?.runIds.includes(runId)),
-  );
+  const hasControllerRepresentedWorkerRun =
+    hasWorkerRun && matchedActiveRunIds.some((runId) => workerCancellation?.runIds.includes(runId));
   const hasUnauthorizedOwner =
     hasUnauthorizedActiveRuns ||
     queuedPlan.hasUnauthorizedRuns ||
@@ -631,9 +630,9 @@ function prepareChatSessionAbort(
     hasOtherWork,
     result,
     abort: abortAuthorizedRuns,
-    async finish(result: Pick<ChatSessionAbortResult, "aborted" | "runIds">) {
-      if (result.aborted && snapshots.length > 0) {
-        const abortedRunIds = new Set(result.runIds);
+    async finish(outcome: Pick<ChatSessionAbortResult, "aborted" | "runIds">) {
+      if (outcome.aborted && snapshots.length > 0) {
+        const abortedRunIds = new Set(outcome.runIds);
         await persistAbortedPartials({
           context: params.context,
           snapshots: snapshots.filter((snapshot) => abortedRunIds.has(snapshot.runId)),

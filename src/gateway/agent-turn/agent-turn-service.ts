@@ -394,11 +394,11 @@ export function createAgentTurnService(
           return;
         }
         const persistedSession = await persistAgentSessionPhase({
-          onSessionCommitted: (entry) =>
+          onSessionCommitted: (committedEntry) =>
             dedupeLifecycle.bindSessionTarget({
               sessionKey: canonicalSessionKey,
               agentId: sessionAgentId,
-              sessionId: entry.sessionId,
+              sessionId: committedEntry.sessionId,
             }),
           assertAdmissionCurrent,
           request,

@@ -54,7 +54,9 @@ describe("chat.abort original authority and registration", () => {
         );
       }
       const lifecycle = vi.fn(() => {
-        if (firstEffect === "lifecycle") current = false;
+        if (firstEffect === "lifecycle") {
+          current = false;
+        }
         return true;
       });
       for (const prefix of ["agent", "pending-chat"]) {
@@ -100,7 +102,19 @@ describe("chat.abort original authority and registration", () => {
           expect(context.chatRunState.resolveBuffer("second", { final: true }).text).toBe(
             "untouched partial",
           );
-        } else expect(persist).not.toHaveBeenCalled();
+        } else {
+          expect(persist.mock.calls.flatMap(([call]) => call.snapshots)).toEqual([]);
+          if (firstEffect === "queued") {
+            expect(persist).not.toHaveBeenCalled();
+          } else {
+            expect(context.chatRunState.resolveBuffer("first", { final: true }).text).toBe(
+              "committed partial",
+            );
+            expect(context.chatRunState.resolveBuffer("second", { final: true }).text).toBe(
+              "untouched partial",
+            );
+          }
+        }
       } finally {
         persist.mockRestore();
       }
@@ -114,7 +128,7 @@ describe("chat.abort original authority and registration", () => {
     const replacement = createActiveRun("main", { sessionId: "main-session", agentId: "main" });
     context.chatAbortControllers.set("first", first);
     context.chatAbortControllers.set("reused", stale);
-    for (const prefix of ["agent", "pending-chat"])
+    for (const prefix of ["agent", "pending-chat"]) {
       context.dedupe.set(`${prefix}:pending`, {
         ts: 1,
         ok: true,
@@ -127,12 +141,13 @@ describe("chat.abort original authority and registration", () => {
           attemptId: "old",
         },
       });
+    }
     let pending: Array<[string, unknown]> = [];
     first.controller.signal.addEventListener(
       "abort",
       () => {
         context.chatAbortControllers.set("reused", replacement);
-        for (const prefix of ["agent", "pending-chat"])
+        for (const prefix of ["agent", "pending-chat"]) {
           context.dedupe.set(`${prefix}:pending`, {
             ts: 2,
             ok: true,
@@ -145,6 +160,7 @@ describe("chat.abort original authority and registration", () => {
               attemptId: "new",
             },
           });
+        }
         pending = [...context.dedupe];
       },
       { once: true },

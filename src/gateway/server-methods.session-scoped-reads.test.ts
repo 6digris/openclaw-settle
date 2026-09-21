@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/users.js";
+import { PreparedModelRuntimePublicationSupersededError } from "../agents/prepared-model-runtime.errors.js";
 import * as sessions from "../config/sessions/session-accessor.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -77,7 +78,9 @@ describe("narrow session read owners", () => {
             const metadata = { commands: [], models: [], swarmEnabled: false };
             const readMetadata = vi.fn(async () => {
               entered.resolve();
-              if (visibility === "changed") await release.promise;
+              if (visibility === "changed") {
+                await release.promise;
+              }
               return metadata;
             });
             const context = await createHistoryReadContext({
@@ -106,6 +109,7 @@ describe("narrow session read owners", () => {
               isWebchatConnect: () => false,
               extraHandlers: chatHistoryHandlers,
             });
+            const outcome = Promise.allSettled([request]);
             try {
               if (visibility === "changed") {
                 await Promise.race([entered.promise, request]);
@@ -117,11 +121,32 @@ describe("narrow session read owners", () => {
               }
             } finally {
               release.resolve();
-              await request;
+              await outcome;
             }
             expect(readMetadata).toHaveBeenCalledTimes(visibility === "draft" ? 0 : 1);
-            expect(respond.mock.calls[0]?.[0]).toBe(visibility === "shared");
-            if (visibility !== "shared") expect(respond.mock.calls[0]?.[1]).toBeUndefined();
+            const settled = await outcome;
+            if (method === "chat.metadata" && visibility === "changed") {
+              expect(settled).toMatchObject([
+                {
+                  status: "rejected",
+                  reason: {
+                    message: "Session changed while preparing its metadata. Retry the request.",
+                  },
+                },
+              ]);
+              expect(settled[0]).toHaveProperty(
+                "reason",
+                expect.any(PreparedModelRuntimePublicationSupersededError),
+              );
+              expect(respond).not.toHaveBeenCalled();
+            } else {
+              expect(settled).toEqual([{ status: "fulfilled", value: undefined }]);
+              expect(respond).toHaveBeenCalledOnce();
+              expect(respond.mock.calls[0]?.[0]).toBe(visibility === "shared");
+              if (visibility !== "shared") {
+                expect(respond.mock.calls[0]?.[1]).toBeUndefined();
+              }
+            }
           }
         }
       });
@@ -153,11 +178,12 @@ describe("narrow session read owners", () => {
             profileId: GATEWAY_OWNER_PROFILE_ID,
           };
           const io = prepareRead(method, async () => {
-            if (changed)
+            if (changed) {
               client.internal!.operatorRoleActor = {
                 kind: "operator",
                 profileId: "another-person",
               };
+            }
           });
           const respond = vi.fn();
           await handleGatewayRequest({
@@ -179,7 +205,9 @@ describe("narrow session read owners", () => {
           });
           expect(io).toHaveBeenCalledOnce();
           expect(respond.mock.calls[0]?.[0]).toBe(!changed);
-          if (changed) expect(respond.mock.calls[0]?.[1]).toBeUndefined();
+          if (changed) {
+            expect(respond.mock.calls[0]?.[1]).toBeUndefined();
+          }
           io.mockRestore();
         }
       });
@@ -298,6 +326,7 @@ describe("narrow session read owners", () => {
           isWebchatConnect: () => false,
           extraHandlers: { ...sessionsFilesHandlers, ...sessionRewindHandlers },
         });
+        const outcome = Promise.allSettled([request]);
         try {
           await Promise.race([entered.promise, request]);
           expect(io).toHaveBeenCalledOnce();
@@ -317,11 +346,21 @@ describe("narrow session read owners", () => {
           }
         } finally {
           release.resolve();
-          await request;
+          await outcome;
           io.mockRestore();
         }
-        expect(respond.mock.calls[0]?.[0]).toBe(false);
-        expect(respond.mock.calls[0]?.[1]).toBeUndefined();
+        const settled = await outcome;
+        if (changed === "authority") {
+          expect(settled).toMatchObject([
+            { status: "rejected", reason: { message: "Gateway requester authority changed" } },
+          ]);
+          expect(respond).not.toHaveBeenCalled();
+        } else {
+          expect(settled).toEqual([{ status: "fulfilled", value: undefined }]);
+          expect(respond).toHaveBeenCalledOnce();
+          expect(respond.mock.calls[0]?.[0]).toBe(false);
+          expect(respond.mock.calls[0]?.[1]).toBeUndefined();
+        }
       }
     });
   });

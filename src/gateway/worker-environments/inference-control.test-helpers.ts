@@ -41,7 +41,9 @@ export function createWorkerInferenceCancellationService(
       return {
         runIds: captured,
         cancel: (control) => {
-          if (!captured.length) return [];
+          if (!captured.length) {
+            return [];
+          }
           control?.assertCurrent?.();
           const cancelled = cancel({ sessionId: candidate, ...(runId ? { runId } : {}) });
           cancelled.forEach((id) => control?.onCancelled?.(id));

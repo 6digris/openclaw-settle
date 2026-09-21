@@ -527,13 +527,13 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       loadGatewayModelCatalogSnapshot: () =>
         context.loadGatewayModelCatalogSnapshot({ agentId: sessionAgentId }),
       commitGuard,
-      onCreatedSessionCommitted: (created) => {
+      onCreatedSessionCommitted: (committed) => {
         sessionMutationAuthorization?.recordCreatedSession?.({
-          agentId: created.agentId,
-          sessionKey: created.key,
-          storePath: created.storePath,
-          sessionId: created.entry.sessionId,
-          lifecycleRevision: created.entry.lifecycleRevision,
+          agentId: committed.agentId,
+          sessionKey: committed.key,
+          storePath: committed.storePath,
+          sessionId: committed.entry.sessionId,
+          lifecycleRevision: committed.entry.lifecycleRevision,
         });
       },
       afterCreate: async (session) => {

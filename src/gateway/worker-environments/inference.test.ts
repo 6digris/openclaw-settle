@@ -166,7 +166,9 @@ describe("worker inference manager", () => {
           sink: {
             connectionId: "original",
             send: (frame) => {
-              if (frame.event !== "worker.inference.terminal") return;
+              if (frame.event !== "worker.inference.terminal") {
+                return;
+              }
               frames.push(frame);
               accept(instance, { request: replacementRequest, sink: successor.sink }, false);
             },
@@ -200,7 +202,9 @@ describe("worker inference manager", () => {
         sink: {
           connectionId: "original",
           send: (frame) => {
-            if (frame.event !== "worker.inference.terminal") return;
+            if (frame.event !== "worker.inference.terminal") {
+              return;
+            }
             current = false;
             accept(
               instance,
@@ -221,7 +225,9 @@ describe("worker inference manager", () => {
       expect(
         captured.cancel({
           assertCurrent: () => {
-            if (!current) throw new Error("source revoked");
+            if (!current) {
+              throw new Error("source revoked");
+            }
           },
           onCancelled: (runId) => committed.push(runId),
         }),
@@ -272,7 +278,9 @@ describe("worker inference manager", () => {
           parent.controller.signal.addEventListener(
             "abort",
             () => {
-              if (change === "revocation") current = false;
+              if (change === "revocation") {
+                current = false;
+              }
               if (change === "replacement") {
                 instance.cancelSession(REQUEST.sessionId, REQUEST.runId);
                 accept(

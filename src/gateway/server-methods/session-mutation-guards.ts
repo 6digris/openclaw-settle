@@ -123,8 +123,8 @@ export function bindGatewayRequestHandlerMutationAuthority<T extends GatewayRequ
   sessionScope?: SessionOperatorScope,
 ): T {
   const source = readGatewayRequestMutationAuthority(request);
-  expectedProfileBinding ??= source.expectedProfileBinding;
-  sessionScope ??= source.sessionScope;
+  const retainedProfileBinding = expectedProfileBinding ?? source.expectedProfileBinding;
+  const retainedSessionScope = sessionScope ?? source.sessionScope;
   const { req, client, context, signal, hasCurrentClientAuthority, sessionMutationCommitGuard } =
     handler;
   const assertHandlerCurrent = () => {
@@ -151,14 +151,19 @@ export function bindGatewayRequestHandlerMutationAuthority<T extends GatewayRequ
       ? {
           family: "worker",
           assertCurrent,
-          expectedProfileBinding,
-          sessionScope,
+          expectedProfileBinding: retainedProfileBinding,
+          sessionScope: retainedSessionScope,
           assertWorkerCurrent: () => {
             assertHandlerCurrent();
             source.assertWorkerCurrent();
           },
         }
-      : { family: "native-compatibility", assertCurrent, expectedProfileBinding, sessionScope };
+      : {
+          family: "native-compatibility",
+          assertCurrent,
+          expectedProfileBinding: retainedProfileBinding,
+          sessionScope: retainedSessionScope,
+        };
   requestMutationAuthorities.set(handler, authority);
   return handler;
 }

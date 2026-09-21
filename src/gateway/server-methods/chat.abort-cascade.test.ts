@@ -83,18 +83,26 @@ describe("descendant cascade ownership", () => {
     const persist = vi
       .spyOn(transcriptPersistence, "persistAbortedPartials")
       .mockResolvedValue(undefined);
-    await expect(
-      invokeChatAbortHandler({
-        handler: (options) =>
-          handleChatAbortRequestWithLifecycle({
-            ...options,
-            hasCurrentClientAuthority: () => current,
-          }),
-        context,
-        request: { sessionKey, runId: "parent" },
-        client: { connId: "owner", connect: { scopes: ["operator.write"] } },
+    const respond = await invokeChatAbortHandler({
+      handler: (options) =>
+        handleChatAbortRequestWithLifecycle({
+          ...options,
+          hasCurrentClientAuthority: () => current,
+        }),
+      context,
+      request: { sessionKey, runId: "parent" },
+      client: { connId: "owner", connect: { scopes: ["operator.write"] } },
+    });
+    expect(respond).toHaveBeenCalledExactlyOnceWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        code: "UNAVAILABLE",
+        message: expect.stringMatching(
+          /Parent run stopped, but descendant cancellation was incomplete: .*Gateway requester authority changed/,
+        ),
       }),
-    ).rejects.toThrow("requester authority changed");
+    );
     expect(parent.controller.signal.aborted).toBe(true);
     expect(persist).toHaveBeenCalledOnce();
     expect(persist.mock.calls[0]?.[0].snapshots.map((snapshot) => snapshot.runId)).toEqual([

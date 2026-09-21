@@ -110,9 +110,11 @@ describe("invocation-owned session mutations", () => {
                     : "current-incarnation",
               owner: { connId: client.connId },
             });
-            if (kind === "active") context.chatAbortControllers.set(runId, run);
-            else if (kind === "queued") context.chatQueuedTurns.set(runId, run);
-            else
+            if (kind === "active") {
+              context.chatAbortControllers.set(runId, run);
+            } else if (kind === "queued") {
+              context.chatQueuedTurns.set(runId, run);
+            } else {
               context.dedupe.set(`${kind}:${runId}`, {
                 ts: Date.now(),
                 ok: true,
@@ -126,6 +128,7 @@ describe("invocation-owned session mutations", () => {
                     : { sessionKey: run.sessionKey, sessionId: run.sessionId }),
                 },
               });
+            }
             const before = [...context.dedupe];
             const respond = vi.fn();
             await handleGatewayRequest({
@@ -142,11 +145,14 @@ describe("invocation-owned session mutations", () => {
               extraHandlers: { "chat.abort": handleChatAbortRequest },
             });
             const allowed = mismatch === "none";
-            if (kind === "active" || kind === "queued")
+            if (kind === "active" || kind === "queued") {
               expect(run.controller.signal.aborted).toBe(allowed);
-            else if (!allowed) expect([...context.dedupe]).toEqual(before);
-            if (allowed)
+            } else if (!allowed) {
+              expect([...context.dedupe]).toEqual(before);
+            }
+            if (allowed) {
               expect(respond.mock.calls[0]?.[1]).toMatchObject({ aborted: true, runIds: [runId] });
+            }
             expect(respond).toHaveBeenCalledOnce();
           }
         }
@@ -187,9 +193,13 @@ describe("invocation-owned session mutations", () => {
           first.controller.signal.addEventListener(
             "abort",
             () => {
-              if (changed === "registration") runs.set("second", replacement);
-              else if (changed === "key") second.sessionKey = "agent:main:other";
-              else second[changed] = "replacement";
+              if (changed === "registration") {
+                runs.set("second", replacement);
+              } else if (changed === "key") {
+                second.sessionKey = "agent:main:other";
+              } else {
+                second[changed] = "replacement";
+              }
             },
             { once: true },
           );
@@ -413,20 +423,36 @@ describe("invocation-owned session mutations", () => {
             isWebchatConnect: () => false,
             extraHandlers: sessionMessagingHandlers,
           });
+          const outcome = Promise.allSettled([request]);
           try {
             await Promise.race([entered.promise, request]);
             expect(dispatch).toHaveBeenCalledOnce();
-            if (changed === "source") current = false;
+            if (changed === "source") {
+              current = false;
+            }
             if (changed === "generation") {
               await upsertSessionEntryCore(scope, { ...entry, lifecycleRevision: "replacement" });
             }
           } finally {
             resume.resolve();
-            await request;
+            await outcome;
             dispatch.mockRestore();
           }
           expect(effect).toHaveBeenCalledTimes(changed === "none" ? 1 : 0);
-          expect(respond.mock.calls[0]?.[0]).toBe(changed === "none");
+          const settled = await outcome;
+          if (changed === "source") {
+            expect(settled).toMatchObject([
+              { status: "rejected", reason: { message: "Gateway requester authority changed" } },
+            ]);
+            expect(respond).not.toHaveBeenCalled();
+          } else {
+            expect(settled).toEqual([{ status: "fulfilled", value: undefined }]);
+            expect(respond).toHaveBeenCalledOnce();
+            expect(respond.mock.calls[0]?.[0]).toBe(changed === "none");
+            if (changed === "generation") {
+              expect(respond.mock.calls[0]?.[1]).toBeUndefined();
+            }
+          }
         }
       });
     },
@@ -476,13 +502,16 @@ describe("invocation-owned session mutations", () => {
         try {
           await Promise.race([entered.promise, request]);
           expect(respond).not.toHaveBeenCalled();
-          if (changed === "source") current = false;
-          else await upsertSessionEntryCore(scope, { ...entry, lifecycleRevision: "replacement" });
+          if (changed === "source") {
+            current = false;
+          } else {
+            await upsertSessionEntryCore(scope, { ...entry, lifecycleRevision: "replacement" });
+          }
         } finally {
           resume.resolve();
           await request;
         }
-        expect(loadSessionEntry(scope)?.unread).not.toBe(true);
+        expect(loadSessionEntry(scope)?.markedUnreadAt).toBeUndefined();
         expect(respond).toHaveBeenCalledOnce();
         const [ok, payload] = respond.mock.calls[0]!;
         if (ok) {

@@ -503,7 +503,8 @@ export function resolveAuthorizedQueuedTurnsForSession(params: {
   const authorized = matches
     .filter((match) => canRequesterAbortChatRun(match.entry, params.requester))
     .map((match) => ({
-      ...match,
+      runId: match.runId,
+      entry: match.entry,
       sessionKey: match.entry.sessionKey,
       sessionId: match.entry.sessionId,
       agentId: match.entry.agentId,
