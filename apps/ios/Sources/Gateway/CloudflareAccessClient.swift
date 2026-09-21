@@ -57,11 +57,20 @@ struct CloudflareAccessClient: Sendable {
         // only a hint: discovery still verifies signed metadata from the original URL.
         if response.statusCode == 302,
            let location = response.value(forHTTPHeaderField: "Location"), !location.isEmpty,
-           let target = URLComponents(string: location, encodingInvalidCharacters: false)?
-               .url(relativeTo: responseURL)?.absoluteURL,
-               target.standardized.path.hasPrefix("/cdn-cgi/access/login")
+           var target = URLComponents(string: location, encodingInvalidCharacters: false)
         {
-            return true
+            // Go keeps scheme-less triple-leading slashes in the path; Foundation parses an empty authority.
+            // Restore that path on the original authority for local normalization only, never for a request.
+            if location.hasPrefix("///") {
+                target.percentEncodedPath = "//" + target.percentEncodedPath
+                target.host = responseURL.host
+                target.port = responseURL.port
+            }
+            if target.url(relativeTo: responseURL)?.absoluteURL.standardized.path
+                .hasPrefix("/cdn-cgi/access/login") == true
+            {
+                return true
+            }
         }
         guard [301, 302, 303, 307, 308, 401, 403].contains(response.statusCode),
               let header = response.value(forHTTPHeaderField: "WWW-Authenticate"), header.utf8.count <= 8192
