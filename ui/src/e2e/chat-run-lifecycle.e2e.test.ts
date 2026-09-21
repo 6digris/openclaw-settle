@@ -173,6 +173,9 @@ suite.define(() => {
       runtimeMs: 13_000,
       updatedAt: firstStartedAt + 994_000,
     };
+    await gateway.setSessionsListResponse({
+      sessions: [{ ...completedSession, sessionId: `session:${sessionKey}` }],
+    });
     await gateway.setMethodResponse("chat.history", {
       ...prepareChatHistoryFixture(messages),
       sessionId: `session:${sessionKey}`,
