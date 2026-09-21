@@ -351,6 +351,7 @@ describe("text_end snapshot reconciliation", () => {
           ...expectedTail,
         ]);
         expect(subscription.assistantTexts).toEqual([...delivered, ...expectedTail]);
+        expect(onBlockReply).toHaveBeenCalledTimes(delivered.length + expectedTail.length);
       } finally {
         subscription.unsubscribe();
       }
