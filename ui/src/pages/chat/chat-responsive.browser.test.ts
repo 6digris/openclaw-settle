@@ -14,7 +14,11 @@ import {
 import { readStyleSheet } from "../../../../test/helpers/ui-style-fixtures.js";
 import type { ComposerEditor } from "../../components/composer-editor.ts";
 import { finishElementAnimations } from "../../test-helpers/animations.ts";
-import { closeBrowserPage, withBrowserPage } from "../../test-helpers/browser-page.ts";
+import {
+  closeBrowserPage,
+  waitForLayoutSettled,
+  withBrowserPage,
+} from "../../test-helpers/browser-page.ts";
 import { fillComposer } from "../../test-helpers/composer-editor.ts";
 import {
   captureControlUiE2eFailureDiagnostics,
@@ -33,13 +37,13 @@ import {
   messageCircleOffSvg,
   readUiCss,
   rectsOverlap,
-  waitForLayoutSettled,
   type ControlRect,
 } from "./chat-layout.browser.test-support.ts";
 import {
   getTextContentRect,
   expectNoHorizontalOverflow,
   openComposerLayoutFixture,
+  readCornerScale,
   syncFixtureComposerPopoverAnchor,
 } from "./chat-responsive.fixture.test-support.ts";
 
@@ -238,19 +242,6 @@ type ChatFixtureOptions = {
   sessionRailBody?: string;
   slashMenu?: boolean;
 };
-
-/**
- * Corner radii are expressed as their base step times the live corner scale,
- * so these expectations stay true on engines that draw continuous curvature
- * (`--openclaw-corner-radius-scale: 1.25`) and on engines that do not.
- */
-async function readCornerScale(page: Page): Promise<number> {
-  return await page.evaluate(() =>
-    Number.parseFloat(
-      getComputedStyle(document.documentElement).getPropertyValue("--openclaw-corner-radius-scale"),
-    ),
-  );
-}
 
 function expectControlRect(rect: ControlRect | null, label: string): ControlRect {
   if (rect === null) {
@@ -2394,7 +2385,6 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
     }
     expect(await page.getByText(/can't play this format/iu).count()).toBe(0);
   });
-
   it(
     "renders one named card for every success and failure in a mixed attachment batch",
     FULL_APP_TEST_OPTIONS,

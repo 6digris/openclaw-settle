@@ -246,4 +246,72 @@ describe.runIf("__vitest_browser__" in globalThis)("inline atomic tokens", () =>
       }
     },
   );
+  it("undoes and redoes recipient removal without replaying an older text edit", async () => {
+    const { userEvent } = await import("vitest/browser");
+    const editor = new ComposerEditor();
+    let selected = true;
+    const provider = (value: string): ComposerChip[] =>
+      selected && value === "@Avery Finch "
+        ? [{ kind: "mention", profileId: "avery", label: "Avery Finch", start: 0, end: 12 }]
+        : [];
+    editor.resolveChips = provider;
+    editor.value = "@Avery";
+    document.body.append(editor);
+    editor.value = "@Avery Finch ";
+    editor.addEventListener("input", () => {
+      if (editor.restoredChips !== undefined) {
+        selected = editor.restoredChips.length > 0;
+      }
+      editor.resolveChips = provider;
+    });
+    selected = false;
+    editor.refreshChips(true);
+    editor.focus();
+    await userEvent.keyboard("{Control>}z{/Control}");
+    expect(editor.value).toBe("@Avery Finch ");
+    expect(selected).toBe(true);
+    await userEvent.keyboard("{Control>}{Shift>}Z{/Shift}{/Control}");
+    expect(editor.value).toBe("@Avery Finch ");
+    expect(selected).toBe(false);
+  });
+  it("orders provider groups by document position before atomic navigation and history", async () => {
+    const { userEvent } = await import("vitest/browser");
+    const editor = new ComposerEditor();
+    editor.value = "@Avery Stone $weekly_review";
+    editor.resolveChips = (value) =>
+      tokens.flatMap((token) => {
+        const start = value.indexOf(token.raw);
+        return start < 0
+          ? []
+          : [
+              {
+                ...token,
+                start,
+                end: start + token.raw.length,
+                ...(token.kind === "mention" ? { profileId: "avery" } : {}),
+              },
+            ];
+      });
+    document.body.append(editor);
+    expect(
+      [...editor.shadowRoot!.querySelectorAll(".composer-chip")].map((chip) =>
+        chip.getAttribute("aria-label"),
+      ),
+    ).toEqual(["mention: Avery Stone", "skill: Weekly Delivery Readiness Review"]);
+    editor.focus();
+    editor.setSelectionRange(0, 0);
+    await userEvent.keyboard("{ArrowRight}");
+    expect(editor.selectionStart).toBe(12);
+    await userEvent.keyboard("{Backspace}");
+    expect(editor.value).toBe(" $weekly_review");
+    let restored: readonly ComposerChip[] | undefined;
+    editor.addEventListener("input", () => {
+      restored = editor.restoredChips;
+    });
+    await userEvent.keyboard("{Control>}z{/Control}");
+    expect(restored?.map(({ profileId, start, end }) => ({ profileId, start, end }))).toEqual([
+      { profileId: "avery", start: 0, end: 12 },
+    ]);
+    expect(editor.value).toBe("@Avery Stone $weekly_review");
+  });
 });

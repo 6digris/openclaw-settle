@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { waitForLayoutSettled } from "../pages/chat/chat-layout.browser.test-support.ts";
+import { waitForLayoutSettled } from "../test-helpers/browser-page.ts";
 import { composerValue } from "../test-helpers/composer-editor.ts";
 import { waitForControlUiRoute } from "../test-helpers/control-ui-e2e.ts";
 import {

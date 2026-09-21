@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { readStyleSheet } from "../../../../test/helpers/ui-style-fixtures.js";
-import { withBrowserPage } from "../../test-helpers/browser-page.ts";
+import { waitForLayoutSettled, withBrowserPage } from "../../test-helpers/browser-page.ts";
 import {
   canRunChatLayoutBrowser,
   createChatLayoutBrowser,
@@ -12,7 +12,6 @@ import {
   messageCircleOffSvg,
   readUiCss,
   rectsOverlap,
-  waitForLayoutSettled,
 } from "./chat-layout.browser.test-support.ts";
 
 const describeBrowserLayout = canRunChatLayoutBrowser ? describe : describe.skip;

@@ -4,7 +4,7 @@
 import path from "node:path";
 import type { BrowserContext, Page } from "playwright";
 import { beforeEach, afterEach, expect, it } from "vitest";
-import { waitForLayoutSettled } from "../pages/chat/chat-layout.browser.test-support.ts";
+import { waitForLayoutSettled } from "../test-helpers/browser-page.ts";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import {
   installMockGateway,

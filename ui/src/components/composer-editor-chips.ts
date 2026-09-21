@@ -1,4 +1,6 @@
+import { invertedEffects } from "@codemirror/commands";
 import {
+  Annotation,
   EditorSelection,
   type EditorState,
   Facet,
@@ -6,7 +8,7 @@ import {
   StateField,
 } from "@codemirror/state";
 import { Decoration, type DecorationSet, EditorView, WidgetType } from "@codemirror/view";
-import { render, type TemplateResult } from "lit";
+import { nothing, render, type TemplateResult } from "lit";
 import { t } from "../i18n/index.ts";
 
 /** Ranges refer to the unchanged plain-text document, including the original token syntax. */
@@ -16,7 +18,7 @@ export type ComposerChip = {
   end: number;
   label: string;
   icon?: TemplateResult;
-  avatarUrl?: string;
+  profileId?: string;
 };
 
 class ChipWidget extends WidgetType {
@@ -26,9 +28,9 @@ class ChipWidget extends WidgetType {
   override eq(other: ChipWidget) {
     return (
       this.chip.kind === other.chip.kind &&
+      this.chip.profileId === other.chip.profileId &&
       this.chip.label === other.chip.label &&
-      this.chip.icon === other.chip.icon &&
-      this.chip.avatarUrl === other.chip.avatarUrl
+      this.chip.icon === other.chip.icon
     );
   }
   toDOM() {
@@ -45,12 +47,7 @@ class ChipWidget extends WidgetType {
     const icon = document.createElement("span");
     icon.className = "composer-chip__icon";
     icon.setAttribute("aria-hidden", "true");
-    if (this.chip.avatarUrl) {
-      const avatar = document.createElement("img");
-      avatar.src = this.chip.avatarUrl;
-      avatar.alt = "";
-      icon.append(avatar);
-    } else if (this.chip.icon) {
+    if (this.chip.icon) {
       render(this.chip.icon, icon);
     } else {
       icon.textContent = this.chip.kind === "skill" ? "$" : "@";
@@ -63,6 +60,12 @@ class ChipWidget extends WidgetType {
   }
   override ignoreEvent() {
     return false;
+  }
+  override destroy(dom: HTMLElement) {
+    // CodeMirror removes DOM directly; disconnect Lit directives retaining avatar resources.
+    if (this.chip.icon) {
+      render(nothing, dom.querySelector(".composer-chip__icon")!);
+    }
   }
 }
 
@@ -77,22 +80,54 @@ export const chipResolver =
     (value: string, context: ComposerChipContext) => readonly ComposerChip[] | undefined
   >();
 export const setChips = StateEffect.define<readonly ComposerChip[]>();
+export const recordChipHistory = Annotation.define<boolean>();
+export const restoreChipBindings = StateEffect.define<readonly ComposerChip[]>({
+  map: (chips, changes) =>
+    chips.map((chip) => ({
+      ...chip,
+      start: changes.mapPos(chip.start, 1),
+      end: changes.mapPos(chip.end, -1),
+    })),
+});
+export const chipHistory = invertedEffects.of((transaction) => {
+  if (
+    !transaction.docChanged &&
+    !transaction.annotation(recordChipHistory) &&
+    !transaction.effects.some((effect) => effect.is(restoreChipBindings))
+  ) {
+    return [];
+  }
+  const chips: ComposerChip[] = [];
+  transaction.startState
+    .field(chipDecorations)
+    .between(0, transaction.startState.doc.length, (start, end, decoration) => {
+      const widget = decoration.spec.widget;
+      if (widget instanceof ChipWidget && widget.chip.profileId) {
+        chips.push({ ...widget.chip, start, end });
+      }
+    });
+  return [restoreChipBindings.of(chips)];
+});
 export const chipDecorations = StateField.define<DecorationSet>({
   create: () => Decoration.none,
   update(previous, transaction) {
     let decorations = previous.map(transaction.changes);
-    const resolved = transaction.docChanged
-      ? transaction.state.facet(chipResolver)[0]?.(transaction.newDoc.toString(), {
-          editing:
-            transaction.isUserEvent("input") &&
-            !transaction.isUserEvent("input.paste") &&
-            !transaction.isUserEvent("input.drop"),
-          caret: transaction.newSelection.main.head,
-        })
-      : undefined;
-    const effects = resolved
-      ? [...transaction.effects, setChips.of(resolved)]
-      : transaction.effects;
+    const restored = transaction.effects.findLast((effect) => effect.is(restoreChipBindings));
+    const resolved =
+      transaction.docChanged || restored
+        ? transaction.state.facet(chipResolver)[0]?.(transaction.newDoc.toString(), {
+            editing:
+              transaction.isUserEvent("input") &&
+              !transaction.isUserEvent("input.paste") &&
+              !transaction.isUserEvent("input.drop"),
+            caret: transaction.newSelection.main.head,
+          })
+        : undefined;
+    const effects = restored
+      ? [setChips.of([...(resolved ?? []).filter((chip) => !chip.profileId), ...restored.value])]
+      : resolved
+        ? [...transaction.effects, setChips.of(resolved)]
+        : transaction.effects;
     for (const effect of effects) {
       if (effect.is(setChips)) {
         let previousEnd = 0;

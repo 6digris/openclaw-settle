@@ -3,6 +3,10 @@ import { Compartment, Prec, EditorSelection, EditorState, Transaction } from "@c
 import { EditorView, placeholder } from "@codemirror/view";
 import {
   normalizeChipSelection,
+  chipHistory,
+  recordChipHistory,
+  restoreChipBindings,
+  type ComposerChip,
   chipDecorations,
   chipResolver,
   setChips,
@@ -49,6 +53,11 @@ export class ComposerEditor extends HTMLElement {
   private selectTask?: object;
   private ariaReferenceTask?: object;
   private pendingInput?: { inputType: string; data: string | null };
+  private restoredBindings?: readonly ComposerChip[];
+  /** Available only during the input event replaying this editor’s own undo history. */
+  get restoredChips() {
+    return this.restoredBindings;
+  }
 
   constructor() {
     super();
@@ -74,7 +83,11 @@ export class ComposerEditor extends HTMLElement {
     this.view = new EditorView({
       parent: this.shadowRoot!,
       dispatchTransactions: (transactions, view) => {
-        const transaction = transactions.find((candidate) => candidate.docChanged);
+        const transaction = transactions.find(
+          (candidate) =>
+            candidate.docChanged ||
+            candidate.effects.some((effect) => effect.is(restoreChipBindings)),
+        );
         let input = this.pendingInput;
         if (transaction) {
           this.pendingInput = undefined;
@@ -140,14 +153,21 @@ export class ComposerEditor extends HTMLElement {
             ];
         view.update(updates);
         if (transaction && !this.programmatic && input) {
-          this.dispatchEvent(
-            new InputEvent("input", {
-              bubbles: true,
-              composed: true,
-              ...input,
-              isComposing: view.composing,
-            }),
-          );
+          this.restoredBindings = transaction.effects.findLast((effect) =>
+            effect.is(restoreChipBindings),
+          )?.value;
+          try {
+            this.dispatchEvent(
+              new InputEvent("input", {
+                bubbles: true,
+                composed: true,
+                ...input,
+                isComposing: view.composing,
+              }),
+            );
+          } finally {
+            this.restoredBindings = undefined;
+          }
         }
         if (
           updates.some(
@@ -185,6 +205,7 @@ export class ComposerEditor extends HTMLElement {
             },
           }),
           chipDecorations,
+          chipHistory,
           chipResolver.of((value, context) => {
             this.chipContext = { ...context, editing: context.editing && !this.programmatic };
             return this.chipProvider?.(value, this.chipContext);
@@ -498,13 +519,14 @@ export class ComposerEditor extends HTMLElement {
     this.queueAriaReferences();
   }
   /** Re-evaluate a hydrated catalog or confirm the unchanged raw token after a menu choice. */
-  refreshChips() {
+  refreshChips(recordHistory = false) {
     this.chipContext = {
       editing: false,
       caret: this.view?.state.selection.main.head ?? this.selectionEnd,
     };
     this.view?.dispatch({
       effects: setChips.of(this.chipProvider?.(this.value, this.chipContext) ?? []),
+      annotations: recordChipHistory.of(recordHistory),
     });
   }
   get selectionStart() {

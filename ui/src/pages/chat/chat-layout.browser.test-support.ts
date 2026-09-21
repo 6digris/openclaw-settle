@@ -147,46 +147,6 @@ export function messageCircleOffSvg() {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m2 2 20 20"></path><path d="M4.93 4.929a10 10 0 0 0-1.938 11.412 2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 0 0 11.302-1.989"></path><path d="M8.35 2.69A10 10 0 0 1 21.3 15.65"></path></svg>`;
 }
 
-export async function waitForLayoutSettled(page: Page, selector: string): Promise<void> {
-  // content-visibility and container queries can defer descendant layout beyond
-  // a fixed rAF pair. Require a short quiet window so a delayed update cannot
-  // land immediately after two coincidentally identical frames.
-  await page.evaluate(
-    async ({ maxFrames, minStableFrames, minStableMs, selector: targetSelector }) => {
-      let previousGeometry: string | undefined;
-      let stableFrames = 0;
-      let stableSince = performance.now();
-      for (let frame = 0; frame < maxFrames; frame += 1) {
-        await new Promise<void>((resolve) => {
-          requestAnimationFrame(() => resolve());
-        });
-        const elements = [...document.querySelectorAll<HTMLElement>(targetSelector)];
-        if (elements.length === 0) {
-          throw new Error(`No layout elements matched ${targetSelector}`);
-        }
-        const geometry = JSON.stringify(
-          elements.map((element) => {
-            const rect = element.getBoundingClientRect();
-            return [rect.x, rect.y, rect.width, rect.height];
-          }),
-        );
-        if (geometry === previousGeometry) {
-          stableFrames += 1;
-        } else {
-          stableFrames = 1;
-          stableSince = performance.now();
-        }
-        if (stableFrames >= minStableFrames && performance.now() - stableSince >= minStableMs) {
-          return;
-        }
-        previousGeometry = geometry;
-      }
-      throw new Error(`Layout did not stabilize for ${targetSelector} within ${maxFrames} frames`);
-    },
-    { maxFrames: 60, minStableFrames: 4, minStableMs: 50, selector },
-  );
-}
-
 export async function getRect(page: Page, selector: string) {
   const rect = await page.locator(selector).evaluate((node) => {
     const bounds = (node as HTMLElement).getBoundingClientRect();

@@ -80,3 +80,16 @@ export async function expectNoHorizontalOverflow(page: Page) {
   expect(metrics.html).toBeLessThanOrEqual(metrics.viewport + 1);
   expect(metrics.body).toBeLessThanOrEqual(metrics.viewport + 1);
 }
+
+/**
+ * Corner radii are expressed as their base step times the live corner scale,
+ * so these expectations stay true on engines that draw continuous curvature
+ * (`--openclaw-corner-radius-scale: 1.25`) and on engines that do not.
+ */
+export async function readCornerScale(page: Page): Promise<number> {
+  return await page.evaluate(() =>
+    Number.parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue("--openclaw-corner-radius-scale"),
+    ),
+  );
+}

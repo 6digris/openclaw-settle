@@ -15,7 +15,6 @@ import {
   isChatControlCommand,
   isModelIndependentChatCommand,
 } from "../../../lib/chat/commands.ts";
-import { updateHumanMentions } from "../../../lib/chat/human-mentions.ts";
 import { detectTextDirection } from "../../../lib/text-direction.ts";
 import { ComposerDictationController, insertComposerDictation } from "../composer-dictation.ts";
 import { normalizeChatComposerDraft } from "../composer-draft.ts";
@@ -33,6 +32,7 @@ import {
 } from "./chat-composer-dom.ts";
 import { createGoalComposerController } from "./chat-composer-goal-mode.ts";
 import { createComposerKeyDownHandler } from "./chat-composer-keydown.ts";
+import { composerInputMentions } from "./chat-composer-mention-chips.ts";
 import type { HumanMentionMenuHost } from "./chat-composer-mention-menu.ts";
 import { resolveChatSlashCommandArgOptions, resolveComposerMenus } from "./chat-composer-menus.ts";
 import { resolveComposerQuestionPanel } from "./chat-composer-question.ts";
@@ -313,14 +313,12 @@ export function renderChatComposer(props: ChatComposerProps) {
     commitComposerDraft(
       props,
       target.value,
-      mentions.length
-        ? updateHumanMentions(
-            props.getDraft?.() ?? props.draft,
-            target.value,
-            mentions,
-            state.mentionInput,
-          )
-        : undefined,
+      composerInputMentions(
+        target,
+        props.getDraft?.() ?? props.draft,
+        mentions,
+        state.mentionInput,
+      ),
     );
     state.mentionInput = undefined;
     goalComposer.activateDraft(target.value);
