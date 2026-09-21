@@ -109,9 +109,9 @@
     color: color-mix(in srgb, var(--danger) 35%, var(--text-strong));
   }
 
-  .agent-chat__composer-shell .chat-queue__steer,
+  .agent-chat__composer-shell .chat-queue__steer:not(:disabled),
   .agent-chat__composer-shell .chat-queue__item--failed .chat-queue__retry,
-  .agent-chat__composer-shell .chat-queue__item:hover .chat-queue__steer {
+  .agent-chat__composer-shell .chat-queue__item:hover .chat-queue__steer:not(:disabled) {
     color: color-mix(in srgb, var(--accent) 35%, var(--text-strong));
   }
 
