@@ -139,30 +139,34 @@ describe("consecutive image sets", () => {
     },
   );
 
-  it("keeps image-only forwarded replies out of the text disclosure when streaming settles", () => {
-    const content = [image("forwarded-a"), image("forwarded-b")];
-    const draw = (isStreaming: boolean) =>
-      render(
-        renderGroupedMessage(
-          prepareChatMessageRender({ role: "assistant", content }),
-          "forwarded-images",
-          {
-            ...options,
-            isStreaming,
-            isForwarded: true,
-            isUserMessageExpanded: () => false,
-            onToggleUserMessageExpanded: vi.fn(),
-          },
-        ),
-        container,
-      );
-    draw(true);
-    const firstImage = container.querySelector("img");
-    draw(false);
-    expect(rows()).toEqual([["forwarded-a", "forwarded-b"]]);
-    expect(container.querySelector(".chat-message-disclosure")).toBeNull();
-    expect(container.querySelector("img")).toBe(firstImage);
-  });
+  it.each(["", "\n\n", " \t "])(
+    "keeps forwarded images outside text disclosure with separator %j",
+    (separator) => {
+      const content = [image("forwarded-a"), text(separator), image("forwarded-b")];
+      expect(prepareChatMessageRender({ role: "assistant", content }).displayMarkdown).toBe("");
+      const draw = (isStreaming: boolean) =>
+        render(
+          renderGroupedMessage(
+            prepareChatMessageRender({ role: "assistant", content }),
+            "forwarded-images",
+            {
+              ...options,
+              isStreaming,
+              isForwarded: true,
+              isUserMessageExpanded: () => false,
+              onToggleUserMessageExpanded: vi.fn(),
+            },
+          ),
+          container,
+        );
+      draw(true);
+      const firstImage = container.querySelector("img");
+      draw(false);
+      expect(rows()).toEqual([["forwarded-a", "forwarded-b"]]);
+      expect(container.querySelector(".chat-message-disclosure")).toBeNull();
+      expect(container.querySelector("img")).toBe(firstImage);
+    },
+  );
 
   it("retains user grids and never mixes their lightbox gallery with assistant images", () => {
     drawTranscript([

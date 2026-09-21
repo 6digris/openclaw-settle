@@ -48,6 +48,14 @@ Node harnesses:
   `node scripts/run-vitest.mjs <path-or-filter>`.
 - Changed typecheck/lint/guard proof: `node scripts/check-changed.mjs`.
 
+Fresh source installs clone package files from the pnpm store, falling back to
+copies when the filesystem cannot clone. Separate checkouts therefore keep
+independent file metadata: installing dependencies elsewhere cannot change an
+active compiler input's modification history through a shared hardlink. Existing
+hardlinked installs are not converted by an up-to-date `pnpm install`; use a fresh
+task-owned checkout and install for isolated proof. Do not reinstall borrowed
+dependencies or replace an installation while another task uses it.
+
 For Control UI route tests, run `node scripts/run-tsgo-core-test-shards.mjs ui`
 to check fixture types; `node scripts/run-tsgo.mjs -p tsconfig.ui.json` checks
 production UI code and excludes tests. Type route fixtures against the loader's
@@ -86,6 +94,13 @@ Filesystem transform caching uses `test.fsModuleCache` and
 `test.fsModuleCachePath`; the existing `OPENCLAW_VITEST_FS_MODULE_CACHE` and
 `OPENCLAW_VITEST_FS_MODULE_CACHE_PATH` controls retain their ownership and
 disable behavior. Cache-key plugins use `defineCacheKeyGenerator`.
+The jsdom lanes optimize Lit and its exported subpaths together through
+`deps.optimizer.client`. CodeMirror and Lezer stay in Vite's module graph so
+editor classes and parser properties retain one dependency identity.
+When `NODE_COMPILE_CACHE` is configured, test launchers preserve it for Vitest
+and its workers. Vitest disables bytecode caching in workers and their child
+processes for V8 and custom coverage providers; explicit
+`NODE_DISABLE_COMPILE_CACHE=1` still disables caching for the entire invocation.
 Inline projects inherit root configuration in Vitest 5, including concatenated
 setup and include arrays. The four UI E2E resource projects declare
 `extends: false` because each supplies its complete inventory and setup.

@@ -43,7 +43,7 @@ function landscapeImages() {
 }
 
 const text = (value: string) => ({ type: "text", text: value });
-type Message = { key: string; content: unknown[]; streaming?: boolean };
+type Message = { key: string; content: unknown[]; streaming?: boolean; forwarded?: boolean };
 
 function history(count: number): Message[] {
   return Array.from({ length: count }, (_, index) => ({
@@ -122,7 +122,14 @@ class ImageRowsTranscriptFixture extends LitElement {
                             content: entry.item.content,
                           }),
                           entry.key,
-                          { isStreaming: entry.item.streaming ?? false, showReasoning: false },
+                          {
+                            isStreaming: entry.item.streaming ?? false,
+                            showReasoning: false,
+                            isForwarded: entry.item.forwarded,
+                            onToggleUserMessageExpanded: entry.item.forwarded
+                              ? () => {}
+                              : undefined,
+                          },
                         )}
                       </div>
                     </div>`
@@ -145,7 +152,9 @@ afterEach(() => {
 });
 
 async function settleFrames() {
-  // Each pair crosses a ResizeObserver delivery and its next Lit/sizer commit.
+  // Real frames are the contract: CSS reflow -> ResizeObserver -> Lit/sizer
+  // commit -> scroll compensation. Three pairs cross those stages without
+  // polling geometry or replacing Chromium layout with mocked measurements.
   for (let index = 0; index < 3; index += 1) {
     await new Promise<void>((resolve) => {
       requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
@@ -161,12 +170,12 @@ async function mount(messages: Message[], width = 1000) {
   host.style.cssText = "display: block; width: 100%";
   document.body.append(host);
   await host.updateComplete;
-  await expect.poll(() => host.transcript.scrollElement).not.toBeNull();
+  expect(host.transcript.scrollElement).toBe(thread(host));
   // The pane explicitly schedules initial content follow; the virtualizer does
   // not infer application-level follow from the first real image measurement.
   scheduleCommittedChatScroll(host.policy, false, false, { contentChanged: true });
   await settleFrames();
-  await expect.poll(() => distanceFromEnd(host)).toBeLessThanOrEqual(1);
+  expect(distanceFromEnd(host)).toBeLessThanOrEqual(1);
   return host;
 }
 
@@ -194,46 +203,82 @@ async function update(
   change: () => void,
   contentChanged = false,
 ) {
-  // Commit from a task, like streaming input, rather than inside a measurement callback.
-  await new Promise<void>((resolve) => {
-    setTimeout(() => {
-      change();
-      host.requestUpdate();
-      void host.updateComplete.then(() => {
-        if (contentChanged) {
-          scheduleCommittedChatScroll(host.policy, false, false, { contentChanged: true });
+  // Message delivery is a native task, like streaming input, not a timer or a
+  // ResizeObserver microtask. Await Lit's owned commit before measuring layout.
+  await new Promise<void>((resolve, reject) => {
+    const channel = new MessageChannel();
+    channel.port1.addEventListener(
+      "message",
+      () => {
+        channel.port1.close();
+        channel.port2.close();
+        try {
+          change();
+          host.requestUpdate();
+          resolve();
+        } catch (error) {
+          reject(error instanceof Error ? error : new Error(String(error)));
         }
-        resolve();
-      });
-    }, 0);
+      },
+      { once: true },
+    );
+    channel.port1.start();
+    channel.port2.postMessage(null);
   });
+  await host.updateComplete;
+  if (contentChanged) {
+    scheduleCommittedChatScroll(host.policy, false, false, { contentChanged: true });
+  }
   await settleFrames();
 }
 
-async function readAt(host: ImageRowsTranscriptFixture, key: string) {
-  expect(host.transcript.revealMessage(key)).toBe(true);
-  await expect.poll(() => host.querySelector(`[data-virtual-row-key="${key}"]`)).not.toBeNull();
-  await settleFrames();
-  // Cancel the reveal through the same input path that hands ownership to the reader.
-  const element = thread(host);
-  element.dispatchEvent(new WheelEvent("wheel", { deltaY: -1 }));
-  let readerIdle = false;
-  const unsubscribe = subscribeTranscriptScroll(element, (observation) => {
-    if (observation.type === "offset") {
-      readerIdle = !observation.scrolling;
+async function positionReader(host: ImageRowsTranscriptFixture, element: HTMLElement, top = 80) {
+  const viewport = thread(host);
+  // Input cancels an outstanding reveal before subscribing, so its cancellation
+  // cannot masquerade as completion of the reader's subsequent movement.
+  viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -1 }));
+  const idle = Promise.withResolvers<void>();
+  let readerScrolled = false;
+  const unsubscribe = subscribeTranscriptScroll(viewport, (observation) => {
+    if (observation.type !== "offset") {
+      return;
+    }
+    // A prior maintenance scroll can publish idle before this native scroll
+    // arrives. Only the reader's scrolling -> idle transition completes it.
+    if (observation.scrolling && !observation.programmatic) {
+      readerScrolled = true;
+    } else if (readerScrolled && !observation.scrolling) {
+      idle.resolve();
     }
   });
   try {
     await update(host, () => {
-      element.scrollTop += relativeTop(host, row(host, key)) - 80;
+      const delta = relativeTop(host, element) - top;
+      const before = viewport.scrollTop;
+      viewport.scrollTop += delta;
+      expect(viewport.scrollTop, "fixture must move before awaiting scroll idle").not.toBe(before);
     });
-    // Backward gestures intentionally suppress compensation until native idle.
-    // Resize a settled reader, not an unfinished reveal/scroll animation.
-    await expect.poll(() => readerIdle).toBe(true);
+    // TanStack owns idle (including its browser fallback debounce). Its signal,
+    // not a test sleep/poll or synthetic scrollend, releases backward scrolling.
+    await idle.promise;
+    await host.updateComplete;
+    // Idle queues the owner's image-anchor capture in its next render frame.
+    // A pair crosses that complete frame; a continuation inside its first rAF
+    // could still precede another callback's capture (and ResizeObserver).
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
   } finally {
     unsubscribe();
   }
-  await expect.poll(() => Math.abs(relativeTop(host, row(host, key)) - 80)).toBeLessThanOrEqual(1);
+  expect(Math.abs(relativeTop(host, element) - top)).toBeLessThanOrEqual(1);
+}
+
+async function readAt(host: ImageRowsTranscriptFixture, key: string) {
+  expect(host.transcript.revealMessage(key)).toBe(true);
+  await host.updateComplete;
+  await settleFrames();
+  await positionReader(host, row(host, key));
   expect(host.policy.chatFollowLocked).toBe(true);
 }
 
@@ -246,26 +291,6 @@ async function decodeImages(root: ParentNode) {
     expect(image.naturalWidth).toBeGreaterThan(0);
   }
   return elements;
-}
-
-async function readImageAt(host: ImageRowsTranscriptFixture, image: HTMLImageElement) {
-  const viewport = thread(host);
-  viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -1 }));
-  let idle = false;
-  const unsubscribe = subscribeTranscriptScroll(viewport, (observation) => {
-    if (observation.type === "offset") {
-      idle = !observation.scrolling;
-    }
-  });
-  try {
-    await update(host, () => {
-      viewport.scrollTop += relativeTop(host, image) - 80;
-    });
-    await expect.poll(() => idle).toBe(true);
-  } finally {
-    unsubscribe();
-  }
-  expect(Math.abs(relativeTop(host, image) - 80)).toBeLessThanOrEqual(1);
 }
 
 function expectRetainedImages(root: ParentNode, retained: HTMLImageElement[]) {
@@ -329,6 +354,72 @@ function expectImageFlow(element: HTMLElement, count: number, width: number) {
 }
 
 describe("assistant image rows in the real transcript virtualizer", () => {
+  it("does not anchor hidden images inside an above-reader forwarded disclosure", async () => {
+    const messages = history(120);
+    messages[59] = {
+      key: "forwarded-gallery",
+      forwarded: true,
+      content: [text("A forwarded comparison."), ...landscapeImages().slice(0, 20)],
+    };
+    const host = await mount(messages);
+    await readAt(host, "history-61");
+    const forwarded = row(host, "forwarded-gallery");
+    await decodeImages(forwarded);
+    const content = forwarded.querySelector<HTMLElement>(".chat-message-disclosure__content")!;
+    const gallery = forwarded.querySelector<HTMLElement>(".chat-message-images")!;
+    expect(content).not.toBeNull();
+    expect(content.getBoundingClientRect().bottom).toBeLessThan(
+      thread(host).getBoundingClientRect().top,
+    );
+    expect(gallery.getBoundingClientRect().bottom).toBeGreaterThan(
+      thread(host).getBoundingClientRect().top,
+    );
+    const frames = [...gallery.querySelectorAll<HTMLElement>(".chat-image-frame")];
+    expect(frames).toHaveLength(20);
+    expect(frames[0]!.getBoundingClientRect().top).toBe(frames[1]!.getBoundingClientRect().top);
+    const reader = row(host, "history-61");
+    const before = relativeTop(host, reader);
+    for (const width of [600, 1000]) {
+      await update(host, () => {
+        host.style.width = `${width}px`;
+      });
+      if (width === 600) {
+        expect(frames[1]!.getBoundingClientRect().top).toBeGreaterThan(
+          frames[0]!.getBoundingClientRect().bottom,
+        );
+      } else {
+        expect(frames[0]!.getBoundingClientRect().top).toBe(frames[1]!.getBoundingClientRect().top);
+      }
+      expect(Math.abs(relativeTop(host, reader) - before)).toBeLessThanOrEqual(1);
+      expect(host.policy.chatFollowLocked).toBe(true);
+    }
+  });
+  it.each(["append", "prepend"] as const)(
+    "keeps the visible image when a message %s commits during width reflow",
+    async (change) => {
+      const content = Array.from({ length: 50 }, (_, index) => ({
+        ...images[1]!,
+        alt: `Projection image ${index}`,
+      }));
+      const host = await mount([{ key: "projection-gallery", content }], 1200);
+      await update(host, () => {
+        host.style.width = "1000px";
+      });
+      const gallery = row(host, "projection-gallery");
+      const decoded = await decodeImages(gallery);
+      const image = decoded[20]!;
+      await positionReader(host, image);
+      await update(host, () => {
+        host.style.width = "600px";
+        const message = { key: "other-message", content: [text("Another message")] };
+        host.messages =
+          change === "append" ? [...host.messages, message] : [message, ...host.messages];
+      });
+      expect(Math.abs(relativeTop(host, image) - 80)).toBeLessThanOrEqual(1);
+      expectRetainedImages(gallery, decoded);
+      expect(host.policy.chatFollowLocked).toBe(true);
+    },
+  );
   it("keeps text below an image run in the same message anchored through reflow", async () => {
     const content = [
       ...Array.from({ length: 20 }, () => images[1]!),
@@ -344,21 +435,7 @@ describe("assistant image rows in the real transcript virtualizer", () => {
       (element) => element.textContent === "Reader paragraph 10.",
     )!;
     const viewport = thread(host);
-    viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -1 }));
-    let idle = false;
-    const unsubscribe = subscribeTranscriptScroll(viewport, (observation) => {
-      if (observation.type === "offset") {
-        idle = !observation.scrolling;
-      }
-    });
-    try {
-      await update(host, () => {
-        viewport.scrollTop += relativeTop(host, paragraph) - 80;
-      });
-      await expect.poll(() => idle).toBe(true);
-    } finally {
-      unsubscribe();
-    }
+    await positionReader(host, paragraph);
     const before = relativeTop(host, paragraph);
     expect(Math.abs(before - 80)).toBeLessThanOrEqual(1);
     expect(
@@ -389,21 +466,7 @@ describe("assistant image rows in the real transcript virtualizer", () => {
     const decoded = await decodeImages(gallery);
     const image = decoded[20]!;
     const viewport = thread(host);
-    viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -1 }));
-    let idle = false;
-    const unsubscribe = subscribeTranscriptScroll(viewport, (observation) => {
-      if (observation.type === "offset") {
-        idle = !observation.scrolling;
-      }
-    });
-    try {
-      await update(host, () => {
-        viewport.scrollTop += relativeTop(host, image) + 60;
-      });
-      await expect.poll(() => idle).toBe(true);
-    } finally {
-      unsubscribe();
-    }
+    await positionReader(host, image, -60);
     const before = relativeTop(host, image);
     expect(image.getBoundingClientRect().left).toBe(decoded[0]!.getBoundingClientRect().left);
     expect(Math.abs(before + 60)).toBeLessThanOrEqual(1);
@@ -448,7 +511,7 @@ describe("assistant image rows in the real transcript virtualizer", () => {
       );
       const image = decoded[imageNumber - 1]!;
       const viewport = thread(host);
-      await readImageAt(host, image);
+      await positionReader(host, image);
       expect(host.policy.chatFollowLocked).toBe(true);
       expect(viewport.getBoundingClientRect().width).toBe(from);
       expect(gallery.getBoundingClientRect().top).toBeLessThan(
@@ -504,7 +567,7 @@ describe("assistant image rows in the real transcript virtualizer", () => {
       });
       const gallery = row(host, "takeover-gallery");
       const decoded = await decodeImages(gallery);
-      await readImageAt(host, decoded[20]!);
+      await positionReader(host, decoded[20]!);
       const viewport = thread(host);
       const before = viewport.scrollTop;
       const touch = new Touch({ identifier: 1, target: viewport, clientX: 100, clientY: 200 });
@@ -529,7 +592,8 @@ describe("assistant image rows in the real transcript virtualizer", () => {
         );
       }
       scheduleCommittedChatScroll(host.policy, false, false, { source: "manual" });
-      await expect.poll(() => distanceFromEnd(host)).toBeLessThanOrEqual(1);
+      await settleFrames();
+      expect(distanceFromEnd(host)).toBeLessThanOrEqual(1);
       await update(host, () => {
         host.style.width = "1000px";
       });

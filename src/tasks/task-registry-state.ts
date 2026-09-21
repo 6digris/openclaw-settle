@@ -13,7 +13,6 @@ import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worke
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import { restoreTaskExecutionSnapshot } from "./task-execution-owner.js";
 import { getTaskFlowRegistryStore } from "./task-flow-registry.store.js";
-import { reconcileTaskFlowWorkerReceipts } from "./task-flow-runtime-internal.js";
 import {
   clearTaskFlowSyncRetries,
   receiveTaskRegistryRestoreResult,
@@ -27,7 +26,7 @@ import {
   withPendingTaskRegistryEvents,
 } from "./task-registry-listener-state.js";
 import { createTaskRegistryProjectionPreparation } from "./task-registry-projection-prepare.js";
-import { listTasksFromIndex, normalizeTaskRecord } from "./task-registry-records.js";
+import { listTasksFromIndex, normalizeTaskTimestamps } from "./task-registry-records.js";
 import { createAsyncRegistryRestore, createSyncRegistryReader } from "./task-registry-restore.js";
 import type { TaskRegistryRestoreResult } from "./task-registry-restore.worker.js";
 import {
@@ -278,7 +277,7 @@ function restoreTaskRegistryOnce() {
         commit() {},
         rollback() {
           if (taskRegistryRestoreState === installed) {
-            // An enclosing rollback also undoes the identifier repair performed by restore.
+            // An enclosing rollback can undo orphan settlement and snapshot inputs.
             taskRegistryRestoreState = { status: "uninitialized", admission: reader.admission };
             projection.dirty = true;
             bumpTaskRegistryRevision();
@@ -338,15 +337,12 @@ export const ensureTaskRegistryReadyAsync = createAsyncRegistryRestore<
   getStore: getTaskRegistryStore,
   onReady: () => startTaskRegistryListener(),
   received: (result, context, store) => receiveTaskRegistryRestoreResult(result, context, store),
-  async reconcile(result, context, store) {
+  async reconcile(_result, context, store, reconcileFlows) {
     if (getTaskRegistryStore() !== store || !isCurrentTaskRegistryDatabase(context.admission)) {
       return;
     }
     try {
-      await reconcileTaskFlowWorkerReceipts(
-        context,
-        result.flowSyncs.flatMap((outcome) => (outcome.flowId ? [outcome.flowId] : [])),
-      );
+      await reconcileFlows();
     } catch (error) {
       if (taskRegistryRestoreState.status !== "failed") {
         throw error;
@@ -499,7 +495,7 @@ function installSnapshot(
       continue;
     }
     const current = tasks.get(taskId);
-    const next = normalizeTaskRecord(record);
+    const next = normalizeTaskTimestamps(record);
     if (!isDeepStrictEqual(current, next)) {
       tasks.set(taskId, next);
       if (recordWrites) {
