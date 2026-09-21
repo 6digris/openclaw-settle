@@ -1,6 +1,5 @@
 /* @vitest-environment jsdom */
 
-import { expectDefined } from "@openclaw/normalization-core";
 import { render } from "lit";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
@@ -18,7 +17,8 @@ import { createSessionsListResult } from "../../test-helpers/chat-model.ts";
 import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
 import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
 import { waitForFast } from "../../test-helpers/wait-for.ts";
-import { makeChatHost } from "./chat-host.test-support.ts";
+import { makeChatHost, makeRequestMock } from "./chat-host.test-support.ts";
+import { createRefreshChatPane } from "./chat-pane-history.test-support.ts";
 import { renderChatPaneComposerControls } from "./chat-pane-session-controls.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import {
@@ -141,25 +141,22 @@ describe("chat pane composer controls", () => {
   it("keeps current models interactive while the direct catalog revalidates", async () => {
     const startup = createDeferred<unknown>();
     const catalog = createDeferred<unknown>();
-    const host = makeChatHost({
-      chatModelSwitchPromises: {},
-      hello: gatewayHelloForMethods(["chat.metadata", "chat.startup"], []),
-      requestHandlers: {
+    const client = createTestGatewayClient(
+      makeRequestMock({
         "chat.startup": () => startup.promise,
         "models.list": () => catalog.promise,
-      },
-    }) as ChatPageHost;
-    onTestFinished(() => {
-      retireChatMetadataRequests(host);
-      host.sessions.dispose();
-    });
+      }),
+    );
+    const { state: host } = createRefreshChatPane(client);
+    host.sessionKey = "agent:main";
+    host.hello = gatewayHelloForMethods(["chat.metadata", "chat.startup"], []);
+    onTestFinished(() => retireChatMetadataRequests(host));
     const cachedModel = {
       available: true,
       id: "cached-model",
       name: "Cached Model",
       provider: "openai",
     };
-    const client = expectDefined(host.client, "chat host client");
     const scope = { agentId: "main", sessionKey: host.sessionKey };
     const release = subscribeChatMetadata(client, scope, () => {});
     beginChatMetadataPublication(client, scope).publish({
