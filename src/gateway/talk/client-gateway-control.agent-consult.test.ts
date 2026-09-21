@@ -155,6 +155,8 @@ describe("Talk client agent consult admission", () => {
 
     expect(mocks.prepareAgentRunAdmission).toHaveBeenCalledWith({
       cfg: config,
+      assertSourceCurrent: expect.any(Function),
+      onAdmitted: expect.any(Function),
       operationalRunInstance: { instanceId: "instance:run-talk", runId: "run-talk" },
       facts: {
         runId: "run-talk",

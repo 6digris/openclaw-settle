@@ -10,6 +10,7 @@ import {
   getAgentEventLifecycleGeneration,
   isAgentEventLifecycleGenerationCurrent,
 } from "../../infra/agent-events.js";
+import { bindGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
 import { createPluginRuntime } from "../../plugins/runtime/index.js";
 import {
   GatewayDrainingError,
@@ -68,6 +69,7 @@ const loadTalkAgentExecution = createLazyRuntimeModule(async () => {
 function createTalkClientAgentRuntime(params: {
   config: OpenClawConfig;
   rawSourceRef?: string;
+  resolveGatewayContext?: GatewayRequestContext["resolveGatewayContext"];
   assertCurrent?: () => void;
   getAdditionalSystemPrompt?: () => string | undefined;
   bindOperationalRunInstance?: (instance: OperationalRunInstanceRef) => void;
@@ -87,6 +89,14 @@ function createTalkClientAgentRuntime(params: {
     const preparedRunAdmission = execution.prepareAgentRunAdmission({
       cfg: params.config,
       operationalRunInstance,
+      assertSourceCurrent: () => {
+        params.assertCurrent?.();
+        runParams.abortSignal?.throwIfAborted();
+        if (params.resolveGatewayContext && !params.resolveGatewayContext()) {
+          throw new Error("Talk consult Gateway owner is no longer active");
+        }
+      },
+      onAdmitted: (admitted) => bindGatewayContextResolver(admitted, params.resolveGatewayContext),
       facts: {
         runId: runParams.runId,
         agentId,
@@ -193,7 +203,10 @@ export function prepareTalkClientControlAuthority(params: {
 
 export function createTalkClientAgentConsultRunner(params: {
   config: OpenClawConfig;
-  context: Pick<GatewayRequestContext, "chatAbortControllers" | "logGateway">;
+  context: Pick<
+    GatewayRequestContext,
+    "chatAbortControllers" | "logGateway" | "resolveGatewayContext"
+  >;
   sessionTarget: PreparedTalkSessionTarget;
   ownerConnId?: string;
   authority?: TalkAgentConsultAuthority;
@@ -207,10 +220,21 @@ export function createTalkClientAgentConsultRunner(params: {
 }) {
   const { agentId, sessionKey, canonicalKey, storePath } = params.sessionTarget;
   const authority = params.authority ?? resolveTalkAgentConsultAuthority(undefined);
+  // Provider callbacks can outlive the request that created them. Retain this
+  // exact Gateway owner; a replacement must not lend routing to an old consult.
+  const gatewayResolver = params.context.resolveGatewayContext;
+  const gatewayContext = gatewayResolver?.();
+  const resolveGatewayContext = gatewayResolver
+    ? () => (gatewayResolver() === gatewayContext ? gatewayContext : undefined)
+    : undefined;
+  if (resolveGatewayContext) {
+    bindGatewayContextResolver(resolveGatewayContext, gatewayResolver);
+  }
   let agentRuntime: ReturnType<typeof createPluginRuntime>["agent"] | undefined;
   const getAgentRuntime = () =>
     (agentRuntime ??= createTalkClientAgentRuntime({
       config: params.config,
+      resolveGatewayContext,
       ...(params.ownerConnId ? { rawSourceRef: params.ownerConnId } : {}),
     }));
   type PromptOwner = {
@@ -237,6 +261,7 @@ export function createTalkClientAgentConsultRunner(params: {
   ) =>
     createTalkClientAgentRuntime({
       config: params.config,
+      resolveGatewayContext,
       ...(params.ownerConnId ? { rawSourceRef: params.ownerConnId } : {}),
       assertCurrent,
       getAdditionalSystemPrompt,
@@ -298,6 +323,7 @@ export function createTalkClientAgentConsultRunner(params: {
         : assertCurrent || source === "native-delegation"
           ? createTalkClientAgentRuntime({
               config: params.config,
+              resolveGatewayContext,
               ...(params.ownerConnId ? { rawSourceRef: params.ownerConnId } : {}),
               assertCurrent,
               getAdditionalSystemPrompt,
