@@ -86,10 +86,10 @@ suite.define(() => {
         };
         await openInbox();
         await panel.getByRole("tab", { name: /Mentions/ }).click();
-        expect(await drawer.getAttribute("aria-hidden")).toBe("false");
+        expect(await drawer.getAttribute("aria-hidden")).toBeNull();
         await panel.getByRole("button", { name: "Close", exact: true }).click();
         await panel.waitFor({ state: "hidden" });
-        expect(await drawer.getAttribute("aria-hidden")).toBe("false");
+        expect(await drawer.getAttribute("aria-hidden")).toBeNull();
         await page.locator(".sidebar-issues-button:visible").click();
         await panel.locator('[data-mention-id="mobile-mention"] a').click();
         await waitForControlUiRoute(page, { pathname: "/chat/main", routeId: "chat" });
