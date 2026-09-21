@@ -45,6 +45,17 @@ function decodeSkillXml(value: string): string {
     .replace(/&amp;/g, "&");
 }
 
+/** Narrow policy-selected sources to the saved directory when the search lab is off. */
+export function selectPromptSkills(prompt: string, skills: readonly Skill[]): Skill[] {
+  const catalog = /<available_skills>([\s\S]*?)<\/available_skills>/u.exec(prompt)?.[1] ?? "";
+  const names = new Set(
+    Array.from(catalog.matchAll(/<skill>[\s\S]*?<name>(.*?)<\/name>[\s\S]*?<\/skill>/gu), (match) =>
+      decodeSkillXml(match[1] ?? ""),
+    ),
+  );
+  return skills.filter((skill) => names.has(skill.name));
+}
+
 /** Remap an existing display projection without promoting omitted runtime resources. */
 export function remapSkillsPrompt(prompt: string, skills: readonly Skill[]): string {
   const byName = new Map(skills.map((skill) => [skill.name, skill]));

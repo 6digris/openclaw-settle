@@ -3,11 +3,17 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import { resolveEffectiveAgentSkillsLimits } from "../discovery/agent-filter.js";
 import { filterPromptVisibleSkillEntries } from "../discovery/skill-index.js";
+import { isSkillSearchEnabled } from "../experimental.js";
 import type { SkillEligibilityContext, SkillEntry, SkillSnapshot } from "../types.js";
 import { WORKSPACE_SKILLS_PROMPT_FORMAT_VERSION } from "../types.js";
 import { hasUnavailableSkillSecretOwners, isSkillSecretOwnerUnavailable } from "./config.js";
 import { resolveSkillKey } from "./frontmatter.js";
-import { compactSkillsPromptForContext, escapeSkillXml, type Skill } from "./skill-contract.js";
+import {
+  compactSkillsPromptForContext,
+  escapeSkillXml,
+  selectPromptSkills,
+  type Skill,
+} from "./skill-contract.js";
 import { compactPromptSkills } from "./skill-paths.js";
 import { prepareSkillsForPrompt } from "./skill-prompt-limits.js";
 import { resolveWorkspaceSkillPromptEntries } from "./workspace-skill-loader.js";
@@ -64,10 +70,13 @@ async function resolveWorkspaceSkillPromptState(
     remoteNote,
     preserveOrder: opts?.preserveEntryOrder,
   });
+  const admittedNames = new Set(prepared.skills.map((skill) => skill.name));
   return {
     eligible,
     prompt: prepared.prompt,
-    resolvedSkills,
+    resolvedSkills: isSkillSearchEnabled(opts?.config)
+      ? resolvedSkills
+      : resolvedSkills.filter((skill) => admittedNames.has(skill.name)),
     skillFilter,
   };
 }
@@ -97,6 +106,7 @@ export async function buildSkillSnapshot(
     resolvedSkills,
     version: opts?.snapshotVersion,
     promptFormatVersion: WORKSPACE_SKILLS_PROMPT_FORMAT_VERSION,
+    ...(isSkillSearchEnabled(opts?.config) ? { searchEnabled: true as const } : {}),
   };
 }
 
@@ -158,7 +168,10 @@ async function resolveSkillsPromptCatalog(
   // Cold snapshots retain eligibility identities but omit runtime sources on disk.
   // Hydrate through the same policy owner, never from the presentation subset.
   const hydrated =
-    snapshot && !snapshot.resolvedSkills && snapshot.skills.length
+    snapshot &&
+    !snapshot.resolvedSkills &&
+    snapshot.skills.length &&
+    (snapshotPrompt || isSkillSearchEnabled(params.config))
       ? await buildSkillsPromptFromEntries(params, params.entries ?? (await params.loadEntries?.()))
       : undefined;
   const availableNames = new Set(
@@ -250,6 +263,9 @@ export async function resolveSkillsContext(
   const context = await resolveSkillsPromptCatalog(params);
   return {
     ...context,
+    skills: isSkillSearchEnabled(params.config)
+      ? context.skills
+      : selectPromptSkills(context.prompt, context.skills),
     prompt: compactSkillsPromptForContext(context.prompt, params.contextTokenBudget),
   };
 }

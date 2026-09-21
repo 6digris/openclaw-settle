@@ -398,7 +398,7 @@ describe("prepared workspace skill resources", () => {
     const entries = loadWorkspaceSkills(workspace, { workspaceOnly: true });
     const snapshot = await buildSkillSnapshot(workspace, {
       entries,
-      config: { skills: { limits: { maxSkillsInPrompt: 1 } } },
+      config: { skills: { experimental: { search: true }, limits: { maxSkillsInPrompt: 1 } } },
     });
     expect(snapshot.prompt).toContain("<name>visible</name>");
     expect(snapshot.prompt).not.toContain("<name>z-omitted</name>");

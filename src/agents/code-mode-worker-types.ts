@@ -64,6 +64,7 @@ type CodeModeWorkerInput =
       apiFiles?: CodeModeApiVirtualFile[];
       namespaces: CodeModeNamespaceDescriptor[];
       swarmEnabled?: boolean;
+      skillSearchEnabled?: boolean;
     }
   | {
       kind: "resume";

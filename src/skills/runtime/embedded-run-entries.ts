@@ -1,5 +1,6 @@
 // Embedded run entry helpers serialize runtime skill metadata for agent run records.
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { isSkillSearchEnabled } from "../experimental.js";
 import { loadSkillLibrarySelection } from "../library/selection.js";
 import { resolveSkillRuntimeConfig } from "../loading/runtime-config.js";
 import { prepareWorkspaceSkills } from "../loading/workspace-skill-loader.js";
@@ -29,7 +30,8 @@ export async function resolveEmbeddedRunSkillEntries(params: {
 }> {
   const shouldLoadSkillEntries =
     !params.skillsSnapshot ||
-    ((Boolean(params.skillsSnapshot.prompt.trim()) || params.skillsSnapshot.skills.length > 0) &&
+    ((Boolean(params.skillsSnapshot.prompt.trim()) ||
+      (isSkillSearchEnabled(params.config) && params.skillsSnapshot.skills.length > 0)) &&
       !params.skillsSnapshot.resolvedSkills);
   const config = resolveSkillRuntimeConfig(params.config);
   // Materialized sandbox copies are the sole read root, including lazy rebuilds

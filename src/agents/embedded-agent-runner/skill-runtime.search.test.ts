@@ -25,9 +25,13 @@ it.each([
   "sandbox",
   "sandbox-empty",
   "sandbox-live",
+  "default",
+  "disabled",
+  "warm-disabled",
 ] as const)(
   "discovers overflow through real runtime preparation (%s), retaining policy and secret gates",
   async (mode) => {
+    const searchEnabled = !["default", "disabled", "warm-disabled"].includes(mode);
     const root = temps.make("skill-search-runtime-");
     const workspace = path.join(root, "workspace");
     const bundled = path.join(root, "bundled");
@@ -63,6 +67,7 @@ it.each([
       plugins: { enabled: false },
       agents: { defaults: { skills: ["alpha", "release", "manual", "disabled", "needs-env"] } },
       skills: {
+        ...(mode === "default" ? {} : { experimental: { search: searchEnabled } }),
         load: { watch: false },
         entries: { disabled: { enabled: false } },
         limits: {
@@ -74,7 +79,13 @@ it.each([
     const snapshot =
       mode === "live" || mode === "sandbox-live"
         ? undefined
-        : await buildSkillSnapshot(workspace, { config, agentId: "main" });
+        : await buildSkillSnapshot(workspace, {
+            config:
+              mode === "warm-disabled"
+                ? { ...config, skills: { ...config.skills, experimental: { search: true } } }
+                : config,
+            agentId: "main",
+          });
     if (mode === "cold" && snapshot) {
       delete snapshot.resolvedSkills;
     }
@@ -96,7 +107,13 @@ it.each([
       });
     const prepared = await prepare();
     expect(prepared.skillsPrompt).not.toContain("<name>release</name>");
-    expect(prepared.codeModeSkills.map((skill) => skill.name)).toEqual(["alpha", "release"]);
+    expect(prepared.codeModeSkills.map((skill) => skill.name)).toEqual(
+      searchEnabled ? ["alpha", "release"] : ["alpha"],
+    );
+    if (!searchEnabled) {
+      expect(searchCodeModeSkills(prepared.codeModeSkills, "publishing")).toEqual([]);
+      return;
+    }
     expect(
       searchCodeModeSkills(prepared.codeModeSkills, "publishing").map((skill) => skill.name),
     ).toEqual(["release"]);

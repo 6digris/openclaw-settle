@@ -7,11 +7,12 @@ import { buildSkillSnapshot } from "../skills/loading/workspace-skill-prompt.js"
 import { createFixtureSkillEntry } from "../skills/test-support/test-helpers.js";
 import { createOpenClawReadTool } from "./agent-tools.read.js";
 import { resolveCodeModeSkills } from "./code-mode-skills.js";
-import { applyCodeModeCatalog } from "./code-mode.js";
+import { applyCodeModeCatalog, runCodeModeScriptHeadless } from "./code-mode.js";
 import {
   resetCodeModeTestState,
   pluginTool,
   createCodeModeHarness,
+  createHeadlessCodeModeHarness,
   runUntilCompleted,
 } from "./code-mode.test-support.js";
 import { createReadTool } from "./sessions/index.js";
@@ -37,6 +38,25 @@ function skillCandidate(params: {
 }
 
 describe("Code Mode skills and read tools", () => {
+  it.each([undefined, false, true])(
+    "gates headless skill search with the same opt-in (%s)",
+    async (enabled) => {
+      const ctx = createHeadlessCodeModeHarness();
+      ctx.config = { ...ctx.config, skills: { experimental: { search: enabled } } };
+      ctx.runtimeConfig = ctx.config;
+      const result = await runCodeModeScriptHeadless({
+        ctx,
+        code: `
+      return typeof skills.search === "function" ? await skills.search("missing") : "off";
+    `,
+      });
+      expect(result.status).toBe("completed");
+      if (result.status === "completed") {
+        expect(result.value).toEqual(enabled === true ? [] : "off");
+      }
+    },
+  );
+
   beforeEach(() => {
     vi.useRealTimers();
   });
@@ -55,14 +75,17 @@ describe("Code Mode skills and read tools", () => {
     entries[2]!.invocation = { userInvocable: true, disableModelInvocation: true };
     const snapshot = await buildSkillSnapshot("/workspace", {
       entries,
-      config: { skills: { limits: { maxSkillsInPrompt: 1 } } },
+      config: { skills: { experimental: { search: true }, limits: { maxSkillsInPrompt: 1 } } },
     });
     expect(snapshot.prompt).toContain("<name>alpha</name>");
     expect(snapshot.prompt).not.toContain("<name>release</name>");
     const codeModeSkills = resolveCodeModeSkills({
       candidates: snapshot.resolvedSkills!,
     });
-    const { tools, config, catalogRef } = createCodeModeHarness({ codeModeSkills });
+    const { tools, config, catalogRef } = createCodeModeHarness({
+      codeModeSkills,
+      skillSearchEnabled: true,
+    });
     applyCodeModeCatalog({
       tools: [...tools, pluginTool("fake_noop", "Noop")],
       config,
@@ -91,6 +114,50 @@ describe("Code Mode skills and read tools", () => {
       none: [],
     });
   });
+
+  it.each([undefined, false])(
+    "keeps search absent and list/read prompt-limited when the lab is %s",
+    async (enabled) => {
+      const entries = ["alpha", "release"].map((name) => createFixtureSkillEntry(name));
+      entries[0]!.skill.readContent = "Complete alpha instructions";
+      const snapshot = await buildSkillSnapshot("/workspace", {
+        entries,
+        config: { skills: { limits: { maxSkillsInPrompt: 1 }, experimental: { search: enabled } } },
+      });
+      const codeModeSkills = resolveCodeModeSkills({ candidates: snapshot.resolvedSkills! });
+      const { tools, config, catalogRef } = createCodeModeHarness({
+        codeModeSkills,
+        skillSearchEnabled: enabled,
+      });
+      applyCodeModeCatalog({
+        tools: [...tools, pluginTool("fake_noop", "Noop")],
+        config,
+        sessionId: "skill-off",
+        sessionKey: "agent:main:main",
+        runId: "skill-off",
+        catalogRef,
+        codeModeSkills,
+      });
+      expect(tools[0]!.description).not.toContain("skills.search");
+      const result = await runUntilCompleted({
+        execTool: tools[0]!,
+        waitTool: tools[1]!,
+        code: `
+      let omittedRejected = false;
+      try { await skills.read("release"); } catch { omittedRejected = true; }
+      return { search: typeof skills.search, names: (await skills.list()).map(s => s.name),
+        body: await skills.read("alpha"), omittedRejected };
+    `,
+      });
+      expect(result.status, JSON.stringify(result)).toBe("completed");
+      expect(result.value).toEqual({
+        search: "undefined",
+        names: ["alpha"],
+        body: "Complete alpha instructions",
+        omittedRejected: true,
+      });
+    },
+  );
 
   it("lists and reads policy-selected skills through the worker bridge", async () => {
     const demo = skillCandidate({

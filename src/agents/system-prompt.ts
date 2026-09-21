@@ -268,7 +268,7 @@ function buildSkillsSection(params: {
   return [
     "## Skills",
     params.codeModeActive
-      ? 'Scan <available_skills>. Clear match: use `skills.read("<name>")` inside `exec`; obey. If specialized guidance is needed but no clear match is listed, use `skills.search("English task description")`; prompt omissions are not exclusions.'
+      ? 'Scan <available_skills>. Clear match: use `skills.read("<name>")` inside `exec`; obey.'
       : `Scan <available_skills>. Clear match: read exact <location> with \`${params.readToolName}\`; obey.`,
     "Several: most specific. None: read none.",
     "Up-front max one. Never invent paths.",

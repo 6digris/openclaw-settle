@@ -42,7 +42,7 @@ describe("resolveSandboxSkillRuntimeInputs", () => {
   it("remaps the bounded Library directory without advertising every searchable skill", async () => {
     const selected = await buildSkillSnapshot("/workspace", {
       entries: [createFixtureSkillEntry("alpha"), createFixtureSkillEntry("beta")],
-      config: { skills: { limits: { maxSkillsInPrompt: 1 } } },
+      config: { skills: { experimental: { search: true }, limits: { maxSkillsInPrompt: 1 } } },
     });
     selected.librarySelections = [
       { skillId: "pin", revision: "a".repeat(64), name: "alpha", ownerProfileId: null },

@@ -237,9 +237,18 @@ remains, the result is `"truncated"` and its continuation describes the next pag
 
 ## Skill discovery
 
-OpenClaw Code Mode exposes the run's policy-eligible skill catalog through
-`skills`. The prompt directory is only a bounded display: omitted names and
-descriptions do not remove otherwise eligible skills from this catalog.
+By default, OpenClaw Code Mode exposes only the run's prompt-admitted skill
+catalog through `skills.list()` and `skills.read(name)`. The `skills.search`
+API and search hint are absent.
+
+Enable **Skill Search** in **Settings → Labs**, or set the boolean config key
+`skills.experimental.search: true`, to opt in. The experiment is off by default
+and requires Code Mode; enabling it does not turn on Code Mode itself.
+
+With Skill Search enabled, `skills` exposes the broader policy-eligible skill
+catalog. The prompt directory remains bounded: omitted names and descriptions
+do not remove otherwise eligible skills from this catalog. The following search
+example and search options require that opt-in:
 
 ```javascript
 const matches = await skills.search("verify release publishing checks", { limit: 3 });

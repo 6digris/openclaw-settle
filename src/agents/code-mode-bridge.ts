@@ -8,6 +8,7 @@ import { createLazyRuntimeNamedExport } from "../shared/lazy-runtime.js";
 import { parseNodeList } from "../shared/node-list-parse.js";
 import type { NodeListNode } from "../shared/node-list-types.js";
 import { resolveEligibleNodeFromList } from "../shared/node-resolve.js";
+import { isSkillSearchEnabled } from "../skills/experimental.js";
 import { resolveSafeTimeoutDelayMs } from "../utils/timer-delay.js";
 import { getBeforeToolCallFailureDisposition } from "./agent-tools.before-tool-call.js";
 import { redactCodeModeCatalogIds, type CodeModeCatalogProjection } from "./code-mode-catalog.js";
@@ -409,6 +410,9 @@ export async function runBridgeRequest(params: {
         break;
       }
       case "skillsSearch": {
+        if (!isSkillSearchEnabled(params.ctx.runtimeConfig ?? params.ctx.config)) {
+          throw new ToolInputError("Skill Search is disabled for this run.");
+        }
         value = searchCodeModeSkills(params.ctx.codeModeSkills ?? [], values[0], values[1]);
         break;
       }

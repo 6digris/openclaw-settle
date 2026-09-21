@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { stripRuntimeOnlySessionSkillsFields } from "../../config/sessions/store-entry-shape.js";
 import { loadWorkspaceSkills } from "../loading/workspace-skill-loader.js";
 import { writeSkill } from "../test-support/e2e-test-helpers.js";
 import {
@@ -25,6 +26,61 @@ afterEach(() => {
 });
 
 describe("content-addressed skill refresh", () => {
+  it("refreshes discovery when the Labs gate changes without source changes", async () => {
+    const workspaceDir = tempDirs.make("skills-search-gate-");
+    vi.stubEnv("OPENCLAW_STATE_DIR", workspaceDir);
+    for (const name of ["alpha", "beta"]) {
+      await writeSkill({ dir: path.join(workspaceDir, "skills", name), name, description: name });
+    }
+    const config = { skills: { limits: { maxSkillsInPrompt: 1 } } };
+    const first = await resolveReusableWorkspaceSkillSnapshot({
+      workspaceDir,
+      config,
+      watch: false,
+    });
+    expect(first.snapshot.resolvedSkills?.map((s) => s.name)).toEqual(["alpha"]);
+    const enabled = await resolveReusableWorkspaceSkillSnapshot({
+      workspaceDir,
+      watch: false,
+      existingSnapshot: first.snapshot,
+      config: { skills: { ...config.skills, experimental: { search: true } } },
+    });
+    expect(enabled.shouldRefresh).toBe(true);
+    expect(enabled.snapshot.resolvedSkills?.map((s) => s.name)).toEqual(["alpha", "beta"]);
+    expect(enabled.snapshot.prompt).toBe(first.snapshot.prompt);
+    const saved = stripRuntimeOnlySessionSkillsFields({
+      sessionId: "labs-toggle",
+      updatedAt: 1,
+      skillsSnapshot: enabled.snapshot,
+    });
+    expect(saved.skillsSnapshot?.searchEnabled).toBe(true);
+    expect(saved.skillsSnapshot?.resolvedSkills).toBeUndefined();
+    const resumed = await resolveReusableWorkspaceSkillSnapshot({
+      workspaceDir,
+      watch: false,
+      existingSnapshot: saved.skillsSnapshot,
+      config: { skills: { ...config.skills, experimental: { search: true } } },
+    });
+    expect(resumed.shouldRefresh).toBe(false);
+    expect(resumed.snapshot.resolvedSkills?.map((s) => s.name)).toEqual(["alpha", "beta"]);
+    const disabled = await resolveReusableWorkspaceSkillSnapshot({
+      workspaceDir,
+      config,
+      watch: false,
+      existingSnapshot: resumed.snapshot,
+    });
+    expect(disabled.shouldRefresh).toBe(true);
+    expect(disabled.snapshot.resolvedSkills?.map((s) => s.name)).toEqual(["alpha"]);
+    const unchanged = await resolveReusableWorkspaceSkillSnapshot({
+      workspaceDir,
+      config,
+      watch: false,
+      existingSnapshot: disabled.snapshot,
+    });
+    expect(unchanged.shouldRefresh).toBe(false);
+    expect(unchanged.snapshot).toBe(disabled.snapshot);
+  });
+
   it.each([false, true])(
     "reuses snapshots and refreshes instruction-only edits (prompt omitted=%s)",
     async (omitted) => {
@@ -34,7 +90,12 @@ describe("content-addressed skill refresh", () => {
       await writeSkill({ dir: skillDir, name: "demo", description: "Demo", body: "Original body" });
       const params = {
         workspaceDir,
-        config: { skills: { limits: { maxSkillsPromptChars: omitted ? 1 : 18000 } } },
+        config: {
+          skills: {
+            experimental: { search: true },
+            limits: { maxSkillsPromptChars: omitted ? 1 : 18000 },
+          },
+        },
         watch: false,
       };
       const first = await resolveReusableWorkspaceSkillSnapshot(params);
