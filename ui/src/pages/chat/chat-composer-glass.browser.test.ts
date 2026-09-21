@@ -15,8 +15,11 @@ afterEach(() => {
     container.remove();
   }
   styles?.remove();
-  if (previousTheme === undefined) delete document.documentElement.dataset.themeMode;
-  else document.documentElement.dataset.themeMode = previousTheme;
+  if (previousTheme === undefined) {
+    delete document.documentElement.dataset.themeMode;
+  } else {
+    document.documentElement.dataset.themeMode = previousTheme;
+  }
 });
 
 it.each(["dark", "light"])("keeps unavailable Steer muted on row hover in %s", async (theme) => {

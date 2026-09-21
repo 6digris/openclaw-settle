@@ -153,21 +153,31 @@ async function expectFullStackGlass(page: Page) {
       const thread = shell
         .closest(".chat-main__conversation")
         ?.querySelector<HTMLElement>(".chat-thread");
-      if (!thread) throw new Error("Missing transcript beside the composer");
+      if (!thread) {
+        throw new Error("Missing transcript beside the composer");
+      }
       const canvas = document.createElement("canvas");
       const context = canvas.getContext("2d");
-      if (!context) throw new Error("Missing color measurement context");
+      if (!context) {
+        throw new Error("Missing color measurement context");
+      }
       const surfaces = Object.entries(surfaceSelectors).flatMap(([name, selector]) => {
         const surface = shell.querySelector(selector);
-        if (!surface) return [];
+        if (!surface) {
+          return [];
+        }
         const style = getComputedStyle(surface);
         context.clearRect(0, 0, 1, 1);
         context.fillStyle = style.backgroundColor;
         context.fillRect(0, 0, 1, 1);
+        const alphaByte = context.getImageData(0, 0, 1, 1).data[3];
+        if (alphaByte === undefined) {
+          throw new Error("Missing measured pixel alpha");
+        }
         return [
           {
             name,
-            alpha: context.getImageData(0, 0, 1, 1).data[3] / 255,
+            alpha: alphaByte / 255,
             filter: style.backdropFilter,
             top: surface.getBoundingClientRect().top,
           },
@@ -196,7 +206,7 @@ async function expectFullStackGlass(page: Page) {
 }
 
 suite.define(() => {
-  it.each(displays.flatMap((display) => scenes.map((scene) => ({ ...display, ...scene }))))(
+  it.each(displays.flatMap((display) => scenes.map((scene) => Object.assign({}, display, scene))))(
     "extends translucent composer surfaces over the transcript: $name, $theme, $width",
     async ({ theme, width, ...scene }) => {
       await suite.withPage(

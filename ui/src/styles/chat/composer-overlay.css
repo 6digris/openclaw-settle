@@ -53,6 +53,13 @@
     --composer-overlay-base: var(--chat-composer-surface);
   }
 
+  @media (prefers-reduced-motion: reduce) {
+    /* Keep the existing static prefill cue visible through the glass surface. */
+    .agent-chat__composer-shell > .agent-chat__input--prefill-attention {
+      --composer-overlay-base: color-mix(in srgb, var(--accent) 14%, var(--card));
+    }
+  }
+
   .agent-chat__composer-overlay .compaction-indicator {
     --composer-overlay-base: var(--panel-strong);
   }
