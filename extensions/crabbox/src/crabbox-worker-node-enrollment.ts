@@ -51,13 +51,14 @@ function createCrabboxNodeSetup(params: {
   const workerBundle = params.workerBundle
     ? (({ token: _token, ...artifact }) => artifact)(params.workerBundle)
     : undefined;
-  const desktopEnvironment = params.desktop
-    ? [
-        "set -eu",
-        ...createCrabboxXfceSessionEnvironment(),
-        `exec "$1" -e 'process.stdout.write(JSON.stringify({DISPLAY:process.env.DISPLAY,DBUS_SESSION_BUS_ADDRESS:process.env.DBUS_SESSION_BUS_ADDRESS,XDG_RUNTIME_DIR:process.env.XDG_RUNTIME_DIR}))'`,
-      ].join("\n")
-    : null;
+  const desktopEnvironment =
+    params.desktop && (params.target ?? "linux") === "linux"
+      ? [
+          "set -eu",
+          ...createCrabboxXfceSessionEnvironment(),
+          `exec "$1" -e 'process.stdout.write(JSON.stringify({DISPLAY:process.env.DISPLAY,DBUS_SESSION_BUS_ADDRESS:process.env.DBUS_SESSION_BUS_ADDRESS,XDG_RUNTIME_DIR:process.env.XDG_RUNTIME_DIR}))'`,
+        ].join("\n")
+      : null;
   // The script receives credentials only through the private forwarded environment.
   // Its children inherit neither download authority nor the enrollment credential.
   const script = `const fs = require("node:fs");
@@ -357,9 +358,11 @@ setPhase("preparation");
     fs.unlinkSync(runtimeLink);
   } catch (error) { if (error.code !== "ENOENT") throw error; }
   setPhase("plugin activation");
-  for (const pluginId of new Set([...bootstrap.enabledPluginIds, ...${JSON.stringify(params.desktop ? ["cua-computer"] : [])}])) {
-    const enabled = spawnSync(process.execPath, [cli, "plugins", "enable", pluginId], { env: nodeEnv, encoding: "utf8", timeout: 60000 });
-    if (enabled.status !== 0) throw new Error("Cloud worker bootstrap could not enable plugin " + pluginId);
+  const pluginIds = [...new Set([...bootstrap.enabledPluginIds, ...${JSON.stringify(params.desktop ? ["cua-computer"] : [])}])];
+  if (pluginIds.length > 0) {
+    // One CLI process retains the combined per-plugin time and output allowances.
+    const enabled = spawnSync(process.execPath, [cli, "plugins", "enable", ...pluginIds], { env: nodeEnv, encoding: "utf8", timeout: 60000 * pluginIds.length, maxBuffer: 1024 * 1024 * pluginIds.length });
+    if (enabled.status !== 0) throw new Error("Cloud worker bootstrap could not enable plugins " + pluginIds.join(", "));
   }
   // Publishing this pointer earlier makes fresh state look like a legacy installation.
   fs.symlinkSync(runtimeDir, runtimeLink, process.platform === "win32" ? "junction" : "dir");

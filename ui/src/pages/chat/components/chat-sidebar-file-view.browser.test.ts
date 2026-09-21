@@ -104,6 +104,39 @@ describe.runIf(browserMode)("chat file editor", () => {
     expect(getComputedStyle(scroller).overflowX).toBe("auto");
   });
 
+  it("wraps long lines at the panel width when word wrap is on and remembers the choice", async () => {
+    localStorage.removeItem("openclaw.control.fileView.wrap.v1");
+    const panel = await mountFile(
+      {
+        kind: "file",
+        path: "src/long-line.ts",
+        name: "long-line.ts",
+        content: `export const value = "${"long-content-".repeat(80)}";`,
+      },
+      320,
+    );
+    const scroller = panel.querySelector<HTMLElement>(".cm-scroller")!;
+    await expect.poll(() => scroller.scrollWidth).toBeGreaterThan(scroller.clientWidth);
+
+    const wrapButton = button(panel, "Enable word wrap");
+    expect(wrapButton.getAttribute("aria-pressed")).toBe("false");
+    await userEvent.click(wrapButton);
+
+    await expect.poll(() => scroller.scrollWidth).toBeLessThanOrEqual(scroller.clientWidth);
+    // One logical line now occupies several visual rows.
+    const line = panel.querySelector<HTMLElement>(".cm-line")!;
+    expect(line.getBoundingClientRect().height).toBeGreaterThan(
+      Number.parseFloat(getComputedStyle(line).lineHeight) * 2,
+    );
+    expect(button(panel, "Disable word wrap").getAttribute("aria-pressed")).toBe("true");
+    expect(localStorage.getItem("openclaw.control.fileView.wrap.v1")).toBe("true");
+
+    await userEvent.click(button(panel, "Disable word wrap"));
+    await expect.poll(() => scroller.scrollWidth).toBeGreaterThan(scroller.clientWidth);
+    expect(localStorage.getItem("openclaw.control.fileView.wrap.v1")).toBe("false");
+    localStorage.removeItem("openclaw.control.fileView.wrap.v1");
+  });
+
   it("renders content and decorates the requested line", async () => {
     const panel = await mountFile({
       kind: "file",
@@ -145,6 +178,35 @@ describe.runIf(browserMode)("chat file editor", () => {
     await expect.poll(() => lineIndexes(".file-view__line--current")).toEqual([matchLines[1]]);
     await userEvent.click(button(panel, "Previous match"));
     await expect.poll(() => lineIndexes(".file-view__line--current")).toEqual([matchLines[0]]);
+  });
+
+  it("returns focus to the file search toggle on Escape and can reopen with the keyboard", async () => {
+    const panel = await mountFile({
+      kind: "file",
+      path: "search.json",
+      name: "search.json",
+      content: '{"city":"雪"}\n',
+    });
+    const searchToggle = button(panel, "Search in file");
+    await userEvent.click(searchToggle);
+    const input = panel.querySelector<HTMLInputElement>('input[type="search"]')!;
+    await expect.poll(() => document.activeElement).toBe(input);
+    await userEvent.fill(input, "雪");
+    expect(panel.querySelector(".file-view__search-counter")?.textContent?.trim()).toBe("1/1");
+
+    await userEvent.keyboard("{Escape}");
+    await expect.poll(() => panel.querySelector('input[type="search"]')).toBeNull();
+    expect(document.activeElement).toBe(searchToggle);
+    expect(searchToggle.getAttribute("aria-pressed")).toBe("false");
+
+    await userEvent.keyboard("{Enter}");
+    await expect
+      .poll(() => document.activeElement === panel.querySelector('input[type="search"]'))
+      .toBe(true);
+    expect(panel.querySelector<HTMLInputElement>('input[type="search"]')?.value).toBe("");
+    await userEvent.click(searchToggle);
+    await expect.poll(() => panel.querySelector('input[type="search"]')).toBeNull();
+    expect(document.activeElement).toBe(searchToggle);
   });
 
   it("enables save after an edit and keeps the saved content", async () => {

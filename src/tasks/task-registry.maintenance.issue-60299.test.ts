@@ -41,8 +41,8 @@ function makeStaleTask(overrides: Partial<TaskRecord>): TaskRecord {
   };
 }
 
-afterEach(() => {
-  stopTaskRegistryMaintenance();
+afterEach(async () => {
+  await stopTaskRegistryMaintenance();
   resetTaskRegistryMaintenanceRuntimeForTests();
   resetDetachedTaskLifecycleRuntimeForTests();
 });
@@ -437,6 +437,38 @@ describe("task-registry maintenance issue #60299", () => {
     expect(storedTask.endedAt).toBe(startedAt + 1250);
     expect(storedTask.terminalSummary).toBe("done");
     expect(storedTask.detail).toEqual({ kind: "cron-run", status: "ok", durationMs: 1250 });
+  });
+
+  it("recovers a durable cron result that arrives while the recovery hook yields", async () => {
+    const sourceId = "cron-job-late-result";
+    const task = makeStaleTask({ runtime: "cron", sourceId, runId: "cron-late-result" });
+    const endedAt = Date.now();
+    const durableCronTaskRows: Record<string, TaskRecord[]> = { [sourceId]: [] };
+    const { currentTasks } = createTaskRegistryMaintenanceHarness({
+      tasks: [task],
+      durableCronTaskRows,
+    });
+    const recoveryHook = vi.fn(async () => {
+      await Promise.resolve();
+      durableCronTaskRows[sourceId] = [
+        { ...task, status: "succeeded", endedAt, lastEventAt: endedAt, terminalSummary: "done" },
+      ];
+      return { recovered: false };
+    });
+    setDetachedTaskLifecycleRuntime({
+      ...getDetachedTaskLifecycleRuntime(),
+      tryRecoverTaskBeforeMarkLost: recoveryHook,
+    });
+
+    expectMaintenanceCounts(await runTaskRegistryMaintenance(), { reconciled: 0, recovered: 1 });
+    expect(recoveryHook).toHaveBeenCalledOnce();
+    expect(currentTasks.get(task.taskId)).toMatchObject({
+      status: "succeeded",
+      endedAt,
+      lastEventAt: endedAt,
+      terminalSummary: "done",
+    });
+    expect(currentTasks.get(task.taskId)).not.toHaveProperty("error");
   });
 
   it("recovers cancelled cron tasks with exact durable summaries", async () => {

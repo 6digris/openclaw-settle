@@ -36,6 +36,7 @@ import type {
 } from "./command-queue.types.js";
 import {
   GatewayDrainingError,
+  type GatewayDrainReason,
   isGatewaySubordinateWorkAdmissionClosed,
   isGatewayWorkAdmissionClosed,
   markGatewayRestartDraining,
@@ -447,8 +448,8 @@ function drainReadyCommandLane(lane: string, completedState?: LaneState): void {
  * Mark gateway as draining for restart so new enqueues fail fast with
  * `GatewayDrainingError` instead of being silently killed on shutdown.
  */
-export function markGatewayDraining(): void {
-  markGatewayRestartDraining();
+export function markGatewayDraining(reason?: GatewayDrainReason): void {
+  markGatewayRestartDraining(reason);
 }
 
 export function isGatewayDraining(): boolean {
@@ -704,7 +705,7 @@ export function resetCommandLane(lane: string = CommandLane.Main): number {
 }
 
 /**
- * Reset all lane runtime state to idle. Used after SIGUSR1 in-process
+ * Reset all lane runtime state to idle. Used after SIGUSR2 in-process
  * restarts where interrupted tasks' finally blocks may not run, leaving
  * stale active task IDs that permanently block new work from draining.
  *

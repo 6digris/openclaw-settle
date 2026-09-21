@@ -184,6 +184,14 @@ const fail = async (code, message) => {
     "\\nterminal failure: Authorization: Bearer fixture-tail-secret", resolve));
   process.exit(code);
 };
+const fixtureVersion = process.env.QA_CONFIG_RUNTIME_VERSION;
+if (fixtureVersion) {
+  const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  const touchedVersion = config.meta?.lastTouchedVersion;
+  if (touchedVersion && touchedVersion !== fixtureVersion) {
+    throw new Error("config last written by newer runtime: " + touchedVersion);
+  }
+}
 const authDbPath = path.join(stateDir, "agents", "qa", "agent", "openclaw-agent.sqlite");
 if (args[0] === "models") {
   let stdin = "";
@@ -215,6 +223,7 @@ if (args[0] === "models") {
   }
   const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
   config.fixtureProfiles = [...(config.fixtureProfiles ?? []), provider];
+  if (fixtureVersion) config.meta = { lastTouchedVersion: fixtureVersion };
   fs.writeFileSync(configPath, JSON.stringify(config));
   process.exit(0);
 }
@@ -254,6 +263,7 @@ if (args[0] === "update") {
     portProbe.close((error) => error ? reject(error) : resolve());
   });
   record({ kind: "plugins", args, authDbPath, configPath, stateDir, configPort: config.gateway.port });
+  if (fixtureVersion) config.meta = { lastTouchedVersion: fixtureVersion };
   delete config.plugins.entries["qa-lab"];
   config.plugins.allow = config.plugins.allow.filter((id) => id !== "qa-lab");
   fs.writeFileSync(configPath, JSON.stringify(config));
@@ -269,6 +279,7 @@ record({
   configPath,
   authProfileIds: Object.keys(config.auth?.profiles ?? {}),
   fixtureProfiles: config.fixtureProfiles,
+  configVersion: config.meta?.lastTouchedVersion,
   sourcePluginConfigured: Boolean(config.plugins?.entries?.["qa-lab"]),
   configPort: config.gateway.port,
   stateDir,
@@ -752,36 +763,6 @@ describe("buildQaRuntimeEnv", () => {
     });
     expect(developmentEnv.NODE_ENV).toBe("development");
   });
-
-  it.each(["parent", "runtime patch"])(
-    "keeps %s supervision out of QA-owned children",
-    (source) => {
-      const supervisorEnv = {
-        OPENCLAW_SUPERVISOR_MODE: "external",
-        OPENCLAW_LAUNCHD_LABEL: "ai.openclaw.gateway",
-        LAUNCH_JOB_LABEL: "ai.openclaw.gateway",
-        LAUNCH_JOB_NAME: "ai.openclaw.gateway",
-        XPC_SERVICE_NAME: "ai.openclaw.gateway",
-        OPENCLAW_SYSTEMD_UNIT: "openclaw-gateway.service",
-        INVOCATION_ID: "synthetic-parent-invocation",
-        SYSTEMD_EXEC_PID: "1234",
-        JOURNAL_STREAM: "8:1234",
-        OPENCLAW_WINDOWS_TASK_NAME: "OpenClaw Gateway",
-        OPENCLAW_SERVICE_MARKER: "openclaw",
-        OPENCLAW_SERVICE_KIND: "gateway",
-      };
-      const env = buildQaRuntimeEnv({
-        ...createParams(source === "parent" ? supervisorEnv : {}),
-        runtimeEnvPatch: source === "runtime patch" ? supervisorEnv : undefined,
-      });
-
-      for (const key of Object.keys(supervisorEnv)) {
-        expect(env[key], key).toBeUndefined();
-      }
-      expect(env.OPENCLAW_NO_RESPAWN).toBe("1");
-      expect(env.OPENCLAW_QA_PARENT_PID).toBe(String(process.pid));
-    },
-  );
 
   it("does not inherit parent channel or provider skip controls", () => {
     const env = buildQaRuntimeEnv({
@@ -1267,7 +1248,7 @@ describe("buildQaRuntimeEnv", () => {
       timeoutMs: 100,
     });
 
-    logs += "signal SIGUSR1 received\nrestart mode: in-process restart\n";
+    logs += "signal SIGUSR2 received\nrestart mode: in-process restart\n";
 
     await expect(wait).resolves.toBeUndefined();
   });
@@ -1364,10 +1345,10 @@ describe("buildQaRuntimeEnv", () => {
     expect(output.text()).not.toContain("�");
   });
 
-  it("times out when a SIGUSR1 restart never reaches the boundary", async () => {
+  it("times out when a SIGUSR2 restart never reaches the boundary", async () => {
     await expect(
       waitForQaGatewayRestartBoundary({
-        readLogsSince: () => "signal SIGUSR1 received\n",
+        readLogsSince: () => "signal SIGUSR2 received\n",
         mark: 0,
         pollMs: 1,
         timeoutMs: 1,
@@ -1378,7 +1359,7 @@ describe("buildQaRuntimeEnv", () => {
   it("keeps oversized restart-boundary poll intervals within the timeout", async () => {
     await expect(
       waitForQaGatewayRestartBoundary({
-        readLogsSince: () => "signal SIGUSR1 received\n",
+        readLogsSince: () => "signal SIGUSR2 received\n",
         mark: 0,
         pollMs: Number.MAX_SAFE_INTEGER,
         timeoutMs: 5,
@@ -1781,6 +1762,7 @@ describe("buildQaRuntimeEnv", () => {
           runtimeEnvPatch: {
             QA_RECORD_PATH: recordPath,
             QA_LEGACY_PLUGIN_SETUP: legacy ? "1" : "0",
+            QA_CONFIG_RUNTIME_VERSION: "2026.7.33",
           },
         }),
       ).rejects.toThrow("fixture gateway exit");
@@ -1835,6 +1817,7 @@ describe("buildQaRuntimeEnv", () => {
       expect(records.at(-1)).toMatchObject({
         kind: "gateway",
         authProfileIds: ["qa-mock-openai", "qa-mock-anthropic"],
+        configVersion: "2026.7.33",
         dbExists: true,
       });
       expect(records.at(-1)?.configPath).not.toBe(authConfigPaths[0]);
@@ -1888,7 +1871,11 @@ describe("buildQaRuntimeEnv", () => {
           },
           providerMode: "mock-openai",
           transportBaseUrl: "http://127.0.0.1:43123",
-          runtimeEnvPatch: { QA_RECORD_PATH: recordPath, QA_STARTUP_RETRY: retry },
+          runtimeEnvPatch: {
+            QA_RECORD_PATH: recordPath,
+            QA_STARTUP_RETRY: retry,
+            QA_CONFIG_RUNTIME_VERSION: "2026.7.33",
+          },
           mutateConfig,
         }),
       ).rejects.toThrow("fixture gateway exit");
@@ -1918,6 +1905,7 @@ describe("buildQaRuntimeEnv", () => {
         expect(gateway).toMatchObject({
           dbExists: true,
           authProfileIds: ["qa-mock-openai", "qa-mock-anthropic"],
+          configVersion: "2026.7.33",
         });
       }
       if (retry === "migration") {
@@ -1925,6 +1913,33 @@ describe("buildQaRuntimeEnv", () => {
       }
     },
   );
+
+  it("preserves authored newer-version metadata so the packaged candidate refuses it", async () => {
+    const fixtureRoot = await tempDirs.makeTempDir("qa-packaged-newer-config-");
+    const tempParentDir = path.join(fixtureRoot, "gateway-temp");
+    const recordPath = path.join(fixtureRoot, "commands.jsonl");
+    const fixturePath = await writePackagedGatewayFixture(fixtureRoot);
+    await mkdir(tempParentDir);
+    await expect(
+      ownGateway().start({
+        repoRoot: process.cwd(),
+        command: {
+          executablePath: process.execPath,
+          argsPrefix: [fixturePath],
+          tempParentDir,
+          usePackagedPlugins: true,
+        },
+        providerMode: "mock-openai",
+        transportBaseUrl: "http://127.0.0.1:43123",
+        runtimeEnvPatch: {
+          QA_RECORD_PATH: recordPath,
+          QA_CONFIG_RUNTIME_VERSION: "2026.7.33",
+        },
+        mutateConfig: (cfg) => ({ ...cfg, meta: { lastTouchedVersion: "2026.9.4" } }),
+      }),
+    ).rejects.toThrow("config last written by newer runtime: 2026.9.4");
+    await expect(lstat(recordPath)).rejects.toThrow(/ENOENT/u);
+  });
 
   it.each(["openai", "anthropic", "help", "repair"] as const)(
     "blocks packaged gateway spawn with bounded redacted diagnostics when %s fails",

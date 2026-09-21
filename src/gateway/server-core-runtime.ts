@@ -65,6 +65,7 @@ export async function startGatewayCoreRuntime(input: {
   loadGatewayModelCatalog: typeof import("./server-model-catalog.js").loadGatewayModelCatalog;
   loadGatewayModelCatalogSnapshot: typeof import("./server-model-catalog.js").loadGatewayModelCatalogSnapshot;
   readPreparedGatewayModelCatalog: typeof import("./server-model-catalog.js").readPreparedGatewayModelCatalog;
+  readPreparedGatewayModelCatalogBatch: typeof import("./server-model-catalog.js").readPreparedGatewayModelCatalogBatch;
 }) {
   const {
     lifecycleRuntime: runtime,
@@ -78,6 +79,7 @@ export async function startGatewayCoreRuntime(input: {
     loadGatewayModelCatalog,
     loadGatewayModelCatalogSnapshot,
     readPreparedGatewayModelCatalog,
+    readPreparedGatewayModelCatalogBatch,
   } = input;
   const {
     minimalTestGateway,
@@ -117,7 +119,6 @@ export async function startGatewayCoreRuntime(input: {
     workerEnvironmentService,
     workerPlacementDispatchAvailable,
     workerPlacementControlAvailable,
-    workerDesktopObserveAvailable,
     desktopSessionRegistry,
     gatewayComputerService,
     listStartupChannelGatewayMethods,
@@ -155,6 +156,7 @@ export async function startGatewayCoreRuntime(input: {
         loadGatewayStartupEarlyModule().then(({ startGatewayEarlyRuntime }) =>
           startGatewayEarlyRuntime({
             minimalTestGateway,
+            isClosing: () => runtime.lifecycle.closePreludeStarted,
             updateCanary: runtime.opts.updateCanary,
             cfgAtStart,
             port,
@@ -236,6 +238,7 @@ export async function startGatewayCoreRuntime(input: {
   } = await startupTrace.measure("runtime.subscriptions", () =>
     startGatewayEventSubscriptions({
       signal: runtime.connectionWork.signal,
+      getSessionRowProjection: runtime.getSessionRowProjection,
       log,
       broadcast,
       broadcastToConnIds,
@@ -293,6 +296,8 @@ export async function startGatewayCoreRuntime(input: {
     questionManager,
     cancelRunBoundApprovals,
     forwardPluginApprovalRequest,
+    forwardExecApprovalRequest,
+    execApprovalIosPushDelivery,
     approvalWebPushDelivery,
     pluginApprovalIosPushDelivery,
     pluginApprovalManager,
@@ -339,11 +344,8 @@ export async function startGatewayCoreRuntime(input: {
             delegatedAuthority: authority,
           }),
         onApprovalLifecycle: approvalSessionEvents.publish,
-        onAgentRunAuthorityClosed: (authority, approvalReason) => {
+        onAgentRunAuthorityClosed: (authority) => {
           gatewayComputerService.revokeRunAuthority(authority);
-          if (!approvalReason) {
-            secretEgressProxy?.revokeRun(authority.operationalRunInstance);
-          }
         },
       }),
       coreGatewayHandlers: coreGatewayHandlersLocal,
@@ -404,11 +406,12 @@ export async function startGatewayCoreRuntime(input: {
       (descriptor) =>
         (workerEnvironmentService ||
           (descriptor.name !== "environments.create" &&
-            descriptor.name !== "environments.destroy")) &&
+            descriptor.name !== "environments.destroy" &&
+            !descriptor.name.startsWith("environments.session."))) &&
         (workerPlacementDispatchAvailable || descriptor.name !== "sessions.dispatch") &&
         (workerPlacementControlAvailable ||
           (descriptor.name !== "sessions.reclaim" && descriptor.name !== "sessions.move")) &&
-        (workerDesktopObserveAvailable ||
+        (workerEnvironmentService ||
           (descriptor.name !== "desktop.launch" &&
             descriptor.name !== "worker.desktop.observe" &&
             descriptor.name !== "worker.desktop.launch")),
@@ -526,6 +529,8 @@ export async function startGatewayCoreRuntime(input: {
     questionManager,
     cancelRunBoundApprovals,
     forwardPluginApprovalRequest,
+    forwardExecApprovalRequest,
+    execApprovalIosPushDelivery,
     approvalWebPushDelivery,
     pluginApprovalIosPushDelivery,
     pluginApprovalManager,
@@ -541,6 +546,7 @@ export async function startGatewayCoreRuntime(input: {
     loadGatewayModelCatalog,
     loadGatewayModelCatalogSnapshot,
     readPreparedGatewayModelCatalog,
+    readPreparedGatewayModelCatalogBatch,
     getPluginMetadataSnapshot: () => runtime.pluginMetadataSnapshot,
   };
 }

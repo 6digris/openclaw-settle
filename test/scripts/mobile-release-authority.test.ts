@@ -16,7 +16,8 @@ import {
 } from "../../scripts/mobile-release-intent.mjs";
 import { applyMobileReleasePlan, planMobileRelease } from "../../scripts/mobile-release-version.ts";
 import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
-import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+import { cleanupTempDirs, makeTempDir, useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+import { runVitestShutdownCommand } from "../helpers/vitest-shutdown-command.js";
 
 const REPOSITORY = "openclaw/openclaw";
 const TARGET_REF = "release/2026.9.2-mobile";
@@ -44,6 +45,8 @@ const TOOLING_FILES = [
   "scripts/lib/release-version.mjs",
 ] as const;
 const tempRoots = useAutoCleanupTempDirTracker(afterEach);
+const joinedObservationRoots: string[] = [];
+afterEach(() => cleanupTempDirs(joinedObservationRoots));
 
 type Platform = "ios" | "android";
 
@@ -653,6 +656,12 @@ function advanceObservedMain(fixture: Fixture, fromSha: string, branch: string):
 
 function runAuthority(fixture: Fixture, phase: string, overrides: NodeJS.ProcessEnv = {}) {
   fs.writeFileSync(fixture.outputPath, "");
+  if (overrides.MOBILE_OPERATION === "inspect" && phase === "inspect") {
+    const candidatePath = path.join(fixture.trusted, ".ios-inspection-candidate");
+    if (!fs.existsSync(candidatePath)) {
+      fs.cpSync(fixture.workspace, candidatePath, { recursive: true });
+    }
+  }
   return spawnSync(process.execPath, ["--experimental-strip-types", fixture.scriptPath, phase], {
     encoding: "utf8",
     env: { ...fixture.env, ...overrides },
@@ -893,6 +902,78 @@ function expectOnlyAttemptOneLifecycleReads(
 }
 
 describe("mobile release authority", () => {
+  it("validates inspection without publication receipts, intents, attestations, or ref writes", () => {
+    const fixture = createFixture();
+    const result = runAuthority(fixture, "inspect", { MOBILE_OPERATION: "inspect" });
+    expect(result.status, result.stderr).toBe(0);
+    expect(readOutputs(fixture.outputPath)).toEqual({
+      inspection_validated: "true",
+      ios_app_store_version: "2026.9.20",
+    });
+    expect(fs.existsSync(path.join(fixture.runnerTemp, "mobile-release-ref-ios"))).toBe(false);
+    expect(fs.existsSync(path.join(fixture.runnerTemp, "mobile-release-intent-ios"))).toBe(false);
+    expect(
+      readGhTrace(fixture.ghLog).every(
+        ({ args }) =>
+          args[0] === "api" && !args.includes("POST") && !args[1]?.includes("/artifacts"),
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    [
+      "cancelled",
+      { GH_CURRENT_STATUSES: "in_progress,completed", GH_CURRENT_CONCLUSIONS: 'null,"cancelled"' },
+    ],
+    ["rerun", { GH_CURRENT_ATTEMPTS: "1,2" }],
+    ["revoked actor", { GH_PERMISSIONS: "write,read" }],
+    ["moved candidate", { GH_TARGET_REFS: OTHER_SHA }],
+    ["wrong tooling", { MOBILE_WORKFLOW_SHA: OTHER_SHA }],
+    ["recovery", { MOBILE_RECOVERY: "true" }],
+    ["foreign run", { MOBILE_AUTHORITY_RUN_ID: "999" }],
+  ])("rejects inspection with %s before returning credential admission", (_label, overrides) => {
+    const fixture = createFixture();
+    const result = runAuthority(fixture, "inspect", { MOBILE_OPERATION: "inspect", ...overrides });
+    expect(result.status).toBe(1);
+    expect(readOutputs(fixture.outputPath)).toEqual({});
+    expect(readGhTrace(fixture.ghLog).some(({ args }) => args.includes("POST"))).toBe(false);
+  });
+
+  it("rejects dirty trusted tooling during inspection before admission", () => {
+    const fixture = createFixture();
+    fs.appendFileSync(
+      path.join(fixture.trusted, "scripts/lib/ios-release-plan.ts"),
+      "\n// unexpected tooling mutation\n",
+    );
+    const result = runAuthority(fixture, "inspect", { MOBILE_OPERATION: "inspect" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Trusted inspection tooling has tracked changes");
+    expect(readOutputs(fixture.outputPath)).toEqual({});
+    expect(readGhTrace(fixture.ghLog)).toEqual([]);
+  });
+
+  it("rejects dirty candidate data during inspection", () => {
+    const fixture = createFixture();
+    const candidatePath = path.join(fixture.trusted, ".ios-inspection-candidate");
+    fs.cpSync(fixture.workspace, candidatePath, { recursive: true });
+    fs.writeFileSync(path.join(candidatePath, "apps/ios/CHANGELOG.md"), "dirty\n");
+    const result = runAuthority(fixture, "inspect", { MOBILE_OPERATION: "inspect" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("tracked changes");
+    expect(readOutputs(fixture.outputPath)).toEqual({});
+  });
+
+  it.each(["authorize", "revalidate", "validate-record", "record"])(
+    "inspection cannot enter %s",
+    (phase) => {
+      const fixture = createFixture();
+      const result = runAuthority(fixture, phase, { MOBILE_OPERATION: "inspect" });
+      expect(result.status).toBe(1);
+      expect(readOutputs(fixture.outputPath)).toEqual({});
+      expect(readGhTrace(fixture.ghLog)).toEqual([]);
+    },
+  );
+
   it("authorizes an exact five-file release candidate and emits an attested v2 receipt", () => {
     const fixture = createFixture();
     const outputs = authorize(fixture);
@@ -1838,6 +1919,26 @@ describe("mobile release authority", () => {
     expect(fs.existsSync(path.join(fixture.stateDir, "release-ref"))).toBe(false);
   });
 
+  it("record-only rejects a missing original intent before token or ref writing", () => {
+    const fixture = createFixture();
+    const outputs = authorize(fixture);
+    const recovery = prepareRecoveryOverrides(fixture, outputs);
+    resetState(fixture);
+    const result = runAuthority(fixture, "resolve-artifacts", {
+      ...recovery,
+      MOBILE_INTENT_ARTIFACT_DIGEST: "",
+      MOBILE_INTENT_ARTIFACT_ID: "",
+      MOBILE_INTENT_ARTIFACT_NAME: "",
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "Expected exactly one unexpired mobile-release-intent-ios-123-1 artifact",
+    );
+    expect(readOutputs(fixture.outputPath)).toEqual({});
+    expect(fs.existsSync(path.join(fixture.runnerTemp, "mobile-release-intent-ios"))).toBe(false);
+    expect(readGhTrace(fixture.ghLog).some(({ args }) => args.includes("POST"))).toBe(false);
+  });
+
   it("records exact iOS and Android intents and handles an identical create race idempotently", () => {
     for (const platform of ["ios", "android"] as const) {
       const fixture = createFixture({ platform });
@@ -1998,7 +2099,7 @@ describe("mobile release authority", () => {
     expect(source).not.toContain("extraheader");
   });
 
-  it("keeps the Android emulator diagnostic manual, exact-SHA-bound, and secretless", () => {
+  it("keeps the Android emulator diagnostic manual, exact-SHA-bound, and secretless", async () => {
     const file = ".github/workflows/android-emulator-diagnostic.yml";
     const source = fs.readFileSync(file, "utf8");
     const workflow = parse(source) as {
@@ -2462,7 +2563,7 @@ describe("mobile release authority", () => {
       .replace("final_snapshot_lead_seconds=15", "final_snapshot_lead_seconds=4")
       .replace("snapshot_properties_max_bytes=65536", "snapshot_properties_max_bytes=64")
       .replace("snapshot_logcat_max_bytes=262144", "snapshot_logcat_max_bytes=128");
-    const runPostDeadlineObservation = (
+    const runPostDeadlineObservation = async (
       adbSource: string,
       options: {
         deadlineSeconds?: number;
@@ -2471,9 +2572,10 @@ describe("mobile release authority", () => {
         preObservationDelaySeconds?: number;
       } = {},
     ) => {
-      const root = tempRoots.make("openclaw-android-emulator-post-deadline-");
+      const root = makeTempDir([], "openclaw-android-emulator-post-deadline-");
       const bin = path.join(root, "bin");
       const diagnosticDir = path.join(root, "diagnostic");
+      const clockPath = path.join(root, "observation-clock.txt");
       const deadlineSeconds = options.deadlineSeconds ?? 12;
       const functions = options.functions ?? observationFunctions;
       const preObservationDelaySeconds = options.preObservationDelaySeconds ?? 0;
@@ -2481,12 +2583,24 @@ describe("mobile release authority", () => {
       fs.mkdirSync(diagnosticDir);
       fs.writeFileSync(path.join(bin, "adb"), adbSource, { mode: 0o755 });
       const startedAt = Date.now();
-      const result = spawnSync(
-        "/bin/bash",
-        [
+      const result = await runVitestShutdownCommand({
+        bin: "/bin/bash",
+        args: [
           "-c",
           [
             "set -euo pipefail",
+            // Observation waits use a clock; the timeout and cleanup probes below use real time.
+            "unset SECONDS",
+            "SECONDS=0",
+            "sleep() {",
+            '  if [[ -n "${probe_pid:-}" ]]; then',
+            // Join the short-lived adb fixture without racing its output or exit status.
+            '    wait "$probe_pid" 2>/dev/null || :',
+            "  else",
+            "    SECONDS=$((SECONDS + $1))",
+            "  fi",
+            "}",
+            `trap 'printf "%s\\n" "$SECONDS" >"$OBSERVATION_CLOCK_FILE"' EXIT`,
             "sample_owned_qemu() { :; }",
             functions,
             "readiness_failure_latched=0",
@@ -2498,31 +2612,37 @@ describe("mobile release authority", () => {
             'fail_after_readiness_timeout "latched readiness failure" "${INITIAL_SERIAL:-}"',
           ].join("\n"),
         ],
-        {
-          encoding: "utf8",
-          env: {
-            ...process.env,
-            DIAGNOSTIC_DIR: diagnosticDir,
-            INITIAL_SERIAL: options.initialSerial ?? "",
-            PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
-          },
-          timeout: 20_000,
+        env: {
+          ...process.env,
+          DIAGNOSTIC_DIR: diagnosticDir,
+          INITIAL_SERIAL: options.initialSerial ?? "",
+          OBSERVATION_CLOCK_FILE: clockPath,
+          PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
         },
-      );
+        timeoutMs: 20_000,
+        maxBytes: 1024 * 1024,
+      }).catch((error: unknown) => {
+        throw new Error(`Android observation failed; fixture retained at ${root}`, {
+          cause: error,
+        });
+      });
+      // A rejected managed join leaves this root outside automatic cleanup.
+      joinedObservationRoots.push(root);
       const snapshotsRoot = path.join(diagnosticDir, "cold-boot-snapshots");
       return {
         durationMs: Date.now() - startedAt,
+        elapsedSeconds: Number(fs.readFileSync(clockPath, "utf8").trim()),
         observations: fs.readFileSync(
           path.join(diagnosticDir, "post-deadline-observations.log"),
           "utf8",
         ),
-        result,
+        result: { ...result, status: result.code },
         snapshots: fs.existsSync(snapshotsRoot) ? fs.readdirSync(snapshotsRoot).toSorted() : [],
         snapshotsRoot,
       };
     };
 
-    const lateReady = runPostDeadlineObservation(`#!/bin/bash
+    const lateReady = await runPostDeadlineObservation(`#!/bin/bash
 set -euo pipefail
 if [[ "\${1:-}" == "devices" ]]; then
   printf 'List of devices attached\\nemulator-5554\\tdevice product:sdk model:sdk\\n'
@@ -2549,7 +2669,7 @@ fi
       "final_snapshot_lead_seconds=4",
       "final_snapshot_lead_seconds=60",
     );
-    const lateReadyNearCeiling = runPostDeadlineObservation(
+    const lateReadyNearCeiling = await runPostDeadlineObservation(
       `#!/bin/bash
 set -euo pipefail
 if [[ "\${1:-}" == "devices" ]]; then
@@ -2567,8 +2687,9 @@ fi
     expect(lateReadyNearCeiling.observations).toContain("observation_stop=late-boot-completed");
     expect(lateReadyNearCeiling.snapshots).toEqual(["first-online"]);
 
-    const failedBootProbeNearCeiling = runPostDeadlineObservation(
-      `#!/bin/bash
+    const [failedBootProbeResult, boundedSnapshotsResult] = await Promise.allSettled([
+      runPostDeadlineObservation(
+        `#!/bin/bash
 set -euo pipefail
 if [[ "\${1:-}" == "devices" ]]; then
   printf 'List of devices attached\\nemulator-5554\\tdevice product:sdk model:sdk\\n'
@@ -2582,13 +2703,46 @@ elif [[ "\${1:-}" == "-s" && "\${3:-}" == "logcat" ]]; then
   printf 'system crash evidence line\\n'
 fi
 `,
-      { functions: lateReadyNearCeilingFunctions },
-    );
+        { functions: lateReadyNearCeilingFunctions },
+      ),
+      runPostDeadlineObservation(`#!/bin/bash
+set -euo pipefail
+if [[ "\${1:-}" == "devices" ]]; then
+  printf 'List of devices attached\\nemulator-5554\\tdevice product:sdk model:sdk\\n'
+elif [[ "\${1:-}" == "-s" && "\${3:-}" == "emu" ]]; then
+  printf '%s\\nOK\\n' "\${AVD_NAME:?}"
+elif [[ "\${1:-}" == "-s" && "\${3:-}" == "shell" && "\${5:-}" == "sys.boot_completed" ]]; then
+  printf '\\n'
+elif [[ "\${1:-}" == "-s" && "\${3:-}" == "shell" ]]; then
+  for _ in {1..40}; do printf '[init.svc.example]: [running]\\n'; done
+elif [[ "\${1:-}" == "-s" && "\${3:-}" == "logcat" ]]; then
+  for _ in {1..40}; do printf 'system crash evidence line\\n'; done
+fi
+`),
+    ]);
+    if (
+      failedBootProbeResult.status === "rejected" &&
+      boundedSnapshotsResult.status === "rejected"
+    ) {
+      throw new AggregateError(
+        [failedBootProbeResult.reason, boundedSnapshotsResult.reason],
+        "Android observation scenarios failed",
+      );
+    }
+    if (failedBootProbeResult.status === "rejected") {
+      throw failedBootProbeResult.reason;
+    }
+    if (boundedSnapshotsResult.status === "rejected") {
+      throw boundedSnapshotsResult.reason;
+    }
+    const failedBootProbeNearCeiling = failedBootProbeResult.value;
+    const boundedSnapshots = boundedSnapshotsResult.value;
     expect(failedBootProbeNearCeiling.result.status).toBe(1);
+    expect(failedBootProbeNearCeiling.elapsedSeconds).toBe(12);
     expect(failedBootProbeNearCeiling.observations).toContain("boot_status=7");
     expect(failedBootProbeNearCeiling.snapshots).toEqual(["first-online", "near-ceiling"]);
 
-    const unrelatedDevice = runPostDeadlineObservation(`#!/bin/bash
+    const unrelatedDevice = await runPostDeadlineObservation(`#!/bin/bash
 set -euo pipefail
 if [[ "\${1:-}" == "devices" ]]; then
   printf 'List of devices attached\\nemulator-5554\\tdevice product:sdk model:sdk\\n'
@@ -2604,7 +2758,7 @@ fi
     expect(unrelatedDevice.observations).not.toContain("late_boot_completed_at=");
     expect(unrelatedDevice.snapshots).toEqual([]);
 
-    const changedDevice = runPostDeadlineObservation(
+    const changedDevice = await runPostDeadlineObservation(
       `#!/bin/bash
 set -euo pipefail
 if [[ "\${1:-}" == "devices" ]]; then
@@ -2617,7 +2771,7 @@ fi
     expect(changedDevice.observations).toContain("observation_stop=unexpected-device-change");
     expect(changedDevice.snapshots).toEqual([]);
 
-    const capped = runPostDeadlineObservation(
+    const capped = await runPostDeadlineObservation(
       `#!/bin/bash
 set -euo pipefail
 if [[ "\${1:-}" == "devices" ]]; then
@@ -2627,11 +2781,12 @@ fi
       { deadlineSeconds: 2 },
     );
     expect(capped.result.status).toBe(1);
+    expect(capped.elapsedSeconds).toBe(2);
     expect(capped.result.stderr).toContain("::error::latched readiness failure");
     expect(capped.observations).toContain("observation_cap_seconds=900");
     expect(capped.observations).toContain("observation_stop=observation-cap-reached");
 
-    const absoluteCap = runPostDeadlineObservation(
+    const absoluteCap = await runPostDeadlineObservation(
       `#!/bin/bash
 set -euo pipefail
 if [[ "\${1:-}" == "devices" ]]; then
@@ -2641,24 +2796,12 @@ fi
       { deadlineSeconds: 3, preObservationDelaySeconds: 2 },
     );
     expect(absoluteCap.result.status).toBe(1);
+    expect(absoluteCap.elapsedSeconds).toBe(3);
     expect(absoluteCap.durationMs).toBeLessThan(5_000);
     expect(absoluteCap.observations).toContain("observation_stop=observation-cap-reached");
 
-    const boundedSnapshots = runPostDeadlineObservation(`#!/bin/bash
-set -euo pipefail
-if [[ "\${1:-}" == "devices" ]]; then
-  printf 'List of devices attached\\nemulator-5554\\tdevice product:sdk model:sdk\\n'
-elif [[ "\${1:-}" == "-s" && "\${3:-}" == "emu" ]]; then
-  printf '%s\\nOK\\n' "\${AVD_NAME:?}"
-elif [[ "\${1:-}" == "-s" && "\${3:-}" == "shell" && "\${5:-}" == "sys.boot_completed" ]]; then
-  printf '\\n'
-elif [[ "\${1:-}" == "-s" && "\${3:-}" == "shell" ]]; then
-  for _ in {1..40}; do printf '[init.svc.example]: [running]\\n'; done
-elif [[ "\${1:-}" == "-s" && "\${3:-}" == "logcat" ]]; then
-  for _ in {1..40}; do printf 'system crash evidence line\\n'; done
-fi
-`);
     expect(boundedSnapshots.result.status).toBe(1);
+    expect(boundedSnapshots.elapsedSeconds).toBe(12);
     expect(boundedSnapshots.observations).toContain("observation_stop=observation-cap-reached");
     expect(boundedSnapshots.snapshots).toEqual(["first-online", "near-ceiling"]);
     for (const snapshot of boundedSnapshots.snapshots) {
@@ -3233,7 +3376,11 @@ fi
       };
       expect(workflow.name).toBe(name);
       expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
-      expect(Object.keys(workflow.jobs)).toEqual(["authorize", "release", "recover-record"]);
+      expect(Object.keys(workflow.jobs)).toEqual(
+        platform === "ios"
+          ? ["authorize", "release", "recover-record", "inspect"]
+          : ["authorize", "release", "recover-record"],
+      );
       expect(workflow.jobs.authorize?.environment).toBeUndefined();
       expect(workflow.jobs.release?.environment).toBe(environment);
       expect(workflow.jobs["recover-record"]?.environment).toBe(environment);
@@ -3633,7 +3780,7 @@ fi
     }
   });
 
-  it("passes protected iOS release inputs only to the iOS upload step", () => {
+  it("passes protected iOS group policy only to upload and inspection, and screenshot inputs only to upload", () => {
     const source = fs.readFileSync(".github/workflows/ios-beta-release.yml", "utf8");
     const project = parse(fs.readFileSync("apps/ios/project.yml", "utf8")) as {
       name?: string;
@@ -3666,13 +3813,19 @@ fi
     );
 
     expect(source).not.toContain("secrets.TESTFLIGHT_INTERNAL_GROUP");
-    expect(source.match(/\$\{\{ vars\.TESTFLIGHT_INTERNAL_GROUP \}\}/gu)).toHaveLength(1);
+    expect(source.match(/\$\{\{ vars\.TESTFLIGHT_INTERNAL_GROUP \}\}/gu)).toHaveLength(2);
     expect(workflow.jobs.release?.environment).toBe("ios-beta-release");
     expect(placements).toEqual([
       {
         envName: "TESTFLIGHT_INTERNAL_GROUP",
         jobName: "release",
         runsUpload: true,
+        value: "${{ vars.TESTFLIGHT_INTERNAL_GROUP }}",
+      },
+      {
+        envName: "TESTFLIGHT_INTERNAL_GROUP",
+        jobName: "inspect",
+        runsUpload: false,
         value: "${{ vars.TESTFLIGHT_INTERNAL_GROUP }}",
       },
     ]);

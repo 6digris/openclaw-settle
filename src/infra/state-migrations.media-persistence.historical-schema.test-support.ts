@@ -1,4 +1,6 @@
+import { withoutCanonicalSessionValidationSchema } from "../state/openclaw-agent-canonical-validation-schema.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "../state/openclaw-agent-schema.js";
+import { withoutTranscriptFtsRowSchema } from "../state/openclaw-agent-transcript-fts-schema.js";
 
 const HISTORICAL_AGENT_LEASE_SCHEMA = `CREATE TABLE IF NOT EXISTS state_leases (
   scope TEXT NOT NULL,
@@ -41,7 +43,12 @@ function removeSchemaRange(sql: string, startMarker: string, endMarker?: string)
 /** Exact schema bytes from 509a5f0373764, derived from current SQL with later additions removed. */
 export function historicalV15AgentSchemaSql(): string {
   const withoutPendingInputs = removeSchemaRange(
-    OPENCLAW_AGENT_SCHEMA_SQL,
+    withoutCanonicalSessionValidationSchema(
+      withoutTranscriptFtsRowSchema(OPENCLAW_AGENT_SCHEMA_SQL),
+    ).replace(
+      "-- No foreign key: node triggers settle key renames and deletion even while a\n-- maintenance owner has disabled foreign-key enforcement.\n",
+      "",
+    ),
     "\n-- Accepted input stays outside the active transcript until its exact turn owns execution.",
   );
   let sql = restoreHistoricalAgentLeaseSchema(withoutPendingInputs)
